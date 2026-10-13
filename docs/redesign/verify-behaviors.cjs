@@ -53,8 +53,15 @@ const MUTATIONS = {
     from: "const a = curScope().accounts.find((x) => x.id === a1);",
     to: "const a = curScope().accounts.find((x) => x.id === a2); /* MUTATED: 读错参数位 */",
   },
-  progbind: {
-    desc: "退回单绑定模型（切一个程序位会清掉本账号其他程序位）",
+  /* ★ P14 S4a · 把「未检测到客户端」的**独立空态**去掉 ⇒ 它会被下面的「没有会话」分支吃掉，
+     于是「没装 / 没登录」被说成「你确实没有会话」。 */
+  extmissing: {
+    desc: "去掉「未检测到客户端」的独立空态（把没装说成没有会话）",
+    file: "demo-app.js",
+    from: "  if (!view.dataRoot) {\n    return `<div class=\"dsec\" data-ext-state=\"missing\">",
+    to: "  if (false) {\n    return `<div class=\"dsec\" data-ext-state=\"missing\">",
+  },
+  progbind: {    desc: "退回单绑定模型（切一个程序位会清掉本账号其他程序位）",
     file: "demo-app.js",
     from: "      acc.programs[a2] = true;\n      curScope().accounts.forEach((o) => { if (o.id !== acc.id) o.programs[a2] = false; });",
     to: "      p.programs.forEach((x) => { acc.programs[x.id] = x.id === a2; }); /* MUTATED: 单绑定 */",
@@ -1360,6 +1367,95 @@ async function boot(query) {
   } catch (e) {
     results.push({ name: "核实序列完整执行", ok: false, detail: e.message });
   }
+  /* ── ★★ P14 S4a · 插件侧「复制会话」 ──
+     与上面那套「会话副本组」**不是一回事**：副本组有账本、可双向同步、有「谁落后 / 谁分叉」；
+     插件侧是**一次性单向复制**（副本恒取新 id）⇒ 没有同步 / 统一，也**不进**会话页的客户端 Tab。 */
+  const domExt = await boot("dest=accounts&hint=0");
+  const dExt = domExt.window.document;
+  const evExt = (expr) => domExt.window.eval(expr);
+
+  const extAcc = evExt("(curScope().accounts.find((a) => a.programs.ide || a.programs.vscode) || {}).id");
+  check("★ S4a 入口只在**绑定了插件程序位**的账号上出现", () => {
+    if (!extAcc) throw new Error("演示数据里没有绑定插件程序位的账号（夹具失效）");
+    evExt(`drawerAccount(${JSON.stringify(extAcc)})`);
+    const btn = [...dExt.querySelectorAll("[data-act]")]
+      .find((n) => n.dataset.act.startsWith("ext-sess|open|"));
+    if (!btn) throw new Error("插件程序位的账号上找不到「复制插件会话」入口");
+    /* 阴性对照：**没绑定**插件程序位的账号上不该有这个入口 —— 否则它就是个恒显的假入口。 */
+    const otherAcc = evExt(
+      "(curScope().accounts.find((a) => !a.programs.ide && !a.programs.vscode && a.id !== " +
+      JSON.stringify(extAcc) + ") || {}).id"
+    );
+    if (!otherAcc) throw new Error("演示数据里没有「未绑定插件程序位」的账号（阴性对照缺失）");
+    evExt(`drawerAccount(${JSON.stringify(otherAcc)})`);
+    if ([...dExt.querySelectorAll("[data-act]")].some((n) => n.dataset.act.startsWith("ext-sess|open|")))
+      throw new Error("未绑定插件程序位的账号上也出现了该入口（假入口）");
+    return true;
+  });
+
+  /* 打开插件会话抽屉：**必须先渲染账号详情抽屉、再点那个入口按钮** ——
+     `drawerAccount` 只画账号详情，插件会话抽屉是它里面的一个动作。 */
+  const openExt = () => {
+    evExt(`drawerAccount(${JSON.stringify(extAcc)})`);
+    const btn = [...dExt.querySelectorAll("[data-act]")]
+      .find((n) => n.dataset.act.startsWith("ext-sess|open|"));
+    if (!btn) throw new Error("找不到「复制插件会话」入口");
+    btn.click();
+  };
+
+  check("★ S4a 默认全选；取消全选后主操作**禁用**（无选中不给出口）", () => {
+    openExt();
+    const rows = () => [...dExt.querySelectorAll(".ext-row input")];
+    const primary = () => dExt.querySelector('[data-act="ext-sess|copy"]');
+    if (rows().length === 0) throw new Error("抽屉里没有会话行（夹具失效）");
+    if (!rows().every((n) => n.checked)) throw new Error("默认应全选（复制是加法，默认带走全部）");
+    if (primary().disabled) throw new Error("默认全选时主操作不该禁用");
+    /* 逐个取消 ⇒ 主操作必须禁用，并给出原因。
+       ⚠️ **每点一次都要重新取节点**：`renderExtDrawer` 会整块重画抽屉，
+       旧的 NodeList 里的节点已经脱离文档 ⇒ 只点得动第一个（本用例初版就这么错的）。 */
+    for (let guard = 0; guard < 20; guard++) {
+      const next = [...dExt.querySelectorAll(".ext-row input")].find((n) => n.checked);
+      if (!next) break;
+      next.click();
+    }
+    if (dExt.querySelector(".ext-row input:checked")) throw new Error("没能取消掉全部勾选（用例自身失效）");
+    if (!primary().disabled) throw new Error("无选中时主操作必须禁用");
+    if (!dExt.querySelector("#drawer-body").textContent.includes("先勾选"))
+      throw new Error("禁用时没有说明原因（禁用而不给解释）");
+    return true;
+  });
+
+  check("★★ S4a「未检测到客户端」与「这个账号没有会话」是**两段不同文案**", () => {
+    openExt();
+    evExt('state.extVariant = "missing"; renderExtDrawer();');
+    const missing = dExt.querySelector('[data-ext-state="missing"]');
+    if (!missing) throw new Error("dataRoot=null 时没有渲染「未检测到」空态");
+    if (!missing.textContent.includes("未检测到"))
+      throw new Error("「未检测到客户端」的文案没说实话：" + missing.textContent.trim().slice(0, 40));
+
+    evExt('state.extVariant = "empty"; renderExtDrawer();');
+    const empty = dExt.querySelector('[data-ext-state="empty"]');
+    if (!empty) throw new Error("装了客户端但账号没会话时没有渲染对应的空态");
+    if (empty.textContent.trim() === missing.textContent.trim())
+      throw new Error("两种空态文案相同 —— 把「没装 / 没登录」说成了「你没有会话」");
+    if (!empty.textContent.includes("数据目录已找到"))
+      throw new Error("「没有会话」时应给出数据目录作为可核对的事实");
+    return true;
+  });
+
+  check("★ S4a 读不出来的工作区索引要**如实标注**（不假装全列出来了）", () => {
+    openExt();
+    evExt('state.extVariant = "ok"; renderExtDrawer();');
+    const warn = dExt.querySelector("[data-ext-skipped]");
+    if (!warn) throw new Error("skipped>0 时没有如实标注");
+    if (!warn.textContent.includes("1")) throw new Error("标注里没带上真实条数");
+    /* 阴性对照：skipped=0 时不该出现这行（否则是恒显的噪声）。 */
+    evExt("EXT_SESSIONS.ok.skipped = 0; renderExtDrawer();");
+    if (dExt.querySelector("[data-ext-skipped]")) throw new Error("skipped=0 时仍在标注（恒显噪声）");
+    evExt("EXT_SESSIONS.ok.skipped = 1;");
+    return true;
+  });
+
   const pass = results.filter((r) => r.ok).length;
   const fail = results.length - pass;
   for (const r of results) console.log(`${r.ok ? "  ok  " : " FAIL "} ${r.name}${r.detail && !r.ok ? "  → " + r.detail : ""}`);

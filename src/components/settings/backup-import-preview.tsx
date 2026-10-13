@@ -85,7 +85,7 @@ export function BackupImportPreview({
     .filter((item): item is string => item !== null && item.length > 0);
 
   return (
-    <div className="space-y-3 px-4 py-3 sm:px-5">
+    <div className="space-y-3 px-4 py-3">
       {/* 契约版本头：kind / formatVersion / exportedAt / 含不含凭据 */}
       <div className="space-y-1">
         <p className="text-[13px] font-medium">

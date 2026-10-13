@@ -42,6 +42,33 @@
 `TRAE SOLO` 与 `GLOBAL_SPEC` 重叠），修它必须连同约 20 条依赖「一个变体多个候选目录」
 的护栏一起做，仍属该任务「仍未做 #1」的范围。
 
+**2026-10-13 第三处更正（issue #20）：客户端把两条产品线合并成一个，程序位由 4 变 6。**
+
+客户端把 TraeWork 与 TraeCode 合并成**一个**客户端：CN 叫 `Trae CN`、国际版叫 `Trae`
+—— 与旧的 **TraeCode** 逐字同名。本机实证在 `%APPDATA%\Trae CN\migration-job.json`：
+
+```json
+{ "sourceAppName": "TRAE SOLO CN", "sourceInstallPath": "D:\\Programs\\TRAE SOLO CN",
+  "targetDataPath": "…\\AppData\\Roaming\\Trae CN", "removeApp": true, "status": "completed" }
+```
+
+即 `TRAE SOLO CN`（TraeWork）被卸载、数据并入 `Trae CN`。因此：
+
+- 新增第 3 条程序线 `TraeProgram::Trae`（`as_str = "trae"`），每区域 3 条、共 6 个程序位；
+- 它与遗留 `TraeCode` **物理上是同一个客户端**，故**共用**候选名、`TraeVariant`
+  与快照目录（`profiles_trae_cn` / `profiles_global_trae_code`）—— 给同一个客户端开
+  两套持久化身份会把登录态拆成两半，且不报错；
+- 候选名重叠（`Trae` × `TraeCode`）因此是**刻意**的，已由
+  `region::tests::程序位候选名互不重叠除登记在案的重叠` 以**显式白名单**钉住；
+- `variant_for_program` 从此**不是单射**，`client_settings::tests::变体与区域程序双向一致`
+  相应放宽到「区域逐字一致 + 程序位指向同一客户端」；
+- `env_status` 新增 `configuredPathExists`：设置里存的 exe 路径在客户端升级/合并后
+  会失效，后端仍**静默回落**自动探测（不卡启动），但界面必须提示用户重选。
+
+⚠️ 由此产生的一处**已知冗余**（产品决定，非缺陷）：同一区域会出现两枚指向同一客户端的
+程序按钮（CN 是 `TraeCode` / `Trae`；国际版两枚都叫 `Trae AI`）。合并前的老机器上
+两者仍各自可探测。API Key 的「归属程序位」下拉按 `variant` 去重，仍是 4 项。
+
 ---
 
 ## 0. TL;DR

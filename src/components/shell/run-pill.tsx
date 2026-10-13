@@ -52,7 +52,13 @@ export function RunPill({
     >
       <span
         aria-hidden
-        className={cn("size-1.5 shrink-0 rounded-full", on ? "bg-success" : "bg-muted-foreground/50")}
+        className={cn(
+          "size-1.5 shrink-0 rounded-full",
+          on ? "bg-success" : "bg-muted-foreground/50",
+          /* 原型 `.run-pill:not(.off) .dot`（`demo.css:113`）：运行中那颗点带一圈
+             3px 的success 22% 光晕，让「在跑」在余光里也能分辨。关闭态不加。 */
+          on && "shadow-[0_0_0_3px_color-mix(in_oklab,var(--success)_22%,transparent)]",
+        )}
       />
       {compact ? null : t(LABEL_KEY[state])}
     </span>

@@ -89,10 +89,12 @@ pub fn switch_account_cross(
         close_workbuddy_for(region, 20)?;
         // 只有重启场景才做会话操作（数据库在运行中不宜写入）
         if !copy_session_ids.is_empty() {
-            progress("正在复制会话到目标账号…");
+            // 逐会话进度直接透传：正文复制是 GB 级 I/O，切成 (i/N) 步进
+            // 才能让用户知道「还在动」，而不是盯着一行消息以为卡死。
             copy_report = session::copy_sessions_for_switch_cross(
                 source_region,
                 region,
+                progress_fn.map(|f| f.as_ref()),
                 &acc,
                 copy_session_ids,
             );

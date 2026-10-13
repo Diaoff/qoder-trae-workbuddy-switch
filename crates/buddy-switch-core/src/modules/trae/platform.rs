@@ -89,7 +89,8 @@ pub(crate) fn hidden_command(program: &str) -> std::process::Command {
 /// ## 值来自**程序位表**（`region::all_program_specs`），顺序按「区域 → 程序」
 ///
 /// 摊平口径在 2026-09-28（issue #3）从 [`TraeVariant::all`]（**只含国内两条**）
-/// 换成 [`super::region::all_program_specs`]（**四个程序位全覆盖**）。
+/// 换成 [`super::region::all_program_specs`]（**全部程序位**，issue #20 后为
+/// 3 程序 × 2 区域 = 6 条）。
 /// 换口径的直接后果：国际版 TraeCode 的 `Trae.exe` / `Trae` 仍留在候选里，
 /// 却**不再**冒充国内 TraeCode 的次候选（那条静默跨区误判已修，见
 /// [`super::variant::GLOBAL_TRAE_CODE_SPEC`] 与 `TRAE_CN_SPEC` 的说明）。
@@ -321,7 +322,8 @@ fn region_status(region: super::region::TraeRegion) -> Value {
     let programs: Vec<Value> = super::region::programs_of(region)
         .iter()
         .map(|spec| {
-            // ★ 四个程序位**全部已建模**（2026-09-28，issue #3）：本函数不再有
+            // ★ 全部程序位**都已建模**（2026-09-28，issue #3；2026-10-13 issue #20
+            //   增合并版 Trae）：本函数不再有
             //   「未建模 ⇒ 报未安装」的分支。所以探测结果就是事实，
             //   不存在「程序位存在但拿不到标识」这种中间态。
             let target = variant_for_program(spec.region, spec.program);
@@ -349,7 +351,7 @@ fn region_status(region: super::region::TraeRegion) -> Value {
                 "program": spec.program.as_str(),
                 "label": spec.display_name,
                 "nameAlias": spec.name_alias,
-                // 前端「切换到此程序」时回传的标识。**四个程序位都有值**
+                // 前端「切换到此程序」时回传的标识。**每个程序位都有值**
                 // （`null` 只在「未建模」时代出现过，见上方说明）。
                 "variant": target.as_str(),
                 "installed": installed,
@@ -410,17 +412,23 @@ fn region_status(region: super::region::TraeRegion) -> Value {
     })
 }
 
-/// 程序位 → 客户端建模标识。
+/// 程序位 → 变体（**持久化身份**）。
 ///
-/// **四个程序位全部已建模**（2026-09-28，issue #3 收尾）：国际版 TraeCode 补上
-/// [`TraeVariant::GlobalTraeCode`] 之后，本函数不再返回 `None`。
+/// **全部程序位已建模**（2026-09-28 issue #3 收尾，2026-10-13 issue #20 增第 3 条程序线）：
+/// 本函数不返回 `Option` —— 曾经 `(Global, TraeCode) => None`，调用方据此把该程序位
+/// 报成「未安装」；那条分支已删。留着 `Option` 等于把「已建模」降级成运行期判断，
+/// 而 `match` 本身就把这件事钉住了（新增程序线会编译不过）。
 ///
-/// ## 返回值为什么不是 `Option` 的旧形状
+/// ## ⚠️ 合并版 `Trae` 与遗留 `TraeCode` 映射到**同一个变体**（issue #20）
 ///
-/// 曾经 `(Global, TraeCode) => None`，调用方据此把该程序位报成「未安装」。
-/// 那条分支现在没了 —— 留着它等于把「已建模」这件事降级成运行期判断。
-/// 若将来又出现未建模的程序位，**在编译期**让本函数返回 `Option` 更安全，
-/// 但当前四个组合已闭合，`match` 本身就把这件事钉住了（新增程序线会编译不过）。
+/// 两者物理上是同一个客户端（同名 `Trae CN` / `Trae`，见 `region` 模块头），
+/// 因此必须共享变体 —— 变体决定**账号库 / 登录态快照 / Key 归属 / 网关日志分档**，
+/// 给合并版另立一个变体会把同一个客户端的登录态拆进两套快照（症状是
+/// 「快照明明备份了，恢复时却说没有」，且只在合并后的机器上出现）。
+///
+/// ⇒ 本函数**不是单射**：`(Cn, TraeCode)` 与 `(Cn, Trae)` 同值，
+/// `(Global, TraeCode)` 与 `(Global, Trae)` 同值。反向映射（`client_settings::program_of_variant`）
+/// 取**遗留标识**为规范值，因为那是既有数据里写的那个。
 fn variant_for_program(
     region: super::region::TraeRegion,
     program: super::region::TraeProgram,
@@ -430,8 +438,11 @@ fn variant_for_program(
     match (region, program) {
         (TraeRegion::Cn, TraeProgram::TraeWork) => TraeVariant::TraeWork,
         (TraeRegion::Cn, TraeProgram::TraeCode) => TraeVariant::Trae,
+        // 合并版：与遗留 TraeCode 同一个客户端 ⇒ 同一个变体（见上）。
+        (TraeRegion::Cn, TraeProgram::Trae) => TraeVariant::Trae,
         (TraeRegion::Global, TraeProgram::TraeWork) => TraeVariant::Global,
         (TraeRegion::Global, TraeProgram::TraeCode) => TraeVariant::GlobalTraeCode,
+        (TraeRegion::Global, TraeProgram::Trae) => TraeVariant::GlobalTraeCode,
     }
 }
 
@@ -441,12 +452,23 @@ fn variant_for_program(
 /// 一旦漂移就会出现「某个程序位的 exe 永远探测不到」这类静默故障。
 /// 编译期无法校验（`cfg` 分支 + 静态切片），故放一条测试。
 ///
-/// ## 摊平基准是**程序位表**（4 个），不是 [`TraeVariant::all`]（2 个）
+/// ## 摊平基准是**程序位表**（6 条 = 3 程序 × 2 区域），不是 [`TraeVariant::all`]（2 个）
 ///
 /// 2026-09-28（issue #3）换的基准：`all()` 只含国内两条程序位，
 /// 用它当基准会让两个国际程序位的名字（`TRAE SOLO.exe` / `Trae.exe`）
 /// **在跨变体探测里凭空消失** —— 症状是「国际版客户端在跑，'关闭全部 Trae'
 /// 却说没有」。程序位表才是完整口径。
+///
+/// ## ⚠️ 必须**按序去重**再比对（issue #20）
+///
+/// 表里合并版 `Trae` 与遗留 `TraeCode` 的候选名**逐字相同**（同一个客户端，
+/// 见 `region` 模块头）⇒ 直接摊平会得到 6 个名字、而 `exe_names()` 只有 4 个。
+/// 去重是**语义正确**的：跨变体探测要的是「本机可能叫哪些名字」的集合，
+/// 重复项没有任何意义。
+///
+/// 但去重会让这条护栏**变松**（表里少写一条、多写一条重复项都看不出来），
+/// 因此另有一条用例专门钉「合并版与遗留 TraeCode 指向同一客户端」
+/// （`region::tests::合并版与遗留traecode指向同一客户端`）。
 ///
 /// [`TraeVariant::all`]: super::variant::TraeVariant::all
 #[cfg(test)]
@@ -455,9 +477,26 @@ fn flattened_candidates_match_variant_table() {
     let mut from_table_exe: Vec<&str> = Vec::new();
     let mut from_table_dir: Vec<&str> = Vec::new();
     for spec in super::region::all_program_specs() {
-        from_table_dir.extend(spec.data_dir_names.iter().copied());
-        from_table_exe.extend(spec.exe_names.iter().copied());
+        for name in spec.data_dir_names {
+            if !from_table_dir.contains(name) {
+                from_table_dir.push(name);
+            }
+        }
+        for name in spec.exe_names {
+            if !from_table_exe.contains(name) {
+                from_table_exe.push(name);
+            }
+        }
     }
+    // 前置：去重确实发生了（否则这条用例没在测它声称测的东西）。
+    assert_eq!(
+        super::region::all_program_specs()
+            .iter()
+            .map(|s| s.exe_names.len())
+            .sum::<usize>(),
+        from_table_exe.len() + 2,
+        "程序位表应恰有 2 条重复的 exe 候选（合并版 Trae 与遗留 TraeCode 各 2 条）"
+    );
     assert_eq!(data_dir_names(), from_table_dir.as_slice(), "userData 目录名候选与程序位表漂移");
     // exe 名只在 Windows 上与表逐字相同（非 Windows 去过 `.exe`）。
     if cfg!(target_os = "windows") {
@@ -1437,6 +1476,28 @@ pub fn env_status() -> Value {
 
     let variant = detected_variant();
 
+    // 「设置里填的客户端路径现在还指向一个真实文件吗」（issue #20）。
+    //
+    // ## 为什么必须单独下发这个布尔值
+    //
+    // [`detect_install`] 在自定义路径失效时会**静默回落**到自动探测 —— 这是刻意的：
+    // 客户端合并/升级会搬走甚至卸载旧 exe（本机 `D:\Programs\TRAE SOLO CN\` 现在就只剩
+    // 一个 debug.log），不该因此卡住启动。但用户需要知道「我填的那个路径已经没用了」，
+    // 否则设置页会一直显示一个不存在的路径、而界面同时说「已检测到」——
+    // 两边对不上，正是 issue #20 报障原话「设置了启动 exe 已经无法找到」的形态。
+    //
+    // 判据用**存盘值原样**判存在性，与 `detect_install` 的采纳逻辑**分开**：
+    // 后者还要求路径归属该变体，混在一起会把「路径存在但不属于这条产品线」
+    // 也说成「失效」，那是另一回事（`detect_install_for` 的 `belongs` 分支负责）。
+    let configured_path = settings
+        .trae_path
+        .as_deref()
+        .map(str::trim)
+        .filter(|path| !path.is_empty());
+    let configured_path_exists = configured_path
+        .map(|path| std::path::Path::new(path).is_file())
+        .unwrap_or(false);
+
     json!({
         "installed": probe.installed,
         "running": is_running(),
@@ -1446,6 +1507,9 @@ pub fn env_status() -> Value {
         "dataDirExists": data_dir.map(|p| p.is_dir()).unwrap_or(false),
         "platform": platform_tag(),
         "configuredPath": settings.trae_path,
+        // `configuredPath` 为空时恒 `false` —— 前端只在「填了且失效」时才提示，
+        // 见 `TraeSettingsPage` 的客户端路径一栏。
+        "configuredPathExists": configured_path_exists,
         "variant": variant.map(|v| v.as_str()),
         "variantLabel": variant.map(|v| v.display_name()),
     })
@@ -1967,13 +2031,87 @@ mod tests {
             "dataDirExists",
             "platform",
             "configuredPath",
+            "configuredPathExists",
         ] {
             assert!(value.get(key).is_some(), "缺少线上字段 {key}");
         }
         // 不能泄漏 snake_case 形式
         assert!(value.get("data_dir").is_none());
+        assert!(value.get("configured_path_exists").is_none());
         assert!(value.get("running").unwrap().is_boolean());
         assert!(value.get("installed").unwrap().is_boolean());
+        assert!(value.get("configuredPathExists").unwrap().is_boolean());
+    }
+
+    /// ★ `configuredPathExists` 必须如实反映「设置里填的那个路径**还在不在**」（issue #20）。
+    ///
+    /// ## 为什么这条非钉不可
+    ///
+    /// issue #20 的报障原话是「设置了启动 exe 已经无法找到」：客户端合并/升级后
+    /// 旧 exe 被搬走甚至整个目录被卸载（本机 `D:\Programs\TRAE SOLO CN\` 现在只剩 debug.log），
+    /// 而设置里仍存着旧路径。`detect_install` 会**静默回落**（这是对的），
+    /// 于是界面显示「已检测到」、设置页却摆着一个不存在的路径 —— 用户无从知道该改。
+    ///
+    /// 反例（改坏会红）：
+    /// - 把它写成「探测到的路径存在」⇒ 几乎恒为 `true`，提示永远不出现；
+    /// - 干脆不判存在性、恒 `true` ⇒ 同上。
+    #[test]
+    fn configured_path_existence_reflects_saved_value() {
+        let env = crate::modules::trae::test_support::TempEnv::with_device_fixture();
+        let dir = std::env::temp_dir().join(format!(
+            "buddy-switch-configured-path-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        std::fs::create_dir_all(&dir).expect("临时目录应能创建");
+
+        // 1) 没填 → 恒 false（前端据此**不**提示）。
+        crate::modules::trae::settings::patch(serde_json::json!({ "traePath": null }))
+            .expect("清空 traePath 应成功");
+        assert_eq!(
+            env_status().get("configuredPathExists").and_then(|v| v.as_bool()),
+            Some(false),
+            "未配置路径时不得报 true"
+        );
+
+        // 2) 填了一个**存在**的文件 → true。
+        let real = dir.join("Trae CN.exe");
+        std::fs::write(&real, b"x").expect("应能写临时 exe");
+        crate::modules::trae::settings::patch(serde_json::json!({
+            "traePath": real.to_string_lossy()
+        }))
+        .expect("设置 traePath 应成功");
+        let value = env_status();
+        assert_eq!(
+            value.get("configuredPathExists").and_then(|v| v.as_bool()),
+            Some(true),
+            "存在的路径必须报 true"
+        );
+        assert_eq!(
+            value.get("configuredPath").and_then(|v| v.as_str()),
+            Some(real.to_string_lossy().as_ref()),
+            "configuredPath 必须原样回显存盘值"
+        );
+
+        // 3) 填了一个**已失效**的路径（客户端合并/升级搬走了 exe）→ false，
+        //    且探测必须仍然跑完（回落自动探测，不因失效路径报错/卡死）。
+        let dead = dir.join("TRAE SOLO CN.exe");
+        crate::modules::trae::settings::patch(serde_json::json!({
+            "traePath": dead.to_string_lossy()
+        }))
+        .expect("设置失效 traePath 应成功");
+        let value = env_status();
+        assert_eq!(
+            value.get("configuredPathExists").and_then(|v| v.as_bool()),
+            Some(false),
+            "失效路径必须如实报 false —— 设置页据此提示用户重新选择"
+        );
+        assert!(
+            value.get("installed").unwrap().is_boolean(),
+            "回落探测必须仍然给出 installed，不得因失效路径中断"
+        );
+
+        drop(env);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -2103,8 +2241,8 @@ mod tests {
         assert_eq!(seen.len(), 2, "区域标识重复: {seen:?}");
     }
 
-    /// ★★ 四个程序位**全部已建模**，且每个程序位回传的 `variant` 都能反解回
-    /// 「同一个区域 + 同一个程序」（2026-09-28，issue #3）。
+    /// ★★ 全部程序位**已建模**，且每个程序位回传的 `variant` 都能反解回
+    /// 「同一个区域 + 同一个程序」（2026-09-28 issue #3；2026-10-13 issue #20 增合并版）。
     ///
     /// ## 这条是 issue #3 的直接验收
     ///
@@ -2112,15 +2250,19 @@ mod tests {
     /// ⇒ 国际版页签上的 TraeCode 程序位 `variant: null`、`installed: false`，
     /// 前端把它渲染成**禁用按钮**，用户看到的就是「不支持」。
     ///
-    /// 现在四个组合都有值。断言三件事：
+    /// 现在全部组合都有值。断言三件事：
     /// 1. **没有一个程序位的 `variant` 是 `null`**（这正是当时那条分支的痕迹）；
     /// 2. 回传的 `variant` 反解后的**区域**等于它所在的区域条目；
     /// 3. 回传的 `variant` 反解后的**程序**等于该程序位的 `program`。
     ///
     /// 第 2、3 条合起来才排得掉「值有、但指向另一个客户端」这种更坏的形态
     /// （切换会把登录态写进错的 userData，而界面上一切正常）。
+    ///
+    /// ⚠️ 第 3 条在 issue #20 之后**不再是「同一区域内的唯一解」**：合并版 `Trae`
+    /// 与遗留 `TraeCode` 共享同一个变体（`trae_cn` / `global_trae_code`），
+    /// 两者都能通过 `variant_for_program` 的往返 —— 这是刻意的（同一个客户端）。
     #[test]
-    fn 四个程序位全部已建模且自洽() {
+    fn 全部程序位已建模且自洽() {
         use super::super::region::{TraeProgram, TraeRegion};
         use super::super::variant::TraeVariant;
 
@@ -2159,8 +2301,9 @@ mod tests {
                 );
             }
         }
-        // 前置：必须真的把 4 个程序位都过了一遍，否则本用例会**恒真**。
-        assert_eq!(checked, 4, "应有 4 个程序位（2 区域 × 2 程序）");
+        // 前置：必须真的把 6 个程序位都过了一遍，否则本用例会**恒真**。
+        // 6 = 2 区域 × 3 程序（TraeWork / TraeCode / 合并版 Trae，issue #20）。
+        assert_eq!(checked, 6, "应有 6 个程序位（2 区域 × 3 程序）");
     }
 
     /// 区域状态带出的「站点域」（`consoleBase`）必须**按区域分家**，且与授权页域**同源**。

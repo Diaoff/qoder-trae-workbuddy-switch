@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { ArrowRight, Check, Download, Info, Pencil, RefreshCw, ShieldCheck, Sparkles, StickyNote, Tag, Trash2, XIcon } from "lucide-react";
+import { ArrowRight, Check, Download, Info, MessageSquare, Pencil, RefreshCw, ShieldCheck, Sparkles, StickyNote, Tag, Trash2, XIcon } from "lucide-react";
 
 import { avatarTone, formatCredits } from "@/components/account-card";
 import { EmptyState } from "@/components/ui/empty-state";
@@ -200,6 +200,16 @@ export interface AccountDetailDrawerProps {
   switchTargets?: DetailSwitchTarget[];
   /** 「使用向导切换（可选迁移内容）」入口（原型 :3485）。 */
   onWizardSwitch?: () => void;
+  /**
+   * ★ P14 S4a · 打开「插件会话」抽屉（VS Code 插件 / CodeBuddy IDE 的会话仓）。
+   *
+   * ⚠️ 只在**该账号绑定了有会话仓的程序位**时注入（映射见 `lib/ext-sessions.ts`）——
+   * JetBrains 等没有会话仓的程序位**不注入**，于是入口不渲染。
+   * 渲染一个点了会去读错目录的按钮，比没有这个功能坏得多。
+   */
+  onExtSessions?: () => void;
+  /** 入口文案里的客户端名（已 i18n）；`onExtSessions` 提供时才用得到。 */
+  extClientLabel?: string;
   /** 「操作」区回调（原型 :3518-3527）。`null` / 不传 = 不渲染该区块。 */
   actions?: DetailActions | null;
   /** 签到历史（近 7 天）；`null` / 空数组 = 不渲染该区块。 */
@@ -244,6 +254,8 @@ export function AccountDetailDrawer({
   current = false,
   switchTargets = [],
   onWizardSwitch,
+  onExtSessions,
+  extClientLabel,
   actions = null,
   checkinHistory = null,
 }: AccountDetailDrawerProps) {
@@ -612,6 +624,22 @@ export function AccountDetailDrawer({
                   {t("shared.drawer.switch.wizard")}
                 </Button>
               )}
+              {onExtSessions && (
+                /* ★ P14 S4a · 插件会话复制的入口。
+                   为什么在**这里**、不在「关联会话」页：那边是**副本组**模型
+                   （有账本、可双向同步、有「谁落后 / 谁分叉」），而插件侧是
+                   **一次性单向复制**（副本恒取新 id）⇒ 塞进去只会多出一个永远空的组列表。 */
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  className="ml-2 mt-2.5"
+                  onClick={onExtSessions}
+                >
+                  <MessageSquare className="size-4" />
+                  {t("sessions.ext.entry", { client: extClientLabel ?? "" })}
+                </Button>
+              )}
             </section>
           )}
 
@@ -773,13 +801,18 @@ export function AccountDetailDrawer({
                   <h3 className="mb-2 text-[11.5px] font-medium text-muted-foreground">
                     {section.title}
                   </h3>
-                  <dl className="space-y-1.5">
+                  {/* 原型 `.kv`（`demo.css:492-495`）：`flex gap10` + `12.5px` + `padding:7px 0`
+      + **`border-bottom:1px dashed --border`**（虚线分隔，此前完全没有）+末行无边框；
+      `.kv .k` 是**固定 `width:96px`** 的标签列（此前 `auto` 随内容伸缩 ⇒ 每行标签起点都在变）。*/}
+                  <dl className="space-y-0">
                     {section.rows.map((row, index) => (
                       <div
                         key={`${section.key}-${index}`}
-                        className="grid min-w-0 grid-cols-[auto_minmax(0,1fr)] items-baseline gap-3 text-xs"
+                        className={cn(
+                          "grid min-w-0 grid-cols-[96px_minmax(0,1fr)] items-baseline gap-2.5 border-b border-dashed border-border py-1.5 text-[12.5px] last:border-b-0",
+                        )}
                       >
-                        <dt className="shrink-0 text-muted-foreground">{row.label}</dt>
+                        <dt className="shrink-0 text-[11.5px] text-muted-foreground">{row.label}</dt>
                         <dd
                           className={cn(
                             "min-w-0 truncate text-right text-foreground/80",

@@ -136,12 +136,12 @@ function UpdateCard() {
       title={t("appSettings.update.title")}
     >
       <CardContent className="space-y-0 p-0">
-        <div className="border-b border-border/60 px-4 py-3 text-sm sm:px-5">
+        <div className="border-b border-border/60 px-4 py-3 text-sm">
           {t("appSettings.update.current")}
           <span className="font-mono">v{version || "?"}</span>
         </div>
 
-        <div className="flex min-w-0 items-center justify-between gap-3 border-b border-border/60 bg-muted/25 px-4 py-3 text-sm sm:px-5">
+        <div className="flex min-w-0 items-center justify-between gap-3 border-b border-border/60 bg-muted/25 px-4 py-3 text-sm">
           <div className="min-w-0 flex-1">
             <div className="font-medium">{t("appSettings.update.source")}</div>
             <div className="truncate text-xs text-muted-foreground">{GITHUB_REPOSITORY_URL}</div>
@@ -174,14 +174,14 @@ function UpdateCard() {
           />
         </SettingsFieldRow>
 
-        <div className="flex flex-wrap gap-2 border-b border-border/60 bg-muted/25 px-4 py-3 sm:px-5">
+        <div className="flex flex-wrap gap-2 border-b border-border/60 bg-muted/25 px-4 py-3">
           <DemoAction><Button size="sm" variant="outline" onClick={() => void saveProxy()} disabled={proxySaving}>
             {proxySaving ? <Loader2 className="animate-spin" /> : <Save />}
             {t("appSettings.update.proxy.save")}
           </Button></DemoAction>
         </div>
 
-        <div className="flex flex-wrap gap-2 border-b-0 border-border/60 px-4 py-3 sm:px-5">
+        <div className="flex flex-wrap gap-2 border-b-0 border-border/60 px-4 py-3">
           <DemoAction><Button size="sm" variant="outline" onClick={check} disabled={checking}>
             {checking ? <Loader2 className="animate-spin" /> : <RefreshCw />}
             {t("appSettings.update.check")}

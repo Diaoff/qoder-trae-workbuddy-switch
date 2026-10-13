@@ -40,8 +40,8 @@ export default function TraeSessionsPage() {
       {/* 页头（原型 `viewSessions` 的 Trae 分支）：28px 标题 + 作用域副标题 + 只读 scope-chip。 */}
       <header className="flex items-start gap-4">
         <div className="min-w-0">
-          <h1 className="text-[28px] font-semibold tracking-tight">{t("sessions.title")}</h1>
-          <p className="mt-1.5 text-xs text-muted-foreground">
+          <h1 className="text-[28px] font-[640] tracking-[-0.02em]">{t("sessions.title")}</h1>
+          <p className="mt-1.5 text-[12.5px] text-muted-foreground">
             {t("pageHead.sessions", { scope: scopeLabel(t, scope) })}
           </p>
         </div>

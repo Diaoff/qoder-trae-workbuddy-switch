@@ -221,11 +221,161 @@ export interface SessionReplica {
   region: Region;
 }
 
+/**
+ * ★ P14 S2 · 一对副本的「**上次一致点**」。
+ *
+ * 在**复制成功**或**分歧统一成功**的那一刻建立：那两刻两份内容逐行相同
+ * （副本的 `sessionId` 已归一化，见 core `SESSION_ID_PLACEHOLDER`）。
+ *
+ * ⚠️ 与「共同旧版」**不是一回事**：
+ * - 共同旧版 = **当前**内容的公共前缀（随时可变）；
+ * - 上次一致点 = 我们**记录过**的那次逐行相同（历史事实）。
+ *
+ * 两者不一致恰恰是有信息量的 —— 说明有人改写过更早的内容。
+ */
+export interface SessionBaseline {
+  /** 一端副本的会话 id。 */
+  a: string;
+  /** 另一端副本的会话 id。 */
+  b: string;
+  /** 建立时刻（ms）。 */
+  createdAt: number;
+  /** 一致点的行数。 */
+  lineCount: number;
+  /**
+   * 前 N 行的逐行 hash（与 `SessionFingerprint.prefixHashes` **同一算法、同一上限**）。
+   *
+   * 用途：**验证**「这条基线是不是当前内容的真前缀」—— 验证不过就不能说
+   * 「自上次一致以来新增了几条」（见 `deriveBaselineDelta`）。
+   */
+  prefixHashes: number[];
+}
+
+/**
+ * P14 S4a · 插件侧客户端的会话仓标识（与 core `ExtClient::as_str` **同取值**）。
+ *
+ * ⚠️ 与桌面版的「会话」**不是同一套存储**：那边是 `workbuddy.db` + jsonl，
+ * 这边是 **JSON 记录仓**（目录 + 索引数组）⇒ 数据形状完全不同，别混用。
+ */
+export type ExtClientId = "vscode" | "codebuddy-ide";
+
+/** P14 S4a · 插件侧的一条会话（来自工作区级 `index.json` 的 `conversations[]`）。 */
+export interface ExtSession {
+  /** 会话 id（**32 位小写 hex**，扩展 `generateId()` 的产物）。 */
+  id: string;
+  /** 工作区目录名（扩展自己算的 `md5(工作区)`，本仓**只透传不重算**）。 */
+  workspaceHash: string;
+  title: string;
+  /** 最近活动时刻（ms）；认不出时为 `0`（**不臆造**时刻）。 */
+  updatedAt: number;
+  type: string;
+  hasHistory: boolean;
+}
+
+/** `list_vscode_sessions` 的返回。 */
+export interface ExtSessionsResponse {
+  sourceUid: string;
+  sessions: ExtSession[];
+  /** 读不出来（缺失 / 损坏）的工作区索引数 —— **如实报数**，不把问题吞掉。 */
+  skipped: number;
+  /**
+   * 客户端数据根；`null` = **未检测到客户端**。
+   *
+   * ⚠️ 必须与「该账号没有会话」（`sessions: []` + `dataRoot` 有值）**分开** ——
+   * 压成一个值就是在撒谎。
+   */
+  dataRoot: string | null;
+}
+
+/** `copy_vscode_sessions` 的一条任务。 */
+export interface ExtCopyItem {
+  workspaceHash: string;
+  conversationId: string;
+}
+
+/** `copy_vscode_sessions` 的返回（逐条结果 ⇒ 支持部分失败）。 */
+export interface ExtCopyResponse {
+  sourceUid: string;
+  targetUid: string;
+  copied: Array<{
+    workspaceHash: string;
+    /** 源会话 id。 */
+    sourceId: string;
+    /** 副本的新 id（**恒为新 id** ⇒ 永不覆盖目标已有会话）。 */
+    newId: string;
+    /** 被改写的目标工作区索引的备份路径；目标原本没有索引时为 `null`。 */
+    backup?: string | null;
+  }>;
+  errors: Array<{ workspaceHash: string; conversationId: string; error: string }>;
+  copiedCount: number;
+  failCount: number;
+}
+
+/**
+ * P14 S4b · 记录级 diff 的状态。**判据顺序即优先级**（与 core 的实现逐条对应）。
+ *
+ * - `error`：源缺失 / 标识非法 / **目标损坏**（索引说有、磁盘上没有正文文件）
+ * - `absent`：目标没有这份会话 ⇒ 走**整份复制**，不是增量
+ * - `divergent`：同 id 但**内容不同** ⇒ 拒绝（同步会**静默改写**目标内容）
+ * - `unordered`：目标不是源的**前缀** ⇒ 拒绝（追加会**打乱会话顺序**）
+ * - `identical`：逐条一致 ⇒ 无事可做（**不是**可同步）
+ * - `appendable`：目标恰好是源的开头一段 ⇒ 可安全追加
+ */
+export type ExtDiffStatus =
+  | "error"
+  | "absent"
+  | "divergent"
+  | "unordered"
+  | "identical"
+  | "appendable";
+
+/** `diff_vscode_sessions` 的返回。 */
+export interface ExtDiffResponse {
+  status: ExtDiffStatus;
+  /** 人话原因（拒绝时**必须**说清后果，不能只给状态码）。 */
+  reason: string;
+  /** 只有它为 `true` 才允许调 `syncExtSession`。 */
+  appendable: boolean;
+  commonMessages: number;
+  /** 源有、目标没有的（按源顺序）—— `appendable` 时就是**要追加的那几条**。 */
+  missingMessages: string[];
+  extraMessages: string[];
+  /** 同 id 但内容不同（⇒ `divergent`）。 */
+  divergentMessages: string[];
+  /** 同 id 但**目标缺正文文件**（⇒ `error`，目标损坏）。 */
+  brokenMessages?: string[];
+}
+
+/** `sync_vscode_sessions` 的返回。 */
+export interface ExtSyncResponse {
+  ok: boolean;
+  status: string;
+  reason: string;
+  /** 本次真正追加的消息 id（**失败时一定是空数组**，不许谎报）。 */
+  addedMessages: string[];
+  /** 被改写的目标会话索引的备份路径。 */
+  backup?: string | null;
+}
+
 /** 一份会话的跨账号副本组（由 ledger 边连通而成）。 */
 export interface SessionReplicaGroup {
   /** 稳定组键（用于 React key 与抽屉定位）。 */
   key: string;
   replicas: SessionReplica[];
+  /**
+   * ★ P14 S1 · **乐观令牌** —— 组结构指纹（`session::group_fingerprint`）。
+   *
+   * 提交同步 / 统一时**原样带回**，由后端复核「组还是不是你看到的那个组」：
+   * 组里多了 / 少了成员 ⇒ 指纹变 ⇒ **拒绝提交**（前端算的任务清单已对着旧组，不该执行）。
+   *
+   * ⚠️ 这是**陈旧检测**，不是鉴权 —— 后端对**内容**另有一层独立复核。
+   */
+  previewToken: string;
+  /**
+   * ★ P14 S2：本组**两端成员都在组内**的「上次一致点」，按 `createdAt` 升序。
+   * 无基线 ⇒ 空数组（**不臆造**一个一致点）。
+   */
+  baselines: SessionBaseline[];
 }
 
 /** `list_session_replicas` 的返回（`source: "empty"` = 无可用登记 ⇒ 结构化空态）。 */
@@ -245,12 +395,23 @@ export interface SyncSessionReplicaItem {
   sourceCid: string;
   /** 目标副本的会话 id（落后的那一份，只会在其末尾**追加**）。 */
   targetCid: string;
+  /** ★ P14 S1：本任务所属的会话组键（后端据此复核令牌 + 校验两个 cid 同组）。 */
+  groupKey: string;
+  /**
+   * ★ P14 S1：乐观令牌。**取不到时不该构造任务**（`buildSyncItems` 会返回空数组 ⇒ 不给出口）。
+   */
+  previewToken: string;
 }
 
 /** 单条同步的结果（**逐条**返回 ⇒ 批量时天然支持部分失败）。 */
 export interface SyncSessionReplicaResult {
   sourceCid: string;
   targetCid: string;
+  /**
+   * ★ P14 S1：后端**回显**的会话组键 —— 失败后前端要按**组**重算任务再重试
+   * （直接复用旧 items 会把旧令牌再送一遍，必然再失败）。
+   */
+  groupKey?: string | null;
   /** 是否成功（**已一致**也算成功，`appendedLines` 为 0）。 */
   ok: boolean;
   /** 实际追加的行数；仅 `ok` 时有意义。 */
@@ -277,12 +438,18 @@ export interface UnifySessionReplicaItem {
   sourceCid: string;
   /** 被覆盖的副本（它的分歧内容会被丢弃）。 */
   targetCid: string;
+  /** ★ P14 S1：本任务所属的会话组键（后端据此复核令牌 + 校验两个 cid 同组）。 */
+  groupKey: string;
+  /** ★ P14 S1：乐观令牌（同上，取不到时不该构造任务）。 */
+  previewToken: string;
 }
 
 /** 单条统一的结果（**逐条**返回 ⇒ 批量时天然支持部分失败）。 */
 export interface UnifySessionReplicaResult {
   sourceCid: string;
   targetCid: string;
+  /** ★ P14 S1：后端回显的会话组键（供按组重试，见 {@link SyncSessionReplicaResult.groupKey}）。 */
+  groupKey?: string | null;
   ok: boolean;
   /** 是否真的覆盖了（`false` = 本来就一致，未写盘）。 */
   overwritten?: boolean;
@@ -319,16 +486,39 @@ export interface ClientLimitEntry {
   accountUid: string | null;
   /** 会话所选模型（join 失败为 null）。⚠️ `hy4-preview` 与 `hy4-preview-f` 是两个模型。 */
   model: string | null;
-  /** 上游错误码（6004 模型级限流 / 6020 / 6022 排队 / …）。 */
+  /** 上游错误码（6004 模型级限流 / 6020 / 6022 排队 / …）；字符串码为 null。 */
   code: number | null;
-  /** HTTP 状态码（多为 429）。 */
+  /** 字符串错误码原文（实测 `ECONNRESET`）；数值码为 null。 */
+  codeText: string | null;
+  /** HTTP 状态码（限流多为 429）。 */
   status: number | null;
-  /** 恢复时刻（毫秒）；文案漂移解析不出为 null。 */
+  /**
+   * 上游文案里写的恢复时刻（毫秒）；文案漂移解析不出为 null。
+   *
+   * ⚠️ **这是配额窗口的重置时刻，不是解锁时刻**。实测：17:20 报 429 声称
+   * 「次日 09:04 才重置」，而 17:36 该会话就恢复了产出。判状态请看 `state`。
+   */
   resetAt: number | null;
-  /** 最近一次发生时刻（毫秒）。 */
+  /** 本条目内**最近一次**发生时刻（毫秒）。 */
   occurredAt: number;
-  /** `resetAt > now` —— 界面主排序依据。 */
-  active: boolean;
+  /**
+   * **实测可用时刻**：`occurredAt` 之后该账号在该模型上确实成功产出过的最晚时刻
+   * （毫秒）；无实证为 `null`。有值时 `state` 必为 `recovered`。
+   */
+  evidenceAt: number | null;
+  /**
+   * 三态状态：`active` 仍受限 / `unknown` 状态未知 / `recovered` 已恢复。
+   *
+   * ⚠️ 曾经是布尔 `active`：`resetAt` 缺失时一律 `false`，界面于是把「不知道」
+   * 渲染成「已恢复」—— 那是**凭空下结论**。
+   *
+   * ⚠️ 现在的 `active` 也很严：必须有「该错误**之后又试过**、却仍无成功产出」的实证。
+   * 只按「文案里的恢复时刻还没到」判会把正在正常使用的账号报成受限（实测 6/6 全错）；
+   * 而「错误之后没有任何记录」也推不出仍受限（那只是会话停了）。
+   */
+  state: "active" | "unknown" | "recovered";
+  /** 合并进本条目的原始记录数（`1` = 未去重）。⚠️ 同一次限流会**扇出**到多个会话文件。 */
+  occurrences: number;
   /** **原始**上游文案（解析失败时保留原文，不静默丢弃）。 */
   message: string;
   /** 会话 ID（便于跳转定位）。 */
@@ -347,7 +537,18 @@ export interface ClientLimitsResponse {
   /** 扫描窗口毫秒下界；`null` 表示全量扫描。 */
   since: number | null;
   now: number;
-  counts: { scanned: number; deduped: number; active: number };
+  counts: {
+    /** 窗口内**限流类**原始记录数（已过记录级时间过滤）。 */
+    scanned: number;
+    /** 聚合后的台账条数。 */
+    entries: number;
+    /** `state === "active"` 的条数。 */
+    active: number;
+    /** `state === "unknown"` 的条数。 */
+    unknown: number;
+    /** 窗口内被判定为**非限流**（网络类等）而排除的原始记录数。 */
+    skipped: number;
+  };
   limits: ClientLimitEntry[];
 }
 
@@ -929,7 +1130,7 @@ export interface CreditStatistics {
 
 export interface TokenStatsTotals { total: number; input: number; output: number; cacheRead: number; cacheWrite: number; uncachedInput: number; records: number; cacheHitRate: number | null; }
 export interface TokenStatsGroup extends TokenStatsTotals { key: string; title?: string | null; project?: string; sessionId?: string; }
-export interface TokenStatsSource { source: "workbuddy" | "codebuddy-cli" | "codebuddy-ide" | "workbuddy-ai"; summary: TokenStatsTotals; models: TokenStatsGroup[]; projects: TokenStatsGroup[]; sessions: TokenStatsGroup[]; daily: TokenStatsGroup[]; /** Optional model-specific daily series for trend filtering. */ dailyByModel?: Record<string, TokenStatsGroup[]>; hours: TokenStatsGroup[]; filesScanned: number; parseErrors: number; coverageStartAt?: number | null; coverageEndAt?: number | null; }
+export interface TokenStatsSource { source: "workbuddy" | "codebuddy-cli" | "codebuddy-ide" | "workbuddy-ai" | "trae-gateway"; summary: TokenStatsTotals; models: TokenStatsGroup[]; projects: TokenStatsGroup[]; sessions: TokenStatsGroup[]; daily: TokenStatsGroup[]; /** Optional model-specific daily series for trend filtering. */ dailyByModel?: Record<string, TokenStatsGroup[]>; hours: TokenStatsGroup[]; filesScanned: number; parseErrors: number; coverageStartAt?: number | null; coverageEndAt?: number | null; }
 export interface TokenStatistics { /** 查询范围（后端返回：cn / global / all）；缺省兼容旧后端。 */ region?: RegionFilter; generatedAt: number; rangeDays?: number | null; sources: TokenStatsSource[]; }
 
 export interface CodeBuddyCliStatus {

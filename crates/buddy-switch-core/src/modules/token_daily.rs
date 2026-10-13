@@ -12,21 +12,51 @@
 //! - **只读上游**：绝不改网关写路径、绝不写 `workbuddy.db`（`SQLITE_OPEN_READ_ONLY`）。
 //! - **诚实**：网关卡被裁剪过（条数到达 `log_keep`）时透出 `gatewayTruncated`；无法归属的
 //!   客户端会话落 `unknownClient` 桶，**绝不猜**到别的账号，也**绝不静默丢弃**。
-//! - **不重复扫 18MB 文件**：客户端扫描带「今日已扫」闸门（`force` 可强制重扫）。
+//! - **重扫有界**：客户端扫描带 **TTL 闸门**（[`CLIENT_SCAN_TTL_MS`]，`force` 可强制重扫），
+//!   且**两道代价控制**：**mtime 预筛**（只有「当天动过」的文件才可能含当天记录）
+//!   + **尾部窗口读取**（当天记录只可能在文件尾部）。见 [`scan_client_rows`]。
+//!
+//!   ⚠️ 闸门**曾经**是「当天扫过一次就不再扫」，那是**错的**（2026-10-12 实测）：
+//!   当天第一次扫描通常发生在**任何用量产生之前**，于是当日值被冻结成空，
+//!   一整天卡片都显示「—」。改成 TTL 后，最多滞后 [`CLIENT_SCAN_TTL_MS`]。
+//!   代价控制不靠「少扫」而靠「扫得少」—— 见下方「性能」。
+//!
+//! ## 性能（2026-10-13 实测）
+//!
+//! 「今日」窗口，Global 语料（当日被动过的 5,704 个文件 / **14.59 GB**）：
+//!
+//! | 版本 | 冷启（OS 缓存冷） | 稳态 |
+//! |---|---:|---:|
+//! | 逐行读完整份（原实现） | **66–75 s** | 66–75 s |
+//! | 预筛 + 尾部窗口 + 并行（现实现） | ≈5 s | **≈0.7 s** |
+//!
+//! 三条改动的分工（缺一条都达不到这个数）：
+//!
+//! 1. **遍历**：`entry.file_type()` 取代 `path.is_dir()`（同一棵树 **0.69 s → 0.03 s**），
+//!    并把 mtime 预筛**并进遍历**（不再「先收全部路径、再逐个 `stat`」）；
+//! 2. **读取**：只读尾部窗口（[`jsonl_tail`]）—— 实读字节 ≈ 预筛文件总大小的 **1.2%**
+//!    （14.59 GB → 0.18 GB）；
+//! 3. **解析**：按文件并行（[`worker_count`]，上限 32）。
+//!
+//! 等价性：`tail_window_keeps_every_today_record_against_a_full_read` 用**真文件**
+//! 驱动生产函数 `read_day_window`，逐条比对「尾部窗口 vs 整份读」；实测同语料下
+//! 两者**逐字段一致**（`clientIn` / `clientOut` 完全相同）。
 
 use chrono::{Duration as ChronoDuration, Local, NaiveDate, TimeZone};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::io::{BufRead, BufReader};
+use std::io::Read;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
-use std::time::Duration;
+use std::time::{Duration, UNIX_EPOCH};
 
 use rusqlite::Connection;
 
 use crate::modules::account;
 use crate::modules::config::{atomic_write, now_ms, store_dir};
+use crate::modules::jsonl_tail;
 use crate::modules::region::{gateway_config_file, token_daily_file_for, Region};
 use crate::modules::session::{session_data_dir, workbuddy_db_path_for};
 
@@ -35,10 +65,38 @@ pub const TOKEN_DAILY_RETENTION_DAYS: i64 = 90;
 /// 每日记录条数上限（**安全网**：保留窗内还可能出现病态/未来的日期，超出即丢最旧）。
 pub const TOKEN_DAILY_MAX_DAYS: usize = 400;
 /// 存储 schema 版本。
-pub const TOKEN_DAILY_VERSION: u32 = 1;
+///
+/// v2：`clientScannedDate`（本地日串）→ `clientScannedAtMs`（毫秒时刻）——
+/// 闸门语义从「当天扫过就不再扫」改为「距上次扫描不足 TTL 才跳过」（见
+/// [`CLIENT_SCAN_TTL_MS`]）。旧文件里那个字段反序列化时被忽略 ⇒ `None` ⇒ 重扫一次，
+/// 结果正确（只是多扫一轮）。
+pub const TOKEN_DAILY_VERSION: u32 = 2;
 
 /// 网关日志条数上限的缺省值（与 `GatewayConfig::default().log_keep` 同值）。
 const DEFAULT_GATEWAY_LOG_KEEP: usize = 200;
+
+/// 客户端扫描的**最短重扫间隔**（毫秒）。
+///
+/// ## 为什么闸门不能是「当天扫过一次就不再扫」（2026-10-12 实测驱动的修正）
+///
+/// 原闸门判据是 `clientScannedDate == 今天` ⇒ 当日值被**冻结在当天第一次扫描的那一刻**。
+/// 实测现场：CN 的 `token_daily.json` 在 **14:33** 落盘（当时今日确无用量 ⇒ `accounts: {}`），
+/// 客户端 **15:00** 才开始产生用量 ⇒ 此后一整天卡片都是「—」；而前端从不传 `force`，
+/// **没有任何路径**能让它恢复 —— 这正是「今日 Token 总是横杠」的根因。
+///
+/// ## 为什么取 2 分钟
+///
+/// 「今日 Token」是仪表盘读数：**不需要实时**，但绝不能整天不动。2 分钟足够短
+/// （用户切到账号页基本都能看到当前值），又足够长（一次页面停留不会反复重扫）。
+/// 真正的代价控制在 [`scan_client_rows`]：mtime 预筛 + 尾部窗口 + 并行。
+pub const CLIENT_SCAN_TTL_MS: i64 = 2 * 60 * 1000;
+
+/// mtime 预筛的**回退余量**（毫秒）：允许文件在本地日界之前一点点被写入。
+///
+/// 日志是**追加写**的，「一条当日记录的写入时刻」不早于「它自己的时间戳」，
+/// 所以日界之后的 mtime 足以覆盖当日记录。留 1 小时余量是为了吸收
+/// 时钟抖动 / 跨日批量刷盘这类噪声 —— 代价只是多读几个文件。
+const CLIENT_SCAN_MTIME_SKEW_MS: i64 = 60 * 60 * 1000;
 
 static TOKEN_DAILY_WRITE_LOCK: Mutex<()> = Mutex::new(());
 
@@ -78,7 +136,7 @@ struct DayRecord {
     gateway_truncated: bool,
 }
 
-/// 落盘存储：`{ version, days: { "YYYY-MM-DD": DayRecord }, clientScannedDate }`。
+/// 落盘存储：`{ version, days: { "YYYY-MM-DD": DayRecord }, clientScannedAtMs }`。
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct Store {
@@ -86,9 +144,12 @@ struct Store {
     version: u32,
     #[serde(default)]
     days: BTreeMap<String, DayRecord>,
-    /// 客户端扫描「今日已算」标记（本地日期尾）。非 `force` 且相等时不再重扫。
+    /// 客户端扫描的**上次完成时刻**（毫秒）。非 `force` 且「同一天且不足 TTL」时不再重扫。
+    ///
+    /// ⚠️ 刻意存**时刻**而不是「本地日串」：只存日串就退化成「当天扫过就不再扫」，
+    /// 当日值会被冻结在当天首次扫描那一刻（见 [`CLIENT_SCAN_TTL_MS`] 的实测现场）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    client_scanned_date: Option<String>,
+    client_scanned_at_ms: Option<i64>,
 }
 
 fn default_version() -> u32 {
@@ -99,7 +160,7 @@ fn empty_store() -> Store {
     Store {
         version: TOKEN_DAILY_VERSION,
         days: BTreeMap::new(),
-        client_scanned_date: None,
+        client_scanned_at_ms: None,
     }
 }
 
@@ -120,6 +181,19 @@ fn local_date(ts: i64) -> Option<NaiveDate> {
         .timestamp_millis_opt(ts)
         .single()
         .map(|dt| dt.date_naive())
+}
+
+/// 本地日 `YYYY-MM-DD` 的**起点毫秒**（供 mtime 预筛当「日界」）。
+///
+/// 非法日期 / DST 歧义（`from_local_datetime` 返回 `Ambiguous`）⇒ `None`。
+/// 调用方拿到 `None` 时**必须退化为全量扫描** —— 宁可慢，不可漏（诚实优先于快）。
+fn local_day_start_ms(day: &str) -> Option<i64> {
+    let date = NaiveDate::parse_from_str(day, "%Y-%m-%d").ok()?;
+    let naive = date.and_hms_opt(0, 0, 0)?;
+    Local
+        .from_local_datetime(&naive)
+        .single()
+        .map(|dt| dt.timestamp_millis())
 }
 
 // ---------------------------------------------------------------------------
@@ -344,7 +418,7 @@ fn resolve_account_key(
 // 客户端 JSONL 聚合（只读）
 // ---------------------------------------------------------------------------
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 struct ClientUsageRow {
     session_id: String,
     ts: i64,
@@ -352,20 +426,39 @@ struct ClientUsageRow {
     output: u64,
 }
 
-/// 递归收集 `.jsonl`；**排除 `subagents`**（子代理日志会重复父会话上下文，
-/// 与 `token_stats` 的主用量口径一致）。
-fn collect_jsonl_files(dir: &Path, out: &mut Vec<PathBuf>) {
+/// 递归收集「**可能含今日记录**」的 `.jsonl` 路径。
+///
+/// **一次遍历同时做完三件事**（旧实现是「先遍历收全部路径 → 再逐个 `stat` 取 mtime」）：
+/// 判类型 · 取 mtime · 应用预筛。
+///
+/// - `entry.file_type()` 直接取自目录枚举结果，**不额外发系统调用**。旧写法
+///   `path.is_dir()` 每个条目都要一次 `stat`：实测同一棵树（Global，26,932 个文件）
+///   **0.43s → 0.03s**。
+/// - `entry.metadata()` 在 Windows 上同样来自枚举结果 ⇒ 「遍历完再逐个 stat」那第二遍消失。
+/// - 预筛在**遍历时**生效 ⇒ 不通过的文件连 `PathBuf` 都不用分配。
+///
+/// 排除 `subagents`（子代理日志会重复父会话上下文，与 `token_stats` 的主用量口径一致）。
+fn collect_day_files(dir: &Path, day_start_ms: Option<i64>, out: &mut Vec<PathBuf>) {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
     };
     for entry in entries.flatten() {
-        let path = entry.path();
-        if path.is_dir() {
-            if path.file_name().and_then(|name| name.to_str()) == Some("subagents") {
+        let Ok(kind) = entry.file_type() else {
+            continue;
+        };
+        if kind.is_dir() {
+            if entry.file_name().to_str() == Some("subagents") {
                 continue;
             }
-            collect_jsonl_files(&path, out);
-        } else if path.extension().and_then(|extension| extension.to_str()) == Some("jsonl") {
+            collect_day_files(&entry.path(), day_start_ms, out);
+            continue;
+        }
+        let path = entry.path();
+        if path.extension().and_then(|ext| ext.to_str()) != Some("jsonl") {
+            continue;
+        }
+        let mtime_ms = entry.metadata().ok().and_then(|meta| mtime_of(&meta));
+        if mtime_may_hold_day(mtime_ms, day_start_ms) {
             out.push(path);
         }
     }
@@ -444,28 +537,126 @@ fn parse_client_line(line: &str) -> Option<ClientUsageRow> {
     })
 }
 
-/// 流式扫描该 region 的 CLI 会话日志，只保留**今日**的用量行。
-fn scan_client_rows(region: Region, day: &str) -> Vec<ClientUsageRow> {
-    let root = session_data_dir(region).join("projects");
-    let mut files = Vec::new();
-    collect_jsonl_files(&root, &mut files);
-    let mut rows = Vec::new();
-    for path in files {
-        let Ok(file) = std::fs::File::open(&path) else {
-            continue;
-        };
-        for line in BufReader::new(file).lines() {
-            let Ok(line) = line else {
-                continue;
-            };
-            if let Some(row) = parse_client_line(&line) {
-                if local_date_string(row.ts).as_deref() == Some(day) {
-                    rows.push(row);
-                }
-            }
-        }
+/// 文件的 mtime（毫秒）。读不到 ⇒ `None`。
+fn mtime_of(meta: &std::fs::Metadata) -> Option<i64> {
+    let since = meta.modified().ok()?.duration_since(UNIX_EPOCH).ok()?;
+    i64::try_from(since.as_millis()).ok()
+}
+
+/// mtime 预筛判据（**纯函数**，便于单测）。
+///
+/// `mtime_ms` 或 `day_start_ms` 任一缺失 ⇒ **放行**（宁可慢，不可漏）。
+fn mtime_may_hold_day(mtime_ms: Option<i64>, day_start_ms: Option<i64>) -> bool {
+    match (mtime_ms, day_start_ms) {
+        (Some(mtime_ms), Some(start)) => mtime_ms >= start - CLIENT_SCAN_MTIME_SKEW_MS,
+        _ => true,
     }
-    rows
+}
+
+/// 读一份 jsonl 的**今日尾部**；I/O 失败返回 `None`（调用方按「无记录」处理，不 panic）。
+///
+/// ## 为什么可以只读尾部（2026-10-13 加入）
+///
+/// 会话 jsonl 是**只追加**的，记录按时间顺序落盘 ⇒ **今日记录必然在文件尾部**。
+/// 具体算法（块大小、停止判据、边界用例）在 [`jsonl_tail`] —— 与
+/// `client_limits` 的限流台账**共用同一实现**，那边不再各写一份。
+///
+/// 实测（Global，当日被动过的 5,704 个文件 / **14.59 GB**）：旧实现逐行读完整份，
+/// `record_client_today` 要 **66–75s**；改为尾部窗口 + 并行后见模块头「性能」一节。
+fn read_day_window(file: &mut std::fs::File, size: u64, day_start_ms: i64) -> Option<Vec<u8>> {
+    jsonl_tail::read_window_from(file, size, day_start_ms).map(|(bytes, _)| bytes)
+}
+
+/// 解析窗口文本，只留今日的行。
+fn parse_day_rows(text: &str, day: &str) -> Vec<ClientUsageRow> {
+    text.lines()
+        .filter_map(parse_client_line)
+        .filter(|row| local_date_string(row.ts).as_deref() == Some(day))
+        .collect()
+}
+
+/// 扫描单个文件（**只读尾部窗口**），返回其中今日的用量行。
+fn scan_file_rows(path: &Path, day: &str, day_start_ms: Option<i64>) -> Vec<ClientUsageRow> {
+    let Ok(mut file) = std::fs::File::open(path) else {
+        return Vec::new();
+    };
+    let Ok(size) = file.metadata().map(|meta| meta.len()) else {
+        return Vec::new();
+    };
+    if size == 0 {
+        return Vec::new();
+    }
+    let window = match day_start_ms {
+        Some(start) => read_day_window(&mut file, size, start),
+        // 算不出日界 ⇒ 整份读（宁可慢，不可漏）。
+        None => {
+            let mut buffer = Vec::new();
+            file.read_to_end(&mut buffer).ok().map(|_| buffer)
+        }
+    };
+    match window {
+        Some(bytes) => parse_day_rows(&String::from_utf8_lossy(&bytes), day),
+        None => Vec::new(),
+    }
+}
+
+/// 并行度：够用即可，上限 32（再多只会在同一条磁盘队列上排队）。
+fn worker_count(pending: usize) -> usize {
+    let cores = std::thread::available_parallelism()
+        .map(|value| value.get())
+        .unwrap_or(4);
+    cores.clamp(1, 32).min(pending.max(1))
+}
+
+/// 扫描 `root` 下的 CLI 会话日志，只保留**今日**的用量行。
+///
+/// ## 两道代价控制（2026-10-13 重做）
+///
+/// 1. **mtime 预筛**（遍历时生效，见 [`collect_day_files`]）：日志是追加写的，
+///    一条记录的写入时刻不早于它自己的时间戳 ⇒ 当日记录只可能出现在「本地日界之后
+///    被动过」的文件里。**没有这一步**，把闸门从「整天一次」改成「2 分钟一次」
+///    是不可接受的。
+/// 2. **尾部窗口**（[`read_day_window`]）：预筛放行的文件里，今日记录也只在**尾部**。
+///    实测当日被动过的文件共 14.59 GB，而真正需要读的只是各文件的尾部一段。
+///
+/// 之后按文件**并行**解析（[`worker_count`]）；结果按文件路径顺序合并 ⇒ 与线程调度无关。
+///
+/// ⚠️ 取舍：预筛**依赖 mtime 与写入时刻一致**。若某文件内容在当天增长、而 mtime 被改回
+/// 昨天（如带 mtime 的还原 / 复制），它的当日记录会被漏掉 —— 这由
+/// `mtime_prefilter_keeps_fresh_files_and_drops_stale_ones` 用例**显式固定**下来
+/// （不是「没想到」，而是写明的取舍）。
+fn scan_client_rows(root: &Path, day: &str) -> Vec<ClientUsageRow> {
+    let day_start = local_day_start_ms(day);
+    let mut files = Vec::new();
+    collect_day_files(root, day_start, &mut files);
+    if files.is_empty() {
+        return Vec::new();
+    }
+    // `read_dir` 顺序不保证稳定 ⇒ 先排序，让结果与缓存都可复现。
+    files.sort();
+
+    let next = AtomicUsize::new(0);
+    let per_file: Mutex<Vec<(usize, Vec<ClientUsageRow>)>> =
+        Mutex::new(Vec::with_capacity(files.len()));
+    std::thread::scope(|scope| {
+        for _ in 0..worker_count(files.len()) {
+            scope.spawn(|| loop {
+                let cursor = next.fetch_add(1, Ordering::Relaxed);
+                let Some(path) = files.get(cursor) else {
+                    break;
+                };
+                let rows = scan_file_rows(path, day, day_start);
+                per_file.lock().unwrap().push((cursor, rows));
+            });
+        }
+    });
+
+    let mut collected = per_file.into_inner().unwrap();
+    collected.sort_by_key(|(index, _)| *index);
+    collected
+        .into_iter()
+        .flat_map(|(_, rows)| rows)
+        .collect()
 }
 
 fn table_columns(conn: &Connection, table: &str) -> Vec<String> {
@@ -585,24 +776,45 @@ pub fn record_gateway_today(region: Region) -> Value {
     build_response(&day, store.days.get(&day))
 }
 
+/// 客户端扫描闸门（**纯函数**，便于单测）。
+///
+/// 判据：`force` ⇒ **总是要重扫**；否则「上次扫描在**同一本地日** **且** 距今不足
+/// [`CLIENT_SCAN_TTL_MS`]」才跳过。
+///
+/// ⚠️ 「同一本地日」这一半是**跨日**判据（昨夜 23:59 扫过、现在 00:01 必须重扫），
+/// 不是原来那个「当天扫过就不再扫」的判据 —— 后者会把当日值冻结在当天首次扫描那一刻。
+fn client_scan_is_fresh(force: bool, scanned_at_ms: Option<i64>, now: i64, day: &str) -> bool {
+    if force {
+        return false;
+    }
+    let Some(scanned_at) = scanned_at_ms else {
+        return false;
+    };
+    now.saturating_sub(scanned_at) < CLIENT_SCAN_TTL_MS
+        && local_date_string(scanned_at).as_deref() == Some(day)
+}
+
 /// 聚合客户端会话日志到「今日」的 client 桶并落盘，返回今日记录。
 ///
-/// `force = false` 且今日已扫过时**直接返回**（不重扫 18MB 文件）；`force = true`
-/// 强制重扫（当日数据在扫过之后可能仍会增长）。
+/// `force = false` 且**距上次扫描不足 [`CLIENT_SCAN_TTL_MS`]** 时直接返回缓存；
+/// `force = true` 强制重扫（当日数据在扫过之后仍会增长）。
+///
+/// ⚠️ 闸门**不是**「当天扫过就不再扫」（那会把当日值冻结在当天首次扫描那一刻，
+/// 见 [`CLIENT_SCAN_TTL_MS`]）。重扫的代价由 [`scan_client_rows`] 的 mtime 预筛兜住。
 pub fn record_client_today(region: Region, force: bool) -> Value {
     let at = now_ms();
     let day = local_date_string(at).unwrap_or_default();
 
-    // 闸门：非强制且今日已算 ⇒ 绝不重扫。
+    // 闸门：非强制且「同日 + 未过 TTL」⇒ 直接读缓存。
     {
         let store = load_store(region);
-        if !force && store.client_scanned_date.as_deref() == Some(day.as_str()) {
+        if client_scan_is_fresh(force, store.client_scanned_at_ms, at, &day) {
             return build_response(&day, store.days.get(&day));
         }
     }
 
     let meta = load_session_user_map(region);
-    let rows = scan_client_rows(region, &day);
+    let rows = scan_client_rows(&session_data_dir(region).join("projects"), &day);
     let (per_account, unknown) = bucket_client(&rows, &meta, &day);
 
     let _guard = TOKEN_DAILY_WRITE_LOCK.lock().unwrap();
@@ -616,7 +828,7 @@ pub fn record_client_today(region: Region, force: bool) -> Value {
         record.unknown_client =
             (unknown.input > 0 || unknown.output > 0).then_some(unknown);
     }
-    store.client_scanned_date = Some(day.clone());
+    store.client_scanned_at_ms = Some(at);
     prune_store(&mut store, at);
     save_store(region, &store);
     build_response(&day, store.days.get(&day))
@@ -670,6 +882,7 @@ fn build_response(day: &str, record: Option<&DayRecord>) -> Value {
 mod tests {
     use super::*;
     use chrono::Datelike;
+    use std::fs;
 
     fn at_local_date(days_ago: i64, hour: u32) -> i64 {
         let today = Local::now().date_naive() - ChronoDuration::days(days_ago);
@@ -687,6 +900,105 @@ mod tests {
             input,
             output,
         }
+    }
+
+    /// 造一份「昨天 + 今天」的 jsonl 文本：昨天 `old_rows` 行、今天 `new_rows` 行。
+    ///
+    /// `pad` 是每行塞进去的填充长度 —— 用来把「今天的记录」推到**一个 chunk 之外**，
+    /// 从而真正压到尾部窗口的扩张逻辑（而不是一读就覆盖）。
+    fn day_fixture(old_rows: usize, new_rows: usize, pad: usize) -> (String, u64, u64) {
+        let filler = "x".repeat(pad);
+        let mut text = String::new();
+        for index in 0..old_rows {
+            text.push_str(&format!(
+                "{}\n",
+                json!({
+                    "timestamp": at_local_date(1, 9) + index as i64,
+                    "sessionId": "s-old",
+                    "message": { "usage": { "input_tokens": 3, "output_tokens": 1 } },
+                    "content": filler,
+                })
+            ));
+        }
+        for index in 0..new_rows {
+            text.push_str(&format!(
+                "{}\n",
+                json!({
+                    "timestamp": at_local_date(0, 1) + index as i64,
+                    "sessionId": "s-today",
+                    "message": { "usage": { "input_tokens": 7, "output_tokens": 2 } },
+                    "content": filler,
+                })
+            ));
+        }
+        (text, 3 * old_rows as u64, 7 * new_rows as u64)
+    }
+
+    /// ★★ **尾部窗口必须与全量读等价**（2026-10-13 尾部读取的护栏）。
+    ///
+    /// 尾部读取是纯 I/O 优化：一旦停止判据写错，今日记录会被**静默漏掉**
+    /// （数字变小、不报错）—— 真实语料里正是靠独立复算才发现「差 2%」的疑点。
+    /// 这里走**生产函数** `read_day_window`（真文件、真 `File`），与整份文件的解析逐条比对。
+    ///
+    /// 阳性对照：断言全量读**确实**读到了今日记录（否则「两边都空」也能过）。
+    #[test]
+    fn tail_window_keeps_every_today_record_against_a_full_read() {
+        let day = local_date_string(at_local_date(0, 1)).expect("today");
+        let day_start = local_day_start_ms(&day).expect("day start");
+        let dir = std::env::temp_dir().join(format!(
+            "buddy-switch-token-daily-window-{}-{}",
+            std::process::id(),
+            now_ms()
+        ));
+        fs::create_dir_all(&dir).expect("create fixture dir");
+
+        // 今天 400 行、每行 ~1KB ⇒ 今日记录**单独就超过一个 chunk**（256KB），
+        // 迫使尾部窗口扩张多轮；前面再垫 2000 行昨天的记录（约 2.3MB），
+        // 让窗口**明显短于**整份文件 —— 否则证明不了「只读尾部」。
+        let (text, _old_in, new_in) = day_fixture(2000, 400, 1024);
+        assert!(
+            text.len() as u64 > 2 * jsonl_tail::TAIL_CHUNK_BYTES,
+            "夹具必须超过两个 chunk（实际 {} 字节）",
+            text.len()
+        );
+        let path = dir.join("sess.jsonl");
+        fs::write(&path, &text).expect("write fixture");
+        let bytes = text.into_bytes();
+
+        let full = parse_day_rows(&String::from_utf8_lossy(&bytes), &day);
+        assert!(!full.is_empty(), "阳性对照：全量读必须读到今日记录");
+        assert_eq!(full.len(), 400, "阳性对照：全量读的条数 = 夹具里今天的行数");
+        assert_eq!(
+            full.iter().map(|row| row.input).sum::<u64>(),
+            new_in,
+            "阳性对照：全量读的 input 合计 = 夹具里今天的 input"
+        );
+
+        let mut file = fs::File::open(&path).expect("open fixture");
+        let size = file.metadata().expect("stat").len();
+        let window = read_day_window(&mut file, size, day_start).expect("窗口读得到");
+        assert!(
+            (window.len() as u64) < bytes.len() as u64,
+            "窗口必须**短于**整份文件，否则这条用例证明不了「只读尾部」"
+        );
+        let tail = parse_day_rows(&String::from_utf8_lossy(&window), &day);
+        assert_eq!(tail.len(), full.len(), "尾部窗口不得少读今日记录");
+        assert_eq!(tail, full, "尾部窗口的结果必须与全量读逐条一致");
+
+        // 反向：整份都可能是今天的（昨日 0 行）⇒ 窗口必须一直扩张到文件开头。
+        let (only_today, _, _) = day_fixture(0, 40, 1024);
+        let path = dir.join("today-only.jsonl");
+        fs::write(&path, &only_today).expect("write fixture");
+        let mut file = fs::File::open(&path).expect("open fixture");
+        let size = file.metadata().expect("stat").len();
+        let window = read_day_window(&mut file, size, day_start).expect("窗口读得到");
+        assert_eq!(window.len() as u64, size, "今日记录覆盖整份时必须读全");
+        assert_eq!(
+            parse_day_rows(&String::from_utf8_lossy(&window), &day).len(),
+            40
+        );
+
+        let _ = fs::remove_dir_all(&dir);
     }
 
     /// (a) 日期分桶：昨日记录不落今日、今日记录落今日。
@@ -884,5 +1196,144 @@ mod tests {
         assert_eq!(response["unknownClient"]["in"], 0);
         assert_eq!(response["unknownClient"]["out"], 0);
         assert_eq!(response["gatewayTruncated"], false);
+    }
+
+    // -----------------------------------------------------------------------
+    // 2026-10-12：当日扫描闸门（「今日 Token 总是横杠」的根因）+ mtime 预筛
+    // -----------------------------------------------------------------------
+
+    /// ★ 闸门：**同日 + 未过 TTL** 才跳过；跨日 / 过期 / `force` / 从未扫过都要重扫。
+    ///
+    /// ## 为什么这条用例是关键护栏
+    ///
+    /// 旧闸门是 `clientScannedDate == 今天` ⇒ 当日值被冻结在当天**第一次**扫描那一刻。
+    /// 实测现场：CN 的 `token_daily.json` 14:33 落盘（当时今日无用量 ⇒ `accounts: {}`），
+    /// 客户端 15:00 才开始产生用量 ⇒ 之后一整天卡片都是「—」，且前端从不传 `force`，
+    /// 没有任何路径能恢复。
+    ///
+    /// 可证伪：把 `client_scan_is_fresh` 的 TTL 判据去掉、只留「同一天」⇒ 第二条断言
+    /// （超过 TTL 必须重扫）立刻变红。
+    #[test]
+    fn client_scan_gate_skips_only_within_the_same_day_ttl() {
+        let today = at_local_date(0, 15);
+        let day = local_date_string(today).expect("local day");
+        let today_start = local_day_start_ms(&day).expect("today start");
+
+        // 昨天 23:59:30 扫过、今天 00:00:10 再问 —— 只隔 40 秒（< TTL），但**跨日** ⇒ 必须重扫。
+        let before_midnight = today_start - 30_000;
+        let after_midnight = today_start + 10_000;
+        assert!(
+            !client_scan_is_fresh(false, Some(before_midnight), after_midnight, &day),
+            "跨日必须重扫 —— 否则新的一天沿用昨天的（很可能是空的）结果"
+        );
+
+        // 同日：TTL 之内跳过、到点重扫。
+        assert!(
+            client_scan_is_fresh(
+                false,
+                Some(after_midnight),
+                after_midnight + CLIENT_SCAN_TTL_MS - 1,
+                &day
+            ),
+            "同日且未过 TTL 应跳过（否则每次进账号页都重扫）"
+        );
+        assert!(
+            !client_scan_is_fresh(
+                false,
+                Some(after_midnight),
+                after_midnight + CLIENT_SCAN_TTL_MS,
+                &day
+            ),
+            "过 TTL 必须重扫 —— 这是「今日 Token 一整天不动」的修法"
+        );
+
+        // `force` ⇒ 总是重扫；从未扫过 ⇒ 重扫。
+        assert!(!client_scan_is_fresh(true, Some(after_midnight), after_midnight + 1_000, &day));
+        assert!(!client_scan_is_fresh(false, None, today, &day));
+    }
+
+    /// ★ TTL 必须「短到能反映当天、长到不折腾」——把两个边界都钉住。
+    ///
+    /// 可证伪：把 `CLIENT_SCAN_TTL_MS` 改成一天 ⇒ 第一条断言变红（「今日 Token」又会一整天不动）。
+    #[test]
+    fn client_scan_ttl_is_short_enough_for_a_today_metric() {
+        assert!(
+            CLIENT_SCAN_TTL_MS <= 10 * 60 * 1000,
+            "TTL 过长（{CLIENT_SCAN_TTL_MS}ms）—— 「今日 Token」又会一整天不动"
+        );
+        assert!(
+            CLIENT_SCAN_TTL_MS >= 30 * 1000,
+            "TTL 过短（{CLIENT_SCAN_TTL_MS}ms）—— 每次进账号页都要重扫"
+        );
+    }
+
+    /// mtime 预筛判据：信息缺失时**放行**（宁可慢，不可漏）。
+    #[test]
+    fn mtime_prefilter_falls_open_when_information_is_missing() {        assert!(mtime_may_hold_day(None, Some(1_000_000)), "读不到 mtime 必须放行");
+        assert!(mtime_may_hold_day(Some(1), None), "算不出日界必须放行");
+        assert!(mtime_may_hold_day(None, None));
+        // 日界前 1 小时之内（余量内）仍放行；再早就不放行。
+        let start = 10 * 86_400_000;
+        assert!(mtime_may_hold_day(Some(start - CLIENT_SCAN_MTIME_SKEW_MS), Some(start)));
+        assert!(!mtime_may_hold_day(Some(start - CLIENT_SCAN_MTIME_SKEW_MS - 1), Some(start)));
+    }
+
+    /// ★ mtime 预筛的**行为**（真文件、真 mtime）：新鲜的当日记录必须读到，陈旧的被跳过。
+    ///
+    /// ## 为什么要带**阳性对照**
+    ///
+    /// 「陈旧文件被跳过」这条断言在「扫描整个坏掉、返回空」时也恒真 —— 那是假绿。
+    /// 所以同时断言新鲜的当日记录**必须出现在结果里**：两条一起才说明「筛的是 mtime，
+    /// 不是把一切都扔掉」。
+    #[test]
+    fn mtime_prefilter_keeps_fresh_files_and_drops_stale_ones() {
+        use std::time::SystemTime;
+
+        let now = now_ms();
+        let day = local_date_string(now).expect("local day");
+        let root = std::env::temp_dir().join(format!(
+            "buddy-switch-token-daily-mtime-{}-{now}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&root).expect("create fixture dir");
+
+        let set_mtime = |path: &Path, at_ms: i64| {
+            let file = fs::OpenOptions::new()
+                .write(true)
+                .open(path)
+                .expect("open for mtime");
+            let when = SystemTime::UNIX_EPOCH + Duration::from_millis(u64::try_from(at_ms).unwrap());
+            file.set_modified(when).expect("set mtime");
+        };
+        let line = |session_id: &str, ts: i64, input: u64| {
+            json!({
+                "timestamp": ts,
+                "sessionId": session_id,
+                "message": { "usage": { "input_tokens": input, "output_tokens": 2 } }
+            })
+            .to_string()
+        };
+
+        let fresh = root.join("fresh.jsonl");
+        fs::write(&fresh, format!("{}\n", line("s-fresh", now, 10))).expect("write fresh");
+        set_mtime(&fresh, now);
+
+        // 内容含「今日」记录，但 mtime 停在 10 天前 ⇒ 预筛跳过（写明的取舍，见函数注释）。
+        let stale = root.join("stale.jsonl");
+        fs::write(&stale, format!("{}\n", line("s-stale", now, 999))).expect("write stale");
+        set_mtime(&stale, now - 10 * 86_400_000);
+
+        let rows = scan_client_rows(&root, &day);
+
+        assert!(
+            rows.iter().any(|row| row.session_id == "s-fresh"),
+            "mtime 新鲜的当日记录被漏掉 —— 预筛过严（阳性对照失败，说明扫描整体没工作）"
+        );
+        assert!(
+            !rows.iter().any(|row| row.session_id == "s-stale"),
+            "mtime 预筛没有生效 —— 陈旧文件仍被读取"
+        );
+
+        let _ = fs::remove_dir_all(&root);
     }
 }

@@ -13,6 +13,12 @@
  * - 图注**必须**由 `lib/chart-caption.ts` 产出后传入（本壳不生成、不校验内容，靠约定）；
  * - 图/表互切：给 `tableFallback` 即出现切换器（同一份数据的两种形态，不是第二个「看起来能切」的控件）；
  * - 导出：内置把图区 `<svg>` 序列化为 PNG（recharts 出 svg；纯 DOM 图设 `exportable={false}`）。
+ *
+ * ## 卡片几何 = 原型 `.card` / `.card-head` / `.card-pad`
+ *
+ * - 卡片 `border-radius: var(--radius)` = **12px** ⇒ `rounded-lg`（改造前是 `rounded-xl` = 16px）；
+ * - 头部走共用原语 `CardHead`（`13px 16px` / 标题 13.5px·600 / 说明 11.5px）；
+ * - 正文 `padding: 16px` ⇒ `p-4`（改造前是 `px-4 pt-3 pb-4 sm:px-5`）。
  */
 
 import { useRef, useState, type ReactNode } from "react";
@@ -20,6 +26,7 @@ import { BarChart3, Download, Table2 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
+import { CardHead } from "@/components/ui/card-head";
 import { useT } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
 
@@ -91,66 +98,64 @@ export function ChartFrame({
   const showToggle = Boolean(tableFallback);
 
   return (
-    <Card className={cn("min-w-0 gap-0 overflow-hidden rounded-xl py-0 shadow-none", className)}>
-      <div className="flex min-w-0 flex-wrap items-start justify-between gap-2 border-b border-border/60 px-4 py-3 sm:px-5">
-        <div className="min-w-0">
-          <h3 className="text-[13px] font-medium leading-5">{title}</h3>
-          {caption ? (
-            <p className="mt-0.5 text-[11px] leading-4 text-muted-foreground">{caption}</p>
-          ) : null}
-        </div>
-        <div className="flex shrink-0 items-center gap-1">
-          {showToggle ? (
-            <div
-              className="flex gap-1 rounded-lg bg-muted p-1"
-              role="group"
-              aria-label={t("wbStats.usage.chart.viewToggleAria")}
-            >
-              <button
-                type="button"
-                className={cn(
-                  "cursor-pointer rounded-md p-1.5 transition-colors",
-                  mode === "chart"
-                    ? "bg-background text-foreground shadow-sm"
-                    : "text-muted-foreground hover:text-foreground",
-                )}
-                aria-pressed={mode === "chart"}
-                aria-label={t("wbStats.usage.chart.chart")}
-                onClick={() => setMode("chart")}
+    <Card className={cn("min-w-0 gap-0 overflow-hidden rounded-lg py-0 shadow-none", className)}>
+      <CardHead
+        title={title}
+        caption={caption}
+        actions={
+          <>
+            {showToggle ? (
+              <div
+                className="flex gap-0.5 rounded-md bg-muted p-0.5"
+                role="group"
+                aria-label={t("wbStats.usage.chart.viewToggleAria")}
               >
-                <BarChart3 className="size-3.5" aria-hidden="true" />
-              </button>
-              <button
+                <button
+                  type="button"
+                  className={cn(
+                    "cursor-pointer rounded-sm p-1.5 transition-colors",
+                    mode === "chart"
+                      ? "bg-card text-foreground shadow-sm"
+                      : "text-muted-foreground hover:text-foreground",
+                  )}
+                  aria-pressed={mode === "chart"}
+                  aria-label={t("wbStats.usage.chart.chart")}
+                  onClick={() => setMode("chart")}
+                >
+                  <BarChart3 className="size-3.5" aria-hidden="true" />
+                </button>
+                <button
+                  type="button"
+                  className={cn(
+                    "cursor-pointer rounded-sm p-1.5 transition-colors",
+                    mode === "table"
+                      ? "bg-card text-foreground shadow-sm"
+                      : "text-muted-foreground hover:text-foreground",
+                  )}
+                  aria-pressed={mode === "table"}
+                  aria-label={t("wbStats.usage.chart.table")}
+                  onClick={() => setMode("table")}
+                >
+                  <Table2 className="size-3.5" aria-hidden="true" />
+                </button>
+              </div>
+            ) : null}
+            {exportable && mode === "chart" ? (
+              <Button
                 type="button"
-                className={cn(
-                  "cursor-pointer rounded-md p-1.5 transition-colors",
-                  mode === "table"
-                    ? "bg-background text-foreground shadow-sm"
-                    : "text-muted-foreground hover:text-foreground",
-                )}
-                aria-pressed={mode === "table"}
-                aria-label={t("wbStats.usage.chart.table")}
-                onClick={() => setMode("table")}
+                variant="ghost"
+                size="sm"
+                className="size-7 p-0 text-muted-foreground"
+                onClick={handleExport}
+                aria-label={t("wbStats.usage.chart.export")}
               >
-                <Table2 className="size-3.5" aria-hidden="true" />
-              </button>
-            </div>
-          ) : null}
-          {exportable && mode === "chart" ? (
-            <Button
-              type="button"
-              variant="ghost"
-              size="sm"
-              className="size-7 p-0 text-muted-foreground"
-              onClick={handleExport}
-              aria-label={t("wbStats.usage.chart.export")}
-            >
-              <Download className="size-3.5" />
-            </Button>
-          ) : null}
-        </div>
-      </div>
-      <div className="min-w-0 px-4 pt-3 pb-4 sm:px-5">
+                <Download className="size-3.5" />
+              </Button>
+            ) : null}
+          </>
+        }
+      />
+      <div className="min-w-0 p-4">
         {mode === "table" && tableFallback ? (
           tableFallback
         ) : (

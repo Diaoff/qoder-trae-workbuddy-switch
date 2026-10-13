@@ -310,7 +310,14 @@ function emptyDay(key: string): TokenStatsGroup {
   };
 }
 
-function shortLabel(date: string): string {
+/**
+ * 轴短标签：`2026-10-01` → `10/01`；不足 10 位的原样返回。
+ *
+ * ★ 导出（原为模块私有 `shortLabel`）：**两个数据源共用同一份标签口径** ——
+ * WorkBuddy 的 `creditDailyBars` 与 Trae 的 `traeCreditBars` 都要它，
+ * 各写一份必然在「补零 / 切位」上分叉。
+ */
+export function dateAxisLabel(date: string): string {
   return date.length >= 10 ? `${date.slice(5, 7)}/${date.slice(8, 10)}` : date;
 }
 
@@ -348,7 +355,7 @@ export function dailyModelSeries(source: TokenStatsSource, range: UsageRange): D
     if (segments.length === 0) {
       return {
         day: day.key,
-        label: shortLabel(day.key),
+        label: dateAxisLabel(day.key),
         total: day.total,
         segments: day.total > 0 ? [{ name: TOTAL_SEGMENT, value: day.total }] : [],
       };
@@ -360,7 +367,7 @@ export function dailyModelSeries(source: TokenStatsSource, range: UsageRange): D
       const last = segments[segments.length - 1];
       last.value = Math.max(0, last.value + remainder);
     }
-    return { day: day.key, label: shortLabel(day.key), total: day.total, segments };
+    return { day: day.key, label: dateAxisLabel(day.key), total: day.total, segments };
   });
 }
 
@@ -369,10 +376,10 @@ export function dailyModelSeries(source: TokenStatsSource, range: UsageRange): D
  *
  * 从 `hours` 的 `"{weekday}-{hour}"` key 还原；非法 key 忽略，缺失格补 0。
  */
-export function heatmapMatrix(source: TokenStatsSource): HeatmapMatrix {
+export function heatmapMatrix(hours: readonly { key?: string | null; total: number }[]): HeatmapMatrix {
   const cells: number[][] = Array.from({ length: 7 }, () => Array.from({ length: 24 }, () => 0));
-  for (const group of source.hours) {
-    const [weekdayRaw, hourRaw] = group.key.split("-");
+  for (const group of hours) {
+    const [weekdayRaw, hourRaw] = (group.key ?? "").split("-");
     const weekday = Number.parseInt(weekdayRaw, 10);
     const hour = Number.parseInt(hourRaw, 10);
     if (!Number.isInteger(weekday) || weekday < 0 || weekday > 6) continue;
@@ -420,6 +427,33 @@ export function modelSlices(source: TokenStatsSource, range: UsageRange): ModelS
   return slices.filter((slice) => slice.value > 0).sort((left, right) => right.value - left.value);
 }
 
+/**
+ * 会话视图的**渲染上限**（2026-10-12 实测驱动，**有意偏离**原型契约 8）。
+ *
+ * ## 原型契约 8 说了什么，为什么必须改
+ *
+ * 契约 8（`docs/redesign/P3-ARCH.md`）要求「气泡数 = 会话数，排行条数 = 会话数」——
+ * 它假设会话数是**几十**量级。但 `sessions` 是**一个 jsonl 文件一条**：
+ * 实测 `~/.workbuddy-ai/projects` 有 **14463** 个文件 ⇒ 会话 ~1.5 万条。
+ *
+ * 全量渲染的代价（已量化）：`SessionRanking` 每个会话出「排行条 + 明细表行」两组节点
+ * ⇒ 2 × 15000 ≈ **19.5 万** DOM 节点；散点再叠 1.5 万个 SVG 点。
+ * 纯 innerHTML + 强制布局就要 **0.69s**，React 重建 + recharts 散点还要再翻数倍
+ * ⇒ 用户感知为「切到会话 tab 要等很久」。
+ *
+ * ## 为什么是「截断 + 显式说明」而不是虚拟滚动
+ *
+ * ① 与其余三视图同构（都是「适配层切数据 → 渲染层画」），不引入新的滚动容器范式；
+ * ② 「看完全部 1.5 万个会话」本身没有信息量 —— 会话排行天然只关心头部；
+ * ③ **诚实**：截断必须由渲染层**显式说明**（`wbStats.usage.sessions.shownOf`
+ *    写明「共 M 个」），不许让用户以为「一共就这么多」。
+ *
+ * ⚠️ 只截**渲染**，不截**统计**：`SessionsView` 的「会话数 / 会话总 Token /
+ * 单会话均值 / 最高消耗」四个 tile 一律按**全量** `sessionPoints` 算 ——
+ * 否则数字会随这个常量变化而漂移（那就成了「调样式改数据」）。
+ */
+export const SESSION_RENDER_LIMIT = 100;
+
 /** 会话 · 散点（契约 8/9）：x = records（**记录数**），y = total tokens。 */
 export function sessionPoints(source: TokenStatsSource): SessionPoint[] {
   return source.sessions
@@ -445,9 +479,27 @@ export function sessionPoints(source: TokenStatsSource): SessionPoint[] {
  * 渲染层据此只画**消耗侧**（单向柱）+ 图注说明「入账明细不可得」。
  */
 export function creditDailyBars(stats: CreditStatistics): CreditDailyBar[] {
-  return [...stats.daily]
+  /* WB 的入账**不可得**（`events` 无金额字段）⇒ `inAmt` 恒 0，渲染层据此只画消耗侧。 */
+  return creditBars(stats.daily.map((point) => ({ date: point.date, outAmt: point.usage })));
+}
+
+/**
+ * 积分 · 逐日收支（**两个数据源共用**）。
+ *
+ * `inAmt` 可选：WorkBuddy 的入账不可得（恒 0 ⇒ 渲染层画单向柱）；
+ * Trae 的每日快照**两侧都有**（`earned` / `consumed`）⇒ 同一函数直接产出双向柱。
+ * 共用的好处是**标签口径与排序只有一份**（各写一份必在补零 / 切位上分叉）。
+ */
+export function creditBars(
+  points: readonly { date: string; outAmt: number; inAmt?: number }[],
+): CreditDailyBar[] {
+  return [...points]
     .sort((left, right) => left.date.localeCompare(right.date))
-    .map((point) => ({ label: shortLabel(point.date), inAmt: 0, outAmt: point.usage }));
+    .map((point) => ({
+      label: dateAxisLabel(point.date),
+      inAmt: point.inAmt ?? 0,
+      outAmt: point.outAmt,
+    }));
 }
 
 /**

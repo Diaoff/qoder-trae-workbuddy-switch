@@ -218,6 +218,45 @@ function SessionGraphSheet({ group, onSyncGroup, busy, onUnifyGroup }: SessionGr
           </div>
         ) : null}
 
+        {/* ★★ P14 S2：**上次一致点** —— 与上面的「共同旧版」**不是一回事**：
+            共同旧版 = **当前**内容的公共前缀；上次一致点 = 我们**记录过**的那次逐行相同。
+            两者不一致恰恰有信息量：说明有人改写过更早的内容（那时「相对共同旧版的新增条数」
+            会凭空放大，而这里给的是**经过前缀验证**的诚实读数）。
+            ⚠️ 前缀验证不过 ⇒ 如实说「已改写更早内容」，**不编一个数**。
+            无基线 ⇒ 整块不渲染（§3.4 规则 1「无数据不渲染」）。 */}
+        {group.baseline ? (
+          <div className="mt-2.5 rounded-[10px] border-l-[3px] bg-muted px-3 py-2.5">
+            <div className="flex flex-wrap items-baseline justify-between gap-x-2.5 gap-y-0.5">
+              <b className="text-[12.5px] font-semibold">
+                {t("sessions.replica.baseline", { count: group.baseline.lineCount })}
+              </b>
+              <span className="text-[11px] tabular-nums text-muted-foreground">
+                {formatDate(group.baseline.createdAt)}
+              </span>
+            </div>
+            <div className="mt-2 flex flex-col gap-1.5">
+              {group.rows
+                .filter((row) => group.sinceBaseline.has(row.sessionId))
+                .map((row) => {
+                  const delta = group.sinceBaseline.get(row.sessionId);
+                  return (
+                    <div
+                      key={`baseline\u001f${row.accountUid}\u001f${row.sessionId}`}
+                      className="flex items-center justify-between gap-2.5"
+                    >
+                      <span className="truncate text-[12px]">{row.accountLabel}</span>
+                      <span className="shrink-0 text-[11px] text-muted-foreground">
+                        {delta === null || delta === undefined
+                          ? t("sessions.replica.baselineRewritten")
+                          : t("sessions.replica.baselineDelta", { count: delta })}
+                      </span>
+                    </div>
+                  );
+                })}
+            </div>
+          </div>
+        ) : null}
+
         {/* ★ 诚实标注：ledger 只覆盖「经本应用复制过」的会话（§3.5）。
             `partial` 恒 true ⇒ 这段文案恒渲染；绑在 `partial` 上是为了让「诚实性」承重。 */}
         {group.partial ? (

@@ -1138,7 +1138,11 @@ fn copy_entry(source: &Path, target: &Path, kind: EntryKind) -> Result<u64, Stri
 }
 
 /// 递归复制目录，返回复制的文件数。
-fn copy_dir_recursive(source: &Path, target: &Path) -> Result<u64, String> {
+///
+/// `pub(crate)` 而不是私有：`snapshot_migrate` 也要用它（把遗留程序线的快照槽位
+/// 搬进合并版槽位）。**刻意只有这一份实现** —— 再写一个「差不多的」递归复制，
+/// 迟早出现「备份时跳过锁文件、搬运时却整目录失败」这类分叉。
+pub(crate) fn copy_dir_recursive(source: &Path, target: &Path) -> Result<u64, String> {
     std::fs::create_dir_all(target).map_err(|e| format!("创建目录失败: {e}"))?;
     let mut copied = 0u64;
     for entry in std::fs::read_dir(source)

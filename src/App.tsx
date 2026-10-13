@@ -1,12 +1,13 @@
 import { Suspense, lazy, useEffect, useMemo, useState, type ComponentType, type ElementType } from "react";
 import { BrowserRouter, HashRouter, Navigate, NavLink, Outlet, Route, Routes, useLocation, useNavigate, useParams } from "react-router-dom";
-import { ArrowUp, GitBranch, LayoutDashboard, MessagesSquare, Monitor, Server, Settings, User } from "lucide-react";
+import { ArrowUp, Coffee, GitBranch, LayoutDashboard, MessagesSquare, Monitor, Server, Settings, User } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 import * as api from "@/lib/api";
 import type { UpdateInfo } from "@/lib/types";
 import { PageFallback } from "@/components/page-fallback";
 import { AppIconMark, StatusDot } from "@/components/product-marks";
+import { DonateDialog } from "@/components/donate-dialog";
 import { TopBar } from "@/components/shell/top-bar";
 import { UpdateInstallDialog } from "@/components/update-install-dialog";
 import { CommandPalette } from "@/components/command-palette/command-palette";
@@ -44,16 +45,12 @@ import type { TraeVariantStatus } from "@/lib/trae-types";
 // ---------------------------------------------------------------------------
 const AccountsPage = lazy(() => import("@/pages/AccountsPage"));
 const ApiServicePage = lazy(() => import("@/pages/ApiServicePage"));
-const CreditStatsPage = lazy(() => import("@/pages/CreditStatsPage"));
-const TokenStatsPage = lazy(() => import("@/pages/TokenStatsPage"));
 const SettingsPage = lazy(() => import("@/pages/SettingsPage"));
 const OverviewPage = lazy(() => import("@/pages/OverviewPage"));
 const UsagePage = lazy(() => import("@/pages/UsagePage"));
 const TraeAccountsPage = lazy(() => import("@/pages/TraeAccountsPage"));
 const TraeApiServicePage = lazy(() => import("@/pages/TraeApiServicePage"));
-const TraeCreditsPage = lazy(() => import("@/pages/TraeCreditsPage"));
 const TraeSettingsPage = lazy(() => import("@/pages/TraeSettingsPage"));
-const TraeTokenStatsPage = lazy(() => import("@/pages/TraeTokenStatsPage"));
 /* P8：第 6 目的地「会话」。两平台各一个组件 —— WorkBuddy 侧是工作台骨架（`SessionsPage`），
    Trae 侧是**结构化空态**（`TraeSessionsPage`，说明「暂不支持会话管理」+ 原因）。
    ⚠️ Trae 侧**不渲染入口**（能力门控），但 URL 直达仍可达 ⇒ 仍需一个组件接住。 */
@@ -223,15 +220,18 @@ function ScopedDestination() {
 }
 
 /**
- * 侧栏导航项（原型 `.nav-item`，`buddy-switch-prototype.html:166-175`）—— 逐值对齐：
+ * 侧栏导航项（原型 `.nav-item`，`demo.css:147-163`）—— 逐值对齐：
  * 高 38px、内边距 `0 10px`、圆角 10px、字号 13px；悬停 `foreground 6%`；
- * **选中 `primary 16%` + 图标转 primary + 字重 550**（原型还额外强调图标，不只是背景）。
+ * **选中 `primary 16%` + 图标转primary + 字重 550**（原型还额外强调图标，不只是背景）。
+ *
+ * ⚠️ 选中底色是**16%** 不是 15%（原型 `:155` 是 `color-mix(primary 16%, transparent)`），
+ * 与 `.brand-mark` 的 18%、`.nav-badge.warn` 的 22% 各不相同 —— 三处别互抄。
  */
 function navLinkClass({ isActive }: { isActive: boolean }): string {
   return cn(
     "group flex h-[38px] items-center gap-2.5 rounded-[10px] px-2.5 text-[13px] outline-none transition-colors focus-visible:ring-2 focus-visible:ring-sidebar-ring/50",
     isActive
-      ? "bg-primary/15 font-[550] text-foreground [&>svg]:text-primary"
+      ? "bg-primary/16 font-[550] text-foreground [&>svg]:text-primary"
       : "text-muted-foreground hover:bg-foreground/[0.06] hover:text-foreground",
   );
 }
@@ -331,14 +331,58 @@ function CompanionToggle() {
 }
 
 /**
+ * 侧栏底部的打赏入口（**版本号上方**）。
+ *
+ * ## 为什么在侧栏底部，而不是只留在顶栏 ⚙ 菜单
+ *
+ * 打赏是「顺手支持一下」的动作，没人会去翻设置菜单找它；侧栏底部常驻可见，
+ * 紧贴版本号放着，语义正好是「这个应用免费开源，可以请作者喝饮料」。
+ * 顶栏 ⚙ 菜单里那一项**保留**（与「更新」弹层同款：同一弹层允许两个入口，
+ * 各自持有自己的 `open`），因此这里**不**再复制一份收款码 UI。
+ *
+ * ## 为什么是「图标 + 文字」的整行按钮，不是无文字图标
+ *
+ * 侧栏底部已经有状态圆点与更新按钮两处图标入口，再加一枚无文字图标，
+ * 用户只能靠猜。整行按钮语义自明。
+ *
+ * ## 弹层仍是**受控**的
+ *
+ * `DonateDialog` 自己不带触发按钮（与顶栏 ⚙ 菜单共用同一份实现），
+ * 入口只负责持有 `open` 状态 —— 收款码只有一处实现。
+ */
+function SidebarDonate() {
+  const t = useT();
+  const [open, setOpen] = useState(false);
+
+  return (
+    <>
+      <Button
+        type="button"
+        variant="ghost"
+        size="sm"
+        /* 左内边距与 `navLinkClass` 同为 `px-2.5` ⇒ 图标与上面 5 个导航项对齐。
+           ⚠️ 不要改成无文字图标：侧栏底部已有两枚图标入口，再加一枚只能靠猜。 */
+        className="h-8 w-full justify-start gap-2.5 rounded-[10px] px-2.5 text-[12.5px] font-normal text-sidebar-foreground/70 hover:bg-foreground/[0.06] hover:text-sidebar-foreground"
+        onClick={() => setOpen(true)}
+      >
+        <Coffee className="size-3.5" aria-hidden="true" />
+        {t("wbSettings.donate.trigger")}
+      </Button>
+      <DonateDialog open={open} onOpenChange={setOpen} />
+    </>
+  );
+}
+
+/**
  * 侧栏底部的应用信息。
  *
  * 这里展示的是**本应用**（Buddy Switch）的版本，而不是所管理客户端的版本：
  * `status.version` 来自 `update::APP_VERSION`，此前挂在「WorkBuddy」名下会让人
  * 误以为它是 WorkBuddy 客户端的版本号。状态圆点跟随当前选中的产品。
  *
- * **自带容器**：`.sidebar-foot`（顶部边框 + 上间距）在本组件内 —— 侧栏底部现在
- * 只有它一项（应用级入口已收进顶栏 ⚙ 菜单，见 `AppMenu`），容器随它一起走。
+ * **只负责内容**：底部区块的边框、上间距与纵向间隔归 `Layout` 里那个
+ * `<section>` —— 同一块里还要放打赏入口（`SidebarDonate`），而它在 webui 下
+ * **仍然显示**（版本行则不显示），把容器留在 `Layout` 才能只写一处。
  * webui 下整行不渲染（没有桌面运行态可展示）。
  */
 function AppFooter({
@@ -379,7 +423,7 @@ function AppFooter({
 
   return (
     <>
-      <div className="mt-auto border-t border-sidebar-border pt-2.5">
+      <div>
         <div className="flex items-center gap-2 px-1 text-[11.5px] text-muted-foreground">
           <Tooltip>
             <TooltipTrigger asChild>
@@ -637,20 +681,16 @@ function Layout() {
       <div className="flex min-h-0 flex-1">
         {/* ══ 侧栏（L2 目的地）：品牌 + 导航 + 版本行。不随产品换血（§3.2） ══ */}
         <aside className="flex min-h-0 w-[240px] shrink-0 flex-col border-r border-sidebar-border bg-sidebar px-3 pb-3 pt-3.5">
-          {/* 品牌块（原型 `.brand` / `.brand-mark`，`:155-163`）：32px 图标底 + 双行文案。
-              ⚠️ 图标必须带 `primary 18%` 底色 —— 原型不是「裸图标」。 */}
+          {/* 品牌块（原型 `.brand` / `.brand-mark`，`demo.css:136-141`）：32px 图标底 + 双行文案。
+              ⚠️ 图标必须带 `primary 18%` 底色 —— 原型不是「裸图标」（此前写 15%，偏淡）。*/}
           <div className="flex items-center gap-2.5 px-1.5 pb-4">
-            <span className="grid size-8 shrink-0 place-items-center rounded-[10px] bg-primary/15 text-primary">
+            <span className="grid size-8 shrink-0 place-items-center rounded-[10px] bg-primary/18 text-primary">
               <AppIconMark size={17} />
             </span>
             <div className="min-w-0">
-              <div
-                className="truncate text-[13.5px] leading-5 tracking-[-0.01em] text-sidebar-foreground"
-                style={{
-                  fontFamily: '"Bricolage Grotesque Variable", "SF Pro Display", ui-sans-serif, sans-serif',
-                  fontWeight: 650,
-                }}
-              >
+              {/* 字重 650 / 字距 -.01em 对齐原型 `.brand-text b`（`demo.css:143`）。
+                  字体走 body 继承 —— 原型全站统一 `ui-sans-serif`，不另设展示字体。 */}
+              <div className="truncate text-[13.5px] font-[650] leading-5 tracking-[-0.01em] text-sidebar-foreground">
                 Buddy Switch
               </div>
               {demoModeEnabled ? (
@@ -670,36 +710,46 @@ function Layout() {
             aria-label={t("product.navAria", { product: t(platformDescriptor(product).labelKey) })}
           >
             {scopedNav.map((item) => (
-              <NavLink key={item.to} to={item.to} className={navLinkClass}>
-                <item.icon className="size-4" />
-                {t(item.labelKey)}
-                {/* ★ 侧栏徽章（原型 `renderNav`）：账号数 / 网关密钥数 / 会话待同步数。
-                  一律 **`>0` 才渲染**（不摆「0」，§3.4 规则 1）；`warn` ⇒ 用警示色
-                  （账号「有需重登」、会话「有待同步」—— 都是「有事要处理」）。 */}
-                {item.badge !== null ? (
-                  /* 徽章逐值对齐原型 `.nav-badge`（`:176-182`）：min-w 20 / 高 18 / 内边距 0 6 /
-                     圆角 999（**胶囊**，不是方角）/ 字号 10.5。 */
-                  <span
-                    data-badge={item.dest === "sessions" ? "pending-sync" : `count-${item.dest}`}
-                    className={cn(
-                      "ml-auto grid h-[18px] min-w-[20px] place-items-center rounded-full px-1.5 text-[10.5px] tabular-nums",
-                      item.badge.warn
-                        ? "bg-warning/20 text-warning"
-                        : "bg-muted text-muted-foreground",
-                    )}
-                  >
-                    {item.badge.n}
-                  </span>
-                ) : null}
-              </NavLink>
+              <NavLink
+                key={item.to}
+                to={item.to}
+                className={navLinkClass}
+                /* 徽章底色要用选中态（原型 `.nav-item.active .nav-badge` = primary 25%），
+                   而 `className` 回调只收 `{isActive}`、children 回调也收同一个形状 ——
+                   两处同源，不会各说各话。children 用函数式才能拿到 `isActive`。 */
+                children={({ isActive }) => (
+                  <>
+                    <item.icon className="size-4" />
+                    {t(item.labelKey)}
+                    {item.badge !== null ? (
+                      <span
+                        data-badge={item.dest === "sessions" ? "pending-sync" : `count-${item.dest}`}
+                        className={cn(
+                          "ml-auto grid h-[18px] min-w-[20px] place-items-center rounded-full px-1.5 text-[10.5px] tabular-nums",
+                          item.badge.warn
+                            ? "bg-warning/22 text-warning"
+                            : "bg-muted text-muted-foreground",
+                          isActive && "bg-primary/25 text-foreground",
+                        )}
+                      >
+                        {item.badge.n}
+                      </span>
+                    ) : null}
+                  </>
+                )}
+              />
             ))}
           </nav>
 
-          {/* 侧栏底部只剩版本行 —— 应用级入口（通用设置 / 客户端设置 / Skill / 打赏）
-              已收进顶栏 ⚙ 菜单（`AppMenu`），不再占侧栏固定高度。 */}
-          {api.isWebui() && !demoModeEnabled ? null : (
-            <AppFooter product={product} running={running} version={appVersion} />
-          )}
+          {/* 侧栏底部区块：**打赏入口在版本号上方**。
+              打赏在 webui 下**也显示**（版本行不显示），因此容器放在这里、
+              由两个子项共用边框与上间距，而不是塞进 `AppFooter`。 */}
+          <section className="mt-auto flex flex-col gap-2.5 border-t border-sidebar-border pt-3">
+            <SidebarDonate />
+            {api.isWebui() && !demoModeEnabled ? null : (
+              <AppFooter product={product} running={running} version={appVersion} />
+            )}
+          </section>
         </aside>
 
         {/* ══ 内容区（L3 视图参数）：懒加载页面 ══ */}
@@ -734,16 +784,16 @@ export default function App() {
             <Route path="/s/:scope/:dest" element={<ScopedDestination />} />
             <Route path="/overview" element={<OverviewPage />} />
             <Route path="/" element={<AccountsPage />} />
-            <Route path="/credit-stats" element={<CreditStatsPage />} />
-            <Route path="/token-stats" element={<TokenStatsPage />} />
+            <Route path="/credit-stats" element={<UsagePage defaultTab="credits" />} />
+            <Route path="/token-stats" element={<UsagePage />} />
             <Route path="/api-service" element={<ApiServicePage />} />
             <Route path="/settings" element={<SettingsPage />} />
             {/* Trae 侧与 WorkBuddy 侧逐条同构；`/trae` 本身重定向到账号管理，
                 避免旧书签或外部链接落在空路由上。 */}
             <Route path="/trae" element={<Navigate to="/trae/accounts" replace />} />
             <Route path="/trae/accounts" element={<TraeAccountsPage />} />
-            <Route path="/trae/token-stats" element={<TraeTokenStatsPage />} />
-            <Route path="/trae/credits" element={<TraeCreditsPage />} />
+            <Route path="/trae/token-stats" element={<UsagePage />} />
+            <Route path="/trae/credits" element={<UsagePage defaultTab="credits" />} />
             <Route path="/trae/api-service" element={<TraeApiServicePage />} />
             <Route path="/trae/settings" element={<TraeSettingsPage />} />
             <Route path="*" element={<Navigate to="/" replace />} />

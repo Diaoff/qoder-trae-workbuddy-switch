@@ -55,6 +55,8 @@ pub mod schedule;
 pub mod scheduler;
 pub mod school;
 pub mod session;
+// 追加型 jsonl 的尾部窗口读取（token_daily / client_limits 共用的唯一实现）。
+pub(crate) mod jsonl_tail;
 // Skill 管理（cc-switch 式）：清单 + 启停 + 跨区搬迁 + 本地导入 —— 目录即 SSOT。
 pub mod skill;
 pub mod switch;
@@ -68,3 +70,5 @@ pub mod upstream;
 // VS Code 内 CodeBuddy 扩展（tencent-cloud.coding-copilot）账号切换。
 pub mod vscode_ext;
 pub mod vscode_cn_inject;
+/// VS Code 插件 / CodeBuddy IDE 的**会话仓**（P14 S4a · 只读半）。
+pub mod vscode_session;

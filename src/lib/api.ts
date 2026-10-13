@@ -63,6 +63,12 @@ import type {
   SyncSessionReplicaResponse,
   UnifySessionReplicaItem,
   UnifySessionReplicaResponse,
+  ExtClientId,
+  ExtCopyItem,
+  ExtCopyResponse,
+  ExtDiffResponse,
+  ExtSessionsResponse,
+  ExtSyncResponse,
   SwitchConfig,
   SwitchResult,
   TrashList,
@@ -291,6 +297,13 @@ const ROUTES: Record<string, Route> = {
   list_sessions: { method: "GET", path: "/api/sessions" },
   // P8 T02 · 只读：copy ledger 连通成「会话副本组」（两宿主同步）。
   list_session_replicas: { method: "GET", path: "/api/sessions/replicas" },
+  // P14 S4a · VS Code 插件 / CodeBuddy IDE 的会话仓（**与桌面版不是同一套存储**，
+  // 所以单开路由而不是往 `/api/sessions` 塞 `client` 参数）。
+  list_vscode_sessions: { method: "GET", path: "/api/vscode-sessions" },
+  copy_vscode_sessions: { method: "POST", path: "/api/vscode-sessions/copy" },
+  // P14 S4b · 记录级 diff（只读）+ 增量追加（只有 `appendable` 才真写）。
+  diff_vscode_sessions: { method: "GET", path: "/api/vscode-sessions/diff" },
+  sync_vscode_sessions: { method: "POST", path: "/api/vscode-sessions/sync" },
   // P8 · 会话内容指纹（组状态派生的数据源）—— **POST**：批量传 sessionIds。
   session_fingerprints: { method: "POST", path: "/api/sessions/fingerprints" },
   // P8 · **安全同步（增量追加）** —— POST：批量传 `{ sourceCid, targetCid }[]`。
@@ -800,7 +813,7 @@ export function importAccounts(fileText: string, indexes: number[], region?: Reg
 export interface BackupSelectionState {
   scopes: Partial<Record<Scope, { accounts: boolean; config: boolean; gateway: boolean }>>;
   includesCredentials: boolean;
-  /** `appSettings` 的 localStorage 段（语言 / 外观 / 紧凑模式 / 上次作用域）；缺省即不含。 */
+  /** `appSettings` 的 localStorage 段（语言 / 外观 / 上次作用域）；缺省即不含。 */
   appSettings?: Record<string, unknown>;
 }
 
@@ -1079,6 +1092,93 @@ export function unifySessionReplicas(
   region?: Region,
 ): Promise<UnifySessionReplicaResponse> {
   return call("unify_session_replicas", { items, ...(region ? { region } : {}) });
+}
+
+/**
+ * P14 S4a · **插件侧会话仓**：列出某账号在 VS Code 插件 / CodeBuddy IDE 里的会话（**只读**）。
+ *
+ * ## 为什么是独立命令而不是给 `listSessions` 加 `client` 参数
+ *
+ * 桌面版会话是 `workbuddy.db` + **jsonl**，插件侧是 **JSON 记录仓**（目录 + 索引数组）
+ * ⇒ 两套数据形状完全不同。挤进一个出口会让每个调用点都长出分支。
+ *
+ * `uid` **必填**：本仓不猜「插件当前登录的是哪个账号」——猜错就是去读**别人的**会话目录。
+ *
+ * `dataRoot === null` ⇒ **未检测到客户端**（与「该账号没有会话」是两件事，文案不同）。
+ */
+export function listExtSessions(client: ExtClientId, uid: string): Promise<ExtSessionsResponse> {
+  return call("list_vscode_sessions", { client, uid });
+}
+
+/**
+ * P14 S4a · 把插件侧会话复制给另一个账号。
+ *
+ * ## 语义（与桌面版的同步**不是一回事**）
+ *
+ * - **恒取新 id** ⇒ **加法**，**永不覆盖**目标已有会话；
+ * - 消息 / 请求 id 会**递归精确重映射**（副本内部的互相引用跟着换，否则扩展显示空会话）；
+ * - 逐条隔离 ⇒ 部分失败由 `errors[]` 如实表达。
+ *
+ * ⚠️ **写操作**：不进演示站的只读命令表（`DEMO_READ_COMMANDS`）。
+ */
+export function copyExtSessions(
+  client: ExtClientId,
+  sourceUid: string,
+  targetUid: string,
+  items: ExtCopyItem[],
+): Promise<ExtCopyResponse> {
+  return call("copy_vscode_sessions", { client, sourceUid, targetUid, items });
+}
+
+/**
+ * P14 S4b · **记录级 diff（只读）**：这份会话能不能做增量追加。
+ *
+ * ★ 为什么插件侧需要先算 diff：桌面版的会话是 **jsonl**（追加**天然保序**），
+ * 插件侧的顺序由 `index.json` 的 `messages[]` **数组次序**决定 ⇒ 目标缺的是**中间**几条时，
+ * 追加会把会话读成**错乱的顺序** —— 而且是**静默**的（JSON 依然合法）。
+ *
+ * ⇒ **只有 `appendable === true` 才允许调 [`syncExtSession`]**；其余状态是**拒绝**，
+ * `reason` 里会说清后果（不要自己改写文案，那是产品口径）。
+ */
+export function diffExtSession(
+  client: ExtClientId,
+  sourceUid: string,
+  targetUid: string,
+  workspaceHash: string,
+  conversationId: string,
+): Promise<ExtDiffResponse> {
+  return call("diff_vscode_sessions", {
+    client,
+    sourceUid,
+    targetUid,
+    workspaceHash,
+    conversationId,
+  });
+}
+
+/**
+ * P14 S4b · **增量追加**：把源尾部多出来的记录补到目标（**只加不改**）。
+ *
+ * ★★ 后端**不信任调用方**：进来先**自己重算** diff，只有 `appendable` 才真写
+ * （调用方说「我算过了」不算数 —— 两件事之间源可能又变了）。
+ * 目标已有的消息文件**一个字节都不碰**，索引也只替换 `messages` / `requests` 两条序列。
+ *
+ * ⚠️ **写操作**：不进演示站的只读命令表（`DEMO_READ_COMMANDS`）。
+ */
+export function syncExtSession(
+  client: ExtClientId,
+  sourceUid: string,
+  targetUid: string,
+  workspaceHash: string,
+  conversationId: string,
+): Promise<ExtSyncResponse> {
+  return call("sync_vscode_sessions", {
+    client,
+    sourceUid,
+    targetUid,
+    workspaceHash,
+    conversationId,
+  });
 }
 
 /**

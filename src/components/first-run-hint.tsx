@@ -13,8 +13,18 @@
  *
  * ## 形态与退场
  *
- * **可关闭的顶部提示条**（非模态、不挡操作）；关闭即**持久化**（`lib/first-run.ts`），
- * 下次冷启动不再出现。刻意不做「自动退场」—— 那会让每次冷启动都重来一遍。
+ * **底部居中浮层**（原型 `.hint`，`demo.css:538-547`：`fixed` + `bottom:20px` +
+ * `left:50%` + `translateX(-50%)`、`rounded-[12px]`、底 `--popover`、`shadow-overlay`、
+ * 字号 12px、`max-width: min(760px,94vw)`）。
+ *
+ * ⚠️ 原先是**顶部通栏**（`border-b` + 通栏底色）：它会把内容整体下推一截，且与页头
+ * 争夺注意力。原型做成浮层正是为了「不挤压内容、不抢视觉重心」。
+ *
+ * ⚠️ 浮层会盖住底部内容 ⇒ 外层 `pointer-events-none` + 本体 `pointer-events-auto`，
+ * 使浮层**空隙处**的点击能穿透到下面的卡片，不挡住操作。
+ *
+ * 关闭即**持久化**（`lib/first-run.ts`），下次冷启动不再出现。
+ * 刻意不做「自动退场」—— 那会让每次冷启动都重来一遍。
  */
 
 import { useMemo, useState } from "react";
@@ -57,8 +67,9 @@ export function FirstRunHint() {
   }
 
   return (
-    <div className="flex items-start gap-3 border-b border-border/60 bg-muted/40 px-4 py-2.5 text-xs sm:px-6">
-      <span className="shrink-0 font-medium">{t("firstRun.title")}</span>
+    <div className="pointer-events-none fixed inset-x-0 bottom-5 z-50 flex justify-center px-4">
+      <div className="pointer-events-auto flex w-full max-w-[760px] items-start gap-3 rounded-[12px] border border-border bg-popover px-3.5 py-2.5 text-xs shadow-overlay">
+        <span className="shrink-0 font-medium text-primary">{t("firstRun.title")}</span>
       <ul className="min-w-0 flex-1 space-y-0.5 text-muted-foreground">
         <li>{t("firstRun.openPalette", { shortcut: "⌘K" })}</li>
         {scopeHint ? <li>{t("firstRun.scopeShortcut", { shortcut: scopeHint })}</li> : null}
@@ -73,6 +84,7 @@ export function FirstRunHint() {
         <X className="size-3.5" aria-hidden="true" />
         {t("firstRun.dismiss")}
       </Button>
+      </div>
     </div>
   );
 }

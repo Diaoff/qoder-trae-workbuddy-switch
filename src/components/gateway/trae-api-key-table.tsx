@@ -28,7 +28,8 @@ import type { TraeApiKeyRecord, TraeVariantId } from "@/lib/trae-types";
 import { cn } from "@/lib/utils";
 
 /**
- * 归属取值集合 = **4 个程序位**（区域 × 程序）。
+ * 归属取值集合 = **4 个变体**（区域 × 程序；合并版 `trae` 与 `trae_code` 共用变体，
+ * 已在 `allPrograms()` 里按 `variant` 去重，见该函数的说明）。
  *
  * ## ⚠️ 2026-09-30 由「区域」改为「程序位」（issue #4 的实测结论）
  *

@@ -113,7 +113,11 @@ export function describeCatalogSource(
 }
 
 /**
- * 相对时间文案（「刚刚 / {n} 分钟前 / {n} 小时前 / {n} 天前」）；`ts === null` ⇒ `null`。
+ * 相对时间文案（「刚刚 / {n} 分钟前 / {n} 小时前 / 昨天 / {n} 天前」）；`ts === null` ⇒ `null`。
+ *
+ * ★ 2026-10-12：补 **「昨天」** 一档。此前 24~48 小时一律显示「1 天前」，
+ * 而人话里那个区间就是「昨天」（原型演示数据也是这么写的）。
+ * 三处调用方（账号卡「最后使用」/ Trae 卡「最后更新」/ 网关来源条）共用这一份口径。
  *
  * `now` 可注入（便于测试与 SSR 场景）；缺省取当前时间。
  */
@@ -130,6 +134,7 @@ export function formatRelativeTime(
   const hours = Math.floor(minutes / 60);
   if (hours < 24) return t("shared.gateway.sourceBar.hoursAgo", { n: hours });
   const days = Math.floor(hours / 24);
+  if (days === 1) return t("shared.gateway.sourceBar.yesterday");
   return t("shared.gateway.sourceBar.daysAgo", { n: days });
 }
 

@@ -15,7 +15,7 @@ import * as api from "@/lib/api";
 import { useT } from "@/lib/i18n";
 import { platformOfPath } from "@/lib/platforms/registry";
 import { scopeOf } from "@/lib/scope";
-import { buildSyncItems, buildUnifyItems } from "@/lib/session-replicas";
+import { buildSyncItems, buildUnifyItems, failedGroupKeys } from "@/lib/session-replicas";
 import type { SessionGroupStatus, SessionGroupView } from "@/lib/session-replicas";
 import type { SyncSessionReplicaItem, UnifySessionReplicaItem } from "@/lib/types";
 import { useScope } from "@/lib/use-scope";
@@ -93,6 +93,25 @@ export default function SessionsPage() {
     () => (statusFilter === "all" ? groups : groups.filter((g) => g.status === statusFilter)),
     [groups, statusFilter],
   );
+  const [sortOrder, setSortOrder] = useState<"recent" | "oldest">("recent");
+  const sortedGroups = useMemo(() => {
+    /* updatedAt 只用于列表排序，不参与副本状态推断；无时间戳的组稳定排在末尾。 */
+    const timestampOf = (group: SessionGroupView) => {
+      const timestamps = group.rows.flatMap((row) => row.updatedAt === null ? [] : [row.updatedAt]);
+      return timestamps.length > 0 ? Math.max(...timestamps) : null;
+    };
+    return filteredGroups
+      .map((group, index) => ({ group, index, timestamp: timestampOf(group) }))
+      .sort((a, b) => {
+        if (a.timestamp === null && b.timestamp !== null) return 1;
+        if (a.timestamp !== null && b.timestamp === null) return -1;
+        if (a.timestamp !== null && b.timestamp !== null && a.timestamp !== b.timestamp) {
+          return sortOrder === "recent" ? b.timestamp - a.timestamp : a.timestamp - b.timestamp;
+        }
+        return a.index - b.index;
+      })
+      .map(({ group }) => group);
+  }, [filteredGroups, sortOrder]);
 
   /* 筛选态在数据变化后可能失效（该状态已无组）⇒ 自动回落到 `all`，避免"空屏 + 假筛选"。 */
   useEffect(() => {
@@ -113,17 +132,14 @@ export default function SessionsPage() {
    * ⚠️ 分歧组**不给**这条出口（`buildSyncItems` 只对 `behind` 出项）——
    *    分歧要先人工决定保留哪一份（D20 后置），硬同步会丢内容。
    */
-  async function runSync(items: SyncSessionReplicaItem[], busyKeys: string[]) {
+  async function runSync(items: SyncSessionReplicaItem[], groupKeys: string[]) {
     if (syncBusy || items.length === 0) return;
     setSyncBusy(true);
-    setBusyGroupKeys(new Set(busyKeys));
+    setBusyGroupKeys(new Set(groupKeys));
     try {
       const response = await syncItems(region, items);
       await load(region);
 
-      const failed = response.results
-        .filter((r) => !r.ok)
-        .map((r) => ({ sourceCid: r.sourceCid, targetCid: r.targetCid }));
       const appended = response.results.reduce((sum, r) => sum + (r.appendedLines ?? 0), 0);
 
       const parts: string[] = [];
@@ -135,12 +151,14 @@ export default function SessionsPage() {
       }
       const summary = parts.join(t("shared.punct.comma"));
 
-      /* ★ 有失败 ⇒ 给「只重试失败项」出口（否则用户只能把成功的一起重跑）。 */
+      /* ★ 有失败 ⇒ 给「只重试失败项」出口（否则用户只能把成功的一起重跑）。
+         ⚠️ 重试**按组重算**，不复用上一次的 items —— 见 `retrySync`。 */
+      const failedGroups = failedGroupKeys(response.results);
       const retryAction =
-        failed.length > 0
+        failedGroups.length > 0
           ? {
               label: t("sessions.sync.toast.retryFailed"),
-              onClick: () => void runSync(failed, busyKeys),
+              onClick: () => retrySync(failedGroups),
             }
           : undefined;
 
@@ -161,6 +179,28 @@ export default function SessionsPage() {
       setSyncBusy(false);
       setBusyGroupKeys(new Set());
     }
+  }
+
+  /**
+   * ★ P14 S1：重试必须**按组重算**，不能复用上一次的 items。
+   *
+   * 直接复用会把**旧令牌**再送一遍 —— 而令牌失效恰恰意味着组已经变了（后端因此拒绝），
+   * 于是重试必然再失败，用户看到的是「重试永远失败」。从**刷新后**的 store 重算才正确
+   * （`runSync` 里已经 `await load(region)`，所以此刻 store 是新的一份）。
+   *
+   * ⚠️ 重算后可能**一条都不剩**（组已变成 `diverge` / 已一致）⇒ 如实提示，不假装重试过。
+   */
+  function retrySync(groupKeys: string[]) {
+    const wanted = new Set(groupKeys);
+    const items = useSessionsStore
+      .getState()
+      .groups.filter((group) => wanted.has(group.key))
+      .flatMap((group) => buildSyncItems(group));
+    if (items.length === 0) {
+      toast.info(t("sessions.sync.toast.nothingToRetry"));
+      return;
+    }
+    void runSync(items, groupKeys);
   }
 
   /** 单个组：同步它所有落后的副本。 */
@@ -192,7 +232,7 @@ export default function SessionsPage() {
    * 二次确认在 [`UnifyReplicasDialog`] 里（选保留哪一份 + 如实报「会丢几条」）；
    * 本函数只负责**执行 + 汇总**，沿用与同步同一套「部分失败 + 只重试失败项」纪律（§3.6）。
    */
-  async function runUnify(items: UnifySessionReplicaItem[]) {
+  async function runUnify(items: UnifySessionReplicaItem[], keepSessionId: string) {
     if (unifyBusy || items.length === 0) return;
     setUnifyBusy(true);
     try {
@@ -200,9 +240,6 @@ export default function SessionsPage() {
       // 列表状态来自内容指纹 ⇒ 不重载会继续显示「有分歧」（看起来像没生效）。
       await load(region);
 
-      const failed = response.results
-        .filter((r) => !r.ok)
-        .map((r) => ({ sourceCid: r.sourceCid, targetCid: r.targetCid }));
       const lost = response.results.reduce((sum, r) => sum + (r.lostLines ?? 0), 0);
 
       const parts: string[] = [];
@@ -214,11 +251,13 @@ export default function SessionsPage() {
       }
       const summary = parts.join(t("shared.punct.comma"));
 
+      /* ⚠️ 与同步同款：重试**按组重算**（保留用户选的那一份不变），不复用旧 items。 */
+      const failedGroups = failedGroupKeys(response.results);
       const retryAction =
-        failed.length > 0
+        failedGroups.length > 0
           ? {
               label: t("sessions.unify.toast.retryFailed"),
-              onClick: () => void runUnify(failed),
+              onClick: () => retryUnify(failedGroups, keepSessionId),
             }
           : undefined;
 
@@ -236,10 +275,27 @@ export default function SessionsPage() {
     }
   }
 
+  /**
+   * ★ P14 S1：分歧统一的重试 —— 同样**按组重算**，并沿用用户**已经选定的**那一份
+   * （`keepSessionId`）。不复用旧 items 的理由与 [`retrySync`] 完全一致（旧令牌必然再失败）。
+   */
+  function retryUnify(groupKeys: string[], keepSessionId: string) {
+    const wanted = new Set(groupKeys);
+    const items = useSessionsStore
+      .getState()
+      .groups.filter((group) => wanted.has(group.key))
+      .flatMap((group) => buildUnifyItems(group, keepSessionId));
+    if (items.length === 0) {
+      toast.info(t("sessions.unify.toast.nothingToRetry"));
+      return;
+    }
+    void runUnify(items, keepSessionId);
+  }
+
   /** 对话框确认：把「选定保留的那一份」换算成覆盖任务（`buildUnifyItems` 会挡住非法输入）。 */
   function confirmUnify(keepSessionId: string) {
     if (!unifyTarget) return;
-    void runUnify(buildUnifyItems(unifyTarget, keepSessionId));
+    void runUnify(buildUnifyItems(unifyTarget, keepSessionId), keepSessionId);
   }
 
   return (
@@ -248,15 +304,15 @@ export default function SessionsPage() {
           批量出口仍**只在真有可同步项时**出现（§3.4 规则 1，不摆假控件）。 */}
       <header className="flex items-start gap-4">
         <div className="min-w-0">
-          <h1 className="text-[28px] font-semibold tracking-tight">{t("sessions.title")}</h1>
-          <p className="mt-1.5 text-xs text-muted-foreground">
+          <h1 className="text-[28px] font-[640] tracking-[-0.02em]">{t("sessions.title")}</h1>
+          <p className="mt-1.5 text-[12.5px] text-muted-foreground">
             {t("pageHead.sessions", { scope: scopeLabel(t, scope) })}
           </p>
         </div>
         <div className="grow" />
         {allSyncable.length > 0 ? (
           <Button
-            size="sm"
+            size="default"
             variant="outline"
             disabled={syncBusy}
             data-sync-all="true"
@@ -328,9 +384,37 @@ export default function SessionsPage() {
                 ))}
               </div>
             ) : null}
+            {/* ★ 排序（原型 `.sess-sort-seg`，:3187-3190）：最近更新 / 最早更新。
+                ⚠️ 这里只排**列表顺序**，绝不参与「落后 / 分叉」状态推断（§3.15.2）。 */}
+            <div
+              className="flex items-center gap-1 rounded-lg bg-muted p-1"
+              role="group"
+              aria-label={t("sessions.sort.aria")}
+            >
+              <Button
+                size="sm"
+                variant={sortOrder === "recent" ? "default" : "ghost"}
+                className="h-6 px-2 text-xs"
+                onClick={() => setSortOrder("recent")}
+                data-sort-order="recent"
+                aria-pressed={sortOrder === "recent"}
+              >
+                {t("sessions.sort.recent")}
+              </Button>
+              <Button
+                size="sm"
+                variant={sortOrder === "oldest" ? "default" : "ghost"}
+                className="h-6 px-2 text-xs"
+                onClick={() => setSortOrder("oldest")}
+                data-sort-order="oldest"
+                aria-pressed={sortOrder === "oldest"}
+              >
+                {t("sessions.sort.oldest")}
+              </Button>
+            </div>
           </div>
           <SessionReplicaView
-            groups={filteredGroups}
+            groups={sortedGroups}
             onSyncGroup={syncGroup}
             busyGroupKeys={busyGroupKeys}
             onUnifyGroup={setUnifyTarget}

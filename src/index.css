@@ -193,6 +193,14 @@
   --shadow-card: var(--elevation-1);
   --shadow-card-hover: var(--elevation-2);
   --shadow-overlay: var(--elevation-3);
+  /* ★ 骨架屏扫光（原型 `@keyframes sk`）→ `animate-skeleton-sweep`。
+     ⚠️ 必须在这里登记：Tailwind v4 的 `animate-*` 工具类只认`@theme` 里声明的
+     `--animate-*`，光写 `@keyframes` 不会生成工具类（且类名会被静默丢弃）。 */
+  --animate-skeleton-sweep: skeleton-sweep 1.3s ease-in-out infinite;
+  /* ★ 旋转时长对齐原型 `.spinner`（`demo.css:618`：`animation: spin .7s linear infinite`）。
+     Tailwind 默认 `animate-spin` 是 **1s** ⇒ 全仓 70+ 处 loading 图标都比原型慢 43%，
+     视觉上「转得不够快、像卡住了」。这里覆盖成 0.7s，一处改动全局生效。 */
+  --animate-spin: spin 0.7s linear infinite;
 }
 
 @layer base {
@@ -212,6 +220,20 @@
        否则 Windows 下中文会落到默认宋体，与原型观感差异明显。 */
     font-family: ui-sans-serif, -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI",
       "Microsoft YaHei", sans-serif;
+    /**
+     * ★ `font-size: 13.5px` / `line-height: 1.5`（原型 `:64-65`）。
+     *
+     * ⚠️ 这是**全站排版的地基**，漏了它偏差最大：
+     * Tailwind preflight 只给 `html` 设 `line-height: 1.5`，**不设 `font-size`**，
+     * 于是浏览器默认 16px 生效 ⇒ 凡是没显式写 `text-*` 的文本节点（`<p>`、`<span>`、
+     * 表格单元、按钮继承文字）都比原型**大 18.5%**；反过来写了 `text-xs`(12px) 的地方
+     * 又比原型的 12.5px 偏小 ⇒ 形成「正文偏大、标注偏小」的反向错配。
+     *
+     * `line-height` 虽已被 preflight 覆盖，这里**显式重写**：原型把它写在 `body` 上，
+     * 依赖 preflight 属于隐式耦合（preflight 一改就漂）。
+     */
+    font-size: 13.5px;
+    line-height: 1.5;
     font-synthesis: none;
     text-rendering: optimizeLegibility;
     -webkit-font-smoothing: antialiased;
@@ -235,14 +257,164 @@
   ::-webkit-scrollbar-track {
     background: transparent;
   }
+  /**
+   * ★ 图标默认 16px（原型 `:70`：`svg { width:16px; height:16px; display:block }`）。
+   *
+   * ⚠️ preflight 只给 `display:block`，**不给尺寸** ⇒ 任何漏写 `size-*` 的图标会退化成
+   * 300×150 的默认占位，把布局撑开。这里给 16px 兜底，与原型一致；
+   * 组件里的 `size-*` 工具类优先级更高，仍可逐个覆盖。
+   */
+  svg {
+    width: 16px;
+    height: 16px;
+  }
+  /**
+   * 键帽（原型 `:71-75`）：等宽 10.5px、圆角 5px、弱化底色。
+   * 此前**全站无 kbd 规则**，两个使用点各写一套且互相不一致
+   * （`top-bar.tsx` 与 `command-palette.tsx` 的圆角/内边距/字号三项全不同）。
+   */
+  kbd {
+    font-family: ui-monospace, "SFMono-Regular", Consolas, monospace;
+    font-size: 10.5px;
+    line-height: 1.4;
+    padding: 2px 5px;
+    border-radius: 5px;
+    background: var(--muted);
+    border: 1px solid var(--border);
+    color: var(--muted-foreground);
+  }
   #root {
     height: 100%;
     overflow: hidden;
   }
 }
 
-@media (min-width: 900px) {
-  [aria-label="Token 总览"] {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
+/**
+ * ★ 骨架屏扫光（原型 `.sk` / `@keyframes sk`，`demo.css:365-366`）。
+ *
+ * 原型是一条 200% 宽的三段渐变（`muted 25% → accent 50% → muted 75%`）
+ * 以 `background-position` 从 `0` 移到 `-200%`，1.3s 无限循环。
+ * 起点与终点同为 `--muted` ⇒ 循环无跳变。
+ *
+ * ⚠️ 用 `background-position` 而非 `transform`：位移渐变本身，transform 会让整块平移出容器。
+ */
+@keyframes skeleton-sweep {
+  from {
+    background-position: 200% 0;
+  }
+  to {
+    background-position: -200% 0;
+  }
+}
+
+/**
+ * ★ 模型清单来源条 `.cat-bar`（原型 `demo.css:804-809`）。
+ *
+ * ⚠️ **这条规则此前根本不存在** —— `catalog-source-bar.tsx:77` 写着
+ * `className="cat-bar mb-3"`，但本文件里**没有任何 `.cat-bar` 规则**
+ * ⇒ 那个 `cat-bar` 只是个**验收钩子**（文件注释里明说是给 CDP 回归定位用的），
+ * 视觉上**完全没有任何样式**：无底色、无内距、无圆角。
+ * 而原型它是 `底--muted + r10 + px10 py12` 的一整条横条 —— 这是最明显的一处「样式丢失」。
+ *
+ * 逐值对齐原型：flex / items-center / gap10 / flex-wrap / padding 10px 12px /
+ * margin-bottom 12px / radius 10px / background `--muted`。
+ * （`.cat-bar .grow` 的 `flex:1` 在实现里用 `ml-auto` 等效，见 `catalog-source-bar.tsx:96`。）
+ */
+.cat-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 10px 12px;
+  margin-bottom: 12px;
+  border-radius: 10px;
+  background: var(--muted);
+}
+
+/**
+ * ★ 响应式断点—— **逐条对应原型**（`demo.css:227-228 / 379 / 721`）。
+ *
+ * 原型靠 `.g2/.g3/.g4` / `.split` / `.chart-2col` 这些**语义类**降列，
+ * Tailwind 没有等价物 ⇒ 改用**属性选择器**挂在真实容器上。
+ *
+ * ⚠️ 两条纪律（都是踩过的坑）：
+ * 1. **断点值照抄原型**（1100/760/900/980），不改成 Tailwind 的 `sm/md/lg`
+ *    （640/768/1024）—— 否则 760~1024px 这段区间的列数会与原型不一致。
+ * 2. **每个选择器都必须真的挂在元素上**。本文件此前有一条
+ *    `[aria-label="Token 总览"]`（`min-width:900px`）—— 全库**没有任何元素**
+ *    带这个 aria-label，那条规则永远不生效，是个纯装饰的假规则，已删除。
+ *    ⇒ 新增断点后必须 `grep` 确认每个选择器都有对应属性，否则就是重蹈覆辙。
+ */
+@media (max-width: 1100px) {
+  /* `.g4` → 2 列（原型 `:227`）。
+     ⚠️ 只保留**真实存在**的档位：`data-grid-cols="4"` 挂在概览四联统计块
+     （`usage/stat-tiles.tsx`）。原型还有 `.g3`，但本仓没有三列网格挂这个属性——
+     **不写没有宿主的规则**（那正是旧 `[aria-label="Token 总览"]` 的毛病）。 */
+  [data-grid-cols="4"] {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+@media (max-width: 760px) {
+  /* `.g4` → 1 列（原型 `:228`） */
+  [data-grid-cols="4"] {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+/**
+ * ★ 页内左侧子导航 `.subnav`（原型 `demo.css:370-379`）。
+ *
+ * ⚠️ **为什么这几个属性写在 CSS 而不是 Tailwind 类**：本文件的手写规则都在
+ * `@layer base`，**优先级低于 utilities 层** ⇒ `flex-direction` / `width` /
+ * `position` 若用 `flex-col` / `w-[186px]` / `sticky` 之类的工具类写，
+ * 900px 以下的 `row` / `100%` / `static` 覆盖**不会生效**（base 层盖不过 utilities）。
+ * 故方向、宽度、定位整组交给这里，Tailwind 只留 `gap` 与按钮内部样式。
+ *
+ * ⚠️ **基础规则必须排在下面的 `@media (max-width:900px)` 之前** —— 同特异性下
+ * 后写的胜出；顺序反过来会让 900px 以下的覆盖被基础规则反盖。
+ *
+ * 逐值：`width 186px` · `flex-direction column` · `sticky top 26px`（= `.page` 的 padding-top）。
+ */
+[data-side-subnav] {
+  display: flex;
+  flex-direction: column;
+  width: 186px;
+  flex-shrink: 0;
+  position: sticky;
+  top: 26px;
+}
+
+/**
+ * ★ 「子导航 + 内容」两栏容器 `.split`（原型 `demo.css:369-379`）。
+ *
+ * 逐值：`display:flex` · `align-items:flex-start` · `gap:22px`。
+ *
+ * ⚠️ `align-items: flex-start` **不是可选的美化**：子导航是 `position: sticky`，
+ * 若让它被 `stretch` 拉到与内容等高，它就没有可滚动的余量，sticky **静默失效**。
+ * 而 900px 以下转纵向时又必须回到 `stretch` —— 否则子项宽度塌成内容宽。
+ * 两个方向的 `align-items` 分属不同断点，故整组写在这里（理由同 `[data-side-subnav]`）。
+ */
+[data-split-layout] {
+  display: flex;
+  align-items: flex-start;
+  gap: 22px;
+}
+
+@media (max-width: 900px) {
+  /* `.split` 转纵向（原型 `:379`）。
+     挂在设置页/网关页那个「子导航 + 内容」的横向容器上：
+     原型在 900px 以下把两栏叠成纵向，子导航随之变成横向换行。 */
+  [data-split-layout] {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  /* `.subnav` 在 900px 以下转横向换行（原型 `:379`），并隐藏选中态竖条。 */
+  [data-side-subnav] {
+    flex-direction: row;
+    flex-wrap: wrap;
+    width: 100%;
+    position: static;
+  }
+  [data-side-subnav] [data-subnav-marker] {
+    display: none;
   }
 }

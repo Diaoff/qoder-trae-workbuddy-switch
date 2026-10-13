@@ -1,4 +1,4 @@
-import { Check, CircleCheck, CircleSlash, Clock3, Coins, Ellipsis, Info, KeyRound, Loader2, Plug, Save, Sparkles, StickyNote, Trash2 } from "lucide-react";
+import { Check, CircleCheck, CircleSlash, Coins, Ellipsis, Info, KeyRound, Loader2, Save, StickyNote, Trash2 } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -6,14 +6,16 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { DemoAction } from "@/components/demo-action";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
-import { avatarTone } from "@/components/account-card";
-import { TraeMark, TraeVariantMark } from "@/components/product-marks";
+import { AVATAR_TEXT_CLASS, accountInitials, avatarTone } from "@/components/account-card";
 import { displayText } from "@/lib/display-text";
+import { formatRelativeTime } from "@/lib/catalog-source";
 import { useT, type Translate } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
-import type { TraeAccount, TraeJwtStatus, TraeRegionId, TraeVariantId } from "@/lib/trae-types";
+import type { TraeAccount, TraeJwtStatus, TraeProgramId, TraeRegionId, TraeVariantId } from "@/lib/trae-types";
 
-const chipClass = "rounded-md px-1.5 py-0 text-[11px] font-medium";
+/* 与 WB 卡片同一处理：几何交给 `Badge` 基础样式（已逐值对齐原型 `.badge`），
+   这里只抵消它的 1px 透明边框（原型 `.badge` 没有边框）。 */
+const chipClass = "border-0 px-[7px] font-medium";
 
 /** 剩余小时数 → 可读文案。 */
 export function hoursText(hours: number | null, t: Translate): string {
@@ -60,24 +62,19 @@ export function formatCredits(value: number | null): string {
   return new Intl.NumberFormat("zh-CN", { maximumFractionDigits: 2 }).format(value);
 }
 
-/** Unix 秒 → `MM/DD 到期`（与 WorkBuddy 卡片的 `formatCreditExpiry` 同形）。 */
-function formatExpiryShort(seconds: number | null, t: Translate): string {
-  if (!seconds) return t("trae.comp.card.expiry.permanent");
+/**
+ * 到期日**只到日**（`MM/DD`）—— 指标行专用。
+ *
+ * ⚠️ 只返回日期本身：指标行的标签已经写了「到期」，若值再带后缀就成了
+ * 「到期 10/03 到期」。原型 `.acct-metrics` 的值也是**纯值**（标签在行内）。
+ */
+export function formatExpiryDate(seconds: number | null): string | null {
+  if (!seconds) return null;
   const date = new Date(seconds * 1000);
-  if (Number.isNaN(date.getTime())) return t("trae.comp.card.expiry.permanent");
+  if (Number.isNaN(date.getTime())) return null;
   const mm = String(date.getMonth() + 1).padStart(2, "0");
   const dd = String(date.getDate()).padStart(2, "0");
-  return t("trae.comp.card.expiry.short", { date: `${mm}/${dd}` });
-}
-
-/** 到期语气：临期 / 已过期用琥珀，其余用次要前景色（语义色走 class，不写裸色值）。 */
-function expiryTone(expired: boolean, expiringSoon: boolean): string {
-  return expired || expiringSoon ? "text-warning" : "text-muted-foreground";
-}
-
-/** 区域展示名（用于跨区域程序位的**消歧**）。 */
-function regionLabelOf(region: TraeRegionId, t: Translate): string {
-  return region === "global" ? t("shared.region.version.global") : t("shared.region.version.cn");
+  return `${mm}/${dd}`;
 }
 
 /**
@@ -104,6 +101,15 @@ export interface TraeProgram {
   region: TraeRegionId;
   /** 切换目标（区域限定，后端 `TraeProgramStatus.variant`）—— 真正喂给 `traeSwitchAccount` 的值。 */
   variant: TraeVariantId;
+  /**
+   * 程序位标识（`trae_work` / `trae_code`，**不含区域**）。
+   *
+   * ★ 2026-10-12：按钮上的**可见短名**（`Work` / `Code`，原型 `pg.short`）由它决定。
+   * ⚠️ **不能**用 `variant` 或 `label` 猜：`trae_cn` / `trae_code` 这类历史值在
+   * `variant.rs` 里**语义不唯一**（`TraeRegion × TraeProgram` 的朴素笛卡尔积命名），
+   * `label` 又是展示名（`TraeWork` / `Trae AI`）—— 两者都会把 Code 判成 Work。
+   */
+  program: TraeProgramId;
   /** 展示名（`Trae Work` / `Trae CN`），取自后端 `variantLabel`。 */
   label: string;
   /** 本机是否检测到该程序（未检测到时按钮禁用，理由写进 tooltip）。 */
@@ -128,8 +134,6 @@ export interface TraeProgram {
 
 interface Props {
   account: TraeAccount;
-  /** 分组名（用于展示归属；未分组时传 null）。 */
-  groupName?: string | null;
   /** 是否为**当前管理的这条产品线**的当前账号（头部高亮 + 幽灵 logo 用它）。 */
   current?: boolean;
   /**
@@ -139,30 +143,21 @@ interface Props {
    * 后者在两条线并存时根本无法表达「点下去是挂到哪条线上」。
    */
   programs?: TraeProgram[];
-  /**
-   * **当前页面所在的区域**（`cn` / `global`）。
-   *
-   * 用来判定「哪些程序位跨区域」：跨区域按钮**可见但不可直接切换** ——
-   * 账号库按区域分家，跨库直接切会被后端切换 / 保存守卫拒绝，而那句拒绝用户看不懂
-   * （PLAN §3.3）。点击改为**引导切换区域**（`onSwitchRegion`）。
-   */
-  currentRegion?: TraeRegionId;
-  /** 紧凑模式：头部缩成一条、按钮图标化、无 footer */
-  compact?: boolean;
   /** 当前正在执行的动作 key（`switch-<uid>@<变体>` / `save-<uid>` / …）。 */
   busy?: string | null;
   /** 任一账号正在切换中，用于阻止并发切换。 */
   switchBusy?: boolean;
   /** 演示模式等场景下禁用所有写操作。 */
   featuresDisabled?: boolean;
-  /** 把该账号挂到指定 Trae 程序上（会重启该程序）。 */
-  onSwitchTo?: (account: TraeAccount, variant: TraeVariantId) => void;
   /**
-   * 跨区域程序位被点击时，**引导用户先切到该区域**（改页面的 `?line=`）。
+   * 把该账号挂到指定 Trae 程序上（会重启该程序）。
    *
-   * 不实现「跨区域直接切换」：那会被后端守卫拒绝，且报错用户看不懂。
+   * ⚠️ 第三个参数是**该程序位自己的展示名**，调用方必须原样往上传，**不要**拿
+   * `variant` 去反推名字：`trae_cn` 这个变体同时属于 `trae_code`（遗留）与 `trae`
+   * （合并版，issue #20），反推会把合并版说成 `TraeCode`。
+   * 后端下发的 `program.label` 才是唯一正确来源（本组件已按 `displayText` 归一）。
    */
-  onSwitchRegion?: (region: TraeRegionId) => void;
+  onSwitchTo?: (account: TraeAccount, variant: TraeVariantId, label: string) => void;
   /** 单账号签到。 */
   onCheckin?: (account: TraeAccount) => void;
   onSaveLogin: (account: TraeAccount) => void;
@@ -182,7 +177,7 @@ interface Props {
  * Trae 账号卡片。
  *
  * 结构与 WorkBuddy 的 `AccountCard` 一一对应（同样的 header/body/footer 三段、
- * 同样的紧凑模式断点、同样的「当前账号」角标与操作菜单），差异只在数据源：
+ * 同样的「当前账号」角标与操作菜单），差异只在数据源：
  * Trae 的额度单位是积分、登录凭据是 JWT、切换动作是重启 Trae 客户端。
  *
  * ## P4 卡片瘦身
@@ -200,16 +195,12 @@ interface Props {
  */
 export function TraeAccountCard({
   account,
-  groupName,
   current = false,
   programs = [],
-  currentRegion = "cn",
-  compact = false,
   busy = null,
   switchBusy = false,
   featuresDisabled = false,
   onSwitchTo,
-  onSwitchRegion,
   onCheckin,
   onSaveLogin,
   onRefreshJwt,
@@ -222,7 +213,6 @@ export function TraeAccountCard({
 }: Props) {
   const t = useT();
   const name = displayText(account.name) || `UID · ${account.userId}`;
-  const badge = jwtBadge(account.jwtStatus, account.jwtExpHours, t);
   // 忙状态 key 带上变体（`switch-<uid>@<变体>`）：同一账号可能在切另一条线，
   // 只按 uid 判定会把「切 Trae CN 中」的转圈画到 Trae Work 的按钮上。
   const switchKeyPrefix = `switch-${account.userId}@`;
@@ -237,65 +227,83 @@ export function TraeAccountCard({
   const hasCredits = account.remainingCredits !== null;
 
   /**
-   * 「近期到期」要展示的积分包：只取**还有剩余**的包，按最早到期排序，最多 3 条。
+   * 状态标签 —— **槽位与顺序照原型 `.acct-chips`**（`buddy-switch-prototype.html:2505-2508`）：
    *
-   * 数据源是 `account.creditPackages`（T03 经 `credits_overview_for` 的 `packages` 透出，
-   * 页面按 uid 合并进账号对象）；未刷新过积分时为 `null` → 空数组 → 如实显示「暂无可用积分」。
-   * **绝不**用聚合积分伪造一条假进度条（分母 / 到期日都无从得知）。
+   * ```
+   * 使用中 N 个工具 → 状态 → X 积分 N 天后过期 → 优先
+   * ```
+   *
+   * 原型对**两个平台用同一个渲染器**，所以 Trae 卡片的标签形状与 WorkBuddy 完全一致。
+   *
+   * ⚠️ 2026-10-12：此前这里挂的是 Trae 专有标签（JWT 有效期 / 冷却 · 时间戳 / 分组 /
+   * 自动刷新）—— 5~6 枚、折成两三行，卡片 **243px**，而原型是 **170px**。
+   * 信号没有丢，只是**换进原型规定的槽位**：
+   *   · JWT 过期 / `SessionDead` 冷却 ⇒ 第 2 槽「状态」（凭据已过期 / 需重新登录）
+   *   · 冷却的时间与原因 ⇒ 该标签的 tooltip
+   *   · 分组 / 自动刷新 JWT ⇒ 详情抽屉（chips 行是原型的固定四槽，不塞第五枚）
    */
-  const visiblePackages = (account.creditPackages ?? [])
-    .filter((item) => item.remaining > 0)
-    .sort(
-      (left, right) =>
-        (left.expireAt ?? Number.MAX_SAFE_INTEGER) - (right.expireAt ?? Number.MAX_SAFE_INTEGER),
-    )
-    .slice(0, 3);
+  const activeProgramCount = programs.filter((program) => program.current).length;
+  const cooling = Boolean(account.cooldownType) && (account.cooldownUntil ?? 0) * 1000 > Date.now();
+  const cooldownTip = account.cooldownType
+    ? [
+        account.cooldownType,
+        account.cooldownUntil ? t("trae.comp.card.cooldown.until", { time: shortTime(account.cooldownUntil) }) : "",
+        account.cooldownReason ?? "",
+      ]
+        .filter(Boolean)
+        .join(" · ")
+    : "";
 
-  /**
-   * 状态标签。
-   *
-   * 紧凑模式的卡片只有约 300px 宽，标签是 `shrink-0` 的，塞不下四个（冷却标签还带时间戳）。
-   * 因此紧凑模式只保留「凭据状态 + 签到状态 + 冷却中」三枚短标签，冷却详情与分组
-   * 分别由卡片正文与宽松模式承载——宁可少展示，也不要让标签溢出到按钮上。
-   */
+  /** 第 2 槽「状态」—— 与原型 `accountStatus()` 同一口径（互斥的一枚）。 */
+  const statusChip =
+    account.jwtStatus === "expired" || account.cooldownType === "SessionDead" ? (
+      <Badge
+        variant="destructive"
+        className={chipClass}
+        title={account.cooldownType === "SessionDead" ? cooldownTip : undefined}
+      >
+        {account.cooldownType === "SessionDead"
+          ? t("trae.comp.card.chip.needRelogin")
+          : t("trae.comp.card.chip.expired")}
+      </Badge>
+    ) : !account.checkedToday ? (
+      <Badge variant="warning" className={chipClass} title={cooling ? cooldownTip : undefined}>
+        {t("trae.comp.card.chip.unchecked")}
+      </Badge>
+    ) : (
+      <Badge variant="success" className={chipClass} title={cooling ? cooldownTip : undefined}>
+        <CircleCheck /> {t("trae.comp.card.chip.checked")}
+      </Badge>
+    );
+
+  /** 第 3 槽「N 积分 M 天后过期」—— 取临期（≤7 天）那部分之和 + 其中最早的到期时刻。 */
+  const expiringChip = (() => {
+    const soon = (account.creditPackages ?? []).filter((pkg) => pkg.expiringSoon && pkg.remaining > 0);
+    const amount = soon.reduce((sum, pkg) => sum + pkg.remaining, 0);
+    if (amount <= 0) return null;
+    const earliest = soon.reduce<number | null>((min, pkg) => {
+      if (typeof pkg.expireAt !== "number" || pkg.expireAt <= 0) return min;
+      return min === null || pkg.expireAt < min ? pkg.expireAt : min;
+    }, null);
+    if (earliest === null) return null;
+    const at = earliest > 1e12 ? earliest : earliest * 1000;
+    if (at <= Date.now()) return null;
+    return (
+      <Badge variant="warning" className={chipClass}>
+        {t("trae.comp.card.chip.expiring", { amount: formatCredits(amount), days: Math.ceil((at - Date.now()) / 86_400_000) })}
+      </Badge>
+    );
+  })();
+
   const statusChips = (
     <>
-      <Badge variant={badge.variant} className={cn(chipClass, badge.className)}>
-        {badge.text}
-      </Badge>
-      <Badge variant={account.checkedToday ? "success" : "secondary"} className={cn(chipClass, !account.checkedToday && "text-muted-foreground")}>
-        {account.checkedToday ? t("trae.comp.card.chip.checked") : t("trae.comp.card.chip.unchecked")}
-      </Badge>
-      {account.cooldownType &&
-        (compact ? (
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <Badge variant="warning" className={chipClass}>
-                {t("trae.comp.card.chip.cooling")}
-              </Badge>
-            </TooltipTrigger>
-            <TooltipContent side="top">
-              {account.cooldownType}
-              {account.cooldownUntil ? t("trae.comp.card.cooldown.until", { time: shortTime(account.cooldownUntil) }) : ""}
-              {account.cooldownReason ? ` · ${account.cooldownReason}` : ""}
-            </TooltipContent>
-          </Tooltip>
-        ) : (
-          <Badge variant="warning" className={chipClass}>
-            {account.cooldownType}
-            {account.cooldownUntil ? ` · ${shortTime(account.cooldownUntil)}` : ""}
-          </Badge>
-        ))}
-      {!compact && groupName && (
-        <Badge variant="secondary" className={cn(chipClass, "text-muted-foreground")}>
-          {groupName}
+      {activeProgramCount >= 2 && (
+        <Badge variant="info" className={chipClass}>
+          <CircleCheck /> {t("trae.comp.card.chip.toolsInUse", { n: activeProgramCount })}
         </Badge>
       )}
-      {!compact && account.hasRefreshToken && (
-        <Badge variant="secondary" className={cn(chipClass, "text-muted-foreground")}>
-          {account.jwtAutoRefresh ? t("trae.comp.card.chip.jwtAuto") : t("trae.comp.card.chip.jwtManual")}
-        </Badge>
-      )}
+      {statusChip}
+      {expiringChip}
     </>
   );
 
@@ -328,51 +336,43 @@ export function TraeAccountCard({
   /**
    * 单个程序的控件。
    *
-   * 形态与 WorkBuddy 卡片逐一对齐，另加**跨区域**一支：
+   * 形态与 WorkBuddy 卡片逐一对齐：
    * - **当前账号** → 角标（不可点，`role="status"`），WorkBuddy 同位置同形态；
-   * - **跨区域** → 可见但**不可直接切换**，点击引导「先切到该区域」（PLAN §3.3）；
    * - **演示模式** → 包一层 `DemoAction`（控件保持可见可聚焦，点击只解释为什么不可用）；
    * - **其余** → 切换按钮，未安装 / 有并发切换 / 缺回调时禁用，理由写进 tooltip。
+   *
+   * ⚠️ 2026-10-10：原来的**跨区域**一支已删除 —— `programs` 现在只含**当前区域**的程序位
+   * （见 `TraeAccountsPage::programsFor`），跨区域按钮永远不会出现，留着就是死代码。
    */
   function programControl(program: TraeProgram) {
     const busyHere = switchingVariant === program.variant;
     const key = `${program.region}:${program.variant}`;
-    const crossRegion = program.region !== currentRegion;
     // `program.label` 来自后端（`TraeProgramStatus.variantLabel`），类型声明是 `string`
     // 但运行时可能是对象 ⇒ 直接当 React 子节点会卸载整棵树（白屏）。取不到时回落到
     // **程序位标识**（`variant`），不编造展示名。下面所有用到 label 的地方（子节点 /
     // `title` / `aria-label` 插值）统一走这一个归一值，避免漏网。
     const label = displayText(program.label) || program.variant;
+    /* ★ 2026-10-12：按钮上的**可见文字**改固定短名（原型 `pg.short` = `Work` / `Code`）。
+       `label`（`TraeWork` / `TraeCode`）仍用于 `title` / `aria-label` 与 tooltip。
+       ★ 2026-10-13（issue #20）：合并版程序位 `trae` 的短名用 `Trae` —— 它与 `trae_code`
+       共用同一个客户端，但按钮上必须看得出「这是哪一枚」，否则两枚按钮文字相同。 */
+    const short =
+      program.program === "trae_code" ? "Code" : program.program === "trae" ? "Trae" : "Work";
 
     if (program.current) {
-      return compact ? (
+      return (
         <Tooltip key={key}>
           <TooltipTrigger asChild>
             <span
               role="status"
               aria-label={t("trae.comp.card.currentOf", { label })}
-              className="relative inline-flex size-7 items-center justify-center rounded-lg border border-primary/25 bg-primary/10 text-primary"
+              /* 与 `account-card` 的「当前账号」同口径（原型 `.prog.on`，`demo.css:332`：
+                 底 primary **18%** + 描边 primary 40% + 字 primary + **字重 600**；
+                 硬编码的 `inset 0 1px 0 rgba(255,255,255,.8)` 在深色下是一条刺眼白线）： */
+              className="inline-flex h-[26px] items-center gap-1 rounded-[8px] border border-primary/40 bg-primary/18 px-2 text-[11px] font-semibold text-primary"
             >
-              <TraeVariantMark variant={program.variant} size={15} />
-              <span className="absolute -right-1 -top-1 flex size-3.5 items-center justify-center rounded-full bg-primary text-primary-foreground">
-                <Check className="size-2.5" strokeWidth={3} />
-              </span>
-            </span>
-          </TooltipTrigger>
-          <TooltipContent side="top">{t("trae.comp.card.currentOf", { label })}</TooltipContent>
-        </Tooltip>
-      ) : (
-        <Tooltip key={key}>
-          <TooltipTrigger asChild>
-            <span
-              role="status"
-              aria-label={t("trae.comp.card.currentOf", { label })}
-              /* 与 `account-card` 的「当前账号」同口径（`border-primary/40 bg-primary/15`，无内阴影）：
-                 硬编码的 `inset 0 1px 0 rgba(255,255,255,.8)` 在深色下是一条刺眼白线。 */
-              className="inline-flex h-[26px] items-center gap-1.5 rounded-[8px] border border-primary/40 bg-primary/15 px-2 text-[11px] text-primary"
-            >
-              <TraeVariantMark variant={program.variant} size={12} />
               <Check className="size-3" strokeWidth={2.25} />
+              <span>{short}</span>
             </span>
           </TooltipTrigger>
           <TooltipContent side="top">{t("trae.comp.card.currentOf", { label })}</TooltipContent>
@@ -380,71 +380,18 @@ export function TraeAccountCard({
       );
     }
 
-    // 跨区域：可见但**不直接切换**，点击引导「先切到该区域」。同名按钮必须消歧。
-    if (crossRegion) {
-      const regionLabel = regionLabelOf(program.region, t);
-      const hint = t("trae.comp.card.switch.regionHint", { region: regionLabel });
-      const button = compact ? (
-        <Button
-          variant="outline"
-          size="icon"
-          className="size-7 rounded-lg text-muted-foreground"
-          disabled={featuresDisabled || !onSwitchRegion}
-          onClick={() => onSwitchRegion?.(program.region)}
-          aria-label={hint}
-        >
-          <TraeVariantMark variant={program.variant} size={15} />
-        </Button>
-      ) : (
-        <Button
-          variant="outline"
-          size="sm"
-          className="h-7 rounded-full px-2.5 pr-3 text-xs text-muted-foreground"
-          disabled={featuresDisabled || !onSwitchRegion}
-          onClick={() => onSwitchRegion?.(program.region)}
-          aria-label={hint}
-        >
-          <TraeVariantMark variant={program.variant} size={18} />
-          <span>{label}</span>
-          <span className="rounded bg-muted px-1 text-[10px] font-medium">{regionLabel}</span>
-        </Button>
-      );
-      return featuresDisabled ? (
-        <DemoAction key={key}>{button}</DemoAction>
-      ) : (
-        <Tooltip key={key}>
-          <TooltipTrigger asChild>
-            <span className="inline-flex">{button}</span>
-          </TooltipTrigger>
-          <TooltipContent side="top">{hint}</TooltipContent>
-        </Tooltip>
-      );
-    }
-
-    const button = compact ? (
-      <Button
-        variant="outline"
-        size="icon"
-        className="size-7 rounded-lg"
-        disabled={featuresDisabled || switchBusy || !program.installed || !program.hasDataDir || !onSwitchTo}
-        onClick={() => onSwitchTo?.(account, program.variant)}
-        aria-label={busyHere ? t("trae.comp.card.switch.ariaBusy", { label }) : t("trae.comp.card.switch.aria", { label })}
-        aria-busy={busyHere}
-      >
-        {busyHere ? <Loader2 className="size-3.5 animate-spin" /> : <TraeVariantMark variant={program.variant} size={15} />}
-      </Button>
-    ) : (
+    const button = (
       <Button
         variant="outline"
         size="sm"
-        className="h-7 rounded-full px-2.5 pr-3.5 text-xs"
+        className="h-[26px] gap-1 rounded-[8px] border-border bg-transparent px-2 text-[11px] !font-normal text-muted-foreground"
         disabled={featuresDisabled || switchBusy || !program.installed || !program.hasDataDir || !onSwitchTo}
-        onClick={() => onSwitchTo?.(account, program.variant)}
+        onClick={() => onSwitchTo?.(account, program.variant, label)}
         aria-label={busyHere ? t("trae.comp.card.switch.ariaBusy", { label }) : t("trae.comp.card.switch.aria", { label })}
         aria-busy={busyHere}
       >
-        {busyHere ? <Loader2 className="size-4 animate-spin" /> : <TraeVariantMark variant={program.variant} size={18} />}
-        <span>{busyHere ? t("trae.comp.card.switch.busy") : label}</span>
+        {busyHere ? <Loader2 className="size-3.5 animate-spin" /> : null}
+        <span>{busyHere ? t("trae.comp.card.switch.busy") : short}</span>
       </Button>
     );
 
@@ -460,13 +407,86 @@ export function TraeAccountCard({
     );
   }
 
-  const programControls = programs.map(programControl);
+  /**
+   * 程序位行（**单一定义**，页脚程序位行）——与 WorkBuddy 的 `programRow` 同构。
+   *
+   * ⚠️ `w-full` + `flex-wrap` 与 WorkBuddy 逐字一致：程序位到 4 个（TraeWork / TraeCode ×
+   * 两个区域）时不换行会溢出卡片；只加 `min-w-0` 又会让本行收缩到最小内容宽、槽位被压成多行。
+   */
+  const programRow = (
+    <div className="flex w-full flex-wrap items-center gap-1">
+      {programs.map(programControl)}
+    </div>
+  );
 
-  const menu = (
+  /**
+   * ★ 与 WorkBuddy 卡片**同一套结构**（原型 `.acct`，`buddy-switch-prototype.html:2497-2535`）：
+   * 左侧当前竖条 → 头部（勾选 + 头像 + 昵称/「当前登录」徽章 + 身份行 + chips）→ 指标行 →
+   * 正文（积分 + 到期包）→ 页脚程序位。
+   *
+   * ⚠️ 差异**只在数据**：Trae 的额度单位是积分、凭据是 JWT、身份行是 UID（Trae 没有邮箱）。
+   * 结构与交互（整卡可点、当前登录两重信号、指标行、程序位页脚）必须逐项一致 ——
+   * 这正是本次重构「用原型统一两个平台」的要求。
+   */
+  const identity = `UID · ${account.userId}`;
+
+  /* 「当前登录」徽章**单独拆出来**、与昵称同一行（原型 `:2502`）。
+     ⚠️ 不能塞进下面的 `statusChips` 行：那会把头部撑成三行（WorkBuddy 侧已踩过）。 */
+  const currentLoginBadge = current ? (
+    <Badge variant="secondary" className={cn(chipClass, "shrink-0 border-transparent bg-primary/16 text-primary")}>
+      {t("trae.comp.card.currentLogin")}
+    </Badge>
+  ) : null;
+
+  /* 指标行（原型 `.acct-metrics` `:2510`）：与 WorkBuddy 同位置、同字号、同「标签 + 粗体值」形状。
+     ⚠️ Trae **没有**「今日 Token」数据源 ⇒ 该项不渲染（不摆一个永远「—」的假指标）；
+     取而代之的是 Trae 真实有的「到期」（WorkBuddy 侧对应的是积分包最早到期）。 */
+  const updatedSeconds = account.updatedAt ? Math.floor(new Date(account.updatedAt).getTime() / 1000) : null;
+  /* ★ 指标行 —— 与 WorkBuddy 卡片、原型 `.acct-metrics`（`demo.css:341-342`）同一形状：
+     `display:flex; gap:14px; font-size:11.5px; color:var(--muted-fg)`，**不换行**、无下边距。
+     Trae 没有「今日 Token」数据源 ⇒ 第二格用真实有的「到期」，**不摆一个永远「—」的假指标**。
+     第三格与原型一致：**无标签的相对时间**（`2 分钟前`），绝对时刻挂 `title`。 */
+  /* 积分总量 = 各包 `total` 之和（原型 `.acct-metrics` 是 `积分 X/Y`）。取不到包 ⇒ 不写「/Y」。 */
+  const creditTotal = (() => {
+    const pkgs = account.creditPackages ?? [];
+    if (pkgs.length === 0) return null;
+    const sum = pkgs.reduce((acc, pkg) => acc + pkg.total, 0);
+    return sum > 0 ? sum : null;
+  })();
+
+  const lastUpdatedRelative = formatRelativeTime(updatedSeconds === null ? null : updatedSeconds * 1000, t);
+  const metricsRow = (
+    <div className="flex min-w-0 gap-[14px] text-[11.5px] text-muted-foreground">
+      <span>
+        {t("trae.comp.card.metric.credits")}{" "}
+        <b className="font-semibold tabular-nums text-foreground">{formatCredits(account.remainingCredits)}</b>
+{creditTotal === null ? "" : `/${formatCredits(creditTotal)}`}
+      </span>
+      <span>
+        {t("trae.comp.card.metric.expiry")}{" "}
+        <b className="font-semibold tabular-nums text-foreground">
+          {formatExpiryDate(account.creditsExpireAt) ?? t("trae.comp.card.expiry.permanent")}
+        </b>
+      </span>
+      {lastUpdatedRelative !== null && (
+        <span title={t("trae.comp.card.footer.updatedTip")}>{lastUpdatedRelative}</span>
+      )}
+    </div>
+  );
+
+  /* 「更多」菜单（**单一定义**，页脚 `.acct-actions` 用它）——与 WorkBuddy 卡片同形：
+     演示模式下包一层 `DemoAction`（控件保持可见可聚焦，点击只解释为什么不可用）。 */
+  const menu = featuresDisabled ? (
+    <DemoAction>
+      <Button variant="ghost" size="sm" className="!px-[10px] text-muted-foreground hover:bg-accent hover:text-foreground" aria-label={t("trae.comp.card.manage.aria", { name })} title={t("trae.comp.card.manage.title")}>
+        <Ellipsis className="size-4" />
+      </Button>
+    </DemoAction>
+  ) : (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
-        <Button variant="ghost" size="icon" className={cn("rounded-lg text-muted-foreground hover:text-foreground", compact ? "size-7" : "size-8")} aria-label={t("trae.comp.card.manage.aria", { name })} title={t("trae.comp.card.manage.title")}>
-          <Ellipsis />
+        <Button variant="ghost" size="sm" className="!px-[10px] text-muted-foreground hover:bg-accent hover:text-foreground" aria-label={t("trae.comp.card.manage.aria", { name })} title={t("trae.comp.card.manage.title")}>
+          <Ellipsis className="size-4" />
         </Button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end" className="w-44">
@@ -520,174 +540,113 @@ export function TraeAccountCard({
       onCheckedChange={() => onToggleSelect?.(account)}
       disabled={!onToggleSelect}
       aria-label={t("trae.comp.card.selectAria", { name })}
-      className={compact ? "size-4" : "size-[18px]"}
+      className="size-[18px]"
     />
   );
 
   return (
     <TooltipProvider>
-      <article className="flex min-w-0 flex-col overflow-hidden rounded-lg border border-border bg-card shadow-card transition-[border-color,box-shadow] hover:border-border-strong hover:shadow-card-hover">
-        <header
-          className={cn(
-            "relative flex items-center border-b border-border",
-            compact ? "min-h-[52px] px-3.5 py-1.5" : "min-h-[104px] px-5 py-3",
-            current ? "bg-primary/5" : "bg-muted/30",
-          )}
-        >
-          <div className="pointer-events-none absolute inset-0 overflow-hidden">
-            <div className={cn("absolute -right-10 -top-16 rounded-full blur-2xl", compact ? "size-20" : "size-24", current ? "bg-primary/15" : "bg-muted/30")} />
-            {current && (
-              <div className={cn("absolute right-5 top-[64%] -translate-y-1/2 rotate-[7deg] opacity-[0.075] saturate-50 grayscale-[10%]")}>
-                {/* 幽灵水印用**品牌 logo**（`TraeMark`）而不是某一变体的图标：
-                    它表达的是「这张卡当前挂在这条 Trae 产品线上」，不是「挂在 Trae CN 上」。 */}
-                <TraeMark size={compact ? 40 : 56} />
-              </div>
-            )}
-          </div>
-
-          <div className={cn("absolute z-20", compact ? "right-2.5 top-1/2 -translate-y-1/2" : "right-3.5 top-3.5")}>
-            {featuresDisabled ? (
-              <DemoAction>
-                <Button variant="ghost" size="icon" className={cn("rounded-lg text-muted-foreground hover:text-foreground", compact ? "size-7" : "size-8")} aria-label={t("trae.comp.card.manage.aria", { name })} title={t("trae.comp.card.manage.title")}>
-                  <Ellipsis />
-                </Button>
-              </DemoAction>
-            ) : (
-              menu
-            )}
-          </div>
-
-          {compact ? (
-            <div className="relative z-10 flex w-full min-w-0 items-center gap-2.5 pr-10">
-              {checkbox}
-              <h3 className="min-w-0 flex-1 truncate text-[13px] font-semibold leading-5" title={name}>{name}</h3>
-              <div className="hidden min-w-0 overflow-hidden shrink-0 items-center gap-1 min-[420px]:flex">{statusChips}</div>
-              <div className="ml-auto flex shrink-0 items-center gap-1">{programControls}</div>
+      <article
+        /* ★ 整卡可点开详情 —— 与 WorkBuddy 卡片**同一交互**（原型 `.acct` 是 `data-act="acct-open"`
+           的整卡按钮区，`buddy-switch-prototype.html:2497`）。
+           ⚠️ 内部控件（勾选框 / 程序位按钮 / 更多菜单）必须**不触发**开详情 ⇒ 用 `closest` 守卫。
+           ⚠️ `role` 用 `article` 而非原型写的 `button`：卡内嵌着多个可交互控件，
+           嵌套在 `button` 里是非法 ARIA；`article` + `tabIndex` + Enter/Space 是等价可达的正确写法。 */
+        tabIndex={0}
+        role="article"
+        onClick={(e) => {
+          if (!onOpenDetail) return;
+          const target = e.target;
+          if (target instanceof Element && target.closest("button, a, input, [role='checkbox'], [role='switch'], [data-no-account-open]")) {
+            return;
+          }
+          onOpenDetail(account);
+        }}
+        onKeyDown={(e) => {
+          if (!onOpenDetail || e.target !== e.currentTarget) return;
+          if (e.key === "Enter" || e.key === " ") {
+            e.preventDefault();
+            onOpenDetail(account);
+          }
+        }}
+        className={cn(
+          /* ★ 原型 `.acct`（`buddy-switch-prototype.html:312-317`）：
+             `display:flex; flex-direction:column; gap:10px; padding:13px 14px`
+             ⇒ 卡片是「**四个块 + 统一 10px 间距**」，内边距在**根**上，各块不再自带 padding。
+             与 WorkBuddy 卡片逐值一致（`rounded-lg` = `var(--radius)` = 12px）。 */
+          "relative flex min-w-0 flex-col gap-2.5 overflow-hidden rounded-lg border border-border bg-card px-3.5 py-[13px] shadow-card transition-[border-color,box-shadow] hover:border-border-strong hover:shadow-card-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2",
+          selected && "border-ring bg-primary/[0.07]",
+        )}
+      >
+      {/* ★ 原型 `.acct.is-current::before`（`buddy-switch-prototype.html:321-324`）：
+          「当前账号」用**左侧 3px 竖条**表达 —— 与头部的「当前登录」徽章构成两重信号。
+          条件必须与徽章**同为** `current`，否则会出现「有徽章却无竖条」的矛盾态。 */}
+      {current ? (
+        <span
+          aria-hidden="true"
+          data-current-bar="true"
+          className="pointer-events-none absolute inset-y-0 left-0 w-[3px] rounded-l-lg bg-primary"
+        />
+      ) : null}
+        <header className="flex items-center gap-2.5">
+          {/* ⚠️ `...` 菜单**不在这里** —— 原型把它放在 `.acct-actions` 里（程序位行右侧），
+              见页脚 `{menu}`。
+              ⚠️ 2026-10-12 按原型删掉了头部底色带（`bg-primary/5` / `bg-muted/30`）与幽灵水印：
+              原型 `.acct-top` 是**透明的**，整张卡只有一个底色；底色带把它变成了一条「页眉」，
+              还把卡片切成两半。 */}
+          {/* 原型 `.acct-top`（`buddy-switch-prototype.html:2499-2503`）的四件套：
+             `[勾选] [头像32] [.acct-id：昵称 + 身份] [当前登录徽章]`。
+             ⚠️ 徽章是 `.acct-top` 的**直接子级**（行尾独立件），不是昵称那一行里的小尾巴；
+             ⚠️ 状态标签**移出头部** —— 原型里 `.acct-chips` 是 `.acct-top` 的**兄弟块**。 */}
+          <div className="relative z-10 flex w-full min-w-0 items-center gap-2.5">
+            {checkbox}
+            {/* 原型 `.avatar`（`demo.css:308-311`）：32px / 圆角 10px / `12.5px` / `640` / 近白字，
+                首字取**前 2 位**（`initials()`）。与 WorkBuddy 卡片逐值一致。 */}
+            <div className={cn("flex size-8 shrink-0 items-center justify-center rounded-[10px] text-[12.5px] font-[640]", AVATAR_TEXT_CLASS, avatarTone(name))}>
+              {accountInitials(name)}
             </div>
-          ) : (
-            <div className="relative z-10 flex w-full min-w-0 items-center gap-3 pr-[112px]">
-              {checkbox}
-              <div className={cn("flex size-12 shrink-0 items-center justify-center rounded-full text-base font-semibold ring-4 ring-white/65", avatarTone(name))}>
-                {name.charAt(0).toUpperCase()}
-              </div>
-              <div className="min-w-0 flex-1">
-                <h3 className="truncate text-sm font-semibold leading-5" title={name}>{name}</h3>
-                <p className="mt-0.5 truncate text-xs leading-5 text-muted-foreground" title={account.userId}>
-                  UID · {account.userId}
-                </p>
-                <div className="mt-1.5 flex min-w-0 flex-wrap items-center gap-1.5">{statusChips}</div>
-              </div>
+            <div className="min-w-0 flex-1">
+              <h3 className="truncate text-[13px] font-semibold" title={name}>{name}</h3>
+              <p className="truncate text-[11px] text-muted-foreground" title={identity}>{identity}</p>
             </div>
-          )}
+            {currentLoginBadge}
+          </div>
         </header>
 
-        <section className={cn("flex min-w-0 flex-1 flex-col", compact ? "px-3.5 pb-3 pt-3" : "px-5 pb-4 pt-4")}>
-          {/* 大数字行：与 WorkBuddy 卡片同一位置、同一字号层级与图标用法。 */}
-          <div className="flex items-baseline gap-x-3 gap-y-1">
-            <span className="flex items-center gap-1.5">
-              <Sparkles className="size-4 shrink-0 stroke-[1.75] text-muted-foreground" aria-hidden="true" />
-              <strong
-                className={cn("font-semibold leading-none tabular-nums tracking-[-0.025em]", compact ? "text-[20px]" : "text-[22px]")}
-                style={{ fontFamily: '"Bricolage Grotesque Variable", "SF Pro Display", ui-sans-serif, sans-serif' }}
-              >
-                {formatCredits(account.remainingCredits)}
-              </strong>
-            </span>
-            <span className={cn("text-muted-foreground", compact ? "text-[11px]" : "text-xs")}>
-              {hasCredits ? t("trae.comp.card.credits.remaining") : t("trae.comp.card.credits.unknown")}
-            </span>
-            <div
-              className={cn("ml-auto flex items-center gap-1.5 text-muted-foreground", compact ? "text-[11px]" : "text-xs")}
-              title={
-                account.cooldownUntil
-                  ? t("trae.comp.card.expiry.cooldownUntil", { time: shortTime(account.cooldownUntil) })
-                  : account.creditsExpireAt
-                    ? t("trae.comp.card.expiry.earliest", { time: shortTime(account.creditsExpireAt) })
-                    : t("trae.comp.card.expiry.none")
-              }
-            >
-              <Clock3 className="size-3.5 shrink-0" />
-              <span className="whitespace-nowrap tabular-nums">
-                {account.creditsExpireAt ? formatExpiryShort(account.creditsExpireAt, t) : t("trae.comp.card.expiry.noneShort")}
-              </span>
-            </div>
-          </div>
+        {/* ★ 原型 `.acct-chips`（`buddy-switch-prototype.html:341`）：`flex-wrap; gap:5px`，
+            是 `.acct-top` 的**兄弟块**（卡片共 4 个块），不是塞在头像右侧的第三行。 */}
+        <div className="flex min-w-0 flex-wrap items-center gap-[5px]">{statusChips}</div>
+
+        {/* 原型 `.acct-metrics`（`buddy-switch-prototype.html:2510`）：徽章之下的一行小字，
+            **始终渲染** —— 取不到的项显示「—」，不闪不藏。
+            ⚠️ 2026-10-12 按原型删掉了「大数字行 + 近期到期逐包列表」：原型卡片只有 4 个块
+            （`.acct-top` / `.acct-chips` / `.acct-metrics` / `.acct-actions`），逐包明细改由
+            **详情抽屉**承载（`TraeAccountsPage` 装配时读 `creditPackages`）。 */}
+        <section className="flex min-w-0 flex-1 flex-col">
+          {metricsRow}
 
           {/* 冷却 / 未查询提示：与 WorkBuddy 的积分错误行同形（同一图标位、同一配色语义）。 */}
           {account.cooldownType ? (
-            <div className={cn("flex min-w-0 items-center gap-2 text-destructive", compact ? "mt-3 text-[11px]" : "mt-4 text-xs")}>
+            <div className="flex min-w-0 items-center gap-2 py-3 text-sm text-destructive">
               <Coins className="size-4 shrink-0" />
               <span className="min-w-0 truncate">{account.cooldownReason || t("trae.comp.card.cooldown.fallback", { type: account.cooldownType })}</span>
             </div>
           ) : !hasCredits ? (
-            <div className={cn("flex min-w-0 items-center gap-2 text-muted-foreground", compact ? "mt-3 text-[11px]" : "mt-4 text-xs")}>
+            <div className="flex min-w-0 items-center gap-2 py-3 text-sm text-muted-foreground">
               <Coins className="size-4 shrink-0" />
               <span className="min-w-0 truncate">{t("trae.comp.card.credits.notQueried")}</span>
             </div>
           ) : null}
-
-          {/* 近期到期：与 WorkBuddy `account-card.tsx` 的积分包区块逐段对齐（剩余徽标 / 包名 /
-              到期日 / 比例条），数据源＝本账号的逐包明细 `creditPackages`。
-              无包级数据（未刷新过积分）时如实显示「暂无可用积分」，不渲染占位进度条。 */}
-          <div className={cn("text-[11px] font-medium text-muted-foreground", compact ? "mt-3" : "mt-4")}>{t("trae.comp.card.section.expiring")}</div>
-          <div className={cn(compact ? "mt-1.5 space-y-2" : "mt-2 space-y-2.5")}>
-            {visiblePackages.length > 0 ? (
-              visiblePackages.map((item, index) => {
-                const packageName = displayText(item.packageName) || displayText(item.packageCode) || t("trae.comp.card.package.fallback");
-                const ratio = item.total > 0 ? Math.min(100, Math.max(0, (item.remaining / item.total) * 100)) : 0;
-                return (
-                  <div
-                    key={`${item.packageCode ?? "resource"}-${item.expireAt ?? "none"}-${index}`}
-                    className="min-w-0"
-                    title={t("trae.comp.card.package.tip", {
-                      name: packageName,
-                      remaining: formatCredits(item.remaining),
-                      total: formatCredits(item.total),
-                      expiry: formatExpiryShort(item.expireAt, t),
-                    })}
-                  >
-                    <div className={cn("grid min-w-0 grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-3", compact ? "text-[11px]" : "text-xs")}>
-                      <span className={cn("rounded-lg bg-muted/80 font-medium tabular-nums text-foreground", compact ? "px-1.5 py-0.5" : "px-2 py-1")}>
-                        {t("trae.comp.card.package.remaining", { credits: formatCredits(item.remaining) })}
-                      </span>
-                      <span className="truncate text-muted-foreground">{packageName}</span>
-                      <span className={cn("whitespace-nowrap tabular-nums", expiryTone(item.expired, item.expiringSoon))}>
-                        {formatExpiryShort(item.expireAt, t)}
-                      </span>
-                    </div>
-                    <div className={cn("h-1 overflow-hidden rounded-full bg-muted", compact ? "mt-1" : "mt-1.5")} aria-hidden="true">
-                      <div
-                        className={cn("h-full rounded-full", item.expiringSoon || item.expired ? "bg-warning" : "bg-primary")}
-                        style={{ width: `${ratio}%` }}
-                      />
-                    </div>
-                  </div>
-                );
-              })
-            ) : (
-              <div className="py-1 text-[11px] text-muted-foreground">{t("trae.comp.card.package.empty")}</div>
-            )}
-          </div>
         </section>
 
-        {!compact && (
-          <footer className="flex flex-wrap items-center gap-2.5 border-t px-5 py-2.5">
-            {/* 程序切换位：与 WorkBuddy 卡片页脚的工具按钮同位同形。 */}
-            {programControls}
-
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <span className="ml-auto inline-flex items-center gap-1.5 text-[11px] text-muted-foreground">
-                  <Plug className="size-3.5" />
-                  {account.updatedAt
-                    ? t("trae.comp.card.footer.updatedAt", { time: shortTime(Math.floor(new Date(account.updatedAt).getTime() / 1000)) })
-                    : t("trae.comp.card.footer.noUpdate")}
-                </span>
-              </TooltipTrigger>
-              <TooltipContent side="top">{t("trae.comp.card.footer.updatedTip")}</TooltipContent>
-            </Tooltip>
-          </footer>
-        )}
+        {/* 原型 `.acct-actions`（`demo.css:343` / `accountCard` :2515-2534）：
+           `display:flex; align-items:center; gap:6px; padding-top:10px; border-top:1px solid var(--border)`
+           ⇒ 页脚 = **程序位行（`flex:1`）+ 「更多」按钮**（菜单在**这里**，不是头部）。
+           与 WorkBuddy 卡片页脚逐字同构。 */}
+        <footer className="flex items-center gap-1.5 border-t border-border pt-2.5">
+          {programRow}
+          {menu}
+        </footer>
       </article>
     </TooltipProvider>
   );

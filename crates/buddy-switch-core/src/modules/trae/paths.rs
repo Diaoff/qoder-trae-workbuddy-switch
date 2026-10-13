@@ -190,17 +190,30 @@ pub fn log_file_for_region(region: TraeRegion, name: &str) -> PathBuf {
 /// |:---|:---|:---|:---|
 /// | `Cn` | `TraeWork` | `profiles` | 旧默认变体的目录名 |
 /// | `Cn` | `TraeCode` | `profiles_trae_cn` | 旧 `Trae` 变体的目录名 |
+/// | `Cn` | `Trae`（合并版） | `profiles_trae_cn` | **与 `TraeCode` 同一客户端**（issue #20） |
 /// | `Global` | `TraeWork` | `profiles_global_trae_work` | 新 |
 /// | `Global` | `TraeCode` | `profiles_global_trae_code` | 新 |
+/// | `Global` | `Trae`（合并版） | `profiles_global_trae_code` | **与 `TraeCode` 同一客户端**（issue #20） |
 ///
 /// 新增槽位一律用 `<region>_<program>` 规则；两个历史名当**兼容别名**保留，
 /// 因为改名要搬动用户既有快照，而收益只是"整齐"，不值这个风险。
+///
+/// ## ⚠️ 合并版 `Trae` **刻意**与 `TraeCode` 共用目录（issue #20）
+///
+/// 两者物理上是同一个客户端（同名 `Trae CN` / `Trae`，见 `region` 模块头），
+/// 快照是「某个客户端 userData 的文件副本」——给同一个客户端开两个快照目录，
+/// 只会让「备份了 A、恢复时读 B」这种故障变得可能，而它**不会报错**。
+/// 因此这两个程序位**必须**给出逐字相同的目录名（有单测钉住）。
 pub fn profiles_dir_for_program(region: TraeRegion, program: TraeProgram) -> PathBuf {
     let name = match (region, program) {
         // 历史名（零迁移）：与改造前 `profiles` / `profiles_trae_cn` 逐字相同。
         (TraeRegion::Cn, TraeProgram::TraeWork) => "profiles".to_string(),
         (TraeRegion::Cn, TraeProgram::TraeCode) => "profiles_trae_cn".to_string(),
-        // 新槽位：`<region>_<program>`。
+        // 合并版：与遗留 TraeCode 同一个客户端 ⇒ 同一个快照目录（见上）。
+        (TraeRegion::Cn, TraeProgram::Trae) => "profiles_trae_cn".to_string(),
+        (TraeRegion::Global, TraeProgram::TraeCode) => "profiles_global_trae_code".to_string(),
+        (TraeRegion::Global, TraeProgram::Trae) => "profiles_global_trae_code".to_string(),
+        // 其余槽位：`<region>_<program>`。
         (region, program) => format!("profiles_{}_{}", region.as_str(), program.as_str()),
     };
     ensured(trae_dir().join(name))
@@ -1067,17 +1080,29 @@ mod tests {
             Some("profiles_global_trae_code")
         );
 
-        // 四个程序位**两两不同目录**：混用会把一条程序的登录态灌进另一条。
-        let all = [
+        // **不同客户端**的快照目录必须两两不同：混用会把一条程序的登录态灌进另一条。
+        // （程序位有 6 条，但客户端只有 4 个 —— 合并版 `Trae` 与遗留 `TraeCode` 同名同物。）
+        let distinct_clients = [
             profiles_dir_for_program(TraeRegion::Cn, TraeProgram::TraeWork),
             profiles_dir_for_program(TraeRegion::Cn, TraeProgram::TraeCode),
             profiles_dir_for_program(TraeRegion::Global, TraeProgram::TraeWork),
             profiles_dir_for_program(TraeRegion::Global, TraeProgram::TraeCode),
         ];
-        for (i, a) in all.iter().enumerate() {
-            for b in all.iter().skip(i + 1) {
-                assert_ne!(a, b, "两个程序位的快照目录相同: {a:?}");
+        for (i, a) in distinct_clients.iter().enumerate() {
+            for b in distinct_clients.iter().skip(i + 1) {
+                assert_ne!(a, b, "两个客户端的快照目录相同: {a:?}");
             }
+        }
+
+        // ★ 合并版 `Trae` 与遗留 `TraeCode` 是**同一个客户端** ⇒ 必须共用目录
+        //   （issue #20）。给同一个客户端开两个快照目录会让「备份了 A、恢复时读 B」
+        //   成为可能，而它**不会报错** —— 正是这条断言要挡住的形态。
+        for region in [TraeRegion::Cn, TraeRegion::Global] {
+            assert_eq!(
+                profiles_dir_for_program(region, TraeProgram::Trae),
+                profiles_dir_for_program(region, TraeProgram::TraeCode),
+                "{region:?} 的合并版 Trae 与遗留 TraeCode 必须共用快照目录"
+            );
         }
 
         // 不安全槽位名一律拒绝，绝不拼出越界路径。

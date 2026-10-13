@@ -74,15 +74,20 @@ export function TopBar({
         title={t("topbar.search")}
         /* ⚠️ 底色必须是 `--card-2`（原型 `.search-btn` 的 `background: var(--card-2)`，`:136`）：
            顶栏本身是 `bg-card`，而深色下 `--muted` 与 `--card` **同值** ⇒ 用 `bg-muted/40`
-           等于「在 card 上再铺一层 card」= 控件看不出边界。 */
-        className="flex h-[34px] min-w-[250px] items-center gap-2 rounded-[10px] border border-border bg-card-2 pl-2.5 pr-2 text-xs text-muted-foreground outline-none transition-colors hover:border-border-strong focus-visible:ring-2 focus-visible:ring-ring/40"
+           等于「在 card 上再铺一层 card」= 控件看不出边界。
+
+           ⚠️ `min-w` 用**响应式**值：原型写死 `min-width:250px`，但那是给浏览器窗口用的；
+           桌面端最小窗口只有 720px（`tauri.conf.json` 的 `minWidth`），而顶栏不可压缩部分
+           （作用域 300 + 运行态~65 + 三个图标钮 102 + 间距/内边距 ~78）已占 ~545px
+           ⇒ 搜索钮再锁死 250px 就会把右侧的设置按钮挤出视口。
+           故宽屏给 250px（与原型一致），窄屏退到 120px，内部的 `truncate` 负责省略。 */
+        className="flex h-[34px] w-[250px] min-w-[120px] items-center gap-2 rounded-[10px] border border-border bg-card-2 pl-2.5 pr-2 text-xs text-muted-foreground outline-none transition-colors hover:border-border-strong focus-visible:ring-2 focus-visible:ring-ring/40 lg:w-auto"
       >
         <Search className="size-4 shrink-0" aria-hidden="true" />
         <span className="min-w-0 flex-1 truncate text-left">{searchLabel}</span>
-        {/* 原型 `.search-btn kbd`（`buddy-switch-prototype.html:139`）：内边距 2/5、字号 10.5。 */}
-        <kbd className="shrink-0 rounded-[5px] border border-border px-[5px] py-[2px] text-[10.5px] tabular-nums text-muted-foreground/70">
-          ⌘K
-        </kbd>
+        {/* 原型 `.search-btn kbd`（`buddy-switch-prototype.html:139`）：等宽 10.5px、内边距 2/5、
+            圆角 5px、`--muted` 底 —— 这些已由 `index.css` 的全局 `kbd` 规则提供，此处不再重复。 */}
+        <kbd className="shrink-0 tabular-nums">⌘K</kbd>
       </button>
 
       <button

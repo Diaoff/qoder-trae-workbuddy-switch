@@ -291,6 +291,37 @@ fn local_hour(ts_ms: i64) -> String {
         .unwrap_or_else(|| "--".to_string())
 }
 
+/// 毫秒时间戳 → 本地**星期** `0`..`6`（**周一 = 0**，与前端 `HeatmapMatrix.cells[weekday][hour]`
+/// 及原型的 `WEEKDAYS = ["周一".."周日"]` 同一口径）。
+///
+/// 用 `num_days_from_monday()` 而不是 `%u`：后者的 1..7 还要再减一，
+/// 而 `num_days_from_monday()` 的语义**就是**本函数要的「距周一几天」。
+fn local_weekday(ts_ms: i64) -> String {
+    chrono::DateTime::from_timestamp_millis(ts_ms)
+        .map(|utc| {
+            use chrono::Datelike;
+            utc.with_timezone(&chrono::Local)
+                .weekday()
+                .num_days_from_monday()
+                .to_string()
+        })
+        .unwrap_or_else(|| "-".to_string())
+}
+
+/// 毫秒时间戳 → **「星期-小时」槽位** `"{weekday}-{HH}"`（如 `"0-09"`）。
+///
+/// ## 为什么是「星期 × 小时」而不是单纯的「小时」
+///
+/// 原型的「使用时段分布」是一张 **7 行（周一..周日）× 24 列**的热力图
+/// （`demo-app.js` 的 `heatmap(e.hourly, WEEKDAYS, …)`）。只按小时聚合只能画出 24 列，
+/// 丢掉「工作日 vs 周末」这个真正有用的维度。
+///
+/// 键的**字符串升序**即「周 → 小时」的自然顺序（`"0-00" < "0-09" < "1-00"`），
+/// 因此下游沿用既有的 `ascending(...)` 排序即可，不需要额外排序键。
+fn local_slot(ts_ms: i64) -> String {
+    format!("{}-{}", local_weekday(ts_ms), local_hour(ts_ms))
+}
+
 /// Trae Token 统计（`days` 为统计窗口天数，`None` 表示全部历史；`scope` 为变体范围）。
 ///
 /// 返回体形状与 WorkBuddy 的 `get_statistics` **刻意不同**：那边是「多源 + 会话/项目维度」，
@@ -299,6 +330,7 @@ fn local_hour(ts_ms: i64) -> String {
 /// 新增（本轮）：
 /// - `variantCounts: { work, cn, unlabeled, all }`：**时间窗口内**各档条数（供范围条徽标）；
 /// - `modelDaily: [{ date, model, total, input, output, records }]`：按天×模型的堆叠柱数据源；
+/// - `hours: [{ key: "{weekday}-{HH}", … }]`：**周 × 小时**槽位（周一=0），供 7×24 热力图；
 /// - `unsupported: [ { capability, label, supportedOn, reason } ]`：平台做不到的维度（置灰卡）。
 ///
 /// `scope` 只影响**展示聚合**（summary/models/accounts/daily/hours/statuses/modelDaily），
@@ -352,7 +384,8 @@ pub fn get_statistics(days: Option<i64>, scope: TraeTokenScope) -> Value {
             .or_default()
             .add(entry);
         by_date.entry(local_date(entry.ts)).or_default().add(entry);
-        by_hour.entry(local_hour(entry.ts)).or_default().add(entry);
+        // 键 = `"{weekday}-{HH}"`（见 `local_slot` 的说明）：供前端直接构造 7×24 热力矩阵。
+        by_hour.entry(local_slot(entry.ts)).or_default().add(entry);
         *by_status.entry(entry.status.to_string()).or_insert(0) += 1;
         coverage_start = Some(coverage_start.map_or(entry.ts, |current| current.min(entry.ts)));
         coverage_end = Some(coverage_end.map_or(entry.ts, |current| current.max(entry.ts)));
@@ -715,9 +748,26 @@ mod tests {
         let ts = chrono::Local::now().timestamp_millis();
         assert_eq!(local_date(ts).len(), 10, "YYYY-MM-DD");
         assert_eq!(local_hour(ts).len(), 2, "HH");
+        // ★ 热力槽位 = `"{weekday}-{HH}"`：星期 **0..6（周一=0）**、小时 **00..23**。
+        //   前端 `heatmapMatrix` 按 `-` 拆键，任一档越界都会**静默丢格子**，故钉死。
+        let slot = local_slot(ts);
+        let (weekday, hour) = slot.split_once('-').expect("槽位必须是 `{weekday}-{HH}`");
+        assert!((0..=6).contains(&weekday.parse::<i64>().expect("星期是数字")), "{slot}");
+        assert_eq!(hour.len(), 2, "{slot}");
+        assert!((0..=23).contains(&hour.parse::<i64>().expect("小时是数字")), "{slot}");
         // 极端时间戳不 panic，退化为占位符。
         assert_eq!(local_date(i64::MIN), "未知");
         assert_eq!(local_hour(i64::MIN), "--");
+        assert_eq!(local_weekday(i64::MIN), "-");
+    }
+
+    #[test]
+    fn slot_keys_sort_by_weekday_then_hour() {
+        // 键的**字符串升序**必须等于「周 → 小时」的自然顺序：下游沿用 `ascending()` 排序，
+        // 顺序错了热力图的行列就会错位（且不会有任何报错）。
+        let mut keys = vec!["1-00".to_string(), "0-23".to_string(), "0-00".to_string(), "6-09".to_string()];
+        keys.sort();
+        assert_eq!(keys, vec!["0-00", "0-23", "1-00", "6-09"]);
     }
 
     #[test]

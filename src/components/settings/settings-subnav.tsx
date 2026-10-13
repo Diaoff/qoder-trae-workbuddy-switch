@@ -18,19 +18,15 @@
  * （PLAN §3.9 的层级表）。本组件只负责**切换视图**，把选中态交给调用方
  * （`active` / `onSelect`），不自持状态 —— 否则「页面刷新后回到第一项」这类
  * 问题会在两个地方各修一遍。
+ *
+ * ## ★ 一份表，两个产品线共用
+ *
+ * 原型只有一个 `viewSettings`（`buddy-switch-prototype.html:3230`），靠
+ * `r.cap && p.capabilities.includes(r.cap)` 做平台差异 ⇒ **子导航表本身没有平台分支**。
+ * 本仓照此办理：WorkBuddy 设置页与 Trae 设置页**接同一个 `SETTINGS_SUBNAV`**，
+ * 各自渲染自己的内容（§3.9 归位表：Trae 的 10 组已全部落进这 9 项）。
+ * 若某天真出现「无处安放」的项，再按 D12 走平台专属子项，而不是在这里写 `if`。
  */
-
-import {
-  CalendarCheck,
-  Clock,
-  DatabaseBackup,
-  Monitor,
-  ScrollText,
-  Server,
-  Settings2,
-  ShieldCheck,
-  UserRound,
-} from "lucide-react";
 
 import { SideSubnav, type SideSubnavItem } from "@/components/shell/side-subnav";
 import { useT } from "@/lib/i18n";
@@ -51,16 +47,21 @@ export type SettingsSubnavItem = SideSubnavItem<SettingsSubnavId>;
 
 /** 唯一的一份子导航表（顺序即展示顺序）。 */
 export const SETTINGS_SUBNAV: readonly SettingsSubnavItem[] = [
-  { id: "general", labelKey: "settings.subnav.general", icon: Settings2 },
-  { id: "account", labelKey: "settings.subnav.account", icon: UserRound },
-  { id: "checkin", labelKey: "settings.subnav.checkin", icon: CalendarCheck },
-  { id: "gateway", labelKey: "settings.subnav.gateway", icon: Server },
-  { id: "schedule", labelKey: "settings.subnav.schedule", icon: Clock },
-  { id: "client", labelKey: "settings.subnav.client", icon: Monitor },
-  { id: "diagnostics", labelKey: "settings.subnav.diagnostics", icon: ShieldCheck },
-  { id: "logs", labelKey: "settings.subnav.logs", icon: ScrollText },
-  { id: "backup", labelKey: "settings.subnav.backup", icon: DatabaseBackup },
+  { id: "general", labelKey: "settings.subnav.general" },
+  { id: "account", labelKey: "settings.subnav.account" },
+  { id: "checkin", labelKey: "settings.subnav.checkin" },
+  { id: "gateway", labelKey: "settings.subnav.gateway" },
+  { id: "schedule", labelKey: "settings.subnav.schedule" },
+  { id: "client", labelKey: "settings.subnav.client" },
+  { id: "diagnostics", labelKey: "settings.subnav.diagnostics" },
+  { id: "logs", labelKey: "settings.subnav.logs" },
+  { id: "backup", labelKey: "settings.subnav.backup" },
 ];
+
+/** 从 URL 段解析设置分区（非法值 fail-closed 回 `general`，不把任意串塞进 state）。 */
+export function parseSettingsSubnav(raw: string | null): SettingsSubnavId {
+  return SETTINGS_SUBNAV.some((item) => item.id === raw) ? (raw as SettingsSubnavId) : "general";
+}
 
 interface Props {
   active: SettingsSubnavId;

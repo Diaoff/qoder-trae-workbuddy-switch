@@ -78,11 +78,11 @@ export function AccountTable<T>({
   openRowLabel,
 }: AccountTableProps<T>) {
   return (
-    <div className="overflow-x-auto rounded-[12px] border border-border">
+    <div className="overflow-x-auto rounded-[12px] border border-border bg-card">
       <table className="w-full border-collapse text-[12.5px]">
         <thead>
           <tr className="border-b border-border text-muted-foreground">
-            <th scope="col" className="sticky top-0 z-[1] w-10 bg-card-2 px-3 py-2.5 text-left text-[11.5px] font-medium">
+            <th scope="col" className="sticky top-0 z-[1] w-10 whitespace-nowrap bg-card-2 px-3 py-2.5 text-left text-[11.5px] font-medium">
               <Checkbox
                 checked={allSelected ? true : someSelected ? "indeterminate" : false}
                 onCheckedChange={(checked) => onToggleAll(checked === true)}
@@ -115,7 +115,7 @@ export function AccountTable<T>({
                   if (event.key === "Enter") onOpen(row);
                 }}
                 className={cn(
-                  "cursor-pointer border-b border-border/60 last:border-0 hover:bg-muted/40 focus-visible:bg-muted/40 focus-visible:outline-none",
+                  "cursor-pointer border-b border-border/60 last:border-0 hover:bg-card-2 focus-visible:bg-card-2 focus-visible:outline-none",
                   isCurrent?.(row) && "bg-primary/[0.07]",
                 )}
               >

@@ -1,40 +1,33 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { toast } from "sonner";
 import {
   AlertTriangle,
-  Columns3,
+  CalendarCheck,
   Download,
   FileDown,
-  FileUp,
   Loader2,
+  Plane,
   QrCode,
   RefreshCw,
-  Rows3,
-  SearchX,
   Terminal,
-  Trash2,
-  UserPlus,
 } from "lucide-react";
 
-import { AccountCard, accountIdentity, accountDisplayName, avatarTone, formatCredits, formatCreditExpiry, formatTodayTokens, todayTokensBreakdown, type GuideTarget } from "@/components/account-card";
-import { AccountBatchBar } from "@/components/account-batch-bar";
-import { AccountTable, type AccountColumn } from "@/components/account-table";
-import { AccountToolbar, type ToolbarOption } from "@/components/account-toolbar";
+import { AccountCard, accountIdentity, accountDisplayName, formatCredits, formatCreditExpiry, formatTodayTokens, todayTokensBreakdown, type GuideTarget } from "@/components/account-card";
+import { AccountsTableAvatar } from "@/components/account-list-parts";
+import { AccountWorkbench } from "@/components/account-workbench";
+import { type AccountColumn } from "@/components/account-table";
+import { type ToolbarOption } from "@/components/account-toolbar";
+import { AddAccountDrawer, type AddAccountWay } from "@/components/add-account-drawer";
 import { AccountDetailDrawer, type DetailActions, type DetailCheckinHistoryRow, type DetailPack, type DetailProgramBadge, type DetailSection, type DetailSwitchTarget } from "@/components/account-detail-drawer";
 import { ClientLimitsCard } from "@/components/client-limits-card";
 import { DemoAction } from "@/components/demo-action";
-import { CodeBuddyCnIdeMark, CodeBuddyMark, WorkBuddyMark } from "@/components/product-marks";
 import { ScopeChip, scopeLabel } from "@/components/scope-chip";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
-import { EmptyState } from "@/components/ui/empty-state";
-import { Separator } from "@/components/ui/separator";
-import { Skeleton } from "@/components/ui/skeleton";
 import { Switch } from "@/components/ui/switch";
-import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import {
   Dialog,
   DialogContent,
@@ -49,11 +42,13 @@ import { OAuthLoginDialog } from "@/components/oauth-login-dialog";
 import { RecycleBinSheet } from "@/components/recycle-bin-sheet";
 import { RestartConfirmDialog } from "@/components/restart-confirm-dialog";
 import { SwitchAccountDialog } from "@/components/switch-account-dialog";
+import { ExtSessionDrawer } from "@/components/sessions/ext-session-drawer";
 import * as api from "@/lib/api";
 // ★ B5：`checkinCreditsOf` 是**值**（从条目/raw 里取积分字段），`CheckinStatusEntry` 是**类型**。
 import { checkinCreditsOf } from "@/lib/api";
 import type { CheckinStatusEntry } from "@/lib/api";
 import { accountSearchText } from "@/lib/account-search";
+import { lastSevenDays, localDateKey } from "@/lib/checkin-history";
 import {
   filterAccounts,
   groupAccounts,
@@ -81,6 +76,7 @@ import type {
   CreditExpiry,
   CreditStatsEvent,
   JetbrainsCodebuddyPluginStatus,
+  ExtClientId,
   Region,
   SwitchConfig,
   TravelConfig,
@@ -88,7 +84,6 @@ import type {
   VscodeCodebuddyPluginStatus,
 } from "@/lib/types";
 import { cn } from "@/lib/utils";
-import { useCompactMode } from "@/lib/use-compact-mode";
 import { useDocumentVisible } from "@/lib/use-document-visible";
 import { useMediaQuery } from "@/lib/use-media-query";
 import { useScope } from "@/lib/use-scope";
@@ -100,22 +95,8 @@ function expiringSoonAmount(credit?: CreditExpiry): number {
   return credit?.ok ? credit.expiringSoonRemaining ?? 0 : 0;
 }
 
-/** 本地日期键（YYYY-MM-DD）：与后端签到日志 / 积分统计事件的 `date` 同口径（`local_date_string`）。 */
-function localDateKey(ts: number): string {
-  const date = new Date(ts);
-  const pad = (n: number) => String(n).padStart(2, "0");
-  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
-}
-
-/** 近 7 天本地日期（含今天，倒序）。 */
-function lastSevenDays(): string[] {
-  const days: string[] = [];
-  const base = new Date();
-  for (let i = 0; i < 7; i += 1) {
-    days.push(localDateKey(new Date(base.getFullYear(), base.getMonth(), base.getDate() - i).getTime()));
-  }
-  return days;
-}
+/* 日期口径（`localDateKey` / `lastSevenDays`）已上提到 `@/lib/checkin-history` ——
+   Trae 侧也要装配「近 7 天」抽屉区块，两处必须同口径（差一天就会把「昨天签的」显示成「未签到」）。 */
 
 function hasExpiringSoonCredits(credit?: CreditExpiry): boolean {
   return credit?.ok === true && expiringSoonAmount(credit) > 0;
@@ -232,8 +213,9 @@ export default function AccountsPage() {
       {/* 页头：作用域副标题 + 只读 scope-chip（区域已并入 L1 作用域，切作用域走顶栏）。 */}
       <header className="mb-5 flex items-start gap-4">
         <div className="min-w-0">
-          <h1 className="text-[28px] font-semibold tracking-tight">{t("wbAccounts.page.title")}</h1>
-          <p className="mt-1.5 text-xs text-muted-foreground">
+          {/* 原型 `.page-head h1`（`buddy-switch-prototype.html:179`）：28px / 字重 640 / `-.02em`。 */}
+          <h1 className="text-[28px] font-[640] tracking-[-0.02em]">{t("wbAccounts.page.title")}</h1>
+          <p className="mt-1.5 text-[12.5px] text-muted-foreground">
             {pendingCount > 0
               ? t("pageHead.accounts.pending", {
                   scope: scopeLabel(t, scopeOf("workbuddy", activeRegion)),
@@ -265,7 +247,6 @@ function RegionPanel({ region }: { region: Region }) {
   const error = useAccountsStore((s) => (region === "cn" ? s.error : s.global.error));
   const creditMap = useAccountsStore((s) => (region === "cn" ? s.creditMap : s.global.creditMap));
   const creditLoadingMap = useAccountsStore((s) => (region === "cn" ? s.creditLoadingMap : s.global.creditLoadingMap));
-  const creditUpdatedAtMap = useAccountsStore((s) => (region === "cn" ? s.creditUpdatedAtMap : s.global.creditUpdatedAtMap));
   const refreshingCredits = useAccountsStore((s) => (region === "cn" ? s.refreshingCredits : s.global.refreshingCredits));
   const reconcileAccounts = useAccountsStore((s) => s.reconcileAccounts);
   const refreshRegionStatus = useAccountsStore((s) => s.refreshRegionStatus);
@@ -278,6 +259,9 @@ function RegionPanel({ region }: { region: Region }) {
 
   const [oauthOpen, setOauthOpen] = useState(false);
   const [exportOpen, setExportOpen] = useState(false);
+  /* ★「添加账号」三选抽屉（原型 `drawerAdd()`）。选完方式后**关闭抽屉**再开对应流程
+     （原型 `case "add-way"` 也是 `closeDrawer()` 之后才继续）。 */
+  const [addDrawerOpen, setAddDrawerOpen] = useState(false);
   /**
    * 导出目标：`null` = 导出**全部**账号（工具栏入口）；非 `null` = 导出**所选**账号（批量条入口）。
    *
@@ -287,6 +271,16 @@ function RegionPanel({ region }: { region: Region }) {
   const [exportTargets, setExportTargets] = useState<AccountMeta[] | null>(null);
   const [importOpen, setImportOpen] = useState(false);
   const [switchAccount, setSwitchAccount] = useState<AccountMeta | null>(null);
+  /**
+   * ★ P14 S4a · 插件会话抽屉的目标（`null` = 关闭）。
+   *
+   * 与 `switchAccount` **分开两个状态**：两者是**不同的抽屉、不同的流程**
+   * （切换向导是桌面版迁移；插件会话是一次性单向复制），共用一个状态会让
+   * 「关掉一个却打开了另一个」这种缺陷无法表达。
+   */
+  const [extDrawer, setExtDrawer] = useState<{ client: ExtClientId; account: AccountMeta } | null>(
+    null,
+  );
   /**
    * 待确认的客户端切换目标（P8 T03 / §3.15.3）。
    *
@@ -350,8 +344,6 @@ function RegionPanel({ region }: { region: Region }) {
   const [recycleOpen, setRecycleOpen] = useState(false);
   /** 区域不匹配详情展开 */
   const [mismatchDetailOpen, setMismatchDetailOpen] = useState(false);
-  /** 紧凑模式：卡片更小、同屏更多列；默认开启，偏好由 `useCompactMode` 统一持久化 */
-  const [compact, toggleCompact] = useCompactMode();
   /**
    * P4 工具栏：搜索 / 排序 / 分组 / 视图。
    *
@@ -365,7 +357,6 @@ function RegionPanel({ region }: { region: Region }) {
   const [view, setView] = useState<AccountViewMode>("card");
   /** < 900px 强制卡片视图（`§3.12`）；断点只在 `useMediaQuery` 一处判断，不散落常量。 */
   const tableEnabled = useMediaQuery("(min-width: 900px)");
-  const effectiveView: AccountViewMode = tableEnabled ? view : "card";
   const searchRef = useRef<HTMLInputElement>(null);
   const t = useT();
   const navigate = useNavigate();
@@ -449,6 +440,13 @@ function RegionPanel({ region }: { region: Region }) {
   const [selectedKeys, setSelectedKeys] = useState<Set<string>>(new Set());
   const [batchBusy, setBatchBusy] = useState(false);
   const [batchDeleteOpen, setBatchDeleteOpen] = useState(false);
+  /**
+   * 批量签到**结果**（原型 `state.checkinResult`，`buddy-switch-prototype.html:2339-2354`）。
+   *
+   * ⚠️ 不能只靠 toast：toast 一闪而过，用户来不及看失败的是谁，且「一键签到」看起来
+   * 永远 100% 成功。结果条**留在页面上**（工具栏与列表之间），带「只重试失败项」出口。
+   */
+  const [checkinResult, setCheckinResult] = useState<{ ok: number; failedIds: string[] } | null>(null);
 
   function toggleSelect(account: AccountMeta) {
     const key = selectionKey(account.id);
@@ -573,6 +571,8 @@ function RegionPanel({ region }: { region: Region }) {
     setBatchBusy(true);
     try {
       const { ok, already, failedIds } = await runCheckinFor(targetIds);
+      /* ★ 结果**留在页面上**（原型 `checkinResult`）—— toast 只做即时反馈，不承担留档。 */
+      setCheckinResult({ ok: ok + already, failedIds });
       const parts: string[] = [];
       if (ok > 0) parts.push(t("wbAccounts.toast.checkinBatchSuccess", { n: ok }));
       if (already > 0) parts.push(t("wbAccounts.toast.checkinBatchAlready", { n: already }));
@@ -912,27 +912,40 @@ function RegionPanel({ region }: { region: Region }) {
    *
    * ⚠️ 读不到时**清空为「今日无记录」**（卡片 / 表格渲染「—」），**绝不**沿用上一次的数字：
    * 换 region 后旧数字会张冠李戴（本仓踩过字段张冠李戴的坑）。取数失败不弹错、不打扰用户。
+   *
+   * ## ★ `force` 的边界（2026-10-12）
+   *
+   * 后端 `force` 会**绕过**「距上次扫描不足 TTL」的闸门、立刻重扫客户端会话日志；
+   * 默认路径**不给** —— 由后端按 TTL 自己决定（否则每次进页面都全量重扫）。
+   * 只有**用户显式点刷新**才给 `true`。
+   *
+   * 重扫本身不贵：后端带 mtime 预筛，只读「当天动过的文件」（实测 40GB → 当天那几 MB）。
    */
-  useEffect(() => {
-    let cancelled = false;
-    void api
-      .getAccountTokenToday(region)
-      .then((res) => {
-        if (cancelled) return;
+  const tokenTodayGenRef = useRef(0);
+  const loadTokenToday = useCallback(
+    async (force: boolean) => {
+      /* 代次：region 变化后晚到的旧响应**不得**覆盖新结果（否则又变成张冠李戴）。 */
+      const gen = (tokenTodayGenRef.current += 1);
+      const current = () => gen === tokenTodayGenRef.current;
+      try {
+        const res = await api.getAccountTokenToday(region, force);
+        if (!current()) return;
         const map = new Map<string, AccountTokenTodayEntry>();
         for (const entry of res.accounts ?? []) map.set(entry.uid, entry);
         setTokenTodayMap(map);
         setTokenTodayTruncated(Boolean(res.gatewayTruncated));
-      })
-      .catch(() => {
-        if (cancelled) return;
+      } catch {
+        if (!current()) return;
         setTokenTodayMap(new Map());
         setTokenTodayTruncated(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [region, accounts.length]);
+      }
+    },
+    [region],
+  );
+
+  useEffect(() => {
+    void loadTokenToday(false);
+  }, [loadTokenToday, accounts.length]);
 
   async function onRecheck() {
     await Promise.all([refreshRegionStatus(region), reconcileAccounts(region)]);
@@ -1070,7 +1083,7 @@ function RegionPanel({ region }: { region: Region }) {
     }
   }
 
-  /** 刷新按钮：先跑一轮批量签到并重查今日签到状态，再强制刷新全部积分。 */
+  /** 刷新按钮：先跑一轮批量签到并重查今日签到状态，再强制刷新全部积分与「今日 Token」。 */
   async function onRefreshCredits() {
     if (!accounts.length || refreshingCredits || checkinAllRunning) return;
     setCheckinAllRunning(true);
@@ -1101,6 +1114,8 @@ function RegionPanel({ region }: { region: Region }) {
       }
       await refreshCredits(accounts.map((account) => account.id), { region });
       await loadTravelMap(accounts.map((account) => account.id));
+      /* 显式刷新 ⇒ 强制重算「今日 Token」（绕过后端 TTL 闸门）。 */
+      await loadTokenToday(true);
       toast.success(t("wbAccounts.toast.creditsRefreshed"));
     } finally {
       setCheckinAllRunning(false);
@@ -1361,13 +1376,7 @@ function RegionPanel({ region }: { region: Region }) {
       displayText(current.uid) ||
       t("wbAccounts.common.unknownAccount")
     : t("wbAccounts.common.notLoggedIn");
-  const codebuddyCurrentName = codebuddyCli?.configured
-    ? codebuddyCli.activeAccountName || t("wbAccounts.common.notDetected")
-    : t("wbAccounts.common.notConnected");
   const cnIdeCurrentAccountId = codebuddyCnIde?.activeAccountId;
-  const cnIdeCurrentName = codebuddyCnIde?.installed
-    ? codebuddyCnIde.activeAccountName || t("wbAccounts.common.notDetected")
-    : t("wbAccounts.common.notInstalled");
   /* ★ 2026-10-09：编辑器内两个插件的「当前账号」——同样来自**本地状态文件**
      （`status.activeAccountId`），不为了这一行去解密 secret（那会弹钥匙串授权）。 */
   const vscodePluginCurrentAccountId = vscodePlugin?.activeAccountId;
@@ -1590,14 +1599,9 @@ function RegionPanel({ region }: { region: Region }) {
       header: t("wbAccounts.table.account"),
       render: (account) => (
         <div className="flex min-w-0 items-center gap-2.5">
-          <span
-            className={cn(
-              "flex size-7 shrink-0 items-center justify-center rounded-full text-xs font-semibold",
-              avatarTone(wbAccountName(account)),
-            )}
-          >
-            {wbAccountName(account).charAt(0).toUpperCase()}
-          </span>
+          {/* 表格头像走共享件（原型 `.avatar`：26px / 圆角 8px / 2 字）——
+              此前这里写的是 `rounded-full` + 1 字，与原型不符，也与卡片头像规格混用。 */}
+          <AccountsTableAvatar name={wbAccountName(account)} />
           <div className="min-w-0">
             <div className="flex items-center gap-1.5">
               <span className="truncate font-medium" title={wbAccountName(account)}>
@@ -1810,8 +1814,7 @@ function RegionPanel({ region }: { region: Region }) {
    * 不把用户引向一个必然失败的切换（与卡片 `.prog.off` 的措辞同一纪律）。
    * 回调全部复用页面**既有**的切换处理函数（各程序位自己的确认流程）。
    */
-  const detailSwitchTargets: DetailSwitchTarget[] = detail
-    ? [
+  const detailSwitchTargets: DetailSwitchTarget[] = detail    ? [
         {
           key: "workbuddy",
           label: "WorkBuddy",
@@ -1860,6 +1863,26 @@ function RegionPanel({ region }: { region: Region }) {
         },
       ]
     : [];
+
+  /**
+   * ★ P14 S4a · 插件会话复制的来源客户端（`null` ⇒ 入口不渲染）。
+   *
+   * ⚠️ **`jetbrains` 刻意不在映射里**：会话仓的客户端段只有 `VSCode` / `CodeBuddyIDE`
+   * 两个值（见 `lib/ext-sessions.ts`）⇒ JetBrains 插件**没有**对应的会话树。
+   * 给它入口等于去读一棵不属于它的树 —— 比没有这个功能坏得多。
+   *
+   * ⚠️ **与原型的一处已知差异（未消除）**：原型用「该账号**绑定了**插件程序位」作条件；
+   * 真实页面的 `switchTargets` 没有「本账号是否绑定」这个位，只有「该程序位是否已接入」
+   * ⇒ 这里退化为「**该程序位已接入**」。记在 `P14-TASKS.md` 的待办里。
+   */
+  const detailExtClient: ExtClientId | null = (() => {
+    const map: Record<string, ExtClientId> = { ide: "codebuddy-ide", vscode: "vscode" };
+    for (const target of detailSwitchTargets) {
+      const client = map[target.key];
+      if (client && target.available) return client;
+    }
+    return null;
+  })();
 
   const detailExpired =
     detail != null && typeof detail.expiresAt === "number" && detail.expiresAt < Date.now();
@@ -1928,54 +1951,6 @@ function RegionPanel({ region }: { region: Region }) {
 
   return (
     <>
-      {/* 产品状态徽标 */}
-      <div className="mb-6 flex justify-end gap-4">
-        <div className="flex items-center gap-2.5">
-          <span className="group relative inline-flex cursor-default">
-            <span
-              className={
-                status?.running
-                  ? "inline-flex rounded-[22%] bg-primary p-[2px] shadow-sm shadow-primary/40"
-                  : "inline-flex rounded-[22%] bg-muted-foreground/30 p-[2px]"
-              }
-            >
-              <WorkBuddyMark size={28} />
-            </span>
-            <span className="pointer-events-none absolute right-0 top-full z-50 mt-2 hidden whitespace-nowrap rounded-md bg-popover px-2.5 py-1.5 text-xs text-popover-foreground shadow-lg ring-1 ring-black/5 group-hover:block">
-              {descriptor.displayName}：{status?.running ? t("wbAccounts.common.running") : t("wbAccounts.common.notRunning")} · {t("wbAccounts.common.currentAccount", { name: workbuddyCurrentName })}
-            </span>
-          </span>
-          <span className="group relative inline-flex cursor-default">
-            <span
-              className={
-                codebuddyCnIde?.installed
-                  ? "inline-flex rounded-[22%] bg-primary p-[2px] shadow-sm shadow-primary/40"
-                  : "inline-flex rounded-[22%] bg-muted-foreground/30 p-[2px]"
-              }
-            >
-              <CodeBuddyCnIdeMark size={28} />
-            </span>
-            <span className="pointer-events-none absolute right-0 top-full z-50 mt-2 hidden whitespace-nowrap rounded-md bg-popover px-2.5 py-1.5 text-xs text-popover-foreground shadow-lg ring-1 ring-black/5 group-hover:block">
-              CodeBuddy IDE：{codebuddyCnIde?.installed ? (codebuddyCnIde.running ? t("wbAccounts.common.running") : t("wbAccounts.common.connected")) : t("wbAccounts.common.notConnected")} · {t("wbAccounts.common.currentAccount", { name: cnIdeCurrentName })}
-            </span>
-          </span>
-          <span className="group relative inline-flex cursor-default">
-            <span
-              className={
-                codebuddyCli?.configured
-                  ? "inline-flex rounded-[22%] bg-primary p-[2px] shadow-sm shadow-primary/40"
-                  : "inline-flex rounded-[22%] bg-muted-foreground/30 p-[2px]"
-              }
-            >
-              <CodeBuddyMark size={28} />
-            </span>
-            <span className="pointer-events-none absolute right-0 top-full z-50 mt-2 hidden whitespace-nowrap rounded-md bg-popover px-2.5 py-1.5 text-xs text-popover-foreground shadow-lg ring-1 ring-black/5 group-hover:block">
-              CodeBuddy CLI：{codebuddyCli?.migrationRequired ? t("wbAccounts.common.needsUpgrade") : codebuddyCli?.configured ? t("wbAccounts.common.connected") : t("wbAccounts.common.notConnected")} · {t("wbAccounts.common.currentAccount", { name: codebuddyCurrentName })}
-            </span>
-          </span>
-        </div>
-      </div>
-
       {/* 区域不匹配（安全红线） */}
       {mismatch && (
         <Alert variant="warning" className="mb-4">
@@ -1995,66 +1970,58 @@ function RegionPanel({ region }: { region: Region }) {
         </Alert>
       )}
 
-      {/* 空态（未安装 / 未登录） */}
-      {loading && accounts.length === 0 ? (
-        /* 区块**首次加载**用 `<Skeleton>`（§3.6），形状接近真实卡片栅格（不是一行文字）。
-           ⚠️ 栅格必须与下面真实的卡片栅格**同列数**（`.g3`：3 / 2 / 1），
-           否则加载完成瞬间列数会跳变（骨架 2 列 → 内容 3 列）。 */
-        <div className="grid grid-cols-1 gap-3 min-[761px]:grid-cols-2 min-[1101px]:grid-cols-3">
-          {[0, 1, 2].map((index) => (
-            <Skeleton key={index} className="h-44 w-full rounded-lg" />
-          ))}
-        </div>
-      ) : showEmpty ? (
-        <EmptyRegionCard
-          region={region}
-          installed={presence !== "absent"}
-          expectedAuthFile={expectedAuthFile}
-          onRecheck={() => void onRecheck()}
-          onImport={() => void onImport()}
-          importing={importing}
-        />
-      ) : (
-        <>
-          <div className="relative mb-6 overflow-visible rounded-2xl border border-border bg-muted/30 px-5 py-5 shadow-card">
-            <div className="pointer-events-none absolute inset-0 overflow-hidden rounded-2xl">
-              <div className="absolute -right-12 -top-20 size-44 rounded-full border-[28px] border-slate-400/[0.035]" />
-            </div>
-            <div className="relative flex flex-wrap items-center gap-x-5 gap-y-4">
-              <div className="min-w-[190px] flex-1">
-                <h2 className="text-sm font-semibold text-foreground">{t("wbAccounts.page.addTitle")}</h2>
-                <p className="mt-1 text-xs leading-5 text-muted-foreground">{t("wbAccounts.page.addSubtitle")}</p>
-              </div>
-              <div className="flex flex-wrap items-center gap-2.5">
-                <DemoAction>
-                  <Button
-                    className="h-10 bg-primary px-4 text-primary-foreground shadow-sm hover:bg-primary/90"
-                    onClick={() => setOauthOpen(true)}
-                  >
-                    <QrCode />{t("wbAccounts.page.oauthAdd")}
-                  </Button>
-                </DemoAction>
-                <DemoAction>
-                  <Button className="h-10 px-4" onClick={onImport} disabled={importing} variant="outline">
-                    {importing ? <Loader2 className="animate-spin" /> : <Download />}{t("wbAccounts.page.importLocal")}
-                  </Button>
-                </DemoAction>
-              </div>
-              <div className="flex items-center gap-1">
-                <DemoAction>
-                  <Button variant="ghost" size="sm" className="h-9 px-2.5" onClick={() => setImportOpen(true)} title={t("wbAccounts.page.importBackupTitle")}>
-                    <FileUp />{t("wbAccounts.page.importBackup")}
-                  </Button>
-                </DemoAction>
-                <DemoAction>
-                  <Button variant="ghost" size="sm" className="h-9 px-2.5" onClick={() => setExportOpen(true)} disabled={accounts.length === 0} title={t("wbAccounts.page.exportTitle")}>
-                    <FileDown />{t("wbAccounts.page.export")}
-                  </Button>
-                </DemoAction>
-              </div>
-            </div>
-          </div>
+      {/* ★ 账号工作台（**两平台共用容器**）：布局与交互全部下沉到 `AccountWorkbench`，
+          本页只负责取数 + 装配 props + 注入平台插槽。
 
+          ⚠️ 改造前这里是 450 行手写 JSX，`TraeAccountsPage` 里有一份「差不多但不一样」的副本
+          —— 骨架形状、空态出口、批量条位置、分组标题样式逐项漂移。原型的账号页是
+          **平台无关**的（只有 `viewAccounts()` + `curPlatform().programs`），本容器就是那个
+          「一段代码」。 */}
+      <AccountWorkbench
+        query={query}
+        onQueryChange={setQuery}
+        searchInputRef={searchRef}
+        sort={sort}
+        sortOptions={sortOptions}
+        onSortChange={(next) => setSort(next as AccountSortKey)}
+        group={group}
+        groupOptions={groupOptions}
+        onGroupChange={(next) => setGroup(next as AccountGroupKey)}
+        view={view}
+        onViewChange={setView}
+        tableViewEnabled={tableEnabled}
+        selection={{
+          allSelected: allVisibleSelected,
+          someSelected: someVisibleSelected,
+          onToggleAll: toggleVisibleSelection,
+          label: allVisibleSelected ? t("shared.toolbar.deselectAll") : t("shared.toolbar.selectAll"),
+        }}
+        addAction={{
+          label: t("wbAccounts.toolbar.addAccount"),
+          onClick: () => setAddDrawerOpen(true),
+        }}
+        /* ★ 一枚**常驻**控件（用户要求「回收站放出来」）——
+           走结构化 prop 注入，几何与文案都留在工具栏壳里；其余入口仍在抽屉的「更多操作」。 */
+        onOpenRecycleBin={() => setRecycleOpen(true)}
+        /* ★ 工具栏**只有** 搜索 / 排序 / 分组 / 视图 / 回收站 / 全选 / 主操作。
+           原先挂在这里的「⋯」溢出菜单已删除，其余入口改由「添加账号」抽屉承载
+           （见下方 `<AddAccountDrawer moreTools={…}>`）。 */
+        loading={loading}
+        /* 首屏空态（未安装 / 未登录）：整块替换工具栏与列表（原型 `emptyBlock` 也不带工具栏）。 */
+        emptyState={
+          showEmpty ? (
+            <EmptyRegionCard
+              region={region}
+              installed={presence !== "absent"}
+              expectedAuthFile={expectedAuthFile}
+              onRecheck={() => void onRecheck()}
+              onImport={() => void onImport()}
+              importing={importing}
+            />
+          ) : null
+        }
+        notices={
+          <>
           {error && (
             <Alert variant="destructive" className="mb-4">
               <AlertTitle>{t("wbAccounts.page.loadFailed")}</AlertTitle>
@@ -2073,46 +2040,50 @@ function RegionPanel({ region }: { region: Region }) {
             </Alert>
           )}
 
+          {/* ★ CodeBuddy CLI 接入提示：**压成一行细条**，不再占一整张卡。
+            原型没有这个场景（`viewAccounts` 里没有 CLI 接入提示），但本仓账号页确实会撞上
+            「装了 CodeBuddy 却没接入 CLI」—— 这是**真实待办**，不能删。
+            ⇒ 保留信息与出口，但按原型 `.note-warn`（`demo.css:833-836`）那种
+            「一行说明 + 一个按钮」的密度：11.5px 文字、圆角 9px、无标题层级。*/}
           {codebuddyCli &&
             (!codebuddyCli.configured ||
               (!codebuddyUsesSettingsEnv && !codebuddyCli.helperSupportsAccountIds) ||
               codebuddyCli.migrationRequired ||
               codebuddyCli.syncPending) && (
-              <Alert className="mb-4">
-                <Terminal />
-                <AlertTitle>{t("wbAccounts.page.cliTitle")}</AlertTitle>
-                <AlertDescription>
-                  <p>
+              <div className="mb-4 flex flex-wrap items-center gap-x-3 gap-y-2 rounded-[9px] border border-border bg-card-2 px-3 py-2">
+                <Terminal className="size-[15px] shrink-0 text-muted-foreground" aria-hidden="true" />
+                <span className="min-w-0 flex-1 text-[11.5px] leading-relaxed text-muted-foreground">
+                  <span className="font-medium text-foreground">{t("wbAccounts.page.cliTitle")}</span>
+                  {" · "}
+                  {codebuddyUsesSettingsEnv
+                    ? codebuddyCli.environmentOverride
+                      ? t("wbAccounts.page.cliDescEnvOverride")
+                      : codebuddyCli.syncPending
+                        ? t("wbAccounts.page.cliDescEnvSyncPending")
+                        : codebuddyCli.migrationRequired
+                          ? t("wbAccounts.page.cliDescEnvMigration")
+                          : t("wbAccounts.page.cliDescEnvDefault")
+                    : codebuddyCli.migrationRequired
+                      ? t("wbAccounts.page.cliDescHelperMigration")
+                      : codebuddyCli.configured
+                        ? t("wbAccounts.page.cliDescHelperConfigured")
+                        : t("wbAccounts.page.cliDescDefault")}
+                </span>
+                <DemoAction>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="h-[28px] shrink-0 rounded-[8px] px-[10px] text-[12px]"
+                    onClick={() => void onInstallCodebuddyCli()}
+                    disabled={installingCodebuddyCli}
+                  >
+                    {installingCodebuddyCli && <Loader2 className="animate-spin" />}
                     {codebuddyUsesSettingsEnv
-                      ? codebuddyCli.environmentOverride
-                        ? t("wbAccounts.page.cliDescEnvOverride")
-                        : codebuddyCli.syncPending
-                          ? t("wbAccounts.page.cliDescEnvSyncPending")
-                          : codebuddyCli.migrationRequired
-                            ? t("wbAccounts.page.cliDescEnvMigration")
-                            : t("wbAccounts.page.cliDescEnvDefault")
-                      : codebuddyCli.migrationRequired
-                        ? t("wbAccounts.page.cliDescHelperMigration")
-                        : codebuddyCli.configured
-                          ? t("wbAccounts.page.cliDescHelperConfigured")
-                          : t("wbAccounts.page.cliDescDefault")}
-                  </p>
-                  <DemoAction>
-                    <Button
-                      className="mt-2"
-                      size="sm"
-                      variant="outline"
-                      onClick={() => void onInstallCodebuddyCli()}
-                      disabled={installingCodebuddyCli}
-                    >
-                      {installingCodebuddyCli && <Loader2 className="animate-spin" />}
-                      {codebuddyUsesSettingsEnv
-                        ? codebuddyCli.configured ? t("wbAccounts.page.cliBtnUpdateAuth") : t("wbAccounts.page.cliBtnConnect")
-                        : codebuddyCli.configured || codebuddyCli.migrationRequired ? t("wbAccounts.page.cliBtnUpgradeHelper") : t("wbAccounts.page.cliBtnConnect")}
-                    </Button>
-                  </DemoAction>
-                </AlertDescription>
-              </Alert>
+                      ? codebuddyCli.configured ? t("wbAccounts.page.cliBtnUpdateAuth") : t("wbAccounts.page.cliBtnConnect")
+                      : codebuddyCli.configured || codebuddyCli.migrationRequired ? t("wbAccounts.page.cliBtnUpgradeHelper") : t("wbAccounts.page.cliBtnConnect")}
+                  </Button>
+                </DemoAction>
+              </div>
             )}
 
           {/*
@@ -2139,207 +2110,76 @@ function RegionPanel({ region }: { region: Region }) {
             </div>
           )}
 
-          <section className="mt-7 min-w-0" aria-labelledby={`accounts-list-title-${region}`}>
-            <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
-              <div className="flex items-center gap-2">
-                <h2 id={`accounts-list-title-${region}`} className="text-base font-semibold tracking-tight">
-                  {t("wbAccounts.page.accounts")}
-                </h2>
-                <Badge
-                  variant="secondary"
-                  className="h-6 min-w-6 rounded-full border-0 px-1.5 text-[11px] tabular-nums text-muted-foreground shadow-none"
-                  aria-label={t("wbAccounts.page.accountsAria", { count: accounts.length })}
-                >
-                  {accounts.length}
-                </Badge>
-              </div>
-            </div>
-
-            {/* ★ 工具栏**常驻**（不随结果为空而消失）：搜索框的 DOM 因此不会被 unmount，
-                中文输入法连续组词不丢字（IME 约束，§1.4）。工具栏与列表是两个独立子树。 */}
-            <AccountToolbar
-              query={query}
-              onQueryChange={setQuery}
-              searchInputRef={searchRef}
-              sort={sort}
-              sortOptions={sortOptions}
-              onSortChange={(next) => setSort(next as AccountSortKey)}
-              group={group}
-              groupOptions={groupOptions}
-              onGroupChange={(next) => setGroup(next as AccountGroupKey)}
-              view={view}
-              onViewChange={setView}
-              tableViewEnabled={tableEnabled}
-              selection={{
-                allSelected: allVisibleSelected,
-                someSelected: someVisibleSelected,
-                onToggleAll: toggleVisibleSelection,
-                label: allVisibleSelected ? t("shared.toolbar.deselectAll") : t("shared.toolbar.selectAll"),
-              }}
-              /* ★ 工具栏主操作（原型 :2428）：接**同一个**既有入口 ——
-                 「添加与迁移账号」横幅的 OAuth 扫码添加（不另起一套流程）。 */
-              addAction={{ label: t("wbAccounts.toolbar.addAccount"), onClick: () => setOauthOpen(true) }}
-            >
-              <div className="ml-auto flex items-center gap-1">
-                <div className="mr-1 flex items-center gap-2.5">
-                  <label htmlFor={`accounts-auto-checkin-${region}`} className="cursor-pointer text-xs font-medium text-muted-foreground">
-                    {t("wbAccounts.page.autoCheckin")}
-                  </label>
-                  <DemoAction>
-                    <Switch
-                      id={`accounts-auto-checkin-${region}`}
-                      checked={autoCheckinConfig?.enabled ?? false}
-                      disabled={!autoCheckinConfig || autoCheckinSaving}
-                      onCheckedChange={(enabled) => void onAutoCheckinChange(enabled)}
-                      aria-label={t("wbAccounts.page.autoCheckin")}
-                    />
-                  </DemoAction>
-                  {autoCheckinSaving && <Loader2 className="size-3.5 animate-spin text-muted-foreground" aria-label={t("wbAccounts.page.autoCheckinSaving")} />}
-                </div>
-                <div className="mr-1 flex items-center gap-2.5">
-                  <label htmlFor={`accounts-auto-travel-${region}`} className="cursor-pointer text-xs font-medium text-muted-foreground">
-                    {t("wbAccounts.page.autoTravel")}
-                  </label>
-                  <DemoAction>
-                    <Switch
-                      id={`accounts-auto-travel-${region}`}
-                      checked={autoTravelConfig?.enabled ?? false}
-                      disabled={!autoTravelConfig || autoTravelSaving}
-                      onCheckedChange={(enabled) => void onAutoTravelChange(enabled)}
-                      aria-label={t("wbAccounts.page.autoTravel")}
-                    />
-                  </DemoAction>
-                  {autoTravelSaving && <Loader2 className="size-3.5 animate-spin text-muted-foreground" aria-label={t("wbAccounts.page.autoTravelSaving")} />}
-                </div>
-                <Separator orientation="vertical" className="mx-2 h-5" />
-                {/* `compact`（卡片密度）**仅在卡片视图下渲染**（决策 #5）：表格视图下密度无意义，
-                    且与视图控件并排会构成「两个看起来能切的控件」。 */}
-                {effectiveView === "card" && (
-                  <Tooltip>
-                    <TooltipTrigger asChild>
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        className={cn("size-9 rounded-lg", compact && "bg-accent text-accent-foreground")}
-                        onClick={toggleCompact}
-                        aria-label={compact ? t("wbAccounts.page.compactToLoose") : t("wbAccounts.page.compactToCompact")}
-                      >
-                        {compact ? <Rows3 /> : <Columns3 />}
-                      </Button>
-                    </TooltipTrigger>
-                    <TooltipContent side="top">{compact ? t("wbAccounts.page.compactToLoose") : t("wbAccounts.page.compactToCompact")}</TooltipContent>
-                  </Tooltip>
-                )}
-                {/* 回收站入口（P5 §2.7.1）：按**当前作用域**过滤 —— 只列本作用域被软删除的账号。
-                    入口放账号页工具栏（不放设置页），避免与 P7「备份与恢复」的整库级语义混淆。 */}
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <span>
-                      <DemoAction>
-                        <Button
-                          variant="ghost"
-                          size="icon"
-                          className="size-9 rounded-lg"
-                          onClick={() => setRecycleOpen(true)}
-                          aria-label={t("recycleBin.title")}
-                        >
-                          <Trash2 />
-                        </Button>
-                      </DemoAction>
-                    </span>
-                  </TooltipTrigger>
-                  <TooltipContent side="top">{api.isDemoMode() ? t("wbAccounts.page.demoDisabled") : t("recycleBin.title")}</TooltipContent>
-                </Tooltip>
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <span>
-                      <DemoAction>
-                        <Button
-                          variant="ghost"
-                          size="icon"
-                          className="size-9 rounded-lg"
-                          disabled={refreshingCredits || checkinAllRunning || accounts.length === 0}
-                          onClick={() => void onRefreshCredits()}
-                          aria-label={t("wbAccounts.page.refreshCredits")}
-                        >
-                          <RefreshCw className={refreshingCredits || checkinAllRunning ? "animate-spin" : undefined} />
-                        </Button>
-                      </DemoAction>
-                    </span>
-                  </TooltipTrigger>
-                  <TooltipContent side="top">{api.isDemoMode() ? t("wbAccounts.page.demoDisabled") : t("wbAccounts.page.refreshCredits")}</TooltipContent>
-                </Tooltip>
-              </div>
-            </AccountToolbar>
-
-            <div className="mt-4">
-              {/* 两种空态**绝不混用**（§1.9）：真没有账号 → 「还没有账号」+ 添加出口；
-                  有账号但被筛没 → 「没有符合条件的账号」+ 清除筛选出口。 */}
-              {accounts.length === 0 ? (
-                <EmptyState
-                  icon={UserPlus}
-                  title={t("shared.list.empty.none")}
-                  description={t("shared.list.empty.noneDesc")}
-                  action={
-                    <Button onClick={() => setOauthOpen(true)}>
-                      <QrCode />
-                      {t("wbAccounts.page.oauthAdd")}
-                    </Button>
-                  }
-                />
-              ) : sorted.length === 0 ? (
-                <EmptyState
-                  icon={SearchX}
-                  title={t("shared.list.empty.filtered")}
-                  description={t("shared.list.empty.filteredDesc")}
-                  action={
-                    <Button variant="outline" onClick={clearListFilters}>
-                      {t("shared.list.empty.clearFilters")}
-                    </Button>
-                  }
-                />
-              ) : (
-                <div className="space-y-6">
-                  {buckets.map((bucket) => (
-                    <div key={bucket.key ?? "__all__"} className="min-w-0">
-                      {bucket.key !== null && (
-                        <div className="mb-3 flex items-center gap-2">
-                          <h3 className="text-sm font-semibold tracking-tight">{bucket.key}</h3>
-                          <Badge
-                            variant="secondary"
-                            className="h-5 min-w-5 rounded-full border-0 px-1.5 text-[11px] tabular-nums text-muted-foreground shadow-none"
-                          >
-                            {bucket.items.length}
-                          </Badge>
-                        </div>
-                      )}
-                      {/* ★ 卡片视图用原型 `.grid.g3`（`buddy-switch-prototype.html:242-247`）：
-                          宽屏**恰好 3 列等宽**、间距 12px，逐级降为 2 列 / 1 列。
-                          ⚠️ 原先用 `auto-fit + minmax(340px,1fr)` —— 列数随容器宽度**连续变化**，
-                          同一屏可能排出 2/3/4 列，与原型「固定 3 列」的节奏完全不同。 */}
-                      {effectiveView === "table" ? (
-                        <AccountTable
-                          columns={columns}
-                          rows={bucket.items}
-                          rowKey={(account) => selectionKey(account.id)}
-                          selectedIds={selectedKeys}
-                          onToggleSelect={toggleSelect}
-                          onToggleAll={(checked) => toggleBucketSelection(bucket.items, checked)}
-                          allSelected={bucketAllSelected(bucket.items)}
-                          someSelected={bucketSomeSelected(bucket.items)}
-                          onOpen={openDetail}
-                          isCurrent={(account) => isWorkbuddyCurrent(account, current)}
-                          selectAllLabel={t("shared.table.selectAllAria")}
-                          selectRowLabel={(account) => t("shared.table.selectRowAria", { name: wbAccountName(account) })}
-                          openRowLabel={(account) => t("shared.table.openRowAria", { name: wbAccountName(account) })}
-                        />
-                      ) : (
-                        <div className="grid min-w-0 grid-cols-1 items-start gap-3 min-[761px]:grid-cols-2 min-[1101px]:grid-cols-3">
-                          {bucket.items.map((a) => (
+          </>
+        }
+        checkinResult={
+          checkinResult
+            ? {
+                okCount: checkinResult.ok,
+                failedNames: accounts
+                  .filter((account) => checkinResult.failedIds.includes(account.id))
+                  .map((account) => wbAccountName(account)),
+                onRetry:
+                  checkinResult.failedIds.length > 0
+                    ? () => void batchCheckin(checkinResult.failedIds)
+                    : undefined,
+              }
+            : null
+        }
+        onDismissCheckinResult={() => setCheckinResult(null)}
+        batch={{
+          selectedCount: selectedKeys.size,
+          busy: batchBusy,
+          onCheckin: () => void batchCheckin(),
+          onRefresh: () => void batchRefresh(),
+          onExport:
+            selectedAccounts.length > 0
+              ? () => {
+                  setExportTargets(selectedAccounts);
+                  setExportOpen(true);
+                }
+              : undefined,
+          onDelete: () => setBatchDeleteOpen(true),
+          onClear: clearSelection,
+        }}
+        listAriaLabel={t("wbAccounts.page.accountsAria", { count: accounts.length })}
+        totalCount={accounts.length}
+        visibleCount={sorted.length}
+        emptyNone={{
+          title: t("shared.list.empty.none"),
+          description: t("shared.list.empty.noneDesc"),
+          action: (
+            <Button onClick={() => setOauthOpen(true)}>
+              <QrCode />
+              {t("wbAccounts.page.oauthAdd")}
+            </Button>
+          ),
+        }}
+        emptyFiltered={{
+          title: t("shared.list.empty.filtered"),
+          description: t("shared.list.empty.filteredDesc"),
+          action: (
+            <Button variant="outline" onClick={clearListFilters}>
+              {t("shared.list.empty.clearFilters")}
+            </Button>
+          ),
+        }}
+        buckets={buckets}
+        columns={columns}
+        rowKey={(account) => selectionKey(account.id)}
+        selectedIds={selectedKeys}
+        onToggleSelect={toggleSelect}
+        onToggleBucketAll={toggleBucketSelection}
+        bucketAllSelected={bucketAllSelected}
+        bucketSomeSelected={bucketSomeSelected}
+        onOpenRow={openDetail}
+        isRowCurrent={(account) => isWorkbuddyCurrent(account, current)}
+        rowSelectLabel={(account) => t("shared.table.selectRowAria", { name: wbAccountName(account) })}
+        rowOpenLabel={(account) => t("shared.table.openRowAria", { name: wbAccountName(account) })}
+        renderCard={(a) => (
                             <AccountCard
                               key={a.id}
                               account={a}
-                              compact={compact}
                               onDelete={onDelete}
                               onSwitch={setSwitchAccount}
                               onCheckin={onCheckin}
@@ -2350,7 +2190,6 @@ function RegionPanel({ region }: { region: Region }) {
                               todayTokensTruncated={tokenTodayTruncated}
                               credit={creditMap[a.id]}
                               creditLoading={creditLoadingMap[a.id]}
-                              creditUpdatedAt={creditUpdatedAtMap[a.id]}
                               creditPriority={a.id === priorityAccountId}
                               workbuddyActive={isWorkbuddyCurrent(a, current)}
                               codebuddyCliConfigured={codebuddyCli?.configured && !codebuddyCli.migrationRequired && !codebuddyCli.syncPending}
@@ -2381,27 +2220,120 @@ function RegionPanel({ region }: { region: Region }) {
                               onOpenDetail={openDetail}
                               onEditRemark={openRemark}
                               onEditGroup={openGroup}
+                              /* ★ 两平台**同一取值**（Trae 侧同为 `false`）。
+                                 ⚠️ 此前 WB 传 `false`、Trae 传 `api.isDemoMode()` ⇒ 同一个演示构建里
+                                 「WB 的按钮能点、Trae 的按钮点不动」，用户看到两个平台行为不一致。
+                                 统一取 `false`：演示构建里写操作由 `api.ts` 统一拦截并给可读原因
+                                 （`demoUnavailableMessage`），比一枚**点不动又不说明**的按钮好；
+                                 这也是截图演示一直依赖的行为。 */
                               featuresDisabled={false}
                             />
-                          ))}
-                        </div>
-                      )}
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-          </section>
-
-          {/*
-            客户端限流台账（**只读**观测）：账号 × 模型 × 恢复时刻。
-            与账号强相关、无需切页；与网关无关，故不放「API 服务」页（PRD S4「挂载位置已定」）。
-          */}
+        )}
+        /* 列表下方的平台专属插槽：客户端限流台账（**只读**观测，账号 × 模型 × 恢复时刻）。
+           与账号强相关、无需切页；与网关无关，故不放「API 服务」页（PRD S4「挂载位置已定」）。 */
+        footer={
           <section className="mt-7 min-w-0">
             <ClientLimitsCard region={region} />
           </section>
-        </>
-      )}
+        }
+      />
+
+      <AddAccountDrawer
+        open={addDrawerOpen}
+        onOpenChange={setAddDrawerOpen}
+        scopeLabel={scopeLabel(t, scopeOf("workbuddy", region))}
+        installed={presence !== "absent"}
+        onPick={(way: AddAccountWay) => {
+          /* 与原型 `case "add-way"`（`:4236`）同构：先关抽屉，再进入对应流程。 */
+          if (way === "oauth") setOauthOpen(true);
+          else if (way === "backup") setImportOpen(true);
+          else void onImport();
+        }}
+        /* ★ 原工具栏「⋯」溢出菜单的落点（2026-10-12 用户要求「合并到添加账号的右侧弹出栏内」）。
+           抽屉里**本来就有**的两个入口（从本机导入 / 导入备份）就是上面那两张卡 ⇒ **不重复搬**；
+           回收站**已被用户点名「放出来」**（回工具栏，见 `onOpenRecycleBin`）
+           ⇒ 这里只剩 4 个：两枚开关 + 两枚动作。
+           动作行先关抽屉再开各自的弹层，避免两层遮罩叠在一起。 */
+        moreTools={[
+          {
+            key: "auto-checkin",
+            icon: CalendarCheck,
+            label: t("wbAccounts.page.autoCheckin"),
+            htmlFor: `accounts-auto-checkin-${region}`,
+            control: (
+              <>
+                <DemoAction>
+                  <Switch
+                    id={`accounts-auto-checkin-${region}`}
+                    checked={autoCheckinConfig?.enabled ?? false}
+                    disabled={!autoCheckinConfig || autoCheckinSaving}
+                    onCheckedChange={(enabled) => void onAutoCheckinChange(enabled)}
+                    aria-label={t("wbAccounts.page.autoCheckin")}
+                  />
+                </DemoAction>
+                {autoCheckinSaving && (
+                  <Loader2 className="size-3.5 animate-spin text-muted-foreground" aria-label={t("wbAccounts.page.autoCheckinSaving")} />
+                )}
+              </>
+            ),
+          },
+          {
+            key: "auto-travel",
+            icon: Plane,
+            label: t("wbAccounts.page.autoTravel"),
+            htmlFor: `accounts-auto-travel-${region}`,
+            control: (
+              <>
+                <DemoAction>
+                  <Switch
+                    id={`accounts-auto-travel-${region}`}
+                    checked={autoTravelConfig?.enabled ?? false}
+                    disabled={!autoTravelConfig || autoTravelSaving}
+                    onCheckedChange={(enabled) => void onAutoTravelChange(enabled)}
+                    aria-label={t("wbAccounts.page.autoTravel")}
+                  />
+                </DemoAction>
+                {autoTravelSaving && (
+                  <Loader2 className="size-3.5 animate-spin text-muted-foreground" aria-label={t("wbAccounts.page.autoTravelSaving")} />
+                )}
+              </>
+            ),
+          },
+          {
+            key: "export",
+            icon: FileDown,
+            label: t("wbAccounts.page.exportTitle"),
+            disabled: accounts.length === 0,
+            onClick: () => {
+              setAddDrawerOpen(false);
+              setExportOpen(true);
+            },
+          },
+          {
+            key: "refresh",
+            icon: RefreshCw,
+            label: t("wbAccounts.page.refreshCredits"),
+            disabled: refreshingCredits || checkinAllRunning || accounts.length === 0,
+            onClick: () => {
+              setAddDrawerOpen(false);
+              void onRefreshCredits();
+            },
+          },
+        ]}
+        labels={{
+          title: t("shared.addDrawer.title"),
+          scopeHintPrefix: t("shared.addDrawer.scopePrefix"),
+          scopeHintSuffix: t("shared.addDrawer.scopeSuffix"),
+          oauthTitle: t("shared.addDrawer.oauthTitle"),
+          oauthDesc: t("shared.addDrawer.oauthDesc"),
+          localTitle: t("shared.addDrawer.localTitle"),
+          localDesc: t("shared.addDrawer.localDesc"),
+          backupTitle: t("shared.addDrawer.backupTitle"),
+          backupDesc: t("shared.addDrawer.backupDesc"),
+          notInstalled: t("shared.addDrawer.notInstalled"),
+          moreTools: t("shared.addDrawer.moreTools"),
+        }}
+      />
 
       <OAuthLoginDialog open={oauthOpen} onOpenChange={setOauthOpen} region={region} />
       <ExportAccountsDialog
@@ -2421,6 +2353,21 @@ function RegionPanel({ region }: { region: Region }) {
         onImported={onImported}
         region={region}
       />
+      {/* ★ P14 S4a · 插件会话抽屉（VS Code 插件 / CodeBuddy IDE）。
+          与切换向导**并列而不是嵌套**：两者是不同流程，嵌套会让「关一个开一个」无法表达。 */}
+      {extDrawer ? (
+        <ExtSessionDrawer
+          open
+          onOpenChange={(open) => {
+            if (!open) setExtDrawer(null);
+          }}
+          client={extDrawer.client}
+          account={extDrawer.account}
+          /* 目标候选 = 本区域**除源账号以外**的全部账号（不写死列表）。 */
+          targets={accounts.filter((item) => item.id !== extDrawer.account.id)}
+        />
+      ) : null}
+
       <SwitchAccountDialog
         open={switchAccount !== null}
         onOpenChange={(o) => {
@@ -2584,6 +2531,22 @@ function RegionPanel({ region }: { region: Region }) {
         current={detailIsCurrent}
         switchTargets={detailSwitchTargets}
         onWizardSwitch={detail ? () => setSwitchAccount(detail) : undefined}
+        /* ★ P14 S4a · 插件会话复制入口：只在**有会话仓的程序位已接入**时注入
+           （`jetbrains` 刻意不映射 —— 它没有对应的会话树）。 */
+        onExtSessions={
+          detail && detailExtClient
+            ? () => setExtDrawer({ client: detailExtClient, account: detail })
+            : undefined
+        }
+        extClientLabel={
+          detailExtClient
+            ? t(
+                detailExtClient === "vscode"
+                  ? "sessions.ext.client.vscode"
+                  : "sessions.ext.client.codebuddyIde",
+              )
+            : undefined
+        }
         /* ★ 「操作」区（原型 :3518-3527）：刷新 / 签到 / 导出 / 权限诊断 / 删除（复用页面既有处理函数）。 */
         actions={detailActions}
         /* ★ 「签到历史（近 7 天）」（原型 :3428）：日期 / 结果来自签到日志，金额来自积分统计（缺失「—」）。 */
@@ -2613,25 +2576,6 @@ function RegionPanel({ region }: { region: Region }) {
             </Button>
           ),
         }}
-      />
-
-      {/* 最小批量操作条（P4）：仅在有勾选时浮现。 */}
-      <AccountBatchBar
-        selectedCount={selectedKeys.size}
-        busy={batchBusy}
-        onCheckin={() => void batchCheckin()}
-        onRefresh={() => void batchRefresh()}
-        /* 原型 `batch-export`：导出**所选**账号（工具栏那枚是「全部」，两者范围不同）。 */
-        onExport={
-          selectedAccounts.length > 0
-            ? () => {
-                setExportTargets(selectedAccounts);
-                setExportOpen(true);
-              }
-            : undefined
-        }
-        onDelete={() => setBatchDeleteOpen(true)}
-        onClear={clearSelection}
       />
 
       {/* 批量删除确认（桌面 App 不支持 window.confirm）。 */}

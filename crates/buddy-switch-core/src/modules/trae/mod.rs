@@ -114,6 +114,9 @@ pub mod region;
 /// 旧「产品线」账号库 → 新「区域」账号库的一次性合并迁移（幂等、带备份、不动旧文件）。
 pub mod region_migrate;
 pub mod settings;
+/// 客户端**合并**（issue #20）后，把遗留程序线的登录态快照搬进合并版槽位
+/// （幂等、只增不改、由客户端自己的 `migration-job.json` 门控）。
+pub mod snapshot_migrate;
 pub mod store;
 /// 测试专用的环境隔离与 fixture 构造（`cfg(test)` 下才编译，生产代码零引用）。
 #[cfg(test)]

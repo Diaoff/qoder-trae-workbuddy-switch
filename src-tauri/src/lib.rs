@@ -307,6 +307,12 @@ pub fn run() {
             // P8 · **分歧处理（覆盖式统一）**：目标分歧内容会被丢弃 ⇒ 前端二次确认（两宿主同步）。
             commands::unify_session_replicas,
             commands::copy_sessions,
+            // P14 S4a · VS Code 插件 / CodeBuddy IDE 的**会话仓**（只读枚举 + 加法复制；两宿主同步）。
+            commands::list_vscode_sessions,
+            commands::copy_vscode_sessions,
+            // P14 S4b · 记录级 diff（只读）+ 增量追加（**只有 appendable 才真写**）。
+            commands::diff_vscode_sessions,
+            commands::sync_vscode_sessions,
             // 客户端限流可视化（**只读**观测：账号 × 模型 × 恢复时刻；两宿主同步）。
             commands::client_limits,
             commands::migrate_account_data,

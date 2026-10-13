@@ -14,7 +14,7 @@ import { EmptyState } from "@/components/ui/empty-state";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 
-/** 扫描范围：`7` / `30` / `0`（`0` = 全量）。 */
+/** 扫描范围：`7` / `30` / `all`（`all` = 全量）。 */
 type WindowKey = "7" | "30" | "all";
 
 const WINDOW_DAYS: Record<WindowKey, number> = { "7": 7, "30": 30, all: 0 };
@@ -36,11 +36,28 @@ const WINDOW_LABELS: Record<WindowKey, TranslationKey> = {
 const QUEUE_CODES = new Set([6020, 6022]);
 
 /**
+ * 状态 → 徽章变体。**三态**，不是布尔：
+ * `unknown`（恢复时间解析不出）必须与 `recovered`（确定已过恢复时刻）区分开 ——
+ * 把「不知道」渲染成「已恢复」是凭空下结论。
+ */
+const STATE_VARIANTS = {
+  active: "warning",
+  unknown: "outline",
+  recovered: "secondary",
+} as const;
+
+const STATE_LABELS: Record<ClientLimitEntry["state"], TranslationKey> = {
+  active: "wbAccounts.limits.active",
+  unknown: "wbAccounts.limits.unknown",
+  recovered: "wbAccounts.limits.recovered",
+};
+
+/**
  * 客户端限流台账卡片：**账号 × 模型 × 恢复时刻**（**只读**观测）。
  *
  * 数据源是客户端自身落盘的三张只读表 join（见 core `client_limits.rs`）——
- * **不依赖网关、不代理客户端流量、不要求客户端配合**。后端已把「仍受限」置顶，
- * 本组件只负责渲染：仍受限的高亮，已恢复的灰显（PRD S4）。
+ * **不依赖网关、不代理客户端流量、不要求客户端配合**。后端已把「仍受限 → 未知 → 已恢复」
+ * 排好序，本组件只负责渲染（PRD S4）。
  *
  * ⚠️ **只读**：不触发任何写操作、不改变账号状态（PRD R8）。
  */
@@ -86,9 +103,18 @@ export function ClientLimitsCard({ region }: { region: Region }) {
             {data ? (
               <span className="text-xs text-muted-foreground tabular-nums">
                 {t("wbAccounts.limits.summary", {
-                  total: data.counts.deduped,
+                  total: data.counts.entries,
                   active: data.counts.active,
                 })}
+                {data.counts.unknown > 0
+                  ? t("wbAccounts.limits.summaryUnknown", { unknown: data.counts.unknown })
+                  : null}
+                {/* 非限流错误（网络类）被排除时**报数**，不是静默丢弃。 */}
+                {data.counts.skipped > 0 ? (
+                  <span title={t("wbAccounts.limits.skippedHint")}>
+                    {t("wbAccounts.limits.summarySkipped", { skipped: data.counts.skipped })}
+                  </span>
+                ) : null}
               </span>
             ) : null}
           </div>
@@ -130,7 +156,7 @@ export function ClientLimitsCard({ region }: { region: Region }) {
         ) : (
           <ul className="space-y-2">
             {limits.map((entry) => (
-              <LimitRow key={`${entry.accountUid ?? "?"}:${entry.model ?? "?"}:${entry.resetAt ?? "?"}`} entry={entry} />
+              <LimitRow key={limitRowKey(entry)} entry={entry} />
             ))}
           </ul>
         )}
@@ -139,17 +165,39 @@ export function ClientLimitsCard({ region }: { region: Region }) {
   );
 }
 
+/**
+ * React key：必须把**错误码**也编进去。
+ *
+ * 后端按 `(uid, model, code, reset_at)` 分桶 ⇒ 同一账号同模型下**不同错误码**的条目
+ * `resetAt` 可能同为 `null`，只用 `uid:model:resetAt` 会撞出重复 key（列表渲染错位）。
+ */
+function limitRowKey(entry: ClientLimitEntry): string {
+  const code = entry.code ?? entry.codeText ?? "?";
+  return `${entry.accountUid ?? "?"}:${entry.model ?? "?"}:${code}:${entry.resetAt ?? "?"}`;
+}
+
 function LimitRow({ entry }: { entry: ClientLimitEntry }) {
   const t = useT();
   const account = entry.account ?? t("wbAccounts.limits.accountUnknown");
   const model = entry.model ?? t("wbAccounts.limits.modelUnknown");
-  const reset = entry.resetAt ? t("wbAccounts.limits.resetAt", { time: formatDate(entry.resetAt) }) : t("wbAccounts.limits.resetUnknown");
+  // ⚠️ `resetAt` 是**配额窗口**的重置时刻，不是解锁时刻 —— 有实测实证时优先显示实证，
+  // 否则「恢复于 明天 09:04」和「已恢复」并排会自相矛盾。
+  const reset =
+    entry.state === "recovered" && entry.evidenceAt !== null
+      ? t("wbAccounts.limits.recoveredByEvidence", { time: formatDate(entry.evidenceAt) })
+      : entry.resetAt !== null
+        ? t("wbAccounts.limits.resetAt", { time: formatDate(entry.resetAt) })
+        : t("wbAccounts.limits.resetUnknown");
+  // 错误码：数值码优先，字符串码（实测 `ECONNRESET`）兜底 —— 都不丢。
+  const code = entry.code ?? entry.codeText;
 
   return (
     <li
       className={cn(
         "flex items-start justify-between gap-4 rounded-lg border border-border px-3.5 py-3",
-        entry.active ? "border-l-2 border-l-warning bg-warning/[0.04]" : "opacity-60",
+        entry.state === "active" && "border-l-2 border-l-warning bg-warning/[0.04]",
+        entry.state === "unknown" && "border-l-2 border-l-muted-foreground/50",
+        entry.state === "recovered" && "opacity-60",
       )}
     >
       <div className="min-w-0 flex-1">
@@ -162,13 +210,27 @@ function LimitRow({ entry }: { entry: ClientLimitEntry }) {
           </Badge>
         </div>
         <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
-          <span className={entry.active ? "font-medium text-warning" : undefined}>{reset}</span>
+          <span
+            className={entry.state === "active" ? "font-medium text-warning" : undefined}
+            title={t("wbAccounts.limits.resetHint")}
+          >
+            {reset}
+          </span>
           <span>{t("wbAccounts.limits.occurredAt", { time: formatDate(entry.occurredAt) })}</span>
-          {entry.code !== null ? (
+          {/* 合并了多条原始记录时如实标出条数，避免「条数」变成黑箱。 */}
+          {entry.occurrences > 1 ? (
+            <span
+              className="tabular-nums"
+              title={t("wbAccounts.limits.occurrencesHint", { count: entry.occurrences })}
+            >
+              {t("wbAccounts.limits.occurrences", { count: entry.occurrences })}
+            </span>
+          ) : null}
+          {code !== null ? (
             <span className="inline-flex items-center gap-1">
-              {t("wbAccounts.limits.code", { code: entry.code })}
+              {t("wbAccounts.limits.code", { code })}
               {/* R7：排队类 code 只标注保守词「排队中」，不臆造精确语义文案。 */}
-              {QUEUE_CODES.has(entry.code) ? (
+              {entry.code !== null && QUEUE_CODES.has(entry.code) ? (
                 <Badge
                   variant="outline"
                   className="h-4 px-1.5 text-[10px] leading-none"
@@ -185,8 +247,8 @@ function LimitRow({ entry }: { entry: ClientLimitEntry }) {
           </span>
         </div>
       </div>
-      <Badge variant={entry.active ? "warning" : "secondary"} className="shrink-0">
-        {entry.active ? t("wbAccounts.limits.active") : t("wbAccounts.limits.recovered")}
+      <Badge variant={STATE_VARIANTS[entry.state]} className="shrink-0">
+        {t(STATE_LABELS[entry.state])}
       </Badge>
     </li>
   );

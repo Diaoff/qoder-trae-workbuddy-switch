@@ -28,7 +28,6 @@ export const zh = {
   // 保存的目标只能是「该账号此刻登录着的程序位」；一个都没有时如实报错，不静默跳过。
   "trae.page.accounts.saveLoginNoProgram": "该账号当前没有登录在任何 Trae 客户端上，无法保存登录态",
   "trae.page.accounts.actionRefreshJwt": "刷新 JWT",
-  "trae.page.accounts.actionClearCooldown": "清除冷却",
   "trae.page.accounts.actionThaw": "解除冷却",
   "trae.page.accounts.actionDelete": "删除账号",
   // P4：最小批量条的动作标签（走 actionDone / actionFailed 组合）。
@@ -47,6 +46,9 @@ export const zh = {
   "trae.page.accounts.mergeBackup": "旧数据已备份到 {path}",
   "trae.page.accounts.mergeBackupFailed": "⚠️ 备份失败，请先手动复制数据目录",
   "trae.page.accounts.mergeFailed": "合并旧账号库失败",
+  "trae.page.accounts.mergeSnapshotsDone": "已搬运遗留登录态快照",
+  "trae.page.accounts.mergeSnapshots": "搬入 {count} 个账号的登录态快照（客户端合并前保存的）",
+  "trae.page.accounts.mergeSnapshotsFailed": "⚠️ {count} 个快照未能搬运，详见运行日志",
 
   // ---- 签到（全部 / 单个）----
   "trae.page.accounts.creditsRefreshFailed": "积分刷新失败",
@@ -74,39 +76,25 @@ export const zh = {
   "trae.page.accounts.addTitle": "添加与迁移账号",
   "trae.page.accounts.addSubtitle": "快速接入新账号，或从已有环境恢复",
   "trae.page.accounts.oauthLogin": "OAuth 网页登录",
-  "trae.page.accounts.importLocal": "导入本机账号",
   "trae.page.accounts.pasteJwt": "粘贴 JWT",
   "trae.page.accounts.pasteJwtTitle": "手动粘贴 Cloud-IDE-JWT（兜底方式，优先用上方网页登录）",
-  "trae.page.accounts.importBackup": "导入备份",
-  "trae.page.accounts.importBackupTitle": "从备份文件导入账号",
-  "trae.page.accounts.export": "导出",
   "trae.page.accounts.exportTitle": "导出账号备份",
 
-  // ---- 客户端环境说明行 ----
-  "trae.page.accounts.client": "客户端",
-  "trae.page.accounts.installed": "已安装",
-  "trae.page.accounts.installedVersion": "已安装 v{version}",
-  "trae.page.accounts.notInstalled": "未检测到",
-  "trae.page.accounts.manualPinned": "· 手动指定",
-  "trae.page.accounts.runtime": "运行状态",
-  "trae.page.accounts.running": "运行中",
-  "trae.page.accounts.notRunning": "未运行",
-  "trae.page.accounts.checkedTodayLabel": "今日已签",
-  "trae.page.accounts.availableCredits": "可用积分",
-  "trae.page.accounts.todayEarned": "今日新增",
-  "trae.page.accounts.jwtExpiring": "JWT 临期",
-  "trae.page.accounts.cooling": "冷却中",
-  "trae.page.accounts.clearCooldownAll": "全部清除",
-  "trae.page.accounts.dataDirLabel": "客户端数据目录：",
+  // ---- 首屏空态（`EmptyTraeCard`）----
+  // ⚠️ 2026-10-10：原「客户端环境说明行」（`client` / `runtime` / `checkedTodayLabel` /
+  //    `availableCredits` / `todayEarned` / `jwtExpiring` / `cooling` / `clearCooldownAll` /
+  //    `dataDirLabel` …）已随那条细说明**一并删除**（用户要求去掉，原型骨架里也没有它）。
+  //    这里只保留仍被 `EmptyTraeCard` 引用的键。
   "trae.page.accounts.dataDirMissing": "（尚未生成，请先启动一次 Trae 并登录）",
 
   // ---- 账号工具栏 ----
   "trae.page.accounts.sectionTitle": "账号",
   "trae.page.accounts.countAria": "{count} 个账号",
-  "trae.page.accounts.groupFilterAria": "按分组筛选",
-  "trae.page.accounts.allAccounts": "全部账号（{count}）",
-  "trae.page.accounts.ungrouped": "未分组（{count}）",
-  "trae.page.accounts.groupItem": "{name}（{count}）",
+  /* ★ 列表区**不再有可见标题**（原型 `viewAccounts` 的列表区没有「账号 N」标题，
+     计数由页头副标题表达）⇒ 语义改由 `section` 的 `aria-label` 承担，与 WorkBuddy 一致。 */
+  "trae.page.accounts.sectionAria": "账号列表（{count} 个）",
+  // ⚠️ 2026-10-10：工具栏上的「分组筛选」下拉已删除（用户要求工具栏与 WorkBuddy 一致），
+  //    随之删除 `groupFilterAria` / `allAccounts` / `ungrouped` / `groupItem` 四条文案。
   "trae.page.accounts.fallbackGroup": "分组",
   // P4 工具栏：排序 / 分组选项（由 `availableSorts` / `availableGroups` 数据驱动，不摆假选项）
   "trae.page.accounts.toolbar.sort.priority": "积分优先级",
@@ -134,10 +122,7 @@ export const zh = {
   "trae.page.accounts.skipChecked": "跳过已签到",
   "trae.page.accounts.skipCheckedAria": "跳过今日已签到账号",
   "trae.page.accounts.checkinSettingsSaving": "正在保存签到设置",
-  "trae.page.accounts.compactToLoose": "切换为宽松模式",
-  "trae.page.accounts.compactToCompact": "切换为紧凑模式",
   "trae.page.accounts.checkinRefreshAll": "签到并刷新全部账号积分",
-  "trae.page.accounts.demoDisabled": "演示模式下不可操作",
   "trae.page.accounts.autoCheckinSaveFailed": "自动签到设置保存失败",
   "trae.page.accounts.settingsSaveFailed": "设置保存失败",
   "trae.page.accounts.switchIncomplete": "切换未完成",
@@ -151,15 +136,10 @@ export const zh = {
   "trae.page.accounts.resultFailed": "失败",
   "trae.page.accounts.resultEmpty": "本轮没有需要签到的账号（今日已签到、冷却中或凭据过期）。",
 
-  // ---- 上次签到卡 ----
-  "trae.page.accounts.lastTitle": "上次签到",
-  "trae.page.accounts.lastUnknownTime": "时间未知",
-  "trae.page.accounts.lastNotToday": "（非今日）",
-  "trae.page.accounts.lastTruncated": "仅展示前 {limit} 条，共 {total} 条。",
-  "trae.page.accounts.lastCooldownDetail": "冷却明细：{list}",
-  "trae.page.accounts.lastCooldownItem": "{uid}（{type}{permanent}）",
-  "trae.page.accounts.lastCooldownPermanent": "·永久",
-  "trae.page.accounts.lastCooldownSep": "、",
+  // ⚠️ 2026-10-10：原「上次签到卡」（`lastTitle` / `lastUnknownTime` / `lastNotToday` /
+  //    `lastTruncated` / `lastCooldownDetail` / `lastCooldownItem` / `lastCooldownPermanent` /
+  //    `lastCooldownSep`）已随那张卡**一并删除**（用户要求去掉）。
+  //    批量签到结果改由共享 `CheckinResultBar` 就地呈现（工具栏与列表之间），不另开卡片。
 
   // ---- 账号增删改提示 ----
   "trae.page.accounts.accountAdded": "已添加账号",
@@ -243,6 +223,7 @@ export const zh = {
   "trae.page.settings.pathLabel": "客户端可执行文件路径",
   "trae.page.settings.pathDesc": "留空即自动探测，会覆盖系统盘与各非系统盘的常见安装目录，无需手动填写。仅在装在非常规位置时指定。",
   "trae.page.settings.pathPlaceholder": "留空则自动探测常见安装位置",
+  "trae.page.settings.pathStale": "这里填的路径已失效（客户端升级或合并后搬到了新位置），当前实际使用的是自动探测到的：{path}。点「保存」清空本栏即可恢复自动探测。",
 
   // ---- 端口与网络 ----
   "trae.page.settings.networkGroup": "端口与网络",
@@ -269,6 +250,7 @@ export const zh = {
   "trae.page.settings.skipExpiredDesc": "失效凭据必然返回 401；跳过可避免把账号打入永久冷却。",
   "trae.page.settings.retryLabel": "网络失败重试次数",
   "trae.page.settings.retryDesc": "仅对网络层异常重试；业务失败（如额度限制）不会重试。",
+  "trae.page.settings.logRetentionGroup": "日志保留",
   "trae.page.settings.logRetentionLabel": "日志保留天数",
   "trae.page.settings.logRetentionDesc": "超期的日志行会在启动时裁剪；无日期前缀的外部输出一律保留。",
 

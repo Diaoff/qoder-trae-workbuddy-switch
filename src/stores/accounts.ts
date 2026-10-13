@@ -10,8 +10,6 @@ export interface RegionSlice {
   error: string | null;
   creditMap: Record<string, CreditExpiry>;
   creditLoadingMap: Record<string, boolean>;
-  /** 账号 id -> 最近一次积分查询完成时间（成功/失败都记录） */
-  creditUpdatedAtMap: Record<string, number>;
   refreshingCredits: boolean;
 }
 
@@ -23,7 +21,6 @@ function emptySlice(): RegionSlice {
     error: null,
     creditMap: {},
     creditLoadingMap: {},
-    creditUpdatedAtMap: {},
     refreshingCredits: false,
   };
 }
@@ -60,7 +57,6 @@ export function selectRegionSlice(state: AccountsState, region: Region): RegionS
     error: state.error,
     creditMap: state.creditMap,
     creditLoadingMap: state.creditLoadingMap,
-    creditUpdatedAtMap: state.creditUpdatedAtMap,
     refreshingCredits: state.refreshingCredits,
   };
 }
@@ -83,8 +79,6 @@ interface AccountsState {
   error: string | null;
   creditMap: Record<string, CreditExpiry>;
   creditLoadingMap: Record<string, boolean>;
-  /** 账号 id -> 最近一次积分查询完成时间（成功/失败都记录） */
-  creditUpdatedAtMap: Record<string, number>;
   refreshingCredits: boolean;
   lastCreditRefreshAt: number;
   // —— 国际版 ——
@@ -173,15 +167,12 @@ export const useAccountsStore = create<AccountsState>((set, get) => ({
       const slice = selectRegionSlice(s, region);
       const nextCredits = { ...slice.creditMap };
       const nextLoading = { ...slice.creditLoadingMap };
-      const nextUpdatedAt = { ...slice.creditUpdatedAtMap };
       delete nextCredits[id];
       delete nextLoading[id];
-      delete nextUpdatedAt[id];
       return regionPatch(s, region, {
         accounts: slice.accounts.filter((a) => a.id !== id),
         creditMap: nextCredits,
         creditLoadingMap: nextLoading,
-        creditUpdatedAtMap: nextUpdatedAt,
       });
     });
   },
@@ -238,7 +229,6 @@ async function loadCredits(accountIds: string[], force: boolean, silent: boolean
         const cur = selectRegionSlice(s, region);
         return regionPatch(s, region, {
           creditMap: { ...cur.creditMap, [id]: result },
-          creditUpdatedAtMap: { ...cur.creditUpdatedAtMap, [id]: Date.now() },
           creditLoadingMap: silent ? cur.creditLoadingMap : { ...cur.creditLoadingMap, [id]: false },
         });
       });

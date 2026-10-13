@@ -42,13 +42,16 @@ const TONE_CLASS: Record<NonNullable<StatTile["tone"]>, string> = {
 export function StatTiles({
   tiles,
   ariaLabel,
-  separated = false,
+  separated = true,
 }: {
   tiles: StatTile[];
   ariaLabel?: string;
   /**
-   * 概览 `.grid.g4` 的形态：**每块一张独立 `.stat` 卡**（原型 `buddy-switch-prototype.html:2105-2110`），
-   * 而非把四块收进一张带分隔线的卡。仅概览传 `true`，其余四视图保持原形态。
+   * `.grid.g4` 的形态：**每块一张独立 `.stat` 卡**（原型 `buddy-switch-prototype.html:2105-2110`
+   * / 四视图的 `statTile()` 都是独立卡），而非把四块收进一张带分隔线的卡。
+   *
+   * ⚠️ **默认 `true`**：原型的用量四视图（趋势 / 模型 / 会话 / 积分）全部是「一排独立统计卡」，
+   * 合并成一张带分隔线的卡是改造前的旧形态（与原型不符）。保留 `false` 分支仅作历史兜底。
    */
   separated?: boolean;
 }) {
@@ -58,28 +61,28 @@ export function StatTiles({
   if (separated) {
     return (
       <div
+        /* `data-grid-cols="4"` 让 `index.css` 的原型断点（1100px→2 列 / 760px→1 列，
+           `demo.css:227-228`）能作用到这块。⚠️ 这里的 `sm:`/`lg:` 是 Tailwind 自带的
+           640/1024 断点，与原型不同 ⇒ 保留它们做兜底，但**原型值以 data 属性为准**。 */
+        data-grid-cols="4"
         className="grid min-w-0 grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4"
         aria-label={ariaLabel}
       >
         {tiles.map((tile) => (
           <Card
             key={tile.label}
-            className="min-w-0 gap-0 overflow-hidden rounded-lg bg-card/70 px-4 py-[15px] shadow-none"
+            className="min-w-0 gap-0 overflow-hidden rounded-lg bg-card px-4 py-[15px] shadow-none"
             title={tile.title}
           >
-            <div className="flex min-w-0 items-center gap-1.5 text-[11.5px] leading-4 text-muted-foreground">
+            <div className="flex min-w-0 items-center gap-1.5 text-[11.5px] text-muted-foreground">
               <tile.icon className="size-3.5 shrink-0 stroke-[1.75]" aria-hidden="true" />
               <span className="truncate">{tile.label}</span>
             </div>
             <div
               className={cn(
-                "mt-1.5 max-w-full truncate text-[20px] font-[640] leading-7 tracking-[-0.02em] tabular-nums",
+                "mt-1.5 max-w-full truncate text-[20px] font-[640] tracking-[-0.02em] tabular-nums",
                 TONE_CLASS[tile.tone ?? "default"],
               )}
-              style={{
-                fontFamily:
-                  '"Bricolage Grotesque Variable", "SF Pro Display", ui-sans-serif, sans-serif',
-              }}
             >
               {tile.value}
             </div>
@@ -96,7 +99,7 @@ export function StatTiles({
 
   return (
     <Card
-      className="min-w-0 gap-0 overflow-hidden rounded-2xl bg-card/70 py-0 shadow-none"
+      className="min-w-0 gap-0 overflow-hidden rounded-2xl bg-card py-0 shadow-none"
       aria-label={ariaLabel}
     >
       <div
@@ -122,10 +125,6 @@ export function StatTiles({
                 "mt-3 max-w-full truncate text-[26px] font-semibold leading-8 tracking-[-0.025em] tabular-nums",
                 TONE_CLASS[tile.tone ?? "default"],
               )}
-              style={{
-                fontFamily:
-                  '"Bricolage Grotesque Variable", "SF Pro Display", ui-sans-serif, sans-serif',
-              }}
             >
               {tile.value}
             </div>

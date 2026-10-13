@@ -218,12 +218,17 @@ export const zh = {
   "wbStats.usage.sessions.colRecords": "记录数",
   "wbStats.usage.sessions.colTokens": "Token",
   "wbStats.usage.sessions.colShare": "占比",
+  // ★ 截断说明：会话可达 1.5 万条，只渲染前 N 条，**必须显式讲明共多少个**。
+  "wbStats.usage.sessions.shownOf": "显示前 {shown} 个 · 共 {total} 个会话",
 
   // 积分视图
   "wbStats.usage.credits.available": "可用积分合计",
   "wbStats.usage.credits.in": "区间入账",
   "wbStats.usage.credits.out": "区间消耗",
   "wbStats.usage.credits.expiring": "即将过期",
+  // 「可用积分合计」的副标题（原型 `statTile("可用积分合计", …, `${allAcc.length} 个账号`)`）。
+  // 两平台的积分视图共用这一条 —— 只写一个裸数字（改造前的写法）看不出它是什么。
+  "wbStats.usage.credits.accountsHint": "{count} 个账号",
   "wbStats.usage.credits.dailyTitle": "每日积分消耗",
   "wbStats.usage.credits.dailyAria": "每日积分消耗柱状图",
   "wbStats.usage.credits.balanceTitle": "积分余额变化",

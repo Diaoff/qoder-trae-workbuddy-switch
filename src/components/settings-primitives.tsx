@@ -21,6 +21,25 @@ import { cn } from "@/lib/utils";
  * 这里只放**纯版式**原语，不含任何数据获取与业务判断 —— 两个设置页的内容
  * 差异极大（Trae 有客户端探测/设备标识/平台能力，WorkBuddy 有外观/权限/更新），
  * 强行合并内容只会得到一堆 `if (product === …)`。骨架统一、内容各自实现。
+ *
+ * ## 逐值对齐原型（`demo.css:210-220 / 382-386`）
+ *
+ * | 原型 | 本仓 | 说明 |
+ * |:---|:---|:---|
+ * | `.card { background:var(--card); border:1px solid var(--border); border-radius:var(--radius) }` | `Card` 默认 | `rounded-xl` 即 `--radius`=12px |
+ * | `.card-head { padding:13px 16px; border-bottom:1px solid var(--border) }` | `px-4 py-[13px] border-b border-border` | **标题在卡片内部** |
+ * | `.card-head h3 { font-size:13.5px; font-weight:600 }` | `text-[13.5px] font-semibold` | |
+ * | `.srow { gap:14px; padding:13px 16px; border-bottom }` | `gap-3.5 px-4 py-[13px] border-b border-border` | |
+ * | `.srow:last-child { border-bottom:0 }` | `last:border-b-0` | 不再由调用点手写 `border-b-0` |
+ * | `.srow .lab b { font-size:12.5px; font-weight:550 }` | `text-[12.5px] font-[550]` | |
+ * | `.srow .lab span { font-size:11.5px; color:var(--muted-fg); margin-top:2px }` | `mt-0.5 text-[11.5px] text-muted-foreground` | 不降不透明度 |
+ *
+ * ⚠️ **曾经的两处偏离**（本轮修掉）：
+ * 1. **分组标题写在卡片外面**（`section` 里再放一个 `h2`）—— 原型是卡片内的
+ *    `.card-head`。卡外标题会额外占掉「标题行高 + 间距」× 分区数，
+ *    这正是设置页内容高度 `803 vs 503` 的主要来源。
+ * 2. **行边框靠 `mx-4` 缩进**（`px-0` + 左右 margin）—— 原型的 `border-bottom`
+ *    铺满整行，缩进来自 `padding`。用 margin 模拟会让分隔线比原型短 32px。
  */
 
 interface SettingsGroupProps {
@@ -29,16 +48,18 @@ interface SettingsGroupProps {
   children: ReactNode;
 }
 
-/** 设置分组：标题贴左 + 圆角卡片。 */
+/** 设置分组：卡片内一条 `.card-head` 标题 + 内容（原型 `viewSettings` 的 `<section class="card">`）。 */
 export function SettingsGroup({ id, title, children }: SettingsGroupProps) {
   return (
-    <section className="min-w-0 space-y-2.5" aria-labelledby={id}>
-      <div className="px-1">
-        <h2 id={id} className="text-[13px] font-medium leading-5">
-          {title}
-        </h2>
-      </div>
-      <Card className="min-w-0 gap-0 overflow-hidden rounded-xl py-0 shadow-none">{children}</Card>
+    <section className="min-w-0" aria-labelledby={id}>
+      <Card className="min-w-0 gap-0 overflow-hidden rounded-xl py-0 shadow-none">
+        <div className="flex items-center gap-2.5 border-b border-border px-4 py-[13px]">
+          <h2 id={id} className="text-[13.5px] font-semibold leading-5">
+            {title}
+          </h2>
+        </div>
+        {children}
+      </Card>
     </section>
   );
 }
@@ -48,7 +69,7 @@ export function SettingsRow({ children, className }: { children: ReactNode; clas
   return (
     <div
       className={cn(
-        "mx-4 flex min-w-0 items-center justify-between gap-3 border-b border-border/50 px-0 py-2.5 sm:mx-5",
+        "flex min-w-0 items-center justify-between gap-3.5 border-b border-border px-4 py-[13px] last:border-b-0",
         className,
       )}
     >
@@ -85,14 +106,14 @@ export function SettingsFieldRow({
     <SettingsRow className={cn("flex-col items-stretch gap-2 sm:flex-row sm:items-center", className)}>
       <div className="min-w-0 flex-1">
         {htmlFor ? (
-          <Label htmlFor={htmlFor} className="text-[13px] leading-4">
+          <Label htmlFor={htmlFor} className="text-[12.5px] font-[550] leading-4">
             {label}
           </Label>
         ) : (
-          <div className="text-[13px] font-medium leading-4">{label}</div>
+          <div className="text-[12.5px] font-[550] leading-4">{label}</div>
         )}
         {description && (
-          <p className="mt-0.5 text-xs leading-4 text-muted-foreground/75">{description}</p>
+          <p className="mt-0.5 text-[11.5px] leading-4 text-muted-foreground">{description}</p>
         )}
       </div>
       <div className="flex min-w-0 w-full shrink-0 justify-end sm:w-auto">

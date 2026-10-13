@@ -71,6 +71,7 @@ export const en = {
   "shared.gateway.sourceBar.justNow": "just now",
   "shared.gateway.sourceBar.minutesAgo": "{n} min ago",
   "shared.gateway.sourceBar.hoursAgo": "{n} h ago",
+  "shared.gateway.sourceBar.yesterday": "yesterday",
   "shared.gateway.sourceBar.daysAgo": "{n} d ago",
   /* Model table (P11 §1.6) — components/gateway/model-table.tsx, shared by both platforms.
      Columns = model / upstream / gateway exposure; no "scope" column (#1), no "protocol" column (#2). */
@@ -122,7 +123,10 @@ export const en = {
   "shared.clipboard.copied": "Copied",
   "shared.clipboard.failed": "Copy failed — select the text and copy it manually",
 
-  // ---- Desktop companion window (components/companion/*, a separate window) ----
+  // ---- Desktop companion window (components/companion/, a separate window) ----
+  // ⚠️ Do NOT write a bare `/*` in a comment here: the scope gate strips comments with a
+  //   naive regex, so `companion/*` inside a line comment swallows everything up to the next
+  //   `*/` (it once dropped 250 lines of entries).
   // The companion is a separate webview (`?window=companion`, see the entry split in
   // `main.tsx`) sharing this word list. State labels / read-only footnote / empty state /
   // a11y labels come in T03; T01 only adds the title key the skeleton actually uses.
@@ -165,10 +169,17 @@ export const en = {
   // =====================================================================
   // Model names, protocol keys, paths and uids stay out of the word list — they are contracts.
   // ---- Fake accounts ----
-  "shared.demo.account.a": "Test A",
-  "shared.demo.account.aRemark": "DS4.1 quota unlocks on 10/03",
-  "shared.demo.account.b": "Test B",
-  "shared.demo.account.c": "Test C",
+  // Demo account names mirror the prototype's `SCOPES["wb-cn"].accounts` 1:1.
+  // ⚠️ These are usernames (data) — identical in both languages, never translated.
+  "shared.demo.account.a": "jackey",
+  "shared.demo.account.aRemark": "Primary · long-term",
+  "shared.demo.account.b": "team-shared",
+  "shared.demo.account.c": "backup-01",
+  "shared.demo.account.d": "qa-bot",
+  "shared.demo.account.e": "design-lab",
+  "shared.demo.account.f": "ops-02",
+  "shared.demo.account.g": "spare-global",
+  "shared.demo.account.h": "demo",
   // ---- Credit package names ----
   "shared.demo.pack.fission": "CodeBuddy Personal CN Growth Pack",
   "shared.demo.pack.credits": "CodeBuddy Personal Credits Pack",
@@ -176,8 +187,6 @@ export const en = {
   "shared.demo.pack.checkin": "CodeBuddy Check-in Bonus Credits",
   "shared.demo.pack.activity": "CodeBuddy Campaign Reward Credits",
   // ---- Auto travel ----
-  "shared.demo.travel.cafe": "Cafe",
-  "shared.demo.travel.gym": "Gym",
   // ---- Auto-rotate log ----
   "shared.demo.rotate.reasonPinned": "The current account is still the available one with the most urgent credit expiry",
   "shared.demo.rotate.reasonExpiring": "The target account's credits expire within 5 days",
@@ -200,11 +209,17 @@ export const en = {
   "shared.demo.pool.diagnose": "{name} ({tail}: {reason}, credits={credits})",
   "shared.demo.pool.creditsUnknown": "unknown",
   // ---- Trae: fake account names / group / packages / cooldown ----
-  "shared.demo.trae.name.main": "Primary",
-  "shared.demo.trae.remark.main": "Primary: keep for check-in credits, not long tasks",
-  "shared.demo.trae.name.altA": "Alt A",
-  "shared.demo.trae.name.altB": "Alt B",
-  "shared.demo.trae.group.spare": "Spare",
+  // Trae demo accounts mirror the prototype's `SCOPES["trae-cn"].accounts` 1:1.
+  // ⚠️ Usernames are data — identical in both languages.
+  "shared.demo.trae.name.jackey": "jackey",
+  "shared.demo.trae.remark.jackey": "TraeWork primary",
+  "shared.demo.trae.name.codeLab": "code-lab",
+  "shared.demo.trae.name.soloTest": "solo-test",
+  "shared.demo.trae.name.idle": "idle-01",
+  "shared.demo.trae.name.snap": "snap-acc",
+  "shared.demo.trae.group.common": "Common",
+  "shared.demo.trae.group.test": "Test",
+  "shared.demo.trae.group.idle": "Idle",
   "shared.demo.trae.pack.month": "Work Monthly Pack",
   "shared.demo.trae.pack.checkinBonus": "Check-in Bonus Pack",
   "shared.demo.trae.pack.cnPlan": "CN Plan Pack",
@@ -226,6 +241,9 @@ export const en = {
   "shared.demo.trae.program.workAi": "TraeWork AI",
   "shared.demo.trae.program.workGlobal": "TraeWork",
   "shared.demo.trae.program.codeAi": "Trae AI",
+  // Merged client (issue #20): the client is literally named `Trae`.
+  "shared.demo.trae.program.trae": "Trae",
+  "shared.demo.trae.program.traeAi": "Trae AI",
   "shared.demo.trae.program.codePending": "TraeCode (untested)",
   // ---- Trae: API key names / gateway diagnostics / logs ----
   "shared.demo.trae.key.cursorCn": "Cursor (TraeWork)",
@@ -339,18 +357,45 @@ export const en = {
   "shared.batch.deleteDesc": "Delete the {n} selected accounts? You can restore them from the recycle bin.",
   "shared.batch.confirm": "Delete",
   "shared.batch.cancel": "Cancel",
+  // ★ Bulk check-in result bar (prototype `checkinResultHtml`). Must report BOTH counts —
+  // a bulk operation always partially fails, so reporting only successes would be a lie.
+  "shared.checkinResult.summary": "{ok} ok · {fail} failed",
+  "shared.checkinResult.failedNames": "Failed: {names}",
+  "shared.checkinResult.allOk": "All accounts checked in",
+  "shared.checkinResult.retryFailed": "Retry failed",
+  "shared.checkinResult.dismiss": "Got it",
+  "shared.list.groupCount": "{n}",
 
   // ---- Account list toolbar (components/account-toolbar.tsx, shared) ----
-  "shared.toolbar.searchPlaceholder": "Search accounts…",
+  "shared.toolbar.searchPlaceholder": "Search name, email, remark… (press / to focus)",
   "shared.toolbar.searchAria": "Search accounts",
+  "shared.toolbar.sort": "Sort",
   "shared.toolbar.sortAria": "Sort by",
+  "shared.toolbar.group": "Group",
   "shared.toolbar.groupAria": "Group by",
   "shared.toolbar.viewAria": "Switch card / table view",
-  "shared.toolbar.viewCard": "Cards",
-  "shared.toolbar.viewTable": "Table",
+  "shared.toolbar.viewCard": "Card view",
+  "shared.toolbar.viewTable": "Table view",
   "shared.toolbar.viewTableDisabled": "Window is too narrow for the table view; widen it and try again",
   "shared.toolbar.selectAll": "Select all",
   "shared.toolbar.deselectAll": "Deselect all",
+
+  // =====================================================================
+  // ---- "Add account" drawer (components/add-account-drawer.tsx, shared) ----
+  // =====================================================================
+  // Shared by WorkBuddy and Trae, and it now also carries what used to live in the toolbar's
+  // "…" overflow menu — so the copy lives here instead of once per platform.
+  "shared.addDrawer.title": "Add account",
+  "shared.addDrawer.scopePrefix": "Current scope: ",
+  "shared.addDrawer.scopeSuffix": ". Pick a way to add an account.",
+  "shared.addDrawer.oauthTitle": "OAuth login",
+  "shared.addDrawer.oauthDesc": "Open the official authorization page; the account is imported after you sign in",
+  "shared.addDrawer.localTitle": "Import from this machine",
+  "shared.addDrawer.localDesc": "Read this client's signed-in session and add the account in use",
+  "shared.addDrawer.backupTitle": "Import a backup file",
+  "shared.addDrawer.backupDesc": "Restore accounts in bulk from an exported JSON backup",
+  "shared.addDrawer.notInstalled": "No client detected in this scope, so \"Import from this machine\" is unavailable. Use OAuth login instead.",
+  "shared.addDrawer.moreTools": "More actions",
 
   // ---- Account list empty states (two distinct kinds — never mix) ----
   "shared.list.empty.none": "No accounts yet",

@@ -11,6 +11,9 @@
  *
  * 气泡半径按 y 归一后取 `ZAxis.range`（像素上限受限），recharts 会在绘图区内布局，
  * 不会溢出边框。
+ *
+ * ⚠️ **本组件不做截断**：传入的点由调用方（`SessionsView`）先切到
+ * `SESSION_RENDER_LIMIT`。散点与排行**共用同一个切片**（契约 8 的「同一批会话」仍成立）。
  */
 
 import { CartesianGrid, Scatter, ScatterChart, XAxis, YAxis, ZAxis } from "recharts";

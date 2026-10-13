@@ -643,18 +643,29 @@ pub fn reset_device_for(variant: TraeVariant) -> Result<Value, String> {
 // 旧「产品线」账号库 → 区域账号库的一次性合并
 // ---------------------------------------------------------------------------
 
-/// 把旧产品线的账号库（`.trae_cn` 后缀）并入**国内版**区域账号库。
+/// 把旧产品线的账号库（`.trae_cn` 后缀）并入**国内版**区域账号库，
+/// 并把客户端合并（issue #20）遗留的登录态快照搬进合并版槽位。
 ///
-/// **幂等**：没有旧库、或已经并完时返回 `changed: false`，且不产生任何写入
-/// （见 [`super::region_migrate::merge_legacy_cn_into_region`]）。
-/// 因此前端在页面加载时无脑调一次是安全的。
+/// **幂等**：没有旧库 / 已经并完 / 没有可搬的快照时返回 `changed: false`，且不产生任何写入
+/// （见 [`super::region_migrate::merge_legacy_cn_into_region`] 与
+/// [`super::snapshot_migrate::carry_merged_snapshots`]）。因此前端在页面加载时无脑调一次是安全的。
 ///
 /// 为什么由**前端触发**而不是启动阶段自动跑：合并会改写用户的账号库。让用户在
 /// 能看到结果的地方触发、并在合并后收到一条明确提示，比在启动阶段静默改数据
 /// 更符合本工具「改写用户数据前先备份、并让用户知道」的既有约定
 /// —— 备份路径会随报告一起回传。
+///
+/// ⚠️ **快照搬运是尽力而为的**：它的失败只落在报告的 `snapshots.errors` 里，
+/// **不让整条命令失败** —— 账号库此刻已经并完并落盘了，此时报「失败」会让用户
+/// 以为什么都没发生（而那正是最需要他看到报告的时候）。
 pub fn merge_legacy_regions() -> Result<Value, String> {
-    super::region_migrate::merge_legacy_cn_into_region().map(|report| report.to_json())
+    let report = super::region_migrate::merge_legacy_cn_into_region()?;
+    let snapshots = super::snapshot_migrate::carry_merged_snapshots();
+    let mut value = report.to_json();
+    if let Some(object) = value.as_object_mut() {
+        object.insert("snapshots".to_string(), snapshots.to_json());
+    }
+    Ok(value)
 }
 
 // ---------------------------------------------------------------------------

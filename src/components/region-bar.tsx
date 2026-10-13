@@ -1,3 +1,4 @@
+import { Seg } from "@/components/ui/seg";
 import { useT } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
 
@@ -38,37 +39,26 @@ interface RegionBarProps {
  * `单区 → all` 换的是**同一份数据的呈现方式**（把两个区域合起来看）⇒ **视图参数**，留在页内。
  *
  * 这也与 `useScope` 的分工一致：它只管 `cn` / `global`，**不管 `all`**。
+ *
+ * ## 两平台同一控件
+ *
+ * Trae 侧的「作用域」就是**区域**（`/s/trae-cn` ↔ `/s/trae-global`，见 `useScope("trae")`），
+ * 与 WorkBuddy 同一根轴 ⇒ 同一枚控件、同一套文案，**不是** Trae 专属的「版本范围」四档
+ * （那枚四档控件已被删除：它既是页内区域选择器、又与 WB 长得不一样）。
  */
 export function RegionBar({ value, onChange, disabled, className }: RegionBarProps) {
   const t = useT();
-  const options = [
-    { merge: false, label: t("shared.region.combine.only") },
-    { merge: true, label: t("shared.region.combine.all") },
-  ];
   return (
-    <div
-      className={cn("flex gap-1 rounded-lg bg-muted p-1", disabled && "opacity-60", className)}
-      role="group"
-      aria-label={t("shared.region.combine.aria")}
-    >
-      {options.map((option) => (
-        <button
-          key={option.merge ? "all" : "only"}
-          type="button"
-          className={cn(
-            "cursor-pointer rounded-md px-2.5 py-1.5 text-xs transition-colors",
-            value === option.merge
-              ? "bg-background font-medium text-foreground shadow-sm"
-              : "text-muted-foreground hover:text-foreground",
-            disabled && "cursor-not-allowed",
-          )}
-          onClick={() => onChange(option.merge)}
-          disabled={disabled}
-          aria-pressed={value === option.merge}
-        >
-          {option.label}
-        </button>
-      ))}
-    </div>
+    <Seg
+      className={cn("shrink-0", className)}
+      value={value ? "all" : "only"}
+      onChange={(next) => onChange(next === "all")}
+      disabled={disabled}
+      ariaLabel={t("shared.region.combine.aria")}
+      options={[
+        { value: "only", label: t("shared.region.combine.only") },
+        { value: "all", label: t("shared.region.combine.all") },
+      ]}
+    />
   );
 }

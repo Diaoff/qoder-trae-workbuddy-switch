@@ -217,8 +217,8 @@ export default function ApiServicePage() {
       {/* 页头（原型 `viewGateway`）：作用域副标题 + 只读 scope-chip；区域来自作用域，整页跟随。 */}
       <header className="mb-5 flex items-start gap-4">
         <div className="min-w-0">
-          <h1 className="text-[28px] font-semibold tracking-tight">{t("wbStats.gateway.title")}</h1>
-          <p className="mt-1.5 text-xs text-muted-foreground">
+          <h1 className="text-[28px] font-[640] tracking-[-0.02em]">{t("wbStats.gateway.title")}</h1>
+          <p className="mt-1.5 text-[12.5px] text-muted-foreground">
             {t("pageHead.gateway", { scope: scopeLabel(t, scope) })}
           </p>
         </div>
@@ -243,9 +243,11 @@ export default function ApiServicePage() {
         </Alert>
       )}
 
-      {/* ---- 主区：子导航 + 分区内容（PLAN §3.9：替代原来的 6 卡纵向堆叠）---- */}
-      <div className="flex min-w-0 flex-col gap-6 lg:flex-row lg:gap-8">
-        <GatewaySubnav active={sub} onSelect={goSub} className="lg:w-44 lg:shrink-0" />
+      {/* ---- 主区：子导航 + 分区内容（PLAN §3.9：替代原来的 6 卡纵向堆叠）----
+          方向 / 对齐 / 间距整组在 `index.css` 的 `[data-split-layout]`（原型 `.split`，
+          含 900px 转纵向），故这里不再写 `flex-col` / `lg:flex-row` / `gap-*`。 */}
+      <div data-split-layout className="min-w-0">
+        <GatewaySubnav active={sub} onSelect={goSub} />
 
         <div className="min-w-0 flex-1">
           {/* ---- 概览：服务状态 + 接入地址 + 接入指引 ---- */}
@@ -330,8 +332,8 @@ export default function ApiServicePage() {
 
               {/* 接入地址：只显示**当前版本**（版本在页头切换，不在这里并排）。 */}
               <Card className="mb-6 gap-0 py-0">
-                <div className="flex flex-wrap items-center gap-3 border-b border-border/60 px-5 py-3">
-                  <span className="text-sm font-semibold">{t("wbStats.gateway.addr")}</span>
+                <div className="flex flex-wrap items-center gap-2.5 border-b border-border/60 px-4 py-[13px]">
+                  <span className="text-[13.5px] font-semibold">{t("wbStats.gateway.addr")}</span>
                 </div>
                 <div className="px-5 py-4">
                   <div className="flex flex-wrap items-center gap-3">

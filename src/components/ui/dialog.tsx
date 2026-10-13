@@ -50,7 +50,11 @@ function DialogContent({
       <DialogPrimitive.Content
         data-slot="dialog-content"
         className={cn(
-          "bg-background data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 fixed top-[50%] left-[50%] z-50 grid w-full max-w-[calc(100%-2rem)] translate-x-[-50%] translate-y-[-50%] gap-4 rounded-lg border p-6 shadow-lg duration-200 sm:max-w-lg",
+          /* ★ 逐值对齐原型 `.confirm`（`demo.css:591-599`）：
+             底 `--popover`（**不是** `--background` —— 深色下 background=0.208 比 popover=0.279
+             明显发暗，浮层会「沉下去」）、宽 420px、内距 20px、圆角 16px、
+             **靠上 6vh**（不是垂直居中）、阴影用本仓三级 elevation 的最高档。 */
+          "bg-popover data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 fixed left-[50%] top-[6vh] z-50 grid w-full max-w-[calc(100%-2rem)] -translate-x-1/2 gap-4 rounded-[16px] border p-5 shadow-overlay duration-200 sm:max-w-[420px]",
           className,
         )}
         {...props}
@@ -94,7 +98,8 @@ function DialogTitle({ className, ...props }: React.ComponentProps<typeof Dialog
   return (
     <DialogPrimitive.Title
       data-slot="dialog-title"
-      className={cn("text-lg leading-none font-semibold", className)}
+      /* 原型 `.confirm h3`（`demo.css:597`）：`15px` / `font-weight:640`（不是 shadcn 的18px/600） */
+      className={cn("text-[15px] leading-tight font-[640]", className)}
       {...props}
     />
   );
@@ -107,7 +112,8 @@ function DialogDescription({
   return (
     <DialogPrimitive.Description
       data-slot="dialog-description"
-      className={cn("text-muted-foreground text-sm", className)}
+      /* 原型 `.confirm p`（`demo.css:598`）：`12.5px` / `line-height:1.6` / muted */
+      className={cn("text-muted-foreground text-[12.5px] leading-relaxed", className)}
       {...props}
     />
   );

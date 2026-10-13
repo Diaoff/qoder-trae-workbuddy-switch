@@ -20,7 +20,6 @@ export const en = {
   "trae.page.accounts.actionSaveLogin": "Save sign-in state",
   "trae.page.accounts.saveLoginNoProgram": "This account is not signed in on any Trae client, so its sign-in state cannot be saved",
   "trae.page.accounts.actionRefreshJwt": "Refresh JWT",
-  "trae.page.accounts.actionClearCooldown": "Clear cooldown",
   "trae.page.accounts.actionThaw": "Clear cooldown",
   "trae.page.accounts.actionDelete": "Delete account",
   // P4: labels for the minimal batch bar (composed via actionDone / actionFailed).
@@ -37,6 +36,9 @@ export const en = {
   "trae.page.accounts.mergeBackup": "Old data backed up to {path}",
   "trae.page.accounts.mergeBackupFailed": "⚠️ Backup failed — copy the data directory manually first",
   "trae.page.accounts.mergeFailed": "Failed to merge the legacy account store",
+  "trae.page.accounts.mergeSnapshotsDone": "Legacy sign-in snapshots carried over",
+  "trae.page.accounts.mergeSnapshots": "Carried over sign-in snapshots for {count} account(s) (saved before the client merged)",
+  "trae.page.accounts.mergeSnapshotsFailed": "⚠️ {count} snapshot(s) could not be carried over — see the run log",
 
   // ---- Check-in (all / single) ----
   "trae.page.accounts.creditsRefreshFailed": "Failed to refresh credits",
@@ -64,39 +66,24 @@ export const en = {
   "trae.page.accounts.addTitle": "Add & migrate accounts",
   "trae.page.accounts.addSubtitle": "Add an account quickly, or restore from an existing environment",
   "trae.page.accounts.oauthLogin": "OAuth web sign-in",
-  "trae.page.accounts.importLocal": "Import local account",
   "trae.page.accounts.pasteJwt": "Paste JWT",
   "trae.page.accounts.pasteJwtTitle": "Paste Cloud-IDE-JWT manually (fallback — prefer the web sign-in above)",
-  "trae.page.accounts.importBackup": "Import backup",
-  "trae.page.accounts.importBackupTitle": "Import accounts from a backup file",
-  "trae.page.accounts.export": "Export",
   "trae.page.accounts.exportTitle": "Export account backup",
 
-  // ---- Client environment line ----
-  "trae.page.accounts.client": "Client",
-  "trae.page.accounts.installed": "Installed",
-  "trae.page.accounts.installedVersion": "Installed v{version}",
-  "trae.page.accounts.notInstalled": "Not detected",
-  "trae.page.accounts.manualPinned": "· pinned manually",
-  "trae.page.accounts.runtime": "Status",
-  "trae.page.accounts.running": "Running",
-  "trae.page.accounts.notRunning": "Not running",
-  "trae.page.accounts.checkedTodayLabel": "Checked in today",
-  "trae.page.accounts.availableCredits": "Available credits",
-  "trae.page.accounts.todayEarned": "Earned today",
-  "trae.page.accounts.jwtExpiring": "JWT expiring",
-  "trae.page.accounts.cooling": "Cooling down",
-  "trae.page.accounts.clearCooldownAll": "Clear all",
-  "trae.page.accounts.dataDirLabel": "Client data directory: ",
+  // ---- First-run empty state (`EmptyTraeCard`) ----
+  // 2026-10-10: the old "client environment line" keys were deleted along with that strip
+  // (the user asked to remove it, and the prototype's skeleton has no such row).
+  // Only the key still referenced by `EmptyTraeCard` remains.
   "trae.page.accounts.dataDirMissing": "(Not created yet — start Trae once and sign in first)",
 
   // ---- Accounts toolbar ----
   "trae.page.accounts.sectionTitle": "Accounts",
   "trae.page.accounts.countAria": "{count} accounts",
-  "trae.page.accounts.groupFilterAria": "Filter by group",
-  "trae.page.accounts.allAccounts": "All accounts ({count})",
-  "trae.page.accounts.ungrouped": "Ungrouped ({count})",
-  "trae.page.accounts.groupItem": "{name} ({count})",
+  /* The list section no longer renders a visible heading (the prototype's account list has
+     none); the count lives in the page-head subtitle, and semantics come from aria-label. */
+  "trae.page.accounts.sectionAria": "Account list ({count})",
+  // 2026-10-10: the toolbar's "filter by group" dropdown was removed so the toolbar matches
+  // WorkBuddy's control set; its four strings went with it.
   "trae.page.accounts.fallbackGroup": "Group",
   // P4 toolbar: sort / group options (driven by `availableSorts` / `availableGroups` data; no fake options)
   "trae.page.accounts.toolbar.sort.priority": "Credit priority",
@@ -124,10 +111,7 @@ export const en = {
   "trae.page.accounts.skipChecked": "Skip checked-in",
   "trae.page.accounts.skipCheckedAria": "Skip accounts already checked in today",
   "trae.page.accounts.checkinSettingsSaving": "Saving check-in setting",
-  "trae.page.accounts.compactToLoose": "Switch to comfortable mode",
-  "trae.page.accounts.compactToCompact": "Switch to compact mode",
   "trae.page.accounts.checkinRefreshAll": "Check in and refresh all accounts' credits",
-  "trae.page.accounts.demoDisabled": "Disabled in demo mode",
   "trae.page.accounts.autoCheckinSaveFailed": "Failed to save auto check-in setting",
   "trae.page.accounts.settingsSaveFailed": "Failed to save settings",
   "trae.page.accounts.switchIncomplete": "Switch did not complete",
@@ -141,15 +125,8 @@ export const en = {
   "trae.page.accounts.resultFailed": "Failed",
   "trae.page.accounts.resultEmpty": "No account needed a check-in this round (already checked in today, cooling down, or credentials expired).",
 
-  // ---- Last check-in card ----
-  "trae.page.accounts.lastTitle": "Last check-in",
-  "trae.page.accounts.lastUnknownTime": "Time unknown",
-  "trae.page.accounts.lastNotToday": "(Not today)",
-  "trae.page.accounts.lastTruncated": "Showing the first {limit} of {total} entries.",
-  "trae.page.accounts.lastCooldownDetail": "Cooldown details: {list}",
-  "trae.page.accounts.lastCooldownItem": "{uid} ({type}{permanent})",
-  "trae.page.accounts.lastCooldownPermanent": "· permanent",
-  "trae.page.accounts.lastCooldownSep": ", ",
+  // 2026-10-10: the "last check-in card" keys were deleted along with that card.
+  // Batch check-in results are shown inline by the shared `CheckinResultBar` instead.
 
   // ---- Account add / import / delete feedback ----
   "trae.page.accounts.accountAdded": "Account added",
@@ -231,6 +208,7 @@ export const en = {
   "trae.page.settings.pathLabel": "Client executable path",
   "trae.page.settings.pathDesc": "Leave empty for auto-detection, which scans common install locations on the system drive and other drives — no need to fill this in. Only set it if Trae sits in an unusual location.",
   "trae.page.settings.pathPlaceholder": "Empty = auto-detect common locations",
+  "trae.page.settings.pathStale": "The path set here no longer exists (the client was upgraded or merged into a new location). Currently using the auto-detected one: {path}. Click “Save” with this field empty to fall back to auto-detection.",
 
   // ---- Ports & network ----
   "trae.page.settings.networkGroup": "Ports & network",
@@ -257,6 +235,7 @@ export const en = {
   "trae.page.settings.skipExpiredDesc": "Invalid credentials always return 401; skipping them keeps the account out of permanent cooldown.",
   "trae.page.settings.retryLabel": "Network failure retries",
   "trae.page.settings.retryDesc": "Only network-level errors are retried; business failures (such as quota limits) are not.",
+  "trae.page.settings.logRetentionGroup": "Log retention",
   "trae.page.settings.logRetentionLabel": "Log retention days",
   "trae.page.settings.logRetentionDesc": "Log rows past the window are trimmed at startup; external output without a date prefix is always kept.",
 

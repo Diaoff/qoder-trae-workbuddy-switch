@@ -388,10 +388,17 @@ check("★ P3 空态迁移：已迁移处必须继续用 `EmptyState`（防回�
     "src/components/gateway/trae-model-list.tsx",
     "src/components/gateway/trae-request-log.tsx",
     "src/components/trae-export-accounts-dialog.tsx",
+    /* 用量四视图（2026-10-12 跨平台对齐）：Trae 两页原来的「一行虚线框」空态
+       已换成 `EmptyState`（含出口），并登记在此防回退。 */
+    "src/pages/TraeTokenStatsPage.tsx",
+    "src/pages/TraeCreditsPage.tsx",
   ];
   const regressed = migrated.filter((f) => {
     const code = stripComments(fs.readFileSync(path.join(ROOT, f), "utf8"));
-    return !/<EmptyState /.test(code);
+    /* ⚠️ 判据是「用了 `EmptyState` 这个原语」，**不是**「属性与标签同一行」——
+       此前写的是 `/<EmptyState /`（带空格），多行写法（`<EmptyState\n  icon=…`）会被误判成
+       「没迁移」。这是**门禁自身的格式依赖**，不是代码问题（2026-10-12 撞到）。 */
+    return !/<EmptyState\b/.test(code);
   });
   if (regressed.length) {
     throw new Error(`空态被改回自建形态：${regressed.map((f) => path.basename(f)).join(", ")}`);
@@ -534,26 +541,258 @@ check("★ P3 用量页：Token + 积分合并为一个目的地，且旧路径�
   return `目的地 ${registry.DESTINATIONS.length} 项 · 三条旧路径映射到 usage`;
 });
 
-check("★ P3 页面内不许再有区域选择器（区域归顶栏作用域，页内只留合并态）", () => {
-  const pages = ["src/pages/TokenStatsPage.tsx", "src/pages/CreditStatsPage.tsx"];
-  for (const f of pages) {
-    const code = stripComments(fs.readFileSync(path.join(ROOT, f), "utf8"));
-    const base = path.basename(f);
+check("★ P3 用量页视图参数条**只有一条**：由 `UsagePage` 渲染，四个视图页内不许有区域选择器", () => {
+  /* 原型 `viewUsage` 的结构是「页头 → seg（子 Tab）→ params → body」：
+     **一条**参数条管全部子 Tab，`state.range` / `state.merge` 是**页面级**的。
+     改造前每个视图页各持一份 `range` / `combineAll` 并各渲染一条 ⇒
+     ① 同一件事两份实现（必然漂移）；② 切子 Tab 范围被悄悄重置。 */
+  const page = stripComments(fs.readFileSync(path.join(ROOT, "src/pages/UsagePage.tsx"), "utf8"));
+  if (!/<ViewParamBar\b/.test(page)) {
+    throw new Error("`UsagePage` 没有渲染 `ViewParamBar` —— 参数条必须由页面级渲染一次");
+  }
+  if (!/useState<UsageRange>/.test(page) || !/readPreferredCombineAll/.test(page)) {
+    throw new Error("`UsagePage` 没有持有页面级视图参数（`range` / `combineAll`）");
+  }
 
-    // `RegionBar` 现在只接受布尔（合并态）—— 传 `region` 说明又变回区域选择器了
-    if (/<RegionBar[\s\S]{0,160}?value=\{region\}/.test(code)) {
-      throw new Error(`${base} 又用 RegionBar 切 region 了 —— 区域归顶栏作用域选择器（ScopeSelector）`);
+  /* 合并态控件（`RegionBar`）的唯一落点：参数条内部。 */
+  const bar = stripComments(
+    fs.readFileSync(path.join(ROOT, "src/components/usage/view-param-bar.tsx"), "utf8"),
+  );
+  if (!/<RegionBar value=\{combineAll\}/.test(bar)) {
+    throw new Error("视图参数条没有把合并态绑到 `combineAll`（`RegionBar`）");
+  }
+
+  /* 四个视图页：**都不许**自己再放参数条 / 区域选择器 / 自持参数状态。 */
+  const views = ["TokenStatsPage", "CreditStatsPage", "TraeTokenStatsPage", "TraeCreditsPage"];
+  for (const name of views) {
+    const code = stripComments(fs.readFileSync(path.join(ROOT, `src/pages/${name}.tsx`), "utf8"));
+    if (/<ViewParamBar\b/.test(code)) {
+      throw new Error(`${name} 又自己渲染参数条了 —— 参数条只在 \`UsagePage\` 一处`);
     }
-    if (!/<RegionBar value=\{combineAll\}/.test(code)) {
-      throw new Error(`${base} 的 RegionBar 没有绑定 \`combineAll\``);
+    if (/<RegionBar\b/.test(code)) {
+      throw new Error(`${name} 又自己渲染 \`RegionBar\` 了 —— 合并态归参数条`);
     }
     /* 不许解构 `useScope` 的 setter：页面内**不该有能力**切区域，
        否则又会出现「两个看起来能切的控件」。 */
-    if (/const \[scopeRegion, setScopeRegion\] = useScope\(/.test(code)) {
-      throw new Error(`${base} 又取了 \`useScope\` 的 setter —— 页面内不该能切区域`);
+    if (/const \[[A-Za-z]+, set[A-Za-z]+\] = useScope\(/.test(code)) {
+      throw new Error(`${name} 又取了 \`useScope\` 的 setter —— 页面内不该能切区域`);
+    }
+    if (/useState<UsageRange>|useState\(\(\) => readPreferredCombineAll/.test(code)) {
+      throw new Error(`${name} 又自持视图参数状态了 —— 那是页面级的（切子 Tab 不重置）`);
     }
   }
-  return `${pages.length} 个统计页都只留合并态`;
+  return `参数条唯一落点 = UsagePage；${views.length} 个视图页无区域选择器、无自持参数`;
+});
+
+check("★ 用量四视图两平台共用同一套骨架（统计卡 / 图表卡 / 受控参数）", () => {
+  /* 用户 2026-10-12 要求：「用量 tab 下 WorkBuddy 与 TraeWork 的 UI 和交互必须一致，
+     都严格对齐原型」。原型 `viewUsage` 是**平台无关**的（同一段代码 + 不同数据），
+     所以四个视图页必须共用同一批原语，差异**只能**走数据。
+     改造前的分叉：Trae 两页各自手搓「一张卡带分隔线、26px 居中数字」的统计块与手写卡片头。 */
+  const views = ["TokenStatsPage", "CreditStatsPage", "TraeTokenStatsPage", "TraeCreditsPage"];
+  for (const name of views) {
+    const code = stripComments(fs.readFileSync(path.join(ROOT, `src/pages/${name}.tsx`), "utf8"));
+
+    if (!/<StatTiles\b/.test(code)) {
+      throw new Error(`${name} 没有用共用的 \`StatTiles\` —— 统计卡会两平台两套几何`);
+    }
+    if (!/<ChartFrame\b/.test(code)) {
+      throw new Error(`${name} 没有用共用的 \`ChartFrame\` —— 图表卡会两平台两套外壳`);
+    }
+    if (!/UsageViewProps/.test(code)) {
+      throw new Error(`${name} 没有接收受控视图参数（\`UsageViewProps\`）`);
+    }
+    /* 反向断言：不许再手搓统计块 / 卡片头。 */
+    if (/text-\[26px\]/.test(code)) {
+      throw new Error(`${name} 又手搓了 26px 统计块（应走 \`StatTiles\`）`);
+    }
+    if (/function StatMetric\(/.test(code)) {
+      throw new Error(`${name} 又定义了局部 \`StatMetric\`（应走 \`StatTiles\`）`);
+    }
+    if (/text-\[13\.5px\]/.test(code)) {
+      throw new Error(`${name} 又手写了卡片头字号（应走 \`CardHead\` / \`ChartFrame\`）`);
+    }
+  }
+  return `${views.length} 个视图页都走 StatTiles + ChartFrame + 受控参数`;
+});
+
+check("★ 用量四视图的**图表集**两平台同源（原型块序：堆叠柱 / 累计曲线 / 环形 / 7×24 热力图 / 排行）", () => {
+  /* 用户 2026-10-12：「用量 tab 中的 TraeWork 要严格按照原型的实现」。
+     原型 `viewUsage` 的图表是**平台无关**的固定几张，所以两平台必须渲染同一批原语 ——
+     各写一套（Trae 改造前就是：整年活动网格 / 折线 / 自建柱状图）必然与原型的块序分叉。
+     反向断言「不许直接引 recharts」：一旦某个页面自己画图，共用原语的契约就绕过去了。 */
+  const tokenPages = ["TokenStatsPage", "TraeTokenStatsPage"];
+  const creditPages = ["CreditStatsPage", "TraeCreditsPage"];
+  const tokenCharts = [
+    ["StackedDailyBar", /<StackedDailyBar\b/],
+    ["CumulativeArea", /<CumulativeArea\b/],
+    ["ModelDonut", /<ModelDonut\b/],
+    ["UsageHeatmap", /<UsageHeatmap\b/],
+    ["ModelRanking", /<ModelRanking\b/],
+  ];
+  const creditCharts = [
+    ["CreditDivergingBar", /<CreditDivergingBar\b/],
+    ["CreditBalanceArea", /<CreditBalanceArea\b/],
+    ["CreditExpiryBars", /<CreditExpiryBars\b/],
+  ];
+  for (const [pages, charts] of [
+    [tokenPages, tokenCharts],
+    [creditPages, creditCharts],
+  ]) {
+    for (const name of pages) {
+      const code = stripComments(fs.readFileSync(path.join(ROOT, `src/pages/${name}.tsx`), "utf8"));
+      for (const [label, re] of charts) {
+        if (!re.test(code)) throw new Error(`${name} 缺原型的图表原语 \`${label}\``);
+      }
+      if (/from "recharts"/.test(code)) {
+        throw new Error(`${name} 又直接引 recharts 自己画图了 —— 原型的图必须走共用原语`);
+      }
+    }
+  }
+  return `${tokenPages.length} 页 × ${tokenCharts.length} 张 Token 图 + ${creditPages.length} 页 × ${creditCharts.length} 张积分图`;
+});
+
+check("★ Trae 用量适配层：映射成共用形状后走**同一批**图表适配函数（跑真代码）", () => {
+  /* 判据：Trae 的载荷（网关日志）与 WB 的形状不同，但图表需要的维度一致
+     ⇒ 只做映射、不另写一套。这里跑真代码验证四条契约：
+     ① 7×24 热力矩阵；② 堆叠柱列数 = 窗口天数且分段和 = 当日总量；
+     ③ 环形扇区数 = 有窗口内用量的模型数；④ 积分逐日柱**双向**（Trae 的入账可得）。 */
+  const tu = loadTs(path.join(ROOT, "src/lib/trae-usage-charts.ts"));
+  const uc = loadTs(path.join(ROOT, "src/lib/usage-charts.ts"));
+
+  const dayKey = (daysAgo) => {
+    const date = new Date(Date.now() - daysAgo * 86_400_000);
+    return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+  };
+  const bucket = (key, total) => ({
+    key, total, input: total, output: 0, records: 1, errors: 0,
+    streamRequests: 0, avgLatencyMs: 0, p95LatencyMs: 0,
+  });
+  const stats = {
+    source: "trae-gateway", label: "", generatedAt: 0, rangeDays: 30,
+    logFile: "", summary: bucket("summary", 60),
+    models: [bucket("m-a", 40), bucket("m-b", 20)],
+    accounts: [{ ...bucket("u1", 60), name: "甲", shortId: "u1" }],
+    /* ⚠️ `daily` 与 `modelDaily` 必须**同源**（真实后端两者都由同一批日志条目聚合）——
+       若某天只在 `modelDaily` 里出现，「分段之和 = 当日总量」这条契约就不可能成立。 */
+    daily: [bucket(dayKey(0), 60), bucket(dayKey(1), 0), bucket(dayKey(3), 9)],
+    /* 「周-小时」槽位：周一 09 点两笔累加 ⇒ 6；非法键必须被忽略。 */
+    hours: [
+      { ...bucket("0-09", 5), key: "0-09" },
+      { ...bucket("0-09", 1), key: "0-09" },
+      { ...bucket("6-23", 7), key: "6-23" },
+      { ...bucket("oops", 99), key: "oops" },
+    ],
+    statuses: [{ key: "200", records: 2 }],
+    modelDaily: [
+      { date: dayKey(0), model: "m-a", total: 40, input: 40, output: 0, records: 1 },
+      { date: dayKey(0), model: "m-b", total: 20, input: 20, output: 0, records: 1 },
+      { date: dayKey(3), model: "m-a", total: 9, input: 9, output: 0, records: 1 },
+    ],
+    variantCounts: { cn: 1, global: 0, unlabeled: 0, all: 1 },
+    unsupported: [], filesScanned: 1, parseErrors: 0,
+    coverageStartAt: null, coverageEndAt: null, note: "",
+  };
+
+  const source = tu.toTokenStatsSource(stats);
+  if (source.hours.length !== 4) throw new Error("hours 没有原样带过来");
+
+  const matrix = uc.heatmapMatrix(source.hours);
+  if (matrix.rows !== 7 || matrix.cols !== 24) throw new Error(`热力矩阵应为 7×24，实得 ${matrix.rows}×${matrix.cols}`);
+  if (matrix.cells[0][9] !== 6) throw new Error(`周一 09 点应为 6（5+1），实得 ${matrix.cells[0][9]}`);
+  if (matrix.cells[6][23] !== 7) throw new Error(`周日 23 点应为 7，实得 ${matrix.cells[6][23]}`);
+  if (matrix.cells.flat().reduce((a, b) => a + b, 0) !== 13) throw new Error("非法槽位键没有被忽略");
+
+  const cols = uc.dailyModelSeries(source, 30);
+  if (cols.length !== 30) throw new Error(`堆叠柱列数应 = 窗口天数 30，实得 ${cols.length}`);
+  for (const col of cols) {
+    const sum = col.segments.reduce((acc, seg) => acc + seg.value, 0);
+    if (Math.abs(sum - col.total) > 1e-6) throw new Error(`${col.day} 分段之和 ${sum} ≠ 当日总量 ${col.total}`);
+  }
+  const today = cols[cols.length - 1];
+  if (today.total !== 60 || today.segments.length !== 2) {
+    throw new Error(`今天应有 2 段共 60，实得 ${today.segments.length} 段 / ${today.total}`);
+  }
+
+  const slices = uc.modelSlices(source, 30);
+  if (slices.length !== 2) throw new Error(`扇区数应 = 窗口内有量的模型数 2，实得 ${slices.length}`);
+  if (slices[0].value !== 49) throw new Error(`头部模型窗口内应为 49（40+9），实得 ${slices[0].value}`);
+
+  const bars = tu.traeCreditBars([{ date: dayKey(0), total: 10, earned: 3, consumed: 1 }], 7);
+  if (bars.length !== 7) throw new Error(`逐日柱应铺满窗口 7 天，实得 ${bars.length}`);
+  const last = bars[bars.length - 1];
+  if (last.inAmt !== 3 || last.outAmt !== 1) {
+    throw new Error(`Trae 的入账可得 ⇒ 必须是双向柱（实得 in=${last.inAmt} / out=${last.outAmt}）`);
+  }
+
+  return `热力 7×24（周一09=6）· 堆叠 30 列且分段和=总量 · 扇区 2 个 · 积分双向柱 in=3/out=1`;
+});
+
+check("★ 用量·积分「合并全部作用域」**真的聚合**（跨区域按区域前缀分行，绝不按 uid 折叠）", () => {
+  /* 合并态是**视图参数**，不是装饰：切了数据必须变，否则就是本仓明令禁止的「假控件」。
+     Trae 的积分按区域分家、后端没有「一次取两区」的命令 ⇒ 合并只能在前端做，
+     本函数就是那段逻辑（`src/lib/trae-credits-merge.ts`）。**跑真代码**断言。 */
+  const m = loadTs(path.join(ROOT, "src/lib/trae-credits-merge.ts"));
+  const slice = (region, uid, credits, daily = []) => ({
+    region,
+    credits: {
+      remaining: { [uid]: credits },
+      expireTimes: {},
+      packages: {},
+      updatedAt: null,
+      balances: [],
+      records: [],
+      daily,
+      todayEarned: 0,
+      historyDays: 30,
+      unsupported: [],
+    },
+    overview: { accounts: [{ userId: uid, name: `acc-${uid}`, groupId: null }], groups: [] },
+  });
+
+  const merged = m.mergeTraeCredits([
+    slice("cn", "u1", 100, [{ date: "2026-10-11", total: 100, earned: 10, consumed: 1 }]),
+    slice("global", "u1", 7, [{ date: "2026-10-11", total: 7, earned: 2, consumed: 0 }]),
+  ]);
+  if (merged.total !== 107) throw new Error(`可用积分合计应为 107（100 + 7），实得 ${merged.total}`);
+  if (merged.rows.length !== 2) {
+    throw new Error(`同一 uid 在两个区域是**两个账号** ⇒ 应 2 行，实得 ${merged.rows.length}`);
+  }
+  if (new Set(merged.rows.map((r) => r.key)).size !== 2) {
+    throw new Error("行键没带区域前缀 —— 跨区被折叠成一行了");
+  }
+  const day = merged.daily.find((d) => d.date === "2026-10-11");
+  if (!day || day.total !== 107 || day.earned !== 12 || day.consumed !== 1) {
+    throw new Error(`每日快照没按日期求和：${JSON.stringify(day)}`);
+  }
+
+  /* 单区也走同一函数 ⇒ 页面只有**一条**渲染路径（这正是当初两平台分叉的成因）。 */
+  const single = m.mergeTraeCredits([slice("cn", "u1", 100)]);
+  if (single.total !== 100 || single.rows.length !== 1 || single.daily.length !== 0) {
+    throw new Error("单区路径与合并路径形状不一致");
+  }
+
+  /* 到期分布：Trae 的行里 `expireAt` 是**秒**、`CreditResource` 是**毫秒** ——
+     不换算会被当成「已过期」而**静默剔除**（「即将过期」永远 0）。 */
+  const tu = loadTs(path.join(ROOT, "src/lib/trae-usage-charts.ts"));
+  const now = 1_800_000_000_000;
+  const expiry = tu.traeCreditExpiry(
+    [
+      { credits: 5, expireAt: Math.floor((now + 3 * 86_400_000) / 1000) },
+      { credits: 9, expireAt: Math.floor((now - 86_400_000) / 1000) },
+      { credits: 4, expireAt: Math.floor((now + 90 * 86_400_000) / 1000) },
+      { credits: null, expireAt: null },
+    ],
+    now,
+  );
+  const uc = loadTs(path.join(ROOT, "src/lib/usage-charts.ts"));
+  const buckets = uc.expiryBuckets(expiry, now);
+  if (buckets.length !== 30) throw new Error(`到期轴应为 30 天，实得 ${buckets.length}`);
+  const bucketTotal = buckets.reduce((sum, bucket) => sum + bucket.value, 0);
+  if (bucketTotal !== 5) throw new Error(`未来 30 天内到期应为 5（已过期 / 超窗口 / 未同步都不计），实得 ${bucketTotal}`);
+  if (buckets[2].value !== 5) throw new Error(`D+3 应为 5，实得 ${buckets[2].value}`);
+
+  return `合计 ${merged.total} · 两区同 uid ⇒ ${merged.rows.length} 行 · 到期轴 30 天 · D+3 = ${buckets[2].value}`;
 });
 
 check("★ P3 用量页两平台共用同一组件（同概览页的模式）", () => {
@@ -712,12 +951,15 @@ function enclosingBraces(code, index) {
 
 check("★ P4 卡片常规可点区 ≤4：程序位行算 1 组（勾选框 / 程序位行 / 更多菜单 = 3）", () => {
   /* §1.3：卡片瘦身把「备注编辑」「资源包展开」移进抽屉，常规可点区收敛到 3。
-     口径：**程序位行算 1 组**（不是 3 枚按钮）—— 它是单一定义、紧凑头部与宽松页脚各引用一次。
+     口径：**程序位行算 1 组**（不是 3 枚按钮）—— 它是单一定义、页脚引用一次。
      所以静态计数**不数 `<Button>`**（那会把 3 枚程序位按钮数成 3 组），而数**可点组**：
      勾选框(1) + 程序位行(1) + 更多菜单(1) = 3 ≤ 4。 */
+  /* ★ 2026-10-10：两张卡的程序位行**改用同一个名字** `programRow`（Trae 侧原为 `programControls`）。
+     本次重构的目标是「用原型统一两个平台的交互」，同一结构在两处叫两个名字只会让人以为它们不同。
+     名字一致之后，下面的计数断言对两张卡是**同一套判据** —— 顺带把「两卡同构」钉住。 */
   const cards = [
     { file: "src/components/account-card.tsx", row: "programRow" },
-    { file: "src/components/trae-account-card.tsx", row: "programControls" },
+    { file: "src/components/trae-account-card.tsx", row: "programRow" },
   ];
   const summary = [];
   for (const { file, row } of cards) {
@@ -732,15 +974,15 @@ check("★ P4 卡片常规可点区 ≤4：程序位行算 1 组（勾选框 / �
       }
     }
 
-    /* 防回退②：程序位行必须**单一定义 + 两处引用**。
-       拆成两处定义会被静态计数当成两组，且紧凑 / 宽松两套渲染迟早漂移（§1.3 收敛动因）。 */
+    /* 防回退②：程序位行必须**单一定义 + 一处引用**（页脚）。
+       拆成多处定义会被静态计数当成多组，且两套渲染迟早漂移（§1.3 收敛动因）。 */
     const defs = (code.match(new RegExp(`const\\s+${row}\\s*=`, "g")) || []).length;
     if (defs !== 1) {
       throw new Error(`${base} 的程序位行 \`${row}\` 定义了 ${defs} 处，应为 1 处（单一定义）`);
     }
     const refs = (code.match(new RegExp(`\\{${row}\\}`, "g")) || []).length;
-    if (refs !== 2) {
-      throw new Error(`${base} 的程序位行 \`${row}\` 被引用 ${refs} 次，应为 2 次（紧凑头部 + 宽松页脚）`);
+    if (refs !== 1) {
+      throw new Error(`${base} 的程序位行 \`${row}\` 被引用 ${refs} 次，应为 1 次（页脚）`);
     }
 
     // 可点组计数：勾选框 + 程序位行 + 更多菜单（菜单以其触发器 `DropdownMenuTrigger` 代表存在）。
@@ -787,9 +1029,12 @@ check("★ P4 TraeProgram.region 在所有构造点都被赋值（跨区域消�
 check("★ P4 programsFor 不许按 program 去重（TraeProgramId 不含区域）", () => {
   /* §1.4 第 2 步：`TraeProgramId` 只有 2 个取值（`trae_work` / `trae_code`）且**不含区域**，
      按 `program` 去重会把 `(cn, trae_work)` 与 `(global, trae_work)` 合并成一条、
-     丢掉「该写哪个客户端」。去重必然要读程序项的 `.program` 字段
-     （`new Set(… .program)` / `.filter(p => seen.has(p.program))` / `new Map([[p.program, p]])`），
-     故「函数体内出现 `.program`」即该反模式的充分信号；按 `variant`（区域限定、唯一）去重不会读它。 */
+     丢掉「该写哪个客户端」。
+     ⚠️ 2026-10-12：原判据是「函数体内出现 `.program` 即报警」—— 那是**代理信号**，
+     而卡片按钮的可见短名（`Work` / `Code`）**必须**从 `program` 取
+     （`variant` / `label` 在 `variant.rs` 里语义不唯一，会把 Code 判成 Work）
+     ⇒ 代理信号产生**误报**，逼人改用不可靠的猜法。收紧为**真正的去重构造**：
+     任何去重都必然建 `Set`/`Map` 或 `filter`/`some` 并读 `.program`。 */
   const code = stripComments(
     fs.readFileSync(path.join(ROOT, "src/pages/TraeAccountsPage.tsx"), "utf8"),
   );
@@ -797,37 +1042,43 @@ check("★ P4 programsFor 不许按 program 去重（TraeProgramId 不含区域�
   if (start < 0) throw new Error("找不到 `programsFor` —— 断言失效（函数是否改名？）");
   const body = enclosingBraces(code, code.indexOf("{", start));
   if (!body) throw new Error("无法解析 `programsFor` 的函数体");
-  if (/\.program\b/.test(body)) {
+  if (/new\s+(Set|Map)\s*\([^)]*\.program\b|\.(filter|some|find|findIndex)\s*\([^)]*\.program\b/.test(body)) {
     throw new Error(
-      "`programsFor` 里出现按 `program` 去重的痕迹 —— 只能按 `variant` 去重（`program` 不含区域，去重会丢客户端）",
+      "`programsFor` 里出现按 `program` 去重/去查的构造 —— 只能按 `variant` 去重（`program` 不含区域，去重会丢客户端）",
     );
   }
   return "programsFor 未按 program 去重";
 });
 
-check("★ P4 跨区域同名程序位按钮必须带区域标识（显示层消歧，§5）", () => {
-  /* §5 硬约束：跨区域常显后 `TraeProgram` 带 `region`；**显示层不得出现两个无法区分的同名按钮**。
-     §1.4 的显示层解法：cross-region 分支给按钮加**区域标识**（`regionLabelOf(program.region)`），
-     且切换目标用**区域限定**的 `program.variant`（`onSwitchTo(account, program.variant)`）。
-     上面两条只锁了**数据**（`region` 有赋值、不去重）；这条补上**显示**（同名按钮可区分）——
-     否则 `region` 填对了、卡片却渲染两枚一模一样的「TraeWork」，用户仍无法分辨。
-     变异：删掉 cross-region 分支里的区域标识 span ⇒ 本条变红。 */
-  const code = stripComments(
-    fs.readFileSync(path.join(ROOT, "src/components/trae-account-card.tsx"), "utf8"),
-  );
-  if (!/\bcrossRegion\b/.test(code)) {
-    throw new Error("trae-account-card 无 `crossRegion` 判定 —— 跨区域程序位无法消歧");
+check("★ 账号页只渲染**本区域**的程序位（国内版不得出现国际版的，用户 2026-10-10 要求）", () => {
+  /* ★ 决策反转（2026-10-10）：原 §5 是「跨区域常显 + 显示层加区域标识消歧」，
+     于是国内版页面上一直挂着「TraeWork AI 国际版 / Trae AI 国际版」两枚**点了不能直接切**的按钮。
+     用户明确要求「国内版不要显示国外版的」⇒ 改为 `programsFor` **按当前区域过滤**，
+     卡片里的跨区域分支（`crossRegion` / `regionLabelOf` / `regionHint`）随之删除。
+
+     三条判据，证伪能力都在：
+       ① `programsFor` 必须按 `variant` 过滤（删掉 `.filter(... status.variant === variant)` ⇒ 变红）；
+       ② 卡片里**不得**再出现跨区域分支（`crossRegion` / `onSwitchRegion` 复活 ⇒ 变红）；
+       ③ 切换目标仍必须是**区域限定**的 `program.variant`（改成 `program.program` 会丢客户端 ⇒ 变红）。 */
+  /* ⚠️ 用字面路径而不是 `TRAE_PAGE` 常量：本断言的位置在常量声明**之前**（TDZ）。 */
+  const page = readCode("src/pages/TraeAccountsPage.tsx");
+  const fn = /function programsFor\([\s\S]*?\n  \}/.exec(page);
+  if (!fn) throw new Error("找不到 `programsFor` —— 断言失效（是否改名？）");
+  if (!/\.filter\(\(status\) => status\.variant === variant\)/.test(fn[0])) {
+    throw new Error("`programsFor` 未按当前区域过滤 —— 国内版会显示国际版的程序位");
   }
-  if (!/regionLabelOf\(program\.region/.test(code)) {
-    throw new Error("跨区域按钮未取区域标识（`regionLabelOf(program.region)`）—— 同名按钮无法区分");
+  const card = readCode("src/components/trae-account-card.tsx");
+  for (const gone of ["crossRegion", "onSwitchRegion", "regionLabelOf", "switch.regionHint"]) {
+    if (card.includes(gone)) {
+      throw new Error(
+        `trae-account-card 又出现 \`${gone}\` —— 跨区域程序位已改为「不渲染」，这条支路是死代码`,
+      );
+    }
   }
-  if (!/\{regionLabel\}/.test(code)) {
-    throw new Error("区域标识未被渲染为子节点（`{regionLabel}`）—— 两个同名按钮将无法区分（§5）");
+  if (!/onSwitchTo\?\.\(account,\s*program\.variant\)/.test(card)) {
+    throw new Error("切换目标不是区域限定的 `program.variant`（用 `program.program` 会丢客户端）");
   }
-  if (!/onSwitchTo\?\.\(account,\s*program\.variant\)/.test(code)) {
-    throw new Error("切换目标不是区域限定的 `program.variant`");
-  }
-  return "跨区域按钮带区域标识 · 切换目标 = program.variant";
+  return "programsFor 按区域过滤 · 卡片无跨区域分支 · 切换目标 = program.variant";
 });
 
 /* ── P4 收口：后端展示字段必须过 `displayText` 出口（防「白屏」回归）────────────
@@ -932,25 +1183,266 @@ function readCode(rel) {
 const WB_PAGE = "src/pages/AccountsPage.tsx";
 const TRAE_PAGE = "src/pages/TraeAccountsPage.tsx";
 
-check("★ P4 工具栏接线：两平台都用共用壳（AccountToolbar + AccountTable），且壳内无平台判断", () => {
+check("★ P4 工具栏接线：两平台都用共用壳（AccountWorkbench → AccountToolbar + AccountTable），且壳内无平台判断", () => {
+  /* ★ 2026-10-10 变更：`<AccountToolbar>` / `<AccountTable>` 的**调用点**从两个页面
+     移进了共享容器 `AccountWorkbench`（本次「用原型统一两平台」的收敛动作）。
+     断言因此分两层，证伪能力不变：
+       ① 两个页面都**必须**用 `AccountWorkbench`（页面不再自己摆工具栏/列表）；
+       ② 容器里**必须**同时调用 `AccountToolbar` 与 `AccountTable`（否则页面等于没有工具栏/表格）。
+     变异：任一侧页面改回手写工具栏 ⇒ ① 变红；容器里删掉 `<AccountTable>` ⇒ ② 变红。 */
+  const WORKBENCH = "src/components/account-workbench.tsx";
   for (const rel of [WB_PAGE, TRAE_PAGE]) {
-    const code = readCode(rel);
-    if (!/<AccountToolbar\b/.test(code)) {
-      throw new Error(`${path.basename(rel)} 没有用 \`AccountToolbar\``);
+    if (!/<AccountWorkbench\b/.test(readCode(rel))) {
+      throw new Error(`${path.basename(rel)} 没有用 \`AccountWorkbench\`（工具栏/列表不该由页面自己摆）`);
     }
-    if (!/<AccountTable\b/.test(code)) {
-      throw new Error(`${path.basename(rel)} 没有用 \`AccountTable\``);
+  }
+  const shell = readCode(WORKBENCH);
+  for (const [tag, why] of [
+    ["<AccountToolbar\\b", "工具栏"],
+    ["<AccountTable\\b", "表格视图"],
+  ]) {
+    if (!new RegExp(tag).test(shell)) {
+      throw new Error(`AccountWorkbench 没有调用 ${why} —— 共用容器必须自己渲染工具栏与表格`);
     }
   }
   /* 共用壳里**禁止**出现 `platform === ...` —— 平台差异一律走 `AccountListConfig`（数据）/
      `columns`（数据）/ `children`（插槽）。出现平台分支 = 合并过度，应退回「两份 + 抽片段」。 */
-  for (const rel of ["src/components/account-toolbar.tsx", "src/components/account-table.tsx"]) {
+  for (const rel of [
+    "src/components/account-toolbar.tsx",
+    "src/components/account-table.tsx",
+    WORKBENCH,
+  ]) {
     const code = readCode(rel);
     if (/\bplatform\s*===|\bplatform\s*:/.test(code)) {
-      throw new Error(`${path.basename(rel)} 出现平台判断 —— 差异应走数据 / children 插槽`);
+      throw new Error(`${path.basename(rel)} 出现平台判断 —— 差异应走数据 / 插槽`);
     }
   }
-  return "2 页接线 · 2 壳无平台分支";
+  return "2 页接线 AccountWorkbench · 容器含工具栏+表格 · 3 壳无平台分支";
+});
+
+check("★ 两平台工具栏**控件集一致**（Trae 不得再有 WB / 原型都没有的「分组筛选」下拉）", () => {
+  /* ★ 2026-10-10 用户要求「需要和 workbuddy 一样的交互」（圈了整个工具栏）。
+     实测两个工具栏的**唯一控件集差异** = Trae 独有的「分组**筛选**」下拉
+     （`全部账号（N）` / 未分组 / 各分组）—— 它把工具栏挤成两行，且 WB 与原型都没有这个控件。
+     ⇒ 删除（连同 `groupFilter` / `groupFiltered` / `UNGROUPED` 三个状态与四条文案）。
+     分组信息未丢：卡片上仍有分组标签，`group = "group"` 仍能按分组**分桶**。
+     变异：把那个下拉加回来（重新引入 `groupFilter`）⇒ 本条变红。
+
+     ⚠️★ 2026-10-12 二次修订：工具栏**不再有任何平台专属插槽** —— `toolbarExtra` /
+     `secondaryActions` 连同「⋯」溢出菜单一起删除（用户要求「合并到添加账号的右侧弹出栏内，
+     外面那枚菜单不用存在了」）⇒ 本条改成钉「两页都**没有**插槽 + 两页都用**同一个**抽屉」。
+     变异：给某一页加回 `toolbarExtra` ⇒ 本条变红。 */
+  const trae = readCode(TRAE_PAGE);
+  for (const gone of ["groupFilter", "groupFiltered", "UNGROUPED"]) {
+    if (trae.includes(gone)) {
+      throw new Error(
+        `Trae 页又出现 \`${gone}\` —— 工具栏多出 WorkBuddy / 原型都没有的控件（两平台工具栏必须一致）`,
+      );
+    }
+  }
+  for (const rel of [WB_PAGE, TRAE_PAGE]) {
+    const code = readCode(rel);
+    for (const gone of ["toolbarExtra", "secondaryActions"]) {
+      if (code.includes(gone)) {
+        throw new Error(
+          `${path.basename(rel)} 又给工具栏传了 \`${gone}\` —— 工具栏已无平台插槽，入口应进「添加账号」抽屉`,
+        );
+      }
+    }
+    /* 两平台必须渲染**同一个**抽屉（同一组件、同一套槽位），差异只走数据。 */
+    if (!/<AddAccountDrawer/.test(code)) {
+      throw new Error(`${path.basename(rel)} 没有渲染「添加账号」抽屉`);
+    }
+    for (const slot of ["moreTools={", "labels={{"]) {
+      if (!code.includes(slot)) {
+        throw new Error(`${path.basename(rel)} 的「添加账号」抽屉缺 \`${slot}\``);
+      }
+    }
+  }
+  /* ★ 2026-10-12（用户「回收站放出来」）：常驻控件必须**两页都注入** ——
+     只给一页加就会出现「同一个控件在一个平台有、另一个没有」。 */
+  for (const rel of [WB_PAGE, TRAE_PAGE]) {
+    const code = readCode(rel);
+    if (!code.includes("onOpenRecycleBin={")) {
+      throw new Error(`${path.basename(rel)} 没有注入常驻控件 \`onOpenRecycleBin={\``);
+    }
+  }
+  return "Trae 已无分组筛选下拉 · 两页无平台插槽 · 两页同抽屉 + 同常驻控件";
+});
+
+check("★ 账号页工具栏 = 原型一行 + 一枚常驻控件（搜索/排序/分组/视图/回收站/全选/主操作，**无「⋯」**）", () => {
+  /* ★ 2026-10-12 用户要求「1:1 还原」原型账号页。原型 `viewAccounts`
+     （`buddy-switch-prototype.html:2406-2429`）的工具栏在 1440px 下是**一行 56px**，控件只有：
+       搜索(`label.field.search`) · 排序(`label.field` + 「排序」前缀) · 分组(同) ·
+       视图 `.seg`(**纯图标**) · `[grow]` · 全选(`btn ghost sm` **文字按钮**) · `+ 添加账号`(`btn primary`)
+     ⚠️★ 2026-10-12 二次修订：本仓原先把多出来的 8 个入口收在一枚「⋯」溢出菜单里；
+     用户要求「合并到添加账号的右侧弹出栏内，外面那枚菜单不用存在了」⇒ 「⋯」**整块删除**，
+     内容改由 `AddAccountDrawer` 承载（见下一条门禁）。本条因此**反向**钉住：
+     工具栏里**不得**再有溢出菜单，也**不得**再有平台专属插槽 —— 那是它当初存在的唯一理由。
+     变异：把「⋯」加回来 / 给工具栏加回 `children` 插槽 ⇒ 本条变红。 */
+  const tb = readCode("src/components/account-toolbar.tsx");
+  // ① 搜索框 = 原型 `label.field`：图标与输入在**同一个字段**里（不是「图标绝对定位 + `pl-8`」）。
+  if (!/<label[^>]*flex h-8[^>]*>\s*<Search/.test(tb)) {
+    throw new Error("搜索框不是原型 `label.field` 结构（图标应在字段内，而非绝对定位）");
+  }
+  if (!/border-0 bg-transparent p-0/.test(tb)) {
+    throw new Error("字段内的 input 不是无边框 / 透明（原型 `.field input` 自身无边框）");
+  }
+  // ② 排序 / 分组：字段里**先写前缀文字**再跟下拉（原型 `label.field` 是「排序 <select>」）。
+  for (const k of ["shared.toolbar.sort", "shared.toolbar.group"]) {
+    if (!tb.includes(`t("${k}")`)) throw new Error(`排序 / 分组字段缺少前缀文字「${k}」`);
+  }
+  // ③ 视图切换 = **纯图标**（原型 `.seg button` 里只有 `ICON.grid` / `ICON.list`）。
+  if (/<LayoutGrid className="size-4" \/>\s*\{t\("shared\.toolbar\.viewCard"\)\}/.test(tb)) {
+    throw new Error("视图切换按钮又带上了文字 —— 原型 `.seg button` 里只有图标");
+  }
+  if (!/aria-label=\{t\("shared\.toolbar\.viewCard"\)\}/.test(tb)) {
+    throw new Error("视图切换按钮丢了无障碍名（文字拿掉后必须靠 aria-label / title 承担）");
+  }
+  // ④ 全选 = `btn ghost sm` **文字按钮**，不是「勾选框 + 文字」。
+  if (/<Checkbox/.test(tb)) {
+    throw new Error("工具栏又用回勾选框 —— 原型是 `btn ghost sm` 文字按钮");
+  }
+  if (!/aria-pressed=\{selection\.allSelected\}/.test(tb)) {
+    throw new Error("全选按钮没有 `aria-pressed`（勾选态现在由它承担）");
+  }
+  // ⑤ ★ 工具栏里**不得**再有溢出菜单 / ReactNode 平台插槽（入口已搬进「添加账号」抽屉）。
+  for (const gone of ["Ellipsis", "DropdownMenu", "shared.toolbar.moreAria", "children", "secondaryActions"]) {
+    if (tb.includes(gone)) {
+      throw new Error(`工具栏又出现 \`${gone}\` —— 溢出菜单已删除，入口应进「添加账号」抽屉`);
+    }
+  }
+  // ⑥ ★ 一枚**常驻**控件必须存在（用户要求「回收站放出来」），且必须是
+  //    **结构化 prop**（不是 ReactNode 插槽 —— 那种槽位正是上一轮删掉的东西）。
+  if (!tb.includes("onOpenRecycleBin?:")) {
+    throw new Error("工具栏缺常驻控件的结构化 prop `onOpenRecycleBin?:`");
+  }
+  //    回收站按 prop 有无条件渲染（不传就不画，避免出现点不动的死按钮）。
+  if (!/\{onOpenRecycleBin \? \(/.test(tb)) throw new Error("回收站按钮不是按 `onOpenRecycleBin` 条件渲染");
+  //    ⚠️ 图标钮必须 **34px**：`size-9`（36px）会成为行内最高子件 ⇒ 工具栏 `58` 而不是原型的 `56`
+  //    （实测 36 + 20 padding + 2 border = 58；34 + 20 + 2 = 56）。
+  if (tb.includes("size-9")) {
+    throw new Error("工具栏里的常驻图标钮用了 `size-9`（36px）—— 会把工具栏顶到 58，原型是 56");
+  }
+  // ⑦ 顺序 = 「视图 → 回收站 → grow → 全选 → 主操作」（原型右侧只有后两者）。
+  const iGrow = tb.indexOf('className="grow"');
+  const iAll = tb.indexOf("selection.allSelected");
+  const iAdd = tb.indexOf("addAction ? (");
+  const iRecycle = tb.indexOf("{onOpenRecycleBin ?");
+  if (!(iRecycle > 0 && iRecycle < iGrow && iGrow < iAll && iAll < iAdd)) {
+    throw new Error("工具栏顺序不是「回收站 → grow → 全选 → 主操作」");
+  }
+  // ⑧ 主操作 = 原型 `.btn`（内边距 13px；`Button` 对带图标者默认收到 11px，必须补回来）。
+  if (!/has-\[>svg\]:px-\[13px\]/.test(tb)) {
+    throw new Error("主操作内边距不是原型 `.btn` 的 13px");
+  }
+  return "搜索=label.field · 排序/分组带前缀 · 视图纯图标 · 回收站常驻 · 全选=ghost 按钮 · 无溢出菜单 · 主操作 13px";
+});
+
+check("★「添加账号」抽屉 = 原工具栏「⋯」内容的唯一落点（已有的不重复搬 · 放出来的不再留）", () => {
+  /* ★ 2026-10-12 用户要求「合并到添加账号的右侧弹出栏内…外面的菜单不用存在了，
+     workbuddy 和 traework 的交互保持一致」。原「⋯」菜单里的入口现在必须**全部有落点**，
+     且**已经存在的功能不重复搬**：
+       - 从本机导入 / 导入备份 → 抽屉**基础三张卡**里本来就有（不重复）；
+       - 自动签到 / 第二枚开关 / 导出备份 / 刷新 → `moreTools` **四行**；
+       - 回收站 → **已被用户点名「放出来」**（回工具栏的 `onOpenRecycleBin`）
+         ⇒ 抽屉里**不得**再留一份（同一个开关出现在两处必然打架）。
+     两平台的 `moreTools` **行数与顺序一致**（先两枚开关，再两枚动作），只有数据不同；
+     文案走 `shared.addDrawer.*`（同一个组件 ⇒ 不许再写回平台自己的域，否则两边会漂移）。
+     变异：删掉某一页的 `moreTools`（入口变死路）/ 改键序 / 把文案写回平台域 ⇒ 本条变红。 */
+  const WB_TOOL_KEYS = ["auto-checkin", "auto-travel", "export", "refresh"];
+  const TRAE_TOOL_KEYS = ["auto-checkin", "skip-checked", "export", "checkin-refresh"];
+  const drawer = readCode("src/components/add-account-drawer.tsx");
+  if (!/\{moreTools\?\.length \?/.test(drawer)) throw new Error("抽屉没有渲染 moreTools 分区");
+  if (!/\{moreTools\.map\(/.test(drawer)) throw new Error("抽屉没有把 moreTools 逐行渲染出来");
+  if (!/\{extraOptions\?\.map\(/.test(drawer)) throw new Error("抽屉没有渲染平台专属的 extraOptions");
+  for (const [rel, keys] of [[WB_PAGE, WB_TOOL_KEYS], [TRAE_PAGE, TRAE_TOOL_KEYS]]) {
+    const code = readCode(rel);
+    const i = code.indexOf("moreTools={");
+    if (i < 0) throw new Error(`${path.basename(rel)} 没给抽屉传 \`moreTools\``);
+    const seg = code.slice(i, code.indexOf("labels={{", i));
+    const found = [...seg.matchAll(/key:\s*"([^"]+)"/g)].map((m) => m[1]);
+    if (found.join(",") !== keys.join(",")) {
+      throw new Error(
+        `${path.basename(rel)} 的 moreTools 键序列为 [${found.join(",")}]，应为 [${keys.join(",")}]`,
+      );
+    }
+    if (!/moreTools:\s*t\("shared\.addDrawer\.moreTools"\)/.test(code)) {
+      throw new Error(`${path.basename(rel)} 的抽屉没有「更多操作」分区标题`);
+    }
+    if (/t\("(wbAccounts|trae)\.(addDrawer|page\.accounts\.addDrawer)/.test(code)) {
+      throw new Error(`${path.basename(rel)} 的抽屉文案又写回平台自己的域 —— 两平台必须逐字一致（shared.addDrawer.*）`);
+    }
+    /* ★ 抽屉里**不得**再出现「回收站」—— 它已放回工具栏，两处都放会打架。 */
+    if (/shared\.addDrawer\.compactMode|key:\s*"recycle"/.test(code)) {
+      throw new Error(`${path.basename(rel)} 的抽屉里仍有「回收站」—— 它已放回工具栏`);
+    }
+  }
+  return "两页抽屉各 4 行 · 键序一致 · 分区有标题 · 文案同源 · 无「已放出来」的重复项";
+});
+
+check("★ 卡片栅格不得用 `items-start`（同行卡片必须等高，原型 `.grid` 默认 stretch）", () => {
+  /* 原型 `.grid { display:grid; gap:12px }`（`buddy-switch-prototype.html:242`）**没有**
+     `align-items` ⇒ 默认 `stretch` ⇒ 同一行卡片**等高**，页脚自然落在底部对齐。
+     实测加 `items-start` 时同行卡片高度 406/381/361（差 45px），用户直接看出「卡片有些大有些小」。
+     变异：给栅格加回 `items-start` ⇒ 本条变红。 */
+  const shell = readCode("src/components/account-workbench.tsx");
+  const grid = /className="grid[^"]*"/.exec(shell);
+  if (!grid) throw new Error("AccountWorkbench 找不到卡片栅格");
+  if (/\bitems-start\b/.test(grid[0])) {
+    throw new Error(`卡片栅格带了 \`items-start\`（${grid[0]}）—— 同行卡片会不等高（原型默认 stretch）`);
+  }
+  if (!/min-\[1101px\]:grid-cols-3/.test(grid[0])) {
+    throw new Error("卡片栅格不是原型 `.g3` 的三列断点（min-[1101px]:grid-cols-3）");
+  }
+  return "栅格 stretch（同行等高）· 三列断点与原型一致";
+});
+
+check("★ 徽章图标必须用**后代**选择器 `[&_svg]`（用 `[&>svg]` 会失配并堆叠成两行）", () => {
+  /* `Badge` 为了「长文本出省略号」把 children 包进了内层 `truncate` span
+     ⇒ 图标**不再**是 `Badge` 的直接子级。若用 `[&>svg]:size-[11px]`：
+       ① 选择器失配 ⇒ 图标回到 lucide 默认 16px；
+       ② Tailwind preflight 给 `svg` 设了 `display:block`，内层 span 又是 block
+          ⇒ 图标与文字**上下堆叠成两行**（实测内层 33px），塞进 `h-5`（内容区 18px）
+          被 `overflow-hidden` **硬裁 13px** —— 用户看到「徽章里的图标/文字被切掉」。
+     ⇒ 必须同时有 `[&_svg]:size-…` 与 `[&_svg]:inline`（抵消 preflight 的 block）。
+     变异：把 `[&_svg]` 改回 `[&>svg]` ⇒ 本条变红（实测 scrollHeight 25 > clientHeight 18）。 */
+  const badge = readCode("src/components/ui/badge.tsx");
+  if (/\[&>svg\]/.test(badge)) {
+    throw new Error("Badge 用了 `[&>svg]` —— 图标在内层 truncate span 里，选择器会失配（图标变 16px 且堆叠被裁）");
+  }
+  if (!/\[&_svg\]:size-\[11px\]/.test(badge)) {
+    throw new Error("Badge 缺少 `[&_svg]:size-[11px]` —— 原型 `.badge` 的图标是 11px");
+  }
+  if (!/\[&_svg\]:inline/.test(badge)) {
+    throw new Error("Badge 缺少 `[&_svg]:inline` —— preflight 的 `svg{display:block}` 会让图标与文字堆叠成两行");
+  }
+  return "后代选择器 + 11px + inline（不堆叠、不被裁）";
+});
+
+check("★ Trae「当前登录」必须**逐程序位**判定（用区域去查 logins 会永远查不到）", () => {
+  /* ★ 2026-10-10 修的真实缺陷：`logins` 的键是**程序位标识**
+     （`trae_work` / `trae_cn` / `global` / `global_trae_code`），而 `variant` 是**区域**
+     （`cn` / `global`）。原实现写 `logins[variant]` ⇒ 只有「区域名恰好等于某个程序位标识」
+     时才能查到 —— 国际版有个程序位就叫 `global`，那边**碰巧**正常；
+     **国内版两个程序位叫 `trae_work` / `trae_cn`，永远查不到**
+     ⇒ 国内版作用域下没有任何一张卡会亮「当前登录」（实测复现）。
+     正解：`programsFor(account).some(p => p.current)`，与 WorkBuddy 卡片同一口径。
+     变异：把判定改回 `logins[variant]` ⇒ 本条变红。 */
+  const code = readCode(TRAE_PAGE);
+  if (/logins\[\s*variant\s*\]/.test(code)) {
+    throw new Error(
+      "Trae 页用 `logins[variant]`（区域）查登录态 —— 键是程序位标识，国内版永远查不到「当前登录」",
+    );
+  }
+  if (!/function isCurrentAccount\(/.test(code)) {
+    throw new Error("缺少 `isCurrentAccount` —— 卡片 / 表格 / 抽屉的「当前登录」必须共用同一判定");
+  }
+  const uses = (code.match(/isCurrentAccount\(/g) || []).length;
+  if (uses < 4) {
+    throw new Error(`\`isCurrentAccount\` 只被用了 ${uses} 次 —— 卡片 / 表格行 / 抽屉 / 定义处应≥4`);
+  }
+  return "逐程序位判定 · 卡片/表格/抽屉共用";
 });
 
 check("★ P4 排序选项按平台数据：WB 有 recent（有 lastUsedAt），Trae 无 recent（无「最近使用」字段）", () => {
@@ -997,7 +1489,7 @@ check("★ 「今日 Token」诚实边界：卡片指标行三项齐备，—/�
   for (const key of [
     "wbAccounts.card.metric.credits",
     "wbAccounts.card.metric.todayTokens",
-    "wbAccounts.card.metric.lastUsed",
+    "wbAccounts.card.metric.lastUsedTip",
   ]) {
     if (!card.includes(key)) throw new Error(`账号卡片指标行缺少「${key}」`);
   }
@@ -1008,8 +1500,12 @@ check("★ 「今日 Token」诚实边界：卡片指标行三项齐备，—/�
   if (!/"—"/.test(body)) throw new Error("`formatTodayTokens` 未把「缺席」渲染成「—」（会误显示成 0）");
   if (!/metric\.atLeast/.test(body)) throw new Error("`formatTodayTokens` 未把「网关被裁剪」渲染成下界「≥」");
   if (!/account\.lastUsedAt/.test(card)) throw new Error("账号卡片未读取 `AccountMeta.lastUsedAt`");
-  if (!/formatDate\(lastUsedAt\)/.test(card)) throw new Error("「最后使用」未经共享 `formatDate` 渲染");
-  return "三项齐备 · 缺席「—」/ 裁剪「≥」由 formatTodayTokens 统一承担 · lastUsedAt 走 formatDate";
+  /* 第三格：原型是**相对时间**（`2 分钟前`），且复用共享 `formatRelativeTime`
+     （`lib/catalog-source.ts`）—— 不许在本组件里另写一份相对时间格式化。 */
+  if (!/formatRelativeTime\(lastUsedAt, t\)/.test(card)) {
+    throw new Error("「最后使用」未经共享 `formatRelativeTime` 渲染（另写一份会与网关口径漂移）");
+  }
+  return "三项齐备 · 缺席「—」/ 裁剪「≥」由 formatTodayTokens 统一承担 · lastUsedAt 走 formatRelativeTime";
 });
 
 check("★ 「今日 Token」命令两端接线：路由 + 调用 + 命令名 + 结果类型", () => {
@@ -1052,38 +1548,54 @@ check("★ 「今日 Token」表格列：WB 账号表新增该列，且复用同
 check("★ P4 两种空态不混用：被筛没必须给「清除筛选」出口（删出口即变红）", () => {
   /* §1.9：真没有数据 → 「还没有 X」+ 添加出口；被筛没 → 「没有符合条件的 X」+ **清除筛选出口**。
      变异②：删掉「清除筛选」出口（按钮 / 文案 / 复位函数任一）⇒ 本条变红。 */
+  /* ★ 2026-10-10 变更：分桶与两种空态的**判据**已收进 `AccountWorkbench`
+     （页面只传 `totalCount` / `visibleCount` / 两份文案）。断言因此分两层：
+       ① 容器里「总数 0」与「可见 0」是**两个独立分支**（混用即变红）；
+       ② 每个页面都**必须**为「被筛没」提供带「清除筛选」出口的文案 + 复位函数。
+     变异：把容器里两个分支合成一个 ⇒ ① 变红；删掉任一侧的 `clearListFilters` / 文案 ⇒ ② 变红。 */
+  const WORKBENCH = "src/components/account-workbench.tsx";
+  const shell = readCode(WORKBENCH);
+  if (!/totalCount === 0/.test(shell)) {
+    throw new Error("AccountWorkbench 缺少「真没有」判据（totalCount === 0）");
+  }
+  if (!/visibleCount === 0/.test(shell)) {
+    throw new Error("AccountWorkbench 缺少「被筛没」判据（visibleCount === 0）");
+  }
   for (const rel of [WB_PAGE, TRAE_PAGE]) {
     const code = readCode(rel);
-    if (!/sorted\.length === 0/.test(code)) {
-      throw new Error(`${path.basename(rel)} 缺少「被筛没」判据（sorted.length === 0）`);
-    }
     if (!/function clearListFilters\(/.test(code)) {
       throw new Error(`${path.basename(rel)} 缺少 \`clearListFilters\` 复位函数`);
     }
     if (!/shared\.list\.empty\.clearFilters/.test(code)) {
       throw new Error(`${path.basename(rel)} 的「清除筛选」按钮文案缺失 —— 空态被丢在原地`);
     }
+    if (!/emptyFiltered=\{/.test(code)) {
+      throw new Error(`${path.basename(rel)} 没有把「被筛没」文案交给容器（emptyFiltered）`);
+    }
   }
   // Trae 的「真没有账号」由外层 `EmptyTraeCard` 承担（与「被筛没」是两套不同文案）。
   if (!/<EmptyTraeCard/.test(readCode(TRAE_PAGE))) {
     throw new Error("Trae 页缺少「真没有账号」空态（EmptyTraeCard）—— 两种空态会混用");
   }
-  return "两页「真没有 / 被筛没」分离 · 被筛没均含出口";
+  return "容器内「真没有 / 被筛没」两分支 · 两页均含清除筛选出口";
 });
 
 check("★ P4 搜索框常驻（IME 约束）：工具栏不被「结果为空」换掉，<Input> 无条件渲染", () => {
   /* §1.4：受控 <Input> 不得因 `query` 变化 / 结果为空而 unmount，否则中文输入法连续组词丢字。
      变异①：把工具栏（含搜索框）挪进「被筛没」分支（`sorted.length === 0 ? … : <AccountToolbar/>`）
      ⇒ 工具栏出现在 `sorted.length === 0` **之后** ⇒ 本条变红。 */
-  for (const rel of [WB_PAGE, TRAE_PAGE]) {
-    const code = readCode(rel);
-    const iToolbar = code.indexOf("<AccountToolbar");
-    const iEmpty = code.indexOf("sorted.length === 0");
-    if (iToolbar < 0) throw new Error(`${path.basename(rel)} 找不到 <AccountToolbar>`);
-    if (iEmpty < 0) throw new Error(`${path.basename(rel)} 找不到 sorted.length === 0`);
+  /* ★ 2026-10-10 变更：工具栏的**调用点**已从两个页面移进 `AccountWorkbench`
+     ⇒ 断言改在容器里做（判据不变：工具栏必须排在「可见数为 0」的分支**之前**）。
+     变异：把 `<AccountToolbar>` 挪进 `visibleCount === 0` 分支 ⇒ 本条变红。 */
+  {
+    const shell = readCode("src/components/account-workbench.tsx");
+    const iToolbar = shell.indexOf("<AccountToolbar");
+    const iEmpty = shell.indexOf("visibleCount === 0");
+    if (iToolbar < 0) throw new Error("AccountWorkbench 找不到 <AccountToolbar>");
+    if (iEmpty < 0) throw new Error("AccountWorkbench 找不到 visibleCount === 0");
     if (iToolbar > iEmpty) {
       throw new Error(
-        `${path.basename(rel)} 的工具栏出现在「被筛没」分支之后 —— 结果为空时搜索框会被 unmount（IME 丢字）`,
+        "AccountWorkbench 的工具栏出现在「被筛没」分支之后 —— 结果为空时搜索框会被 unmount（IME 丢字）",
       );
     }
   }
@@ -3569,6 +4081,10 @@ check("★ P3 网关 6 项子导航：6 项齐备 + 两页接线（替代 6 卡�
     const code = readCode(page);
     if (!/<GatewaySubnav\b/.test(code)) throw new Error(`${page} 没有接网关子导航`);
     if (!/useState<GatewaySubnavId>/.test(code)) throw new Error(`${page} 子导航选中态未接线`);
+    /* 两页必须同构：`data-split-layout`（900px 转纵向）与 `goSub`（写 URL）缺一即红。
+       ⚠️ Trae 页此前两样都缺 —— 点击子导航 URL 不变、窄屏也不转纵向。 */
+    if (!/data-split-layout/.test(code)) throw new Error(`${page} 缺 data-split-layout（900px 以下不转纵向）`);
+    if (!/function goSub\(/.test(code)) throw new Error(`${page} 切换子分区未写 URL（缺 goSub）`);
   }
   /* 变异②：Trae 页若把「请求代理」也渲染出来（P12 的 C 路只覆盖 WorkBuddy 网关端口）⇒ 变红。 */
   const trae = readCode("src/pages/TraeApiServicePage.tsx");
@@ -3596,7 +4112,6 @@ check("★ P7 appSettings localStorage 段：键名与各来源模块逐字一�
   const pairs = [
     ["buddy-switch.language", "src/lib/i18n.ts"],
     ["buddy-switch.theme", "src/lib/theme.ts"],
-    ["buddy-switch.compact", "src/lib/use-compact-mode.ts"],
     ["buddy-switch:v1:last-scope", "src/lib/scope.ts"],
   ];
   for (const [key, source] of pairs) {
@@ -3611,7 +4126,7 @@ check("★ P7 appSettings localStorage 段：键名与各来源模块逐字一�
     throw new Error("缺读 / 回写函数");
   }
   if (!/containsCredential/.test(code)) throw new Error("缺凭据护栏（代理 URL 可能含 user:pass@）");
-  return "4 键与来源逐字一致 · 读/写/凭据护栏齐备";
+  return "3 键与来源逐字一致 · 读/写/凭据护栏齐备";
 });
 
 check("★ P7 词条 zh + en 同步（备份域逐键对齐，且已组合进词表）", () => {
@@ -4531,8 +5046,17 @@ check("★ P8 T03 所有客户端切换走**同一条**确认流程（WorkBuddy 
   if (!/<RestartConfirmDialog\b/.test(tp)) {
     throw new Error("TraeAccountsPage 未复用确认流程（TraeWork / TraeCode 切换未接）");
   }
-  if (!/onSwitchTo=\{[\s\S]{0,300}setSwitchConfirm\(/.test(tp)) {
-    throw new Error("Trae 的 `onSwitchTo` 未先打开确认框（直接切换 = 行为不一致）");
+  /* ★ 2026-10-10：Trae 的切换点从**内联箭头**抽成具名函数 `requestSwitchTo`
+     —— 因为「切换到此账号」现在**卡片与抽屉两处**都要用，两处各写一遍内联箭头
+     正是「同一动作两种实现」的分叉来源（本仓在确认流程 / 保存登录态上都栽过）。
+     断言因此拆成两条，证伪能力不变：
+       ① 接线在（`onSwitchTo={requestSwitchTo}`）；
+       ② 该函数**确实**先打开确认框（改成直接调 API ⇒ 变红）。 */
+  if (!/onSwitchTo=\{requestSwitchTo\}/.test(tp)) {
+    throw new Error("Trae 的 `onSwitchTo` 未接 `requestSwitchTo`（切换入口失联）");
+  }
+  if (!/function requestSwitchTo\([\s\S]{0,400}?setSwitchConfirm\(/.test(tp)) {
+    throw new Error("Trae 的 `requestSwitchTo` 未先打开确认框（直接切换 = 行为不一致）");
   }
   return "SD(WorkBuddy) + AccountsPage(IDE/CLI) + TraeAccountsPage(Trae) 同一条流程";
 });
@@ -4978,17 +5502,16 @@ check("★ P3(独立) 适配层①：堆叠柱每列分段之和 === 当日总�
 check("★ P3(独立) 适配层②：热力图 7 行 × 24 列，缺失补 0，非法 key 忽略（跑真代码）", () => {
   /* 变异：`heatmapMatrix` 只出 24 桶（丢掉 weekday 维）⇒ 维度不再是 7×24 ⇒ 本条变红。 */
   const uc = loadTs(path.join(ROOT, USAGE_CHARTS));
-  const src = usageSource({
-    hours: [
-      { key: "0-9", total: 5 },   // 周一 09 点
-      { key: "0-9", total: 1 },   // 同格累加 ⇒ 6
-      { key: "6-23", total: 7 },  // 周日 23 点
-      { key: "7-3", total: 99 },  // weekday=7 非法 ⇒ 忽略
-      { key: "2-24", total: 99 }, // hour=24 非法 ⇒ 忽略
-      { key: "oops", total: 99 }, // 非法 key ⇒ 忽略
-    ],
-  });
-  const hm = uc.heatmapMatrix(src);
+  /* `heatmapMatrix` 现在只吃**槽位数组**（两个数据源共用同一份实现）—— 见该函数注释。 */
+  const hm = uc.heatmapMatrix([
+    { key: "0-9", total: 5 }, // 周一 09 点
+    { key: "0-9", total: 1 }, // 同格累加 ⇒ 6
+    { key: "6-23", total: 7 }, // 周日 23 点
+    { key: "7-3", total: 99 }, // weekday=7 非法 ⇒ 忽略
+    { key: "2-24", total: 99 }, // hour=24 非法 ⇒ 忽略
+    { key: "oops", total: 99 }, // 非法 key ⇒ 忽略
+    { total: 99 }, // 缺 key ⇒ 忽略
+  ]);
   if (hm.rows !== 7 || hm.cols !== 24) throw new Error(`维度 ${hm.rows}×${hm.cols}，期望 7×24`);
   if (hm.cells.length !== 7 || hm.cells.some((r) => r.length !== 24)) throw new Error("cells 不是 7×24 矩阵");
   if (hm.cells[0][9] !== 6) throw new Error(`周一 09 点应为 6（5+1），实得 ${hm.cells[0][9]}`);
@@ -5358,6 +5881,38 @@ check("★ P3 会话散点：四侧留边 + ZAxis range 存在（防气泡溢出
   return "四侧留边 + ZAxis range 存在（视觉仍需人工）";
 });
 
+check("★ 会话视图必须**截断渲染**（会话可达 1.5 万，全量渲染要等数秒）", () => {
+  /* ## 为什么必须有这条
+     会话 = 一个 jsonl 一条，实测重用户 1.5 万条。原型契约 8（「排行条数 = 气泡数 =
+     会话数」）按**几十**量级写的，全量渲染 = 2×N 个 DOM 节点 + N 个散点
+     （实测 1.5 万行纯 innerHTML + 强制布局 0.69s，React 重建 + recharts 还要翻数倍）。
+     ⇒ 有意偏离契约 8：只渲染前 `SESSION_RENDER_LIMIT` 个，并**显式说明共多少个**。
+     没有这条门禁，下一个人读到 P3-ARCH 契约 8 会「顺手改回去」，性能问题静默回归。
+
+     变异：① 删掉 `points.slice(0, SESSION_RENDER_LIMIT)` ⇒ 变红；
+           ② 把某个图改回吃全量 `points`（两图不同源）⇒ 变红；
+           ③ 把「会话数」tile 改成吃切片 ⇒ 变红（数字会随渲染上限漂移）。 */
+  const uc = loadTs(path.join(ROOT, USAGE_CHARTS));
+  const limit = uc.SESSION_RENDER_LIMIT;
+  if (!Number.isInteger(limit) || limit <= 0 || limit > 500) {
+    throw new Error(`SESSION_RENDER_LIMIT 非法（${JSON.stringify(limit)}）—— 必须是 ≤500 的正整数`);
+  }
+  const page = readCode("src/pages/TokenStatsPage.tsx");
+  if (!/points\.slice\(0,\s*SESSION_RENDER_LIMIT\)/.test(page)) {
+    throw new Error("SessionsView 没有按 SESSION_RENDER_LIMIT 切片 —— 又会全量渲染 1.5 万条");
+  }
+  for (const chart of ["SessionRanking", "SessionScatter"]) {
+    if (!new RegExp(`<${chart}\\s+points=\\{visible\\}`).test(page)) {
+      throw new Error(`${chart} 没吃切片后的 \`visible\`（排行与散点可能不同源）`);
+    }
+  }
+  /* 统计 tile 必须仍按**全量**算 —— 否则「会话数 / 总 Token / 均值」会随渲染上限漂移。 */
+  if (!/exactTokens\(points\.length\)/.test(page)) {
+    throw new Error("「会话数」tile 不是按全量 points 算的（数字会随渲染上限漂移）");
+  }
+  return `limit=${limit} · 两图同源切片 · tile 仍按全量`;
+});
+
 check("★ P3 权限自愈：授权恢复后**自动重试**上次切换（且只重试一次）", () => {
   /* 原型 P3 要求「恢复即自动重试切换」。此前实现只 `setError("")` 清错误、**不重试**
      ⇒ 用户仍要手动再点一次（而文件头注释却写着「并自动恢复」—— **注释描述了不存在的行为**）。
@@ -5395,10 +5950,58 @@ check("★ P0-4a 未检测程序位：「去设置」跳到「权限与诊断」
   if (!/useSearchParams/.test(settings) || !/searchParams\.get\("section"\)/.test(settings)) {
     throw new Error("SettingsPage 没从 URL 读 section —— 带了 ?section= 也不生效");
   }
-  if (!/SETTINGS_SUBNAV\.some/.test(settings)) {
+  /* 合法性校验有两条合法路径：本页内联 `SETTINGS_SUBNAV.some(...)`，或走共享的
+     `parseSettingsSubnav`（fail-closed 在 `settings-subnav.tsx` 里）。
+     ⚠️ 后者是两平台共用的正解 ⇒ 断言必须**穿透到被调函数**，否则「把校验搬走」
+     会让这条门禁变成空壳。 */
+  if (!/SETTINGS_SUBNAV\.some/.test(settings) && !/parseSettingsSubnav\(/.test(settings)) {
     throw new Error("SettingsPage 没校验 section 合法性 —— 非法值会被塞进 state");
   }
+  if (/parseSettingsSubnav\(/.test(settings)) {
+    const nav = stripComments(
+      fs.readFileSync(path.join(ROOT, "src/components/settings/settings-subnav.tsx"), "utf8"),
+    );
+    if (!/export function parseSettingsSubnav/.test(nav)) {
+      throw new Error("parseSettingsSubnav 不存在（校验被搬走却没落地）");
+    }
+    if (!/SETTINGS_SUBNAV\.some/.test(nav) || !/:\s*"general"/.test(nav)) {
+      throw new Error("parseSettingsSubnav 未 fail-closed 回 general");
+    }
+  }
   return "带锚点 + 从 URL 读 + 合法性校验";
+});
+
+check("★ 设置页两平台同构：同一张 9 项子导航表 + URL 承载 + split 布局（PLAN §3.9 / D12）", () => {
+  /* 变异①：把 Trae 设置页退回「一屏长滚动 10 组」⇒ 子导航断言变红。
+     变异②：Trae 页自建一份子导航表 ⇒ 「同一张表」断言变红。
+     变异③：两页任一缺 `data-split-layout` ⇒ 900px 以下不转纵向、子导航不换行。 */
+  for (const page of ["src/pages/SettingsPage.tsx", "src/pages/TraeSettingsPage.tsx"]) {
+    const code = stripComments(fs.readFileSync(path.join(ROOT, page), "utf8"));
+    if (!/<SettingsSubnav\b/.test(code)) throw new Error(`${page} 没有接设置子导航`);
+    if (!/useState<SettingsSubnavId>/.test(code)) throw new Error(`${page} 子导航选中态未接线`);
+    if (!/parseSettingsSubnav\(/.test(code)) {
+      throw new Error(`${page} 未走 parseSettingsSubnav（URL 承载 + fail-closed 的唯一实现）`);
+    }
+    if (!/data-split-layout/.test(code)) {
+      throw new Error(`${page} 缺 data-split-layout（900px 以下不会转纵向）`);
+    }
+    /* 主区间距 = 原型 `.split-main { gap:16px }`；写 `space-y-10/12` 是改造前的长滚动间距。 */
+    if (!/space-y-4\b/.test(code)) throw new Error(`${page} 主区间距不是原型的 16px`);
+  }
+  const trae = stripComments(fs.readFileSync(path.join(ROOT, "src/pages/TraeSettingsPage.tsx"), "utf8"));
+  if (/SETTINGS_SUBNAV\s*(:|=)/.test(trae)) {
+    throw new Error("Trae 设置页自建了子导航表 —— 两平台必须共用 SETTINGS_SUBNAV");
+  }
+  /* 子导航版式逐值对齐原型 `.subnav`：宽度/断点在 CSS，按钮内只有文字（原型无图标）。 */
+  const subnav = stripComments(fs.readFileSync(path.join(ROOT, "src/components/shell/side-subnav.tsx"), "utf8"));
+  if (/icon/.test(subnav)) throw new Error("SideSubnav 带了图标 —— 原型 `.subnav` 只有文字");
+  if (!/data-side-subnav/.test(subnav)) throw new Error("SideSubnav 缺 data-side-subnav（断点规则的宿主）");
+  const css = fs.readFileSync(path.join(ROOT, "src/index.css"), "utf8");
+  if (!/\[data-side-subnav\]/.test(css)) throw new Error("index.css 缺 [data-side-subnav] 规则（假宿主）");
+  if (!/\[data-side-subnav\] \{[^}]*width:\s*186px/.test(css)) {
+    throw new Error("[data-side-subnav] 宽度不是原型的 186px");
+  }
+  return "两页同一张表 · URL 承载 · split 布局 · 16px 间距 · 186px 无图标子导航";
 });
 
 check("★ P1-2 批量签到部分失败：toast 给「只重试失败项」出口", () => {
@@ -6095,19 +6698,22 @@ check("★ Q5 全模型禁用时计数行仍须渲染（served=0 不是「无数
   return "守卫为 total > 0 + 无「可用」措辞";
 });
 
-check("★ Q4 头像首字底色不得用语义色 + /15（实测低于 AA 4.5:1）", () => {
+check("★ Q4 头像底色须「深底 + 白字」且自含（原型 avatarTone，AA ≥ 4.5:1）", () => {
   const src = stripComments(
     fs.readFileSync(path.join(ROOT, "src/components/account-card.tsx"), "utf8"),
   );
-  /* 实测：`text-success` 压在 `bg-success/15` 上 = 3.11:1、`text-warning` = 3.17:1，
-     均低于 AA 4.5:1 ⇒ 头像首字（12.5px/640）在亮色主题下读不清。
-     ⚠️ 不能照原型断言的 `L ≤ 0.5` 判罪：oklch 的 L 与 WCAG 亮度不是同一个量。 */
+  /* 断言的是**意图**而非某套具体色值：
+     ① 头像是 12.5px/640 的小字 ⇒ 必须与底色有足够对比度，且**不能依赖主题**
+        （`--success`/`--warning` 的 `/15` 底实测仅 3.11:1 / 3.17:1，低于 AA 4.5:1）；
+     ② 形态对齐原型 `avatarTone()`（`buddy-switch-prototype.html:1921-1928`）：
+        6 个 `oklch(L ≤ 0.5)` **深底** + `oklch(0.99 0 0)` 近白字。
+        ⚠️ 这六条压白字实测 5.46~7.00:1 **全部过 AA** —— 旧断言担心的
+        「照原型会读不清」不成立，故取值改回原型。 */
   for (const bad of ["bg-success/15", "bg-warning/15"]) {
     if (src.includes(bad)) {
       throw new Error(`头像色板仍用 \`${bad}\`（实测 3.1:1，低于 AA 4.5:1）`);
     }
   }
-  // 六条必须**同构**：都是「固定 100 底 + 800 字」，不再有跟随主题的分裂。
   const tones = /const AVATAR_TONES = \[([\s\S]*?)\] as const;/.exec(src);
   if (!tones) throw new Error("找不到 AVATAR_TONES");
   const entries = tones[1]
@@ -6115,15 +6721,27 @@ check("★ Q4 头像首字底色不得用语义色 + /15（实测低于 AA 4.5:1
     .map((line) => line.trim())
     .filter((line) => line.startsWith('"'));
   if (entries.length !== 6) throw new Error(`头像色板应有 6 条，实际 ${entries.length}`);
+  /* 六条同构：写死的深色 oklch（L ≤ 0.5），不引用任何 CSS 变量 / 语义色。 */
   for (const entry of entries) {
-    // 去掉行尾逗号再比对（条目是 `"bg-emerald-100 text-emerald-800",`）。
     const tone = entry.replace(/,$/, "");
-    const m = /^"bg-([a-z]+)-100 text-\1-800"$/.exec(tone);
+    const m = /^"\[background:oklch\(0\.(\d+)_[\d.]+_\d+\)\]"$/.exec(tone);
     if (!m) {
-      throw new Error(`头像色板条目不同构（须「bg-*-100 text-*-800」）：${tone}`);
+      throw new Error(`头像色板条目须为写死的深色 oklch（不依赖主题）：${tone}`);
     }
+    /* ⚠️ 这里比较的是 `0.48` 的**小数部分** `48`（百分制），不是 `0.48`——
+       直接比 `0.48 > 0.5` 会误判（写成 `48 > 5` 就把 0.48 判成超标）。
+       故用 `Number("0." + m[1])`还原后再比。 */
+    const L = Number(`0.${m[1]}`);
+    if (L > 0.5) throw new Error(`头像底色亮度须 ≤ 0.5（白字才够对比度）：${tone} = L ${L}`);
   }
-  return "6 条全部为固定 100/800 色板（同构，emerald 6.03:1 / amber 6.88:1）";
+  /* 字色须为近白，且与色板同源定义（否则改色板会漏改字色）。 */
+  if (!/const AVATAR_TEXT_CLASS = "text-\[oklch\(0\.99_0_0\)\]"/.test(src)) {
+    throw new Error("缺少 AVATAR_TEXT_CLASS（近白字色，须与色板同源定义）");
+  }
+  if (!/AVATAR_TEXT_CLASS, avatarClass/.test(src)) {
+    throw new Error("头像未同时应用字色与底色（AVATAR_TEXT_CLASS + avatarClass）");
+  }
+  return "6 条深底（oklch L≤0.5）+ 近白字，实测 5.46~7.00:1 全部过 AA";
 });
 
 check("★ Q2「指定」不得按账号状态禁用（偏好而非约束，D36）", () => {
@@ -6384,21 +7002,83 @@ check("★ B2 账号页任何位置不得出现完整邮箱（回落链也不许
   return "无裸回落 + 两个收口函数齐备";
 });
 
-check("★ B3 当前账号的头部底色与竖条 / 徽章同条件", () => {
-  /* 竖条 + 徽章都用 `isCurrentAccount`，唯独头部底色的第三档用 `codebuddyCliActive`
-     ⇒ 只绑 IDE / 插件的账号「有徽章有竖条、却是非当前底色」。 */
+check("★ 原型卡片四块结构：两平台卡片 = [可选竖条] → header → chips → metrics → actions", () => {
+  /* 2026-10-12 用户要求「完全按照 `buddy-switch-prototype.html` 的账号卡片」。
+     原型 `accountCard`（`:2496-2535`）+ `.acct`（`demo.css:294-343`）只有**四个块**：
+       `.acct-top` → `.acct-chips` → `.acct-metrics` → `.acct-actions`（= `.progs` + 更多按钮）
+     且 `.acct-top` **透明**（无底色、无水印），`.acct` 根上统一 `gap:10px; padding:13px 14px`。
+     ⇒ 两平台**同一结构**（差异只允许是数据：WB 有今日 Token，Trae 用「到期」顶替）。
+     变异：把任一卡的头部底色加回来 / 把 chips 塞回头部 / 把菜单搬回头部 ⇒ 本条变红。 */
+  const cards = [
+    ["src/components/account-card.tsx", "wbAccounts 卡片"],
+    ["src/components/trae-account-card.tsx", "trae 卡片"],
+  ];
+  for (const [rel, label] of cards) {
+    const code = stripComments(fs.readFileSync(path.join(ROOT, rel), "utf8"));
+    // ① 卡片根：原型的内边距与块间距（`padding:13px 14px` / `gap:10px`）。
+    if (!/px-3\.5 py-\[13px\]/.test(code)) {
+      throw new Error(`${label} 卡片根缺少原型内边距 \`px-3.5 py-[13px]\``);
+    }
+    if (!/flex-col gap-2\.5/.test(code)) {
+      throw new Error(`${label} 卡片根缺少原型块间距 \`gap-2.5\``);
+    }
+    // ② 头部透明（原型 `.acct-top` 没有底色，整张卡一个底色）。
+    const header = /<header[\s\S]{0,300}?>/.exec(code);
+    if (!header) throw new Error(`${label} 找不到 \`<header>\``);
+    if (/bg-(primary|muted|card)\b/.test(header[0])) {
+      throw new Error(`${label} 头部又出现了底色档位 —— 原型 \`.acct-top\` 是透明的`);
+    }
+    // ③ `.acct-chips` 是**独立块**（不是塞在头像右侧的第三行）。
+    if (
+      !/<div className="flex min-w-0 flex-wrap items-center gap-\[5px\]">\{statusChips\}<\/div>/.test(
+        code,
+      )
+    ) {
+      throw new Error(`${label} 缺少独立的 \`.acct-chips\` 块（状态标签被塞回头部？）`);
+    }
+    // ④ `.acct-actions` = 程序位行 + 更多菜单（菜单在**页脚**，不是头部）。
+    if (
+      !/<footer className="flex items-center gap-1\.5 border-t border-border pt-2\.5">[\s\S]{0,120}?\{programRow\}[\s\S]{0,60}?\{menu\}/.test(
+        code,
+      )
+    ) {
+      throw new Error(`${label} 页脚不是「程序位 + 更多菜单」—— 原型把菜单放在 \`.acct-actions\``);
+    }
+    // ⑤ 原型**没有**「大数字行 + 近期到期逐包列表」⇒ 不得回归。
+    if (/expiringSoonTitle|section\.expiring|creditPacks/.test(code)) {
+      throw new Error(`${label} 又出现了「大数字行 / 近期到期」块 —— 原型卡片只有四个块`);
+    }
+  }
+  return "2 卡：透明头部 + 独立 chips 块 + 页脚 progs+menu";
+});
+
+check("★ B3 当前账号信号：竖条 + 徽章同读 isCurrentAccount，且头部**无**底色（原型 .acct-top 透明）", () => {
+  /* 这条门禁原本断言「头部底色用 `isCurrentAccount`」—— 那是「底色/竖条/徽章三者同条件」。
+     2026-10-12 按原型重排卡片后，**头部底色整块被删**（原型 `.acct-top` 是透明的，
+     底色带把它变成了一条「页眉」，还把卡片切成两半）⇒ 原断言的前提消失。
+     新判据钉住**仍在的信号**（竖条 + 徽章同读 `isCurrentAccount`）**并禁止底色回归** ——
+     证伪能力不减：把竖条/徽章改回 `codebuddyCliActive` 会红，把底色档位加回来也会红。 */
   const card = stripComments(
     fs.readFileSync(path.join(ROOT, "src/components/account-card.tsx"), "utf8"),
   );
-  const header = /<header[\s\S]{0,600}?>/.exec(card);
+  // ① 左侧竖条：由 `isCurrentAccount` 门控（与徽章同信号）。
+  if (!/\{isCurrentAccount \? \([\s\S]{0,200}?data-current-bar="true"/.test(card)) {
+    throw new Error("左侧竖条不再由 `isCurrentAccount` 门控 —— 与徽章口径会分叉（B3）");
+  }
+  // ② 「当前登录」徽章：同一条件。
+  if (!/const currentLoginBadge = isCurrentAccount \? \(/.test(card)) {
+    throw new Error("「当前登录」徽章不再由 `isCurrentAccount` 门控（B3）");
+  }
+  // ③ 头部**不得**再出现底色档位：原型 `.acct-top` 透明，整张卡只有一个底色。
+  const header = /<header[\s\S]{0,400}?>/.exec(card);
   if (!header) throw new Error("找不到账号卡 header");
-  if (/codebuddyCliActive\s*\?\s*"bg-/.test(header[0])) {
-    throw new Error("头部底色仍按 `codebuddyCliActive` 分档 —— 与竖条/徽章口径矛盾（B3）");
+  if (/bg-(primary|muted|card)\b/.test(header[0])) {
+    throw new Error("头部又出现了底色档位 —— 原型 `.acct-top` 是透明的（B3）");
   }
-  if (!/isCurrentAccount\s*\?\s*"bg-primary\/5"/.test(header[0])) {
-    throw new Error("头部底色未用 `isCurrentAccount`（应与竖条 + 徽章同条件）");
+  if (/codebuddyCliActive/.test(header[0])) {
+    throw new Error("头部仍按 `codebuddyCliActive` 分档 —— 与竖条/徽章口径矛盾（B3）");
   }
-  return "底色/竖条/徽章三者同读 isCurrentAccount";
+  return "竖条/徽章同读 isCurrentAccount · 头部无底色";
 });
 
 check("★ B4 Trae 批量签到：部分失败要能「只重试失败项」", () => {

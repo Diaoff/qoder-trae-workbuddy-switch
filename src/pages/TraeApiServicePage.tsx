@@ -132,9 +132,19 @@ export default function TraeApiServicePage() {
   /** 模型清单「重新读取」的进行中状态（只驱动按钮的转圈，不参与快照）。 */
   const [refreshingModels, setRefreshingModels] = useState(false);
   /* ★ 子导航选中项：**初值从 URL 读**（`?sub=logs`），非法值 fail-closed 回 `overview`
-     （与设置页 `?section=`、WB 网关页同一口径）。 */
-  const [searchParams] = useSearchParams();
+     （与设置页 `?section=`、WB 网关页同一口径）。
+     ⚠️ 原实现只**读**不**写** —— 注释承诺了「同一口径」，但点击子导航后 URL 不变，
+     刷新就回到 `overview`。这里补齐写入，与 WB 网关页 / 两平台设置页完全同构。 */
+  const [searchParams, setSearchParams] = useSearchParams();
   const [sub, setSub] = useState<GatewaySubnavId>(() => parseGatewaySubnav(searchParams.get("sub")));
+
+  /** 切换子分区并写回 URL（保留其他查询参数，只覆盖 `sub`）。 */
+  function goSub(id: GatewaySubnavId) {
+    setSub(id);
+    const next = new URLSearchParams(searchParams);
+    next.set("sub", id);
+    setSearchParams(next, { replace: true });
+  }
 
   const loadSnapshot = useCallback(async (): Promise<ApiServiceSnapshot> => {
     // 本区域的两条程序位（TraeWork / TraeCode）：清单按程序位分家，一次取全。
@@ -332,8 +342,8 @@ export default function TraeApiServicePage() {
           区域切换已上移到顶栏的 `ScopeSelector`（L1 作用域），页内不再有区域选择器。 */}
       <header className="mb-5 flex items-start gap-4">
         <div className="min-w-0">
-          <h1 className="text-[28px] font-semibold tracking-tight">{t("trae.stats.api.title")}</h1>
-          <p className="mt-1.5 text-xs text-muted-foreground">
+          <h1 className="text-[28px] font-[640] tracking-[-0.02em]">{t("trae.stats.api.title")}</h1>
+          <p className="mt-1.5 text-[12.5px] text-muted-foreground">
             {t("pageHead.gateway", { scope: scopeLabel(t, scope) })}
           </p>
         </div>
@@ -357,14 +367,12 @@ export default function TraeApiServicePage() {
         </Alert>
       )}
 
-      {/* ---- 主区：子导航 + 分区内容（PLAN §3.9：替代原来的 6 卡纵向堆叠）---- */}
-      <div className="flex min-w-0 flex-col gap-6 lg:flex-row lg:gap-8">
-        <GatewaySubnav
-          active={sub}
-          items={TRAE_GATEWAY_SUBNAV}
-          onSelect={setSub}
-          className="lg:w-44 lg:shrink-0"
-        />
+      {/* ---- 主区：子导航 + 分区内容（PLAN §3.9：替代原来的 6 卡纵向堆叠）----
+          方向 / 对齐 / 间距整组在 `index.css` 的 `[data-split-layout]`（原型 `.split`，
+          含 900px 转纵向）。⚠️ 此前这里**缺 `data-split-layout`** ⇒ 900px 以下不转纵向、
+          子导航也不换行，与 WB 网关页行为不同。 */}
+      <div data-split-layout className="min-w-0">
+        <GatewaySubnav active={sub} items={TRAE_GATEWAY_SUBNAV} onSelect={goSub} />
 
         <div className="min-w-0 flex-1">
           {/* ---- 概览：服务状态 + 接入地址 + 接入指引 ---- */}

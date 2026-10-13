@@ -298,7 +298,9 @@ export function CommandPalette({ open, onOpenChange }: CommandPaletteProps) {
                         runningActionId === item.id.replace(/^action:/, "") ? (
                           <Loader2 className="size-3.5 shrink-0 animate-spin" aria-hidden="true" />
                         ) : item.shortcutHint ? (
-                          <kbd className="shrink-0 rounded border border-border/60 px-1.5 py-0.5 text-[10px] tabular-nums text-muted-foreground/70">
+                          /* 键帽的字体/内边距/圆角/底色由 `index.css` 的全局 `kbd` 规则统一提供
+                            （原型 `:71-75`），此处只保留列表布局需要的收缩与字色。 */
+                          <kbd className="shrink-0 tabular-nums text-muted-foreground/70">
                             {item.shortcutHint}
                           </kbd>
                         ) : null}

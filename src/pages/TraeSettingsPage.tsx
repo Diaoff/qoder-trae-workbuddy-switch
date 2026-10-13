@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import {
   AlertTriangle,
   Copy,
@@ -22,6 +23,10 @@ import { toast } from "sonner";
 import { DemoAction } from "@/components/demo-action";
 import { HoursEditor } from "@/components/schedule-hours-editor";
 import { ScopeChip, scopeLabel } from "@/components/scope-chip";
+import { AppSettingsGroups } from "@/components/app-settings";
+import { BackupSection } from "@/components/settings/backup-section";
+// 设置子导航**与 WorkBuddy 设置页共用同一张表 / 同一个解析函数**（PLAN §3.9、D12）。
+import { parseSettingsSubnav, SettingsSubnav, type SettingsSubnavId } from "@/components/settings/settings-subnav";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -319,7 +324,7 @@ function RuntimeLogsSection() {
       </div>
 
       {error && (
-        <div className="px-4 pb-4 sm:px-5">
+        <div className="px-4 pb-4">
           <Alert variant="destructive">
             <AlertTriangle />
             <AlertTitle>{t("trae.page.settings.logsLoadFailed")}</AlertTitle>
@@ -329,7 +334,7 @@ function RuntimeLogsSection() {
       )}
 
       <div className="border-t border-border/60">
-        <div className="flex items-center justify-between border-b border-border/60 px-4 py-2.5 sm:px-5">
+        <div className="flex items-center justify-between border-b border-border/60 px-4 py-2.5">
           <span className="flex items-center gap-2 text-[13px] font-medium">
             <FileText className="size-4 text-muted-foreground" />
             {t("trae.page.settings.detailLabel")}
@@ -365,7 +370,7 @@ function RuntimeLogsSection() {
               {entries.map((entry, index) => (
                 <li
                   key={`${entry.time}-${index}`}
-                  className="flex items-start gap-3 px-4 py-2 font-mono text-xs hover:bg-muted/40 sm:px-5"
+                  className="flex items-start gap-3 px-4 py-2 font-mono text-xs hover:bg-muted/40"
                 >
                   <span className="shrink-0 text-muted-foreground">
                     {entry.time || t("trae.page.settings.noTime")}
@@ -382,7 +387,7 @@ function RuntimeLogsSection() {
       </div>
 
       {/* 边界说明与文件状态：不写清楚，用户会把「日志是空的」当成 bug。 */}
-      <div className="border-t border-border/60 px-4 py-3 sm:px-5">
+      <div className="border-t border-border/60 px-4 py-3">
         <p className="text-xs leading-5 text-muted-foreground">
           {data?.note ?? t("trae.page.settings.noteFallback")}
         </p>
@@ -563,7 +568,7 @@ function GatewayLogsSection() {
       </div>
 
       {failure && (
-        <div className="px-4 pb-4 sm:px-5">
+        <div className="px-4 pb-4">
           <Alert variant="destructive">
             <AlertTriangle />
             <AlertTitle>{t("trae.page.settings.gwLoadFailed")}</AlertTitle>
@@ -629,7 +634,7 @@ function GatewayLogsSection() {
         )}
       </div>
 
-      <div className="border-t border-border/60 px-4 py-2.5 text-xs text-muted-foreground sm:px-5">
+      <div className="border-t border-border/60 px-4 py-2.5 text-xs text-muted-foreground">
         {t("trae.page.settings.gwFooter")}
       </div>
 
@@ -701,7 +706,7 @@ function ProfilesSection({
     <SettingsGroup id="trae-settings-profiles" title={t("trae.page.settings.profilesGroup")}>
       <CardContent className="space-y-0 p-0">
       <SettingsRow className="flex-wrap gap-y-1">
-        <div className="flex flex-wrap items-center gap-x-6 gap-y-2 text-sm">
+        <div className="flex flex-wrap items-center gap-x-6 gap-y-2 text-[12.5px]">
           <span className="text-muted-foreground">
             {t("trae.page.settings.currentAccount")}
             {/* 主文本给**展示名**（账号库里的 `name`），uid 退到次要位置：
@@ -742,7 +747,7 @@ function ProfilesSection({
       </SettingsRow>
 
       {data?.dataDir && (
-        <div className="border-b border-border/50 px-4 py-2.5 text-xs text-muted-foreground sm:px-5">
+        <div className="border-b border-border/50 px-4 py-2.5 text-xs text-muted-foreground">
           {t("trae.page.settings.dataDirLabel")}
           <code className="font-mono">{data.dataDir}</code>
         </div>
@@ -785,13 +790,13 @@ function ProfilesSection({
           <Skeleton className="h-14 w-full" />
         </div>
       ) : profiles.length === 0 ? (
-        <p className="px-4 py-8 text-center text-sm text-muted-foreground sm:px-5">
+        <p className="px-4 py-8 text-center text-sm text-muted-foreground">
           {t("trae.page.settings.profilesEmpty")}
         </p>
       ) : (
         <div className="divide-y divide-border/50">
           {profiles.map((profile) => (
-            <div key={profile.slot} className="flex flex-wrap items-center justify-between gap-3 px-4 py-3 sm:px-5">
+            <div key={profile.slot} className="flex flex-wrap items-center justify-between gap-3 px-4 py-3">
               <div className="min-w-0">
                 <div className="flex flex-wrap items-center gap-2">
                   <span className="truncate text-[13px] font-medium">{profile.slot}</span>
@@ -842,7 +847,7 @@ function ProfilesSection({
         </div>
       )}
 
-      <div className="border-t border-border/60 px-4 py-3 text-xs leading-5 text-muted-foreground sm:px-5">
+      <div className="border-t border-border/60 px-4 py-3 text-xs leading-5 text-muted-foreground">
         {t("trae.page.settings.profilesFooter")}
       </div>
 
@@ -955,6 +960,25 @@ export default function TraeSettingsPage() {
   const [resetOpen, setResetOpen] = useState(false);
   const [resetBusy, setResetBusy] = useState(false);
   const [resetReport, setResetReport] = useState<TraeDeviceResetReport | null>(null);
+
+  /**
+   * ★ 子导航选中项：**初值从 URL 读**（`?section=client`），非法值 fail-closed 回 `general`。
+   *
+   * 与 WorkBuddy 设置页接**同一个** `parseSettingsSubnav`（`settings-subnav.tsx`）——
+   * 两平台同一件事只有一份实现，不存在「一边认 `?section=`、另一边认别的」。
+   * 切换时写回 URL（保留式，不动 `line` 等其他查询参数）：刷新 / 前进后退行为一致。
+   */
+  const [searchParams, setSearchParams] = useSearchParams();
+  const [section, setSection] = useState<SettingsSubnavId>(() =>
+    parseSettingsSubnav(searchParams.get("section")),
+  );
+
+  function goSection(id: SettingsSubnavId) {
+    setSection(id);
+    const next = new URLSearchParams(searchParams);
+    next.set("section", id);
+    setSearchParams(next, { replace: true });
+  }
 
   /**
    * 设置页除「设置项」之外的只读快照。
@@ -1089,11 +1113,12 @@ export default function TraeSettingsPage() {
   }
 
   if (loading && !settings) {
+    /* 整页骨架：容器与页面同为 `.page`（1240px / 26·28·60）——
+       此前是 `max-w-3xl`(768px) + `px-4 py-6`，加载完会横向跳 472px。 */
     return (
-      <div className="mx-auto min-w-0 w-full max-w-3xl space-y-3 px-4 py-6 sm:px-6 sm:py-8">
-        <Skeleton className="h-10 w-64" />
-        <Skeleton className="h-40 w-full" />
-        <Skeleton className="h-40 w-full" />
+      <div className="mx-auto min-w-0 w-full max-w-[1240px] px-7 pt-[26px] pb-[60px]">
+        <Skeleton className="h-9 w-48" />
+        <Skeleton className="mt-5 h-64 w-full" />
       </div>
     );
   }
@@ -1101,17 +1126,28 @@ export default function TraeSettingsPage() {
   // 探测到的是哪条产品线 / 是否为自动探测。产品名由路径推断，推断不出就省略标签。
   const productLabel = traeProductLabel(env);
   const autoDetected = isAutoDetected(env);
+  /* 设置里存的客户端路径**已失效**（issue #20）。
+     客户端升级/合并会搬走甚至卸载旧 exe（本机 `D:\Programs\TRAE SOLO CN\` 现在只剩一个
+     debug.log），而存盘路径仍指着它。后端在这种情况下会**静默回落**自动探测 ——
+     这是对的（不该因此卡住启动），但界面必须**明说**「你填的那个已经没用了」，
+     否则设置页会一直摆着一个不存在的路径、而上方同时显示「已检测到」，两边对不上。
+     判据用后端下发的 `configuredPathExists`（它判的是**存盘值本身**是否存在），
+     不要用 `env.path`（那是回落**之后**的探测结果）。 */
+  const configuredPath = env?.configuredPath?.trim() ?? "";
+  const pathStale = configuredPath.length > 0 && env?.configuredPathExists === false;
   /* 页头作用域：平台固定 trae，区域来自 `useTraeVariant`（URL 作用域优先）。 */
   const scope = scopeOf("trae", variant);
 
   return (
-    <div className="mx-auto min-w-0 w-full max-w-3xl px-4 py-6 sm:px-6 sm:py-8">
-      {/* 页头（原型 `viewSettings`）：作用域副标题 + 只读 scope-chip。
+    <div className="mx-auto min-w-0 w-full max-w-[1240px] px-7 pt-[26px] pb-[60px]">
+      {/* 页头（原型 `viewSettings`，`demo.css:177-180`）：作用域副标题 + 只读 scope-chip。
+          容器与其余页面同为 `.page`（1240px）；`mb-5` = 原型 `.page-head` 的 `margin-bottom:20px`，
+          与 WorkBuddy 设置页逐值相同（此前这里是 `mb-6 sm:mb-8` = 24/32px，两平台不一致）。
           区域切换已上移到顶栏的 `ScopeSelector`（L1 作用域），页内不再有区域选择器。 */}
-      <header className="mb-6 flex items-start gap-4 sm:mb-8">
+      <header className="mb-5 flex items-start gap-4">
         <div className="min-w-0">
-          <h1 className="text-[28px] font-semibold tracking-tight">{t("trae.page.settings.title")}</h1>
-          <p className="mt-1.5 text-xs text-muted-foreground">
+          <h1 className="text-[28px] font-[640] tracking-[-0.02em]">{t("trae.page.settings.title")}</h1>
+          <p className="mt-1.5 text-[12.5px] text-muted-foreground">
             {t("pageHead.settings", { scope: scopeLabel(t, scope) })}
           </p>
         </div>
@@ -1120,19 +1156,30 @@ export default function TraeSettingsPage() {
       </header>
 
       {error && (
-        <Alert variant="destructive" className="mb-6">
+        <Alert variant="destructive" className="mb-5">
           <AlertTriangle />
           <AlertTitle>{t("trae.page.settings.loadFailed")}</AlertTitle>
           <AlertDescription>{error}</AlertDescription>
         </Alert>
       )}
 
-      <div className="min-w-0 space-y-12">
-        {/* ---- 客户端 ---- */}
+      {/* 两栏容器 `.split`（原型 `:369`）：方向 / 对齐 / 间距整组在 `index.css` 的
+          `[data-split-layout]`（含 900px 转纵向），故这里不再写 `flex-col` / `lg:flex-row`。
+          此前这里是**一屏长滚动**（`space-y-12`、无子导航），与 WorkBuddy 设置页结构不同。 */}
+      <div data-split-layout className="min-w-0">
+        <SettingsSubnav active={section} onSelect={goSection} />
+
+        {/* 主区 `.split-main`：分区之间 16px（原型 `:378`）。 */}
+        <div className="min-w-0 flex-1 space-y-4">
+        {/* ---- 客户端：客户端检测 + 网络与代理 ----
+             PLAN §3.9 把 Trae 的「客户端 / 网络」归到「客户端」，与原型 `SETTINGS.client`
+             的「客户端检测 / 网络与代理」两组一一对应。 */}
+        {section === "client" && (
+          <>
         <SettingsGroup id="trae-settings-client" title={t("trae.page.settings.clientGroup")}>
           <CardContent className="space-y-0 p-0">
           <SettingsRow className="flex-wrap gap-y-2">
-            <div className="flex flex-wrap items-center gap-x-6 gap-y-2 text-sm">
+            <div className="flex flex-wrap items-center gap-x-6 gap-y-2 text-[12.5px]">
               <span className="flex items-center gap-2">
                 {t("trae.page.settings.installLabel")}
                 <span className={cn("font-medium", env?.installed ? "text-success" : "text-muted-foreground")}>
@@ -1160,7 +1207,7 @@ export default function TraeSettingsPage() {
 
           {/* 探测结果：同时装了两个 Trae 时，用户靠这块确认切换器管的是哪一个 */}
           {autoDetected && (env?.path || env?.dataDir) && (
-            <div className="border-b border-border/50 px-4 py-3 sm:px-5">
+            <div className="border-b border-border/50 px-4 py-3">
               <div className="space-y-1.5 rounded-md border bg-muted/40 px-3 py-2.5">
                 <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1 text-xs">
                   <span className="shrink-0 text-muted-foreground">
@@ -1212,6 +1259,20 @@ export default function TraeSettingsPage() {
               </Button>
             </div>
           </SettingsFieldRow>
+          {/* ★ 失效路径提示（issue #20）：只在「填了**且**已失效」时出现。
+              这里用 `AlertTriangle` 而非 `Badge variant="destructive"` —— 它不是错误
+              （探测已回落、功能正常），只是「你的配置已经过时了」这一条待办。 */}
+          {pathStale && (
+            <div
+              role="status"
+              className="flex items-start gap-2 border-t border-border px-4 py-3 text-xs leading-5 text-warning"
+            >
+              <AlertTriangle className="mt-0.5 size-3.5 shrink-0" aria-hidden />
+              <span className="min-w-0 break-words">
+                {t("trae.page.settings.pathStale", { path: env?.path ?? "—" })}
+              </span>
+            </div>
+          )}
           </CardContent>
         </SettingsGroup>
 
@@ -1268,7 +1329,13 @@ export default function TraeSettingsPage() {
           </CardContent>
         </SettingsGroup>
 
-        {/* ---- 自动签到（排程）---- */}
+          </>
+        )}
+
+        {/* ---- 计划任务：自动签到排程 ----
+             PLAN §3.9 把 Trae 的 `schedule` 归到「计划任务」（排程是全局单份
+             `schedule_config.json`，本页只呈现 Trae 的 `trae_checkin` 一类）。 */}
+        {section === "schedule" && (
         <SettingsGroup id="trae-settings-auto-checkin" title={t("trae.page.settings.autoCheckinGroup")}>
           <CardContent className="space-y-0 p-0">
           <SettingsFieldRow
@@ -1297,7 +1364,10 @@ export default function TraeSettingsPage() {
           </CardContent>
         </SettingsGroup>
 
-        {/* ---- 签到策略 ---- */}
+        )}
+
+        {/* ---- 签到与积分：签到策略 ---- */}
+        {section === "checkin" && (
         <SettingsGroup id="trae-settings-checkin" title={t("trae.page.settings.checkinGroup")}>
           <CardContent className="space-y-0 p-0">
           <SettingsFieldRow
@@ -1338,26 +1408,13 @@ export default function TraeSettingsPage() {
               onBlur={() => void patch({ retry: settings?.retry ?? 1 })}
             />
           </SettingsFieldRow>
-          <SettingsFieldRow
-            label={t("trae.page.settings.logRetentionLabel")}
-            description={t("trae.page.settings.logRetentionDesc")}
-            htmlFor="trae-log-retention"
-          >
-            <Input
-              id="trae-log-retention"
-              className="h-8 w-full sm:w-24"
-              inputMode="numeric"
-              value={settings?.logRetentionDays ?? 30}
-              onChange={(event) =>
-                patchSettings((prev) => ({ ...prev, logRetentionDays: Number(event.target.value) || 0 }))
-              }
-              onBlur={() => void patch({ logRetentionDays: settings?.logRetentionDays ?? 30 })}
-            />
-          </SettingsFieldRow>
           </CardContent>
         </SettingsGroup>
+        )}
 
-        {/* ---- 登录态快照 ---- */}
+        {/* ---- 账号与登录：登录态快照 ----
+             PLAN §3.9 把 Trae 的 `profiles`（账号档案）归到「账号与登录」。 */}
+        {section === "account" && (
         <ProfilesSection
           data={profiles}
           loading={loading}
@@ -1366,8 +1423,13 @@ export default function TraeSettingsPage() {
           onReload={() => void load()}
           onRun={runProfileAction}
         />
+        )}
 
-        {/* ---- 设备标识 ---- */}
+        {/* ---- 权限与诊断：设备标识 + 平台能力 ----
+             PLAN §3.9 把 `capabilities` 归到「权限与诊断」；原型的 diagnostics 里
+             「危险操作」组正是「重置设备标识」⇒ 设备组整体落在这里，而不是「客户端」。 */}
+        {section === "diagnostics" && (
+          <>
         <SettingsGroup id="trae-settings-device" title={t("trae.page.settings.deviceGroup")}>
           <CardContent className="space-y-0 p-0">
           <SettingsFieldRow
@@ -1386,7 +1448,7 @@ export default function TraeSettingsPage() {
             </Button>
           </SettingsFieldRow>
           {resetReport && (
-            <div className="space-y-1.5 px-4 py-3 sm:px-5">
+            <div className="space-y-1.5 px-4 py-3">
               <div className="text-xs text-muted-foreground">
                 {t("trae.page.settings.resetResultPrefix")}
                 {t("trae.page.settings.resetLayers", {
@@ -1417,7 +1479,7 @@ export default function TraeSettingsPage() {
         {/* ---- 平台能力 ---- */}
         <SettingsGroup id="trae-settings-capabilities" title={t("trae.page.settings.capabilitiesGroup")}>
           <CardContent className="space-y-0 p-0">
-          <div className="px-4 py-3.5 sm:px-5">
+          <div className="px-4 py-3.5">
             <div className="flex flex-wrap gap-2">
               <CapabilityBadge
                 labelKey="trae.page.settings.capClientDetection"
@@ -1442,7 +1504,7 @@ export default function TraeSettingsPage() {
             </p>
           </div>
           {capabilities && capabilities.unsupported.length > 0 && (
-            <div className="space-y-1.5 border-t border-border/50 px-4 py-3 sm:px-5">
+            <div className="space-y-1.5 border-t border-border/50 px-4 py-3">
               {capabilities.unsupported.map((item) => (
                 <div key={item.capability} className="text-xs text-muted-foreground">
                   {t("trae.page.settings.capabilityRow", {
@@ -1456,20 +1518,52 @@ export default function TraeSettingsPage() {
           )}
           </CardContent>
         </SettingsGroup>
+          </>
+        )}
 
-        {/* ---- 运行日志 ---- */}
+        {/* ---- 日志：日志保留天数 + 运行日志 ----
+             保留天数从「签到策略」移到这里（原型 `SETTINGS.logs` 的「保留天数」在日志组下）。 */}
+        {section === "logs" && (
+          <>
+        <SettingsGroup id="trae-settings-log-retention" title={t("trae.page.settings.logRetentionGroup")}>
+          <CardContent className="space-y-0 p-0">
+          <SettingsFieldRow
+            label={t("trae.page.settings.logRetentionLabel")}
+            description={t("trae.page.settings.logRetentionDesc")}
+            htmlFor="trae-log-retention"
+          >
+            <Input
+              id="trae-log-retention"
+              className="h-8 w-full sm:w-24"
+              inputMode="numeric"
+              value={settings?.logRetentionDays ?? 30}
+              onChange={(event) =>
+                patchSettings((prev) => ({ ...prev, logRetentionDays: Number(event.target.value) || 0 }))
+              }
+              onBlur={() => void patch({ logRetentionDays: settings?.logRetentionDays ?? 30 })}
+            />
+          </SettingsFieldRow>
+          </CardContent>
+        </SettingsGroup>
         <RuntimeLogsSection />
+          </>
+        )}
 
-        {/* ---- 网关请求日志 ---- */}
-        <GatewayLogsSection />
+        {/* ---- 网关：网关请求日志 ----
+             PLAN §3.9 把 Trae 的「网关日志」归到「网关」（Trae 的网关**配置**在
+             `TraeApiServicePage`，本页只呈现请求日志）。 */}
+        {section === "gateway" && <GatewayLogsSection />}
 
-        {/* ---- 关于 ---- */}
+        {/* ---- 通用：应用级设置（与 WorkBuddy 共用同一份实现）+ 关于 ---- */}
+        {section === "general" && (
+          <>
+        <AppSettingsGroups />
         <SettingsGroup id="trae-settings-about" title={t("trae.page.settings.aboutGroup")}>
           <CardContent className="space-y-0 p-0">
           <SettingsRow className="flex-wrap gap-y-2">
             <div className="min-w-0">
-              <div className="text-[13px]">{t("trae.page.settings.aboutTitle")}</div>
-              <p className="mt-0.5 text-xs leading-4 text-muted-foreground/75">
+              <div className="text-[12.5px] font-[550] leading-4">{t("trae.page.settings.aboutTitle")}</div>
+              <p className="mt-0.5 text-[11.5px] leading-4 text-muted-foreground">
                 {t("trae.page.settings.aboutDesc")}
               </p>
             </div>
@@ -1482,13 +1576,19 @@ export default function TraeSettingsPage() {
               </Button>
             ) : (
               // 域未知时**不给死链**：宁可少一枚按钮，也不把用户导到可能错的站。
-              <span className="text-xs text-muted-foreground/75">
+              <span className="text-[11.5px] text-muted-foreground">
                 {t("trae.page.settings.aboutUnknownSite")}
               </span>
             )}
           </SettingsRow>
           </CardContent>
         </SettingsGroup>
+          </>
+        )}
+
+        {/* ---- 备份与恢复（第 9 项；与 WorkBuddy 共用同一组件）---- */}
+        {section === "backup" && <BackupSection />}
+        </div>
       </div>
 
       {/* 重置确认 */}

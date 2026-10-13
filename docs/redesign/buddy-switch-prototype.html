@@ -798,6 +798,15 @@ html:not(.dark) {
 }
 .sg-card:hover { border-color: var(--primary); }
 .sg-card h4 { margin: 8px 0 6px; font-size: 13px; font-weight: 600; }
+/* ★ P14 S4a · 插件侧「复制会话」抽屉：会话勾选列表。
+   与桌面版的会话树（`wiz` 那套）**刻意不同** —— 插件侧没有「目录 / 工作区」层级，
+   只有一层平铺的会话（工作区 hash 只是标注，不是可展开的树）。 */
+.ext-list { display: flex; flex-direction: column; gap: 2px; max-height: 260px; overflow-y: auto; }
+.ext-row { display: flex; align-items: flex-start; gap: 8px; padding: 7px 8px; border-radius: 8px; cursor: pointer; }
+.ext-row:hover { background: var(--muted); }
+.ext-row input { margin-top: 2px; flex: none; }
+.ext-row b { display: block; font-size: 12.5px; font-weight: 600; }
+.ext-row i { display: block; font-style: normal; }
 .sg-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 
 /* 会话关联图：共同旧版 → 各账号副本分支 */

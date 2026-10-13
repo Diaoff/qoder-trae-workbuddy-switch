@@ -88,6 +88,7 @@ export const zh = {
   "shared.gateway.sourceBar.justNow": "刚刚",
   "shared.gateway.sourceBar.minutesAgo": "{n} 分钟前",
   "shared.gateway.sourceBar.hoursAgo": "{n} 小时前",
+  "shared.gateway.sourceBar.yesterday": "昨天",
   "shared.gateway.sourceBar.daysAgo": "{n} 天前",
   /* 模型表格（P11 §1.6）—— components/gateway/model-table.tsx，**两平台共用**。
      列集 = 模型 / 上游状态 / 网关暴露；**无归属列**（决策 #1）、**无协议列**（决策 #2）。
@@ -144,7 +145,11 @@ export const zh = {
   "shared.clipboard.failed": "复制失败，请手动选择后复制",
 
   // =====================================================================
-  // ---- 桌面悬浮窗（components/companion/*，独立窗口）----
+  // ---- 桌面悬浮窗（components/companion/，独立窗口）----
+  // ⚠️ 这里**不要**写 `companion/*` 这种通配：`check-scope-registry.cjs` 的 `stripComments`
+  //   是**朴素正则**（`/\/\*[\s\S]*?\*\//`），行注释里的 `/*` 会被当成块注释起点，
+  //   一直吞到文件里**下一个 `*/`** —— 实测因此丢掉过 250 行词条（门禁报「词条缺 …」）。
+  //   词条文件里任何注释都别出现裸 `/*`。
   // =====================================================================
   // 悬浮窗是**独立 webview**（`?window=companion`，见 `main.tsx` 的入口分流），
   // 与主窗口共用同一份词表。四态文案 / 只读脚注 / 空态 / 无障碍标签由 T03 补；
@@ -201,10 +206,18 @@ export const zh = {
   // ⚠️ 这些文案**只在演示模式下出现**，但演示站本身就是给人看的一站，
   // 因此同样要中英两版。模型名、协议键、路径、uid 刻意不入表（它们是契约）。
   // ---- 假账号 ----
-  "shared.demo.account.a": "测试 A",
-  "shared.demo.account.aRemark": "DS4.1 额度 10/03 解禁",
-  "shared.demo.account.b": "测试 B",
-  "shared.demo.account.c": "测试 C",
+  // ★ 2026-10-12：演示账号名与原型 `SCOPES["wb-cn"].accounts`（`buddy-switch-prototype.html:1229`）
+  //   **逐一对应** ⇒ 演示站的账号页可以与原型逐卡对照（1:1 核验）。
+  //   ⚠️ 这些是**用户名（数据）**，中英两语言下写法相同 —— **不翻译**。
+  "shared.demo.account.a": "jackey",
+  "shared.demo.account.aRemark": "主号 · 长期",
+  "shared.demo.account.b": "team-shared",
+  "shared.demo.account.c": "backup-01",
+  "shared.demo.account.d": "qa-bot",
+  "shared.demo.account.e": "design-lab",
+  "shared.demo.account.f": "ops-02",
+  "shared.demo.account.g": "spare-global",
+  "shared.demo.account.h": "demo",
   // ---- 积分包名 ----
   "shared.demo.pack.fission": "CodeBuddy 个人版国内运营裂变包",
   "shared.demo.pack.credits": "CodeBuddy 个人版积分包",
@@ -212,8 +225,6 @@ export const zh = {
   "shared.demo.pack.checkin": "CodeBuddy 签到赠送积分",
   "shared.demo.pack.activity": "CodeBuddy 活动奖励积分",
   // ---- 自动旅行 ----
-  "shared.demo.travel.cafe": "咖啡馆",
-  "shared.demo.travel.gym": "健身房",
   // ---- 自动轮换日志 ----
   "shared.demo.rotate.reasonPinned": "当前账号仍是积分到期最紧迫的可用账号",
   "shared.demo.rotate.reasonExpiring": "目标账号积分将在 5 天内到期",
@@ -238,11 +249,17 @@ export const zh = {
   "shared.demo.pool.diagnose": "{name}（{tail}：{reason}，积分={credits}）",
   "shared.demo.pool.creditsUnknown": "未知",
 
-  "shared.demo.trae.name.main": "主号",
-  "shared.demo.trae.remark.main": "主号：签到攒额度，别用来跑长任务",
-  "shared.demo.trae.name.altA": "小号 A",
-  "shared.demo.trae.name.altB": "小号 B",
-  "shared.demo.trae.group.spare": "备用",
+  // ★ 2026-10-12：Trae 演示账号名与原型 `SCOPES["trae-cn"].accounts`（`buddy-switch-prototype.html:1292`）
+  //   **逐账号对应** ⇒ 演示站可与原型逐卡对照。⚠️ 用户名是**数据**，中英两语言写法相同 —— 不翻译。
+  "shared.demo.trae.name.jackey": "jackey",
+  "shared.demo.trae.remark.jackey": "TraeWork 主号",
+  "shared.demo.trae.name.codeLab": "code-lab",
+  "shared.demo.trae.name.soloTest": "solo-test",
+  "shared.demo.trae.name.idle": "idle-01",
+  "shared.demo.trae.name.snap": "snap-acc",
+  "shared.demo.trae.group.common": "常用",
+  "shared.demo.trae.group.test": "测试",
+  "shared.demo.trae.group.idle": "闲置",
   "shared.demo.trae.pack.month": "Work 月度包",
   "shared.demo.trae.pack.checkinBonus": "签到赠送包",
   "shared.demo.trae.pack.cnPlan": "国内套餐包",
@@ -264,6 +281,9 @@ export const zh = {
   "shared.demo.trae.program.workAi": "TraeWork AI",
   "shared.demo.trae.program.workGlobal": "TraeWork",
   "shared.demo.trae.program.codeAi": "Trae AI",
+  // 合并后的客户端（issue #20）：客户端自己就叫 `Trae`。
+  "shared.demo.trae.program.trae": "Trae",
+  "shared.demo.trae.program.traeAi": "Trae AI",
   // 「待实测」是**状态标注**，不是品牌名 —— 它是这条目唯一需要翻译的部分。
   "shared.demo.trae.program.codePending": "TraeCode（待实测）",
   // ---- Trae：API Key 名 / 网关诊断 / 日志 ----
@@ -400,23 +420,53 @@ export const zh = {
   "shared.batch.deleteDesc": "确定删除选中的 {n} 个账号？删除后可在回收站恢复。",
   "shared.batch.confirm": "删除",
   "shared.batch.cancel": "取消",
+  // ★ 批量签到结果条（原型 `checkinResultHtml`，`buddy-switch-prototype.html:2339-2354`）。
+  // ⚠️ 必须**同时**给出「成功 N · 失败 M」，只报成功就是撒谎（批量操作必然部分失败）。
+  "shared.checkinResult.summary": "成功 {ok} · 失败 {fail}",
+  "shared.checkinResult.failedNames": "失败账号：{names}",
+  "shared.checkinResult.allOk": "全部账号已签到",
+  "shared.checkinResult.retryFailed": "重试失败项",
+  "shared.checkinResult.dismiss": "知道了",
+  // 分组标题右侧的数量（原型 `.tiny muted`，`buddy-switch-prototype.html:2471`）。
+  "shared.list.groupCount": "{n} 个",
 
   // =====================================================================
   // ---- 账号列表工具栏（components/account-toolbar.tsx，两平台共用）----
   // =====================================================================
   // 工具栏是**共享壳**：四个核心控件（搜索 / 排序 / 分组 / 视图）结构相同，
-  // 平台差异由调用方以 options / children 注入，因此壳自身的文案放这里。
-  "shared.toolbar.searchPlaceholder": "搜索账号…",
+  // 平台差异由调用方以 options / addAction 注入，因此壳自身的文案放这里。
+  "shared.toolbar.searchPlaceholder": "搜索账号名、邮箱、备注…（按 / 聚焦）",
   "shared.toolbar.searchAria": "搜索账号",
+  "shared.toolbar.sort": "排序",
   "shared.toolbar.sortAria": "排序方式",
+  "shared.toolbar.group": "分组",
   "shared.toolbar.groupAria": "分组方式",
   "shared.toolbar.viewAria": "切换卡片 / 表格视图",
-  "shared.toolbar.viewCard": "卡片",
-  "shared.toolbar.viewTable": "表格",
+  "shared.toolbar.viewCard": "卡片视图",
+  "shared.toolbar.viewTable": "表格视图",
   // 窄窗（< 900px）下表格不可读 ⇒ 按钮**禁用并说明原因**（不是隐藏，隐藏会让用户以为没有表格）。
   "shared.toolbar.viewTableDisabled": "窗口太窄，表格视图不可用；请加宽窗口后重试",
   "shared.toolbar.selectAll": "全选",
   "shared.toolbar.deselectAll": "取消全选",
+
+  // =====================================================================
+  // ---- 「添加账号」抽屉（components/add-account-drawer.tsx，两平台共用）----
+  // =====================================================================
+  // ★ 抽屉是**共享组件**（WorkBuddy 与 Trae 是同一个），且同时承载原工具栏「⋯」菜单的内容 ⇒
+  //   文案放这里，而不是 `wbAccounts.*` / `trae.page.*` 各写一份 —— 两平台的「添加账号」
+  //   必须逐字一致（用户要求「交互保持一致」）。
+  "shared.addDrawer.title": "添加账号",
+  "shared.addDrawer.scopePrefix": "当前作用域：",
+  "shared.addDrawer.scopeSuffix": "。选择一种方式添加账号。",
+  "shared.addDrawer.oauthTitle": "OAuth 登录",
+  "shared.addDrawer.oauthDesc": "打开官方授权页，用浏览器登录后自动导入",
+  "shared.addDrawer.localTitle": "从本机导入",
+  "shared.addDrawer.localDesc": "读取当前客户端的登录态，把正在用的账号加进来",
+  "shared.addDrawer.backupTitle": "导入备份文件",
+  "shared.addDrawer.backupDesc": "从导出的 JSON 备份批量恢复账号",
+  "shared.addDrawer.notInstalled": "当前作用域未检测到客户端，「从本机导入」不可用。可先用 OAuth 登录。",
+  // 「更多操作」= 原工具栏「⋯」菜单的分区标题。
+  "shared.addDrawer.moreTools": "更多操作",
 
   // =====================================================================
   // ---- 账号列表空态（两种，绝不混用 —— §3.4 规则 3）----

@@ -2,29 +2,33 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import {
   AlertTriangle,
-  CheckCircle2,
-  CircleSlash,
-  Columns3,
+  CalendarCheck,
   Download,
   FileDown,
-  FileUp,
+  ListChecks,
   Loader2,
   QrCode,
   RefreshCw,
   Rocket,
-  Rows3,
-  SearchX,
-  Trash2,
   UserPlus,
-  XCircle,
 } from "lucide-react";
 import { toast } from "sonner";
 
+import { AddAccountDrawer, type AddAccountWay } from "@/components/add-account-drawer";
 import { DemoAction } from "@/components/demo-action";
-import { AccountBatchBar } from "@/components/account-batch-bar";
-import { AccountTable, type AccountColumn } from "@/components/account-table";
-import { AccountToolbar, type ToolbarOption } from "@/components/account-toolbar";
-import { AccountDetailDrawer, type DetailPack, type DetailProgramBadge, type DetailSection } from "@/components/account-detail-drawer";
+import { AccountsTableAvatar } from "@/components/account-list-parts";
+import { AccountWorkbench } from "@/components/account-workbench";
+import { type AccountColumn } from "@/components/account-table";
+import { type ToolbarOption } from "@/components/account-toolbar";
+import {
+  AccountDetailDrawer,
+  type DetailActions,
+  type DetailCheckinHistoryRow,
+  type DetailPack,
+  type DetailProgramBadge,
+  type DetailSection,
+  type DetailSwitchTarget,
+} from "@/components/account-detail-drawer";
 import { ScopeChip, scopeLabel } from "@/components/scope-chip";
 import { TraeAccountCard, formatCredits, jwtBadge, shortTime, type TraeProgram } from "@/components/trae-account-card";
 import { TraeExportAccountsDialog } from "@/components/trae-export-accounts-dialog";
@@ -44,16 +48,13 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { EmptyState } from "@/components/ui/empty-state";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Separator } from "@/components/ui/separator";
-import { Skeleton } from "@/components/ui/skeleton";
 import { Switch } from "@/components/ui/switch";
-import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import * as api from "@/lib/api";
 import { accountSearchText } from "@/lib/account-search";
+import { lastSevenDays } from "@/lib/checkin-history";
 import {
   filterAccounts,
   groupAccounts,
@@ -74,8 +75,7 @@ import {
   saveSchedulePatch,
   SCHEDULE_CONFIG_KEY,
 } from "@/lib/schedule-config";
-import { isAutoDetected } from "@/lib/trae-client";
-import { traeVariantLabel } from "@/lib/trae-types";
+import { traeVariantLabel, type TraeLogEntry } from "@/lib/trae-types";
 import {
   TRAE_VARIANT_FALLBACK,
   loadTraeVariantLogins,
@@ -99,11 +99,7 @@ import { cn } from "@/lib/utils";
 import { scopeOf } from "@/lib/scope";
 import { useCachedResource } from "@/lib/use-cached-resource";
 import { showUndoToast } from "@/lib/undo-toast";
-import { useCompactMode } from "@/lib/use-compact-mode";
 import { useTraeVariant } from "@/lib/use-trae-variant";
-
-/** 未分组在过滤器里的哨兵值（`Select` 不接受空字符串作为 value）。 */
-const UNGROUPED = "__ungrouped__";
 
 /**
  * 一次动作的**结果判定**（由调用方按后端报告如实给出）。
@@ -151,8 +147,8 @@ interface AccountsSnapshot {
  * ## 与 WorkBuddy 页面的关系
  *
  * **骨架逐段照抄** WorkBuddy 的 `AccountsPage`：产品状态标记行 → 「添加与迁移账号」
- * 横幅 → 环境说明行 → 空态卡 → 账号工具栏（开关 / 分组筛选 / 紧凑 / 刷新）→
- * 卡片栅格 → 各确认 Dialog。用户在两个分区之间切换时不需要重新学习界面。
+ * 横幅 → 环境说明行 → 空态卡 → 账号工具栏 → 卡片栅格 → 各确认 Dialog。
+ * 用户在两个分区之间切换时不需要重新学习界面。
  *
  * **文案与数据源按 Trae 实情落地**，不搬 WorkBuddy 的：
  * - 区域（国内版 / 国际版）与 WorkBuddy **语义完全对应**，且**切换入口统一在顶栏**
@@ -184,7 +180,10 @@ export default function TraeAccountsPage() {
    * 探测结果仍然有用：它作为**兜底**（URL 没有显式指定时）以及用于展示
    * 「该线的安装/运行状态」。两者分工不同，不要混为一谈。
    */
-  const [variant, setVariant] = useTraeVariant();
+  /* ⚠️ 只取值、不取 setter：切区域的动作在**顶栏 `ScopeSwitch`**（作用域是路由状态的一部分）。
+     2026-10-10 前这里还取了 setter 给卡片「跨区域程序位」引导用 —— 那条支路已随
+     「国内版不显示国际版程序位」一起删除，setter 因此不再需要。 */
+  const [variant] = useTraeVariant();
   const t = useT();
 
   /**
@@ -265,7 +264,6 @@ export default function TraeAccountsPage() {
    * （后者也是先渲染两枚 Tab，再逐区填状态）。
    */
   const overview = snapshot?.overview ?? null;
-  const env = snapshot?.env ?? null;
   const credits = snapshot?.credits ?? null;
   const checkin = snapshot?.checkin ?? null;
   const variantStatuses = snapshot?.variantStatuses ?? TRAE_VARIANT_FALLBACK;
@@ -293,27 +291,34 @@ export default function TraeAccountsPage() {
   const [scheduleSaving, setScheduleSaving] = useState(false);
   const [oauthOpen, setOauthOpen] = useState(false);
   const [addOpen, setAddOpen] = useState(false);
+  /** 「添加账号」抽屉（两平台同一入口；原工具栏「⋯」菜单的内容都落在这里）。 */
+  const [addDrawerOpen, setAddDrawerOpen] = useState(false);
   const [exportOpen, setExportOpen] = useState(false);
+  /**
+   * 导出目标：`null` = 导出**全部**账号（工具栏入口）；非 `null` = 导出**所选**账号（批量条入口）。
+   *
+   * ⚠️ 与 WorkBuddy **同名同义**（`AccountsPage` 的 `exportTargets`）：批量条上的「导出」
+   * 与工具栏上的「导出备份」范围不同（所选 vs 全部），必须分成两个状态，
+   * 否则「关闭时清空选择」与「打开时带选择」会互相踩。
+   */
+  const [exportTargets, setExportTargets] = useState<TraeAccount[] | null>(null);
   const [importOpen, setImportOpen] = useState(false);
   const [importing, setImporting] = useState(false);
-  const [groupFilter, setGroupFilter] = useState<string>("all");
   const [progress, setProgress] = useState<TraeCheckinEvent | null>(null);
   const [report, setReport] = useState<TraeCheckinReport | null>(null);
-  const [compact, toggleCompact] = useCompactMode();
   /**
    * P4 工具栏：搜索 / 排序 / 分组 / 视图（**页面私有 `useState`**，`PLAN §2.1 L3` / D1）。
    * 不进 URL、不进 store、不碰作用域，且**不持久化**（决策 #2）。
    *
-   * ⚠️ 与既有的 `groupFilter`（**筛选到某个自定义组**）是两件事：`group` 是**分桶**
-   * （按什么把列表分开），`groupFilter` 是**筛选**（只看某一组）。两者共存、命名与位置分开
-   * （决策 #4 / §1.6）—— 合并会丢掉「只看某组」的能力。
+   * ⚠️ 2026-10-10：原先另有一个「分组**筛选**」状态（`groupFilter`，只看某一组），
+   * 已随工具栏上那个 Trae 独有的下拉一起删除（用户要求工具栏与 WorkBuddy 一致）。
+   * 分组信息仍在：卡片上有分组标签，`group = "group"` 仍能按分组**分桶**。
    */
   const [query, setQuery] = useState("");
   const [sort, setSort] = useState<AccountSortKey>("priority");
   const [group, setGroup] = useState<AccountGroupKey>("none");
   const [view, setView] = useState<AccountViewMode>("card");
   const tableEnabled = useMediaQuery("(min-width: 900px)");
-  const effectiveView: AccountViewMode = tableEnabled ? view : "card";
   const searchRef = useRef<HTMLInputElement>(null);
 
   /** `/` 键聚焦搜索框（`§3.4`）；在输入框 / 文本域 / 可编辑区里打字时不劫持。 */
@@ -385,6 +390,14 @@ export default function TraeAccountsPage() {
    * 选择集用 `Set<userId>`：Trae 账号的身份就是 `userId`（改名不改身份）。
    */
   const [detailAccount, setDetailAccount] = useState<TraeAccount | null>(null);
+  /**
+   * ★ 抽屉「签到历史（近 7 天）」的数据源（打开抽屉时拉取）。
+   *
+   * `get_trae_logs({ kind: "checkin" })` 是本机**真实**的签到日志（`TraeLogEntry` 带 `date`），
+   * 与 WorkBuddy 侧的 `getCheckinLogs()` 同一层语义。取不到时 `null` ⇒ 该区块**不渲染**
+   * （不摆一张空表，也不臆造「+N」）。
+   */
+  const [detailCheckinLogs, setDetailCheckinLogs] = useState<TraeLogEntry[] | null>(null);
   const [detailAutoEditRemark, setDetailAutoEditRemark] = useState(false);
   /**
    * ★ 跨作用域选择集按 **(scope, userId)** 键控（P5 §2.5 第 (4) 条）。
@@ -399,6 +412,13 @@ export default function TraeAccountsPage() {
   const [selectedKeys, setSelectedKeys] = useState<Set<string>>(new Set());
   const [batchBusy, setBatchBusy] = useState(false);
   const [batchDeleteOpen, setBatchDeleteOpen] = useState(false);
+  /**
+   * 批量签到**结果条**（原型 `state.checkinResult`，`buddy-switch-prototype.html:2339-2354`）。
+   *
+   * ⚠️ 与 WorkBuddy **同一条**结果条、同一位置（工具栏与列表之间）——
+   * 此前 Trae 侧是一张页面底部的大 Card，形状与位置都与 WB 不同。
+   */
+  const [checkinResult, setCheckinResult] = useState<{ ok: number; failedIds: string[] } | null>(null);
 
   /**
    * 状态条第二行（每条产品线各自已登录哪个账号）的数据由**本页持有并注入**，
@@ -417,20 +437,27 @@ export default function TraeAccountsPage() {
    */
 
   /**
-   * 一次性把旧「产品线」账号库并入国内版区域账号库（幂等）。
+   * 一次性遗留迁移（幂等）：旧「产品线」账号库并入国内版区域账号库 + 客户端合并后
+   * 遗留的登录态快照搬进合并版槽位。
    *
    * ## 为什么挂在页面挂载时
    *
-   * 后端在没有旧库、或已经并完时立刻返回 `changed: false`（成本只是一次文件
-   * 存在性判断），所以不需要前端再维护「跑过没有」的状态 —— 那反而会引入
+   * 后端在没有旧库 / 已经并完 / 没有可搬的快照时立刻返回 `changed: false`（成本只是一次
+   * 文件存在性判断），所以不需要前端再维护「跑过没有」的状态 —— 那反而会引入
    * 「换了台机器/清了缓存就不跑了」这类新缺陷。依赖 `loadAll` 会让切换产品线时
    * 再调一次：**这是有意的**，代价是一次廉价请求，换来的是「用户切过去时数据已就绪」。
    *
+   * ## ⚠️ 两个 `changed` 必须分开看（issue #20）
+   *
+   * `report.changed` 只表示**账号库**被改写了，`report.snapshots.changed` 才是快照搬运。
+   * 两者互相独立：账号库早就并完、只剩快照没搬的机器上，只看前者会让提示**永不出现**，
+   * 用户则继续卡在「切换账号失败：登录态快照不存在」。
+   *
    * ## 为什么只在真并了东西时提示
    *
-   * 改写用户账号库这件事，用户有权知道改了什么、旧数据备份在哪 ——
+   * 改写用户数据这件事，用户有权知道改了什么、旧数据备份在哪 ——
    * 因此提示里带上账号数、分组数与**备份路径**；备份失败单独警告（凭据仍在旧文件里，
-   * 未被删除，所以不必阻断）。
+   * 未被删除，所以不必阻断）。快照搬运同理：搬了几个、有没有搬失败都要说。
    *
    * 失败**不阻断页面**：读侧此刻仍按旧库工作，账号一个都没少，用户照常用。
    */
@@ -440,22 +467,47 @@ export default function TraeAccountsPage() {
     void (async () => {
       try {
         const report = await api.traeMergeLegacyRegions();
-        if (disposed || !report.changed) return;
-        toast.success(t("trae.page.accounts.mergeDone"), {
-          description: [
-            t("trae.page.accounts.mergeSummary", {
-              added: report.accountsAdded,
-              kept: report.accountsKept,
-            }),
-            report.groupsAdded > 0
-              ? t("trae.page.accounts.mergeGroups", { count: report.groupsAdded })
-              : null,
-            report.backup ? t("trae.page.accounts.mergeBackup", { path: report.backup }) : null,
-            report.backupFailed ? t("trae.page.accounts.mergeBackupFailed") : null,
-          ]
-            .filter(Boolean)
-            .join(" · "),
-        });
+        if (disposed) return;
+        const snapshots = report.snapshots;
+        const snapshotsChanged = snapshots?.changed ?? false;
+        // 两个 changed 任一为真才提示（见上方说明）。
+        if (!report.changed && !snapshotsChanged) return;
+        toast.success(
+          report.changed
+            ? t("trae.page.accounts.mergeDone")
+            : t("trae.page.accounts.mergeSnapshotsDone"),
+          {
+            description: [
+              // 账号库那几行只在账号库真被改写时才出现 —— 快照-only 的机器上
+              // 报「并入 0 个账号」是噪声，还会让人以为账号出了问题。
+              report.changed
+                ? t("trae.page.accounts.mergeSummary", {
+                    added: report.accountsAdded,
+                    kept: report.accountsKept,
+                  })
+                : null,
+              report.changed && report.groupsAdded > 0
+                ? t("trae.page.accounts.mergeGroups", { count: report.groupsAdded })
+                : null,
+              report.changed && report.backup
+                ? t("trae.page.accounts.mergeBackup", { path: report.backup })
+                : null,
+              report.changed && report.backupFailed
+                ? t("trae.page.accounts.mergeBackupFailed")
+                : null,
+              snapshotsChanged
+                ? t("trae.page.accounts.mergeSnapshots", { count: snapshots.slotsCopied })
+                : null,
+              snapshots?.errors?.length
+                ? t("trae.page.accounts.mergeSnapshotsFailed", {
+                    count: snapshots.errors.length,
+                  })
+                : null,
+            ]
+              .filter(Boolean)
+              .join(" · "),
+          },
+        );
         await loadAll();
       } catch (e) {
         toast.error(t("trae.page.accounts.mergeFailed"), { description: api.asError(e) });
@@ -536,13 +588,23 @@ export default function TraeAccountsPage() {
    *
    * `restart`（确认框的「自动重开」）映射到后端 `launch`：`true` ⇒ 切换后拉起客户端；
    * `false` ⇒ 只换登录态、不拉起（与 WorkBuddy 的 `restart` 同一语义）。
+   *
+   * ⚠️ `programLabel` 由调用方从**程序位自己的展示名**传进来（卡片/抽屉读的是后端
+   * `TraeProgramStatus.label`），**不得**在这里用 `traeVariantLabel(programVariant)` 反推：
+   * 变体 `trae_cn` 同时属于遗留 `trae_code` 与合并版 `trae`（issue #20，两者共用变体），
+   * 反推会把合并版说成 `TraeCode` —— 用户报障原文就是「我点的是 trae 不是 TraeCode」。
    */
-  async function doSwitchTo(userId: string, programVariant: TraeVariantId, restart: boolean) {
+  async function doSwitchTo(
+    userId: string,
+    programVariant: TraeVariantId,
+    programLabel: string,
+    restart: boolean,
+  ) {
     await run(
       `switch-${userId}@${programVariant}`,
       "trae.page.accounts.actionSwitch",
       () => api.traeSwitchAccount({ userId, launch: restart, variant: programVariant }),
-      { line: traeVariantLabel(programVariant) },
+      { line: programLabel },
     );
   }
 
@@ -798,16 +860,86 @@ export default function TraeAccountsPage() {
     setSelectedKeys(new Set());
   }, [variant]);
 
-  /** 点「查看详情」：只打开抽屉。 */
+  /**
+   * 请求把账号切到指定 Trae 产品线：**先走统一重启确认**（TraeWork / TraeCode 需先关再开），
+   * 真正的切换在确认框的 `onConfirm` 里调 `doSwitchTo`。
+   *
+   * ★ 抽成具名函数：卡片与抽屉（「切换到此账号」）必须是**同一条**流程 ——
+   * 两处各写一遍内联箭头，迟早出现「卡片会确认、抽屉直接切」的分叉。
+   *
+   * ⚠️ `label` 必须由调用方传入（取自后端 `TraeProgramStatus.label`），**不要**用
+   * `traeVariantLabel(programVariant)` 反推：合并版 `trae` 与遗留 `trae_code`
+   * **共用变体** `trae_cn`，反推会把合并版说成 `TraeCode`（issue #20 报障）。
+   */
+  function requestSwitchTo(account: TraeAccount, programVariant: TraeVariantId, label: string) {
+    setSwitchConfirm({
+      userId: account.userId,
+      variant: programVariant,
+      label,
+    });
+  }
+
+  /**
+   * ★ 以下四个「单账号动作」抽成具名函数：卡片菜单与抽屉「操作」区必须是**同一段代码**。
+   *
+   * ⚠️ 它们原先全是卡片上的内联箭头。抽屉要复用就只能再抄一遍 ——
+   * 而「同一动作两处实现」正是本仓反复出现的分叉来源（确认流程、保存登录态都栽过）。
+   */
+  function refreshJwt(account: TraeAccount) {
+    void run(`jwt-${account.userId}`, "trae.page.accounts.actionRefreshJwt", () =>
+      api.traeRefreshJwt(account.userId, variant),
+    );
+  }
+
+  function clearCooldown(account: TraeAccount) {
+    void run(`thaw-${account.userId}`, "trae.page.accounts.actionThaw", () =>
+      api.traeClearCooldown(account.userId, variant),
+    );
+  }
+
+  function requestDelete(account: TraeAccount) {
+    setPendingDelete(account);
+  }
+
+  /** 「保存登录态」：目标是「该账号此刻登录着的那个程序位」（可能多条线同时登录）。 */
+  function saveLogin(account: TraeAccount) {
+    const targets = programsFor(account).filter((program) => program.current);
+    if (targets.length === 0) {
+      toast.error(t("trae.page.accounts.saveLoginNoProgram"), {
+        description: account.name || account.userId,
+      });
+      return;
+    }
+    void run(`save-${account.userId}`, "trae.page.accounts.actionSaveLogin", async () => {
+      let fileCount = 0;
+      for (const program of targets) {
+        const result = await api.traeSaveLogin(account.userId, program.variant);
+        fileCount += result.fileCount;
+      }
+      return fileCount;
+    });
+  }
+
+  /** 拉一次本机签到日志（抽屉的「近 7 天」用它；失败 ⇒ 该区块不渲染）。 */
+  function loadDetailCheckinLogs() {
+    void api
+      .getTraeLogs({ kind: "checkin", variant })
+      .then((res) => setDetailCheckinLogs(res.entries))
+      .catch(() => setDetailCheckinLogs(null));
+  }
+
+  /** 点「查看详情」：打开抽屉。 */
   function openDetail(account: TraeAccount) {
     setDetailAutoEditRemark(false);
     setDetailAccount(account);
+    loadDetailCheckinLogs();
   }
 
   /** 点「更多 → 编辑备注」：打开抽屉并**直接进入编辑态**。 */
   function openRemark(account: TraeAccount) {
     setDetailAutoEditRemark(true);
     setDetailAccount(account);
+    loadDetailCheckinLogs();
   }
 
   /**
@@ -836,6 +968,11 @@ export default function TraeAccountsPage() {
         variant,
       });
       setReport(result);
+      /* ★ 结果**留在页面上**（原型 `checkinResult`），与 WorkBuddy 同一形状同一位置。 */
+      setCheckinResult({
+        ok: result.totalOk + result.already,
+        failedIds: (result.results ?? []).filter((row) => !row.ok && row.userId).map((row) => row.userId),
+      });
       const parts: string[] = [];
       if (result.totalOk > 0) parts.push(t("trae.page.accounts.checkinBatchSuccess", { n: result.totalOk }));
       if (result.already > 0) parts.push(t("trae.page.accounts.checkinBatchAlready", { n: result.already }));
@@ -982,27 +1119,28 @@ export default function TraeAccountsPage() {
   const groups = overview?.groups ?? [];
 
   /**
-   * 分组**筛选**（只看某一组）—— 与工具栏的 `group`（**分桶**：按什么把列表分开）
-   * 语义不同，两者共存（决策 #4 / §1.6）。这里是**先筛**，再交给搜索 / 排序 / 分桶。
-   */
-  const groupFiltered = useMemo(() => {
-    if (groupFilter === "all") return accounts;
-    if (groupFilter === UNGROUPED) return accounts.filter((account) => !account.groupId);
-    return accounts.filter((account) => account.groupId === groupFilter);
-  }, [accounts, groupFilter]);
-
-  const coolingCount = overview?.cooling ?? 0;
-  const expiringSoon = accounts.filter((account) => account.jwtStatus === "warn").length;
-  /**
-   * **当前正在管理的这条产品线**的当前登录账号（由该线登录态快照的 `currentAccount` 判定）。
+   * 该账号是不是**当前登录**（卡片头部高亮 + 幽灵 logo + 「当前登录」徽章 + 左侧竖条）。
    *
-   * 它只用于卡片本体（头部高亮、幽灵 logo）：卡片上每枚程序按钮的「是否当前账号」
-   * 各判各的，见 {@link programsFor}。
+   * ## ★ 为什么不是 `logins[variant]`（2026-10-10 修的真实缺陷）
    *
-   * ⚠️ 取的是 `userId`（身份），**不是** `name`：卡片高亮与「当前账号」角标都靠
-   * 「这个账号 uid == 客户端此刻登录的 uid」，拿展示名比较会在用户改名后立刻失配。
+   * `logins` 的键是**程序位标识**（`trae_work` / `trae_cn` / `global` / `global_trae_code`），
+   * 而 `variant` 是**区域**（`cn` / `global`）。原实现写 `logins[variant]` ⇒
+   * 只有「区域名恰好等于某个程序位标识」时才能查到 —— 国际版有个程序位就叫 `global`，
+   * 所以那边**碰巧**正常；**国内版两个程序位叫 `trae_work` / `trae_cn`，永远查不到**
+   * ⇒ 国内版作用域下**没有任何一张卡**会亮「当前登录」。
+   *
+   * 实测（`build:demo`，同一份数据）：`/s/trae-global/accounts` 主号卡有徽章 + 竖条；
+   * `/s/trae-cn/accounts` 三张卡全无。
+   *
+   * 现改为**逐程序位判定**（`programsFor(account).some(p => p.current)`）——
+   * 与 WorkBuddy 卡片 `isCurrentAccount`（「绑定任一程序位即当前」）**同一口径**，
+   * 也与抽屉的 `detailIsCurrent` 同一实现。`logins[program.variant]` 的键是对得上的。
    */
-  const currentUserId = logins[variant]?.userId ?? null;
+  /* 用函数声明（与 `programsFor` 同形）而不是 `useCallback`：
+     它只在渲染期被调用，包成 hook 反而要处理 `programsFor` 的依赖身份（每渲染都变）。 */
+  function isCurrentAccount(account: TraeAccount): boolean {
+    return programsFor(account).some((program) => program.current);
+  }
   const switchBusy = busy?.startsWith("switch-") ?? false;
 
   /**
@@ -1014,18 +1152,30 @@ export default function TraeAccountsPage() {
    * 迟早与状态条、详情弹窗的口径出现分歧。
    */
   function programsFor(account: TraeAccount): TraeProgram[] {
-    // ★ P4（§1.4）：遍历**全部区域**（不再是当前区域那一条），让 TraeCode 等程序位
-    //   在任意区域页面上都常显。每个 `(region, program)` 组合天然唯一（最多 4 条）。
+    // ★ 2026-10-10（**用户要求，决策反转**）：**只取当前区域**的程序位。
     //
-    //   ⚠️ **禁止按 `program` 去重**：`TraeProgramStatus.program` 只有 2 个取值
-    //   （不含区域），按它去重会把 `(cn, trae_work)` 与 `(global, trae_work)` 合并成
-    //   一条、丢掉「该写哪个客户端」。`variant`（区域限定）才是切换目标、天然唯一。
-    return variantStatuses.flatMap((status) =>
+    //   原设计（P4 §1.4 / §5）是「跨区域常显 + 显示层消歧」：任意区域页面上都列出 4 个程序位，
+    //   跨区域那两枚可见但不可直接切（点了只是**引导切区域**）。实际效果是国内版页面上
+    //   一直挂着「TraeWork AI 国际版 / Trae AI 国际版」两枚按钮 —— 用户明确要求
+    //   **国内版不显示国际版的**。
+    //
+    //   改成本区域之后反而更自洽：账号库本就按区域分家（跨库切换会被后端守卫拒绝），
+    //   所以本区域页面只该谈本区域的客户端；要管另一条产品线，切作用域即可（顶栏 `ScopeSwitch`）。
+    //
+    //   ⚠️ **仍然禁止按 `program` 去重**：`TraeProgramStatus.program` 不含区域，
+    //      按它去重会把 `(cn, trae_work)` 与 `(global, trae_work)` 合并、丢掉「该写哪个客户端」。
+    //      `variant`（区域限定）才是切换目标、天然唯一。
+    return variantStatuses
+      .filter((status) => status.variant === variant)
+      .flatMap((status) =>
       status.programs.map((program) => ({
-        // ★ 来源区域：跨区域常显后必须带上，供卡片做**同名按钮消歧**（§1.4 显示层）。
+        // 来源区域（= 当前区域）。保留字段：抽屉徽标的 key 用它，且它标明「这个程序位属于哪条线」。
         region: status.variant,
         // 切换目标（区域限定）—— 真正喂给 `api.traeSwitchAccount` 的值。
         variant: program.variant,
+        // 程序位标识（不含区域）：**只用于卡片按钮的可见短名**（`Work` / `Code`）。
+        // ⚠️ 绝不参与去重 —— 它不含区域，按它去重会丢掉「该写哪个客户端」。
+        program: program.program,
         label: program.label,
         installed: program.installed,
         // ★ 「装了」不等于「能用」：客户端从未启动过时它的 userData 目录压根不存在
@@ -1039,7 +1189,7 @@ export default function TraeAccountsPage() {
         current:
           Boolean(account.userId) && logins[program.variant]?.userId === account.userId,
       })),
-    );
+      );
   }
   /**
    * **当前区域**的探测结果（含该区域的 `dataDir` / `dataDirExists`）。
@@ -1070,34 +1220,6 @@ export default function TraeAccountsPage() {
    * （与后端 `overview_for().dataDir` 同源）。本机两者不同值：
    * `writeDataDir` = `TRAE SOLO CN`（有登录态）、`dataDir` = `TRAE SOLO`（国际版、更活跃）。
    */
-  const clientStatus = regionStatus?.programs?.[0] ?? null;
-  const clientInstalled = clientStatus?.installed ?? regionStatus?.installed ?? false;
-  const clientVersion = clientStatus?.version ?? regionStatus?.version ?? null;
-  const clientPath = clientStatus?.path ?? regionStatus?.path ?? null;
-  const clientDataDir = clientStatus?.writeDataDir ?? regionStatus?.writeDataDir ?? null;
-  const clientDataDirExists =
-    clientStatus?.writeDataDirExists ?? regionStatus?.writeDataDirExists ?? false;
-  const clientRunning = clientStatus?.running ?? regionStatus?.running ?? false;
-
-  /**
-   * 探测到的是哪条产品线。同机装多个 Trae 时，用户靠这个确认切换器管的是哪一个。
-   *
-   * 取自**该区域主程序**的展示名（`TraeWork` / `TraeCode` / `TraeWork AI` / `Trae AI`），
-   * 不再从 `env` 推 —— 那是全局探测的结果，在国际版页签上会写着国内版的产品名。
-   */
-  const productLabel = clientStatus?.label ?? regionStatus?.variantLabel ?? null;
-  /**
-   * 「手工指定」标记：取自**应用级**设置 `settings.traePath`（`env.configuredPath`），
-   * 与区域无关，故仍看 `env`。
-   */
-  const autoDetected = isAutoDetected(env);
-
-  const checkedToday = accounts.filter((account) => account.checkedToday).length;
-  const totalCredits = accounts.reduce(
-    (sum, account) => sum + (account.remainingCredits ?? account.credits ?? 0),
-    0,
-  );
-
   function groupNameOf(account: TraeAccount): string | null {
     if (!account.groupId) return null;
     return groups.find((group) => group.id === account.groupId)?.name ?? t("trae.page.accounts.fallbackGroup");
@@ -1165,8 +1287,8 @@ export default function TraeAccountsPage() {
     // `programsFor` / `groupNameOf` 读 `variantStatuses` / `logins` / `groups`，故一并入依赖。
   }, [t, groups, variantStatuses, logins]);
 
-  /** 筛选（分组筛选 → 搜索）→ 排序 → 分桶；视图参数全部留在页内。 */
-  const filtered = filterAccounts(groupFiltered, listConfig, query);
+  /** 筛选（搜索）→ 排序 → 分桶；视图参数全部留在页内。 */
+  const filtered = filterAccounts(accounts, listConfig, query);
   const sorted = sortAccounts(filtered, sort, listConfig);
   const buckets = groupAccounts(sorted, group, listConfig);
 
@@ -1190,6 +1312,13 @@ export default function TraeAccountsPage() {
     const label = groupLabels[key];
     return label ? [{ value: key, label }] : [];
   });
+
+  /** 已勾选的账号（按当前列表顺序）—— 批量条的「导出」用它，与 WorkBuddy 同一口径。 */
+  const selectedAccounts = useMemo(
+    () => accounts.filter((account) => selectedKeys.has(selectionKey(account.userId))),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [accounts, selectedKeys, scope],
+  );
 
   /** 全选：只作用于**当前可见**（筛选后）的行；与表头全选读写同一份 `selectedKeys`。 */
   const allVisibleSelected =
@@ -1223,12 +1352,11 @@ export default function TraeAccountsPage() {
     });
   }
 
-  /** 「清除筛选」出口：复位搜索 + 分组筛选 + 分桶（`§1.9` 两种空态绝不混用）。 */
+  /** 「清除筛选」出口：复位搜索 + 分桶（`§1.9` 两种空态绝不混用）。 */
   function clearListFilters() {
     if (!hasActiveFilter({ query, group })) return;
     setQuery("");
     setGroup("none");
-    setGroupFilter("all");
   }
 
   /** Trae 状态徽标（表格用；与卡片同一套语义，只是排布不同）。 */
@@ -1271,18 +1399,23 @@ export default function TraeAccountsPage() {
       key: "account",
       header: t("trae.page.accounts.table.account"),
       render: (account) => (
-        <div className="min-w-0">
-          <div className="flex items-center gap-1.5">
-            <span className="truncate font-medium" title={traeAccountName(account)}>
-              {traeAccountName(account)}
-            </span>
-            {account.userId === currentUserId && (
-              <Badge variant="secondary" className="rounded-md px-1.5 py-0 text-[11px] font-medium">
-                {t("trae.page.accounts.table.current")}
-              </Badge>
-            )}
+        /* ★ 与 WorkBuddy 表格**同一结构**（原型 `tableView` `:2551`）：头像 + 名称行（含「当前」徽章）
+           + 身份行。此前 Trae 侧没有头像 ⇒ 两个分区的表格首列不同形。 */
+        <div className="flex min-w-0 items-center gap-2.5">
+          <AccountsTableAvatar name={traeAccountName(account)} />
+          <div className="min-w-0">
+            <div className="flex items-center gap-1.5">
+              <span className="truncate font-medium" title={traeAccountName(account)}>
+                {traeAccountName(account)}
+              </span>
+              {isCurrentAccount(account) && (
+                <Badge variant="secondary" className="rounded-md px-1.5 py-0 text-[11px] font-medium">
+                  {t("trae.page.accounts.table.current")}
+                </Badge>
+              )}
+            </div>
+            <div className="truncate font-mono text-xs text-muted-foreground">UID · {displayText(account.userId) ?? "—"}</div>
           </div>
-          <div className="truncate font-mono text-xs text-muted-foreground">UID · {displayText(account.userId) ?? "—"}</div>
         </div>
       ),
     },
@@ -1439,6 +1572,118 @@ export default function TraeAccountsPage() {
     : [];
   const detailRemark = detail ? displayText(detail.remark)?.trim() || "" : "";
 
+  /* ────────────── 抽屉装配：与 WorkBuddy **逐项同构** ──────────────
+     ⚠️ 改造前 Trae 只注入了 `packs/sections/programs/remark` 四样，
+     抽屉因此缺了「当前登录徽章 / 切换到此账号 / 操作区 / 签到历史」四块 ——
+     同一个共享抽屉在两个分区里内容完全不同。下面按 WB 的口径补齐，
+     差异**只在数据**（Trae 的切换目标是 Trae 产品线、凭据是 JWT）。 */
+
+  /**
+   * ★ 「当前登录」= 该账号是**任一** Trae 产品线的当前账号（与卡片 / WB 抽屉同口径，
+   * 原型 `drawerAccount` :3467）。
+   */
+  const detailIsCurrent = detail ? isCurrentAccount(detail) : false;
+
+  /**
+   * ★ 「切换到此账号」程序位（可点）。回调复用页面既有的 `requestSwitchTo`（会走统一重启确认）。
+   *
+   * ⚠️ 2026-10-10：`programsFor` 现在只返回**本区域**的程序位 ⇒ 原先那条「跨区域不给 onSwitch、
+   * 标签加区域后缀消歧」的分支已删除（永远走不到，留着就是死代码）。
+   * 不可切换只剩一种原因：客户端没装 / 没有可读写的数据目录（`hasDataDir`）。
+   */
+  const detailSwitchTargets: DetailSwitchTarget[] = detail
+    ? programsFor(detail).map((program) => {
+        // 与卡片**同一取值**：程序位自己的展示名。抽成局部变量是因为它既要上界面，
+        // 又要原样传给 `requestSwitchTo` —— 而**不能**在那里用 variant 反推
+        // （合并版 `trae` 与遗留 `trae_code` 共用变体 `trae_cn`，反推会说成 `TraeCode`）。
+        const label = displayText(program.label) || program.variant;
+        return {
+          key: `${program.region}:${program.variant}`,
+          label,
+          current: program.current,
+          available: program.installed,
+          busy: busy?.startsWith("switch-") ?? false,
+          loading: busy === `switch-${detail.userId}@${program.variant}`,
+          onSwitch:
+            program.installed && program.hasDataDir
+              ? () => requestSwitchTo(detail, program.variant, label)
+              : undefined,
+        };
+      })
+    : [];
+
+  /**
+   * 该账号凭据是否不可用（JWT 已过期 / 状态未知）—— 与卡片菜单的「不给签到入口」同口径。
+   * ⚠️ `TraeJwtStatus` 只有 `ok | warn | expired | unknown`（**没有** `unparsable`，那是文案层的说法）。
+   */
+  const detailCredentialUnavailable = detail
+    ? detail.jwtStatus === "expired" || detail.jwtStatus === "unknown"
+    : false;
+
+  /**
+   * ★ 抽屉「操作」区：回调全部复用页面**既有**处理函数（刷新 JWT / 签到 / 导出 / 删除）。
+   * 「手动签到」按与卡片菜单**同一门控**：今日未签到且凭据可用时才给入口。
+   */
+  const detailActions: DetailActions | null = detail
+    ? {
+        onRefresh: () => refreshJwt(detail),
+        onCheckin: () => void checkinOne(detail),
+        showCheckin: !detail.checkedToday && !detailCredentialUnavailable,
+        onExport: () => {
+          setExportTargets([detail]);
+          setExportOpen(true);
+        },
+        onDelete: () => requestDelete(detail),
+        credentialUnavailable: detailCredentialUnavailable,
+      }
+    : null;
+
+  /**
+   * ★ 抽屉「签到积分」（原型 B5）：`todayCheckedIn` 必给；「今日获得」来自**最近一轮**签到摘要里
+   * 该账号的 `delta`（上游实测字段）。
+   *
+   * ⚠️ 摘要不是今天的、或该账号不在摘要里 ⇒ `todayCredit: null` ⇒ 抽屉**不渲染**那一行
+   * （§3.4 规则 1：无数据不渲染）。**绝不**用固定奖励凑一个「+N」。
+   */
+  const detailCheckin = detail
+    ? {
+        todayCheckedIn: detail.checkedToday,
+        todayCredit:
+          checkin?.summaryIsToday
+            ? checkin.summary.results.find((row) => row.userId === detail.userId && row.ok)?.delta ?? null
+            : null,
+      }
+    : null;
+
+  /**
+   * ★ 抽屉「签到历史（近 7 天）」：日期 + 结果来自**本机签到日志**
+   * （`get_trae_logs({ kind: "checkin" })`，`TraeLogEntry.date`）。
+   *
+   * 「获得积分」按**账号 + 日期**取 `checkin.summary.results` 里那一条的 `delta`；
+   * 该摘要只覆盖**最近一轮**，取不到时为 `null` ⇒ 渲染「—」（**绝不**臆造固定奖励）。
+   */
+  const detailCheckinHistory: DetailCheckinHistoryRow[] | null =
+    detail && detailCheckinLogs
+      ? lastSevenDays().map((day) => {
+          const entry = detailCheckinLogs
+            .filter((log) => log.kind === "checkin" && log.date === day)
+            .find((log) => log.message.includes(detail.userId));
+          const outcome = checkin?.summaryIsToday
+            ? checkin.summary.results.find((row) => row.userId === detail.userId && row.ok)
+            : undefined;
+          const amount = outcome ? outcome.delta : null;
+          if (!entry) {
+            return { date: day, resultLabel: t("shared.drawer.checkin.result.none"), tone: "none" as const, amount };
+          }
+          /* 日志行是**纯文本**，不做自然语言解析：只按「是否含失败关键字」二分。
+             宁可把失败显示成「成功」以外的一档，也不猜更细的状态。 */
+          const failed = /失败|error|fail/i.test(entry.message);
+          return failed
+            ? { date: day, resultLabel: t("shared.drawer.checkin.result.fail"), tone: "fail" as const, amount }
+            : { date: day, resultLabel: t("shared.drawer.checkin.result.success"), tone: "ok" as const, amount };
+        })
+      : null;
+
   /* 页头作用域（原型 `viewAccounts`）复用上方的 `scope`；「需处理」= JWT 已过期，
      与 WorkBuddy 侧的 `needsRelogin` 同一层语义。 */
   const expiredCount = accounts.filter((account) => account.jwtStatus === "expired").length;
@@ -1452,8 +1697,8 @@ export default function TraeAccountsPage() {
           与 WorkBuddy 的骨架冲突，也让同一功能出现两个入口。 */}
       <header className="mb-5 flex items-start gap-4">
         <div className="min-w-0">
-          <h1 className="text-[28px] font-semibold tracking-tight">{t("trae.page.accounts.title")}</h1>
-          <p className="mt-1.5 text-xs text-muted-foreground">
+          <h1 className="text-[28px] font-[640] tracking-[-0.02em]">{t("trae.page.accounts.title")}</h1>
+          <p className="mt-1.5 text-[12.5px] text-muted-foreground">
             {expiredCount > 0
               ? t("pageHead.accounts.pending", {
                   scope: scopeLabel(t, scope),
@@ -1467,28 +1712,44 @@ export default function TraeAccountsPage() {
         <ScopeChip scope={scope} />
       </header>
 
-      {error && (
-        <Alert variant="destructive" className="mb-4">
-          <AlertTriangle />
-          <AlertTitle>{t("trae.page.accounts.loadFailed")}</AlertTitle>
-          <AlertDescription>{error}</AlertDescription>
-        </Alert>
-      )}
-
-      {loading && !overview ? (
-        /* 区块**首次加载**用 `<Skeleton>`（§3.6），形状接近真实内容（顶部环境条 + 卡片栅格），
-           不是一行文字 —— 让用户先看到「这里将出现什么」。 */
-        <div className="space-y-6">
-          <Skeleton className="h-24 w-full rounded-2xl" />
-          <div className="grid grid-cols-[repeat(auto-fit,minmax(min(100%,300px),1fr))] gap-5">
-            {[0, 1, 2].map((index) => (
-              <Skeleton key={index} className="h-44 w-full rounded-2xl" />
-            ))}
-          </div>
-        </div>
-      ) : accounts.length === 0 ? (
-        /* 空态：与 WorkBuddy 的 `EmptyRegionCard` 同构（可能原因 + 期望产物 + 两个动作）。 */
-        <EmptyTraeCard
+      {/* ★ 账号工作台（**两平台共用容器**）—— 与 `AccountsPage` 是**同一个组件**，
+          差异只在 props：排序/分组选项、工具栏专属控件、卡片渲染、列定义、首屏空态。
+          这正是原型 `curPlatform()` 的机制（同一段 `viewAccounts`，只换数据）。 */}
+      <AccountWorkbench
+        query={query}
+        onQueryChange={setQuery}
+        searchInputRef={searchRef}
+        sort={sort}
+        sortOptions={sortOptions}
+        onSortChange={(next) => setSort(next as AccountSortKey)}
+        group={group}
+        groupOptions={groupOptions}
+        onGroupChange={(next) => setGroup(next as AccountGroupKey)}
+        view={view}
+        onViewChange={setView}
+        tableViewEnabled={tableEnabled}
+        selection={{
+          allSelected: allVisibleSelected,
+          someSelected: someVisibleSelected,
+          onToggleAll: toggleVisibleSelection,
+          label: allVisibleSelected ? t("shared.toolbar.deselectAll") : t("shared.toolbar.selectAll"),
+        }}
+        /* ★ 主操作：两平台**同一入口** —— 都开「添加账号」抽屉（`AddAccountDrawer`）。
+           原工具栏右侧还有 4 个 ghost 级入口（导入本机 / 粘贴 JWT / 导入备份 / 导出备份），
+           已随「⋯」溢出菜单一起删除 ⇒ 全部搬进抽屉：粘贴 JWT 成为第 4 张添加方式卡，
+           导出备份进「更多操作」，导入本机 / 导入备份本就与抽屉前两张卡同义（**不重复搬**）。 */
+        addAction={{
+          label: t("shared.addDrawer.title"),
+          onClick: () => setAddDrawerOpen(true),
+        }}
+        /* ★ 一枚**常驻**控件（用户要求「回收站放出来」）——
+           走结构化 prop 注入，几何与文案都留在工具栏壳里；其余入口仍在抽屉的「更多操作」。 */
+        onOpenRecycleBin={() => setRecycleOpen(true)}
+        loading={loading}
+        /* 首屏空态：与 WorkBuddy 的 `EmptyRegionCard` 同构（可能原因 + 期望产物 + 动作）。 */
+        emptyState={
+          accounts.length === 0 ? (
+            <EmptyTraeCard
           // ⚠️ 三个字段都必须取**当前区域**那份（见 `EmptyTraeCard` 的 prop 文档）：
           // `env`（`get_trae_env`）是横跨全部产品线的全局探测，在区域页里会张冠李戴
           // —— 「装了」会取自另一条产品线，`dataDir` 会写成另一个客户端的目录。
@@ -1503,366 +1764,94 @@ export default function TraeAccountsPage() {
               api.launchTraeClient(variant),
             )
           }
-          importing={importing}
-          launching={busy === "launch-client"}
-        />
-      ) : (
-        <>
-          {/* 「添加与迁移账号」横幅：位置、结构与 WorkBuddy 完全一致。 */}
-          <div className="relative mb-6 overflow-visible rounded-2xl border border-border bg-muted/30 px-5 py-5 shadow-card">
-            <div className="pointer-events-none absolute inset-0 overflow-hidden rounded-2xl">
-              <div className="absolute -right-12 -top-20 size-44 rounded-full border-[28px] border-slate-400/[0.035]" />
-            </div>
-            <div className="relative flex flex-wrap items-center gap-x-5 gap-y-4">
-              <div className="min-w-[190px] flex-1">
-                <h2 className="text-sm font-semibold text-foreground">{t("trae.page.accounts.addTitle")}</h2>
-                <p className="mt-1 text-xs leading-5 text-muted-foreground">
-                  {t("trae.page.accounts.addSubtitle")}
-                </p>
-              </div>
-              <div className="flex flex-wrap items-center gap-2.5">
-                {/* 主入口与 WorkBuddy 同形同位：OAuth。Trae 的授权页是普通网页
-                    （不是二维码），因此文案是「网页登录」而不是「扫码添加」。 */}
-                <DemoAction>
-                  <Button
-                    className="h-10 bg-primary px-4 text-primary-foreground shadow-sm hover:bg-primary/90"
-                    onClick={() => setOauthOpen(true)}
-                  >
-                    <QrCode />{t("trae.page.accounts.oauthLogin")}
-                  </Button>
-                </DemoAction>
-                <DemoAction>
-                  <Button className="h-10 px-4" onClick={() => void importLocal()} disabled={importing} variant="outline">
-                    {importing ? <Loader2 className="animate-spin" /> : <Download />}{t("trae.page.accounts.importLocal")}
-                  </Button>
-                </DemoAction>
-              </div>
-              <div className="flex items-center gap-1">
-                {/* 粘贴 JWT 是 Trae 独有且**已降级**的兜底路径（OAuth 才是主路径），
-                    按「Trae 独有项下沉」放进 ghost 组，与备份导入导出同级。 */}
-                <DemoAction>
-                  <Button variant="ghost" size="sm" className="h-9 px-2.5" onClick={() => setAddOpen(true)} title={t("trae.page.accounts.pasteJwtTitle")}>
-                    <UserPlus />{t("trae.page.accounts.pasteJwt")}
-                  </Button>
-                </DemoAction>
-                <DemoAction>
-                  <Button variant="ghost" size="sm" className="h-9 px-2.5" onClick={() => setImportOpen(true)} title={t("trae.page.accounts.importBackupTitle")}>
-                    <FileUp />{t("trae.page.accounts.importBackup")}
-                  </Button>
-                </DemoAction>
-                <DemoAction>
-                  <Button variant="ghost" size="sm" className="h-9 px-2.5" onClick={() => setExportOpen(true)} disabled={accounts.length === 0} title={t("trae.page.accounts.exportTitle")}>
-                    <FileDown />{t("trae.page.accounts.export")}
-                  </Button>
-                </DemoAction>
-              </div>
-            </div>
-          </div>
-
-          {/* 客户端环境说明行：Trae 独有（WorkBuddy 的环境信息在卡片里），下沉为一条细说明。 */}
-          <Card className="mb-6 gap-0 py-0">
-            <div className="flex flex-wrap items-center gap-x-8 gap-y-3 px-5 py-3.5 text-sm">
-              <span className="flex items-center gap-2">
-                {t("trae.page.accounts.client")}
-                <span className={cn("font-medium", clientInstalled ? "text-success" : "text-muted-foreground")}>
-                  {clientInstalled
-                    ? clientVersion
-                      ? t("trae.page.accounts.installedVersion", { version: clientVersion })
-                      : t("trae.page.accounts.installed")
-                    : t("trae.page.accounts.notInstalled")}
-                </span>
-                {clientInstalled && productLabel && (
-                  <TooltipProvider delayDuration={400}>
-                    <Tooltip>
-                      <TooltipTrigger asChild>
-                        <Badge variant="secondary" className="cursor-default">
-                          {productLabel}
-                          {!autoDetected && <span className="ml-1 text-muted-foreground">{t("trae.page.accounts.manualPinned")}</span>}
-                        </Badge>
-                      </TooltipTrigger>
-                      <TooltipContent className="max-w-md">
-                        <div className="space-y-1 font-mono text-xs break-all">
-                          <div>{clientPath ?? "—"}</div>
-                          {clientDataDir && <div className="text-muted-foreground">{clientDataDir}</div>}
-                        </div>
-                      </TooltipContent>
-                    </Tooltip>
-                  </TooltipProvider>
-                )}
-              </span>
-              <span className="flex items-center gap-2">
-                {t("trae.page.accounts.runtime")}
-                <span className={cn("inline-flex items-center gap-1.5 font-medium", clientRunning ? "text-success" : "text-muted-foreground")}>
-                  <span className={cn("size-2 rounded-full", clientRunning ? "bg-success" : "bg-muted-foreground/50")} />
-                  {clientRunning ? t("trae.page.accounts.running") : t("trae.page.accounts.notRunning")}
-                </span>
-              </span>
-              <span className="text-muted-foreground">
-                {t("trae.page.accounts.checkedTodayLabel")} <span className="font-medium text-foreground">{checkedToday}</span>
-              </span>
-              <span className="text-muted-foreground">
-                {t("trae.page.accounts.availableCredits")} <span className="font-medium text-foreground">{totalCredits.toLocaleString("zh-CN")}</span>
-              </span>
-              {credits && (
-                <span className="text-muted-foreground">
-                  {t("trae.page.accounts.todayEarned")} <span className="font-medium text-foreground">{credits.todayEarned}</span>
-                </span>
-              )}
-              {expiringSoon > 0 && (
-                <span className="text-warning">
-                  {t("trae.page.accounts.jwtExpiring")} <span className="font-medium">{expiringSoon}</span>
-                </span>
-              )}
-              {coolingCount > 0 && (
-                <span className="flex items-center gap-2 text-muted-foreground">
-                  <CircleSlash className="size-3.5" />
-                  {t("trae.page.accounts.cooling")} <span className="font-medium text-foreground">{coolingCount}</span>
-                  <DemoAction>
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      disabled={busy === "clear-cooldown"}
-                      onClick={() => void run("clear-cooldown", "trae.page.accounts.actionClearCooldown", () => api.traeClearCooldown(undefined, variant))}
-                    >
-                      {t("trae.page.accounts.clearCooldownAll")}
+              importing={importing}
+              launching={busy === "launch-client"}
+            />
+          ) : null
+        }
+        notices={
+          <>
+            {error && (
+              <Alert variant="destructive" className="mb-4">
+                <AlertTriangle />
+                <AlertTitle>{t("trae.page.accounts.loadFailed")}</AlertTitle>
+                <AlertDescription>
+                  <span>{error}</span>
+                  {/* ★ 失败态**必须给一条出路**（本仓约定，与 WorkBuddy 同形）：
+                      没有它，用户唯一能做的就是重启应用。此前 Trae 侧这条 Alert 只有文字。 */}
+                  <div className="mt-2">
+                    <Button size="sm" variant="outline" onClick={() => void loadAll()}>
+                      <RefreshCw />
+                      {t("trae.page.accounts.emptyRecheck")}
                     </Button>
-                  </DemoAction>
-                </span>
-              )}
-            </div>
-            {clientDataDir && (
-              <div className="border-t border-border/60 px-5 py-2.5 text-xs text-muted-foreground">
-                {t("trae.page.accounts.dataDirLabel")}<code className="font-mono">{clientDataDir}</code>
-                {!clientDataDirExists && <span className="ml-2 text-warning">{t("trae.page.accounts.dataDirMissing")}</span>}
-              </div>
+                  </div>
+                </AlertDescription>
+              </Alert>
             )}
-          </Card>
-
-          <section className="mt-7 min-w-0" aria-labelledby="trae-accounts-list-title">
-            <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
-              <div className="flex items-center gap-2">
-                <h2 id="trae-accounts-list-title" className="text-base font-semibold tracking-tight">
-                  {t("trae.page.accounts.sectionTitle")}
-                </h2>
-                <Badge
-                  variant="secondary"
-                  className="h-6 min-w-6 rounded-full border-0 px-1.5 text-[11px] tabular-nums text-muted-foreground shadow-none"
-                  aria-label={t("trae.page.accounts.countAria", { count: accounts.length })}
-                >
-                  {accounts.length}
-                </Badge>
-                {/* 分组筛选是 Trae 独有项（WorkBuddy 没有分组维度），
-                    按「独有项下沉」放在标题侧，不占用右侧工具栏的固定槽位——
-                    右侧必须与 WorkBuddy 保持「开关 → 分隔符 → 两个图标」的一致节奏。 */}
-                <Select value={groupFilter} onValueChange={setGroupFilter}>
-                  <SelectTrigger size="sm" className="ml-1 w-40" aria-label={t("trae.page.accounts.groupFilterAria")}>
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="all">{t("trae.page.accounts.allAccounts", { count: accounts.length })}</SelectItem>
-                    <SelectItem value={UNGROUPED}>{t("trae.page.accounts.ungrouped", { count: overview?.ungrouped ?? 0 })}</SelectItem>
-                    {groups.map((group) => (
-                      <SelectItem key={group.id} value={group.id}>
-                        {t("trae.page.accounts.groupItem", { name: group.name, count: group.count })}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-            </div>
-
-            {/* ★ 工具栏**常驻**（不随结果为空而消失）：搜索框的 DOM 因此不会被 unmount，
-                中文输入法连续组词不丢字（IME 约束，§1.4）。工具栏与列表是两个独立子树。 */}
-            <AccountToolbar
-              query={query}
-              onQueryChange={setQuery}
-              searchInputRef={searchRef}
-              sort={sort}
-              sortOptions={sortOptions}
-              onSortChange={(next) => setSort(next as AccountSortKey)}
-              group={group}
-              groupOptions={groupOptions}
-              onGroupChange={(next) => setGroup(next as AccountGroupKey)}
-              view={view}
-              onViewChange={setView}
-              tableViewEnabled={tableEnabled}
-              selection={{
-                allSelected: allVisibleSelected,
-                someSelected: someVisibleSelected,
-                onToggleAll: toggleVisibleSelection,
-                label: allVisibleSelected ? t("shared.toolbar.deselectAll") : t("shared.toolbar.selectAll"),
-              }}
-            >
-              <div className="ml-auto flex items-center gap-1">
-                {/* 自动签到：与 WorkBuddy 工具栏的**同名开关同位同义** —— 都写排程任务
-                    （何时签）。Trae 是**独立任务**（`trae_checkin`），关掉另一方不受影响。
-                    小时点在 Trae 设置页配（这里只放开/关）。 */}
-                <div className="mr-1 flex items-center gap-2.5">
-                  <label
-                    htmlFor="trae-auto-checkin"
-                    className="cursor-pointer text-xs font-medium text-muted-foreground"
-                  >
-                    {t("trae.page.accounts.autoCheckin")}
-                  </label>
-                  <DemoAction>
-                    <Switch
-                      id="trae-auto-checkin"
-                      checked={schedule?.trae_checkin_enabled ?? false}
-                      disabled={!schedule || scheduleSaving}
-                      onCheckedChange={(enabled) => void onAutoCheckinChange(enabled)}
-                      aria-label={t("trae.page.accounts.autoCheckin")}
-                    />
-                  </DemoAction>
-                  {scheduleSaving && (
-                    <Loader2
-                      className="size-3.5 animate-spin text-muted-foreground"
-                      aria-label={t("trae.page.accounts.autoCheckinSaving")}
-                    />
-                  )}
-                </div>
-                {/* 签到策略：与 WorkBuddy 工具栏的第二个开关同位 —— 那边是「自动旅行」，
-                    Trae 没有该功能（按用户决定隐藏，不塞假开关占位）。
-                    这里放的是「批量签到是否跳过今日已签账号」：它管**怎么签**，
-                    与上面的「何时签」是两个层，因此两枚开关并不重复。 */}
-                <div className="mr-1 flex items-center gap-2.5">
-                  <label
-                    htmlFor="trae-skip-checked"
-                    className="cursor-pointer text-xs font-medium text-muted-foreground"
-                  >
-                    {t("trae.page.accounts.skipChecked")}
-                  </label>
-                  <DemoAction>
-                    <Switch
-                      id="trae-skip-checked"
-                      checked={settings?.checkinSkipChecked ?? true}
-                      disabled={!settings || autoCheckinSaving}
-                      onCheckedChange={(enabled) => void onSkipCheckedChange(enabled)}
-                      aria-label={t("trae.page.accounts.skipCheckedAria")}
-                    />
-                  </DemoAction>
-                  {autoCheckinSaving && (
-                    <Loader2
-                      className="size-3.5 animate-spin text-muted-foreground"
-                      aria-label={t("trae.page.accounts.checkinSettingsSaving")}
-                    />
-                  )}
-                </div>
-                <Separator orientation="vertical" className="mx-2 h-5" />
-                {/* `compact`（卡片密度）**仅在卡片视图下渲染**（决策 #5）：表格视图下密度无意义，
-                    且与视图控件并排会构成「两个看起来能切的控件」（§1.7）。 */}
-                {effectiveView === "card" && (
-                  <Tooltip>
-                    <TooltipTrigger asChild>
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        className={cn("size-9 rounded-lg", compact && "bg-accent text-accent-foreground")}
-                        onClick={toggleCompact}
-                        aria-label={compact ? t("trae.page.accounts.compactToLoose") : t("trae.page.accounts.compactToCompact")}
-                      >
-                        {compact ? <Rows3 /> : <Columns3 />}
-                      </Button>
-                    </TooltipTrigger>
-                    <TooltipContent side="top">
-                      {compact ? t("trae.page.accounts.compactToLoose") : t("trae.page.accounts.compactToCompact")}
-                    </TooltipContent>
-                  </Tooltip>
-                )}
-                {/* 与 WorkBuddy 同名同形：一个图标同时承担「批量签到」与「刷新积分」。
-                    Trae 侧这两步是两个接口，`checkinAll` 里按顺序调完再统一刷新。 */}
-                {/* 回收站入口（P5 §2.7.1）：按**当前作用域**过滤 —— 只列本作用域被软删除的账号。
-                    与 WorkBuddy 同名同形（同是账号页工具栏入口），语义与位置一致。 */}
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <span>
-                      <DemoAction>
-                        <Button
-                          variant="ghost"
-                          size="icon"
-                          className="size-9 rounded-lg"
-                          onClick={() => setRecycleOpen(true)}
-                          aria-label={t("recycleBin.title")}
-                        >
-                          <Trash2 />
-                        </Button>
-                      </DemoAction>
-                    </span>
-                  </TooltipTrigger>
-                  <TooltipContent side="top">{api.isDemoMode() ? t("trae.page.accounts.demoDisabled") : t("recycleBin.title")}</TooltipContent>
-                </Tooltip>
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <span>
-                      <DemoAction>
-                        <Button
-                          variant="ghost"
-                          size="icon"
-                          className="size-9 rounded-lg"
-                          disabled={busy === "checkin" || busy === "refresh-credits" || accounts.length === 0}
-                          onClick={() => void checkinAll()}
-                          aria-label={t("trae.page.accounts.checkinRefreshAll")}
-                        >
-                          <RefreshCw className={busy === "checkin" || busy === "refresh-credits" ? "animate-spin" : undefined} />
-                        </Button>
-                      </DemoAction>
-                    </span>
-                  </TooltipTrigger>
-                  <TooltipContent side="top">
-                    {api.isDemoMode() ? t("trae.page.accounts.demoDisabled") : t("trae.page.accounts.checkinRefreshAll")}
-                  </TooltipContent>
-                </Tooltip>
-              </div>
-            </AccountToolbar>
-
-            <div className="mt-4">
-              {/* 两种空态**绝不混用**（§1.9）：本页「真没有账号」由**上方**的 `EmptyTraeCard`
-                  承担（`accounts.length === 0` 时整块列表都不渲染）；这里只负责「有账号但被筛没」
-                  → 「没有符合条件的账号」+ **清除筛选出口**。出口必须有，否则用户被丢在原地。 */}
-              {sorted.length === 0 ? (
-                <EmptyState
-                  icon={SearchX}
-                  title={t("shared.list.empty.filtered")}
-                  description={t("shared.list.empty.filteredDesc")}
-                  action={
-                    <Button variant="outline" onClick={clearListFilters}>
-                      {t("shared.list.empty.clearFilters")}
-                    </Button>
-                  }
-                />
-              ) : (
-                <div className="space-y-6">
-                  {buckets.map((bucket) => (
-                    <div key={bucket.key ?? "__all__"} className="min-w-0">
-                      {bucket.key !== null && (
-                        <div className="mb-3 flex items-center gap-2">
-                          <h3 className="text-sm font-semibold tracking-tight">{bucket.key}</h3>
-                          <Badge
-                            variant="secondary"
-                            className="h-5 min-w-5 rounded-full border-0 px-1.5 text-[11px] tabular-nums text-muted-foreground shadow-none"
-                          >
-                            {bucket.items.length}
-                          </Badge>
-                        </div>
-                      )}
-                      {effectiveView === "table" ? (
-                        <AccountTable
-                          columns={columns}
-                          rows={bucket.items}
-                          rowKey={(account) => selectionKey(account.userId)}
-                          selectedIds={selectedKeys}
-                          onToggleSelect={toggleSelect}
-                          onToggleAll={(checked) => toggleBucketSelection(bucket.items, checked)}
-                          allSelected={bucketAllSelected(bucket.items)}
-                          someSelected={bucketSomeSelected(bucket.items)}
-                          onOpen={openDetail}
-                          isCurrent={(account) => account.userId === currentUserId}
-                          selectAllLabel={t("shared.table.selectAllAria")}
-                          selectRowLabel={(account) => t("shared.table.selectRowAria", { name: traeAccountName(account) })}
-                          openRowLabel={(account) => t("shared.table.openRowAria", { name: traeAccountName(account) })}
-                        />
-                      ) : (
-                        <div className="grid min-w-0 grid-cols-1 items-start gap-3 min-[761px]:grid-cols-2 min-[1101px]:grid-cols-3">
-                          {bucket.items.map((account) => (
+          </>
+        }
+        checkinResult={
+          checkinResult
+            ? {
+                okCount: checkinResult.ok,
+                failedNames: accounts
+                  .filter((account) => checkinResult.failedIds.includes(account.userId))
+                  .map((account) => displayText(account.name) || account.userId),
+                onRetry:
+                  checkinResult.failedIds.length > 0
+                    ? () => void batchCheckin(checkinResult.failedIds)
+                    : undefined,
+              }
+            : null
+        }
+        onDismissCheckinResult={() => setCheckinResult(null)}
+        batch={{
+          selectedCount: selectedKeys.size,
+          busy: batchBusy,
+          onCheckin: () => void batchCheckin(),
+          onRefresh: () => void batchRefresh(),
+          /* ★ 导出所选账号：原型 `batchBarHtml` 的固定动作之一（`:2453`）。
+             Trae 侧此前缺这一项 ⇒ 同一个批量条在两个分区动作集不同。 */
+          onExport:
+            selectedAccounts.length > 0
+              ? () => {
+                  setExportTargets(selectedAccounts);
+                  setExportOpen(true);
+                }
+              : undefined,
+          onDelete: () => setBatchDeleteOpen(true),
+          onClear: clearSelection,
+        }}
+        listAriaLabel={t("trae.page.accounts.sectionAria", { count: accounts.length })}
+        totalCount={accounts.length}
+        visibleCount={sorted.length}
+        /* 本页「真没有账号」由 `emptyState`（`EmptyTraeCard`）承担，这里只留「被筛没」出口。 */
+        emptyNone={{
+          title: t("shared.list.empty.none"),
+          description: t("shared.list.empty.noneDesc"),
+        }}
+        emptyFiltered={{
+          title: t("shared.list.empty.filtered"),
+          description: t("shared.list.empty.filteredDesc"),
+          action: (
+            <Button variant="outline" onClick={clearListFilters}>
+              {t("shared.list.empty.clearFilters")}
+            </Button>
+          ),
+        }}
+        buckets={buckets}
+        columns={columns}
+        rowKey={(account) => selectionKey(account.userId)}
+        selectedIds={selectedKeys}
+        onToggleSelect={toggleSelect}
+        onToggleBucketAll={toggleBucketSelection}
+        bucketAllSelected={bucketAllSelected}
+        bucketSomeSelected={bucketSomeSelected}
+        onOpenRow={openDetail}
+        isRowCurrent={isCurrentAccount}
+        rowSelectLabel={(account) => t("shared.table.selectRowAria", { name: traeAccountName(account) })}
+        rowOpenLabel={(account) => t("shared.table.openRowAria", { name: traeAccountName(account) })}
+        renderCard={(account) => (
                             <TraeAccountCard
                               key={account.userId}
                               account={{
@@ -1871,17 +1860,12 @@ export default function TraeAccountsPage() {
                                 // 只带聚合积分，包粒度明细在积分总览里，按 uid 合并后交给卡片渲染「近期到期」进度条。
                                 creditPackages: credits?.packages?.[account.userId] ?? account.creditPackages ?? null,
                               }}
-                              groupName={groupNameOf(account)}
-                              current={account.userId === currentUserId}
+                              current={isCurrentAccount(account)}
                               programs={programsFor(account)}
-                              compact={compact}
                               busy={busy}
                               switchBusy={switchBusy}
-                              featuresDisabled={api.isDemoMode()}
-                              /* P4：程序位常显后需告知「当前页面所在区域」，跨区域项据此改为
-                                 「可见但不可直接切换」——点击引导先切区域（PLAN §3.3 / §6 #1 结论 A）。 */
-                              currentRegion={variant}
-                              onSwitchRegion={setVariant}
+                              /* ★ 与 WorkBuddy 卡片**同一取值**（见下方说明 / `AccountsPage` 同处）。 */
+                              featuresDisabled={false}
                               selected={selectedKeys.has(selectionKey(account.userId))}
                               onToggleSelect={toggleSelect}
                               onOpenDetail={openDetail}
@@ -1897,15 +1881,7 @@ export default function TraeAccountsPage() {
                                  曾经这里用 `after` 补一条 error toast，而 `run()` 的成功 toast
                                  是**无条件**弹的 ⇒ 用户同时收到「完成」与「未完成」，
                                  绿勾那条还在，正是「谎报成功」的来源（2026-09-29 报障）。 */
-                              onSwitchTo={(target, programVariant) =>
-                                // P8 T03：切换前先走**统一重启确认**（TraeWork / TraeCode 需先关再开）。
-                                // 真正的切换在确认框的 `onConfirm` 里调 `doSwitchTo`。
-                                setSwitchConfirm({
-                                  userId: target.userId,
-                                  variant: programVariant,
-                                  label: traeVariantLabel(programVariant),
-                                })
-                              }
+                              onSwitchTo={requestSwitchTo}
                               onCheckin={(target) => void checkinOne(target)}
                               /* 「保存登录态」＝把客户端**此刻**的登录态存到这个账号名下，
                                  因此目标只能是「这个账号当前登录着的那个程序位」。
@@ -1920,46 +1896,13 @@ export default function TraeAccountsPage() {
                                  卡片可能已经渲染了几十秒，期间 `logins` 被轮询刷新过 ⇒
                                  按钮的 disabled 与此刻的事实可能不一致。一个都没命中就如实报错，
                                  不要静默什么都不做（那正是本次要修的毛病）。 */
-                              onSaveLogin={(target) => {
-                                const targets = programsFor(target).filter((program) => program.current);
-                                if (targets.length === 0) {
-                                  toast.error(t("trae.page.accounts.saveLoginNoProgram"), {
-                                    description: target.name || target.userId,
-                                  });
-                                  return;
-                                }
-                                void run(
-                                  `save-${target.userId}`,
-                                  "trae.page.accounts.actionSaveLogin",
-                                  async () => {
-                                    let fileCount = 0;
-                                    for (const program of targets) {
-                                      const result = await api.traeSaveLogin(target.userId, program.variant);
-                                      fileCount += result.fileCount;
-                                    }
-                                    return fileCount;
-                                  },
-                                );
-                              }}
-                              onRefreshJwt={(target) =>
-                                void run(`jwt-${target.userId}`, "trae.page.accounts.actionRefreshJwt", () => api.traeRefreshJwt(target.userId, variant))
-                              }
-                              onClearCooldown={(target) =>
-                                void run(`thaw-${target.userId}`, "trae.page.accounts.actionThaw", () => api.traeClearCooldown(target.userId, variant))
-                              }
-                              onDelete={(target) => setPendingDelete(target)}
+                              onSaveLogin={saveLogin}
+                              onRefreshJwt={refreshJwt}
+                              onClearCooldown={clearCooldown}
+                              onDelete={requestDelete}
                             />
-                          ))}
-                        </div>
-                      )}
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-          </section>
-        </>
-      )}
+        )}
+      />
 
       {/* 签到进度 / 结果：与「全部签到」同源，就地展开不做成独立页。 */}
       {(progress || report) && (
@@ -2020,67 +1963,111 @@ export default function TraeAccountsPage() {
         </Card>
       )}
 
-      {/* 上次签到明细（含冷却）：与 WorkBuddy 一样就地展开，不占导航。 */}
-      {(checkin?.summary.results.length ?? 0) > 0 && (
-        <Card className="mt-6 gap-0 py-0">
-          <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border/60 px-5 py-3">
-            <span className="text-sm font-semibold">{t("trae.page.accounts.lastTitle")}</span>
-            <span className="flex flex-wrap items-center gap-3 text-xs text-muted-foreground">
-              <span>{checkin?.summary.time ?? t("trae.page.accounts.lastUnknownTime")}</span>
-              {checkin && !checkin.summaryIsToday && (
-                <span className="text-warning">{t("trae.page.accounts.lastNotToday")}</span>
-              )}
-              <span className="flex items-center gap-1.5">
-                <CheckCircle2 className="size-3.5 text-success" />
-                {t("trae.page.accounts.resultSuccess")} <span className="font-medium text-foreground">{checkin?.summary.totalOk ?? 0}</span>
-                <XCircle className="ml-1.5 size-3.5 text-destructive" />
-                {t("trae.page.accounts.resultFailed")} <span className="font-medium text-foreground">{checkin?.summary.failed ?? 0}</span>
-              </span>
-            </span>
-          </div>
-          <div className="divide-y divide-border/60">
-            {checkin?.summary.results.slice(0, 10).map((item, index) => (
-              <div
-                key={`${item.userId}-${index}`}
-                className="flex items-center justify-between gap-3 px-5 py-2.5 text-sm"
-              >
-                <span className="min-w-0 truncate">{item.name || item.userId}</span>
-                <span className="flex shrink-0 items-center gap-3">
-                  {item.delta > 0 && (
-                    <span className="text-success">+{item.delta}</span>
-                  )}
-                  <span className="max-w-[280px] truncate text-xs text-muted-foreground">
-                    {item.message || item.action}
-                  </span>
-                </span>
-              </div>
-            ))}
-          </div>
-          {(checkin?.summary.results.length ?? 0) > 10 && (
-            <div className="border-t border-border/60 px-5 py-2.5 text-xs text-muted-foreground">
-              {t("trae.page.accounts.lastTruncated", {
-                limit: 10,
-                total: checkin?.summary.results.length ?? 0,
-              })}
-            </div>
-          )}
-          {checkin && checkin.cooldownCount > 0 && (
-            <div className="border-t border-border/60 px-5 py-2.5 text-xs text-muted-foreground">
-              {t("trae.page.accounts.lastCooldownDetail", {
-                list: checkin.cooldowns
-                  .map((item) =>
-                    t("trae.page.accounts.lastCooldownItem", {
-                      uid: item.userId,
-                      type: item.type,
-                      permanent: item.permanent ? t("trae.page.accounts.lastCooldownPermanent") : "",
-                    }),
-                  )
-                  .join(t("trae.page.accounts.lastCooldownSep")),
-              })}
-            </div>
-          )}
-        </Card>
-      )}
+      <AddAccountDrawer
+        open={addDrawerOpen}
+        onOpenChange={setAddDrawerOpen}
+        scopeLabel={scopeLabel(t, scope)}
+        installed={regionStatus?.installed ?? false}
+        onPick={(way: AddAccountWay) => {
+          /* 与 WorkBuddy 同构：先关抽屉，再进入对应流程。 */
+          if (way === "oauth") setOauthOpen(true);
+          else if (way === "backup") setImportOpen(true);
+          else void importLocal();
+        }}
+        /* Trae 独有的一条兜底路径（OAuth 才是主路径）：手动粘贴 Cloud-IDE-JWT。 */
+        extraOptions={[
+          {
+            key: "paste-jwt",
+            icon: UserPlus,
+            title: t("trae.page.accounts.pasteJwt"),
+            desc: t("trae.page.accounts.pasteJwtTitle"),
+            onClick: () => setAddOpen(true),
+          },
+        ]}
+        /* ★ 原工具栏「⋯」溢出菜单的落点（2026-10-12 用户要求「合并到添加账号的右侧弹出栏内」）。
+           与 WorkBuddy **同结构同顺序**（先两枚开关，再两枚动作）；回收站**已被用户点名「放出来」**
+           （回工具栏，见 `onOpenRecycleBin`）⇒ 这里只剩 4 个；
+           「从本机导入 / 导入备份」就是上面那两张卡 ⇒ 不重复搬。 */
+        moreTools={[
+          {
+            key: "auto-checkin",
+            icon: CalendarCheck,
+            label: t("trae.page.accounts.autoCheckin"),
+            htmlFor: "trae-auto-checkin",
+            control: (
+              <>
+                <DemoAction>
+                  <Switch
+                    id="trae-auto-checkin"
+                    checked={schedule?.trae_checkin_enabled ?? false}
+                    disabled={!schedule || scheduleSaving}
+                    onCheckedChange={(enabled) => void onAutoCheckinChange(enabled)}
+                    aria-label={t("trae.page.accounts.autoCheckin")}
+                  />
+                </DemoAction>
+                {scheduleSaving && (
+                  <Loader2 className="size-3.5 animate-spin text-muted-foreground" aria-label={t("trae.page.accounts.autoCheckinSaving")} />
+                )}
+              </>
+            ),
+          },
+          {
+            key: "skip-checked",
+            icon: ListChecks,
+            label: t("trae.page.accounts.skipChecked"),
+            htmlFor: "trae-skip-checked",
+            control: (
+              <>
+                <DemoAction>
+                  <Switch
+                    id="trae-skip-checked"
+                    checked={settings?.checkinSkipChecked ?? true}
+                    disabled={!settings || autoCheckinSaving}
+                    onCheckedChange={(enabled) => void onSkipCheckedChange(enabled)}
+                    aria-label={t("trae.page.accounts.skipCheckedAria")}
+                  />
+                </DemoAction>
+                {autoCheckinSaving && (
+                  <Loader2 className="size-3.5 animate-spin text-muted-foreground" aria-label={t("trae.page.accounts.checkinSettingsSaving")} />
+                )}
+              </>
+            ),
+          },
+          {
+            key: "export",
+            icon: FileDown,
+            label: t("trae.page.accounts.exportTitle"),
+            disabled: accounts.length === 0,
+            onClick: () => {
+              setAddDrawerOpen(false);
+              setExportOpen(true);
+            },
+          },
+          {
+            key: "checkin-refresh",
+            icon: RefreshCw,
+            label: t("trae.page.accounts.checkinRefreshAll"),
+            disabled: busy === "checkin" || busy === "refresh-credits" || accounts.length === 0,
+            onClick: () => {
+              setAddDrawerOpen(false);
+              void checkinAll();
+            },
+          },
+        ]}
+        labels={{
+          title: t("shared.addDrawer.title"),
+          scopeHintPrefix: t("shared.addDrawer.scopePrefix"),
+          scopeHintSuffix: t("shared.addDrawer.scopeSuffix"),
+          oauthTitle: t("shared.addDrawer.oauthTitle"),
+          oauthDesc: t("shared.addDrawer.oauthDesc"),
+          localTitle: t("shared.addDrawer.localTitle"),
+          localDesc: t("shared.addDrawer.localDesc"),
+          backupTitle: t("shared.addDrawer.backupTitle"),
+          backupDesc: t("shared.addDrawer.backupDesc"),
+          notInstalled: t("shared.addDrawer.notInstalled"),
+          moreTools: t("shared.addDrawer.moreTools"),
+        }}
+      />
 
       <TraeOAuthLoginDialog
         open={oauthOpen}
@@ -2103,8 +2090,12 @@ export default function TraeAccountsPage() {
 
       <TraeExportAccountsDialog
         open={exportOpen}
-        onOpenChange={setExportOpen}
-        accounts={accounts}
+        onOpenChange={(open) => {
+          setExportOpen(open);
+          /* 关闭时清掉「所选」范围，否则下次从工具栏打开会莫名只导出上次勾的那几个。 */
+          if (!open) setExportTargets(null);
+        }}
+        accounts={exportTargets ?? accounts}
         variant={variant}
         onExported={(count) => toast.success(t("trae.page.accounts.exportedCount", { count }))}
       />
@@ -2137,7 +2128,7 @@ export default function TraeAccountsPage() {
         onConfirm={(restart) => {
           const target = switchConfirm;
           setSwitchConfirm(null);
-          if (target) void doSwitchTo(target.userId, target.variant, restart);
+          if (target) void doSwitchTo(target.userId, target.variant, target.label, restart);
         }}
       />
 
@@ -2188,13 +2179,28 @@ export default function TraeAccountsPage() {
             : ""
         }
         avatarSeed={detailName}
+        /* ★ 以下五项是**补齐**的（此前 Trae 只注入 packs/sections/programs/remark）——
+           它们让共享抽屉在两个分区里内容一致：当前登录徽章 / 切换到此账号 / 操作区 / 签到历史 / 签到积分。
+
+           ⚠️ 不传 `loading`：Trae 的抽屉数据（积分包 / 信息区块）全部来自**已加载**的账号对象，
+           没有 WorkBuddy 那种「打开抽屉才逐账号拉积分」的懒加载 ⇒ 没有「未就绪」这个态。
+           传一个恒 `false` 的值只会让下一个人以为这里有异步加载。
+           ⚠️ 不传 `onWizardSwitch`：那是 WorkBuddy 的「会话复制向导」，Trae 没有会话复制能力
+           （`PLAN` §3.15.1）—— 摆一个点不开的向导比不摆更差。 */
+        current={detailIsCurrent}
+        switchTargets={detailSwitchTargets}
+        actions={detailActions}
+        checkinHistory={detailCheckinHistory}
+        checkin={detailCheckin}
         packs={detailPacks}
         sections={detailSections}
         programs={detailPrograms}
         remark={detailRemark}
         onSaveRemark={detail ? (remark) => saveRemark(detail, remark) : undefined}
         autoEditRemark={detailAutoEditRemark}
-        featuresDisabled={api.isDemoMode()}
+        /* ★ 与 WorkBuddy 抽屉**同一取值**：WB 侧不传（默认 `false`），这里显式写 `false`。
+           ⚠️ 此前 Trae 传 `api.isDemoMode()` ⇒ 演示构建里 Trae 抽屉的备注**不可编辑**、WB 可编辑。 */
+        featuresDisabled={false}
         empty={{
           title: t("shared.drawer.empty.title"),
           description: t("shared.drawer.empty.description"),
@@ -2204,16 +2210,6 @@ export default function TraeAccountsPage() {
             </Button>
           ),
         }}
-      />
-
-      {/* 最小批量操作条（P4）：仅在有勾选时浮现。 */}
-      <AccountBatchBar
-        selectedCount={selectedKeys.size}
-        busy={batchBusy}
-        onCheckin={() => void batchCheckin()}
-        onRefresh={() => void batchRefresh()}
-        onDelete={() => setBatchDeleteOpen(true)}
-        onClear={clearSelection}
       />
 
       {/* 批量删除确认（桌面 App 不支持 window.confirm）。 */}

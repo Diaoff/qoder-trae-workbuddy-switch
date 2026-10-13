@@ -25,6 +25,18 @@ export interface TraeEnvStatus {
   platform: string;
   configuredPath: string | null;
   /**
+   * `configuredPath` 是否**仍指向一个真实文件**（后端 `env_status`，issue #20）。
+   *
+   * ## 为什么要单独下发
+   *
+   * 后端在自定义路径失效时会**静默回落**到自动探测（客户端合并/升级会搬走甚至卸载
+   * 旧 exe，不该因此卡住启动）。于是界面会显示「已检测到」，而设置页仍摆着一个
+   * 不存在的路径 —— 用户无从知道该改。本字段就是给设置页做那条提示用的。
+   *
+   * `configuredPath` 为空时恒为 `false`；调用方**只在「填了且失效」时提示**。
+   */
+  configuredPathExists: boolean;
+  /**
    * 自动探测到的**产品线变体**稳定标识（`"trae_work"` / `"trae_cn"`）。
    *
    * 自动探测横跨全部变体挑最近活跃的那一个，所以界面必须说得出挑中的是谁。
@@ -54,8 +66,16 @@ export type TraeRegionId = "cn" | "global";
  *
  * 与 Rust 侧 `TraeProgram::as_str()` 同源。区域决定「账号属于哪套体系」，
  * 程序只决定「落到哪个客户端」。
+ *
+ * ## 三个取值的来历（issue #20）
+ *
+ * - `trae_work` / `trae_code`：改造前的两条产品线，各自对应一个客户端；
+ * - `trae`：2026-10-13 客户端把上面两条**合并**成的一个客户端（CN `Trae CN`、
+ *   国际 `Trae`）。它与 `trae_code` **物理上是同一个客户端**（同名同目录），
+ *   因此后端把两者映射到**同一个变体** —— 变体才是 Key / 快照 / 日志的归属键。
+ *   `trae_code` 保留是为了让既有数据（Key 记录、快照目录、旧链接）继续可读。
  */
-export type TraeProgramId = "trae_work" | "trae_code";
+export type TraeProgramId = "trae_work" | "trae_code" | "trae";
 
 /**
  * 发给后端的「目标」标识 —— **区域与程序位共用一个字段**（后端宽容解析）。
@@ -89,7 +109,15 @@ export type TraeVariantId =
  * `zh.ts` 的 `TranslationKey` 会编译期提醒补英文条目。
  */
 export function traeProgramLabel(program: TraeProgramId): string {
-  return t(program === "trae_code" ? "trae.program.traeCode" : "trae.program.traeWork");
+  switch (program) {
+    case "trae_code":
+      return t("trae.program.traeCode");
+    case "trae":
+      // 合并后的客户端（issue #20）：客户端现在就叫 `Trae`，不再叫 `TraeCode`。
+      return t("trae.program.trae");
+    default:
+      return t("trae.program.traeWork");
+  }
 }
 
 /**
@@ -110,6 +138,11 @@ export function traeVariantLabel(variant: TraeVariantId): string {
     case "trae_cn":
     case "trae_code":
       return t("trae.program.traeCode");
+    // 合并后的客户端（issue #20）：`trae` 作为变体参数时与 `trae_cn` 同源
+    // （后端 `TraeVariant::parse("trae") == Trae`，区域是**国内**），
+    // 但展示名取客户端现在的名字 `Trae`，而不是历史名 `TraeCode`。
+    case "trae":
+      return t("trae.program.trae");
     // 国际版 TraeCode：**不是** `trae_code` 那条（那是国内），见 `TraeVariantId`。
     case "global_trae_code":
       return t("trae.program.traeCodeGlobal");
@@ -151,6 +184,9 @@ export function traeRegionLabelOf(variant: TraeVariantId): string {
     case "cn":
     case "trae_work":
     case "trae_cn":
+    // 合并后的客户端 `trae` 落**国内**（后端 `TraeVariant::parse("trae") == Trae`，
+    // 而 `Trae` 的区域是 `Cn`）。国际版那个走 `global_trae_code`。
+    case "trae":
       return t("shared.region.version.cn");
     default:
       return traeVariantLabel(variant);
@@ -190,6 +226,10 @@ export function traeRegionOf(variant: TraeVariantId): TraeRegionId {
     case "trae_cn":
     // `TraeProgramId` 的 `trae_code`：程序位不含区域，按其归属的国内库处理。
     case "trae_code":
+    // `TraeProgramId` 的 `trae`（合并版客户端，issue #20）：同样落国内 ——
+    // 后端 `TraeVariant::parse("trae") == Trae`，而 `Trae` 的区域是 `Cn`。
+    // 漏掉这一格会让 `traeRegionOf("trae")` 掉进 `default` 抛错（`never` 检查）。
+    case "trae":
       return "cn";
     default: {
       const exhaustive: never = variant;
@@ -205,7 +245,7 @@ export function traeRegionOf(variant: TraeVariantId): TraeRegionId {
  * 卡片上的切换按钮就是按它渲染的（每枚按钮对应一个程序位）。
  */
 export interface TraeProgramStatus {
-  /** 程序位标识（`trae_work` / `trae_code`）。 */
+  /** 程序位标识（`trae_work` / `trae_code` / `trae`）。 */
   program: TraeProgramId;
   /** 展示名（`TraeWork` / `TraeCode` / `TraeWork AI` / `Trae AI`）。 */
   label: string;
@@ -214,7 +254,7 @@ export interface TraeProgramStatus {
   /**
    * 切换时回传的标识。
    *
-   * 自 2026-09-28（issue #3）起**四个程序位都有值**：此前 `(国际版, TraeCode)`
+   * 自 2026-09-28（issue #3）起**每个程序位都有值**：此前 `(国际版, TraeCode)`
    * 未建模，后端回 `null`、按钮必须禁用。现在四个组合都已建模，
    * `null` 这个形态不再出现 —— 类型收成非空，是为了让「忘了建模」在编译期暴露，
    * 而不是在界面上表现成一枚灰按钮。
@@ -397,6 +437,50 @@ export interface TraeLegacyMergeReport {
   /** 备份是否尝试过但失败 —— 与「无需备份」区分开。 */
   backupFailed: boolean;
   /** 本次是否真的改写了数据（`false` = 幂等空转）。 */
+  changed: boolean;
+  /**
+   * 客户端**合并**（issue #20）后的登录态快照搬运报告。
+   *
+   * ## 为什么它挂在这条命令上
+   *
+   * 快照搬运与账号库合并同属「一次性遗留迁移」，因此共用同一个入口
+   * （账号页挂载时调一次，幂等）。⚠️ 两者的 `changed` **互相独立** ——
+   * 账号库早就并完了、但快照还没搬的机器上是「DB 空转 + 快照有变动」，
+   * 调用方必须两个都看（见 `TraeAccountsPage` 的挂载 effect）。
+   */
+  snapshots: TraeSnapshotCarryReport;
+}
+
+/**
+ * 登录态快照搬运报告（`trae_merge_legacy_regions().snapshots`）。
+ *
+ * 客户端把 TraeWork 与 TraeCode 合并成一个客户端后，用户在**合并前**保存的
+ * 登录态快照落在遗留程序位的槽位里，合并后的客户端槽位是空的 ⇒
+ * 「切换账号」会报「该账号的登录态快照不存在」。本报告描述那次**补齐搬运**。
+ */
+export interface TraeSnapshotCarryReport {
+  /** 实际搬运的账号槽位数。 */
+  slotsCopied: number;
+  /** 因目标槽位已有同 uid 而**跳过**（只增不改）的账号数。 */
+  slotsKept: number;
+  /** 复制的文件总数。 */
+  filesCopied: number;
+  /** 逐条搬运明细。 */
+  carried: {
+    region: string;
+    /** 源程序位标识（`trae_work` / `trae_code`）。 */
+    from: string;
+    /** 目标程序位标识（合并版为 `trae`）。 */
+    to: string;
+    /** 账号槽位名（userId）。 */
+    slot: string;
+    files: number;
+  }[];
+  /** 未能搬运的槽位及原因（非空即「有东西没搬成」）。 */
+  errors: string[];
+  /** 诊断备注（为什么没搬），仅供排查。 */
+  notes: string[];
+  /** 本次是否真的搬了东西（`false` = 幂等空转）。 */
   changed: boolean;
 }
 

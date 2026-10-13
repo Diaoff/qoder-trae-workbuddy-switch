@@ -17,9 +17,10 @@
  * ⚠️ Trae **没有**「请求代理」（P12 的 C 路只覆盖 WorkBuddy 网关端口），
  * 故 Trae 页**不渲染**该项 —— 缺能力就不画空壳（§3.4 规则 1），
  * 由页面按 `capabilities` 过滤，而不是在这里写死平台判断。
+ *
+ * ⚠️ **原型子导航没有图标**（`demo-app.js:3089` 只渲染 label）⇒ 本仓此前的
+ * 每项一枚 16px 图标属于「demo 里不存在的自定义设计」，已删除（与设置子导航同步）。
  */
-
-import { Boxes, Gauge, KeyRound, Layers, Route, ScrollText } from "lucide-react";
 
 import { SideSubnav, type SideSubnavItem } from "@/components/shell/side-subnav";
 import { useT } from "@/lib/i18n";
@@ -29,12 +30,12 @@ export type GatewaySubnavId = "overview" | "keys" | "models" | "pool" | "proxy" 
 
 /** 唯一的一份子导航表（顺序即展示顺序）。 */
 export const GATEWAY_SUBNAV: readonly SideSubnavItem<GatewaySubnavId>[] = [
-  { id: "overview", labelKey: "gateway.subnav.overview", icon: Gauge },
-  { id: "keys", labelKey: "gateway.subnav.keys", icon: KeyRound },
-  { id: "models", labelKey: "gateway.subnav.models", icon: Boxes },
-  { id: "pool", labelKey: "gateway.subnav.pool", icon: Layers },
-  { id: "proxy", labelKey: "gateway.subnav.proxy", icon: Route },
-  { id: "logs", labelKey: "gateway.subnav.logs", icon: ScrollText },
+  { id: "overview", labelKey: "gateway.subnav.overview" },
+  { id: "keys", labelKey: "gateway.subnav.keys" },
+  { id: "models", labelKey: "gateway.subnav.models" },
+  { id: "pool", labelKey: "gateway.subnav.pool" },
+  { id: "proxy", labelKey: "gateway.subnav.proxy" },
+  { id: "logs", labelKey: "gateway.subnav.logs" },
 ];
 
 /** 从 URL 段解析子导航（非法值 fail-closed 回 `overview`，不把任意串塞进 state）。 */

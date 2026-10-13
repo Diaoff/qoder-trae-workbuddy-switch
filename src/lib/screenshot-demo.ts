@@ -74,6 +74,11 @@ const DEMO_ACCOUNT_KEYS: Record<string, { nickname: TranslationKey; remark?: Tra
   "demo-account-a": { nickname: "shared.demo.account.a", remark: "shared.demo.account.aRemark" },
   "demo-account-b": { nickname: "shared.demo.account.b" },
   "demo-account-c": { nickname: "shared.demo.account.c" },
+  "demo-account-d": { nickname: "shared.demo.account.d" },
+  "demo-account-e": { nickname: "shared.demo.account.e" },
+  "demo-account-f": { nickname: "shared.demo.account.f" },
+  "demo-account-g": { nickname: "shared.demo.account.g" },
+  "demo-account-h": { nickname: "shared.demo.account.h" },
 };
 /**
  * 演示账号的**静态部分**（`nickname` / `remark` 不在表内）。
@@ -85,12 +90,27 @@ const DEMO_ACCOUNT_KEYS: Record<string, { nickname: TranslationKey; remark?: Tra
  */
 type DemoAccountSeed = Omit<AccountMeta, "nickname" | "remark"> & { id: keyof typeof DEMO_ACCOUNT_KEYS };
 
+/** 相对时刻（「N 分钟前 / N 小时前 / N 天前」由指标行第三格现算）。 */
+const MINUTE_MS = 60_000;
+const HOUR_MS = 60 * MINUTE_MS;
+const DAY_MS = 24 * HOUR_MS;
+const ago = (ms: number) => Date.now() - ms;
+
 const accountSeeds: DemoAccountSeed[] = [
-  // ★ 2026-10-10：补 `lastUsedAt`（epoch 毫秒）⇒ 演示站能看到「最后使用」与「最近使用」排序。
-  //   demo-account-c **刻意缺席** ⇒ 该项省略、且排到最后（演示诚实边界）。
-  { id: "demo-account-a", uid: "demo-user-001", email: "test-a@example.com", enterpriseName: "Demo Workspace", expiresAt: 0, refreshExpiresAt: 0, lastUsedAt: atLocalTime(0, 17, 10), refreshedAt: 0, createdAt: 0, needsRelogin: false, needsReloginReason: null },
-  { id: "demo-account-b", uid: "demo-user-002", email: "test-b@example.com", enterpriseName: "Demo Workspace", expiresAt: 0, refreshExpiresAt: 0, lastUsedAt: atLocalTime(1, 9, 30), refreshedAt: 0, createdAt: 0, needsRelogin: false, needsReloginReason: null },
-  { id: "demo-account-c", uid: "demo-user-003", email: "test-c@example.com", enterpriseName: "Demo Workspace", expiresAt: 0, refreshExpiresAt: 0, refreshedAt: 0, createdAt: 0, needsRelogin: false, needsReloginReason: null },
+  // ★ 2026-10-12：与原型 `SCOPES["wb-cn"].accounts`（`buddy-switch-prototype.html:1229-1266`）
+  //   **逐账号对应** —— 名字 / 邮箱 / 最后使用 / 需重登 / 凭据过期全部照抄，
+  //   演示站因此可以与原型**逐卡对照**（用户要求的 1:1 核验）。
+  //   刻意覆盖的状态：当前登录 · 需重新登录 · 凭据已过期 · 今日未签到 · 优先 · 临期积分。
+  { id: "demo-account-a", uid: "demo-user-001", email: "jackey@example.com", enterpriseName: "Demo Workspace", expiresAt: 0, refreshExpiresAt: 0, lastUsedAt: ago(2 * MINUTE_MS), refreshedAt: 0, createdAt: 0, needsRelogin: false, needsReloginReason: null },
+  { id: "demo-account-b", uid: "demo-user-002", email: "shared@example.com", enterpriseName: "Demo Workspace", expiresAt: 0, refreshExpiresAt: 0, lastUsedAt: ago(1 * HOUR_MS), refreshedAt: 0, createdAt: 0, needsRelogin: false, needsReloginReason: null },
+  { id: "demo-account-c", uid: "demo-user-003", email: "backup01@example.com", enterpriseName: "Demo Workspace", expiresAt: 0, refreshExpiresAt: 0, lastUsedAt: ago(3 * DAY_MS), refreshedAt: 0, createdAt: 0, needsRelogin: false, needsReloginReason: null },
+  { id: "demo-account-d", uid: "demo-user-004", email: "qa@example.com", enterpriseName: "Demo Workspace", expiresAt: 0, refreshExpiresAt: 0, lastUsedAt: ago(5 * MINUTE_MS), refreshedAt: 0, createdAt: 0, needsRelogin: false, needsReloginReason: null },
+  // design-lab：`expiresAt` 在过去 ⇒ 卡片状态标签走「凭据已过期」。
+  { id: "demo-account-e", uid: "demo-user-005", email: "design@example.com", enterpriseName: "Demo Workspace", expiresAt: ago(1 * DAY_MS), refreshExpiresAt: 0, lastUsedAt: ago(8 * DAY_MS), refreshedAt: 0, createdAt: 0, needsRelogin: false, needsReloginReason: null },
+  { id: "demo-account-f", uid: "demo-user-006", email: "ops02@example.com", enterpriseName: "Demo Workspace", expiresAt: 0, refreshExpiresAt: 0, lastUsedAt: ago(1 * DAY_MS), refreshedAt: 0, createdAt: 0, needsRelogin: false, needsReloginReason: null },
+  // spare-global：需重新登录。
+  { id: "demo-account-g", uid: "demo-user-007", email: "spare@example.com", enterpriseName: "Demo Workspace", expiresAt: 0, refreshExpiresAt: 0, lastUsedAt: ago(12 * DAY_MS), refreshedAt: 0, createdAt: 0, needsRelogin: true, needsReloginReason: null },
+  { id: "demo-account-h", uid: "demo-user-008", email: "demo@example.com", enterpriseName: "Demo Workspace", expiresAt: 0, refreshExpiresAt: 0, lastUsedAt: ago(4 * HOUR_MS), refreshedAt: 0, createdAt: 0, needsRelogin: false, needsReloginReason: null },
 ];
 
 /**
@@ -122,7 +142,9 @@ function demoAccountName(account: DemoAccountSeed): string {
 }
 
 /** 演示模式中的临时 CLI 当前账号，仅存在于本次页面会话。 */
-let demoActiveCliAccountId = accountSeeds[0].id;
+/* ★ 2026-10-12：默认指向 **ops-02** 而不是 jackey —— 原型里 jackey 只绑了
+   WB + IDE（卡片显示「使用中 2 个工具」），CLI / VSC 都不绑它。 */
+let demoActiveCliAccountId = accountSeeds[5].id;
 
 // Counts and relative model roles follow anonymous aggregates from the sanitized local cache.
 // No upstream request row or identifier is copied into this fixture.
@@ -169,27 +191,37 @@ const PACK_CHECKIN: TranslationKey = "shared.demo.pack.checkin";
 const PACK_ACTIVITY: TranslationKey = "shared.demo.pack.activity";
 
 /** `[包名键, 总量, 剩余, 距到期天数]` */
+/**
+ * 每个账号的积分包（`[名称键, 总量, 剩余, 到期天数][]`）—— 与原型逐账号对应。
+ *
+ * 卡片的「积分 `剩余`/`总量`」= 本行的求和；「`N` 积分 `M` 天后过期」= 行内
+ * `expiringSoon`（≤7 天）那部分之和。jackey / qa-bot 刻意拆成**两个包**：
+ * 这样「临期 320」与「总额 2000」能同时成立（单包做不到）。
+ */
 const creditPackageSeeds: [TranslationKey, number, number, number][][] = [
+  // jackey：积分 1,240/2,000，其中 320 三天后到期（原型 `expiring: 320, expireInDays: 3`）
   [
-    [PACK_FISSION, 5000, 3186.4, 36],
-    [PACK_CREDITS, 2400, 1180.75, 18],
-    [PACK_TRIAL, 800, 386.4, 5],
-    [PACK_CHECKIN, 300, 196.25, 11],
-    [PACK_ACTIVITY, 600, 428.6, 27],
+    [PACK_CREDITS, 500, 320, 3],
+    [PACK_FISSION, 1500, 920, 30],
   ],
+  [[PACK_CREDITS, 1000, 860, 21]],   // team-shared 860/1,000
+  // backup-01 1,580/2,000（两个包 ⇒ 抽屉里的逐包明细仍有多个包名可看）
   [
-    [PACK_FISSION, 3600, 2468.2, 24],
-    [PACK_CREDITS, 1800, 905.5, 42],
-    [PACK_TRIAL, 500, 128.2, 7],
-    [PACK_CHECKIN, 240, 174.35, 15],
-    [PACK_ACTIVITY, 400, 286.8, 31],
+    [PACK_CREDITS, 1500, 1180, 44],
+    [PACK_TRIAL, 500, 400, 44],
   ],
+  [[PACK_CREDITS, 2000, 120, 2]],    // qa-bot     120/2,000（全部两天后到期）
+  [[PACK_CREDITS, 1000, 430, 12]],   // design-lab 430/1,000
+  // ops-02 990/2,000
   [
-    [PACK_FISSION, 2400, 1680.4, 29],
-    [PACK_CREDITS, 1200, 748.6, 55],
-    [PACK_TRIAL, 360, 214.5, 14],
-    [PACK_CHECKIN, 180, 96.75, 21],
-    [PACK_ACTIVITY, 300, 207.9, 38],
+    [PACK_CREDITS, 1800, 890, 27],
+    [PACK_CHECKIN, 200, 100, 27],
+  ],
+  [[PACK_CREDITS, 3000, 2050, 58]],  // spare-global 2,050/3,000
+  // demo 640/1,000
+  [
+    [PACK_CREDITS, 700, 440, 9],
+    [PACK_ACTIVITY, 300, 200, 9],
   ],
 ];
 
@@ -222,7 +254,9 @@ function futureAt(daysAhead: number, hour = 23, minute = 59): number {
 function hydratedAccounts(): AccountMeta[] {
   return withDemoNames(accountSeeds).map((account, index) => ({
     ...account,
-    expiresAt: futureAt(12 + index * 5, 18, 30),
+    /* ⚠️ 种子给了**非 0** 的 `expiresAt` 就尊重它 —— 演示「凭据已过期」需要它落在过去，
+       而此前这里无条件覆盖成未来时刻 ⇒ 那个状态**永远演示不出来**。 */
+    expiresAt: account.expiresAt !== 0 && account.expiresAt !== null ? account.expiresAt : futureAt(12 + index * 5, 18, 30),
     refreshExpiresAt: futureAt(40 + index * 7),
     refreshedAt: atLocalTime(0, 9, 12 + index * 7),
     createdAt: atLocalTime(45 + index * 19, 10, 0),
@@ -239,7 +273,7 @@ function creditExpiry(accountId: string): CreditExpiry {
     remaining,
     used: Number((total - remaining).toFixed(2)),
     status: 1,
-    expireAt: futureAt(expireDays),
+    expireAt: futureAt(expireDays, 0, 0),
     expired: false,
     expiringSoon: expireDays <= 7,
   }));
@@ -315,7 +349,11 @@ function sumModels(rows: { models: CreditOfficialUsageModel[] }[]): CreditOffici
 
 function visibleRequests(accountIndex: number) {
   const account = accountSeeds[accountIndex];
-  const seed = usageSeeds[accountIndex];
+  /* ⚠️ **取模**：`accountSeeds`（与原型逐账号对应的 8 条）比 `usageSeeds`（3 条用量模板）多，
+     直接下标会越界 ⇒ 演示构建下 WB 积分页整页报
+     `Cannot read properties of undefined (reading 'requestCount')`。
+     用量模板是**演示素材**，按账号循环复用即可（真实数据来自后端）。 */
+  const seed = usageSeeds[accountIndex % usageSeeds.length];
   const hours = [16, 15, 17, 14, 1, 0, 3];
   const flashCredits = [0.13, 0.04, 0.2, 1, 0.08, 3.99, 0.45, 8.5, 24.56];
   const kimiCredits = [86.4, 103.2, 112.8, 128.4, 74.6];
@@ -358,7 +396,11 @@ function visibleRequests(accountIndex: number) {
 
 function buildStatistics(): CreditStatistics {
   const demoAccounts = hydratedAccounts();
-  const accountDaily = usageSeeds.map((seed, index) => distributeModels(seed, index));
+  /* ⚠️ 逐账号都要有日序列（账号数 > 用量模板数，见 `visibleRequests` 的说明）——
+     按模板循环复用，否则 `accountDaily[index]` 越界（`reading 'length'`）。 */
+  const accountDaily = demoAccounts.map((_, index) =>
+    distributeModels(usageSeeds[index % usageSeeds.length], index),
+  );
   const daily = accountDaily[0].map((_, dayIndex) => {
     const models = new Map<string, CreditOfficialUsageModel>();
     for (const rows of accountDaily) {
@@ -377,20 +419,23 @@ function buildStatistics(): CreditStatistics {
   const sumMonth = (rows: { date: string; usage: number }[]) => Number(rows.filter((row) => row.date.startsWith(monthPrefix)).reduce((sum, row) => sum + row.usage, 0).toFixed(2));
   const generatedAt = Date.now() - 3 * 60 * 1000;
   const creditRows = accountSeeds.map((account) => creditExpiry(account.id));
-  const officialAccounts = demoAccounts.map((account, index) => ({
-    accountId: account.id,
-    accountName: account.nickname ?? account.email ?? account.id,
-    ok: true,
-    requestCount: usageSeeds[index].requestCount,
-    detailTruncated: usageSeeds[index].requestCount > DEMO_DETAIL_LIMIT,
-    usageToday: accountDaily[index][accountDaily[index].length - 1]?.usage ?? 0,
-    usage7Days: sumRecent(accountDaily[index], 7),
-    usageThisMonth: sumMonth(accountDaily[index]),
-    reportedTotal: usageSeeds[index].requestCount,
-    fetchedCount: usageSeeds[index].requestCount,
-    models: sumModels(accountDaily[index]),
-    daily: accountDaily[index],
-  }));
+  const officialAccounts = demoAccounts.map((account, index) => {
+    const seed = usageSeeds[index % usageSeeds.length];
+    return {
+      accountId: account.id,
+      accountName: account.nickname ?? account.email ?? account.id,
+      ok: true,
+      requestCount: seed.requestCount,
+      detailTruncated: seed.requestCount > DEMO_DETAIL_LIMIT,
+      usageToday: accountDaily[index][accountDaily[index].length - 1]?.usage ?? 0,
+      usage7Days: sumRecent(accountDaily[index], 7),
+      usageThisMonth: sumMonth(accountDaily[index]),
+      reportedTotal: seed.requestCount,
+      fetchedCount: seed.requestCount,
+      models: sumModels(accountDaily[index]),
+      daily: accountDaily[index],
+    };
+  });
   const usageToday = daily[daily.length - 1]?.usage ?? 0;
   const usage7Days = sumRecent(daily, 7);
   const usageThisMonth = sumMonth(daily);
@@ -444,12 +489,12 @@ function travelConfig(): TravelConfig {
   return { enabled: true };
 }
 
-function travelStatus(accountId: string): TravelStatus {
-  const index = Math.max(0, accountSeeds.findIndex((account) => account.id === accountId));
-  // 演示三种状态：旅行中 / 已结束 / 无 Buddy
-  if (index % 3 === 0) return { label: "traveling", rewardCredit: 7, locationName: t("shared.demo.travel.cafe"), arriveAt: Math.floor(Date.now() / 1000) + 2 * 3600 + 40 * 60 };
-  if (index % 3 === 1) return { label: "finished", rewardCredit: 20, locationName: t("shared.demo.travel.gym") };
-  return { label: "no-buddy", rewardCredit: null, locationName: null };
+function travelStatus(_accountId: string): TravelStatus {
+  /* ★ 2026-10-12：演示统一返回 `untraveled`（**默认态**，卡片不渲染 chip）。
+     原型 `SCOPES["wb-cn"]` 里没有旅行概念，而此前这里按 `index % 3` 造出
+     「旅行中 / 已结束 / 无 Buddy」⇒ 每张卡都多一枚标签，chips 行折成两行、
+     卡片比原型高 25px，目视无法逐卡对照。 */
+  return { label: "untraveled", rewardCredit: null, locationName: null, arriveAt: null };
 }
 
 function rotateConfig(): AutoRotateConfig {
@@ -519,8 +564,34 @@ function demoTokenSource(source: TokenStatsSource["source"], scale: number): Tok
   const sessions = tokenSessionSeeds.map(([key, titleKey, project, input, output, cacheRead, cacheWrite, records]) =>
     demoTokenSession(key, t(titleKey), project, input * scale, output * scale, cacheRead * scale, cacheWrite * scale, Math.round(records * scale)),
   );
+  /**
+   * 逐模型 × 逐日 —— 堆叠柱 / 模型环形 / 排行迷你趋势线的**唯一**数据源。
+   *
+   * ⚠️ 缺了它，原型的「每日 Token · 按模型拆分」「模型占比」「模型用量排行」
+   * 在演示站会**整块消失**（`modelSlices` 只认 `dailyByModel`，按 A2 的裁定
+   * **不回落** `models[].total` —— 那是全时段累计，口径不同）。
+   * 比例之和 = 1 ⇒ 每个模型的逐日和与总量口径一致。
+   */
+  const modelShares: [string, number][] = [
+    ["deepseek-v4-flash", 0.62],
+    ["kimi-k3-1", 0.24],
+    ["glm-5.2", 0.14],
+  ];
+  const dailyByModel: Record<string, TokenStatsGroup[]> = {};
+  for (const [name, share] of modelShares) {
+    dailyByModel[name] = daily.map((row) =>
+      demoTokenGroup(
+        row.key,
+        Math.round(row.input * share),
+        Math.round(row.output * share),
+        Math.round(row.cacheRead * share),
+        Math.round(row.cacheWrite * share),
+        Math.max(1, Math.round(row.records * share)),
+      ),
+    );
+  }
   const now = Date.now();
-  return { source, summary, models, projects, sessions, daily, hours, filesScanned: source === "workbuddy" ? 63 : source === "codebuddy-ide" ? 17 : 41, parseErrors: 0, coverageStartAt: now - 13 * 86_400_000, coverageEndAt: now };
+  return { source, summary, models, projects, sessions, daily, dailyByModel, hours, filesScanned: source === "workbuddy" ? 63 : source === "codebuddy-ide" ? 17 : 41, parseErrors: 0, coverageStartAt: now - 13 * 86_400_000, coverageEndAt: now };
 }
 
 function demoTokenStatistics(days?: number): TokenStatistics {
@@ -700,8 +771,17 @@ function demoSessions(): Session[] {
  * 演示：copy ledger 连通出的副本组。
  *
  * 形状与后端 `session::list_replica_groups_for` **逐字段一致**（只回
- * `accountUid` / `sessionId` / `region` + `source`）—— 演示站与真机走同一套归一化逻辑，
- * 形状不一致会让「演示好看、真机崩」在打包后才暴露。
+ * `accountUid` / `sessionId` / `region` + `previewToken` + `baselines` + `source`）——
+ * 演示站与真机走同一套归一化逻辑，形状不一致会让「演示好看、真机崩」在打包后才暴露。
+ *
+ * ⚠️ `previewToken` 是**照后端算法真算出来的**（`session::group_fingerprint`），
+ * 不是随手编的 hex —— 本仓红线「演示数据不许自造结构」。那两个值与
+ * `session.rs::tests::group_fingerprint_values_are_frozen_for_demo_fixtures`
+ * **成对钉住**：算法一改，Rust 侧先红，演示夹具才不至于静默失真。
+ *
+ * ⚠️ `baselines` 刻意留**空**：基线只在「复制成功 / 分歧统一成功」的那一刻建立，
+ * 而演示站里没有发生过任何写操作。**编一条假基线**会让「上次一致点」这块 UI
+ * 显示一个假的读数 —— 宁可演示站不展示这个特性，也不撒谎（§3.5）。
  */
 function demoSessionReplicas(): SessionReplicaResponse {
   return {
@@ -712,6 +792,8 @@ function demoSessionReplicas(): SessionReplicaResponse {
           { accountUid: "demo-user-001", sessionId: "demo-session-1", region: "cn" },
           { accountUid: "demo-user-002", sessionId: "demo-session-1-copy", region: "cn" },
         ],
+        previewToken: "71186784553e0e0b",
+        baselines: [],
       },
       {
         key: "demo-user-001\u001fdemo-session-2",
@@ -719,6 +801,8 @@ function demoSessionReplicas(): SessionReplicaResponse {
           { accountUid: "demo-user-001", sessionId: "demo-session-2", region: "cn" },
           { accountUid: "demo-user-003", sessionId: "demo-session-2-copy", region: "cn" },
         ],
+        previewToken: "7f64fb4bd44b030c",
+        baselines: [],
       },
     ],
     source: "ledger",
@@ -742,14 +826,28 @@ function demoAccountTokenToday(): AccountTokenTodayResponse {
   const now = new Date();
   const pad = (n: number) => String(n).padStart(2, "0");
   const date = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
+  /**
+   * ★ 2026-10-12：**八个账号全给**、且 `gatewayTruncated: false`。
+   *
+   * 此前只有两个账号、且 `gatewayTruncated: true` ⇒ 卡片上出现 `今日 —`（缺席）与
+   * `今日 ≥N`（下界），而原型是**干净的数值**（`42.1K` / `0`）。
+   * 诚实边界的**代码路径**仍由 `formatTodayTokens` 承担（门禁在钉），
+   * 但演示数据本身应当与原型逐卡一致，否则无法做 1:1 目视核验。
+   */
   return {
     date,
     accounts: [
-      { uid: "demo-user-001", clientIn: 18400, clientOut: 9200, gatewayIn: 6100, gatewayOut: 2400 },
-      { uid: "demo-user-003", clientIn: 0, clientOut: 0, gatewayIn: 0, gatewayOut: 0 },
+      { uid: "demo-user-001", clientIn: 28000, clientOut: 9000, gatewayIn: 4000, gatewayOut: 1100 }, // 42.1K
+      { uid: "demo-user-002", clientIn: 18000, clientOut: 7000, gatewayIn: 2600, gatewayOut: 800 }, // 28.4K
+      { uid: "demo-user-003", clientIn: 0, clientOut: 0, gatewayIn: 0, gatewayOut: 0 }, // 0
+      { uid: "demo-user-004", clientIn: 20000, clientOut: 8000, gatewayIn: 2400, gatewayOut: 800 }, // 31.2K
+      { uid: "demo-user-005", clientIn: 0, clientOut: 0, gatewayIn: 0, gatewayOut: 0 }, // 0
+      { uid: "demo-user-006", clientIn: 6000, clientOut: 2000, gatewayIn: 500, gatewayOut: 200 }, // 8.7K
+      { uid: "demo-user-007", clientIn: 0, clientOut: 0, gatewayIn: 0, gatewayOut: 0 }, // 0
+      { uid: "demo-user-008", clientIn: 12000, clientOut: 4500, gatewayIn: 1400, gatewayOut: 400 }, // 18.3K
     ],
-    unknownClient: { in: 320, out: 180 },
-    gatewayTruncated: true,
+    unknownClient: { in: 0, out: 0 },
+    gatewayTruncated: false,
   };
 }
 
@@ -760,9 +858,15 @@ function demoAccountTokenToday(): AccountTokenTodayResponse {
 /**
  * 演示：客户端限流台账（账号 × 模型 × 恢复时刻）。
  *
- * 形状与 core `client_limits::ClientLimitEntry` **逐字段一致**。演示数据为**虚构**：
- * 一条仍受限（`resetAt` 在未来 ⇒ 置顶）、一条已恢复（`resetAt` 在过去 ⇒ 灰显），
- * 用于呈现排序与状态；`account` / `model` 为 `null` 的条目表示 join 失败（未知兜底）。
+ * 形状与 core `client_limits::ClientLimitEntry` **逐字段一致**。演示数据为**虚构**，
+ * 覆盖三种状态与两条易错分支：
+ * - `state: "active"`（`resetAt` 在未来 ⇒ 置顶高亮）；
+ * - `state: "unknown"`（`resetAt` 为 `null`，且之后没再试过 ⇒ 「状态未知」，
+ *   **不得**画成「已恢复」，也不得画成「仍受限」）；
+ * - `state: "recovered"`（**实测**：该错误之后又有成功产出，故 `evidenceAt` 非空、
+ *   且 `resetAt` 仍在未来 —— 上游文案里的恢复时刻是配额窗口，不是解锁时刻）；
+ *   该条同时演示 `occurrences > 1`（同一次限流扇出到多个会话文件）；
+ * - `account` / `model` 为 `null` 的条目表示 join 失败（未知兜底）。
  */
 function demoClientLimits(): ClientLimitsResponse {
   const now = Date.now();
@@ -770,17 +874,21 @@ function demoClientLimits(): ClientLimitsResponse {
     region: "cn",
     since: now - 7 * 24 * 60 * 60 * 1000,
     now,
-    counts: { scanned: 2, deduped: 2, active: 1 },
+    // `entries` 必须等于 `limits.length`（后端保证两者一致）；写错会让汇总条与列表自相矛盾。
+    counts: { scanned: 7, entries: 3, active: 1, unknown: 1, skipped: 3 },
     limits: [
       {
         account: "demo-user-001",
         accountUid: "demo-user-001",
         model: "deepseek-v4.1-flash",
         code: 6004,
+        codeText: null,
         status: 429,
         resetAt: now + 45 * 60 * 1000,
         occurredAt: now - 5 * 60 * 1000,
-        active: true,
+        evidenceAt: null,
+        state: "active",
+        occurrences: 2,
         message: "429 您的使用量已超出频率限制，将在 <时间> UTC+8 重置，您也可以切换其他模型继续使用。",
         sessionId: "demo-session-1",
         cwd: "/demo/projects/alpha",
@@ -791,15 +899,37 @@ function demoClientLimits(): ClientLimitsResponse {
         account: null,
         accountUid: null,
         model: "hy4-preview-f",
-        code: 6004,
+        code: 6020,
+        codeText: null,
         status: 429,
-        resetAt: now - 30 * 60 * 1000,
-        occurredAt: now - 90 * 60 * 1000,
-        active: false,
-        message: "429 usage exceeds frequency limit, your usage will reset at <时间> UTC+8.",
+        resetAt: null,
+        occurredAt: now - 40 * 60 * 1000,
+        evidenceAt: null,
+        state: "unknown",
+        occurrences: 5,
+        message: "429 queue.waiting.title",
         sessionId: "demo-session-2",
         cwd: null,
         agent: "Explore",
+        region: "cn",
+      },
+      {
+        account: "demo-user-002",
+        accountUid: "demo-user-002",
+        model: "deepseek-v4.1-flash",
+        code: 6004,
+        codeText: null,
+        status: 429,
+        resetAt: now + 9 * 60 * 60 * 1000,
+        occurredAt: now - 90 * 60 * 1000,
+        // 已恢复靠的是**实测**：该错误之后确实又产出了（配额窗口其实还没到点）。
+        evidenceAt: now - 60 * 60 * 1000,
+        state: "recovered",
+        occurrences: 1,
+        message: "429 usage exceeds frequency limit, your usage will reset at <时间> UTC+8.",
+        sessionId: "demo-session-3",
+        cwd: "/demo/projects/beta",
+        agent: "cli",
         region: "cn",
       },
     ],
@@ -1103,47 +1233,79 @@ function demoClientSettingsDiff(slotA: string, slotB: string): ClientSettingsDif
  * 是协议值，只有 `cooldownReason` 是给人看的文案。
  */
 function traeDemoAccounts(): TraeAccount[] {
+  /**
+   * ★ 2026-10-12：与原型 `SCOPES["trae-cn"].accounts`（`buddy-switch-prototype.html:1292-1317`）
+   * **逐账号对应** —— 名字 / 积分 / 临期 / 签到 / 最后使用全部照抄，
+   * 演示站因此可以与原型**逐卡对照**（用户要求的 1:1 核验）。
+   *
+   * 每个账号拆**两个积分包**（月度包 + 临期包）是为了让「剩余 880」与「临期 140」同时成立：
+   * 单包做不到「总量 1,500 里只有一部分快到期」。
+   */
   return [
+    // jackey：880/1,500，其中 140 五天后到期；work + code 两个程序位都绑
     {
-      userId: "7481920", name: t("shared.demo.trae.name.main"), groupId: null, jwt: "", jwtExpHours: 320.5,
+      userId: "7481920", name: t("shared.demo.trae.name.jackey"), groupId: "g1", jwt: "", jwtExpHours: 320.5,
       jwtExpTimestamp: atLocalTime(0, 9, 12), jwtStatus: "ok", checkedToday: true,
-      credits: 120, remainingCredits: 120, creditsExpireAt: futureAt(26),
+      credits: 880, remainingCredits: 880, creditsExpireAt: Math.floor(futureAt(5, 0, 0) / 1000),
       creditPackages: [
-        { packageCode: "pkg_work_month", packageName: t("shared.demo.trae.pack.month"), total: 100, remaining: 80, used: 20, expireAt: Math.floor(futureAt(26) / 1000), expired: false, expiringSoon: false },
-        { packageCode: "pkg_work_bonus", packageName: t("shared.demo.trae.pack.checkinBonus"), total: 40, remaining: 40, used: 0, expireAt: Math.floor(futureAt(4) / 1000), expired: false, expiringSoon: true },
+        { packageCode: "pkg_work_month", packageName: t("shared.demo.trae.pack.month"), total: 1360, remaining: 740, used: 620, expireAt: Math.floor(futureAt(30, 0, 0) / 1000), expired: false, expiringSoon: false },
+        { packageCode: "pkg_work_bonus", packageName: t("shared.demo.trae.pack.checkinBonus"), total: 140, remaining: 140, used: 0, expireAt: Math.floor(futureAt(5, 0, 0) / 1000), expired: false, expiringSoon: true },
       ],
       deviceIdMasked: "a1b2…9f", cooldownType: null, cooldownUntil: null, cooldownReason: null,
       hasRefreshToken: true, jwtAutoRefresh: true,
-      addedAt: "2026-09-10T02:11:00Z", updatedAt: "2026-09-17T01:54:00Z",
-      // 主号带一条备注：演示站与截图要能看见「备注」这一行（另两条留空，
-      // 顺带覆盖「没有备注」的形态）。
-      remark: t("shared.demo.trae.remark.main"),
+      addedAt: "2026-09-10T02:11:00Z", updatedAt: new Date(Date.now() - 30 * 1000).toISOString(),
+      remark: t("shared.demo.trae.remark.jackey"),
     },
+    // code-lab：1,320/1,500，33 天后到期；只绑 code
     {
-      userId: "7481999", name: t("shared.demo.trae.name.altA"), groupId: "g1", jwt: "", jwtExpHours: 6.2,
-      jwtExpTimestamp: atLocalTime(0, 15, 20), jwtStatus: "warn", checkedToday: false,
-      credits: 0, remainingCredits: 64.5, creditsExpireAt: futureAt(5),
+      userId: "7481999", name: t("shared.demo.trae.name.codeLab"), groupId: "g1", jwt: "", jwtExpHours: 210.4,
+      jwtExpTimestamp: atLocalTime(0, 15, 20), jwtStatus: "ok", checkedToday: true,
+      credits: 1320, remainingCredits: 1320, creditsExpireAt: Math.floor(futureAt(33, 0, 0) / 1000),
       creditPackages: [
-        { packageCode: "pkg_cn_plan", packageName: t("shared.demo.trae.pack.cnPlan"), total: 100, remaining: 64.5, used: 35.5, expireAt: Math.floor(futureAt(5) / 1000), expired: false, expiringSoon: true },
+        { packageCode: "pkg_cn_plan", packageName: t("shared.demo.trae.pack.cnPlan"), total: 1500, remaining: 1320, used: 180, expireAt: Math.floor(futureAt(33, 0, 0) / 1000), expired: false, expiringSoon: false },
       ],
-      deviceIdMasked: "c3d4…7e", cooldownType: "SoftRate",
-      cooldownUntil: Math.floor(Date.now() / 1000) + 5400,
-      cooldownReason: t("shared.demo.trae.cooldown.rateLimited"),
-      hasRefreshToken: false, jwtAutoRefresh: false,
-      addedAt: "2026-09-12T08:00:00Z", updatedAt: "2026-09-16T22:10:00Z",
+      deviceIdMasked: "c3d4…7e", cooldownType: null, cooldownUntil: null, cooldownReason: null,
+      hasRefreshToken: true, jwtAutoRefresh: true,
+      addedAt: "2026-09-12T08:00:00Z", updatedAt: new Date(Date.now() - 20 * 60_000).toISOString(),
       remark: null,
     },
+    // solo-test：90/500，全部一天后到期；**今日未签到**
     {
-      userId: "7482044", name: t("shared.demo.trae.name.altB"), groupId: "g1", jwt: "", jwtExpHours: -3,
-      jwtExpTimestamp: atLocalTime(0, 5, 30), jwtStatus: "expired", checkedToday: false,
-      credits: 8, remainingCredits: 8, creditsExpireAt: futureAt(3),
+      userId: "7482044", name: t("shared.demo.trae.name.soloTest"), groupId: "g2", jwt: "", jwtExpHours: 96.8,
+      jwtExpTimestamp: atLocalTime(1, 5, 30), jwtStatus: "ok", checkedToday: false,
+      credits: 90, remainingCredits: 90, creditsExpireAt: Math.floor(futureAt(1, 0, 0) / 1000),
       creditPackages: [
-        { packageCode: "pkg_trial", packageName: t("shared.demo.trae.pack.trial"), total: 8, remaining: 8, used: 0, expireAt: Math.floor(futureAt(3) / 1000), expired: false, expiringSoon: true },
+        { packageCode: "pkg_trial", packageName: t("shared.demo.trae.pack.trial"), total: 500, remaining: 90, used: 410, expireAt: Math.floor(futureAt(1, 0, 0) / 1000), expired: false, expiringSoon: true },
       ],
-      deviceIdMasked: "e5f6…1a", cooldownType: "SessionDead", cooldownUntil: 9_999_999_999,
-      cooldownReason: t("shared.demo.trae.cooldown.sessionDead"),
-      hasRefreshToken: true, jwtAutoRefresh: false,
-      addedAt: "2026-09-14T09:30:00Z", updatedAt: "2026-09-17T00:40:00Z",
+      deviceIdMasked: "e5f6…1a", cooldownType: null, cooldownUntil: null, cooldownReason: null,
+      hasRefreshToken: true, jwtAutoRefresh: true,
+      addedAt: "2026-09-14T09:30:00Z", updatedAt: new Date(Date.now() - 2 * 86_400_000).toISOString(),
+      remark: null,
+    },
+    // idle-01：480/500，15 天后到期；今日用量 0
+    {
+      userId: "7482101", name: t("shared.demo.trae.name.idle"), groupId: "g3", jwt: "", jwtExpHours: 640.2,
+      jwtExpTimestamp: atLocalTime(3, 11, 0), jwtStatus: "ok", checkedToday: true,
+      credits: 480, remainingCredits: 480, creditsExpireAt: Math.floor(futureAt(15, 0, 0) / 1000),
+      creditPackages: [
+        { packageCode: "pkg_cn_plan", packageName: t("shared.demo.trae.pack.cnPlan"), total: 500, remaining: 480, used: 20, expireAt: Math.floor(futureAt(15, 0, 0) / 1000), expired: false, expiringSoon: false },
+      ],
+      deviceIdMasked: "1122…3b", cooldownType: null, cooldownUntil: null, cooldownReason: null,
+      hasRefreshToken: true, jwtAutoRefresh: true,
+      addedAt: "2026-09-18T03:20:00Z", updatedAt: new Date(Date.now() - 11 * 86_400_000).toISOString(),
+      remark: null,
+    },
+    // snap-acc：700/1,500，25 天后到期
+    {
+      userId: "7482102", name: t("shared.demo.trae.name.snap"), groupId: "g3", jwt: "", jwtExpHours: 512.0,
+      jwtExpTimestamp: atLocalTime(2, 14, 5), jwtStatus: "ok", checkedToday: true,
+      credits: 700, remainingCredits: 700, creditsExpireAt: Math.floor(futureAt(25, 0, 0) / 1000),
+      creditPackages: [
+        { packageCode: "pkg_work_month", packageName: t("shared.demo.trae.pack.month"), total: 1500, remaining: 700, used: 800, expireAt: Math.floor(futureAt(25, 0, 0) / 1000), expired: false, expiringSoon: false },
+      ],
+      deviceIdMasked: "7788…4c", cooldownType: null, cooldownUntil: null, cooldownReason: null,
+      hasRefreshToken: true, jwtAutoRefresh: true,
+      addedAt: "2026-09-20T06:45:00Z", updatedAt: new Date(Date.now() - 5 * 86_400_000).toISOString(),
       remark: null,
     },
   ];
@@ -1152,9 +1314,9 @@ function traeDemoAccounts(): TraeAccount[] {
 /** 签到结果（演示）。`message` 是给人看的，`errorType` / `action` 是协议值。 */
 function traeDemoCheckinResults() {
   return [
-    { name: t("shared.demo.trae.name.main"), userId: "7481920", ok: true, code: 200, message: t("shared.demo.trae.checkin.ok"), action: "claim", credits: 120, delta: 20, errorType: null, cooldownUntil: null },
-    { name: t("shared.demo.trae.name.altA"), userId: "7481999", ok: true, code: 200, message: t("shared.demo.trae.checkin.already"), action: "skip_already", credits: 64.5, delta: 0, errorType: null, cooldownUntil: null },
-    { name: t("shared.demo.trae.name.altB"), userId: "7482044", ok: false, code: 401, message: t("shared.demo.trae.checkin.sessionDead"), action: "claim", credits: null, delta: 0, errorType: "SessionDead", cooldownUntil: 9_999_999_999 },
+    { name: t("shared.demo.trae.name.jackey"), userId: "7481920", ok: true, code: 200, message: t("shared.demo.trae.checkin.ok"), action: "claim", credits: 120, delta: 20, errorType: null, cooldownUntil: null },
+    { name: t("shared.demo.trae.name.codeLab"), userId: "7481999", ok: true, code: 200, message: t("shared.demo.trae.checkin.already"), action: "skip_already", credits: 64.5, delta: 0, errorType: null, cooldownUntil: null },
+    { name: t("shared.demo.trae.name.soloTest"), userId: "7482044", ok: false, code: 401, message: t("shared.demo.trae.checkin.sessionDead"), action: "claim", credits: null, delta: 0, errorType: "SessionDead", cooldownUntil: 9_999_999_999 },
   ];
 }
 
@@ -1166,6 +1328,9 @@ function demoTraeEnv(): TraeEnvStatus {
     path: "D:\\Programs\\TRAE SOLO CN\\TRAE SOLO CN.exe",
     dataDir: "C:\\Users\\demo\\AppData\\Roaming\\TRAE SOLO CN",
     dataDirExists: true, platform: "win32", configuredPath: null,
+    // `configuredPath` 为空 ⇒ 本字段恒 `false`（后端同款语义）：演示站上
+    // 设置页的「路径已失效」提示因此不出现，符合「没填就没有失效」。
+    configuredPathExists: false,
     // 变体字段必须与真实 HTTP 响应同形状：fixture 少一个键，演示站就看不到
     // 产品线标签，而这个差异只会在真机暴露。
     variant: "trae_work", variantLabel: t("trae.program.traeWork"),
@@ -1190,7 +1355,7 @@ function demoTraeEnv(): TraeEnvStatus {
 function demoTraeVariants(): TraeVariantsStatus {
   /** 程序位展示名走词表（`shared.demo.trae.program.*`）；`variant` 是回传后端的标识，保持英文。 */
   const program = (
-    program: "trae_work" | "trae_code",
+    program: "trae_work" | "trae_code" | "trae",
     labelKey: TranslationKey,
     nameAliasKey: TranslationKey,
     variant: "trae_work" | "trae_cn" | "global" | "global_trae_code",
@@ -1251,6 +1416,19 @@ function demoTraeVariants(): TraeVariantsStatus {
             "D:\\Programs\\Trae CN\\Trae CN.exe",
             "C:\\Users\\demo\\AppData\\Roaming\\Trae CN",
           ),
+          // 合并后的客户端（issue #20）：与上面的 TraeCode **同名同物**（同一个客户端），
+          // `variant` 因此也相同。演示数据让它已安装、未运行 ——
+          // 卡片上三枚按钮的状态各不相同，截图里能看出「3 个程序位」这件事。
+          program(
+            "trae",
+            "shared.demo.trae.program.trae",
+            "shared.demo.trae.program.codeCn",
+            "trae_cn",
+            true,
+            false,
+            "D:\\Programs\\Trae CN\\Trae CN.exe",
+            "C:\\Users\\demo\\AppData\\Roaming\\Trae CN",
+          ),
         ],
       },
       {
@@ -1283,6 +1461,18 @@ function demoTraeVariants(): TraeVariantsStatus {
           program(
             "trae_code",
             "shared.demo.trae.program.codeAi",
+            "shared.demo.trae.program.codePending",
+            "global_trae_code",
+            false,
+            false,
+            "",
+            "",
+          ),
+          // 合并版国际客户端（issue #20）：与上面的国际 TraeCode 同名同物。
+          // 演示数据同样保持「未安装」，与 CN 区域形成对比。
+          program(
+            "trae",
+            "shared.demo.trae.program.traeAi",
             "shared.demo.trae.program.codePending",
             "global_trae_code",
             false,
@@ -1341,8 +1531,13 @@ function demoTraeAccounts(): unknown {
   const list = traeDemoAccounts();
   return {
     accounts: list,
-    groups: [{ id: "g1", name: t("shared.demo.trae.group.spare"), color: "#888", order: 0, count: 2 }],
-    total: list.length, cooling: 1, ungrouped: 1,
+    /* 分组照原型（常用 / 测试 / 闲置）；count 与上面 5 个账号的 groupId 一致。 */
+    groups: [
+      { id: "g1", name: t("shared.demo.trae.group.common"), color: "#888", order: 0, count: 2 },
+      { id: "g2", name: t("shared.demo.trae.group.test"), color: "#888", order: 1, count: 1 },
+      { id: "g3", name: t("shared.demo.trae.group.idle"), color: "#888", order: 2, count: 2 },
+    ],
+    total: list.length, cooling: 0, ungrouped: 0,
   };
 }
 
@@ -1391,9 +1586,13 @@ function demoTraeCredits(): TraeCreditsOverview {
       credits: account.credits ?? 0,
       date: localDate(0),
     })),
+    /* 积分流水（原型「积分流水」表的数据源）：**与 `daily` 的 earned / consumed 同源**
+       —— 每一行的 `delta` 都能在上面找到对应日的收支，不另编一套数。
+       刻意**不给 `delta: 0` 的行**：那既不是入账也不是消耗，摆在流水里只会让人困惑。 */
     records: [
       { date: localDate(0), userId: "7481920", credits: 120, delta: 20 },
-      { date: localDate(0), userId: "7481999", credits: 64, delta: 0 },
+      { date: localDate(2), userId: "7481920", credits: 158, delta: 12 },
+      { date: localDate(6), userId: "7481999", credits: 64.5, delta: -8.5 },
     ],
     daily,
     todayEarned: 20,
@@ -1421,10 +1620,11 @@ function demoTraeProfiles(args?: Record<string, unknown>): TraeProfilesOverview 
       profiles: [
         { slot: "7481920", sizeBytes: 3_180_000, fileCount: 9, lastModified: `${localDate(2)} 09:31`, sizeText: "3.0 MB" },
       ],
-      currentAccount: "7481920",
-      // 与 `traeAccounts` 里同 uid 的记录同名（`7481920` = 「主号」）：
-      // 演示数据也必须**自洽**，否则截图会被当成「名字与账号列表对不上」的缺陷。
-      currentAccountName: t("shared.demo.trae.name.main"),
+      currentAccount: "9201733",
+      // 刻意给 `null`：这个 uid 不在 `traeAccounts` 里，正好演示
+      // 「客户端登录着一个库里没有的账号」这一**正常状态**——界面回落到 uid，
+      // 而不是把它渲染成「未知账号」（那会抹掉唯一可核对的线索）。
+      currentAccountName: null,
       dataDir: "C:\\Users\\demo\\AppData\\Roaming\\TRAE SOLO",
       clientRunning: false,
       coreEntryCount: 9,
@@ -1436,11 +1636,11 @@ function demoTraeProfiles(args?: Record<string, unknown>): TraeProfilesOverview 
       profiles: [
         { slot: "9201733", sizeBytes: 2_610_000, fileCount: 9, lastModified: `${localDate(1)} 14:05`, sizeText: "2.5 MB" },
       ],
-      currentAccount: "9201733",
-      // 刻意给 `null`：这个 uid 不在 `traeAccounts` 里，正好演示
-      // 「客户端登录着一个库里没有的账号」这一**正常状态**——界面回落到 uid，
-      // 而不是把它渲染成「未知账号」（那会抹掉唯一可核对的线索）。
-      currentAccountName: null,
+      currentAccount: "7481920",
+      // ★ 2026-10-12：与原型一致 —— jackey **两个程序位都绑**（卡片显示「使用中 2 个工具」）。
+      //   原先这里是「客户端登录着一个库里没有的账号」的演示态，现挪到 `global` 分支
+      //   （同一类正常状态，仍然被覆盖到）。
+      currentAccountName: t("shared.demo.trae.name.jackey"),
       dataDir: "C:\\Users\\demo\\AppData\\Roaming\\Trae CN",
       clientRunning: false,
       coreEntryCount: 9,
@@ -1452,7 +1652,7 @@ function demoTraeProfiles(args?: Record<string, unknown>): TraeProfilesOverview 
       { slot: "7481999", sizeBytes: 3_140_000, fileCount: 9, lastModified: `${localDate(2)} 18:40`, sizeText: "3.0 MB" },
     ],
     currentAccount: "7481920",
-    currentAccountName: t("shared.demo.trae.name.main"),
+    currentAccountName: t("shared.demo.trae.name.jackey"),
     dataDir: "C:\\Users\\demo\\AppData\\Roaming\\TRAE SOLO CN",
     clientRunning: true,
     coreEntryCount: 9,
@@ -1498,9 +1698,9 @@ function demoTraeGatewayStatus(): unknown {
     last_error: null, api_key_prefix: "sk-trae-9f2c1a4b…7d31",
     pool: { total: 3, available: 1, cooling: 1, disabled: 1, expired: 0, zero_credits: 0, total_credits: 192.5 },
     accounts: [
-      { uid: "7481920", name: t("shared.demo.trae.name.main"), status: "available", credits: 120, creditsExpireAt: Math.floor(futureAt(26) / 1000), cooling: false, cooldownUntil: null, cooldownReason: null, disabled: false, deviceIdMasked: "a1b2…9f0e" },
-      { uid: "7481999", name: t("shared.demo.trae.name.altA"), status: "cooling", credits: 64.5, creditsExpireAt: Math.floor(futureAt(5) / 1000), cooling: true, cooldownUntil: Math.floor(Date.now() / 1000) + 5400, cooldownReason: t("shared.demo.trae.cooldown.reasonRateLimited"), disabled: false, deviceIdMasked: "c3d4…1122" },
-      { uid: "7482044", name: t("shared.demo.trae.name.altB"), status: "disabled", credits: 8, creditsExpireAt: null, cooling: false, cooldownUntil: 9_999_999_999, cooldownReason: t("shared.demo.trae.cooldown.reasonSessionDead"), disabled: true, deviceIdMasked: "e5f6…3344" },
+      { uid: "7481920", name: t("shared.demo.trae.name.jackey"), status: "available", credits: 120, creditsExpireAt: Math.floor(futureAt(26) / 1000), cooling: false, cooldownUntil: null, cooldownReason: null, disabled: false, deviceIdMasked: "a1b2…9f0e" },
+      { uid: "7481999", name: t("shared.demo.trae.name.codeLab"), status: "cooling", credits: 64.5, creditsExpireAt: Math.floor(futureAt(5) / 1000), cooling: true, cooldownUntil: Math.floor(Date.now() / 1000) + 5400, cooldownReason: t("shared.demo.trae.cooldown.reasonRateLimited"), disabled: false, deviceIdMasked: "c3d4…1122" },
+      { uid: "7482044", name: t("shared.demo.trae.name.soloTest"), status: "disabled", credits: 8, creditsExpireAt: null, cooling: false, cooldownUntil: 9_999_999_999, cooldownReason: t("shared.demo.trae.cooldown.reasonSessionDead"), disabled: true, deviceIdMasked: "e5f6…3344" },
     ],
     diagnose: [
       t("shared.demo.trae.diagnose.main"),
@@ -1673,63 +1873,109 @@ function demoTraeGatewayLogs(): unknown {
   const now = Math.floor(Date.now() / 1000);
   const logs: TraeGatewayLogEntry[] = [
     { ts: (now - 60) * 1000, endpoint: "/v1/chat/completions", method: "POST", account: "7481920", model: "deepseek-v4-flash", status: 200, latencyMs: 1840, promptTokens: 1204, completionTokens: 386, stream: true, error: null },
-    { ts: (now - 900) * 1000, endpoint: "/v1/chat/completions", method: "POST", account: "7481963", model: "glm-5.3", status: 429, latencyMs: 220, promptTokens: 0, completionTokens: 0, stream: true, error: t("shared.demo.trae.gatewayUpstreamError", { name: t("shared.demo.trae.name.altA"), status: 429 }) },
+    { ts: (now - 900) * 1000, endpoint: "/v1/chat/completions", method: "POST", account: "7481963", model: "glm-5.3", status: 429, latencyMs: 220, promptTokens: 0, completionTokens: 0, stream: true, error: t("shared.demo.trae.gatewayUpstreamError", { name: t("shared.demo.trae.name.codeLab"), status: 429 }) },
     { ts: (now - 3600) * 1000, endpoint: "/v1/chat/completions", method: "POST", account: "7481920", model: "glm-5.3", status: 200, latencyMs: 3120, promptTokens: 4021, completionTokens: 1188, stream: false, error: null },
   ];
   return { logs };
 }
 
-/** Trae Token 统计（源 = 网关请求日志）。 */
+/**
+ * Trae Token 统计（源 = 网关请求日志）。
+ *
+ * ★ **所有数字都从 `dayTotals` 派生**：同一个量在「统计卡 / 堆叠柱 / 环形 / 热力图」
+ * 里显示成不同的数，就是**图在撒谎**（本仓的红线）。改造前这里各写各的常量，
+ * `summary.total`（6791）与 `daily` 之和（15981）就对不上。
+ */
 function demoTraeTokenStatistics(days?: number): TraeTokenStatistics {
-  const totals = [0, 0, 0, 0, 1860, 4210, 3120, 6791];
-  const inputs = [0, 0, 0, 0, 1500, 3400, 4021, 5225];
-  const outputs = [0, 0, 0, 0, 360, 810, 1188, 1566];
-  const daily = totals.map((total, index) => ({
-    key: localDate(totals.length - 1 - index),
-    total, input: inputs[index], output: outputs[index],
-    records: total === 0 ? 0 : index,
-    errors: index < 5 ? 0 : 1,
-    streamRequests: index,
-    avgLatencyMs: total === 0 ? 0 : 900 + index * 120,
-    p95LatencyMs: total === 0 ? 0 : 1800 + index * 200,
+  const dayTotals = [0, 0, 0, 0, 1860, 4210, 3120, 6791];
+  const dayKeys = dayTotals.map((_, index) => localDate(dayTotals.length - 1 - index));
+  const total = dayTotals.reduce((sum, value) => sum + value, 0);
+  const records = dayTotals.filter((value) => value > 0).length;
+  const errors = 1;
+  /** 输入 / 输出按固定比例拆（保证 `input + output === total`）。 */
+  const input = Math.round(total * 0.77);
+  const output = total - input;
+
+  const bucket = (key: string, value: number, count: number, failed = 0) => ({
+    key,
+    total: value,
+    input: Math.round(value * 0.77),
+    output: value - Math.round(value * 0.77),
+    records: count,
+    errors: failed,
+    streamRequests: Math.max(0, count - 1),
+    avgLatencyMs: value > 0 ? 1727 : 0,
+    p95LatencyMs: value > 0 ? 3120 : 0,
+  });
+
+  /* 模型 / 账号各占多少：**第二个吃余数**，保证求和 === total。 */
+  const modelSplit = [
+    { key: "deepseek-v4-flash", share: 0.62, errors: 0 },
+    { key: "glm-5.3", share: 0.38, errors },
+  ];
+  const accountSplit = [
+    { key: "7481920", name: t("shared.demo.trae.name.jackey"), share: 0.85, errors: 0 },
+    { key: "7481963", name: t("shared.demo.trae.name.codeLab"), share: 0.15, errors },
+  ];
+  const splitByShare = <T extends { share: number }>(rows: T[], value: number) => {
+    let remaining = value;
+    return rows.map((row, index) => {
+      const part = index === rows.length - 1 ? remaining : Math.round(value * row.share);
+      remaining -= part;
+      return { ...row, value: part };
+    });
+  };
+
+  const models = splitByShare(modelSplit, total).map((row) => bucket(row.key, row.value, 2, row.errors));
+  const accounts = splitByShare(accountSplit, total).map((row) => ({
+    ...bucket(row.key, row.value, 2, row.errors),
+    name: row.name,
+    shortId: row.key,
   }));
+
+  /* 按天 × 模型：每天按同一比例拆（求和 === 当天总量 ⇒ 堆叠柱与逐日柱同源）。 */
+  const modelDaily = dayKeys.flatMap((date, index) => {
+    const dayTotal = dayTotals[index];
+    if (dayTotal === 0) return [];
+    return splitByShare(modelSplit, dayTotal).map((row) => ({
+      date,
+      model: row.key,
+      total: row.value,
+      input: Math.round(row.value * 0.77),
+      output: row.value - Math.round(row.value * 0.77),
+      records: 1,
+    }));
+  });
+
+  /* 「周-小时」槽位（`"{weekday}-{HH}"`，周一 = 0）：只给**有调用的槽位**（后端亦然）。
+     share 之和 = 1 ⇒ 槽位总量之和 === `total`（热力图与其它图同源）。 */
+  const hotSlots = [
+    { weekday: 0, hour: 10, share: 0.2 },
+    { weekday: 1, hour: 11, share: 0.11 },
+    { weekday: 2, hour: 10, share: 0.26 },
+    { weekday: 3, hour: 14, share: 0.09 },
+    { weekday: 4, hour: 9, share: 0.16 },
+    { weekday: 5, hour: 15, share: 0.06 },
+    { weekday: 6, hour: 16, share: 0.12 },
+  ];
+  const hours = splitByShare(hotSlots, total).map((slot) =>
+    bucket(`${slot.weekday}-${String(slot.hour).padStart(2, "0")}`, slot.value, 1),
+  );
+
   return {
     source: "trae-gateway", label: t("shared.demo.trae.tokenSource"),
     generatedAt: Date.now(), rangeDays: days ?? 30,
     logFile: "/demo/buddy-switch/trae/api_gateway_logs.json",
-    summary: { total: 6791, input: 5225, output: 1566, records: 3, errors: 1, streamRequests: 2, avgLatencyMs: 1727, p95LatencyMs: 3120 },
-    models: [
-      { key: "deepseek-v4-flash", total: 1590, input: 1204, output: 386, records: 1, errors: 0, streamRequests: 1, avgLatencyMs: 1840, p95LatencyMs: 1840 },
-      { key: "glm-5.3", total: 5209, input: 4021, output: 1188, records: 2, errors: 1, streamRequests: 1, avgLatencyMs: 1670, p95LatencyMs: 3120 },
-    ],
-    accounts: [
-      { key: "7481920", name: t("shared.demo.trae.name.main"), shortId: "7481920", total: 6791, input: 5225, output: 1566, records: 2, errors: 0, streamRequests: 2, avgLatencyMs: 2480, p95LatencyMs: 3120 },
-      { key: "7481963", name: t("shared.demo.trae.name.altA"), shortId: "7481963", total: 0, input: 0, output: 0, records: 1, errors: 1, streamRequests: 1, avgLatencyMs: 220, p95LatencyMs: 220 },
-    ],
-    daily,
-    hours: Array.from({ length: 24 }, (_, hour) => ({
-      key: String(hour).padStart(2, "0"),
-      total: hour === 10 ? 6791 : 0,
-      input: hour === 10 ? 5225 : 0,
-      output: hour === 10 ? 1566 : 0,
-      records: hour === 10 ? 3 : 0,
-      errors: hour === 10 ? 1 : 0,
-      streamRequests: hour === 10 ? 2 : 0,
-      avgLatencyMs: hour === 10 ? 1727 : 0,
-      p95LatencyMs: hour === 10 ? 3120 : 0,
-    })),
-    statuses: [{ key: "200", records: 2 }, { key: "429", records: 1 }],
-    // 按天 × 模型的堆叠柱数据（两模型与下方两变体对应）。
-    modelDaily: [
-      { date: localDate(2), model: "deepseek-v4-flash", total: 1860, input: 1500, output: 360, records: 1 },
-      { date: localDate(2), model: "glm-5.3", total: 4210, input: 3400, output: 810, records: 1 },
-      { date: localDate(1), model: "deepseek-v4-flash", total: 3120, input: 4021, output: 1188, records: 1 },
-      { date: localDate(0), model: "glm-5.3", total: 6791, input: 5225, output: 1566, records: 1 },
-    ],
-    // **区域**范围条各档计数（含「未标注」= 升级前的旧日志）。
-    // demo 刻意同时给两个区域数据；国内那一档是两条程序位的**合计**。
+    summary: { total, input, output, records, errors, streamRequests: records - errors, avgLatencyMs: 1727, p95LatencyMs: 3120 },
+    models,
+    accounts,
+    daily: dayKeys.map((key, index) =>
+      bucket(key, dayTotals[index], dayTotals[index] > 0 ? 1 : 0, index === dayKeys.length - 1 ? errors : 0),
+    ),
+    hours,
+    statuses: [{ key: "200", records: records - errors }, { key: "429", records: errors }],
+    modelDaily,
     variantCounts: { cn: 3, global: 1, unlabeled: 1, all: 5 },
-    // 平台做不到的维度（置灰卡）——形状与 `handlers::unsupported_note` 逐字一致。
     unsupported: localizedStubs(CAPABILITY_STUBS.tokenStats),
     filesScanned: 1, parseErrors: 0,
     coverageStartAt: Date.now() - 3600_000, coverageEndAt: Date.now(),
@@ -1890,8 +2136,8 @@ export function screenshotDemoResponse(command: string, args?: Record<string, un
       dataDir: "/demo/Code",
       dbPath: "/demo/Code/User/globalStorage/state.vscdb",
       dbExists: true,
-      activeAccountId: demoAccounts[0].id,
-      activeAccountName: demoAccounts[0].nickname,
+      activeAccountId: demoAccounts[1].id,
+      activeAccountName: demoAccounts[1].nickname,
       detectedFrom: "state",
       statePath: "/demo/vscode-ext-state.json",
     } satisfies VscodeCodebuddyPluginStatus;
@@ -1921,7 +2167,13 @@ export function screenshotDemoResponse(command: string, args?: Record<string, un
       demoActiveCliAccountId = target.id;
       return { ok: true, configured: true, synced: true, verified: true, activeIndex: demoAccounts.indexOf(target), activeAccountId: target.id, message: t("shared.demo.switchDone") } satisfies CodeBuddyCliSwitchResult;
     }
-    case "get_checkin_status": return { ok: true, todayCheckedIn: true };
+    case "get_checkin_status": {
+      /* ★ 按账号给：原型里 qa-bot / design-lab 是「今日未签到」，其余「已签到」。
+         `api.getCheckinStatusMap` 在演示模式下**逐个账号**调这里（见 `api.ts`）。 */
+      const accountId = String((args as { accountId?: unknown } | undefined)?.accountId ?? "");
+      const notCheckedIn = accountId === "demo-account-d" || accountId === "demo-account-e";
+      return { ok: true, todayCheckedIn: !notCheckedIn };
+    }
     case "get_credit_expiry": return creditExpiry(String(args?.accountId ?? ""));
     case "get_credit_statistics": return buildStatistics();
     case "get_token_statistics": return demoTokenStatistics(typeof args?.days === "number" ? args.days : undefined);

@@ -20,6 +20,10 @@ export const zh = {
   "trae.program.traeCode": "TraeCode",
   "trae.program.traeWorkGlobal": "TraeWork AI",
   "trae.program.traeCodeGlobal": "Trae AI",
+  // 合并后的客户端（issue #20）：客户端自己就叫 `Trae`。国际版按约定带 `AI` 后缀，
+  // 因此与 `traeCodeGlobal` 同名 —— 两者本就是同一个客户端（见 Rust 侧 `region` 模块头）。
+  // 本键只服务 `traeProgramLabel()`（**不含区域**），故不带 `Global` 变体。
+  "trae.program.trae": "Trae",
 
   // =====================================================================
   // trae-account-card.tsx —— Trae 账号卡片
@@ -38,10 +42,10 @@ export const zh = {
   // ---- 到期 ----
   "trae.comp.card.expiry.permanent": "长期有效",
   "trae.comp.card.expiry.short": "{date} 到期",
-  "trae.comp.card.expiry.cooldownUntil": "冷却至 {time}",
-  "trae.comp.card.expiry.earliest": "最早到期 {time}",
-  "trae.comp.card.expiry.none": "暂无到期时间",
-  "trae.comp.card.expiry.noneShort": "暂无到期",
+  // ⚠️ 2026-10-12：卡片按原型删掉「大数字行 + 近期到期逐包列表」后，
+  // `expiry.cooldownUntil` / `expiry.earliest` / `expiry.none` / `expiry.noneShort`
+  // 与 `section.expiring` / `package.tip` / `package.remaining` / `package.empty`
+  // 均已无引用，一并删除。
 
   // ---- 正文行标签 ----
   "trae.comp.card.label.device": "设备",
@@ -52,7 +56,12 @@ export const zh = {
 
   // ---- 状态标签 ----
   "trae.comp.card.chip.checked": "已签到",
-  "trae.comp.card.chip.unchecked": "未签到",
+  // ★ 2026-10-12：与 WorkBuddy 卡片**同一组槽位**（原型对两个平台用同一个渲染器）。
+  "trae.comp.card.chip.toolsInUse": "使用中 {n} 个工具",
+  "trae.comp.card.chip.expired": "凭据已过期",
+  "trae.comp.card.chip.needRelogin": "需重新登录",
+  "trae.comp.card.chip.expiring": "{amount} 积分 {days} 天后过期",
+  "trae.comp.card.chip.unchecked": "今日未签到",
   "trae.comp.card.chip.cooling": "冷却中",
   "trae.comp.card.chip.jwtAuto": "自动刷新 JWT",
   "trae.comp.card.chip.jwtManual": "支持刷新 JWT",
@@ -69,10 +78,9 @@ export const zh = {
   "trae.comp.card.switch.aria": "切换到 {label}",
   "trae.comp.card.switch.ariaBusy": "正在切换到 {label}",
   "trae.comp.card.switch.busy": "切换中…",
-  // P4：跨区域程序位**可见但不可直接切换**（账号库按区域分家，跨库切换会被后端守卫拒绝，
-  // 而那句拒绝用户看不懂）⇒ 点击引导「先切到该区域」。
-  "trae.comp.card.switch.regionHint": "需先切到{region}区域",
-  "trae.comp.card.switch.guideRegion": "切换到{region}区域",
+  // ⚠️ 2026-10-10：原「跨区域程序位引导切区域」两条文案（`regionHint` / `guideRegion`）已删除。
+  //    用户要求**国内版不显示国际版的程序位** ⇒ `programsFor` 只返回本区域程序位，
+  //    跨区域按钮永远不出现，那两条文案再无引用（`guideRegion` 在此之前就已无引用）。
 
   // ---- 操作菜单 ----
   "trae.comp.card.manage.aria": "管理账号 {name}",
@@ -87,14 +95,9 @@ export const zh = {
 
   // ---- 积分区 ----
   "trae.comp.card.credits.remaining": "剩余积分",
-  "trae.comp.card.credits.unknown": "积分未查询",
   "trae.comp.card.credits.notQueried": "尚未查询到积分，点右上角菜单「刷新积分」重试",
-  "trae.comp.card.section.expiring": "近期到期",
   "trae.comp.card.section.info": "账号信息",
   "trae.comp.card.package.fallback": "积分包",
-  "trae.comp.card.package.tip": "{name} · 剩余 {remaining} / {total} · {expiry}",
-  "trae.comp.card.package.remaining": "{credits} 积分",
-  "trae.comp.card.package.empty": "暂无可用积分",
   // P4：抽屉 `DetailPack` 的「已用 / 到期」文本（与 WorkBuddy 抽屉同形，各平台自持文案）。
   "trae.comp.card.package.used": "已用 {n}",
   "trae.comp.card.package.expired": "已到期",
@@ -113,6 +116,13 @@ export const zh = {
   "trae.comp.card.footer.updatedAt": "{time} 更新",
   "trae.comp.card.footer.noUpdate": "未记录更新时间",
   "trae.comp.card.footer.updatedTip": "该账号在本地账号库中的最近更新时间",
+
+  // ---- 卡片头部与指标行（原型 `.acct-top` / `.acct-metrics`）----
+  // ★ 与 WorkBuddy 卡片**同名同义**（`wbAccounts.card.currentLogin` / `.metric.*`）：
+  //   两个产品分区的卡片是同一套结构，文案也不该各写一版。
+  "trae.comp.card.currentLogin": "当前登录",
+  "trae.comp.card.metric.credits": "积分",
+  "trae.comp.card.metric.expiry": "到期",
 
   // ---- 详情抽屉的信息区块（由 TraeAccountsPage 装配后注入）----
   "trae.comp.card.detail.section.account": "账号信息",

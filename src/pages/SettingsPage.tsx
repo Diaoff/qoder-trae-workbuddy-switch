@@ -29,7 +29,7 @@ import { EmptyState } from "@/components/ui/empty-state";
 import { ScopeChip, scopeLabel } from "@/components/scope-chip";
 import { SettingsFieldRow, SettingsGroup, SettingsRow } from "@/components/settings-primitives";
 // P7 T03：设置页子导航（9 项）+「备份与恢复」分区 + 通用设置分组（与侧栏弹层共用）。
-import { SETTINGS_SUBNAV, SettingsSubnav, type SettingsSubnavId } from "@/components/settings/settings-subnav";
+import { parseSettingsSubnav, SettingsSubnav, type SettingsSubnavId } from "@/components/settings/settings-subnav";
 import { BackupSection } from "@/components/settings/backup-section";
 import { AppSettingsGroups } from "@/components/app-settings";
 // 小时表编辑器与 Trae 设置页**共用同一份实现**（校验规则属于规则，不属于版式）。
@@ -223,7 +223,7 @@ function AutoCheckinCard() {
               />
             </SettingsFieldRow>
 
-            <div className="flex flex-wrap gap-2 border-b-0 border-border/60 px-4 py-3 sm:px-5">
+            <div className="flex flex-wrap gap-2 border-b-0 border-border/60 px-4 py-3">
               <DemoAction><Button size="sm" onClick={save} disabled={saving}>
                 {saving ? <Loader2 className="animate-spin" /> : <Save />}{t("wbSettings.common.saveConfig")}
               </Button></DemoAction>
@@ -233,7 +233,7 @@ function AutoCheckinCard() {
             </div>
           </>
         ) : (
-          <p className="px-4 py-3 text-sm text-muted-foreground sm:px-5">{t("wbSettings.common.loading")}</p>
+          <p className="px-4 py-3 text-sm text-muted-foreground">{t("wbSettings.common.loading")}</p>
         )}
 
         {msg && (
@@ -245,7 +245,7 @@ function AutoCheckinCard() {
           </Alert>
         )}
 
-        <div className="px-4 py-3 sm:px-5">
+        <div className="px-4 py-3">
           <p className="mb-2 text-[13px] font-medium">{t("wbSettings.checkin.logTitle")}</p>
           {logs.length === 0 ? (
             <p className="py-3 text-center text-sm text-muted-foreground">{t("wbSettings.checkin.logEmpty")}</p>
@@ -380,7 +380,7 @@ function AutoRotateCard() {
     >
       <CardContent className="space-y-0 p-0">
         {status && (
-          <div className="flex flex-wrap items-center gap-x-4 gap-y-1 border-b border-border/60 bg-muted/25 px-4 py-3 text-xs text-muted-foreground sm:px-5">
+          <div className="flex flex-wrap items-center gap-x-4 gap-y-1 border-b border-border/60 bg-muted/25 px-4 py-3 text-xs text-muted-foreground">
             <span>
               {t("wbSettings.rotate.currentAccountLabel")}
               <b className="text-foreground">{status.activeAccountName ?? t("wbSettings.rotate.notConfigured")}</b>
@@ -507,11 +507,11 @@ function AutoRotateCard() {
                 onChange={(e) => setNum("min_remaining_credits", e.target.value)}
               />
             </SettingsFieldRow>
-            <p className="border-b border-border/60 px-4 py-3 text-[13px] leading-5 text-muted-foreground sm:px-5">
+            <p className="border-b border-border/60 px-4 py-3 text-[13px] leading-5 text-muted-foreground">
               {t("wbSettings.rotate.timingHint")}
             </p>
 
-            <div className="flex flex-wrap gap-2 border-b-0 border-border/60 px-4 py-3 sm:px-5">
+            <div className="flex flex-wrap gap-2 border-b-0 border-border/60 px-4 py-3">
               <DemoAction><Button size="sm" onClick={save} disabled={saving}>
                 {saving ? <Loader2 className="animate-spin" /> : <Save />}{t("wbSettings.common.saveConfig")}
               </Button></DemoAction>
@@ -521,7 +521,7 @@ function AutoRotateCard() {
             </div>
           </>
         ) : (
-          <p className="px-4 py-3 text-sm text-muted-foreground sm:px-5">{t("wbSettings.common.loading")}</p>
+          <p className="px-4 py-3 text-sm text-muted-foreground">{t("wbSettings.common.loading")}</p>
         )}
 
         {msg && (
@@ -533,7 +533,7 @@ function AutoRotateCard() {
           </Alert>
         )}
 
-        <div className="px-4 py-3 sm:px-5">
+        <div className="px-4 py-3">
           <p className="mb-2 text-[13px] font-medium">{t("wbSettings.rotate.logTitle")}</p>
           {logs.length === 0 ? (
             <p className="py-3 text-center text-sm text-muted-foreground">{t("wbSettings.rotate.logEmpty")}</p>
@@ -610,10 +610,10 @@ function PermissionCheckCard() {
       title={t("wbSettings.permission.groupTitle")}
     >
       <CardContent className="space-y-0 p-0">
-        <div className="break-all border-b border-border/60 bg-muted/25 px-4 py-3 font-mono text-[11px] leading-5 text-muted-foreground sm:px-5">
+        <div className="break-all border-b border-border/60 bg-muted/25 px-4 py-3 font-mono text-[11px] leading-5 text-muted-foreground">
           {authFile || t("wbSettings.permission.authFileMissing")}
         </div>
-        <div className="flex flex-wrap gap-2 border-b-0 border-border/60 px-4 py-3 sm:px-5">
+        <div className="flex flex-wrap gap-2 border-b-0 border-border/60 px-4 py-3">
           <DemoAction><Button size="sm" onClick={runCheck} disabled={checking}>
             {checking ? t("wbSettings.permission.checking") : t("wbSettings.permission.checkBtn")}
           </Button></DemoAction>
@@ -721,7 +721,7 @@ function DangerZoneCard() {
   return (
     <SettingsGroup id="settings-danger" title={t("wbSettings.danger.groupTitle")}>
       <CardContent className="space-y-0 p-0">
-        <p className="border-b border-border/60 bg-muted/25 px-4 py-3 text-xs leading-5 text-muted-foreground sm:px-5">
+        <p className="border-b border-border/60 bg-muted/25 px-4 py-3 text-xs leading-5 text-muted-foreground">
           {t("wbSettings.danger.intro")}
         </p>
 
@@ -1411,7 +1411,7 @@ function ScheduleCard() {
   return (
     <SettingsGroup id="settings-schedule" title={t("wbSettings.schedule.groupTitle")}>
       <CardContent className="space-y-0 p-0">
-        <p className="border-b border-border/60 bg-muted/25 px-4 py-3 text-xs leading-5 text-muted-foreground sm:px-5">
+        <p className="border-b border-border/60 bg-muted/25 px-4 py-3 text-xs leading-5 text-muted-foreground">
           {t("wbSettings.schedule.intro")}
         </p>
 
@@ -1430,10 +1430,10 @@ function ScheduleCard() {
                     aria-label={t("wbSettings.schedule.enableAria", { label: t(task.labelKey) })}
                   />
                   <div className="min-w-0">
-                    <Label htmlFor={`schedule-${task.key}-enabled`} className="text-[13px] leading-4">
+                    <Label htmlFor={`schedule-${task.key}-enabled`} className="text-[12.5px] font-[550] leading-4">
                       {t(task.labelKey)}
                     </Label>
-                    <p className="mt-0.5 text-xs leading-4 text-muted-foreground/75">{t(task.descKey)}</p>
+                    <p className="mt-0.5 text-[11.5px] leading-4 text-muted-foreground">{t(task.descKey)}</p>
                     <DemoAction>
                       <Button
                         type="button"
@@ -1472,7 +1472,7 @@ function ScheduleCard() {
               />
             </SettingsFieldRow>
 
-            <div className="flex flex-wrap gap-2 border-b-0 border-border/60 px-4 py-3 sm:px-5">
+            <div className="flex flex-wrap gap-2 border-b-0 border-border/60 px-4 py-3">
               <DemoAction>
                 <Button size="sm" onClick={save} disabled={saving}>
                   {saving ? <Loader2 className="animate-spin" /> : <Save />}{t("wbSettings.schedule.saveBtn")}
@@ -1481,7 +1481,7 @@ function ScheduleCard() {
             </div>
           </>
         ) : (
-          <p className="px-4 py-3 text-sm text-muted-foreground sm:px-5">{t("wbSettings.common.loading")}</p>
+          <p className="px-4 py-3 text-sm text-muted-foreground">{t("wbSettings.common.loading")}</p>
         )}
 
         {msg && (
@@ -1531,20 +1531,34 @@ export default function SettingsPage() {
   /* ★ P0-4a：`section` 的**初始值从 URL 读**（`?section=diagnostics`）——
      否则「未检测到程序位 → 去设置」只能落到设置页**首页**，到不了「权限与诊断」子项
      （原型断言 `P0-4a` 要求点了之后能跳到「权限与诊断」）。
-     ⚠️ 必须**校验合法性**：非法值 fail-closed 回 "general"，不把任意串塞进 state。 */
-  const [searchParams] = useSearchParams();
-  const [section, setSection] = useState<SettingsSubnavId>(() => {
-    const raw = searchParams.get("section");
-    return SETTINGS_SUBNAV.some((i) => i.id === raw) ? (raw as SettingsSubnavId) : "general";
-  });
+     ⚠️ 必须**校验合法性**：非法值 fail-closed 回 "general"，不把任意串塞进 state。
+     解析走 `parseSettingsSubnav`（与网关页的 `parseGatewaySubnav` 同一形状），
+     Trae 设置页接的是同一个函数 —— 两平台同一件事只有一份实现。 */
+  const [searchParams, setSearchParams] = useSearchParams();
+  const [section, setSection] = useState<SettingsSubnavId>(() =>
+    parseSettingsSubnav(searchParams.get("section")),
+  );
+
+  /**
+   * 切换分区：**同时写 URL**（与网关页同构 —— 位置真值在 URL，刷新 / 前进后退行为一致）。
+   * 用「保留式」写回：只覆盖 `section`，不动 `region` 之类的其他查询参数。
+   */
+  function goSection(id: SettingsSubnavId) {
+    setSection(id);
+    const next = new URLSearchParams(searchParams);
+    next.set("section", id);
+    setSearchParams(next, { replace: true });
+  }
 
   return (
-    <div className="mx-auto min-w-0 w-full max-w-5xl px-4 py-6 sm:px-6 sm:py-8">
-      {/* 页头（原型 `viewSettings`）：作用域副标题 + 只读 scope-chip。 */}
+    <div className="mx-auto min-w-0 w-full max-w-[1240px] px-7 pt-[26px] pb-[60px]">
+      {/* 页头（原型 `viewSettings`，`demo.css:177-180`）：作用域副标题 + 只读 scope-chip。
+          容器与其余 12 个页面同为 `.page`（1240px / 26·28·60）——
+          此前这里是 `max-w-5xl`(1024px) + `px-4 py-6`，比原型窄 216px、留白也更紧。*/}
       <header className="mb-5 flex items-start gap-4">
         <div className="min-w-0">
-          <h1 className="text-[28px] font-semibold tracking-tight">{t("wbSettings.page.title")}</h1>
-          <p className="mt-1.5 text-xs text-muted-foreground">
+          <h1 className="text-[28px] font-[640] tracking-[-0.02em]">{t("wbSettings.page.title")}</h1>
+          <p className="mt-1.5 text-[12.5px] text-muted-foreground">
             {t("pageHead.settings", { scope: scopeLabel(t, scope) })}
           </p>
         </div>
@@ -1552,14 +1566,14 @@ export default function SettingsPage() {
         <ScopeChip scope={scope} />
       </header>
 
-      <div className="flex min-w-0 flex-col gap-6 lg:flex-row lg:gap-8">
-        <SettingsSubnav
-          active={section}
-          onSelect={setSection}
-          className="lg:w-44 lg:shrink-0"
-        />
+      {/* 两栏容器 `.split`（原型 `:369`）：方向 / 对齐 / 间距整组在 `index.css` 的
+          `[data-split-layout]` 里（含 900px 转纵向），故这里不再写 `flex-col` /
+          `lg:flex-row` / `gap-*` —— utilities 会盖过 base 层，导致断点失效。 */}
+      <div data-split-layout className="min-w-0">
+        <SettingsSubnav active={section} onSelect={goSection} />
 
-        <div className="min-w-0 flex-1 space-y-10">
+        {/* 主区 `.split-main`：分区之间 16px（原型 `:378`）。 */}
+        <div className="min-w-0 flex-1 space-y-4">
           {section === "general" && <AppSettingsGroups />}
 
           {section === "account" && (
@@ -1598,7 +1612,7 @@ export default function SettingsPage() {
               title={t("settings.logs.emptyTitle")}
               description={t("settings.logs.emptyBody")}
               action={
-                <Button variant="outline" size="sm" onClick={() => setSection("gateway")}>
+                <Button variant="outline" size="sm" onClick={() => goSection("gateway")}>
                   {t("settings.logs.emptyAction")}
                 </Button>
               }

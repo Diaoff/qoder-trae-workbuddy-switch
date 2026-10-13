@@ -1039,6 +1039,10 @@ pub fn atomic_write(path: &Path, content: &str) -> std::io::Result<()> {
         return Err(e);
     }
     if let Err(e) = std::fs::rename(&tmp, path) {
+        // ★ rename 失败时**必须清掉临时文件** —— 否则目标目录里会留下一个
+        //   `xxx.tmp-<uuid>` 垃圾（实测：目标被一个**目录**占住时就会这样）。
+        //   在**用户客户端的数据目录**里留垃圾比写失败更坏：客户端可能把它当数据扫。
+        let _ = std::fs::remove_file(&tmp);
         eprintln!("[atomic] rename FAILED: {e}");
         return Err(e);
     }

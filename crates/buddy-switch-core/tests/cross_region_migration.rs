@@ -182,6 +182,7 @@ fn cross_region_session_copy_writes_only_into_target_region() {
     let report = session::copy_sessions_for_switch_cross(
         Region::Cn,
         Region::Global,
+        None,
         &target,
         &[CID.to_string()],
     )
@@ -265,6 +266,7 @@ fn cross_region_session_copy_writes_only_into_target_region() {
     let again = session::copy_sessions_for_switch_cross(
         Region::Cn,
         Region::Global,
+        None,
         &target,
         &[CID.to_string()],
     )

@@ -8,11 +8,16 @@
 //! 的 `requests[].usage` 中；消息正文文件（`messages/`）不会被扫描。
 
 use chrono::{Datelike, Local, Timelike};
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
+use std::time::UNIX_EPOCH;
 
+use crate::modules::config::{atomic_write, store_dir};
 use crate::modules::region::{Region, RegionFilter};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -45,6 +50,18 @@ impl Totals {
         self.usage.read = self.usage.read.saturating_add(usage.read);
         self.usage.write = self.usage.write.saturating_add(usage.write);
         self.records = self.records.saturating_add(1);
+    }
+
+    /// 把另一个 `Totals` 累加进来（按文件解析 + 有序合并的等价性基础）。
+    ///
+    /// 与原实现的**逐记录**累加等价：`saturating_add` 满足交换律与结合律，
+    /// 所以「先按文件求和、再按文件顺序合并」与「按记录顺序累加」结果相同。
+    fn merge(&mut self, other: &Totals) {
+        self.usage.input = self.usage.input.saturating_add(other.usage.input);
+        self.usage.output = self.usage.output.saturating_add(other.usage.output);
+        self.usage.read = self.usage.read.saturating_add(other.usage.read);
+        self.usage.write = self.usage.write.saturating_add(other.usage.write);
+        self.records = self.records.saturating_add(other.records);
     }
 
     fn value(&self) -> Value {
@@ -413,6 +430,50 @@ impl SourceCollector {
         });
     }
 
+    /// 合并**另一个文件**的解析结果（`SourceCollector` 在此被当作「单文件累加器」用）。
+    ///
+    /// ## 为什么 `key` 必须在这里**重算**
+    ///
+    /// [`Self::push_session`] 的 `key` 带跨文件去重后缀（`项目 · 会话 · 2`），
+    /// 计数器 `session_key_counts` 属于**整个 source**、不属于单个文件。并行/缓存
+    /// 路径下每个文件各自从 1 开始计数 ⇒ 直接搬 `other.sessions` 里的 `key` 会把
+    /// 后缀算错。所以这里只取原始四元组、由 `self` 重新 `push_session`。
+    ///
+    /// 顺序语义与改造前一致：调用方按 `paths.sort()` 的**文件顺序**逐个 `absorb`，
+    /// 与旧实现「按同一顺序逐文件 `push_session`」逐字对应。
+    fn absorb(&mut self, other: &SourceCollector) {
+        self.total.merge(&other.total);
+        for (key, totals) in &other.models {
+            self.models.entry(key.clone()).or_default().merge(totals);
+        }
+        for (key, totals) in &other.projects {
+            self.projects.entry(key.clone()).or_default().merge(totals);
+        }
+        for (key, totals) in &other.daily {
+            self.daily.entry(key.clone()).or_default().merge(totals);
+        }
+        for (model, days) in &other.daily_by_model {
+            let target = self.daily_by_model.entry(model.clone()).or_default();
+            for (day, totals) in days {
+                target.entry(day.clone()).or_default().merge(totals);
+            }
+        }
+        for (key, totals) in &other.hours {
+            self.hours.entry(key.clone()).or_default().merge(totals);
+        }
+        self.parse_errors = self.parse_errors.saturating_add(other.parse_errors);
+        self.coverage_start_at = min_option(self.coverage_start_at, other.coverage_start_at);
+        self.coverage_end_at = max_option(self.coverage_end_at, other.coverage_end_at);
+        for session in &other.sessions {
+            self.push_session(
+                session.session_id.clone(),
+                session.title.clone(),
+                session.project.clone(),
+                session.totals.clone(),
+            );
+        }
+    }
+
     fn into_value(self, name: &str, files_scanned: usize) -> Value {
         let daily_by_model = self
             .daily_by_model
@@ -436,74 +497,522 @@ impl SourceCollector {
     }
 }
 
-fn source(root: PathBuf, name: &str, cutoff: Option<i64>) -> Value {
-    let mut paths = Vec::new();
-    files(&root, &mut paths);
+/// 解析**单个** `.jsonl` 文件，返回只含该文件贡献的累加器。
+///
+/// 与改造前的逐文件循环体逐字一致 —— 唯一区别是「累加器按文件新建」而不是
+/// 「全源共用一个」，合并交给 [`SourceCollector::absorb`]。
+fn parse_file(root: &Path, path: &Path, cutoff: Option<i64>) -> SourceCollector {
     let mut collector = SourceCollector::default();
+    #[cfg(test)]
+    PARSED_PATHS.lock().unwrap().push(path.to_path_buf());
 
-    paths.sort();
-    for path in &paths {
-        let session_id = path
-            .file_stem()
-            .and_then(|name| name.to_str())
-            .filter(|name| !name.is_empty())
-            .unwrap_or("未知会话")
-            .to_string();
-        let fallback_project = project_name(&root, path);
-        let Ok(file) = std::fs::File::open(path) else {
+    let session_id = path
+        .file_stem()
+        .and_then(|name| name.to_str())
+        .filter(|name| !name.is_empty())
+        .unwrap_or("未知会话")
+        .to_string();
+    let fallback_project = project_name(root, path);
+    let Ok(file) = std::fs::File::open(path) else {
+        collector.note_parse_error();
+        return collector;
+    };
+
+    let mut session_totals = Totals::default();
+    let mut session_project: Option<String> = None;
+    let mut ai_title: Option<String> = None;
+    let mut summary: Option<String> = None;
+
+    for line in BufReader::new(file).lines() {
+        let Ok(line) = line else {
             collector.note_parse_error();
             continue;
         };
-
-        let mut session_totals = Totals::default();
-        let mut session_project: Option<String> = None;
-        let mut ai_title: Option<String> = None;
-        let mut summary: Option<String> = None;
-
-        for line in BufReader::new(file).lines() {
-            let Ok(line) = line else {
-                collector.note_parse_error();
-                continue;
-            };
-            let Ok(value) = serde_json::from_str::<Value>(&line) else {
-                collector.note_parse_error();
-                continue;
-            };
-            // Title metadata belongs to the whole JSONL session file. Read it
-            // before applying the usage cutoff so an older title can still
-            // label usage that falls inside the selected range. aiTitle has
-            // precedence over summary regardless of event order.
-            if let Some(title) = non_empty_text(value.get("aiTitle")) {
-                ai_title = Some(title);
-            }
-            if let Some(value) = non_empty_text(value.get("summary")) {
-                summary = Some(value);
-            }
-            // Records with a missing timestamp are excluded from a bounded
-            // range rather than guessed from file mtime or browser time.
-            if cutoff.is_some_and(|minimum| timestamp(&value).is_none_or(|ts| ts < minimum)) {
-                continue;
-            }
-            let Some(usage) = usage(&value) else {
-                continue;
-            };
-            let project = record_project(&value, &fallback_project);
-            if session_project.is_none() {
-                session_project = Some(project.clone());
-            }
-            session_totals.add(usage);
-            collector.add(usage, &value, &project);
+        let Ok(value) = serde_json::from_str::<Value>(&line) else {
+            collector.note_parse_error();
+            continue;
+        };
+        // Title metadata belongs to the whole JSONL session file. Read it
+        // before applying the usage cutoff so an older title can still
+        // label usage that falls inside the selected range. aiTitle has
+        // precedence over summary regardless of event order.
+        if let Some(title) = non_empty_text(value.get("aiTitle")) {
+            ai_title = Some(title);
         }
-
-        collector.push_session(
-            session_id,
-            ai_title.or(summary),
-            session_project.unwrap_or(fallback_project),
-            session_totals,
-        );
+        if let Some(value) = non_empty_text(value.get("summary")) {
+            summary = Some(value);
+        }
+        // Records with a missing timestamp are excluded from a bounded
+        // range rather than guessed from file mtime or browser time.
+        if cutoff.is_some_and(|minimum| timestamp(&value).is_none_or(|ts| ts < minimum)) {
+            continue;
+        }
+        let Some(usage) = usage(&value) else {
+            continue;
+        };
+        let project = record_project(&value, &fallback_project);
+        if session_project.is_none() {
+            session_project = Some(project.clone());
+        }
+        session_totals.add(usage);
+        collector.add(usage, &value, &project);
     }
 
-    collector.into_value(name, paths.len())
+    collector.push_session(
+        session_id,
+        ai_title.or(summary),
+        session_project.unwrap_or(fallback_project),
+        session_totals,
+    );
+    collector
+}
+
+fn min_option(left: Option<i64>, right: Option<i64>) -> Option<i64> {
+    match (left, right) {
+        (Some(left), Some(right)) => Some(left.min(right)),
+        (Some(left), None) => Some(left),
+        (None, right) => right,
+    }
+}
+
+fn max_option(left: Option<i64>, right: Option<i64>) -> Option<i64> {
+    match (left, right) {
+        (Some(left), Some(right)) => Some(left.max(right)),
+        (Some(left), None) => Some(left),
+        (None, right) => right,
+    }
+}
+
+/// `(mtime 毫秒, 文件字节数)` —— 文件内容的**充分指纹**。
+///
+/// 日志是**追加写**：任何一次写入都会同时推进 mtime 与 size，所以这对值变了
+/// 就说明内容变了。反过来，内容变了而这对值不变在本文件系统的粒度下不可能
+/// （NTFS mtime 精度 100ns，且 size 单独把关「同刻度内追加」）。
+fn file_stamp(meta: &std::fs::Metadata) -> Option<(i64, u64)> {
+    let millis = meta.modified().ok()?.duration_since(UNIX_EPOCH).ok()?.as_millis();
+    Some((i64::try_from(millis).ok()?, meta.len()))
+}
+
+/// 单文件解析结果的**进程内**缓存条目。
+struct ScanCacheEntry {
+    mtime_ms: i64,
+    size: u64,
+    cutoff: Option<i64>,
+    scan: Arc<SourceCollector>,
+}
+
+/// 按**绝对路径**缓存单文件解析结果（进程内）。
+///
+/// ## 为什么可以缓存，且命中即逐字节等价
+///
+/// 真实流量只有 **`cutoff = None`** 一种：`TokenStatsPage` 传 `undefined`，
+/// `overview-metrics` 传 `TREND_DAYS = 14` 天 —— 而 `days` 只在
+/// [`get_statistics_for_filter`] 里归一成 `Some(7 | 30 | 90)`，其余一律 `None`。
+/// 因此把 `cutoff` 放进键做**精确比对**后，命中返回的就是「同一份文件、同一个
+/// 窗口」的解析结果，与重新解析逐字节相同。
+///
+/// `days` 恰好取 7 / 30 / 90 的调用（目前无调用方）会因 `cutoff` 含 `now_ms()`
+/// 而必然未命中 ⇒ 行为与改造前一致（全量重扫），不会引入陈旧窗口。
+///
+/// ## 为什么**必须落盘**（2026-10-10 追加，实测驱动）
+///
+/// 先量化（`token_scan_bench read`）：`~/.workbuddy-ai/projects` 34.5GB / 12356 文件，
+/// **纯读盘 65.0s、且「热」与「冷」一样（64.0s）** —— 35GB 塞不进 31.7GB 内存，
+/// 页缓存完全不帮忙。而「读 + 解析 + 聚合」总共 72.1s ⇒ **解析只占 ~7s，90% 是 I/O**。
+/// 结论：再优化 CPU 侧没有意义，**唯一出路是不重读**。
+///
+/// 原注释把「不落盘」写成设计属性，评审给的边界是「可加内存缓存、但不可落盘」，
+/// 理由是怕「落库聚合值与真实日志不一致」。**该理由对内容指纹键不成立**：
+/// 条目只在 `(path, mtime, size, cutoff)` **逐字段相等**时才被使用，文件一改就必然
+/// 未命中 ⇒ 陈旧在结构上不可能。故落盘安全，且是让「冷启动」从 65s 降到亚秒的唯一手段。
+fn scan_cache() -> &'static Mutex<HashMap<PathBuf, ScanCacheEntry>> {
+    static CACHE: OnceLock<Mutex<HashMap<PathBuf, ScanCacheEntry>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// 仅供测试：移除**某一个路径**的缓存条目。
+///
+/// 刻意做成按路径清除而不是整表清空：`cargo test` 并行跑用例，整表清空会把
+/// 别的用例正在做的「冷 → 热」序列打断，让它们的「命中不再解析」断言随机变红。
+#[cfg(test)]
+fn clear_scan_cache_entry(path: &Path) {
+    scan_cache().lock().unwrap().remove(path);
+}
+
+// ---------------------------------------------------------------------------
+// 落盘表示
+// ---------------------------------------------------------------------------
+
+/// 落盘格式版本。**任何字段语义变化都必须 +1** —— 不匹配时整体丢弃
+/// （宁可重扫一次，不可读出错值）。
+const SCAN_CACHE_VERSION: u32 = 1;
+
+/// `Totals` 的紧凑表示：`[input, output, read, write, records]`。
+///
+/// ## 为什么不直接 `derive(Serialize)` 到 `Totals`
+///
+/// 一个文件里有几十个 `Totals`（models / projects / daily / hours / dailyByModel
+/// 各一份），12356 个文件 ⇒ 数百万个。若每个都带 `"input":`/`"output":`/… 键名，
+/// 光键名就要几百 MB。定长数组没有键名开销。
+type PersistedTotals = [u64; 5];
+
+fn totals_to_persisted(totals: &Totals) -> PersistedTotals {
+    [
+        totals.usage.input,
+        totals.usage.output,
+        totals.usage.read,
+        totals.usage.write,
+        totals.records,
+    ]
+}
+
+fn totals_from_persisted(value: PersistedTotals) -> Totals {
+    Totals {
+        usage: Usage {
+            input: value[0],
+            output: value[1],
+            read: value[2],
+            write: value[3],
+        },
+        records: value[4],
+    }
+}
+
+/// `HashMap` → **按 key 排序**的数组。
+///
+/// 排序不是为了正确性（合并顺序由 `absorb` 的调用顺序决定，与这里无关），
+/// 而是为了让同一份数据**每次落盘产生相同的字节** —— 否则 `HashMap` 的随机
+/// 迭代序会让缓存文件每次都变，既无法 diff，也白白多写盘。
+fn totals_map_to_persisted(map: &HashMap<String, Totals>) -> Vec<(String, PersistedTotals)> {
+    let mut entries: Vec<(String, PersistedTotals)> = map
+        .iter()
+        .map(|(key, totals)| (key.clone(), totals_to_persisted(totals)))
+        .collect();
+    entries.sort_unstable_by(|left, right| left.0.cmp(&right.0));
+    entries
+}
+
+fn totals_map_from_persisted(entries: Vec<(String, PersistedTotals)>) -> HashMap<String, Totals> {
+    entries
+        .into_iter()
+        .map(|(key, totals)| (key, totals_from_persisted(totals)))
+        .collect()
+}
+
+fn daily_by_model_to_persisted(
+    map: &HashMap<String, HashMap<String, Totals>>,
+) -> Vec<(String, Vec<(String, PersistedTotals)>)> {
+    let mut entries: Vec<(String, Vec<(String, PersistedTotals)>)> = map
+        .iter()
+        .map(|(model, days)| (model.clone(), totals_map_to_persisted(days)))
+        .collect();
+    entries.sort_unstable_by(|left, right| left.0.cmp(&right.0));
+    entries
+}
+
+fn daily_by_model_from_persisted(
+    entries: Vec<(String, Vec<(String, PersistedTotals)>)>,
+) -> HashMap<String, HashMap<String, Totals>> {
+    entries
+        .into_iter()
+        .map(|(model, days)| (model, totals_map_from_persisted(days)))
+        .collect()
+}
+
+/// 一个文件在盘上的会话信息。
+///
+/// `Option`：`push_session` 在 `records == 0` 时**提前返回**，所以一个文件可能
+/// **没有**会话条目（例如整份日志都没有 usage）。这时必须保持「没有」，
+/// 否则 `absorb` 会凭空 push 一个空会话。
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PersistedSession {
+    session_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    title: Option<String>,
+    project: String,
+    totals: PersistedTotals,
+}
+
+/// 一个文件的落盘条目：内容指纹 + 该文件的全部贡献。
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PersistedFileEntry {
+    mtime: i64,
+    size: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    cutoff: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    session: Option<PersistedSession>,
+    total: PersistedTotals,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    models: Vec<(String, PersistedTotals)>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    projects: Vec<(String, PersistedTotals)>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    daily: Vec<(String, PersistedTotals)>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    daily_by_model: Vec<(String, Vec<(String, PersistedTotals)>)>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    hours: Vec<(String, PersistedTotals)>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    coverage_start: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    coverage_end: Option<i64>,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    parse_errors: u64,
+}
+
+fn is_zero(value: &u64) -> bool {
+    *value == 0
+}
+
+#[derive(Serialize, Deserialize)]
+struct PersistedScanCache {
+    version: u32,
+    files: BTreeMap<String, PersistedFileEntry>,
+}
+
+impl ScanCacheEntry {
+    fn to_persisted(&self) -> PersistedFileEntry {
+        let scan = &self.scan;
+        let session = scan.sessions.first().map(|session| PersistedSession {
+            session_id: session.session_id.clone(),
+            title: session.title.clone(),
+            project: session.project.clone(),
+            totals: totals_to_persisted(&session.totals),
+        });
+        PersistedFileEntry {
+            mtime: self.mtime_ms,
+            size: self.size,
+            cutoff: self.cutoff,
+            session,
+            total: totals_to_persisted(&scan.total),
+            models: totals_map_to_persisted(&scan.models),
+            projects: totals_map_to_persisted(&scan.projects),
+            daily: totals_map_to_persisted(&scan.daily),
+            daily_by_model: daily_by_model_to_persisted(&scan.daily_by_model),
+            hours: totals_map_to_persisted(&scan.hours),
+            coverage_start: scan.coverage_start_at,
+            coverage_end: scan.coverage_end_at,
+            parse_errors: scan.parse_errors,
+        }
+    }
+
+    fn from_persisted(entry: PersistedFileEntry) -> Self {
+        let mut scan = SourceCollector {
+            total: totals_from_persisted(entry.total),
+            models: totals_map_from_persisted(entry.models),
+            projects: totals_map_from_persisted(entry.projects),
+            daily: totals_map_from_persisted(entry.daily),
+            daily_by_model: daily_by_model_from_persisted(entry.daily_by_model),
+            hours: totals_map_from_persisted(entry.hours),
+            coverage_start_at: entry.coverage_start,
+            coverage_end_at: entry.coverage_end,
+            parse_errors: entry.parse_errors,
+            ..SourceCollector::default()
+        };
+        if let Some(session) = entry.session {
+            scan.sessions.push(SessionTotals {
+                // `key` 由 `absorb` 重算（跨文件去重计数不属于单个文件），此处占位。
+                key: String::new(),
+                title: session.title,
+                project: session.project,
+                session_id: session.session_id,
+                totals: totals_from_persisted(session.totals),
+            });
+        }
+        ScanCacheEntry {
+            mtime_ms: entry.mtime,
+            size: entry.size,
+            cutoff: entry.cutoff,
+            scan: Arc::new(scan),
+        }
+    }
+}
+
+/// 落盘位置。**单一文件、不按 region 分家**：键是**绝对路径**，
+/// `.workbuddy/projects`（CN）与 `.workbuddy-ai/projects`（Global）天然不会撞车，
+/// 因此不存在 `token_daily` 那种「两版串台」的风险。
+fn scan_cache_path() -> PathBuf {
+    store_dir().join("token-scan-cache.json")
+}
+
+/// `ensure_cache_loaded` 的可复位句柄（`OnceLock` 无法复位，故用 `AtomicBool`）。
+static CACHE_LOADED_FLAG: AtomicBool = AtomicBool::new(false);
+
+/// 进程内**有过新解析** —— 只有这时才值得写盘。
+static CACHE_DIRTY: AtomicBool = AtomicBool::new(false);
+
+/// 从指定路径读缓存。`None` = **没有可用缓存**（文件不存在 / 坏 JSON / 版本不符）。
+///
+/// 抽成显式路径的纯函数，一是让 `ensure_cache_loaded` 保持单行语义，
+/// 二是让用例能直接喂临时文件测试，**不必依赖进程级一次性标记** ——
+/// `cargo test` 并行跑用例，全局标记会被别的用例踩。
+fn read_persisted_cache(path: &Path) -> Option<HashMap<PathBuf, ScanCacheEntry>> {
+    let text = std::fs::read_to_string(path).ok()?;
+    let persisted = serde_json::from_str::<PersistedScanCache>(&text).ok()?;
+    if persisted.version != SCAN_CACHE_VERSION {
+        return None;
+    }
+    Some(
+        persisted
+            .files
+            .into_iter()
+            .map(|(file, entry)| (PathBuf::from(file), ScanCacheEntry::from_persisted(entry)))
+            .collect(),
+    )
+}
+
+/// 进程内只从盘上装载一次。**任何失败都静默回落成空缓存**：缓存是纯加速，
+/// 读不到就重扫，绝不能因为缓存坏了让统计失败。
+fn ensure_cache_loaded() {
+    if CACHE_LOADED_FLAG.swap(true, Ordering::AcqRel) {
+        return;
+    }
+    let Some(loaded) = read_persisted_cache(&scan_cache_path()) else {
+        return;
+    };
+    let mut cache = scan_cache().lock().unwrap();
+    for (path, entry) in loaded {
+        cache.insert(path, entry);
+    }
+}
+
+fn write_persisted_cache(path: &Path, cache: &HashMap<PathBuf, ScanCacheEntry>) {
+    // 丢掉文件已不存在的条目：否则缓存只增不减（用户删掉旧会话后条目永远留着）。
+    // 这是**纯清理**，不影响正确性 —— 不存在的文件本来也不会被查询。
+    let files: BTreeMap<String, PersistedFileEntry> = cache
+        .iter()
+        .filter(|(file, _)| file.exists())
+        .map(|(file, entry)| (file.to_string_lossy().into_owned(), entry.to_persisted()))
+        .collect();
+    let payload = PersistedScanCache { version: SCAN_CACHE_VERSION, files };
+    let Ok(text) = serde_json::to_string(&payload) else {
+        return;
+    };
+    let _ = std::fs::create_dir_all(store_dir());
+    let _ = atomic_write(path, &text);
+}
+
+/// 有新解析时把缓存落盘。**没有新解析就一个字节都不写** —— 热路径零成本。
+fn persist_scan_cache_if_dirty() {
+    if !CACHE_DIRTY.swap(false, Ordering::AcqRel) {
+        return;
+    }
+    let cache = scan_cache().lock().unwrap();
+    write_persisted_cache(&scan_cache_path(), &cache);
+}
+
+/// 仅用于测试断言「缓存命中时**确实没有**再解析」。发布构建零成本。
+///
+/// ⚠️ 刻意按**路径**记录而不是用全局计数：`cargo test` 在同一个二进制里**并行**
+/// 跑用例，而本模块有若干用例会真的去扫真实 home（如
+/// `get_statistics_for_global_reads_only_its_own_directory`，上万个文件）。
+/// 全局计数会被它们污染，`assert_eq!(计数, 1)` 变成必然失败的假阳性。
+/// 按路径过滤后，断言只受**本用例自己的临时目录**影响。
+#[cfg(test)]
+static PARSED_PATHS: Mutex<Vec<PathBuf>> = Mutex::new(Vec::new());
+
+/// 测试专用：某个文件被真正解析过几次。
+#[cfg(test)]
+fn parse_count_for(path: &Path) -> usize {
+    PARSED_PATHS
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|recorded| recorded.as_path() == path)
+        .count()
+}
+
+/// 并行度：够用即可。上限 32 是刻意的 —— 再多只会在同一条磁盘队列上排队。
+fn worker_count(pending: usize) -> usize {    let cores = std::thread::available_parallelism()
+        .map(|value| value.get())
+        .unwrap_or(4);
+    cores.clamp(1, 32).min(pending.max(1))
+}
+
+/// 解析一个源目录下的全部文件：**先查缓存，未命中的并行解析**，按 `paths` 顺序返回。
+///
+/// 顺序是硬要求：`sessions` 的 `key` 去重后缀、以及同名分组的**首次出现顺序**
+/// 都依赖「按 `paths.sort()` 逐个 absorb」，并行只能发生在**单个文件内部**。
+fn scan_paths(root: &Path, paths: &[PathBuf], cutoff: Option<i64>) -> Vec<Arc<SourceCollector>> {
+    ensure_cache_loaded();
+
+    let mut slots: Vec<Option<Arc<SourceCollector>>> = (0..paths.len()).map(|_| None).collect();
+    let mut pending: Vec<usize> = Vec::new();
+
+    {
+        let cache = scan_cache().lock().unwrap();
+        for (index, path) in paths.iter().enumerate() {
+            let stamp = std::fs::metadata(path).ok().and_then(|meta| file_stamp(&meta));
+            let hit = stamp.and_then(|(mtime_ms, size)| {
+                cache
+                    .get(path)
+                    .filter(|entry| {
+                        entry.mtime_ms == mtime_ms && entry.size == size && entry.cutoff == cutoff
+                    })
+                    .map(|entry| entry.scan.clone())
+            });
+            match hit {
+                Some(scan) => slots[index] = Some(scan),
+                // 元数据读不到 ⇒ 与原实现一致：开文件会失败，记一次 parse error。
+                None => pending.push(index),
+            }
+        }
+    }
+
+    if !pending.is_empty() {
+        CACHE_DIRTY.store(true, Ordering::Release);
+
+        let next = AtomicUsize::new(0);
+        let parsed: Mutex<Vec<(usize, SourceCollector)>> =
+            Mutex::new(Vec::with_capacity(pending.len()));
+        std::thread::scope(|scope| {
+            for _ in 0..worker_count(pending.len()) {
+                scope.spawn(|| loop {
+                    let cursor = next.fetch_add(1, Ordering::Relaxed);
+                    let Some(&index) = pending.get(cursor) else {
+                        break;
+                    };
+                    let scan = parse_file(root, &paths[index], cutoff);
+                    parsed.lock().unwrap().push((index, scan));
+                });
+            }
+        });
+
+        let mut cache = scan_cache().lock().unwrap();
+        for (index, scan) in parsed.into_inner().unwrap() {
+            let scan = Arc::new(scan);
+            if let Some((mtime_ms, size)) =
+                std::fs::metadata(&paths[index]).ok().and_then(|meta| file_stamp(&meta))
+            {
+                cache.insert(
+                    paths[index].clone(),
+                    ScanCacheEntry { mtime_ms, size, cutoff, scan: scan.clone() },
+                );
+            }
+            slots[index] = Some(scan);
+        }
+    }
+
+    slots
+        .into_iter()
+        .map(|slot| slot.unwrap_or_else(|| Arc::new(SourceCollector::default())))
+        .collect()
+}
+
+fn source(root: PathBuf, name: &str, cutoff: Option<i64>) -> Value {
+    let mut paths = Vec::new();
+    files(&root, &mut paths);
+    paths.sort();
+    let files_scanned = paths.len();
+
+    let mut collector = SourceCollector::default();
+    for scan in scan_paths(&root, &paths, cutoff) {
+        collector.absorb(&scan);
+    }
+    collector.into_value(name, files_scanned)
 }
 
 fn codebuddy_extension_data_dir() -> PathBuf {
@@ -1119,6 +1628,8 @@ pub fn get_statistics_for_filter(filter: RegionFilter, days: Option<i64>) -> Val
     if let Some(region) = filter.single() {
         let ide_projects = ide_project_by_session();
         let sources = collect_sources_for(region, cutoff, &home, &ide_projects);
+        // 有新解析才落盘；热路径（全部命中）一个字节都不写。
+        persist_scan_cache_if_dirty();
         return json!({
             "region": region.as_str(),
             "generatedAt": generated_at,
@@ -1154,6 +1665,7 @@ pub fn get_statistics_for_filter(filter: RegionFilter, days: Option<i64>) -> Val
         .map(|group| merge_source_values(&group))
         .collect();
 
+    persist_scan_cache_if_dirty();
     json!({
         "region": filter.as_str(),
         "generatedAt": generated_at,
@@ -1920,5 +2432,440 @@ mod tests {
             .collect();
         assert_eq!(day.len(), 1, "同日期必须合并为一条");
         assert_eq!(day[0]["total"], 40);
+    }
+
+    /* ───────────────────── 扫描缓存 / 并行的等价性护栏 ─────────────────────
+     *
+     * 这一组是 P0-4 优化的**唯一验收标准**：缓存命中与冷路径必须**逐字段相同**，
+     * 且缓存必须真的被用上（否则「优化」是假的）、必须随内容变化失效。
+     */
+
+    /// 冷路径 → 命中 → 手动清条目 → 内容改写，四条路径的输出与解析次数。
+    #[test]
+    fn scan_cache_is_equivalent_and_invalidates_on_content_change() {
+        let now = crate::modules::config::now_ms();
+        let root = std::env::temp_dir().join(format!(
+            "buddy-switch-token-stats-cache-{}-{now}",
+            std::process::id()
+        ));
+        let project = root.join("fixture-project");
+        fs::create_dir_all(&project).expect("create fixture dirs");
+        let file = project.join("session.jsonl");
+        let record = |input: u64| {
+            json!({
+                "timestamp": now,
+                "cwd": "/fixture/example-project",
+                "message": { "usage": { "input_tokens": input, "output_tokens": 2 } }
+            })
+        };
+        fs::write(&file, format!("{}\n", record(10))).expect("write fixture");
+
+        let cold = source(root.clone(), "fixture", None);
+        assert_eq!(parse_count_for(&file), 1, "冷路径应当真的解析了一次");
+        assert_eq!(cold["summary"]["input"], 10);
+        assert_eq!(cold["filesScanned"], 1);
+
+        let warm = source(root.clone(), "fixture", None);
+        assert_eq!(warm, cold, "缓存命中必须与冷路径**逐字段相同**");
+        assert_eq!(parse_count_for(&file), 1, "缓存命中不得再解析");
+
+        // 重置入口必须真的有效：清掉条目后必须重新解析，且输出不变。
+        clear_scan_cache_entry(&file);
+        let reset = source(root.clone(), "fixture", None);
+        assert_eq!(parse_count_for(&file), 2, "清条目后必须重新解析");
+        assert_eq!(reset, cold, "清条目再解析的结果必须与冷路径相同");
+
+        // 内容变了（size 也变）⇒ 必须失效，否则会把旧结果当新的用。
+        fs::write(&file, format!("{}\n{}\n", record(10), record(90))).expect("rewrite fixture");
+        let refreshed = source(root.clone(), "fixture", None);
+        assert_eq!(parse_count_for(&file), 3, "改写后必须重新解析");
+        assert_eq!(refreshed["summary"]["input"], 100);
+        assert_eq!(refreshed["summary"]["records"], 2);
+        assert_ne!(refreshed, cold, "改写后输出必须变化");
+
+        fs::remove_dir_all(root).expect("remove fixture");
+    }
+
+    /// `cutoff` 必须参与缓存键：有窗口的调用不得污染无窗口的条目。
+    #[test]
+    fn cutoff_is_part_of_the_scan_cache_key() {
+        let now = crate::modules::config::now_ms();
+        let root = std::env::temp_dir().join(format!(
+            "buddy-switch-token-stats-cutoff-{}-{now}",
+            std::process::id()
+        ));
+        let project = root.join("fixture-project");
+        fs::create_dir_all(&project).expect("create fixture dirs");
+        let record = |timestamp| {
+            json!({
+                "timestamp": timestamp,
+                "cwd": "/fixture/example-project",
+                "message": { "usage": { "input_tokens": 10, "output_tokens": 2 } }
+            })
+        };
+        fs::write(
+            project.join("session.jsonl"),
+            format!("{}\n{}\n", record(now - 10_000), record(now - 100_000)),
+        )
+        .expect("write fixture");
+
+        let unbounded = source(root.clone(), "fixture", None);
+        assert_eq!(unbounded["summary"]["records"], 2);
+
+        let bounded = source(root.clone(), "fixture", Some(now - 50_000));
+        assert_eq!(bounded["summary"]["records"], 1, "窗口必须生效");
+
+        let unbounded_again = source(root.clone(), "fixture", None);
+        assert_eq!(
+            unbounded_again["summary"]["records"], 2,
+            "有窗口的调用不得污染无窗口的缓存条目"
+        );
+
+        fs::remove_dir_all(root).expect("remove fixture");
+    }
+
+    /// 并行解析后，跨文件的同名会话去重后缀仍按**文件顺序**分配。
+    ///
+    /// 这是并行化最容易踩的坑：`session_key_counts` 属于整个 source，若把每个文件
+    /// 的局部计数结果直接搬过来，两个文件都会得到「无后缀」的 key。
+    #[test]
+    fn parallel_scan_keeps_cross_file_session_key_dedup() {
+        let now = crate::modules::config::now_ms();
+        let root = std::env::temp_dir().join(format!(
+            "buddy-switch-token-stats-dedup-{}-{now}",
+            std::process::id()
+        ));
+        let record = |input: u64| {
+            json!({
+                "timestamp": now,
+                "cwd": "/fixture/shared-project",
+                "message": { "usage": { "input_tokens": input, "output_tokens": 1 } }
+            })
+        };
+        // 两个文件**同名不同目录**、`cwd` 又相同 ⇒ `项目 · 会话` 撞车 ⇒ 必须有后缀。
+        // 两个文件的用量**刻意不同**：这样「哪个文件拿到无后缀 key」才可断言，
+        // 否则把合并顺序倒过来结果集合不变，用例会漏掉顺序回归。
+        fs::create_dir_all(root.join("alpha")).expect("create fixture dirs");
+        fs::create_dir_all(root.join("beta")).expect("create fixture dirs");
+        fs::write(
+            root.join("alpha/same-stem.jsonl"),
+            format!("{}\n", record(10)),
+        )
+        .expect("write fixture");
+        fs::write(
+            root.join("beta/same-stem.jsonl"),
+            format!("{}\n", record(100)),
+        )
+        .expect("write fixture");
+
+        let result = source(root.clone(), "fixture", None);
+        let mut keys: Vec<(String, u64)> = result["sessions"]
+            .as_array()
+            .expect("sessions")
+            .iter()
+            .map(|session| {
+                (
+                    session["key"].as_str().unwrap_or_default().to_string(),
+                    session["total"].as_u64().unwrap_or_default(),
+                )
+            })
+            .collect();
+        keys.sort_unstable();
+        assert_eq!(
+            keys,
+            [
+                // `paths.sort()` ⇒ alpha 在前 ⇒ 它拿无后缀 key，beta 拿 `· 2`。
+                ("shared-project · same-stem".to_string(), 11),
+                ("shared-project · same-stem · 2".to_string(), 101),
+            ],
+            "跨文件同名会话必须按文件顺序拿到 1 / 2 后缀（顺序颠倒 ⇒ 两行对调，必须红）"
+        );
+        assert_eq!(result["summary"]["records"], 2);
+        assert_eq!(result["filesScanned"], 2);
+
+        fs::remove_dir_all(root).expect("remove fixture");
+    }
+
+    /// **跨文件聚合**的黄金断言 —— 等价性证明的主力。
+    ///
+    /// 改造把「全源共用一个累加器」换成「每文件一个累加器 + 有序合并」，
+    /// 风险全在**跨文件**的语义上：同名模型/项目/日期是否仍合并、`sessions` 的
+    /// 排序与去重后缀是否仍按文件顺序、`coverage*` 是否仍是全局 min/max。
+    /// 这条用例把这些逐项钉死，并**在改造前的实现上同样通过**（见提交说明）。
+    #[test]
+    fn multi_file_aggregation_matches_single_collector_semantics() {
+        use chrono::TimeZone;
+
+        let today = Local::now().date_naive();
+        let at = |hour: u32| {
+            Local
+                .with_ymd_and_hms(today.year(), today.month(), today.day(), hour, 0, 0)
+                .single()
+                .expect("valid local time")
+                .timestamp_millis()
+        };
+        let (t1, t2, t3) = (at(12), at(13), at(14));
+        let day_key = today.format("%Y-%m-%d").to_string();
+        let weekday = today.weekday().num_days_from_monday();
+
+        let root = std::env::temp_dir().join(format!(
+            "buddy-switch-token-stats-multi-{}-{}",
+            std::process::id(),
+            crate::modules::config::now_ms()
+        ));
+        fs::create_dir_all(root.join("proj-a")).expect("create fixture dirs");
+        fs::create_dir_all(root.join("proj-b")).expect("create fixture dirs");
+
+        let record = |timestamp, cwd: &str, model: &str, input: u64, output: u64, read: u64| {
+            json!({
+                "timestamp": timestamp,
+                "cwd": cwd,
+                "providerData": { "model": model },
+                "message": { "usage": {
+                    "input_tokens": input,
+                    "output_tokens": output,
+                    "cache_read_input_tokens": read
+                }}
+            })
+        };
+
+        // 文件 1：两个模型、两个整点，另有一条**只带标题**的行（无 usage）。
+        fs::write(
+            root.join("proj-a/s1.jsonl"),
+            format!(
+                "{}\n{}\n{}\n",
+                json!({ "type": "ai-title", "aiTitle": "标题 A" }),
+                record(t1, "/x/alpha", "m1", 10, 1, 0),
+                record(t2, "/x/alpha", "m2", 20, 2, 5),
+            ),
+        )
+        .expect("write fixture");
+        // 文件 2：与文件 1 共享模型 `m1`，项目不同；含一条 input=0 的记录。
+        fs::write(
+            root.join("proj-b/s2.jsonl"),
+            format!(
+                "{}\n{}\n",
+                record(t1, "/x/beta", "m1", 100, 10, 0),
+                record(t3, "/x/beta", "m1", 0, 7, 0),
+            ),
+        )
+        .expect("write fixture");
+
+        let result = source(root.clone(), "fixture", None);
+
+        assert_eq!(result["filesScanned"], 2);
+        assert_eq!(result["parseErrors"], 0);
+        // 输入 = 10+20+100+0；输出 = 1+2+10+7；cacheRead = 5；write 恒 0。
+        assert_eq!(result["summary"]["records"], 4);
+        assert_eq!(result["summary"]["input"], 130);
+        assert_eq!(result["summary"]["output"], 20);
+        assert_eq!(result["summary"]["cacheRead"], 5);
+        assert_eq!(result["summary"]["cacheWrite"], 0);
+        assert_eq!(result["summary"]["total"], 150);
+        // coverage 是**跨文件**的 min/max，不是「最后一个文件」的值。
+        assert_eq!(result["coverageStartAt"], t1);
+        assert_eq!(result["coverageEndAt"], t3);
+
+        // 同名模型必须合并成一条，并按 total 降序：m1=128 > m2=22。
+        let models = result["models"].as_array().expect("models");
+        let model_keys: Vec<&str> = models.iter().filter_map(|m| m["key"].as_str()).collect();
+        assert_eq!(model_keys, ["m1", "m2"]);
+        assert_eq!(models[0]["total"], 128);
+        assert_eq!(models[0]["records"], 3);
+        assert_eq!(models[1]["total"], 22);
+
+        // 项目按 total 降序：beta=117 > alpha=33。
+        let projects = result["projects"].as_array().expect("projects");
+        let project_keys: Vec<&str> = projects.iter().filter_map(|p| p["key"].as_str()).collect();
+        assert_eq!(project_keys, ["beta", "alpha"]);
+        assert_eq!(projects[0]["total"], 117);
+        assert_eq!(projects[1]["total"], 33);
+
+        // 会话按 total 降序，标题只跟着**它自己那个文件**走。
+        let sessions = result["sessions"].as_array().expect("sessions");
+        let session_keys: Vec<&str> = sessions
+            .iter()
+            .filter_map(|s| s["key"].as_str())
+            .collect();
+        assert_eq!(session_keys, ["beta · s2", "alpha · s1"]);
+        assert_eq!(sessions[0]["total"], 117);
+        assert_eq!(sessions[0]["title"], Value::Null);
+        assert_eq!(sessions[1]["total"], 33);
+        assert_eq!(sessions[1]["title"], "标题 A");
+
+        // 日期只有今天一天，四条记录全部落在上面。
+        let daily = result["daily"].as_array().expect("daily");
+        assert_eq!(daily.len(), 1);
+        assert_eq!(daily[0]["key"], day_key);
+        assert_eq!(daily[0]["total"], 150);
+        assert_eq!(daily[0]["records"], 4);
+        // dailyByModel 也按模型分家：m1=128、m2=22。
+        assert_eq!(result["dailyByModel"]["m1"][0]["total"], 128);
+        assert_eq!(result["dailyByModel"]["m2"][0]["total"], 22);
+
+        // 整点桶：12 点两条（11+110）、13 点一条、14 点一条。
+        let hours = result["hours"].as_array().expect("hours");
+        let hour_keys: Vec<&str> = hours.iter().filter_map(|h| h["key"].as_str()).collect();
+        let h12 = format!("{weekday}-12");
+        let h13 = format!("{weekday}-13");
+        let h14 = format!("{weekday}-14");
+        assert_eq!(hour_keys, [h12, h13, h14], "整点桶按 total 降序");
+        assert_eq!(hours[0]["total"], 121);
+        assert_eq!(hours[0]["records"], 2);
+        assert_eq!(hours[1]["total"], 22);
+        assert_eq!(hours[2]["total"], 7);
+
+        fs::remove_dir_all(root).expect("remove fixture");
+    }
+
+    /* ─────────────────── 落盘缓存（进程间）的等价性护栏 ─────────────────── */
+
+    /// 造一份**字段全非空**的夹具，返回 `(root, paths, 冷路径解析结果)`。
+    fn rich_fixture(tag: &str) -> (PathBuf, Vec<PathBuf>, Vec<Arc<SourceCollector>>) {
+        use chrono::TimeZone;
+
+        let today = Local::now().date_naive();
+        let at = |hour: u32| {
+            Local
+                .with_ymd_and_hms(today.year(), today.month(), today.day(), hour, 0, 0)
+                .single()
+                .expect("valid local time")
+                .timestamp_millis()
+        };
+        let root = std::env::temp_dir().join(format!(
+            "buddy-switch-token-stats-{tag}-{}-{}",
+            std::process::id(),
+            crate::modules::config::now_ms()
+        ));
+        fs::create_dir_all(root.join("proj-a")).expect("create fixture dirs");
+        fs::write(
+            root.join("proj-a/s1.jsonl"),
+            format!(
+                "{}\n{}\n{}\nnot-json\n",
+                json!({ "type": "ai-title", "aiTitle": "标题 A" }),
+                json!({
+                    "timestamp": at(12), "cwd": "/x/alpha",
+                    "providerData": { "model": "m1" },
+                    "message": { "usage": { "input_tokens": 10, "output_tokens": 1 } }
+                }),
+                json!({
+                    "timestamp": at(13), "cwd": "/x/alpha",
+                    "providerData": { "model": "m2" },
+                    "message": { "usage": {
+                        "input_tokens": 20, "output_tokens": 2, "cache_read_input_tokens": 5
+                    }}
+                }),
+            ),
+        )
+        .expect("write fixture");
+
+        let mut paths = Vec::new();
+        files(&root, &mut paths);
+        paths.sort();
+        // 冷路径：先清掉可能存在的同名条目，保证这次真的解析。
+        for path in &paths {
+            clear_scan_cache_entry(path);
+        }
+        let cold = scan_paths(&root, &paths, None);
+        (root, paths, cold)
+    }
+
+    fn merge_all(scans: &[Arc<SourceCollector>], files_scanned: usize) -> Value {
+        let mut collector = SourceCollector::default();
+        for scan in scans {
+            collector.absorb(scan);
+        }
+        collector.into_value("fixture", files_scanned)
+    }
+
+    /// **落盘往返必须无损**：把逐文件结果写进 JSON、读回来，合并结果必须逐字段相同。
+    ///
+    /// 这是落盘层唯一的新风险 —— 「缓存命中即等价」在进程内缓存那轮已经证过，
+    /// 这里要证的只有**序列化保真**。
+    #[test]
+    fn persisted_entry_round_trips_every_field() {
+        let (root, paths, cold) = rich_fixture("persist-roundtrip");
+        assert_eq!(cold.len(), 1);
+
+        let entry = ScanCacheEntry {
+            mtime_ms: 123,
+            size: 456,
+            cutoff: None,
+            scan: cold[0].clone(),
+        };
+        let text = serde_json::to_string(&PersistedScanCache {
+            version: SCAN_CACHE_VERSION,
+            files: BTreeMap::from([("k".to_string(), entry.to_persisted())]),
+        })
+        .expect("serialize");
+        let restored = serde_json::from_str::<PersistedScanCache>(&text).expect("deserialize");
+        let restored = ScanCacheEntry::from_persisted(
+            restored.files.into_values().next().expect("one entry"),
+        );
+
+        assert_eq!(restored.mtime_ms, 123);
+        assert_eq!(restored.size, 456);
+        assert_eq!(restored.cutoff, None);
+
+        let before = merge_all(&cold, paths.len());
+        let after = merge_all(&[restored.scan.clone()], paths.len());
+        assert_eq!(after, before, "落盘往返后的合并结果必须逐字段相同");
+        // 夹具刻意带一条坏行与一条只有标题的行 ⇒ 这些也必须活着往返。
+        assert_eq!(after["parseErrors"], 1, "parseErrors 必须往返");
+        assert_eq!(after["sessions"][0]["title"], "标题 A", "标题必须往返");
+
+        fs::remove_dir_all(root).expect("remove fixture");
+    }
+
+    /// 写盘 → 读回：条目数与内容指纹都要保住；**异版本必须整体拒绝**（宁可重扫）。
+    #[test]
+    fn persisted_cache_file_round_trips_and_rejects_a_foreign_version() {
+        let (root, paths, cold) = rich_fixture("persist-file");
+        let store = root.join("store");
+        fs::create_dir_all(&store).expect("create store dir");
+        let cache_file = store.join("token-scan-cache.json");
+
+        let cache: HashMap<PathBuf, ScanCacheEntry> = paths
+            .iter()
+            .cloned()
+            .zip(cold.iter().cloned())
+            .map(|(path, scan)| {
+                (path, ScanCacheEntry { mtime_ms: 7, size: 8, cutoff: None, scan })
+            })
+            .collect();
+        write_persisted_cache(&cache_file, &cache);
+        assert!(cache_file.exists(), "缓存文件必须被写出");
+
+        let loaded = read_persisted_cache(&cache_file).expect("读回缓存");
+        assert_eq!(loaded.len(), 1);
+        let restored = loaded.values().next().expect("one entry");
+        assert_eq!(restored.mtime_ms, 7);
+        assert_eq!(restored.size, 8);
+        assert_eq!(
+            merge_all(&[restored.scan.clone()], paths.len()),
+            merge_all(&cold, paths.len()),
+            "从文件读回的结果必须与冷路径相同"
+        );
+
+        // 异版本：整体丢弃，绝不能读出错值。
+        let text = std::fs::read_to_string(&cache_file).expect("read cache");
+        std::fs::write(
+            &cache_file,
+            text.replace(
+                &format!("\"version\":{SCAN_CACHE_VERSION}"),
+                "\"version\":999999",
+            ),
+        )
+        .expect("write foreign version");
+        assert!(
+            read_persisted_cache(&cache_file).is_none(),
+            "版本不符必须整体拒绝"
+        );
+
+        // 坏 JSON 同样必须静默回落，而不是让统计失败。
+        std::fs::write(&cache_file, "{ not json").expect("write corrupt cache");
+        assert!(read_persisted_cache(&cache_file).is_none(), "坏 JSON 必须静默回落");
+
+        fs::remove_dir_all(root).expect("remove fixture");
     }
 }

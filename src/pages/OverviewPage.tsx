@@ -398,7 +398,7 @@ export default function OverviewPage() {
         <div className="grow" />
         <Button
           variant="outline"
-          size="sm"
+          size="default"
           onClick={() => void fetchAllRegions()}
           disabled={loading}
           aria-label={t("wbOverview.refresh")}

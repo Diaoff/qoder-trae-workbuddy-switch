@@ -448,12 +448,12 @@ export function BackupSection() {
       {/* ══════════ 导出 ══════════ */}
       <SettingsGroup id="settings-backup-export" title={t("backup.export.title")}>
         <CardContent className="space-y-0 p-0">
-          <p className="border-b border-border/60 bg-muted/25 px-4 py-3 text-xs leading-5 text-muted-foreground sm:px-5">
+          <p className="border-b border-border/60 bg-muted/25 px-4 py-3 text-xs leading-5 text-muted-foreground">
             {t("backup.export.intro")}
           </p>
 
           {statsError && (
-            <div className="px-4 pt-3 sm:px-5">
+            <div className="px-4 pt-3">
               <Alert variant="destructive">
                 <AlertTriangle />
                 <AlertDescription>{statsError}</AlertDescription>
@@ -462,7 +462,7 @@ export function BackupSection() {
           )}
 
           {statsLoading ? (
-            <div className="space-y-2 px-4 py-3 sm:px-5">
+            <div className="space-y-2 px-4 py-3">
               <Skeleton className="h-9 w-full" />
               <Skeleton className="h-9 w-full" />
               <Skeleton className="h-9 w-full" />
@@ -478,7 +478,7 @@ export function BackupSection() {
                 return (
                   <div
                     key={scope}
-                    className="flex flex-col gap-2 px-4 py-2.5 sm:flex-row sm:items-center sm:justify-between sm:px-5"
+                    className="flex flex-col gap-2 px-4 py-2.5 sm:flex-row sm:items-center sm:justify-between"
                   >
                     <label className="flex min-w-0 cursor-pointer items-center gap-2.5">
                       <Checkbox
@@ -538,7 +538,7 @@ export function BackupSection() {
           </SettingsFieldRow>
 
           {creds ? (
-            <div className="px-4 pb-3 sm:px-5">
+            <div className="px-4 pb-3">
               <Alert variant="destructive">
                 <AlertTriangle />
                 <AlertDescription>{t("backup.export.credsWarning")}</AlertDescription>
@@ -546,12 +546,12 @@ export function BackupSection() {
             </div>
           ) : (
             /* ★ 文案红线：**不得**写「备份完整」——凭据不含在内 ⇒ 导入后需重新登录 */
-            <p className="px-4 pb-3 text-xs leading-5 text-muted-foreground sm:px-5">
+            <p className="px-4 pb-3 text-xs leading-5 text-muted-foreground">
               {t("backup.credentials.notice")}
             </p>
           )}
 
-          <div className="border-t border-border/60 px-4 py-3 text-xs tabular-nums text-muted-foreground sm:px-5">
+          <div className="border-t border-border/60 px-4 py-3 text-xs tabular-nums text-muted-foreground">
             {t("backup.export.estimate", {
               size: Math.max(1, Math.round(estimate.bytes / 1024)),
               accounts: estimate.accounts,
@@ -562,7 +562,7 @@ export function BackupSection() {
             {creds ? t("backup.export.credentialsOn") : t("backup.export.credentialsOff")}
           </div>
 
-          <div className="flex flex-wrap items-center gap-2 border-t border-border/60 px-4 py-3 sm:px-5">
+          <div className="flex flex-wrap items-center gap-2 border-t border-border/60 px-4 py-3">
             <Button size="sm" onClick={() => void doExport()} disabled={pending || !canExport}>
               {pending ? <Loader2 className="animate-spin" /> : <Download />}
               {creds ? t("backup.export.buttonCreds") : t("backup.export.button")}
@@ -586,7 +586,7 @@ export function BackupSection() {
           />
 
           {result ? (
-            <div className="space-y-3 px-4 py-3 sm:px-5">
+            <div className="space-y-3 px-4 py-3">
               <p className="text-[13px] font-medium">{t("backup.import.result.title")}</p>
               <p className="text-sm tabular-nums">
                 {t("backup.import.result.summary", {
@@ -633,10 +633,10 @@ export function BackupSection() {
             />
           ) : (
             <>
-              <p className="px-4 pt-3 text-xs leading-5 text-muted-foreground sm:px-5">
+              <p className="px-4 pt-3 text-xs leading-5 text-muted-foreground">
                 {t("backup.import.intro")}
               </p>
-              <div className="flex flex-wrap items-center gap-2 px-4 py-3 sm:px-5">
+              <div className="flex flex-wrap items-center gap-2 px-4 py-3">
                 <Button size="sm" variant="outline" onClick={chooseFile} disabled={reading || pending}>
                   {reading ? <Loader2 className="animate-spin" /> : <HardDriveDownload />}
                   {reading ? t("backup.import.reading") : t("backup.import.choose")}
@@ -649,7 +649,7 @@ export function BackupSection() {
           )}
 
           {previewError && (
-            <div className="px-4 pb-3 sm:px-5">
+            <div className="px-4 pb-3">
               <Alert variant="destructive">
                 <AlertTriangle />
                 <AlertDescription>
@@ -659,7 +659,7 @@ export function BackupSection() {
             </div>
           )}
           {importError && (
-            <div className="px-4 pb-3 sm:px-5">
+            <div className="px-4 pb-3">
               <Alert variant="destructive">
                 <AlertTriangle />
                 <AlertDescription>
@@ -690,7 +690,7 @@ export function BackupSection() {
             />
           </SettingsFieldRow>
 
-          <div className="flex items-center justify-between border-t border-border/60 px-4 py-2.5 sm:px-5">
+          <div className="flex items-center justify-between border-t border-border/60 px-4 py-2.5">
             <span className="text-[13px] font-medium">{t("backup.auto.listTitle")}</span>
             <Button size="sm" variant="ghost" disabled={autoLoading} onClick={() => void loadAuto()}>
               {autoLoading ? <Loader2 className="animate-spin" /> : <RefreshCw />}
@@ -699,7 +699,7 @@ export function BackupSection() {
           </div>
 
           {autoLoading ? (
-            <div className="space-y-2 px-4 py-3 sm:px-5">
+            <div className="space-y-2 px-4 py-3">
               <Skeleton className="h-8 w-full" />
               <Skeleton className="h-8 w-full" />
             </div>
@@ -720,7 +720,7 @@ export function BackupSection() {
               {autoBackups.map((entry, index) => (
                 <div
                   key={`${displayText(entry.fileName) ?? "backup"}-${index}`}
-                  className="flex flex-wrap items-center justify-between gap-2 px-4 py-2.5 sm:px-5"
+                  className="flex flex-wrap items-center justify-between gap-2 px-4 py-2.5"
                 >
                   <div className="min-w-0">
                     <div className="flex items-center gap-2">

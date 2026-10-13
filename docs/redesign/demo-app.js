@@ -24,6 +24,12 @@ const state = {
   sessionClient: "workbuddy",
   sessionFilter: "all",
   sessionSort: "recent",
+  /* ★ P14 S4a · 插件侧「复制会话」抽屉的状态。
+     `extVariant` 只是**原型的演示变体**（ok / empty / missing 三种真实返回形状），
+     真实实现里它由 `list_vscode_sessions` 的返回决定（`dataRoot` 是否为 null）。 */
+  extVariant: "ok",
+  extTarget: null,
+  extPicked: new Set(),
   /* 账号池「显式指定」：每个作用域最多一个（排他）。{ [scope]: accountName } */
   pins: {},
   /* 抽屉 */
@@ -1384,6 +1390,106 @@ function sessionGraphHtml(g) {
     </div>`;
 }
 
+/* ★★ P14 S4a · 插件侧「复制会话」抽屉（VS Code 插件 / CodeBuddy IDE）。
+ *
+ * ## 为什么**不**复用桌面版的迁移向导
+ *
+ * 两者模型根本不同：桌面版是跨账号**副本组**（有账本、可双向同步、有「谁落后 / 谁分叉」）；
+ * 插件侧是**一次性单向复制**，副本**恒取新 id** ⇒ 构不成可同步的副本组。
+ * 所以这里**没有**「同步 / 统一」两个动作 —— 它们只在副本组上才有意义。
+ *
+ * ## 三条诚实规则（每条都有断言）
+ *
+ * 1. **未检测到客户端**（`dataRoot === null`）与「这个账号没有会话」**文案与出口都不同**
+ *    —— 压成一句「没有会话」就是把「你没装 / 没登录」说成「你确实没有会话」；
+ * 2. `skipped > 0` 要**如实标注**有几个工作区索引读不出来，不假装「全都列在这儿了」；
+ * 3. 目标账号**不含源账号自己**（自我复制无意义，后端也会拒）。
+ *
+ * ⚠️ 复制是**加法**：恒取新 id ⇒ 目标已有内容**一个字都不会被动**。
+ * 这一点必须写在界面上 —— 用户最怕的正是「复制会不会覆盖我目标账号的会话」。
+ */
+function extSessionCopyHtml(accountId) {
+  const s = curScope();
+  const view = EXT_SESSIONS[state.extVariant];
+  const source = s.accounts.find((a) => a.id === accountId);
+
+  /* 规则 1：未检测到客户端 ⇒ **独立空态**（不是「没有会话」）。 */
+  if (!view.dataRoot) {
+    return `<div class="dsec" data-ext-state="missing">
+      ${emptyBlock(ICON.sessions, "未检测到 VS Code 插件的数据目录",
+        "本机没找到 CodeBuddyExtension 的数据目录。这与「这个账号没有会话」是**两件事** —— 请先在 VS Code 里登录一次插件。")}
+    </div>`;
+  }
+  /* 规则 1（另一半）：装了客户端但账号没会话 ⇒ 另一段文案，并给出**数据目录**作为可核对的事实。 */
+  if (!view.sessions.length) {
+    return `<div class="dsec" data-ext-state="empty">
+      ${emptyBlock(ICON.sessions, "这个账号在插件里还没有会话",
+        `数据目录已找到：${esc(view.dataRoot)}`)}
+    </div>`;
+  }
+
+  /* 目标候选 = **本区域里除源账号以外的全部账号**（不写死列表：
+     写死会让「多了一个账号但选不到」这种缺陷看不见）。跨区域**不**给候选 ——
+     插件侧没有跨版本数据通道。 */
+  const targets = s.accounts.filter((x) => x.id !== accountId);
+  const target = targets.find((a) => a.id === state.extTarget) || targets[0] || null;
+  const picked = view.sessions.filter((x) => state.extPicked.has(x.id));
+
+  const rows = view.sessions.map((x) => {
+    const on = state.extPicked.has(x.id);
+    return `<label class="ext-row" data-ext-session="${esc(x.id)}">
+      <input type="checkbox" data-act="ext-sess|pick|${esc(x.id)}" ${on ? "checked" : ""} />
+      <span class="grow"><b>${esc(x.title)}</b>
+        <i class="tiny muted">${esc(x.workspaceHash)} · ${esc(x.updated)}${x.hasHistory ? "" : " · 无正文"}</i></span>
+    </label>`;
+  }).join("");
+
+  const targetBtns = targets.map((a) => `<button class="opt${target && target.id === a.id ? " on" : ""}"
+    data-act="ext-sess|target|${a.id}">${esc(a.name)}</button>`).join("");
+
+  return `<div class="dsec" data-ext-state="ok">
+    <div class="kv"><span class="k">来源账号</span><span class="v">${esc(source ? source.name : accountId)}</span></div>
+    <div class="kv"><span class="k">数据目录</span><span class="v tiny muted" style="word-break:break-all">${esc(view.dataRoot)}</span></div>
+    ${view.skipped > 0
+      ? `<p class="tiny" style="color:var(--warning);margin:4px 0" data-ext-skipped="${view.skipped}">
+          有 ${view.skipped} 个工作区索引读不出来，这些工作区里的会话**没有列在这里**。</p>`
+      : ""}
+  </div>
+
+  <div class="dsec">
+    <h4>选择要复制的会话 <span class="badge">${view.sessions.length}</span></h4>
+    <div class="row" style="gap:6px;margin-bottom:6px">
+      <button class="btn ghost sm" data-act="ext-sess|all">${picked.length === view.sessions.length ? "全不选" : "全选"}</button>
+    </div>
+    <div class="ext-list">${rows}</div>
+  </div>
+
+  <div class="dsec">
+    <h4>复制到</h4>
+    <div class="row wrap">${targetBtns || `<span class="tiny muted">本区域没有其它账号可作为目标。</span>`}</div>
+    <p class="tiny muted" style="margin:6px 0 0">副本会**新建**会话（新 id）—— 目标账号原有的会话**一个字都不会被动**。</p>
+    <button class="btn primary" data-act="ext-sess|copy" ${picked.length && target ? "" : "disabled"}>
+      ${ICON.arrowRight}复制 ${picked.length} 个会话${target ? ` 到 ${esc(target.name)}` : ""}
+    </button>
+    ${picked.length ? "" : `<p class="tiny muted" style="margin:4px 0 0">先勾选要复制的会话。</p>`}
+  </div>`;
+}
+
+function drawerExtSessionCopy(accountId) {
+  const view = EXT_SESSIONS[state.extVariant];
+  state.drawer = { kind: "ext-sessions", id: accountId };
+  /* 默认**全选**：复制是加法（新 id、不覆盖）⇒ 默认带走全部是安全且省事的。 */
+  state.extPicked = new Set(view.sessions.map((x) => x.id));
+  const a = curScope().accounts.find((x) => x.id === accountId);
+  openDrawer(extSessionCopyHtml(accountId), `插件会话 · ${a ? a.name : accountId}`);
+}
+
+/** 只重画抽屉**内容**（不重跑 `drawerExtSessionCopy` —— 那会把勾选重置成全选）。 */
+function renderExtDrawer() {
+  if (!state.drawer || state.drawer.kind !== "ext-sessions") return;
+  $("#drawer-body").innerHTML = extSessionCopyHtml(state.drawer.id);
+}
+
 function drawerSession(key) {
   const g = SESSION_GROUPS.find((x) => x.key === key);
   if (!g) return;
@@ -1648,6 +1754,16 @@ function drawerAccount(id, editing) {
           data-act="acct-prog|${a.id}|${pg.id}">${a.programs[pg.id] ? ICON.check : ""}${esc(pg.label)}${pg.installed ? "" : "（未检测到）"}</button>`).join("")}
       </div>
       <button class="btn primary" data-act="wizard|${a.id}">${ICON.arrowRight}使用向导切换（可选迁移内容）</button>
+      ${(() => {
+        /* ★★ P14 S4a · 插件侧会话复制的入口 —— **只在账号绑定了插件类程序位**时出现。
+           为什么入口在这里、**不在**「关联会话」页：那边是**副本组**模型
+           （有账本、可双向同步、有「谁落后 / 谁分叉」），而插件侧是**一次性单向复制**
+           （副本恒取新 id）⇒ 塞进去只会多出一个永远空的组列表。 */
+        const ext = p.programs.find((pg) => (pg.id === "vscode" || pg.id === "ide") && a.programs[pg.id]);
+        return ext
+          ? `<button class="btn sm" data-act="ext-sess|open|${a.id}">${ICON.sessions}复制插件会话（${esc(ext.label)}）</button>`
+          : "";
+      })()}
     </div>
 
     <div class="dsec">
@@ -2193,6 +2309,34 @@ document.addEventListener("click", (e) => {
     case "sess-sync": stop(); closeDrawer(); toast("ok", "已同步 1 个会话组", "新增内容已追加到落后的副本（加法，不删除原有内容）"); break;
     case "sess-unify": stop(); closeDrawer(); toast("ok", "已统一到其他副本", "保留了你选择的那一份"); break;
     case "sess-unlink": stop(); closeDrawer(); toast("ok", "已解除关联", "各副本从此独立，不再互相同步"); break;
+    /* ── ★ P14 S4a · 插件侧「复制会话」（**不是**副本组，没有同步/统一） ── */
+    case "ext-sess": {
+      stop();
+      if (a1 === "open") { drawerExtSessionCopy(a2); break; }
+      if (a1 === "all") {
+        const view = EXT_SESSIONS[state.extVariant];
+        state.extPicked = state.extPicked.size === view.sessions.length
+          ? new Set()
+          : new Set(view.sessions.map((x) => x.id));
+        renderExtDrawer();
+        break;
+      }
+      if (a1 === "pick") {
+        if (state.extPicked.has(a2)) state.extPicked.delete(a2);
+        else state.extPicked.add(a2);
+        renderExtDrawer();
+        break;
+      }
+      if (a1 === "target") { state.extTarget = a2; renderExtDrawer(); break; }
+      if (a1 === "copy") {
+        const n = state.extPicked.size;
+        closeDrawer();
+        toast("ok", `已复制 ${n} 个会话`,
+          "副本是**新会话**（新 id）—— 目标账号原有的会话一个字都没动");
+        break;
+      }
+      break;
+    }
     /* ── 全局备份与恢复（§3.14） ── */
     case "bk-part": {
       stop();

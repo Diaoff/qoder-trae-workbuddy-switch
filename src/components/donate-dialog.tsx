@@ -26,7 +26,11 @@ const DONATE_CHANNELS: { key: string; nameKey: TranslationKey; image: string }[]
 ];
 
 /**
- * 打赏入口（顶栏 ⚙ 菜单项驱动）：点击后弹出收款码。
+ * 打赏入口：点击后弹出收款码。
+ *
+ * **两个入口共用这一个弹层**：顶栏 ⚙ 菜单项（`app-menu.tsx`）与侧栏底部
+ * 「版本号上方」的整行按钮（`App.tsx` 的 `SidebarDonate`）。两个入口各自持有
+ * 自己的 `open`，因此收款码 UI 只有这一处实现（同款先例见「更新」弹层）。
  *
  * ## 为什么做成弹窗而不是直接铺开两张码
  *
@@ -35,8 +39,9 @@ const DONATE_CHANNELS: { key: string; nameKey: TranslationKey; image: string }[]
  *
  * ## 受控形态
  *
- * `open` / `onOpenChange` 由 `app-menu.tsx` 的菜单项驱动；本组件**不自带触发按钮**
- * （与 `AppSettingsDialog` / `SkillManagerDialog` / `ClientSettingsDialog` 同构）。
+ * `open` / `onOpenChange` 由调用方驱动（顶栏 ⚙ 菜单项 / 侧栏底部入口）；
+ * 本组件**不自带触发按钮**（与 `AppSettingsDialog` / `SkillManagerDialog` /
+ * `ClientSettingsDialog` 同构）。
  */
 export function DonateDialog({
   open,

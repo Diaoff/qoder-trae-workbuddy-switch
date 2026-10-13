@@ -22,16 +22,20 @@
  *
  * ## 契约（详见 `docs/redesign/P3-ARCH.md`）
  *
- * - 视图参数每页**最多一条**（区域归顶栏 `ScopeSelector`，页内只留合并态 `RegionBar`）；
+ * - ★ **视图参数是受控的**（`range` / `combineAll` / `onRangeChange` 由 `UsagePage` 传入）：
+ *   本页**不持有**范围与合并态 —— 原型 `viewUsage` 的 `state.range` / `state.merge`
+ *   是页面级的，切子 Tab 不重置（见 `UsagePage` 文件头）。参数条也由 `UsagePage` 渲染一次。
  * - 空数组**不渲染**该图；整视图空 ⇒ 区块级 `EmptyState`（含出口）；
  * - 区分「真的没有」与「被视图参数筛没」；
- * - 所有展示字段过 `displayText`（白屏防线）。
+ * - 所有展示字段过 `displayText`（白屏防线）；
+ * - ★ **会话视图只渲染前 `SESSION_RENDER_LIMIT` 个**（**有意偏离** P3 契约 8
+ *   「排行条数 = 气泡数 = 会话数」—— 会话数可达 1.5 万，全量渲染要等数秒；
+ *   截断由渲染层显式说明「共 M 个」，统计 tile 仍按全量算。理由见该常量注释）。
  */
 
 import { useEffect, useMemo, useState } from "react";
-import { CircleAlert, Coins, Gauge, Loader2, MessagesSquare, RefreshCw, Server, Sparkles, TrendingUp, Users } from "lucide-react";
+import { CircleAlert, Coins, Gauge, MessagesSquare, Server, Sparkles, TrendingUp, Users } from "lucide-react";
 
-import { RegionBar } from "@/components/region-bar";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { EmptyState } from "@/components/ui/empty-state";
@@ -46,14 +50,14 @@ import { SessionScatter } from "@/components/usage/session-scatter";
 import { StackedDailyBar } from "@/components/usage/stacked-daily-bar";
 import { StatTiles, type StatTile } from "@/components/usage/stat-tiles";
 import { UsageHeatmap } from "@/components/usage/usage-heatmap";
-import { ViewParamBar } from "@/components/usage/view-param-bar";
+import type { UsageViewProps } from "@/components/usage/view-param-bar";
 import * as api from "@/lib/api";
 import { cumulativeCaption, scatterAxisCaption } from "@/lib/chart-caption";
 import { useT } from "@/lib/i18n";
-import { regionFilterLabel } from "@/lib/region";
 import type { RegionFilter, TokenStatistics, TokenStatsSource } from "@/lib/types";
 import { useScope } from "@/lib/use-scope";
 import {
+  SESSION_RENDER_LIMIT,
   calendarWindowKeys,
   dailyModelSeries,
   heatmapMatrix,
@@ -66,31 +70,8 @@ import {
 /** 本页承载的视图（积分视图在 `CreditStatsPage`）。 */
 export type TokenUsageView = "trend" | "models" | "sessions";
 
-const TOKEN_REGION_STORAGE_KEY = "buddy-switch:token-stats:region";
-
 /** 会话级缓存：切走再切回不重取（与 `CreditStatsPage` 同一约定）。 */
 const statisticsCache: Partial<Record<RegionFilter, TokenStatistics>> = {};
-
-function isRegionFilter(value: unknown): value is RegionFilter {
-  return value === "cn" || value === "global" || value === "all";
-}
-
-/**
- * 读**旧的**「统计范围」偏好键 —— 只用于**初始化合并态**。
- *
- * ⚠️ `cn` / `global` 已由 `useScope` 接管（URL 优先 + localStorage 记忆），
- * 这里只对存着 `all` 的老用户有意义（`all` 是**视图参数**，不是作用域）。
- * **不再回写**（回写会与 `useScope` 打架，门禁亦禁止 `persistPreferredRegion`）。
- */
-function readPreferredRegion(): RegionFilter {
-  if (typeof window === "undefined") return "cn";
-  try {
-    const stored = window.localStorage.getItem(TOKEN_REGION_STORAGE_KEY);
-    return isRegionFilter(stored) ? stored : "cn";
-  } catch {
-    return "cn";
-  }
-}
 
 /** 视图为空时的统一空态（四要素：icon + title + description + 出口）。 */
 function ViewEmpty({
@@ -133,7 +114,7 @@ function TrendView({
 }) {
   const t = useT();
   const columns = useMemo(() => dailyModelSeries(source, range), [source, range]);
-  const matrix = useMemo(() => heatmapMatrix(source), [source]);
+  const matrix = useMemo(() => heatmapMatrix(source.hours), [source]);
   const slices = useMemo(() => modelSlices(source, range), [source, range]);
   const heatmapHasData = useMemo(
     () => matrix.cells.some((row) => row.some((value) => value > 0)),
@@ -309,8 +290,24 @@ function ModelsView({
 
 function SessionsView({ source, onRefresh }: { source: TokenStatsSource; onRefresh: () => void }) {
   const t = useT();
+  /* **统计口径**：全量点 —— tile 的「会话数 / 总 Token / 均值 / 最高消耗」按它算。 */
   const points = useMemo(() => sessionPoints(source), [source]);
+  /**
+   * **渲染口径**：只画前 `SESSION_RENDER_LIMIT` 个。
+   *
+   * ⚠️ 这是**有意偏离**原型契约 8（「排行条数 = 气泡数 = 会话数」）：会话数可达 1.5 万
+   * （一个 jsonl 一条），全量渲染 = 2×N 个 DOM 节点 + N 个散点 ⇒ 切页要等数秒。
+   * 取舍与「为什么不虚拟滚动」见 `SESSION_RENDER_LIMIT` 的注释。
+   *
+   * 两个图**共用同一个切片**，所以契约 8 里「排行与散点同源、同一批会话」仍成立。
+   */
+  const visible = useMemo(() => points.slice(0, SESSION_RENDER_LIMIT), [points]);
   const total = points.reduce((sum, point) => sum + point.value, 0);
+  /** 截断说明。**只在真的截断时出现** —— 没截断还写「共 N 个」是句废话。 */
+  const capNote =
+    points.length > visible.length
+      ? t("wbStats.usage.sessions.shownOf", { shown: visible.length, total: points.length })
+      : null;
 
   if (points.length === 0) {
     /* 区块级空态（§1.6）——**四要素含出口**。 */
@@ -341,18 +338,19 @@ function SessionsView({ source, onRefresh }: { source: TokenStatsSource; onRefre
       <div className="grid min-w-0 gap-6 lg:grid-cols-2">
         <ChartFrame
           title={t("wbStats.usage.sessions.rankTitle")}
-          caption={`${exactTokens(points.length)} · ${compactTokens(total)}`}
+          caption={capNote ?? `${exactTokens(points.length)} · ${compactTokens(total)}`}
           ariaLabel={t("wbStats.usage.sessions.rankTitle")}
           exportable={false}
         >
-          <SessionRanking points={points} />
+          <SessionRanking points={visible} />
         </ChartFrame>
         <ChartFrame
           title={t("wbStats.usage.sessions.scatterTitle")}
-          caption={`${scatterAxisCaption(t)} · ${t("wbStats.usage.sessions.scatterDesc")}`}
+          /* 轴语义（记录数）**必须留**（「图不能撒谎」红线，门禁断言）；截断说明接在后面。 */
+          caption={`${scatterAxisCaption(t)} · ${t("wbStats.usage.sessions.scatterDesc")}${capNote ? ` · ${capNote}` : ""}`}
           ariaLabel={t("wbStats.usage.sessions.scatterAria")}
         >
-          <SessionScatter points={points} />
+          <SessionScatter points={visible} />
         </ChartFrame>
       </div>
     </div>
@@ -361,14 +359,17 @@ function SessionsView({ source, onRefresh }: { source: TokenStatsSource; onRefre
 
 /* ────────────────────────────── 页面 ────────────────────────────── */
 
-export default function TokenStatsPage({ view = "trend" }: { view?: TokenUsageView }) {
+export default function TokenStatsPage({
+  view = "trend",
+  range,
+  combineAll,
+  onRangeChange,
+}: { view?: TokenUsageView } & UsageViewProps) {
   const t = useT();
   /* P1：`cn` / `global` 统一走 `useScope`（URL 优先 + localStorage 记忆）。
      ⚠️ 只取值、不取 setter —— 切区域的动作在**侧栏**（`ScopeSwitch`），页内不再有区域选择器。 */
   const [scopeRegion] = useScope("workbuddy");
-  const [combineAll, setCombineAll] = useState(() => readPreferredRegion() === "all");
   const region: RegionFilter = combineAll ? "all" : scopeRegion;
-  const [range, setRange] = useState<UsageRange>(30);
   const [stats, setStats] = useState<TokenStatistics | null>(() => statisticsCache[region] ?? null);
   const [loading, setLoading] = useState(() => !statisticsCache[region]);
   const [error, setError] = useState<string | null>(null);
@@ -408,34 +409,10 @@ export default function TokenStatsPage({ view = "trend" }: { view?: TokenUsageVi
     source!.sessions.length === 0;
 
   return (
-    <div className="mx-auto w-full max-w-[1240px] min-w-0 px-7 pt-[26px] pb-[60px]">
-      <header className="mb-4 flex min-w-0 flex-wrap items-start justify-between gap-4 sm:mb-5">
-        <div className="min-w-0">
-          <h2 className="text-xl font-semibold tracking-tight">{t("wbStats.token.pageTitle")}</h2>
-          <p className="mt-2 max-w-2xl text-sm leading-6 text-muted-foreground">
-            {regionFilterLabel(region)}
-            {region === "all" && t("wbStats.token.bothRegions")}
-          </p>
-        </div>
-        <Button
-          className="shrink-0"
-          variant="outline"
-          size="sm"
-          onClick={() => setReload((value) => value + 1)}
-          disabled={loading}
-        >
-          {loading ? <Loader2 className="animate-spin" /> : <RefreshCw />}
-          {t("wbStats.token.refresh")}
-        </Button>
-      </header>
-
-      {/* 每页**唯一**的视图参数条：范围 + 合并态（区域归侧栏）。 */}
-      <div className="mb-6 border-b pb-4">
-        <ViewParamBar range={range} onRangeChange={setRange}>
-          <RegionBar value={combineAll} onChange={setCombineAll} disabled={loading} />
-        </ViewParamBar>
-      </div>
-
+    /* ⚠️ 页头 / 子 Tab / **视图参数条**都由**上层** `UsagePage` 统一渲染
+       （原型 `viewUsage` 只有一个「用量」页头、一条参数条）⇒ 本页只渲染视图内容。
+       `view` 决定画趋势 / 模型 / 会话哪一个。 */
+    <div className="min-w-0">
       {error && (
         <Alert variant="destructive" className="mb-5">
           <CircleAlert />
@@ -482,7 +459,7 @@ export default function TokenStatsPage({ view = "trend" }: { view?: TokenUsageVi
       ) : view === "sessions" ? (
         <SessionsView source={source} onRefresh={() => setReload((value) => value + 1)} />
       ) : (
-        <TrendView source={source} range={range} onRangeChange={setRange} />
+        <TrendView source={source} range={range} onRangeChange={onRangeChange} />
       )}
     </div>
   );

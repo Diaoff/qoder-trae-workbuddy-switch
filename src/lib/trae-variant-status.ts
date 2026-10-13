@@ -43,11 +43,16 @@ function programStub(
  * 各自维护一份占位表迟早漂移（曾经由 `TraeVariantBar` 私有持有）。
  *
  * 程序位的 `variant` 是**切换时要回传给后端的标识**：
- * 国内两个程序位有各自的历史标识（`trae_work` / `trae_cn`），
- * 国际版两个是 `global`（TraeWork）与 `global_trae_code`（TraeCode）。
+ * 国内两条历史程序位是 `trae_work` / `trae_cn`，国际版两条是 `global`（TraeWork）
+ * 与 `global_trae_code`（TraeCode）。
+ *
+ * ⚠️ 2026-10-13（issue #20）起每个区域有**三条**程序位：上面两条 + 合并版 `trae`。
+ * 合并版与遗留 `trae_code` **共用同一个 `variant`**（同一个客户端，变体才是
+ * Key / 快照 / 日志的归属键）—— 这是刻意的，消费方按 `variant` 去重（见 `allPrograms()`），
+ * 按 `program` 区分按钮。
  *
  * ⚠️ 2026-09-28（issue #3）之前，国际版 TraeCode 未建模 ⇒ 这里填 `null`、
- * 按钮禁用。现在四个程序位都已建模，**四个占位都必须带标识** ——
+ * 按钮禁用。现在每个程序位都已建模，**每个占位都必须带标识** ——
  * 留 `null` 会让「后端不可用」时的占位形态与正常形态不一致，
  * 而 `variant` 的类型已收成非空（`TraeProgramStatus.variant`）。
  *
@@ -76,6 +81,10 @@ export const TRAE_VARIANT_FALLBACK: TraeVariantStatus[] = [
     programs: [
       programStub("trae_work", "TraeWork", "trae.program.traeWork", "trae_work"),
       programStub("trae_code", "TraeCode", "trae.program.traeCode", "trae_cn"),
+      // 合并后的客户端（issue #20）：客户端现在就叫 `Trae`。
+      // `variant` 与上面的 `trae_code` **相同**（后端把两者映射到同一个变体 ——
+      // 变体才是 Key / 快照 / 日志的归属键），这是刻意的，见 `TraeProgramId` 的说明。
+      programStub("trae", "Trae", "trae.program.trae", "trae_cn"),
     ],
   },
   {
@@ -96,6 +105,9 @@ export const TRAE_VARIANT_FALLBACK: TraeVariantStatus[] = [
     programs: [
       programStub("trae_work", "TraeWork AI", "trae.program.traeWorkGlobal", "global"),
       programStub("trae_code", "Trae AI", "trae.program.traeCodeGlobal", "global_trae_code"),
+      // 合并版国际客户端：按用户约定带 `AI` 后缀（与 `TraeCode` 国际版同名 ——
+      // 它们本就是同一个客户端，见 Rust 侧 `region` 模块头）。
+      programStub("trae", "Trae AI", "trae.program.trae", "global_trae_code"),
     ],
   },
 ];
@@ -210,7 +222,8 @@ export function findRegionStatus(
  * ## 为什么取的是 {@link TRAE_VARIANT_FALLBACK} 而不是再探测一次
  *
  * 本函数要回答的是「这个区域**有哪些**程序位」，而这是一个**结构性事实**
- * （每个区域两条：TraeWork 与 TraeCode），与「装了没 / 在不在跑」无关。
+ * （每个区域三条：TraeWork / TraeCode / 合并版 Trae —— 后两条是同一个客户端，
+ * 见 `TraeProgramId` 的说明），与「装了没 / 在不在跑」无关。
  * `TRAE_VARIANT_FALLBACK` 正是这份结构表（区域切换器在后端不可用时也用它），
  * 复用它就**不会**多出第二份会漂移的程序位清单。
  *
@@ -233,21 +246,34 @@ export function regionPrograms(region: TraeRegionId): { variant: TraeVariantId; 
 }
 
 /**
- * **全部**程序位（4 个：区域 × 程序），顺序与 {@link TRAE_VARIANT_FALLBACK} 一致。
+ * **全部**程序位（区域 × 程序），顺序与 {@link TRAE_VARIANT_FALLBACK} 一致，
+ * **按 `variant` 去重**。
  *
- * 与 {@link regionPrograms} 的分工：后者只回答「这个区域有哪两条」，
- * 本函数回答「一共有哪几条」—— 用于**不按区域分区**、而按程序位归属的控件
- * （目前是 API Key 的「归属程序位」下拉：一把 Key 绑定一个程序位，由它决定
+ * 与 {@link regionPrograms} 的分工：后者只回答「这个区域有哪几条」，
+ * 本函数回答「一共有哪几个**变体**」—— 用于**不按区域分区**、而按程序位归属的控件
+ * （目前是 API Key 的「归属程序位」下拉：一把 Key 绑定一个 `variant`，由它决定
  * `/v1/models` 列哪份清单、请求体带哪个 `function`）。
+ *
+ * ## ⚠️ 为什么必须去重（issue #20）
+ *
+ * 合并版 `trae` 与遗留 `trae_code` **共用同一个变体**（同一个客户端）。
+ * 不去重的话这个下拉会出现**两个 value 完全相同**的选项 ——
+ * `Select` 的选中态会指向第一个、用户点第二个时看起来「没反应」，
+ * 而它们对后端来说本来就是同一件事（Key 存的是 `variant`，不是程序位标识）。
+ * 去重时保留**先出现的那个**（＝遗留标签），既有 Key 的归属列文案因此不变。
  *
  * ⚠️ 与 {@link regionPrograms} 同样：`installed` 在兜底表里恒为 `false`，
  * 不能拿它禁用控件；本函数只提供 `variant`（回传标识）与 `label`（展示名）。
  */
 export function allPrograms(): { variant: TraeVariantId; label: string }[] {
-  return TRAE_VARIANT_FALLBACK.flatMap((region) =>
-    region.programs.map((program) => ({
-      variant: program.variant,
-      label: program.label,
-    })),
-  );
+  const seen = new Set<TraeVariantId>();
+  const out: { variant: TraeVariantId; label: string }[] = [];
+  for (const region of TRAE_VARIANT_FALLBACK) {
+    for (const program of region.programs) {
+      if (seen.has(program.variant)) continue;
+      seen.add(program.variant);
+      out.push({ variant: program.variant, label: program.label });
+    }
+  }
+  return out;
 }

@@ -1,6 +1,5 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
-import "@fontsource-variable/bricolage-grotesque";
 import App from "./App";
 import "./index.css";
 import { CompanionApp } from "./components/companion/companion-app";

@@ -537,6 +537,46 @@ const SESSION_CLIENTS = [
   { id: "workbuddy", label: "WorkBuddy 桌面", mark: "◆" },
 ];
 
+/* ★★ P14 S4a · 插件侧会话仓（VS Code 插件 / CodeBuddy IDE）—— **不进上面这张表**。
+ *
+ * 上面那句「将来有第二个客户端时**零改动**地出现」**不成立**，这条注释在此更正：
+ * 插件侧确实有会话复制能力了（S4a），但它与桌面版的模型**根本不同** ——
+ *   · 桌面版：跨账号**副本组**（有账本、可双向同步、有「谁落后/谁分叉」）；
+ *   · 插件侧：**一次性单向复制**，副本**恒取新 id** ⇒ 构不成可同步的副本组。
+ * ⇒ 把它塞进 `SESSION_CLIENTS` 只会让会话页多出一个**永远空的组列表**（假客户端 Tab）。
+ * 正确入口在**账号页**（对齐参考实现：插件/IDE 的会话复制随账号切换触发）。
+ *
+ * 数据形状对齐 `list_vscode_sessions` 的返回（`ExtSessionsResponse`）。
+ * ⚠️ 三种状态**必须分开**，文案不同 —— 压成一个「没有会话」就是在撒谎：
+ *   `ok`      = 有会话（`skipped > 0` ⇒ 有工作区索引读不出来，要**如实标注**）
+ *   `empty`   = 装了客户端，但这个账号没有会话
+ *   `missing` = **未检测到客户端数据目录**（`dataRoot: null`）
+ */
+const EXT_SESSIONS = {
+  ok: {
+    sourceUid: "jackey",
+    dataRoot: "C:\\Users\\jackey\\AppData\\Local\\CodeBuddyExtension\\Data",
+    skipped: 1,
+    /* 按 `updatedAt` **降序**（最近更新的排前面）。 */
+    sessions: [
+      { id: "8f2a41c7", workspaceHash: "a91f…", title: "重构账号切换流程", updated: "12 分钟前", updatedAt: 1760000000000, type: "craft", hasHistory: true },
+      { id: "3d70be55", workspaceHash: "a91f…", title: "修 issue #3 命名后缀", updated: "2 小时前", updatedAt: 1760000000000, type: "craft", hasHistory: true },
+      { id: "c0149a72", workspaceHash: "77b2…", title: "会话副本的幂等性", updated: "昨天", updatedAt: 1760000000000, type: "craft", hasHistory: false },
+    ],
+  },
+  empty: {
+    sourceUid: "jackey",
+    dataRoot: "C:\\Users\\jackey\\AppData\\Local\\CodeBuddyExtension\\Data",
+    skipped: 0,
+    sessions: [],
+  },
+  missing: { sourceUid: "jackey", dataRoot: null, skipped: 0, sessions: [] },
+};
+
+/* 复制目标候选 = **本区域里除源账号以外的全部账号**（由 `extSessionCopyHtml` 从
+   `curScope().accounts` 现算，**不写死列表** —— 写死会让「多了一个账号但选不到」这种
+   缺陷看不见）。跨区域**不**给候选：插件侧没有跨版本数据通道。 */
+
 /* member.state: latest（最新/与共同旧版一致） / behind（落后） / diverge（已分叉） */
 const SESSION_GROUPS = [
   {

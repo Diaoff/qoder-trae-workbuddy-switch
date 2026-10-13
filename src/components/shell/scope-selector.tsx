@@ -70,10 +70,14 @@ export function ScopeSelector({
         <button
           type="button"
           aria-label={t("topbar.scope.aria")}
-          /* 与原型 `.scope-trigger`（`:110-116`）逐项对齐：
+          /* 与原型 `.scope-trigger`（`demo.css:91-97`）逐项对齐：
              `background: var(--card-2)`（凹陷面，**不是** muted/40 —— 深色下 muted 与 card 同值会隐形）、
-             hover 时 `background: var(--accent)` + `border-color: var(--border-strong)`。 */
-          className="flex h-10 max-w-[300px] shrink-0 items-center gap-2.5 rounded-[12px] border border-border bg-card-2 pl-2 pr-2.5 text-left outline-none transition-colors hover:border-border-strong hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring/40 data-[state=open]:border-ring data-[state=open]:ring-2 data-[state=open]:ring-ring/20"
+             hover 时 `background: var(--accent)` + `border-color: var(--border-strong)`。
+             ⚠️ 展开环是 `0 0 0 3px ring 22%`（原型 `:97`），此前写 2px/20%，环细了一圈。
+             ⚠️ `shrink-0` 已去掉：桌面端最小窗口720px（`tauri.conf.json` 的 `minWidth`），
+             若作用域按钮不可收缩，300px 上限会把右侧图标钮挤出视口。改成可收缩 +
+             `min-w-[132px]`；内部两行本就都有 `truncate` 兜底，宽屏仍是原型观感。 */
+          className="flex h-10 min-w-[132px] max-w-[300px] shrink items-center gap-2.5 rounded-[12px] border border-border bg-card-2 pl-2 pr-2.5 text-left outline-none transition-colors hover:border-border-strong hover:bg-accent focus-visible:ring-[3px] focus-visible:ring-ring/40 data-[state=open]:border-ring data-[state=open]:ring-[3px] data-[state=open]:ring-ring/22"
         >
           <ScopeMark product={current.product} size={26} />
           <span className="flex min-w-0 flex-col leading-tight">

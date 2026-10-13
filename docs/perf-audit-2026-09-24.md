@@ -32,7 +32,7 @@
 | 1 | 进程检测每次起 N 个 `tasklist` 子进程 | 单次 208ms，Global 区域一轮 ≈ 564ms | 低（改动局限在 `process.rs`） | 真问题，但**路径是冷的** ⇒ 降为 P1 |
 | 2 | 首屏单 chunk **1.40 MiB**，零路由懒加载 | 冷启动解析 1.4MB JS | 低 | 真问题，**影响需先量化** |
 | 3 | Trae 网关**每个请求**重建整个账号池 | 3 次磁盘读 + N 次哈希派生 | 中（需保住「写即可见」语义） | 真问题；**重同步本身是有意设计** |
-| 4 | token 统计每次**全量重扫 + 全量 JSON 解析** | 随日志量线性增长 | 中（需等价性护栏） | **⚠️ 需先向作者确认** |
+| 4 | token 统计每次**全量重扫 + 全量 JSON 解析** | 随日志量线性增长 | 中（需等价性护栏） | ✅ **已实施 2026-10-10（两轮）**：首扫 226s→79s；**重启后 127s→1.2s**（落盘缓存，见 P0-4 正文） |
 | 5 | 静态资源**无任何缓存头** | 每次刷新重传 1.4MB | 低（但 index.html 必须 `no-cache`） | 真问题（从未考虑过） |
 | 6 | WorkBuddy 网关每请求 **5 次全局写锁** | 全局串行化 | 中 | 真问题；**底层设计有意** |
 
@@ -311,9 +311,141 @@ P0-2 量出 −46% 首屏，所以做；P0-3 量出 0.33 ms，所以不做。
   立刻红，报 **`left: 3` vs `right: 1`** —— 计数缝量的正是这件事，且坐实了改造前确实是 N 次。
 - `token_stats::` 全套 **32 passed / 0 failed**，无编译警告。
 
-**仍未做（须先向作者确认「不缓存聚合结果」是刻意还是现状）**：
-per-文件聚合结果的 `(path, mtime, size)` 缓存、追加式 jsonl 的 offset 增量解析、
-以及用精简 `#[derive(Deserialize)]` 替代 `Value`（风险最高，需先枚举全部被读字段）。
+**仍未做**：追加式 jsonl 的 offset 增量解析、以及用精简 `#[derive(Deserialize)]`
+替代 `Value`（风险最高，需先枚举全部被读字段）。
+
+---
+
+#### ✅ P0-4 主体已实施（2026-10-10）——「不缓存」按现状处理，先加**内存**缓存
+
+**前置结论：作者已确认。** 用户明确要求「token 查询太慢了，需要优化」⇒
+「实时聚合、不缓存、不落库」按**描述现状**处理，不再是「待确认的设计属性」。
+评审给的边界照办：**可加内存缓存、不可落盘**。
+> ⚠️ 当天稍晚这条边界被**第二轮反转**为「可落盘」—— 见下面「落盘缓存」一节，
+> 那里给出了反转的理由（内容指纹键让陈旧在结构上不可能）。
+
+**★ 决定性发现（决定了整个方案）**：真实流量**只有 `cutoff = None` 一种**。
+`TokenStatsPage` 传 `undefined`；`overview-metrics.ts` 传 `TREND_DAYS = 14`，
+而 `get_statistics_for_filter` 只把 `7 | 30 | 90` 映射成窗口，**其余一律 `None`**。
+⇒ 把 `cutoff` 放进缓存键做精确比对后，**命中即逐字节等价**，不存在「窗口随时间漂移
+导致陈旧」的问题；`days` 恰好取 7/30/90 的调用（当前无调用方）必然未命中，行为与改造前一致。
+
+**改动**（`crates/buddy-switch-core/src/modules/token_stats.rs`）
+1. `source()` 的「全源共用一个累加器 + 逐文件循环」拆成
+   [`parse_file`]（**每文件**一个 `SourceCollector`）+ [`SourceCollector::absorb`]（**按
+   `paths.sort()` 顺序**合并）。
+2. **并行**：`scan_paths()` 先查缓存，未命中的文件用 `std::thread::scope` +
+   原子游标按 `available_parallelism()`（上限 32）分片解析，结果写回**按索引定位**的槽位
+   ⇒ 合并顺序与串行逐字一致。
+3. **进程内缓存**：`HashMap<PathBuf, (mtime_ms, size, cutoff) → Arc<SourceCollector>>`，
+   按 `(mtime, size)` 做内容指纹。（当天稍晚追加了**落盘**层，见下一节。）
+
+**★ 并行化最容易踩的坑（已加护栏）**：`push_session` 的 `key` 带**跨文件**去重后缀
+（`项目 · 会话 · 2`），计数器属于**整个 source**。若各文件各自从 1 计数再直接搬运，
+两个同名会话会**都拿到无后缀 key**。故 `absorb` 只取原始四元组、由 `self` 重新 `push_session`。
+
+**实测（本机 32 逻辑核；`~/.workbuddy-ai/projects` = 12356 个 jsonl / 35GB）**
+
+| 场景 | 改造前 | 改造后 | 倍数 |
+| --- | --- | --- | --- |
+| global 冷（首扫） | 226.4 s | **72.1 s** | 3.1× |
+| global 热（二次查询） | 127.4 s | **0.50 s** | 255× |
+| cn 冷 | 8.2 s | **1.99 s** | 4.1× |
+| cn 热 | 2.1 s | **0.02 s** | 105× |
+
+复现：`cargo run --release -p buddy-switch-core --example token_scan_bench -- <region>`
+（每例自动跑冷/热两轮；`TOKEN_BENCH_DUMP=<目录>` 可把完整 JSON 落盘供 diff）。
+
+**等价性验证（本项目纪律：等价性是唯一验收标准）**
+1. 新增 `multi_file_aggregation_matches_single_collector_semantics`：2 文件 / 2 项目 /
+   3 个整点 / 共享模型 / 只带标题的行，逐项断言 `summary`（含 `cacheRead`）、`models`、
+   `projects`、`sessions`（含标题归属与排序）、`daily`、`dailyByModel`、`hours`、
+   `coverageStartAt/EndAt`、`parseErrors`、`filesScanned`。
+2. **★ 该断言在「改前」实现上同样通过**：用 `git show HEAD:<path>` 取出旧实现、
+   注入同一条 `#[test]`（连同属性）后单跑 —— `1 passed`。⇒ 它编码的是**旧语义**，
+   不是把新代码的输出抄成断言。
+   ⚠️ 第一次注入时漏了 `#[test]` 属性 ⇒ 函数成死代码、**`0 passed` 却是绿的**；
+   这正是「断言的敌人不是红、是永远绿」的现场。
+3. **变异检验（证明护栏会红）**：
+   - 缓存永不失效（忽略 mtime/size/cutoff）⇒ `scan_cache_is_equivalent_...` 红，
+     报「改写后必须重新解析」；
+   - 缓存永不命中 ⇒ 同一用例红，报「缓存命中不得再解析」；
+   - 合并顺序倒置（`absorb` 反序）⇒ `parallel_scan_keeps_cross_file_session_key_dedup`
+     红，报「按文件顺序拿到 1 / 2 后缀」。
+4. `token_stats::` 全套 **36 passed / 0 failed**；`core / server / gateway` `--all-targets`
+   零警告。
+
+**★ 缓存失效在**活数据**上确实生效**：同一进程连跑两轮，第二轮 `records` 比第一轮多 1 ——
+期间被 WorkBuddy 写过的那个文件 `(mtime, size)` 变了 ⇒ 未命中 ⇒ 重新解析。
+（这也是为什么**不能**用「两次运行记录数相等」当等价性证据：日志目录是活的。）
+
+**未做 / 已知边界**
+- `ide_source()`（CodeBuddy IDE 的 `index.json`）仍是**串行 + 不缓存**：本机该目录
+  `index.json` 数为 **0**，故未纳入本轮；有 IDE 历史的重度用户仍会慢，需单独一轮。
+- 追加式 jsonl 的 **offset 增量解析**未做（首次扫描仍要读完 35GB）。
+- 并发冷请求无 single-flight：两个请求同时冷启动会各扫一遍。
+
+---
+
+#### ✅ P0-4 第二轮：**落盘缓存**（2026-10-10）——冷启动 79s → 1.2s
+
+**为什么还要做第二轮**：用户反馈「冷 72s 还是太久」。先量化（新增
+`token_scan_bench read` 模式，只读盘不解析）：
+
+| 量 | 结果 |
+| --- | --- |
+| 纯读盘 34.5GB / 12356 文件（32 线程） | **65.0 s（543 MB/s）** |
+| 同上「热」轮（第二次） | **64.0 s** —— 与冷**一样** |
+| 读 + 解析 + 聚合（全量） | 72.1 s |
+| 单个 31MB 文件重复读（.NET 原生） | 1680 MB/s |
+
+⇒ **解析只占 ~7s，90% 是 I/O；而且页缓存完全不帮忙**（35GB 塞不进 31.7GB 内存）。
+磁盘本身不慢（单文件 1680MB/s、C: 余量 743GB），543MB/s 的聚合吞吐来自**每文件开销**
+（12356 次 open + Defender 实时扫描；本机 Defender 实时防护为**开启**状态）。
+
+**结论**：再优化 CPU 侧（预筛、`serde` 结构体、offset 增量）**收益上限只有 7s**，
+不值得承担等价性风险。**唯一出路是不重读** ⇒ 把逐文件解析结果**落盘**。
+
+**改动**（`crates/buddy-switch-core/src/modules/token_stats.rs`）
+- 新增 `PersistedScanCache` / `PersistedFileEntry` / `PersistedSession`，
+  写到 `~/.buddy-switch/token-scan-cache.json`（`store_dir()`，`atomic_write`）。
+- `Totals` 用**定长数组** `[input, output, read, write, records]` 落盘：12356 个文件 ×
+  每个几十个 `Totals` ⇒ 若带 `"input":` 之类键名，光键名就要几百 MB。
+  **实测缓存文件 10.5MB**。
+- `HashMap` 落盘前**按 key 排序**：不是为了正确性，是为了同一份数据每次产生相同字节
+  （否则 `HashMap` 随机序让文件每次都变，无法 diff 且白写盘）。
+- `ensure_cache_loaded()` 进程内只装一次；`read_persisted_cache(path)` 抽成**显式路径的纯函数**，
+  让用例直接喂临时文件，不依赖进程级标记（并行用例会踩）。
+- **只有真的解析过才写盘**（`CACHE_DIRTY`）；热路径一个字节都不写。
+- 落盘前用 `path.exists()` 清掉已删除文件的条目（纯清理，不影响正确性）。
+- **失败一律静默回落**：文件不存在 / 坏 JSON / 版本不符 ⇒ 当空缓存，重扫。
+  `SCAN_CACHE_VERSION` 不匹配整体丢弃 —— 宁可重扫，不可读出错值。
+
+**★ 关于「不落盘」这条边界的反转**：原注释把「实时聚合，不缓存、不落库」写成设计属性；
+评审给的边界是「可加内存缓存、但不可落盘」，**理由是怕落库聚合值与真实日志不一致**。
+该理由**对内容指纹键不成立**：条目只在 `(path, mtime, size, cutoff)` **逐字段相等**时
+才被使用 ⇒ 文件一改必然未命中，**陈旧在结构上不可能**。故落盘安全。
+
+**实测（两次独立进程 = 模拟重启）**
+
+| 场景 | 耗时 |
+| --- | --- |
+| 第 1 次进程（真扫 35GB + 落盘） | **79.1 s** |
+| 第 2 次进程（从盘装载 + 只重解析变化的文件） | **1.32 s** |
+| 第 3 次进程 | **1.19 s** |
+
+34.5GB 不可能 1.2s 读完（需 29GB/s）⇒ 缓存确实生效。三轮 `records` 分别为
+2315587 / 2315592 / 2315593 —— 数据是活的，**只有变化的文件被重新解析**，
+这同时反证了「缓存不会吞掉新写入」。
+
+**验证**
+- `persisted_entry_round_trips_every_field`：字段全非空的夹具（含标题行、坏行、
+  `cacheRead`、coverage、多模型）经 JSON 往返后合并结果**逐字段相同**。
+- `persisted_cache_file_round_trips_and_rejects_a_foreign_version`：写盘→读回等价；
+  **异版本与坏 JSON 都必须整体拒绝**。
+- **变异检验**：去掉版本检查 / 标题不落盘 / `parseErrors` 不落盘 ⇒ 两条用例**分别变红**。
+- `token_stats::` 全套 **38 passed / 0 failed**。
+
 
 
 ---
@@ -743,6 +875,13 @@ session_headers::resolve_conversation_request_id(inbound_request_id, None, turn_
 但「不缓存、不落库」被写成设计属性（`token_stats.rs:1048`）且无理由 ⇒ **仍建议加内存缓存、
 绝不落盘**，并在实现时给出明确失效条件（按文件 `(mtime, size)` 判定）。
 `CodeBuddyExtension/Data` 本机仅 **24 KB** ⇒ 该数据源不是瓶颈。
+
+> ⚠️ **两处已被 2026-10-10 的实际结果推翻，留作对照：**
+> 1. **「2.8 GB / I/O 下界 2.4 s」严重低估** —— 日志目录随使用增长，
+>    到 10-10 已达 **34.5 GB / 12356 文件**，实测纯读盘 **65 s**。**别再用这组数字做容量假设。**
+> 2. **「绝不落盘」被反转** —— 理由是「怕落库聚合值与真实日志不一致」，而该理由
+>    对 `(path, mtime, size, cutoff)` **内容指纹键**不成立（文件一改必然未命中）。
+>    落盘后冷启动从 79 s 降到 1.2 s，见下一节。
 
 ### 5.3 P1-8 `dir_stats`：**本机为 ~0，降级**
 

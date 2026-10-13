@@ -46,8 +46,43 @@ export const zh = {
   "sessions.replica.status.unknown": "状态未知",
   "sessions.replica.commonPrefix": "共同旧版 {count} 条",
   "sessions.replica.delta": "+{count} 条",
+  "sessions.replica.baseline": "上次一致 {count} 条",
+  "sessions.replica.baselineDelta": "自上次一致 +{count} 条",
+  "sessions.replica.baselineRewritten": "已改写更早内容",
+  // ★ P14 S4a · 插件侧会话（VS Code 插件 / CodeBuddy IDE）。与桌面版**不是同一套存储**。
+  "sessions.ext.title": "插件会话 · {client}",
+  "sessions.ext.entry": "复制插件会话（{client}）",
+  "sessions.ext.client.vscode": "VS Code 插件",
+  "sessions.ext.client.codebuddyIde": "CodeBuddy IDE",
+  "sessions.ext.loading": "正在读取插件会话…",
+  "sessions.ext.retry": "重试",
+  "sessions.ext.error.title": "读取插件会话失败",
+  // ⚠️ 「未检测到客户端」与「这个账号没有会话」**必须**是两段不同的话：
+  //    前者是「你没装 / 没登录」，后者是「你确实没有会话」——压成一句就是在撒谎。
+  "sessions.ext.missing.title": "未检测到 VS Code 插件的数据目录",
+  "sessions.ext.missing.desc": "本机没找到 CodeBuddyExtension 的数据目录。这与「这个账号没有会话」是两件事 —— 请先在 VS Code 里登录一次插件。",
+  "sessions.ext.empty.title": "这个账号在插件里还没有会话",
+  "sessions.ext.empty.desc": "数据目录已找到：{root}",
+  "sessions.ext.skipped": "有 {count} 个工作区索引读不出来，这些工作区里的会话没有列在这里。",
+  "sessions.ext.pick": "选择要复制的会话",
+  "sessions.ext.pickAll": "全选",
+  "sessions.ext.pickNone": "全不选",
+  "sessions.ext.noHistory": "无正文",
+  "sessions.ext.target": "复制到",
+  "sessions.ext.noTarget": "本区域没有其它账号可作为目标。",
+  "sessions.ext.additiveNote": "副本会新建会话（新 id）—— 目标账号原有的会话一个字都不会被动。",
+  "sessions.ext.copy": "复制 {count} 个会话到 {target}",
+  "sessions.ext.pickFirst": "先勾选要复制的会话。",
+  "sessions.ext.copied": "已复制 {count} 个会话到 {target}",
+  "sessions.ext.partial": "有 {count} 个会话没能复制（见下方逐条原因）",
+  "sessions.ext.failed": "{count} 个会话复制失败",
   // 状态筛选（**按需出现**：至少 2 个可选状态才渲染整条）。
   "sessions.filter.all": "全部（{count}）",
+  /* ★ 列表排序（原型 `.sess-sort-seg`，:3187-3190）：最近更新 / 最早更新。
+     ⚠️ 只排列表顺序，**不派生**副本状态（§3.15.2「时间新 ≠ 内容新」）。 */
+  "sessions.sort.aria": "会话排序",
+  "sessions.sort.recent": "最近更新",
+  "sessions.sort.oldest": "最早更新",
   "sessions.replica.hasHistory": "含历史",
   "sessions.replica.titleFallback": "标题未知",
   "sessions.replica.updatedUnknown": "—",
@@ -76,6 +111,7 @@ export const zh = {
   "sessions.sync.toast.ok": "已同步 {n} 项，追加 {lines} 条",
   "sessions.sync.toast.failed": "{n} 项失败",
   "sessions.sync.toast.retryFailed": "只重试失败项",
+  "sessions.sync.toast.nothingToRetry": "刷新后已无可重试的项（会话状态可能已变化）",
   "sessions.sync.toast.error": "同步请求失败",
 
   /* ★ P8「分歧处理」（覆盖式统一，§3.15.2）—— 与上面的「安全同步」**语义相反**：
@@ -96,6 +132,7 @@ export const zh = {
   "sessions.unify.toast.ok": "已统一 {n} 项，丢弃 {lost} 条",
   "sessions.unify.toast.failed": "{n} 项失败",
   "sessions.unify.toast.retryFailed": "只重试失败项",
+  "sessions.unify.toast.nothingToRetry": "刷新后已无可重试的项（会话状态可能已变化）",
   "sessions.unify.toast.error": "统一请求失败",
 
   /* ★ 统一重启确认（P8 T03 / §3.15.3）—— 跨程序位**复用同一条**流程。

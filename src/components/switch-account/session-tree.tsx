@@ -148,7 +148,9 @@ export function SessionTree({
         </Button>
       </div>
 
-      <div className="max-h-[min(22rem,42vh)] overflow-y-auto pr-1">
+      {/* 原型 `.tree`（`demo.css:627`）：`flex flex-col gap1` + `r10` + `px6 py6` + 底 `--card-2`
+          —— 此前只有滚动容器，**没有外壳**，整棵树散在对话框底上、层次不明。 */}
+      <div className="flex max-h-[min(22rem,42vh)] flex-col gap-1 overflow-y-auto rounded-[10px] border border-border bg-card-2 p-1.5">
         {tree.map((type, typeIndex) => {
           const typeOpen = expanded.has(type.key);
           const typeIds = type.dirs.flatMap((dir) => dir.sessions.map((leaf) => leaf.id));

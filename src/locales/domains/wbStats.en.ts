@@ -201,11 +201,14 @@ export const en = {
   "wbStats.usage.sessions.colRecords": "Records",
   "wbStats.usage.sessions.colTokens": "Tokens",
   "wbStats.usage.sessions.colShare": "Share",
+  // ★ Truncation notice: session count can reach ~15k, only the top N are rendered.
+  "wbStats.usage.sessions.shownOf": "Top {shown} of {total} sessions",
 
   "wbStats.usage.credits.available": "Available credits",
   "wbStats.usage.credits.in": "Inflow in range",
   "wbStats.usage.credits.out": "Usage in range",
   "wbStats.usage.credits.expiring": "Expiring soon",
+  "wbStats.usage.credits.accountsHint": "{count} accounts",
   "wbStats.usage.credits.dailyTitle": "Daily credit usage",
   "wbStats.usage.credits.dailyAria": "Daily credit usage bar chart",
   "wbStats.usage.credits.balanceTitle": "Credit balance",

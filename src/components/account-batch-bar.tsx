@@ -8,12 +8,20 @@ import { cn } from "@/lib/utils";
 /**
  * 最小批量操作条（**两平台共用**，PLAN §3.3 的「勾选 + 批量」本期最小形态）。
  *
- * ## 为什么是底部浮条而不是工具栏
+ * ## 位置与形态：**文档流内**横条，位于工具栏与列表之间（照原型）
  *
- * 它只在**有勾选**时出现（`selectedCount === 0` 直接不渲染），属于「选择模式的上下文动作」，
- * 放在底部浮条可以让用户在不离开列表的情况下连续勾选 + 操作；塞进顶部工具栏会与
- * 常驻开关（自动签到 / 紧凑 / 刷新）混在一起，且顶部工具栏在两个平台各有差异，
- * 不适合承载平台无关的批量语义。
+ * 原型 `.batch-bar`（`buddy-switch-prototype.html:303-307`）是**文档流内**的横条：
+ * `padding:10px 14px; margin-bottom:14px; border-radius:var(--radius);
+ * border:1px solid color-mix(primary 35%, transparent);
+ * background:color-mix(primary 10%, var(--card))`，插在工具栏与列表之间。
+ *
+ * ⚠️ **不再用底部浮条**：浮条会盖住列表底部（网格视图尤甚），且「选择模式」是
+ * **当前列表上下文**的动作，跟着列表走才符合直觉。
+ *
+ * ## 动作是可选的（`onCheckin?` / `onRefresh?` / `onDelete?`）
+ *
+ * 平台能力不同（WB 有积分刷新、Trae 侧动作集不同），**缺哪个就不渲染哪个**，
+ * 而不是渲染一枚点了没反应的按钮 —— 后者比不渲染更差。
  *
  * ## 动作是可选的（`onCheckin?` / `onRefresh?` / `onDelete?`）
  *
@@ -52,8 +60,10 @@ export function AccountBatchBar({
   if (selectedCount <= 0) return null;
 
   return (
-    <div className="pointer-events-none fixed inset-x-0 bottom-6 z-40 flex justify-center px-4">
-      <div className="pointer-events-auto flex items-center gap-1 rounded-full border border-border bg-popover/95 px-2 py-1.5 shadow-overlay backdrop-blur">
+    <div
+      className="mb-3 flex min-w-0 w-full items-center gap-2.5 rounded-lg border border-primary/35 px-3.5 py-2.5"
+      style={{ background: "color-mix(in oklab, var(--primary) 10%, var(--card))" }}
+    >
         <Badge variant="secondary" className="tabular-nums">
           {t("shared.batch.selected", { n: selectedCount })}
         </Badge>
@@ -116,7 +126,6 @@ export function AccountBatchBar({
         >
           <XIcon />
         </Button>
-      </div>
     </div>
   );
 }

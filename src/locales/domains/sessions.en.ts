@@ -34,8 +34,42 @@ export const en = {
   "sessions.replica.status.unknown": "Status unknown",
   "sessions.replica.commonPrefix": "{count} messages in common",
   "sessions.replica.delta": "+{count}",
+  "sessions.replica.baseline": "{count} messages at last match",
+  "sessions.replica.baselineDelta": "+{count} since last match",
+  "sessions.replica.baselineRewritten": "Earlier content was rewritten",
+  // P14 S4a · editor-plugin sessions (VS Code extension / CodeBuddy IDE). A different store than desktop.
+  "sessions.ext.title": "Plugin sessions · {client}",
+  "sessions.ext.entry": "Copy plugin sessions ({client})",
+  "sessions.ext.client.vscode": "VS Code extension",
+  "sessions.ext.client.codebuddyIde": "CodeBuddy IDE",
+  "sessions.ext.loading": "Reading plugin sessions…",
+  "sessions.ext.retry": "Retry",
+  "sessions.ext.error.title": "Failed to read plugin sessions",
+  // ⚠️ "client not detected" and "this account has no sessions" must stay two different sentences.
+  "sessions.ext.missing.title": "VS Code extension data directory not found",
+  "sessions.ext.missing.desc": "No CodeBuddyExtension data directory on this machine. That is different from \"this account has no sessions\" — sign in to the extension once in VS Code first.",
+  "sessions.ext.empty.title": "This account has no sessions in the extension yet",
+  "sessions.ext.empty.desc": "Data directory found: {root}",
+  "sessions.ext.skipped": "{count} workspace index(es) could not be read; sessions in those workspaces are not listed here.",
+  "sessions.ext.pick": "Sessions to copy",
+  "sessions.ext.pickAll": "Select all",
+  "sessions.ext.pickNone": "Clear",
+  "sessions.ext.noHistory": "no transcript",
+  "sessions.ext.target": "Copy to",
+  "sessions.ext.noTarget": "No other account in this region can be a target.",
+  "sessions.ext.additiveNote": "Copies are new sessions (new ids) — nothing already in the target account is touched.",
+  "sessions.ext.copy": "Copy {count} session(s) to {target}",
+  "sessions.ext.pickFirst": "Select the sessions to copy first.",
+  "sessions.ext.copied": "Copied {count} session(s) to {target}",
+  "sessions.ext.partial": "{count} session(s) could not be copied (see per-item reasons below)",
+  "sessions.ext.failed": "{count} session(s) failed",
   // Status filter (**on demand**: only rendered when >= 2 statuses are selectable).
   "sessions.filter.all": "All ({count})",
+  /* ★ List ordering (prototype `.sess-sort-seg`, :3187-3190). Ordering only — it never
+     derives replica status (§3.15.2 "newer time != newer content"). */
+  "sessions.sort.aria": "Session ordering",
+  "sessions.sort.recent": "Recently updated",
+  "sessions.sort.oldest": "Least recently updated",
   "sessions.replica.hasHistory": "Has history",
   "sessions.replica.titleFallback": "Title unavailable",
   "sessions.replica.updatedUnknown": "—",
@@ -61,6 +95,7 @@ export const en = {
   "sessions.sync.toast.ok": "Synced {n} item(s), appended {lines} line(s)",
   "sessions.sync.toast.failed": "{n} failed",
   "sessions.sync.toast.retryFailed": "Retry failed only",
+  "sessions.sync.toast.nothingToRetry": "Nothing left to retry after refresh (session state may have changed)",
   "sessions.sync.toast.error": "Sync request failed",
 
   /* ★ P8 "resolve divergence" (overwrite-based unify, §3.15.2) — the **opposite** of the
@@ -84,6 +119,7 @@ export const en = {
   "sessions.unify.toast.ok": "Unified {n} item(s), discarded {lost} line(s)",
   "sessions.unify.toast.failed": "{n} failed",
   "sessions.unify.toast.retryFailed": "Retry failed only",
+  "sessions.unify.toast.nothingToRetry": "Nothing left to retry after refresh (session state may have changed)",
   "sessions.unify.toast.error": "Unify request failed",
 
   /* ★ Unified restart confirmation (P8 T03 / §3.15.3). The non-CLI copy defaults to

@@ -75,9 +75,12 @@ function SheetContent({
         data-slot="sheet-content"
         data-side={side}
         className={cn(
-          "bg-background fixed z-50 flex flex-col gap-0 shadow-lg transition ease-in-out data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:duration-300 data-[state=open]:duration-500",
+          /* ★ 逐值对齐原型 `.drawer`（`demo.css:481-489`）：
+             底 `--card`（**不是** `--background`）、宽 `min(460px,94vw)`、
+             阴影用三级 elevation 的最高档、滑入曲线 `cubic-bezier(.32,.72,0,1)`。*/
+          "bg-card fixed z-50 flex flex-col gap-0 shadow-overlay transition ease-in-out data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:duration-300 data-[state=open]:duration-500",
           side === "right" &&
-            "data-[state=closed]:slide-out-to-right data-[state=open]:slide-in-from-right inset-y-0 right-0 h-full w-3/4 border-l sm:max-w-sm",
+            "data-[state=closed]:slide-out-to-right data-[state=open]:slide-in-from-right inset-y-0 right-0 h-full w-3/4 border-l sm:max-w-[460px]",
           side === "left" &&
             "data-[state=closed]:slide-out-to-left data-[state=open]:slide-in-from-left inset-y-0 left-0 h-full w-3/4 border-r sm:max-w-sm",
           side === "top" &&
@@ -127,7 +130,8 @@ function SheetTitle({ className, ...props }: React.ComponentProps<typeof SheetPr
   return (
     <SheetPrimitive.Title
       data-slot="sheet-title"
-      className={cn("text-foreground text-base leading-none font-semibold", className)}
+      /* 原型 `.drawer-title`（`demo.css:488`）：`14px` / `600`（不是 shadcn 的 16px） */
+      className={cn("text-foreground text-[14px] leading-tight font-semibold", className)}
       {...props}
     />
   );

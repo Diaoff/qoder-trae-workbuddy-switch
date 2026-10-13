@@ -14,6 +14,11 @@ export const en = {
   "trae.program.traeCode": "TraeCode",
   "trae.program.traeWorkGlobal": "TraeWork AI",
   "trae.program.traeCodeGlobal": "Trae AI",
+  // Merged client (issue #20): the client is literally named `Trae`. The global build
+  // carries the `AI` suffix by convention, so it matches `traeCodeGlobal` — they are
+  // the same physical client (see the Rust `region` module header).
+  // This key only serves `traeProgramLabel()` (region-agnostic), hence no `Global` variant.
+  "trae.program.trae": "Trae",
 
   // =====================================================================
   // trae-account-card.tsx —— Trae account card
@@ -32,10 +37,8 @@ export const en = {
   // ---- Expiry ----
   "trae.comp.card.expiry.permanent": "No expiry",
   "trae.comp.card.expiry.short": "Due {date}",
-  "trae.comp.card.expiry.cooldownUntil": "Cooldown until {time}",
-  "trae.comp.card.expiry.earliest": "Earliest expiry {time}",
-  "trae.comp.card.expiry.none": "No expiry time yet",
-  "trae.comp.card.expiry.noneShort": "No expiry",
+  // 2026-10-12: the in-card "big number row + expiring packages list" was removed to match
+  // the prototype card, so the related keys are gone.
 
   // ---- Body row labels ----
   "trae.comp.card.label.device": "Device",
@@ -46,7 +49,11 @@ export const en = {
 
   // ---- Status chips ----
   "trae.comp.card.chip.checked": "Checked in",
-  "trae.comp.card.chip.unchecked": "Not checked in",
+  "trae.comp.card.chip.toolsInUse": "{n} tools in use",
+  "trae.comp.card.chip.expired": "Credentials expired",
+  "trae.comp.card.chip.needRelogin": "Needs re-login",
+  "trae.comp.card.chip.expiring": "{amount} credits expire in {days} days",
+  "trae.comp.card.chip.unchecked": "Not checked in today",
   "trae.comp.card.chip.cooling": "Cooling down",
   "trae.comp.card.chip.jwtAuto": "Auto-refresh JWT",
   "trae.comp.card.chip.jwtManual": "JWT refreshable",
@@ -61,9 +68,8 @@ export const en = {
   "trae.comp.card.switch.aria": "Switch to {label}",
   "trae.comp.card.switch.ariaBusy": "Switching to {label}",
   "trae.comp.card.switch.busy": "Switching…",
-  // P4: cross-region program buttons are visible but not directly switchable.
-  "trae.comp.card.switch.regionHint": "Switch to the {region} region first",
-  "trae.comp.card.switch.guideRegion": "Switch to the {region} region",
+  // 2026-10-10: the cross-region "switch region first" strings were deleted — the CN scope
+  // no longer renders global program buttons at all (user request).
 
   // ---- Action menu ----
   "trae.comp.card.manage.aria": "Manage account {name}",
@@ -78,14 +84,9 @@ export const en = {
 
   // ---- Credits section ----
   "trae.comp.card.credits.remaining": "Credits left",
-  "trae.comp.card.credits.unknown": "Credits not fetched",
   "trae.comp.card.credits.notQueried": "No credits fetched yet. Use “Refresh JWT” in the top-right menu to try again.",
-  "trae.comp.card.section.expiring": "Expiring soon",
   "trae.comp.card.section.info": "Account info",
   "trae.comp.card.package.fallback": "Credit package",
-  "trae.comp.card.package.tip": "{name} · {remaining} / {total} left · {expiry}",
-  "trae.comp.card.package.remaining": "{credits} credits",
-  "trae.comp.card.package.empty": "No credits available",
   // P4: "used / expiry" text for the drawer `DetailPack` (mirrors the WorkBuddy drawer).
   "trae.comp.card.package.used": "Used {n}",
   "trae.comp.card.package.expired": "Expired",
@@ -100,6 +101,12 @@ export const en = {
   "trae.comp.card.footer.updatedAt": "Updated {time}",
   "trae.comp.card.footer.noUpdate": "No update time recorded",
   "trae.comp.card.footer.updatedTip": "Last time this account was updated in the local account library",
+
+  // ---- Card head + metrics row (prototype `.acct-top` / `.acct-metrics`) ----
+  // Same names and meaning as the WorkBuddy card: both product areas render one card shape.
+  "trae.comp.card.currentLogin": "Current login",
+  "trae.comp.card.metric.credits": "Credits",
+  "trae.comp.card.metric.expiry": "Expires",
 
   // ---- Detail drawer sections (assembled by TraeAccountsPage) ----
   "trae.comp.card.detail.section.account": "Account",

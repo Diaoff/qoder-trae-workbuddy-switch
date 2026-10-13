@@ -85,7 +85,7 @@ export function ProxyPanel() {
   }
 
   return (
-    <Card>
+    <Card className="gap-0 py-0">
       <CardContent className="space-y-4 p-5">
         {/* 头部：标题 + 状态徽标 + 还原 + 开关 */}
         <div className="flex items-start justify-between gap-4">

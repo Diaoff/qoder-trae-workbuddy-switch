@@ -6,10 +6,14 @@
  */
 export const en = {
   // =====================================================================
-  // TraeTokenStatsPage.tsx — Token usage page
+  // TraeTokenStatsPage.tsx — Usage · Token views (Trae section): trend / models
+  //
+  // ⚠️ The page header / sub-tabs / view-parameter bar are rendered by `UsagePage`,
+  //    so this domain no longer carries title / subtitle / time-window / scope-bar keys.
+  // ⚠️ Both views' stat tiles and chart titles reuse `wbStats.usage.trend.*` /
+  //    `wbStats.usage.models.*` / `wbStats.usage.range.*` (the prototype's
+  //    platform-agnostic usage labels) so both platforms read identically.
   // =====================================================================
-  "trae.stats.token.title": "Token usage",
-  "trae.stats.token.subtitle": "Aggregated usage of calls that went through the local Trae gateway.",
   "trae.stats.token.loadFailed": "Cannot read token statistics",
   "trae.stats.token.retry": "Retry",
   "trae.stats.token.refresh": "Refresh",
@@ -18,84 +22,27 @@ export const en = {
   "trae.stats.token.sourceTitle": "Data source",
   "trae.stats.token.sourceFallback": "Only calls that went through the local Trae gateway are counted.",
 
-  // ---- Time window ----
-  "trae.stats.token.range.7d": "Last 7 days",
-  "trae.stats.token.range.30d": "Last 30 days",
-  "trae.stats.token.range.90d": "Last 90 days",
-  "trae.stats.token.range.all": "All time",
-  "trae.stats.token.rangeAria": "Statistics range",
-
-  // ---- Product-line scope bar ----
-  "trae.stats.token.scopeTitle": "Product line",
-  "trae.stats.token.scopeNote": "Filters the statistics below only; the time window is unchanged",
-  "trae.stats.token.scope.unlabeled": "Unlabeled on this machine",
-  "trae.stats.token.scope.unlabeledHint": "Older logs recorded before the upgrade, without a product line",
-  "trae.stats.token.scope.cn": "CN",
-  "trae.stats.token.scope.cnHint": "Calls attributed to the CN region (both client slots combined)",
-  "trae.stats.token.scope.global": "Global",
-  "trae.stats.token.scope.globalHint": "Calls attributed to the global region",
-  "trae.stats.token.scope.all": "All",
-  "trae.stats.token.scope.allHint": "Calls from every product line",
-
   // ---- Empty state ----
   "trae.stats.token.emptyTitle": "No gateway calls in the current window",
   "trae.stats.token.emptyBody": "Enable the gateway on the API service page and point your client's Base URL at it; calls will then be recorded here.",
 
-  // ---- Summary card ----
-  "trae.stats.token.summaryTitle": "Usage summary",
-  "trae.stats.token.series.total": "Total tokens",
-  "trae.stats.token.series.input": "Input",
-  "trae.stats.token.series.output": "Output",
-  "trae.stats.token.summary.inputOutputHint": "Input {input} · Output {output}",
-  "trae.stats.token.summary.records": "Requests",
-  "trae.stats.token.summary.errorsHint": "{count} of them failed",
-  "trae.stats.token.summary.avgLatency": "Average latency",
-  "trae.stats.token.summary.p95Latency": "P95 latency",
-  "trae.stats.token.summary.streamRequests": "Streaming requests",
+  // ---- Stat tiles (labels come from the shared keys) ----
+  "trae.stats.token.summaryAria": "Usage summary",
   "trae.stats.token.summary.activeAccounts": "Active accounts",
-
-  // ---- Full-year heatmap ----
-  "trae.stats.heatmap.title": "Token activity (last 12 months)",
-  "trae.stats.heatmap.activeDays": "{count} active days",
-  "trae.stats.heatmap.aria": "Heatmap of daily token activity over the last 12 months, {count} active days in total",
-  "trae.stats.heatmap.cellAria": "{date}: {tokens} tokens used",
-  "trae.stats.heatmap.tooltip": "{date}: {tokens} tokens used",
-  "trae.stats.heatmap.tooltipCalls": " · {count} calls",
-
-  // ---- Daily trend ----
-  "trae.stats.token.trendTitle": "Daily usage trend",
-
-  // ---- By model × by day ----
-  "trae.stats.token.modelDaily.title": "By model × by day",
-  "trae.stats.token.modelDaily.note": "Stacked bars = tokens per day (split by model); the line = calls that day",
-  "trae.stats.token.modelDaily.empty": "No per-model, per-day data to show yet",
-  "trae.stats.token.modelDaily.calls": "Calls",
-  "trae.stats.token.modelDaily.callsAxis": "Calls (right axis)",
-
-  // ---- By model ----
-  "trae.stats.token.byModel": "By model",
-  "trae.stats.token.byModelEmpty": "No model data yet",
-  "trae.stats.token.times": "{count} calls",
-  "trae.stats.token.failed": "{count} failed",
-
-  // ---- By account ----
-  "trae.stats.token.byAccount": "By account",
-  "trae.stats.token.byAccountEmpty": "No account data yet",
-
-  // ---- Response status distribution ----
-  "trae.stats.token.statusTitle": "Response status distribution",
 
   // ---- Dimensions the platform cannot provide ----
   "trae.stats.token.unsupportedTitle": "Dimensions not supported by the platform",
   "trae.stats.token.unsupportedOnly": " ({on} only)",
 
-  // ---- Log parse failures ----
+  // ---- Log parse failures (honesty notice: incomplete numbers must be stated) ----
   "trae.stats.token.parseErrors": "{count} records in the log could not be parsed (missing timestamp) and were skipped.",
 
   // =====================================================================
-  // TraeCreditsPage.tsx — Credits page
+  // TraeCreditsPage.tsx — Usage · Credits view (Trae section)
+  //
+  // ⚠️ Stat tiles and chart titles reuse `wbStats.usage.credits.*` (the prototype's
+  //    platform-agnostic credits labels); only Trae-specific strings live here.
   // =====================================================================
-  "trae.stats.credits.title": "Credits",
   "trae.stats.credits.subtitle": "Remaining credits, daily change and history for each Trae account.",
   "trae.stats.credits.sync": "Sync credits",
   "trae.stats.credits.syncing": "Syncing",
@@ -104,46 +51,42 @@ export const en = {
   "trae.stats.credits.loadFailed": "Cannot read Trae credits",
   "trae.stats.credits.overviewAria": "Credits overview",
 
-  // ---- Trend series ----
-  "trae.stats.credits.series.total": "Total credits",
-  "trae.stats.credits.series.earned": "Credits earned",
-  "trae.stats.credits.series.consumed": "Credits spent",
+  // ---- Stat-tile captions (prototype: check-in reward / net ±Y / earliest in D+N days) ----
+  "trae.stats.credits.inHint": "Check-in rewards",
+  "trae.stats.credits.netHint": "Net {net}",
+  "trae.stats.credits.soonestHint": "Earliest in {days} days",
+  "trae.stats.credits.noExpiryHint": "Nothing expires within 30 days",
 
-  // ---- Overview metrics ----
-  "trae.stats.credits.metric.total": "Total available credits",
-  "trae.stats.credits.metric.totalHint": "All accounts combined",
-  "trae.stats.credits.metric.average": "Average available credits",
-  "trae.stats.credits.metric.averageHint": "Total ÷ number of accounts",
-  "trae.stats.credits.metric.accounts": "Accounts",
-  "trae.stats.credits.metric.accountsHint": "{count} synced",
-  "trae.stats.credits.metric.todayEarned": "Credits earned today",
-  "trae.stats.credits.metric.todayConsumed": "Credits spent today",
-  "trae.stats.credits.cacheUpdated": "Credits cache updated: {time}",
-  "trae.stats.credits.historyDays": "History kept for {days} days",
+  // ---- Daily credits flow (Trae has both sides ⇒ two-way bars; WB only has spend) ----
+  "trae.stats.credits.dailyTitle": "Daily credits flow",
+  "trae.stats.credits.dailyNote": "Up = check-in rewards　Down = chat spend",
+  "trae.stats.credits.dailyAria": "Two-way bar chart of daily credits flow (rewards up, spend down)",
+  "trae.stats.credits.expiryEmpty": "Nothing expires within the next 30 days.",
 
-  // ---- Trend section ----
-  "trae.stats.credits.trendTitle": "Credits trend over the last {days} days",
-  "trae.stats.credits.trendNote": "Data comes from daily credits snapshots; a point for today appears once a check-in or credits sync has run.",
-  "trae.stats.credits.trendEmptyAccounts": "No account data yet. Add an account and the credits trend shows up here.",
-  "trae.stats.credits.trendEmptyData": "No trend data yet. Run a check-in or “Sync credits” once to see the daily change.",
+  // ---- The prototype's two donuts (WB has no data source ⇒ not rendered) ----
+  "trae.stats.credits.accountShareTitle": "Token share by account",
+  "trae.stats.credits.shareNote": "Cumulative",
+  "trae.stats.credits.accountShareAria": "Donut chart of cumulative token share per account",
+  "trae.stats.credits.accountShareEmpty": "No account has produced usage yet.",
+  "trae.stats.credits.statusTitle": "Gateway status codes",
+  "trae.stats.credits.statusNote": "Current window",
+  "trae.stats.credits.statusAria": "Donut chart of gateway response status codes",
+  "trae.stats.credits.statusEmpty": "No gateway requests in this scope.",
+
+  // ---- Credits ledger ----
+  "trae.stats.credits.flowNote": "Newest first",
+  "trae.stats.credits.recordEarned": "Credits earned",
+  "trae.stats.credits.recordSpent": "Credits spent",
+  "trae.stats.credits.flowEmptyTitle": "No credits ledger yet",
+  "trae.stats.credits.flowEmptyBody": "Run a check-in or “Sync credits” once and the daily credits changes will be listed here.",
+
+  // ---- Empty states ----
+  "trae.stats.credits.trendEmptyAccounts": "No account data yet. Add an account and the credits statistics show up here.",
+  "trae.stats.credits.trendEmptyData": "No credits data yet. Run a check-in or “Sync credits” once to see the daily change.",
 
   // ---- Dimensions the platform cannot provide ----
   "trae.stats.credits.unsupportedTitle": "Dimensions not supported by the platform",
   "trae.stats.credits.unsupportedOnly": " ({on} only)",
-
-  // ---- Per-account credits breakdown ----
-  "trae.stats.credits.detailTitle": "Per-account credits",
-  "trae.stats.credits.detailNote": "The data comes from check-in snapshots and “Sync credits”. Trae has no “request usage that produced these credits” metric, so there is no split view.",
-  "trae.stats.credits.detail.byAccount": "By account",
-  "trae.stats.credits.detail.accountCount": "{count} accounts",
-  "trae.stats.credits.detail.empty": "No account data yet.",
-  "trae.stats.credits.col.rank": "Rank",
-  "trae.stats.credits.col.account": "Account",
-  "trae.stats.credits.col.group": "Group",
-  "trae.stats.credits.col.expires": "Credits expire",
-  "trae.stats.credits.col.remaining": "Remaining credits",
-  "trae.stats.credits.ungrouped": "Ungrouped",
-  "trae.stats.credits.notSynced": "Not synced",
 
   // =====================================================================
   // TraeApiServicePage.tsx — API service page

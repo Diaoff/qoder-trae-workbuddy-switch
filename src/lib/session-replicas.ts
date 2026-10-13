@@ -26,6 +26,7 @@ import { t } from "@/lib/i18n";
 import type {
   AccountMeta,
   Session,
+  SessionBaseline,
   SessionFingerprint,
   SessionReplicaGroup,
   SyncSessionReplicaItem,
@@ -77,6 +78,36 @@ export interface SessionGroupView {
   deltas: Map<string, number>;
   /** 行数最多的副本的条数（`latestLineCount`）；`unknown` 时为 `null`。 */
   latestLineCount: number | null;
+  /**
+   * ★ P14 S1 · **乐观令牌**（后端给的组结构指纹）。
+   *
+   * 提交时原样带回，后端复核「组还是不是你看到的那个组」。
+   * ⚠️ `null` ⇒ **不给同步 / 统一的出口**（见 [`buildSyncItems`]）：宁可不让做，
+   * 也不做一次**对着旧组**算出来的写操作。取不到只可能是「后端与本前端版本不匹配」。
+   */
+  previewToken: string | null;
+  /**
+   * ★ P14 S2：本组**最近一次一致点**（取 `createdAt` 最大的那条基线）。
+   *
+   * ⚠️ 与 `commonPrefix`（共同旧版）**不是一回事**：那个是**当前**内容的公共前缀，
+   * 这个是**记录过的**历史事实。两者不同 ⇒ 有人改写过更早的内容。
+   * 无基线 ⇒ `null`（**不臆造**一个一致点）。
+   */
+  baseline: SessionBaselineView | null;
+  /**
+   * ★ P14 S2：各副本自「上次一致点」以来的新增条数（`sessionId → delta`）。
+   *
+   * ⚠️ **值为 `null` = 前缀未被验证**（该副本自基线之后改写过更早的内容）——
+   * 此时「新增了几条」这个问题**本身不成立**，不是 0、也不是「未知」。
+   * **不在表里** = 该副本与这条基线无关（基线是**成对**的，不是全组一个）。
+   */
+  sinceBaseline: Map<string, number | null>;
+}
+
+/** [`SessionGroupView.baseline`] 的展示形态（只带界面要用的两个字段）。 */
+export interface SessionBaselineView {
+  createdAt: number;
+  lineCount: number;
 }
 
 /** 两个指纹的公共前缀长度（与后端 `common_prefix_len` **同一判据**）。 */
@@ -131,6 +162,74 @@ export function deriveGroupStatus(
     common < minLines ? "diverge" : maxLines === minLines ? "latest" : "behind";
 
   return { status, commonPrefix: common, deltas, latestLineCount: maxLines };
+}
+
+/**
+ * ★ P14 S2：本组**最近一次**一致点（`createdAt` 最大；并列时按 `a`/`b` 字典序取最大，
+ * 保证**确定性** —— 否则同一次加载两次渲染可能选到不同基线）。
+ *
+ * 为什么取「最近」：用户问的是「**上一次**同步之后谁写了多少」。更早的一致点已经被
+ * 更近的那次覆盖掉了（复制 / 统一成功都会刷新基线），取最老的会给出一个已经没有意义的读数。
+ */
+export function newestBaseline(baselines: SessionBaseline[]): SessionBaseline | null {
+  let best: SessionBaseline | null = null;
+  for (const baseline of baselines) {
+    if (!best) {
+      best = baseline;
+      continue;
+    }
+    if (baseline.createdAt !== best.createdAt) {
+      if (baseline.createdAt > best.createdAt) best = baseline;
+      continue;
+    }
+    const tiebreak = baseline.a !== best.a ? baseline.a > best.a : baseline.b > best.b;
+    if (tiebreak) best = baseline;
+  }
+  return best;
+}
+
+/**
+ * ★ P14 S2：各副本相对「**上次一致点**」的增量。
+ *
+ * ## 为什么必须先**验证前缀**
+ *
+ * 基线只说「那一刻两份逐行相同」。要回答「之后新增了几条」，前提是**基线仍是当前内容的
+ * 真前缀** —— 否则该副本改写过更早的内容，「新增几条」这个问法**本身不成立**。
+ *
+ * ## 这正是基线**纠正既有读数**的地方
+ *
+ * `deriveGroupStatus` 的 `deltas` 是相对**当前**公共前缀算的：一旦有人改写第 50 行，
+ * 公共前缀会从 100 塌到 49 ⇒ 「A 新增 54 条」这种数字**凭空放大**（明明只追加了 3 条）。
+ * 基线给的是那个诚实的 3；**验证不过就什么都不说**（`null`），不编一个数出来。
+ *
+ * ## 已知上限
+ *
+ * 逐行 hash 只到前 512 行（与 `SessionFingerprint` 同口径）⇒ 超长会话里
+ * 「512 行之后的改写」看不见。这是本仓既有取舍，**基线沿用**，不偷偷放大
+ * （两套上限并存会让「共同旧版」与「上次一致点」在不同尺度上打架）。
+ */
+export function deriveBaselineDelta(
+  rows: SessionReplicaRow[],
+  fingerprints: Record<string, SessionFingerprint | null>,
+  baseline: SessionBaseline | null,
+): Map<string, number | null> {
+  const out = new Map<string, number | null>();
+  if (!baseline) return out;
+  for (const row of rows) {
+    // 基线是**成对**的：只给它的两端读数，其余成员与这条基线无关（**不臆造** 0）。
+    if (row.sessionId !== baseline.a && row.sessionId !== baseline.b) continue;
+    const fingerprint = fingerprints[row.sessionId];
+    if (!fingerprint) {
+      out.set(row.sessionId, null);
+      continue;
+    }
+    const verified =
+      baseline.lineCount <= fingerprint.lineCount &&
+      baseline.prefixHashes.length <= fingerprint.prefixHashes.length &&
+      baseline.prefixHashes.every((hash, index) => fingerprint.prefixHashes[index] === hash);
+    out.set(row.sessionId, verified ? fingerprint.lineCount - baseline.lineCount : null);
+  }
+  return out;
 }
 
 /** 从账号清单建 `uid → 显示名`（`nickname → email → id` 降级链；空值不登记）。 */
@@ -208,11 +307,19 @@ export function buildGroupViews(
         hasHistory: session?.hasHistory === true,
       };
     });
+    // ★ P14 S2：最近一次一致点 + 各副本相对它的增量（前缀验证不过 ⇒ `null`，**不臆造**）。
+    const baseline = newestBaseline(group.baselines ?? []);
     return {
       key: group.key,
       // ★ 恒 true：只覆盖「经本应用复制过」的会话（类型锁死诚实性，§3.5）。
       partial: true,
       rows,
+      // ★ P14 S1：令牌也过 `displayText`（脏值 ⇒ `null` ⇒ 不给出口，而不是把对象当令牌送出去）。
+      previewToken: displayText(group.previewToken),
+      baseline: baseline
+        ? { createdAt: baseline.createdAt, lineCount: baseline.lineCount }
+        : null,
+      sinceBaseline: deriveBaselineDelta(rows, fingerprints, baseline),
       // ★ 内容级状态（缺 fingerprint ⇒ `"unknown"`，**不臆造**）。
       ...deriveGroupStatus(rows, fingerprints),
     };
@@ -233,13 +340,19 @@ export function buildGroupViews(
  *
  * - 状态不是 `behind`：`latest` 无事可做；`diverge` **必须先人工决定保留哪一份**
  *   （分歧处理 D20 后置）—— 硬同步会丢内容；`unknown` 缺指纹 ⇒ **不臆造**；
- * - `deltas` 为空 / 最大增量为 0：没有可追加的内容。
+ * - `deltas` 为空 / 最大增量为 0：没有可追加的内容；
+ * - ★ **P14 S1：缺乐观令牌**（`previewToken` 为 `null`）—— 没有令牌就无法让后端复核
+ *   「组还是不是你看到的那个组」，那就**不该发**这次写操作（宁可不让做，也不做错）。
  *
  * ⇒ 返回空数组时调用方**不渲染按钮**（§3.4 规则 1「无数据不渲染」，不摆假控件）。
  */
 export function buildSyncItems(group: SessionGroupView): SyncSessionReplicaItem[] {
   if (group.status !== "behind") return [];
   if (group.rows.length < 2 || group.deltas.size === 0) return [];
+
+  // ★ P14 S1：令牌必须先落地成局部量 —— 否则在下面的 `.map()` 回调里 TS 会丢掉收窄。
+  const previewToken = group.previewToken;
+  if (!previewToken) return [];
 
   const deltaOf = (row: SessionReplicaRow) => group.deltas.get(row.sessionId) ?? 0;
   const maxDelta = Math.max(...group.rows.map(deltaOf));
@@ -250,7 +363,12 @@ export function buildSyncItems(group: SessionGroupView): SyncSessionReplicaItem[
 
   return group.rows
     .filter((row) => row.sessionId !== source.sessionId && deltaOf(row) < maxDelta)
-    .map((row) => ({ sourceCid: source.sessionId, targetCid: row.sessionId }));
+    .map((row) => ({
+      sourceCid: source.sessionId,
+      targetCid: row.sessionId,
+      groupKey: group.key,
+      previewToken,
+    }));
 }
 
 /**
@@ -267,6 +385,9 @@ export function buildSyncItems(group: SessionGroupView): SyncSessionReplicaItem[
  * **不许**拿它去覆盖（§3.4 规则 1：无数据不渲染）。
  *
  * `keepSessionId` 不在组里 ⇒ 返回空数组（防止 UI 传了个陈旧 id 就开覆盖）。
+ *
+ * ★ **P14 S1：缺乐观令牌 ⇒ 同样返回空数组** —— 覆盖是**破坏性**操作，比同步更需要
+ * 「组还是不是你看到的那个组」这一层保证。
  */
 export function buildUnifyItems(
   group: SessionGroupView,
@@ -274,9 +395,45 @@ export function buildUnifyItems(
 ): UnifySessionReplicaItem[] {
   if (group.status !== "diverge") return [];
   if (!group.rows.some((row) => row.sessionId === keepSessionId)) return [];
+
+  const previewToken = group.previewToken;
+  if (!previewToken) return [];
+
   return group.rows
     .filter((row) => row.sessionId !== keepSessionId)
-    .map((row) => ({ sourceCid: keepSessionId, targetCid: row.sessionId }));
+    .map((row) => ({
+      sourceCid: keepSessionId,
+      targetCid: row.sessionId,
+      groupKey: group.key,
+      previewToken,
+    }));
+}
+
+/**
+ * ★ P14 S1：从逐条结果里取出**失败的会话组键**（去重、保序）。
+ *
+ * ## 为什么需要它
+ *
+ * 批量提交部分失败后要给「只重试失败项」的出口。但**重试不能复用上一次的 items** ——
+ * 那些 items 带着**旧令牌**，而令牌失效恰恰意味着组已经变了 ⇒ 重试必然再失败。
+ * 正确做法是拿这组 `groupKey` 回**刷新后的 store** 重算任务（见 `SessionsPage.retrySync`）。
+ *
+ * 后端会把每条任务的 `groupKey` 回显在结果里；取不到的条目（理论上不该有）被跳过 ——
+ * 宁可少给一个重试入口，也不送一次**没有令牌**的写操作。
+ */
+export function failedGroupKeys(
+  results: ReadonlyArray<{ ok: boolean; groupKey?: string | null }>,
+): string[] {
+  const keys: string[] = [];
+  const seen = new Set<string>();
+  for (const result of results) {
+    if (result.ok) continue;
+    const key = displayText(result.groupKey);
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    keys.push(key);
+  }
+  return keys;
 }
 
 /**

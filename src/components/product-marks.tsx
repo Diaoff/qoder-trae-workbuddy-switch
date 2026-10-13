@@ -137,6 +137,8 @@ type TraeVariantKey =
   | "trae_work"
   | "trae_cn"
   | "trae_code"
+  // 合并后的客户端（issue #20）：图标与 `trae_code` 同一个（同一家族）。
+  | "trae"
   | "global"
   | "global_trae_code"
   | "cn";
@@ -174,7 +176,8 @@ export function TraeVariantMark({
       )}
       style={{ width: size, height: size }}
     >
-      {/* `global`（国际版 TraeWork）与 `trae_work`（国内版）同属 TraeWork 家族 ⇒ 同一个图标。 */}
+      {/* `global`（国际版 TraeWork）与 `trae_work`（国内版）同属 TraeWork 家族 ⇒ 同一个图标。
+          `trae`（合并版）与 `trae_code` 同属 Trae 家族 ⇒ 也走 `traeIcon`（落 else 分支）。 */}
       <img
         src={variant === "trae_work" || variant === "global" ? traeworkIcon : traeIcon}
         alt=""

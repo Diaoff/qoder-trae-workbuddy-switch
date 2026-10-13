@@ -5,7 +5,7 @@
  *
  * 旧页是「官方请求明细 + 按模型分类 + 资源包」三块拼接；本版按原型**积分四视图**重做：
  * 统计 tile（可用 / 入账 / 消耗 / 即将过期）+ 每日收支柱 + 余额曲线 + 到期分布 + 积分流水。
- * 视图参数收敛为**一条** `ViewParamBar`（范围 + 合并）。
+ * 视图参数（范围 + 合并态）由 `UsagePage` **页面级**持有并传入（`UsageViewProps`）。
  *
  * ## ★ 关键取舍（P3-ARCH §6）
  *
@@ -27,7 +27,6 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { CalendarDays, CircleAlert, Coins, Loader2, RefreshCw, TrendingDown, TrendingUp } from "lucide-react";
 import { useShallow } from "zustand/react/shallow";
 
-import { RegionBar } from "@/components/region-bar";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -39,36 +38,18 @@ import { CreditDivergingBar } from "@/components/usage/credit-diverging-bar";
 import { CreditExpiryBars } from "@/components/usage/credit-expiry-bars";
 import { formatCredits } from "@/components/usage/format";
 import { StatTiles, type StatTile } from "@/components/usage/stat-tiles";
-import { ViewParamBar } from "@/components/usage/view-param-bar";
+import type { UsageViewProps } from "@/components/usage/view-param-bar";
 import * as api from "@/lib/api";
 import { balanceCaption, singleSideCaption } from "@/lib/chart-caption";
 import { displayText } from "@/lib/display-text";
 import { useT } from "@/lib/i18n";
-import { regionFilterLabel } from "@/lib/region";
 import type { CreditExpiry, CreditResource, CreditStatistics, RegionFilter } from "@/lib/types";
 import { useScope } from "@/lib/use-scope";
-import { balanceCurve, creditDailyBars, expiryBuckets, type UsageRange } from "@/lib/usage-charts";
+import { balanceCurve, creditDailyBars, expiryBuckets } from "@/lib/usage-charts";
 import { useAccountsStore } from "@/stores/accounts";
 
-const CREDIT_REGION_STORAGE_KEY = "buddy-switch:credit-stats:region";
-
-function isRegionFilter(value: unknown): value is RegionFilter {
-  return value === "cn" || value === "global" || value === "all";
-}
-
-/**
- * 读**旧的**「统计范围」偏好键 —— 只用于**初始化合并态**（`all` 是视图参数）。
- * **不再回写**（`cn` / `global` 已由 `useScope` 接管）。
- */
-function readPreferredRegion(): RegionFilter {
-  if (typeof window === "undefined") return "cn";
-  try {
-    const stored = window.localStorage.getItem(CREDIT_REGION_STORAGE_KEY);
-    return isRegionFilter(stored) ? stored : "cn";
-  } catch {
-    return "cn";
-  }
-}
+/** 会话级缓存：切走再切回不重取。 */
+const statisticsCache: Partial<Record<RegionFilter, CreditStatistics>> = {};
 
 /** 资源包名回落链 —— **必须**过 `displayText`（对象当 React 子节点 ⇒ 白屏，issue #2）。 */
 function resourceName(resource: CreditResource): string | null {
@@ -85,15 +66,10 @@ function formatDateTime(timestamp: number | null | undefined): string {
   });
 }
 
-/** 会话级缓存：切走再切回不重取。 */
-const statisticsCache: Partial<Record<RegionFilter, CreditStatistics>> = {};
-
-export default function CreditStatsPage() {
+export default function CreditStatsPage({ range, combineAll }: UsageViewProps) {
   const t = useT();
   const [scopeRegion] = useScope("workbuddy");
-  const [combineAll, setCombineAll] = useState(() => readPreferredRegion() === "all");
   const region: RegionFilter = combineAll ? "all" : scopeRegion;
-  const [range, setRange] = useState<UsageRange>(30);
   const [stats, setStats] = useState<CreditStatistics | null>(() => statisticsCache[region] ?? null);
   const [loading, setLoading] = useState(() => !statisticsCache[region]);
   const [error, setError] = useState<string | null>(null);
@@ -168,7 +144,7 @@ export default function CreditStatsPage() {
       icon: Coins,
       label: t("wbStats.usage.credits.available"),
       value: formatCredits(stats?.summary.currentRemaining),
-      hint: `${accountCount}`,
+      hint: t("wbStats.usage.credits.accountsHint", { count: accountCount }),
     },
     {
       icon: TrendingUp,
@@ -196,34 +172,9 @@ export default function CreditStatsPage() {
       : "";
 
   return (
-    <div className="mx-auto w-full max-w-[1240px] min-w-0 px-7 pt-[26px] pb-[60px]">
-      <header className="mb-4 flex min-w-0 flex-wrap items-start justify-between gap-4 sm:mb-5">
-        <div className="min-w-0">
-          <h2 className="text-xl font-semibold tracking-tight">{t("wbStats.credit.pageTitle")}</h2>
-          <p className="mt-2 max-w-2xl text-sm leading-6 text-muted-foreground">
-            {regionFilterLabel(region)}
-            {region === "all" && t("wbStats.credit.bothRegions")}
-          </p>
-        </div>
-        <Button
-          className="shrink-0"
-          variant="outline"
-          size="sm"
-          onClick={() => void load(region, true)}
-          disabled={loading}
-        >
-          {loading ? <Loader2 className="animate-spin" /> : <RefreshCw />}
-          {t("wbStats.credit.refresh")}
-        </Button>
-      </header>
-
-      {/* 每页**唯一**的视图参数条：范围 + 合并态（区域归侧栏）。 */}
-      <div className="mb-6 border-b pb-4">
-        <ViewParamBar range={range} onRangeChange={setRange}>
-          <RegionBar value={combineAll} onChange={setCombineAll} disabled={loading} />
-        </ViewParamBar>
-      </div>
-
+    /* ⚠️ 页头 / 子 Tab / **视图参数条**都由**上层** `UsagePage` 统一渲染
+       （原型 `viewUsage` 只有一个「用量」页头、一条参数条）⇒ 本页只渲染视图内容。 */
+    <div className="min-w-0">
       {error && (
         <Alert variant="destructive" className="mb-5">
           <CircleAlert />

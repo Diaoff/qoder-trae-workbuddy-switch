@@ -20,7 +20,7 @@ use buddy_switch_core::modules::{
     account, auth_file, backup, checkin, client_limits, client_settings, config, credit_usage,
     credits, diagnostics, export_import, migrate, oauth, process, programs, refresh,
     region::Region, region::RegionFilter, rotate, schedule, scheduler, session, skill, switch,
-    token_daily, token_stats, trae, travel, update,
+    token_daily, token_stats, trae, travel, update, vscode_session,
 };
 use buddy_switch_gateway::{GatewayConfig, GatewayStatusView};
 
@@ -193,6 +193,12 @@ fn api_routes() -> Router {
         .route("/api/sessions/sync", post(api_session_sync))
         .route("/api/sessions/unify", post(api_session_unify))
         .route("/api/sessions/copy", post(api_copy_sessions))
+        // P14 S4a · VS Code 插件 / CodeBuddy IDE 的会话仓（只读枚举 + 加法复制）。
+        .route("/api/vscode-sessions", get(api_vscode_sessions))
+        .route("/api/vscode-sessions/copy", post(api_copy_vscode_sessions))
+        // P14 S4b · 记录级 diff（只读）+ 增量追加。
+        .route("/api/vscode-sessions/diff", get(api_diff_vscode_sessions))
+        .route("/api/vscode-sessions/sync", post(api_sync_vscode_sessions))
         // 客户端限流可视化（**只读**）：账号 × 模型 × 恢复时刻。
         .route("/api/client/limits", get(api_client_limits))
         // Skill 管理（cc-switch 式）：清单 + 启停 + 跨区搬迁 + 本地导入。
@@ -1683,6 +1689,149 @@ async fn api_session_unify(Json(body): Json<Value>) -> Response {
     json_ok(session::unify_session_replicas_for(region, &items))
 }
 
+/// 把前端的 `client` 字符串解析成 [`vscode_session::ExtClient`]。
+///
+/// ⚠️ **空串与未知值一律 `Err`**（不回落默认值）：本仓不猜「用户指的是哪个客户端」——
+/// 猜错就是去读写**另一个客户端**的会话目录。前端必须显式传。
+fn parse_ext_client(raw: &str) -> Result<vscode_session::ExtClient, String> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "vscode" => Ok(vscode_session::ExtClient::Vscode),
+        "codebuddy-ide" => Ok(vscode_session::ExtClient::CodebuddyIde),
+        other => Err(format!("未知的客户端标识: {other}")),
+    }
+}
+
+/// GET /api/vscode-sessions —— 列出 VS Code 插件 / CodeBuddy IDE 某账号的会话（**只读**）。
+///
+/// 与 Tauri 侧 `commands::list_vscode_sessions` **同契约**（两宿主同步）。
+/// 查询参数：`client`（`vscode` / `codebuddy-ide`，**必填**）、`uid`（**必填**）。
+///
+/// ★ 与桌面版会话**不是同一套存储**（那边 `workbuddy.db` + jsonl，这边 JSON 记录仓）
+/// ⇒ 单开命令，**不往 `/api/sessions` 里塞 `client` 参数**（两套形状挤一个出口会让前端处处分支）。
+async fn api_vscode_sessions(RawQuery(query): RawQuery) -> Response {
+    if let Err(error) = require_capability(Product::Workbuddy, capability::Capability::SessionCopy) {
+        return json_err(error, StatusCode::FORBIDDEN);
+    }
+    let client = match parse_ext_client(query_value(query.as_deref(), "client").as_deref().unwrap_or_default()) {
+        Ok(client) => client,
+        Err(error) => return json_err(error, StatusCode::BAD_REQUEST),
+    };
+    let Some(uid) = query_value(query.as_deref(), "uid").filter(|uid| !uid.trim().is_empty()) else {
+        return json_err("缺少 uid".to_string(), StatusCode::BAD_REQUEST);
+    };
+    json_ok(vscode_session::list_sessions_for(client, uid.trim()))
+}
+
+/// POST /api/vscode-sessions/copy —— 把插件侧会话复制给另一个账号（**加法**，绝不覆盖）。
+///
+/// 与 Tauri 侧 `commands::copy_vscode_sessions` **同契约**（两宿主同步）。
+/// body：`{ client, sourceUid, targetUid, items: [{ workspaceHash, conversationId }] }`。
+///
+/// ⚠️ **数据根找不到 ⇒ 4xx**（不是「复制了 0 条」）——后者会把「客户端没装」
+/// 伪装成一次成功的空操作（「失败不得谎报成功」）。
+async fn api_copy_vscode_sessions(Json(body): Json<Value>) -> Response {
+    if let Err(error) = require_capability(Product::Workbuddy, capability::Capability::SessionCopy) {
+        return json_err(error, StatusCode::FORBIDDEN);
+    }
+    let client = match parse_ext_client(
+        body.get("client").and_then(Value::as_str).unwrap_or_default(),
+    ) {
+        Ok(client) => client,
+        Err(error) => return json_err(error, StatusCode::BAD_REQUEST),
+    };
+    let source_uid = body
+        .get("sourceUid")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .trim()
+        .to_string();
+    let target_uid = body
+        .get("targetUid")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .trim()
+        .to_string();
+    let items: Vec<vscode_session::CopyItem> = match body
+        .get("items")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default()
+        .into_iter()
+        .map(|item| serde_json::from_value(item).map_err(|e| format!("复制条目格式不对: {e}")))
+        .collect::<Result<_, _>>()
+    {
+        Ok(items) => items,
+        Err(error) => return json_err(error, StatusCode::BAD_REQUEST),
+    };
+    match vscode_session::copy_conversations(client, &source_uid, &target_uid, &items) {
+        Ok(report) => json_ok(report),
+        Err(error) => json_err(error, StatusCode::BAD_REQUEST),
+    }
+}
+
+/// GET /api/vscode-sessions/diff —— **记录级 diff（只读）**：这份会话能不能做增量追加。
+///
+/// 与 Tauri 侧 `commands::diff_vscode_sessions` **同契约**（两宿主同步）。
+/// 查询参数：`client`（必填）、`sourceUid`、`targetUid`、`workspaceHash`、`conversationId`。
+///
+/// ★ 插件侧**不能**照搬桌面版的「按行 append」：顺序由 `index.json` 的 `messages[]`
+/// **数组次序**决定 ⇒ 目标缺的是**中间**几条时追加会**打乱会话顺序**。
+async fn api_diff_vscode_sessions(RawQuery(query): RawQuery) -> Response {
+    if let Err(error) = require_capability(Product::Workbuddy, capability::Capability::SessionCopy) {
+        return json_err(error, StatusCode::FORBIDDEN);
+    }
+    let client = match parse_ext_client(
+        query_value(query.as_deref(), "client").as_deref().unwrap_or_default(),
+    ) {
+        Ok(client) => client,
+        Err(error) => return json_err(error, StatusCode::BAD_REQUEST),
+    };
+    let text = |key: &str| query_value(query.as_deref(), key).unwrap_or_default().trim().to_string();
+    json_ok(vscode_session::diff_conversation(
+        client,
+        &text("sourceUid"),
+        &text("targetUid"),
+        &text("workspaceHash"),
+        &text("conversationId"),
+    ))
+}
+
+/// POST /api/vscode-sessions/sync —— **增量追加**（只有 diff 说 `appendable` 才真写）。
+///
+/// 与 Tauri 侧 `commands::sync_vscode_sessions` **同契约**（两宿主同步）。
+/// body：`{ client, sourceUid, targetUid, workspaceHash, conversationId }`。
+///
+/// ★★ **不信任调用方**：core 里进来先自己重算 diff。其余状态一律**拒绝**并如实说原因
+/// （`divergent` 会静默改写目标内容、`unordered` 会打乱会话顺序 —— 两者都看不出来）。
+async fn api_sync_vscode_sessions(Json(body): Json<Value>) -> Response {
+    if let Err(error) = require_capability(Product::Workbuddy, capability::Capability::SessionCopy) {
+        return json_err(error, StatusCode::FORBIDDEN);
+    }
+    let client = match parse_ext_client(
+        body.get("client").and_then(Value::as_str).unwrap_or_default(),
+    ) {
+        Ok(client) => client,
+        Err(error) => return json_err(error, StatusCode::BAD_REQUEST),
+    };
+    let text = |key: &str| {
+        body.get(key)
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .trim()
+            .to_string()
+    };
+    match vscode_session::sync_conversation(
+        client,
+        &text("sourceUid"),
+        &text("targetUid"),
+        &text("workspaceHash"),
+        &text("conversationId"),
+    ) {
+        Ok(report) => json_ok(report),
+        Err(error) => json_err(error, StatusCode::BAD_REQUEST),
+    }
+}
+
 /// GET /api/client/limits —— 客户端限流台账（**只读**观测：账号 × 模型 × 恢复时刻）。
 ///
 /// 与 Tauri 侧 `commands::client_limits` **同契约**（两宿主同步）。判据在 core
@@ -1891,7 +2040,8 @@ async fn api_copy_sessions(Json(body): Json<Value>) -> Response {
     // copy_sessions_for_switch_for 已返回完整报告（sourceUid / targetUid / copied /
     // skipped? / errors?）。这里必须**原样透传**，不能再包一层 "copied" —— 否则
     // 响应会变成 {copied:{copied:[...]}}，与 Tauri 通道及前端 CopyResult[] 契约不一致。
-    match session::copy_sessions_for_switch_cross(source_region, region, &target, &session_ids) {
+    // webui 侧没有进度事件通道，逐会话进度传 None（复制本身的时间优化不受影响）。
+    match session::copy_sessions_for_switch_cross(source_region, region, None, &target, &session_ids) {
         Some(report) => json_ok(report),
         None => json_ok(json!({
             "sourceUid": Value::Null,

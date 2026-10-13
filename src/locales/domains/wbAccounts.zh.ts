@@ -17,10 +17,6 @@ export const zh = {
   "wbAccounts.page.addTitle": "添加与迁移账号",
   "wbAccounts.page.addSubtitle": "快速接入新账号，或从已有环境恢复",
   "wbAccounts.page.oauthAdd": "OAuth 扫码添加",
-  "wbAccounts.page.importLocal": "导入本机账号",
-  "wbAccounts.page.importBackup": "导入备份",
-  "wbAccounts.page.importBackupTitle": "从备份文件导入账号",
-  "wbAccounts.page.export": "导出",
   "wbAccounts.page.exportTitle": "导出账号备份",
   "wbAccounts.page.loadFailed": "加载失败",
   "wbAccounts.page.accountsAria": "{count} 个账号",
@@ -28,10 +24,7 @@ export const zh = {
   "wbAccounts.page.autoCheckinSaving": "正在保存自动签到设置",
   "wbAccounts.page.autoTravel": "自动旅行",
   "wbAccounts.page.autoTravelSaving": "正在保存自动旅行设置",
-  "wbAccounts.page.compactToLoose": "切换为宽松模式",
-  "wbAccounts.page.compactToCompact": "切换为紧凑模式",
   "wbAccounts.page.refreshCredits": "签到并刷新全部账号积分",
-  "wbAccounts.page.demoDisabled": "演示模式下不可操作",
   "wbAccounts.page.statusLoggedIn": "已登录: {name}",
   "wbAccounts.page.cliTitle": "CodeBuddy CLI 接入",
   "wbAccounts.page.cliDescEnvOverride": "检测到进程环境变量 CODEBUDDY_AUTH_TOKEN。它会覆盖 settings.json；请先从 Windows 用户或系统环境变量中删除它，再重启本应用与 CodeBuddy CLI。",
@@ -125,20 +118,28 @@ export const zh = {
   "wbAccounts.program.plannedHint": "尚未支持",
   "wbAccounts.card.unnamed": "未命名账号",
   "wbAccounts.card.checkedIn": "已签到",
-  "wbAccounts.card.notCheckedIn": "未签到",
+  // 原型 `accountStatus()`（`buddy-switch-prototype.html:2390-2395`）是**互斥的一枚**状态：
+  // 凭据已过期 → 需重新登录 → 今日未签到 → （否则）已签到。
+  "wbAccounts.card.notCheckedIn": "今日未签到",
   "wbAccounts.card.needRelogin": "需重新登录",
-  "wbAccounts.card.tokenExpired": "Token 已过期",
-  "wbAccounts.card.priorityAria": "建议优先",
+  "wbAccounts.card.tokenExpired": "凭据已过期",
+  // 「优先」——原型 `.acct-chips` 里是**带文字**的 `badge info`（`:2508`），
+  // 此前我们只摆一枚星形图标，与原型不同。
+  "wbAccounts.card.priority": "优先",
   "wbAccounts.card.priorityTip": "建议优先使用",
-  "wbAccounts.card.toolsInUse": "{n} 个工具正在使用",
+  // 原型 `.acct-chips` 第三条（`:2507`）：`{X} 积分 {N} 天后过期`。
+  "wbAccounts.card.expiringChip": "{amount} 积分 {days} 天后过期",
+  "wbAccounts.card.toolsInUse": "使用中 {n} 个工具",
   // 头部「当前登录」徽章（原型 `accountCard` :2502）：绑定任一程序位即为当前登录。
   "wbAccounts.card.currentLogin": "当前登录",
-  // 卡片指标行（原型 `.acct-metrics` :2510）：积分 已用/总量 · 今日 Token · 最后使用。
-  // ⚠️ 2026-10-10 起三项都有真实来源：积分（credit.resources）、今日 Token（get_account_token_today）、
-  //    最后使用（AccountMeta.lastUsedAt）。缺值仍按诚实边界渲染：「今日 Token」缺席 ⇒ 「—」（非 0）。
+  // 卡片指标行（原型 `.acct-metrics` :2510）：`积分 1,240/2,000` · `今日 42.1K` · `2 分钟前`。
+  // ⚠️ 三项都有真实来源：积分（credit.resources）、今日 Token（get_account_token_today）、
+  //    最后使用（AccountMeta.lastUsedAt）。缺值仍按诚实边界渲染：缺席 ⇒ 「—」（非 0）。
   "wbAccounts.card.metric.credits": "积分",
-  "wbAccounts.card.metric.todayTokens": "今日 Token",
-  "wbAccounts.card.metric.lastUsed": "最后使用",
+  // 原型该格只有「今日」两字（`<span>今日 <b>…</b></span>`），不是「今日 Token」。
+  "wbAccounts.card.metric.todayTokens": "今日",
+  // 第三格原型是**无标签的相对时间**；标签与绝对时刻改挂 `title`。
+  "wbAccounts.card.metric.lastUsedTip": "最后使用 {time}",
   // 「今日 Token」= 下界（网关日志已到保留上限）时的前缀；`{value}` 已含紧凑计数（如 42.1K）。
   "wbAccounts.card.metric.atLeast": "≥{value}",
   // 「今日 Token」明细（tooltip）：客户端自身 CLI 用量 / 经本网关的用量，各自 输入·输出。
@@ -174,21 +175,16 @@ export const zh = {
   "wbAccounts.card.waitingCredits": "等待积分数据…",
   "wbAccounts.card.creditFailed": "积分查询失败",
   "wbAccounts.card.addPlaintextAccount": "用 OAuth 扫码添加",
-  "wbAccounts.card.creditPacks": "{n} 个积分包",
-  "wbAccounts.card.expireSoon": "{amount} 积分将在 7 天内到期",
-  "wbAccounts.card.nextExpiry": "最近到期 {date}",
-  "wbAccounts.card.creditsForever": "当前积分长期有效",
-  "wbAccounts.card.updated": "更新",
-  "wbAccounts.card.expiringSoonTitle": "近期到期",
   "wbAccounts.card.creditPackFallback": "积分包",
-  "wbAccounts.card.resourceTitle": "{name} · 剩余 {remaining} / {total} · {expiry}",
-  "wbAccounts.card.creditsUnit": "{n} 积分",
-  "wbAccounts.card.noCredits": "暂无可用积分",
   "wbAccounts.card.setCurrent": "设为当前",
   "wbAccounts.card.switching": "切换中…",
   "wbAccounts.card.cliCurrent": "CLI 当前",
   // P4：积分包明细从卡片内 Dialog 迁入**共享抽屉**，以下键改由 `AccountsPage` 装配
-  // `DetailPack` 时使用（卡片本身只保留「近期到期」前两条预览）。
+  // `DetailPack` 时使用。
+  // ⚠️ 2026-10-12：卡片上的「大数字行 + 近期到期」整块已按原型删除（原型卡片只有
+  // `.acct-top` / `.acct-chips` / `.acct-metrics` / `.acct-actions` 四块），
+  // 故 `creditPacks` / `expireSoon` / `nextExpiry` / `creditsForever` / `updated` /
+  // `expiringSoonTitle` / `resourceTitle` / `creditsUnit` / `noCredits` 一并删除。
   "wbAccounts.card.expired": "已到期",
   "wbAccounts.card.expiresIn7": "7 天内到期",
   "wbAccounts.card.expiresOn": "到期 {date}",
@@ -431,7 +427,7 @@ export const zh = {
   "wbAccounts.toolbar.sort.name": "名称",
   "wbAccounts.toolbar.sort.expiry": "到期时间",
   "wbAccounts.toolbar.sort.recent": "最近使用",
-  // 工具栏主操作（原型 `viewAccounts` :2428）：与「添加与迁移账号」横幅的 OAuth 入口**同一动作**。
+  // 工具栏主操作（原型 `viewAccounts` :2428）：打开「添加账号」三选抽屉（原型 `drawerAdd()`）。
   "wbAccounts.toolbar.addAccount": "添加账号",
   "wbAccounts.toolbar.group.none": "不分组",
   "wbAccounts.toolbar.group.program": "按程序位",
@@ -459,7 +455,7 @@ export const zh = {
   // 客户端限流台账（账号 × 模型 × 恢复时刻，**只读**观测）
   // =====================================================================
   // 数据源是客户端自身落盘的三张只读表 join（见 core `client_limits.rs`）——
-  // **不依赖网关、不代理客户端流量**。当前受限的条目置顶，已恢复的灰显。
+  // **不依赖网关、不代理客户端流量**。排序与状态由后端定：仍受限 → 状态未知 → 已恢复。
   "wbAccounts.limits.title": "客户端限流",
   "wbAccounts.limits.subtitle": "从客户端本地数据自动汇总：哪个账号在哪个模型上被上游限流、何时恢复。",
   "wbAccounts.limits.refresh": "刷新",
@@ -472,12 +468,23 @@ export const zh = {
   "wbAccounts.limits.empty": "所选范围内没有限流记录。",
   "wbAccounts.limits.active": "仍受限",
   "wbAccounts.limits.recovered": "已恢复",
+  // 「恢复时间未知」是**第三种状态**，既不是「仍受限」也不是「已恢复」。
+  "wbAccounts.limits.unknown": "状态未知",
   "wbAccounts.limits.accountUnknown": "未知账号",
   "wbAccounts.limits.modelUnknown": "未知模型",
   "wbAccounts.limits.resetAt": "恢复于 {time}",
   "wbAccounts.limits.resetUnknown": "恢复时间未知",
+  // ⚠️ 上游文案里的「恢复于」是**配额窗口**重置时刻，不是解锁时刻（实测报 429 后 16 分钟即恢复产出）。
+  // 有实测实证时改显实证时刻，避免「已恢复」与「恢复于 明天 09:04」自相矛盾。
+  "wbAccounts.limits.resetHint": "上游文案里的恢复时刻是**配额窗口**的重置时间，不等于解锁时刻；判状态以右侧徽章为准。",
+  "wbAccounts.limits.recoveredByEvidence": "已恢复（{time} 实测有产出）",
   "wbAccounts.limits.occurredAt": "最近 {time}",
   "wbAccounts.limits.summary": "共 {total} 条 · 仍受限 {active} 条",
+  "wbAccounts.limits.summaryUnknown": " · 状态未知 {unknown} 条",
+  "wbAccounts.limits.summarySkipped": " · 已排除 {skipped} 条非限流错误",
+  "wbAccounts.limits.skippedHint": "窗口内的网络类错误（502 网络不可达、ECONNRESET 断连等）不是上游限流，不计入本台账，这里只报数。",
+  "wbAccounts.limits.occurrences": "{count} 条记录",
+  "wbAccounts.limits.occurrencesHint": "该条目合并了 {count} 条原始记录（同一账号 · 模型 · 错误码 · 恢复时刻）。同一次上游限流会**扇出**到多个会话文件，故条数常大于 1。",
   "wbAccounts.limits.code": "错误码 {code}",
   "wbAccounts.limits.queued": "排队中",
   "wbAccounts.limits.queuedHint": "上游排队类错误（6020 / 6022）：模型资源紧张或已达使用上限，等待恢复。精确文案待确认，暂按 code 原样标注。",
