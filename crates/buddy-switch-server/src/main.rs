@@ -2,10 +2,24 @@
 //!
 //! ```bash
 //! buddy-switch              # 启动本地服务 + 打开浏览器 webui
-//! buddy-switch serve        # 只起服务不开浏览器（--port / --no-open）
+//! buddy-switch serve        # 只起服务不开浏览器（--port / --host / --no-open）
 //! buddy-switch status       # 终端输出当前账号
 //! buddy-switch version      # 版本号
 //! ```
+//!
+//! ## 监听地址（容器 / 反代）
+//!
+//! 默认只绑 `127.0.0.1:57890`。容器里从外部访问不到回环地址，因此地址与端口都可以覆盖：
+//!
+//! | 优先级 | 地址 | 端口 |
+//! |:---|:---|:---|
+//! | 1（最高） | `--host <addr>` | `--port <n>` |
+//! | 2 | 环境变量 `BUDDY_SWITCH_HOST` | 环境变量 `BUDDY_SWITCH_PORT` |
+//! | 3 | `127.0.0.1` | `57890` |
+//!
+//! ⚠️ 监听地址**不是回环**时会打印一条警告：webui 能读写账号库与网关 Key，
+//! 对外暴露前请读 `docs/DOCKER.md` 的安全段。数据落点由 `BUDDY_SWITCH_HOME` 决定，
+//! 与本组变量无关。
 
 mod api;
 mod gateway_host;
@@ -24,6 +38,57 @@ use buddy_switch_core::modules::product::Product;
 
 fn default_port() -> u16 {
     57890
+}
+
+/// 监听地址覆盖用的环境变量名（容器 / 反代场景）。
+///
+/// 容器里 `127.0.0.1` 从外部访问不到，必须能从环境变量指定 `0.0.0.0`。
+/// 与 `BUDDY_SWITCH_HOME` 同一层：**只改监听地址**，不改变任何数据落点。
+const BUDDY_SWITCH_HOST_ENV: &str = "BUDDY_SWITCH_HOST";
+
+/// 监听端口覆盖用的环境变量名（优先级低于 CLI `--port`）。
+const BUDDY_SWITCH_PORT_ENV: &str = "BUDDY_SWITCH_PORT";
+
+/// 解析监听地址：`--host <addr>` > `BUDDY_SWITCH_HOST` > `127.0.0.1`。
+///
+/// 取 env 值作**入参**而非直接读 `std::env`：测试可以并行跑，不会互相踩环境变量
+/// （本仓的既有约定：可并行单测的纯决策函数一律显式入参）。
+fn resolve_host(args: &[String], env: Option<&str>) -> String {
+    if let Some(index) = args.iter().position(|arg| arg == "--host") {
+        if let Some(host) = args
+            .get(index + 1)
+            .map(|value| value.trim())
+            .filter(|value| !value.is_empty())
+        {
+            return host.to_string();
+        }
+    }
+    env.map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("127.0.0.1")
+        .to_string()
+}
+
+/// 解析监听端口：`--port <n>` > `BUDDY_SWITCH_PORT` > [`default_port`]。
+///
+/// 非法值（非数字 / 超出 `u16`）**静默回落**下一优先级：这与 `--port` 的既有行为一致
+/// （启动不该因为一个错字而失败），且启动日志里会打印最终生效的地址，便于发现。
+fn resolve_port(args: &[String], env: Option<&str>) -> u16 {
+    if let Some(index) = args.iter().position(|arg| arg == "--port") {
+        if let Some(port) = args.get(index + 1).and_then(|value| value.parse::<u16>().ok()) {
+            return port;
+        }
+    }
+    env.and_then(|value| value.trim().parse::<u16>().ok())
+        .unwrap_or_else(default_port)
+}
+
+/// 该监听地址是否**只对本机可见**。
+///
+/// 用于决定要不要打印那条「已对外监听」的警告。判据刻意保守（只认几个明确的回环写法）：
+/// 把 `0.0.0.0` / 局域网 IP / 域名误判成回环 ⇒ 警告不出现，用户不知道 webui 已对外。
+fn is_loopback_host(host: &str) -> bool {
+    matches!(host, "127.0.0.1" | "localhost" | "::1" | "[::1]")
 }
 
 /// 为某一类任务起一个独立排程循环。
@@ -309,25 +374,33 @@ async fn main() {
 }
 
 async fn serve(args: &[String]) {
-    let mut port = default_port();
-    if let Some(i) = args.iter().position(|a| a == "--port") {
-        if let Some(p) = args.get(i + 1).and_then(|p| p.parse::<u16>().ok()) {
-            port = p;
-        }
-    }
+    let port = resolve_port(args, std::env::var(BUDDY_SWITCH_PORT_ENV).ok().as_deref());
+    let host = resolve_host(args, std::env::var(BUDDY_SWITCH_HOST_ENV).ok().as_deref());
 
     let app = api::router();
-    let addr = format!("127.0.0.1:{port}");
+    let addr = format!("{host}:{port}");
     let listener = match tokio::net::TcpListener::bind(&addr).await {
         Ok(l) => l,
         Err(e) => {
-            eprintln!("启动失败: 端口 {port} 被占用或不可用（{e}）。可用 --port 指定其他端口。");
+            eprintln!(
+                "启动失败: {addr} 被占用或不可用（{e}）。\
+                 可用 --port 指定其他端口，或 --host 指定监听地址。"
+            );
             std::process::exit(1);
         }
     };
 
     println!("Buddy Switch v{}", update::APP_VERSION);
     println!("webui: http://{addr}");
+    // ★ 对外监听时**必须明说**：webui 能读写账号库与网关 Key（见 docs/DOCKER.md 的安全段），
+    // 默认只绑回环正是为了「不声不响地把管理面暴露出去」这件事不发生。
+    // 判据用最终生效的地址（不是用户填的原始值），否则 `--host localhost` 这类写法会漏报。
+    if !is_loopback_host(&host) {
+        println!(
+            "⚠️  webui 正对外监听（{host}）—— 它能读写账号库与网关 Key。\
+             请确保只在可信网络内暴露，或用反向代理加上鉴权。"
+        );
+    }
     println!("按 Ctrl+C 停止服务。");
 
     let no_open = args.iter().any(|a| a == "--no-open");
@@ -425,6 +498,73 @@ mod tests {
         // 纯查询命令不受影响（它不碰任何数据）。
         assert!(home_override_problem("version", Some("D:/no/such/dir")).is_none());
         assert!(home_override_problem("--version", Some("relative")).is_none());
+    }
+
+    // -----------------------------------------------------------------------
+    // 监听地址 / 端口（容器与反代场景，issue #12）
+    // -----------------------------------------------------------------------
+
+    fn args(values: &[&str]) -> Vec<String> {
+        values.iter().map(|value| value.to_string()).collect()
+    }
+
+    /// ★ 默认必须仍是**回环**：改坏这条等于「不声不响把 webui 暴露到局域网」。
+    #[test]
+    fn listen_defaults_to_loopback_and_default_port() {
+        assert_eq!(resolve_host(&args(&["serve"]), None), "127.0.0.1");
+        assert_eq!(resolve_port(&args(&["serve"]), None), default_port());
+        assert!(is_loopback_host("127.0.0.1"));
+        assert!(is_loopback_host("localhost"));
+        assert!(is_loopback_host("::1"));
+    }
+
+    /// 优先级：CLI > 环境变量 > 默认值（三条都钉住，防止某一级被悄悄改掉）。
+    #[test]
+    fn cli_beats_env_beats_default() {
+        // 只有 env
+        assert_eq!(resolve_host(&args(&["serve"]), Some("0.0.0.0")), "0.0.0.0");
+        assert_eq!(resolve_port(&args(&["serve"]), Some("9999")), 9999);
+        // CLI 压过 env
+        assert_eq!(
+            resolve_host(&args(&["serve", "--host", "10.0.0.5"]), Some("0.0.0.0")),
+            "10.0.0.5"
+        );
+        assert_eq!(
+            resolve_port(&args(&["serve", "--port", "1234"]), Some("9999")),
+            1234
+        );
+    }
+
+    /// 非法 / 空白值必须**回落下一优先级**而不是 panic 或产生非法地址。
+    #[test]
+    fn invalid_overrides_fall_back_instead_of_panicking() {
+        // 空白 host / 非法 port 一律回落。
+        assert_eq!(resolve_host(&args(&["serve"]), Some("   ")), "127.0.0.1");
+        assert_eq!(resolve_host(&args(&["serve", "--host", "  "]), Some("0.0.0.0")), "0.0.0.0");
+        assert_eq!(resolve_port(&args(&["serve"]), Some("not-a-number")), default_port());
+        // 超出 u16 的端口同样回落（不能截断成 0 或 panic）。
+        assert_eq!(resolve_port(&args(&["serve"]), Some("70000")), default_port());
+        assert_eq!(
+            resolve_port(&args(&["serve", "--port", "abc"]), Some("8080")),
+            8080,
+            "非法 CLI 端口应回落环境变量，而不是直接跳回默认值"
+        );
+        // `--host` 后面没跟值时不得 panic，也不得把下一个 flag 当地址。
+        assert_eq!(resolve_host(&args(&["serve", "--host"]), None), "127.0.0.1");
+    }
+
+    /// 对外监听必须被 `is_loopback_host` 判成「非回环」—— 那条警告靠它触发。
+    ///
+    /// 反例（改坏会红）：把判据写成「以 `127.` 开头」之类，`0.0.0.0` 就会漏判，
+    /// 用户以为还在本机、实际整个局域网都能打开管理面。
+    #[test]
+    fn non_loopback_hosts_are_not_treated_as_local() {
+        for host in ["0.0.0.0", "192.168.1.10", "10.0.0.5", "example.com", "[::]"] {
+            assert!(
+                !is_loopback_host(host),
+                "{host} 不是回环地址，必须触发对外监听警告"
+            );
+        }
     }
 
     /// 护栏：余额刷新任务**必须**登记在 core 后台任务表（[`TASKS`]）里。

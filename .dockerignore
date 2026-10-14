@@ -1,0 +1,40 @@
+# 构建上下文裁剪。
+#
+# 目标：**只**让 Dockerfile 看到源码与清单。下面这些要么是构建产物（会在镜像里重新生成）、
+# 要么是宿主机专有的重物，进上下文只会拖慢构建、并制造「用了宿主机旧产物」的隐患。
+
+# ---- 依赖与构建产物（镜像里重新生成）----
+node_modules
+target
+
+# ★ 前端产物：**必须**排除。
+#   镜像里的 dist/ 由 Dockerfile 阶段 1 生成、阶段 2 显式 `COPY --from=frontend`。
+#   若宿主机那份 dist/ 进了上下文，就可能出现「编进二进制的是宿主机的旧前端」——
+#   而构建全绿、页面看着也正常，只是内容是旧的。这是本仓踩过的同类坑
+#   （见 AGENTS/记忆里「核验别 grep 源码字符串，要 grep 构建产物」那条）。
+dist
+dist-demo
+dist-stale-*
+
+# ---- 仓库里的大件 / 与本镜像无关 ----
+deliverables
+backups
+logs
+pic
+docs/images
+.workbuddy-ai
+.trellis
+.agents
+.codex
+
+# ---- 版本控制与编辑器 ----
+.git
+.gitignore
+.github
+.vscode
+.idea
+
+# ---- 杂项 ----
+*.log
+*.md
+!README.md
