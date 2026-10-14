@@ -6431,33 +6431,50 @@ check("★ P8 组状态：**内容级**派生（四态）+ 禁止用 updatedAt �
      ⚠️ 数据源曾被标为「❌ 无」（`P8-ARCH.md` §1.2）—— 但那**只看 copy ledger**，
      **漏了本地会话 jsonl**（`~/.workbuddy/projects/<ws>/<cid>.jsonl`，每行一条消息）。
      ⇒ 现在用**内容指纹**（行数 + 逐行 hash）的公共前缀派生。
+
+     ★ 判据在 **core**（`derive_content_status`），不在前端：前端要自己算就得把
+     **每个副本**的前 512 行逐行 hash 拿过来（真机 25,487 个副本 ≈ 200 MB JSON），
+     再在 JS 里逐对比较 ⇒ 会话页永远转圈。本断言同时守这条边界：
+     ① core 有判据 + 四态；② 判据体内**不许**出现 updatedAt；③ 前端**不许**自己再派生。
+
      ★ **反向断言**：`updatedAt` 只能表达「谁最近被改过」，**不能**表达「谁落后 N 条」
-     （§1.2「时间新 ≠ 内容新」）⇒ 派生函数里**不许**出现 `updatedAt`。 */
+     （§1.2「时间新 ≠ 内容新」）⇒ 派生函数里**不许**出现 `updated_at`。 */
   const core = stripComments(
     fs.readFileSync(path.join(ROOT, "crates/buddy-switch-core/src/modules/session.rs"), "utf8"),
   );
   for (const f of [
-    "session_fingerprint_for",
+    "derive_content_status",
+    "fingerprint_of_text",
     "common_prefix_len",
     "line_count",
     "prefix_hashes",
   ]) {
-    if (!core.includes(f)) throw new Error(`session.rs 缺 ${f} —— 内容指纹未实现`);
+    if (!core.includes(f)) throw new Error(`session.rs 缺 ${f} —— 内容指纹 / 组状态未实现`);
   }
+  for (const s of ["latest", "behind", "diverge", "unknown"]) {
+    if (!core.includes(`STATUS_${s.toUpperCase()}: &str = "${s}"`)) {
+      throw new Error(`derive_content_status 缺状态 ${s}`);
+    }
+  }
+  // ★ 反向：判据函数体内**不许**出现 updated_at（用时间冒充内容 = 撒谎）。
+  const body = core.split("fn derive_content_status")[1]?.split("\nfn ")[0] ?? "";
+  if (body === "") {
+    throw new Error("找不到 derive_content_status 函数体（结构已变，请更新本断言）");
+  }
+  if (/updated_at|updatedAt/.test(body)) {
+    throw new Error("derive_content_status 里出现 updatedAt —— 用时间冒充内容（§1.2 红线）");
+  }
+  // ★ 前端**不许**自己重算（重算 = 逐行 hash 又得过 IPC，正是本次修掉的东西）。
   const rep = stripComments(
     fs.readFileSync(path.join(ROOT, "src/lib/session-replicas.ts"), "utf8"),
   );
-  if (!/deriveGroupStatus/.test(rep)) throw new Error("没有 deriveGroupStatus —— 组状态未派生");
-  for (const s of ["latest", "behind", "diverge", "unknown"]) {
-    if (!rep.includes(`"${s}"`)) throw new Error(`deriveGroupStatus 缺状态 ${s}`);
+  if (/deriveGroupStatus/.test(rep)) {
+    throw new Error("前端又自己派生组状态了 —— 判据属于 core（derive_content_status）");
   }
-  // ★ 反向：派生函数体内**不许**出现 updatedAt（用时间冒充内容 = 撒谎）。
-  const body = rep.split("export function deriveGroupStatus")[1]?.split("\nexport ")[0] ?? "";
-  if (body === "") throw new Error("找不到 deriveGroupStatus 函数体（结构已变，请更新本断言）");
-  if (/updatedAt/.test(body)) {
-    throw new Error("deriveGroupStatus 里出现 updatedAt —— 用时间冒充内容（§1.2 红线）");
+  if (!/group\.content/.test(rep)) {
+    throw new Error("前端没有消费后端 content —— 组状态会全落 unknown");
   }
-  return "内容指纹 + 四态 + 派生体无 updatedAt";
+  return "core 内容指纹 + 四态 + 判据体无 updatedAt + 前端只消费结论";
 });
 
 check("★ P8 面板：筛选按需出现 + 失效回落 + 徽章只读已加载 store", () => {

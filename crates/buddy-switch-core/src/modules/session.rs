@@ -5617,19 +5617,24 @@ mod fingerprint_tests {
             .iter()
             .find(|g| g["key"].as_str().unwrap().contains("cid-1"))
             .expect("组 A");
-        let a_baselines = group_a["baselines"].as_array().unwrap();
-        assert_eq!(a_baselines.len(), 1, "组 A 只该挂自己那一条（跨组的那对不算）");
-        assert_eq!(a_baselines[0]["lineCount"], json!(12));
-        assert_eq!(a_baselines[0]["a"], json!("cid-1"));
-        assert_eq!(a_baselines[0]["b"], json!("new-1"));
+        // ★ 组上只出**最近一次**一致点（前端不用再自己挑；逐行 hash 不外泄）。
+        assert_eq!(group_a["baseline"]["lineCount"], json!(12));
+        assert_eq!(group_a["baseline"]["a"], json!("cid-1"));
+        assert_eq!(group_a["baseline"]["b"], json!("new-1"));
+        assert_eq!(group_a["baseline"]["createdAt"], json!(200));
+        // ⚠️ 逐行 hash **不进响应**（那是 200 MB 级的历史包袱，校验在 core 做）。
+        assert!(
+            group_a["baseline"].get("prefixHashes").is_none(),
+            "组响应里不该出现 prefixHashes"
+        );
 
         let group_b = groups
             .iter()
             .find(|g| g["key"].as_str().unwrap().contains("cid-9"))
             .expect("组 B");
         assert!(
-            group_b["baselines"].as_array().unwrap().is_empty(),
-            "组 B 不该挂上别人的基线"
+            group_b["baseline"].is_null(),
+            "组 B 不该挂上别人的基线（跨组的那对两端不都在组内）"
         );
 
         std::fs::remove_dir_all(dir).unwrap();
@@ -5653,7 +5658,7 @@ mod fingerprint_tests {
             let groups = out["groups"].as_array().unwrap();
             assert_eq!(groups.len(), 1, "损坏的基线不该影响副本组：{payload}");
             assert!(
-                groups[0]["baselines"].as_array().unwrap().is_empty(),
+                groups[0]["baseline"].is_null(),
                 "损坏的基线必须视为「没有基线」：{payload}"
             );
         }

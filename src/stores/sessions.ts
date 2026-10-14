@@ -9,7 +9,8 @@
  *
  * ## 数据来源纪律
  *
- * - 副本组：`list_session_replicas`（**只读** copy ledger，**只读当前 region**，P8 ✅ #2）；
+ * - 副本组：`list_session_replicas`（**只读** copy ledger，**只读当前 region**，P8 ✅ #2）
+ *   —— ★ **含内容状态 `content`**（状态 / 共同前缀 / 每副本增量），判据在 core；
  * - 账号显示名：从**账号 store** join（`useAccountsStore`）—— **不重造第二份账号清单**（§1.5 / R9）；
  * - 会话行（标题 / `updatedAt` / `hasHistory`）：`list_sessions`（**当前账号**的会话）。
  *
@@ -18,6 +19,13 @@
  *
  * ⚠️ **取不到会话行不致命**：副本组仍可见，标题落兜底（`buildGroupViews` 负责），
  * 并由视图的 `partial` + 固定文案**如实**标注「仅覆盖经本应用复制过的会话」。
+ *
+ * ## 曾经的三次请求 → 现在两次
+ *
+ * 旧实现还在这里发一次 `session_fingerprints`，把**全账本每个副本**的前 512 行逐行 hash
+ * 拉回前端自己算状态（真机 25,487 个副本 ≈ 200 MB 响应体 + JS 里 O(N²·512) 的两两比较）
+ * ⇒ 会话页**永远转圈**。状态判据已下沉到 core（`session::derive_content_status`），
+ * 这个命令随之**下线**。
  */
 
 import { create } from "zustand";
@@ -29,7 +37,7 @@ import {
   buildSessionsByAccount,
 } from "@/lib/session-replicas";
 import type { SessionGroupView } from "@/lib/session-replicas";
-import type { Region, Session, SessionFingerprint, SyncSessionReplicaItem, SyncSessionReplicaResponse, UnifySessionReplicaItem, UnifySessionReplicaResponse } from "@/lib/types";
+import type { Region, Session, SyncSessionReplicaItem, SyncSessionReplicaResponse, UnifySessionReplicaItem, UnifySessionReplicaResponse } from "@/lib/types";
 import { selectRegionSlice, useAccountsStore } from "@/stores/accounts";
 
 interface SessionsState {
@@ -108,23 +116,14 @@ export const useSessionsStore = create<SessionsState>((set) => ({
         // 会话行不可用：保留空 map ⇒ 标题走 `titleFallback`。
       }
 
-      // ★ P8：查**内容指纹**（组状态派生的数据源）—— **内容级**判据，不用 `updatedAt` 冒充。
-      //   ⚠️ 查不到 ⇒ 各组落 `"unknown"`（**诚实**，不臆造）；**也不阻断**副本视图本身。
-      let fingerprints: Record<string, SessionFingerprint | null> = {};
-      try {
-        const ids = response.groups.flatMap((group) =>
-          group.replicas.map((replica) => replica.sessionId),
-        );
-        if (ids.length > 0) fingerprints = await api.sessionFingerprints(ids, region);
-      } catch {
-        // 指纹不可用：保留空 map ⇒ 全部组 `"unknown"`（副本视图仍可见）。
-      }
-
+      // ★ 内容状态（组状态派生的数据源）**随 `list_session_replicas` 一起回来** ——
+      //   原来这里对全账本每个副本再发一次 `session_fingerprints`（真机 25,487 个 id），
+      //   响应体是「每副本 512 个 hash」≈ 200 MB，会话页因此**永远转圈**。
+      //   判据现在在 core（`session::derive_content_status`），前端只拿结论。
       const groups = buildGroupViews(
         response.groups,
         sessionsByAccount,
         accountLabels,
-        fingerprints,
       );
       set({ groups, source: response.source, loading: false });
     } catch (e) {

@@ -13,6 +13,13 @@
  * ⚠️ **ledger 只覆盖「经本应用复制过」的会话** ⇒ `SessionGroupView.partial` **恒 `true`**
  * （类型锁死 + 视图据此渲染固定文案），**禁止**「全部副本」口径（§3.5）。
  *
+ * ## 内容状态（`status` / `commonPrefix` / `deltas` / `sinceBaseline`）
+ *
+ * ★ **判据在 core**（`session::derive_content_status`），本模块只做**搬运 + 脏值兜底**。
+ * 搬到后端的理由是可验证的：前端要自己算，就得把**每个副本**的前 512 行逐行 hash 拿过来
+ * （真机 25,487 个副本 ≈ 200 MB JSON / 1300 万个整数），再在 JS 里逐对比较 —— 会话页
+ * 因此**永远转圈**。而结论本身只有每组几个整数。
+ *
  * ⚠️ **不许用 `updatedAt` 冒充「落后 / 最新」**：`updatedAt` 只能表达「谁最近被改过」，
  * 不能表达「谁落后 N 条」（§3.15.2「时间新 ≠ 内容新」）。本模块**只把 `updatedAt` 当作事实
  * 透传**，**不派生任何状态**。
@@ -26,8 +33,7 @@ import { t } from "@/lib/i18n";
 import type {
   AccountMeta,
   Session,
-  SessionBaseline,
-  SessionFingerprint,
+  SessionReplicaContent,
   SessionReplicaGroup,
   SyncSessionReplicaItem,
   UnifySessionReplicaItem,
@@ -110,126 +116,53 @@ export interface SessionBaselineView {
   lineCount: number;
 }
 
-/** 两个指纹的公共前缀长度（与后端 `common_prefix_len` **同一判据**）。 */
-function commonPrefixLen(a: SessionFingerprint, b: SessionFingerprint): number {
-  const n = Math.min(a.prefixHashes.length, b.prefixHashes.length);
-  let i = 0;
-  while (i < n && a.prefixHashes[i] === b.prefixHashes[i]) i += 1;
-  return i;
-}
-
-/**
- * 由**内容指纹**派生组状态（P8）。
- *
- * ⚠️ **任一副本缺 fingerprint ⇒ 整体 `unknown`**：宁可说「未知」，也不用部分数据
- * 冒充完整结论（诚实优先，同 §3.5 的 `partial` 标注）。
- */
-export function deriveGroupStatus(
-  rows: SessionReplicaRow[],
-  fingerprints: Record<string, SessionFingerprint | null>,
-): Pick<SessionGroupView, "status" | "commonPrefix" | "deltas" | "latestLineCount"> {
-  const empty = {
-    status: "unknown" as const,
+/** 一组「内容结论」的**诚实空值**（缺字段 / 脏值 / 旧后端 ⇒ 落这里，**不臆造**）。 */
+function unknownContent(): Pick<
+  SessionGroupView,
+  "status" | "commonPrefix" | "deltas" | "latestLineCount" | "sinceBaseline"
+> {
+  return {
+    status: "unknown",
     commonPrefix: null,
     deltas: new Map<string, number>(),
     latestLineCount: null,
+    sinceBaseline: new Map<string, number | null>(),
   };
-  if (rows.length < 2) return empty; // 单副本无「组」可言（调用方也不该建组）。
+}
 
-  const list: SessionFingerprint[] = [];
-  for (const row of rows) {
-    const fp = fingerprints[row.sessionId];
-    if (!fp) return empty; // 缺一个 ⇒ 未知
-    list.push(fp);
-  }
+/** 后端 `content.status` 的合法取值（越界一律落 `unknown`，不把脏值透到 UI）。 */
+const CONTENT_STATUSES: readonly SessionGroupStatus[] = ["latest", "behind", "diverge", "unknown"];
 
-  // 所有副本两两公共前缀的**最小值** = 全体的共同旧版。
-  let common = Math.min(...list.map((f) => f.prefixHashes.length));
-  for (let i = 0; i < list.length; i += 1) {
-    for (let j = i + 1; j < list.length; j += 1) {
-      common = Math.min(common, commonPrefixLen(list[i], list[j]));
-    }
-  }
-
-  const counts = list.map((f) => f.lineCount);
-  const maxLines = Math.max(...counts);
-  const minLines = Math.min(...counts);
+/**
+ * 后端的内容结论 → 视图字段（**搬运 + 脏值兜底**，不做任何判据）。
+ *
+ * ⚠️ **判据不在这里**：`status` / `commonPrefix` / `deltas` / `latestLineCount` /
+ * `sinceBaseline` 全部由 core 算完（`session::derive_content_status`）。前端重算一次 =
+ * 再要一遍每个副本的逐行 hash（200 MB 级）—— 那正是本次修掉的东西。
+ *
+ * ★ **不得**在这里引入任何基于 `updatedAt` 的派生（§3.15.2「时间新 ≠ 内容新」）。
+ */
+function contentOf(
+  content: SessionReplicaContent | null | undefined,
+): Pick<SessionGroupView, "status" | "commonPrefix" | "deltas" | "latestLineCount" | "sinceBaseline"> {
+  if (!content) return unknownContent();
+  const status = CONTENT_STATUSES.includes(content.status) ? content.status : "unknown";
   const deltas = new Map<string, number>();
-  rows.forEach((row, i) => deltas.set(row.sessionId, counts[i] - common));
-
-  // 公共前缀没覆盖到最短副本 ⇒ 双方在共同旧版之后各自改过 ⇒ 分叉（优先级最高）。
-  const status: SessionGroupStatus =
-    common < minLines ? "diverge" : maxLines === minLines ? "latest" : "behind";
-
-  return { status, commonPrefix: common, deltas, latestLineCount: maxLines };
-}
-
-/**
- * ★ P14 S2：本组**最近一次**一致点（`createdAt` 最大；并列时按 `a`/`b` 字典序取最大，
- * 保证**确定性** —— 否则同一次加载两次渲染可能选到不同基线）。
- *
- * 为什么取「最近」：用户问的是「**上一次**同步之后谁写了多少」。更早的一致点已经被
- * 更近的那次覆盖掉了（复制 / 统一成功都会刷新基线），取最老的会给出一个已经没有意义的读数。
- */
-export function newestBaseline(baselines: SessionBaseline[]): SessionBaseline | null {
-  let best: SessionBaseline | null = null;
-  for (const baseline of baselines) {
-    if (!best) {
-      best = baseline;
-      continue;
-    }
-    if (baseline.createdAt !== best.createdAt) {
-      if (baseline.createdAt > best.createdAt) best = baseline;
-      continue;
-    }
-    const tiebreak = baseline.a !== best.a ? baseline.a > best.a : baseline.b > best.b;
-    if (tiebreak) best = baseline;
+  for (const [sessionId, delta] of Object.entries(content.deltas ?? {})) {
+    if (typeof delta === "number") deltas.set(sessionId, delta);
   }
-  return best;
-}
-
-/**
- * ★ P14 S2：各副本相对「**上次一致点**」的增量。
- *
- * ## 为什么必须先**验证前缀**
- *
- * 基线只说「那一刻两份逐行相同」。要回答「之后新增了几条」，前提是**基线仍是当前内容的
- * 真前缀** —— 否则该副本改写过更早的内容，「新增几条」这个问法**本身不成立**。
- *
- * ## 这正是基线**纠正既有读数**的地方
- *
- * `deriveGroupStatus` 的 `deltas` 是相对**当前**公共前缀算的：一旦有人改写第 50 行，
- * 公共前缀会从 100 塌到 49 ⇒ 「A 新增 54 条」这种数字**凭空放大**（明明只追加了 3 条）。
- * 基线给的是那个诚实的 3；**验证不过就什么都不说**（`null`），不编一个数出来。
- *
- * ## 已知上限
- *
- * 逐行 hash 只到前 512 行（与 `SessionFingerprint` 同口径）⇒ 超长会话里
- * 「512 行之后的改写」看不见。这是本仓既有取舍，**基线沿用**，不偷偷放大
- * （两套上限并存会让「共同旧版」与「上次一致点」在不同尺度上打架）。
- */
-export function deriveBaselineDelta(
-  rows: SessionReplicaRow[],
-  fingerprints: Record<string, SessionFingerprint | null>,
-  baseline: SessionBaseline | null,
-): Map<string, number | null> {
-  const out = new Map<string, number | null>();
-  if (!baseline) return out;
-  for (const row of rows) {
-    // 基线是**成对**的：只给它的两端读数，其余成员与这条基线无关（**不臆造** 0）。
-    if (row.sessionId !== baseline.a && row.sessionId !== baseline.b) continue;
-    const fingerprint = fingerprints[row.sessionId];
-    if (!fingerprint) {
-      out.set(row.sessionId, null);
-      continue;
-    }
-    const verified =
-      baseline.lineCount <= fingerprint.lineCount &&
-      baseline.prefixHashes.length <= fingerprint.prefixHashes.length &&
-      baseline.prefixHashes.every((hash, index) => fingerprint.prefixHashes[index] === hash);
-    out.set(row.sessionId, verified ? fingerprint.lineCount - baseline.lineCount : null);
+  const sinceBaseline = new Map<string, number | null>();
+  for (const [sessionId, delta] of Object.entries(content.sinceBaseline ?? {})) {
+    if (delta === null || typeof delta === "number") sinceBaseline.set(sessionId, delta);
   }
-  return out;
+  return {
+    status,
+    commonPrefix: typeof content.commonPrefix === "number" ? content.commonPrefix : null,
+    deltas,
+    latestLineCount:
+      typeof content.latestLineCount === "number" ? content.latestLineCount : null,
+    sinceBaseline,
+  };
 }
 
 /** 从账号清单建 `uid → 显示名`（`nickname → email → id` 降级链；空值不登记）。 */
@@ -282,16 +215,15 @@ function findSession(
  * 把后端副本组 + 账号显示名 + 会话行 → 可渲染视图。
  *
  * **纯函数**（可测）：不读 store、不发请求。`partial` 在此**字面量锁死**为 `true`。
+ *
+ * ⚠️ **本函数不算内容状态**：`status` / `commonPrefix` / `deltas` / `latestLineCount` /
+ * `sinceBaseline` 全部来自后端 `group.content`（core 按 jsonl 指纹算完）；
+ * 这里只把「最近一次一致点」从 `group.baseline` 摊平成展示形态，并对脏响应兜底。
  */
 export function buildGroupViews(
   groups: SessionReplicaGroup[],
   sessionsByAccount: Map<string, Session[]>,
   accountLabels: Map<string, string>,
-  /**
-   * ★ P8：各副本的**内容指纹**（`sessionId → 指纹`；取不到为 `null`）。
-   * 缺省 `{}` ⇒ 全部组落 `"unknown"`（**诚实**：没查过就别说状态）。
-   */
-  fingerprints: Record<string, SessionFingerprint | null> = {},
 ): SessionGroupView[] {
   return groups.map((group) => {
     const rows: SessionReplicaRow[] = group.replicas.map((replica) => {
@@ -307,8 +239,6 @@ export function buildGroupViews(
         hasHistory: session?.hasHistory === true,
       };
     });
-    // ★ P14 S2：最近一次一致点 + 各副本相对它的增量（前缀验证不过 ⇒ `null`，**不臆造**）。
-    const baseline = newestBaseline(group.baselines ?? []);
     return {
       key: group.key,
       // ★ 恒 true：只覆盖「经本应用复制过」的会话（类型锁死诚实性，§3.5）。
@@ -316,12 +246,13 @@ export function buildGroupViews(
       rows,
       // ★ P14 S1：令牌也过 `displayText`（脏值 ⇒ `null` ⇒ 不给出口，而不是把对象当令牌送出去）。
       previewToken: displayText(group.previewToken),
-      baseline: baseline
-        ? { createdAt: baseline.createdAt, lineCount: baseline.lineCount }
-        : null,
-      sinceBaseline: deriveBaselineDelta(rows, fingerprints, baseline),
-      // ★ 内容级状态（缺 fingerprint ⇒ `"unknown"`，**不臆造**）。
-      ...deriveGroupStatus(rows, fingerprints),
+      // ★ P14 S2：最近一次一致点（后端已按 `createdAt` → `a` → `b` 选出，前端不重选）。
+      baseline:
+        group.baseline && typeof group.baseline.lineCount === "number"
+          ? { createdAt: group.baseline.createdAt, lineCount: group.baseline.lineCount }
+          : null,
+      // ★ 内容级结论：core 算完随响应回来（见 `contentOf`）。
+      ...contentOf(group.content),
     };
   });
 }

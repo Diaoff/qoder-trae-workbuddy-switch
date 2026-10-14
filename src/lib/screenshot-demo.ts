@@ -785,17 +785,22 @@ function demoSessions(): Session[] {
  * 演示：copy ledger 连通出的副本组。
  *
  * 形状与后端 `session::list_replica_groups_for` **逐字段一致**（只回
- * `accountUid` / `sessionId` / `region` + `previewToken` + `baselines` + `source`）——
- * 演示站与真机走同一套归一化逻辑，形状不一致会让「演示好看、真机崩」在打包后才暴露。
+ * `accountUid` / `sessionId` / `region` + `previewToken` + `baseline` + `content` + `source`）
+ * —— 演示站与真机走同一套归一化逻辑，形状不一致会让「演示好看、真机崩」在打包后才暴露。
  *
  * ⚠️ `previewToken` 是**照后端算法真算出来的**（`session::group_fingerprint`），
  * 不是随手编的 hex —— 本仓红线「演示数据不许自造结构」。那两个值与
  * `session.rs::tests::group_fingerprint_values_are_frozen_for_demo_fixtures`
  * **成对钉住**：算法一改，Rust 侧先红，演示夹具才不至于静默失真。
  *
- * ⚠️ `baselines` 刻意留**空**：基线只在「复制成功 / 分歧统一成功」的那一刻建立，
+ * ⚠️ `baseline` 刻意留 `null`：基线只在「复制成功 / 分歧统一成功」的那一刻建立，
  * 而演示站里没有发生过任何写操作。**编一条假基线**会让「上次一致点」这块 UI
  * 显示一个假的读数 —— 宁可演示站不展示这个特性，也不撒谎（§3.5）。
+ *
+ * ⚠️ `content` 由 core 算（前端不再自己派生）⇒ 演示值必须**自洽**（判据见
+ * `session::derive_content_status`）：第一组 21 行 vs 18 行且公共前缀 = 18
+ * ⇒ `behind`（有人多写了，无分叉）；第二组两侧同为 12 行 ⇒ `latest`。
+ * **不臆造**第三种形态（分叉 / 未知）——演示站没有能证明它们的数据。
  */
 function demoSessionReplicas(): SessionReplicaResponse {
   return {
@@ -807,7 +812,14 @@ function demoSessionReplicas(): SessionReplicaResponse {
           { accountUid: "demo-user-002", sessionId: "demo-session-1-copy", region: "cn" },
         ],
         previewToken: "71186784553e0e0b",
-        baselines: [],
+        baseline: null,
+        content: {
+          status: "behind",
+          commonPrefix: 18,
+          deltas: { "demo-session-1": 3, "demo-session-1-copy": 0 },
+          latestLineCount: 21,
+          sinceBaseline: {},
+        },
       },
       {
         key: "demo-user-001\u001fdemo-session-2",
@@ -816,7 +828,14 @@ function demoSessionReplicas(): SessionReplicaResponse {
           { accountUid: "demo-user-003", sessionId: "demo-session-2-copy", region: "cn" },
         ],
         previewToken: "7f64fb4bd44b030c",
-        baselines: [],
+        baseline: null,
+        content: {
+          status: "latest",
+          commonPrefix: 12,
+          deltas: { "demo-session-2": 0, "demo-session-2-copy": 0 },
+          latestLineCount: 12,
+          sinceBaseline: {},
+        },
       },
     ],
     source: "ledger",
