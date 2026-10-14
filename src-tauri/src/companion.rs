@@ -212,6 +212,13 @@ pub fn ensure<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<WebviewWindow<R>>
     .title("会话状态")
     .inner_size(WINDOW_WIDTH, WINDOW_HEIGHT)
     .decorations(false) // 无系统标题栏 ⇒ 自管焦点
+    // ⚠️ **`.transparent()` 在 macOS 上只有开了 `macos-private-api` 才有这个方法**
+    //    —— tauri 的 cfg 门是 `#[cfg(any(not(target_os = "macos"), feature = "macos-private-api"))]`。
+    //    本仓配套两处（缺一即 macOS 编译报 `E0599: no method named transparent`）：
+    //    ① `src-tauri/Cargo.toml` 的 tauri features 含 `macos-private-api`；
+    //    ② `tauri.conf.json` 的 `app.macOSPrivateApi: true`。
+    //    2026-10-07 引入本行时漏了这两处 ⇒ win / linux 全绿、**只有 mac 两个 job 红**，
+    //    直到 2026-10-14 打 tag 发布才暴露（见 commit 说明）。
     .transparent(true) // 圆角卡片外观
     .always_on_top(true) // 「常驻桌面」
     .skip_taskbar(true) // 不占任务栏
