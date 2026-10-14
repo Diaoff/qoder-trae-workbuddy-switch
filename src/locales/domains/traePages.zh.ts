@@ -221,9 +221,9 @@ export const zh = {
   "trae.page.settings.multiSep": "、",
   "trae.page.settings.multiTail": " 等）时，按最近活跃的那个自动选定。",
   "trae.page.settings.pathLabel": "客户端可执行文件路径",
-  "trae.page.settings.pathDesc": "留空即自动探测，会覆盖系统盘与各非系统盘的常见安装目录，无需手动填写。仅在装在非常规位置时指定。",
+  "trae.page.settings.pathDesc": "仅作用于【{region}】。留空即自动探测，会覆盖系统盘与各非系统盘的常见安装目录，无需手动填写；仅在装在非常规位置时指定。国内版与国际版各存各的，互不覆盖。",
   "trae.page.settings.pathPlaceholder": "留空则自动探测常见安装位置",
-  "trae.page.settings.pathStale": "这里填的路径已失效（客户端升级或合并后搬到了新位置），当前实际使用的是自动探测到的：{path}。点「保存」清空本栏即可恢复自动探测。",
+  "trae.page.settings.pathStale": "【{region}】这里填的路径已失效（客户端升级或合并后搬到了新位置），当前实际使用的是自动探测到的：{path}。点「保存」清空本栏即可恢复自动探测。",
 
   // ---- 端口与网络 ----
   "trae.page.settings.networkGroup": "端口与网络",

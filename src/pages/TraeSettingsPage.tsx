@@ -63,18 +63,20 @@ import {
   TRAE_VARIANTS_KEY,
 } from "@/lib/trae-variant-status";
 import type { ScheduleConfig } from "@/lib/types";
-import type {
-  TraeCapabilities,
-  TraeDeviceResetReport,
-  TraeEnvStatus,
-  TraeGatewayLogEntry,
-  TraeLogKind,
-  TraeLogsResponse,
-  TraeProfileInfo,
-  TraeProfilesOverview,
-  TraeSettings,
-  TraeVariantId,
-  TraeVariantStatus,
+import {
+  traeRegionLabelOf,
+  traeRegionOf,
+  type TraeCapabilities,
+  type TraeDeviceResetReport,
+  type TraeEnvStatus,
+  type TraeGatewayLogEntry,
+  type TraeLogKind,
+  type TraeLogsResponse,
+  type TraeProfileInfo,
+  type TraeProfilesOverview,
+  type TraeSettings,
+  type TraeVariantId,
+  type TraeVariantStatus,
 } from "@/lib/trae-types";
 import { cn } from "@/lib/utils";
 import { useCachedResource } from "@/lib/use-cached-resource";
@@ -1132,9 +1134,30 @@ export default function TraeSettingsPage() {
      这是对的（不该因此卡住启动），但界面必须**明说**「你填的那个已经没用了」，
      否则设置页会一直摆着一个不存在的路径、而上方同时显示「已检测到」，两边对不上。
      判据用后端下发的 `configuredPathExists`（它判的是**存盘值本身**是否存在），
-     不要用 `env.path`（那是回落**之后**的探测结果）。 */
-  const configuredPath = env?.configuredPath?.trim() ?? "";
-  const pathStale = configuredPath.length > 0 && env?.configuredPathExists === false;
+     不要用 `env.path`（那是回落**之后**的探测结果）。
+
+     ★ **按区域判定**（issue #20）：路径已按区域分家，本页只关心**当前区域**那一条。
+     用全局的 `configuredPath` 会张冠李戴 —— 在国内版页面上读到国际版的值。 */
+  const region = traeRegionOf(variant);
+  const regionPath = settings?.traePaths?.[region] ?? "";
+  const configuredPath = (env?.configuredPaths?.[region] ?? "").trim();
+  const pathStale = configuredPath.length > 0 && env?.configuredPathsExist?.[region] === false;
+
+  /**
+   * 保存**当前区域**的客户端路径。
+   *
+   * 必须提交**整份** `traePaths`：后端 `patch` 按顶层键整份替换，只发本区域那一条
+   * 会把另一个区域的值抹掉 —— 那正是 issue #20 要修的反面。
+   */
+  function saveRegionPath(next: string) {
+    if (!settings) return;
+    const trimmed = next.trim();
+    const nextPaths = { ...settings.traePaths };
+    if (trimmed) nextPaths[region] = trimmed;
+    else delete nextPaths[region];
+    void patch({ traePaths: nextPaths });
+  }
+
   /* 页头作用域：平台固定 trae，区域来自 `useTraeVariant`（URL 作用域优先）。 */
   const scope = scopeOf("trae", variant);
 
@@ -1237,22 +1260,27 @@ export default function TraeSettingsPage() {
 
           <SettingsFieldRow
             label={t("trae.page.settings.pathLabel")}
-            description={t("trae.page.settings.pathDesc")}
+            description={t("trae.page.settings.pathDesc", { region: traeRegionLabelOf(variant) })}
             htmlFor="trae-path"
           >
             <div className="flex w-full flex-wrap items-center justify-end gap-2 sm:w-auto">
               <Input
                 id="trae-path"
                 className="h-8 sm:w-80"
-                value={settings?.traePath ?? ""}
-                onChange={(event) => patchSettings((prev) => ({ ...prev, traePath: event.target.value }))}
+                value={regionPath}
+                onChange={(event) =>
+                  patchSettings((prev) => ({
+                    ...prev,
+                    traePaths: { ...prev.traePaths, [region]: event.target.value },
+                  }))
+                }
                 placeholder={env?.path ?? t("trae.page.settings.pathPlaceholder")}
               />
               <Button
                 size="sm"
                 variant="outline"
                 disabled={saving}
-                onClick={() => void patch({ traePath: settings?.traePath?.trim() ? settings.traePath.trim() : null })}
+                onClick={() => saveRegionPath(regionPath)}
               >
                 {saving ? <Loader2 className="animate-spin" /> : <Save />}
                 {t("trae.page.settings.save")}
@@ -1269,7 +1297,10 @@ export default function TraeSettingsPage() {
             >
               <AlertTriangle className="mt-0.5 size-3.5 shrink-0" aria-hidden />
               <span className="min-w-0 break-words">
-                {t("trae.page.settings.pathStale", { path: env?.path ?? "—" })}
+                {t("trae.page.settings.pathStale", {
+                  region: traeRegionLabelOf(variant),
+                  path: env?.path ?? "—",
+                })}
               </span>
             </div>
           )}

@@ -166,14 +166,14 @@ pub fn data_dir_names_for(variant: super::variant::TraeVariant) -> &'static [&'s
 ///
 /// `custom` 仅在它确实属于该变体时才生效 —— 用户在设置里指定的路径
 /// 不应该让"另一条产品线"也显示成已安装。
+///
+/// ## ★ 自定义路径**按区域取**（issue #20）
+///
+/// 设置里的客户端路径已按区域分家（`TraeSettings::trae_paths`），本函数取
+/// **该变体所属区域**的那一条。此前读的是单个全局值 ⇒ 给国际版设路径会覆盖国内版。
 pub fn detect_install_for(variant: super::variant::TraeVariant) -> InstallProbe {
     let settings = crate::modules::trae::settings::load();
-    if let Some(custom) = settings
-        .trae_path
-        .as_deref()
-        .map(str::trim)
-        .filter(|path| !path.is_empty())
-    {
+    if let Some(custom) = settings.path_for(variant.region()) {
         let path = PathBuf::from(custom);
         // 只有自定义路径确实指向该变体时才采纳，否则它会让两条产品线都显示"已安装"。
         let belongs = path
@@ -739,7 +739,13 @@ pub struct InstallProbe {
 
 /// 在给定候选路径中探测 Trae 客户端。
 ///
-/// `custom` 为用户在设置里显式指定的路径，**优先级最高**。
+/// `custom` 为用户在设置里显式指定的路径列表（**按区域各一条**，见
+/// `TraeSettings::all_paths`），**优先级最高**、按传入顺序取第一个真实存在的文件。
+///
+/// ## 为什么是**列表**而不是单个值（issue #20）
+///
+/// 设置里的客户端路径已按区域分家。本函数回答的是「**本机装的是哪一条** Trae」，
+/// 横跨全部区域 —— 因此必须把每个区域配置的路径都试一遍，只看一条会漏掉另一区域。
 ///
 /// 自动探测（[`candidate_exe_paths`]）覆盖 `%LOCALAPPDATA%\Programs`、三个
 /// `ProgramFiles` 变体，以及非系统盘上的 `<盘符>:\Programs` —— 最后一项是必需的：
@@ -748,9 +754,13 @@ pub struct InstallProbe {
 ///
 /// 仍然覆盖不到的只剩「装在任意自定义目录」（例如 `D:\Apps\Trae\`），
 /// 该场景由 `custom` 兜底，且报错文案会主动提示这一点。
-pub fn detect_install(custom: Option<&str>) -> InstallProbe {
-    if let Some(custom) = custom.map(str::trim).filter(|path| !path.is_empty()) {
-        let path = PathBuf::from(custom);
+pub fn detect_install(custom: &[String]) -> InstallProbe {
+    for raw in custom {
+        let path = raw.trim();
+        if path.is_empty() {
+            continue;
+        }
+        let path = PathBuf::from(path);
         if path.is_file() {
             return InstallProbe {
                 installed: true,
@@ -1472,7 +1482,8 @@ pub fn capabilities() -> Value {
 /// **两者都推不出来时为 `null`**，调用方应省略该标签而不是显示一个猜测值。
 pub fn env_status() -> Value {
     let settings = crate::modules::trae::settings::load();
-    let probe = detect_install(settings.trae_path.as_deref());
+    // 跨区域探测：每个区域配置的路径都要试（只看一条会漏掉另一区域，issue #20）。
+    let probe = detect_install(&settings.all_paths());
     let data_dir = detect_data_dir();
 
     let variant = detected_variant();
@@ -1490,11 +1501,28 @@ pub fn env_status() -> Value {
     // 判据用**存盘值原样**判存在性，与 `detect_install` 的采纳逻辑**分开**：
     // 后者还要求路径归属该变体，混在一起会把「路径存在但不属于这条产品线」
     // 也说成「失效」，那是另一回事（`detect_install_for` 的 `belongs` 分支负责）。
-    let configured_path = settings
-        .trae_path
-        .as_deref()
-        .map(str::trim)
-        .filter(|path| !path.is_empty());
+    //
+    // ## ★ 为什么下发**两个映射**而不是单值（issue #20）
+    //
+    // 设置里的路径已按区域分家，而本命令是**全局**视角（「自动挑中的是哪一条」）。
+    // 设置页按区域渲染，需要拿到**本区域**那一条 —— 用检测到的变体所属区域去取会张冠李戴
+    // （用户在国际版页面上却看到国内版的路径）。因此把每个区域的值都下发，
+    // 由前端按当前区域取。`configuredPath` / `configuredPathExists` 保留为
+    // 「**检测到的那条线**所属区域」的值，供不关心区域的旧调用点继续读。
+    let mut configured_paths = serde_json::Map::new();
+    let mut configured_paths_exist = serde_json::Map::new();
+    for region in super::region::TraeRegion::all() {
+        let path = settings.path_for(region);
+        configured_paths.insert(region.as_str().to_string(), json!(path));
+        configured_paths_exist.insert(
+            region.as_str().to_string(),
+            json!(path
+                .map(|path| std::path::Path::new(path).is_file())
+                .unwrap_or(false)),
+        );
+    }
+
+    let configured_path = variant.and_then(|variant| settings.path_for(variant.region()));
     let configured_path_exists = configured_path
         .map(|path| std::path::Path::new(path).is_file())
         .unwrap_or(false);
@@ -1507,10 +1535,13 @@ pub fn env_status() -> Value {
         "dataDir": data_dir.as_ref().map(|p| p.to_string_lossy().to_string()),
         "dataDirExists": data_dir.map(|p| p.is_dir()).unwrap_or(false),
         "platform": platform_tag(),
-        "configuredPath": settings.trae_path,
+        "configuredPath": configured_path,
         // `configuredPath` 为空时恒 `false` —— 前端只在「填了且失效」时才提示，
         // 见 `TraeSettingsPage` 的客户端路径一栏。
         "configuredPathExists": configured_path_exists,
+        // ★ 按区域分家的完整视图（键 = `TraeRegion::as_str()`）。
+        "configuredPaths": Value::Object(configured_paths),
+        "configuredPathsExist": Value::Object(configured_paths_exist),
         "variant": variant.map(|v| v.as_str()),
         "variantLabel": variant.map(|v| v.display_name()),
     })
@@ -1532,7 +1563,9 @@ pub fn detected_variant() -> Option<super::variant::TraeVariant> {
         .and_then(|dir| dir.file_name().and_then(|n| n.to_str()))
         .and_then(super::variant::variant_of_name)
         .or_else(|| {
-            detect_install(settings.trae_path.as_deref())
+            // 自定义路径**逐个区域**试（issue #20：只看单值会漏掉另一区域）。
+            // `detect_install` 已按传入顺序取第一个存在的文件，故这里直接取它的 exe 名反查。
+            detect_install(&settings.all_paths())
                 .exe
                 .as_ref()
                 .and_then(|exe| exe.file_name().and_then(|n| n.to_str()))
@@ -1942,7 +1975,7 @@ mod tests {
         let exe = temp.join(exe_names()[0]);
         std::fs::write(&exe, b"stub").unwrap();
 
-        let probe = detect_install(Some(&exe.to_string_lossy()));
+        let probe = detect_install(&[exe.to_string_lossy().to_string()]);
         assert!(probe.installed);
         assert_eq!(probe.exe.as_deref(), Some(exe.as_path()));
 
@@ -1952,7 +1985,7 @@ mod tests {
     #[test]
     fn detect_install_ignores_invalid_custom_path() {
         // 自定义路径不存在时不能直接报「已安装」，应继续走自动探测。
-        let probe = detect_install(Some("/definitely/not/here/trae"));
+        let probe = detect_install(&["/definitely/not/here/trae".to_string()]);
         assert!(!probe.installed || probe.exe.is_some());
         if !probe.installed {
             assert!(probe.exe.is_none());
@@ -1961,7 +1994,7 @@ mod tests {
 
     #[test]
     fn detect_install_blank_custom_path_does_not_error() {
-        let probe = detect_install(Some("   "));
+        let probe = detect_install(&["   ".to_string()]);
         // 空/空白自定义路径应被忽略而不是当成路径 ""
         if let Some(exe) = probe.exe {
             assert!(!exe.to_string_lossy().trim().is_empty());
@@ -2033,6 +2066,8 @@ mod tests {
             "platform",
             "configuredPath",
             "configuredPathExists",
+            "configuredPaths",
+            "configuredPathsExist",
         ] {
             assert!(value.get(key).is_some(), "缺少线上字段 {key}");
         }
@@ -2065,44 +2100,72 @@ mod tests {
         ));
         std::fs::create_dir_all(&dir).expect("临时目录应能创建");
 
-        // 1) 没填 → 恒 false（前端据此**不**提示）。
-        crate::modules::trae::settings::patch(serde_json::json!({ "traePath": null }))
-            .expect("清空 traePath 应成功");
-        assert_eq!(
-            env_status().get("configuredPathExists").and_then(|v| v.as_bool()),
-            Some(false),
-            "未配置路径时不得报 true"
-        );
+        // 1) 没填 → 两个区域都 false（前端据此**不**提示）。
+        crate::modules::trae::settings::patch(serde_json::json!({ "traePaths": {} }))
+            .expect("清空 traePaths 应成功");
+        let value = env_status();
+        for region in ["cn", "global"] {
+            assert_eq!(
+                value
+                    .get("configuredPathsExist")
+                    .and_then(|map| map.get(region))
+                    .and_then(|v| v.as_bool()),
+                Some(false),
+                "未配置路径时 {region} 不得报 true"
+            );
+        }
 
-        // 2) 填了一个**存在**的文件 → true。
+        // 2) **只**给国内版填一个**存在**的文件 → cn=true、global 仍 false。
+        //    ★ 这一对断言就是 issue #20 的回归护栏：旧实现是单个全局字段，
+        //    给任一区域设置都会让两边同时变 true（「以最后的设置为准」）。
         let real = dir.join("Trae CN.exe");
         std::fs::write(&real, b"x").expect("应能写临时 exe");
         crate::modules::trae::settings::patch(serde_json::json!({
-            "traePath": real.to_string_lossy()
+            "traePaths": { "cn": real.to_string_lossy() }
         }))
-        .expect("设置 traePath 应成功");
+        .expect("设置 traePaths 应成功");
         let value = env_status();
+        let exist = value.get("configuredPathsExist").expect("应有 configuredPathsExist");
         assert_eq!(
-            value.get("configuredPathExists").and_then(|v| v.as_bool()),
+            exist.get("cn").and_then(|v| v.as_bool()),
             Some(true),
-            "存在的路径必须报 true"
+            "国内版存在的路径必须报 true"
         );
         assert_eq!(
-            value.get("configuredPath").and_then(|v| v.as_str()),
+            exist.get("global").and_then(|v| v.as_bool()),
+            Some(false),
+            "★ 区域必须隔离：给国内版设路径不得让国际版也变成已配置"
+        );
+        assert_eq!(
+            value
+                .get("configuredPaths")
+                .and_then(|map| map.get("cn"))
+                .and_then(|v| v.as_str()),
             Some(real.to_string_lossy().as_ref()),
-            "configuredPath 必须原样回显存盘值"
+            "configuredPaths.cn 必须原样回显存盘值"
+        );
+        assert!(
+            value
+                .get("configuredPaths")
+                .and_then(|map| map.get("global"))
+                .map(|v| v.is_null())
+                .unwrap_or(false),
+            "未配置的区域必须为 null 而不是空串"
         );
 
         // 3) 填了一个**已失效**的路径（客户端合并/升级搬走了 exe）→ false，
         //    且探测必须仍然跑完（回落自动探测，不因失效路径报错/卡死）。
         let dead = dir.join("TRAE SOLO CN.exe");
         crate::modules::trae::settings::patch(serde_json::json!({
-            "traePath": dead.to_string_lossy()
+            "traePaths": { "cn": dead.to_string_lossy() }
         }))
-        .expect("设置失效 traePath 应成功");
+        .expect("设置失效 traePaths 应成功");
         let value = env_status();
         assert_eq!(
-            value.get("configuredPathExists").and_then(|v| v.as_bool()),
+            value
+                .get("configuredPathsExist")
+                .and_then(|map| map.get("cn"))
+                .and_then(|v| v.as_bool()),
             Some(false),
             "失效路径必须如实报 false —— 设置页据此提示用户重新选择"
         );
@@ -2867,7 +2930,7 @@ mod tests {
     fn detect_install_returns_a_registered_exe_name_when_installed() {
         // 命中安装时，返回的必须是候选表里的文件名（防止拼出错误路径）。
         // 同时把结果打出来，便于用 `--nocapture` 核对本机真实探测结果。
-        let probe = detect_install(None);
+        let probe = detect_install(&[]);
         eprintln!(
             "[trae] detect_install -> installed={} exe={:?} version={:?}",
             probe.installed,
@@ -2901,7 +2964,7 @@ mod tests {
         let exe = temp.join(exe_names()[0]);
         std::fs::write(&exe, b"stub").unwrap();
 
-        let probe = detect_install(Some(&exe.to_string_lossy()));
+        let probe = detect_install(&[exe.to_string_lossy().to_string()]);
         assert!(probe.installed);
         assert_eq!(probe.version.as_deref(), Some("9.9.9"));
         assert_eq!(probe.exe.as_deref(), Some(exe.as_path()));

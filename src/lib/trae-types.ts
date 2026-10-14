@@ -37,6 +37,22 @@ export interface TraeEnvStatus {
    */
   configuredPathExists: boolean;
   /**
+   * **按区域**配置的客户端路径（键 = {@link TraeRegionId}），未配置的区域为 `null`。
+   *
+   * ## 为什么必须有它（issue #20）
+   *
+   * `configuredPath` 是**全局视角**下的单值 —— 它取「检测到的那条线所属区域」的路径。
+   * 设置页是**按区域**渲染的：用户在国际版页面上必须看到国际版的值，
+   * 拿 `configuredPath` 会张冠李戴（在国内版页面看到国际版的路径）。
+   * 因此后端把每个区域的值都下发，由设置页按当前区域取。
+   */
+  configuredPaths: Record<TraeRegionId, string | null>;
+  /**
+   * `configuredPaths` 每个区域的值是否**仍指向一个真实文件**（判据同
+   * {@link configuredPathExists}）。设置页的「路径已失效」提示据此**按区域**判定。
+   */
+  configuredPathsExist: Record<TraeRegionId, boolean>;
+  /**
    * 自动探测到的**产品线变体**稳定标识（`"trae_work"` / `"trae_cn"`）。
    *
    * 自动探测横跨全部变体挑最近活跃的那一个，所以界面必须说得出挑中的是谁。
@@ -644,6 +660,24 @@ export interface TraeSettings {
   checkinSkipExpired: boolean;
   retry: number;
   notify: string;
+  /**
+   * 用户指定的 Trae 客户端可执行文件路径，**按区域分家**（issue #20）。
+   *
+   * 键 = {@link TraeRegionId}（`"cn"` / `"global"`），值 = exe 绝对路径；缺失 = 该区域未指定。
+   *
+   * ## 为什么不再是单个 `traePath`（issue #20）
+   *
+   * 国内版与国际版是**两个物理上不同的客户端**（`Trae CN.exe` / `Trae.exe`），
+   * 单个全局字段会让「设置国际版路径」直接覆盖国内版 —— 用户报障原话：
+   * 「设置Trae 路径国内版和国际版 两个都设置是一样的，以最后的设置为准了，没有隔离开来」。
+   */
+  traePaths: Partial<Record<TraeRegionId, string>>;
+  /**
+   * **旧版单值字段：只读回显，不要写。**
+   *
+   * 后端 `load()` 会把它单向迁移进 {@link traePaths} 并清空；前端保留它只为
+   * 「升级前设过路径」的诊断提示，**保存时不得回写**（写了会让迁移反复发生）。
+   */
   traePath: string | null;
   browserPath: string | null;
   logRetentionDays: number;

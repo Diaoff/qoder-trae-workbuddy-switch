@@ -1364,6 +1364,11 @@ function demoTraeEnv(): TraeEnvStatus {
     // `configuredPath` 为空 ⇒ 本字段恒 `false`（后端同款语义）：演示站上
     // 设置页的「路径已失效」提示因此不出现，符合「没填就没有失效」。
     configuredPathExists: false,
+    // ★ 按区域分家的完整视图（issue #20）：键必须两个区域都在，否则设置页在
+    // 缺键的区域上会读到 `undefined` —— 演示站能跑、真实站要等归一化才生效，
+    // 这类差异只会在真机暴露。
+    configuredPaths: { cn: null, global: null },
+    configuredPathsExist: { cn: false, global: false },
     // 变体字段必须与真实 HTTP 响应同形状：fixture 少一个键，演示站就看不到
     // 产品线标签，而这个差异只会在真机暴露。
     variant: "trae_work", variantLabel: t("trae.program.traeWork"),
@@ -1697,7 +1702,7 @@ function demoTraeSettings(): TraeSettings {
   return {
     proxyPort: 8899, theme: "dark", launchMinimized: false, autoStartProxy: true, tray: true,
     language: "zh-CN", checkinSkipChecked: true, checkinSkipExpired: true, retry: 2,
-    notify: "system", traePath: null, browserPath: null, logRetentionDays: 7,
+    notify: "system", traePaths: {}, traePath: null, browserPath: null, logRetentionDays: 7,
     proxyDomains: "", apiPort: 7864, apiKey: "sk-trae-9f2c1a4b6d8e0f3a5b7c9d1e2f4a6b8c",
     apiDefaultModel: "deepseek-v4-flash",
   };

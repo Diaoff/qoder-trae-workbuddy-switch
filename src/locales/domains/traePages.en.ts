@@ -206,9 +206,9 @@ export const en = {
   "trae.page.settings.multiSep": ", ",
   "trae.page.settings.multiTail": "), the most recently active one is selected automatically.",
   "trae.page.settings.pathLabel": "Client executable path",
-  "trae.page.settings.pathDesc": "Leave empty for auto-detection, which scans common install locations on the system drive and other drives — no need to fill this in. Only set it if Trae sits in an unusual location.",
+  "trae.page.settings.pathDesc": "Applies to [{region}] only. Leave empty for auto-detection, which scans common install locations on the system drive and other drives — no need to fill this in. Only set it if Trae sits in an unusual location. Domestic and international keep separate values and never overwrite each other.",
   "trae.page.settings.pathPlaceholder": "Empty = auto-detect common locations",
-  "trae.page.settings.pathStale": "The path set here no longer exists (the client was upgraded or merged into a new location). Currently using the auto-detected one: {path}. Click “Save” with this field empty to fall back to auto-detection.",
+  "trae.page.settings.pathStale": "The path set for [{region}] no longer exists (the client was upgraded or merged into a new location). Currently using the auto-detected one: {path}. Click “Save” with this field empty to fall back to auto-detection.",
 
   // ---- Ports & network ----
   "trae.page.settings.networkGroup": "Ports & network",
