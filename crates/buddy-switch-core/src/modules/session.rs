@@ -370,7 +370,11 @@ fn data_dir_has_session_data(region: Region) -> bool {
 
 /// 按 region 在 `{data_dir}/projects/{workspace}/{cid}.jsonl` 定位会话正文。
 fn find_project_jsonl_for(region: Region, cid: &str) -> Option<PathBuf> {
-    let projects = session_data_dir(region).join("projects");
+    find_project_jsonl_in(&session_data_dir(region).join("projects"), cid)
+}
+
+/// [`find_project_jsonl_for`] 的**可重定向**版本（根目录由调用方给 ⇒ 单测不碰真实 home）。
+fn find_project_jsonl_in(projects: &Path, cid: &str) -> Option<PathBuf> {
     if !projects.is_dir() {
         return None;
     }
@@ -378,7 +382,7 @@ fn find_project_jsonl_for(region: Region, cid: &str) -> Option<PathBuf> {
     if direct.is_file() {
         return Some(direct);
     }
-    for entry in std::fs::read_dir(&projects).ok()?.flatten() {
+    for entry in std::fs::read_dir(projects).ok()?.flatten() {
         if !entry.path().is_dir() {
             continue;
         }
@@ -404,9 +408,13 @@ fn find_project_jsonl_for(region: Region, cid: &str) -> Option<PathBuf> {
 /// - **直立在先**：`projects/{cid}.jsonl` 与子目录里的同名文件并存时，直立赢；
 /// - 子目录兜底：`projects/{workspace}/{cid}.jsonl`。
 fn build_projects_index_for(region: Region) -> HashMap<String, PathBuf> {
-    let projects = session_data_dir(region).join("projects");
+    build_projects_index_in(&session_data_dir(region).join("projects"))
+}
+
+/// [`build_projects_index_for`] 的**可重定向**版本（根目录由调用方给 ⇒ 单测不碰真实 home）。
+fn build_projects_index_in(projects: &Path) -> HashMap<String, PathBuf> {
     let mut index: HashMap<String, PathBuf> = HashMap::new();
-    let Ok(entries) = std::fs::read_dir(&projects) else {
+    let Ok(entries) = std::fs::read_dir(projects) else {
         return index;
     };
     let mut subdirs: Vec<PathBuf> = Vec::new();
@@ -481,7 +489,7 @@ pub struct SessionFingerprint {
 /// 而副本是**另一个 cid**（复制时整份 `text.replace(cid, new_cid)`）。
 ///
 /// ⇒ 若直接对**原始行**做 hash，两个副本**永远没有公共前缀** ⇒
-/// `deriveGroupStatus` 会把**每一个组都判成 `diverge`**（**假分歧**）——
+/// `derive_content_status` 会把**每一个组都判成 `diverge`**（**假分歧**）——
 /// 明明内容一致，却告诉用户「有分歧」，比不显示更坏（§3.10 第 1 条「图不能撒谎」）。
 ///
 /// ⇒ hash 前把本会话的 cid 换成这个占位符，使指纹表达的是**内容**，而不是「谁的副本」。
@@ -512,33 +520,78 @@ struct CachedFingerprint {
     fingerprint: SessionFingerprint,
 }
 
-/// ★ 进程内指纹缓存（键 = `region ␟ cid`）。
+/// ★ 指纹缓存（键 = `region ␟ cid`）—— **进程内 + 落盘**两级。
 ///
 /// ## 为什么必须有它
 ///
 /// 会话页要给账本里**每个副本**算内容状态。真机实测（2026-10-14，Global 分区）：
-/// 账本 25,078 条边 → 409 组 / 25,487 个副本 → **66 GB** 正文；全量读一遍单线程
-/// **13 分钟**（Python 参照实现 92 MB/s）。「每次开页都重算」因此完全不可接受。
+/// 账本 25,078 条边 → 409 组 / 25,487 个副本 → **66 GB** 正文；原始读吞吐 150 MB/s
+/// ⇒ 全量读一遍 7 分钟以上（Python 参照实现带解析只有 92 MB/s）。「每次开页都重算」
+/// 因此完全不可接受。
 ///
 /// 指纹只由 **(路径, 大小, mtime)** 决定 ⇒ 三者未变即可复用，**命中时零 IO**。
 /// 客户端在会话里继续打字只会让文件变长 ⇒ 只有**活跃的那几份**会被重读。
 ///
-/// ## 为什么刻意**不落盘**
+/// ## 落盘（本步新增）
 ///
-/// 单份缓存 = 25k × 512 × 8B ≈ 100 MB；写一遍比重读一遍还贵，还要自定义二进制格式 /
-/// 版本号 / 损坏回退。进程内缓存已把「重复开页」的代价降到 0，先把这一步做扎实。
-/// ⚠️ 已知代价：**重启应用后的第一次**开页仍要付一次全量读（并行的几十秒量级）。
-/// 要消掉它必须走「二进制 + 尾部增量」的持久化，那是独立的一步，不做半成品。
+/// 进程内缓存只解决「同一个应用会话里重复开页」；**重启后第一次**开页仍要读 66 GB。
+/// ⇒ 把条目落到 `store_dir()/session-fingerprints.bin`（**应用自有目录**，不写进
+/// 客户端数据目录），下次启动直接复用。
+///
+/// 格式是**定长二进制**（`magic + 条目数 + 条目×N`）：25,487 个副本 ≈ **106 MB**
+/// （每条 = cid + size + mtime + lineCount + ≤512 个 u64）。JSON 存同样的东西要
+/// 转义 + 十进制编码（约 300 MB），纯浪费；这也是**刻意不用 JSON** 的唯一理由。
+///
+/// ⚠️ **不落盘的诱惑要顶住一半**：只在「本次真的读过盘 / 条目集合变了」时才重写
+/// （`dirty`），全命中的开页**一个字节都不写**。
+///
+/// ⚠️ **失效判据仍只有 (size, mtime)**：文件被**同尺寸同 mtime** 改写（同一毫秒内
+/// 覆写，且长度恰好相等）会读到旧读数。这是**刻意接受**的已知边界 —— 客户端追加式
+/// 写入几乎必然改尺寸或 mtime，而引入内容校验就等于每次开页重读 66 GB（本末倒置）。
 #[derive(Default)]
 pub struct FingerprintStore {
     entries: HashMap<String, CachedFingerprint>,
+    /// 是否有未落盘的改动（`put` / `prune` 置位，成功保存后清位）。
+    dirty: bool,
+    /// 自上次落盘以来**真的读过盘**的条目数（命中不算）。
+    fresh_reads: usize,
+    /// 上次落盘时的条目数 —— 用来识别「条目集合变了（新增 / 剪枝）」这类值得写的改动。
+    entries_at_load: usize,
 }
 
-/// 进程内共享的指纹缓存。
+/// 落盘缓存的文件名（位于 [`crate::modules::config::store_dir`]，即应用自有目录）。
+const FINGERPRINT_CACHE_FILE: &str = "session-fingerprints.bin";
+
+/// 落盘格式的魔数 + 版本。**改格式必须换它** —— 否则老文件会被按新布局解读，
+/// 读出满屏垃圾读数（比缓存失效坏得多，因为它是**静默的错**）。
+const FINGERPRINT_CACHE_MAGIC: &[u8; 8] = b"BSFPC002";
+
+/// 条目数上限：超过就不落盘（内存缓存照常工作）。
+///
+/// 每条 ≈ 4.2 KB ⇒ 50,000 条 ≈ 210 MB，已经是「为省一次 66 GB 读而付的合理代价」的
+/// 上限。再大宁可退化成进程内缓存，也不在用户磁盘上无声堆一个 GB 级文件。
+const FINGERPRINT_CACHE_MAX_ENTRIES: usize = 50_000;
+
+/// **值得重写整份缓存**的最少新增读数。
+///
+/// 落盘是**整份重写**（106 MB）⇒ 为了「刚才聊天让 3 个会话变长了」就重写一次，
+/// 代价与收益完全不成比例。规则：**条目集合变了**（首次构建 / 剪枝）或**攒够**
+/// [`FINGERPRINT_CACHE_MIN_PERSIST_READS`] 条新读数才写。
+///
+/// ⚠️ 攒不够就不写是**安全**的：文件里留着的是**旧 (size, mtime)**，重启后照常被
+/// 判为失效、重读那几份 —— 只是多读几十 MB，不会给出错误读数。
+const FINGERPRINT_CACHE_MIN_PERSIST_READS: usize = 32;
+
+/// 落盘缓存的路径（应用自有 store 目录；`BUDDY_SWITCH_HOME` 会被一并重定向 ⇒ 单测安全）。
+fn fingerprint_cache_path() -> PathBuf {
+    crate::modules::config::store_dir().join(FINGERPRINT_CACHE_FILE)
+}
+
+/// 进程内共享的指纹缓存（**首次使用时**才从磁盘载入 —— 冷启动不为它读盘）。
 static FINGERPRINTS: OnceLock<Mutex<FingerprintStore>> = OnceLock::new();
 
 fn fingerprint_store() -> &'static Mutex<FingerprintStore> {
-    FINGERPRINTS.get_or_init(|| Mutex::new(FingerprintStore::default()))
+    FINGERPRINTS.get_or_init(|| Mutex::new(FingerprintStore::load_from(&fingerprint_cache_path())))
 }
 
 /// 缓存键：**region 分家**（CN / Global 的 cid 是两套 uuid 空间，不许互相命中）。
@@ -600,7 +653,158 @@ impl FingerprintStore {
                 fingerprint,
             },
         );
+        self.dirty = true;
+        self.fresh_reads += 1;
     }
+
+    /// 从磁盘载入（**fail-safe**：文件缺失 / 魔数不符 / 中途损坏都退化成空表）。
+    ///
+    /// ⚠️ 中途损坏时**保留已解析的部分**而不是整体丢弃：缓存只是为了省一次读，
+    /// 部分可用也比全废好。但**魔数 / 版本不符 ⇒ 整体丢弃** —— 那是布局变了，
+    /// 按新布局读老字节会得到**静默的错误读数**。
+    fn load_from(path: &Path) -> FingerprintStore {
+        let mut store = FingerprintStore::default();
+        let Ok(bytes) = std::fs::read(path) else {
+            return store;
+        };
+        let Some(body) = bytes.strip_prefix(FINGERPRINT_CACHE_MAGIC.as_slice()) else {
+            return store;
+        };
+        let mut cursor = 0usize;
+        let Some(count) = read_u64(body, &mut cursor) else {
+            return store;
+        };
+        for _ in 0..count {
+            let Some(key_len) = read_u16(body, &mut cursor) else {
+                return store;
+            };
+            let Some(key) =
+                read_bytes(body, &mut cursor, key_len as usize).map(String::from_utf8)
+            else {
+                return store;
+            };
+            let Ok(key) = key else {
+                return store;
+            };
+            let (Some(size), Some(mtime_ms), Some(line_count)) = (
+                read_u64(body, &mut cursor),
+                read_i64(body, &mut cursor),
+                read_u64(body, &mut cursor),
+            ) else {
+                return store;
+            };
+            let Some(hash_len) = read_u16(body, &mut cursor) else {
+                return store;
+            };
+            let mut prefix_hashes: Vec<u64> = Vec::with_capacity(hash_len as usize);
+            for _ in 0..hash_len {
+                let Some(hash) = read_u64(body, &mut cursor) else {
+                    return store;
+                };
+                prefix_hashes.push(hash);
+            }
+            store.entries.insert(
+                key,
+                CachedFingerprint {
+                    size,
+                    mtime_ms,
+                    fingerprint: SessionFingerprint {
+                        line_count: line_count as usize,
+                        prefix_hashes,
+                    },
+                },
+            );
+        }
+        // 载入不是「改动」：紧接着的保存只应发生在真有新读数时。
+        store.dirty = false;
+        store
+    }
+
+    /// 按 `region` 剪掉**本次没被请求**的条目（一个会话被删掉后，它的条目就永远取不到了）。
+    ///
+    /// ⚠️ 只在**本次账本读成功**（有组）时调用 —— 账本损坏读到空时剪枝会把整份缓存清空，
+    /// 那正好是最需要它的时候。
+    fn prune_region(&mut self, region: Region, keep: &std::collections::HashSet<String>) -> usize {
+        let prefix = format!("{}{LEDGER_SEP}", region.as_str());
+        let before = self.entries.len();
+        self.entries
+            .retain(|key, _| !key.starts_with(&prefix) || keep.contains(key));
+        let removed = before - self.entries.len();
+        if removed > 0 {
+            self.dirty = true;
+        }
+        removed
+    }
+
+    /// 值得写才落盘；返回是否真的写了。
+    ///
+    /// 两个判据（见 [`FINGERPRINT_CACHE_MIN_PERSIST_READS`]）：
+    /// ① **条目集合变了**（首次构建、剪枝）—— 这是结构性变化，必须落盘；
+    /// ② **攒够新读数** —— 避免「聊几句天就重写 106 MB」。
+    /// 另外条目太多 ⇒ 不写（见 [`FINGERPRINT_CACHE_MAX_ENTRIES`]）。
+    ///
+    /// ⚠️ 不满足条件时**不清 `dirty` / 计数器** —— 改动攒着，下次接着算。
+    fn save_if_worthwhile(&mut self, path: &Path) -> bool {
+        if !self.dirty || self.entries.len() > FINGERPRINT_CACHE_MAX_ENTRIES {
+            return false;
+        }
+        let structural = self.entries.len() != self.entries_at_load;
+        if !structural && self.fresh_reads < FINGERPRINT_CACHE_MIN_PERSIST_READS {
+            return false;
+        }
+        let mut bytes: Vec<u8> = Vec::with_capacity(16 + self.entries.len() * 4200);
+        bytes.extend_from_slice(FINGERPRINT_CACHE_MAGIC);
+        bytes.extend_from_slice(&(self.entries.len() as u64).to_le_bytes());
+        for (key, entry) in &self.entries {
+            bytes.extend_from_slice(&(key.len() as u16).to_le_bytes());
+            bytes.extend_from_slice(key.as_bytes());
+            bytes.extend_from_slice(&entry.size.to_le_bytes());
+            bytes.extend_from_slice(&entry.mtime_ms.to_le_bytes());
+            bytes.extend_from_slice(&(entry.fingerprint.line_count as u64).to_le_bytes());
+            let hashes = &entry.fingerprint.prefix_hashes;
+            bytes.extend_from_slice(&(hashes.len() as u16).to_le_bytes());
+            for hash in hashes {
+                bytes.extend_from_slice(&hash.to_le_bytes());
+            }
+        }
+        if crate::modules::config::atomic_write_bytes(path, &bytes).is_err() {
+            // 写失败**不清 dirty**：下次还有机会重写（否则一次瞬时失败就永久停写）。
+            return false;
+        }
+        self.dirty = false;
+        self.fresh_reads = 0;
+        self.entries_at_load = self.entries.len();
+        true
+    }
+}
+
+/// 从 `cursor` 处读一个 `u16`（越界 ⇒ `None`）。
+fn read_u16(buf: &[u8], cursor: &mut usize) -> Option<u16> {
+    let end = *cursor + 2;
+    let slice = buf.get(*cursor..end)?;
+    *cursor = end;
+    Some(u16::from_le_bytes([slice[0], slice[1]]))
+}
+
+/// 从 `cursor` 处读一个 `u64`（越界 ⇒ `None`）。
+fn read_u64(buf: &[u8], cursor: &mut usize) -> Option<u64> {
+    let end = *cursor + 8;
+    let slice = buf.get(*cursor..end)?;
+    *cursor = end;
+    Some(u64::from_le_bytes(slice.try_into().ok()?))
+}
+
+/// 从 `cursor` 处读一个 `i64`（越界 ⇒ `None`）。
+fn read_i64(buf: &[u8], cursor: &mut usize) -> Option<i64> {
+    read_u64(buf, cursor).map(|value| value as i64)
+}
+
+/// 从 `cursor` 处读 `len` 字节（越界 ⇒ `None`）。
+fn read_bytes(buf: &[u8], cursor: &mut usize, len: usize) -> Option<Vec<u8>> {
+    let end = *cursor + len;
+    let slice = buf.get(*cursor..end)?;
+    *cursor = end;
+    Some(slice.to_vec())
 }
 
 /// 有界并行地把 `cid → 路径` 读成指纹（**顺序与入参一一对应**）。
@@ -640,8 +844,10 @@ fn read_fingerprints_parallel(
 
 /// 把 `members` 的指纹**从缓存复用 / 必要时读盘**（并行）取回，顺序与 `members` 对齐。
 ///
-/// 返回的每项都是 `(索引, 指纹)` 之外还带 `(size, mtime)` 以便回填缓存。
+/// `store` 显式传入（**不用全局**）—— 单测要能拿一个只属于它的临时缓存，
+/// 否则会读写真实用户的 `~/.buddy-switch/session-fingerprints.bin`（本仓踩过四次的坑）。
 fn fingerprints_for_members(
+    store: &mut FingerprintStore,
     region: Region,
     projects: &HashMap<String, PathBuf>,
     members: &[(String, String)],
@@ -649,18 +855,15 @@ fn fingerprints_for_members(
     let mut out: Vec<Option<SessionFingerprint>> = vec![None; members.len()];
     // ① 先在缓存里找（命中零 IO）；缺失的登记为待读任务。
     let mut pending: Vec<(usize, String, PathBuf)> = Vec::new();
-    {
-        let store = fingerprint_store().lock().unwrap();
-        for (index, (_uid, cid)) in members.iter().enumerate() {
-            match projects.get(cid) {
-                // ⚠️ 目录里没有这份 jsonl ⇒ **没有内容可读**（不是错误）⇒ 留 `None`。
-                None => continue,
-                Some(path) => {
-                    let key = fingerprint_key(region, cid);
-                    match store.valid(&key, path) {
-                        Some(hit) => out[index] = Some(hit),
-                        None => pending.push((index, cid.clone(), path.clone())),
-                    }
+    for (index, (_uid, cid)) in members.iter().enumerate() {
+        match projects.get(cid) {
+            // ⚠️ 目录里没有这份 jsonl ⇒ **没有内容可读**（不是错误）⇒ 留 `None`。
+            None => continue,
+            Some(path) => {
+                let key = fingerprint_key(region, cid);
+                match store.valid(&key, path) {
+                    Some(hit) => out[index] = Some(hit),
+                    None => pending.push((index, cid.clone(), path.clone())),
                 }
             }
         }
@@ -676,18 +879,12 @@ fn fingerprints_for_members(
         .collect();
     let reads = read_fingerprints_parallel(&jobs);
 
-    // ③ 回填：内存里对一遍 + 顺手写缓存（**只有稳定读数才写**，见 `read_stable_fingerprint`）。
-    let mut store = fingerprint_store().lock().unwrap();
+    // ③ 回填：**只有稳定读数才写**（见 `read_stable_fingerprint`）。
     for ((index, cid, _), read) in pending.into_iter().zip(reads) {
         let Some((fingerprint, size, mtime_ms)) = read else {
             continue;
         };
-        store.put(
-            fingerprint_key(region, &cid),
-            size,
-            mtime_ms,
-            fingerprint.clone(),
-        );
+        store.put(fingerprint_key(region, &cid), size, mtime_ms, fingerprint.clone());
         out[index] = Some(fingerprint);
     }
     out
@@ -2750,14 +2947,21 @@ pub fn list_replica_groups_for(region: Region) -> Value {
     let (entries, source) = replica_group_entries(region, None);
     if entries.is_empty() {
         // 无可用登记（文件缺失 / 空 / 只有跨 region 边）⇒ 前端渲染结构化空态。
+        // ⚠️ **此时不动缓存**：账本损坏读到空时剪枝 / 落盘会把好端端的一份缓存毁掉。
         return json!({ "groups": [], "source": "empty" });
     }
-    // ★ 内容状态：**在这里算完**，只把每组几个整数回给前端（见 [`GroupContentStatus`]）。
+    // ★ 内容状态：**在这里算完**，只把每组几个整数回给前端（见 [`derive_content_status`]）。
     //   `projects/` 索引只建一次 —— 逐副本重扫目录是「加载很久」的第二大来源。
     let projects = build_projects_index_for(region);
+    let mut store = fingerprint_store().lock().unwrap();
     let mut groups: Vec<Value> = Vec::with_capacity(entries.len());
+    // 本次真的请求过的键 ⇒ 用来剪掉「会话已被删掉」的陈旧条目（缓存不无限长）。
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
     for entry in &entries {
-        let fingerprints = fingerprints_for_members(region, &projects, &entry.members);
+        let fingerprints = fingerprints_for_members(&mut store, region, &projects, &entry.members);
+        for (_uid, cid) in &entry.members {
+            seen.insert(fingerprint_key(region, cid));
+        }
         let baseline = newest_baseline(&entry.baselines);
         let mut json = entry.json.clone();
         if let Some(object) = json.as_object_mut() {
@@ -2768,6 +2972,11 @@ pub fn list_replica_groups_for(region: Region) -> Value {
         }
         groups.push(json);
     }
+    // ★ 落盘：全命中时 `dirty` 为假 ⇒ **一个字节都不写**（见 [`FingerprintStore`] 的说明）。
+    //   载入失败 / 写失败都不影响本次读数（缓存只是加速器）。
+    store.prune_region(region, &seen);
+    let cache_path = fingerprint_cache_path();
+    store.save_if_worthwhile(&cache_path);
     json!({ "groups": groups, "source": source })
 }
 
@@ -5106,10 +5315,10 @@ mod fingerprint_tests {
     /// 一份 15 行的会话里 14 行含该 cid。而副本是**另一个 cid**
     /// （复制时整份 `text.replace(cid, new_cid)`）。
     /// ⇒ 若按原始行 hash，两个**内容完全一致**的副本公共前缀恒为 0 ⇒
-    /// `deriveGroupStatus` 会把**每个组都判成 `diverge`**（假分歧）。
+    /// `derive_content_status` 会把**每个组都判成 `diverge`**（假分歧）。
     ///
-    /// 可证伪：把 `fingerprint_of_file` 里的 `text.replace(cid, SESSION_ID_PLACEHOLDER)`
-    /// 去掉（改回直接 hash 原始行），本用例即红。
+    /// 可证伪：把 `fingerprint_of_text` 里那行按需归一化（`line.replace(cid, …)`）去掉
+    /// （改回直接 hash 原始行），本用例即红。
     #[test]
     fn fingerprint_ignores_the_replicas_own_session_id() {
         let dir = sync_tmp_dir("fp-id");
@@ -5839,5 +6048,506 @@ mod fingerprint_tests {
         );
 
         std::fs::remove_dir_all(dir).unwrap();
+    }
+}
+
+/// ★ 会话页性能地基的单测：**索引 / 缓存 / 组状态算法**。
+///
+/// 全部用临时目录（**不碰真实 home**）—— 这是本仓踩过四次的坑（见模块头）。
+#[cfg(test)]
+mod content_status_tests {
+    use super::*;
+
+    /// 建一个临时 `projects/` 根 + 若干 jsonl（返回 `(根, 清理 guard)`）。
+    fn temp_projects(tag: &str) -> (PathBuf, PathBuf) {
+        let home = std::env::temp_dir().join(format!(
+            "buddy-switch-status-{tag}-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        let projects = home.join("projects");
+        std::fs::create_dir_all(projects.join("ws-a")).unwrap();
+        (home, projects)
+    }
+
+    /// 写一份会话正文（每行一条「消息」；含本会话 id —— 与真机形态对齐）。
+    fn write_jsonl(projects: &Path, workspace: &str, cid: &str, lines: usize) {
+        let mut body = String::new();
+        for index in 0..lines {
+            body.push_str(&format!(
+                "{{\"type\":\"message\",\"sessionId\":\"{cid}\",\"n\":{index}}}\n"
+            ));
+        }
+        let dir = projects.join(workspace);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join(format!("{cid}.jsonl")), body).unwrap();
+    }
+
+    /// ★ 索引与「逐次查找」**逐条等价**（含「直立案优先于子目录」这条）。
+    ///
+    /// 可证伪：把 `build_projects_index_in` 里直立案的 `insert` 改成 `or_insert`
+    /// ⇒ 子目录里的同名文件会赢 ⇒ 第二条断言红。
+    #[test]
+    fn projects_index_matches_per_lookup_path() {
+        let (home, projects) = temp_projects("index-parity");
+        write_jsonl(&projects, "ws-a", "cid-in-subdir", 3);
+        // 直立案与子目录同名文件并存：**直立必须赢**（`find_project_jsonl_in` 的语义）。
+        std::fs::write(
+            projects.join("cid-direct.jsonl"),
+            "{\"type\":\"message\"}\n",
+        )
+        .unwrap();
+        write_jsonl(&projects, "ws-a", "cid-direct", 99);
+        // 非 `.jsonl` 一律不参与（.meta.json / .file-rollback.ndjson 是边车）。
+        std::fs::write(projects.join("ws-a").join("cid-meta.meta.json"), "{}").unwrap();
+
+        let index = build_projects_index_in(&projects);
+        for cid in ["cid-in-subdir", "cid-direct", "cid-missing", "cid-meta.meta"] {
+            assert_eq!(
+                index.get(cid).cloned(),
+                find_project_jsonl_in(&projects, cid),
+                "索引与逐次查找必须给出同一条路径：{cid}"
+            );
+        }
+        assert_eq!(
+            index.get("cid-direct").map(|p| p.parent().unwrap().to_path_buf()),
+            Some(projects.clone()),
+            "直立文件必须赢过子目录里的同名文件"
+        );
+        std::fs::remove_dir_all(home).unwrap();
+    }
+
+    /// ★★★ 「全体一致的公共前缀」== 「两两公共前缀的最小值」。
+    ///
+    /// 这是把 O(N²·512) 降成 O(N·512) 的**唯一依据**，所以必须拿**参考实现**
+    /// （`common_prefix_len` 的两两版本）逐组对拍，不能只靠推导。
+    ///
+    /// 可证伪：把 `derive_content_status` 里「扫一遍找首个不一致」换成「只看第 0 个
+    /// 成员与其他成员」之类的不完整实现 ⇒ 第三条（第 2 个成员先分叉的构造）红。
+    #[test]
+    fn all_agree_prefix_equals_min_pairwise_prefix() {
+        // 构造：a 与 b 在前 4 行一致；c 在第 2 行就分叉（首个不一致 = 索引 2）。
+        let a = SessionFingerprint { line_count: 9, prefix_hashes: vec![1, 2, 3, 4, 5] };
+        let b = SessionFingerprint { line_count: 7, prefix_hashes: vec![1, 2, 3, 4, 6] };
+        let c = SessionFingerprint { line_count: 6, prefix_hashes: vec![1, 2, 9, 9, 9] };
+        let fps = vec![Some(a.clone()), Some(b.clone()), Some(c.clone())];
+
+        let reference = [
+            common_prefix_len(&a, &b),
+            common_prefix_len(&a, &c),
+            common_prefix_len(&b, &c),
+        ]
+        .into_iter()
+        .min()
+        .unwrap();
+        assert_eq!(reference, 2, "参考实现：第 2 行即分叉");
+
+        let members: Vec<(String, String)> = ["a", "b", "c"]
+            .iter()
+            .map(|cid| ("uid".to_string(), cid.to_string()))
+            .collect();
+        let status = derive_content_status(&members, &fps, None);
+        assert_eq!(status["commonPrefix"], json!(2), "一遍扫过全体 = 两两最小值");
+        assert_eq!(status["deltas"]["a"], json!(7), "9 - 2");
+        assert_eq!(status["deltas"]["b"], json!(5), "7 - 2");
+        assert_eq!(status["deltas"]["c"], json!(4), "6 - 2");
+        assert_eq!(status["latestLineCount"], json!(9));
+        // 公共前缀（2）没覆盖到最短副本（6 行）⇒ 分叉。
+        assert_eq!(status["status"], json!(STATUS_DIVERGE));
+
+        // 全体一致 ⇒ latest；行数不等但前缀覆盖最短 ⇒ behind。
+        // ⚠️ 构造必须**自洽**：`prefix_hashes.len() <= line_count`（超过 512 行时才截断），
+        // 否则「公共前缀 < 行数」会把它判成分叉 —— 这正是本条断言要挡的假数据。
+        let full = SessionFingerprint {
+            line_count: 5,
+            prefix_hashes: vec![1, 2, 3, 4, 5],
+        };
+        let same = vec![Some(full.clone()), Some(full)];
+        let equal = derive_content_status(&members[..2], &same, None);
+        assert_eq!(equal["status"], json!(STATUS_LATEST));
+        assert_eq!(equal["commonPrefix"], json!(5));
+        assert_eq!(equal["latestLineCount"], json!(5));
+        let prefix_only = vec![Some(a.clone()), Some(SessionFingerprint {
+            line_count: 3,
+            prefix_hashes: vec![1, 2, 3],
+        })];
+        let behind = derive_content_status(&members[..2], &prefix_only, None);
+        assert_eq!(behind["status"], json!(STATUS_BEHIND));
+        assert_eq!(behind["commonPrefix"], json!(3), "公共前缀 = 3（覆盖到最短副本）");
+
+        // 缺一个指纹 ⇒ 整体 unknown（**不臆造**）。
+        let missing = vec![Some(a), None];
+        assert_eq!(
+            derive_content_status(&members[..2], &missing, None)["status"],
+            json!(STATUS_UNKNOWN)
+        );
+    }
+
+    /// ★ 缓存按 **(size, mtime)** 失效：**只追加几行**就必须给出新读数。
+    ///
+    /// 可证伪：把 `FingerprintStore::valid` 里的判据删成「存在即命中」
+    /// ⇒ 第二条断言红（会拿到追加前的行数）。
+    #[test]
+    fn fingerprint_store_invalidates_when_file_grows() {
+        let (home, projects) = temp_projects("cache");
+        write_jsonl(&projects, "ws-a", "cid-1", 5);
+        let index = build_projects_index_in(&projects);
+        let members = vec![("uid-a".to_string(), "cid-1".to_string())];
+
+        let mut store = FingerprintStore::default();
+        let first = fingerprints_for_members(&mut store, Region::Cn, &index, &members);
+        assert_eq!(first[0].as_ref().unwrap().line_count, 5);
+
+        // 命中：缓存里的读数被复用（内容未变 ⇒ 行数不变）。
+        let cached = fingerprints_for_members(&mut store, Region::Cn, &index, &members);
+        assert_eq!(cached[0].as_ref().unwrap().line_count, 5);
+
+        // 追加一行（客户端继续对话）⇒ **必须**读到新行数。
+        let path = projects.join("ws-a").join("cid-1.jsonl");
+        let mut body = std::fs::read_to_string(&path).unwrap();
+        body.push_str("{\"type\":\"message\",\"sessionId\":\"cid-1\",\"n\":5}\n");
+        std::fs::write(&path, body).unwrap();
+
+        let after = fingerprints_for_members(&mut store, Region::Cn, &index, &members);
+        assert_eq!(
+            after[0].as_ref().unwrap().line_count,
+            6,
+            "文件变长 ⇒ 缓存必须失效（否则会一直显示旧行数）"
+        );
+        std::fs::remove_dir_all(home).unwrap();
+    }
+
+    /// ★ 端到端（**不碰真实 home**）：目录里的 jsonl → 指纹 → 组状态。
+    ///
+    /// 这条覆盖「索引 + 并行读取 + 归一化 + 派生」的整条接线 —— 上面的用例各自
+    /// 只覆盖一段，缺了它，「接线错了但每段都对」不会被发现。
+    #[test]
+    fn content_status_end_to_end_from_disk() {
+        let (home, projects) = temp_projects("e2e");
+        // 副本 a：12 行；副本 a-copy：内容相同（id 已归一化）⇒ 应当「已一致」。
+        write_jsonl(&projects, "ws-a", "cid-a", 12);
+        write_jsonl(&projects, "ws-b", "cid-a-copy", 12);
+        // 副本 c：前缀 10 行 + 自己 2 行 ⇒ 相对最短副本（12）是**追加** ⇒ behind。
+        write_jsonl(&projects, "ws-c", "cid-c", 14);
+
+        let index = build_projects_index_in(&projects);
+        let mut store = FingerprintStore::default();
+        let members = vec![
+            ("uid-a".to_string(), "cid-a".to_string()),
+            ("uid-b".to_string(), "cid-a-copy".to_string()),
+        ];
+        let fingerprints = fingerprints_for_members(&mut store, Region::Cn, &index, &members);
+        let status = derive_content_status(&members, &fingerprints, None);
+        assert_eq!(
+            status["status"],
+            json!(STATUS_LATEST),
+            "两份同名内容（换了 id）必须判「已一致」—— 归一化没生效就会误判分叉"
+        );
+        assert_eq!(status["commonPrefix"], json!(12));
+
+        // 三副本：c 多 2 行 ⇒ behind（公共前缀仍是 12，覆盖到最短副本）。
+        let mut three = members.clone();
+        three.push(("uid-c".to_string(), "cid-c".to_string()));
+        let fingerprints = fingerprints_for_members(&mut store, Region::Cn, &index, &three);
+        let status = derive_content_status(&three, &fingerprints, None);
+        assert_eq!(status["status"], json!(STATUS_BEHIND));
+        assert_eq!(status["latestLineCount"], json!(14));
+        assert_eq!(status["deltas"]["cid-c"], json!(2));
+        assert_eq!(status["deltas"]["cid-a"], json!(0));
+
+        // 目录里没有的 cid ⇒ `None`（**没有内容可读**不是错误）⇒ 整体 unknown。
+        let ghost = vec![
+            ("uid-a".to_string(), "cid-a".to_string()),
+            ("uid-b".to_string(), "cid-ghost".to_string()),
+        ];
+        let fingerprints = fingerprints_for_members(&mut store, Region::Cn, &index, &ghost);
+        assert!(fingerprints[1].is_none());
+        assert_eq!(
+            derive_content_status(&ghost, &fingerprints, None)["status"],
+            json!(STATUS_UNKNOWN)
+        );
+        std::fs::remove_dir_all(home).unwrap();
+    }
+
+    // ---------------------------------------------------------------- 落盘缓存
+
+    /// ★ 落盘缓存**往返**：写出去再读回来，读数与身份逐条一致。
+    ///
+    /// 可证伪：把 `save_if_worthwhile` 里的 `line_count` 改成不写（写 0）⇒ 第二条断言红。
+    #[test]
+    fn fingerprint_cache_round_trips() {
+        let (home, projects) = temp_projects("cache-roundtrip");
+        let cache = home.join("cache.bin");
+        write_jsonl(&projects, "ws-a", "cid-1", 7);
+
+        let mut store = FingerprintStore::default();
+        store.put(
+            fingerprint_key(Region::Cn, "cid-1"),
+            1234,
+            1_700_000_000_123,
+            SessionFingerprint {
+                line_count: 7,
+                prefix_hashes: vec![10, 20, 30],
+            },
+        );
+        assert!(store.save_if_worthwhile(&cache), "有改动就必须落盘");
+        assert!(!store.save_if_worthwhile(&cache), "落盘后不再是 dirty（全命中的开页一个字节都不写）");
+
+        let reloaded = FingerprintStore::load_from(&cache);
+        let entry = reloaded.entries.get(&fingerprint_key(Region::Cn, "cid-1")).unwrap();
+        assert_eq!(entry.size, 1234);
+        assert_eq!(entry.mtime_ms, 1_700_000_000_123);
+        assert_eq!(entry.fingerprint.line_count, 7);
+        assert_eq!(entry.fingerprint.prefix_hashes, vec![10, 20, 30]);
+        assert!(!reloaded.dirty, "载入不算改动（否则每次开页都会白写一份 106 MB）");
+
+        std::fs::remove_dir_all(home).unwrap();
+    }
+
+    /// ★★★ 跨「重启」复用：**没有重新读正文**也能拿到读数。
+    ///
+    /// 证明方式（唯一可靠的一种）：把文件内容**换成等长的另一份**、并把 mtime **改回去** ——
+    /// 此时 (size, mtime) 与缓存一致 ⇒ 命中路径**必须**给出**旧**行数。
+    /// 若读到的是新内容（行数变了），说明它根本没走缓存、偷偷读了盘。
+    ///
+    /// 这同时把「同尺寸同 mtime 改写会被漏掉」这条**已知边界**钉成断言：它是**刻意**接受的
+    /// （客户端追加式写入必然改 size 或 mtime；为它每次开页重读 66 GB 是本末倒置）。
+    #[test]
+    fn persisted_cache_is_reused_without_reading_content() {
+        let (home, projects) = temp_projects("cache-reuse");
+        let cache = home.join("cache.bin");
+        write_jsonl(&projects, "ws-a", "cid-1", 3);
+        let path = projects.join("ws-a").join("cid-1.jsonl");
+        let original_mtime = std::fs::metadata(&path).unwrap().modified().unwrap();
+
+        // 第一趟：真读一遍并落盘。
+        let mut store = FingerprintStore::default();
+        let members = vec![("uid-a".to_string(), "cid-1".to_string())];
+        let index = build_projects_index_in(&projects);
+        let first = fingerprints_for_members(&mut store, Region::Cn, &index, &members);
+        assert_eq!(first[0].as_ref().unwrap().line_count, 3);
+        assert!(store.save_if_worthwhile(&cache));
+
+        // 「重启」：新进程只有磁盘上的缓存。
+        let mut store = FingerprintStore::load_from(&cache);
+
+        // 等长改写 + mtime 改回去 ⇒ 按 (size, mtime) 判据**仍是命中**。
+        let rewritten = "{\"type\":\"message\",\"sessionId\":\"cid-1\",\"n\":9}\n"
+            .repeat(3);
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().len(),
+            rewritten.len() as u64,
+            "构造前提：两份内容必须等长"
+        );
+        std::fs::write(&path, &rewritten).unwrap();
+        let file = std::fs::OpenOptions::new().write(true).open(&path).unwrap();
+        file.set_modified(original_mtime).unwrap();
+        drop(file);
+
+        let reused = fingerprints_for_members(&mut store, Region::Cn, &index, &members);
+        // 行数仍是 3（两份都 3 行）⇒ 用 hash 证明：命中的是**旧**内容的前缀 hash。
+        assert_eq!(
+            reused[0].as_ref().unwrap().prefix_hashes,
+            first[0].as_ref().unwrap().prefix_hashes,
+            "同 (size, mtime) ⇒ 必须直接复用缓存读数；hash 变了说明它偷读了盘"
+        );
+
+        // 反向对照：mtime 变了（正常的追加）⇒ **必须**重读，hash 随之变化。
+        let appended = format!("{rewritten}{{\"type\":\"message\"}}\n");
+        std::fs::write(&path, &appended).unwrap();
+        let refreshed = fingerprints_for_members(&mut store, Region::Cn, &index, &members);
+        assert_eq!(refreshed[0].as_ref().unwrap().line_count, 4, "尺寸变了必须重读");
+        assert_ne!(
+            refreshed[0].as_ref().unwrap().prefix_hashes,
+            first[0].as_ref().unwrap().prefix_hashes,
+            "内容变了 hash 必须变（证明上面那条不是「hash 恒等」）"
+        );
+
+        std::fs::remove_dir_all(home).unwrap();
+    }
+
+    /// ★ 缓存文件损坏 / 版本不符 ⇒ **不 panic、不给定错误读数**（fail-safe 成空表）。
+    ///
+    /// ⚠️ 魔数不符必须**整体丢弃**：那是「布局变了」，按新布局读老字节会得到静默的错读数。
+    #[test]
+    fn corrupt_fingerprint_cache_degrades_to_empty() {
+        let (home, projects) = temp_projects("cache-corrupt");
+        let cache = home.join("cache.bin");
+        write_jsonl(&projects, "ws-a", "cid-1", 2);
+
+        let mut store = FingerprintStore::default();
+        store.put(
+            fingerprint_key(Region::Cn, "cid-1"),
+            10,
+            20,
+            SessionFingerprint { line_count: 2, prefix_hashes: vec![1, 2] },
+        );
+        assert!(store.save_if_worthwhile(&cache));
+        let good = std::fs::read(&cache).unwrap();
+
+        // 魔数不符 ⇒ 空（不是「按新布局硬读」）。
+        let mut wrong_magic = good.clone();
+        wrong_magic[..8].copy_from_slice(b"BSFPC999");
+        std::fs::write(&cache, &wrong_magic).unwrap();
+        assert_eq!(FingerprintStore::load_from(&cache).entries.len(), 0, "版本 / 魔数不符必须整体丢弃");
+
+        // 中途截断 ⇒ 保留已解析部分，**不 panic**。
+        std::fs::write(&cache, &good[..good.len() - 5]).unwrap();
+        let truncated = FingerprintStore::load_from(&cache);
+        assert!(truncated.entries.len() <= 1, "截断最多留下完整解析的那几条");
+
+        // 空文件 / 垃圾字节 ⇒ 空表。
+        for payload in [Vec::new(), b"not-a-cache".to_vec(), vec![0u8; 64]] {
+            std::fs::write(&cache, &payload).unwrap();
+            assert_eq!(FingerprintStore::load_from(&cache).entries.len(), 0);
+        }
+        // 文件根本不存在 ⇒ 空表（首次运行）。
+        assert_eq!(
+            FingerprintStore::load_from(&home.join("nope.bin")).entries.len(),
+            0
+        );
+
+        std::fs::remove_dir_all(home).unwrap();
+    }
+
+    /// ★ 落盘**不是**「有改动就写」：条目集合没变、且新读数太少时**不写**（106 MB 整份重写）。
+    ///
+    /// 可证伪：把 `save_if_worthwhile` 里的 `structural` / `fresh_reads` 判据删掉
+    /// （退回「dirty 就写」）⇒ 第一条「不该写」断言红。
+    #[test]
+    fn cache_write_is_skipped_for_tiny_updates() {
+        let (home, projects) = temp_projects("cache-threshold");
+        let cache = home.join("cache.bin");
+        write_jsonl(&projects, "ws-a", "cid-1", 3);
+        let path = projects.join("ws-a").join("cid-1.jsonl");
+
+        // 模拟「上一次已经落过盘」：1 条条目，`entries_at_load` 与之一致。
+        let mut store = FingerprintStore::default();
+        store.put(
+            fingerprint_key(Region::Cn, "cid-1"),
+            1,
+            1,
+            SessionFingerprint { line_count: 3, prefix_hashes: vec![1] },
+        );
+        assert!(store.save_if_worthwhile(&cache), "首次构建（条目数变了）必须写");
+        let after_first = std::fs::read(&cache).unwrap();
+
+        // 内容变了（模拟用户聊了几句）⇒ 只有 1 条新读数、条目数不变 ⇒ **不该重写 106 MB**。
+        let fingerprint = fingerprint_of_file(&path, "cid-1").unwrap();
+        store.put(
+            fingerprint_key(Region::Cn, "cid-1"),
+            99,
+            99,
+            fingerprint,
+        );
+        assert!(
+            !store.save_if_worthwhile(&cache),
+            "只有 1 条新读数、条目数没变 ⇒ 不值得重写整份缓存"
+        );
+        assert_eq!(
+            std::fs::read(&cache).unwrap(),
+            after_first,
+            "跳过落盘时文件必须**一个字节都没变**"
+        );
+
+        // 攒够 32 条 ⇒ 值得写。
+        for index in 0..FINGERPRINT_CACHE_MIN_PERSIST_READS {
+            store.put(
+                fingerprint_key(Region::Cn, &format!("filler-{index}")),
+                1,
+                1,
+                SessionFingerprint { line_count: 1, prefix_hashes: vec![index as u64] },
+            );
+        }
+        // ⚠️ 注意：上面这轮 **条目数变了** ⇒ `structural` 也为真；这里要单独验的是
+        //    「fresh_reads 判据本身有效」—— 所以再补一次只有读数、没有新条目的场景。
+        assert!(store.save_if_worthwhile(&cache), "条目数变了 ⇒ 必须写");
+
+        let mut store = FingerprintStore::load_from(&cache);
+        let before = std::fs::read(&cache).unwrap();
+        for _ in 0..FINGERPRINT_CACHE_MIN_PERSIST_READS {
+            store.put(
+                fingerprint_key(Region::Cn, "cid-1"),
+                2,
+                2,
+                SessionFingerprint { line_count: 3, prefix_hashes: vec![2] },
+            );
+        }
+        assert!(
+            store.save_if_worthwhile(&cache),
+            "同一个键重读 32 次 ⇒ fresh_reads 达标 ⇒ 必须写（证明该判据真的在起作用）"
+        );
+        assert_ne!(std::fs::read(&cache).unwrap(), before, "这次必须真的重写了");
+
+        std::fs::remove_dir_all(home).unwrap();
+    }
+
+    /// ★ 剪枝：只清「本 region 且本次没请求」的条目 —— 别的 region 与本次请求过的必须留。
+    ///
+    /// 可证伪：把 `prune_region` 里的前缀判断去掉（退化成按 key 是否存在）
+    /// ⇒ 别的 region 的条目会被连坐清掉 ⇒ 第一条保留断言红。
+    #[test]
+    fn prune_region_keeps_other_regions() {
+        let mut store = FingerprintStore::default();
+        for (region, cid) in [
+            (Region::Cn, "keep"),
+            (Region::Cn, "stale"),
+            (Region::Global, "other-region"),
+        ] {
+            store.put(
+                fingerprint_key(region, cid),
+                1,
+                1,
+                SessionFingerprint { line_count: 1, prefix_hashes: vec![7] },
+            );
+        }
+        let mut keep = std::collections::HashSet::new();
+        keep.insert(fingerprint_key(Region::Cn, "keep"));
+        let removed = store.prune_region(Region::Cn, &keep);
+
+        assert_eq!(removed, 1, "只该剪掉 CN 里没被请求的那一条");
+        assert!(store.entries.contains_key(&fingerprint_key(Region::Cn, "keep")));
+        assert!(!store.entries.contains_key(&fingerprint_key(Region::Cn, "stale")));
+        assert!(
+            store.entries.contains_key(&fingerprint_key(Region::Global, "other-region")),
+            "别的 region 的条目与本次剪枝无关"
+        );
+    }
+
+    /// ★ P14 S2：基线的**前缀验证**在 core（原先在前端）—— 验证不过 ⇒ `null`，不编数。
+    #[test]
+    fn since_baseline_requires_a_verified_prefix() {
+        let baseline = GroupBaseline {
+            a: "cid-a".to_string(),
+            b: "cid-b".to_string(),
+            created_at: 1,
+            line_count: 3,
+            prefix_hashes: vec![1, 2, 3],
+        };
+        let members = vec![
+            ("uid-a".to_string(), "cid-a".to_string()),
+            ("uid-b".to_string(), "cid-b".to_string()),
+            ("uid-c".to_string(), "cid-c".to_string()),
+        ];
+
+        // 前缀仍是真前缀 ⇒ 给出诚实增量（5 - 3 = 2）。
+        let good = vec![
+            Some(SessionFingerprint { line_count: 5, prefix_hashes: vec![1, 2, 3, 4, 5] }),
+            Some(SessionFingerprint { line_count: 3, prefix_hashes: vec![1, 2, 3] }),
+            Some(SessionFingerprint { line_count: 3, prefix_hashes: vec![1, 2, 3] }),
+        ];
+        let status = derive_content_status(&members, &good, Some(&baseline));
+        assert_eq!(status["sinceBaseline"]["cid-a"], json!(2));
+        assert_eq!(status["sinceBaseline"]["cid-b"], json!(0));
+        // 基线是**成对**的：与它无关的成员**不在表里**（不是 0）。
+        assert!(status["sinceBaseline"].get("cid-c").is_none());
+
+        // 改写了更早的内容（第 3 行变了）⇒ 验证不过 ⇒ `null`（「新增几条」不成立）。
+        let rewritten = vec![
+            Some(SessionFingerprint { line_count: 5, prefix_hashes: vec![1, 2, 9, 4, 5] }),
+            Some(SessionFingerprint { line_count: 3, prefix_hashes: vec![1, 2, 3] }),
+            Some(SessionFingerprint { line_count: 3, prefix_hashes: vec![1, 2, 3] }),
+        ];
+        let status = derive_content_status(&members, &rewritten, Some(&baseline));
+        assert!(status["sinceBaseline"]["cid-a"].is_null());
     }
 }

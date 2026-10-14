@@ -179,23 +179,33 @@ export function buildAccountLabels(accounts: AccountMeta[]): Map<string, string>
 }
 
 /**
- * 建 `accountUid → 会话行`。
+ * 建 `accountUid → (sessionId → 会话行)`。
  *
  * ⚠️ **只有一个键**（当前账号）：`list_sessions` 只列**当前账号**的会话。其它账号的副本
  * 拿不到会话行 ⇒ 落兜底标题。这是数据源的**已知局限**（§1.2 / §3.1 注），不是缺陷 ——
  * 视图以 `partial` + 固定文案**如实**呈现。
+ *
+ * ★ 内层是 **Map 而不是数组**：真机上副本行有 25k 条、当前账号的会话有 12k 条 ⇒
+ * 用 `Array.find` 逐行找就是 25k × 12k = **3 亿次**字符串比较（主线程卡死几秒）。
+ * 建索引是一次 O(12k)，之后每行 O(1)。
  */
 export function buildSessionsByAccount(
   currentUid: string | null,
   sessions: Session[],
-): Map<string, Session[]> {
-  const map = new Map<string, Session[]>();
+): Map<string, Map<string, Session>> {
+  const byId = new Map<string, Session>();
+  for (const session of sessions) {
+    const id = displayText(session.id);
+    if (id) byId.set(id, session);
+  }
+  const map = new Map<string, Map<string, Session>>();
   const key = displayText(currentUid);
-  if (key) map.set(key, sessions);
+  if (key) map.set(key, byId);
   return map;
 }
 
-/** 账号显示名：命中账号库用显示名；否则 `uid 前缀 + 「未知账号」`（**绝不**留空）。 */function resolveAccountLabel(uid: string, labels: Map<string, string>): string {
+/** 账号显示名：命中账号库用显示名；否则 `uid 前缀 + 「未知账号」`（**绝不**留空）。 */
+function resolveAccountLabel(uid: string, labels: Map<string, string>): string {
   const known = displayText(labels.get(uid));
   if (known && known.trim() !== "") return known;
   // 前缀取前 8 位（与账号卡片的短 uid 口径一致）；uid 本身可能很短，兜底用整体。
@@ -204,11 +214,11 @@ export function buildSessionsByAccount(
 }
 
 function findSession(
-  sessionsByAccount: Map<string, Session[]>,
+  sessionsByAccount: Map<string, Map<string, Session>>,
   uid: string,
   sessionId: string,
 ): Session | undefined {
-  return sessionsByAccount.get(uid)?.find((session) => session.id === sessionId);
+  return sessionsByAccount.get(uid)?.get(sessionId);
 }
 
 /**
@@ -222,7 +232,7 @@ function findSession(
  */
 export function buildGroupViews(
   groups: SessionReplicaGroup[],
-  sessionsByAccount: Map<string, Session[]>,
+  sessionsByAccount: Map<string, Map<string, Session>>,
   accountLabels: Map<string, string>,
 ): SessionGroupView[] {
   return groups.map((group) => {

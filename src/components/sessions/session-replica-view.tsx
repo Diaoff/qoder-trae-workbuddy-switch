@@ -18,8 +18,9 @@
  * ## 状态 / 分歧（**内容指纹**）
  *
  * ⚠️ **禁止**用 `updatedAt` 派生「落后 / 最新」（`P8-ARCH.md` §1.2「时间新 ≠ 内容新」）。
- * 状态一律由 `deriveGroupStatus`（jsonl 指纹公共前缀）派生；`updatedAt` **只作事实展示**
- * （卡片更新行 `formatDate(...)`、抽屉里 `formatDate(row.updatedAt)`），不参与任何判定。
+ * 状态一律来自**后端**（`session::derive_content_status`，随 `list_session_replicas` 的
+ * `content` 一起回）；`updatedAt` **只作事实展示**（卡片更新行 `formatDate(...)`、
+ * 抽屉里 `formatDate(row.updatedAt)`），不参与任何判定。
  *
  * ## 白屏防线（issue #2）
  *

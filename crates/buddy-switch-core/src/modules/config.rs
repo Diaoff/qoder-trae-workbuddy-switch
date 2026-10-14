@@ -1029,6 +1029,17 @@ pub fn utc_iso() -> String {
 
 /// 原子写文件（临时文件 + rename），对照 Python atomic_write。
 pub fn atomic_write(path: &Path, content: &str) -> std::io::Result<()> {
+    atomic_write_bytes(path, content.as_bytes())
+}
+
+/// 二进制版的 [`atomic_write`]（**同一套「临时文件 + rename」纪律**）。
+///
+/// 单开一个函数而不是把上面那个泛化成 `impl AsRef<[u8]>`：那会牵动全部既有调用点的
+/// 类型推断（`&str` 与 `&[u8]` 同时可推断为泛型时，字面量调用会歧义），收益为零。
+///
+/// 用途：会话指纹缓存是**定长二进制**（25k × 512 × 8B ≈ 100 MB），
+/// 用 JSON / 文本写一遍要额外转义与编码，纯浪费。
+pub fn atomic_write_bytes(path: &Path, content: &[u8]) -> std::io::Result<()> {
     let file_name = path
         .file_name()
         .map(|n| n.to_string_lossy().to_string())

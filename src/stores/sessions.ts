@@ -105,7 +105,7 @@ export const useSessionsStore = create<SessionsState>((set) => ({
 
       // 会话行：只列**当前账号**的会话（`list_sessions` 的既有语义）。取不到不致命 ——
       // 副本组仍可见，标题落兜底（诚实标注由 `partial` 承担）。
-      let sessionsByAccount = new Map<string, Session[]>();
+      let sessionsByAccount = new Map<string, Map<string, Session>>();
       try {
         const sessionResponse = await api.listSessions(region);
         sessionsByAccount = buildSessionsByAccount(
