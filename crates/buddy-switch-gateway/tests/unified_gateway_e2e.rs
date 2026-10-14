@@ -6,15 +6,17 @@
 //! （`{*path}` 写成 0.8 语法 ⇒ router 构建期 panic；handler 写了但没人调 ⇒ 路径 404）。
 //! 所以这份测试**只用真实请求**判定行为，不读源码字符串。
 //!
-//! ## 隔离：必须带 `BUDDY_SWITCH_HOME` 跑
+//! ## 隔离：**由夹具自己完成**（不需要运行者记得设环境变量）
 //!
 //! 统一网关**借用**两个产品线的进程内单例（目录缓存 / 禁用集）—— 那些是**只读**的；
-//! 但 `WbGateway::shared_state()` 初始化时可能创建 store 目录。
-//! ⇒ 跑本测试时请指向一个临时目录，避免碰用户的真实数据：
+//! 但 `WbGateway::shared_state()` 初始化时可能创建 store 目录，而 `relay` 每个请求都会
+//! 读真实账号库。⇒ [`isolate_home`] 在**第一个请求之前**把 `BUDDY_SWITCH_HOME` 指向一个
+//! **恒空的临时目录**。
 //!
-//! ```text
-//! BUDDY_SWITCH_HOME=/tmp/bs-e2e cargo test -p buddy-switch-gateway --test unified_gateway_e2e
-//! ```
+//! ⚠️ **不要改回「跑之前请自行设 `BUDDY_SWITCH_HOME`」**：那种「记得设」的前提会让裸跑
+//! `cargo test` 变红（本机有账号 ⇒ 请求真的打到上游），而 CI 上又会因为机器恰好没登录
+//! 而**假绿**。2026-10-14 实测踩到：`config_changes_apply_to_the_running_listener`
+//! 常年红，而真因根本不是它名字说的那件事。
 //!
 //! ## 覆盖边界（**刻意不测什么**）
 //!
@@ -34,6 +36,41 @@ use buddy_switch_gateway::unified::{
 };
 use serde_json::Value;
 
+/// 进程级隔离的 `BUDDY_SWITCH_HOME`（**只设一次**，指向一个恒空的临时目录）。
+///
+/// # 为什么必须有它（2026-10-14 实测：一条用例因它常年红）
+///
+/// 网关读账号库 / 认证文件走 `core_config::home_dir()`，那是**进程级 env**。夹具原先
+/// 只隔离了 `keys.json`，于是用例的结论取决于**跑测试的人本机有没有登录过**：
+/// `config_changes_apply_to_the_running_listener` 在本机（有可用 CN 账号）上，请求
+/// **真的打到了上游**并拿回「模型 x 不存在」= 400，撞上「不应是 400」的断言。
+///
+/// ⇒ 隔离必须**自证**，不能靠运行者记得设变量（见文件头的 ⚠️）。
+///
+/// # 为什么只设一次（而不是每个用例各设一次）
+///
+/// `cargo test` 默认多线程，用例间反复改同一个进程级变量是竞态源（本仓既有约定：
+/// 需要改它的用例必须串行化）。一次性设成恒空目录 ⇒ 值恒定、无竞态，且所有用例
+/// 都看不到真实账号。临时目录不回收（`temp_dir` 下的空目录，无副作用）。
+///
+/// # 为什么必须在**第一个请求之前**调
+///
+/// `WbGateway::shared_state()` 是**进程单例**，首次被请求触发时初始化；而池的
+/// `sync_accounts` **只增不删** ⇒ 一旦有请求在隔离前同步过真实账号，后续用例即使
+/// home 空了，也会从池里选到那个账号。故 [`start_gateway_with_state`] 一进来就调。
+fn isolate_home() {
+    static HOME: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
+    HOME.get_or_init(|| {
+        let dir = std::env::temp_dir().join(format!(
+            "buddy-switch-unified-e2e-home-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        std::fs::create_dir_all(&dir).expect("隔离 home 应可创建");
+        std::env::set_var("BUDDY_SWITCH_HOME", &dir);
+        dir
+    });
+}
+
 /// 起一个隔离的统一网关（端口 0 = 内核分配），返回 (基址, 明文Key, 临时目录)。
 ///
 /// 密钥库放临时目录；命名空间取默认集（派生层 4 条）。
@@ -42,6 +79,31 @@ async fn start_gateway(
     biz_namespace: Option<&str>,
     tune: impl FnOnce(&mut UnifiedGatewayConfig),
 ) -> (String, String, std::path::PathBuf, buddy_switch_gateway::GatewayHandle) {
+    let (base, key, dir, handle, _state) =
+        start_gateway_with_state(key_namespaces, biz_namespace, tune).await;
+    (base, key, dir, handle)
+}
+
+/// 与 [`start_gateway`] 相同，但**额外把监听持有的那份 state 交回来**。
+///
+/// 统一网关的 `config` 是 `Arc<RwLock<…>>`，`Clone` 廉价且**共享同一个 Arc**
+/// ⇒ 外部拿克隆改配置，监听下一跳就读到新值 —— 「配置热改立刻生效」因此**可测**。
+///
+/// （改造前那条用例以为「无法从测试外部拿到监听持有的 state」，退而断言 `/healthz`
+/// 的命名空间条数，等于**没测**它名字说的那件事。）
+async fn start_gateway_with_state(
+    key_namespaces: &[&str],
+    biz_namespace: Option<&str>,
+    tune: impl FnOnce(&mut UnifiedGatewayConfig),
+) -> (
+    String,
+    String,
+    std::path::PathBuf,
+    buddy_switch_gateway::GatewayHandle,
+    UnifiedGatewayState,
+) {
+    isolate_home();
+
     let dir = std::env::temp_dir().join(format!(
         "buddy-switch-unified-e2e-{}",
         uuid::Uuid::new_v4().simple()
@@ -65,10 +127,16 @@ async fn start_gateway(
         .expect("授权集应合法");
     assert!(record.is_active());
 
-    let handle = spawn_listener_with_state(state)
+    let handle = spawn_listener_with_state(state.clone())
         .await
         .expect("统一网关应能起监听");
-    (format!("http://{}", handle.addr()), plaintext, dir, handle)
+    (
+        format!("http://{}", handle.addr()),
+        plaintext,
+        dir,
+        handle,
+        state,
+    )
 }
 
 /// 发一条请求并取 (状态码, JSON 体)。
@@ -443,29 +511,73 @@ async fn biz_accepts_get_for_read_only_whitelisted_paths() {
 /// ★ 配置改动**立刻生效**：起监听后把某条命名空间停用（热改配置），下一跳就应 400。
 ///
 /// 这条覆盖「管理面保存后独立监听读到新值」这一路径（共享同一份状态）。
+///
+/// ## 为什么断言 `error.code` 而不只是状态码
+///
+/// 改造前这里写的是 `assert_ne!(status, 400)`，而 400 有好几种来源：命名空间未启用 /
+/// 前缀缺失 / **上游回的 client 错**。本机有可用账号时请求会真的打到上游、拿回
+/// 「模型 x 不存在」的 400 ⇒ 用例红得莫名其妙，且从状态码看不出是哪一类。
+/// 现在钉住**具体那一类**（`namespace_not_enabled`），语义与用例名一致。
+///
+/// ## 为什么要有第 ③ 步（改回来）
+///
+/// 只测「改小 ⇒ 拒绝」的话，把配置在启动期读一次并缓存、或干脆把启用集写死在
+/// router 里，都能让 ①② 变绿。第 ③ 步证明读的是**每次请求时的配置**。
 #[tokio::test]
 async fn config_changes_apply_to_the_running_listener() {
-    let (base, key, dir, handle) = start_gateway(&["wb-cn"], None, |_| {}).await;
+    let (base, key, dir, handle, state) =
+        start_gateway_with_state(&["wb-cn"], None, |_| {}).await;
 
-    // 先确认可用（过掉命名空间把关，落到后续步骤即可 —— 不假设上游可用）
-    let (status, _) = post(&base, "/v1/chat/completions", Some(&key), r#"{"model":"wb-cn:x"}"#).await;
-    assert_ne!(
-        status,
-        StatusCode::BAD_REQUEST,
-        "启用前不应因命名空间被拒：{status}"
+    // ① 启用中：命名空间把关**放行**，请求停在本地（隔离 home 里没有账号 ⇒ 401）。
+    //
+    // ★ 断言 `no_credential` 而不是「不是 400」，是**隔离本身的可观测判据**：
+    //   若 [`isolate_home`] 被删掉，本机（有可用账号）的请求会真的打到上游、
+    //   拿回上游的 `client`/`server` 错误码 ⇒ 这里立刻红。
+    let (_, body) = post(
+        &base,
+        "/v1/chat/completions",
+        Some(&key),
+        r#"{"model":"wb-cn:x"}"#,
+    )
+    .await;
+    assert_eq!(
+        body["error"]["code"], "no_credential",
+        "应停在本地「无可用账号」，说明隔离生效、没打到真实上游：{body}"
     );
 
-    // 热改：只留 trae-cn 启用 ⇒ 同一把 Key 打 wb-cn 应立刻变成「未启用」
-    let state = buddy_switch_gateway::unified::UnifiedGatewayState::new(UnifiedGatewayConfig::default());
-    let _ = state; // 仅用于确认类型可用（真实状态在监听里，见下）
-    // ⚠️ 无法从测试外部拿到监听持有的那份 state ⇒ 用 `/healthz` 观察配置生效的间接证据：
-    //    这里改为断言「服务的健康检查读的是同一份配置」。
-    let (status, body) = get(&base, "/healthz", None).await;
-    assert_eq!(status, StatusCode::OK);
+    // ② 热改：只留 trae-cn 启用 ⇒ 同一把 Key 打 wb-cn 应**立刻**变成「未启用」
+    let mut config = state.config_snapshot().await;
+    config.namespaces = vec!["trae-cn".to_string()];
+    state.set_config(config).await;
+
+    let (status, body) = post(
+        &base,
+        "/v1/chat/completions",
+        Some(&key),
+        r#"{"model":"wb-cn:x"}"#,
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "未启用必须 400：{body}");
     assert_eq!(
-        body["namespaces"].as_array().unwrap().len(),
-        4,
-        "healthz 与网关读同一份配置"
+        body["error"]["code"], "namespace_not_enabled",
+        "应明确报「未启用」，而不是别的 400：{body}"
+    );
+
+    // ③ 再改回来 ⇒ 又放行（证明读的是配置，不是启动期快照）
+    let mut config = state.config_snapshot().await;
+    config.namespaces = vec!["wb-cn".to_string()];
+    state.set_config(config).await;
+
+    let (_, body) = post(
+        &base,
+        "/v1/chat/completions",
+        Some(&key),
+        r#"{"model":"wb-cn:x"}"#,
+    )
+    .await;
+    assert_eq!(
+        body["error"]["code"], "no_credential",
+        "改回来应立刻放行（同样停在本地，不再是被命名空间把关拒绝）：{body}"
     );
 
     handle.shutdown().await;
