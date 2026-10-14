@@ -118,8 +118,17 @@ export const en = {
   "shared.gateway.pool.pin": "Pin",
   "shared.gateway.pool.unpin": "Unpin",
   "shared.gateway.pool.pinned": "Pinned",
+  "shared.gateway.pool.revive": "Restore",
+  // Result strings for the "Restore" exit — **shared by both platforms** (same action, same wording):
+  // disabled is terminal on both WorkBuddy and Trae, and this is the only way out.
+  "shared.gateway.pool.reviveDone": "Restored — the account is back in rotation",
+  "shared.gateway.pool.reviveNoop": "That account was already usable — nothing to restore",
+  "shared.gateway.pool.reviveFail": "Restore failed",
   // Selection priority and exclusivity note (prototype :3069).
   "shared.gateway.pool.exclusiveHint": "Priority: explicit pin > sticky session > auto-best. Pinning is exclusive — only one account is pinned at a time.",
+  // The "Restore" exit: disabled is terminal, so without an exit the account stays dead forever.
+  // ⚠️ Must NOT mention a "breaker": Trae has no such dimension and the string is shared.
+  "shared.gateway.pool.reviveHint": "A disabled account never recovers on its own — Restore clears the disable and the cooldown at once so it rejoins rotation. If it is still unusable it will be disabled again.",
 
   // ---- Clipboard (clipboard.ts) ----
   "shared.clipboard.copied": "Copied",

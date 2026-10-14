@@ -655,6 +655,63 @@ impl Pool {
         )
     }
 
+    /// **人工解除禁用**（清禁用 + 清冷却域，**保留熔断历史**）。
+    ///
+    /// 返回「本次是否真的解除了一个禁用」；`false` = 该 uid 不在池里，或本来就没被禁用
+    /// （幂等：重复点不会报错，也不会重复清状态）。
+    ///
+    /// # 为什么必须有这个出口（2026-10-14 实测：一个**没有任何出口**的终态）
+    ///
+    /// [`PoolEntry::disabled`] 是终态，而且**落盘持久化**（[`restore_entry`] 会读回）。
+    /// 但代码里写的两条恢复路径**都不存在**：
+    ///
+    /// - [`Self::thaw_hard_credit_if_recovered`] 第一句就是 `if entry.disabled { return false }`
+    ///   ⇒ 余额刷新**救不了**禁用账号；
+    /// - [`PoolEntry::revive`] 在本模块之外**零调用点**（只有单测用）。
+    ///
+    /// ⇒ 一个被三振（`12153` 会话失效连续 3 次）禁用的账号**永久不可用**，用户在界面上
+    /// 找不到任何出口。这正是 issue #26「切换过多个账号、桌面端和 Buddy Switch 都试过
+    /// 解决不了」的另一半原因。
+    ///
+    /// # 为什么不做「重新登录 ⇒ 自动复活」（**已验证不可行，别再试**）
+    ///
+    /// 唯一看似可行的信号是「账号库里那条记录变了」。实测两条都不成立：
+    ///
+    /// - `id` / `createdAt` **刻意被保留**（`account::upsert_collected_account`：重新导入同一
+    ///   uid 时把已有的 `id` / `createdAt` 原样写回）⇒ 重新登录**不换** id，id 变化无法作信号；
+    /// - `access_token` 确实会变，但**后台保活刷新也会改它**（`refresh::refresh_account_token_for`
+    ///   只写 token、保留 id）⇒ 用 token 当指纹等于「每次保活都把所有被禁用的号洗白」，
+    ///   三振机制直接被取消。
+    ///
+    /// 结论：账号库里**没有任何字段**能区分「用户重新登录」与「保活刷新」⇒ 自动复活必然误判。
+    /// 故只提供**显式**出口，与网关 API Key 的「恢复」（吊销 ↔ 恢复）同构。
+    ///
+    /// # 为什么**还要**清熔断截止（而不是沿用 [`PoolEntry::revive`] 的「不动熔断域」）
+    ///
+    /// `PoolEntry::healthy` 是 `!disabled && now >= until_ms && now >= breaker_until_ms`
+    /// —— **熔断截止同样挡选号**。三振禁用时 `note_error` 已顺手压上一次熔断
+    /// （默认 30 分钟，退避封顶 6 小时）⇒ 若只清 `disabled`，用户点了「恢复」后
+    /// 账号**最长 6 小时仍选不中**，而界面不会告诉他为什么 —— 按钮点了没用，等于坏了。
+    ///
+    /// 语义上这也说得通：熔断是**自动**治理（防机器反复撞同一堵墙），人工复活是**人的
+    /// 显式判断**（「我知道我在做什么」）。两者冲突时后者优先。
+    ///
+    /// 保留 `retry_count`（退避指数）：它**不参与可用性判定**，只让这个号下次熔断
+    /// 退避更久 —— 既给了出口，也记住了教训。若这个号其实还是坏的，它会在 3 次失败后
+    /// **再次**被禁用，且下次熔断退避更长（不会变成「点一次试三次」的无限循环）。
+    pub fn revive(&mut self, uid: &str) -> bool {
+        let Some(entry) = self.entries.get_mut(uid) else {
+            return false;
+        };
+        if !entry.disabled {
+            return false;
+        }
+        entry.revive();
+        entry.breaker_until_ms = 0;
+        self.dirty = true;
+        true
+    }
+
     /// 指定 uid 此刻是否可用于该请求。
     ///
     /// 供**会话粘性**使用：粘性先问「上次那个账号还能不能用」，能用就复用、不能用就解绑换号。
@@ -1571,6 +1628,92 @@ mod tests {
         assert!(!pool.apply_upstream_error("u1", "", &event, NOW));
         assert!(pool.apply_upstream_error("u1", "", &event, NOW), "第三次应禁用");
         assert!(pool.get("u1").unwrap().disabled);
+    }
+
+    /// ★ `revive` 是被三振禁用账号的**唯一出口**（改造前一个出口都没有）。
+    ///
+    /// 断言四件事：① 真能解除禁用；② 冷却域一并清空；③ **熔断历史保留**（复活不是洗白）；
+    /// ④ 幂等、且不在池里返回 `false`。
+    #[test]
+    fn revive_is_the_only_way_out_of_a_disabled_account() {
+        let mut pool = Pool::new(PoolConfig::default());
+        pool.upsert("u1", None, "");
+
+        // 先压上熔断历史（3 次 Server ⇒ 熔断），再打到禁用。
+        for _ in 0..3 {
+            pool.apply_upstream_error("u1", "", &UpstreamEvent::Server, NOW);
+        }
+        for _ in 0..3 {
+            pool.apply_upstream_error("u1", "", &UpstreamEvent::SessionDead, NOW);
+        }
+        assert!(pool.get("u1").unwrap().disabled, "前置：应已禁用");
+
+        let breaker = pool.get("u1").unwrap().breaker_until_ms;
+        let retry = pool.get("u1").unwrap().retry_count;
+        assert!(breaker > NOW, "前置：应有未过期的熔断，否则下面的断言是空转");
+        assert!(retry > 0, "前置：退避指数应有记录");
+
+        assert!(pool.revive("u1"), "应报告确实解除了禁用");
+        let entry = pool.get("u1").unwrap();
+        assert!(!entry.disabled, "禁用必须被解除");
+        assert_eq!(entry.until_ms, 0, "冷却域应一并清空");
+        assert!(entry.reason.is_empty(), "禁用原因应随禁用一并清掉");
+        assert_eq!(
+            entry.breaker_until_ms, 0,
+            "★ 熔断截止必须一并清掉：`healthy()` 也看它，否则按钮点了最长 6h 不生效"
+        );
+        assert_eq!(entry.retry_count, retry, "退避指数（教训）必须保留，别洗白");
+
+        assert!(!pool.revive("u1"), "本来就可用 ⇒ 返回 false（幂等，不报错）");
+        assert!(!pool.revive("no-such-uid"), "不在池里 ⇒ 返回 false");
+    }
+
+    /// ★ 复活的**用户可见后果**：该账号真的重新进入选号。
+    ///
+    /// 只断言「`disabled` 字段被清」是不够的 —— 选号还有别的判据（冷却 / 熔断 / 在途），
+    /// 而 `healthy()` 把**熔断截止**也算进去。这里直接问「能不能选到它」，
+    /// 那才是用户点「恢复」想要的结果。
+    ///
+    /// 阳性对照：把 `PoolEntry::revive` 改成空操作 ⇒ 本用例必红（`disabled` 未清）；
+    /// 只清 `disabled` 而不清 `breaker_until_ms` ⇒ 本用例也必红（`is_usable_for` 为 false）。
+    ///
+    /// ⚠️ **不能只断言 `pick_account`**：候选全不可用时它会回落到
+    /// [`pick_earliest_expiry`]（宁可试一个也不报「没有账号」），于是「只是被回落捞出来」
+    /// 与「真的可用」在它眼里**长得一样**。要判「真的可用」必须问 `is_usable_for` ——
+    /// 它与选号**同一套判据**（`entry_usable`）且没有回落。
+    #[test]
+    fn revived_account_is_selectable_again() {
+        let mut pool = Pool::new(PoolConfig::default());
+        pool.upsert("u1", Some(RealmTag::Cn), "");
+        // 先压上熔断，再打到禁用 —— 「禁用 + 熔断同时在」正是最容易让「恢复」按钮失效的状态。
+        // ⚠️ 只有 `Server` 会触发熔断（`SessionDead` 只累计三振），故这一步不能省。
+        for _ in 0..3 {
+            pool.apply_upstream_error("u1", "", &UpstreamEvent::Server, NOW);
+        }
+        for _ in 0..3 {
+            pool.apply_upstream_error("u1", "", &UpstreamEvent::SessionDead, NOW);
+        }
+        assert!(pool.get("u1").unwrap().disabled, "前置：应已禁用");
+        assert!(
+            pool.get("u1").unwrap().breaker_until_ms > NOW,
+            "前置：熔断应仍在"
+        );
+        assert!(
+            !pool.is_usable_for("u1", NOW, ""),
+            "前置：被禁用的账号不可用"
+        );
+
+        assert!(pool.revive("u1"));
+
+        assert!(
+            pool.is_usable_for("u1", NOW, ""),
+            "复活后必须**真的可用**（与选号同一套判据，无回落）：禁用 / 冷却 / 熔断都不得再挡"
+        );
+        assert_eq!(
+            pool.pick_account(NOW, Some(RealmTag::Cn), "", &HashSet::new(), 1, None),
+            Some("u1".to_string()),
+            "也应当能被选到 —— 这才是「恢复」按钮的意义"
+        );
     }
 
     #[test]

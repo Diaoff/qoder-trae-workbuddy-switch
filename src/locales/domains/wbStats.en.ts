@@ -140,6 +140,8 @@ export const en = {
   // two save-result strings below are still referenced.
   "wbStats.gateway.strategySaved": "Strategy saved",
   "wbStats.gateway.strategySaveFail": "Strategy save failed",
+  // Result strings for the pool "Restore" exit are **not** here: it is a shared action,
+  // moved to `shared.gateway.pool.reviveDone / reviveNoop / reviveFail`.
   "wbStats.gateway.guide": "Integration guide",
   "wbStats.gateway.copyCode": "Copy code",
   "wbStats.gateway.codeCopied": "Code copied",

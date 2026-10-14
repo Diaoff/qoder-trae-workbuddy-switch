@@ -279,6 +279,11 @@ fn api_routes() -> Router {
         .route("/api/proxy/enable", post(api_proxy_enable))
         .route("/api/proxy/disable", post(api_proxy_disable))
         .route("/api/gateway/status", get(api_gateway_status))
+        // 账号池：人工解除某账号的禁用（禁用是终态且落盘，此前**没有任何出口**）。
+        .route(
+            "/api/gateway/pool/revive",
+            post(api_gateway_revive_account),
+        )
         // 打开 WorkBuddy 客户端数据目录（非 Windows 返回结构化 Unsupported）。
         .route("/api/gateway/open-data-dir", post(api_gateway_open_data_dir))
         .route(
@@ -2498,6 +2503,42 @@ async fn api_gateway_status() -> Response {
         Ok(value) => json_ok(value),
         Err(error) => json_err(error.to_string(), StatusCode::INTERNAL_SERVER_ERROR),
     }
+}
+
+/// POST /api/gateway/pool/revive —— **人工解除**账号池里某账号的禁用（`{uid}`）。
+///
+/// 与「API Key 的恢复」同构：`disabled` 是**终态且落盘持久化**，而改造前它
+/// **没有任何出口** —— 余额刷新被 `if entry.disabled` 挡住，`PoolEntry::revive`
+/// 在生产代码里零调用点（详见 `buddy_switch_gateway::pool::Pool::revive` 的文档）。
+///
+/// 幂等：账号本来可用时返回 `{ok:true,revived:false}` 而**不报错** —— 并发点两次、
+/// 或界面状态陈旧，都不该变成一个错误弹窗。
+///
+/// 「不在池中」是**真错误**（400）：那说明 uid 写错了或账号已被删除，
+/// 静默返回成功会让用户以为修好了。
+async fn api_gateway_revive_account(Json(body): Json<Value>) -> Response {
+    let uid = body
+        .get("uid")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .trim();
+    if uid.is_empty() {
+        return json_err("缺少 uid".to_string(), StatusCode::BAD_REQUEST);
+    }
+
+    let state = crate::gateway_host::shared_state();
+    let mut pool = state.pool.write().await;
+    // 先与账号库对齐：否则「刚导入、还没发过请求」的账号在池里根本不存在，
+    // 而界面刚刚明明显示过它 —— 用户会拿到一句莫名其妙的「不在池中」。
+    buddy_switch_gateway::sync_pool_with_accounts(&mut pool);
+    if pool.get(uid).is_none() {
+        return json_err(
+            format!("账号 {uid} 不在账号池中（可能已被删除）"),
+            StatusCode::BAD_REQUEST,
+        );
+    }
+    let revived = pool.revive(uid);
+    json_ok(json!({ "ok": true, "revived": revived }))
 }
 
 /// POST /api/gateway/open-data-dir —— 打开 **WorkBuddy 客户端**的数据目录（`{region?}`）。

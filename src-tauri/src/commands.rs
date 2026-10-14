@@ -2362,6 +2362,35 @@ pub fn delete_api_key(id: String) -> Result<Value, String> {
     Ok(json!({ "ok": true }))
 }
 
+/// POST /api/gateway/pool/revive —— **人工解除**账号池里某账号的禁用。
+///
+/// 与「API Key 的恢复」同构：`disabled` 是**终态且落盘持久化**，而改造前它
+/// **没有任何出口** —— 余额刷新被 `if entry.disabled` 挡住，`PoolEntry::revive`
+/// 在生产代码里零调用点（详见 `buddy_switch_gateway::pool::Pool::revive` 的文档）。
+///
+/// 幂等：账号本来可用时返回 `{ok:true,revived:false}` 而**不报错**；
+/// 「不在池中」才是真错误（uid 写错 / 账号已删）。
+///
+/// ⚠️ 本命令是 **async**（要 `.write().await`）—— 与 `gateway_status` 那种同步命令
+/// 不同，**不能**在这里用 `try_write`（拿不到锁就静默什么都没做，而用户以为点成功了）。
+#[tauri::command]
+pub async fn revive_gateway_account(uid: String) -> Result<Value, String> {
+    let uid = uid.trim().to_string();
+    if uid.is_empty() {
+        return Err("缺少 uid".to_string());
+    }
+    let state = gateway::shared_state();
+    let mut pool = state.pool.write().await;
+    // 先与账号库对齐：否则「刚导入、还没发过请求」的账号在池里根本不存在，
+    // 而界面刚刚明明显示过它 —— 用户会拿到一句莫名其妙的「不在池中」。
+    buddy_switch_gateway::sync_pool_with_accounts(&mut pool);
+    if pool.get(&uid).is_none() {
+        return Err(format!("账号 {uid} 不在账号池中（可能已被删除）"));
+    }
+    let revived = pool.revive(&uid);
+    Ok(json!({ "ok": true, "revived": revived }))
+}
+
 /// GET /api/gateway/models —— 模型列表 + 来源（按 region）。
 #[tauri::command]
 pub fn get_gateway_models(region: Option<String>) -> Value {

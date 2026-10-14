@@ -142,8 +142,17 @@ export const zh = {
   "shared.gateway.pool.pin": "指定",
   "shared.gateway.pool.unpin": "取消指定",
   "shared.gateway.pool.pinned": "已指定",
+  "shared.gateway.pool.revive": "恢复",
+  // 「恢复」出口的结果文案 —— **两平台共用**（同一件事同一做法）：WorkBuddy 与 Trae
+  // 的禁用都是终态，都要靠这个出口解除。放在 shared 而不是各自的页面命名空间。
+  "shared.gateway.pool.reviveDone": "已恢复：该账号重新参与选号",
+  "shared.gateway.pool.reviveNoop": "该账号本来可用，无需恢复",
+  "shared.gateway.pool.reviveFail": "恢复失败",
   // 选号优先级与排他性说明（原型 :3069）。
   "shared.gateway.pool.exclusiveHint": "选号优先级：显式指定 > 粘性会话 > 自动择优。指定是排他的——同一时刻只有一个账号被指定。",
+  // 「恢复」出口说明：禁用是终态，没有出口该账号就永久不可用。
+  // ⚠️ 文案**不得**提「熔断」：Trae 侧没有熔断这一维，两边共用同一句。
+  "shared.gateway.pool.reviveHint": "已禁用的账号不会自动解除——点「恢复」会立即解除禁用与冷却，让它重新参与选号；若它仍然不可用，会再次被禁用。",
 
   // ---- 剪贴板（clipboard.ts） ----
   "shared.clipboard.copied": "已复制",

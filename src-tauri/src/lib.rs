@@ -392,6 +392,7 @@ pub fn run() {
             commands::revoke_api_key,
             commands::restore_api_key,
             commands::delete_api_key,
+            commands::revive_gateway_account,
             commands::get_unified_gateway_config,
             commands::save_unified_gateway_config,
             commands::get_unified_gateway_models,

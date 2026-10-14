@@ -1,4 +1,4 @@
-import { Users } from "lucide-react";
+import { Loader2, Users } from "lucide-react";
 import type { ReactNode } from "react";
 
 import { Badge } from "@/components/ui/badge";
@@ -87,6 +87,14 @@ export function AccountPoolCard({
   emptyHint,
   /** 卡片标题（WorkBuddy 一页有两张卡 ⇒ 带版本名；缺省用共用文案）。 */
   title,
+  /**
+   * 「恢复」出口（**可选插槽**）：`disabled` 是终态且落盘持久化，没有出口该账号
+   * **永久不可用**（余额刷新被 `disabled` 挡住、`PoolEntry::revive` 在生产代码里
+   * 零调用点）。未传则该按钮不渲染 —— 差异走**插槽**，不写 `platform === …`。
+   */
+  onRevive,
+  /** 正在恢复的 uid：该行按钮显示「操作进行中」（不是加载态）。 */
+  revivingUid = null,
   className,
 }: {
   pool: GatewayPoolSummary | null;
@@ -109,6 +117,10 @@ export function AccountPoolCard({
   emptyHint?: ReactNode;
   /** 卡片标题（缺省「账号池」）。 */
   title?: ReactNode;
+  /** 「恢复」出口；未传则不渲染该按钮（差异走插槽，见解构处的 ★ 说明）。 */
+  onRevive?: (uid: string) => void;
+  /** 正在恢复的 uid。 */
+  revivingUid?: string | null;
   className?: string;
 }) {
   const t = useT();
@@ -274,20 +286,44 @@ export function AccountPoolCard({
                       </div>
                     </td>
                     <td className="px-5 py-2.5 text-right">
-                      <DemoAction>
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          className="h-7 px-2"
-                          data-act="pool-pin"
-                          disabled={saving}
-                          /* 空串 = 不指定（回落「跟随登录态 / 自动择优」）；排他由后端单值策略保证
-                             —— 同一 region 只有一个 pinned，故「同一时刻只有一个账号被指定」。 */
-                          onClick={() => onPreferredUidChange(pinned ? "" : account.uid)}
-                        >
-                          {pinned ? t("shared.gateway.pool.unpin") : t("shared.gateway.pool.pin")}
-                        </Button>
-                      </DemoAction>
+                      <div className="flex items-center justify-end gap-2">
+                        {/* ★ 已禁用的账号**必须**给「恢复」出口：`disabled` 是终态且落盘持久化，
+                            余额刷新救不了它（`thaw_hard_credit_if_recovered` 第一句就是
+                            `if entry.disabled { return false }`）—— 没有这个按钮，该账号**永久不可用**。
+                            与网关 API Key 的「吊销 ↔ 恢复」同构（已吊销行必须同时给两个出口）。 */}
+                        {onRevive && account.disabled && (
+                          <DemoAction>
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              className="h-7 px-2"
+                              data-act="pool-revive"
+                              disabled={revivingUid !== null}
+                              onClick={() => onRevive(account.uid)}
+                            >
+                              {revivingUid === account.uid ? (
+                                <Loader2 className="size-3.5 animate-spin" />
+                              ) : (
+                                t("shared.gateway.pool.revive")
+                              )}
+                            </Button>
+                          </DemoAction>
+                        )}
+                        <DemoAction>
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            className="h-7 px-2"
+                            data-act="pool-pin"
+                            disabled={saving}
+                            /* 空串 = 不指定（回落「跟随登录态 / 自动择优」）；排他由后端单值策略保证
+                               —— 同一 region 只有一个 pinned，故「同一时刻只有一个账号被指定」。 */
+                            onClick={() => onPreferredUidChange(pinned ? "" : account.uid)}
+                          >
+                            {pinned ? t("shared.gateway.pool.unpin") : t("shared.gateway.pool.pin")}
+                          </Button>
+                        </DemoAction>
+                      </div>
                     </td>
                   </tr>
                 );
@@ -304,6 +340,11 @@ export function AccountPoolCard({
         <p className="mt-1 text-xs leading-5 text-muted-foreground">
           {t("shared.gateway.pool.exclusiveHint")}
         </p>
+        {onRevive && (
+          <p className="mt-1 text-xs leading-5 text-muted-foreground">
+            {t("shared.gateway.pool.reviveHint")}
+          </p>
+        )}
       </div>
 
       {diagnose.length > 0 && (

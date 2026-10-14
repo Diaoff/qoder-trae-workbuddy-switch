@@ -157,6 +157,8 @@ export const zh = {
   // 下拉），下列键随之作废并删除；保存结果的两条仍在使用。
   "wbStats.gateway.strategySaved": "策略已保存",
   "wbStats.gateway.strategySaveFail": "策略保存失败",
+  // 账号池「恢复」出口的结果文案**不在本文件**：它是两平台共用的动作，
+  // 已下沉到 `shared.gateway.pool.reviveDone / reviveNoop / reviveFail`。
   "wbStats.gateway.guide": "接入指引",
   "wbStats.gateway.copyCode": "复制代码",
   "wbStats.gateway.codeCopied": "代码已复制",

@@ -378,6 +378,9 @@ const ROUTES: Record<string, Route> = {
   // 撤销吊销（恢复）与吊销互逆：已吊销的 Key **两个出口都必须在**（恢复 / 删除）。
   restore_api_key: { method: "POST", path: "/api/gateway/keys/restore" },
   delete_api_key: { method: "POST", path: "/api/gateway/keys/delete" },
+  // 账号池：人工解除某账号的禁用。禁用是**终态且落盘**，此前没有任何出口
+  // （余额刷新被 `disabled` 挡住、`revive` 在生产代码里零调用点）。
+  revive_gateway_account: { method: "POST", path: "/api/gateway/pool/revive" },
   // 统一网关（第三个产品线）：与上面两条网关线路**平行**，但它是**跨作用域**的 ——
   // 因此这些命令**不进** SCOPE_PARAMETERIZED（拿不到也不该拿 scope）。
   get_unified_gateway_config: { method: "GET", path: "/api/unified-gateway/config" },
@@ -1850,6 +1853,15 @@ export function restoreApiKey(id: string): Promise<{ ok: boolean }> {
 
 export function deleteApiKey(id: string): Promise<{ ok: boolean }> {
   return call("delete_api_key", { id });
+}
+
+/**
+ * 人工解除账号池里某账号的禁用（**幂等**：本来可用时 `revived:false`，不报错）。
+ *
+ * 与「API Key 的恢复」同构 —— 禁用是终态且落盘持久化，不解除就**永久不可用**。
+ */
+export function reviveGatewayAccount(uid: string): Promise<{ ok: boolean; revived: boolean }> {
+  return call("revive_gateway_account", { uid });
 }
 
 export function getGatewayModels(region: Region): Promise<CatalogSnapshot> {

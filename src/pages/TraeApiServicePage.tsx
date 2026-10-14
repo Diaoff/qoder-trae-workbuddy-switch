@@ -131,6 +131,8 @@ export default function TraeApiServicePage() {
   const [clearing, setClearing] = useState(false);
   const [riskOpen, setRiskOpen] = useState(false);
   const [openingDir, setOpeningDir] = useState(false);
+  /** 正在「恢复」的 uid（池卡上该行按钮显示操作进行中）。 */
+  const [revivingUid, setRevivingUid] = useState<string | null>(null);
   /** 模型清单「重新读取」的进行中状态（只驱动按钮的转圈，不参与快照）。 */
   const [refreshingModels, setRefreshingModels] = useState(false);
   /* ★ 子导航选中项：**初值从 URL 读**（`?sub=logs`），非法值 fail-closed 回 `overview`
@@ -315,6 +317,35 @@ export default function TraeApiServicePage() {
       toast.error(t("trae.stats.api.toast.dirOpenFailed"), { description: api.asError(e) });
     } finally {
       setOpeningDir(false);
+    }
+  }
+
+  /**
+   * 解除某账号的禁用（Trae 侧）。
+   *
+   * ## 为什么复用 `trae_clear_cooldown` 而不是新造一条命令
+   *
+   * Trae 的 `disabled` **不是池自己的状态**，而是每次 `sync_for` 从**冷却文件**派生的
+   * （`error_type == "SessionDead"`，见 `trae/pool.rs`）；`clear_cooldown_for` 无条件
+   * 删掉整条记录 ⇒ `disabled` 随之消失。所以「恢复」= 清冷却，后端出口**本来就存在**
+   * （core `clear_cooldown_for` + 命令 `trae_clear_cooldown` + 签到页菜单），
+   * 缺的只是**池卡上的入口** —— 用户在网关页看到「已禁用」却找不到任何按钮。
+   *
+   * ⚠️ 因此**不要**在 Trae 侧照抄 WorkBuddy 的 `revive_gateway_account`：WB 的
+   * `disabled` 是池内状态（需同时清冷却与熔断截止），Trae 的是磁盘冷却记录的投影
+   * （清记录即可，Trae 没有熔断这一维）。差异走**数据与插槽**，前端共用同一张池卡。
+   */
+  async function onRevive(uid: string) {
+    setRevivingUid(uid);
+    try {
+      await api.traeClearCooldown(uid, variant);
+      toast.success(t("shared.gateway.pool.reviveDone"));
+      // 池状态来自 `status` ⇒ 重新拉一次，否则界面还显示「已禁用」。
+      await loadAll();
+    } catch (e) {
+      toast.error(t("shared.gateway.pool.reviveFail"), { description: api.asError(e) });
+    } finally {
+      setRevivingUid(null);
     }
   }
 
@@ -600,6 +631,10 @@ export default function TraeApiServicePage() {
               preferredUid={config.preferredUid}
               onPreferredUidChange={(uid) => void persist({ preferredUid: uid })}
               saving={saving}
+              // 「恢复」出口：Trae 的 `disabled` 派生自冷却文件，故走 `trae_clear_cooldown`
+              // （复用既有命令，见 `onRevive` 的说明）。
+              onRevive={onRevive}
+              revivingUid={revivingUid}
               totalRequests={status?.totalRequests ?? null}
             />
           )}

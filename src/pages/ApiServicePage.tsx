@@ -532,7 +532,9 @@ function RegionPoolCard({ region }: { region: Region }) {
   const status = useGatewayStore((s) => s.status);
   const view = useGatewayStore((s) => s.strategies[region]);
   const saveStrategy = useGatewayStore((s) => s.saveStrategy);
+  const refreshStatus = useGatewayStore((s) => s.refreshStatus);
   const [saving, setSaving] = useState(false);
+  const [revivingUid, setRevivingUid] = useState<string | null>(null);
 
   const { pool, accounts, diagnose } = poolOf(status, region);
   const strategy = view.strategy;
@@ -568,6 +570,34 @@ function RegionPoolCard({ region }: { region: Region }) {
     void persist({ kind: "pinned", account_id: next });
   }
 
+  /**
+   * 解除某账号的禁用。
+   *
+   * 这是**唯一**出口：`disabled` 是终态且落盘持久化，余额刷新救不了它
+   * （`thaw_hard_credit_if_recovered` 第一句就是 `if entry.disabled { return false }`）。
+   * 不做「重新登录就自动复活」—— 账号库里没有任何字段能区分「用户重新登录」与
+   * 「后台保活刷新 token」（`id` / `createdAt` 被刻意保留、只有 token 会变），
+   * 硬做等于每次保活都把三振账号洗白（详见 `Pool::revive` 的文档）。
+   */
+  async function onRevive(uid: string) {
+    setRevivingUid(uid);
+    try {
+      const result = await api.reviveGatewayAccount(uid);
+      if (result.revived) {
+        toast.success(t("shared.gateway.pool.reviveDone"));
+      } else {
+        // 幂等：本来可用。不是错误，但也别谎称「已恢复」。
+        toast.info(t("shared.gateway.pool.reviveNoop"));
+      }
+      // 计数格与行状态都来自 `status` ⇒ 重新拉一次，否则界面还显示「已禁用」。
+      await refreshStatus();
+    } catch (e) {
+      toast.error(t("shared.gateway.pool.reviveFail"), { description: api.asError(e) });
+    } finally {
+      setRevivingUid(null);
+    }
+  }
+
   return (
     <AccountPoolCard
       pool={pool}
@@ -576,6 +606,8 @@ function RegionPoolCard({ region }: { region: Region }) {
       preferredUid={preferredUid}
       onPreferredUidChange={onPreferredChange}
       saving={saving}
+      onRevive={onRevive}
+      revivingUid={revivingUid}
       // WorkBuddy 池不存积分有效期 ⇒ 没有「积分过期」格（见卡片注释）。
       tiles={WB_POOL_TILES}
       autoOptions={[
