@@ -167,6 +167,8 @@ export function TraeModelList({
     disabled: t("shared.gateway.models.disabled"),
     disable: t("shared.gateway.models.disable"),
     enable: t("shared.gateway.models.enable"),
+    copyId: t("shared.gateway.models.copyId"),
+    idCopied: t("shared.gateway.models.idCopied"),
   };
 
   /**
@@ -307,8 +309,12 @@ export function TraeModelList({
               showUpstream={true}
               labels={labels}
             />
-            {/* 计数 = available && !disabled，与出口 ① 同源；无暴露项时不渲染（§3.4 规则 1）。 */}
-            {served > 0 && (
+            {/* 计数 = available && !disabled，与出口 ① 同源。
+                ★ 守卫是 `total > 0`（**有清单就显示**），不是 `served > 0` ——
+                `served === 0` 不是「无数据」，而是「**全部被禁用**」这一真实且正需被看见的状态。
+                （WB 侧 `model-list.tsx` 已按同一判据改过；Trae 侧此前漏跟进，两平台
+                在「全部禁用」时一个显示计数、一个不显示。） */}
+            {total > 0 && (
               <p className="mt-3 text-xs text-muted-foreground" data-act="gw-model-count">
                 {t("shared.gateway.models.count", { served, total })}
               </p>

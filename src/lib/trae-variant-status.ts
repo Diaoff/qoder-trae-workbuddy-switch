@@ -47,9 +47,9 @@ function programStub(
  * 与 `global_trae_code`（TraeCode）。
  *
  * ⚠️ 2026-10-13（issue #20）起每个区域有**三条**程序位：上面两条 + 合并版 `trae`。
- * 合并版与遗留 `trae_code` **共用同一个 `variant`**（同一个客户端，变体才是
- * Key / 快照 / 日志的归属键）—— 这是刻意的，消费方按 `variant` 去重（见 `allPrograms()`），
- * 按 `program` 区分按钮。
+ * 合并版有**自己的变体**（`trae_merged` / `global_trae_merged`）—— 变体是快照目录 /
+ * Key 归属 / 日志分档的派生来源，与遗留 `trae_code` 共用会让两条程序位的快照
+ * 挤进同一个目录（用户报障原文）。因此本表现在有 **6 个互不相同**的变体。
  *
  * ⚠️ 2026-09-28（issue #3）之前，国际版 TraeCode 未建模 ⇒ 这里填 `null`、
  * 按钮禁用。现在每个程序位都已建模，**每个占位都必须带标识** ——
@@ -65,8 +65,10 @@ export const TRAE_VARIANT_FALLBACK: TraeVariantStatus[] = [
   {
     variant: "cn",
     // 表在模块加载时就定型 ⇒ 只存文案键，展示名在**读取时**现取，语言切换才不会失效。
+    // ⚠️ 区域名走 `trae.region.*`（客户端产品名），**不是** `shared.region.version.*`
+    // —— 后端 `TraeRegion::display_name` 给的就是前者，用后者会让演示站与真机文案不同。
     get variantLabel() {
-      return t("shared.region.version.cn");
+      return t("trae.region.cn");
     },
     consoleBase: "https://www.trae.cn",
     installed: false,
@@ -79,18 +81,19 @@ export const TRAE_VARIANT_FALLBACK: TraeVariantStatus[] = [
     writeDataDir: null,
     writeDataDirExists: false,
     programs: [
-      programStub("trae_work", "TraeWork", "trae.program.traeWork", "trae_work"),
-      programStub("trae_code", "TraeCode", "trae.program.traeCode", "trae_cn"),
+      // 展示名规则：**国内版带 ` CN` 后缀、国际版不带后缀**（用户 2026-10-13 更正）。
+      programStub("trae_work", "TraeWork CN", "trae.program.traeWorkCn", "trae_work"),
+      programStub("trae_code", "TraeCode CN", "trae.program.traeCodeCn", "trae_cn"),
       // 合并后的客户端（issue #20）：客户端现在就叫 `Trae`。
-      // `variant` 与上面的 `trae_code` **相同**（后端把两者映射到同一个变体 ——
-      // 变体才是 Key / 快照 / 日志的归属键），这是刻意的，见 `TraeProgramId` 的说明。
-      programStub("trae", "Trae", "trae.program.trae", "trae_cn"),
+      // `variant` 是它**自己的**标识 `trae_merged`（与 `trae_code` 的 `trae_cn` 分开）——
+      // 变体决定快照目录 / Key 归属 / 日志分档，共用会让两条程序位的快照挤进同一个目录。
+      programStub("trae", "Trae CN", "trae.program.traeCn", "trae_merged"),
     ],
   },
   {
     variant: "global",
     get variantLabel() {
-      return t("shared.region.version.global");
+      return t("trae.region.global");
     },
     consoleBase: "https://www.trae.ai",
     installed: false,
@@ -103,11 +106,12 @@ export const TRAE_VARIANT_FALLBACK: TraeVariantStatus[] = [
     writeDataDir: null,
     writeDataDirExists: false,
     programs: [
-      programStub("trae_work", "TraeWork AI", "trae.program.traeWorkGlobal", "global"),
-      programStub("trae_code", "Trae AI", "trae.program.traeCodeGlobal", "global_trae_code"),
-      // 合并版国际客户端：按用户约定带 `AI` 后缀（与 `TraeCode` 国际版同名 ——
-      // 它们本就是同一个客户端，见 Rust 侧 `region` 模块头）。
-      programStub("trae", "Trae AI", "trae.program.trae", "global_trae_code"),
+      programStub("trae_work", "TraeWork", "trae.program.traeWorkGlobal", "global"),
+      // ⚠️ 2026-10-13（issue #20）：国际 TraeCode 的展示名**保留家族名**（`TraeCode AI`）。
+      // 曾经叫 `Trae AI`，与下面的国际合并版撞名 —— Key 归属下拉会出现两个同名选项。
+      programStub("trae_code", "TraeCode", "trae.program.traeCodeGlobal", "global_trae_code"),
+      // 合并版国际客户端：国际版不带后缀 ⇒ `Trae`；变体是它**自己的** `global_trae_merged`。
+      programStub("trae", "Trae", "trae.program.traeGlobal", "global_trae_merged"),
     ],
   },
 ];
@@ -254,13 +258,13 @@ export function regionPrograms(region: TraeRegionId): { variant: TraeVariantId; 
  * （目前是 API Key 的「归属程序位」下拉：一把 Key 绑定一个 `variant`，由它决定
  * `/v1/models` 列哪份清单、请求体带哪个 `function`）。
  *
- * ## ⚠️ 为什么必须去重（issue #20）
+ * ## ⚠️ 去重现在是**安全网**，不再是必需（issue #20 收尾后）
  *
- * 合并版 `trae` 与遗留 `trae_code` **共用同一个变体**（同一个客户端）。
- * 不去重的话这个下拉会出现**两个 value 完全相同**的选项 ——
- * `Select` 的选中态会指向第一个、用户点第二个时看起来「没反应」，
- * 而它们对后端来说本来就是同一件事（Key 存的是 `variant`，不是程序位标识）。
- * 去重时保留**先出现的那个**（＝遗留标签），既有 Key 的归属列文案因此不变。
+ * 上一版里合并版 `trae` 与遗留 `trae_code` **共用变体**，不去重会出现两个 value
+ * 完全相同的选项（`Select` 选中态指向第一个、点第二个像"没反应"）。
+ * 现在两者各有自己的变体（`trae_merged` / `trae_cn`），6 个变体互不相同 ⇒ 去重
+ * 不再触发。**保留它**是因为「同一个变体被两个程序位引用」这件事一旦再次发生，
+ * 症状（下拉里两个一样的选项）极难定位，而这段守卫的成本只是几行循环。
  *
  * ⚠️ 与 {@link regionPrograms} 同样：`installed` 在兜底表里恒为 `false`，
  * 不能拿它禁用控件；本函数只提供 `variant`（回传标识）与 `label`（展示名）。

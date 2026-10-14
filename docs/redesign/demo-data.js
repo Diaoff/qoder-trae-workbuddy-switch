@@ -451,9 +451,13 @@ const USAGE = {
 const GATEWAY = {
   "wb-cn": {
     enabled: true, port: 57890, baseUrl: "http://127.0.0.1:57890",
+    /* ★ `revoked: true` = 已吊销。已吊销的密钥**仍留在表里**，且行内必须同时给出
+       「恢复」与「删除」两条出口 —— 吊销只是置标记（明文未变），恢复不需要重建 Key、
+       也不需要改任何客户端配置；只留「删除」等于逼用户为一次误吊销删掉重建、
+       再把所有客户端配置改一遍。 */
     keys: [
       { id: "k1", name: "默认 Key", masked: "bs_live_9f3a••••••••••••7c21", scope: "国内版", created: "2026-09-12", lastUsed: "2 分钟前", requests: 1842 },
-      { id: "k2", name: "CI 自动化", masked: "bs_live_4d18••••••••••••a0e9", scope: "国内版", created: "2026-09-20", lastUsed: "1 小时前", requests: 613 },
+      { id: "k2", name: "CI 自动化", masked: "bs_live_4d18••••••••••••a0e9", scope: "国内版", created: "2026-09-20", lastUsed: "1 小时前", requests: 613, revoked: true },
       { id: "k3", name: "临时调试", masked: "bs_live_c702••••••••••••31bf", scope: "国际版", created: "2026-09-28", lastUsed: "3 天前", requests: 47 },
     ],
     /* available = 上游事实（能不能调）；disabled = 用户偏好（主动拿掉）。
@@ -496,7 +500,8 @@ const GATEWAY = {
     enabled: true, port: 57892, baseUrl: "http://127.0.0.1:57892",
     keys: [
       { id: "k5", name: "TraeWork Key", masked: "ts_live_77bb••••••••••••2f4a", scope: "国内版", created: "2026-09-18", lastUsed: "5 分钟前", requests: 892 },
-      { id: "k6", name: "TraeCode Key", masked: "ts_live_e310••••••••••••9c77", scope: "国内版", created: "2026-09-26", lastUsed: "40 分钟前", requests: 254 },
+      /* 已吊销（同 wb-cn 的 k2）：两平台各留一条，确认「恢复 + 删除」在两边同形。 */
+      { id: "k6", name: "TraeCode Key", masked: "ts_live_e310••••••••••••9c77", scope: "国内版", created: "2026-09-26", lastUsed: "40 分钟前", requests: 254, revoked: true },
     ],
     models: [
       { name: "chat_v3", provider: "trae", scope: "TraeCode", available: true },

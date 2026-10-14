@@ -8,6 +8,42 @@
 
 ---
 
+## ★ 最新状态（2026-10-14 · 第七轮）—— 统一入口（P16）+ 外部会话监听（P15）+ 三处「界面承诺了但后台没接」
+
+> 产出人：lead · 日期：2026-10-14
+> **判据（全部实测）**：`npm run check:api`（**routes=182 / call=172 / server=166 / invoke=190 / demoRead=65 / demoCase=66 / 单Value参数=14 / 参数化=10 / 别名=20 / 桌面专属豁免=8**）、
+> `npm run check:scope`（**291 passed / 0 failed**）、`cargo check --workspace` 绿、`npx tsc --noEmit` 0 错，
+> 外加**真实环境验收**（用户明确授权）：统一入口四段命名空间**全部真实上游 200**，`/biz/*` 通到真实业务上游。
+> **本段之后的数字以本段为准**（上面的第六轮数字是 2026-10-08 的快照）。
+
+### A⁷. 本轮新增的能力（此前**完全不存在**）
+
+| # | 能力 | 落地证据 | 关键判据 |
+|:--|:---|:---|:---|
+| 1 | **统一入口（第三个产品线，跨作用域）** | core `gateway_namespace.rs`（派生层 4 条由 `Scope::all()` 生成 + 扩展层 4 条手写、默认关）；`gateway/src/unified/{config,apikey,routes,state,mod}.rs`；`server/src/unified_gateway_host.rs` + `src-tauri/src/unified_gateway.rs`；前端 `unified-gateway-view.tsx`（三张卡）+ `GATEWAY_SUBNAV` 第 7 项 | 单端口 `57892`、单 Key 库（`sk-uni-`）、模型 id 带命名空间前缀；**裸模型名一律 400**；**解析只做整段精确匹配**（`trae`/`traework`/`traecode` 互为前缀 ⇒ 前缀匹配会静默走错池）；`trae-*` 的 `/v1/responses` 返回 **501** |
+| 2 | **外部 Agent 会话监听（P15）** | `agent_watch.rs`（状态机）+ `agent_hook_rx.rs`（接收端 + `hook` 子命令）+ `agent_hook_install.rs`（装 / 卸，走客户端设置托管） | **默认关**、需显式开启；接收端只绑回环 `127.0.0.1:57893`；不覆盖用户已有 hook；决策落点 D43–D46 |
+| 3 | **网关 API Key 三态动作** | `apikey.rs::restore`（两平台同形） | ★ **已吊销行必须同时给「恢复 + 删除」两个出口**（恢复在前）；恢复判据锚**行为**（`verify` 重新通过），不是看字段被清 |
+| 4 | **Trae JWT 自动续期** | `schedule.rs` 第 8 类 `trae_jwt_refresh` + Trae 设置页开关 | ★ 修的是**「界面承诺了、后台没有调用点」**：此前文案说「可自动续期」而唯一入口是手动菜单项 |
+| 5 | **会话关联（内容指纹派生）** | `session.rs`：`group_fingerprint` / `list_replica_groups_for` / `sync_session_replica{s,_for}` / `unify_replica_between_files` | 状态由 **jsonl 内容指纹**派生（**不是**「谁的时间新」）；同步是**加法**（只追加不覆盖）；分歧必须先选保留哪一份 |
+| 6 | **Trae 作用域快照自动刷新** | 后台任务 + 窗口严格小于轮询间隔 | ★ 本轮最有价值的发现：**窗口必须严格小于轮询间隔**，否则「看起来在刷、实际永远错过」 |
+| 7 | **关闭窗口去向由偏好决定** | `app_prefs::close_to_tray()` | ★ 宿主也读的偏好必须落 core `app_prefs.json`（不是 localStorage）；「退出」走 `app.exit(0)`，**别碰** `should_keep_tray_alive` |
+| 8 | **自动检查更新接到轮询** | 设置项 ↔ 轮询同源（关掉即短路，间隔 30 分钟） | ★ 「摆了开关不等于接了」—— 同类事故本仓已出四次（见 §A⁷.1） |
+
+### A⁷.1 一类反复出现的事故：**「界面承诺了，后台没有调用点」**
+
+本轮**又**抓到一条（Trae JWT 续期）。这是本仓**第五次**同类问题（前四次分别落在签到、保活、快照刷新、后台任务登记）。
+**根因固定**：`buddy-switch-server/main.rs` 与 `src-tauri/lib.rs` **各有一份** `BackgroundTask` 表（唯一事实来源），
+而新增「写状态 / 周期性」出口的人常常只改了界面与命令，没往那两张表里登记。
+**对策（已成本仓纪律）**：新增任何「写状态 / 周期性」出口，**先 grep 两侧注册表**。
+
+### A⁷.2 覆盖度结论
+
+第六轮的「三条新能力」在本轮**均已被真实使用路径覆盖**（限流台账、Skill 管理、客户端设置托管都在页面上有出口且门禁绿）。
+本轮新增的 8 条里，**唯一尚未做真实现场验证的是 P15 的 S5**（需要一台装了 WorkBuddy 且真在跑任务的机器：
+装 hook → 收事件 → 四态渲染 → 点回原会话）—— 已显式登记为未完成项，不假装完整。
+
+---
+
 ## ★ 最新状态（2026-10-08 · 第六轮）—— 三条新能力落地（限流可视化 / Skill 管理 / 客户端设置托管）
 
 > 产出人：lead · 日期：2026-10-08
@@ -620,6 +656,7 @@ GAP 判定的多个「整期缺失」现已实现（新增文件）：`src/compo
 | 点击条目回到原会话（有反馈） | — | P9 | ✅ | `companion-app.tsx:95-117`（`handleJump` + 成功/失败反馈） | — |
 | 邮箱默认脱敏 | ★ | P9 | ✅ | `account-card.tsx:93-105`（`accountIdentity`：首字母 + `*` + 域名） | 星号个数与原型正则不同（同函数即可） |
 | 搜索仍按完整邮箱匹配 | ★ | P9 | ✅ | `src/lib/account-search.ts:32-44`（用 `email` 原值）；展示侧才脱敏 | — |
+| **悬浮窗的数据源**（P9 §1.3 明写三路） | — | P9 / **P15** | ⚠️ → ✅ | P9 落地时**只有一路**（自家切号进度）；`checkin-progress` / `trae-checkin-progress` **长期缺席** —— 前端 `companion.ts` 甚至在订阅一个**从未被 emit 过**的事件名。P15 补齐签到（`agent_watch::record_local`），并新增第三路「已开启监听的外部客户端会话」 | — |
 | **悬浮窗键盘可达性**（独立窗口自管焦点） | ★ | P9 | ✅（代码 + 静态门禁） | `companion-app.tsx`（`focusEntry` 焦点入口 + `didInitialFocusRef` 只做一次 + `listen("companion-visibility")` 重开送回焦点 + Esc 隐藏）；`companion-row.tsx`（行=原生 `<button>` + `:focus-visible`）；门禁第 **227** 条 | ⚠️ **运行时**走查待独立窗口 E2E（见 §5）—— 门禁是**静态结构断言**，不等于运行时行为 |
 
 ### 2.19 账号卡程序位（§3.3 / 附录 D）
@@ -642,6 +679,20 @@ GAP 判定的多个「整期缺失」现已实现（新增文件）：`src/compo
 | 开启后：显示拦截方式、白名单与 KPI | ★ | P12 | ❌ | 同上 | 无 |
 | 白名单外直连 | ★ | P12 | ❌ | 同上 | 无 |
 | 一键还原：回到关闭态 | ★ | P12 | ❌ | 同上 | 无 |
+
+### 2.21 外部 Agent 会话监听（P15）—— **新增能力**
+
+> 依据：`P13-REFERENCE-PARITY.md` §4.3；spike 结论与实现回写见 `P15-SPIKE-RESULTS.md`；
+> 决策落为 `DECISIONS.md` **D43–D46**。
+
+| 行为 | 期次 | 状态 | 证据 | 缺什么 |
+|:---|:--:|:--:|:---|:---|
+| 客户端 hook 事件 → 会话四态 | P15 | ✅ | `modules/agent_watch.rs`（`HookKind` 是**唯一**允许看客户端事件名的地方；四态 + 两档惰性过期 + 时间回退丢弃）；**25 条单测** | ⚠️ 纯 hook 来源**几乎不会出现「失败」**（客户端不报失败）—— 这是诚实边界，不是缺陷 |
+| 接收端只绑回环 + 六条安全基线 | P15 | ✅ | `modules/agent_hook_rx.rs`；**实测**：合法 **204** / 伪造 `Host` **403** / 错误 `Origin` **403** / 缺 `Content-Type` **415** / `GET` **405** | — |
+| hook 装 / 卸（默认关 + 可还原） | P15 | ✅ | `modules/agent_hook_install.rs`（纯函数合并，13 条单测）+ 复用 `client_settings` 的**备份 / 进程守卫 / 格式保持**；`app_prefs.watch_agent_sessions` 默认 **false** | ⚠️ **Trae 的 hook 机制未取证** ⇒ 只做 WorkBuddy 两区域（CN / Global） |
+| 端到端：hook → 接收端 → 状态机 → 快照 | P15 | ✅ | **实测**：`SessionStart`→`running`；`PermissionRequest`→`waiting`（`hint="刚刚 · 等待确认"`）；`Stop`→`done`；`hook` 子命令 stdout `{}`、退出码 **0** | ⚠️ **真机现场**（客户端真的调用 hook）未验；Windows 上不做宿主进程探测（D46） |
+| 「计划 0 个 / 被 skipped」不留噪音行 | P15 | ✅ | `AgentWatch::forget`；**实测**：隔离 home（空账号库）调 `/api/checkin/all` → `{"accounts":[]}` → 快照仍空 | — |
+| 演示站如实显示「默认关、什么都没装」 | P15 | ✅ | `screenshot-demo.ts` 的 `get_agent_hook_status` case（`enabled:false` + 空 `slots`） | — |
 
 ---
 

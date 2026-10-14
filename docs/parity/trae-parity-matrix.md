@@ -55,19 +55,48 @@
 即 `TRAE SOLO CN`（TraeWork）被卸载、数据并入 `Trae CN`。因此：
 
 - 新增第 3 条程序线 `TraeProgram::Trae`（`as_str = "trae"`），每区域 3 条、共 6 个程序位；
-- 它与遗留 `TraeCode` **物理上是同一个客户端**，故**共用**候选名、`TraeVariant`
-  与快照目录（`profiles_trae_cn` / `profiles_global_trae_code`）—— 给同一个客户端开
-  两套持久化身份会把登录态拆成两半，且不报错；
+- 它与遗留 `TraeCode` **候选名逐字相同**（客户端合并时复用了目录名与 exe 名），
+  但**不是同一个槽位**：各自有独立变体（`trae_merged` / `global_trae_merged`）、
+  独立快照目录（`profiles_trae_merged` / `profiles_global_trae_merged`）、
+  独立的 Key 归属与日志分档；
 - 候选名重叠（`Trae` × `TraeCode`）因此是**刻意**的，已由
   `region::tests::程序位候选名互不重叠除登记在案的重叠` 以**显式白名单**钉住；
-- `variant_for_program` 从此**不是单射**，`client_settings::tests::变体与区域程序双向一致`
-  相应放宽到「区域逐字一致 + 程序位指向同一客户端」；
+- ★ **`变体 ↔ (区域, 程序位)` 恢复为双射**（`client_settings::tests::变体与区域程序双向一致`
+  新增了「六个程序位必须映射到六个互不相同的变体」这条前置）—— 这一点很值钱：
+  变体与程序位不再多对一时，「用变体反推程序位名字」那类缺陷从结构上消失
+  （用户已经踩过一次，见下）；
 - `env_status` 新增 `configuredPathExists`：设置里存的 exe 路径在客户端升级/合并后
   会失效，后端仍**静默回落**自动探测（不卡启动），但界面必须提示用户重选。
 
-⚠️ 由此产生的一处**已知冗余**（产品决定，非缺陷）：同一区域会出现两枚指向同一客户端的
-程序按钮（CN 是 `TraeCode` / `Trae`；国际版两枚都叫 `Trae AI`）。合并前的老机器上
-两者仍各自可探测。API Key 的「归属程序位」下拉按 `variant` 去重，仍是 4 项。
+⚠️ **给已弃用的 `TraeVariant` 加两个取值是临时妥协**：正确方向仍是
+`(TraeRegion, TraeProgram)` 双轴收尾。但在快照链路仍按变体键的当下，这是唯一能让
+两条程序位拿到**各自快照目录**而不动命令面签名的做法（见 `variant.rs` 的说明）。
+
+**补一：登录态快照必须搬进合并版槽位（用户报障「点击 trae 切换账号失败」）。**
+
+快照是**客户端 userData 的文件副本**，按程序位分家。合并前用户管的是 TraeWork，
+快照落在 TraeWork 槽位；合并后活的客户端是 `Trae CN`，它的槽位是空的 ⇒
+点「切换账号」得到「该账号的登录态快照不存在」。那句提示**逻辑上没错但对用户不成立**。
+更糟的是 TraeWork 槽位此刻指向一个**死掉的 userData**（`removeData: false` 让它留在盘上，
+但客户端已卸载）⇒ 从那一侧切过去会「成功」却写进死目录。
+
+⇒ 新增 `trae/snapshot_migrate.rs`：把**全部遗留程序位**的快照**复制**进合并版槽位
+（幂等、只增不改、只复制不动源），由**客户端自己的 `migration-job.json`**
+（`status == "completed"`）门控 —— 无条件搬会在「两条客户端并存」的机器上把
+TraeWork 的登录态灌进 TraeCode 槽位，那正是 `profiles_dir_for_program` 点名过的事故。
+⚠️ 搬**所有**遗留程序位而不是只搬记录里那一条：`migration-job.json` 只写了 TraeWork
+（TraeCode 的 userData 恰好就是合并后的目标目录，客户端没必要为它写迁移项），
+只搬一条会让「用过 TraeCode 的机器」上的快照永远搬不过来。
+该搬运与账号库合并**共用同一个入口**（`trae_merge_legacy_regions`，账号页挂载时调一次），
+报告的 `changed` 与 `snapshots.changed` **互相独立**，前端两个都要看。
+
+**补二：修掉一处由 3 程序位改造引入的缺陷 —— 程序位名字被「反推」。**
+
+切换 toast 的标题原先由 `traeVariantLabel(variant)` 反推，而当时合并版 `trae` 与
+遗留 `trae_code` **共用变体** `trae_cn` ⇒ 点「Trae」按钮会说成「切换 TraeCode 账号失败」。
+现在标签一律取后端下发的 `TraeProgramStatus.label`
+（卡片/抽屉 → `requestSwitchTo` → `doSwitchTo` 全程原样传递），
+且变体已是双射 ⇒ 反推这条路**从结构上**不再有歧义。
 
 ---
 

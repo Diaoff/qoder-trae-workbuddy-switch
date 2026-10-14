@@ -1189,18 +1189,25 @@ function viewGateway() {
     </section>
     ${quickAccessHtml(g)}`;
   } else if (state.gwSub === "keys") {
+    /* ★ 密钥三态动作：吊销（置标记）· 恢复（清标记 ⇒ **同一把 Key 重新可用**）· 删除（不可逆）。
+       已吊销的行必须**同时**给出「恢复」与「删除」—— 只留删除，用户撤销一次误吊销就要
+       删掉重建、再把所有客户端配置改一遍。真实组件 `gateway/api-key-table.tsx` 同形。 */
     main = g.keys.length ? `<div class="tbl-wrap"><table class="tbl">
-      <thead><tr><th>名称</th><th>密钥</th><th>归属</th><th>累计请求</th><th>最后使用</th><th style="width:90px"></th></tr></thead>
-      <tbody>${g.keys.map((k) => `<tr>
+      <thead><tr><th>名称</th><th>密钥</th><th>归属</th><th>累计请求</th><th>最后使用</th><th>状态</th><th style="width:132px"></th></tr></thead>
+      <tbody>${g.keys.map((k) => `<tr${k.revoked ? ' class="row-off"' : ""}>
         <td><b>${esc(k.name)}</b><br><span class="tiny muted">创建于 ${k.created}</span></td>
         <td class="mono">${esc(k.masked)}</td>
         <td><span class="badge">${esc(k.scope)}</span></td>
         <td class="num">${fmt(k.requests)}</td>
         <td class="muted nowrap">${esc(k.lastUsed)}</td>
-        <td><button class="btn ghost xs" data-act="copy|${esc(k.masked)}">${ICON.copy}</button>
-            <button class="btn ghost xs" data-act="revoke|${k.id}">${ICON.trash}</button></td>
+        <td>${k.revoked ? `<span class="badge">已吊销</span>` : `<span class="badge ok">启用</span>`}</td>
+        <td>${k.revoked
+            ? `<button class="btn ghost xs" data-act="key-restore|${k.id}">恢复</button>
+               <button class="btn ghost xs danger" data-act="key-delete|${k.id}">删除</button>`
+            : `<button class="btn ghost xs" data-act="copy|${esc(k.masked)}">${ICON.copy}</button>
+               <button class="btn ghost xs" data-act="revoke|${k.id}">${ICON.trash}</button>`}</td>
       </tr>`).join("")}</tbody></table></div>
-      <p class="tiny muted" style="margin:10px 2px 0">密钥明文只在创建时展示一次；此处永远只显示掩码。请求数为该密钥创建以来的<b>累计值</b>，与概览的「今日」口径不同。</p>`
+      <p class="tiny muted" style="margin:10px 2px 0">密钥明文只在创建时展示一次；此处永远只显示掩码。请求数为该密钥创建以来的<b>累计值</b>，与概览的「今日」口径不同。<b>吊销可逆</b>：已吊销的密钥仍留在表里，可「恢复」回启用态（库中存的是同一把 Key，明文未变，客户端无需改配置），也可「删除」清掉记录。</p>`
       : emptyBlock(ICON.key, "还没有密钥", "创建一个密钥后即可通过本地网关调用模型。",
           `<button class="btn primary" data-act="new-key">${ICON.plus}创建密钥</button>`);
   } else if (state.gwSub === "models") {
@@ -2601,7 +2608,47 @@ document.addEventListener("click", (e) => {
     case "copy": stop();
       if (navigator.clipboard) navigator.clipboard.writeText(a1).catch(() => {});
       toast("ok", "已复制到剪贴板"); break;
-    case "revoke": stop(); toast("ok", "密钥已吊销", "使用该密钥的请求将立即失败"); break;
+    /* ── 密钥三态动作（吊销 / 恢复 / 删除）──
+       ★ 三者都改 `curGateway().keys` 并重渲染：原型要让评审**点得动** —— 一张静态表
+       看不出「恢复后回到启用态」。真实组件同样在每个动作后重载列表。 */
+    case "revoke": {
+      stop();
+      const key = curGateway().keys.find((x) => x.id === a1);
+      if (!key) break;
+      openConfirm({
+        title: "吊销 API Key",
+        body: `吊销后「<b>${esc(key.name)}</b>」立即失效（401）。<br><span class="tiny muted">密钥仍留在列表里，可随时「恢复」；明文未变，客户端无需改配置。</span>`,
+        okLabel: "吊销",
+        onOk: () => { key.revoked = true; renderContent(); toast("ok", `已吊销「${key.name}」`, "使用该密钥的请求立即失败（401）；行内现在有「恢复」与「删除」两个出口"); },
+      });
+      break;
+    }
+    case "key-restore": {
+      stop();
+      const key = curGateway().keys.find((x) => x.id === a1);
+      if (!key) break;
+      openConfirm({
+        title: "恢复 API Key",
+        body: `恢复后「<b>${esc(key.name)}</b>」立即重新可用。<br><span class="tiny muted">库里存的是<b>同一把</b> Key（明文未变），客户端无需改配置。</span>`,
+        okLabel: "恢复",
+        danger: false,
+        onOk: () => { key.revoked = false; renderContent(); toast("ok", `已恢复「${key.name}」`, "已回到启用态；明文与吊销前完全相同"); },
+      });
+      break;
+    }
+    case "key-delete": {
+      stop();
+      const keys = curGateway().keys;
+      const key = keys.find((x) => x.id === a1);
+      if (!key) break;
+      openConfirm({
+        title: "删除 API Key",
+        body: `确定删除已吊销的「<b>${esc(key.name)}</b>」？<br><span class="tiny muted">此操作<b>不可撤销</b>（与可逆的「恢复」不同）；用该密钥的客户端需重新配置。</span>`,
+        okLabel: "删除",
+        onOk: () => { curGateway().keys = keys.filter((x) => x.id !== a1); renderContent(); toast("ok", `已删除「${key.name}」`, "记录已移除；此操作不可撤销"); },
+      });
+      break;
+    }
     case "new-key": stop(); toast("ok", "已创建新密钥", "明文只显示这一次：bs_live_9f3a7d21c4e88b0f"); break;
     case "pal-run": {
       stop();

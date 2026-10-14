@@ -1,0 +1,509 @@
+//! **统一网关**：把两个产品线的模型合成一个入口（`wb-cn:` / `trae-global:` 这类命名空间前缀）。
+//!
+//! 设计依据：`docs/redesign/UNIFIED-GATEWAY-ARCH.md`（架构与契约）+ `UNIFIED-GATEWAY-UI.md`（交互）。
+//!
+//! # 现状（**逐步落地中，别把「已建文件」当成「已完成」**）
+//!
+//! | 部分 | 状态 |
+//! |:--|:--|
+//! | 命名空间表（`core::modules::gateway_namespace`） | ✅ 已落地 |
+//! | 运行配置（[`config`]） | ✅ 已落地 |
+//! | 密钥与命名空间授权（[`apikey`]） | ✅ 已落地 |
+//! | 运行状态（[`state`]） | ✅ 已落地 |
+//! | `GatewayProduct` + 路由 + `/healthz` `/status` `/v1/models`（[`routes`]） | ✅ 已落地 |
+//! | 业务端点 `/v1/chat/completions` `/v1/messages` `/v1/responses` `/biz/*path` | ⬜ 待 P3（抽 `pub(crate) relay_*`） |
+//! | 两处宿主接线（server / src-tauri）+ 管理面四处同步 | ⬜ 待做 |
+//! | 前端「统一入口」子导航页 | ⬜ 待做（原型已可点：`docs/redesign/buddy-switch-prototype.html`） |
+//!
+//! # 为什么是**第三个**产品线，而不是合并两个 router
+//!
+//! 两个网关的 `/v1/models`、`/v1/chat/completions` **逐字相同**，axum 对同路径 `merge`
+//! 会**运行期 panic**（不是编译期）。本仓有一条护栏测试
+//! （`lib.rs::two_products_own_overlapping_paths`）专门把这个重叠钉死，就是为了防止有人去 merge。
+//!
+//! ⇒ 统一网关**只挂一份路径**，在 handler 内按模型名前缀分派到两条既有产品线的既有中继实现。
+//! **合并的是入口，不是 router。**
+//!
+//! # 独立 Key 库（不复用两个既有库）
+//!
+//! 见 [`apikey`] 的模块头：归属语义不同（命名空间集合 vs 单个域/程序位），
+//! 且复用会让「改统一入口的 Key」与「改那个产品线自己的 Key」互相影响。
+
+pub mod apikey;
+pub mod config;
+pub mod routes;
+pub mod state;
+
+use std::net::{IpAddr, SocketAddr};
+
+use tokio::net::TcpListener;
+use tokio::sync::oneshot;
+
+pub use apikey::{UnifiedApiKeyRecord, UnifiedApiKeyStore, UNIFIED_KEY_PREFIX};
+pub use config::{
+    known_ids, unified_config_file, unified_keys_file, UnifiedGatewayConfig,
+    DEFAULT_MAX_BODY_MB, DEFAULT_STICKY_TTL_MS, DEFAULT_UNIFIED_PORT,
+};
+pub use state::UnifiedGatewayState;
+
+use crate::{GatewayHandle, GatewayProduct};
+
+/// 统一网关（第三个产品线）。
+pub struct UnifiedGateway;
+
+impl GatewayProduct for UnifiedGateway {
+    type State = UnifiedGatewayState;
+
+    /// ★ 只声明**已经挂上**的路径。
+    ///
+    /// `OWNED_PATHS` 是「路径所有权」的显式声明，泛型层正靠它判断「两个 router 能不能 merge」
+    /// —— 声明了却没挂就是撒谎（有专门用例钉住两侧一致）。**七个路径全部已挂**；
+    /// 新增路由必须同步本表，否则泛型层会拿一份过期的所有权去判断两个 router 能否 merge。
+    const OWNED_PATHS: &'static [&'static str] = &[
+        "/healthz",
+        "/status",
+        "/v1/models",
+        "/v1/chat/completions",
+        "/v1/messages",
+        "/v1/responses",
+        // ⚠️ 通配符必须是 axum 0.7 的 `*path`（**不是** 0.8 的 `{*path}`）——
+        //   写错会在 **router 构建期 panic**，而 `cargo check` 全绿（本仓踩过这个坑）。
+        "/biz/*path",
+    ];
+
+    fn shared_state() -> UnifiedGatewayState {
+        state::shared_state().clone()
+    }
+
+    fn is_enabled(state: &UnifiedGatewayState) -> impl std::future::Future<Output = bool> + Send {
+        let state = state.clone();
+        async move { state.config_snapshot().await.enabled }
+    }
+
+    fn router(state: UnifiedGatewayState) -> axum::Router {
+        router(state)
+    }
+
+    fn spawn_listener(
+        state: UnifiedGatewayState,
+    ) -> impl std::future::Future<Output = anyhow::Result<GatewayHandle>> + Send {
+        spawn_listener_with_state(state)
+    }
+}
+
+/// 管理面（`/api/unified-gateway/*`）的**共享响应构造**。
+///
+/// # 为什么必须有这一层（实测事故，不是洁癖）
+///
+/// 两处宿主（`buddy-switch-server` / `src-tauri`）各写一份 `json!({...})` 时，
+/// `list_unified_api_keys` 曾经在 **tauri 侧返回裸数组**、server 侧返回 `{ keys: [...] }`。
+/// 前端按 `{ keys }` 取值 ⇒ 桌面端拿到的是 **`Array.prototype.keys` 这个函数**
+/// （数组的 `.keys` 是原型方法！）⇒ `setState(函数)` 被 React 当成 updater 调用
+/// ⇒ `TypeError: Cannot convert undefined or null to object`，**整页白屏**。
+///
+/// 形状不一致**在任何门禁里都看不出来**：`check:api` 只校验命令名 / 路径 / 形参，
+/// 从不校验返回体。⇒ 只能靠「**只有一处构造函数**」在结构上杜绝。
+pub mod admin {
+    use serde_json::{json, Value};
+
+    use super::apikey::UnifiedApiKeyStore;
+    use super::state::UnifiedGatewayState;
+
+    /// `GET /api/unified-gateway/keys` 的响应体：`{ "keys": [ …脱敏… ] }`。
+    ///
+    /// ★ 字段名与两个既有网关的 `list_api_keys` **同形**（`{ keys: [...] }`），
+    /// 前端消费方式一模一样 —— 不发明第三种形状。
+    pub fn keys_list_payload(store: &UnifiedApiKeyStore) -> Value {
+        let keys: Vec<Value> = store.list().iter().map(|record| record.masked()).collect();
+        json!({ "keys": keys })
+    }
+
+    /// `GET /api/unified-gateway/config` 的响应体**中两处宿主共同的那部分**。
+    ///
+    /// ⚠️ **不含** `running` / `addr`：那两项来自各宿主自己的监听运行时
+    /// （server 是 `unified_gateway_host::status()`，桌面端是 `UnifiedGatewayRuntime`）。
+    /// 宿主在返回值上补这两个字段即可，**其余一律不得各自重写**。
+    pub async fn config_payload(state: &UnifiedGatewayState) -> Value {
+        let config = state.config_snapshot().await;
+        let keys = state.keys.list();
+        json!({
+            "config": config,
+            // 已启用项按**命名空间表顺序**（与配置文件里的书写顺序无关）
+            "namespaces": config
+                .enabled_namespaces()
+                .iter()
+                .map(|spec| spec.id)
+                .collect::<Vec<_>>(),
+            "allNamespaces": super::config::known_ids(),
+            // 只给计数：明细走专门的 keys 命令（一个命令不承担两件事）
+            "keys": {
+                "total": keys.len(),
+                "active": keys.iter().filter(|key| key.is_active()).count(),
+            },
+        })
+    }
+}
+
+/// 组装统一网关的路由（**只挂 [`UnifiedGateway::OWNED_PATHS`] 里声明过的路径**）。
+pub fn router(state: UnifiedGatewayState) -> axum::Router {
+    use axum::routing::{get, post};
+    // 请求体上限在 **router 构建期**固化：改配置需重启（与两个既有网关同款语义）。
+    let body_limit = state.body_limit_bytes;
+    axum::Router::new()
+        .route("/healthz", get(routes::healthz))
+        .route("/status", get(routes::status))
+        .route("/v1/models", get(routes::models))
+        // ★ 三个 LLM 端点：**共用一份分派**（`relay_llm`），差异只有错误体形状与 Trae 是否支持。
+        .route("/v1/chat/completions", post(routes::chat_completions))
+        .route("/v1/messages", post(routes::messages))
+        .route("/v1/responses", post(routes::responses))
+        // ★ 业务转发：命名空间来自**统一 Key 的 `biz_namespace`**（没有模型名可解析）。
+        //   **同时接 GET 与 POST** —— 白名单里两种方法混在一起，只挂 POST 会让
+        //   GET-only 的路径（`/activity/growth/streak`）经网关不可达（真实环境实测）。
+        .route("/biz/*path", get(routes::biz).post(routes::biz))
+        .layer(axum::extract::DefaultBodyLimit::max(body_limit))
+        .with_state(state)
+    // 不设 fallback：宿主可能把它 merge 进更大的 Router。
+}
+
+/// 用**调用方提供的**状态启动独立监听（与 [`crate::spawn_listener_with_state`] 同款语义）。
+///
+/// - 监听地址 / 端口 / 是否允许非回环均取自状态内的配置快照；
+/// - 非回环地址需 `allow_non_loopback`（否则明确拒绝，并说明为什么）；
+/// - 端口占用 / 地址非法时返回**可读错误**（不是 panic）。
+pub async fn spawn_listener_with_state(
+    state: UnifiedGatewayState,
+) -> anyhow::Result<GatewayHandle> {
+    let config = state.config_snapshot().await;
+    let bind_addr = config.bind_addr.clone();
+    let port = config.port;
+
+    let ip: IpAddr = bind_addr
+        .parse()
+        .map_err(|_| anyhow::anyhow!("统一网关监听地址无效：{bind_addr}（应为 IPv4/IPv6 字面量）"))?;
+
+    if !ip.is_loopback() && !config.allow_non_loopback {
+        return Err(anyhow::anyhow!(
+            "已拒绝监听非回环地址 {bind_addr}：局域网内任何设备都可消耗你的额度，\
+             请确认可信网络后，在设置中显式开启『允许局域网访问』再重试"
+        ));
+    }
+
+    let addr = SocketAddr::new(ip, port);
+    let listener = TcpListener::bind(addr).await.map_err(|error| {
+        anyhow::anyhow!(
+            "无法监听 {addr}：端口可能被占用或不可用（{error}）。\
+             注意 57890 / 57891 / 7864 / 8899 已被界面本体与两个既有网关占用。"
+        )
+    })?;
+    let local = listener.local_addr().unwrap_or(addr);
+
+    let app = router(state);
+
+    let (tx, rx) = oneshot::channel::<()>();
+    let join = tokio::spawn(async move {
+        let _ = axum::serve(listener, app)
+            .with_graceful_shutdown(async move {
+                let _ = rx.await;
+            })
+            .await;
+    });
+
+    Ok(GatewayHandle::new(local, tx, join))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::GatewayProduct;
+
+    fn temp_state(tag: &str) -> (UnifiedGatewayState, std::path::PathBuf) {
+        let dir = std::env::temp_dir().join(format!(
+            "buddy-switch-unified-{tag}-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let state = UnifiedGatewayState::with_keys(
+            UnifiedGatewayConfig::default(),
+            UnifiedApiKeyStore::new(dir.join("keys.json")),
+        );
+        (state, dir)
+    }
+
+    /// ★★ 管理面响应体的**形状护栏**（钉住 [`admin`] 的两个构造函数）。
+    ///
+    /// ## 这条守的是实测事故
+    ///
+    /// `list_unified_api_keys` 曾在 tauri 侧返回裸数组、server 侧返回 `{ keys: […] }`；
+    /// 前端按 `{ keys }` 取 ⇒ 桌面端拿到 `Array.prototype.keys`（**函数**）
+    /// ⇒ `setState(函数)` 被 React 当 updater 调用 ⇒ 整页白屏。
+    /// 形状不一致**任何门禁都抓不到**，故用测试把「唯一构造函数」的输出钉死：
+    /// 谁把 `keys` 从**数组**改成别的形状（或索性返回裸数组），本用例立刻红。
+    #[tokio::test]
+    async fn admin_payloads_pin_the_documented_shape() {
+        let (state, dir) = temp_state("admin-shape");
+        let keys = super::admin::keys_list_payload(&state.keys);
+        assert!(
+            keys.is_object(),
+            "keys 载荷必须是**对象** `{{ keys: [...] }}`（裸数组曾让桌面端整页白屏）：{keys}"
+        );
+        assert!(
+            keys["keys"].is_array(),
+            "keys 载荷里必须有 `keys` **数组**：{keys}"
+        );
+
+        let config = super::admin::config_payload(&state).await;
+        for field in ["config", "namespaces", "allNamespaces", "keys"] {
+            assert!(
+                config.get(field).is_some(),
+                "config 载荷缺字段 `{field}`（两处宿主与前端都按它取值）：{config}"
+            );
+        }
+        assert!(config["namespaces"].is_array());
+        assert!(config["allNamespaces"].is_array());
+        assert!(config["keys"]["total"].is_number());
+        assert!(config["keys"]["active"].is_number());
+        // ⚠️ 这两个字段**刻意不在共享载荷里**（各宿主自己补），
+        //    这里断言它缺席 ⇒ 谁把它塞进共享层，本用例会提醒他核对两处宿主。
+        assert!(config.get("running").is_none(), "running 应由各宿主补，不在共享载荷里");
+        assert!(config.get("addr").is_none(), "addr 应由各宿主补，不在共享载荷里");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// ★★ 护栏：**统一网关的路由必须真的能构建出来，且真的能应答**。
+    ///
+    /// ## 为什么必须有这条（血的教训，同 `lib.rs` 的同款用例）
+    ///
+    /// `cargo check` / `cargo build` 全绿、`OWNED_PATHS` 声明齐全、字符串断言也全绿，
+    /// 但 axum 语法不对（如把 0.7 的 `*path` 写成 0.8 的 `{*path}`）⇒ **router 构建期 panic**
+    /// ⇒ 网关根本起不来，而编译期完全测不出来。故本用例**真的构建 router 并真的发一条请求**。
+    #[tokio::test]
+    async fn router_builds_and_healthz_answers() {
+        use axum::body::Body;
+        use axum::http::Request;
+        use tower::ServiceExt; // oneshot
+
+        let (state, dir) = temp_state("router");
+        let app = router(state);
+
+        let response = app
+            .oneshot(Request::builder().uri("/healthz").body(Body::empty()).unwrap())
+            .await
+            .expect("router 必须能构建并响应（构建期 panic 会让网关完全起不来）");
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(body["service"], "unified-gateway");
+        assert_eq!(body["running"], true);
+        assert_eq!(
+            body["namespaces"].as_array().unwrap().len(),
+            4,
+            "默认启用集应是派生层 4 条"
+        );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// ★ 未声明的业务端点**在本端口是 404** —— 不是「假装能用」。
+    ///
+    /// 可证伪：往 `router()` 里加一条 `/v1/chat/completions` 却忘了更新 `OWNED_PATHS`
+    /// （或反过来）⇒ 本用例的两侧断言至少一条变红。
+    #[tokio::test]
+    async fn business_endpoints_are_not_mounted_yet() {
+        use axum::body::Body;
+        use axum::http::Request;
+        use tower::ServiceExt;
+
+        let (state, dir) = temp_state("404");
+        let app = router(state);
+
+        // ★ 七个路径**全部已挂** —— 声明与实现两侧必须一致（加路由忘改 OWNED_PATHS，
+        //   泛型层就会拿一份过期的所有权去判断两个 router 能否 merge）。
+        assert_eq!(
+            UnifiedGateway::OWNED_PATHS,
+            &[
+                "/healthz",
+                "/status",
+                "/v1/models",
+                "/v1/chat/completions",
+                "/v1/messages",
+                "/v1/responses",
+                "/biz/*path",
+            ],
+            "路由表变更必须同步本断言与 OWNED_PATHS（两侧一起改）"
+        );
+        // ★ 不设 fallback：未知路径必须 404 —— 否则宿主把它 merge 进更大的 Router 时
+        //   会把别人的路径一起吞掉（axum 同路径 merge 是运行期 panic，fallback 则是静默吞）。
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/definitely-not-a-route")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            response.status(),
+            axum::http::StatusCode::NOT_FOUND,
+            "未知路径必须 404（说明没有 fallback 会吞掉宿主的其它路由）"
+        );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// 声明过的路径都真的挂上了（防「声明与实现脱节」，同 `lib.rs` 的既有护栏口径）。
+    #[tokio::test]
+    async fn every_owned_path_is_actually_mounted() {
+        use axum::body::Body;
+        use axum::http::{Request, StatusCode};
+        use tower::ServiceExt;
+
+        let (state, dir) = temp_state("owned");
+        let app = router(state);
+
+        for path in UnifiedGateway::OWNED_PATHS {
+            let response = app
+                .clone()
+                .oneshot(Request::builder().uri(*path).body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            assert_ne!(
+                response.status(),
+                StatusCode::NOT_FOUND,
+                "{path} 声明了所有权却没挂上 —— handler 写了但没人调（本项目已出过三次同类事故）"
+            );
+        }
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// ★★ **真机验证**：真的起监听、走**真实 TCP** 打一条 HTTP 请求。
+    ///
+    /// 与上一条的区别：那条走 `tower::oneshot`（不碰 socket），本条走真实 socket。
+    /// 本仓的纪律是「**路由在不在册要真的发一条请求**」—— 曾出现「`cargo check` 全绿、
+    /// `OWNED_PATHS` 齐全、字符串断言全绿，但网关根本起不来」的 bug，只有真打一条才能暴露。
+    ///
+    /// 端口用 `0`（内核分配）⇒ 不与并发跑的其它测试抢固定端口（本沙箱踩过「抢端口假红」）。
+    #[tokio::test]
+    async fn listener_serves_http_on_a_real_socket() {
+        let (mut state, dir) = temp_state("tcp");
+        {
+            let mut config = state.config_snapshot().await;
+            config.port = 0; // 内核分配
+            config.enabled = true;
+            state.set_config(config).await;
+        }
+        state.body_limit_bytes = crate::state::body_limit_bytes(8);
+
+        let handle = spawn_listener_with_state(state).await.expect("应能起监听");
+        let addr = handle.addr();
+        assert_ne!(addr.port(), 0, "端口 0 应由内核分配成真实端口");
+
+        let response = reqwest::get(format!("http://{addr}/healthz"))
+            .await
+            .expect("真实 HTTP 请求应成功（起不来会在这里连不上）");
+        assert_eq!(response.status(), reqwest::StatusCode::OK);
+        let body: serde_json::Value = response.json().await.expect("响应应是 JSON");
+        assert_eq!(body["service"], "unified-gateway");
+        assert_eq!(body["enabled"], true);
+
+        // 已挂的业务端点：真实端口上**存在**（无凭据 ⇒ 401，而不是 404）
+        let unauthorized = reqwest::Client::new()
+            .post(format!("http://{addr}/v1/chat/completions"))
+            .body("{}")
+            .send()
+            .await
+            .expect("请求应送达");
+        assert_eq!(
+            unauthorized.status(),
+            reqwest::StatusCode::UNAUTHORIZED,
+            "/v1/chat/completions 已挂上，缺凭据应是 401 而不是 404"
+        );
+
+        // `/v1/messages` 与 `/v1/responses` 也已挂上（无凭据 ⇒ 401）
+        for path in ["/v1/messages", "/v1/responses"] {
+            let response = reqwest::Client::new()
+                .post(format!("http://{addr}{path}"))
+                .body("{}")
+                .send()
+                .await
+                .expect("请求应送达");
+            assert_eq!(
+                response.status(),
+                reqwest::StatusCode::UNAUTHORIZED,
+                "{path} 已挂上，缺凭据应是 401 而不是 404"
+            );
+        }
+
+        // `/biz/*path` 也已挂上（无凭据 ⇒ 401）
+        let biz = reqwest::Client::new()
+            .post(format!("http://{addr}/biz/anything"))
+            .body("{}")
+            .send()
+            .await
+            .expect("请求应送达");
+        assert_eq!(biz.status(), reqwest::StatusCode::UNAUTHORIZED);
+
+        // ★ 未知路径：真实端口上必须 404（证明没有 fallback）
+        let not_found = reqwest::Client::new()
+            .post(format!("http://{addr}/definitely-not-a-route"))
+            .body("{}")
+            .send()
+            .await
+            .expect("请求应送达");
+        assert_eq!(not_found.status(), reqwest::StatusCode::NOT_FOUND);
+
+        handle.shutdown().await;
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// ★ 非回环监听必须被拒绝（除非显式允许）—— 与两个既有网关同款安全默认。
+    #[tokio::test]
+    async fn non_loopback_bind_is_refused_without_the_flag() {
+        let dir = std::env::temp_dir().join(format!(
+            "buddy-switch-unified-bind-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut config = UnifiedGatewayConfig::default();
+        config.bind_addr = "0.0.0.0".to_string();
+        config.allow_non_loopback = false;
+        // 用一个几乎不可能被占用的端口；拒绝发生在 bind **之前**，故不会真的占端口
+        config.port = 57997;
+        let state =
+            UnifiedGatewayState::with_keys(config, UnifiedApiKeyStore::new(dir.join("keys.json")));
+
+        // 不用 `expect_err`：它要求 `Ok` 侧实现 `Debug`，而 `GatewayHandle` 刻意不实现
+        // （持有 shutdown sender / join handle，没有可读的 Debug 形态）。
+        let error = match spawn_listener_with_state(state).await {
+            Ok(_handle) => panic!("未开启 allow_non_loopback 时必须拒绝"),
+            Err(error) => error,
+        };
+        let message = error.to_string();
+        assert!(message.contains("允许局域网访问"), "错误文案要给出出路：{message}");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// ★ 非法监听地址 ⇒ **可读错误**（不是 panic）。
+    #[tokio::test]
+    async fn invalid_bind_addr_yields_a_readable_error() {
+        let dir = std::env::temp_dir().join(format!(
+            "buddy-switch-unified-badaddr-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut config = UnifiedGatewayConfig::default();
+        config.bind_addr = "not-an-ip".to_string();
+        let state =
+            UnifiedGatewayState::with_keys(config, UnifiedApiKeyStore::new(dir.join("keys.json")));
+
+        let error = match spawn_listener_with_state(state).await {
+            Ok(_handle) => panic!("非法地址必须报可读错误"),
+            Err(error) => error,
+        };
+        assert!(error.to_string().contains("监听地址无效"), "{error}");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+}

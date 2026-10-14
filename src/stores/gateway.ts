@@ -69,6 +69,8 @@ interface GatewayState {
   loadKeys: () => Promise<void>;
   createKey: (name: string, region: Region) => Promise<CreateApiKeyResult>;
   revokeKey: (id: string) => Promise<void>;
+  /** 撤销吊销：清 `revokedAt`，Key 重新可用（后端拒绝「未吊销」的恢复）。 */
+  restoreKey: (id: string) => Promise<void>;
   deleteKey: (id: string) => Promise<void>;
   loadModels: (region: Region) => Promise<void>;
   refreshModels: (region: Region) => Promise<void>;
@@ -153,6 +155,11 @@ export const useGatewayStore = create<GatewayState>((set, get) => ({
 
   async revokeKey(id) {
     await api.revokeApiKey(id);
+    await get().loadKeys();
+  },
+
+  async restoreKey(id) {
+    await api.restoreApiKey(id);
     await get().loadKeys();
   },
 

@@ -37,6 +37,7 @@ import type {
   GatewayConfig,
   GatewayLogEntry,
   GatewayStatus,
+  AppPrefs,
   GithubConfig,
   ImportPreview,
   ImportPreviewAccount,
@@ -53,7 +54,6 @@ import type {
   ScheduleConfig,
   ScheduleRunResult,
   Session,
-  SessionFingerprint,
   SessionReplicaResponse,
   SkillCopyReport,
   SkillImportResult,
@@ -162,6 +162,7 @@ const DEMO_READ_COMMANDS = new Set([
   "get_token_statistics",
   "get_checkin_logs", "get_auto_rotate_config", "rotate_status", "get_rotate_logs",
   "get_github_config", "check_update", "get_launch_at_login_enabled", "switch_progress",
+  "get_app_prefs", "set_app_prefs",
   "get_travel_status", "get_auto_travel_config", "get_schedule_config",
   "get_switch_config",
   // P8 T02 · 会话页两个只读命令：演示站必须能渲染副本视图（否则 build:demo 报错）。
@@ -185,6 +186,10 @@ const DEMO_READ_COMMANDS = new Set([
   // ⚠️ 只登记**只读**命令：`companion_set_visible` / `companion_toggle` / `companion_jump`
   // 是显隐 / 聚焦（非只读），一律不进这里。
   "companion_status",
+  // P15 · 外部 Agent 会话监听（**只读**状态）：演示站需返回虚构数据，否则 build:demo 报错。
+  // ⚠️ `set_agent_hook_enabled` 是**写**（会改上游客户端配置），一律不进这里 ——
+  // 演示环境绝不能出现「点了开关就改本机客户端配置」的假动作。
+  "get_agent_hook_status",
   // P7 全局备份**只读**命令（导出 / 自动备份列表 / 自动备份配置）。
   // 预览 / 导入 / 恢复 / 保存配置是**动作**，一律不进这里（由页面侧处理不可用）。
   "export_backup", "list_auto_backups", "get_auto_backup_config",
@@ -304,8 +309,6 @@ const ROUTES: Record<string, Route> = {
   // P14 S4b · 记录级 diff（只读）+ 增量追加（只有 `appendable` 才真写）。
   diff_vscode_sessions: { method: "GET", path: "/api/vscode-sessions/diff" },
   sync_vscode_sessions: { method: "POST", path: "/api/vscode-sessions/sync" },
-  // P8 · 会话内容指纹（组状态派生的数据源）—— **POST**：批量传 sessionIds。
-  session_fingerprints: { method: "POST", path: "/api/sessions/fingerprints" },
   // P8 · **安全同步（增量追加）** —— POST：批量传 `{ sourceCid, targetCid }[]`。
   // ★ **写操作**（会往目标 jsonl 追加行）⇒ 不进演示只读命令表。
   sync_session_replicas: { method: "POST", path: "/api/sessions/sync" },
@@ -372,7 +375,19 @@ const ROUTES: Record<string, Route> = {
   list_api_keys: { method: "GET", path: "/api/gateway/keys" },
   create_api_key: { method: "POST", path: "/api/gateway/keys" },
   revoke_api_key: { method: "POST", path: "/api/gateway/keys/revoke" },
+  // 撤销吊销（恢复）与吊销互逆：已吊销的 Key **两个出口都必须在**（恢复 / 删除）。
+  restore_api_key: { method: "POST", path: "/api/gateway/keys/restore" },
   delete_api_key: { method: "POST", path: "/api/gateway/keys/delete" },
+  // 统一网关（第三个产品线）：与上面两条网关线路**平行**，但它是**跨作用域**的 ——
+  // 因此这些命令**不进** SCOPE_PARAMETERIZED（拿不到也不该拿 scope）。
+  get_unified_gateway_config: { method: "GET", path: "/api/unified-gateway/config" },
+  get_unified_gateway_models: { method: "GET", path: "/api/unified-gateway/models" },
+  save_unified_gateway_config: { method: "POST", path: "/api/unified-gateway/config" },
+  list_unified_api_keys: { method: "GET", path: "/api/unified-gateway/keys" },
+  create_unified_api_key: { method: "POST", path: "/api/unified-gateway/keys" },
+  revoke_unified_api_key: { method: "POST", path: "/api/unified-gateway/keys/revoke" },
+  restore_unified_api_key: { method: "POST", path: "/api/unified-gateway/keys/restore" },
+  delete_unified_api_key: { method: "POST", path: "/api/unified-gateway/keys/delete" },
   get_gateway_models: { method: "GET", path: "/api/gateway/models" },
   refresh_gateway_models: { method: "POST", path: "/api/gateway/models/refresh" },
   get_account_strategy: { method: "GET", path: "/api/gateway/strategy" },
@@ -437,6 +452,8 @@ const ROUTES: Record<string, Route> = {
   list_trae_api_keys: { method: "GET", path: "/api/trae/gateway/keys" },
   create_trae_api_key: { method: "POST", path: "/api/trae/gateway/keys" },
   revoke_trae_api_key: { method: "POST", path: "/api/trae/gateway/keys/revoke" },
+  // 撤销吊销（恢复）：与 WorkBuddy 侧同形同语义。
+  restore_trae_api_key: { method: "POST", path: "/api/trae/gateway/keys/restore" },
   delete_trae_api_key: { method: "POST", path: "/api/trae/gateway/keys/delete" },
   // 打开 Trae 数据目录（非 Windows 返回结构化 Unsupported）。
   open_trae_data_dir: { method: "POST", path: "/api/trae/open-data-dir" },
@@ -449,6 +466,12 @@ const ROUTES: Record<string, Route> = {
   companion_set_visible: { method: "POST", path: "/api/companion/visibility" },
   companion_toggle: { method: "POST", path: "/api/companion/toggle" },
   companion_jump: { method: "POST", path: "/api/companion/jump" },
+  // ---- 外部 Agent 会话监听（P15 · hook 安装面；两宿主同源）----
+  // ⚠️ `set_agent_hook_enabled` 会**写上游客户端的 settings.json**（装 / 卸 hook），
+  // 那是用户显式同意的动作，**不是**悬浮窗的写操作 —— P9 的只读红线仍然成立
+  // （`companion_*` 命令面依旧无任何写操作）。
+  get_agent_hook_status: { method: "GET", path: "/api/agent-hooks/status" },
+  set_agent_hook_enabled: { method: "POST", path: "/api/agent-hooks/enabled" },
 };
 
 /**
@@ -1030,22 +1053,6 @@ export function listSessions(region?: Region): Promise<{
  */
 export function listSessionReplicas(region?: Region): Promise<SessionReplicaResponse> {
   return call("list_session_replicas", region ? { region } : undefined);
-}
-
-/**
- * P8 · **会话内容指纹**（批量）—— 「组状态派生」的数据源。
- *
- * 返回 `{ [sessionId]: { lineCount, prefixHashes } | null }`。
- * ⇒ 两副本的**公共前缀长度** = 「共同旧版」的条数；`lineCount - 公共前缀` = 各自的增量。
- *
- * ⚠️ 这是**内容级**判据 —— **不得**用 `updatedAt` 派生「落后 / 分叉」
- * （`P8-ARCH.md` §1.2：「时间新 ≠ 内容新」）。
- */
-export function sessionFingerprints(
-  sessionIds: string[],
-  region?: Region,
-): Promise<Record<string, SessionFingerprint | null>> {
-  return call("session_fingerprints", { sessionIds, ...(region ? { region } : {}) });
 }
 
 /**
@@ -1717,6 +1724,130 @@ export function revokeApiKey(id: string): Promise<{ ok: boolean }> {
   return call("revoke_api_key", { id });
 }
 
+/* ─────────── 统一网关（第三个产品线 · 跨作用域）───────────
+   与 WorkBuddy / Trae 两条线路同形：**读**配置与密钥、**写**配置与密钥。
+   字段名与后端 `UnifiedGatewayConfig` 的 snake_case 键一一对应（不做 camelCase 转换）。 */
+
+/** 统一网关配置（`~/.buddy-switch/gateway_unified.json`）。 */
+export interface UnifiedGatewayConfigView {
+  enabled: boolean;
+  bind_addr: string;
+  port: number;
+  allow_non_loopback: boolean;
+  log_keep: number;
+  log_bodies: boolean;
+  per_key_rate_limit: number | null;
+  max_rotate: number;
+  sanitize_fingerprints: boolean;
+  prompt_mode: string;
+  prompt_file: string | null;
+  sticky_ttl_ms: number;
+  max_body_mb: number;
+  /** 启用的命名空间 id（后端按命名空间表顺序返回，与文件里的书写顺序无关）。 */
+  namespaces: string[];
+  /** 裸模型名落到哪个命名空间；`null` = 拒绝裸名（默认）。 */
+  default_namespace: string | null;
+}
+
+/** `GET /api/unified-gateway/config` 的响应：配置 + 运行状态 + 命名空间 + 密钥计数。 */
+export interface UnifiedGatewaySnapshot {
+  config: UnifiedGatewayConfigView;
+  /** 已启用的命名空间（表顺序）。 */
+  namespaces: string[];
+  /** 全部在册的命名空间（含**未启用**的扩展层），供「按平台分组勾选」渲染。 */
+  allNamespaces: string[];
+  running: boolean;
+  addr: string | null;
+  keys: { total: number; active: number };
+}
+
+/** 统一密钥的**脱敏**视图（不含 hash，明文只在创建时返回一次）。 */
+export interface UnifiedApiKeyView {
+  id: string;
+  name: string;
+  prefix: string;
+  suffix: string;
+  /** 该 Key 被授权的命名空间。 */
+  namespaces: string[];
+  /** 业务转发（`/biz/*path`）用哪个命名空间；`null` ⇒ 该端点返回 400。 */
+  bizNamespace: string | null;
+  createdAt: number;
+  revokedAt: number | null;
+  revoked: boolean;
+  lastUsedAt: number | null;
+}
+
+export function getUnifiedGatewayConfig(): Promise<UnifiedGatewaySnapshot> {
+  return call("get_unified_gateway_config");
+}
+
+/** 一段命名空间的清单来源（**非实时必有原因** —— 契约恒非空）。 */
+export interface UnifiedNamespaceCatalog {
+  source: string;
+  fetched_at: number | null;
+  note: string | null;
+}
+
+/**
+ * `GET /api/unified-gateway/models` 的响应：本入口**已启用**命名空间的清单预览。
+ *
+ * ★ 与监听端口的 `/v1/models` 不同：**不过滤 API Key 的授权**（管理面看的是「本入口启用了哪些」）。
+ * 因此它只在管理面暴露，不能当客户端清单用。
+ */
+export interface UnifiedModelsPreview {
+  object: string;
+  data: Array<Record<string, unknown>>;
+  namespaces: Record<string, UnifiedNamespaceCatalog>;
+}
+
+export function getUnifiedGatewayModels(): Promise<UnifiedModelsPreview> {
+  return call("get_unified_gateway_models");
+}
+
+export function saveUnifiedGatewayConfig(
+  config: UnifiedGatewayConfigView,
+): Promise<{ ok: boolean; config: UnifiedGatewayConfigView; running: boolean; addr: string | null }> {
+  return call("save_unified_gateway_config", {
+    config: config as unknown as Record<string, unknown>,
+  });
+}
+
+export function listUnifiedApiKeys(): Promise<{ keys: UnifiedApiKeyView[] }> {
+  return call("list_unified_api_keys");
+}
+
+/**
+ * 创建统一密钥。★ **明文只返回这一次**（库里只存 sha256）。
+ *
+ * `bizNamespace` 传 `null` 表示该 Key 不做业务转发（调用 `/biz/*` 会被明确拒绝）。
+ */
+export function createUnifiedApiKey(
+  name: string,
+  namespaces: string[],
+  bizNamespace: string | null,
+): Promise<CreateApiKeyResult> {
+  return call("create_unified_api_key", { name, namespaces, bizNamespace });
+}
+
+export function revokeUnifiedApiKey(id: string): Promise<{ ok: boolean }> {
+  return call("revoke_unified_api_key", { id });
+}
+
+/** 撤销吊销 —— **同一把 Key 重新可用**，客户端配置不用改。 */
+export function restoreUnifiedApiKey(id: string): Promise<{ ok: boolean }> {
+  return call("restore_unified_api_key", { id });
+}
+
+/** 物理删除（后端**仅允许删除已吊销**的 Key）。 */
+export function deleteUnifiedApiKey(id: string): Promise<{ ok: boolean }> {
+  return call("delete_unified_api_key", { id });
+}
+
+/** 撤销吊销：清 `revoked_at`，Key **重新可用**（未吊销的 Key 会被后端拒绝）。 */
+export function restoreApiKey(id: string): Promise<{ ok: boolean }> {
+  return call("restore_api_key", { id });
+}
+
 export function deleteApiKey(id: string): Promise<{ ok: boolean }> {
   return call("delete_api_key", { id });
 }
@@ -1910,6 +2041,31 @@ export function relaunchApp(): Promise<void> {
   if (demoModeEnabled) return Promise.reject(new Error(demoUnavailableMessage()));
   if (isWebui()) return Promise.resolve();
   return call("relaunch_app");
+}
+
+// ---------------------------------------------------------------------------
+// 应用级偏好（仅桌面端；webui 没有可关闭的窗口，故不提供同名接口，卡片也不在 webui 渲染）
+// ---------------------------------------------------------------------------
+
+/**
+ * 读取应用级偏好里「宿主也要读」的那一类（目前只有 `close_to_tray`）。
+ *
+ * 纯渲染层的偏好（主题 / 语言 / 快捷键 / 自动检查更新）**不走这里** ——
+ * 它们在 `localStorage`，同步可得，见 `lib/update-preference.ts` 等。
+ */
+export function getAppPrefs(): Promise<AppPrefs> {
+  if (demoModeEnabled) return call("get_app_prefs");
+  if (!isDesktop()) return Promise.resolve({ close_to_tray: true });
+  return call("get_app_prefs");
+}
+
+/** 保存应用级偏好，返回**归一化后的回读值**（非法值回落默认，见后端模块头）。 */
+export function setAppPrefs(prefs: AppPrefs): Promise<AppPrefs> {
+  /* 演示模式下这条命令**真的能读写**（会话内状态），不是假控件 ——
+     它只改本应用自己的偏好，演示站没有理由拒绝它。 */
+  if (demoModeEnabled) return call("set_app_prefs", { prefs: prefs as unknown as Record<string, unknown> });
+  if (!isDesktop()) return Promise.resolve(prefs);
+  return call("set_app_prefs", { prefs: prefs as unknown as Record<string, unknown> });
 }
 
 // ---------------------------------------------------------------------------
@@ -2481,6 +2637,11 @@ export function revokeTraeApiKey(id: string): Promise<{ ok: boolean }> {
   return call("revoke_trae_api_key", { id });
 }
 
+/** 撤销吊销（清 `revokedAt`，Key 重新可用；未吊销会被后端拒绝）。 */
+export function restoreTraeApiKey(id: string): Promise<{ ok: boolean }> {
+  return call("restore_trae_api_key", { id });
+}
+
 /** 物理删除**已吊销**的 API Key（未吊销会被后端拒绝）。 */
 export function deleteTraeApiKey(id: string): Promise<{ ok: boolean }> {
   return call("delete_trae_api_key", { id });
@@ -2557,6 +2718,77 @@ export function companionToggle(): Promise<boolean> {
  */
 export function companionJump(id: string): Promise<void> {
   return call<void>("companion_jump", { id });
+}
+
+// ---------------------------------------------------------------------------
+// 外部 Agent 会话监听（P15 · hook 安装面）
+// ---------------------------------------------------------------------------
+//
+// ★ 这与悬浮窗的**只读红线不冲突**：那一条约束的是**窗口**（`companion_*`）。
+//   本段改的是**上游客户端的配置文件**（装 / 卸 hook），必须是用户显式动作，
+//   且默认关（`app_prefs.watch_agent_sessions = false`）。
+//
+// ★ 装 / 卸**不新造写入路径**：一律走 `client_settings` 的补丁 ——
+//   它自带格式保持、写前备份、**进程守卫**（客户端在运行就拒写，会被它的内存态覆盖）。
+
+/** 单个客户端的 hook 安装状态。 */
+export interface AgentHookSlot {
+  /** `client_settings` 的槽位键（如 `workbuddy-cn`）。 */
+  slot: string;
+  /** 会话来源 id（同时是 hook 命令 `--source` 的取值）。 */
+  source: string;
+  /** 该客户端**是否安装**（未安装的槽位不会被写配置）。 */
+  clientInstalled: boolean;
+  /**
+   * 该客户端**是否正在运行**。
+   *
+   * ⚠️ 运行中改不了它的配置（进程守卫）⇒ 这一位为 `true` 时开启会失败，
+   * 调用方必须提示用户「先退出客户端」，**不能只说一句失败**。
+   */
+  clientRunning: boolean;
+  /** 是否已装了我们**至少一条** hook。 */
+  installed: boolean;
+  /** 已装了哪些事件（空数组 = 一条都没有）。 */
+  events: string[];
+  /** 装出去的那条命令（诊断用；取不到当前程序路径时为 `null`）。 */
+  command: string | null;
+}
+
+/** hook 安装状态（**只读**）。 */
+export interface AgentHookStatus {
+  /** 用户偏好里的开关（**唯一事实来源**）。 */
+  enabled: boolean;
+  /** 接收端端口。 */
+  port: number;
+  slots: AgentHookSlot[];
+}
+
+/** 读取 hook 安装状态（**只读**）。 */
+export function getAgentHookStatus(): Promise<AgentHookStatus> {
+  return call<AgentHookStatus>("get_agent_hook_status");
+}
+
+/** 开启 / 关闭外部 Agent 会话监听的结果。 */
+export interface AgentHookToggleResult {
+  enabled: boolean;
+  /** 真正改动的槽位。 */
+  changed: Array<{ slot: string; ok: boolean }>;
+  /**
+   * 失败原因（**逐槽位**）。
+   *
+   * ★ 部分成功是常态（国内版装了、国际版没装，或某个客户端正在运行）——
+   * 调用方必须把 `errors` 如实呈现，**不静默失败**。
+   */
+  errors: string[];
+}
+
+/**
+ * 开启 / 关闭外部 Agent 会话监听。
+ *
+ * ⚠️ 开启会**往上游客户端 `settings.json` 写 hook 配置**（默认关，须用户显式同意）。
+ */
+export function setAgentHookEnabled(enabled: boolean): Promise<AgentHookToggleResult> {
+  return call<AgentHookToggleResult>("set_agent_hook_enabled", { enabled });
 }
 
 export type { TraeGatewayLogEntry, TraeGatewayStatus };

@@ -31,6 +31,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
 use crate::modules::auth_file;
@@ -214,12 +215,19 @@ pub fn list_sessions_for_user_for(region: Region, uid: &str) -> Value {
         (false, true) => "id, cwd, title, NULL, updated_at, is_playground",
         (false, false) => "id, cwd, title, NULL, updated_at, 0",
     };
+    // ★ `hasHistory` 需要「这份会话有没有 jsonl 正文」。`projects/` 的两层目录**只扫一次**
+    //   （[`build_projects_index_for`]），之后每行只是一次 HashMap 查询。
+    //   ⚠️ 旧实现对**每一行**调 [`find_project_jsonl_for`]（每次重扫两层目录）—— 真机
+    //   Global 分区 12k 行 × 22 个工作区目录 ≈ 27 万次 syscall，是「会话页加载很久」的
+    //   第二大来源。索引只建一次成本极低（22 次 `read_dir`）。
+    let projects = build_projects_index_for(region);
+
     // 归属匹配 = 严格命中当前账号的行 **∪** 「空归属」行（见 `USER_SCOPE_*`）。
     // 取并集而不是「严格为空才放宽」：后者在「既有当前账号的会话、又有旧空归属行」的库里
     // 仍然看不到旧会话（用户现场：索引恢复后切换弹窗里依然列不出来）。
-    let mut sessions = query_session_rows(&conn, region, columns, USER_SCOPE_STRICT, uid);
+    let mut sessions = query_session_rows(&conn, columns, USER_SCOPE_STRICT, uid, &projects);
     if !uid.is_empty() {
-        for s in query_session_rows(&conn, region, columns, USER_SCOPE_WIDENED, uid) {
+        for s in query_session_rows(&conn, columns, USER_SCOPE_WIDENED, uid, &projects) {
             if !sessions.iter().any(|e| e.get("id") == s.get("id")) {
                 sessions.push(s);
             }
@@ -252,12 +260,15 @@ const USER_SCOPE_WIDENED: &str = "(user_id = ?1 OR user_id IS NULL OR user_id = 
 
 /// 按给定归属范围查会话行并映射成前端结构；任何一步失败都返回空表（**绝不报错**，
 /// 让上层能继续走降级扫描）。
+///
+/// `projects` = `cid → jsonl 路径` 索引（[`build_projects_index_for`]，调用方**建一次**）。
+/// ⚠️ 不在这里自己扫目录：这个函数按行调用，内部扫目录就是 O(行数 × 工作区数)。
 fn query_session_rows(
     conn: &Connection,
-    region: Region,
     columns: &str,
     scope: &str,
     uid: &str,
+    projects: &HashMap<String, PathBuf>,
 ) -> Vec<Value> {
     let sql = format!(
         "SELECT {columns} FROM sessions WHERE {scope} AND deleted_at IS NULL \
@@ -292,7 +303,7 @@ fn query_session_rows(
             "title": session_display_title(title, custom_title),
             "cwd": cwd,
             "updatedAt": updated_at.unwrap_or(0),
-            "hasHistory": find_project_jsonl_for(region, &cid).is_some(),
+            "hasHistory": projects.contains_key(&cid),
             "isPlayground": is_playground.unwrap_or(0) != 0,
         }));
     }
@@ -452,8 +463,8 @@ pub const PREFIX_HASH_LIMIT: usize = 512;
 /// 各自的 `lineCount - 公共前缀` = 各自新增的条数（**内容级 delta**）。
 ///
 /// ⚠️ **只读**：不改写任何会话文件。
-/// ⚠️ **不缓存**：由命令层按 `mtime` 缓存（本函数每次都会真读文件）。
-#[derive(serde::Serialize)]
+/// ⚠️ **本函数每次都会真读文件**；要复用请走 [`FingerprintStore`]（按 `size + mtime` 失效）。
+#[derive(Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SessionFingerprint {
     pub line_count: usize,
@@ -477,15 +488,209 @@ pub struct SessionFingerprint {
 /// 占位符选得足够独特，避免与真实正文撞车。
 pub const SESSION_ID_PLACEHOLDER: &str = "\u{1f}buddy-switch-session-id\u{1f}";
 
-pub fn session_fingerprint_for(region: Region, cid: &str) -> Option<SessionFingerprint> {
-    let path = find_project_jsonl_for(region, cid)?;
-    fingerprint_of_file(&path, cid)
-}
-
 /// 文件级指纹（路径由调用方给出 ⇒ 单测只需临时文件，**不碰真实 home**）。
 pub fn fingerprint_of_file(path: &Path, cid: &str) -> Option<SessionFingerprint> {
     let text = std::fs::read_to_string(path).ok()?;
     Some(fingerprint_of_text(&text, cid))
+}
+
+// ---------------------------------------------------------------------------
+// ★ 会话页性能地基：指纹复用（size + mtime）与有界并行读取
+// ---------------------------------------------------------------------------
+
+/// 读指纹时的并行度上限。
+///
+/// 正文在**磁盘**上（真机 Global 分区 66 GB）⇒ 再多线程也只是互相抢磁道。
+/// 4 是「能把 NVMe 队列喂饱、又不至于让机械盘彻底抖动」的稳妥值。
+const FINGERPRINT_READ_THREADS: usize = 4;
+
+/// 缓存条目的本体：指纹 + **失效判据**（大小 / mtime）。
+#[derive(Clone)]
+struct CachedFingerprint {
+    size: u64,
+    mtime_ms: i64,
+    fingerprint: SessionFingerprint,
+}
+
+/// ★ 进程内指纹缓存（键 = `region ␟ cid`）。
+///
+/// ## 为什么必须有它
+///
+/// 会话页要给账本里**每个副本**算内容状态。真机实测（2026-10-14，Global 分区）：
+/// 账本 25,078 条边 → 409 组 / 25,487 个副本 → **66 GB** 正文；全量读一遍单线程
+/// **13 分钟**（Python 参照实现 92 MB/s）。「每次开页都重算」因此完全不可接受。
+///
+/// 指纹只由 **(路径, 大小, mtime)** 决定 ⇒ 三者未变即可复用，**命中时零 IO**。
+/// 客户端在会话里继续打字只会让文件变长 ⇒ 只有**活跃的那几份**会被重读。
+///
+/// ## 为什么刻意**不落盘**
+///
+/// 单份缓存 = 25k × 512 × 8B ≈ 100 MB；写一遍比重读一遍还贵，还要自定义二进制格式 /
+/// 版本号 / 损坏回退。进程内缓存已把「重复开页」的代价降到 0，先把这一步做扎实。
+/// ⚠️ 已知代价：**重启应用后的第一次**开页仍要付一次全量读（并行的几十秒量级）。
+/// 要消掉它必须走「二进制 + 尾部增量」的持久化，那是独立的一步，不做半成品。
+#[derive(Default)]
+pub struct FingerprintStore {
+    entries: HashMap<String, CachedFingerprint>,
+}
+
+/// 进程内共享的指纹缓存。
+static FINGERPRINTS: OnceLock<Mutex<FingerprintStore>> = OnceLock::new();
+
+fn fingerprint_store() -> &'static Mutex<FingerprintStore> {
+    FINGERPRINTS.get_or_init(|| Mutex::new(FingerprintStore::default()))
+}
+
+/// 缓存键：**region 分家**（CN / Global 的 cid 是两套 uuid 空间，不许互相命中）。
+fn fingerprint_key(region: Region, cid: &str) -> String {
+    format!("{}{LEDGER_SEP}{cid}", region.as_str())
+}
+
+/// 文件 mtime（ms）。取不到 ⇒ `-1`：仍是**可用**的判据（同一路径每次都得到 `-1`，
+/// 退化成「只要 size 不变就复用」），不是错误。
+fn mtime_ms_of(meta: &std::fs::Metadata) -> i64 {
+    meta.modified()
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(-1)
+}
+
+/// 读一份**内容稳定**的指纹：读前 / 读后各 stat 一次，`size` 与 `mtime` 都没变才采信。
+///
+/// ## 为什么必须校验稳定性
+///
+/// 会话文件在**用户正在用**的时候会被客户端追加。若在追加中途读完，拿到的是**撕裂的**
+/// 内容 —— 行数偏少、前缀 hash 也可能对不上，据此判出来的「谁落后几条」是错的
+/// （比不显示更坏）。判据是**读前后一致**：不一致就重试一次，仍不稳定 ⇒ `None`
+/// （本次落 `unknown`，**不臆造**），且**不写缓存**（免得把撕裂的读数钉死）。
+fn read_stable_fingerprint(
+    path: &Path,
+    cid: &str,
+) -> Option<(SessionFingerprint, u64, i64)> {
+    for _ in 0..2 {
+        let before = std::fs::metadata(path).ok()?;
+        let fingerprint = fingerprint_of_file(path, cid)?;
+        let after = std::fs::metadata(path).ok()?;
+        if before.len() == after.len() && mtime_ms_of(&before) == mtime_ms_of(&after) {
+            return Some((fingerprint, after.len(), mtime_ms_of(&after)));
+        }
+    }
+    None
+}
+
+impl FingerprintStore {
+    /// 取一份**仍然有效**的缓存读数（`size` / `mtime` 都未变）；否则 `None`。
+    fn valid(&self, key: &str, path: &Path) -> Option<SessionFingerprint> {
+        let cached = self.entries.get(key)?;
+        let meta = std::fs::metadata(path).ok()?;
+        if meta.len() != cached.size || mtime_ms_of(&meta) != cached.mtime_ms {
+            return None;
+        }
+        Some(cached.fingerprint.clone())
+    }
+
+    /// 登记一份刚读出来的读数（含它对应的身份）。
+    fn put(&mut self, key: String, size: u64, mtime_ms: i64, fingerprint: SessionFingerprint) {
+        self.entries.insert(
+            key,
+            CachedFingerprint {
+                size,
+                mtime_ms,
+                fingerprint,
+            },
+        );
+    }
+}
+
+/// 有界并行地把 `cid → 路径` 读成指纹（**顺序与入参一一对应**）。
+///
+/// ## 为什么是「分块」而不是工作窃取
+///
+/// 并行段**零共享可变状态**（`session.rs` 模块头那条安全边界）：任务切成
+/// [`FINGERPRINT_READ_THREADS`] 份、每份自有所有权、最后按序拼回 ——
+/// 不需要原子计数、不需要锁，也就没有「并行段的锁把顺序段拖慢」这一类问题。
+fn read_fingerprints_parallel(
+    jobs: &[(String, PathBuf)],
+) -> Vec<Option<(SessionFingerprint, u64, i64)>> {
+    if jobs.is_empty() {
+        return Vec::new();
+    }
+    let workers = jobs.len().min(FINGERPRINT_READ_THREADS);
+    let chunk = jobs.len().div_ceil(workers);
+    let mut out: Vec<Option<(SessionFingerprint, u64, i64)>> = Vec::with_capacity(jobs.len());
+    std::thread::scope(|scope| {
+        let handles: Vec<_> = jobs
+            .chunks(chunk)
+            .map(|part| {
+                scope.spawn(move || {
+                    part.iter()
+                        .map(|(cid, path)| read_stable_fingerprint(path, cid))
+                        .collect::<Vec<_>>()
+                })
+            })
+            .collect();
+        for handle in handles {
+            // 线程 panic 不该让整页加载失败：拿不到的那部分就是 `None`（诚实落 unknown）。
+            out.extend(handle.join().unwrap_or_default());
+        }
+    });
+    out
+}
+
+/// 把 `members` 的指纹**从缓存复用 / 必要时读盘**（并行）取回，顺序与 `members` 对齐。
+///
+/// 返回的每项都是 `(索引, 指纹)` 之外还带 `(size, mtime)` 以便回填缓存。
+fn fingerprints_for_members(
+    region: Region,
+    projects: &HashMap<String, PathBuf>,
+    members: &[(String, String)],
+) -> Vec<Option<SessionFingerprint>> {
+    let mut out: Vec<Option<SessionFingerprint>> = vec![None; members.len()];
+    // ① 先在缓存里找（命中零 IO）；缺失的登记为待读任务。
+    let mut pending: Vec<(usize, String, PathBuf)> = Vec::new();
+    {
+        let store = fingerprint_store().lock().unwrap();
+        for (index, (_uid, cid)) in members.iter().enumerate() {
+            match projects.get(cid) {
+                // ⚠️ 目录里没有这份 jsonl ⇒ **没有内容可读**（不是错误）⇒ 留 `None`。
+                None => continue,
+                Some(path) => {
+                    let key = fingerprint_key(region, cid);
+                    match store.valid(&key, path) {
+                        Some(hit) => out[index] = Some(hit),
+                        None => pending.push((index, cid.clone(), path.clone())),
+                    }
+                }
+            }
+        }
+    }
+    if pending.is_empty() {
+        return out;
+    }
+
+    // ② 未命中的并行读（读盘是本函数的全部成本）。
+    let jobs: Vec<(String, PathBuf)> = pending
+        .iter()
+        .map(|(_, cid, path)| (cid.clone(), path.clone()))
+        .collect();
+    let reads = read_fingerprints_parallel(&jobs);
+
+    // ③ 回填：内存里对一遍 + 顺手写缓存（**只有稳定读数才写**，见 `read_stable_fingerprint`）。
+    let mut store = fingerprint_store().lock().unwrap();
+    for ((index, cid, _), read) in pending.into_iter().zip(reads) {
+        let Some((fingerprint, size, mtime_ms)) = read else {
+            continue;
+        };
+        store.put(
+            fingerprint_key(region, &cid),
+            size,
+            mtime_ms,
+            fingerprint.clone(),
+        );
+        out[index] = Some(fingerprint);
+    }
+    out
 }
 
 /// 正文级指纹（**纯函数**）—— [`fingerprint_of_file`] 的内核。
@@ -493,23 +698,27 @@ pub fn fingerprint_of_file(path: &Path, cid: &str) -> Option<SessionFingerprint>
 /// 单独抽出来的理由：调用方**手上已经有正文**时不该再读一遍盘。
 /// （P14 S2 的基线若在 phase A 顺手算就能零额外 I/O；本期刻意没走那条路，
 /// 见 [`CopyBatch::record_baseline`] 的说明。）
+///
+/// ★ 性能：归一化**逐行按需**做 —— 不再对整份正文做一次 `text.replace(cid, …)`。
+/// 那一版会为每个会话额外分配一份与正文等大的字符串（真机均值 2.85 MB × 25k 个副本
+/// ≈ 70 GB 的纯分配/拷贝）。只有**真的含本会话 id** 的那一行才需要替换，其余行直接 hash。
 pub fn fingerprint_of_text(text: &str, cid: &str) -> SessionFingerprint {
-    // ★ 先归一化自己的 id，再逐行 hash —— 否则副本之间**永远**没有公共前缀。
-    let normalized = if cid.is_empty() {
-        std::borrow::Cow::Borrowed(text)
-    } else {
-        std::borrow::Cow::Owned(text.replace(cid, SESSION_ID_PLACEHOLDER))
-    };
     let mut line_count = 0usize;
     let mut prefix_hashes: Vec<u64> = Vec::new();
-    for line in normalized.lines() {
+    for line in text.lines() {
         let line = line.trim();
         if line.is_empty() {
             continue;
         }
         line_count += 1;
         if prefix_hashes.len() < PREFIX_HASH_LIMIT {
-            prefix_hashes.push(hash_line(line));
+            // ★ 先 trim 再归一化：占位符不含空白 ⇒ 与「先整串 replace 再 trim」等价。
+            let hash = if cid.is_empty() || !line.contains(cid) {
+                hash_line(line)
+            } else {
+                hash_line(&line.replace(cid, SESSION_ID_PLACEHOLDER))
+            };
+            prefix_hashes.push(hash);
         }
     }
     SessionFingerprint {
@@ -2538,11 +2747,62 @@ fn parse_copy_ledger_key_same_region(key: &str) -> Option<(String, String, Strin
 ///   "source": "ledger" | "empty" }
 /// ```
 pub fn list_replica_groups_for(region: Region) -> Value {
-    list_replica_groups_at(region, None)
+    let (entries, source) = replica_group_entries(region, None);
+    if entries.is_empty() {
+        // 无可用登记（文件缺失 / 空 / 只有跨 region 边）⇒ 前端渲染结构化空态。
+        return json!({ "groups": [], "source": "empty" });
+    }
+    // ★ 内容状态：**在这里算完**，只把每组几个整数回给前端（见 [`GroupContentStatus`]）。
+    //   `projects/` 索引只建一次 —— 逐副本重扫目录是「加载很久」的第二大来源。
+    let projects = build_projects_index_for(region);
+    let mut groups: Vec<Value> = Vec::with_capacity(entries.len());
+    for entry in &entries {
+        let fingerprints = fingerprints_for_members(region, &projects, &entry.members);
+        let baseline = newest_baseline(&entry.baselines);
+        let mut json = entry.json.clone();
+        if let Some(object) = json.as_object_mut() {
+            object.insert(
+                "content".to_string(),
+                derive_content_status(&entry.members, &fingerprints, baseline),
+            );
+        }
+        groups.push(json);
+    }
+    json!({ "groups": groups, "source": source })
 }
 
-/// [`list_replica_groups_for`] 的可重定向版本（**仅单测**把账本读重定向到临时目录）。
+/// [`list_replica_groups_for`] 的**纯结构**版本（**不读 jsonl**，仅单测重定向账本用）。
+///
+/// ⚠️ 与 [`list_replica_groups_for`] 的差别只有「有没有 `content`」这一块 ——
+/// 这是刻意的：单测必须能在**不碰真实 home** 的前提下断言组结构与「上次一致点」的归属，
+/// 而内容状态天然要读盘（走 [`replica_group_entries`] + 显式传入的 projects 根）。
+#[cfg(test)]
 fn list_replica_groups_at(region: Region, override_path: Option<&Path>) -> Value {
+    let (entries, source) = replica_group_entries(region, override_path);
+    let groups: Vec<Value> = entries.into_iter().map(|entry| entry.json).collect();
+    if groups.is_empty() {
+        json!({ "groups": [], "source": "empty" })
+    } else {
+        json!({ "groups": groups, "source": source })
+    }
+}
+
+/// 一个副本组的**内部形态**：结构（`json`，给前端）+ 成员顶点（给内容状态）。
+struct ReplicaGroupEntry {
+    /// 成员顶点 `(uid, cid)`，已排序、已去重。
+    members: Vec<(String, String)>,
+    /// 该组在组内命中的基线（两端成员都在组内），**已按 `createdAt` 升序**。
+    baselines: Vec<GroupBaseline>,
+    /// 出给前端的 JSON（`key` / `replicas` / `previewToken` / `baseline`）。
+    /// ⚠️ **不含逐行 hash** —— 那是 200 MB 级的历史包袱（见 [`GroupContentStatus`]）。
+    json: Value,
+}
+
+/// 账本 + 基线表 → 组（**唯一**的组结构来源，纯函数；`override_path` 只服务单测）。
+fn replica_group_entries(
+    region: Region,
+    override_path: Option<&Path>,
+) -> (Vec<ReplicaGroupEntry>, &'static str) {
     let path = resolve_ledger_path(region, override_path);
     let ledger = load_copy_ledger_at(&path);
     // ★ P14 S2：基线表与账本**同目录**（`session_baseline_path_for` 也是
@@ -2553,13 +2813,9 @@ fn list_replica_groups_at(region: Region, override_path: Option<&Path>) -> Value
         None => session_baseline_path_for(region),
     };
     let baselines = load_session_baselines_at(&baselines_path);
-    let groups = replica_groups_from_ledger(region, &ledger, &baselines);
-    if groups.is_empty() {
-        // 无可用登记（文件缺失 / 空 / 只有跨 region 边）⇒ 前端渲染结构化空态。
-        json!({ "groups": [], "source": "empty" })
-    } else {
-        json!({ "groups": groups, "source": "ledger" })
-    }
+    let entries = replica_groups_from_ledger(region, &ledger, &parse_group_baselines(&baselines));
+    let source = if entries.is_empty() { "empty" } else { "ledger" };
+    (entries, source)
 }
 
 /// 把账本（`键 → new_cid`）连通成 `(组键, 成员顶点)`；输出**稳定**（组与组内成员都排序）。
@@ -2656,55 +2912,97 @@ fn parse_baseline_key(key: &str) -> Option<(String, String)> {
     Some((a.to_string(), b.to_string()))
 }
 
-/// 把账本连通成副本组的 **JSON 形态**（供前端）；组内只回 ledger 里确有的字段。
-///
-/// 除 `accountUid` / `sessionId` / `region` 外，组上还带：
-/// - `previewToken`（= [`group_fingerprint`]）—— 前端提交时原样带回，供 [`verify_preview_token`] 复核；
-/// - `baselines`（★ P14 S2）—— 本组**两端成员都在组内**的「上次一致点」，按 `createdAt` 升序。
-///   无基线 ⇒ 空数组（**不臆造**一个一致点）。
-fn replica_groups_from_ledger(
-    region: Region,
-    ledger: &serde_json::Map<String, Value>,
-    baselines: &serde_json::Map<String, Value>,
-) -> Vec<Value> {
-    // 基线解析一次，供各组复用（组数 × 基线数都是小量级，不做索引优化）。
-    let parsed: Vec<(String, String, &Value)> = baselines
+/// 组内的一条「上次一致点」（含两端 cid —— 键里的信息，值里没有）。
+#[derive(Clone)]
+struct GroupBaseline {
+    a: String,
+    b: String,
+    created_at: i64,
+    line_count: usize,
+    prefix_hashes: Vec<u64>,
+}
+
+/// 基线表 → 结构化条目（一次解析，各组复用）。结构不符的条目**当作没有基线**。
+fn parse_group_baselines(baselines: &serde_json::Map<String, Value>) -> Vec<GroupBaseline> {
+    baselines
         .iter()
         .filter_map(|(key, value)| {
             let (a, b) = parse_baseline_key(key)?;
-            Some((a, b, value))
+            Some(GroupBaseline {
+                a,
+                b,
+                created_at: value.get("createdAt").and_then(Value::as_i64).unwrap_or(0),
+                line_count: value
+                    .get("lineCount")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0) as usize,
+                prefix_hashes: value
+                    .get("prefixHashes")
+                    .and_then(Value::as_array)
+                    .map(|hashes| hashes.iter().filter_map(Value::as_u64).collect())
+                    .unwrap_or_default(),
+            })
         })
-        .collect();
+        .collect()
+}
 
+/// 本组**最近一次**一致点：`createdAt` 最大；并列时按 `(a, b)` 字典序取最大。
+///
+/// ⚠️ 并列必须**确定性**地取同一个 —— 否则同一次加载的两次渲染可能选到不同基线
+/// （与前端原实现 `newestBaseline` 同判据，逐条对齐）。
+fn newest_baseline(baselines: &[GroupBaseline]) -> Option<&GroupBaseline> {
+    let mut best: Option<&GroupBaseline> = None;
+    for candidate in baselines {
+        best = Some(match best {
+            None => candidate,
+            Some(current) => {
+                let better = if candidate.created_at != current.created_at {
+                    candidate.created_at > current.created_at
+                } else if candidate.a != current.a {
+                    candidate.a > current.a
+                } else {
+                    candidate.b > current.b
+                };
+                if better {
+                    candidate
+                } else {
+                    current
+                }
+            }
+        });
+    }
+    best
+}
+
+/// 把账本连通成副本组（内部形态：结构 JSON + 成员顶点 + 组内基线）。
+///
+/// 组上只回 ledger 里确有的字段（`accountUid` / `sessionId` / `region`）外加：
+/// - `previewToken`（= [`group_fingerprint`]）—— 前端提交时原样带回，供 [`verify_preview_token`] 复核；
+/// - `baseline`（★ P14 S2）—— 本组**两端成员都在组内**的最近一次一致点（`createdAt` /
+///   `lineCount` / `a` / `b`），无基线 ⇒ `null`（**不臆造**一个一致点）。
+///
+/// ⚠️ **不回 `prefixHashes`**：验证「基线是不是当前内容的真前缀」需要逐行 hash，
+/// 但那是**后端**的活（[`derive_content_status`]）；把它塞进列表响应曾是 200 MB 级的
+/// 包袱。前端只需要**结论**（`content.sinceBaseline`）。
+fn replica_groups_from_ledger(
+    region: Region,
+    ledger: &serde_json::Map<String, Value>,
+    baselines: &[GroupBaseline],
+) -> Vec<ReplicaGroupEntry> {
     replica_group_members_from_ledger(ledger)
         .into_iter()
         .map(|(key, members)| {
             let cids: BTreeSet<&str> = members.iter().map(|(_, cid)| cid.as_str()).collect();
-            let mut group_baselines: Vec<Value> = parsed
+            let mut group_baselines: Vec<GroupBaseline> = baselines
                 .iter()
-                .filter(|(a, b, _)| cids.contains(a.as_str()) && cids.contains(b.as_str()))
-                .map(|(a, b, value)| {
-                    json!({
-                        "a": a,
-                        "b": b,
-                        "createdAt": value.get("createdAt").cloned().unwrap_or(Value::Null),
-                        "lineCount": value.get("lineCount").cloned().unwrap_or(Value::Null),
-                        // 逐行 hash：前端据此**验证**「基线是不是当前内容的真前缀」——
-                        // 验证不过就不给增量（见 `deriveBaselineDelta`），宁可不显示也不臆造。
-                        "prefixHashes": value
-                            .get("prefixHashes")
-                            .cloned()
-                            .unwrap_or_else(|| json!([])),
-                    })
+                .filter(|baseline| {
+                    cids.contains(baseline.a.as_str()) && cids.contains(baseline.b.as_str())
                 })
+                .cloned()
                 .collect();
             // 稳定输出：`createdAt` 升序，其次 `a` / `b` 字典序。
-            group_baselines.sort_by_key(|entry| {
-                (
-                    entry.get("createdAt").and_then(Value::as_i64).unwrap_or(0),
-                    entry.get("a").and_then(Value::as_str).unwrap_or("").to_string(),
-                    entry.get("b").and_then(Value::as_str).unwrap_or("").to_string(),
-                )
+            group_baselines.sort_by(|left, right| {
+                (left.created_at, &left.a, &left.b).cmp(&(right.created_at, &right.a, &right.b))
             });
 
             let replicas: Vec<Value> = members
@@ -2717,14 +3015,153 @@ fn replica_groups_from_ledger(
                     })
                 })
                 .collect();
-            json!({
+            let baseline_json = newest_baseline(&group_baselines)
+                .map(|baseline| {
+                    json!({
+                        "a": baseline.a,
+                        "b": baseline.b,
+                        "createdAt": baseline.created_at,
+                        "lineCount": baseline.line_count,
+                    })
+                })
+                .unwrap_or(Value::Null);
+            let json = json!({
                 "key": key,
                 "replicas": replicas,
                 "previewToken": group_fingerprint(&members),
-                "baselines": group_baselines,
-            })
+                "baseline": baseline_json,
+            });
+            ReplicaGroupEntry {
+                members,
+                baselines: group_baselines,
+                json,
+            }
         })
         .collect()
+}
+
+// ---------------------------------------------------------------------------
+// ★ 组内容状态（原先在前端派生，现收口到 core）
+// ---------------------------------------------------------------------------
+
+/// 组状态（与前端 `SessionGroupStatus` **同取值、同判据**）。
+pub const STATUS_LATEST: &str = "latest";
+pub const STATUS_BEHIND: &str = "behind";
+pub const STATUS_DIVERGE: &str = "diverge";
+pub const STATUS_UNKNOWN: &str = "unknown";
+
+/// 一组副本的**内容级**状态 —— 会话列表要展示的**全部**内容结论。
+///
+/// ## 为什么必须搬到 core
+///
+/// 前端要自己算这个状态，就得拿到**每个副本**的前 512 行逐行 hash：真机账本
+/// 25,487 个副本 ⇒ 约 **200 MB** JSON 过 IPC（1300 万个整数），再在 JS 里逐对比较。
+/// 后果是会话页**永远转圈**（JSON.parse + O(N²·512) 双重爆炸）。而结论本身只有
+/// **每组几个整数** ⇒ 在 core 算完再回。
+///
+/// ## 算法：O(N·512) 而不是 O(N²·512)
+///
+/// 「两两公共前缀的**最小值**」与「**全体一致**的最大前缀长度 `k`」恒等：
+/// 任意一对至少有 `k` 行相同 ⇒ 两两最小 ≥ `k`；又因 `k` 极大，必存在两个成员在第
+/// `k+1` 行不同（否则 `k` 可以取更大）⇒ 两两最小 ≤ `k`。⇒ 取等。
+/// 于是只需**一遍扫过全体成员**，不必逐对比较（真机最大组 1338 个成员：
+/// 两两 = 89 万对 ≈ 4.6 亿次比较 → 变成 68 万次）。
+///
+/// ## 判据（与前端逐字对齐，改一处必须同步另一处）
+///
+/// - `latest`：行数全相同且公共前缀 = 行数；
+/// - `behind`：行数不等，但公共前缀**覆盖到最短副本** ⇒ 只是有人多写了，无分叉；
+/// - `diverge`：公共前缀 < 最短副本行数 ⇒ 双方在共同旧版之后各自改过；
+/// - `unknown`：**有副本取不到指纹**（jsonl 缺失 / 正在写入）⇒ 诚实标注，**不臆造**。
+///
+/// ⚠️ **不得**用 `updatedAt` 派生本状态（`P8-ARCH.md` §1.2「时间新 ≠ 内容新」）。
+/// 本函数**根本不接触**会话行 —— 输入只有指纹与基线。
+fn derive_content_status(
+    members: &[(String, String)],
+    fingerprints: &[Option<SessionFingerprint>],
+    baseline: Option<&GroupBaseline>,
+) -> Value {
+    if members.len() < 2 {
+        return unknown_content_status();
+    }
+    let mut list: Vec<&SessionFingerprint> = Vec::with_capacity(fingerprints.len());
+    for fingerprint in fingerprints {
+        // 缺一个 ⇒ 整体 `unknown`（宁可说「未知」，也不用部分数据冒充完整结论）。
+        let Some(fingerprint) = fingerprint.as_ref() else {
+            return unknown_content_status();
+        };
+        list.push(fingerprint);
+    }
+
+    // ★ 一遍扫过全体成员：公共前缀 = 所有成员都一致的最大前缀长度（见函数头证明）。
+    let shortest_prefix = list.iter().map(|f| f.prefix_hashes.len()).min().unwrap_or(0);
+    let mut common = shortest_prefix;
+    for index in 0..shortest_prefix {
+        let first = list[0].prefix_hashes[index];
+        if list.iter().any(|f| f.prefix_hashes[index] != first) {
+            common = index;
+            break;
+        }
+    }
+
+    let counts: Vec<usize> = list.iter().map(|f| f.line_count).collect();
+    let min_lines = counts.iter().copied().min().unwrap_or(0);
+    let max_lines = counts.iter().copied().max().unwrap_or(0);
+    let status = if common < min_lines {
+        STATUS_DIVERGE
+    } else if max_lines == min_lines {
+        STATUS_LATEST
+    } else {
+        STATUS_BEHIND
+    };
+
+    // 增量按 **cid** 聚合（同 cid 出现在不同账号 ⇒ 读数相同；与前端 `Map` 口径一致）。
+    let mut deltas: BTreeMap<String, usize> = BTreeMap::new();
+    for ((_, cid), fingerprint) in members.iter().zip(list.iter()) {
+        deltas.insert(cid.clone(), fingerprint.line_count.saturating_sub(common));
+    }
+
+    // ★ P14 S2：相对「上次一致点」的增量 —— **先验证基线仍是当前内容的真前缀**。
+    //   验证不过 ⇒ `null`（该副本改写过更早的内容，「新增了几条」这个问题不成立），
+    //   **不编一个数**。基线是**成对**的 ⇒ 只给它的两端读数。
+    let mut since_baseline: BTreeMap<String, Option<usize>> = BTreeMap::new();
+    if let Some(baseline) = baseline {
+        for ((_, cid), fingerprint) in members.iter().zip(list.iter()) {
+            if *cid != baseline.a && *cid != baseline.b {
+                continue;
+            }
+            let verified = baseline.line_count <= fingerprint.line_count
+                && baseline.prefix_hashes.len() <= fingerprint.prefix_hashes.len()
+                && baseline
+                    .prefix_hashes
+                    .iter()
+                    .enumerate()
+                    .all(|(index, hash)| fingerprint.prefix_hashes[index] == *hash);
+            since_baseline.insert(
+                cid.clone(),
+                verified.then(|| fingerprint.line_count - baseline.line_count),
+            );
+        }
+    }
+
+    json!({
+        "status": status,
+        "commonPrefix": common,
+        "deltas": deltas,
+        "latestLineCount": max_lines,
+        "sinceBaseline": since_baseline,
+    })
+}
+
+/// 取不到任何内容结论时的**诚实**形态（与前端 `empty` 常量同款）。
+fn unknown_content_status() -> Value {
+    json!({
+        "status": STATUS_UNKNOWN,
+        "commonPrefix": Value::Null,
+        "deltas": BTreeMap::<String, usize>::new(),
+        "latestLineCount": Value::Null,
+        "sinceBaseline": BTreeMap::<String, Option<usize>>::new(),
+    })
 }
 
 /// 切换前把勾选的会话复制到目标账号（CN，路径 B）。返回复制报告。

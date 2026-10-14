@@ -614,11 +614,11 @@ async fn cn_only_accounts_with_global_key_reports_global_pool_empty() {
     let text = body_text(response).await;
     assert!(text.contains("no_healthy_account"), "{text}");
     assert!(
-        text.contains("国际版"),
-        "文案必须点名选中的区域（国际版）\n{text}"
+        text.contains("「Trae」"),
+        "文案必须点名选中的区域（Trae）\n{text}"
     );
     assert!(
-        text.contains("Trae Work") || text.contains("国内版"),
+        text.contains("检测到 Trae CN 有账号"),
         "文案必须提示另一个区域有账号，用户才知道该改用哪个区域的 Key\n{text}"
     );
     assert!(

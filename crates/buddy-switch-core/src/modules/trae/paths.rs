@@ -190,29 +190,30 @@ pub fn log_file_for_region(region: TraeRegion, name: &str) -> PathBuf {
 /// |:---|:---|:---|:---|
 /// | `Cn` | `TraeWork` | `profiles` | 旧默认变体的目录名 |
 /// | `Cn` | `TraeCode` | `profiles_trae_cn` | 旧 `Trae` 变体的目录名 |
-/// | `Cn` | `Trae`（合并版） | `profiles_trae_cn` | **与 `TraeCode` 同一客户端**（issue #20） |
+/// | `Cn` | `Trae`（合并版） | `profiles_trae_merged` | **独立目录**（issue #20） |
 /// | `Global` | `TraeWork` | `profiles_global_trae_work` | 新 |
 /// | `Global` | `TraeCode` | `profiles_global_trae_code` | 新 |
-/// | `Global` | `Trae`（合并版） | `profiles_global_trae_code` | **与 `TraeCode` 同一客户端**（issue #20） |
+/// | `Global` | `Trae`（合并版） | `profiles_global_trae_merged` | **独立目录**（issue #20） |
 ///
 /// 新增槽位一律用 `<region>_<program>` 规则；两个历史名当**兼容别名**保留，
 /// 因为改名要搬动用户既有快照，而收益只是"整齐"，不值这个风险。
 ///
-/// ## ⚠️ 合并版 `Trae` **刻意**与 `TraeCode` 共用目录（issue #20）
+/// ## ★ 合并版必须与遗留 `TraeCode` **分开**（issue #20）
 ///
-/// 两者物理上是同一个客户端（同名 `Trae CN` / `Trae`，见 `region` 模块头），
-/// 快照是「某个客户端 userData 的文件副本」——给同一个客户端开两个快照目录，
-/// 只会让「备份了 A、恢复时读 B」这种故障变得可能，而它**不会报错**。
-/// 因此这两个程序位**必须**给出逐字相同的目录名（有单测钉住）。
+/// 两条程序位的候选名逐字相同（客户端合并时复用了目录名），但**快照不能共用**：
+/// 用户报障原文就是「Trae 与 TraeCode 目前仍共用同一个快照目录」。
+/// 分开的落点在这里 + 各自的变体（`profiles_<variant.as_str>`），两者逐字一致
+/// （有单测钉住 `profiles_dir_for(variant)` 与 `_for_program` 对每个槽位给出同一目录）。
 pub fn profiles_dir_for_program(region: TraeRegion, program: TraeProgram) -> PathBuf {
     let name = match (region, program) {
         // 历史名（零迁移）：与改造前 `profiles` / `profiles_trae_cn` 逐字相同。
         (TraeRegion::Cn, TraeProgram::TraeWork) => "profiles".to_string(),
         (TraeRegion::Cn, TraeProgram::TraeCode) => "profiles_trae_cn".to_string(),
-        // 合并版：与遗留 TraeCode 同一个客户端 ⇒ 同一个快照目录（见上）。
-        (TraeRegion::Cn, TraeProgram::Trae) => "profiles_trae_cn".to_string(),
+        // 合并版（issue #20）：独立目录，与 `profiles_dir_for(TraeVariant::TraeMerged)`
+        // 的 `profiles_<as_str>` 结果**逐字相同**（单测钉住）。
+        (TraeRegion::Cn, TraeProgram::Trae) => "profiles_trae_merged".to_string(),
         (TraeRegion::Global, TraeProgram::TraeCode) => "profiles_global_trae_code".to_string(),
-        (TraeRegion::Global, TraeProgram::Trae) => "profiles_global_trae_code".to_string(),
+        (TraeRegion::Global, TraeProgram::Trae) => "profiles_global_trae_merged".to_string(),
         // 其余槽位：`<region>_<program>`。
         (region, program) => format!("profiles_{}_{}", region.as_str(), program.as_str()),
     };
@@ -1080,30 +1081,48 @@ mod tests {
             Some("profiles_global_trae_code")
         );
 
-        // **不同客户端**的快照目录必须两两不同：混用会把一条程序的登录态灌进另一条。
-        // （程序位有 6 条，但客户端只有 4 个 —— 合并版 `Trae` 与遗留 `TraeCode` 同名同物。）
-        let distinct_clients = [
+        // **全部 6 条程序位**的快照目录必须两两不同（issue #20 收尾）：
+        // 合并版与遗留 `TraeCode` 候选名逐字相同，但**快照目录必须分开** ——
+        // 用户报障原文就是「Trae 与 TraeCode 目前仍共用同一个快照目录」。
+        let all_slots = [
             profiles_dir_for_program(TraeRegion::Cn, TraeProgram::TraeWork),
             profiles_dir_for_program(TraeRegion::Cn, TraeProgram::TraeCode),
+            profiles_dir_for_program(TraeRegion::Cn, TraeProgram::Trae),
             profiles_dir_for_program(TraeRegion::Global, TraeProgram::TraeWork),
             profiles_dir_for_program(TraeRegion::Global, TraeProgram::TraeCode),
+            profiles_dir_for_program(TraeRegion::Global, TraeProgram::Trae),
         ];
-        for (i, a) in distinct_clients.iter().enumerate() {
-            for b in distinct_clients.iter().skip(i + 1) {
-                assert_ne!(a, b, "两个客户端的快照目录相同: {a:?}");
+        for (i, a) in all_slots.iter().enumerate() {
+            for b in all_slots.iter().skip(i + 1) {
+                assert_ne!(
+                    a, b,
+                    "两条程序位的快照目录相同: {a:?} —— 登录态会互相覆盖"
+                );
             }
         }
 
-        // ★ 合并版 `Trae` 与遗留 `TraeCode` 是**同一个客户端** ⇒ 必须共用目录
-        //   （issue #20）。给同一个客户端开两个快照目录会让「备份了 A、恢复时读 B」
-        //   成为可能，而它**不会报错** —— 正是这条断言要挡住的形态。
+        // ★ 合并版**必须**与遗留 `TraeCode` 分开（issue #20 用户报障的直接验收）。
         for region in [TraeRegion::Cn, TraeRegion::Global] {
-            assert_eq!(
+            assert_ne!(
                 profiles_dir_for_program(region, TraeProgram::Trae),
                 profiles_dir_for_program(region, TraeProgram::TraeCode),
-                "{region:?} 的合并版 Trae 与遗留 TraeCode 必须共用快照目录"
+                "{region:?} 的合并版 Trae 与遗留 TraeCode 必须用**不同**的快照目录"
             );
         }
+        // 合并版目录名按 `profiles_<变体 as_str>` 规则 —— 与变体路径逐字一致
+        // （下一条用例专门钉这条，这里先给出期望值）。
+        assert_eq!(
+            profiles_dir_for_program(TraeRegion::Cn, TraeProgram::Trae)
+                .file_name()
+                .and_then(|s| s.to_str()),
+            Some("profiles_trae_merged")
+        );
+        assert_eq!(
+            profiles_dir_for_program(TraeRegion::Global, TraeProgram::Trae)
+                .file_name()
+                .and_then(|s| s.to_str()),
+            Some("profiles_global_trae_merged")
+        );
 
         // 不安全槽位名一律拒绝，绝不拼出越界路径。
         assert!(profile_dir_for_program(TraeRegion::Global, TraeProgram::TraeWork, "1234").is_some());
@@ -1114,8 +1133,8 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// ★ 国际版 TraeCode 的快照目录名必须与 `_for_program` 家族**逐字相同**
-    /// （2026-09-28，issue #3 新增第 4 个程序位）。
+    /// ★ 快照目录的**两套命名入口**必须对**全部 6 条程序位**给出同一个目录
+    /// （唯一登记在案的分歧见下）。
     ///
     /// ## 为什么这条非钉不可
     ///
@@ -1123,38 +1142,62 @@ mod tests {
     /// - 线上路径 `profile.rs` → [`profiles_dir_for`]（按**变体**，`profiles_<as_str>` 规则）；
     /// - `_for_program` 家族 → [`profiles_dir_for_program`]（按**区域 × 程序**）。
     ///
-    /// 两者对 `(Global, TraeCode)` 必须给出**同一个目录**，否则「按区域×程序算出来的
-    /// 槽位」与「切换/备份实际写入的槽位」会分叉 —— 症状是「快照明明备份了，
-    /// 恢复时却说没有」，而且只在国际版 TraeCode 上出现（前三个槽位恰好一致）。
+    /// 两者对同一个程序位必须给出**同一个目录**，否则「按区域×程序算出来的槽位」
+    /// 与「切换/备份实际写入的槽位」会分叉 —— 症状是「快照明明备份了，恢复时却说没有」。
     ///
-    /// ⚠️ 已知**不一致**的一格：`(Global, TraeWork)` 走变体路径得 `profiles_global`、
-    /// 走 `_for_program` 得 `profiles_global_trae_work`。那是登记在案的过渡态分歧
-    /// （`_for_program` 家族目前**只被测试使用**），不在本轮范围内 ——
-    /// 本用例因此**只**钉 TraeCode 那一格，不去替 TraeWork 做选择。
+    /// ## 为什么从「只钉一格」扩到「全部 6 格」（issue #20）
+    ///
+    /// 原用例只钉 `(Global, TraeCode)`（那时它是唯一新增的槽位）。现在合并版有了
+    /// **自己的变体**（`trae_merged` / `global_trae_merged`），那两格才是最容易漂的 ——
+    /// 一旦 `profiles_dir_for_program` 忘了跟着改，合并版的快照会静默写进别处。
+    ///
+    /// ⚠️ **唯一登记在案的分歧**：`(Global, TraeWork)` 走变体路径得 `profiles_global`、
+    /// 走 `_for_program` 得 `profiles_global_trae_work`。那是**过渡态**
+    /// （`_for_program` 家族目前只被测试使用），不在本轮范围内 ——
+    /// 本用例因此把它**显式白名单化**，而不是假装一致。
     #[test]
-    fn 国际版traecode的快照目录两套命名一致() {
+    fn 快照目录两套命名对全部程序位一致除登记在案的一格() {
         let dir = std::env::temp_dir().join(format!(
-            "buddy-switch-profile-gtc-{}",
+            "buddy-switch-profile-naming-{}",
             uuid::Uuid::new_v4().simple()
         ));
         std::fs::create_dir_all(&dir).expect("临时 home 应能创建");
         let guard = crate::modules::config::HomeOverrideGuard::set(&dir);
 
-        let by_variant = profiles_dir_for(TraeVariant::GlobalTraeCode)
-            .file_name()
-            .and_then(|s| s.to_str())
-            .map(str::to_string);
-        let by_program =
-            profiles_dir_for_program(TraeRegion::Global, TraeProgram::TraeCode)
-                .file_name()
-                .and_then(|s| s.to_str())
-                .map(str::to_string);
+        let name_of = |path: std::path::PathBuf| {
+            path.file_name().and_then(|s| s.to_str()).map(str::to_string)
+        };
 
-        assert_eq!(by_variant.as_deref(), Some("profiles_global_trae_code"));
+        let mut checked = 0usize;
+        let mut diverged: Vec<(TraeRegion, TraeProgram)> = Vec::new();
+        for region in TraeRegion::all() {
+            for program in TraeProgram::all() {
+                checked += 1;
+                let variant = crate::modules::client_settings::variant_for_program(region, program);
+                if name_of(profiles_dir_for(variant)) != name_of(profiles_dir_for_program(region, program))
+                {
+                    diverged.push((region, program));
+                }
+            }
+        }
+        // 前置：6 格全过了一遍，否则本用例会**恒真**。
+        assert_eq!(checked, 6, "应遍历 6 条程序位");
         assert_eq!(
-            by_variant, by_program,
-            "变体路径与区域×程序路径必须指向同一个快照目录"
+            diverged,
+            vec![(TraeRegion::Global, TraeProgram::TraeWork)],
+            "两套命名入口的分歧集合变了 —— 白名单外的分歧必须修掉（快照会写错目录）"
         );
+
+        // ★ 合并版两格**必须**一致（issue #20 的核心验收）：它是本轮新增、
+        //   也最容易漂的一格 —— 漂了的症状是「切到 Trae 后快照不见了」。
+        for region in [TraeRegion::Cn, TraeRegion::Global] {
+            let variant = crate::modules::client_settings::variant_for_program(region, TraeProgram::Trae);
+            assert_eq!(
+                name_of(profiles_dir_for(variant)),
+                name_of(profiles_dir_for_program(region, TraeProgram::Trae)),
+                "{region:?} 合并版的两套命名入口不一致 —— 快照会写进另一个目录"
+            );
+        }
 
         drop(guard);
         let _ = std::fs::remove_dir_all(&dir);

@@ -39,9 +39,8 @@ const DONATE_CHANNELS: { key: string; nameKey: TranslationKey; image: string }[]
  *
  * ## 受控形态
  *
- * `open` / `onOpenChange` 由调用方驱动（顶栏 ⚙ 菜单项 / 侧栏底部入口）；
- * 本组件**不自带触发按钮**（与 `AppSettingsDialog` / `SkillManagerDialog` /
- * `ClientSettingsDialog` 同构）。
+ * `open` / `onOpenChange` 由调用方驱动（顶栏 ⚙「应用设置」抽屉里的入口 / 侧栏底部入口）；
+ * 本组件**不自带触发按钮**（与 `SkillManagerDialog` / `ClientSettingsDialog` 同构）。
  */
 export function DonateDialog({
   open,

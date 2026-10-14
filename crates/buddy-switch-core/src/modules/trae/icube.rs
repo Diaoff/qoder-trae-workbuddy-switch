@@ -1364,7 +1364,7 @@ mod tests {
         let error = tc_decrypt(&bad, TcMode::Aes).expect_err("magic 不匹配必须报错");
         assert_eq!(error.kind(), "decryptFailed");
         assert!(
-            error.user_message(TraeVariant::TraeWork).contains("Trae Work"),
+            error.user_message(TraeVariant::TraeWork).contains("TraeWork CN"),
             "错误文案必须点明产品线"
         );
     }
@@ -1691,7 +1691,7 @@ mod tests {
             .and_then(|v| v.as_str())
             .unwrap_or_default();
         assert!(message.contains("Trae"), "{message}");
-        assert!(!message.contains("Trae Work"), "{message}");
+        assert!(!message.contains("TraeWork CN"), "{message}");
     }
 
     /// 每种错误都有稳定的 `kind()` 标签（前端与日志依赖它）。
@@ -1715,7 +1715,7 @@ mod tests {
             assert_eq!(error.kind(), expected);
             // 每条文案都必须点明产品线，且不含凭据片段。
             let message = error.user_message(TraeVariant::TraeWork);
-            assert!(message.contains("Trae Work"), "{message}");
+            assert!(message.contains("TraeWork CN"), "{message}");
             assert!(!message.contains("BEGIN"), "{message}");
         }
     }

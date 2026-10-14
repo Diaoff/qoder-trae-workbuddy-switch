@@ -46,7 +46,9 @@ export const zh = {
   // =====================================================================
   // gateway/trae-request-log.tsx —— 请求日志
   // =====================================================================
-  "trae.gateway.log.title": "请求日志（最近 {count} 条）",
+  /* 与 WB 侧 `wbStats.gateway.requestLog` **逐字同文案**（含「最近 50 条」这个上限）——
+     两平台的请求日志是同一种东西，标题不该一个说上限、一个说实际条数。 */
+  "trae.gateway.log.title": "请求日志（最近 50 条）",
   "trae.gateway.log.clear": "清空",
   "trae.gateway.log.empty": "暂无请求。网关启动后，客户端发来的每次调用都会记在这里（默认只记元数据，不记正文）。",
   "trae.gateway.log.col.time": "时间",
@@ -66,6 +68,9 @@ export const zh = {
   "trae.gateway.guide.streamNote": "Trae 上游只支持流式；请求 `stream: false` 时由本网关在本地聚合后一次性返回，首字节延迟较长。",
   /* 自动发现说明（P10 §1.7）：与 WB 侧同构 —— 外部客户端会从本网关的 `/v1/models` 自动读清单。 */
   "trae.gateway.guide.autoDiscover": "客户端会自动从 `/v1/models` 读取模型清单，不需要手填模型名；若你的工具不支持自动发现，从「模型」页复制即可。",
+  /* 与 WB 侧 `wbStats.gateway.rawRequest` **逐字同文案**：方法 + URL + 协议对应的认证头，
+     可直接粘贴核验（WB 侧一直有这一块，Trae 侧此前缺）。 */
+  "trae.gateway.guide.rawRequest": "原始请求（调试用）",
   // 可复制配置片段里的字段标签（给外部工具粘贴用）
   /* P3：`trae.gateway.guide.snippet.*` 已删除 —— 字段标签统一到 `shared.gateway.snippet.*`。 */
 
@@ -86,16 +91,18 @@ export const zh = {
   "trae.gateway.key.revokeFailed": "吊销失败",
   "trae.gateway.key.deleted": "已删除",
   "trae.gateway.key.deleteFailed": "删除失败",
+  "trae.gateway.key.restored": "已恢复",
+  "trae.gateway.key.restoreFailed": "恢复失败",
   "trae.gateway.key.copied": "API Key 已复制",
 
   // ---- 列表 ----
   "trae.gateway.key.create": "创建 API Key",
-  "trae.gateway.key.loading": "读取中…",
   "trae.gateway.key.empty": "尚未创建 API Key。",
   "trae.gateway.key.neverUsed": "从未使用",
   "trae.gateway.key.statusRevoked": "已吊销",
   "trae.gateway.key.statusActive": "启用",
   "trae.gateway.key.revoke": "吊销",
+  "trae.gateway.key.restore": "恢复",
   "trae.gateway.key.delete": "删除",
 
   // ---- 表头 ----
@@ -120,9 +127,11 @@ export const zh = {
   "trae.gateway.key.copy": "复制",
   "trae.gateway.key.saved": "我已保存，关闭",
 
-  // ---- 吊销 / 删除 确认 ----
+  // ---- 吊销 / 恢复 / 删除 确认 ----
   "trae.gateway.key.revokeTitle": "吊销 API Key",
   "trae.gateway.key.revokeDesc": "吊销后「{name}」立即失效（401），列表中保留为「已吊销」状态。",
+  "trae.gateway.key.restoreTitle": "恢复 API Key",
+  "trae.gateway.key.restoreDesc": "恢复后「{name}」立即重新可用，库中存的是同一把 Key（明文未变），客户端无需改配置。",
   "trae.gateway.key.deleteTitle": "删除 API Key",
   "trae.gateway.key.deleteDesc": "确定删除已吊销的「{name}」？此操作不可撤销。",
 } as const;

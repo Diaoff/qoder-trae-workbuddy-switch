@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useState } from "react";
-import { KeyRound, Loader2, Trash2 } from "lucide-react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { Check, Copy, KeyRound, Loader2, RotateCcw, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 
 import { Badge } from "@/components/ui/badge";
@@ -18,6 +18,7 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Skeleton } from "@/components/ui/skeleton";
 import * as api from "@/lib/api";
 import { copyText } from "@/lib/clipboard";
 import { formatDate } from "@/lib/format";
@@ -120,7 +121,21 @@ export function TraeApiKeyTable({
   const [variant, setVariant] = useState<TraeVariantId>(() => normalizeProgramId(defaultVariant));
   const [creating, setCreating] = useState(false);
   const [plaintext, setPlaintext] = useState<{ value: string; name: string } | null>(null);
+  /**
+   * 「刚复制成功」态（驱动复制按钮 `Copy` → `Check`）。
+   *
+   * 与 WorkBuddy 侧 `api-key-table.tsx` **同一规则**：只影响图标与文案，**不影响可点性** ——
+   * 明文只显示这一次，用户可能要反复复制，按钮永远保持可点。
+   * 定时器存 ref：连点两次时旧定时器不会把新一次的「已复制」提前复位。
+   */
+  const [copied, setCopied] = useState(false);
+  const copyTimer = useRef<number | null>(null);
   const [revokeTarget, setRevokeTarget] = useState<TraeApiKeyRecord | null>(null);
+  /**
+   * ★ 恢复目标：与 `revokeTarget` **互逆**，与 WorkBuddy 侧 `api-key-table.tsx` **同一规则** ——
+   * 已吊销的行必须同时给出「恢复」与「删除」两条出口（吊销只置 `revoked_at`，明文未变）。
+   */
+  const [restoreTarget, setRestoreTarget] = useState<TraeApiKeyRecord | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<TraeApiKeyRecord | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -164,6 +179,7 @@ export function TraeApiKeyTable({
         return;
       }
       setCreateOpen(false);
+      setCopied(false);
       setPlaintext({ value, name: trimmed });
       await load();
       onChanged?.();
@@ -172,6 +188,23 @@ export function TraeApiKeyTable({
     } finally {
       setCreating(false);
     }
+  }
+
+  /** 复制明文。**可反复调用**：成功后把按钮切成「已复制」，1.6s 后复位。 */
+  async function onCopyPlaintext() {
+    if (!plaintext) return;
+    await copyText(plaintext.value, t("trae.gateway.key.copied"));
+    setCopied(true);
+    if (copyTimer.current !== null) window.clearTimeout(copyTimer.current);
+    copyTimer.current = window.setTimeout(() => setCopied(false), 1600);
+  }
+
+  /** 关闭明文对话框。**唯一的关闭路径**（遮罩 / ESC 已被拦截，见下方 DialogContent）。 */
+  function closePlaintext() {
+    if (copyTimer.current !== null) window.clearTimeout(copyTimer.current);
+    copyTimer.current = null;
+    setCopied(false);
+    setPlaintext(null);
   }
 
   async function confirmRevoke() {
@@ -185,6 +218,22 @@ export function TraeApiKeyTable({
       onChanged?.();
     } catch (e) {
       toast.error(t("trae.gateway.key.revokeFailed"), { description: api.asError(e) });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function confirmRestore() {
+    if (!restoreTarget) return;
+    setBusy(true);
+    try {
+      await api.restoreTraeApiKey(restoreTarget.id);
+      toast.success(t("trae.gateway.key.restored"), { description: restoreTarget.name });
+      setRestoreTarget(null);
+      await load();
+      onChanged?.();
+    } catch (e) {
+      toast.error(t("trae.gateway.key.restoreFailed"), { description: api.asError(e) });
     } finally {
       setBusy(false);
     }
@@ -220,10 +269,14 @@ export function TraeApiKeyTable({
 
       <div className="px-5 py-3">
         {loading && keys.length === 0 ? (
-          <p className="py-4 text-center text-sm text-muted-foreground">
-            <Loader2 className="mr-1.5 inline size-3.5 animate-spin" />
-            {t("trae.gateway.key.loading")}
-          </p>
+          /* 区块**首次加载** ⇒ 用 `<Skeleton>` 占位（§3.6）。
+             ⚠️ 此前这里是「文字型『加载中』+ `<Loader2>`」—— 那是**按钮操作中**态的语言，
+             两者不可混用（本仓同一条规则在 `ApiServicePage` / `ModelList` 都有注释钉着）。 */
+          <div className="space-y-2 py-4" aria-busy="true">
+            <Skeleton className="h-4 w-40" />
+            <Skeleton className="h-4 w-64" />
+            <Skeleton className="h-4 w-52" />
+          </div>
         ) : keys.length === 0 ? (
           <EmptyState icon={KeyRound} title={t("trae.gateway.key.empty")} className="py-4" />
         ) : (
@@ -255,7 +308,15 @@ export function TraeApiKeyTable({
                           {programLabelOf(key.variant)}
                         </Badge>
                       </td>
-                      <td className="py-2 pr-4 font-mono text-xs text-muted-foreground">{key.prefix}…</td>
+                      {/* ★ E3：掩码补上尾部 4 位（`prefix••••••••suffix`）——
+                          用户靠它**确认是哪一把**（同时建两把时前缀可能只差一两位）。
+                          旧台账 / 短 legacy Key 无 `suffix` ⇒ 只显示前缀 + 省略号，
+                          与 WorkBuddy 侧 `api-key-table.tsx` **同一规则**。 */}
+                      <td className="py-2 pr-4 font-mono text-xs text-muted-foreground">
+                        {key.suffix
+                          ? `${key.prefix}••••••••${key.suffix}`
+                          : `${key.prefix}…`}
+                      </td>
                       <td className="py-2 pr-4 text-xs text-muted-foreground">{formatDate(key.createdAt)}</td>
                       <td className="py-2 pr-4 text-xs text-muted-foreground">
                         {key.lastUsedAt ? formatDate(key.lastUsedAt) : t("trae.gateway.key.neverUsed")}
@@ -272,16 +333,24 @@ export function TraeApiKeyTable({
                         )}
                       </td>
                       <td className="py-2">
+                        {/* ★ 已吊销 ⇒ **两个出口都在**：恢复（可逆）+ 删除（不可逆）。
+                            与 WorkBuddy 侧同形同序（恢复在前、删除在后）。 */}
                         {revoked ? (
-                          <Button
-                            variant="ghost"
-                            size="sm"
-                            className="text-destructive hover:text-destructive"
-                            onClick={() => setDeleteTarget(key)}
-                          >
-                            <Trash2 />
-                            {t("trae.gateway.key.delete")}
-                          </Button>
+                          <div className="flex items-center gap-1">
+                            <Button variant="ghost" size="sm" onClick={() => setRestoreTarget(key)}>
+                              <RotateCcw />
+                              {t("trae.gateway.key.restore")}
+                            </Button>
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              className="text-destructive hover:text-destructive"
+                              onClick={() => setDeleteTarget(key)}
+                            >
+                              <Trash2 />
+                              {t("trae.gateway.key.delete")}
+                            </Button>
+                          </div>
                         ) : (
                           <Button variant="ghost" size="sm" onClick={() => setRevokeTarget(key)}>
                             {t("trae.gateway.key.revoke")}
@@ -344,27 +413,36 @@ export function TraeApiKeyTable({
         </DialogContent>
       </Dialog>
 
-      {/* 一次性明文展示 */}
-      <Dialog open={plaintext !== null} onOpenChange={(open) => !open && setPlaintext(null)}>
-        <DialogContent className="sm:max-w-md">
+      {/* 一次性明文展示。
+          ★ 2026-10-13：与 WorkBuddy 侧 `api-key-table.tsx` **同规则** —— 遮罩点击与 ESC
+            一律拦截（明文不可复原，误关即永久丢失），复制按钮不禁用（允许反复复制）。 */}
+      <Dialog open={plaintext !== null} onOpenChange={(open) => !open && closePlaintext()}>
+        <DialogContent
+          className="sm:max-w-md"
+          onInteractOutside={(event) => event.preventDefault()}
+          onEscapeKeyDown={(event) => event.preventDefault()}
+        >
           <DialogHeader>
             <DialogTitle>{t("trae.gateway.key.createdTitle")}</DialogTitle>
             <DialogDescription>{t("trae.gateway.key.createdDesc")}</DialogDescription>
           </DialogHeader>
           {plaintext && (
             <div className="flex items-center gap-2 rounded-lg border border-border bg-muted/40 px-3 py-2.5">
-              <code className="min-w-0 flex-1 break-all font-mono text-xs">{plaintext.value}</code>
+              {/* `select-all`：点一下即全选，手动 Ctrl+C 也能用（剪贴板 API 被拒时的兜底）。 */}
+              <code className="min-w-0 flex-1 select-all break-all font-mono text-xs">{plaintext.value}</code>
               <Button
                 variant="outline"
                 size="sm"
-                onClick={() => void copyText(plaintext.value, t("trae.gateway.key.copied"))}
+                data-act="gw-key-copy"
+                onClick={() => void onCopyPlaintext()}
               >
-                {t("trae.gateway.key.copy")}
+                {copied ? <Check /> : <Copy />}
+                {copied ? t("shared.clipboard.copied") : t("trae.gateway.key.copy")}
               </Button>
             </div>
           )}
           <DialogFooter>
-            <Button onClick={() => setPlaintext(null)}>{t("trae.gateway.key.saved")}</Button>
+            <Button onClick={closePlaintext}>{t("trae.gateway.key.saved")}</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
@@ -384,6 +462,26 @@ export function TraeApiKeyTable({
             </Button>
             <Button variant="destructive" onClick={() => void confirmRevoke()} disabled={busy}>
               {t("trae.gateway.key.revoke")}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* 恢复确认（可逆动作 ⇒ 主按钮非 destructive） */}
+      <Dialog open={restoreTarget !== null} onOpenChange={(open) => !open && setRestoreTarget(null)}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>{t("trae.gateway.key.restoreTitle")}</DialogTitle>
+            <DialogDescription>
+              {t("trae.gateway.key.restoreDesc", { name: restoreTarget?.name ?? "" })}
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setRestoreTarget(null)} disabled={busy}>
+              {t("trae.gateway.key.cancel")}
+            </Button>
+            <Button onClick={() => void confirmRestore()} disabled={busy}>
+              {t("trae.gateway.key.restore")}
             </Button>
           </DialogFooter>
         </DialogContent>

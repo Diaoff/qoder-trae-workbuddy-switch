@@ -28,6 +28,10 @@ export const zh = {
 
   // ---- API 网关 ----
   "wbStats.gateway.saveFail": "保存失败",
+  /* 与 Trae 侧 `trae.stats.api.toast.savedStarted` / `savedDisabled` **逐字同文案**：
+     两平台的「保存网关配置」是同一种操作，反馈方式（静默 vs toast）此前不一致。 */
+  "wbStats.gateway.savedStarted": "网关已保存并启动",
+  "wbStats.gateway.savedDisabled": "网关已保存（未启用监听）",
   "wbStats.gateway.portRange": "端口需为 1-65535 之间的整数",
   "wbStats.gateway.title": "API 服务",
   "wbStats.gateway.desc": "把 WorkBuddy 的模型额度以 OpenAI / Anthropic 兼容接口提供给本机工具。",
@@ -53,6 +57,10 @@ export const zh = {
   "wbStats.gateway.cancel": "取消",
   "wbStats.gateway.confirmOpen": "确认开启",
   "wbStats.gateway.keyPlaceholder": "sk-wb-…（在下方 Key 列表创建）",
+  /* 接入地址卡的字段标签 —— 与 Trae 侧 `trae.stats.api.endpoint.baseUrl` / `keyPrefix`
+     **逐字同文案**（此前 WB 侧是硬编码的 `Base URL` / `API Key`，两页措辞不同）。 */
+  "wbStats.gateway.baseUrlLabel": "Base URL",
+  "wbStats.gateway.keyPrefixLabel": "最近 Key 前缀",
   /* 概览卡三行（原型 viewGateway :3013-3018）：上游凭据校验 / 可用模型 / 账号池。 */
   "wbStats.gateway.upstreamCreds": "上游账号凭据",
   "wbStats.gateway.upstreamCredsDesc": "账号池读取上游凭据的有效性",
@@ -82,6 +90,12 @@ export const zh = {
   "wbStats.gateway.refresh": "刷新",
   "wbStats.gateway.retry": "重试",
   "wbStats.gateway.lastError": "最近一次错误",
+  /* ★ 与 Trae 侧 `trae.stats.api.gateway.noteLead` / `noteTail` / `lanWarning` **对称同文案**
+     （只换两个端口号）：两个网关都占用 `/v1/chat/completions`，必须分端口监听 ——
+     这条说明此前只在 Trae 侧有，WB 用户看不到「为什么默认是 57891」。 */
+  "wbStats.gateway.noteLead": "默认端口 57891，与 Trae 网关（7864）错开——两者都占用 ",
+  "wbStats.gateway.noteTail": "。",
+  "wbStats.gateway.lanWarning": "局域网模式下，同网段任何设备拿到 Key 都能消耗你的 WorkBuddy 积分。",
   "wbStats.gateway.openDataDir": "打开数据目录",
   "wbStats.gateway.openDataDirAria": "在文件管理器中打开{version}的 WorkBuddy 数据目录",
   "wbStats.gateway.toast.dirOpened": "已打开 WorkBuddy 数据目录",
@@ -98,6 +112,7 @@ export const zh = {
   "wbStats.gateway.enabled": "启用",
   "wbStats.gateway.delete": "删除",
   "wbStats.gateway.revoke": "吊销",
+  "wbStats.gateway.restore": "恢复",
   "wbStats.gateway.nameRequired": "请填写名称",
   "wbStats.gateway.createdNoPlaintext": "创建成功但未返回明文，请重试",
   "wbStats.gateway.createFail": "创建失败",
@@ -105,6 +120,8 @@ export const zh = {
   "wbStats.gateway.revokeFail": "吊销失败",
   "wbStats.gateway.deletedToast": "已删除",
   "wbStats.gateway.deleteFail": "删除失败",
+  "wbStats.gateway.restoredToast": "已恢复",
+  "wbStats.gateway.restoreFail": "恢复失败",
   "wbStats.gateway.createTitle": "创建 API Key",
   "wbStats.gateway.createDesc": "每个 Key 只能访问其归属版本的模型与账号。",
   "wbStats.gateway.nameLabel": "名称",
@@ -120,11 +137,22 @@ export const zh = {
   "wbStats.gateway.revokeDesc": "吊销后「{name}」立即失效（401），列表中保留为「已吊销」状态。",
   "wbStats.gateway.deleteTitle": "删除 API Key",
   "wbStats.gateway.deleteDesc": "确定删除已吊销的「{name}」？此操作不可撤销。",
+  "wbStats.gateway.restoreTitle": "恢复 API Key",
+  "wbStats.gateway.restoreDesc": "恢复后「{name}」立即重新可用，库中存的是同一把 Key（明文未变），客户端无需改配置。",
   "wbStats.gateway.requestLog": "请求日志（最近 50 条）",
   "wbStats.gateway.clear": "清空",
   "wbStats.gateway.cleared": "日志已清空",
   "wbStats.gateway.clearFail": "清空失败",
   "wbStats.gateway.noRequestsLog": "暂无请求记录",
+  /* 日志表的列集 —— 与 Trae 侧 `trae.gateway.log.col.*` **逐字同文案**
+     （WB 多一列「版本」：它的日志带 region 维度，Trae 没有）。 */
+  "wbStats.gateway.log.col.time": "时间",
+  "wbStats.gateway.log.col.version": "版本",
+  "wbStats.gateway.log.col.account": "账号",
+  "wbStats.gateway.log.col.model": "模型",
+  "wbStats.gateway.log.col.status": "状态",
+  "wbStats.gateway.log.col.latency": "耗时",
+  "wbStats.gateway.log.col.tokens": "Token",
   // 「账号策略」卡已被**两侧共用的账号池卡**取代（策略三档并入卡上的「指定账号」
   // 下拉），下列键随之作废并删除；保存结果的两条仍在使用。
   "wbStats.gateway.strategySaved": "策略已保存",
@@ -148,6 +176,10 @@ export const zh = {
   "wbStats.table.version": "版本",
   "wbStats.table.prefix": "前缀",
   "wbStats.table.createdAt": "创建时间",
+  /* ★ 与 Trae 侧（`trae.gateway.key.col.lastUsed` / `trae.gateway.key.neverUsed`）**逐字同文案**：
+     两平台的 Key 表列集与措辞一致，用户在两边看到的是同一张表。 */
+  "wbStats.table.lastUsed": "最近使用",
+  "wbStats.table.neverUsed": "从未使用",
   "wbStats.table.status": "状态",
   "wbStats.table.actions": "操作",
 

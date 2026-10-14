@@ -35,17 +35,23 @@ const DISABLED_RECHECK_MS: u64 = 60_000;
 
 /// 哪些任务在**进程启动时补跑一轮**。
 ///
-/// 只补「今天该做但还没做」的几类：签到核验（WorkBuddy 与 Trae 各一）、旅行派出+领取、
-/// 保活。活跃上报 / 开学季 / 夜猫子不在其中——它们是「每天至多一次」的积分动作，
-/// 交给排程小时表即可，启动就跑会让「我明明设了 10 点」的语义失效。
+/// 只补「今天该做但还没做」的几类：签到核验（WorkBuddy 与 Trae 各一）、Trae JWT 续期、
+/// 旅行派出+领取、保活。活跃上报 / 开学季 / 夜猫子不在其中——它们是「每天至多一次」的
+/// 积分动作，交给排程小时表即可，启动就跑会让「我明明设了 10 点」的语义失效。
 ///
 /// Trae 签到**在其中**：排程定在 9 点、而用户 10 点才开这个应用是常态，
 /// 不补跑就会变成「打开时已过点，今天整天不签」——那等于「自动签到」对多数人不生效。
 /// 它有自己的开关且**默认关闭**（见 `schedule::default_schedule`），
 /// 因此补跑不会让任何人被突如其来的外部请求影响。
-const STARTUP_TASKS: [ScheduleTask; 4] = [
+///
+/// Trae JWT 续期**也在其中**（2026-10-14 新增）：它是「凭据到期前必须有人换」的动作，
+/// 而到期时刻由**上游签发时决定**、与我们的小时表无关 —— 应用恰好没开在那两个整点是
+/// 常态，不补跑就等于「续期看运气」。它只对**真的快到期**的账号发请求
+/// （`account::needs_jwt_refresh`），没有到期账号时这一轮只是读一遍账号库。
+const STARTUP_TASKS: [ScheduleTask; 5] = [
     ScheduleTask::Checkin,
     ScheduleTask::TraeCheckin,
+    ScheduleTask::TraeJwtRefresh,
     ScheduleTask::Travel,
     ScheduleTask::Keepalive,
 ];
@@ -116,6 +122,11 @@ pub async fn run_scheduled_task(task: ScheduleTask) -> Value {
         ScheduleTask::TraeCheckin => {
             json!({ "task": task.as_str(), "result": trae_handlers::run_scheduled_checkin().await })
         }
+        // 同上：Trae 的账号库按**变体**分家（不是 `Region`），遍历哪几条由
+        // `run_jwt_refresh_cycle` 自己决定（`all_specs()` 全 6 条，含国际版与 TraeCode）。
+        ScheduleTask::TraeJwtRefresh => {
+            json!({ "task": task.as_str(), "result": trae_handlers::run_jwt_refresh_cycle().await })
+        }
     }
 }
 
@@ -181,14 +192,18 @@ mod tests {
         let cfg = schedule::default_schedule();
         // ⚠️ Trae 签到**默认关闭**（它会对用户没授权过的外部服务发请求），
         // 因此默认状态下它不在补跑清单里。这条同时钉住了「默认不替用户做他没授权的事」。
+        // ⚠️ 反之 Trae JWT 续期**默认开启**（`refresh_token` 的唯一用途就是续期，
+        // 是用户走网页登录时明确交出来的）⇒ 它必须在默认清单里，否则「自动续期」
+        // 又只剩小时表那两次机会（应用没开就整天不续）。
         assert_eq!(
             startup_tasks(&cfg),
             vec![
                 ScheduleTask::Checkin,
+                ScheduleTask::TraeJwtRefresh,
                 ScheduleTask::Travel,
                 ScheduleTask::Keepalive,
             ],
-            "默认状态下（Trae 签到默认关闭）启动补跑应恰好是这三类"
+            "默认状态下（Trae 签到默认关闭、JWT 续期默认开启）启动补跑应恰好是这四类"
         );
 
         // 打开 Trae 签到后它**必须**进入补跑清单，否则「排程定在 9 点、10 点才开应用」
@@ -200,27 +215,46 @@ mod tests {
             vec![
                 ScheduleTask::Checkin,
                 ScheduleTask::TraeCheckin,
+                ScheduleTask::TraeJwtRefresh,
                 ScheduleTask::Travel,
                 ScheduleTask::Keepalive,
             ],
             "Trae 签到开启后必须进入启动补跑"
         );
 
+        // 关掉 JWT 续期 ⇒ 它**必须**从补跑清单消失（否则开关形同虚设）。
+        let mut no_jwt = cfg.clone();
+        no_jwt.trae_jwt_refresh_enabled = false;
+        assert_eq!(
+            startup_tasks(&no_jwt),
+            vec![
+                ScheduleTask::Checkin,
+                ScheduleTask::Travel,
+                ScheduleTask::Keepalive,
+            ],
+            "关掉 Trae JWT 续期后它不得再补跑（逐类 gating）"
+        );
+
         let mut all_off = cfg.clone();
         all_off.checkin_enabled = false;
         all_off.travel_enabled = false;
         all_off.keepalive_enabled = false;
+        all_off.trae_jwt_refresh_enabled = false;
         assert!(
             startup_tasks(&all_off).is_empty(),
-            "三类全关时启动补跑必须为空（否则开关形同虚设）"
+            "四类全关时启动补跑必须为空（否则开关形同虚设）"
         );
 
         let mut travel_off = cfg.clone();
         travel_off.travel_enabled = false;
         assert_eq!(
             startup_tasks(&travel_off),
-            vec![ScheduleTask::Checkin, ScheduleTask::Keepalive],
-            "gating 必须是逐类的：关 travel 不影响另外两类"
+            vec![
+                ScheduleTask::Checkin,
+                ScheduleTask::TraeJwtRefresh,
+                ScheduleTask::Keepalive,
+            ],
+            "gating 必须是逐类的：关 travel 不影响另外几类"
         );
 
         // 逐类 gating 的第二个探针：一条线关闭时**不能**把另一条线一起带走。
@@ -232,9 +266,10 @@ mod tests {
             vec![
                 ScheduleTask::Checkin,
                 ScheduleTask::TraeCheckin,
+                ScheduleTask::TraeJwtRefresh,
                 ScheduleTask::Travel,
             ],
-            "关 keepalive 不能带走 Trae 签到"
+            "关 keepalive 不能带走 Trae 签到 / Trae JWT 续期"
         );
 
         // 活跃上报 / 开学季 / 夜猫子**不在**启动补跑里（交给排程小时表）。
@@ -242,21 +277,29 @@ mod tests {
             checkin_enabled: false,
             travel_enabled: false,
             keepalive_enabled: false,
+            trae_jwt_refresh_enabled: false,
             ..cfg.clone()
         };
         assert!(startup_tasks(&only_others).is_empty());
     }
 
-    /// 启动补跑的集合必须**恰好**是这四类；新增第五类进来必须有意为之。
+    /// 启动补跑的集合必须**恰好**是这五类；新增第六类进来必须有意为之。
     ///
-    /// Trae 签到是 2026-09-22 有意加进来的第四类（理由见 [`STARTUP_TASKS`] 的文档），
-    /// 不是顺手带上的 —— 这条断言的作用就是让下次有人想加第五类时被迫说明理由。
+    /// Trae 签到是 2026-09-22 有意加进来的第四类，Trae JWT 续期是 2026-10-14 有意加进来的
+    /// 第五类（理由见 [`STARTUP_TASKS`] 的文档），都不是顺手带上的 ——
+    /// 这条断言的作用就是让下次有人想加第六类时被迫说明理由。
     #[test]
     fn startup_task_set_is_exactly_the_intended_families() {
         let labels: Vec<&str> = STARTUP_TASKS.iter().map(|t| t.as_str()).collect();
         assert_eq!(
             labels,
-            vec!["checkin", "trae_checkin", "travel", "keepalive"]
+            vec![
+                "checkin",
+                "trae_checkin",
+                "trae_jwt_refresh",
+                "travel",
+                "keepalive"
+            ]
         );
     }
 }

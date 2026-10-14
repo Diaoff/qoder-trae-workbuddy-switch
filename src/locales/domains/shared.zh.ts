@@ -103,6 +103,11 @@ export const zh = {
   "shared.gateway.models.disabled": "已禁用",
   "shared.gateway.models.disable": "禁用",
   "shared.gateway.models.enable": "启用",
+  /* 模型 ID 复制（2026-10-13）：Codex / Trae 自定义模型 / dsh 自定义 provider 都要求
+     **手填模型 id**，而表格此前只把 id 当纯文本渲染 ⇒ 用户只能手抄。
+     ⚠️ 复制的是 **id**（上游标识），不是展示名 —— 填展示名不生效。 */
+  "shared.gateway.models.copyId": "复制模型 ID",
+  "shared.gateway.models.idCopied": "模型 ID 已复制",
   /* 计数 = `available && !disabled`，与出口 ①（`/v1/models` 过滤）**同源**。 */
   "shared.gateway.models.count": "当前暴露 {served} / {total} 个",
   /* ★ 两个出口同时生效 —— 禁用**必须**两个出口都改，否则是假开关（§3.18.1）：
@@ -169,6 +174,12 @@ export const zh = {
   "shared.companion.state.waiting": "待确认",
   "shared.companion.state.done": "已完成",
   "shared.companion.state.failed": "失败",
+  // 来源 id → 展示名（id 是**后端数据**，见 companion-row 的 SOURCE_LABEL_KEY）。
+  "shared.companion.source.workbuddyCn": "WorkBuddy 国内版",
+  "shared.companion.source.workbuddyGlobal": "WorkBuddy 国际版",
+  "shared.companion.source.codex": "Codex",
+  // 会话没有标题时的兜底（客户端只在部分事件里带标题，空标题是常态）。
+  "shared.companion.untitled": "未命名会话",
   // ★ 无障碍描述：**脱敏**——只报来源 / 状态 / 时间，**不含标题**
   //（标题是敏感字段，默认不进 DOM；不能因为读屏就把明文塞回去，见 P9 ✅ #3）。
   "shared.companion.row.aria": "{source} · {state} · {hint}",
@@ -180,7 +191,12 @@ export const zh = {
   "shared.companion.jump.failed": "无法聚焦来源：{message}",
   // 空态四要素（含出口「刷新」）——只读刷新，与轮询走同一条路径。
   "shared.companion.empty.title": "暂无会话",
-  "shared.companion.empty.description": "在客户端发起任务后，状态会显示在这里。",
+  // ⚠️ 这句话必须与**实际数据源**相符：窗口只显示「切号进度」与「已开启监听的客户端会话」，
+  //    它**不会**自动读取客户端里的历史任务。此前这里写「在客户端发起任务后，状态会显示
+  //    在这里」，而当时的实现里客户端任务根本进不来（provider 只读 `SWITCH_RUNNING`）——
+  //    那是一句**没实现就写下的承诺**，照着它排查会白费功夫。
+  "shared.companion.empty.description":
+    "这里显示正在进行的账号切换，以及在「设置 → 客户端」开启会话监听后、客户端里发起的任务。",
   "shared.companion.empty.refresh": "刷新",
   // 读取失败的空态（区别于「确实没有会话」）。
   "shared.companion.error.title": "读取会话状态失败",
@@ -274,16 +290,16 @@ export const zh = {
   "shared.demo.trae.checkin.sessionDead": "会话已失效，需重新登录",
   "shared.demo.trae.warn.altBSessionDead": "小号 B 会话已失效，请重新登录后再签到",
   // ---- Trae：程序位展示名（`label` / `nameAlias`） ----
-  "shared.demo.trae.program.work": "TraeWork",
+  "shared.demo.trae.program.work": "TraeWork CN",
   "shared.demo.trae.program.workCn": "TraeWork CN",
-  "shared.demo.trae.program.code": "TraeCode",
+  "shared.demo.trae.program.code": "TraeCode CN",
   "shared.demo.trae.program.codeCn": "TraeCode CN",
-  "shared.demo.trae.program.workAi": "TraeWork AI",
+  "shared.demo.trae.program.workGlobalLabel": "TraeWork",
   "shared.demo.trae.program.workGlobal": "TraeWork",
-  "shared.demo.trae.program.codeAi": "Trae AI",
+  "shared.demo.trae.program.codeGlobalLabel": "TraeCode",
   // 合并后的客户端（issue #20）：客户端自己就叫 `Trae`。
-  "shared.demo.trae.program.trae": "Trae",
-  "shared.demo.trae.program.traeAi": "Trae AI",
+  "shared.demo.trae.program.trae": "Trae CN",
+  "shared.demo.trae.program.traeGlobalLabel": "Trae",
   // 「待实测」是**状态标注**，不是品牌名 —— 它是这条目唯一需要翻译的部分。
   "shared.demo.trae.program.codePending": "TraeCode（待实测）",
   // ---- Trae：API Key 名 / 网关诊断 / 日志 ----

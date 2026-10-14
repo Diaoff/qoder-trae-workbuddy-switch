@@ -232,6 +232,14 @@ const MUTATIONS = {
     from: '<tr><td class="muted">其它全部域名</td><td class="muted">—</td><td><span class="badge">直连</span></td></tr>',
     to: '<tr><td class="muted">其它全部域名</td><td class="muted">—</td><td><span class="badge">也代理</span></td></tr>',
   },
+  /* ★ 密钥三态动作（2026-10-14）：把「恢复」退回「只弹 toast、不改数据」——
+     这正是「吊销后实际只剩删除一条出路」的历史缺陷（用户撤销一次误吊销就得删掉重建）。 */
+  keyrestore: {
+    desc: "「恢复」失效：只弹 toast、键仍是吊销态（等于吊销后只剩删除）",
+    file: "demo-app.js",
+    from: 'onOk: () => { key.revoked = false; renderContent();',
+    to: 'onOk: () => { /* MUTATED: 恢复不生效 */',
+  },
 };
 if (MUT) {
   if (!MUTATIONS[MUT]) { console.error("未知变异：" + MUT + "（可选 " + Object.keys(MUTATIONS).join(" / ") + "）"); process.exit(2); }
@@ -1308,6 +1316,101 @@ async function boot(query) {
     /* 反面：不许用「未检测到客户端」的措辞 —— 那会引导用户去装，而装了也没用 */
     if (/未检测到客户端/.test(t)) throw new Error("planned 误用了「未检测到客户端」的措辞");
     return t;
+  });
+
+  /* ══════════ ★ 密钥三态动作：吊销 / 恢复 / 删除（2026-10-14） ══════════
+     红线：**已吊销的密钥必须同时给出「恢复」与「删除」两条出口**。
+     吊销只置标记（明文未变）⇒ 恢复是把**同一把** Key 拿出来继续用；只留「删除」
+     等于逼用户为一次误吊销删掉重建、再把所有客户端配置改一遍。
+     断言全建在**真渲染出来的 DOM** 上，且每个正向断言都配一条阴性对照
+     （「恢复」不能是恒显按钮、「取消」不能只是装饰）。 */
+  const domK = await boot("dest=gateway&gw=keys&hint=0");
+  const dK = domK.window.document;
+  const kRows = () => [...dK.querySelectorAll(".split-main .tbl tbody tr")];
+  const kActs = (tr) => [...tr.querySelectorAll("[data-act]")].map((el) => el.dataset.act);
+  const kRowOf = (name) => kRows().find((tr) => tr.textContent.includes(name));
+  /** 点某行的某个动作，并确认弹出确认框后按 `ok` / `cancel` 收尾。 */
+  const kClick = (name, act, which) => {
+    const tr = kRowOf(name);
+    if (!tr) throw new Error(`找不到「${name}」那一行`);
+    const btn = tr.querySelector(`[data-act="${act}"]`);
+    if (!btn) throw new Error(`「${name}」行里没有 ${act}`);
+    btn.click();
+    const node = dK.querySelector(`[data-act="confirm-${which}"]`);
+    if (!node) throw new Error(`点 ${act} 没弹出确认框（找不到 confirm-${which}）`);
+    node.click();
+  };
+
+  check("★ 密钥表有「状态」列，已吊销行**同时**有「恢复」与「删除」两个出口", () => {
+    const tr = kRowOf("CI 自动化");
+    if (!tr) throw new Error("找不到演示里那把已吊销的密钥行");
+    if (!/已吊销/.test(tr.textContent)) throw new Error("该行没标「已吊销」：" + tr.textContent.trim().slice(0, 40));
+    const acts = kActs(tr);
+    if (!acts.includes("key-restore|k2")) throw new Error("已吊销行缺「恢复」：" + acts.join(","));
+    if (!acts.includes("key-delete|k2")) throw new Error("已吊销行缺「删除」：" + acts.join(","));
+    if (acts.includes("revoke|k2")) throw new Error("已吊销行不该再出现「吊销」");
+    return acts.join(" · ");
+  });
+
+  check("★ 阴性对照：启用行只有「吊销」，**没有**「恢复 / 删除」", () => {
+    const tr = kRowOf("默认 Key");
+    if (!tr) throw new Error("找不到启用态的密钥行");
+    if (!/启用/.test(tr.textContent)) throw new Error("该行没标「启用」：" + tr.textContent.trim().slice(0, 40));
+    const acts = kActs(tr);
+    if (!acts.includes("revoke|k1")) throw new Error("启用行缺「吊销」：" + acts.join(","));
+    if (acts.some((a) => a.startsWith("key-restore"))) throw new Error("启用行竟然有「恢复」：" + acts.join(","));
+    if (acts.some((a) => a.startsWith("key-delete"))) throw new Error("启用行竟然有「删除」：" + acts.join(","));
+    return acts.join(" · ");
+  });
+
+  check("★ 「取消」不改数据（确认框是闸门，不是装饰）", () => {
+    const before = kRows().length;
+    kClick("CI 自动化", "key-restore|k2", "cancel");
+    const tr = kRowOf("CI 自动化");
+    if (!/已吊销/.test(tr.textContent)) throw new Error("取消后却被恢复了 —— 闸门失效");
+    if (kRows().length !== before) throw new Error("取消却改了列表");
+    return "取消无副作用";
+  });
+
+  check("★ 恢复是**可逆**的：确认后该行回到「启用」（不是只弹个 toast）", () => {
+    kClick("CI 自动化", "key-restore|k2", "ok");
+    const tr = kRowOf("CI 自动化");
+    if (!/启用/.test(tr.textContent)) throw new Error("恢复后仍是已吊销：" + tr.textContent.trim().slice(0, 40));
+    const acts = kActs(tr);
+    if (!acts.includes("revoke|k2")) throw new Error("恢复后没回到启用态的动作集：" + acts.join(","));
+    if (acts.some((a) => a.startsWith("key-restore"))) throw new Error("恢复后仍有「恢复」按钮");
+    return "已吊销 → 启用";
+  });
+
+  check("★ 吊销后**立刻**多出「恢复 + 删除」两条出口（同一把 Key，不需要重建）", () => {
+    kClick("默认 Key", "revoke|k1", "ok");
+    const tr = kRowOf("默认 Key");
+    if (!/已吊销/.test(tr.textContent)) throw new Error("吊销后该行没标「已吊销」");
+    const acts = kActs(tr);
+    if (!acts.includes("key-restore|k1") || !acts.includes("key-delete|k1"))
+      throw new Error("吊销后没给出「恢复 + 删除」：" + acts.join(","));
+    return acts.join(" · ");
+  });
+
+  check("★ 「删除」只清记录：确认后该行消失，且不牵动别的行", () => {
+    const before = kRows().length;
+    kClick("默认 Key", "key-delete|k1", "ok");
+    if (kRowOf("默认 Key")) throw new Error("删除后该行仍在");
+    if (kRows().length !== before - 1) throw new Error(`删除后行数 ${kRows().length}，期望 ${before - 1}`);
+    return `${before} → ${kRows().length}`;
+  });
+
+  /* 两平台同形：Trae 作用域也有一条已吊销的密钥，出口必须一模一样。 */
+  const domKT = await boot("dest=gateway&gw=keys&scope=trae-cn&hint=0");
+  const dKT = domKT.window.document;
+  check("★ 两平台同形：Trae 作用域的已吊销行同样给「恢复 + 删除」", () => {
+    const tr = [...dKT.querySelectorAll(".split-main .tbl tbody tr")].find((r) => /已吊销/.test(r.textContent));
+    if (!tr) throw new Error("Trae 作用域没有「已吊销」的行（演示数据丢了？）");
+    const acts = [...tr.querySelectorAll("[data-act]")].map((el) => el.dataset.act);
+    if (!acts.includes("key-restore|k6")) throw new Error("Trae 已吊销行缺「恢复」：" + acts.join(","));
+    if (!acts.includes("key-delete|k6")) throw new Error("Trae 已吊销行缺「删除」：" + acts.join(","));
+    if (!/TraeCode Key/.test(tr.textContent)) throw new Error("定位到的不是预期那一行：" + tr.textContent.trim().slice(0, 40));
+    return acts.join(" · ");
   });
 
   /* ══════════ 请求代理（§3.19 / P12，D29 已拍板：默认关 + 绝不劫持） ══════════ */

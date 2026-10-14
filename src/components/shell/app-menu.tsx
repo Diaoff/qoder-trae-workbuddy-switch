@@ -1,15 +1,14 @@
 import { useState } from "react";
-import { Blocks, Coffee, FileJson2, Monitor, Moon, Settings, SlidersHorizontal, Sun } from "lucide-react";
+import { Monitor, Moon, Settings, Sun } from "lucide-react";
 
-import { AppSettingsDialog } from "@/components/app-settings";
 import { ClientSettingsDialog } from "@/components/client-settings";
 import { DonateDialog } from "@/components/donate-dialog";
+import { AppSettingsDrawer } from "@/components/shell/app-settings-drawer";
 import { SkillManagerDialog } from "@/components/skill-manager";
 import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
-  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { useT } from "@/lib/i18n";
@@ -17,63 +16,60 @@ import { getThemePreference, setThemePreference, type ThemePreference } from "@/
 import { cn } from "@/lib/utils";
 
 /**
- * 顶栏应用级入口（L0）—— 齿轮溢出菜单。
+ * 顶栏应用级入口（L0）—— ⚙ **应用设置抽屉**。
  *
- * ## 为什么把四个弹层收在一枚菜单里（而不是顶栏排四颗按钮）
+ * ## 形态由原型决定：抽屉，不是下拉菜单
  *
- * 这是**低频**操作（通用设置 / 客户端设置 / Skill 管理 / 捐赠），顶栏的空间要留给
- * 高频的作用域与搜索。收进溢出菜单后，顶栏固定为「作用域 + 运行态 + 搜索 + 刷新 +
- * 主题 + 设置」，与原型 `index.html:14-45` 一致。
+ * 原型点 `#app-settings-btn` 走的是 `openDrawer(body, "应用设置")`
+ *（`buddy-switch-prototype.html:4455-4461`）—— 右侧抽屉。本组件此前是
+ * `DropdownMenu` + 四个 Dialog，同一个入口两套交互；现在收回原型的形态：
+ * 齿轮 = 抽屉触发器（唯一真值在 `AppSettingsDrawer`）。
  *
  * ## 为什么这里只做「驱动」，不重写业务
  *
- * 四个弹层各是一整域实现（`AppSettingsDialog` / `ClientSettingsDialog` /
- * `SkillManagerDialog` / `DonateDialog`），本组件只持有它们的 `open` 状态。
- * 弹层内容**懒挂载**（Radix Dialog 默认卸载）⇒ 不开就不取数，与原先侧栏入口同性能。
+ * 抽屉与三个弹层各是一整域实现（`AppSettingsDrawer` / `ClientSettingsDialog` /
+ * `SkillManagerDialog` / `DonateDialog`），本组件只持有它们的 `open` 状态，
+ * 并在「从抽屉进弹层」时**先关抽屉**（两层同时开着会让 Esc 只关最上层，
+ * 用户以为没反应）。内容均**懒挂载**（Radix 关闭即卸载）⇒ 不开就不取数。
+ *
+ * ## 为什么主题不在抽屉里
+ *
+ * 顶栏本就有独立的主题钮（原型 `#theme-btn`），抽屉里再放一份就是同一设置的第二个入口。
  */
 export function AppMenu() {
   const t = useT();
-  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [drawerOpen, setDrawerOpen] = useState(false);
   const [clientOpen, setClientOpen] = useState(false);
   const [skillsOpen, setSkillsOpen] = useState(false);
   const [donateOpen, setDonateOpen] = useState(false);
 
+  /** 抽屉 → 弹层：先关抽屉，再开目标弹层（避免两层叠着）。 */
+  const leaveDrawer = (open: (value: boolean) => void) => () => {
+    setDrawerOpen(false);
+    open(true);
+  };
+
   return (
     <>
-      <DropdownMenu>
-        <DropdownMenuTrigger asChild>
-          <button
-            type="button"
-            aria-label={t("topbar.appMenu")}
-            title={t("topbar.appMenu")}
-            className={iconButtonClass}
-          >
-            <Settings className="size-[17px]" aria-hidden="true" />
-          </button>
-        </DropdownMenuTrigger>
-        <DropdownMenuContent align="end" className="w-52">
-          <DropdownMenuItem onSelect={() => setSettingsOpen(true)}>
-            <SlidersHorizontal aria-hidden="true" />
-            {t("appSettings.entry")}
-          </DropdownMenuItem>
-          <DropdownMenuItem onSelect={() => setClientOpen(true)}>
-            <FileJson2 aria-hidden="true" />
-            {t("clientSettings.entry")}
-          </DropdownMenuItem>
-          <DropdownMenuItem onSelect={() => setSkillsOpen(true)}>
-            <Blocks aria-hidden="true" />
-            {t("skillManager.entry")}
-          </DropdownMenuItem>
-          <DropdownMenuSeparator />
-          <DropdownMenuItem onSelect={() => setDonateOpen(true)}>
-            <Coffee aria-hidden="true" />
-            {t("wbSettings.donate.trigger")}
-          </DropdownMenuItem>
-        </DropdownMenuContent>
-      </DropdownMenu>
+      <button
+        type="button"
+        aria-label={t("topbar.appMenu")}
+        title={t("topbar.appMenu")}
+        className={iconButtonClass}
+        onClick={() => setDrawerOpen(true)}
+      >
+        <Settings className="size-[17px]" aria-hidden="true" />
+      </button>
 
-      {/* 四个受控弹层：内容懒挂载，关闭即卸载。 */}
-      <AppSettingsDialog open={settingsOpen} onOpenChange={setSettingsOpen} />
+      <AppSettingsDrawer
+        open={drawerOpen}
+        onOpenChange={setDrawerOpen}
+        onOpenClientSettings={leaveDrawer(setClientOpen)}
+        onOpenSkills={leaveDrawer(setSkillsOpen)}
+        onOpenDonate={leaveDrawer(setDonateOpen)}
+      />
+
+      {/* 三个受控弹层：内容懒挂载，关闭即卸载。 */}
       <ClientSettingsDialog open={clientOpen} onOpenChange={setClientOpen} />
       <SkillManagerDialog open={skillsOpen} onOpenChange={setSkillsOpen} />
       <DonateDialog open={donateOpen} onOpenChange={setDonateOpen} />

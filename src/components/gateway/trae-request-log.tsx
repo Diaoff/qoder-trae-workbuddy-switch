@@ -8,6 +8,9 @@ import { useT } from "@/lib/i18n";
 import type { TraeGatewayLogEntry } from "@/lib/trae-types";
 import { cn } from "@/lib/utils";
 
+/** 单次渲染的日志行上限（与 WB 侧 `request-log.tsx` **同值**）。 */
+const MAX_LOG_ROWS = 50;
+
 function formatClock(ts: number): string {
   const date = new Date(ts);
   if (Number.isNaN(date.getTime())) return "—";
@@ -47,11 +50,16 @@ export function TraeRequestLog({
 }) {
   const t = useT();
 
+  /* 与 WB 侧**同一判据**：按 `ts` 降序（新在前）+ 上限 `MAX_LOG_ROWS`。
+     ⚠️ 不用 `reverse()` —— 那依赖「后端一定按追加序返回」这个隐含前提；
+     按 `ts` 显式排序后，无论后端什么顺序，两页看到的次序都一致。 */
+  const rows = [...logs].sort((a, b) => b.ts - a.ts).slice(0, MAX_LOG_ROWS);
+
   return (
     <Card className={cn("gap-0 py-0", className)}>
       <div className="flex items-center justify-between gap-3 border-b border-border/60 px-5 py-3">
         <span className="text-sm font-semibold">
-          {t("trae.gateway.log.title", { count: logs.length })}
+          {t("trae.gateway.log.title")}
         </span>
         <DemoAction>
           <Button variant="ghost" size="sm" disabled={clearing || logs.length === 0} onClick={onClear}>
@@ -61,7 +69,7 @@ export function TraeRequestLog({
         </DemoAction>
       </div>
 
-      {logs.length === 0 ? (
+      {rows.length === 0 ? (
         /* P3：空态改用全应用唯一的 `EmptyState`（§3.6）——
            原来是「一行灰字」，与其它页面的空态形态不一致。 */
         <EmptyState icon={ScrollText} title={t("trae.gateway.log.empty")} className="px-5 py-6" />
@@ -79,14 +87,23 @@ export function TraeRequestLog({
               </tr>
             </thead>
             <tbody>
-              {[...logs].reverse().map((entry, index) => (
+              {rows.map((entry, index) => (
                 <tr key={`${entry.ts}-${index}`} className="border-b border-border/40 last:border-0">
                   <td className="whitespace-nowrap px-5 py-2 font-mono text-xs">{formatClock(entry.ts)}</td>
-                  <td className="max-w-[8rem] truncate px-3 py-2 text-xs text-muted-foreground">
-                    {entry.account ? entry.account.slice(-8) : "—"}
+                  {/* 账号：显示**原值** + `truncate`（完整值放 `title`）。
+                      此前只取末 8 位 —— 与 WB 侧的「显示全名」对不上，同一个账号在
+                      两个页面显示成两个样子。 */}
+                  <td
+                    className="max-w-[10rem] truncate px-3 py-2 text-xs text-muted-foreground"
+                    title={entry.account ?? undefined}
+                  >
+                    {entry.account || "—"}
                   </td>
-                  <td className="max-w-[10rem] truncate px-3 py-2 text-xs text-muted-foreground">
-                    {entry.model ?? "—"}
+                  <td
+                    className="max-w-[10rem] truncate px-3 py-2 text-xs text-muted-foreground"
+                    title={entry.model ?? undefined}
+                  >
+                    {entry.model || "—"}
                   </td>
                   <td className={cn("px-3 py-2 text-right font-mono text-xs", statusTone(entry.status))}>
                     {entry.status}

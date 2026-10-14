@@ -1,9 +1,9 @@
 # 词汇表（P0 冻结）
 
-> **状态**：已冻结（2026-10-03，P0 产出）。
+> **状态**：已冻结（2026-10-03，P0 产出）；**2026-10-14 增补**「命名空间」一词（P16 统一入口引入）。
 > **约束**：新代码一律用「新词汇」；「旧词汇」只允许出现在兼容层，并按「删除时点」清退。
-> **配套代码**：`src/lib/scope.ts`（作用域）· `src/lib/platforms/registry.ts`（平台与能力）。
-> **门禁**：`npm run check:scope`（9 条断言，含 fail-closed 与旧路由映射）。
+> **配套代码**：`src/lib/scope.ts`（作用域）· `src/lib/platforms/registry.ts`（平台与能力）· `crates/buddy-switch-core/src/modules/gateway_namespace.rs`（命名空间）。
+> **门禁**：`npm run check:scope`（**291 条断言** @2026-10-14，含 fail-closed 与旧路由映射；初版为 9 条）。
 
 ## 1. 五个层级（别混）
 
@@ -27,10 +27,38 @@
 | 词 | 定义 | 本仓取值 |
 |:---|:---|:---|
 | **平台** | 产品线 | `workbuddy`、`trae` |
-| **程序位**（Program） | **账号落到哪个客户端** | WB 侧：WorkBuddy 桌面 / CodeBuddy IDE(CN) / CodeBuddy CLI；Trae 侧：TraeWork / TraeCode |
+| **程序位**（Program） | **账号落到哪个客户端** | WB 侧：WorkBuddy 桌面 / CodeBuddy IDE(CN) / CodeBuddy CLI / VS Code CodeBuddy 扩展 / JetBrains CodeBuddy 插件；Trae 侧：TraeWork / TraeCode |
 
 ⚠️ 程序位**不是**平台的下级分类，而是**账号的属性**（一个账号可绑 0..N 个程序位）。
-⚠️ **待新增**：VS Code CodeBuddy 插件、JetBrains IDE 插件（**当前不存在**，见 PLAN §3.3 的 B 表）。
+⚠️ VS Code CodeBuddy 插件、JetBrains IDE 插件**已于 2026-10-09 落地**（注册表里两条均 `status: "available"`）——
+本表原写「当前不存在」，2026-10-14 复核更正。
+
+## 2.1 命名空间（Namespace）—— 与作用域**同形**，但**不是**作用域
+
+> 2026-10-14 新增（P16 统一入口引入）。定义在 `crates/buddy-switch-core/src/modules/gateway_namespace.rs`。
+
+| 词 | 定义 | 取值 |
+|:---|:---|:---|
+| **命名空间**（Namespace） | **统一入口**（端口 `57892`）里，**模型 id 的来源前缀** —— 让 id 自己携带「这条模型来自哪套上游」 | 默认 4 条：`wb-cn` / `wb-global` / `trae-cn` / `trae-global`；可选 4 条：`traework-cn` / `traework-global` / `traecode-cn` / `traecode-global` |
+
+★★ **它与作用域的字面量逐字相同（`wb-cn` 既是作用域也是命名空间），但语义完全不同，别混**：
+
+| | 作用域 `Scope` | 命名空间 `Namespace` |
+|:---|:---|:---|
+| 回答什么 | 「**界面现在管哪套数据**」 | 「**这条模型请求该发给哪套上游**」 |
+| 归属 | 前端路由 / 视图（进 URL 路径段 `/s/wb-cn/…`） | 网关请求解析（进模型名 `wb-cn:deepseek-…`） |
+| 载体 | `src/lib/scope.ts` | `gateway_namespace.rs` |
+| 与 Key 的关系 | 无关 | **统一 Key 授权的是命名空间集合**（一把 Key 可同时授权 `wb-*` 与 `trae-*`） |
+
+★ **命名空间 = `{客户端名}-{区域}`**，**两层**：派生层由 `Scope::all()` 生成（新增平台自动出现，零手写）；扩展层是平台内部额外程序线（当前只有 Trae 两条老程序线，手写、**默认关**）。
+
+⚠️ **三条硬规则**（违反即静默走错池）：
+
+1. **解析只做整段精确匹配，禁止前缀匹配** —— `trae` / `traework` / `traecode` **互为前缀**；
+2. **禁止用 `TraeVariant::parse` / `TraeProgram::parse` 反推** —— 那是**宽容**解析，会把 `traework-cn` 吞进去；
+3. **区域轴与程序位轴的映射一律经既有派生函数**（`Scope::wb_region` / `Scope::trae_region` / `variant_for_program`），**不手搓字符串**。
+
+⚠️ **与 WB 旧前缀（`cn:` / `global:`）不是一回事**：旧前缀属 **WB 独立端口**，语义是「跨域重路由」；命名空间属**统一入口**，语义是「选择来源」。**两套前缀不跨入口混用**。
 
 ## 3. 能力（Capability）vs 偏好（Preference）—— **别混**
 
@@ -46,6 +74,14 @@
 
 ⚠️ `sessionCopy` **只有 WorkBuddy 有**，且精确到 **WorkBuddy 桌面**（CodeBuddy IDE / CLI 都没有）——
 见 PLAN §3.15 的能力边界。
+
+**反例（P15 之后新增，别搞混）**：「客户端会话监听」**不是**能力，而是**偏好驱动的动作**。
+
+| 为什么不进 `Capability` | 说明 |
+|:---|:---|
+| 它与**平台**无关 | 任何平台只要有 WorkBuddy 客户端就能开 |
+| 它问的是**用户同不同意**，不是「这个平台支不支持」 | 开启会**改写上游客户端的配置文件**（装 hook），属于「必须显式同意」的动作，载体是 `app_prefs.watch_agent_sessions`（**默认 `false`**） |
+| 它的「关了会怎样」与偏好一致 | 关掉 = 卸 hook + 不再监听；**账号库与会话数据不受影响**（与偏好那一列的性质吻合） |
 
 ## 4. 旧词汇 → 新词汇（含**删除时点**）
 

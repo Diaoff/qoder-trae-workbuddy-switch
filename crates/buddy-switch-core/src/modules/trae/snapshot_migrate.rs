@@ -50,6 +50,16 @@
 //! 读不到 / 解析不了 / 字段缺失 / `status` 不是 `completed` ⇒ 一律**不搬**，
 //! 并记进 [`SnapshotCarryReport::notes`]。客户端哪天改了这个文件，退化的结果
 //! 只是「回到需要手动保存登录态」，不会写坏任何东西。
+//!
+//! ## 关于槽位里的 `.source` 标记（**刻意原样复制，不要"修正"它**）
+//!
+//! `backup_to_slot_for` 会在槽位根写一个 `.source` 记录快照的**来源 userData**。
+//! 本模块用 [`super::profile::copy_dir_recursive`] 整目录复制，所以搬过去的快照里
+//! `.source` 仍写着 `…\TRAE SOLO CN`（旧客户端），而它现在住在合并版槽位里。
+//!
+//! 这**不是**遗留问题：那个值记录的正是「这份快照抓自哪个客户端」，而事实就是如此。
+//! 全仓**没有任何地方读它做校验**（只在备份时写），因此不会误判；反过来，
+//! 把它改写成目标客户端的路径才是**说谎** —— 这份文件的内容确实来自旧客户端。
 
 use std::path::Path;
 
@@ -147,7 +157,7 @@ fn completed_migration_source(target_data_dir: &Path) -> Option<String> {
 
     // 只认「已完成」。缺 `status` 或其它值 ⇒ 不搬：宁可不动，也不要在客户端
     // 迁移失败 / 中断（`status` 可能是 `failed` / `running`）时把旧快照灌进新槽位。
-    if false {
+    if value.get("status").and_then(Value::as_str) != Some("completed") {
         return None;
     }
 
@@ -189,91 +199,110 @@ pub fn carry_merged_snapshots() -> SnapshotCarryReport {
 
     for region in TraeRegion::all() {
         let target_program = TraeProgram::Trae;
-        let Some(target_data_dir) =
-            platform::user_data_dir_for_program(region, target_program)
+        let Some(target_data_dir) = platform::user_data_dir_for_program(region, target_program)
         else {
             continue;
         };
+        // ★ **门控**：只有客户端自己记录了「合并已完成」才动数据（见模块头）。
         let Some(source_name) = completed_migration_source(&target_data_dir) else {
             continue;
         };
-        let Some(source_program) = TraeProgram::parse(&source_name) else {
+        // 记录里的源客户端名必须能认出程序线 —— 认不出就不搬（宽容失败方向）。
+        let Some(recorded) = TraeProgram::parse(&source_name) else {
             report.notes.push(format!(
                 "{}：合并记录里的源客户端 `{source_name}` 认不出是哪条程序线，未搬运",
                 region.as_str()
             ));
             continue;
         };
-        if source_program == target_program {
-            // 源就是合并版自己（例如客户端把 TraeCode 的数据并进同名目录）⇒ 无槽位可搬。
-            continue;
-        }
 
-        let source_root = paths::profiles_dir_for_program(region, source_program);
         let target_root = paths::profiles_dir_for_program(region, target_program);
-        if source_root == target_root || !source_root.is_dir() {
-            // 源槽位不存在 ⇒ 用户没存过快照，没什么可搬（不是错误）。
-            continue;
-        }
         report.notes.push(format!(
-            "{}：合并记录指出源为 `{source_name}`（{:?}），从 {:?} 搬到 {:?}",
+            "{}：客户端已记录合并完成（源 `{source_name}` ⇒ {:?}），把遗留快照搬进 {:?}",
             region.as_str(),
-            source_program,
-            source_root,
+            recorded,
             target_root
         ));
 
-        let entries = match std::fs::read_dir(&source_root) {
-            Ok(entries) => entries,
-            Err(error) => {
-                report.errors.push(format!(
-                    "读取源槽位 {} 失败（{error}）",
-                    source_root.display()
-                ));
+        let mut carried_here = 0usize;
+        // ## 为什么搬**所有遗留程序位**，而不是只搬记录里那一条
+        //
+        // `migration-job.json` 只记了 TraeWork（`TRAE SOLO CN`）—— 因为 TraeCode 的
+        // userData 恰好**就是**合并后的目标目录，客户端没必要为它写迁移项。
+        // 但合并后的客户端是两条线的并集，两份遗留快照对它**都**有效：
+        // 客户端自己已经把两边的数据合进了同一个 userData。
+        // ⇒ 只搬记录里那一条，会让「用过 TraeCode 的机器」上的快照永远搬不过来。
+        //
+        // ⚠️ 安全性仍由上面的门控保证：门控为真 ⇒ 本机已合并 ⇒ 不存在另一条独立的
+        // 遗留客户端（合并版复用了同名目录），因此不会把 A 客户端的登录态灌进 B。
+        for source_program in TraeProgram::all() {
+            if source_program == target_program {
                 continue;
             }
-        };
+            let source_root = paths::profiles_dir_for_program(region, source_program);
+            // ⚠️ 这里**不能**用 `!source_root.is_dir()` 当「源槽位不存在」的判据：
+            // `profiles_dir_for_program` 内部会 `create_dir_all`（`paths::ensured`），
+            // 所以它返回的路径**恒为已存在的目录** —— 那个判断恒假，是死代码。
+            // 「源槽位里有没有东西」由下面的 `read_dir` 是否产出条目决定：空目录 ⇒ 0 条搬运
+            // ⇒ `changed()` 为假 ⇒ 调用方不提示。代价是源槽位目录会被顺带创建出来
+            // （与本模块其余路径一致，无副作用）。
+            if source_root == target_root {
+                continue;
+            }
 
-        for entry in entries.flatten() {
-            let slot = entry.file_name().to_string_lossy().to_string();
-            // 跳过保留名与非法名（见 `RESERVED_SLOT_NAMES` / `paths::safe_slot_name`）。
-            if !paths::safe_slot_name(&slot) {
-                continue;
-            }
-            let from = entry.path();
-            // 只搬**目录**：槽位根下除保留名外可能还有零散文件（如 `.source` 之外的杂物），
-            // 它们不是快照，搬过去只会让目标槽位多出无法识别的条目。
-            if !from.is_dir() {
-                continue;
-            }
-            let to = target_root.join(&slot);
-            if false {
-                report.slots_kept += 1;
-                continue;
-            }
-            match profile::copy_dir_recursive(&from, &to) {
-                Ok(files) => report.carries.push(SnapshotCarry {
-                    region,
-                    from: source_program,
-                    to: target_program,
-                    slot,
-                    files,
-                }),
-                Err(error) => report.errors.push(format!("{slot}（{error}）")),
+            let entries = match std::fs::read_dir(&source_root) {
+                Ok(entries) => entries,
+                Err(error) => {
+                    report.errors.push(format!(
+                        "读取源槽位 {} 失败（{error}）",
+                        source_root.display()
+                    ));
+                    continue;
+                }
+            };
+
+            for entry in entries.flatten() {
+                let slot = entry.file_name().to_string_lossy().to_string();
+                // 跳过保留名与非法名（见 `RESERVED_SLOT_NAMES` / `paths::safe_slot_name`）。
+                if RESERVED_SLOT_NAMES.contains(&slot.as_str()) || !paths::safe_slot_name(&slot) {
+                    continue;
+                }
+                let from = entry.path();
+                // 只搬**目录**：槽位根下除保留名外可能还有零散文件（如 `.source` 之外的杂物），
+                // 它们不是快照，搬过去只会让目标槽位多出无法识别的条目。
+                if !from.is_dir() {
+                    continue;
+                }
+                let to = target_root.join(&slot);
+                if to.exists() {
+                    // ★ 只增不改：目标已有同 uid ⇒ 保留目标那份。
+                    report.slots_kept += 1;
+                    continue;
+                }
+                match profile::copy_dir_recursive(&from, &to) {
+                    Ok(files) => {
+                        carried_here += 1;
+                        report.carries.push(SnapshotCarry {
+                            region,
+                            from: source_program,
+                            to: target_program,
+                            slot,
+                            files,
+                        });
+                    }
+                    Err(error) => report.errors.push(format!("{slot}（{error}）")),
+                }
             }
         }
 
-        if report.changed() {
+        // 日志按**区域**记（不是全局 `report.changed()`）：否则 A 区搬了东西会让
+        // B 区也写一条「复制 0 个」的噪声日志。
+        if carried_here > 0 {
             store::append_log(
                 &paths::log_file_for_region(region, "switcher.log"),
                 &format!(
-                    "客户端合并快照搬运：{:?} -> {:?}，复制 {} 个账号槽位、{} 个文件，\
-                     跳过（目标已有）{} 个",
-                    source_program,
-                    target_program,
-                    report.carries.len(),
-                    report.files_copied(),
-                    report.slots_kept
+                    "客户端合并快照搬运：{region:?} 的遗留程序位 -> {target_program:?}，\
+                     复制 {carried_here} 个账号槽位"
                 ),
             );
         }
@@ -346,15 +375,19 @@ mod tests {
     }
 
     /// 与 `paths::profiles_dir_for_program` 同源的目录名（测试里只需要名字）。
+    ///
+    /// ⚠️ 合并版（`Trae`）有**自己的**目录（`profiles_trae_merged` /
+    /// `profiles_global_trae_merged`），与遗留 `TraeCode` 的目录**不同** ——
+    /// 那正是 issue #20 要修的事（用户报障「两条程序位共用同一个快照目录」）。
+    /// 这个映射必须与生产实现逐字对齐，否则用例会在错的目录上断言。
     fn profile_dir_name(region: TraeRegion, program: TraeProgram) -> &'static str {
         match (region, program) {
             (TraeRegion::Cn, TraeProgram::TraeWork) => "profiles",
-            (TraeRegion::Cn, TraeProgram::TraeCode) | (TraeRegion::Cn, TraeProgram::Trae) => {
-                "profiles_trae_cn"
-            }
+            (TraeRegion::Cn, TraeProgram::TraeCode) => "profiles_trae_cn",
+            (TraeRegion::Cn, TraeProgram::Trae) => "profiles_trae_merged",
             (TraeRegion::Global, TraeProgram::TraeWork) => "profiles_global_trae_work",
-            (TraeRegion::Global, TraeProgram::TraeCode)
-            | (TraeRegion::Global, TraeProgram::Trae) => "profiles_global_trae_code",
+            (TraeRegion::Global, TraeProgram::TraeCode) => "profiles_global_trae_code",
+            (TraeRegion::Global, TraeProgram::Trae) => "profiles_global_trae_merged",
         }
     }
 
@@ -395,6 +428,39 @@ mod tests {
             "源槽位必须原样保留"
         );
         assert_eq!(report.slots_kept, 0);
+    }
+
+    /// ★ 门控通过时必须把**两个遗留程序位**的快照都搬进来（issue #20）。
+    ///
+    /// 反例（改坏会红）：只搬 `migration-job.json` 里记的那一条（`TRAE SOLO CN` ⇒ TraeWork）
+    /// —— 那样「只用过 TraeCode 的机器」上的快照永远搬不过来，用户照样切不了账号。
+    /// 记录里只有 TraeWork 是因为 TraeCode 的 userData **恰好就是**合并后的目标目录，
+    /// 客户端没必要为它写迁移项（见 `carry_merged_snapshots` 的说明）。
+    #[test]
+    fn 门控通过时两个遗留程序位的快照都要搬() {
+        let fixture = Fixture::new(Some("TRAE SOLO CN"), "completed");
+        fixture.seed(TraeRegion::Cn, TraeProgram::TraeWork, "u-work", "Preferences");
+        fixture.seed(TraeRegion::Cn, TraeProgram::TraeCode, "u-code", "Preferences");
+
+        let report = carry_merged_snapshots();
+
+        assert_eq!(report.carries.len(), 2, "两个遗留槽位都要搬：{report:?}");
+        assert!(
+            fixture
+                .slot_dir(TraeRegion::Cn, TraeProgram::Trae, "u-work")
+                .is_dir(),
+            "TraeWork 的快照没搬进合并槽位"
+        );
+        assert!(
+            fixture
+                .slot_dir(TraeRegion::Cn, TraeProgram::Trae, "u-code")
+                .is_dir(),
+            "TraeCode 的快照没搬进合并槽位"
+        );
+        // 报告里两条的来源必须**分别标对** —— 否则日志与提示会把来源说错。
+        let mut froms: Vec<&str> = report.carries.iter().map(|c| c.from.as_str()).collect();
+        froms.sort_unstable();
+        assert_eq!(froms, vec!["trae_code", "trae_work"]);
     }
 
     /// ★ 没有合并记录（或状态不是 `completed`）时**一个字节都不能搬**。

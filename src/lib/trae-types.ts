@@ -44,7 +44,7 @@ export interface TraeEnvStatus {
    */
   variant: TraeVariantId | null;
   /**
-   * 产品线**展示名**（`"Trae Work"` / `"Trae CN"`），可直接上界面。
+   * 产品线**展示名**（`"TraeWork CN"` / `"Trae CN"`），可直接上界面。
    *
    * 与 Rust 侧 `variant::TraeVariant::display_name()` 同源；`Trae Work` 这个名字
    * 来自客户端 `product.json` 的 `nameAlias`（`TRAE SOLO CN` 自称 `TraeWork CN`）。
@@ -71,9 +71,12 @@ export type TraeRegionId = "cn" | "global";
  *
  * - `trae_work` / `trae_code`：改造前的两条产品线，各自对应一个客户端；
  * - `trae`：2026-10-13 客户端把上面两条**合并**成的一个客户端（CN `Trae CN`、
- *   国际 `Trae`）。它与 `trae_code` **物理上是同一个客户端**（同名同目录），
- *   因此后端把两者映射到**同一个变体** —— 变体才是 Key / 快照 / 日志的归属键。
- *   `trae_code` 保留是为了让既有数据（Key 记录、快照目录、旧链接）继续可读。
+ *   国际 `Trae`）。
+ *
+ * ⚠️ `trae` 与 `trae_code` **候选名逐字相同**（客户端合并时复用了 TraeCode 的目录名
+ * 与 exe 名），但它们是**两条不同的程序位**、两个不同的**变体**
+ * （`trae_merged` / `global_trae_merged`）⇒ 快照目录、Key 归属、日志分档各自独立。
+ * 这正是「Trae 是 Trae、TraeCode 是 TraeCode」在数据层的落点。
  */
 export type TraeProgramId = "trae_work" | "trae_code" | "trae";
 
@@ -92,12 +95,20 @@ export type TraeProgramId = "trae_work" | "trae_code" | "trae";
  * `global_trae_code` 是**国际版 TraeCode**（与 `global`＝国际版 TraeWork 分家，
  * 见 `TraeVariant::GlobalTraeCode`）。它必须与 `global` 分开：
  * 两者只差一个后缀，混用会把登录态写进错的客户端。
+ *
+ * `trae_merged` / `global_trae_merged` 是**合并后的客户端**（issue #20）。
+ * 它们与 `trae_cn` / `global_trae_code` **候选名逐字相同**但**变体不同** ——
+ * 变体是快照目录 / Key 归属 / 日志分档的派生来源，共用变体会让两条程序位的快照
+ * 挤进同一个目录（用户报障原文）。⚠️ 因此**绝不能**用「变体」反推程序位名字：
+ * 那正是「点 Trae 却提示 TraeCode」那次缺陷的成因。
  */
 export type TraeVariantId =
   | TraeRegionId
   | "trae_work"
   | "trae_cn"
   | "global_trae_code"
+  | "trae_merged"
+  | "global_trae_merged"
   | TraeProgramId;
 
 /**
@@ -131,21 +142,33 @@ export function traeProgramLabel(program: TraeProgramId): string {
  */
 export function traeVariantLabel(variant: TraeVariantId): string {
   switch (variant) {
+    // 区域名（Trae 侧）：客户端自己的产品名，见 `trae.region.*` 的说明。
     case "cn":
-      return t("shared.region.version.cn");
+      return t("trae.region.cn");
     case "global":
-      return t("shared.region.version.global");
+      return t("trae.region.global");
+    // 国内 TraeCode（`trae_cn` 是它的落盘标识；`trae_code` 是程序位标识）
+    // ⇒ 展示名 `TraeCode CN`（国内带 ` CN` 后缀）。
     case "trae_cn":
     case "trae_code":
-      return t("trae.program.traeCode");
-    // 合并后的客户端（issue #20）：`trae` 作为变体参数时与 `trae_cn` 同源
-    // （后端 `TraeVariant::parse("trae") == Trae`，区域是**国内**），
-    // 但展示名取客户端现在的名字 `Trae`，而不是历史名 `TraeCode`。
+      return t("trae.program.traeCodeCn");
+    // `trae` 作为**变体**参数时与 `trae_cn` 同源（后端 `TraeVariant::parse("trae")
+    // == Trae`，即国内 TraeCode）⇒ 同一个展示名。注意它**不是**合并版：
+    // 合并版的变体标识是 `trae_merged`。
     case "trae":
-      return t("trae.program.trae");
+      return t("trae.program.traeCodeCn");
+    // 国内 TraeWork（`trae_work` 既是变体标识也是程序位标识）。
+    case "trae_work":
+      return t("trae.program.traeWorkCn");
     // 国际版 TraeCode：**不是** `trae_code` 那条（那是国内），见 `TraeVariantId`。
     case "global_trae_code":
       return t("trae.program.traeCodeGlobal");
+    // 合并后的客户端（issue #20）：各自独立变体，展示名就是客户端现在的名字。
+    case "trae_merged":
+      return t("trae.program.traeCn");
+    case "global_trae_merged":
+      return t("trae.program.traeGlobal");
+    // 不可达（上面的分支已覆盖 `TraeVariantId` 的全部取值）；保留旧兜底值不动。
     default:
       return t("trae.program.traeWork");
   }
@@ -180,14 +203,17 @@ export function traeRegionLabelOf(variant: TraeVariantId): string {
     case "global":
     // 国际版 TraeCode 也落国际区域（它与 `global` 是同一区域的两条程序）。
     case "global_trae_code":
-      return t("shared.region.version.global");
+    // 合并版国际客户端（issue #20）同样落国际区域。
+    case "global_trae_merged":
+      return t("trae.region.global");
     case "cn":
     case "trae_work":
     case "trae_cn":
-    // 合并后的客户端 `trae` 落**国内**（后端 `TraeVariant::parse("trae") == Trae`，
-    // 而 `Trae` 的区域是 `Cn`）。国际版那个走 `global_trae_code`。
+    // 合并后的客户端 `trae` / `trae_merged` 落**国内**（后端
+    // `TraeVariant::parse("trae") == Trae`、`TraeMerged.region() == Cn`）。
     case "trae":
-      return t("shared.region.version.cn");
+    case "trae_merged":
+      return t("trae.region.cn");
     default:
       return traeVariantLabel(variant);
   }
@@ -219,6 +245,8 @@ export function traeRegionOf(variant: TraeVariantId): TraeRegionId {
     case "global":
     // 国际版 TraeCode 也落国际区域（它与 `global` 是同一区域的两条程序）。
     case "global_trae_code":
+    // 合并版国际客户端（issue #20）。
+    case "global_trae_merged":
       return "global";
     case "cn":
     // `trae_work` / `trae_cn` 是改造前的产品线标识，两者**都是国内构建**。
@@ -227,9 +255,10 @@ export function traeRegionOf(variant: TraeVariantId): TraeRegionId {
     // `TraeProgramId` 的 `trae_code`：程序位不含区域，按其归属的国内库处理。
     case "trae_code":
     // `TraeProgramId` 的 `trae`（合并版客户端，issue #20）：同样落国内 ——
-    // 后端 `TraeVariant::parse("trae") == Trae`，而 `Trae` 的区域是 `Cn`。
-    // 漏掉这一格会让 `traeRegionOf("trae")` 掉进 `default` 抛错（`never` 检查）。
+    // 后端 `TraeVariant::parse("trae") == Trae`（`region() == Cn`），
+    // 而合并版变体 `trae_merged` 的 `region()` 也是 `Cn`。
     case "trae":
+    case "trae_merged":
       return "cn";
     default: {
       const exhaustive: never = variant;
@@ -247,7 +276,14 @@ export function traeRegionOf(variant: TraeVariantId): TraeRegionId {
 export interface TraeProgramStatus {
   /** 程序位标识（`trae_work` / `trae_code` / `trae`）。 */
   program: TraeProgramId;
-  /** 展示名（`TraeWork` / `TraeCode` / `TraeWork AI` / `Trae AI`）。 */
+  /**
+   * 展示名。规则 = **国内版带 ` CN` 后缀、国际版不带后缀**，六个名字两两不同：
+   * `TraeWork CN` / `TraeCode CN` / `Trae CN`（国内）· `TraeWork` / `TraeCode` / `Trae`（国际）。
+   *
+   * ★ 六个名字**逐字等于客户端自己的字符串**（`nameAlias` / `nameShort`）。
+   * ⚠️ 更正前的约定是「国际版带 `AI` 后缀」—— 错的，且 `Trae AI` 会同时指
+   * 国际 TraeCode 与国际合并版（Key 归属下拉里两个同名选项）。
+   */
   label: string;
   /** 客户端 `product.json` 的官方别名（诊断与核对用）。 */
   nameAlias: string;
@@ -296,7 +332,14 @@ export interface TraeProgramStatus {
  */
 export interface TraeVariantStatus {
   variant: TraeRegionId;
-  /** 展示名（`"国内版"` / `"国际版"`），与 Rust `TraeRegion::display_name()` 同源。 */
+  /**
+   * 区域名（`"Trae CN"` / `"Trae"`，**客户端自己的产品名**），与 Rust
+   * `TraeRegion::display_name()` 同源。
+   *
+   * ⚠️ 与 `shared.region.version.*`（`国内版` / `国际版`）**不是一回事**：后者是
+   * **跨平台**的区域**词**，用于**组合**标签（作用域芯片 = 平台 + 区域词 ⇒「Trae 国内版」），
+   * 且 WorkBuddy 也读它。两者漂了会让演示站与真机文案不同 —— 有跨层门禁钉住。
+   */
   variantLabel: string;
   /**
    * 该区域**用户看得见的那一页**所在的域，是**可直接拼 URL 的基址**。
@@ -860,7 +903,10 @@ export interface TraeClientModelGroup {
 export interface TraeModelSource {
   /** 程序位标识（直接喂给 `get_trae_client_models`）。 */
   variant: TraeVariantId;
-  /** 程序位展示名（`TraeWork` / `TraeCode` / `TraeWork AI` / `Trae AI`）。 */
+  /**
+   * 程序位展示名。规则 = **国内版带 ` CN` 后缀、国际版不带后缀**：
+   * `TraeWork CN` / `TraeCode CN` / `Trae CN`（国内）· `TraeWork` / `TraeCode` / `Trae`（国际）。
+   */
   label: string;
   /** 该程序位的客户端清单；未取到（后端不可用）为 `null`。 */
   data: TraeClientModelList | null;
@@ -905,8 +951,9 @@ export interface TraeClientModel {
 /**
  * 单条 Trae API Key（`list_trae_api_keys` 的 `keys[]`）。
  *
- * **不含 hash 与明文**：服务端只下发脱敏白名单（`prefix` / `name` / `variant`…），
- * 明文仅在创建时一次性返回。
+ * **不含 hash 与明文**：服务端只下发脱敏白名单（`prefix` / `suffix` / `name` / `variant`…），
+ * 明文仅在创建时一次性返回。`suffix` 是明文的**末 4 位**，与 `prefix`（前 4 位）一样
+ * 不足以还原 32 位 secret —— 它的用途是让用户在列表里**认出是哪一把**。
  *
  * `variant` 是该 Key 的**归属区域**（`"cn"` / `"global"`）—— 账号池按区域建，
  * 因此它决定这把 Key 能取到哪个区域的账号。**新 Key 一律落到区域的线上标识**；
@@ -920,6 +967,14 @@ export interface TraeApiKeyRecord {
   /** 归属区域（`"cn"` / `"global"`；历史记录可能是 `"trae_work"` / `"trae_cn"`）。 */
   variant: TraeVariantId;
   prefix: string;
+  /**
+   * ★ 尾部 4 位（如 `"9f3c"`）。列表显示 `prefix••••••••suffix`。
+   *
+   * 与 WorkBuddy 侧 `ApiKeyRecord.suffix` **同形**（E3）：只靠前缀，同时建两把 Key 时
+   * 用户分不清哪把是哪把。旧台账 / 短 legacy Key 无此值 ⇒ 空串 ⇒ 展示层**省略尾部**
+   * （不报错、不补造）。
+   */
+  suffix?: string;
   createdAt: number;
   revokedAt: number | null;
   revoked: boolean;

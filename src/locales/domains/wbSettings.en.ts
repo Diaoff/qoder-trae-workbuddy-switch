@@ -70,6 +70,17 @@ export const en = {
   "wbSettings.rotate.actionError": "Error",
 
   // ---- Client detection (read-only; from real probe commands) ----
+  // P15 · external-agent session monitoring (installs hooks into the clients; off by default, reversible).
+  "wbSettings.agentWatch.title": "Session monitoring",
+  "wbSettings.agentWatch.enable": "Watch client sessions",
+  "wbSettings.agentWatch.enableDesc":
+    "Install hooks in the clients so their session status shows up in the companion window. This edits the client's settings.json (reversible), and is off by default.",
+  "wbSettings.agentWatch.slot.workbuddy-cn": "WorkBuddy (CN)",
+  "wbSettings.agentWatch.slot.workbuddy-global": "WorkBuddy (Global)",
+  "wbSettings.agentWatch.state.running": "Client is running — quit it first",
+  "wbSettings.agentWatch.state.installed": "{count} hooks installed",
+  "wbSettings.agentWatch.state.off": "Off",
+  "wbSettings.agentWatch.state.missing": "Client not found",
   "wbSettings.client.detectTitle": "Client detection",
   "wbSettings.client.detectWorkbuddy": "WorkBuddy Desktop",
   "wbSettings.client.detectWorkbuddyDesc": "Detect install path and version",

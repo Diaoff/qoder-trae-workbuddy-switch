@@ -12,7 +12,7 @@ use tauri::{
 };
 use tauri_plugin_notification::NotificationExt;
 use tauri_plugin_opener::OpenerExt;
-use buddy_switch_core::modules::{checkin, update};
+use buddy_switch_core::modules::{app_prefs, checkin, update};
 
 const TRAY_ID: &str = "main-menu-bar";
 const MAIN_WINDOW_LABEL: &str = "main";
@@ -88,11 +88,32 @@ pub fn setup(app: &mut tauri::App) -> tauri::Result<()> {
     Ok(())
 }
 
+/// 主窗口的关闭请求 —— **由应用级偏好决定去向**（`app_prefs::close_to_tray`）。
+///
+/// ## 两条路
+///
+/// - `close_to_tray = true`（默认，也是改这个设置之前的行为）：拦下关闭、隐藏窗口、
+///   收起 Dock / 任务栏入口，进程留在托盘里继续跑。
+/// - `close_to_tray = false`：**放行并显式退出**。
+///
+/// ## 为什么是 `app.exit(0)` 而不是「不拦 + 让 `on_run_event` 自己退出」
+///
+/// 不拦关闭时，窗口销毁 ⇒ 运行时会发 `ExitRequested { code: None }`，而
+/// [`should_keep_tray_alive`] 对 `None` 一律 `prevent_exit()`（这是**轻量模式**赖以
+/// 存活的前提：`enter_lightweight` 主动 `destroy()` 窗口后进程必须还在）。
+/// 若改成「让 `should_keep_tray_alive` 去查偏好」，轻量模式在偏好为 false 时会把
+/// 整个应用一起带走 —— 把两件不相关的事绑在同一个判据上。
+/// 所以这里用**显式退出**：`app.exit(0)` ⇒ `ExitRequested { code: Some(0) }` ⇒
+/// `should_keep_tray_alive(Some(0))` 为 false ⇒ 正常退出，轻量模式的判据一个字没动。
 pub fn on_window_event<R: Runtime>(window: &Window<R>, event: &WindowEvent) {
     if window.label() != MAIN_WINDOW_LABEL {
         return;
     }
     if let WindowEvent::CloseRequested { api, .. } = event {
+        if !app_prefs::close_to_tray() {
+            window.app_handle().exit(0);
+            return;
+        }
         api.prevent_close();
         let _ = window.hide();
         apply_dock_visible(window.app_handle(), false);

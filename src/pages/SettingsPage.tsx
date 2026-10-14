@@ -1008,6 +1008,105 @@ function ClientDetectCard() {
   );
 }
 
+/**
+ * P15 · 外部 Agent 会话监听：往客户端 `settings.json` 装 / 卸 hook。
+ *
+ * ## 为什么需要用户显式同意（默认关）
+ *
+ * 开启这一步会**改写别的客户端（WorkBuddy 两版）的配置文件** ——
+ * 本仓对此的动作纪律是「默认关 + 用户点了才做 + 可一键还原」
+ * （`app_prefs.watch_agent_sessions` 是唯一事实来源，见其默认值注释）。
+ *
+ * ## 为什么逐槽位显示状态，而不是一个总开关的「已开启」
+ *
+ * 用户很可能**只装了国内版**、或**某个客户端正开着**（开着时改不了它的配置，
+ * 会被它的内存态覆盖 —— 那是 `client_settings` 的进程守卫）。
+ * 把这种情况显示成一句「已开启」等于骗人：那个客户端里其实一条 hook 都没有。
+ */
+function AgentWatchCard() {
+  const t = useT();
+  const [status, setStatus] = useState<api.AgentHookStatus | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [feedback, setFeedback] = useState<string | null>(null);
+  // 刷新用「递增 key」触发（与 `ClientDetectCard` 同款写法）：把拉取放在 effect 内，
+  // 免得为了 `useCallback` 把一段一次性逻辑抬到组件顶层。
+  const [reloadKey, setReloadKey] = useState(0);
+
+  useEffect(() => {
+    let cancelled = false;
+    void api
+      .getAgentHookStatus()
+      .then((value) => {
+        if (!cancelled) setStatus(value);
+      })
+      .catch(() => {
+        // 读不到就保持 null ⇒ 开关置灰，**不假装「关着」**（那会让人以为可以点）。
+        if (!cancelled) setStatus(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [reloadKey]);
+
+  async function toggle(next: boolean) {
+    setBusy(true);
+    setFeedback(null);
+    try {
+      const result = await api.setAgentHookEnabled(next);
+      // ★ 部分成功是常态（只装了一个版本 / 某个客户端正在运行）⇒ `errors` 如实呈现。
+      setFeedback(result.errors.length > 0 ? result.errors.join("；") : null);
+    } catch (cause) {
+      setFeedback(api.asError(cause));
+    } finally {
+      setBusy(false);
+      setReloadKey((key) => key + 1);
+    }
+  }
+
+  const slots = status?.slots ?? [];
+
+  return (
+    <SettingsGroup id="settings-agent-watch" title={t("wbSettings.agentWatch.title")}>
+      <CardContent className="space-y-0 p-0">
+        <SettingsFieldRow
+          label={t("wbSettings.agentWatch.enable")}
+          description={t("wbSettings.agentWatch.enableDesc")}
+        >
+          <Switch
+            checked={status?.enabled ?? false}
+            disabled={busy || status === null}
+            onCheckedChange={(next) => void toggle(next)}
+            aria-label={t("wbSettings.agentWatch.enable")}
+          />
+        </SettingsFieldRow>
+        {slots.map((slot, index) => (
+          <SettingsFieldRow
+            key={slot.slot}
+            className={index === slots.length - 1 ? "border-b-0" : undefined}
+            label={t(`wbSettings.agentWatch.slot.${slot.slot}` as TranslationKey)}
+            description={slot.command ?? ""}
+          >
+            <span className="text-sm text-muted-foreground">
+              {slot.clientRunning
+                ? t("wbSettings.agentWatch.state.running")
+                : slot.installed
+                  ? t("wbSettings.agentWatch.state.installed", { count: slot.events.length })
+                  : slot.clientInstalled
+                    ? t("wbSettings.agentWatch.state.off")
+                    : t("wbSettings.agentWatch.state.missing")}
+            </span>
+          </SettingsFieldRow>
+        ))}
+      </CardContent>
+      {feedback ? (
+        <p role="alert" className="px-4 pb-3 text-[11px] leading-4 text-destructive">
+          {feedback}
+        </p>
+      ) : null}
+    </SettingsGroup>
+  );
+}
+
 /** 版本与账号库：两版认证文件路径（只读展示 + 复制）、国际版 UA 版本，及打开账号库目录。 */
 function VersionAccountsCard() {
   const t = useT();
@@ -1597,7 +1696,13 @@ export default function SettingsPage() {
 
           {section === "schedule" && <ScheduleCard />}
 
-          {section === "client" && <ClientDetectCard />}
+          {section === "client" && (
+            <>
+              <ClientDetectCard />
+              {/* P15 · 会话监听开关（会写客户端配置，默认关）。 */}
+              <AgentWatchCard />
+            </>
+          )}
 
           {section === "diagnostics" && (
             <>

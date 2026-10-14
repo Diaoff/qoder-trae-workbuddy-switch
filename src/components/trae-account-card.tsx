@@ -107,7 +107,7 @@ export interface TraeProgram {
    * ★ 2026-10-12：按钮上的**可见短名**（`Work` / `Code`，原型 `pg.short`）由它决定。
    * ⚠️ **不能**用 `variant` 或 `label` 猜：`trae_cn` / `trae_code` 这类历史值在
    * `variant.rs` 里**语义不唯一**（`TraeRegion × TraeProgram` 的朴素笛卡尔积命名），
-   * `label` 又是展示名（`TraeWork` / `Trae AI`）—— 两者都会把 Code 判成 Work。
+   * `label` 又是展示名（`TraeWork` / `TraeCode` / `Trae` / `… AI`）—— 两者都会把 Code 判成 Work。
    */
   program: TraeProgramId;
   /** 展示名（`Trae Work` / `Trae CN`），取自后端 `variantLabel`。 */
@@ -355,7 +355,8 @@ export function TraeAccountCard({
     /* ★ 2026-10-12：按钮上的**可见文字**改固定短名（原型 `pg.short` = `Work` / `Code`）。
        `label`（`TraeWork` / `TraeCode`）仍用于 `title` / `aria-label` 与 tooltip。
        ★ 2026-10-13（issue #20）：合并版程序位 `trae` 的短名用 `Trae` —— 它与 `trae_code`
-       共用同一个客户端，但按钮上必须看得出「这是哪一枚」，否则两枚按钮文字相同。 */
+       候选名逐字相同（客户端复用了目录名），但**是两条不同的程序位**
+       （各自变体 / 快照目录 / Key 归属），按钮上必须看得出点的是哪一枚。 */
     const short =
       program.program === "trae_code" ? "Code" : program.program === "trae" ? "Trae" : "Work";
 

@@ -384,6 +384,11 @@ check("★ P3 空态迁移：已迁移处必须继续用 `EmptyState`（防回�
   /* 存量里还有自建空态（`account-pool-card` / `AccountsPage` 等，它们的形态更复杂），
      所以这条**不做全仓零容忍**，只锁住**已经迁移过的那几处** —— 防的是"改回去"。 */
   const migrated = [
+    /* 2026-10-13 跨平台对齐：WB 侧的 Key 表与请求日志**反向**补齐 —— 它们的空态
+       原来是「一行灰字」，而 Trae 侧早已用 `EmptyState`。方向是 WB 跟上 Trae
+       （§3.6「空态唯一 `empty-state.tsx`」对两平台同等生效）。 */
+    "src/components/gateway/api-key-table.tsx",
+    "src/components/gateway/request-log.tsx",
     "src/components/gateway/trae-api-key-table.tsx",
     "src/components/gateway/trae-model-list.tsx",
     "src/components/gateway/trae-request-log.tsx",
@@ -1075,11 +1080,105 @@ check("★ 账号页只渲染**本区域**的程序位（国内版不得出现�
       );
     }
   }
-  if (!/onSwitchTo\?\.\(account,\s*program\.variant\)/.test(card)) {
+  /* ⚠️ 2026-10-13（issue #20）：切换回调**多了一个 `label` 参数**
+     （`onSwitchTo?.(account, program.variant, label)`）—— 展示名必须由调用方从
+     后端下发的 `program.label` 传进去，**不能**在页面里用变体反推
+     （合并版与遗留 TraeCode 的候选名逐字相同，反推会把 Trae 说成 TraeCode）。
+     因此下面这条判据从「逐字匹配整条调用」放宽成「**第二个实参必须是 `program.variant`**」——
+     判据的**性质没变**（切换目标仍必须是区域限定的变体，用 `program.program` 会丢客户端），
+     只是不再把「后面还有没有参数」也当成契约。 */
+  if (!/onSwitchTo\?\.\(\s*account,\s*program\.variant\b/.test(card)) {
     throw new Error("切换目标不是区域限定的 `program.variant`（用 `program.program` 会丢客户端）");
   }
   return "programsFor 按区域过滤 · 卡片无跨区域分支 · 切换目标 = program.variant";
 });
+
+check("★ Trae 六个程序位展示名两两不同，且与后端下发的真值逐字一致", () => {
+  /* 展示名是用户区分程序位的**唯一**依据（Key 归属下拉 / 按钮 tooltip / 切换 toast）。
+     撞名时下拉里出现两个一模一样的选项，选错就是把登录态写进另一条线，
+     而界面上看不出异常。本仓真实踩过：国际 TraeCode 曾叫 `Trae AI`，
+     与合并版客户端（`nameShort` = `Trae`）撞名。
+
+     ★ 两条判据，各有分工：
+       ① **两两不同**：钉 `TRAE_VARIANT_FALLBACK` 这张**兜底表** ——
+          后端不可用时（演示站 / 截图构建）界面上显示的就是它；
+       ② **与后端逐字一致**（跨语言）：兜底表与 `region.rs` 的
+          `ProgramSpec.display_name` 必须同值。漂了会让「演示站」与「真机」
+          显示不同的名字 —— 这类漂移只在截图里看得出来。
+     Rust 侧 `region::tests::六个程序位的展示名两两不同` 钉的是另一侧（后端真值）。
+
+     反例（改坏会红）：把任一条 `programStub` 的 label 改成另一条的 ⇒ ① 红；
+     改掉 region.rs 里任一条 `display_name` ⇒ ② 红。 */
+  const fallback = readCode("src/lib/trae-variant-status.ts");
+  const labels = [...fallback.matchAll(/programStub\("[a-z_]+",\s*"([^"]+)"/g)].map((m) => m[1]);
+  if (labels.length !== 6) {
+    throw new Error(`应解析出 6 个程序位展示名，实际 ${labels.length} —— 判据失效（改名了？）`);
+  }
+  const dup = labels.find((label, i) => labels.indexOf(label) !== i);
+  if (dup) {
+    throw new Error(`展示名 \`${dup}\` 被两个程序位共用 —— 用户分不清选的是哪条程序位`);
+  }
+
+  const region = readCode("crates/buddy-switch-core/src/modules/trae/region.rs");
+  const backend = [
+    ...region.matchAll(/const [A-Z_]+: ProgramSpec = ProgramSpec \{[\s\S]*?display_name: "([^"]+)"/g),
+  ].map((m) => m[1]);
+  if (backend.length !== 6) {
+    throw new Error(`应解析出 6 条 ProgramSpec 的 display_name，实际 ${backend.length} —— 判据失效`);
+  }
+  const sorted = (list) => [...list].sort();
+  if (sorted(labels).join("|") !== sorted(backend).join("|")) {
+    throw new Error(
+      `兜底表与后端展示名不一致：兜底 ${sorted(labels).join(" / ")} · 后端 ${sorted(backend).join(" / ")}`,
+    );
+  }
+  return `${sorted(labels).join(" / ")}（两两不同 · 与后端一致）`;
+});
+
+check("★ Trae 区域名在前端词条 / 后端 display_name / 兜底表三处逐字一致", () => {
+  /* 区域名 = **客户端自己的产品名**（`Trae CN` / `Trae`，用户 2026-10-13 定）。
+     它被登记在**三处**：后端 `TraeRegion::display_name`（文案真值）、
+     前端 `trae.region.*`（Trae 侧单独说区域名）、兜底表两条 `variantLabel`
+     （演示站/截图用它）。漂了会让真机与演示站文案不同 —— 只在截图里看得出来。
+
+     ⚠️ 与 `shared.region.version.*`（`国内版` / `国际版`）**不是一回事**，别合并：
+     后者是**跨平台**的区域**词**，用于**组合**标签（作用域芯片 = 平台 + 区域词，
+     `scope-chip.tsx` ⇒「Trae 国内版」），WorkBuddy 也读它
+     ⇒ 改成 Trae 产品名会得到「Trae Trae CN」与「WorkBuddy Trae CN」。
+
+     反例（改坏会红）：改后端 `display_name` 而忘了前端词条（或反之）⇒ 立刻红。 */
+  const zh = readCode("src/locales/domains/traeComponents.zh.ts");
+  const frontend = Object.fromEntries(
+    [...zh.matchAll(/"trae\.region\.(cn|global)":\s*"([^"]+)"/g)].map((m) => [m[1], m[2]]),
+  );
+  if (!frontend.cn || !frontend.global) {
+    throw new Error(`应解析出 trae.region.cn / trae.region.global，实际 ${JSON.stringify(frontend)}`);
+  }
+  const region = readCode("crates/buddy-switch-core/src/modules/trae/region.rs");
+  const fn = /pub fn display_name\(self\) -> &'static str \{[\s\S]*?\n    \}/.exec(region);
+  if (!fn) throw new Error("找不到 `TraeRegion::display_name` —— 判据失效（改名了？）");
+  const backend = Object.fromEntries(
+    [...fn[0].matchAll(/TraeRegion::(Cn|Global) => "([^"]+)"/g)].map((m) => [
+      m[1] === "Cn" ? "cn" : "global",
+      m[2],
+    ]),
+  );
+  for (const key of ["cn", "global"]) {
+    if (frontend[key] !== backend[key]) {
+      throw new Error(
+        `区域名不一致（${key}）：前端词条 \`${frontend[key]}\` · 后端 display_name \`${backend[key]}\``,
+      );
+    }
+  }
+  const status = readCode("src/lib/trae-variant-status.ts");
+  for (const key of ["cn", "global"]) {
+    if (!status.includes(`t("trae.region.${key}")`)) {
+      throw new Error(`兜底表区域 ${key} 没走 \`trae.region.${key}\` —— 演示站会与真机文案不同`);
+    }
+  }
+  return `${frontend.cn} / ${frontend.global}（词条 · display_name · 兜底表 三处一致）`;
+});
+
 
 /* ── P4 收口：后端展示字段必须过 `displayText` 出口（防「白屏」回归）────────────
  *
@@ -2016,10 +2115,31 @@ check("★ P11 四组合可区分：上游状态列只看 available、网关暴�
   if (!/showUpstream/.test(code)) {
     throw new Error("上游状态列没有 `showUpstream` 开关 —— WB 会渲染一列恒为「可用」的噪音");
   }
-  // 每行只一个可点区：禁用 / 启用按钮（无行点击、无勾选）。
+  /* 每行**两个**可点区：**复制模型 ID** + 禁用 / 启用。**无行点击、无勾选**。
+     ★ 2026-10-13：由 1 → 2（新增「复制模型 ID」—— Codex / Trae 自定义模型 / dsh
+       自定义 provider 都要求手填模型 id，此前只能手抄）。
+     这不是放宽：「恰好 2 处」+ 下面两条**分别**钉住「无行点击」「无勾选」，
+     所以任何第三种行级交互都仍会变红。 */
   const clicks = (code.match(/onClick=/g) || []).length;
-  if (clicks !== 1) {
-    throw new Error(`模型表格有 ${clicks} 处 onClick，应为 1（仅禁用/启用按钮；无行点击、无勾选）`);
+  if (clicks !== 2) {
+    throw new Error(
+      `模型表格有 ${clicks} 处 onClick，应为 2（复制模型 ID + 禁用/启用；无行点击、无勾选）`,
+    );
+  }
+  // 无行点击：`<tr>` 上不得挂 onClick（否则整行可点会与「复制」「切换」抢事件）。
+  if (/<tr[^>]*\sonClick=/.test(code)) {
+    throw new Error("模型表格出现了行级 onClick —— 整行可点会与「复制 ID」「禁用/启用」抢事件");
+  }
+  // 无勾选：本表刻意不做多选。
+  if (/type="checkbox"|role="checkbox"/.test(code)) {
+    throw new Error("模型表格出现了勾选 —— 本表刻意不做多选（行级操作只有复制 + 切换）");
+  }
+  // 复制按钮必须**真的复制**（只有按钮没有 copyText = 假控件）。
+  if (!/data-act="gw-model-copy"/.test(code)) {
+    throw new Error("模型表格缺「复制模型 ID」按钮（用户要靠它把 id 粘进客户端配置）");
+  }
+  if (!/copyText\(/.test(code)) {
+    throw new Error("模型表格的复制按钮没有调用 `copyText` —— 按钮是假的");
   }
   // 白屏防线：展示字段（name / id）必须过 `displayText`。
   if (!/displayText\(/.test(code)) {
@@ -4067,13 +4187,15 @@ check("★ P7 设置页接线：子导航 + 备份分区 + 全不勾禁用导出
   return "子导航接线 · 备份分区 · 全不勾禁用导出";
 });
 
-check("★ P3 网关 6 项子导航：6 项齐备 + 两页接线（替代 6 卡纵向堆叠，PLAN §3.9）", () => {
+check("★ P3 网关 7 项子导航：7 项齐备 + 三页接线（替代 6 卡纵向堆叠，PLAN §3.9；第 7 项 = 统一入口）", () => {
   /* 变异①：把子导航退回「6 张卡纵向堆叠」⇒ 表或 `useState<GatewaySubnavId>` 失配即变红。 */
   const nav = readCode("src/components/gateway/gateway-subnav.tsx");
   const m = nav.match(/GATEWAY_SUBNAV[\s\S]*?=\s*\[([\s\S]*?)\];/);
   if (!m) throw new Error("找不到 `GATEWAY_SUBNAV` 表");
   const ids = [...m[1].matchAll(/id:\s*"([a-z]+)"/g)].map((x) => x[1]);
-  const want = ["overview", "keys", "models", "pool", "proxy", "logs"];
+  // ★ 第 7 项「统一入口」= 统一网关（第三个产品线）：跨作用域的单一入口，
+  //   与「请求日志不做版本过滤」同性质。加/删子导航项必须同步本表。
+  const want = ["overview", "keys", "models", "pool", "proxy", "logs", "unified"];
   if (ids.join(",") !== want.join(",")) {
     throw new Error(`子导航应为 ${want.join(" / ")}，实际 ${ids.join(" / ")}`);
   }
@@ -4081,6 +4203,11 @@ check("★ P3 网关 6 项子导航：6 项齐备 + 两页接线（替代 6 卡�
     const code = readCode(page);
     if (!/<GatewaySubnav\b/.test(code)) throw new Error(`${page} 没有接网关子导航`);
     if (!/useState<GatewaySubnavId>/.test(code)) throw new Error(`${page} 子导航选中态未接线`);
+    /* ★ 「统一入口」子导航项必须在**两页都真的接线**：只加表项不接线 = 点了没反应
+       （本项目已出过「摆了入口没接实现」的同类事故）。 */
+    if (!/<UnifiedGatewayView\b/.test(code)) {
+      throw new Error(`${page} 未渲染 <UnifiedGatewayView> —— 「统一入口」子项点了没反应`);
+    }
     /* 两页必须同构：`data-split-layout`（900px 转纵向）与 `goSub`（写 URL）缺一即红。
        ⚠️ Trae 页此前两样都缺 —— 点击子导航 URL 不变、窄屏也不转纵向。 */
     if (!/data-split-layout/.test(code)) throw new Error(`${page} 缺 data-split-layout（900px 以下不转纵向）`);
@@ -7244,6 +7371,45 @@ check("★ E3 密钥掩码补尾部 4 位（旧台账不报错）", () => {
   return "掩码含尾部 4 位 + 后端产出 + 旧台账 serde 兼容";
 });
 
+check("★ 一次性明文：可反复复制，且不能被遮罩 / ESC 误关销毁（两平台同规则）", () => {
+  /* 明文不可复原（库里只有 sha256 + 前后各 4 位）⇒ 对话框一旦被误关，用户只能吊销重建
+     并把所有客户端配置改一遍。因此：
+       ① 遮罩点击与 ESC **必须**被拦截，关闭只剩显式按钮；
+       ② 复制按钮**必须**保持可点（明文只显示这一次，用户可能要粘到多个客户端）。
+     可证伪：删掉任一处 `preventDefault` ⇒ 变红；给复制按钮加 `disabled={copied}` ⇒ 变红。 */
+  const targets = [
+    "src/components/gateway/api-key-table.tsx",
+    "src/components/gateway/trae-api-key-table.tsx",
+  ];
+  for (const rel of targets) {
+    const name = path.basename(rel);
+    const code = stripComments(fs.readFileSync(path.join(ROOT, rel), "utf8"));
+    const dialog = /open=\{plaintext !== null\}[\s\S]{0,2200}?<\/Dialog>/.exec(code);
+    if (!dialog) {
+      throw new Error(`${name}: 找不到一次性明文对话框（结构已变，请更新本断言）`);
+    }
+    const block = dialog[0];
+    if (!/onInteractOutside/.test(block) || !/preventDefault/.test(block)) {
+      throw new Error(`${name}: 明文对话框可被遮罩点击关闭 —— 明文不可复原，误关即永久丢失`);
+    }
+    if (!/onEscapeKeyDown/.test(block) || !/preventDefault/.test(block)) {
+      throw new Error(`${name}: 明文对话框可被 ESC 关闭 —— 同上，误关即永久丢失`);
+    }
+    if (!/onCopyPlaintext\(\)/.test(block)) {
+      throw new Error(`${name}: 明文对话框里没有复制按钮（或按钮没接到复制处理函数）`);
+    }
+    /* `copyText` 的调用在**处理函数**里（不在 JSX 块内）⇒ 按文件级断言：
+       有按钮、有处理函数、处理函数真的走共享 `copyText`，三者缺一即假控件。 */
+    if (!/copyText\(/.test(code)) {
+      throw new Error(`${name}: 复制没有走共享的 \`copyText\`（按钮会是假控件）`);
+    }
+    if (/disabled=\{copied\}/.test(block)) {
+      throw new Error(`${name}: 复制按钮在复制后被禁用 —— 明文只显示这一次，必须允许反复复制`);
+    }
+  }
+  return "遮罩 / ESC 不可关 · 复制可反复点（WB + Trae 同规则）";
+});
+
 check("★ B5-程序位：卡片 = 注册表 ∪ {WorkBuddy 主位}（刻意例外，已登记）", () => {
   /* 卡片上比注册表多一个「WorkBuddy 主位」按钮。**这不是 bug，是显式例外**：
      主位是「写进客户端自己的认证文件」，与「切换外部程序位」不是一类操作；
@@ -7462,6 +7628,62 @@ check("★ §2 环形扇区数 = 有用量的模型数（与堆叠同源）", ()
   }
   if (!/slices\.map/.test(donut)) throw new Error("环形没有按切片渲染扇区");
   return "空态守卫 + 按切片渲染（数据源已与堆叠统一）";
+});
+
+/* ── 应用级设置：关闭到托盘 + 自动检查更新（2026-10-13）───────────────────────
+ *
+ * 这两项此前只是原型里的两行文案：界面摆不出开关，摆了也没接线。本轮补上实现，
+ * 而它们的正确性**不能靠「界面上能点」证明**：
+ *  ① 「关闭窗口是隐藏还是退出」发生在 Rust 侧的 `WindowEvent::CloseRequested`，
+ *     渲染层完全不参与 ⇒ CDP 测不到，只能在**源码接线**上钉死；
+ *  ② 「自动检查更新」摆一个开关很容易，但真正决定行为的是 `App.tsx` 的轮询读不读它
+ *     ⇒ 只断言「开关存在」是**永远绿**（开关在、轮询照跑，界面上看不出来）。
+ *
+ * 变异锚：① `tray.rs` 把 `app_prefs::close_to_tray()` 换回常量 `true` ⇒ 第一条红；
+ *         ② `App.tsx` 的 `AppFooter` 去掉 `if (!autoCheck) return` ⇒ 第二条红。
+ */
+check("★ 关闭窗口的去向由 app_prefs::close_to_tray() 决定（不是常量隐藏）", () => {
+  const tray = readCode("src-tauri/src/tray.rs");
+  const fn = tray.match(/pub fn on_window_event[\s\S]*?\n}/);
+  if (!fn) throw new Error("tray.rs 找不到 on_window_event");
+  if (!/app_prefs::close_to_tray\(\)/.test(fn[0])) {
+    throw new Error("on_window_event 没有读 app_prefs::close_to_tray()（关窗去向又变成常量）");
+  }
+  if (!/\.exit\(0\)/.test(fn[0])) {
+    throw new Error("close_to_tray=false 时没有显式退出 —— 关窗后进程仍留在托盘");
+  }
+  if (!/prevent_close\(\)/.test(fn[0])) {
+    throw new Error("「隐藏到托盘」那条路没了（prevent_close + hide 必须保留）");
+  }
+  /* ★ 默认值必须 = 改这个设置**之前**的行为（一律隐藏），否则升级后所有老用户的
+     「点关闭」会静默变成「退出应用」。 */
+  const prefs = readCode("crates/buddy-switch-core/src/modules/app_prefs.rs");
+  if (!/"close_to_tray":\s*true/.test(prefs)) {
+    throw new Error("app_prefs 默认值不再是 close_to_tray = true（会静默改变老用户的关闭行为）");
+  }
+  return "宿主读偏好 · false 显式退出 · true 隐藏 · 默认值未变";
+});
+
+check("★ 自动检查更新：开关必须接到轮询（摆了开关不等于接了）", () => {
+  const settings = readCode("src/components/app-settings.tsx");
+  if (!/useAutoCheckUpdate\(\)/.test(settings)) {
+    throw new Error("应用设置里没有「自动检查更新」开关");
+  }
+  const app = readCode("src/App.tsx");
+  if (!/useAutoCheckUpdate\(\)/.test(app)) {
+    throw new Error("App.tsx 没有读自动检查更新偏好 —— 开关拨了轮询照跑");
+  }
+  if (!/AUTO_CHECK_UPDATE_INTERVAL_MS/.test(app)) {
+    throw new Error("App.tsx 的轮询没用 AUTO_CHECK_UPDATE_INTERVAL_MS（间隔会与设置说明漂移）");
+  }
+  if (!/if \(!autoCheck\)/.test(app)) {
+    throw new Error("App.tsx 没有在偏好为 false 时短路 —— 关掉后仍在自动查");
+  }
+  const pref = readCode("src/lib/update-preference.ts");
+  if (!/AUTO_CHECK_UPDATE_INTERVAL_MS\s*=\s*30 \* 60 \* 1000/.test(pref)) {
+    throw new Error("间隔常量不是 30 分钟 —— 与开关说明「每 30 分钟检查一次」不符");
+  }
+  return "开关 ↔ 轮询同源 · 关掉即短路 · 间隔 30 分钟";
 });
 
 console.log(`\n${passed} passed / ${failures.length} failed\n`);

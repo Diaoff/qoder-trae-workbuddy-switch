@@ -95,6 +95,12 @@ define_schedule_tasks! {
     // 前者签 WorkBuddy 的账号库，本任务签 Trae 的区域账号库（两本互不相通）。
     // 粒度刻意独立 —— 用户完全可能只想自动签其中一个产品。
     TraeCheckin => "trae_checkin", trae_checkin_enabled, trae_checkin_hours;
+    // Trae 账号的 **JWT 自动续期**（`refresh_token` → 新 JWT）。
+    //
+    // 与 `trae_checkin` 分开而不是塞进它：签到是「每天签一次就够」的动作，而续期是
+    // **凭据维护** —— 账号没到期时它什么也不做，到期了就必须有人换。合在一起会让
+    // 「只想保活、不想签到」的用户被迫打开自动签到（那是本仓反复消灭的假控件形态）。
+    TraeJwtRefresh => "trae_jwt_refresh", trae_jwt_refresh_enabled, trae_jwt_refresh_hours;
 }
 
 /// 排程配置（`~/.buddy-switch/schedule_config.json`）。
@@ -108,6 +114,8 @@ pub struct ScheduleConfig {
     pub cat_hours: Vec<u32>,
     /// Trae 自动签到的小时点（第二条产品线，区域账号库）。
     pub trae_checkin_hours: Vec<u32>,
+    /// Trae 账号 JWT 自动续期的小时点（第二条产品线，区域账号库）。
+    pub trae_jwt_refresh_hours: Vec<u32>,
     pub checkin_enabled: bool,
     pub travel_enabled: bool,
     pub activity_enabled: bool,
@@ -116,6 +124,8 @@ pub struct ScheduleConfig {
     pub cat_enabled: bool,
     /// Trae 自动签到开关。**默认关闭**，见 [`default_schedule`] 的说明。
     pub trae_checkin_enabled: bool,
+    /// Trae JWT 自动续期开关。**默认开启**，见 [`default_schedule`] 的说明。
+    pub trae_jwt_refresh_enabled: bool,
     pub activity_report_count: u32,
 }
 
@@ -127,6 +137,22 @@ pub struct ScheduleConfig {
 /// Trae 这条是本产品新增的能力，且它会**对外发请求**：默认打开等于「升级后凭空开始
 /// 拿用户的 Trae 凭据去签到」——那不是用户授权过的行为。小时点仍预置 9/21，
 /// 用户打开开关即可用，不需要先配时间。
+///
+/// ## 第二处偏离：Trae JWT 自动续期**默认开启**
+///
+/// 与上一条**方向相反**，但判据是同一个：这件事用户**已经授权过**。
+///
+/// - `trae_checkin` 是**替用户去领东西**（claim 积分）——用户没要求过，故默认关；
+/// - JWT 续期是**维持用户自己已经给出来的登录态**：`refresh_token` 的**唯一用途**就是
+///   换新 JWT，而它是用户走「网页登录」添加账号时明确交出来的（添加账号对话框的原话：
+///   「网页登录的账号可以自动续期」），卡片上也有「自动刷新 JWT」标记。
+///   ⇒ 默认关闭等于**界面承诺了一件事、后台从不兑现**：账号静默过期、网关调用突然 401，
+///   而用户看到的只是「怎么又要手动刷新」（这正是本轮修复的缺陷）。
+///
+/// 小时点取 9/21：告警窗口是 24h（[`crate::modules::trae::TRAE_JWT_WARN_HOURS`]），
+/// 一天两次检查 ⇒ 账号进入窗口后最迟约 12h 内被处理，仍留半天余量；
+/// 应用没开在那个整点时由**启动补跑**兜住（见 `scheduler::STARTUP_TASKS`）。
+/// 用户可用 `trae_jwt_refresh_enabled = false` 关掉。
 pub fn default_schedule() -> ScheduleConfig {
     ScheduleConfig {
         checkin_hours: vec![9, 21],
@@ -136,6 +162,7 @@ pub fn default_schedule() -> ScheduleConfig {
         school_hours: vec![12],
         cat_hours: vec![1],
         trae_checkin_hours: vec![9, 21],
+        trae_jwt_refresh_hours: vec![9, 21],
         checkin_enabled: true,
         travel_enabled: true,
         activity_enabled: true,
@@ -143,6 +170,7 @@ pub fn default_schedule() -> ScheduleConfig {
         school_enabled: true,
         cat_enabled: true,
         trae_checkin_enabled: false,
+        trae_jwt_refresh_enabled: true,
         // 领猫前置需 5 次对话；5 连发把 chat_5 刷满。显式缺省 = 5，但 0/负数归一为 1（旧行为）。
         activity_report_count: 5,
     }
@@ -202,6 +230,7 @@ pub fn schedule_from_value(input: &Value) -> Result<ScheduleConfig, String> {
         cfg.school_hours = hours_from(map, "school_hours", "school_enabled", &defaults.school_hours)?;
         cfg.cat_hours = hours_from(map, "cat_hours", "cat_enabled", &defaults.cat_hours)?;
         cfg.trae_checkin_hours = hours_from(map, "trae_checkin_hours", "trae_checkin_enabled", &defaults.trae_checkin_hours)?;
+        cfg.trae_jwt_refresh_hours = hours_from(map, "trae_jwt_refresh_hours", "trae_jwt_refresh_enabled", &defaults.trae_jwt_refresh_hours)?;
 
         for (key, slot) in [
             ("checkin_enabled", &mut cfg.checkin_enabled),
@@ -211,6 +240,7 @@ pub fn schedule_from_value(input: &Value) -> Result<ScheduleConfig, String> {
             ("school_enabled", &mut cfg.school_enabled),
             ("cat_enabled", &mut cfg.cat_enabled),
             ("trae_checkin_enabled", &mut cfg.trae_checkin_enabled),
+            ("trae_jwt_refresh_enabled", &mut cfg.trae_jwt_refresh_enabled),
         ] {
             if let Some(value) = map.get(key).and_then(Value::as_bool) {
                 *slot = value;
@@ -231,6 +261,7 @@ pub fn schedule_from_value(input: &Value) -> Result<ScheduleConfig, String> {
     validate_hours("schedule.school_hours", "school_enabled", &cfg.school_hours)?;
     validate_hours("schedule.cat_hours", "cat_enabled", &cfg.cat_hours)?;
     validate_hours("schedule.trae_checkin_hours", "trae_checkin_enabled", &cfg.trae_checkin_hours)?;
+    validate_hours("schedule.trae_jwt_refresh_hours", "trae_jwt_refresh_enabled", &cfg.trae_jwt_refresh_hours)?;
     Ok(cfg)
 }
 
@@ -254,6 +285,7 @@ pub fn schedule_to_value(cfg: &ScheduleConfig) -> Value {
         "school_hours": cfg.school_hours.clone(),
         "cat_hours": cfg.cat_hours.clone(),
         "trae_checkin_hours": cfg.trae_checkin_hours.clone(),
+        "trae_jwt_refresh_hours": cfg.trae_jwt_refresh_hours.clone(),
         "checkin_enabled": cfg.checkin_enabled,
         "travel_enabled": cfg.travel_enabled,
         "activity_enabled": cfg.activity_enabled,
@@ -261,6 +293,7 @@ pub fn schedule_to_value(cfg: &ScheduleConfig) -> Value {
         "school_enabled": cfg.school_enabled,
         "cat_enabled": cfg.cat_enabled,
         "trae_checkin_enabled": cfg.trae_checkin_enabled,
+        "trae_jwt_refresh_enabled": cfg.trae_jwt_refresh_enabled,
         "activity_report_count": cfg.activity_report_count,
     })
 }
@@ -315,7 +348,7 @@ pub fn next_fire(hours: &[u32], now_ms: i64) -> Option<i64> {
     earliest
 }
 
-/// 汇总六类时点，返回「最近一次唤醒时刻」与该时刻到期的任务列表。
+/// 汇总全部时点，返回「最近一次唤醒时刻」与该时刻到期的任务列表。
 ///
 /// 同一整点上的多类任务一并返回（调用方据此**并行**派发，互不阻塞）；全部任务被
 /// 显式禁用时返回 `(None, [])`。
@@ -357,18 +390,28 @@ mod tests {
         assert_eq!(cfg.cat_hours, vec![1]);
         assert_eq!(cfg.activity_report_count, 5);
         assert_eq!(cfg.trae_checkin_hours, vec![9, 21]);
+        assert_eq!(cfg.trae_jwt_refresh_hours, vec![9, 21]);
         // WorkBuddy 的六类默认全启用（与参考实现逐字一致，改了会让老用户的功能静默消失）。
+        // Trae 两条**方向相反**，各有理由（见 `default_schedule` 的文档）：
+        //   · `trae_checkin` 默认**关**（替用户去领东西，他没要求过，故 opt-in）；
+        //   · `trae_jwt_refresh` 默认**开**（维持用户网页登录时自己交出来的 refresh_token）。
         for task in ScheduleTask::all() {
+            let expected = !matches!(task, ScheduleTask::TraeCheckin);
             assert_eq!(
                 task.enabled(&cfg),
-                task != ScheduleTask::TraeCheckin,
-                "只有 Trae 签到默认关闭（新增能力、会对外发请求，故 opt-in）: {}",
+                expected,
+                "默认启用状态不符: {}",
                 task.as_str()
             );
         }
         assert!(
             !cfg.trae_checkin_enabled,
             "Trae 自动签到必须**默认关闭**：默认打开等于升级后凭空拿用户凭据去签到"
+        );
+        assert!(
+            cfg.trae_jwt_refresh_enabled,
+            "Trae JWT 续期必须**默认开启**：界面（卡片标记 + 添加账号对话框）早就承诺\
+             「网页登录的账号可以自动续期」，默认关掉等于承诺了却不兑现"
         );
         // 小时表仍预置好，用户打开开关即可用，不必先配时间。
         assert!(
@@ -412,6 +455,7 @@ mod tests {
             "school_enabled": false,
             "cat_enabled": false,
             "trae_checkin_enabled": false,
+            "trae_jwt_refresh_enabled": false,
         }))
         .unwrap();
         for task in ScheduleTask::all() {
@@ -430,6 +474,7 @@ mod tests {
             "school_enabled": true,
             "cat_enabled": true,
             "trae_checkin_enabled": true,
+            "trae_jwt_refresh_enabled": true,
         }))
         .unwrap();
         for task in ScheduleTask::all() {
@@ -512,20 +557,27 @@ mod tests {
 
     #[test]
     fn next_wake_groups_multiple_tasks_on_same_hour() {
-        // 默认配置下 checkin/travel 都在 9 点；08:00 唤醒时二者同槽。
+        // 默认配置下 checkin / travel / trae_jwt_refresh 都在 9 点；08:00 唤醒时三者同槽。
         let cfg = default_schedule();
         let (at, kinds) = next_wake(&cfg, cst_ms(2026, 9, 16, 8, 0));
         assert_eq!(at, Some(cst_ms(2026, 9, 16, 9, 0)));
-        assert_eq!(hours_of(&kinds), vec!["checkin", "travel"]);
+        assert_eq!(
+            hours_of(&kinds),
+            vec!["checkin", "trae_jwt_refresh", "travel"]
+        );
     }
 
     #[test]
     fn next_wake_returns_earliest_across_task_families() {
-        // 08:00：cat=1(次日) / activity=10 / school=12 / checkin&travel=9 / keepalive=22 → 9 点。
+        // 08:00：cat=1(次日) / activity=10 / school=12 / checkin&travel&trae_jwt_refresh=9 /
+        // keepalive=22 → 9 点。
         let cfg = default_schedule();
         let (at, kinds) = next_wake(&cfg, cst_ms(2026, 9, 16, 8, 0));
         assert_eq!(at, Some(cst_ms(2026, 9, 16, 9, 0)));
-        assert_eq!(hours_of(&kinds), vec!["checkin", "travel"]);
+        assert_eq!(
+            hours_of(&kinds),
+            vec!["checkin", "trae_jwt_refresh", "travel"]
+        );
     }
 
     #[test]
@@ -561,6 +613,7 @@ mod tests {
         cfg.keepalive_enabled = false;
         cfg.school_enabled = false;
         cfg.cat_enabled = false;
+        cfg.trae_jwt_refresh_enabled = false;
         let (at, kinds) = next_wake(&cfg, cst_ms(2026, 9, 16, 8, 0));
         assert_eq!(at, None);
         assert!(kinds.is_empty());
@@ -606,16 +659,16 @@ mod tests {
     ///
     /// 关键：配置取值必须**互相可区分**，否则「读错字段」会得到相同观察结果、测不出。
     /// - **label**：逐类断言 `as_str()` 等于自己的字面量。
-    /// - **hours**：六份 `*_hours` 设成互不相同的列表，逐类断言 `hours()` 等于自己的列表；
+    /// - **hours**：八份 `*_hours` 设成互不相同的列表，逐类断言 `hours()` 等于自己的列表；
     ///   任一跨字段错读必然得到别人的列表 → 暴露。
-    /// - **enabled**：布尔只有两态，单份配置区分不了 6 个字段，故遍历「只开一个开关」的
-    ///   六份配置，断言**被启用的任务集合**恰为该开关的属主；任一跨字段错读都会在某份
+    /// - **enabled**：布尔只有两态，单份配置区分不了 8 个字段，故遍历「只开一个开关」的
+    ///   八份配置，断言**被启用的任务集合**恰为该开关的属主；任一跨字段错读都会在某份
     ///   配置里被拆穿。
     ///
     /// 断言的是「等于它自己那一列」（随字段变化），而非某个常量——否则改错映射仍可能蒙对。
     #[test]
     fn schedule_task_mappings_are_pinned_per_variant() {
-        // 全关 + 七份互异的小时列表（当作「每类自己的那一列」的探针）。
+        // 全关 + 八份互异的小时列表（当作「每类自己的那一列」的探针）。
         let off = ScheduleConfig {
             checkin_hours: vec![1],
             travel_hours: vec![2],
@@ -624,6 +677,7 @@ mod tests {
             school_hours: vec![5],
             cat_hours: vec![6],
             trae_checkin_hours: vec![7],
+            trae_jwt_refresh_hours: vec![8],
             checkin_enabled: false,
             travel_enabled: false,
             activity_enabled: false,
@@ -631,11 +685,12 @@ mod tests {
             school_enabled: false,
             cat_enabled: false,
             trae_checkin_enabled: false,
+            trae_jwt_refresh_enabled: false,
             activity_report_count: 5,
         };
 
         // (1) label + hours：逐类断言等于「它自己那一列」。
-        let expected: [(ScheduleTask, &str, &[u32]); 7] = [
+        let expected: [(ScheduleTask, &str, &[u32]); 8] = [
             (ScheduleTask::Checkin, "checkin", off.checkin_hours.as_slice()),
             (ScheduleTask::Travel, "travel", off.travel_hours.as_slice()),
             (ScheduleTask::Activity, "activity", off.activity_hours.as_slice()),
@@ -647,6 +702,11 @@ mod tests {
                 "trae_checkin",
                 off.trae_checkin_hours.as_slice(),
             ),
+            (
+                ScheduleTask::TraeJwtRefresh,
+                "trae_jwt_refresh",
+                off.trae_jwt_refresh_hours.as_slice(),
+            ),
         ];
         // `hours()` 仅在任务启用时才返回自己的列表，故 hours 断言用「全启用」配置。
         let on = ScheduleConfig {
@@ -657,6 +717,7 @@ mod tests {
             school_enabled: true,
             cat_enabled: true,
             trae_checkin_enabled: true,
+            trae_jwt_refresh_enabled: true,
             ..off.clone()
         };
         for (task, label, own_hours) in expected {
@@ -672,9 +733,9 @@ mod tests {
             );
         }
 
-        // (2) enabled：布尔仅两态，一份配置区分不了 7 个字段；遍历「只开一个开关」的七份配置，
+        // (2) enabled：布尔仅两态，一份配置区分不了 8 个字段；遍历「只开一个开关」的八份配置，
         //     断言「被启用的任务集合」恰为该开关的属主。
-        let only: [(&str, ScheduleConfig); 7] = [
+        let only: [(&str, ScheduleConfig); 8] = [
             (
                 "checkin",
                 ScheduleConfig {
@@ -724,6 +785,13 @@ mod tests {
                     ..off.clone()
                 },
             ),
+            (
+                "trae_jwt_refresh",
+                ScheduleConfig {
+                    trae_jwt_refresh_enabled: true,
+                    ..off.clone()
+                },
+            ),
         ];
         for (owner_label, cfg) in only {
             let enabled_labels: Vec<&str> = ScheduleTask::all()
@@ -738,7 +806,7 @@ mod tests {
             );
         }
 
-        // (3) 集合完整性：`all()` 恰好是这七类、不多不少（顺序 = 宏声明顺序）。
+        // (3) 集合完整性：`all()` 恰好是这八类、不多不少（顺序 = 宏声明顺序）。
         let labels: Vec<&str> = ScheduleTask::all()
             .into_iter()
             .map(|task| task.as_str())
@@ -752,9 +820,10 @@ mod tests {
                 "keepalive",
                 "school",
                 "cat",
-                "trae_checkin"
+                "trae_checkin",
+                "trae_jwt_refresh"
             ],
-            "all() 必须恰好包含全部七类且顺序稳定"
+            "all() 必须恰好包含全部八类且顺序稳定"
         );
     }
 

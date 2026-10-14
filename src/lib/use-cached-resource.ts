@@ -27,6 +27,28 @@ export interface CachedResource<T> {
   /** 强制取一次新值并等待完成。**变更操作之后必须调用它**，否则界面停在变更前。 */
   refresh: () => Promise<void>;
   /**
+   * 「像刚挂载那样**再校验一次**」——**不强发**。
+   *
+   * 语义 = 挂载时那次取数：`freshMs` 窗口内已有值就**连请求都不发**，同键在飞请求复用。
+   * 与 [`refresh`] 的分工：
+   *
+   * | | 窗口内已有值 | 同键在飞请求 | 用途 |
+   * |:---|:---|:---|:---|
+   * | `refresh()` | **照发**（`force`） | 不复用 | 变更操作之后（必须拿到新值） |
+   * | `revalidate()` | 跳过 | 复用 | **轮询心跳** |
+   *
+   * ## 为什么轮询必须用它，而不是 `refresh`
+   *
+   * 同一把键可以有**多个消费者同时挂载**（例如 `useScopeStatus` 同时被顶栏与概览页用）。
+   * 各自建定时器调 `refresh()` ⇒ 每个周期发**两遍**请求（该快照一次是 3 个后端调用，
+   * 其中还有进程探测）。走本函数后，后到的那次落在 `freshMs` 窗口内直接返回 ——
+   * 一个周期只有一次真请求，且**不需要**在 hook 外面另造一份「谁负责建定时器」的协调机制。
+   *
+   * ⚠️ **调用方的轮询间隔必须大于 `freshMs`**：两者相等时，tick 会因为「距上次写入还差
+   * 几十毫秒不到一个窗口」而被跳过，实际节奏退化成两倍间隔（抖动决定命中与否）。
+   */
+  revalidate: () => Promise<void>;
+  /**
    * 就地改写快照（乐观更新，如设置项开关先落本地再回读）。
    *
    * `current` **一定**有值：调用点都在「已经渲染出表单」的位置，而表单只在
@@ -64,6 +86,13 @@ export function useCachedResource<T>(
     await load(key, () => loaderRef.current(), { force: true });
   }, [key, load]);
 
+  // 与挂载时那次取数**逐字同一份语义**（同样的 `freshMs`、同样不强发）——
+  // 这正是「revalidate = 再挂载一次」的定义，也是它与 `refresh` 的唯一差别。
+  const revalidate = useCallback(async () => {
+    if (key === null) return;
+    await load(key, () => loaderRef.current(), { freshMs });
+  }, [key, load, freshMs]);
+
   const patch = useCallback(
     (updater: (current: T) => T) => {
       if (key === null) return;
@@ -80,6 +109,7 @@ export function useCachedResource<T>(
     loading: key !== null && data === undefined && entry?.error == null,
     error: entry?.error == null ? null : asError(entry.error),
     refresh,
+    revalidate,
     patch,
   };
 }

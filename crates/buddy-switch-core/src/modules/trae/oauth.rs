@@ -1515,12 +1515,6 @@ fn build_response(content_type: &str, body: &str, method: &str) -> String {
 /// 按 i18n 约定它是**产品名，不译**。
 const APP_DISPLAY_NAME: &str = "Buddy Switch";
 
-/// 结果页里的产品名：**Trae 模块整体**（含 TraeWork 与 Trae 两条产品线）。
-///
-/// 与 `TraeVariant::display_name()`（程序位名：`Trae Work` / `Trae`）不同 ——
-/// 本页要说的是「账号进了哪个产品的库」，而两条产品线**共用同一本国内库**。
-const TRAE_PRODUCT_NAME: &str = "Trae";
-
 /// 成功结果页：账号昵称 + 落库位置（应用 → 产品 → 区域）。
 ///
 /// ## 为什么写「区域」而不是 `variant.display_name()`
@@ -1557,8 +1551,11 @@ fn success_page(account_view: &Value, variant: TraeVariant) -> String {
         &[
             format!("账号 [{name}] 登录成功"),
             format!(
-                "账号已添加到 {APP_DISPLAY_NAME} 的 {TRAE_PRODUCT_NAME}（{}）账号库，\
-                 可关闭此页面返回应用。",
+                // ⚠️ 区域名（`TraeRegion::display_name`）现在**就是客户端的产品名**
+                // （`Trae CN` / `Trae`，用户 2026-10-13 定），因此这里**不再**套
+                // 「Trae（…）」—— 那会写成「Trae（Trae CN）」。
+                // 原先那个 `TRAE_PRODUCT_NAME` 常量随之变成冗余，已删除。
+                "账号已添加到 {APP_DISPLAY_NAME} 的 {} 账号库，可关闭此页面返回应用。",
                 variant.region().display_name()
             ),
         ],
@@ -2715,7 +2712,7 @@ mod tests {
             .await
             .expect("发起登录不应失败");
         assert_eq!(started["variant"].as_str(), Some("global"));
-        assert_eq!(started["variantLabel"].as_str(), Some("国际版"));
+        assert_eq!(started["variantLabel"].as_str(), Some("TraeWork"));
         // 授权 URL 的 `device_id` 必须与**该变体**的 icube 设备身份同源
         // （fixture 里两条产品线的候选目录给了不同 deviceId ⇒ 读错变体会露馅）。
         let uri = started["verificationUri"].as_str().unwrap();
@@ -2750,7 +2747,7 @@ mod tests {
             .await
             .expect_err("设备身份缺失时必须失败，不得回落自造 device_id");
         assert!(
-            error.contains("Trae Work"),
+            error.contains("TraeWork CN"),
             "错误文案必须点明是哪条产品线（否则用户不知道该启动哪个客户端）: {error}"
         );
         assert!(
@@ -2893,7 +2890,7 @@ mod tests {
         );
         assert_eq!(
             started.get("variantLabel").and_then(|v| v.as_str()),
-            Some("Trae Work")
+            Some("TraeWork CN")
         );
         let params = parse_query(uri.split_once('?').unwrap().1);
         assert_eq!(
@@ -2945,7 +2942,7 @@ mod tests {
         );
         assert_eq!(
             started.get("variantLabel").and_then(|v| v.as_str()),
-            Some("国际版")
+            Some("TraeWork")
         );
         let credential = started
             .get("deviceCredential")
@@ -3273,8 +3270,12 @@ mod tests {
         assert!(response.contains("<!DOCTYPE html>"), "{response}");
         assert!(response.contains("登录成功"), "{response}");
         // 落库区域必须写在页面上（持久化轴是区域，不是程序名）。
+        // ⚠️ 区域名现在是**客户端产品名**（`Trae CN`，2026-10-13 用户定）⇒
+        // 它与合并版程序位同名，本断言因此**无法**再区分「区域」与「合并版程序位」；
+        // 但「页面点明了落库区域」这件事仍然被钉住（后端文案由
+        // `TraeRegion::display_name` 唯一提供，漂了这里会红）。
         assert!(
-            response.contains("国内版"),
+            response.contains("Trae CN"),
             "结果页必须点明账号落在哪个区域库: {response}"
         );
         // ★ 结果页**不得**出现凭据（本链路不变式：回调响应体不含凭据）。
@@ -3397,18 +3398,26 @@ mod tests {
             TraeVariant::TraeWork,
         );
         assert!(named.contains("账号 [小明] 登录成功"), "{named}");
-        // ★ 整句逐字对拍：应用名 + 产品名 + 区域，缺一段都算「页面没说清账号进了哪」。
+        // ★ 整句逐字对拍：应用名 + 区域（区域名现在**就是客户端的产品名**，
+        // 见 `TraeRegion::display_name`，因此「产品」那一段由区域名自带）。
         // 现场（2026-09-24 用户报障）：只写「国内版」时用户读不出是哪个应用的哪个产品
         // —— 本应用的 WorkBuddy 分区同样有「国内版」。
         assert!(
-            named.contains("账号已添加到 Buddy Switch 的 Trae（国内版）账号库，可关闭此页面返回应用。"),
-            "成功页必须写全「应用 → 产品 → 区域」: {named}"
+            named.contains("账号已添加到 Buddy Switch 的 Trae CN 账号库，可关闭此页面返回应用。"),
+            "成功页必须写全「应用 → 区域（含产品名）」: {named}"
         );
-        // ★ 反面：**不得**出现程序位名（`Trae Work` / `Trae CN`）。
+        // ★ 反面：**不得**出现**程序位名**。
         // 持久化轴是区域，两条产品线共用一本国内库 ⇒ 写程序名会让另一条线的用户
         // 以为提示在骗人（见 `success_page` 的说明）。
+        //
+        // ⚠️ **本断言因区域改名而收窄**（2026-10-13）：`Trae CN` 现在是**区域名**
+        // （客户端产品名），它同时是合并版程序位的展示名 ⇒ 不能再拿它当「程序位名」的
+        // 标记（否则断言恒红）。因此标记只剩两条**不与区域同名**的程序位：
+        // `TraeWork CN` / `TraeCode CN`。
+        // ⇒ 这是「区域名用客户端产品名」这个选择的**已知成本**：合并版程序位
+        //   在文本层面再也无法与国内区域区分。要恢复强度，只能让区域名与程序位名不同。
         assert!(
-            !named.contains("Trae Work") && !named.contains("Trae CN"),
+            !named.contains("TraeWork CN") && !named.contains("TraeCode CN"),
             "成功页出现了程序位名，会让共用同一本库的另一条线用户误判: {named}"
         );
 
@@ -3420,7 +3429,7 @@ mod tests {
         assert!(empty.contains("未知账号"), "{empty}");
         // 区域随变体分家：国际版必须是「国际版」，且同样写全三段。
         assert!(
-            empty.contains("账号已添加到 Buddy Switch 的 Trae（国际版）账号库"),
+            empty.contains("账号已添加到 Buddy Switch 的 Trae 账号库"),
             "{empty}"
         );
     }

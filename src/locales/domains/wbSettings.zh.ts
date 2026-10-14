@@ -77,6 +77,17 @@ export const zh = {
   "wbSettings.rotate.actionError": "出错",
 
   // ---- 客户端检测（只读；数据来自真实探测命令） ----
+  // P15 · 外部 Agent 会话监听（往客户端 `settings.json` 装 hook；默认关，可一键还原）。
+  "wbSettings.agentWatch.title": "会话监听",
+  "wbSettings.agentWatch.enable": "监听客户端会话",
+  "wbSettings.agentWatch.enableDesc":
+    "给客户端装 hook，把会话状态显示在悬浮窗里。会修改客户端的 settings.json（可一键还原），默认关闭。",
+  "wbSettings.agentWatch.slot.workbuddy-cn": "WorkBuddy（国内版）",
+  "wbSettings.agentWatch.slot.workbuddy-global": "WorkBuddy（国际版）",
+  "wbSettings.agentWatch.state.running": "客户端运行中，请先退出再开启",
+  "wbSettings.agentWatch.state.installed": "已装 {count} 条",
+  "wbSettings.agentWatch.state.off": "未开启",
+  "wbSettings.agentWatch.state.missing": "未检测到该客户端",
   "wbSettings.client.detectTitle": "客户端检测",
   "wbSettings.client.detectWorkbuddy": "WorkBuddy Desktop",
   "wbSettings.client.detectWorkbuddyDesc": "检测安装路径与版本",

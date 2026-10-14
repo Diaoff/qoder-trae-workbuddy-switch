@@ -62,6 +62,19 @@ const STATE_LABEL_KEY: Record<CompanionState, TranslationKey> = {
   failed: "shared.companion.state.failed",
 };
 
+/**
+ * 来源 id → 展示名键。
+ *
+ * ⚠️ 来源 id 是**后端的数据**（`agent_watch::SOURCE_*` / `process::region_app_stems`），
+ * 不是给用户看的字符串 —— 界面上必须走这张表，否则窗口里会出现 `workbuddy-cn`
+ * 这种裸标识。**表里没有的 id 原样透传**（不吞未知来源，便于排查）。
+ */
+const SOURCE_LABEL_KEY: Record<string, TranslationKey> = {
+  "workbuddy-cn": "shared.companion.source.workbuddyCn",
+  "workbuddy-global": "shared.companion.source.workbuddyGlobal",
+  codex: "shared.companion.source.codex",
+};
+
 /** `CompanionRow` 的入参。 */
 export interface CompanionRowProps {
   /** 只读行数据（来自 `companion_status` 快照）。 */
@@ -80,14 +93,19 @@ export function CompanionRow({ item, onJump }: CompanionRowProps) {
   const t = useT();
   const [revealed, setRevealed] = useState(false);
 
-  const source = displayText(item.source) ?? "";
+  const sourceLabelKey = SOURCE_LABEL_KEY[item.source];
+  const source = sourceLabelKey ? t(sourceLabelKey) : (displayText(item.source) ?? "");
   const hint = displayText(item.hint) ?? "";
   // fail-closed：脏数据里出现四态之外的值时，按 `failed` 呈现（不静默、不崩）。
   const dotClass = COMPANION_STATE_DOT_CLASS[item.state] ?? COMPANION_STATE_DOT_CLASS.failed;
   const stateLabel = t(STATE_LABEL_KEY[item.state] ?? STATE_LABEL_KEY.failed);
 
   // ★ 完整标题**只在 revealed 时求值**：未悬停 / 未聚焦时它是占位符，明文根本不进 DOM。
-  const title = revealed ? displayText(item.title) ?? "" : COMPANION_TITLE_PLACEHOLDER;
+  // ★ 标题为空是**常态**（客户端只在部分事件里带 `session_title`，端到端实测过）——
+  //   展开后给一句「未命名会话」，而不是让用户盯着一片空白。
+  const title = revealed
+    ? displayText(item.title) || t("shared.companion.untitled")
+    : COMPANION_TITLE_PLACEHOLDER;
   // ★ 无障碍描述**脱敏**：只报来源 / 状态 / 时间，**不含标题**（不要把明文塞回无障碍树）。
   const ariaLabel = t("shared.companion.row.aria", { source, state: stateLabel, hint });
 

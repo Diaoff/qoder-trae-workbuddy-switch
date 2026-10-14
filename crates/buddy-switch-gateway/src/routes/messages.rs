@@ -27,13 +27,34 @@ pub async fn handler(
     headers: HeaderMap,
     body: Bytes,
 ) -> Response {
-    let started = Instant::now();
-
     let record = match authenticate(&state, &headers) {
         Ok(record) => record,
         Err(error) => return anthropic_error(error),
     };
-    let mut region = record.region;
+    // ★ 归属域由 API Key 决定；前缀策略走产品线那一套（统一入口走 `AlreadyResolved`）。
+    let allow_reroute = state.config_snapshot().await.allow_model_region_prefix;
+    messages_for_region(
+        state,
+        record.region,
+        headers,
+        body,
+        crate::routes::chat::PrefixPolicy::RegionPrefix { allow_reroute },
+    )
+    .await
+}
+
+/// 一趟 Anthropic 中继（**认证之后的全部逻辑**）—— 产品线入口与统一网关**共用**这一份实现。
+///
+/// `state` **按值**传入（`Arc` 句柄，克隆极廉价）⇒ 函数体内既有的 `&state` 写法一行都不用改。
+pub async fn messages_for_region(
+    state: GatewayState,
+    region: Region,
+    headers: HeaderMap,
+    body: Bytes,
+    policy: crate::routes::chat::PrefixPolicy,
+) -> Response {
+    let started = Instant::now();
+    let mut region = region;
 
     let parsed = match parse_body(&body) {
         Ok(value) => value,
@@ -49,23 +70,28 @@ pub async fn handler(
         .and_then(|value| value.as_bool())
         .unwrap_or(false);
 
-    // 模型名前缀路由：与 `/v1/chat/completions` 同一策略（见 `crate::model_route`）。
-    let route = crate::model_route::split_model_prefix(&requested_model);
-    let allow_reroute = state.config_snapshot().await.allow_model_region_prefix;
-    let model = match crate::model_route::decide(region, allow_reroute, &route) {
-        crate::model_route::PrefixDecision::NoPrefix => requested_model.clone(),
-        crate::model_route::PrefixDecision::StripOnly => route.bare_model.clone(),
-        crate::model_route::PrefixDecision::Reroute(target) => {
-            region = target;
-            route.bare_model.clone()
-        }
-        crate::model_route::PrefixDecision::Rejected {
-            requested,
-            key_region,
-        } => {
-            return anthropic_error(crate::error::GatewayError::BadRequest(
-                crate::model_route::rejection_message(requested, key_region),
-            ))
+    // 模型名前缀路由：与 `/v1/chat/completions` **同一策略对象**（见 `PrefixPolicy`）——
+    // 统一入口传 `AlreadyResolved`，此处**不再**解析 `cn:` / `global:`。
+    let model = match policy {
+        crate::routes::chat::PrefixPolicy::AlreadyResolved => requested_model.clone(),
+        crate::routes::chat::PrefixPolicy::RegionPrefix { allow_reroute } => {
+            let route = crate::model_route::split_model_prefix(&requested_model);
+            match crate::model_route::decide(region, allow_reroute, &route) {
+                crate::model_route::PrefixDecision::NoPrefix => requested_model.clone(),
+                crate::model_route::PrefixDecision::StripOnly => route.bare_model.clone(),
+                crate::model_route::PrefixDecision::Reroute(target) => {
+                    region = target;
+                    route.bare_model.clone()
+                }
+                crate::model_route::PrefixDecision::Rejected {
+                    requested,
+                    key_region,
+                } => {
+                    return anthropic_error(crate::error::GatewayError::BadRequest(
+                        crate::model_route::rejection_message(requested, key_region),
+                    ))
+                }
+            }
         }
     };
 

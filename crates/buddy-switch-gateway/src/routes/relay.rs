@@ -43,7 +43,38 @@ pub enum RelayKind {
     Llm,
     /// **业务请求**（签到 / 积分 / 旅行）：路径由调用方给（**已在白名单内**），
     /// 头走 `build_auth_headers`，**body 原样透传**（不是 LLM 协议，不做改写）。
-    Biz { path: String },
+    ///
+    /// ★ **必须带 `method`**：白名单按前缀收，同前缀下 GET-only 与 POST-only 混在一起
+    /// （`/activity/growth/streak` 是 GET、`/lottery/draw` 是 POST）。一律 POST 出去会让
+    /// GET-only 的路径被上游回 `404 page not found`（真实环境实测）。
+    Biz {
+        /// 目标路径（已含前导 `/`）。
+        path: String,
+        /// 出站方法（**透传客户端的原方法**）。
+        method: BizMethod,
+    },
+}
+
+/// 业务转发的**出站方法**（只允许 GET / POST —— 白名单里的端点只有这两种）。
+///
+/// 用本仓自己的小枚举而不是 `reqwest::Method`：中继层不该暴露整个 HTTP 方法空间，
+/// 且新增方法必须**显式**在这里出现（编译期强制复核白名单是否也支持它）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BizMethod {
+    /// 只读查询（`/activity/growth/streak`、`/heatmap`）。
+    Get,
+    /// 写操作（签到 / 领奖 / 抽奖）。
+    Post,
+}
+
+impl BizMethod {
+    /// 转成出站用的 `reqwest::Method`。
+    pub fn as_reqwest(self) -> reqwest::Method {
+        match self {
+            BizMethod::Get => reqwest::Method::GET,
+            BizMethod::Post => reqwest::Method::POST,
+        }
+    }
 }
 
 /// 本轮中继的输入。
@@ -186,7 +217,7 @@ pub async fn relay(
                     .await
             }
             // 业务请求：**body 原样透传**（不是 LLM 协议，不做改写）。
-            RelayKind::Biz { path } => {
+            RelayKind::Biz { path, method } => {
                 state
                     .upstream
                     .forward_biz_with(
@@ -195,6 +226,7 @@ pub async fn relay(
                         path,
                         &request.prepared_body,
                         None,
+                        method.as_reqwest(),
                     )
                     .await
             }

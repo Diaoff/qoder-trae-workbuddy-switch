@@ -10,15 +10,34 @@ export const en = {
   // =====================================================================
   // Brand names are identical in both locales; they still go through the word list
   // so that adding a program triggers a compile-time reminder to add the key.
+  // ★★ Naming rule (user-confirmed, corrected 2026-10-13): the **CN build carries a
+  // ` CN` suffix, the international build carries none**. All six names are verbatim
+  // the client's own strings (`nameAlias` / `nameShort`, measured from `product.json`),
+  // so none of them is invented:
+  //   TraeWork CN / TraeWork · TraeCode CN / TraeCode · Trae CN / Trae
+  // (The earlier "international gets an `AI` suffix" rule was wrong: it invented names
+  // the client never uses, and `Trae AI` matched both international TraeCode and the
+  // international merged client.)
   "trae.program.traeWork": "TraeWork",
+  "trae.program.traeWorkCn": "TraeWork CN",
+  "trae.program.traeWorkGlobal": "TraeWork",
   "trae.program.traeCode": "TraeCode",
-  "trae.program.traeWorkGlobal": "TraeWork AI",
-  "trae.program.traeCodeGlobal": "Trae AI",
-  // Merged client (issue #20): the client is literally named `Trae`. The global build
-  // carries the `AI` suffix by convention, so it matches `traeCodeGlobal` — they are
-  // the same physical client (see the Rust `region` module header).
-  // This key only serves `traeProgramLabel()` (region-agnostic), hence no `Global` variant.
+  "trae.program.traeCodeCn": "TraeCode CN",
+  "trae.program.traeCodeGlobal": "TraeCode",
+  // Merged client (issue #20): the client is literally named `Trae CN` / `Trae`.
+  // They are **separate variants** (`trae_merged` / `global_trae_merged`) — the ids
+  // and snapshot dirs differ from `traeCode*`.
   "trae.program.trae": "Trae",
+  "trae.program.traeCn": "Trae CN",
+  "trae.program.traeGlobal": "Trae",
+
+  // Trae-side **region names** (user-confirmed 2026-10-13: use the client's own
+  // product name — `Trae CN` for the CN build, `Trae` for the international one).
+  // Distinct from `shared.region.version.*`, which is the cross-platform region
+  // *word* used in **composed** labels (`scope-chip.tsx` = product + region word)
+  // and is also read by WorkBuddy — so it must not become a Trae product name.
+  "trae.region.cn": "Trae CN",
+  "trae.region.global": "Trae",
 
   // =====================================================================
   // trae-account-card.tsx —— Trae account card
@@ -124,8 +143,9 @@ export const en = {
   "trae.comp.card.detail.cooldown": "Cooldown",
   "trae.comp.card.detail.none": "None",
   "trae.comp.card.detail.notQueried": "Not fetched",
-  "trae.comp.card.detail.jwtAutoOn": "Enabled",
-  "trae.comp.card.detail.jwtAutoOff": "Manual refresh only",
+  "trae.comp.card.detail.jwtAutoOn": "Due for renewal",
+  "trae.comp.card.detail.jwtAutoOff": "Auto-renews before expiry",
+  "trae.comp.card.detail.jwtAutoDisabled": "Off (manual refresh only)",
   "trae.comp.card.detail.noRefreshToken": "No refresh token",
 
   // =====================================================================

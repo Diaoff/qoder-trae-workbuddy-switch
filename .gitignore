@@ -25,8 +25,6 @@ accounts.json
 backups/
 
 # Editor directories and files
-.vscode/*
-!.vscode/extensions.json
 .idea
 .DS_Store
 *.suo
@@ -47,6 +45,8 @@ npm/platform/*/bin/
 .grok/
 /.workbuddy/
 /.workbuddy-ai/
+.vscode
+.trae
 
 # CodeGraph 索引数据库（体积大且可重建）
 .codegraph/

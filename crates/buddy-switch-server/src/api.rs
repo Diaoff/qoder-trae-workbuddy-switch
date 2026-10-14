@@ -23,9 +23,15 @@ use buddy_switch_core::modules::{
     token_daily, token_stats, trae, travel, update, vscode_session,
 };
 use buddy_switch_gateway::{GatewayConfig, GatewayStatusView};
+use buddy_switch_gateway::unified::UnifiedGatewayConfig;
 
 // P9 · 悬浮窗**只读**数据模型 + provider（core）；两宿主同源。
 use buddy_switch_core::modules::companion as companion_state;
+// P15 · 外部 Agent 会话监听（客户端 hook 驱动）—— 悬浮窗的**第二个数据源**。
+use buddy_switch_core::modules::agent_watch;
+// P15 · hook 安装面（写上游客户端配置）+ 「宿主也要读」的应用偏好。
+use buddy_switch_core::modules::agent_hook_install;
+use buddy_switch_core::modules::app_prefs;
 use buddy_switch_core::modules::proxy;
 
 // P5 §2.5 第 (2) 条：capability **默认拒绝**。表数据只在 core（`product_spec`），本文件只查表。
@@ -187,8 +193,6 @@ fn api_routes() -> Router {
         .route("/api/switch/progress", get(api_switch_progress))
         .route("/api/sessions", get(api_sessions))
         .route("/api/sessions/replicas", get(api_session_replicas))
-        // P8 · 会话内容指纹（组状态派生的数据源；**内容级**，不用 updatedAt 冒充）。
-        .route("/api/sessions/fingerprints", post(api_session_fingerprints))
         // P8 · 安全同步（增量追加）—— **写操作**：只往目标 jsonl 追加，绝不改写已有内容。
         .route("/api/sessions/sync", post(api_session_sync))
         .route("/api/sessions/unify", post(api_session_unify))
@@ -282,6 +286,7 @@ fn api_routes() -> Router {
             get(api_gateway_list_keys).post(api_gateway_create_key),
         )
         .route("/api/gateway/keys/revoke", post(api_gateway_revoke_key))
+        .route("/api/gateway/keys/restore", post(api_gateway_restore_key))
         .route("/api/gateway/keys/delete", post(api_gateway_delete_key))
         .route("/api/gateway/models", get(api_gateway_models))
         .route(
@@ -299,6 +304,30 @@ fn api_routes() -> Router {
         )
         .route("/api/gateway/logs", get(api_gateway_logs))
         .route("/api/gateway/logs/clear", post(api_gateway_clear_logs))
+        // ---- 统一网关（第三个产品线 · 跨作用域）----
+        // ⚠️ 前缀 `/api/unified-gateway/…` 与两条既有线路（`/api/gateway/…`、`/api/trae/…`）平行；
+        //   命令与其在 `src-tauri/commands.rs` 的实现一一对应（门禁 `check:api` 两侧夹）。
+        .route(
+            "/api/unified-gateway/config",
+            get(api_unified_gateway_config).post(api_save_unified_gateway_config),
+        )
+        .route("/api/unified-gateway/models", get(api_unified_gateway_models))
+        .route(
+            "/api/unified-gateway/keys",
+            get(api_unified_gateway_list_keys).post(api_unified_gateway_create_key),
+        )
+        .route(
+            "/api/unified-gateway/keys/revoke",
+            post(api_unified_gateway_revoke_key),
+        )
+        .route(
+            "/api/unified-gateway/keys/restore",
+            post(api_unified_gateway_restore_key),
+        )
+        .route(
+            "/api/unified-gateway/keys/delete",
+            post(api_unified_gateway_delete_key),
+        )
         // ---- Trae 模块（与 src-tauri commands.rs 的 trae 命令一一对应）----
         .route("/api/trae/env", get(api_trae_env))
         .route("/api/trae/variants", get(api_trae_variants))
@@ -365,6 +394,10 @@ fn api_routes() -> Router {
             post(api_trae_revoke_api_key),
         )
         .route(
+            "/api/trae/gateway/keys/restore",
+            post(api_trae_restore_api_key),
+        )
+        .route(
             "/api/trae/gateway/keys/delete",
             post(api_trae_delete_api_key),
         )
@@ -384,6 +417,16 @@ fn api_routes() -> Router {
         .route("/api/companion/visibility", post(api_companion_set_visible))
         .route("/api/companion/toggle", post(api_companion_toggle))
         .route("/api/companion/jump", post(api_companion_jump))
+        // ---- 外部 Agent 会话监听（P15 · hook 安装面）----
+        // 与 `src-tauri/src/commands.rs` 的 `get_agent_hook_status` / `set_agent_hook_enabled`
+        // 一一对应（两宿主同步）。webui 的二进制**也有** `hook` 子命令
+        //（见 `crates/buddy-switch-server/src/main.rs` 的 `"hook"` 分支）⇒ 它同样是合法的
+        // hook 目标，装出来的命令指向 `buddy-switch` 而不是桌面 exe。
+        .route("/api/agent-hooks/status", get(api_agent_hook_status))
+        .route(
+            "/api/agent-hooks/enabled",
+            post(api_agent_hook_set_enabled),
+        )
 }
 
 fn json_ok(v: Value) -> Response {
@@ -1608,43 +1651,15 @@ async fn api_sessions(RawQuery(query): RawQuery) -> Response {
 /// 与 Tauri 侧 `commands::list_session_replicas` **同契约**（两宿主同步）。
 /// 只回 ledger 里确有的字段（`accountUid` / `sessionId` / `region`）；
 /// `title` / `updatedAt` / `hasHistory` 由前端 join 补齐（见 `session::list_replica_groups_for`）。
+///
+/// ★ **内容状态随本响应一起回**（`groups[].content`）：状态判据在 core
+/// （`session::derive_content_status`），前端只拿结论 —— 逐行 hash 不过 IPC。
 async fn api_session_replicas(RawQuery(query): RawQuery) -> Response {
     if let Err(error) = require_capability(Product::Workbuddy, capability::Capability::SessionCopy) {
         return json_err(error, StatusCode::FORBIDDEN);
     }
     let region = parse_region(query_value(query.as_deref(), "region").as_deref());
     json_ok(session::list_replica_groups_for(region))
-}
-
-/// POST /api/sessions/fingerprints —— **会话内容指纹**（P8「组状态派生」的数据源）。
-///
-/// 与 Tauri 侧 `commands::session_fingerprints` **同契约**（两宿主同步）。
-/// 返回 `{ [sessionId]: SessionFingerprint | null }`；取不到的为 `null`（**不臆造**）。
-///
-/// ⚠️ **不许用 `updatedAt` 冒充「落后 / 最新」**（`P8-ARCH.md` §1.2：「时间新 ≠ 内容新」）。
-async fn api_session_fingerprints(Json(body): Json<Value>) -> Response {
-    if let Err(error) = require_capability(Product::Workbuddy, capability::Capability::SessionCopy) {
-        return json_err(error, StatusCode::FORBIDDEN);
-    }
-    let region = parse_region(body.get("region").and_then(Value::as_str));
-    let ids: Vec<String> = body
-        .get("sessionIds")
-        .and_then(Value::as_array)
-        .map(|arr| {
-            arr.iter()
-                .filter_map(|v| v.as_str().map(String::from))
-                .collect()
-        })
-        .unwrap_or_default();
-    let mut out = serde_json::Map::new();
-    for cid in ids {
-        let fingerprint = session::session_fingerprint_for(region, &cid);
-        out.insert(
-            cid,
-            serde_json::to_value(fingerprint).unwrap_or(Value::Null),
-        );
-    }
-    json_ok(Value::Object(out))
 }
 
 /// POST /api/sessions/sync —— P8 **安全同步（增量追加）**：把源副本的新增行追加到落后副本。
@@ -2219,7 +2234,11 @@ async fn api_checkin(Json(body): Json<Value>) -> Response {
 
 async fn api_checkin_all(Json(body): Json<Value>) -> Response {
     let region = parse_region(body.get("region").and_then(Value::as_str));
-    json_ok(checkin::run_checkin_all_for(region).await)
+    // P15 · 签到进悬浮窗（首尾两条；WB 侧没有逐账号进度事件）。
+    let task = observe_workbuddy_checkin_start(region);
+    let result = checkin::run_checkin_all_for(region).await;
+    observe_workbuddy_checkin_end(&task, region, &result);
+    json_ok(result)
 }
 
 /// GET /api/checkin/config —— 自动签到开关。
@@ -2525,6 +2544,16 @@ async fn api_gateway_revoke_key(Json(body): Json<Value>) -> Response {
     let state = crate::gateway_host::shared_state();
     let id = body.get("id").and_then(Value::as_str).unwrap_or("");
     match state.keys.revoke(id) {
+        Ok(()) => json_ok(json!({ "ok": true })),
+        Err(error) => json_err(error, StatusCode::BAD_REQUEST),
+    }
+}
+
+/// POST /api/gateway/keys/restore —— 撤销吊销（清 `revoked_at`，Key 重新可用）。
+async fn api_gateway_restore_key(Json(body): Json<Value>) -> Response {
+    let state = crate::gateway_host::shared_state();
+    let id = body.get("id").and_then(Value::as_str).unwrap_or("");
+    match state.keys.restore(id) {
         Ok(()) => json_ok(json!({ "ok": true })),
         Err(error) => json_err(error, StatusCode::BAD_REQUEST),
     }
@@ -3028,7 +3057,19 @@ async fn api_trae_checkin(Json(body): Json<Value>) -> Response {
         Ok(parsed) => parsed,
         Err(error) => return json_err(error, StatusCode::BAD_REQUEST),
     };
-    json_ok(trae::handlers::run_checkin_report(parsed).await)
+    // P15 · 签到也进悬浮窗。⚠️ webui **没有事件通道** ⇒ 只能给首尾两条；
+    // 桌面侧（`commands.rs` 的 `trae_checkin`）有逐账号进度 —— 那是两条通道的
+    // **能力差异**，如实反映，不在这边编造中间进度。
+    let task = "trae-checkin";
+    agent_watch::record_local(
+        task,
+        "Trae 签到",
+        companion_state::CompanionState::Running,
+        config::now_ms(),
+    );
+    let report = trae::handlers::run_checkin_report(parsed).await;
+    observe_trae_checkin_summary(task, &report);
+    json_ok(report)
 }
 
 async fn api_trae_refresh_credits(Json(body): Json<Value>) -> Response {
@@ -3284,6 +3325,19 @@ async fn api_trae_revoke_api_key(Json(body): Json<Value>) -> Response {
     }
 }
 
+/// POST /api/trae/gateway/keys/restore —— 撤销吊销（Key 重新可用，`{id}`）。
+async fn api_trae_restore_api_key(Json(body): Json<Value>) -> Response {
+    let id = body.get("id").and_then(Value::as_str).unwrap_or("").trim();
+    if id.is_empty() {
+        return json_err("缺少 id".to_string(), StatusCode::BAD_REQUEST);
+    }
+    let state = crate::trae_gateway_host::shared_state();
+    match state.key_store.restore(id) {
+        Ok(()) => json_ok(json!({ "ok": true })),
+        Err(error) => json_err(error, StatusCode::BAD_REQUEST),
+    }
+}
+
 /// POST /api/trae/gateway/keys/delete —— 物理删除已吊销的 Key（`{id}`）。
 async fn api_trae_delete_api_key(Json(body): Json<Value>) -> Response {
     let id = body.get("id").and_then(Value::as_str).unwrap_or("").trim();
@@ -3365,6 +3419,16 @@ fn companion_snapshot() -> companion_state::CompanionSnapshot {
         });
     }
 
+    // ★ P15 · 外部 Agent 会话：由客户端 hook 事件驱动（接收端见 `agent_hook_rx`）。
+    // ★ 零周期任务 —— 过期在 `operations()` 里**读取时惰性判定**（见 `agent_watch` 模块头）。
+    // 两个数据源**合并进同一个快照**：悬浮窗是一个窗口，不是两个（`P15-SPIKE-RESULTS §2 Q1`）。
+    {
+        let watch = agent_watch::shared()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        operations.extend(watch.operations(config::now_ms()));
+    }
+
     companion_state::snapshot_from_operations(&operations, config::now_ms())
 }
 
@@ -3397,6 +3461,214 @@ async fn api_companion_jump() -> Response {
         "桌面悬浮窗仅在桌面端可用".to_string(),
         StatusCode::BAD_REQUEST,
     )
+}
+
+// ---------------------------------------------------------------------------
+// 外部 Agent 会话监听（P15 · hook 安装面）
+// ---------------------------------------------------------------------------
+//
+// ⚠️ 与 `src-tauri/src/commands.rs` 的 `agent_hook_status` / `apply_agent_hook_enabled`
+// **同款实现**（本仓惯例：两宿主各留一份 + 注释互指，不抽公共层 —— 抽了会让
+// 「桌面要改、webui 不能改」这类真实差异无处安放）。
+
+/// hook 的安装目标（与桌面侧同一份清单，见 `commands.rs` 的 `AGENT_HOOK_TARGETS`）。
+const AGENT_HOOK_TARGETS: &[(&str, &str)] = &[
+    ("workbuddy-cn", agent_watch::SOURCE_WORKBUDDY_CN),
+    ("workbuddy-global", agent_watch::SOURCE_WORKBUDDY_GLOBAL),
+];
+
+/// 组装 hook 安装状态（**只读**，无副作用）。形状与桌面侧逐字段一致。
+fn agent_hook_status() -> Value {
+    let exe = std::env::current_exe().ok();
+    let slots: Vec<Value> = AGENT_HOOK_TARGETS
+        .iter()
+        .map(|(slot_key, source)| {
+            let read =
+                client_settings::read_settings(slot_key).unwrap_or_else(|error| json!({ "error": error }));
+            let values = read.get("values").cloned().unwrap_or(Value::Null);
+            let events = if values.is_null() {
+                Vec::new()
+            } else {
+                agent_hook_install::installed_events_of(&values)
+            };
+            json!({
+                "slot": slot_key,
+                "source": source,
+                "clientInstalled": read.get("installed").and_then(Value::as_bool).unwrap_or(false),
+                "clientRunning": read.get("running").and_then(Value::as_bool).unwrap_or(false),
+                "installed": !events.is_empty(),
+                "events": events,
+                "command": exe.as_deref().map(|exe| agent_hook_install::hook_command(exe, source)),
+            })
+        })
+        .collect();
+
+    json!({
+        "enabled": app_prefs::watch_agent_sessions(),
+        "port": buddy_switch_core::modules::agent_hook_rx::HOOK_PORT,
+        "slots": slots,
+    })
+}
+
+/// 装 / 卸 hook 并同步偏好。语义见桌面侧同名函数的文档（「装不上就不写偏好」）。
+fn apply_agent_hook_enabled(enabled: bool) -> Result<Value, String> {
+    let mut errors: Vec<String> = Vec::new();
+    let mut changed: Vec<Value> = Vec::new();
+
+    if enabled {
+        let exe = std::env::current_exe().map_err(|error| format!("取当前程序路径失败：{error}"))?;
+        for (slot_key, source) in AGENT_HOOK_TARGETS {
+            let command = agent_hook_install::hook_command(&exe, source);
+            match agent_hook_install::install(slot_key, &command) {
+                Ok(_) => changed.push(json!({ "slot": slot_key, "ok": true })),
+                Err(error) => errors.push(format!("{slot_key}：{error}")),
+            }
+        }
+        if changed.is_empty() {
+            return Err(format!("没有任何客户端装上 hook —— {}", errors.join("；")));
+        }
+    } else {
+        for (slot_key, _) in AGENT_HOOK_TARGETS {
+            match agent_hook_install::uninstall(slot_key) {
+                Ok(_) => changed.push(json!({ "slot": slot_key, "ok": true })),
+                Err(error) => errors.push(format!("{slot_key}：{error}")),
+            }
+        }
+    }
+
+    let mut prefs = app_prefs::load_app_prefs();
+    prefs["watch_agent_sessions"] = json!(enabled);
+    app_prefs::save_app_prefs(&prefs).map_err(|error| format!("保存偏好失败：{error}"))?;
+
+    Ok(json!({ "enabled": enabled, "changed": changed, "errors": errors }))
+}
+
+/// GET /api/agent-hooks/status —— hook 安装状态（**只读**，两宿主同源）。
+async fn api_agent_hook_status() -> Response {
+    json_ok(agent_hook_status())
+}
+
+/// POST /api/agent-hooks/enabled —— 开关监听（会**写上游客户端配置**，见 P15 决策 D41）。
+async fn api_agent_hook_set_enabled(Json(body): Json<Value>) -> Response {
+    let enabled = body.get("enabled").and_then(Value::as_bool).unwrap_or(false);
+    // 写客户端配置文件是慢 IO ⇒ 放 blocking 线程，不阻塞 webui 的事件循环。
+    match tokio::task::spawn_blocking(move || apply_agent_hook_enabled(enabled)).await {
+        Ok(Ok(value)) => json_ok(value),
+        Ok(Err(error)) => json_err(error, StatusCode::BAD_REQUEST),
+        Err(error) => json_err(
+            format!("切换监听失败：{error}"),
+            StatusCode::INTERNAL_SERVER_ERROR,
+        ),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// P15 · 「本工具自己的长操作」也送进悬浮窗（签到）
+// ---------------------------------------------------------------------------
+//
+// ⚠️ 与 `src-tauri/src/commands.rs` 的 `observe_*` **同款实现**（本仓惯例：两宿主各留一份
+// + 注释互指）。依据见 `P9-ARCH §1.3`：数据源本应有三路
+//（`switch-progress` / `checkin-progress` / `trae-checkin-progress`），后两路**长期缺席**
+// —— `src/lib/companion.ts` 一直在订阅一个从未被 emit 过的 `checkin-progress`。
+//
+// ★ webui **没有事件通道** ⇒ Trae 签到只能给**首尾两条**；桌面侧有逐账号进度。
+//   那是两条通道的**能力差异**，如实反映，不在这一侧编造中间进度。
+
+/// WorkBuddy 批量签到的**开始**一条，返回 task id（结束时用同一个 id 才能覆盖为终态）。
+fn observe_workbuddy_checkin_start(region: Region) -> String {
+    let task = format!("workbuddy-checkin:{}", region.as_str());
+    agent_watch::record_local(
+        &task,
+        &format!("WorkBuddy 签到（{}）", workbuddy_region_label(region)),
+        companion_state::CompanionState::Running,
+        config::now_ms(),
+    );
+    task
+}
+
+/// 见 [`observe_workbuddy_checkin_start`]。
+fn observe_workbuddy_checkin_end(task: &str, region: Region, result: &Value) {
+    // 带 `status` = 这轮**根本没跑**（`skipped` / `unsupported`）⇒ 把刚写的那行**撤掉**。
+    if result.get("status").is_some() {
+        forget_local(task);
+        return;
+    }
+    let accounts = result
+        .get("accounts")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let total = accounts.len();
+    // **账号表是空的** ⇒ 同样什么都没发生（撤掉，不留「成功 0 / 共 0」的噪音行）。
+    if total == 0 {
+        forget_local(task);
+        return;
+    }
+    let failed = accounts
+        .iter()
+        .filter(|account| account.get("error").is_some_and(|error| !error.is_null()))
+        .count();
+    let ok = total.saturating_sub(failed);
+    let state = if ok == 0 {
+        companion_state::CompanionState::Failed
+    } else {
+        companion_state::CompanionState::Done
+    };
+    agent_watch::record_local(
+        task,
+        &format!(
+            "WorkBuddy 签到（{}）：成功 {ok} / 共 {total}",
+            workbuddy_region_label(region)
+        ),
+        state,
+        config::now_ms(),
+    );
+}
+
+/// Trae 签到的**汇总**（`{ok, already, failed, total}`）→ 悬浮窗终态。
+///
+/// 桌面侧从 `done` 事件里取这几个字段、webui 侧从一次性报告里取 —— **字段名相同**，
+/// 所以两条通道的终态判定共用一个来源，不可能分叉。
+fn observe_trae_checkin_summary(task: &str, summary: &Value) {
+    let ok = summary.get("ok").and_then(Value::as_u64).unwrap_or(0);
+    let already = summary.get("already").and_then(Value::as_u64).unwrap_or(0);
+    let failed = summary.get("failed").and_then(Value::as_u64).unwrap_or(0);
+    let total = summary.get("total").and_then(Value::as_u64).unwrap_or(0);
+    // **计划 0 个** ⇒ 这一行本就不该出现（一个字都没签）：撤掉，
+    // 而不是留下「成功 0 · 已签 0 · 失败 0」这种没信息量的噪音行。
+    if total == 0 {
+        forget_local(task);
+        return;
+    }
+    // **一个都没成**（既没有成功、也没有「今日已签」）才算失败。
+    let state = if ok == 0 && already == 0 {
+        companion_state::CompanionState::Failed
+    } else {
+        companion_state::CompanionState::Done
+    };
+    agent_watch::record_local(
+        task,
+        &format!("Trae 签到：成功 {ok} · 已签 {already} · 失败 {failed}"),
+        state,
+        config::now_ms(),
+    );
+}
+
+/// 撤掉一条「本工具自己的操作」（见 `agent_watch::AgentWatch::forget`）。
+fn forget_local(task: &str) {
+    agent_watch::shared()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .forget(agent_watch::SOURCE_THIS_TOOL, task);
+}
+
+/// WorkBuddy 区域的展示名（**只用于标题**，不进 `source`）。
+fn workbuddy_region_label(region: Region) -> &'static str {
+    if region == Region::Global {
+        "国际版"
+    } else {
+        "国内版"
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -4821,6 +5093,11 @@ mod tests {
                 "name",
                 "region",
                 "prefix",
+                // ⚠️ `suffix`（明文末 4 位）是 `apikey.rs` 的**显式白名单**成员
+                // （E3 新增，用户靠它确认是哪一把）。本用例原先漏了这一格，
+                // 于是 `suffix` 一加进来就变红 —— 属**用例未同步**，不是泄露。
+                // 真正的红线在下面三条断言（无 hash / 无明文 / 无 sha256 摘要）。
+                "suffix",
                 "createdAt",
                 "revokedAt",
                 "revoked",
@@ -4859,7 +5136,21 @@ mod tests {
             "error should instruct to revoke first: {body}"
         );
 
-        // 吊销 → 删除成功 → 列表清空。
+        // 未吊销直接恢复 → 400 + 可读错误（恢复只对**已吊销**的 Key 有意义）。
+        let (status, body) = call_api(
+            Method::POST,
+            "/api/gateway/keys/restore",
+            Some(json!({"id": record_id})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(body["ok"], json!(false));
+        assert!(
+            body["error"].as_str().unwrap_or("").contains("未吊销"),
+            "error should say the key is not revoked: {body}"
+        );
+
+        // 吊销 → 恢复 → 列表回到「启用」（两条出口都可用，故用户在吊销后**两个选择都在**）。
         let (status, body) = call_api(
             Method::POST,
             "/api/gateway/keys/revoke",
@@ -4871,6 +5162,29 @@ mod tests {
 
         let (_, body) = call_api(Method::GET, "/api/gateway/keys", None).await;
         assert_eq!(body["keys"][0]["revoked"], json!(true));
+        assert!(body["keys"][0]["revokedAt"].as_i64().is_some(), "revokedAt 应落时间戳");
+
+        let (status, body) = call_api(
+            Method::POST,
+            "/api/gateway/keys/restore",
+            Some(json!({"id": record_id})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["ok"], json!(true));
+
+        let (_, body) = call_api(Method::GET, "/api/gateway/keys", None).await;
+        assert_eq!(body["keys"][0]["revoked"], json!(false), "恢复后应回到启用");
+        assert!(body["keys"][0]["revokedAt"].is_null(), "恢复必须清空 revokedAt");
+
+        // 再吊销 → 删除成功 → 列表清空（吊销 → 恢复 → 再吊销 → 删除 全链路可反复）。
+        let (status, _) = call_api(
+            Method::POST,
+            "/api/gateway/keys/revoke",
+            Some(json!({"id": record_id})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
 
         let (status, body) = call_api(
             Method::POST,
@@ -5199,5 +5513,130 @@ mod parse_trae_variant_tests {
         assert_eq!(parse_trae_variant(Some("")), default);
         assert_eq!(parse_trae_variant(Some("   ")), default);
         assert_eq!(parse_trae_variant(None), default);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 统一网关（第三个产品线 · 管理面）
+//
+// ★ 它**跨平台**（把两个产品线的模型合成一个入口）⇒ 能力门控取 WorkBuddy 的 `gateway`
+//   能力（桌面端恒具备；「网关类能力可用与否」对两个产品线是一致的）。
+// ---------------------------------------------------------------------------
+
+/// GET /api/unified-gateway/config —— 配置 + 运行状态 + 命名空间（已启用 / 全部在册）。
+async fn api_unified_gateway_config() -> Response {
+    let state = crate::unified_gateway_host::shared_state();
+    // ★ 共同字段一律走**共享构造**（与桌面端同源；只有 `running`/`addr` 由本宿主补）。
+    let mut payload = buddy_switch_gateway::unified::admin::config_payload(&state).await;
+    let (running, addr) = crate::unified_gateway_host::status().await;
+    payload["running"] = json!(running);
+    payload["addr"] = json!(addr);
+    json_ok(payload)
+}
+
+/// POST /api/unified-gateway/config —— 保存并应用（启动 / 重启独立监听）。
+async fn api_save_unified_gateway_config(Json(body): Json<Value>) -> Response {
+    if let Err(error) = require_capability(Product::Workbuddy, capability::Capability::Gateway) {
+        return json_err(error, StatusCode::FORBIDDEN);
+    }
+    let submitted = body.get("config").cloned().unwrap_or(body);
+    let config: UnifiedGatewayConfig = match serde_json::from_value(submitted) {
+        Ok(config) => config,
+        Err(error) => return json_err(format!("配置格式错误: {error}"), StatusCode::BAD_REQUEST),
+    };
+    // ★ 不在册的命名空间 ⇒ 明确报错（不静默丢弃用户填的值）
+    if let Err(error) = config.validate() {
+        return json_err(error, StatusCode::BAD_REQUEST);
+    }
+    if let Err(error) = config.save() {
+        return json_err(error, StatusCode::BAD_REQUEST);
+    }
+    let state = crate::unified_gateway_host::shared_state();
+    state.set_config(config.clone()).await;
+    match crate::unified_gateway_host::apply().await {
+        Ok(addr) => json_ok(json!({
+            "ok": true,
+            "config": config,
+            "running": addr.is_some(),
+            "addr": addr,
+        })),
+        Err(error) => json_err(error, StatusCode::BAD_REQUEST),
+    }
+}
+
+/// GET /api/unified-gateway/models —— 已启用命名空间的清单预览（管理面专用，不过滤 Key 授权）。
+async fn api_unified_gateway_models() -> Response {
+    json_ok(buddy_switch_gateway::unified::routes::models_preview().await)
+}
+
+/// GET /api/unified-gateway/keys —— 统一密钥列表（**只出脱敏**）。
+async fn api_unified_gateway_list_keys() -> Response {
+    json_ok(buddy_switch_gateway::unified::admin::keys_list_payload(
+        &crate::unified_gateway_host::shared_state().keys,
+    ))
+}
+
+/// POST /api/unified-gateway/keys —— 创建（**明文只返回这一次**）。
+async fn api_unified_gateway_create_key(Json(body): Json<Value>) -> Response {
+    let namespaces: Vec<String> = body
+        .get("namespaces")
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(Value::as_str)
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default();
+    // ⚠️ 前端发 **camelCase**（门禁按 `commands.rs` 的形参名比对），手工调 API 的人可能发
+    //   snake_case ⇒ **两种都收**（服务端是手工读 body，不像 Tauri 那样自动映射）。
+    let biz_namespace = body
+        .get("bizNamespace")
+        .or_else(|| body.get("biz_namespace"))
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    let name = body
+        .get("name")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .unwrap_or("未命名")
+        .to_string();
+    match crate::unified_gateway_host::shared_state()
+        .keys
+        .create(name, namespaces, biz_namespace)
+    {
+        Ok((record, plaintext)) => {
+            json_ok(json!({ "ok": true, "key": plaintext, "record": record.masked() }))
+        }
+        Err(error) => json_err(error, StatusCode::BAD_REQUEST),
+    }
+}
+
+/// POST /api/unified-gateway/keys/revoke —— 吊销（置标记，**可逆**）。
+async fn api_unified_gateway_revoke_key(Json(body): Json<Value>) -> Response {
+    let id = body.get("id").and_then(Value::as_str).unwrap_or("");
+    match crate::unified_gateway_host::shared_state().keys.revoke(id) {
+        Ok(()) => json_ok(json!({ "ok": true })),
+        Err(error) => json_err(error, StatusCode::BAD_REQUEST),
+    }
+}
+
+/// POST /api/unified-gateway/keys/restore —— 撤销吊销（同一把 Key 重新可用）。
+async fn api_unified_gateway_restore_key(Json(body): Json<Value>) -> Response {
+    let id = body.get("id").and_then(Value::as_str).unwrap_or("");
+    match crate::unified_gateway_host::shared_state().keys.restore(id) {
+        Ok(()) => json_ok(json!({ "ok": true })),
+        Err(error) => json_err(error, StatusCode::BAD_REQUEST),
+    }
+}
+
+/// POST /api/unified-gateway/keys/delete —— 物理删除（**仅限已吊销**）。
+async fn api_unified_gateway_delete_key(Json(body): Json<Value>) -> Response {
+    let id = body.get("id").and_then(Value::as_str).unwrap_or("");
+    match crate::unified_gateway_host::shared_state().keys.delete(id) {
+        Ok(()) => json_ok(json!({ "ok": true })),
+        Err(error) => json_err(error, StatusCode::BAD_REQUEST),
     }
 }

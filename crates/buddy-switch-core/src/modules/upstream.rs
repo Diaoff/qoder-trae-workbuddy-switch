@@ -348,16 +348,40 @@ impl UpstreamClient {
     pub async fn forward_with(
         &self,
         url: &str,
+        headers: HashMap<String, String>,
+        body: String,
+        signal: Option<watch::Receiver<bool>>,
+        user_agent: &str,
+    ) -> UpstreamChatResult {
+        // 行为与抽取前**逐字一致**（一律 POST）—— LLM 两条路径都走这里，不给它们引入任何可变性。
+        self.forward_with_method(url, headers, body, signal, user_agent, reqwest::Method::POST)
+            .await
+    }
+
+    /// 同 [`Self::forward_with`]，但**出站方法可指定**。
+    ///
+    /// ## 为什么需要它（实测，不是推测）
+    ///
+    /// 业务白名单是**按前缀**收的，而同一个前缀下混着两种方法的端点：
+    /// `/activity/growth/streak`、`/activity/growth/heatmap` 只有 **GET**，
+    /// 而 `/activity/growth/redeem`、`/lottery/draw` 是 **POST**。
+    /// 网关原先一律 POST 出去 ⇒ GET-only 的路径被上游回 `404 page not found`（真实环境实测）。
+    ///
+    /// ⇒ **业务转发必须透传客户端的原方法**；LLM 路径继续走上面的 POST 包装。
+    pub async fn forward_with_method(
+        &self,
+        url: &str,
         mut headers: HashMap<String, String>,
         body: String,
         signal: Option<watch::Receiver<bool>>,
         user_agent: &str,
+        method: reqwest::Method,
     ) -> UpstreamChatResult {
         headers.insert("User-Agent".to_string(), user_agent.to_string());
 
         let request = self
             .http
-            .post(url)
+            .request(method, url)
             .headers(header_map(&headers))
             .body(body);
         let send = request.send();
@@ -416,6 +440,7 @@ impl UpstreamClient {
         path: &str,
         body_json: &str,
         signal: Option<watch::Receiver<bool>>,
+        method: reqwest::Method,
     ) -> UpstreamChatResult {
         let user_agent = match self.resolve_chat_ua(region) {
             Ok(ua) => ua,
@@ -429,7 +454,7 @@ impl UpstreamClient {
         };
         let url = format!("{}{path}", region_spec(region).billing_base);
         let headers = account::build_auth_headers(acc);
-        self.forward_with(&url, headers, body_json.to_string(), signal, &user_agent)
+        self.forward_with_method(&url, headers, body_json.to_string(), signal, &user_agent, method)
             .await
     }
 

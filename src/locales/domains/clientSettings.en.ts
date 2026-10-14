@@ -23,10 +23,10 @@ export const en = {
 
   "clientSettings.slot.workbuddyCn": "WorkBuddy CN",
   "clientSettings.slot.workbuddyGlobal": "WorkBuddy Global",
-  "clientSettings.slot.traeCodeCn": "Trae CN",
-  "clientSettings.slot.traeCodeGlobal": "Trae Global",
-  "clientSettings.slot.traeWorkCn": "TRAE SOLO CN",
-  "clientSettings.slot.traeWorkGlobal": "TRAE SOLO",
+  "clientSettings.slot.traeCodeCn": "TraeCode CN",
+  "clientSettings.slot.traeCodeGlobal": "TraeCode",
+  "clientSettings.slot.traeWorkCn": "TraeWork CN",
+  "clientSettings.slot.traeWorkGlobal": "TraeWork",
 
   "clientSettings.status.installed": "Installed",
   "clientSettings.status.notInstalled": "Not installed",

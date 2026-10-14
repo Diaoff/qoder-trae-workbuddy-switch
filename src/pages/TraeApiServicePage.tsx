@@ -1,3 +1,4 @@
+import { UnifiedGatewayView } from "@/components/gateway/unified-gateway-view";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { AlertTriangle, Copy, FolderOpen, Loader2, Power, RefreshCw, ShieldAlert } from "lucide-react";
 import { useSearchParams } from "react-router-dom";
@@ -97,7 +98,8 @@ interface ApiServiceSnapshot {
  *
  * ## 本轮结构：容器 + 五个 Trae 专用组件
  *
- * Key 管理已由后端升级为**多 Key 库（含归属产品线）**（`list/create/revoke/delete_trae_api_key`），
+ * Key 管理已由后端升级为**多 Key 库（含归属产品线）**
+ * （`list/create/revoke/restore/delete_trae_api_key`），
  * 因此单 Key 卡与其「重新生成」入口（R6）一并删除，改由 `TraeApiKeyTable` 承担
  * （「归属产品线」列取代 WorkBuddy 的「归属版本」列）。接入指引 / 账号池 / 模型清单 /
  * 请求日志分别下沉为 `TraeIntegrationGuide` / `AccountPoolCard`（与 WorkBuddy 共用）/
@@ -323,33 +325,51 @@ export default function TraeApiServicePage() {
   }, [config.bindAddr, config.port]);
 
   const keyPrefix = status?.apiKeyPrefix || "";
+  /* ★ 概览两行的取数（与 WB 侧 `ApiServicePage` 的概览行**同源口径**）：
+     - 「可用模型」= **网关对外清单**（`/v1/models` 真正会列出的那批）的条数，
+       取本区域**主程序位**那一份（清单卡内的程序位选择器只管卡片自己的展示，
+       概览行给的是区域主线的口径 —— 与 WB 的「当前 region 清单条数」对应）；
+     - 「账号池」= 池条目总数（`pool.total`，缺数据时回落到账号数）。 */
+  const modelCount = modelSources[0]?.gatewayNames?.length ?? 0;
+  const poolCount = status?.pool?.total ?? status?.accounts?.length ?? 0;
   /* 页头作用域：平台固定 trae，区域来自 `useTraeVariant`（URL 作用域优先）。 */
   const scope = scopeOf("trae", variant);
 
+  /* 页头抽成变量：加载态与正常态**共用同一份** —— 骨架屏出现时页头不闪掉。
+     （原型 `viewGateway`：作用域副标题 + 只读 scope-chip。区域切换已上移到顶栏的
+     `ScopeSelector`（L1 作用域），页内不再有区域选择器。） */
+  const header = (
+    <header className="mb-5 flex items-start gap-4">
+      <div className="min-w-0">
+        <h1 className="text-[28px] font-[640] tracking-[-0.02em]">{t("trae.stats.api.title")}</h1>
+        <p className="mt-1.5 text-[12.5px] text-muted-foreground">
+          {t("pageHead.gateway", { scope: scopeLabel(t, scope) })}
+        </p>
+      </div>
+      <div className="grow" />
+      <ScopeChip scope={scope} />
+    </header>
+  );
+
+  /* ★ 首次加载（`loading && !status`）：页头常驻 + 主区骨架，与 WB 页**同一条件、同一骨架**。
+     ⚠️ 此前这里是「整页替换」且骨架块形状不同（`h-9 w-48` / `h-32` / `h-64`）——
+     与 WB 的「页面底部追加 3 行文字骨架」是两种做法。现在两页完全一致。 */
   if (loading && !status) {
     return (
       <div className="mx-auto w-full max-w-[1240px] px-7 pt-[26px] pb-[60px]">
-        <Skeleton className="h-9 w-48" />
-        <Skeleton className="mt-4 h-32 w-full" />
-        <Skeleton className="mt-6 h-64 w-full" />
+        {header}
+        <div className="space-y-4" aria-busy="true">
+          <Skeleton className="h-[34px] w-[186px]" />
+          <Skeleton className="h-32 w-full" />
+          <Skeleton className="h-64 w-full" />
+        </div>
       </div>
     );
   }
 
   return (
     <div className="mx-auto w-full max-w-[1240px] px-7 pt-[26px] pb-[60px]">
-      {/* 页头（原型 `viewGateway`）：作用域副标题 + 只读 scope-chip。
-          区域切换已上移到顶栏的 `ScopeSelector`（L1 作用域），页内不再有区域选择器。 */}
-      <header className="mb-5 flex items-start gap-4">
-        <div className="min-w-0">
-          <h1 className="text-[28px] font-[640] tracking-[-0.02em]">{t("trae.stats.api.title")}</h1>
-          <p className="mt-1.5 text-[12.5px] text-muted-foreground">
-            {t("pageHead.gateway", { scope: scopeLabel(t, scope) })}
-          </p>
-        </div>
-        <div className="grow" />
-        <ScopeChip scope={scope} />
-      </header>
+      {header}
 
       {error && (
         <Alert variant="destructive" className="mb-5">
@@ -454,18 +474,9 @@ export default function TraeApiServicePage() {
                         : t("trae.stats.api.gateway.stopped")}
                     </span>
                   </span>
-                  <DemoAction>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      className="ml-auto"
-                      disabled={openingDir}
-                      onClick={() => void onOpenDataDir()}
-                    >
-                      {openingDir ? <Loader2 className="animate-spin" /> : <FolderOpen />}
-                      {t("trae.stats.api.gateway.openDataDir")}
-                    </Button>
-                  </DemoAction>
+                  {/* ★「打开数据目录」已移到下方「接入地址」卡的 Base URL 行 ——
+                      与 WB 侧**同位置同 variant**（打开的是这个网关对应的客户端数据目录，
+                      属「接入信息」而不是「服务开关」）。 */}
                 </div>
 
                 <div className="flex flex-wrap items-center gap-2 border-t border-border/60 px-5 py-3 text-xs text-muted-foreground">
@@ -503,12 +514,53 @@ export default function TraeApiServicePage() {
                       <Copy />
                       {t("trae.stats.api.copy")}
                     </Button>
+                    {/* ★ 与 WB 侧同位置同 variant（ghost）：打开的是**本程序位**的数据目录。 */}
+                    <DemoAction>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        disabled={openingDir}
+                        onClick={() => void onOpenDataDir()}
+                      >
+                        {openingDir ? <Loader2 className="animate-spin" /> : <FolderOpen />}
+                        {t("trae.stats.api.gateway.openDataDir")}
+                      </Button>
+                    </DemoAction>
                   </div>
                   <div className="mt-1.5 flex flex-wrap items-center gap-3 text-xs text-muted-foreground">
                     <span>{t("trae.stats.api.endpoint.keyPrefix")}</span>
                     <code className="font-mono">
                       {keyPrefix ? `${keyPrefix}…` : t("trae.stats.api.endpoint.noKey")}
                     </code>
+                  </div>
+                </div>
+
+                {/* ★ 概览两行（2026-10-13 跨平台对齐）：与 WB 的概览行**同位置、同结构、
+                    同 `?sub=` 深链**。数字全部来自后端下发，「查看」跳到对应分区。
+                    ⚠️ 比 WB 少一行「上游账号凭据 · 校验」：那是 WB 的 `check_auth_permission`
+                    写权限探针，Trae 侧没有对应命令 —— 缺能力不画空壳（§3.4 规则 1）。 */}
+                <div className="divide-y divide-border/60 border-t border-border/60">
+                  <div className="flex items-center justify-between gap-3 px-5 py-3">
+                    <div className="min-w-0">
+                      <div className="text-sm">{t("trae.stats.api.overview.models")}</div>
+                      <p className="mt-0.5 text-xs text-muted-foreground">
+                        {t("trae.stats.api.overview.modelsCount", { count: modelCount })}
+                      </p>
+                    </div>
+                    <Button variant="outline" size="sm" onClick={() => goSub("models")}>
+                      {t("trae.stats.api.overview.view")}
+                    </Button>
+                  </div>
+                  <div className="flex items-center justify-between gap-3 px-5 py-3">
+                    <div className="min-w-0">
+                      <div className="text-sm">{t("trae.stats.api.overview.pool")}</div>
+                      <p className="mt-0.5 text-xs text-muted-foreground">
+                        {t("trae.stats.api.overview.poolCount", { count: poolCount })}
+                      </p>
+                    </div>
+                    <Button variant="outline" size="sm" onClick={() => goSub("pool")}>
+                      {t("trae.stats.api.overview.view")}
+                    </Button>
                   </div>
                 </div>
               </Card>
@@ -556,6 +608,7 @@ export default function TraeApiServicePage() {
           {sub === "logs" && (
             <TraeRequestLog logs={logs} clearing={clearing} onClear={() => void onClearLogs()} />
           )}
+          {sub === "unified" && <UnifiedGatewayView />}
         </div>
       </div>
 
@@ -573,8 +626,9 @@ export default function TraeApiServicePage() {
             <Button variant="outline" onClick={() => setRiskOpen(false)}>
               {t("trae.stats.api.lanDialog.cancel")}
             </Button>
-            <Button onClick={confirmLan}>
-              <Power />
+            {/* ★ 与 WB 页同构：标题带警示图标 + 确认按钮 `destructive`（同一处危险操作，
+                此前 Trae 用默认 variant + `<Power>` 图标，两边长得不一样）。 */}
+            <Button variant="destructive" onClick={confirmLan}>
               {t("trae.stats.api.lanDialog.confirm")}
             </Button>
           </DialogFooter>

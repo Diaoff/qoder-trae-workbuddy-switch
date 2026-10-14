@@ -91,6 +91,8 @@ export function ModelList({ region, className }: { region: Region; className?: s
     disabled: t("shared.gateway.models.disabled"),
     disable: t("shared.gateway.models.disable"),
     enable: t("shared.gateway.models.enable"),
+    copyId: t("shared.gateway.models.copyId"),
+    idCopied: t("shared.gateway.models.idCopied"),
   };
 
   async function onRescan() {

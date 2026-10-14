@@ -28,11 +28,13 @@ import type {
   TraeProfilesOverview,
   TraeSettings,
   TraeTokenStatistics,
+  TraeVariantId,
 } from "./trae-types";
 import { demoModeEnabled } from "./demo-mode";
 import { t } from "./i18n";
 import type { TranslationKey } from "@/locales/zh";
 import type { CompanionSnapshot } from "./companion";
+import type { AgentHookStatus } from "./api";
 
 export const screenshotDemoEnabled = demoModeEnabled;
 
@@ -145,6 +147,15 @@ function demoAccountName(account: DemoAccountSeed): string {
 /* ★ 2026-10-12：默认指向 **ops-02** 而不是 jackey —— 原型里 jackey 只绑了
    WB + IDE（卡片显示「使用中 2 个工具」），CLI / VSC 都不绑它。 */
 let demoActiveCliAccountId = accountSeeds[5].id;
+
+/**
+ * 应用级偏好（`app_prefs.json`）的演示态 —— 仅存在于本次页面会话。
+ *
+ * 为什么要有可变状态：`get_app_prefs` / `set_app_prefs` 是一对**读写同一份数据**的命令，
+ * 若 `get` 恒返回常量，演示站里把开关关掉、重开抽屉又变回开 —— 看起来像开关坏了。
+ * 后端那一侧的真值是文件，这里就对应「进程内的一份」。
+ */
+let demoAppPrefs = { close_to_tray: true };
 
 // Counts and relative model roles follow anonymous aggregates from the sanitized local cache.
 // No upstream request row or identifier is copied into this fixture.
@@ -705,10 +716,13 @@ function demoGatewayStatus(): GatewayStatus {
 }
 
 function demoApiKeys(): ApiKeyRecord[] {
+  /* ⚠️ 必须带 `suffix`（尾部 4 位）：真实后端自 E3 起**每把新 Key 都产出**它，
+     列表按 `prefix••••••••suffix` 渲染。夹具缺它 ⇒ 演示站显示 `sk-wb-a1b2…`
+     而真机显示 `sk-wb-a1b2••••••••7d31` —— 那正是「演示数据自造结构」的红线。 */
   return [
-    { id: "demo-key-1", name: "Cursor", region: "cn", prefix: "sk-wb-a1b2", createdAt: atLocalTime(3, 17, 3), revokedAt: null, revoked: false, lastUsedAt: atLocalTime(0, 17, 10) },
-    { id: "demo-key-2", name: "Claude Code", region: "global", prefix: "sk-wb-c3d4", createdAt: atLocalTime(3, 17, 5), revokedAt: null, revoked: false, lastUsedAt: atLocalTime(0, 16, 41) },
-    { id: "demo-key-3", name: "OpenWebUI", region: "cn", prefix: "sk-wb-e5f6", createdAt: atLocalTime(4, 10, 0), revokedAt: atLocalTime(1, 12, 30), revoked: true, lastUsedAt: atLocalTime(2, 9, 12) },
+    { id: "demo-key-1", name: "Cursor", region: "cn", prefix: "sk-wb-a1b2", suffix: "7d31", createdAt: atLocalTime(3, 17, 3), revokedAt: null, revoked: false, lastUsedAt: atLocalTime(0, 17, 10) },
+    { id: "demo-key-2", name: "Claude Code", region: "global", prefix: "sk-wb-c3d4", suffix: "9e02", createdAt: atLocalTime(3, 17, 5), revokedAt: null, revoked: false, lastUsedAt: atLocalTime(0, 16, 41) },
+    { id: "demo-key-3", name: "OpenWebUI", region: "cn", prefix: "sk-wb-e5f6", suffix: "b4a8", createdAt: atLocalTime(4, 10, 0), revokedAt: atLocalTime(1, 12, 30), revoked: true, lastUsedAt: atLocalTime(2, 9, 12) },
   ];
 }
 
@@ -1358,7 +1372,7 @@ function demoTraeVariants(): TraeVariantsStatus {
     program: "trae_work" | "trae_code" | "trae",
     labelKey: TranslationKey,
     nameAliasKey: TranslationKey,
-    variant: "trae_work" | "trae_cn" | "global" | "global_trae_code",
+    variant: "trae_work" | "trae_cn" | "global" | "global_trae_code" | "trae_merged" | "global_trae_merged",
     installed: boolean,
     running: boolean,
     path: string,
@@ -1385,7 +1399,7 @@ function demoTraeVariants(): TraeVariantsStatus {
     variants: [
       {
         variant: "cn",
-        variantLabel: t("shared.region.version.cn"),
+        variantLabel: t("trae.region.cn"),
         consoleBase: "https://www.trae.cn",
         installed: true,
         running: true,
@@ -1416,14 +1430,14 @@ function demoTraeVariants(): TraeVariantsStatus {
             "D:\\Programs\\Trae CN\\Trae CN.exe",
             "C:\\Users\\demo\\AppData\\Roaming\\Trae CN",
           ),
-          // 合并后的客户端（issue #20）：与上面的 TraeCode **同名同物**（同一个客户端），
-          // `variant` 因此也相同。演示数据让它已安装、未运行 ——
-          // 卡片上三枚按钮的状态各不相同，截图里能看出「3 个程序位」这件事。
+          // 合并后的客户端（issue #20）：与上面的 TraeCode **同名同物**（客户端复用目录名），
+          // 但变体是它**自己的** `trae_merged`（快照目录 / Key 归属 / 日志分档各自独立）。
+          // 演示数据让它已安装、未运行 —— 卡片上三枚按钮的状态各不相同。
           program(
             "trae",
             "shared.demo.trae.program.trae",
             "shared.demo.trae.program.codeCn",
-            "trae_cn",
+            "trae_merged",
             true,
             false,
             "D:\\Programs\\Trae CN\\Trae CN.exe",
@@ -1433,7 +1447,7 @@ function demoTraeVariants(): TraeVariantsStatus {
       },
       {
         variant: "global",
-        variantLabel: t("shared.region.version.global"),
+        variantLabel: t("trae.region.global"),
         consoleBase: "https://www.trae.ai",
         installed: true,
         running: false,
@@ -1446,7 +1460,7 @@ function demoTraeVariants(): TraeVariantsStatus {
         programs: [
           program(
             "trae_work",
-            "shared.demo.trae.program.workAi",
+            "shared.demo.trae.program.workGlobalLabel",
             "shared.demo.trae.program.workGlobal",
             "global",
             true,
@@ -1460,7 +1474,7 @@ function demoTraeVariants(): TraeVariantsStatus {
           // 「未安装」以便截图里能看到禁用态，但**不再**用 `null` 表达。
           program(
             "trae_code",
-            "shared.demo.trae.program.codeAi",
+            "shared.demo.trae.program.codeGlobalLabel",
             "shared.demo.trae.program.codePending",
             "global_trae_code",
             false,
@@ -1468,13 +1482,14 @@ function demoTraeVariants(): TraeVariantsStatus {
             "",
             "",
           ),
-          // 合并版国际客户端（issue #20）：与上面的国际 TraeCode 同名同物。
-          // 演示数据同样保持「未安装」，与 CN 区域形成对比。
+          // 合并版国际客户端（issue #20）：与上面的国际 TraeCode 同名同物，
+          // 变体是它自己的 `global_trae_merged`。演示数据同样保持「未安装」，
+          // 与 CN 区域形成对比。
           program(
             "trae",
-            "shared.demo.trae.program.traeAi",
+            "shared.demo.trae.program.traeGlobalLabel",
             "shared.demo.trae.program.codePending",
-            "global_trae_code",
+            "global_trae_merged",
             false,
             false,
             "",
@@ -1695,7 +1710,7 @@ function demoTraeGatewayStatus(): unknown {
     enabled: true, running: true, addr: "127.0.0.1:7864",
     base_url: "http://127.0.0.1:7864", bind_addr: "127.0.0.1", port: 7864,
     allow_non_loopback: false, version: "2026.9.17", total_requests: 137,
-    last_error: null, api_key_prefix: "sk-trae-9f2c1a4b…7d31",
+    last_error: null, api_key_prefix: "sk-trae-9f2c",
     pool: { total: 3, available: 1, cooling: 1, disabled: 1, expired: 0, zero_credits: 0, total_credits: 192.5 },
     accounts: [
       { uid: "7481920", name: t("shared.demo.trae.name.jackey"), status: "available", credits: 120, creditsExpireAt: Math.floor(futureAt(26) / 1000), cooling: false, cooldownUntil: null, cooldownReason: null, disabled: false, deviceIdMasked: "a1b2…9f0e" },
@@ -1740,10 +1755,14 @@ const TRAE_GATEWAY_MODEL_NAMES_TRAE_CODE = [
   "deepseek-v4.1-flash", "kimi-k3", "qwen3.8-flash", "qwen3.8-max",
 ];
 
-/** `args.variant` 决定给哪份清单（缺省 = TraeWork，与后端默认变体一致）。 */
+/** `args.variant` 决定给哪份清单（缺省 = TraeWork，与后端默认变体一致）。
+ *
+ * ⚠️ 合并版（`trae_merged` / `global_trae_merged`）与遗留 TraeCode **同属 IDE 家族**
+ * ⇒ 给同一份清单（客户端家族决定 chat 分组，见 Rust 侧 `function_for`）。 */
 function demoTraeGatewayModels(args?: Record<string, unknown>): unknown {
+  const codeFamily = ["trae_cn", "global_trae_code", "trae_merged", "global_trae_merged"];
   const names =
-    args?.variant === "trae_cn" || args?.variant === "global_trae_code"
+    typeof args?.variant === "string" && codeFamily.includes(args.variant)
       ? TRAE_GATEWAY_MODEL_NAMES_TRAE_CODE
       : TRAE_GATEWAY_MODEL_NAMES;
   return {
@@ -1784,10 +1803,25 @@ function demoTraeClientModels(args?: Record<string, unknown>): TraeClientModelLi
     promptMaxTokens: 224000,
   });
 
-  if (args?.variant === "trae_cn") {
+  // 合并版与遗留 TraeCode 同属 IDE 家族 ⇒ 同一份客户端清单；
+  // 回显的 `variant` / `variantLabel` 用**请求值**，否则演示站会把 Trae 说成 TraeCode
+  // （那正是用户报过一次的那类错位）。
+  const requested = typeof args?.variant === "string" ? args.variant : "";
+  const codeFamily = ["trae_cn", "global_trae_code", "trae_merged", "global_trae_merged"];
+  if (codeFamily.includes(requested)) {
+    const merged = requested === "trae_merged" || requested === "global_trae_merged";
+    // 展示名与程序位表同源（`trae.program.*`），规则 = **国内带 ` CN`、国际不带后缀**。
+    const variantLabel =
+      requested === "trae_cn"
+        ? "TraeCode CN"
+        : requested === "global_trae_code"
+          ? "TraeCode"
+          : requested === "trae_merged"
+            ? "Trae CN"
+            : "Trae";
     return {
-      variant: "trae_cn",
-      variantLabel: "Trae",
+      variant: (merged ? requested : "trae_cn") as TraeVariantId,
+      variantLabel,
       source: "client-cache",
       readAt: 1753600000000,
       dataDir: "C:\\Users\\Demo\\AppData\\Roaming\\Trae CN",
@@ -1814,7 +1848,7 @@ function demoTraeClientModels(args?: Record<string, unknown>): TraeClientModelLi
 
   return {
     variant: "trae_work",
-    variantLabel: "Trae Work",
+    variantLabel: "TraeWork CN",
     source: "client-cache",
     readAt: 1753600000000,
     dataDir: "C:\\Users\\Demo\\AppData\\Roaming\\TRAE SOLO CN",
@@ -1859,12 +1893,16 @@ function demoTraeClientModels(args?: Record<string, unknown>): TraeClientModelLi
  * 明文 / hash 一律不出现（与真实 `list_response` 的脱敏白名单一致）。
  */
 function demoTraeApiKeys(): { keys: TraeApiKeyRecord[] } {
+  /* 与 WB 侧同规则：每条都带 `suffix`（新 Key 是明文末 4 位）。
+     第 4 条是 **legacy 形态**：后端把 legacy 的展示串**拆成两段**
+     （`prefix` = 前 12 字符、`suffix` = 末 4 位，见 `trae/apikey.rs` 的 `legacy_prefix`），
+     所以这里也必须是 `sk-trae-0a1b` + `cdef`，**不是**带省略号的整串。 */
   return {
     keys: [
-      { id: "demo-trae-key-1", name: t("shared.demo.trae.key.cursorCn"), variant: "trae_work", prefix: "sk-trae-9f2c", createdAt: atLocalTime(3, 17, 3), revokedAt: null, revoked: false, lastUsedAt: atLocalTime(0, 17, 10) },
-      { id: "demo-trae-key-2", name: t("shared.demo.trae.key.continueCode"), variant: "trae_cn", prefix: "sk-trae-6d18", createdAt: atLocalTime(2, 20, 12), revokedAt: null, revoked: false, lastUsedAt: atLocalTime(0, 16, 58) },
-      { id: "demo-trae-key-3", name: t("shared.demo.trae.key.cherryGlobal"), variant: "global", prefix: "sk-trae-4b7e", createdAt: atLocalTime(2, 9, 40), revokedAt: null, revoked: false, lastUsedAt: atLocalTime(0, 16, 41) },
-      { id: "demo-trae-key-4", name: t("shared.demo.trae.key.legacy"), variant: "cn", prefix: "sk-trae-0a1b…cdef", createdAt: atLocalTime(9, 8, 0), revokedAt: atLocalTime(1, 12, 30), revoked: true, lastUsedAt: atLocalTime(3, 10, 5) },
+      { id: "demo-trae-key-1", name: t("shared.demo.trae.key.cursorCn"), variant: "trae_work", prefix: "sk-trae-9f2c", suffix: "7d31", createdAt: atLocalTime(3, 17, 3), revokedAt: null, revoked: false, lastUsedAt: atLocalTime(0, 17, 10) },
+      { id: "demo-trae-key-2", name: t("shared.demo.trae.key.continueCode"), variant: "trae_cn", prefix: "sk-trae-6d18", suffix: "a0e9", createdAt: atLocalTime(2, 20, 12), revokedAt: null, revoked: false, lastUsedAt: atLocalTime(0, 16, 58) },
+      { id: "demo-trae-key-3", name: t("shared.demo.trae.key.cherryGlobal"), variant: "global", prefix: "sk-trae-4b7e", suffix: "2f4a", createdAt: atLocalTime(2, 9, 40), revokedAt: null, revoked: false, lastUsedAt: atLocalTime(0, 16, 41) },
+      { id: "demo-trae-key-4", name: t("shared.demo.trae.key.legacy"), variant: "cn", prefix: "sk-trae-0a1b", suffix: "cdef", createdAt: atLocalTime(9, 8, 0), revokedAt: atLocalTime(1, 12, 30), revoked: true, lastUsedAt: atLocalTime(3, 10, 5) },
     ],
   };
 }
@@ -2190,6 +2228,7 @@ export function screenshotDemoResponse(command: string, args?: Record<string, un
       school_hours: [12],
       cat_hours: [1],
       trae_checkin_hours: [9, 21],
+      trae_jwt_refresh_hours: [9, 21],
       checkin_enabled: true,
       travel_enabled: true,
       activity_enabled: true,
@@ -2199,6 +2238,8 @@ export function screenshotDemoResponse(command: string, args?: Record<string, un
       // 与后端默认值一致（Trae 自动签到默认关闭）——演示数据也必须如实，
       // 否则截图会误导成「装上就是开着的」。
       trae_checkin_enabled: false,
+      // 与后端默认值一致（Trae JWT 续期**默认开启**，与上面那条方向相反）。
+      trae_jwt_refresh_enabled: true,
       activity_report_count: 5,
     } satisfies ScheduleConfig;
     case "get_auto_rotate_config": return config;
@@ -2207,6 +2248,15 @@ export function screenshotDemoResponse(command: string, args?: Record<string, un
     case "get_github_config": return githubConfig;
     case "check_update": return { ok: true, current: "2026.9.16", latest: "2026.9.17", latestTag: "v2026.9.17", hasUpdate: true, releaseName: t("shared.demo.updateTitle"), releaseUrl: "https://github.com/NextAgentX/trae-workbuddy-switch/releases/tag/v2026.9.17" };
     case "get_launch_at_login_enabled": return true;
+    /* 应用级偏好（宿主也要读的那一类）。演示站里「关闭窗口」本来就没有真窗口，
+       但开关必须能显示、也必须能记住 → 读写同一份会话内状态，归一化规则与后端
+       `app_prefs::normalize_app_prefs` 一致（非布尔 ⇒ 回落默认 true）。 */
+    case "get_app_prefs": return { ...demoAppPrefs };
+    case "set_app_prefs": {
+      const raw = (args?.prefs as { close_to_tray?: unknown } | undefined)?.close_to_tray;
+      demoAppPrefs = { close_to_tray: typeof raw === "boolean" ? raw : true };
+      return { ...demoAppPrefs };
+    }
     case "switch_progress": return { running: false, progress: null };
     /* P8 T02 · 会话页两个只读命令。`list_session_replicas` 形状与后端逐字段一致；
        `list_sessions` 是既有命令，补进演示面以便会话页 join 标题 / updatedAt。 */
@@ -2275,6 +2325,15 @@ export function screenshotDemoResponse(command: string, args?: Record<string, un
       source: "unavailable",
       updated_at: Date.now(),
     } satisfies CompanionSnapshot;
+    /* P15 · 外部 Agent 会话监听状态（**只读**）。
+       ⚠️ 演示站**必须**如实反映「默认关、什么都没装」：`enabled: false` + 空 `slots`。
+       演示环境绝不能出现「看起来已经装了 hook」的假象 —— 那会让读者以为本工具
+       会偷偷改客户端配置（真实实现是默认关 + 用户显式同意，见 P15 决策 D41）。 */
+    case "get_agent_hook_status": return {
+      enabled: false,
+      port: 57893,
+      slots: [],
+    } satisfies AgentHookStatus;
     /* P7 全局备份：只登记**只读**命令（导出 / 预览 / 导入 / 恢复是动作，不进演示只读面 ——
        由页面侧的错误提示处理）。`get_auto_backup_config` **如实返回默认开**（§7 #7），
        否则截图会误导成「装上就是关着的」。 */

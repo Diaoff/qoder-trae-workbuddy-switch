@@ -18,19 +18,63 @@ use crate::session_headers;
 use crate::state::GatewayState;
 use crate::timeutil;
 
+/// 入口策略 —— **模型名里的前缀**如何处置。
+///
+/// 两个入口对前缀的语义**完全不同**，不能共用一套规则：
+/// - **产品线独立端口**：`cn:` / `global:` 是「跨域重路由」，由 `allow_model_region_prefix` 把关；
+/// - **统一网关**：来源已由**命名空间**（`wb-cn:`）决定，模型名里剩下的 `:` 属于模型本身
+///   （如 `vendor:model`）⇒ **绝不能再解析一次**，否则会被二次改写。
+pub enum PrefixPolicy {
+    /// 产品线入口：按既有开关处理 `cn:` / `global:`。
+    RegionPrefix {
+        /// 是否允许跨域重路由（读 `GatewayConfig::allow_model_region_prefix`）。
+        allow_reroute: bool,
+    },
+    /// 统一入口：前缀已由命名空间处理过，**不再解析**。
+    AlreadyResolved,
+}
+
 /// chat completions 处理器。
 pub async fn handler(
     State(state): State<GatewayState>,
     headers: HeaderMap,
     body: Bytes,
 ) -> Response {
-    let started = Instant::now();
-
     let record = match authenticate(&state, &headers) {
         Ok(record) => record,
         Err(error) => return openai_error(error),
     };
-    let mut region = record.region;
+    // ★ 归属域由 API Key 决定（不接受客户端声明）；前缀策略走产品线那一套。
+    let allow_reroute = state.config_snapshot().await.allow_model_region_prefix;
+    chat_for_region(
+        state,
+        record.region,
+        headers,
+        body,
+        PrefixPolicy::RegionPrefix { allow_reroute },
+    )
+    .await
+}
+
+/// 一趟 chat 中继（**认证之后的全部逻辑**）—— 产品线入口与统一网关**共用**这一份实现。
+///
+/// # 为什么抽出来（而不是让统一网关再写一份）
+///
+/// 「把请求可靠地送到上游」这件事在 `relay` 里已是唯一实现；而它**外面**的那一层
+/// （改写 body → 停用判定 → 首轮 + 内容拦截降级重试 → 流式/非流式出口 → 写日志）
+/// 同样不能有两份 —— 两份必然漂移，且漂移点恰恰是「换号 + 降级」这类最难复现的行为。
+///
+/// `state` **按值**传入（`GatewayState` 是 `Arc` 句柄，克隆极廉价）：这样函数体内既有的
+/// `&state` 写法一行都不用改，抽取的 diff 面最小。
+pub async fn chat_for_region(
+    state: GatewayState,
+    region: Region,
+    headers: HeaderMap,
+    body: Bytes,
+    policy: PrefixPolicy,
+) -> Response {
+    let started = Instant::now();
+    let mut region = region;
 
     let parsed = match parse_body(&body) {
         Ok(value) => value,
@@ -49,22 +93,28 @@ pub async fn handler(
     // 模型名前缀路由（`cn:` / `global:`）。默认只剥离「同域」前缀（纯归一化，不改路由）；
     // 跨域前缀需显式开关，否则返回可诊断的 400 —— 静默改名会让上游报「模型不存在」，
     // 把「配置没开」误报成「模型名写错」，排查成本极高。
-    let route = crate::model_route::split_model_prefix(&requested_model);
-    let allow_reroute = state.config_snapshot().await.allow_model_region_prefix;
-    let model = match crate::model_route::decide(region, allow_reroute, &route) {
-        crate::model_route::PrefixDecision::NoPrefix => requested_model.clone(),
-        crate::model_route::PrefixDecision::StripOnly => route.bare_model.clone(),
-        crate::model_route::PrefixDecision::Reroute(target) => {
-            region = target;
-            route.bare_model.clone()
-        }
-        crate::model_route::PrefixDecision::Rejected {
-            requested,
-            key_region,
-        } => {
-            return openai_error(crate::error::GatewayError::BadRequest(
-                crate::model_route::rejection_message(requested, key_region),
-            ))
+    let model = match policy {
+        // 统一入口：来源已由命名空间决定，模型名**原样采用**
+        // （再解析一次会把 `vendor:model` 这类模型名改写掉）。
+        PrefixPolicy::AlreadyResolved => requested_model.clone(),
+        PrefixPolicy::RegionPrefix { allow_reroute } => {
+            let route = crate::model_route::split_model_prefix(&requested_model);
+            match crate::model_route::decide(region, allow_reroute, &route) {
+                crate::model_route::PrefixDecision::NoPrefix => requested_model.clone(),
+                crate::model_route::PrefixDecision::StripOnly => route.bare_model.clone(),
+                crate::model_route::PrefixDecision::Reroute(target) => {
+                    region = target;
+                    route.bare_model.clone()
+                }
+                crate::model_route::PrefixDecision::Rejected {
+                    requested,
+                    key_region,
+                } => {
+                    return openai_error(crate::error::GatewayError::BadRequest(
+                        crate::model_route::rejection_message(requested, key_region),
+                    ))
+                }
+            }
         }
     };
 

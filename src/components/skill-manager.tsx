@@ -43,9 +43,9 @@ import { cn } from "@/lib/utils";
  * 自带一整域文案与取数。塞进 `app-settings.tsx` 会让「应用级设置的唯一来源」这条
  * 边界失真，故独立成文件、只**借用同一渲染区**（PRD §8.1）。
  *
- * ## 形态与 `AppSettingsDialog` 同构
+ * ## 形态与 `ClientSettingsDialog` 同构
  *
- * **受控 Dialog**（`open` / `onOpenChange`，由顶栏 ⚙ 菜单驱动）：**懒挂载**，
+ * **受控 Dialog**（`open` / `onOpenChange`，由顶栏 ⚙「应用设置」抽屉里的入口驱动）：**懒挂载**，
  * 不开就不取数（清单要读盘 + 解析 frontmatter，常驻挂载会让每次启动都白付一次 IPC）。
  *
  * ## 门禁（PRD §10.4）

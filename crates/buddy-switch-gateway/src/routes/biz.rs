@@ -30,12 +30,13 @@
 
 use axum::body::Bytes;
 use axum::extract::{Path, State};
-use axum::http::{HeaderMap, StatusCode};
+use axum::http::{HeaderMap, Method, StatusCode};
 use axum::response::{IntoResponse, Response};
 
 use buddy_switch_core::modules::biz_allowlist::is_allowed_path;
+use buddy_switch_core::modules::region::Region;
 
-use crate::routes::relay::{self, RelayKind, RelayOutcome, RelayRequest};
+use crate::routes::relay::{self, BizMethod, RelayKind, RelayOutcome, RelayRequest};
 use crate::routes::{authenticate, json_response, openai_error};
 use crate::session_headers;
 use crate::state::GatewayState;
@@ -44,6 +45,7 @@ use crate::state::GatewayState;
 pub async fn handler(
     State(state): State<GatewayState>,
     Path(path): Path<String>,
+    method: Method,
     headers: HeaderMap,
     body: Bytes,
 ) -> Response {
@@ -52,7 +54,44 @@ pub async fn handler(
         Ok(record) => record,
         Err(error) => return openai_error(error),
     };
+    let Some(biz_method) = biz_method_of(&method) else {
+        return json_response(
+            StatusCode::METHOD_NOT_ALLOWED,
+            serde_json::json!({
+                "error": "业务转发只接受 GET / POST",
+                "method": method.as_str(),
+            }),
+        );
+    };
+    // 归属域由 Key 决定 ⇒ 转成显式参数交给共用实现（统一网关从**统一 Key 的
+    // `biz_namespace`** 取，见 `crate::unified::routes::biz`）。
+    biz_for_region(state, record.region, path, body, biz_method).await
+}
 
+/// 客户端方法 → 出站方法（**只允许 GET / POST**，其余明确 405）。
+///
+/// ⚠️ 这两种都要支持，不能只留 POST：白名单是**按前缀**收的，而同前缀下
+/// `/activity/growth/streak`、`/heatmap` **只有 GET** —— 一律 POST 出去会被上游
+/// 回 `404 page not found`（真实环境实测）。
+pub fn biz_method_of(method: &Method) -> Option<BizMethod> {
+    match *method {
+        Method::GET => Some(BizMethod::Get),
+        Method::POST => Some(BizMethod::Post),
+        _ => None,
+    }
+}
+
+/// 一趟业务转发（**认证之后的全部逻辑**）—— 产品线入口与统一网关**共用**这一份实现。
+///
+/// `state` **按值**传入（`Arc` 句柄，克隆极廉价）⇒ 函数体内既有的 `&state` 写法一行都不用改。
+/// 不接收 `headers`：认证之后一律用网关自己的账号凭据重建出站头（见 `build_auth_headers`）。
+pub async fn biz_for_region(
+    state: GatewayState,
+    region: Region,
+    path: String,
+    body: Bytes,
+    method: BizMethod,
+) -> Response {
     // ★ E1：计一次「今日代理请求」。放在**鉴权之后、白名单校验之前** ——
     //   KPI 问的是「今天有多少请求走到本机网关」，含被白名单拒绝的（那是真实流量）。
     //   ⚠️ 这是**业务转发**路径；LLM 路由（chat / messages）另有各自行 为，不在此计。
@@ -77,9 +116,10 @@ pub async fn handler(
     let outcome = relay::relay(
         &state,
         RelayRequest {
-            region: record.region,
+            region,
             kind: RelayKind::Biz {
                 path: full_path.clone(),
+                method,
             },
             // 业务请求没有「模型」概念：传空串 ⇒ 冷却/熔断按「无模型」维度记，**不与 LLM 混淆**。
             model: String::new(),

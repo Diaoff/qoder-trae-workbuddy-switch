@@ -18,6 +18,7 @@
 
 use serde_json::{json, Value};
 
+use crate::modules::config::RunFlagGuard;
 use crate::modules::trae::account::{self, Scope};
 use crate::modules::trae::checkin::{self, CheckinOptions};
 use crate::modules::trae::credits;
@@ -28,7 +29,7 @@ use crate::modules::trae::region::TraeRegion;
 use crate::modules::trae::settings;
 use crate::modules::trae::store;
 use crate::modules::trae::token_stats::TraeTokenScope;
-use crate::modules::trae::variant::TraeVariant;
+use crate::modules::trae::variant::{self, TraeVariant};
 
 /// 账号页需要的全部数据：账号视图 + 分组视图 + 概览计数（默认变体，兼容壳）。
 pub fn accounts_overview() -> Value {
@@ -525,6 +526,81 @@ pub async fn refresh_jwt_for(variant: TraeVariant, user_id: &str) -> Result<Valu
         "jwtExpHours": info.exp_hours,
         "accounts": account::list_account_views_for(variant),
     }))
+}
+
+/// 自动续期一轮的运行标志：同一时刻只允许一轮。
+///
+/// 为什么要它：续期是**换 token** 的操作，而 `refresh_jwt_for` 会用**最新的** refresh_token
+/// 落盘（上游可能轮换）。两轮重叠 ⇒ 第二轮可能拿着已被轮换掉的旧 token 去 exchange ⇒
+/// 白失败一次、还可能把失败写进冷却。启动补跑与排程循环在时间上确实可能撞上。
+static JWT_REFRESH_RUNNING: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// 自动续期一轮：把**即将到期**的 Trae 账号 JWT 用 `refresh_token` 换新。
+///
+/// ## 为什么需要这个函数（本轮修复的缺陷）
+///
+/// `refresh_jwt_for` 此前**只有手动入口**（账号卡片菜单的「刷新 JWT」）——
+/// 卡片上那枚「自动刷新 JWT」标记、以及添加账号对话框里「网页登录的账号可以自动续期」
+/// 这句承诺，**生产上没有任何代码去兑现**：账号只会停在原地，直到某次调用突然 401。
+/// 用户能观察到的就是「不会自动刷新，只能手动点」。
+///
+/// ## 口径（三条都别改）
+///
+/// - **遍历全部变体**（[`variant::all_specs`]，6 条 = 区域 × 程序位）：账号库**按变体分家**，
+///   只遍历国内两条会漏掉国际版与 TraeCode 的账号 —— 它们一样会过期，而漏掉的症状是
+///   「某些账号永远续不上」。
+/// - **只处理需要续期的账号**（[`account::needs_jwt_refresh`]，与卡片标记**同源**）：
+///   每次启动补跑都对全部账号发 exchange 是白打上游（多数账号离到期还有好几天）。
+/// - **逐账号失败不中断**：某个账号的 refresh_token 被吊销，不该让其余账号陪葬。
+pub async fn run_jwt_refresh_cycle() -> Value {
+    let Some(_guard) = RunFlagGuard::try_acquire(&JWT_REFRESH_RUNNING) else {
+        return json!({ "skipped": "already_running" });
+    };
+
+    let mut variants: Vec<Value> = Vec::new();
+    for spec in variant::all_specs() {
+        let target = spec.variant;
+        let accounts = account::load_accounts_for(target);
+        let mut results: Vec<Value> = Vec::new();
+        let (mut refreshed, mut skipped, mut failed) = (0usize, 0usize, 0usize);
+
+        for raw in &accounts.accounts {
+            let user_id = account::resolve_user_id(raw);
+            // uid 定不出来的记录**跳过**而不是报错：`refresh_jwt_for` 按 uid 定位账号，
+            // 没有 uid 就连写回都无从下手（这类脏记录由账号页自己提示重新登录）。
+            if user_id.is_empty() {
+                skipped += 1;
+                continue;
+            }
+            if !account::needs_jwt_refresh(raw) {
+                skipped += 1;
+                continue;
+            }
+            match account::refresh_jwt_for(target, &user_id).await {
+                Ok(_) => {
+                    refreshed += 1;
+                    results.push(json!({ "userId": user_id, "result": "refreshed" }));
+                }
+                Err(error) => {
+                    failed += 1;
+                    results.push(json!({ "userId": user_id, "result": "failed", "error": error }));
+                }
+            }
+        }
+
+        variants.push(json!({
+            "variant": target.as_str(),
+            "region": target.region().as_str(),
+            "total": accounts.accounts.len(),
+            "refreshed": refreshed,
+            "skipped": skipped,
+            "failed": failed,
+            "results": results,
+        }));
+    }
+
+    json!({ "variants": variants })
 }
 
 /// 清除冷却：给了 `userId` 就清单个，否则全清（默认变体，兼容壳）。
@@ -1134,6 +1210,133 @@ mod tests {
             // 空库 ⇒ 一个账号都没处理，也不能因此报错。
             assert_eq!(report.get("total").and_then(Value::as_u64), Some(0));
         }
+    }
+
+    /// 造一个 `hours` 小时后到期的 Trae JWT。
+    fn jwt_expiring_in_hours(uid: &str, hours: i64) -> String {
+        use base64::Engine as _;
+        let payload = json!({
+            "data": { "id": uid },
+            "exp": chrono::Utc::now().timestamp() + hours * 3600,
+        });
+        let encoded =
+            base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(serde_json::to_vec(&payload).unwrap());
+        format!("Cloud-IDE-JWT header.{encoded}.signature")
+    }
+
+    /// 自动续期必须覆盖**全部 6 条变体**（区域 × 程序位），且每段形状可辨认。
+    ///
+    /// 可证伪性（**本轮缺陷的护栏**）：
+    /// - 只遍历国内两条（写成 `TraeVariant::all()`）⇒ 变体清单断言红
+    ///   —— 国际版与 TraeCode 的账号会**永远续不上**；
+    /// - 不回报 `variant` ⇒ 第二条断言红（排查「哪条库没续」时这是唯一线索）；
+    /// - 把结果拼成裸对象（丢掉 `refreshed` / `skipped` / `failed`）⇒ 第三条红。
+    ///
+    /// 本用例在**空账号库**下跑（`TempEnv` 隔离了 home）⇒ 一个账号都不处理、
+    /// 不发任何网络请求，因此它只验形状与遍历口径，不验续期语义
+    /// （窗口判据在 `account::tests::needs_jwt_refresh_is_the_single_predicate_*`）。
+    #[tokio::test]
+    async fn jwt_refresh_cycle_covers_every_variant_with_identifiable_shape() {
+        let _env = crate::modules::trae::test_support::TempEnv::with_device_fixture();
+
+        let value = run_jwt_refresh_cycle().await;
+        let variants = value
+            .get("variants")
+            .and_then(Value::as_array)
+            .expect("必须回报 variants 数组");
+
+        // 字面量钉死：顺序 = `all_specs()` 的顺序（合并版排在遗留 TraeCode 之前）。
+        let labels: Vec<&str> = variants
+            .iter()
+            .filter_map(|item| item.get("variant").and_then(Value::as_str))
+            .collect();
+        assert_eq!(
+            labels,
+            vec![
+                "trae_work",
+                "trae_merged",
+                "trae_cn",
+                "global",
+                "global_trae_merged",
+                "global_trae_code"
+            ],
+            "续期必须覆盖全部 6 条变体（漏掉国际版 / TraeCode 会让那些账号永远续不上）"
+        );
+        let regions: Vec<&str> = variants
+            .iter()
+            .filter_map(|item| item.get("region").and_then(Value::as_str))
+            .collect();
+        assert_eq!(
+            regions,
+            vec!["cn", "cn", "cn", "global", "global", "global"]
+        );
+
+        for item in variants {
+            for key in ["total", "refreshed", "skipped", "failed", "results"] {
+                assert!(item.get(key).is_some(), "每段都要有 {key}: {item}");
+            }
+            // 空库 ⇒ 一个账号都没处理，也不能因此报错。
+            assert_eq!(item.get("total").and_then(Value::as_u64), Some(0));
+            assert_eq!(item.get("refreshed").and_then(Value::as_u64), Some(0));
+            assert_eq!(item.get("failed").and_then(Value::as_u64), Some(0));
+        }
+    }
+
+    /// ★ 自动续期**只碰需要续期的账号** —— 不需要的一律不发请求。
+    ///
+    /// 为什么这条非有不可：「每轮把全部账号都 exchange 一遍」在功能上看不出问题
+    /// （JWT 确实变新了），代价却是**白打上游 + 可能触发风控**，而且每轮都要
+    /// 走一次签名与写盘。判据只能靠「跳过的条数」观察。
+    ///
+    /// 可证伪性：删掉 `account::needs_jwt_refresh` 这道闸门 ⇒ 该账号会被交给
+    /// `refresh_jwt_for`，而它**没有 refresh_token** ⇒ 返回错误 ⇒ `failed` 变 1 ⇒ 红。
+    /// （刻意选「没有 refresh_token」的账号：它在发网络请求**之前**就返回错误，
+    /// 因此这条护栏不需要网络、也不会挂。）
+    #[tokio::test]
+    async fn jwt_refresh_cycle_skips_accounts_that_do_not_need_renewal() {
+        let _env = crate::modules::trae::test_support::TempEnv::with_device_fixture();
+
+        account::save_accounts_for(
+            TraeVariant::TraeWork,
+            &account::AccountsFile {
+                accounts: vec![account::RawAccount {
+                    name: "far-from-expiry".into(),
+                    user_id: Some("uid-far".into()),
+                    // 100h 后到期 ⇒ 不在 24h 告警窗口内。
+                    jwt: jwt_expiring_in_hours("uid-far", 100),
+                    refresh_token: None,
+                    added_at: None,
+                    updated_at: None,
+                    remark: None,
+                }],
+                ..Default::default()
+            },
+        )
+        .expect("写入账号库不应失败");
+
+        let value = run_jwt_refresh_cycle().await;
+        let segment = value
+            .get("variants")
+            .and_then(Value::as_array)
+            .and_then(|items| {
+                items
+                    .iter()
+                    .find(|item| item.get("variant").and_then(Value::as_str) == Some("trae_work"))
+            })
+            .expect("必须有 trae_work 段");
+
+        assert_eq!(segment.get("total").and_then(Value::as_u64), Some(1));
+        assert_eq!(
+            segment.get("skipped").and_then(Value::as_u64),
+            Some(1),
+            "不需要续期的账号必须计入 skipped"
+        );
+        assert_eq!(segment.get("refreshed").and_then(Value::as_u64), Some(0));
+        assert_eq!(
+            segment.get("failed").and_then(Value::as_u64),
+            Some(0),
+            "不该对不需要续期的账号发请求（闸门被删掉时这里会变成 1）"
+        );
     }
 
     #[test]

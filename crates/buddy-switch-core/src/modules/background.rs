@@ -113,7 +113,7 @@ pub enum TaskKind {
     /// ⚠️ **两宿主必须同步登记**（登记即执行 / P5 R9）：缺了它启动时不会补识别
     /// 「内置 / 陈旧」的清单，用户只能看到「内置」来源条。
     GatewayCatalogProbe,
-    /// 六 / 七类积分定时任务之一（按 `schedule_config` 的小时表，各自独立排程）。
+    /// 八类积分定时任务之一（按 `schedule_config` 的小时表，各自独立排程）。
     Scheduled(ScheduleTask),
 }
 
@@ -174,7 +174,7 @@ impl TaskSpec {
 ///
 /// ⚠️ **登记即执行**：新增「写状态 / 周期性」出口必须在此登记，否则不会被任何宿主启动。
 ///
-/// 六 / 七类定时任务由 [`TaskKind::Scheduled`] **逐条**登记：`schedule.rs` 的宏新增一类
+/// 八类定时任务由 [`TaskKind::Scheduled`] **逐条**登记：`schedule.rs` 的宏新增一类
 /// 定时任务后，必须同步在此补一行，否则两宿主的
 /// `background_tasks_cover_all_scheduled_tasks` 会变红。
 pub const TASKS: &[TaskSpec] = &[
@@ -246,6 +246,17 @@ pub const TASKS: &[TaskSpec] = &[
     TaskSpec {
         product: Product::Trae,
         kind: TaskKind::Scheduled(ScheduleTask::TraeCheckin),
+        interval: Duration::ZERO,
+    },
+    // ★ Trae 账号 JWT 自动续期（2026-10-14 新增，缺陷修复）。
+    //
+    // 它属于**「能力存在、类型全对、单测全绿，但生产上没有调用点」**这一类事故的
+    // 又一例：`refresh_jwt_for` 早就写好、卡片上「自动刷新 JWT」标记也早就摆着，
+    // 但唯一的入口是账号卡片菜单里的手动「刷新 JWT」——后台从没调用过它。
+    // 登记在表里才有宿主去起这个排程循环。
+    TaskSpec {
+        product: Product::Trae,
+        kind: TaskKind::Scheduled(ScheduleTask::TraeJwtRefresh),
         interval: Duration::ZERO,
     },
 ];
@@ -359,6 +370,14 @@ mod tests {
         assert!(
             has_task(Product::Workbuddy, TaskKind::AutoRotate),
             "缺自动轮换"
+        );
+        // ★ Trae JWT 自动续期（2026-10-14 缺陷修复）：界面早就承诺「可以自动续期」，
+        // 而唯一的调用点是手动菜单项 ⇒ 账号只会静默过期。删掉这条登记，排程循环
+        // 在两个宿主里都不会被启动，「自动续期」当场退回「只能手动刷新」。
+        assert!(
+            has_task(Product::Trae, TaskKind::Scheduled(ScheduleTask::TraeJwtRefresh)),
+            "缺 Trae JWT 自动续期 ⇒ 卡片上「自动刷新 JWT」标记与添加账号对话框\
+             「网页登录的账号可以自动续期」都变成空头承诺（凭据静默过期）"
         );
     }
 

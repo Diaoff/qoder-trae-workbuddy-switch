@@ -1,5 +1,9 @@
 # 多区域 WorkBuddy + API 网关改造概览
 
+> **时效**：本文记录「多区域 + 网关」那轮改造的收口状态，正文主体写于 2026-10-09 前后。
+> 此后新增的能力见下面「后续新增能力」一节；**最新真实状态以 `docs/redesign/COVERAGE-REPORT.md` 的「最新状态」段与 `README.md` 为准**。
+> 最后更新：2026-10-14。
+
 ## 已完成
 
 - 支持 WorkBuddy CN 与 WorkBuddy AI Global 两套区域配置、认证、账号库、会话、积分、签到、保活、模型目录与身份信息。
@@ -27,13 +31,28 @@
 
 ## 后续新增能力（2026-10 起，超出「多区域 + 网关」原范围）
 
-以下三项在本次改造之后新增，属**应用级 / 观测类**能力，与网关无关；细节见 `README.md`「功能」章节与 `.trellis/tasks/09-22-*` 下的 PRD。
+以下能力在本次改造之后新增，细节见 `README.md`「功能」章节、`docs/GATEWAY-CLIENT-INTEGRATION.md` 与 `docs/redesign/` 下的方案文档。
+
+### 应用级 / 观测类（与网关无关）
 
 - **客户端限流台账**：从客户端本地数据（`projects/**/*.jsonl` + 只读 `workbuddy.db` 的 `sessions` 表 + 账号库 `auth_raw.account.uid`）**只读** join，汇总「账号 × 模型 × 恢复时刻」；按 `(uid, model, reset_at)` 去重取最近，`active = reset_at > now`，仍受限置顶高亮。**不写库、不改账号状态、不代理流量**。排队类错误码 `6020` / `6022` 的精确语义文案**待拍板**，界面按 R7 纪律只标注保守词「排队中」并原样带出 code。
 - **Skill 管理**：扫描 `{data_dir}/skills/<dir>/SKILL.md` 的 frontmatter，清单化展示并逐项启用 / 停用（一并写齐 `user-invocable` / `disable-model-invocation`；**行级重写**、其余字节原样保留，含 CRLF/BOM）；支持跨区域（CN ↔ Global）搬迁补充（冲突保留目标侧）与从本地目录 / zip 导入。
 - **客户端设置托管**：统一读写**被代理的上游客户端**（WorkBuddy 两版 + Trae 四个程序位）各自的 `settings.json`——6 槽位声明式规格表 + 格式指纹（缩进单位 + 行尾）+ **手术式字节级补丁**（改动最小化）+ 备份 / 恢复 + 跨槽位差异；**运行中进程直接拒绝写入**。⚠️ 与本工具自己的代理设置（`~/.buddy-switch/**`）是两个不同的文件，仅名字相近。
+- **客户端会话监听（P15，默认关）**：在「设置 → 客户端」显式开启后，往 WorkBuddy 的 `settings.json` 装 hook，把客户端里发起的任务状态实时送进「会话悬浮窗」（接收端 `127.0.0.1:57893`）。装 / 卸都走客户端设置托管，不覆盖用户已有的其它 hook。决策落点：`DECISIONS.md` D43–D46。
+- **Trae JWT 自动续期**：新增第 8 类定时任务 `trae_jwt_refresh`。此前界面承诺「可自动续期」但唯一入口是手动菜单项 —— 根因是**后台任务登记表里没有这一条**，属本仓已出过四次的同类事故。
 
-## 验证结果
+### 网关类
+
+- **网关 API Key 三态动作**：吊销（置 `revoked_at`）· **恢复**（清 `revoked_at`）· 删除（**仅已吊销可删**）。**已吊销行必须同时给「恢复 + 删除」两个出口**，只留删除等于逼用户「删掉重建 + 改所有客户端配置」。恢复的判据锚**行为**（`verify` 重新通过），不是看字段被清。
+- **统一网关（第三个产品线，跨作用域）**：单端口 `57892`、单套 Key（`sk-uni-`）、单份 `/v1/models`，模型 id 带**命名空间前缀**（`{客户端名}-{区域}`，默认启用 `wb-cn` / `wb-global` / `trae-cn` / `trae-global` 四条）。解决「同名模型在不同平台/版本互相覆盖」的结构性问题。**默认关**；关掉不影响 57891 / 7864。架构见 `docs/redesign/UNIFIED-GATEWAY-ARCH.md`，交互见 `UNIFIED-GATEWAY-UI.md`，接入见 `docs/GATEWAY-CLIENT-INTEGRATION.md` §1.3。
+  - ⚠️ **三条硬边界**：命名空间解析**只做整段精确匹配**（`trae` / `traework` / `traecode` 互为前缀，前缀匹配会静默走错池）；裸模型名**一律 400**；`trae-*` 命名空间的 `/v1/responses` 返回 **501**（不静默降级到 chat）。
+- **会话关联升级（P14）**：会话副本的「已一致 / 待同步 / 有分歧 / 状态未知」由 **jsonl 内容指纹**派生（不是「谁的时间新」），并落成显式持久化的关联表（成员三态 + 逐成员对基线 + 落文件的乐观令牌）。方案见 `docs/redesign/P14-TASKS.md`。
+
+## 验证结果（**本轮，截至 2026-10-09**）
+
+> ⚠️ 下面的数字是**当轮**的实测值，不是今天的值（此后命令面与测试数都在增长）。
+> 当前门禁实测：`check:api` = routes 182 / call 172 / server 166 / invoke 190；`check:scope` = 291 passed / 0 failed。
+> 完整最新状态见 `docs/redesign/COVERAGE-REPORT.md`「最新状态」段。
 
 - `cargo build -p buddy-switch-core` / `-p buddy-switch-gateway` / `-p buddy-switch-server` / `-p buddy-switch-rust`：均通过，0 error / 0 warning。
 - `cargo test -p buddy-switch-core`：**224 passed / 0 failed**（lib）+ **8 passed / 0 failed**（`tests/switch_region_binding.rs`）。

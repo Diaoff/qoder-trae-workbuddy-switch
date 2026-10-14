@@ -129,6 +129,15 @@ export const zh = {
   "trae.stats.api.endpoint.copied": "Base URL 已复制",
   "trae.stats.api.endpoint.keyPrefix": "最近 Key 前缀",
   "trae.stats.api.endpoint.noKey": "尚无可用 Key",
+  /* 概览两行 —— 与 WB 侧 `wbStats.gateway.availableModels` / `modelCount` /
+     `poolEntries` / `poolEntryCount` / `view` **逐字同文案**（两平台的概览行是同一种东西）。
+     ⚠️ Trae **没有**「上游账号凭据 · 校验」那一行：WB 的探针是 `check_auth_permission`
+     （写权限自检），Trae 侧不存在对应命令 —— 缺能力不画空壳（§3.4 规则 1）。 */
+  "trae.stats.api.overview.models": "可用模型",
+  "trae.stats.api.overview.modelsCount": "{count} 个",
+  "trae.stats.api.overview.pool": "账号池",
+  "trae.stats.api.overview.poolCount": "{count} 个条目",
+  "trae.stats.api.overview.view": "查看",
 
   // ---- 操作结果提示 ----
   "trae.stats.api.toast.savedStarted": "网关已保存并启动",

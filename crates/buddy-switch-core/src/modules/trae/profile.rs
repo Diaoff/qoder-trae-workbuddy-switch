@@ -3537,7 +3537,7 @@ mod tests {
         assert_ne!(work_uid, cn_uid, "两条产品线必须各自读到自己的目录");
 
         // 落库形态：**完整请求头值**（含 `Cloud-IDE-JWT ` 前缀），与 OAuth 路径一致。
-        for (label, header) in [("Trae Work", &work_header), ("Trae CN", &cn_header)] {
+        for (label, header) in [("TraeWork CN", &work_header), ("TraeCode CN", &cn_header)] {
             assert!(
                 header.starts_with("Cloud-IDE-JWT "),
                 "{label} 的落库值必须含前缀，实际：{header}"
@@ -4543,7 +4543,7 @@ mod tests {
         );
 
         let error = import_local_login_for(variant).expect_err("两处都没有登录态，必须报错");
-        assert!(error.contains("Trae Work"), "错误必须指向该变体: {error}");
+        assert!(error.contains("TraeWork CN"), "错误必须指向该变体: {error}");
         assert!(
             error.contains(&grid.cells[1].dir.display().to_string()),
             "诊断应显示**导入侧实际选定**的目录（活跃的那个）: {error}"

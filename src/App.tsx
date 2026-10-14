@@ -21,6 +21,7 @@ import { useT } from "@/lib/i18n";
 import type { TranslationKey } from "@/locales/zh";
 import { planScopeShortcuts, scopeShortcutTarget } from "@/lib/scope-shortcuts";
 import { useShortcutsEnabled } from "@/lib/shortcut-preference";
+import { AUTO_CHECK_UPDATE_INTERVAL_MS, useAutoCheckUpdate } from "@/lib/update-preference";
 import { useScopeStatus } from "@/lib/use-scope-status";
 import { useCompanionVisibility } from "@/lib/use-companion-visibility";
 import { TRAE_VARIANTS_KEY, loadTraeVariantStatuses } from "@/lib/trae-variant-status";
@@ -264,6 +265,11 @@ function useTraeVariantRunning(active: boolean): Record<string, boolean> {
 
   useEffect(() => {
     if (!active) return;
+    // ⚠️ 这里刻意用 `refresh()`（强制）而不是 `revalidate()`：本 hook 是**唯一**的定时器
+    // 持有者，而它的 `freshMs` 恰好等于间隔（60s）。换成 `revalidate()` 后，tick 会因为
+    // 「距上次写入还差几十毫秒不到一个窗口」被窗口闸门吃掉 ⇒ 实际节奏退化成 **120 秒**，
+    // 且不报任何错。要用 `revalidate()` 就必须同时把 `freshMs` 调小于间隔
+    // （`use-scope-status.ts` 就是这么做的，那里有多个消费者、非去重不可）。
     const timer = window.setInterval(() => void refresh(), 60 * 1000);
     return () => window.clearInterval(timer);
   }, [active, refresh]);
@@ -397,8 +403,17 @@ function AppFooter({
   const t = useT();
   const [info, setInfo] = useState<UpdateInfo | null>(null);
   const [dialogOpen, setDialogOpen] = useState(false);
+  /* 「自动检查更新」开关（顶栏 ⚙ 抽屉里那一行）。关掉后**挂载时的首次检查也不做** ——
+     「自动」包含首查；想手动查的人走设置里的「检查更新」按钮。 */
+  const [autoCheck] = useAutoCheckUpdate();
 
   useEffect(() => {
+    if (!autoCheck) {
+      // 关掉自动检查时清空已有结果：否则上一次查到的新版本角标会一直挂着，
+      // 看起来像「关了还在查」。
+      setInfo(null);
+      return;
+    }
     let disposed = false;
 
     async function checkForUpdate() {
@@ -411,12 +426,12 @@ function AppFooter({
     }
 
     void checkForUpdate();
-    const timer = window.setInterval(() => void checkForUpdate(), 30 * 60 * 1000);
+    const timer = window.setInterval(() => void checkForUpdate(), AUTO_CHECK_UPDATE_INTERVAL_MS);
     return () => {
       disposed = true;
       window.clearInterval(timer);
     };
-  }, []);
+  }, [autoCheck]);
 
   const hasUpdate = Boolean(info?.ok && info.hasUpdate && info.latest);
   const productLabel = t(platformDescriptor(product).labelKey);

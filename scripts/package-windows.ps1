@@ -215,7 +215,7 @@ $signing = $false
 $cfgOverrides = [ordered]@{}
 
 # 用「能否读到内容」判断，而不是 Test-Path / FileInfo.Exists ——
-# 本工作区的元数据探测偶发假报 False（见 .workbuddy/memory/MEMORY-2-tooling.md）。
+# 本工作区的元数据探测偶发假报 False（见 .workbuddy-ai/memory/archive/legacy-workbuddy/MEMORY-2-tooling.md）。
 $keyText = $null
 try {
   $keyText = (Get-Content -LiteralPath $keyPath -Raw -ErrorAction Stop).Trim()

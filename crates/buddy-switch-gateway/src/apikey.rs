@@ -160,6 +160,31 @@ impl ApiKeyStore {
         self.save(&records)
     }
 
+    /// 撤销吊销（清 `revoked_at`，Key **重新可用**），不物理删除。
+    ///
+    /// 与 [`Self::delete`] 同构但方向相反：`delete` 只接受**已吊销**的 Key，
+    /// 本方法同样**只接受已吊销**的 Key —— 对一把本来就能用的 Key「恢复」是空操作，
+    /// 静默成功会让用户以为「刚才那把被吊销过、现在回来了」，而事实相反 ⇒ 明确报错。
+    pub fn restore(&self, id: &str) -> Result<(), String> {
+        let mut records = self.load();
+        let target_revoked = records
+            .iter()
+            .find(|record| record.id == id)
+            .map(|record| record.revoked_at.is_some());
+        match target_revoked {
+            None => return Err("API Key 不存在".to_string()),
+            Some(false) => return Err("该 API Key 未吊销，无需恢复".to_string()),
+            Some(true) => {}
+        }
+        for record in records.iter_mut() {
+            if record.id == id {
+                record.revoked_at = None;
+                break;
+            }
+        }
+        self.save(&records)
+    }
+
     /// 物理删除（仅允许删除**已吊销**的 Key）。
     pub fn delete(&self, id: &str) -> Result<(), String> {
         let mut records = self.load();
@@ -310,6 +335,58 @@ mod tests {
         let store = temp_store();
         let (record, _) = store.create("k".to_string(), Region::Cn);
         assert!(store.delete(&record.id).is_err());
+    }
+
+    #[test]
+    fn restore_revives_revoked_and_rejects_unknown_or_active() {
+        let store = temp_store();
+        let (record, plaintext) = store.create("restore".to_string(), Region::Cn);
+
+        // 未吊销 ⇒ 无需恢复（**响亮失败**，不静默成功 —— 否则用户会以为刚才那把被吊销过）。
+        assert_eq!(
+            store.restore(&record.id),
+            Err("该 API Key 未吊销，无需恢复".to_string())
+        );
+        assert_eq!(store.restore("missing"), Err("API Key 不存在".to_string()));
+
+        store.revoke(&record.id).unwrap();
+        assert!(store.verify(&plaintext).is_none(), "已吊销 Key 应拒绝");
+
+        store.restore(&record.id).unwrap();
+        // ★ 判据锚在**行为**上：恢复的语义是「Key 重新可用」。只断言 `revoked_at.is_none()`
+        //   会被「清了字段但鉴权仍拦」的实现骗过（永远绿）。
+        assert!(store.verify(&plaintext).is_some(), "恢复后 Key 必须重新可用");
+        let after = store
+            .list()
+            .into_iter()
+            .find(|item| item.id == record.id)
+            .expect("恢复不应删除记录");
+        assert!(after.revoked_at.is_none());
+        // 恢复只清 `revoked_at`：hash 与创建时间不得被牵动（否则等于换了一把 Key）。
+        assert_eq!(after.hash, record.hash, "恢复不得改动 hash");
+        assert_eq!(after.created_at, record.created_at, "恢复不得改动创建时间");
+
+        // 恢复后仍可再次吊销 → 再删除（两条出口互不排斥）。
+        store.revoke(&record.id).unwrap();
+        store.delete(&record.id).unwrap();
+        assert!(store.list().is_empty());
+    }
+
+    #[test]
+    fn restore_does_not_leak_or_touch_other_keys() {
+        let store = temp_store();
+        let (first, first_plaintext) = store.create("first".to_string(), Region::Cn);
+        let (second, second_plaintext) = store.create("second".to_string(), Region::Global);
+
+        store.revoke(&first.id).unwrap();
+        store.revoke(&second.id).unwrap();
+        store.restore(&first.id).unwrap();
+
+        // 恢复一把不得连带恢复另一把（错的实现常写成「无条件全清 revoked_at」）。
+        assert!(store.verify(&first_plaintext).is_some(), "被恢复的 Key 应可用");
+        assert!(store.verify(&second_plaintext).is_none(), "另一把必须仍是吊销态");
+        let second_after = store.list().into_iter().find(|item| item.id == second.id).unwrap();
+        assert!(second_after.revoked_at.is_some());
     }
 
     #[test]

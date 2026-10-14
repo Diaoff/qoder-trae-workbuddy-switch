@@ -1,8 +1,24 @@
 # Buddy Switch 架构与交互重构方案 v2.7
 
-> 状态：**已拍板（2026-10-03），可开工**；仍未动一行代码。
+> ## ★ 落地进度（2026-10-14 复核 —— **本方案已不再是纸面方案**）
+>
+> **P0–P12 全部已落地**（原「仍未动一行代码」的抬头已失效，2026-10-14 删除）。此后又追加了四期，正文尚未展开，见 §5 与各自文档：
+>
+> | 期 | 内容 | 状态 | 详情 |
+> |:--|:--|:--|:--|
+> | **P13** | 参考实现对齐（把外部参考项目里可纳入的功能排期） | 方案 | `P13-REFERENCE-PARITY.md` |
+> | **P14** | 会话跨客户端 + 关联表升级 | 方案（关联能力本仓已按**内容指纹派生**实现，见 `session.rs`） | `P14-TASKS.md` |
+> | **P15** | 外部 Agent 会话监听（悬浮窗数据源） | **S1–S4 已落地**（`agent_watch.rs` / `agent_hook_rx.rs` / `agent_hook_install.rs`）；真实现场验证待做 | `P15-SPIKE-RESULTS.md` |
+> | **P16** | **统一入口**（第三个产品线 · 跨作用域 · 命名空间） | **已落地**（core 命名空间表 + 网关产品线 + 三宿主 + 管理面四处 + 前端三张卡） | `UNIFIED-GATEWAY-ARCH.md` · `UNIFIED-GATEWAY-UI.md` |
+>
+> **当前门禁实测**：`check:api` = routes 182 / call 172 / server 166 / invoke 190；`check:scope` = 291 passed / 0 failed。
+> **最新覆盖度**：`COVERAGE-REPORT.md`「最新状态」段（本文件的 §6 验收度量表是**设计目标**，不是实测记录）。
+>
+> ---
+>
+> 状态：**已拍板（2026-10-03）**，且**P0–P12 已全部落地**。
 > 拍板结论：**28 条决策全部有结论** —— **D21 改为「进本期」**，其余 27 条按推荐。
-> 逐条结论与影响面见 `DECISIONS.md`。
+> 逐条结论与影响面见 `DECISIONS.md`（现行编号已到 **D46**）。
 > 前置：`docs/ia-redesign-proposal.md`（v1，同样未落地）。v2 **保留** v1 最核心的洞察——「把产品 × 区域合并成作用域、上提到顶部应用栏」，并在此基础上补两件 v1 没解决的问题：**页面级重复（5:5 复制）** 与 **新增平台的成本**。
 > 配套 demo：`docs/redesign/index.html`（可直接打开体验）。
 > **v2.1 修订**：经四位审查员（产品 / 代码事实 / 交互 / 安全）对 v2 做完整性与可扩展性审查后修订。
@@ -164,7 +180,7 @@
 
 | 层 | 名称 | 内容 | 载体 | 是否全局 |
 |:---|:---|:---|:---|:---|
-| **L0** | 应用 | 语言 / 外观 / 开机自启 / 自动更新 / **更新代理 / 最小化到托盘 / 关于 / 捐赠**（v2.1 补，初稿漏了这四项） | 顶栏溢出菜单；**捐赠**另有常驻入口 = 侧栏底部**版本号上方**（webui 下版本行不渲染，捐赠仍在） | 是 |
+| **L0** | 应用 | 语言 / 外观 / 开机自启 / 自动更新 / **更新代理 / 最小化到托盘 / 关于 / 捐赠**（v2.1 补，初稿漏了这四项） | 顶栏 ⚙「应用设置」**抽屉**（对齐原型 `openDrawer(body, "应用设置")`；2026-10-13 由下拉菜单改正）；**捐赠**另有常驻入口 = 侧栏底部**版本号上方**（webui 下版本行不渲染，捐赠仍在） | 是 |
 | **L1** | **作用域 Scope** | `平台 × 区域`，如 `wb-global` / `trae-cn` | **顶部应用栏** | 是，全应用唯一 |
 | **L2** | 目的地 Destination | 概览 / 账号 / 用量 / 网关 / 设置 | 侧栏（固定 5 项） | 是 |
 | **L3** | 视图参数 View param | 时间范围 / 数据来源 / 分布维度 / 合并开关 / 程序位 | 页面内参数条、卡片内按钮 | 否，页面私有 |
@@ -542,13 +558,17 @@ preferences.accountDisplayField   // "note" | "phone" | "nickname"
 - 详情（资源包明细、签到历史、会话、日志）全部移入**右侧抽屉**，不再堆在卡片上。
 - **程序位按钮常显**（不再按区域过滤）；未检测到的程序位置灰并带 tooltip 说明原因，点击引导到设置。这是对 §1.2 问题 1 的正面修复。
 
-#### ★ 客户端（程序位）清单：**现状 5 个 + 待新增 2 个**（v2.6 两度修正后的最终口径）
+#### ★ 客户端（程序位）清单：**现状 5 个（待新增的 2 个已于 2026-10-09 落地）**
 
-> ⚠️ **本节经过两次修正，最终口径如下（2026-10-03）**：
+> ⚠️ **本节经过三次修正，最终口径如下**：
 >
 > 1. v2.3 初稿写「程序位不是 3 个，是 5 个」—— 错在**措辞把「目标」写成了「现状」**；
 > 2. v2.6 我一度把它当成事实错误**整节删掉**，**也是错的** —— 用户澄清：
 >    **那正是「参考同源实现、把 VS Code 支持加进来」的目标**。
+> 3. **★ 2026-10-14 复核：B 表的两条目标已全部落地** ——
+>    `registry.ts::WORKBUDDY_PROGRAMS` 现在 5 条**全部 `status: "available"`**，
+>    `PLANNED_PROGRAMS` 已**为空**（机制保留）；后端 `programs.rs` 的
+>    `vscode_codebuddy_plugin` / `jetbrains_codebuddy_plugin` 两个 adapter 均已存在。
 >
 > ⇒ 正确写法是**分列「现状」与「待新增」**，并写清新增的**技术前提**。
 >
@@ -564,18 +584,31 @@ preferences.accountDisplayField   // "note" | "phone" | "nickname"
 | WorkBuddy 桌面 | WB | ✅ | ✅ | 是 |
 | CodeBuddy IDE（CN） | WB | ✅ | — | 是 |
 | CodeBuddy CLI | WB | ✅ | — | **否**（切换会中断当前 CLI 会话，且不自动重开） |
+| **VS Code CodeBuddy 扩展** | WB | ✅ | — | 见 `vscode_ext.rs` 模块头 |
+| **JetBrains CodeBuddy 插件** | WB | ✅ | — | 见 `jetbrains.rs` 模块头 |
 | TraeWork | Trae | ✅ | — | 见 `trae-module` |
 | TraeCode | Trae | ✅ | — | 见 `trae-module` |
 
-依据：`TokenStatsSource` 联合类型 = `"workbuddy" | "codebuddy-cli" | "codebuddy-ide" | "workbuddy-ai"`；
+依据：`src/lib/platforms/registry.ts::WORKBUDDY_PROGRAMS`（5 条，全部 `available`）；
+`crates/buddy-switch-core/src/modules/programs.rs` 的 5 个 adapter；
 `modules/mod.rs` 模块清单。
 
-**B. 待新增（参考同源实现的客户端覆盖，本仓尚未支持）**：
+> ⚠️ 注册表里还有第 6 个**只读探测槽** `vscode_cn_inject`（名「VS Code CodeBuddy 插件」）——
+> 它**只观测不切换**，与可切换的 `vscode_codebuddy_plugin`（名「VS Code CodeBuddy 扩展」）是两个槽位、
+> 两个显示名（**刻意不同**，否则用户分不清点哪个）。
 
-| 客户端 | 归属 | 技术前提 | 优先级 |
+**B. 待新增 —— ✅ 已于 2026-10-09 全部落地（本节保留为历史口径）**：
+
+| 客户端 | 归属 | 技术前提 | 状态 |
 |:---|:---|:---|:---|
-| **VS Code CodeBuddy 插件** | WB | 凭据存储 = VS Code **SecretStorage**（`state.vscdb` 的 ItemTable，`secret://<extensionId>.<key>`）。**本仓已有可复用实现**：`vscode_cn_inject.rs` 做的正是**同一套 Chromium / Electron 加密模型**（macOS Keychain · Windows DPAPI · Linux secret-tool） | **高** —— 路径清晰，复用现成模块 |
-| **JetBrains IDE 插件**（IDEA / PyCharm） | WB | **待调研**：JetBrains 用自有 Credential Store，与本仓已有的 Chromium 系加密模型**不同源** | 低 |
+| **VS Code CodeBuddy 插件** | WB | 凭据存储 = VS Code **SecretStorage**（`state.vscdb` 的 ItemTable，`secret://<extensionId>.<key>`）。**本仓已有可复用实现**：`vscode_cn_inject.rs` 做的正是**同一套 Chromium / Electron 加密模型**（macOS Keychain · Windows DPAPI · Linux secret-tool） | ✅ **已落地**（`vscode_ext.rs` + 注册表 `available`） |
+| **JetBrains IDE 插件**（IDEA / PyCharm） | WB | **待调研**：JetBrains 用自有 Credential Store，与本仓已有的 Chromium 系加密模型**不同源** | ✅ **已落地**（`jetbrains.rs` + 注册表 `available`） |
+
+> **B 表的落地也印证了本节的三条设计规则**：两个程序位是**注册表加行 + 一个凭据读写模块**加进去的，
+> 页面组件零改动 —— 这正是注册表机制要证明的价值。
+>
+> ⚠️ 但**会话复制仍然只有 WorkBuddy 桌面有**（A 表第 3 列）——
+> 「客户端能切换」**不等于**它能复制会话，前提是「有等价的数据三件套 + 云端归属」（§3.15 能力边界）。
 
 ⚠️ **这两个客户端当前不在注册表里。** 单列出来正是为了**避免两种误读**：
 既不能当成「现状」（会让实施者以为只差一个页面），也不能因为「现在没有」就删掉（那是需求）。
@@ -710,7 +743,7 @@ v2 初稿只定义了四态，但原型里**已经实现了**其中几种（§8 
 | **账号** | 列表 + 工具栏 + 抽屉 | 无 |
 | **会话**（v2.3 新增） | 跨账号会话副本的关联、同步与分歧处理（见 §3.15） | 客户端大卡片 Tab + 状态筛选 + 排序 |
 | **用量** | Token 统计 + 积分统计**合并**（现状是两个独立页，且各带 4 组视图参数） | 顶部子 Tab：趋势 / 模型 / 会话 / 积分 |
-| **网关** | 现状 6 卡堆叠 | 左侧子导航：概览 / 密钥 / 模型 / 账号池 / 日志 |
+| **网关** | 现状 6 卡堆叠 | 左侧子导航：概览 / 密钥 / 模型 / 账号池 / 请求代理 / 请求日志 / **统一入口**（v2.8 新增第 7 项，§3.20；Trae 页无「请求代理」，只渲染 6 项） |
 | **设置** | 现状 WB 7 卡 / Trae 10 组、长滚动、无二级导航 | 左侧子导航 **9 项**（见下） |
 
 **视图参数收敛**：每页**最多一条** `ViewParamBar`（分段按钮 + 下拉），全局维度（作用域）不再出现在页面内。现状 `CreditStatsPage` 同屏 4 组切换器、`TokenStatsPage` 4 组的问题由此解决。
@@ -1049,7 +1082,8 @@ UI 文案要显式写出这一点——用户对「同步」的最大恐惧就�
 |:---|:---|
 | 层级 | **不属于 L0–L3**。它是**独立浮层**，有自己的窗口；主窗口关闭后是否存活由用户设置决定 |
 | 入口 | 侧栏左下角图标 + 设置页开关（走 §2.7 的**用户偏好**，不是 `capabilities`） |
-| 数据 | **只读**订阅各来源状态；**不承载任何写操作** |
+| 数据 | **只读**订阅各来源状态；**不承载任何写操作**。三个来源：①本工具的**切号进度**（`switch-progress`）②本工具的**签到进度**（P15 补上，此前长期缺席）③**已开启监听的外部客户端会话**（P15，默认关）|
+| 外部会话来源（P15 已落地） | 客户端 hook 事件 → 本地接收端（`127.0.0.1:57893`，只绑回环）→ 会话状态机（`agent_watch`）。**默认关**（开启要写客户端 `settings.json`，须用户显式同意）；**不新开窗口、不引入独立进程、零周期任务**（合并进本窗口；决策见 `DECISIONS.md` **D43–D46**，验证见 `P15-SPIKE-RESULTS.md`）|
 | 状态 | 运行中 / 待确认 / 已完成 / 失败（与 §3.6 的状态语言对齐） |
 | 交互 | 拖动改位置；悬停出卡；点击跳转；托盘显示 / 隐藏 |
 | 无障碍 | 独立窗口 ⇒ **键盘可达性要单独验证**（不能假定主窗口的焦点管理适用） |
@@ -1520,6 +1554,53 @@ cc-switch 能改的只有 **LLM API 的 base URL** ⇒ **它接管的只有 LLM 
 
 ---
 
+### 3.20 统一入口：第三个产品线（v2.8 新增，2026-10-14，**已落地**）
+
+> **本节是摘要，不是规格。** 规格与逐条决策见 `UNIFIED-GATEWAY-ARCH.md`（架构 / 契约 / 分期）与 `UNIFIED-GATEWAY-UI.md`（三张卡 / 状态矩阵 / 验收钩子）。本节只回答「它是什么、为什么这么切、边界在哪」。
+
+#### 3.20.1 要解决的问题
+
+两个既有网关的**模型 id 不含来源**：同一个 `deepseek-v4.1-flash` 在 WB 国内 / WB 国际 / Trae 国内 / Trae 国际是**四条不同上游、不同倍率、不同上下文窗口**（`catalog.rs` 的两份兜底目录里 `context_window` 分别是 1M / 300k）。而客户端**按 id 去重** ⇒ 同名模型只能存在一条，会被互相覆盖。
+
+⇒ **这不是「客户端缺个去重开关」，而是「模型 id 里不含来源」的结构性问题。** 唯一同时满足「一个 provider」与「不互相覆盖」的做法是**让 id 自己携带来源**。
+
+#### 3.20.2 切法：新增产品线，不合并 router
+
+```
+一个 provider ──► 统一网关 127.0.0.1:57892（新增，默认关）
+sk-uni-…          /healthz /status /v1/models
+                  /v1/chat/completions /v1/messages /v1/responses /biz/*path
+                            │ 按模型名的命名空间前缀分派
+                ┌───────────┴───────────┐
+          WB 网关 57891            Trae 网关 7864
+```
+
+- **不合并 router**：三套网关的 `/v1/models`、`/v1/chat/completions` **逐字重叠**，axum 同路径 `merge` 是**运行期 panic**（有护栏测试 `two_products_own_overlapping_paths`）。⇒ 三个端口、三套 Key 库、三份配置。
+- **不复制状态**：两个 `shared_state()` 都是进程内单例 ⇒ 统一入口**直接借用**，零状态复制。它自己不持有账号池。
+- **命名空间 = `{客户端名}-{区域}`**：默认 4 条（`wb-cn` / `wb-global` / `trae-cn` / `trae-global`，由 `Scope::all()` **派生**），扩展层 4 条（`traework-*` / `traecode-*`，手写、默认关）。
+
+#### 3.20.3 三条硬边界（违反即静默出错）
+
+1. **解析只做整段精确匹配，禁止前缀匹配** —— `trae` / `traework` / `traecode` **互为前缀**，任何 `starts_with` 式推断都会把请求发给**另一套账号池**。同时禁止用 `TraeVariant::parse` / `TraeProgram::parse` 反推（那是**宽容**解析，会把 `traework-cn` 也吞进去）。
+2. **裸模型名一律 400**（附可用前缀清单）—— 不做「猜一个默认命名空间」的兜底：命名空间表一变，兜底就会**静默走错池**。
+3. **`/v1/responses` 在 Trae 侧不存在** ⇒ 统一入口对 `trae-*` 返回 **501**（明确「不支持」），**不许 404、不许静默降级到 chat**。
+
+#### 3.20.4 与既有能力的关系
+
+| 项 | 关系 |
+|:--|:--|
+| WB 的 `cn:` / `global:` 前缀 | **两套前缀不跨入口混用**。旧前缀属 WB 独立端口，语义是「跨域重路由」；命名空间属统一入口，语义是「选择来源」。统一入口不认 `cn:` / `global:` |
+| 模型禁用 | **三入口共用一份、按底层 region** —— 同一个上游模型只有一份禁用状态。代价是「统一入口禁 `wb-cn:x` 会同时影响 57891」⇒ UI 必须显式说明 |
+| `/biz/*path` | 命名空间**不出自请求体**（业务请求没有模型名）⇒ 来自**统一 Key 的 `biz_namespace` 字段**；读取侧**再查一遍**「在册 / 启用 / 授权」 |
+| 会话 / 账号页 / 用量页 / `SCOPES` | **全部不动**。新增的只是网关页子导航**第 7 项「统一入口」** |
+| 侧栏目的地 | **不新增**。依据：本仓既有先例——「Key 表与请求日志**不做版本过滤**，它们是跨版本的管理视图」。统一入口与它们同性质 |
+
+#### 3.20.5 加平台时的可扩展性（用户明确要求）
+
+`Product` / `Scope` / `ProductSpec` 三处声明一加 ⇒ 派生层命名空间**自动出现**，**UI 零改动**（三张卡全表驱动 + 按 `product` 分组）。必须手写的只有三件（**编译器盯着，漏了编译不过**）与词条。完整契约见 `UNIFIED-GATEWAY-ARCH.md` §11。
+
+---
+
 ## 4. 扩展 Playbook（**实测口径**，v2.2 修订）
 
 > v2 初稿说「新增平台 = 前端 2 处 + 后端 2 处」。经逐文件核查，**这个数字是错的**——
@@ -1650,6 +1731,10 @@ cc-switch 能改的只有 **LLM API 的 base URL** ⇒ **它接管的只有 LLM 
 | **P10** | **网关接入与模型自动识别**（v2.4 新增，§3.17）：绑定凭据后**自动探测**模型清单 + 四个触发时机 + 三级来源标注 + 接入向导的「识别」阶段 + 接入指引补「自动发现」说明 | 接入后**无需手动刷新**即有清单；**来源与时间可见**；失败**不阻断接入**且说明回落到什么；对外的 `/v1/models` 与识别清单**同源**；跨 scope 探测被拒 | 探测失败回落「内置」且**明确标注** ⇒ 行为可回退；手动刷新保留 |
 | **P11** | **模型禁用与接入说明**（v2.5 新增，§3.18）：按 scope 禁用 / 启用模型 + `/v1/models` 过滤 + 调用被禁模型走**既有拒绝路径** + 接入说明升级为「协议 Tab × 工具 Tab」 | **两个出口同时生效**：被禁模型既不出现在 `/v1/models`，直接调用也返回**明确说明「已禁用」**的错误；四种 `available × disabled` 组合在 UI 上可区分 | 禁用是本地偏好 ⇒ 清掉即恢复；接入说明为纯展示 |
 | **P12** | **请求代理与无缝切号**（v2.7 新增，§3.19；**D29 已拍板：默认关 + 不劫持**）：代理客户端业务请求 + 按请求选号 + 401 换号重试。**拆三步**：**P12a spike**（先查 C 能否配业务域 → 只配代理不装 CA → 装 CA 探证书固定）→ **P12b 最小可用**（单域 + 单账号 + 读操作直通）→ **P12c 完整**（选号 + 粘性 + 重试 + 日志 + 一键还原） | **P12a 是硬门槛**：**A / C 至少一条可用** 且客户端不报证书错误（**无 pinning**），否则**整个 P12 作废（无兜底）**；P12c：无缝切号可用 + **还原后无残留**（撤代理 / 移除 CA） | **默认关**；一键还原 ⇒ 随时回到原状；**P12a 失败即停**；**绝不劫持**（不改 hosts / 不做 DNS / 不做透明代理） |
+| **P13** | **参考实现对齐**（2026-10-13 新增）：把外部参考项目里**可纳入**的功能排进期次（含决策编号勘误表） | 本文档只做排期；验收项在各自 TASKS 文档里 | 纯文档，无代码回滚面 |
+| **P14** | **会话跨客户端 + 关联表升级**（2026-10-13 新增）：把「同一份会话在各账号的副本」升级为可持久化的关联模型（成员三态 / 逐成员对基线 / 落文件的乐观令牌） | 关联状态必须由**内容指纹**派生（不是「谁的时间新」）；分歧无法自动合并 ⇒ 必须先选保留哪一份 | 同步是**加法**（只追加不覆盖）⇒ 不会破坏已有内容 |
+| **P15** | **外部 Agent 会话监听**（2026-10-14 新增，D43–D46）：往客户端 `settings.json` 装 hook，把客户端里发起的任务状态送进 P9 悬浮窗。**形态 = 宿主内 + 零周期任务 + 复用 P9 窗口** | S1–S4 已落地；**真实现场验证**（装 hook → 收事件 → 四态渲染 → 点回原会话）待做 | 需用户**显式开启**、随时可关闭还原；装 / 卸都走客户端设置托管（写前备份 + 客户端运行中拒写） |
+| **P16** | **统一入口**（2026-10-14 新增，§3.20；详见 `UNIFIED-GATEWAY-ARCH.md`）：新增第三个网关产品线，单端口 `57892` + 单套 Key + 模型 id 带命名空间前缀，把两个产品线的模型合成**一个 provider** | 命名空间解析**整段精确匹配**（禁前缀）；裸模型名**一律 400**；`trae-*` 的 `/v1/responses` 返回 **501**；关掉统一入口**不影响** 57891 / 7864 | **默认关**；三个入口各自独立监听 ⇒ 关掉即回退；命名空间表由 `Scope::all()` 派生 ⇒ 加平台零 UI 改动 |
 
 **为什么 P1 必须先于 P2**：P1 只改状态容器、不动视觉，风险最低、收益最高。跳过 P1 直接做 P2，会同时引入「布局变更」与「状态变更」两个变量，回归时无法归因。
 
@@ -1711,7 +1796,12 @@ cc-switch 能改的只有 **LLM API 的 base URL** ⇒ **它接管的只有 LLM 
 
 ---
 
-## 7. 决策（共 34 条）—— **✅ 全部已确认（2026-10-03）**
+## 7. 决策（本节 34 条）—— **✅ 全部已确认（2026-10-03）**
+
+> ⚠️ **本节只覆盖 D1–D34。`DECISIONS.md` 的现行编号已到 D46**：
+> D35–D42 来自 2026-10-10 的对齐轮（Q1–Q7），D43–D46 来自 P15（外部 Agent 会话监听）。
+> **统一入口（P16）的 8 条决策目前只在 `UNIFIED-GATEWAY-ARCH.md` §10，尚未并入 `DECISIONS.md` 编号。**
+> 读决策时以 `DECISIONS.md` 为准。
 
 > ✅ **拍板结论：D21 改为「进本期」，其余 27 条全部按推荐。**
 > 逐条结论、理由与影响面见 **`DECISIONS.md`**（本节的每条「推荐」即为生效决定）。
@@ -1961,8 +2051,8 @@ B="file:///D:/_03_WorkBuddy/workbuddy-switch/docs/redesign/index.html"
 | 分布维度 | L3 | 页内 `ViewParamBar` | 页 state | 否 |
 | 合并范围 | L3 | 页内二态开关 | 页 state | 否 |
 | 程序位 | L3 | 账号卡片按钮组（操作处） | 操作参数 | 否 |
-| 应用级设置 | L0 | 侧栏底部 / 顶栏溢出菜单 | localStorage | 否 |
-| **更新代理 / 最小化到托盘 / 捐赠 / 关于**（v2.1 补） | L0 | 应用设置弹层；**捐赠**另有常驻入口 = 侧栏底部**版本号上方**（与顶栏 ⚙ 菜单那一项共用同一个受控弹层） | localStorage | 否 |
+| 应用级设置 | L0 | 侧栏底部 / 顶栏 ⚙「应用设置」抽屉 | localStorage | 否 |
+| **更新代理 / 最小化到托盘 / 捐赠 / 关于**（v2.1 补） | L0 | 应用设置抽屉（同一抽屉内分区块；原型该抽屉就是 `.dsec` + `.srow`）；**捐赠**另有常驻入口 = 侧栏底部**版本号上方**（与顶栏 ⚙ 抽屉里那一项共用同一个受控弹层） | localStorage | 否 |
 | **通知与 toast**（v2.1 补） | **L0** | 全局 toast 容器（`sonner`） | 瞬时，不入 URL | 否 |
 | **焦点管理**（v2.1 补） | **全局横切** | 抽屉 / 面板 / 菜单各自的焦点陷阱与归还 | 瞬时 | 否 |
 | **批量选择集**（v2.1 补） | L3 | 页内批量条 | 页 state，键 = `(scope, id)` | 否 |
@@ -2054,13 +2144,17 @@ B="file:///D:/_03_WorkBuddy/workbuddy-switch/docs/redesign/index.html"
 >
 > **维护规则（硬）**：任何新增的「本仓有 / 没有 X」陈述，都必须在此登记并给出依据（文件 + 符号）。
 > **没有依据的陈述不许写进方案。**
+>
+> **★ 2026-10-14 复核**：本附录建立于 2026-10-03，此后代码推进很快（P13–P16），
+> 下面 D-1/D-2/D-3/D-4 四组都做了**逐条复核并标注「现状」变更** —— 带「~~删除线~~」的是**已失效的旧结论**，
+> 保留它们是为了让「事实会变」这件事本身可见。
 
 ### D-1 客户端 / 程序位
 
 | 陈述 | 依据 |
 |:---|:---|
-| **现状只有**：WorkBuddy 桌面、CodeBuddy IDE（CN）、CodeBuddy CLI、TraeWork、TraeCode | `TokenStatsSource` 联合类型 = `"workbuddy" \| "codebuddy-cli" \| "codebuddy-ide" \| "workbuddy-ai"`；`modules/mod.rs` 模块清单 |
-| **待新增**：VS Code CodeBuddy 插件、JetBrains IDE 插件 | 模块清单**无**对应模块 ⇒ 当前不支持；但它们是**计划新增的目标**（§3.3 B 表），不是"本仓已有"。技术前提：VS Code 可复用 `vscode_cn_inject.rs`（同一套 Chromium/Electron 加密模型）；JetBrains 待调研 |
+| **现状（2026-10-14）**：WorkBuddy 桌面、CodeBuddy IDE（CN）、CodeBuddy CLI、VS Code CodeBuddy 扩展、JetBrains CodeBuddy 插件、TraeWork、TraeCode | `src/lib/platforms/registry.ts::WORKBUDDY_PROGRAMS`（5 条全 `available`，`PLANNED_PROGRAMS` 为空）+ `modules/programs.rs` 的 5 个 adapter |
+| ~~**待新增**：VS Code CodeBuddy 插件、JetBrains IDE 插件~~ → **已于 2026-10-09 落地** | 模块 `vscode_ext.rs` / `jetbrains.rs` 已存在；注册表两条 `status: "available"`（原先为 `planned`） |
 | Trae 侧有**两条程序位**：TraeWork / TraeCode | `trae::region::all_program_specs`（4 个取值 = 2 区域 × 2 程序位） |
 
 > ⚠️ **本表的读法**：每行必须**显式标注是「现状」还是「待新增」**。
@@ -2073,9 +2167,10 @@ B="file:///D:/_03_WorkBuddy/workbuddy-switch/docs/redesign/index.html"
 | 会话复制**只有 WorkBuddy 桌面**有 | `copy_sessions_for_switch` 的调用点在 `switch.rs:93`（WB 账号切换路径） |
 | CodeBuddy IDE / CLI **没有**会话复制 | 它们的切换是各自独立模块（`codebuddy_cn_ide.rs` / `codebuddy_cli.rs`） |
 | Trae **没有**会话能力 | `modules/trae/` 内无会话列表 / 复制 / 关联实现（命中的 `SessionDead` 是凭据失效错误类型） |
-| 本仓**只有「复制」没有「关联」** | 命令面只有 `list_sessions` / `copy_sessions`；无 session group / 增量同步 / 分歧处理命令 |
+| ~~本仓**只有「复制」没有「关联」**~~ → **2026-10-14 已失效：关联能力已落地** | `session.rs`：`list_replica_groups_for` / `group_fingerprint` / `sync_session_replica_for` / `sync_session_replicas_for` / `unify_replica_between_files` / `unify_session_replicas_for`。⚠️ **实现路线与 P14-TASKS 描述的「持久化关联表」不同** —— 本仓走**内容指纹派生**（每次重算，不落关联账本），所以**没有** `session_link.rs` |
 | 会话数据依赖 **WB 三件套** | `session.rs` 模块头：`projects/*.jsonl` + `workbuddy.db` sessions 表 + `edge-sync-mapping-v{N}.db` |
 | 会话复制**依赖云端归属机制** | `register_edge_sync_mapping_for` 写 `edge_sync_mapping`（决定复制后的会话归哪个账号） |
+| 安全同步是**加法**（只追加、不覆盖） | `append_delta_between_files`；分歧必须先选保留哪一份（`unify_*`，覆盖前自动备份） |
 
 ### D-3 网关
 
@@ -2084,14 +2179,16 @@ B="file:///D:/_03_WorkBuddy/workbuddy-switch/docs/redesign/index.html"
 | `POST /v1/messages` **已支持**（含流式） | `gateway/src/lib.rs:73`（WB）+ `trae/mod.rs:634`（Trae）；`routes/messages.rs` 247 行 |
 | 认证**同时接受** `x-api-key` 与 `Authorization: Bearer` | `gateway/src/routes/mod.rs:20` |
 | 模型清单三级来源**已存在** | `catalog.rs` 的 `CatalogSource::{Live, Cached, Builtin}` + `fetched_at` + `note` |
-| **模型禁用不存在** | 前端无命令、后端无对应函数（P11 需新增） |
+| ~~**模型禁用不存在**~~ → **2026-10-14 已失效：已落地** | `crates/buddy-switch-gateway/src/disabled_models.rs`；按 `(region, 模型id)` 存，**两个出口共用唯一判断点** `is_disabled`（`/v1/models` 过滤 + 调用路径硬拒 403 `model_disabled`） |
 | 已有「模型前缀路由 + 拒绝」机制可复用 | `model_route.rs` 的 `split_model_prefix` / `decide` / `rejection_message` |
+| **统一入口的命名空间表已存在** | `core/modules/gateway_namespace.rs`：派生层由 `Scope::all()` 生成（4 条）+ 扩展层手写（4 条，默认关）；**解析只做整段精确匹配** |
+| **网关共有三套产品线** | `gateway/src/{lib.rs(WB), trae/mod.rs(Trae), unified/(统一)}` + 三个宿主（`gateway_host.rs` / `trae_gateway_host.rs` / `unified_gateway_host.rs`） |
 
 ### D-4 前端组件
 
 | 陈述 | 依据 |
 |:---|:---|
-| `src/components/ui/` 实有 **16** 个 | 逐个 `ls` 核对（清单见附录 C） |
+| `src/components/ui/` 实有 **24** 个（2026-10-14 复核，原记录为 16 个） | 逐个 `ls` 核对；新增的含 `card-head.tsx` / `seg.tsx` / `empty-state.tsx` / `chart.tsx` 等（清单见附录 C） |
 | 本方案需补 **12 类**组件 | 附录 C |
 
 ---

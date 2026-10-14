@@ -122,10 +122,21 @@ pub const TRAE_FUNCTION_CHAT_V3: &str = "chat_v3";
 ///
 /// 判据是**程序**而不是区域：`TraeWork` / `Global` 都是 TraeWork 客户端，
 /// `Trae` / `GlobalTraeCode` 都是 TraeCode 客户端。
+///
+/// ## 合并后的客户端（issue #20）取 `chat_v3`
+///
+/// 合并版（CN `Trae CN`、国际 `Trae`）**就是** IDE 那条客户端的下一代构建
+/// （客户端合并时复用了 TraeCode 的目录名与 exe 名，见 `region` 模块头），
+/// 因此它的 chat 分组与 TraeCode 家族相同 = [`TRAE_FUNCTION_CHAT_V3`]。
+/// CN 那一格有实测依据（`Trae CN` 本体）；国际那格与其余国际程序位一样**未实测**，
+/// 按同一判据（程序家族）派生 —— 与「产品线不改变端点、region 才改变端点」同向。
 pub fn function_for(variant: TraeVariant) -> &'static str {
     match variant {
         TraeVariant::TraeWork | TraeVariant::Global => TRAE_FUNCTION_SOLO_WORK,
-        TraeVariant::Trae | TraeVariant::GlobalTraeCode => TRAE_FUNCTION_CHAT_V3,
+        TraeVariant::Trae
+        | TraeVariant::GlobalTraeCode
+        | TraeVariant::TraeMerged
+        | TraeVariant::GlobalTraeMerged => TRAE_FUNCTION_CHAT_V3,
     }
 }
 

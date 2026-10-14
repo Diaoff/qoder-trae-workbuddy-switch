@@ -40,7 +40,6 @@ use serde_json::{json, Value};
 use buddy_switch_core::modules::config as core_config;
 use buddy_switch_core::modules::trae::{settings as trae_settings, variant::TraeVariant};
 
-use super::mask_api_key;
 use crate::apikey::{constant_time_eq, sha256_hex};
 
 /// legacy 合成记录的固定 id（升级迁移的旧 Key 只可能有一条）。
@@ -83,8 +82,20 @@ pub struct TraeApiKeyRecord {
         deserialize_with = "variant_from_str"
     )]
     pub variant: TraeVariant,
-    /// 前缀（脱敏展示用），如 `sk-trae-a1b2`（新 Key）或 `sk-trae-0123…cdef`（legacy）。
+    /// 前缀（脱敏展示用），如 `sk-trae-a1b2`（新 Key）或 `sk-trae-0123`（legacy）。
+    ///
+    /// ⚠️ **不含省略号**：展示层统一按 `prefix••••••••suffix` 拼接（见
+    /// [`legacy_prefix`] 的说明）—— 这里若自带 `…` 会拼出双省略号。
     pub prefix: String,
+    /// ★ 尾部 4 位（如 `9f3c`）。列表显示 `prefix••••••••suffix`。
+    ///
+    /// 与 WorkBuddy 侧**同形**（`apikey.rs` 的 `ApiKeyRecord::suffix`，E3）：
+    /// 只靠前缀，用户无法确认「到底是哪一把」（同时建两把时前缀可能只差一两位）。
+    /// 4 位 + 前缀 4 位远不足以还原 32 位 secret ⇒ 不构成泄露。
+    ///
+    /// 旧台账 / 短 legacy Key 无此值 ⇒ 空串 ⇒ 展示层**省略尾部**（不报错、不补造）。
+    #[serde(default)]
+    pub suffix: String,
     /// `sha256(hex)` of 完整明文 Key。
     pub hash: String,
     pub created_at: i64,
@@ -101,6 +112,7 @@ impl TraeApiKeyRecord {
             "name": self.name,
             "variant": self.variant.as_str(),
             "prefix": self.prefix,
+            "suffix": self.suffix,
             "createdAt": self.created_at,
             "revokedAt": self.revoked_at,
             "revoked": self.revoked_at.is_some(),
@@ -112,6 +124,34 @@ impl TraeApiKeyRecord {
     pub fn is_revoked(&self) -> bool {
         self.revoked_at.is_some()
     }
+}
+
+/// legacy Key 的**展示前缀**：前 12 个字符（不足则全部）。
+///
+/// ## 为什么不直接用 `super::mask_api_key`
+///
+/// 那个函数返回的是**一整个脱敏串**（`前12位…末4位`），而展示层统一按
+/// `prefix••••••••suffix` 拼接 —— 两处各带一个省略号会拼出
+/// `sk-trae-0123…cdef••••••••cdef`。拆成前缀 / 后缀两段之后，legacy 记录与
+/// 新 Key 走**同一条**展示规则（`trae-api-key-table.tsx`），信息量不丢。
+///
+/// 按 `chars` 切而不是字节：legacy Key 由用户从 `settings.json` 手填，
+/// 未必是纯 ASCII（字节切片会在多字节边界 panic）。
+fn legacy_prefix(key: &str) -> String {
+    key.trim().chars().take(12).collect()
+}
+
+/// legacy Key 的**展示后缀**：末 4 个字符。
+///
+/// 与 `super::mask_api_key` 的短串分支一致：长度 ≤ 12 时返回空串
+/// （此时前缀已覆盖整把 Key，再给后缀等于把整串拼两遍）。
+fn legacy_suffix(key: &str) -> String {
+    let trimmed = key.trim();
+    let total = trimmed.chars().count();
+    if total <= 12 {
+        return String::new();
+    }
+    trimmed.chars().skip(total - 4).collect()
 }
 
 /// 读写 `api_gateway_keys.json` 的多 Key 存储。
@@ -146,7 +186,8 @@ impl TraeApiKeyStore {
             id: LEGACY_ID.to_string(),
             name: "旧版 Key（升级迁移）".to_string(),
             variant: TraeVariant::default(),
-            prefix: mask_api_key(trimmed),
+            prefix: legacy_prefix(trimmed),
+            suffix: legacy_suffix(trimmed),
             hash: sha256_hex(trimmed),
             created_at: 0,
             revoked_at: None,
@@ -190,11 +231,14 @@ impl TraeApiKeyStore {
         let secret = uuid::Uuid::new_v4().simple().to_string(); // 32 hex
         let plaintext = format!("sk-trae-{secret}");
         let prefix = format!("sk-trae-{}", &secret[..4]);
+        // ★ 尾部 4 位（32 hex 的末 4）—— 与 WorkBuddy 侧同形，用户靠它确认是哪一把。
+        let suffix = secret[secret.len() - 4..].to_string();
         let record = TraeApiKeyRecord {
             id: uuid::Uuid::new_v4().to_string(),
             name,
             variant,
             prefix,
+            suffix,
             hash: sha256_hex(&plaintext),
             created_at: core_config::now_ms(),
             revoked_at: None,
@@ -266,6 +310,35 @@ impl TraeApiKeyStore {
         self.save(&records)
     }
 
+    /// 撤销吊销（清 `revoked_at`，Key **重新可用**），不物理删除。
+    ///
+    /// 与 WorkBuddy 侧 [`crate::apikey::ApiKeyStore::restore`] **同构同语义**：
+    /// 只接受**已吊销**的 Key；不存在 / 未吊销一律 `Err`（静默成功会让用户误判状态）。
+    ///
+    /// ⚠️ 与 `delete` 一样走 `load()`：若台账为空则拿到的是**合成的 legacy 记录**。
+    /// legacy 记录 `revoked_at == None` ⇒ 对它调 `restore` 必然落到「未吊销」，**不会**
+    /// 顺手把 legacy 物化落盘（`save` 只在通过闸门之后才执行）—— 这是刻意的：
+    /// 一次失败的读操作不该改写用户的文件。
+    pub fn restore(&self, id: &str) -> Result<(), String> {
+        let mut records = self.load();
+        let target_revoked = records
+            .iter()
+            .find(|record| record.id == id)
+            .map(TraeApiKeyRecord::is_revoked);
+        match target_revoked {
+            None => return Err("API Key 不存在".to_string()),
+            Some(false) => return Err("该 API Key 未吊销，无需恢复".to_string()),
+            Some(true) => {}
+        }
+        for record in records.iter_mut() {
+            if record.id == id {
+                record.revoked_at = None;
+                break;
+            }
+        }
+        self.save(&records)
+    }
+
     /// 物理删除（仅允许删除**已吊销**的 Key）。
     pub fn delete(&self, id: &str) -> Result<(), String> {
         let mut records = self.load();
@@ -311,6 +384,9 @@ pub fn create_response(store: &TraeApiKeyStore, name: String, variant: TraeVaria
 #[cfg(test)]
 mod tests {
     use super::*;
+    /* `mask_api_key` 现在**只**被测试引用（生产路径改用 `legacy_prefix` / `legacy_suffix`
+       两段式，见那里的说明）⇒ import 放在测试模块里，避免 lib 构建出现 unused 警告。 */
+    use super::super::mask_api_key;
     use std::sync::{Mutex, MutexGuard};
 
     /// 串行化所有改 `BUDDY_SWITCH_HOME` 的用例（env 是进程级全局状态）。
@@ -396,8 +472,65 @@ mod tests {
             TraeVariant::TraeWork,
             "legacy 记录必须归 TraeWork —— 升级前网关只从 TraeWork 池选号"
         );
-        assert_eq!(record.prefix, mask_api_key(legacy_key));
+        // ★ legacy 的 prefix / suffix 是**分段**的（见 `legacy_prefix` / `legacy_suffix`）：
+        // 省略号由展示层统一补，这里若带 `…` 会拼出双省略号。
+        assert_eq!(record.prefix, "sk-trae-0123");
+        assert_eq!(record.suffix, "cdef");
+        // 分段后**信息量不丢**：与完整脱敏串（`mask_api_key`）逐段一致。
+        let masked = mask_api_key(legacy_key);
+        assert!(
+            masked.starts_with(&record.prefix),
+            "legacy 前缀必须与脱敏串同源：{masked}"
+        );
+        assert!(
+            masked.ends_with(&record.suffix),
+            "legacy 后缀必须与脱敏串同源：{masked}"
+        );
         assert_eq!(record.hash, sha256_hex(legacy_key));
+    }
+
+    /// ★ legacy 的展示串与「新 Key 的展示规则」逐字等价 —— 两段拼起来就是用户看到的东西。
+    ///
+    /// ⚠️ 两段各自 `isolated()` 会**死锁**：`EnvGuard` 持 [`ENV_LOCK`]，
+    /// 同一线程连续取两次必阻塞（本仓踩过「guard 自锁死」）。故第一段包在块作用域里，
+    /// 让 guard 在进入第二段之前 drop。
+    #[test]
+    fn legacy_mask_uses_the_same_display_rule_as_new_keys() {
+        {
+            let (guard, store) = isolated("legacy-display");
+            let legacy_key = "sk-trae-0123456789abcdef0123456789abcdef";
+            write_settings_api_key(&guard.home, legacy_key);
+
+            let record = store.verify(legacy_key).unwrap();
+            assert_eq!(
+                format!("{}••••••••{}", record.prefix, record.suffix),
+                "sk-trae-0123••••••••cdef"
+            );
+        }
+
+        // 短 legacy Key：前缀已覆盖整串 ⇒ 后缀必须为空（否则等于把整串拼两遍）。
+        let (guard, store) = isolated("legacy-short");
+        write_settings_api_key(&guard.home, "short");
+        let short = store.verify("short").unwrap();
+        assert_eq!(short.prefix, "short");
+        assert_eq!(short.suffix, "", "≤12 字符的 legacy Key 不该有后缀");
+    }
+
+    /// ★ 新 Key 的 `suffix` 恰好 4 位、且**就是明文的末 4 位**（供用户核对）。
+    ///
+    /// 与 WorkBuddy 侧 `apikey.rs` 的同类断言同形；4 位不足以还原 32 位 secret，
+    /// 所以「明文以 suffix 结尾」是**必然**而非泄露。
+    #[test]
+    fn new_key_suffix_is_the_last_four_of_the_plaintext() {
+        let (_guard, store) = isolated("suffix");
+        let (record, plaintext) = store.create("suffix".to_string(), TraeVariant::Trae);
+        assert_eq!(record.suffix.chars().count(), 4, "suffix 应恰好 4 位");
+        assert!(
+            plaintext.ends_with(&record.suffix),
+            "suffix 就是明文末 4 位（供用户核对）"
+        );
+        // 脱敏出口必须带上它 —— 否则前端拼不出 `prefix••••••••suffix`。
+        assert_eq!(record.masked()["suffix"], json!(record.suffix));
     }
 
     #[test]
@@ -547,6 +680,68 @@ mod tests {
         let (_guard, store) = isolated("unknown-op");
         assert_eq!(store.revoke("missing"), Err("API Key 不存在".to_string()));
         assert_eq!(store.delete("missing"), Err("API Key 不存在".to_string()));
+        assert_eq!(store.restore("missing"), Err("API Key 不存在".to_string()));
+    }
+
+    #[test]
+    fn restore_revives_revoked_and_rejects_active() {
+        let (_guard, store) = isolated("restore");
+        let (record, plaintext) = store.create("恢复".to_string(), TraeVariant::Trae);
+
+        // 未吊销 ⇒ 无需恢复（响亮失败，不静默成功）。
+        assert_eq!(
+            store.restore(&record.id),
+            Err("该 API Key 未吊销，无需恢复".to_string())
+        );
+
+        store.revoke(&record.id).unwrap();
+        assert!(store.verify(&plaintext).is_none(), "已吊销 Key 应拒绝");
+
+        store.restore(&record.id).unwrap();
+        // ★ 判据锚在**行为**上：恢复 = Key 重新可用（只看 `revoked_at` 会永远绿）。
+        assert!(store.verify(&plaintext).is_some(), "恢复后 Key 必须重新可用");
+        let after = store
+            .list()
+            .into_iter()
+            .find(|item| item.id == record.id)
+            .expect("恢复不应删除记录");
+        assert!(!after.is_revoked());
+        assert_eq!(after.variant, record.variant, "恢复不得改动归属程序位");
+        assert_eq!(after.hash, record.hash, "恢复不得改动 hash");
+    }
+
+    /// ★ 恢复一把不得连带恢复另一把（错的实现常写成「无条件全清 `revoked_at`」）。
+    #[test]
+    fn restore_touches_only_the_target_key() {
+        let (_guard, store) = isolated("restore-scope");
+        let (first, first_plaintext) = store.create("first".to_string(), TraeVariant::Trae);
+        let (second, second_plaintext) = store.create("second".to_string(), TraeVariant::TraeWork);
+        store.revoke(&first.id).unwrap();
+        store.revoke(&second.id).unwrap();
+
+        store.restore(&first.id).unwrap();
+        assert!(store.verify(&first_plaintext).is_some(), "被恢复的 Key 应可用");
+        assert!(store.verify(&second_plaintext).is_none(), "另一把必须仍是吊销态");
+    }
+
+    /// ★ legacy **仅在内存里合成**：一次失败的 `restore` 不得把 legacy 顺手物化落盘。
+    ///
+    /// 与 `revoke` / `delete`（通过闸门后必然 `save`）不同，恢复失败的路径**不能在
+    /// 用户磁盘上留下副作用** —— 否则用户只是点错一次，键库文件就被凭空创建。
+    #[test]
+    fn restore_on_legacy_only_state_does_not_materialize_the_file() {
+        let (guard, store) = isolated("restore-legacy-nofile");
+        write_settings_api_key(&guard.home, "sk-trae-dddddddddddddddddddddddddddddddd");
+        assert!(!store.path().exists(), "键库文件此时不应存在");
+
+        assert_eq!(
+            store.restore("legacy"),
+            Err("该 API Key 未吊销，无需恢复".to_string())
+        );
+        assert!(
+            !store.path().exists(),
+            "失败的恢复不得创建 / 改写用户的键库文件"
+        );
     }
 
     #[test]
@@ -558,7 +753,15 @@ mod tests {
         let fields: std::collections::BTreeSet<&str> =
             object.keys().map(String::as_str).collect();
         let expected: std::collections::BTreeSet<&str> = [
-            "id", "name", "variant", "prefix", "createdAt", "revokedAt", "revoked", "lastUsedAt",
+            "id",
+            "name",
+            "variant",
+            "prefix",
+            "suffix",
+            "createdAt",
+            "revokedAt",
+            "revoked",
+            "lastUsedAt",
         ]
         .into_iter()
         .collect();

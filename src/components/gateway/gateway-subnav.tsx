@@ -25,8 +25,16 @@
 import { SideSubnav, type SideSubnavItem } from "@/components/shell/side-subnav";
 import { useT } from "@/lib/i18n";
 
-/** 网关工作台的 6 个分区。 */
-export type GatewaySubnavId = "overview" | "keys" | "models" | "pool" | "proxy" | "logs";
+/** 网关工作台的 7 个分区。 */
+export type GatewaySubnavId =
+  | "overview"
+  | "keys"
+  | "models"
+  | "pool"
+  | "proxy"
+  | "logs"
+  // 统一网关（第三个产品线）：**跨作用域**的单一入口（与「请求日志不做版本过滤」同性质）。
+  | "unified";
 
 /** 唯一的一份子导航表（顺序即展示顺序）。 */
 export const GATEWAY_SUBNAV: readonly SideSubnavItem<GatewaySubnavId>[] = [
@@ -36,6 +44,7 @@ export const GATEWAY_SUBNAV: readonly SideSubnavItem<GatewaySubnavId>[] = [
   { id: "pool", labelKey: "gateway.subnav.pool" },
   { id: "proxy", labelKey: "gateway.subnav.proxy" },
   { id: "logs", labelKey: "gateway.subnav.logs" },
+  { id: "unified", labelKey: "gateway.subnav.unified" },
 ];
 
 /** 从 URL 段解析子导航（非法值 fail-closed 回 `overview`，不把任意串塞进 state）。 */
@@ -48,7 +57,7 @@ export function parseGatewaySubnav(raw: string | null): GatewaySubnavId {
 interface Props {
   active: GatewaySubnavId;
   onSelect: (id: GatewaySubnavId) => void;
-  /** 覆盖表（默认全 6 项）；Trae 页传去掉「请求代理」的表。 */
+  /** 覆盖表（默认全 7 项）；Trae 页传去掉「请求代理」的表（6 项）。 */
   items?: readonly SideSubnavItem<GatewaySubnavId>[];
   className?: string;
 }

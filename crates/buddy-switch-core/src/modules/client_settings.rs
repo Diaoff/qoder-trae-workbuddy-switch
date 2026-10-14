@@ -149,19 +149,24 @@ pub const CLIENT_SLOTS: &[ClientSlot] = &[
 
 /// 变体 → `(区域, 程序)`。
 ///
-/// ★ 与 `trae/variant.rs` 的 `as_str` / `region` **同源**，四处取值**一一对应**：
-/// `TraeWork=(Cn, TraeWork)`、`Trae=(Cn, TraeCode)`、`Global=(Global, TraeWork)`、
-/// `GlobalTraeCode=(Global, TraeCode)`。
+/// ★ 与 `trae/variant.rs` 的 `as_str` / `region` **同源**，六处取值**一一对应**：
+/// `TraeWork=(Cn, TraeWork)`、`Trae=(Cn, TraeCode)`、`TraeMerged=(Cn, Trae)`、
+/// `Global=(Global, TraeWork)`、`GlobalTraeCode=(Global, TraeCode)`、
+/// `GlobalTraeMerged=(Global, Trae)`。
 ///
-/// ⚠️ 程序位维度上返回的是**规范值（遗留标识）**：`TraeVariant::Trae` 也可以表示
-/// 合并版程序位 `Trae`（issue #20，两者共用变体），但本函数固定回 `TraeCode` ——
-/// 既有数据里写的就是它，改成 `Trae` 会让「读旧记录」与「写新记录」对不上。
+/// ⚠️ **本函数与 [`variant_for_program`] 互为逆**（有单测钉住双向一致）。
+/// 这个双射是刻意的：变体是快照目录 / Key 归属 / 网关日志分档的唯一派生来源，
+/// 一旦两个程序位共用一个变体，它们的**快照就会挤进同一个目录** ——
+/// 那正是 issue #20 用户报的「Trae 与 TraeCode 共用快照目录」。
 fn program_of_variant(variant: TraeVariant) -> (TraeRegion, TraeProgram) {
     match variant {
         TraeVariant::TraeWork => (TraeRegion::Cn, TraeProgram::TraeWork),
         TraeVariant::Trae => (TraeRegion::Cn, TraeProgram::TraeCode),
         TraeVariant::Global => (TraeRegion::Global, TraeProgram::TraeWork),
         TraeVariant::GlobalTraeCode => (TraeRegion::Global, TraeProgram::TraeCode),
+        // 合并后的客户端（issue #20）：各自对应**合并版**程序位。
+        TraeVariant::TraeMerged => (TraeRegion::Cn, TraeProgram::Trae),
+        TraeVariant::GlobalTraeMerged => (TraeRegion::Global, TraeProgram::Trae),
     }
 }
 
@@ -170,22 +175,20 @@ fn program_of_variant(variant: TraeVariant) -> (TraeRegion, TraeProgram) {
 /// 仓库里**没有** `variant_for_program`（`platform::variant_for_program` 是**私有**的），
 /// 故在此提供一份公开的、与 [`program_of_variant`] 互为逆的映射，并有单测钉住双向一致。
 ///
-/// ## ⚠️ 它**不是单射**（issue #20）
+/// ## 它是**单射**（issue #20 收尾）
 ///
-/// 合并版 `Trae` 与遗留 `TraeCode` 物理上是同一个客户端（同名 `Trae CN` / `Trae`），
-/// 因此映射到**同一个变体** —— 变体决定账号库 / 登录态快照 / Key 归属 / 网关日志分档，
-/// 给合并版另立变体会把同一个客户端的登录态拆成两套。
-/// ⇒ 「往返一致」只在**区域**维度上逐字成立；程序位维度上反解出的是**遗留标识**
-/// （规范值），见单测 `变体与区域程序双向一致`。
+/// 合并版 `Trae` 与遗留 `TraeCode` 候选名逐字相同（客户端合并时复用了目录名），
+/// 但**各自有自己的变体** —— 变体决定账号库 / 登录态快照 / Key 归属 / 网关日志分档，
+/// 两者共用一个变体会让快照挤进同一个目录（用户报障原文）。
+/// 因此六个 `(区域, 程序)` 组合 → 六个不同变体，往返逐字一致。
 pub fn variant_for_program(region: TraeRegion, program: TraeProgram) -> TraeVariant {
     match (region, program) {
         (TraeRegion::Cn, TraeProgram::TraeWork) => TraeVariant::TraeWork,
         (TraeRegion::Cn, TraeProgram::TraeCode) => TraeVariant::Trae,
-        // 合并版：与遗留 TraeCode 同一个客户端 ⇒ 同一个变体（见上）。
-        (TraeRegion::Cn, TraeProgram::Trae) => TraeVariant::Trae,
+        (TraeRegion::Cn, TraeProgram::Trae) => TraeVariant::TraeMerged,
         (TraeRegion::Global, TraeProgram::TraeWork) => TraeVariant::Global,
         (TraeRegion::Global, TraeProgram::TraeCode) => TraeVariant::GlobalTraeCode,
-        (TraeRegion::Global, TraeProgram::Trae) => TraeVariant::GlobalTraeCode,
+        (TraeRegion::Global, TraeProgram::Trae) => TraeVariant::GlobalTraeMerged,
     }
 }
 
@@ -1490,28 +1493,27 @@ mod tests {
     /// 变体 ↔ (区域, 程序) 必须一致 —— **合并版是刻意的多对一**（issue #20）。
     #[test]
     fn 变体与区域程序双向一致() {
-        // 正向：任何程序位 → 变体 → 反解，**区域**必须相同，且反解出的程序位
-        // 必须指向**同一个客户端**（同一个变体）。
+        // ★★ **双射**：六个程序位 ↔ 六个变体，往返**逐字**一致（issue #20 收尾后恢复）。
+        // 反例（改坏会红）：让合并版 `Trae` 与遗留 `TraeCode` 共用一个变体 ⇒
+        // 往返不再逐字一致，而且两条程序位的**快照会挤进同一个目录**
+        // （用户报障原文：「Trae 与 TraeCode 目前仍共用同一个快照目录」）。
         for region in TraeRegion::all() {
             for program in TraeProgram::all() {
                 let variant = variant_for_program(region, program);
-                let (back_region, back_program) = program_of_variant(variant);
-                assert_eq!(back_region, region, "{region:?}/{program:?} 往返后区域漂了");
-                // ⚠️ 这里断的是「同一个客户端」，**不是**「逐字相同」：
-                //    合并版 `Trae` 反解回来的是遗留标识 `TraeCode`（规范值），
-                //    逐字断言在合并版上必然失败。
                 assert_eq!(
-                    variant_for_program(region, back_program),
-                    variant,
-                    "{region:?}/{program:?} 往返后指向了别的客户端"
+                    program_of_variant(variant),
+                    (region, program),
+                    "{region:?}/{program:?} 往返不逐字一致"
                 );
             }
         }
         for variant in [
             TraeVariant::TraeWork,
             TraeVariant::Trae,
+            TraeVariant::TraeMerged,
             TraeVariant::Global,
             TraeVariant::GlobalTraeCode,
+            TraeVariant::GlobalTraeMerged,
         ] {
             let (region, program) = program_of_variant(variant);
             assert_eq!(variant_for_program(region, program), variant);
@@ -1519,15 +1521,20 @@ mod tests {
             assert_eq!(region, variant.region(), "{variant:?} 的区域漂了");
         }
 
-        // ★ 合并版与遗留 TraeCode 必须**共用同一个变体** —— 否则同一个客户端的
-        //   登录态会被拆进两套快照 / 两本账号库（不报错，只是数据串了）。
+        // ★ 六个程序位必须映射到**六个互不相同**的变体 —— 任何一个变体被两个程序位
+        //   共用，那两条程序位的快照目录就会重合（不报错，只是数据串了）。
+        let mut seen: Vec<TraeVariant> = Vec::new();
         for region in TraeRegion::all() {
-            assert_eq!(
-                variant_for_program(region, TraeProgram::Trae),
-                variant_for_program(region, TraeProgram::TraeCode),
-                "{region:?} 的合并版 Trae 与遗留 TraeCode 必须共用变体"
-            );
+            for program in TraeProgram::all() {
+                let variant = variant_for_program(region, program);
+                assert!(
+                    !seen.contains(&variant),
+                    "{variant:?} 被两个程序位共用 —— 它们的快照目录会重合"
+                );
+                seen.push(variant);
+            }
         }
+        assert_eq!(seen.len(), 6, "程序位数量与变体数量必须一致");
     }
 
     // ---- 格式指纹 --------------------------------------------------------

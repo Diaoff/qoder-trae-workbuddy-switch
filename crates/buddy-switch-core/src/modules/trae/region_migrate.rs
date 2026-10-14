@@ -118,7 +118,7 @@ pub fn merge_legacy_cn_into_region() -> Result<MergeReport, String> {
     let target_groups_path = paths::groups_file_for_region(TraeRegion::Cn);
 
     // 用「能否读到内容」判断存在性，而不是 `Path::exists()` ——
-    // 本工作区的元数据探测偶发假报（见 `.workbuddy/memory/MEMORY-2-tooling.md`）。
+    // 本工作区的元数据探测偶发假报（见 `.workbuddy-ai/memory/archive/legacy-workbuddy/MEMORY-2-tooling.md`）。
     let legacy_raw = std::fs::read_to_string(&legacy_accounts_path).ok();
     if legacy_raw.is_none() {
         return Ok(MergeReport::default());

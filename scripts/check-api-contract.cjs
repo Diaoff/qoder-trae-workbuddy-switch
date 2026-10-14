@@ -64,6 +64,8 @@ const ROUTE_EXEMPT_COMMANDS = new Set([
   "check_auth_permission",
   "reveal_app_in_finder",
   "relaunch_app",
+  "get_app_prefs",
+  "set_app_prefs",
   "get_launch_at_login_enabled",
   "set_launch_at_login_enabled",
 ]);

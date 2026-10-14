@@ -74,12 +74,44 @@
 //! **只区分 `SOLO_*` 与非 `SOLO_*`** ⇒ 任何非 `SOLO_*` 取值都落 TRAE 线（IDE 该用的
 //! 那条钥匙），所以推断错也**不会**把请求打到错的域或换错钥匙。
 //!
-//! ## 展示名：区域前缀 + 程序名
+//! ## 展示名：**国内版带 ` CN` 后缀、国际版不带后缀**
 //!
-//! 程序位的展示名按用户确认的写法（国际版带 `AI` 后缀，国内版不带）：
-//! `TraeWork` / `TraeCode` / `TraeWork AI` / `Trae AI`。
-//! 区域前缀（[`TraeRegion::display_name`]，`国内版` / `国际版`）由调用方按需拼接 ——
-//! 界面上是「国内版 TraeWork」「国际版 TraeWork AI」，日志里也能拼成无歧义的全名。
+//! ★ **六个名字全部取自客户端自己的字符串**，逐个可核（`product.json` 的
+//! `nameShort` / `nameAlias`）：
+//!
+//! | 程序位 | 国内版 | 来源 | 国际版 | 来源 |
+//! |:---|:---|:---|:---|:---|
+//! | TraeWork | `TraeWork CN` | `TRAE SOLO CN` 的 `nameAlias`（实测，见 [`super::variant`] 模块头） | `TraeWork` | 国际 TraeWork 客户端的 `nameAlias`（**本机实测**） |
+//! | TraeCode | `TraeCode CN` | `Trae CN` 客户端的 `nameAlias`（**本机实测**） | `TraeCode` | 按「国际不带后缀」规则**推断**（本机未装国际 TraeCode） |
+//! | Trae（合并版） | `Trae CN` | 合并客户端的 `nameShort`（**本机实测**） | `Trae` | **用户确认**（2026-10-13） |
+//!
+//! ⚠️ 只有「国际 TraeCode」那一格是**推断**（去掉 ` CN` 后缀），因为它没有可读的
+//! 客户端；其余五格都有实测字段或用户确认。推断依据是国际 TraeWork 的
+//! `nameAlias` 实测为 `TraeWork`（不带后缀）⇒ 同族规则。
+//!
+//! ⚠️ 更正记录（2026-10-13，用户更正）：此前的约定是「**国际版带 `AI` 后缀**」，
+//! 那是**错的** —— 它凭空造了 `Trae AI` / `TraeWork AI` 这类客户端根本不用的名字，
+//! 而且 `Trae AI` 会同时指国际 TraeCode 与国际合并版（撞名）。
+//! 六个名字**两两不同**有两条护栏（本模块的 `六个程序位的展示名两两不同` +
+//! 跨语言门禁 `check-scope-registry.cjs`，后者还要求与前端兜底表逐字一致）。
+//!
+//! ## 区域名：**客户端自己的产品名**（用户 2026-10-13 定）
+//!
+//! [`TraeRegion::display_name`] 返回 **`Trae CN`**（国内）/ **`Trae`**（国际）——
+//! 逐字取客户端在该区域的 `nameShort`（本机 `product.json` 实测）。
+//!
+//! ⚠️ **它与合并版程序位的展示名逐字相同**（`Trae CN` / `Trae`）—— 客户端的产品名
+//! 本就同时指这两件事，用户明确选择如此。它们分属**区域轴**与**程序位轴**：
+//! ★ 别把它们并进「六个展示名两两不同」那条护栏，★ 也别去重。
+//!
+//! ⚠️ 它的**已知成本**：文本层面再也无法用 `Trae CN` 当「程序位名」的标记 ——
+//! `oauth` 的「成功页不得出现程序位名」断言因此收窄到 `TraeWork CN` / `TraeCode CN`
+//! （见该用例的说明）。要恢复强度只能让区域名与程序位名不同。
+//!
+//! ⚠️ **组合**标签（作用域芯片 = 平台 + 区域词，见前端 `scope-chip.tsx`）用的是
+//! **跨平台**的区域**词**（`shared.region.version.*`，WorkBuddy 也读它）⇒
+//! 本值塞进那个组合会得到「Trae Trae CN」。Trae 侧因此另有独立词条
+//! （前端 `trae.region.*`），本函数只服务 Trae 自己的文案。
 //!
 //! ## 与 [`super::variant`] 的关系（过渡期）
 //!
@@ -111,11 +143,32 @@ impl TraeRegion {
         }
     }
 
-    /// 界面上的区域前缀（与 WorkBuddy 的「国内版 / 国际版」同形）。
+    /// Trae 侧的**区域名**（用户 2026-10-13 定：用客户端自己的产品名）。
+    ///
+    /// 取客户端在该区域的 `nameShort`（本机 `product.json` 实测）：
+    /// 国内版客户端叫 **`Trae CN`**、国际版叫 **`Trae`**（见 [`super::variant`] 模块头）。
+    ///
+    /// ## ⚠️ 已知的**刻意重名**（用户选择，不是事故）
+    ///
+    /// 这两个名字与**合并版程序位的展示名**逐字相同（`Trae CN` / `Trae`）——
+    /// 因为客户端的产品名本来就同时指这两件事。它们分属两根轴
+    /// （**区域** vs **程序位**），因此：
+    ///
+    /// - ★ **不要**把它们并进「六个展示名两两不同」那条护栏 —— 那条只管程序位轴；
+    /// - ⚠️ 判据层面有真实代价：`oauth` 的「成功页不得出现程序位名」那条断言
+    ///   原先用 `Trae CN` 当标记，现在它同时是区域名 ⇒ 只能用 `TraeWork CN` /
+    ///   `TraeCode CN` 当标记（见该用例的说明）。**这是本命名的已知成本。**
+    ///
+    /// ## ⚠️ 它**只用于 Trae 侧**
+    ///
+    /// 前端的**组合**标签（作用域芯片「平台 + 区域」，见 `scope-chip.tsx`）用的是
+    /// **跨平台**的区域词（`shared.region.version.*`，WorkBuddy 也读它）。
+    /// 把本值塞进那个组合会得到「Trae Trae CN」——
+    /// 因此 Trae 侧另有一对独立词条（`trae.region.*`），本函数只服务 Trae 自己的文案。
     pub fn display_name(self) -> &'static str {
         match self {
-            TraeRegion::Cn => "国内版",
-            TraeRegion::Global => "国际版",
+            TraeRegion::Cn => "Trae CN",
+            TraeRegion::Global => "Trae",
         }
     }
 
@@ -161,13 +214,31 @@ pub enum TraeProgram {
     /// 自 2026-10-13 起客户端已把它**并入** [`TraeProgram::Trae`]；本取值只服务
     /// **未升级的老版本**（本机 `D:\Programs\TRAE SOLO CN\` 已被卸载、只剩 debug.log）。
     TraeWork,
-    /// Trae 代码编辑器程序线（客户端 `Trae*`，官方别名 `TraeCode*`）。
+    /// Trae 代码编辑器程序线（客户端 `Trae CN` / `Trae`，官方别名 `TraeCode*`）。
     ///
-    /// ⚠️ 与 [`TraeProgram::Trae`] **是同一个客户端**（同名、同 userData、同 exe）——
-    /// 保留它是为了让合并前写入的数据（`trae_code` 标识、`profiles_trae_cn` 快照）
-    /// 继续可读。新增逻辑请优先用 [`TraeProgram::Trae`]。
+    /// ## 它与 [`TraeProgram::Trae`] 是**两条不同的程序位**，不是别名关系
+    ///
+    /// 用户确认的表述：**`TraeCode` 是 `TraeCode`，`Trae` 是 `Trae`（Work 与 Code 的
+    /// 合并版）**。两者在界面上是两枚独立按钮、两个独立标识（`trae_code` / `trae`），
+    /// 各有各的语义。
+    ///
+    /// ⚠️ 它们**候选名逐字相同**（`Trae CN` / `Trae`）纯属客户端的历史选择 ——
+    /// 合并版复用了 TraeCode 的目录名与 exe 名。因此在**已合并**的机器上两条程序位
+    /// 探测到的是同一个物理客户端；而在**未合并**的机器上，本取值就是那条遗留 IDE 客户端。
+    ///
+    /// ## ★ 但两者有**各自独立**的变体与快照目录（issue #20 收尾）
+    ///
+    /// 变体是快照目录 / Key 归属 / 网关日志分档的唯一派生来源。两条程序位共用变体时，
+    /// 它们的**登录态快照会挤进同一个目录**（用户报障原文：「Trae 与 TraeCode 目前仍
+    /// 共用同一个快照目录」）。因此合并版有自己的标识：`trae_merged`（CN）/
+    /// `global_trae_merged`（国际），快照目录相应为 `profiles_trae_merged` /
+    /// `profiles_global_trae_merged`。
+    /// ⇒ `变体 ↔ (区域, 程序位)` 是**双射**（见 `client_settings::variant_for_program` 的单测）。
     TraeCode,
     /// **合并后的单一客户端**（issue #20）：CN `Trae CN` / 国际 `Trae`。
+    ///
+    /// 它是 TraeWork 与 TraeCode **两条产品线合并的产物**，与 [`TraeProgram::TraeCode`]
+    /// 是两条不同的程序位（见该取值的说明）。
     ///
     /// ## 依据（本机实测，不是推断）
     ///
@@ -184,12 +255,14 @@ pub enum TraeProgram {
     ///
     /// 即：`TRAE SOLO CN`（TraeWork）被卸载、数据并入 `Trae CN`。
     ///
-    /// ## ⚠️ 它与 [`TraeProgram::TraeCode`] 同名 —— 这是刻意的
+    /// ## ⚠️ 它与 [`TraeProgram::TraeCode`] 候选名逐字相同 —— 这是客户端的历史选择
     ///
-    /// 合并后的客户端**就是** `Trae CN` / `Trae`，与旧 TraeCode 逐字同名，无法（也无需）
-    /// 用名字区分。因此两者共享候选名、共享 [`super::variant::TraeVariant`]
-    /// 与共享快照目录；本取值是**面向用户的正确名字**（客户端现在就叫 Trae，
-    /// 不再叫 TraeCode），`TraeCode` 则是历史标识的兼容别名。
+    /// 合并后的客户端复用了 TraeCode 的目录名 / exe 名（`Trae CN` / `Trae`），
+    /// 因此两者**无法用名字区分**。但它们是**两条不同的程序位**（用户确认：
+    /// 「TraeCode 是 TraeCode，Trae 是 Trae（Work 与 Code 的合并版）」）——
+    /// 界面上是两枚独立按钮、两个独立标识，只是共享同一份持久化身份与快照目录
+    /// （那由「同一台机器上它们是同一个物理客户端」这一事实决定）。
+    /// 本取值是**面向用户的正确名字**：客户端现在就叫 `Trae`，不再叫 `TraeCode`。
     Trae,
 }
 
@@ -246,7 +319,7 @@ pub struct ProgramSpec {
     pub region: TraeRegion,
     /// 所属程序线。
     pub program: TraeProgram,
-    /// 界面展示名（国际版带 `AI` 后缀），见模块头「展示名」。
+    /// 界面展示名（**国内版带 ` CN` 后缀、国际版不带后缀**），见模块头「展示名」。
     pub display_name: &'static str,
     /// 客户端 `product.json` 的 `nameAlias`（官方自称，用于诊断与核对）。
     pub name_alias: &'static str,
@@ -263,7 +336,7 @@ pub struct ProgramSpec {
 const CN_TRAE_WORK: ProgramSpec = ProgramSpec {
     region: TraeRegion::Cn,
     program: TraeProgram::TraeWork,
-    display_name: "TraeWork",
+    display_name: "TraeWork CN",
     name_alias: "TraeWork CN",
     package_type: Some("SOLO_CN"),
     data_dir_names: &["TRAE SOLO CN"],
@@ -274,7 +347,7 @@ const CN_TRAE_WORK: ProgramSpec = ProgramSpec {
 const CN_TRAE_CODE: ProgramSpec = ProgramSpec {
     region: TraeRegion::Cn,
     program: TraeProgram::TraeCode,
-    display_name: "TraeCode",
+    display_name: "TraeCode CN",
     name_alias: "TraeCode CN",
     package_type: Some("TRAE_CN"),
     data_dir_names: &["Trae CN"],
@@ -290,7 +363,7 @@ const CN_TRAE_CODE: ProgramSpec = ProgramSpec {
 const CN_TRAE: ProgramSpec = ProgramSpec {
     region: TraeRegion::Cn,
     program: TraeProgram::Trae,
-    display_name: "Trae",
+    display_name: "Trae CN",
     // 客户端 `product.json` 的 `nameAlias` 实测仍是 `TraeCode CN`
     // （合并版 `D:\Programs\Trae CN\resources\app\product.json`，本机 2026-10-13 读取）
     // —— 上游没改这个字段，我们不替它改。
@@ -304,7 +377,7 @@ const CN_TRAE: ProgramSpec = ProgramSpec {
 const GLOBAL_TRAE_WORK: ProgramSpec = ProgramSpec {
     region: TraeRegion::Global,
     program: TraeProgram::TraeWork,
-    display_name: "TraeWork AI",
+    display_name: "TraeWork",
     name_alias: "TraeWork",
     package_type: Some("SOLO_I18N"),
     data_dir_names: &["TRAE SOLO"],
@@ -323,7 +396,13 @@ const GLOBAL_TRAE_WORK: ProgramSpec = ProgramSpec {
 const GLOBAL_TRAE_CODE: ProgramSpec = ProgramSpec {
     region: TraeRegion::Global,
     program: TraeProgram::TraeCode,
-    display_name: "Trae AI",
+    // 国际版**不带后缀**（用户 2026-10-13 更正的规则）；保留家族名 `TraeCode` ——
+    // 简称 `Trae` 会与国际合并版撞名（Key 归属下拉里两个同名选项）。
+    //
+    // ⚠️ 本格是**六个展示名里唯一的推断值**：本机未装国际 TraeCode，读不到它的
+    // `nameAlias`，故按同族实测规律去掉 ` CN` 后缀（国际 TraeWork 的 `nameAlias`
+    // 实测为 `TraeWork`，不带后缀）。拿到真实客户端后应核对并更正本行。
+    display_name: "TraeCode",
     name_alias: "TraeCode（待实测）",
     package_type: None,
     data_dir_names: &["Trae"],
@@ -333,13 +412,17 @@ const GLOBAL_TRAE_CODE: ProgramSpec = ProgramSpec {
 
 /// **合并后的国际客户端**（issue #20）：客户端名 `Trae` / `Trae.exe`。
 ///
-/// 与 [`GLOBAL_TRAE_CODE`] 逐字段相同（同上：合并后的客户端就是那一个）。
-/// 展示名沿用「国际版带 `AI` 后缀」的用户约定（与 `TraeWork AI` / `Trae AI` 同款），
-/// 因此它与 [`GLOBAL_TRAE_CODE`] 的展示名也相同 —— 两者本就是同一个客户端。
+/// ★ **候选名由用户确认**（2026-10-13）：「国际版 `Trae` / `Trae.exe`、
+/// 国内版 `Trae CN` / `Trae CN.exe`」—— 国内那份另有 `product.json` 实测佐证。
+///
+/// 与 [`GLOBAL_TRAE_CODE`] 候选名逐字段相同（客户端合并时复用了目录名与 exe 名），
+/// 但**展示名不同**：本取值是合并版（客户端 `nameShort` = `Trae`）⇒ `Trae`；
+/// 而 [`GLOBAL_TRAE_CODE`] 保留家族名 ⇒ `TraeCode`。
+/// （规则：**国际版不带后缀**；国内版才带 ` CN`。）
 const GLOBAL_TRAE: ProgramSpec = ProgramSpec {
     region: TraeRegion::Global,
     program: TraeProgram::Trae,
-    display_name: "Trae AI",
+    display_name: "Trae",
     name_alias: "TraeCode（待实测）",
     package_type: None,
     data_dir_names: &["Trae"],
@@ -406,8 +489,11 @@ mod tests {
     fn 区域标识与展示名稳定() {
         assert_eq!(TraeRegion::Cn.as_str(), "cn");
         assert_eq!(TraeRegion::Global.as_str(), "global");
-        assert_eq!(TraeRegion::Cn.display_name(), "国内版");
-        assert_eq!(TraeRegion::Global.display_name(), "国际版");
+        // ⚠️ 区域名 = **客户端自己的产品名**（用户 2026-10-13 定），
+        // 与 `shared.region.version.*`（跨平台区域**词**）分工不同，见 `display_name` 的说明。
+        // 反例（改坏会红）：退回「国内版 / 国际版」⇒ 前端 Trae 侧的区域名会与后端漂开。
+        assert_eq!(TraeRegion::Cn.display_name(), "Trae CN");
+        assert_eq!(TraeRegion::Global.display_name(), "Trae");
         // 默认必须落在与改造前同一份账号库上，否则老用户会看到账号凭空消失。
         assert_eq!(TraeRegion::default(), TraeRegion::Cn);
     }
@@ -463,18 +549,95 @@ mod tests {
         }
     }
 
-    /// 展示名按用户确认的写法：国际版带 `AI`，国内版不带。
+    /// 展示名按用户确认的写法：**国内版带 ` CN` 后缀、国际版不带后缀**。
+    ///
+    /// ★ 命名规则 = **家族名 +（国内 ? ` CN` : 空）**。家族名取自客户端自己的
+    /// `nameAlias`（本机实测：国际 TraeWork 客户端 `nameAlias = "TraeWork"`、
+    /// CN 合并客户端 `nameAlias = "TraeCode CN"`），合并版则取 `nameShort`（`Trae CN`）。
     #[test]
     fn 程序位展示名符合约定() {
         use TraeProgram::{Trae, TraeCode, TraeWork};
         use TraeRegion::{Cn, Global};
-        assert_eq!(program_spec(Cn, TraeWork).display_name, "TraeWork");
-        assert_eq!(program_spec(Cn, TraeCode).display_name, "TraeCode");
-        assert_eq!(program_spec(Global, TraeWork).display_name, "TraeWork AI");
-        assert_eq!(program_spec(Global, TraeCode).display_name, "Trae AI");
-        // 合并后的客户端：客户端自己就叫 `Trae`（CN）/ `Trae`（国际，按约定带 AI 后缀）。
-        assert_eq!(program_spec(Cn, Trae).display_name, "Trae");
-        assert_eq!(program_spec(Global, Trae).display_name, "Trae AI");
+        assert_eq!(program_spec(Cn, TraeWork).display_name, "TraeWork CN");
+        assert_eq!(program_spec(Cn, TraeCode).display_name, "TraeCode CN");
+        assert_eq!(program_spec(Global, TraeWork).display_name, "TraeWork");
+        assert_eq!(program_spec(Global, TraeCode).display_name, "TraeCode");
+        // 合并后的客户端：客户端自己就叫 `Trae CN`（国内）/ `Trae`（国际）。
+        assert_eq!(program_spec(Cn, Trae).display_name, "Trae CN");
+        assert_eq!(program_spec(Global, Trae).display_name, "Trae");
+    }
+
+    /// ★ 合并版客户端的候选名必须与**用户确认的写法**逐字一致（2026-10-13）：
+    /// 「**国际版 `Trae` / `Trae.exe`、国内版 `Trae CN` / `Trae CN.exe`**」。
+    ///
+    /// ## 为什么必须钉住（而不是写在注释里）
+    ///
+    /// 候选名决定**探测结果**：它一漂，程序位就会指到错的客户端，而且**不报错**。
+    /// 反例（改坏会红）：把国内那份写成裸 `Trae`（那是**国际版**客户端的名字）⇒
+    /// 只装国际版客户端的机器上，国内程序位被判成「已安装」并指向国际版目录 ——
+    /// 这正是 issue #3 修掉过的那一类缺陷（当时的现场是裸名 `Trae` 挂在国内 TraeCode 上）。
+    ///
+    /// 国内那份另有本机 `product.json` 实测佐证（`nameShort = "Trae CN"`、
+    /// `applicationName = "trae-cn"`）；国际那份本机未装客户端，依据就是**用户确认**。
+    #[test]
+    fn 合并版候选名与用户确认的写法逐字一致() {
+        use TraeProgram::Trae;
+        use TraeRegion::{Cn, Global};
+        for (region, dir_name, exe_name) in [
+            (Cn, "Trae CN", "Trae CN.exe"),
+            (Global, "Trae", "Trae.exe"),
+        ] {
+            let spec = program_spec(region, Trae);
+            assert_eq!(
+                spec.data_dir_names.to_vec(),
+                vec![dir_name],
+                "{region:?} 合并版的 userData 名漂了（用户确认的是 `{dir_name}`）"
+            );
+            assert_eq!(
+                spec.exe_names.to_vec(),
+                vec![exe_name],
+                "{region:?} 合并版的 exe 名漂了（用户确认的是 `{exe_name}`）"
+            );
+            assert_eq!(
+                spec.proc_names.to_vec(),
+                vec![dir_name],
+                "{region:?} 合并版的进程名漂了"
+            );
+        }
+    }
+
+    /// ★★ **六个展示名必须两两不同**（issue #20 收尾）。
+    ///
+    /// ## 为什么这条非钉不可
+    ///
+    /// 展示名是**用户唯一能拿来区分程序位的东西**：Key 归属下拉、程序位按钮的
+    /// tooltip / `aria-label`、切换 toast 全靠它。两条程序位同名时，
+    /// 用户在下拉里看到两个一模一样的选项 —— 选错就是把登录态写进另一条线，
+    /// 而且**界面上看不出任何异常**。
+    ///
+    /// 本仓真实踩过两次：① 国际 TraeCode 曾叫 `Trae AI`，与合并版客户端
+    /// （`nameShort` = `Trae`）撞名；② 更正约定后若把国际 TraeCode 简称 `Trae`，
+    /// 仍会与合并版撞名 ⇒ 它必须**保留家族名**（`TraeCode`）。
+    ///
+    /// 反例（改坏会红）：把任意两条 `display_name` 改成同一个值 ⇒ 立刻变红。
+    #[test]
+    fn 六个程序位的展示名两两不同() {
+        let specs = all_program_specs();
+        assert_eq!(specs.len(), 6, "前置：应恰有 6 条程序位，否则本用例会恒真");
+        let mut seen: Vec<(&str, TraeProgram, TraeRegion)> = Vec::new();
+        for spec in specs {
+            if let Some((name, other_program, other_region)) = seen
+                .iter()
+                .find(|(name, _, _)| *name == spec.display_name)
+            {
+                panic!(
+                    "展示名 `{name}` 被两条程序位共用：{other_region:?}/{other_program:?} 与 {:?}/{:?} \
+                     —— 用户在下拉里分不清，选错会把登录态写进另一条线",
+                    spec.region, spec.program
+                );
+            }
+            seen.push((spec.display_name, spec.program, spec.region));
+        }
     }
 
     /// ★★ 合并版程序位（`Trae`）与遗留 TraeCode **必须指向同一个客户端**（issue #20）。
@@ -501,19 +664,17 @@ mod tests {
             // 「哪一枚按钮点下去写哪个客户端」这件事就没有载体。
             assert_ne!(merged.program, legacy.program);
             assert_ne!(merged.program.as_str(), legacy.program.as_str());
-            // 展示名：CN 上两者必须可区分（`TraeCode` vs `Trae`）。
+            // 展示名：两条程序位必须**可区分**（`TraeCode CN` vs `Trae CN`）。
             //
-            // ⚠️ Global 上**刻意不断言**不同：用户确认的约定是「国际版带 `AI` 后缀」，
-            //    而那条约定给国际版 TraeCode 的名字本来就是 `Trae AI`（见模块头）。
-            //    合并版与它是同一个客户端 ⇒ 同名是**正确的**，断言不同反而会红。
-            //    （Global 那一行因此会看到两枚 `Trae AI` 按钮，这是「3 程序位」形态的
-            //    必然结果，已在 `issue #20` 的设计选择里确认过。）
-            if region == TraeRegion::Cn {
-                assert_ne!(
-                    merged.display_name, legacy.display_name,
-                    "CN 的合并版与遗留位展示名相同 —— 界面上会分不清谁是谁"
-                );
-            }
+            // ⚠️ 更正记录：这段原先只对 CN 断言，理由是「约定说国际版带 `AI` 后缀，
+            //    而那条约定给国际 TraeCode 的名字本来就是 `Trae AI`，与合并版同名」。
+            //    那个约定是**错的**（2026-10-13 用户更正：国内带 `CN`、国际不带后缀），
+            //    国际行现在是 `TraeCode` vs `Trae` ⇒ **两个区域都必须不同**，
+            //    断言因此收紧到全部区域。
+            assert_ne!(
+                merged.display_name, legacy.display_name,
+                "{region:?} 的合并版与遗留位展示名相同 —— 界面上会分不清谁是谁"
+            );
         }
     }
 

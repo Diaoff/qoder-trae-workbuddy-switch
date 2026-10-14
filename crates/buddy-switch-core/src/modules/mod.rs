@@ -1,5 +1,16 @@
 pub mod account;
 pub mod activity;
+// P15 · 外部 Agent 会话监听：`hook 事件 → 会话状态` 的纯状态机 —— 悬浮窗的**第二个数据源**
+// （第一个是 `companion.rs` 消费的自家切换进度）。**零周期任务**：过期靠读取时惰性判定。
+pub mod agent_watch;
+// P15 · hook 的本地接收端（只绑 127.0.0.1）+ 客户端 hook 调用的 `hook` 子命令。
+pub mod agent_hook_rx;
+// P15 · 往客户端 `settings.json` 装 / 卸本工具的 hook（复用 `client_settings` 的
+// 备份 / 进程守卫 / 格式保持，**不新造写入路径**）。
+pub mod agent_hook_install;
+// L0 应用级偏好里**宿主也要读**的那一类（如「关闭窗口是否隐藏到托盘」）——
+// 纯渲染层的偏好留在 `localStorage`，别搬进来（见模块头）。
+pub mod app_prefs;
 pub mod at_rest;
 pub mod auth_file;
 pub mod backup;
@@ -50,6 +61,9 @@ pub mod programs;
 pub mod proxy;
 pub mod refresh;
 pub mod region;
+// 统一网关的**模型命名空间**（`wb-cn:` / `trae-global:` 前缀）——
+// 派生层由 `Scope::all()` 生成 ⇒ 新增平台时命名空间自动出现；详见模块头。
+pub mod gateway_namespace;
 pub mod rotate;
 pub mod schedule;
 pub mod scheduler;

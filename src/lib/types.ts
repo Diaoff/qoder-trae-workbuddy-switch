@@ -232,24 +232,11 @@ export interface SessionReplica {
  * - 上次一致点 = 我们**记录过**的那次逐行相同（历史事实）。
  *
  * 两者不一致恰恰是有信息量的 —— 说明有人改写过更早的内容。
+ *
+ * ⚠️ 前端拿到的是**结论**（见 [`SessionReplicaBaseline`] / `SessionReplicaContent.sinceBaseline`）：
+ * 「基线还是不是当前内容的真前缀」这一验证需要逐行 hash，而那是**后端**的活
+ * （`session::derive_content_status`）—— 后者已随 `list_session_replicas` 一起回。
  */
-export interface SessionBaseline {
-  /** 一端副本的会话 id。 */
-  a: string;
-  /** 另一端副本的会话 id。 */
-  b: string;
-  /** 建立时刻（ms）。 */
-  createdAt: number;
-  /** 一致点的行数。 */
-  lineCount: number;
-  /**
-   * 前 N 行的逐行 hash（与 `SessionFingerprint.prefixHashes` **同一算法、同一上限**）。
-   *
-   * 用途：**验证**「这条基线是不是当前内容的真前缀」—— 验证不过就不能说
-   * 「自上次一致以来新增了几条」（见 `deriveBaselineDelta`）。
-   */
-  prefixHashes: number[];
-}
 
 /**
  * P14 S4a · 插件侧客户端的会话仓标识（与 core `ExtClient::as_str` **同取值**）。
@@ -372,10 +359,53 @@ export interface SessionReplicaGroup {
    */
   previewToken: string;
   /**
-   * ★ P14 S2：本组**两端成员都在组内**的「上次一致点」，按 `createdAt` 升序。
-   * 无基线 ⇒ 空数组（**不臆造**一个一致点）。
+   * ★ P14 S2：本组**最近一次**一致点（两端成员都在组内；并列时按 `a`/`b` 字典序取最大）。
+   * 无基线 ⇒ `null`（**不臆造**一个一致点）。
    */
-  baselines: SessionBaseline[];
+  baseline: SessionReplicaBaseline | null;
+  /**
+   * ★ **内容级状态** —— 由后端按 jsonl 指纹算完再回（`session::derive_content_status`）。
+   *
+   * ## 为什么结论在后端
+   *
+   * 前端要自己算，就得拿到**每个副本**的前 512 行逐行 hash —— 真机账本 25,487 个副本
+   * ⇒ 约 **200 MB** JSON 过 IPC，再在 JS 里逐对比较（O(N²·512)）⇒ 会话页永远转圈。
+   * 判据本身只有**每组几个整数**，所以留在 core 算完。
+   *
+   * ⚠️ **不得**用 `updatedAt` 派生这里的任何字段（`P8-ARCH.md` §1.2「时间新 ≠ 内容新」）。
+   */
+  content: SessionReplicaContent;
+}
+
+/** 组内一条「上次一致点」的展示形态（**不含逐行 hash** —— 校验在 core 做）。 */
+export interface SessionReplicaBaseline {
+  /** 一端副本的会话 id。 */
+  a: string;
+  /** 另一端副本的会话 id。 */
+  b: string;
+  /** 建立时刻（ms）。 */
+  createdAt: number;
+  /** 一致点的行数。 */
+  lineCount: number;
+}
+
+/**
+ * 一组副本的**内容级结论**（后端 `session::derive_content_status` 的产物）。
+ *
+ * - `status`：`latest`（全一致）/ `behind`（有人多写了）/ `diverge`（各自改过）/
+ *   `unknown`（**有副本取不到指纹** ⇒ 诚实标注，**不臆造**）；
+ * - `commonPrefix`：全体一致的公共前缀行数（`unknown` ⇒ `null`）；
+ * - `deltas`：各副本相对共同旧版的**新增行数**（键 = `sessionId`）；
+ * - `latestLineCount`：行数最多的副本的行数（`unknown` ⇒ `null`）；
+ * - `sinceBaseline`：相对「上次一致点」的增量（键 = `sessionId`；`null` = 该副本
+ *   改写过更早的内容，「新增几条」这个问题**本身不成立**；不在表里 = 与基线无关）。
+ */
+export interface SessionReplicaContent {
+  status: "latest" | "behind" | "diverge" | "unknown";
+  commonPrefix: number | null;
+  deltas: Record<string, number>;
+  latestLineCount: number | null;
+  sinceBaseline: Record<string, number | null>;
 }
 
 /** `list_session_replicas` 的返回（`source: "empty"` = 无可用登记 ⇒ 结构化空态）。 */
@@ -880,6 +910,8 @@ export interface ScheduleConfig {
   cat_hours: number[];
   /** Trae 分区自动签到的小时点（第二条产品线，签的是 Trae 自己的区域账号库）。 */
   trae_checkin_hours: number[];
+  /** Trae 账号 JWT 自动续期的小时点（第二条产品线）。 */
+  trae_jwt_refresh_hours: number[];
   /** 自动签到开关（签 WorkBuddy 的账号）。 */
   checkin_enabled: boolean;
   /** 派猫猫旅行开关。 */
@@ -900,6 +932,15 @@ export interface ScheduleConfig {
    * 界面因此**不得**把它显示成默认开启。
    */
   trae_checkin_enabled: boolean;
+  /**
+   * Trae 账号 JWT 自动续期开关（用 `refresh_token` 换新 JWT）。
+   *
+   * ⚠️ **默认 `true`**，与上面那条 Trae 开关**方向相反**（不是笔误）：
+   * `refresh_token` 的唯一用途就是续期，而它是用户走「网页登录」添加账号时明确交出来的
+   * （界面原话：「网页登录的账号可以自动续期」）。默认关闭等于承诺了却不兑现 ——
+   * 账号静默过期、网关调用突然 401。用户仍可在此关掉。
+   */
+  trae_jwt_refresh_enabled: boolean;
   /** 活跃上报每账号每天的对话次数（后端将 0 / 负数归一为 1）。 */
   activity_report_count: number;
 }
@@ -1179,6 +1220,21 @@ export interface GithubConfig {
   owner?: string;
   repo?: string;
   proxy?: string;
+}
+
+/**
+ * 应用级偏好里**宿主也要读**的那一类（`buddy-switch-core::modules::app_prefs`）。
+ *
+ * ⚠️ 纯渲染层的偏好**不在这里**：主题 / 语言 / 快捷键 / 自动检查更新走 `localStorage`
+ * （判据是「谁需要读它」）。后端一律返回完整对象（缺失字段已按默认值补齐），
+ * 因此这里的字段是必填的 —— 前端不再自己兜默认值，免得两处默认值漂移。
+ *
+ * 字段名与后端**逐字一致**（snake_case，同 `ScheduleConfig` 等）：本仓对后端配置对象
+ * 不做 camelCase 适配，类型即线上形状。
+ */
+export interface AppPrefs {
+  /** 关闭窗口时隐藏到托盘并保持后台运行；false = 关闭即退出。 */
+  close_to_tray: boolean;
 }
 
 export interface UpdateInfo {
@@ -1585,19 +1641,6 @@ export interface AutoBackupEntry {
 /** 自动备份配置（**默认开**；可在设置里关掉，§7 #7）。 */
 export interface AutoBackupConfig {
   enabled: boolean;
-}
-
-/**
- * P8 · 一个会话的**内容指纹**（组状态派生的数据源）。
- *
- * ⚠️ 这是**内容级**判据 —— **不得**用 `updatedAt` 派生「落后 / 分叉」
- * （`P8-ARCH.md` §1.2：「时间新 ≠ 内容新」）。
- */
-export interface SessionFingerprint {
-  /** **完整**行数（≈ 消息数：jsonl 每行一条 `type:"message"`）。 */
-  lineCount: number;
-  /** 前 N 行（后端上限 512）的逐行 hash —— **不含正文**，仅用于算公共前缀。 */
-  prefixHashes: number[];
 }
 
 /**

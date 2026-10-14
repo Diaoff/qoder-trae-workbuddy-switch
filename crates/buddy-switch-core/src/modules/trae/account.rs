@@ -330,12 +330,7 @@ pub fn account_view(
         .as_ref()
         .map(|token| !token.is_empty())
         .unwrap_or(false);
-    // 自动刷新条件：有 refresh_token 且 JWT 在 24h 内到期（或无 exp 无法判定）。
-    let needs_refresh = has_refresh_token
-        && info
-            .exp_hours
-            .map(|hours| hours <= crate::modules::trae::TRAE_JWT_WARN_HOURS)
-            .unwrap_or(true);
+    let needs_refresh = needs_jwt_refresh(account);
 
     let now = chrono::Local::now().timestamp();
     let active_cooldown = cooldown.filter(|entry| {
@@ -1699,6 +1694,37 @@ fn ensure_refreshed_uid_matches(expected: &str, actual: Option<&str>) -> Result<
     }
 }
 
+/// 该账号**是否需要（也允许）自动续期**。
+///
+/// 两条同时成立才算：
+/// 1. **有 `refresh_token`** —— 没有它就没有可换的东西（代理抓取 / 手动粘贴得到的账号
+///    只能重新登录），这一条同时回答了「能不能续期」；
+/// 2. **JWT 剩余有效期 ≤ [`TRAE_JWT_WARN_HOURS`]（24h），或解析不出 `exp`**。
+///
+/// ## ⚠️ 「解析不出 `exp`」按**需要续期**处理（不是「不用管」）
+///
+/// 拿不到到期时间**不等于**凭据还有效。按「不用续期」处理，会让这类账号一直躺在
+/// 账号库里、直到某次真实调用突然 401 —— 而那一刻用户看到的是「账号又掉线了」，
+/// 完全联想不到「它的 JWT 从来没被续过」。
+///
+/// ## ★ 本函数是「要不要续期」的**唯一判据**
+///
+/// 两个消费方：账号卡片的 `jwtAutoRefresh` 标记（界面说「可以自动续期」）与
+/// 后台续期任务（真的去换）。两处各写一遍判据必然漂移成
+/// **「卡片说可以自动续期，后台却一个账号都不动」**——那正是本轮修复的缺陷形态。
+pub fn needs_jwt_refresh(account: &RawAccount) -> bool {
+    let has_refresh_token = account
+        .refresh_token
+        .as_ref()
+        .map(|token| !token.is_empty())
+        .unwrap_or(false);
+    has_refresh_token
+        && jwt::parse(&account.jwt)
+            .exp_hours
+            .map(|hours| hours <= crate::modules::trae::TRAE_JWT_WARN_HOURS)
+            .unwrap_or(true)
+}
+
 /// 用 `refresh_token` 换新 JWT（ExchangeToken）；默认变体，兼容壳。
 pub async fn refresh_jwt(user_id: &str) -> Result<String, String> {
     refresh_jwt_for(TraeVariant::default(), user_id).await
@@ -2283,6 +2309,77 @@ mod tests {
         let view = account_view(&account, "u", None, None, None, None, None, false, None);
         assert_eq!(view.get("hasRefreshToken").unwrap().as_bool(), Some(true));
         assert_eq!(view.get("jwtAutoRefresh").unwrap().as_bool(), Some(true));
+    }
+
+    /// 造一个 `hours` 小时后到期的 Trae JWT（`needs_jwt_refresh` 的窗口探针）。
+    fn jwt_expiring_in_hours(uid: &str, hours: i64) -> String {
+        use base64::Engine as _;
+        let payload = serde_json::json!({
+            "data": { "id": uid },
+            "exp": chrono::Utc::now().timestamp() + hours * 3600,
+        });
+        let encoded = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .encode(serde_json::to_vec(&payload).unwrap());
+        format!("Cloud-IDE-JWT header.{encoded}.signature")
+    }
+
+    fn account_with(jwt_value: &str, refresh_token: Option<&str>) -> RawAccount {
+        RawAccount {
+            name: "n".into(),
+            user_id: Some("u".into()),
+            jwt: jwt_value.into(),
+            refresh_token: refresh_token.map(str::to_string),
+            added_at: None,
+            updated_at: None,
+            remark: None,
+        }
+    }
+
+    /// ★ 续期判据：**窗口内 + 有 refresh_token** 才算「需要续期」，且它与卡片标记同源。
+    ///
+    /// 可证伪性（逐条都有对应的错法）：
+    /// - 把 `<=` 写成 `<` 或拿掉窗口判断 ⇒ 「24h 内」/「25h 外」两条里必有一条红；
+    /// - 漏掉 `has_refresh_token` ⇒ 「无 refresh_token」那条红（会去换一个换不了的东西）；
+    /// - 把「解析不出 exp」当**不需要**续期（`.unwrap_or(false)`）⇒ 最后一条红
+    ///   （凭据会在没人管的情况下过期）；
+    /// - 卡片标记与判据**各写一份**（本仓库最常见的漂移）⇒ 第二条循环断言红。
+    #[test]
+    fn needs_jwt_refresh_is_the_single_predicate_for_window_and_token() {
+        let cases: [(RawAccount, bool, &str); 5] = [
+            (account_with(&jwt_expiring_in_hours("u", 1), Some("rt")), true, "1h 内到期"),
+            (
+                account_with(&jwt_expiring_in_hours("u", 23), Some("rt")),
+                true,
+                "23h（窗口内）",
+            ),
+            (
+                account_with(&jwt_expiring_in_hours("u", 25), Some("rt")),
+                false,
+                "25h（窗口外，不白打上游）",
+            ),
+            (
+                account_with(&jwt_expiring_in_hours("u", 1), None),
+                false,
+                "没有 refresh_token（换不了，只能重新登录）",
+            ),
+            (account_with("x", Some("rt")), true, "解析不出 exp（不能当成还有效）"),
+        ];
+
+        for (account, expected, why) in &cases {
+            assert_eq!(
+                needs_jwt_refresh(account),
+                *expected,
+                "needs_jwt_refresh 判错: {why}"
+            );
+            // ★ 卡片标记必须与判据**同源**：界面说「可以自动续期」的账号，
+            // 正是后台真的会去换的那一批。
+            let view = account_view(account, "u", None, None, None, None, None, false, None);
+            assert_eq!(
+                view.get("jwtAutoRefresh").unwrap().as_bool(),
+                Some(*expected),
+                "卡片标记与 needs_jwt_refresh 漂移了: {why}"
+            );
+        }
     }
 
     #[test]

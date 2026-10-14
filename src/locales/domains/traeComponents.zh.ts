@@ -16,14 +16,56 @@ export const zh = {
   // trae-types.ts —— 程序位 / 标识的展示名
   // =====================================================================
   // 品牌名中英同形，仍走词表：新增程序位时 `TranslationKey` 会编译期提醒补英文条目。
+  //
+  // ★★ 命名规则（用户确认，2026-10-13 更正）：**国内版带 ` CN` 后缀、国际版不带后缀**。
+  // 六个名字**逐字等于客户端自己的字符串**（`nameAlias` / `nameShort`，本机 `product.json`
+  // 实测）⇒ 一个都不是我们编的：
+  //
+  //   | 程序位 | 国内版 | 国际版 |
+  //   |:---|:---|:---|
+  //   | TraeWork | `TraeWork CN` | `TraeWork` |
+  //   | TraeCode | `TraeCode CN` | `TraeCode` |
+  //   | Trae（合并版） | `Trae CN` | `Trae` |
+  //
+  // ⚠️ 更正前的约定是「国际版带 `AI` 后缀」—— 那是**错的**：它凭空造了
+  // `Trae AI` / `TraeWork AI` 这类客户端根本不用的名字，而且 `Trae AI` 会同时指
+  // 国际 TraeCode 与国际合并版（Key 归属下拉里两个同名选项）。
+  // 六个名字两两不同有两条护栏：Rust `region::tests::六个程序位的展示名两两不同`
+  // + 跨语言门禁（本表兜底值 vs `region.rs` 的 `display_name`）。
+  //
+  // ⚠️ `traeWork` / `traeCode` / `trae` 三个**区域无关**的键（`traeProgramLabel` 用）
+  // 保持不带区域后缀的家族名；带区域的那几个键见下。
   "trae.program.traeWork": "TraeWork",
+  "trae.program.traeWorkCn": "TraeWork CN",
+  "trae.program.traeWorkGlobal": "TraeWork",
   "trae.program.traeCode": "TraeCode",
-  "trae.program.traeWorkGlobal": "TraeWork AI",
-  "trae.program.traeCodeGlobal": "Trae AI",
-  // 合并后的客户端（issue #20）：客户端自己就叫 `Trae`。国际版按约定带 `AI` 后缀，
-  // 因此与 `traeCodeGlobal` 同名 —— 两者本就是同一个客户端（见 Rust 侧 `region` 模块头）。
-  // 本键只服务 `traeProgramLabel()`（**不含区域**），故不带 `Global` 变体。
+  "trae.program.traeCodeCn": "TraeCode CN",
+  "trae.program.traeCodeGlobal": "TraeCode",
+  // 合并后的客户端（issue #20）：客户端自己就叫 `Trae CN` / `Trae`。
+  // 两者是**各自独立的变体**（`trae_merged` / `global_trae_merged`），
+  // 标识与快照目录都与 `traeCode*` 不同。
   "trae.program.trae": "Trae",
+  "trae.program.traeCn": "Trae CN",
+  "trae.program.traeGlobal": "Trae",
+
+  // =====================================================================
+  // Trae 侧的**区域名**（用户 2026-10-13 定：用客户端自己的产品名）
+  // =====================================================================
+  // 取客户端在该区域的 `nameShort`：国内版客户端叫 `Trae CN`、国际版叫 `Trae`。
+  //
+  // ⚠️ 与 `shared.region.version.*`（`国内版` / `国际版`）**分工不同**，别混：
+  //   - `shared.region.version.*` 是**跨平台**的区域**词**，用于**组合**标签
+  //     （作用域芯片 = 平台 + 区域词，见 `scope-chip.tsx` ⇒「Trae 国内版」）。
+  //     它也被 WorkBuddy 读（`region.ts`），所以**不能**改成 Trae 产品名
+  //     （会变成「Trae Trae CN」与「WorkBuddy Trae CN」）。
+  //   - `trae.region.*` 是 Trae 侧**单独**说「哪个区域」时用的**名**（Key 归属提示、
+  //     后端文案、`env_status.variantLabel`）—— 与后端 `TraeRegion::display_name` 同源。
+  //
+  // ⚠️ 它与 `trae.program.traeCn` / `trae.program.traeGlobal`（合并版程序位）
+  // **逐字相同**（`Trae CN` / `Trae`）—— 客户端的产品名本就同时指这两件事，
+  // 用户明确选择如此。两者分属**区域轴**与**程序位轴**，别去重。
+  "trae.region.cn": "Trae CN",
+  "trae.region.global": "Trae",
 
   // =====================================================================
   // trae-account-card.tsx —— Trae 账号卡片
@@ -140,8 +182,9 @@ export const zh = {
   "trae.comp.card.detail.cooldown": "冷却",
   "trae.comp.card.detail.none": "无",
   "trae.comp.card.detail.notQueried": "未查询",
-  "trae.comp.card.detail.jwtAutoOn": "已开启",
-  "trae.comp.card.detail.jwtAutoOff": "可手动刷新",
+  "trae.comp.card.detail.jwtAutoOn": "本次将续期",
+  "trae.comp.card.detail.jwtAutoOff": "到期前自动续期",
+  "trae.comp.card.detail.jwtAutoDisabled": "已关闭（仅可手动刷新）",
   "trae.comp.card.detail.noRefreshToken": "无 refresh token",
 
   // =====================================================================

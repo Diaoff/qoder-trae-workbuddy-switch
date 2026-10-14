@@ -84,6 +84,8 @@ export const en = {
   "shared.gateway.models.disabled": "Disabled",
   "shared.gateway.models.disable": "Disable",
   "shared.gateway.models.enable": "Enable",
+  "shared.gateway.models.copyId": "Copy model ID",
+  "shared.gateway.models.idCopied": "Model ID copied",
   "shared.gateway.models.count": "{served} of {total} exposed",
   /* ★ Both exits take effect together — otherwise the disable switch is fake (§3.18.1). */
   "shared.gateway.models.twoExits":
@@ -142,13 +144,23 @@ export const en = {
   "shared.companion.state.waiting": "Awaiting",
   "shared.companion.state.done": "Done",
   "shared.companion.state.failed": "Failed",
+  // Source id → display name (ids are backend data; see SOURCE_LABEL_KEY in companion-row).
+  "shared.companion.source.workbuddyCn": "WorkBuddy (CN)",
+  "shared.companion.source.workbuddyGlobal": "WorkBuddy (Global)",
+  "shared.companion.source.codex": "Codex",
+  // Fallback when a session has no title (clients only send one on some events).
+  "shared.companion.untitled": "Untitled session",
   "shared.companion.row.aria": "{source} · {state} · {hint}",
   "shared.companion.info.source": "Source",
   "shared.companion.info.time": "Time",
   "shared.companion.jump.ok": "Focused {source}",
   "shared.companion.jump.failed": "Couldn't focus the source: {message}",
   "shared.companion.empty.title": "No sessions",
-  "shared.companion.empty.description": "Statuses appear here after you start a task in a client.",
+  // ⚠️ Must match the ACTUAL data sources: this window shows account-switch progress plus
+  //    sessions from clients you explicitly enabled monitoring for. It does NOT read a
+  //    client's past tasks on its own (the previous wording promised exactly that).
+  "shared.companion.empty.description":
+    "Shows account switches in progress, plus tasks from clients once you turn on session monitoring in Settings → Clients.",
   "shared.companion.empty.refresh": "Refresh",
   "shared.companion.error.title": "Couldn't load session status",
   "shared.companion.loading": "Loading session status",
@@ -234,16 +246,16 @@ export const en = {
   "shared.demo.trae.checkin.sessionDead": "Session expired, please sign in again",
   "shared.demo.trae.warn.altBSessionDead": "Alt B's session expired; sign in again before checking in",
   // ---- Trae: program display names (`label` / `nameAlias`) ----
-  "shared.demo.trae.program.work": "TraeWork",
+  "shared.demo.trae.program.work": "TraeWork CN",
   "shared.demo.trae.program.workCn": "TraeWork CN",
-  "shared.demo.trae.program.code": "TraeCode",
+  "shared.demo.trae.program.code": "TraeCode CN",
   "shared.demo.trae.program.codeCn": "TraeCode CN",
-  "shared.demo.trae.program.workAi": "TraeWork AI",
+  "shared.demo.trae.program.workGlobalLabel": "TraeWork",
   "shared.demo.trae.program.workGlobal": "TraeWork",
-  "shared.demo.trae.program.codeAi": "Trae AI",
+  "shared.demo.trae.program.codeGlobalLabel": "TraeCode",
   // Merged client (issue #20): the client is literally named `Trae`.
-  "shared.demo.trae.program.trae": "Trae",
-  "shared.demo.trae.program.traeAi": "Trae AI",
+  "shared.demo.trae.program.trae": "Trae CN",
+  "shared.demo.trae.program.traeGlobalLabel": "Trae",
   "shared.demo.trae.program.codePending": "TraeCode (untested)",
   // ---- Trae: API key names / gateway diagnostics / logs ----
   "shared.demo.trae.key.cursorCn": "Cursor (TraeWork)",

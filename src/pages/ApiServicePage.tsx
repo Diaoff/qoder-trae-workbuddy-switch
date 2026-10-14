@@ -1,5 +1,6 @@
+import { UnifiedGatewayView } from "@/components/gateway/unified-gateway-view";
 import { useEffect, useState } from "react";
-import { AlertTriangle, Copy, FolderOpen, Loader2, Power, RefreshCw } from "lucide-react";
+import { AlertTriangle, Copy, FolderOpen, Loader2, Power, RefreshCw, ShieldAlert } from "lucide-react";
 import { useSearchParams } from "react-router-dom";
 import { toast } from "sonner";
 
@@ -105,10 +106,14 @@ export default function ApiServicePage() {
   const [sub, setSub] = useState<GatewaySubnavId>(() => parseGatewaySubnav(searchParams.get("sub")));
 
   /* ★ 子导航切分的**唯一入口**：更新 state **并**写回 URL（`?sub=models`）——
-     概览的「查看」行与左侧子导航都走它，深链因此可刷新、可分享（与设置页 `?section=` 同口径）。 */
+     概览的「查看」行与左侧子导航都走它，深链因此可刷新、可分享（与设置页 `?section=` 同口径）。
+     ★ 与 Trae 页同一写法：**保留查询串里的其他参数**（`new URLSearchParams(searchParams)`
+     再 `set`），而不是整体覆盖 —— 后者会把别的参数一起抹掉。 */
   function goSub(id: GatewaySubnavId) {
     setSub(id);
-    setSearchParams({ sub: id }, { replace: true });
+    const next = new URLSearchParams(searchParams);
+    next.set("sub", id);
+    setSearchParams(next, { replace: true });
   }
 
   useEffect(() => {
@@ -120,9 +125,17 @@ export default function ApiServicePage() {
   }, [config.port]);
 
   async function persist(next: Partial<GatewayConfig>) {
+    const merged = { ...config, ...next };
     setSaving(true);
     try {
-      await saveConfig({ ...config, ...next });
+      await saveConfig(merged);
+      /* ★ 与 Trae 页同构：保存成功也给反馈。此前 WB 侧**静默** ——
+         用户改完端口 / 监听地址后没有任何确认，只能靠「状态」那一行自己猜。 */
+      toast.success(
+        merged.enabled
+          ? t("wbStats.gateway.savedStarted")
+          : t("wbStats.gateway.savedDisabled"),
+      );
     } catch (e) {
       toast.error(t("wbStats.gateway.saveFail"), { description: api.asError(e) });
     } finally {
@@ -212,19 +225,40 @@ export default function ApiServicePage() {
     }
   }
 
+  /* 页头抽成变量：加载态与正常态**共用同一份** —— 骨架屏出现时页头不闪掉。
+     （原型 `viewGateway`：作用域副标题 + 只读 scope-chip；区域来自作用域，整页跟随。） */
+  const header = (
+    <header className="mb-5 flex items-start gap-4">
+      <div className="min-w-0">
+        <h1 className="text-[28px] font-[640] tracking-[-0.02em]">{t("wbStats.gateway.title")}</h1>
+        <p className="mt-1.5 text-[12.5px] text-muted-foreground">
+          {t("pageHead.gateway", { scope: scopeLabel(t, scope) })}
+        </p>
+      </div>
+      <div className="grow" />
+      <ScopeChip scope={scope} />
+    </header>
+  );
+
+  /* ★ 首次加载（`loading && !status`）：页头常驻 + 主区骨架，与 Trae 页**同一条件、同一骨架**。
+     ⚠️ 判据不是裸 `loading` —— 手动刷新时保留旧内容，不把用户正看着的配置换成骨架。
+     区块首次加载用 `<Skeleton>`（§3.6）；文字型「加载中」+ `<Loader2>` 是**按钮操作中**态。 */
+  if (loading && !status) {
+    return (
+      <div className="mx-auto w-full max-w-[1240px] px-7 pt-[26px] pb-[60px]">
+        {header}
+        <div className="space-y-4" aria-busy="true">
+          <Skeleton className="h-[34px] w-[186px]" />
+          <Skeleton className="h-32 w-full" />
+          <Skeleton className="h-64 w-full" />
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="mx-auto w-full max-w-[1240px] px-7 pt-[26px] pb-[60px]">
-      {/* 页头（原型 `viewGateway`）：作用域副标题 + 只读 scope-chip；区域来自作用域，整页跟随。 */}
-      <header className="mb-5 flex items-start gap-4">
-        <div className="min-w-0">
-          <h1 className="text-[28px] font-[640] tracking-[-0.02em]">{t("wbStats.gateway.title")}</h1>
-          <p className="mt-1.5 text-[12.5px] text-muted-foreground">
-            {t("pageHead.gateway", { scope: scopeLabel(t, scope) })}
-          </p>
-        </div>
-        <div className="grow" />
-        <ScopeChip scope={scope} />
-      </header>
+      {header}
 
       {error && (
         <Alert variant="destructive" className="mb-5">
@@ -303,7 +337,8 @@ export default function ApiServicePage() {
                         className="h-8 w-28"
                         inputMode="numeric"
                         value={portDraft}
-                        onChange={(event) => setPortDraft(event.target.value)}
+                        /* 与 Trae 页同一做法：输入期就滤掉非数字（而不是等提交时报错重置）。 */
+                        onChange={(event) => setPortDraft(event.target.value.replace(/[^\d]/g, ""))}
                         onBlur={commitPort}
                         onKeyDown={(event) => {
                           if (event.key === "Enter") commitPort();
@@ -321,6 +356,16 @@ export default function ApiServicePage() {
                   </span>
                 </div>
 
+                {/* ★ 与 Trae 页同构的说明行（2026-10-13 对齐）：讲清「默认端口为什么是 57891」
+                    （两个网关都占用 `/v1/chat/completions`，必须错开），并在局域网模式下给警示。
+                    此前这条只出现在 Trae 侧，WB 用户看不到端口选择的理由。 */}
+                <div className="flex flex-wrap items-center gap-2 border-t border-border/60 px-5 py-3 text-xs text-muted-foreground">
+                  {t("wbStats.gateway.noteLead")}
+                  <code className="font-mono">/v1/chat/completions</code>
+                  {t("wbStats.gateway.noteTail")}
+                  {config.bind_addr === LAN && t("wbStats.gateway.lanWarning")}
+                </div>
+
                 {/* 最近一次失败的原因（与 Trae 页同构）：否则用户只能去翻请求日志才知道为什么 502。 */}
                 {status?.lastError && (
                   <div className="border-t border-border/60 px-5 py-3">
@@ -332,12 +377,15 @@ export default function ApiServicePage() {
 
               {/* 接入地址：只显示**当前版本**（版本在页头切换，不在这里并排）。 */}
               <Card className="mb-6 gap-0 py-0">
-                <div className="flex flex-wrap items-center gap-2.5 border-b border-border/60 px-4 py-[13px]">
-                  <span className="text-[13.5px] font-semibold">{t("wbStats.gateway.addr")}</span>
+                {/* 卡头与页内其他卡（网关 / 密钥 / 模型 / 账号池 / 日志）**同一组值**：
+                    `px-5 py-3` + `text-sm font-semibold`。此前这里是 `px-4 py-[13px]` +
+                    `text-[13.5px]`，只有它一个不一样（Trae 侧一开始就是标准值）。 */}
+                <div className="flex items-center justify-between gap-3 border-b border-border/60 px-5 py-3">
+                  <span className="text-sm font-semibold">{t("wbStats.gateway.addr")}</span>
                 </div>
                 <div className="px-5 py-4">
                   <div className="flex flex-wrap items-center gap-3">
-                    <span className="text-xs text-muted-foreground">Base URL</span>
+                    <span className="text-xs text-muted-foreground">{t("wbStats.gateway.baseUrlLabel")}</span>
                     <code className="rounded-md border border-border bg-muted/40 px-2 py-1 font-mono text-xs">{baseUrl}</code>
                     <Button variant="ghost" size="sm" onClick={() => void copyText(baseUrl, t("wbStats.gateway.baseUrlCopied"))}>
                       <Copy />
@@ -361,7 +409,7 @@ export default function ApiServicePage() {
                     </DemoAction>
                   </div>
                   <div className="mt-1.5 flex flex-wrap items-center gap-3 text-xs text-muted-foreground">
-                    <span>API Key</span>
+                    <span>{t("wbStats.gateway.keyPrefixLabel")}</span>
                     <code className="font-mono">
                       {representativeKey(keys, region) ?? t("wbStats.gateway.keyPlaceholder")}
                     </code>
@@ -434,6 +482,7 @@ export default function ApiServicePage() {
           {/* ---- 请求日志 ---- */}
           {/* Key 表与请求日志**不做版本过滤**：它们是「跨版本的管理视图」，逐行带归属即可。 */}
           {sub === "logs" && <RequestLog />}
+          {sub === "unified" && <UnifiedGatewayView />}
         </div>
       </div>
 
@@ -441,7 +490,12 @@ export default function ApiServicePage() {
       <Dialog open={riskOpen} onOpenChange={setRiskOpen}>
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
-            <DialogTitle>{t("wbStats.gateway.allowLanTitle")}</DialogTitle>
+            {/* ★ 与 Trae 页同构：危险确认的标题带警示图标（`ShieldAlert` / warning 色），
+                确认按钮用 `destructive` —— 两平台的「开放局域网」是同一个危险操作。 */}
+            <DialogTitle className="flex items-center gap-2">
+              <ShieldAlert className="size-4 text-warning" />
+              {t("wbStats.gateway.allowLanTitle")}
+            </DialogTitle>
             <DialogDescription>
               {t("wbStats.gateway.allowLanDesc")}
             </DialogDescription>
@@ -457,16 +511,6 @@ export default function ApiServicePage() {
         </DialogContent>
       </Dialog>
 
-      {/* §3.6 状态语言：`loading` 由 `loadAll()` 驱动（进页面时并发拉配置 / 状态 / Keys /
-          模型，内容还没到），属**区块首次加载** ⇒ 用 `<Skeleton>` 占位，**不是**文字型
-          「加载中」+ `<Loader2>`（后者是**按钮操作中**态，见上方 `saving` / `openingDir`）。 */}
-      {loading && (
-        <div className="mt-6 space-y-2" aria-busy="true">
-          <Skeleton className="h-4 w-40" />
-          <Skeleton className="h-4 w-64" />
-          <Skeleton className="h-4 w-52" />
-        </div>
-      )}
     </div>
   );
 }

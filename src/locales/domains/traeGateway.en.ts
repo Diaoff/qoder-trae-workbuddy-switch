@@ -32,7 +32,7 @@ export const en = {
   // =====================================================================
   // gateway/trae-request-log.tsx —— request log
   // =====================================================================
-  "trae.gateway.log.title": "Request log (last {count})",
+  "trae.gateway.log.title": "Request log (last 50)",
   "trae.gateway.log.clear": "Clear",
   "trae.gateway.log.empty": "No requests yet. Once the gateway is running, every call from a client is recorded here (metadata only by default, no bodies).",
   "trae.gateway.log.col.time": "Time",
@@ -51,6 +51,7 @@ export const en = {
   "trae.gateway.guide.noKey": "sk-trae-… (create a key above first)",
   "trae.gateway.guide.streamNote": "The Trae upstream only supports streaming; when a request sets `stream: false`, this gateway aggregates locally and returns it at once, with longer first-byte latency.",
   "trae.gateway.guide.autoDiscover": "The client reads the model list from `/v1/models` automatically — you do not need to fill in model names; if your tool does not support auto-discovery, copy one from the \"Models\" page.",
+  "trae.gateway.guide.rawRequest": "Raw request (for debugging)",
   // Field labels inside the copyable snippet
   /* P3: `trae.gateway.guide.snippet.*` removed — labels are now shared. */
 
@@ -72,16 +73,18 @@ export const en = {
   "trae.gateway.key.revokeFailed": "Revoke failed",
   "trae.gateway.key.deleted": "Deleted",
   "trae.gateway.key.deleteFailed": "Delete failed",
+  "trae.gateway.key.restored": "Restored",
+  "trae.gateway.key.restoreFailed": "Restore failed",
   "trae.gateway.key.copied": "API Key copied",
 
   // ---- List ----
   "trae.gateway.key.create": "Create API Key",
-  "trae.gateway.key.loading": "Loading…",
   "trae.gateway.key.empty": "No API Keys created yet.",
   "trae.gateway.key.neverUsed": "Never used",
   "trae.gateway.key.statusRevoked": "Revoked",
   "trae.gateway.key.statusActive": "Enabled",
   "trae.gateway.key.revoke": "Revoke",
+  "trae.gateway.key.restore": "Restore",
   "trae.gateway.key.delete": "Delete",
 
   // ---- Table headers ----
@@ -106,9 +109,11 @@ export const en = {
   "trae.gateway.key.copy": "Copy",
   "trae.gateway.key.saved": "I have saved it, close",
 
-  // ---- Revoke / delete confirmations ----
+  // ---- Revoke / restore / delete confirmations ----
   "trae.gateway.key.revokeTitle": "Revoke API Key",
   "trae.gateway.key.revokeDesc": "After revocation, \"{name}\" becomes invalid immediately (401) and remains listed as \"revoked\".",
+  "trae.gateway.key.restoreTitle": "Restore API Key",
+  "trae.gateway.key.restoreDesc": "After restoring, \"{name}\" becomes usable again immediately. It is the same key (its plaintext is unchanged), so no client reconfiguration is needed.",
   "trae.gateway.key.deleteTitle": "Delete API Key",
   "trae.gateway.key.deleteDesc": "Delete the revoked key \"{name}\"? This cannot be undone.",
 };

@@ -1047,7 +1047,7 @@ export default function TraeSettingsPage() {
    * 提交必须带**当前整份**配置（见 `saveSchedulePatch`）：后端按整份解析，
    * 只发一个字段会让其余字段被默认值覆盖 —— 那是静默的配置丢失。
    */
-  async function saveSchedule(next: Partial<ScheduleConfig>) {
+  async function saveSchedule(next: Partial<ScheduleConfig>, failureKey: TranslationKey) {
     if (!schedule || scheduleSaving) return;
     const previous = schedule;
     setScheduleSaving(true);
@@ -1057,7 +1057,7 @@ export default function TraeSettingsPage() {
       patchSchedule(() => saved);
     } catch (e) {
       patchSchedule(() => previous);
-      toast.error(t("trae.page.settings.autoCheckinSaveFailed"), { description: api.asError(e) });
+      toast.error(t(failureKey), { description: api.asError(e) });
     } finally {
       setScheduleSaving(false);
     }
@@ -1332,10 +1332,13 @@ export default function TraeSettingsPage() {
           </>
         )}
 
-        {/* ---- 计划任务：自动签到排程 ----
+        {/* ---- 计划任务：Trae 的排程（自动签到 / JWT 自动续期） ----
              PLAN §3.9 把 Trae 的 `schedule` 归到「计划任务」（排程是全局单份
-             `schedule_config.json`，本页只呈现 Trae 的 `trae_checkin` 一类）。 */}
+             `schedule_config.json`，本页只呈现 Trae 的两类：`trae_checkin` 与
+             `trae_jwt_refresh`）。两组同处一个分区，因为它们是**同一份配置**的
+             两个字段，分到两个子导航会让用户以为改的是两个文件。 */}
         {section === "schedule" && (
+          <>
         <SettingsGroup id="trae-settings-auto-checkin" title={t("trae.page.settings.autoCheckinGroup")}>
           <CardContent className="space-y-0 p-0">
           <SettingsFieldRow
@@ -1345,7 +1348,7 @@ export default function TraeSettingsPage() {
             <Switch
               checked={schedule?.trae_checkin_enabled ?? false}
               disabled={!schedule || scheduleSaving}
-              onCheckedChange={(checked) => void saveSchedule({ trae_checkin_enabled: checked })}
+              onCheckedChange={(checked) => void saveSchedule({ trae_checkin_enabled: checked }, "trae.page.settings.autoCheckinSaveFailed")}
               aria-label={t("trae.page.settings.autoCheckinEnable")}
             />
           </SettingsFieldRow>
@@ -1358,12 +1361,45 @@ export default function TraeSettingsPage() {
               id="trae-checkin-hour"
               hours={schedule?.trae_checkin_hours ?? []}
               disabled={!schedule || scheduleSaving}
-              onChange={(hours) => void saveSchedule({ trae_checkin_hours: hours })}
+              onChange={(hours) => void saveSchedule({ trae_checkin_hours: hours }, "trae.page.settings.autoCheckinSaveFailed")}
             />
           </SettingsFieldRow>
           </CardContent>
         </SettingsGroup>
 
+        {/* ---- JWT 自动续期 ----
+             与上面那组**同形**（开关 + 小时表），但默认值是**开**（后端默认如此，
+             理由见 `schedule::default_schedule`：refresh_token 的唯一用途就是续期，
+             它是用户网页登录时明确交出来的）。这里不摆「立即续期」按钮 ——
+             手动续期在账号卡片的菜单里，重复摆第二个入口就是「看起来能切」的假控件。 */}
+        <SettingsGroup id="trae-settings-jwt-refresh" title={t("trae.page.settings.jwtRefreshGroup")}>
+          <CardContent className="space-y-0 p-0">
+          <SettingsFieldRow
+            label={t("trae.page.settings.jwtRefreshEnable")}
+            description={t("trae.page.settings.jwtRefreshDesc")}
+          >
+            <Switch
+              checked={schedule?.trae_jwt_refresh_enabled ?? false}
+              disabled={!schedule || scheduleSaving}
+              onCheckedChange={(checked) => void saveSchedule({ trae_jwt_refresh_enabled: checked }, "trae.page.settings.jwtRefreshSaveFailed")}
+              aria-label={t("trae.page.settings.jwtRefreshEnable")}
+            />
+          </SettingsFieldRow>
+          <SettingsFieldRow
+            label={t("trae.page.settings.jwtRefreshHoursLabel")}
+            description={t("trae.page.settings.jwtRefreshHoursDesc")}
+            htmlFor="trae-jwt-refresh-hour"
+          >
+            <HoursEditor
+              id="trae-jwt-refresh-hour"
+              hours={schedule?.trae_jwt_refresh_hours ?? []}
+              disabled={!schedule || scheduleSaving}
+              onChange={(hours) => void saveSchedule({ trae_jwt_refresh_hours: hours }, "trae.page.settings.jwtRefreshSaveFailed")}
+            />
+          </SettingsFieldRow>
+          </CardContent>
+        </SettingsGroup>
+          </>
         )}
 
         {/* ---- 签到与积分：签到策略 ---- */}

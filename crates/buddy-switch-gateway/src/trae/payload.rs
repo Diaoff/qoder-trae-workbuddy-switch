@@ -751,7 +751,7 @@ mod tests {
     fn dedupe_entries_keeps_first_occurrence_order() {
         let list = ClientModelList {
             variant: "trae_work".into(),
-            variant_label: "Trae Work".into(),
+            variant_label: "TraeWork CN".into(),
             source: "client-cache".into(),
             read_at: 0,
             data_dir: None,
@@ -842,7 +842,7 @@ mod tests {
     fn servable_entries_lists_only_the_function_group() {
         let list = |groups: Vec<ClientModelGroup>| ClientModelList {
             variant: "trae_work".into(),
-            variant_label: "Trae Work".into(),
+            variant_label: "TraeWork CN".into(),
             source: "client-cache".into(),
             read_at: 0,
             data_dir: None,

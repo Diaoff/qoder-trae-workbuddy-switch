@@ -241,6 +241,12 @@ export const zh = {
   "trae.page.settings.checkinHoursLabel": "触发时间",
   "trae.page.settings.checkinHoursDesc": "每天在这些整点各签一轮（0-23，可多个）。需要先打开上面的开关；手动签一轮用账号页工具栏的刷新按钮。",
   "trae.page.settings.autoCheckinSaveFailed": "自动签到设置保存失败",
+  "trae.page.settings.jwtRefreshGroup": "自动刷新 JWT",
+  "trae.page.settings.jwtRefreshEnable": "启用自动续期",
+  "trae.page.settings.jwtRefreshDesc": "JWT 剩余不足 24 小时时，用该账号的 refresh_token 自动换一份新的。到点由后台调度器执行，应用启动时若还没续也会补一轮。只有网页登录的账号有 refresh_token；默认开启，关掉后只能到账号卡片菜单里手动「刷新 JWT」。",
+  "trae.page.settings.jwtRefreshHoursLabel": "检查时间",
+  "trae.page.settings.jwtRefreshHoursDesc": "每天在这些整点各检查一轮（0-23，可多个）。只对快过期的账号发请求，没到期的一律跳过。",
+  "trae.page.settings.jwtRefreshSaveFailed": "JWT 续期设置保存失败",
 
   // ---- 签到策略 ----
   "trae.page.settings.checkinGroup": "签到策略",

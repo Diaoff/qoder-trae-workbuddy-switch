@@ -36,8 +36,12 @@
  *
  * ## 硬约束（可证伪）
  *
- * - **每行只一个可点区**：禁用 / 启用按钮。**无行点击、无勾选**（与 `AccountTable` 不同，
- *   故**不复用**它 —— 后者强制勾选 + 打开详情）。
+ * - **每行两个可点区**：**复制模型 ID** + 禁用 / 启用按钮。**无行点击、无勾选**（与
+ *   `AccountTable` 不同，故**不复用**它 —— 后者强制勾选 + 打开详情）。
+ *   ⚠️ 复制按钮是 2026-10-13 新增的：Codex / Trae 自定义模型 / dsh 自定义 provider
+ *   都要求**手填模型 id**，此前表格只把 id 当纯文本 ⇒ 用户只能手抄。
+ *   它**不是**「第三个可点区」的开口 —— 再加任何行级交互前先看门禁
+ *   `scripts/check-scope-registry.cjs` 的「每行 2 处 onClick」断言。
  * - **标灰仍可见**（D26）：`disabled` 行加 `row-off`（`opacity-60` + 虚边框），**仍渲染** ——
  *   彻底隐藏会让用户以为清单里没有它。
  * - **展示字段一律过 `displayText`**（白屏防线，issue #2）：`name` / `id` 运行时可能是对象，
@@ -53,11 +57,14 @@
  * `Button` 并包在 `DemoAction` 里（与其余网关控件同口径）。
  */
 
-import { Ban, Loader2, RotateCcw } from "lucide-react";
+import { useState } from "react";
+import { Ban, Check, Copy, Loader2, RotateCcw } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { DemoAction } from "@/components/demo-action";
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
+import { copyText } from "@/lib/clipboard";
 import { displayText } from "@/lib/display-text";
 import { cn } from "@/lib/utils";
 import type { GatewayModelRow } from "@/lib/types";
@@ -73,6 +80,10 @@ export interface ModelTableLabels {
   disabled: string;
   disable: string;
   enable: string;
+  /** 「复制模型 ID」的按钮名 / 无障碍名。 */
+  copyId: string;
+  /** 复制成功后的提示（toast 与 tooltip 共用）。 */
+  idCopied: string;
 }
 
 export interface ModelTableProps {
@@ -93,8 +104,22 @@ export function ModelTable({
   showUpstream,
   labels,
 }: ModelTableProps) {
+  /** 刚复制成功的行 id（驱动图标 `Copy` → `Check`；1.6s 后复位）。 */
+  const [copiedId, setCopiedId] = useState<string | null>(null);
+
+  /** 复制模型 id 到剪贴板。**可反复点**（不是一次性），失败时由 `copyText` 给出可读提示。 */
+  async function onCopyId(id: string) {
+    await copyText(id, labels.idCopied);
+    setCopiedId(id);
+    window.setTimeout(() => setCopiedId((current) => (current === id ? null : current)), 1600);
+  }
+
   return (
-    <div className="overflow-x-auto">
+    /* TooltipProvider 挂在**本组件根**（与 `account-toolbar` 同做法）：本表每行一个
+       图标钮，若依赖全局 provider 则单测 / 嵌入场景下 tooltip 会静默失效。
+       Radix Provider 不渲染 DOM，包住根节点不改变表格结构。 */
+    <TooltipProvider delayDuration={400}>
+      <div className="overflow-x-auto">
       <table className="w-full border-collapse text-sm" data-act="gw-model-table">
         <thead>
           <tr className="border-b border-border/60 text-left text-xs text-muted-foreground">
@@ -132,10 +157,33 @@ export function ModelTable({
                 )}
               >
                 <td className="px-2 py-2">
-                  <span className="font-medium">{name}</span>
-                  {name !== id && (
-                    <code className="ml-1.5 font-mono text-[11px] text-muted-foreground">{id}</code>
-                  )}
+                  <div className="flex items-center gap-1.5">
+                    <span className="font-medium">{name}</span>
+                    {name !== id && (
+                      <code className="font-mono text-[11px] text-muted-foreground">{id}</code>
+                    )}
+                    {/* 复制模型 ID：图标钮（`size-6` 覆盖 `size="icon"` 的 34px —— `cn` 走
+                        tailwind-merge，同组 `size-*` 后者胜）。复制的是 **id**，
+                        与旁边的展示名无关（填展示名不生效）。 */}
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="icon"
+                          className="size-6 shrink-0"
+                          data-act="gw-model-copy"
+                          aria-label={labels.copyId}
+                          onClick={() => void onCopyId(id)}
+                        >
+                          {copiedId === id ? <Check /> : <Copy />}
+                        </Button>
+                      </TooltipTrigger>
+                      <TooltipContent side="top">
+                        {copiedId === id ? labels.idCopied : labels.copyId}
+                      </TooltipContent>
+                    </Tooltip>
+                  </div>
                 </td>
                 {showUpstream && (
                   <td className="px-2 py-2">
@@ -177,6 +225,7 @@ export function ModelTable({
           })}
         </tbody>
       </table>
-    </div>
+      </div>
+    </TooltipProvider>
   );
 }

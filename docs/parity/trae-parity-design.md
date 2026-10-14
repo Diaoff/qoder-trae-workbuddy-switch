@@ -1,6 +1,6 @@
 # Trae 对齐 WorkBuddy · 增量架构设计与任务分解
 
-> 输入：`docs/parity/trae-parity-matrix.md`（76 条差距，带 `文件:行号` 证据）+ `.workbuddy/memory/MEMORY*.md`（硬约定）。
+> 输入：`docs/parity/trae-parity-matrix.md`（76 条差距，带 `文件:行号` 证据）+ `.workbuddy-ai/memory/archive/legacy-workbuddy/MEMORY*.md`（硬约定）。
 > 目标：把 Trae 五页的**交互与功能骨架**补齐到与 WorkBuddy 一致，只统一骨架不搬文案。
 > 本文只做设计，**不改任何源码**。所有判定与矩阵编号（G-xxx）或 `文件:行号` 对齐。
 > 作者：架构师高见远（software-architect）。

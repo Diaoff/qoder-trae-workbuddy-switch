@@ -145,6 +145,10 @@ pub fn exe_names_for(variant: super::variant::TraeVariant) -> &'static [&'static
             super::variant::TraeVariant::Global => &["TRAE SOLO"],
             // 国际版 TraeCode：裸名（与 `TRAE SOLO` 同款「国内带 CN 后缀」规则）。
             super::variant::TraeVariant::GlobalTraeCode => &["Trae"],
+            // 合并后的客户端（issue #20）：与各自遗留线**同名**（客户端复用了目录名），
+            // 但标识与快照目录各自独立。
+            super::variant::TraeVariant::TraeMerged => &["Trae CN"],
+            super::variant::TraeVariant::GlobalTraeMerged => &["Trae"],
         }
     }
 }
@@ -419,16 +423,14 @@ fn region_status(region: super::region::TraeRegion) -> Value {
 /// 报成「未安装」；那条分支已删。留着 `Option` 等于把「已建模」降级成运行期判断，
 /// 而 `match` 本身就把这件事钉住了（新增程序线会编译不过）。
 ///
-/// ## ⚠️ 合并版 `Trae` 与遗留 `TraeCode` 映射到**同一个变体**（issue #20）
+/// ## ⚠️ 合并版 `Trae` 与遗留 `TraeCode` 各有**自己的变体**（issue #20 收尾）
 ///
-/// 两者物理上是同一个客户端（同名 `Trae CN` / `Trae`，见 `region` 模块头），
-/// 因此必须共享变体 —— 变体决定**账号库 / 登录态快照 / Key 归属 / 网关日志分档**，
-/// 给合并版另立一个变体会把同一个客户端的登录态拆进两套快照（症状是
-/// 「快照明明备份了，恢复时却说没有」，且只在合并后的机器上出现）。
+/// 两者候选名逐字相同（客户端合并时复用了目录名），但**不是同一个变体** ——
+/// 变体决定**账号库 / 登录态快照 / Key 归属 / 网关日志分档**，共用一个变体会让
+/// 两条程序位的快照挤进同一个目录（用户报障原文：「Trae 与 TraeCode 共用快照目录」）。
+/// ⇒ 本函数是**单射**：六个 `(区域, 程序)` 组合 → 六个不同变体。
 ///
-/// ⇒ 本函数**不是单射**：`(Cn, TraeCode)` 与 `(Cn, Trae)` 同值，
-/// `(Global, TraeCode)` 与 `(Global, Trae)` 同值。反向映射（`client_settings::program_of_variant`）
-/// 取**遗留标识**为规范值，因为那是既有数据里写的那个。
+/// 反向映射（`client_settings::program_of_variant`）与它互为逆，有单测钉住双向一致。
 fn variant_for_program(
     region: super::region::TraeRegion,
     program: super::region::TraeProgram,
@@ -438,11 +440,10 @@ fn variant_for_program(
     match (region, program) {
         (TraeRegion::Cn, TraeProgram::TraeWork) => TraeVariant::TraeWork,
         (TraeRegion::Cn, TraeProgram::TraeCode) => TraeVariant::Trae,
-        // 合并版：与遗留 TraeCode 同一个客户端 ⇒ 同一个变体（见上）。
-        (TraeRegion::Cn, TraeProgram::Trae) => TraeVariant::Trae,
+        (TraeRegion::Cn, TraeProgram::Trae) => TraeVariant::TraeMerged,
         (TraeRegion::Global, TraeProgram::TraeWork) => TraeVariant::Global,
         (TraeRegion::Global, TraeProgram::TraeCode) => TraeVariant::GlobalTraeCode,
-        (TraeRegion::Global, TraeProgram::Trae) => TraeVariant::GlobalTraeCode,
+        (TraeRegion::Global, TraeProgram::Trae) => TraeVariant::GlobalTraeMerged,
     }
 }
 
@@ -1464,7 +1465,7 @@ pub fn capabilities() -> Value {
 /// 所以界面必须能说出「挑中的是谁」。这两个字段就是那个答案：
 ///
 /// - `variant`：稳定标识（`"trae_work"` / `"trae_cn"`），供程序判定；
-/// - `variantLabel`：展示名（`"Trae Work"` / `"Trae CN"`），直接上界面。
+/// - `variantLabel`：展示名（`"TraeWork CN"` / `"Trae CN"`），直接上界面。
 ///
 /// 判定依据是 [`detect_data_dir`] 的目录名（唯一的权威来源 —— 它是 `%APPDATA%\<产品名>`
 /// 逐字拼出来的）；目录不存在时退到安装路径的 exe 名。

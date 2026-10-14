@@ -1,3 +1,4 @@
+import type { ReactNode } from "react";
 import { useEffect, useMemo, useState } from "react";
 import { ArrowUpCircle, ExternalLink, Loader2, RefreshCw, Save } from "lucide-react";
 
@@ -6,13 +7,6 @@ import { SettingsFieldRow, SettingsGroup } from "@/components/settings-primitive
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { CardContent } from "@/components/ui/card";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
@@ -23,6 +17,7 @@ import { SCOPES } from "@/lib/scope";
 import { planScopeShortcuts, SCOPE_SHORTCUT_LIMIT } from "@/lib/scope-shortcuts";
 import { useShortcutsEnabled } from "@/lib/shortcut-preference";
 import { getThemePreference, setThemePreference, type ThemePreference } from "@/lib/theme";
+import { useAutoCheckUpdate } from "@/lib/update-preference";
 import type { GithubConfig, UpdateInfo } from "@/lib/types";
 import { GITHUB_RELEASE_URL, GITHUB_REPOSITORY_URL, openReleaseUrl } from "@/lib/update";
 import { cn } from "@/lib/utils";
@@ -54,10 +49,34 @@ import { useAccountsStore } from "@/stores/accounts";
  * 正是本模块当初要消灭的那类不一致。判据仍是「有无产品耦合」：语言完全没有。
  */
 
+/**
+ * 版式变体 —— 同一份内容有两种出口（原型里也是两处渲染）：
+ *
+ * - `card`（默认）：设置页的 `<section class="card">`，标题在 `.card-head` 里。
+ * - `plain`：顶栏齿轮抽屉的 `.dsec`，标题是 11.5px muted 的 `h4`，行直接贴抽屉底色。
+ *
+ * ★ 用参数而不是复制一份组件：这五块**含取数**（`getGithubConfig` / `getLaunchAtLoginEnabled`），
+ * 复制一份就会长成两份会各自漂移的实现 —— 正是本模块当初要消灭的病。
+ */
+export type AppSettingsVariant = "card" | "plain";
+
+/**
+ * 分组正文容器。
+ *
+ * ⚠️ `plain` 下**必须直接展开**（`<>`）：原型 `.dsec` 靠 `gap:9px` 给行距，
+ * 而 `gap` 只作用于**直接子级**。夹一层 `CardContent` 会让行距塌成 0，行与行
+ * 只剩一条分隔线贴着 —— 与抽屉里其它分区的节奏对不上。
+ */
+function GroupBody({ variant, children }: { variant: AppSettingsVariant; children: ReactNode }) {
+  if (variant === "plain") return <>{children}</>;
+  return <CardContent className="space-y-0 p-0">{children}</CardContent>;
+}
+
 /** 自动更新：检查公开 GitHub Releases 源 + 安装签名更新。 */
-function UpdateCard() {
+function UpdateCard({ variant }: { variant: AppSettingsVariant }) {
   const t = useT();
   const version = useAccountsStore((s) => s.status?.version);
+  const [autoCheck, setAutoCheck] = useAutoCheckUpdate();
   const [info, setInfo] = useState<UpdateInfo | null>(null);
   const [checking, setChecking] = useState(false);
   const [installOpen, setInstallOpen] = useState(false);
@@ -130,18 +149,41 @@ function UpdateCard() {
     }
   }
 
+  /** 卡片形态下给「代理 / 更新源」这一组行铺一层 `--muted` 底，抽屉形态下不铺（原型 `.srow` 无底色）。 */
+  const tint = variant === "card" ? "bg-muted/25" : undefined;
+
   return (
     <SettingsGroup
       id="settings-updates"
       title={t("appSettings.update.title")}
+      variant={variant}
     >
-      <CardContent className="space-y-0 p-0">
-        <div className="border-b border-border/60 px-4 py-3 text-sm">
+      <GroupBody variant={variant}>
+        {/* ★ 自动检查更新：原型这一行的说明就是「每 30 分钟检查一次」
+            （`buddy-switch-prototype.html:4459`），间隔常量与轮询实现同源
+            （`lib/update-preference.ts` 的 `AUTO_CHECK_UPDATE_INTERVAL_MS` → `App.tsx` 的 AppFooter）。
+            ⚠️ 不加 `operational`：这是 localStorage 偏好，演示模式下**真的能用**，
+            遮起来反而变成假控件。 */}
+        <SettingsFieldRow
+          stacked={variant === "plain"}
+          label={t("appSettings.update.auto.label")}
+          description={t("appSettings.update.auto.description")}
+          htmlFor="update-auto-check"
+        >
+          <Switch
+            id="update-auto-check"
+            checked={autoCheck}
+            onCheckedChange={(value) => setAutoCheck(value)}
+            aria-label={t("appSettings.update.auto.label")}
+          />
+        </SettingsFieldRow>
+
+        <div className="border-b border-border px-4 py-3 text-sm">
           {t("appSettings.update.current")}
           <span className="font-mono">v{version || "?"}</span>
         </div>
 
-        <div className="flex min-w-0 items-center justify-between gap-3 border-b border-border/60 bg-muted/25 px-4 py-3 text-sm">
+        <div className={cn("flex min-w-0 items-center justify-between gap-3 border-b border-border px-4 py-3 text-sm", tint)}>
           <div className="min-w-0 flex-1">
             <div className="font-medium">{t("appSettings.update.source")}</div>
             <div className="truncate text-xs text-muted-foreground">{GITHUB_REPOSITORY_URL}</div>
@@ -160,12 +202,14 @@ function UpdateCard() {
           label={t("appSettings.update.proxy.label")}
           description={t("appSettings.update.proxy.description")}
           htmlFor="update-proxy"
-          className="bg-muted/25"
+          className={tint}
           operational
+          /* 抽屉形态（460px）必须纵向堆叠：`sm:` 是视口断点，在抽屉里会误判成够宽。 */
+          stacked={variant === "plain"}
         >
           <Input
             id="update-proxy"
-            className="w-full sm:w-80"
+            className={cn("w-full", variant === "card" && "sm:w-80")}
             value={proxyUrl}
             onChange={(event) => setProxyUrl(event.target.value)}
             placeholder={t("appSettings.update.proxy.placeholder")}
@@ -174,14 +218,14 @@ function UpdateCard() {
           />
         </SettingsFieldRow>
 
-        <div className="flex flex-wrap gap-2 border-b border-border/60 bg-muted/25 px-4 py-3">
+        <div className={cn("flex flex-wrap gap-2 border-b border-border px-4 py-3", tint)}>
           <DemoAction><Button size="sm" variant="outline" onClick={() => void saveProxy()} disabled={proxySaving}>
             {proxySaving ? <Loader2 className="animate-spin" /> : <Save />}
             {t("appSettings.update.proxy.save")}
           </Button></DemoAction>
         </div>
 
-        <div className="flex flex-wrap gap-2 border-b-0 border-border/60 px-4 py-3">
+        <div className="flex flex-wrap gap-2 border-b border-border px-4 py-3">
           <DemoAction><Button size="sm" variant="outline" onClick={check} disabled={checking}>
             {checking ? <Loader2 className="animate-spin" /> : <RefreshCw />}
             {t("appSettings.update.check")}
@@ -236,17 +280,38 @@ function UpdateCard() {
           onOpenChange={setInstallOpen}
           update={info}
         />
-      </CardContent>
+      </GroupBody>
     </SettingsGroup>
   );
 }
 
-/** 开机自启（仅桌面端渲染）：开关直接反映系统自启注册状态，切换立即生效。 */
-function StartupCard() {
+/**
+ * 启动与托盘（仅桌面端渲染）—— 两行，都是「应用在窗口之外怎么活着」。
+ *
+ * - **开机时静默启动到托盘**：真值来自系统登录项（`tauri-plugin-autostart`）。
+ * - **关闭窗口时保持后台运行**：真值来自 `app_prefs.json`（`close_to_tray`）；
+ *   宿主在 `WindowEvent::CloseRequested` 里读它决定「隐藏还是退出」。
+ *
+ * ## 为什么两行同卡
+ *
+ * 原型把「开机自启」与「最小化到托盘」摆在同一列（`buddy-switch-prototype.html:4458-4460`），
+ * 两件事也确实成对：一个管「开机后进不进托盘」，一个管「关窗后留不留在托盘」。
+ * 拆成两张单行卡只会多一条分组标题。
+ *
+ * ## 两个开关的载体不同，是**刻意**的
+ *
+ * 开机自启的权威在**操作系统注册项**（应用不另存布尔值，否则会出现「系统已禁用但设置显示已开启」）；
+ * 关闭到托盘的权威在**本应用自己的偏好文件**（宿主需要读，见 `app_prefs.rs` 模块头）。
+ * 两者都用「写后回读、失败回滚」的同一种交互，但**不共用存储**。
+ */
+function StartupCard({ variant }: { variant: AppSettingsVariant }) {
   const t = useT();
   const [enabled, setEnabled] = useState<boolean | null>(null);
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<{ type: "ok" | "err"; text: string } | null>(null);
+  /** `close_to_tray`：与开机自启**分开**的 busy / 错误态 —— 一个失败不该锁住另一个。 */
+  const [closeToTray, setCloseToTray] = useState<boolean | null>(null);
+  const [trayBusy, setTrayBusy] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -254,6 +319,14 @@ function StartupCard() {
       .getLaunchAtLoginEnabled()
       .then((value) => {
         if (!cancelled) setEnabled(value);
+      })
+      .catch((e) => {
+        if (!cancelled) setMsg({ type: "err", text: api.asError(e) });
+      });
+    void api
+      .getAppPrefs()
+      .then((prefs) => {
+        if (!cancelled) setCloseToTray(prefs.close_to_tray);
       })
       .catch((e) => {
         if (!cancelled) setMsg({ type: "err", text: api.asError(e) });
@@ -287,16 +360,39 @@ function StartupCard() {
     }
   }
 
+  async function onToggleCloseToTray(value: boolean) {
+    if (trayBusy || closeToTray === null) return;
+    const previous = closeToTray;
+    // 乐观更新：开关必须立刻跟手（宿主是「点关闭那一刻」才读文件，中间没有状态可漂）。
+    setCloseToTray(value);
+    setTrayBusy(true);
+    setMsg(null);
+    try {
+      // 按**回读值**渲染：后端会把非法值归一成默认值，回显请求值会与宿主真实行为分叉。
+      const saved = await api.setAppPrefs({ close_to_tray: value });
+      setCloseToTray(saved.close_to_tray);
+      if (saved.close_to_tray !== value) {
+        setMsg({ type: "err", text: t("appSettings.tray.saveMismatch") });
+      }
+    } catch (e) {
+      setCloseToTray(previous);
+      setMsg({ type: "err", text: api.asError(e) });
+    } finally {
+      setTrayBusy(false);
+    }
+  }
+
   const label = t("appSettings.startup.silent.label");
+  const trayLabel = t("appSettings.tray.closeToTray.label");
 
   return (
     <SettingsGroup
       id="settings-startup"
       title={t("appSettings.startup.title")}
+      variant={variant}
     >
-      <CardContent className="space-y-0 p-0">
+      <GroupBody variant={variant}>
         <SettingsFieldRow
-          className="border-b-0"
           label={label}
           description={t("appSettings.startup.silent.description")}
           htmlFor="startup-silent"
@@ -311,6 +407,22 @@ function StartupCard() {
           />
         </SettingsFieldRow>
 
+        <SettingsFieldRow
+          className="border-b-0"
+          stacked={variant === "plain"}
+          label={trayLabel}
+          description={t("appSettings.tray.closeToTray.description")}
+          htmlFor="tray-close-to-tray"
+        >
+          <Switch
+            id="tray-close-to-tray"
+            checked={closeToTray ?? true}
+            disabled={trayBusy || closeToTray === null}
+            onCheckedChange={(v) => void onToggleCloseToTray(v)}
+            aria-label={trayLabel}
+          />
+        </SettingsFieldRow>
+
         {msg && (
           <Alert
             variant={msg.type === "err" ? "destructive" : "default"}
@@ -319,13 +431,13 @@ function StartupCard() {
             <AlertDescription>{msg.text}</AlertDescription>
           </Alert>
         )}
-      </CardContent>
+      </GroupBody>
     </SettingsGroup>
   );
 }
 
 /** 外观：主题选择（持久化到 localStorage）。 */
-function AppearanceCard() {
+function AppearanceCard({ variant }: { variant: AppSettingsVariant }) {
   const t = useT();
   const [theme, setTheme] = useState<ThemePreference>(getThemePreference);
 
@@ -339,8 +451,9 @@ function AppearanceCard() {
     <SettingsGroup
       id="settings-appearance"
       title={t("appSettings.appearance.title")}
+      variant={variant}
     >
-      <CardContent className="space-y-0 p-0">
+      <GroupBody variant={variant}>
         <SettingsFieldRow
           className="border-b-0"
           label={t("appSettings.appearance.theme.label")}
@@ -363,7 +476,7 @@ function AppearanceCard() {
             </SelectContent>
           </Select>
         </SettingsFieldRow>
-      </CardContent>
+      </GroupBody>
     </SettingsGroup>
   );
 }
@@ -378,7 +491,7 @@ function AppearanceCard() {
  * 两个选项的文案是**自名的**（`简体中文` / `English`）：语言菜单用目标语言写自己的名字，
  * 是通行做法 —— 当前界面语言看不懂时，用户仍能认出自己要去哪一项。
  */
-function LanguageCard() {
+function LanguageCard({ variant }: { variant: AppSettingsVariant }) {
   const t = useT();
   const locale = useLocale();
 
@@ -386,8 +499,9 @@ function LanguageCard() {
     <SettingsGroup
       id="settings-language"
       title={t("appSettings.language.title")}
+      variant={variant}
     >
-      <CardContent className="space-y-0 p-0">
+      <GroupBody variant={variant}>
         <SettingsFieldRow
           className="border-b-0"
           label={t("appSettings.language.label")}
@@ -414,7 +528,7 @@ function LanguageCard() {
             </SelectContent>
           </Select>
         </SettingsFieldRow>
-      </CardContent>
+      </GroupBody>
     </SettingsGroup>
   );
 }
@@ -433,7 +547,7 @@ function LanguageCard() {
  * 数字快捷键作用于整个应用的全局键（不区分 WorkBuddy / Trae），与主题 / 语言同类，
  * 因此放在共享的 `AppSettingsGroups` 里，两个产品分区走同一份实现。
  */
-function ShortcutsCard() {
+function ShortcutsCard({ variant }: { variant: AppSettingsVariant }) {
   const t = useT();
   const [enabled, setEnabled] = useShortcutsEnabled();
   const plan = useMemo(() => planScopeShortcuts({ scopes: SCOPES, enabled }), [enabled]);
@@ -443,8 +557,8 @@ function ShortcutsCard() {
   const degradedByCount = plan.reason === "too-many";
 
   return (
-    <SettingsGroup id="settings-shortcuts" title={t("shortcuts.settings.title")}>
-      <CardContent className="space-y-0 p-0">
+    <SettingsGroup id="settings-shortcuts" title={t("shortcuts.settings.title")} variant={variant}>
+      <GroupBody variant={variant}>
         <SettingsFieldRow
           className="border-b-0"
           label={label}
@@ -468,72 +582,31 @@ function ShortcutsCard() {
             />
           )}
         </SettingsFieldRow>
-      </CardContent>
+      </GroupBody>
     </SettingsGroup>
   );
 }
 
 /**
- * 四个应用级设置块，**门禁与原先设置页逐条对齐**。
+ * 五个应用级设置块，**门禁与原先设置页逐条对齐**。
  *
- * 门禁必须留在这里而不是交给调用方：本模块同时被侧栏（常驻）与设置页引用，
+ * 门禁必须留在这里而不是交给调用方：本模块同时被设置页与顶栏 ⚙「应用设置」抽屉引用，
  * 把判断写在页面上会让两条路径各写一遍 —— 这正是当初 `settings-primitives`
  * 出现漂移的同一种病。
  *
  * 顺序把**语言放在最前**：它改的是其余所有文案的语言，用户在找「设置」时最可能先要它。
+ *
+ * ★ `variant` 由调用方给：设置页传 `card`（默认），抽屉传 `plain`。**内容只有一份**，
+ * 两个出口不会各长一套。
  */
-export function AppSettingsGroups() {
+export function AppSettingsGroups({ variant = "card" }: { variant?: AppSettingsVariant } = {}) {
   return (
     <>
-      <LanguageCard />
-      <AppearanceCard />
-      <ShortcutsCard />
-      {api.isDesktop() || api.isDemoMode() ? <StartupCard /> : null}
-      {api.isWebui() && !api.isDemoMode() ? null : <UpdateCard />}
+      <LanguageCard variant={variant} />
+      <AppearanceCard variant={variant} />
+      <ShortcutsCard variant={variant} />
+      {api.isDesktop() || api.isDemoMode() ? <StartupCard variant={variant} /> : null}
+      {api.isWebui() && !api.isDemoMode() ? null : <UpdateCard variant={variant} />}
     </>
-  );
-}
-
-/**
- * 「通用设置」弹层 —— **受控**形态，由顶栏 ⚙ 溢出菜单（`shell/app-menu.tsx`）驱动。
- *
- * ## 为什么是受控 Dialog 而不是带 Trigger 的入口
- *
- * L0（应用级）入口按原型收进顶栏的 ⚙ 菜单：菜单项负责「开哪一个弹层」，
- * 弹层自己不再带触发按钮 —— 否则会出现「同一弹层两个入口」的重复形态。
- * 受控（`open` / `onOpenChange`）让菜单成为**唯一**的开关来源。
- *
- * ## 为什么是 Dialog 而不是内联控件
- *
- * 这些块含取数（`getGithubConfig` / `getLaunchAtLoginEnabled`）与更新相关的
- * 轮询，常驻挂载会让每次启动都多付一次 IPC；Dialog 内容默认卸载 ⇒ **懒挂载**，
- * 不开就不取数。
- *
- * ⚠️ `UpdateCard` 内含 `UpdateInstallDialog`，所以这里是**嵌套 Dialog**。
- * Radix 的 `DismissableLayer` 维护层栈，Esc 只关最上层，行为正确 —— 但不要
- * 把「点升级时先关外层」当优化：外层一关，`UpdateCard` 会随之卸载，
- * 升级弹窗的 `installOpen` 状态就丢了。
- */
-export function AppSettingsDialog({
-  open,
-  onOpenChange,
-}: {
-  open: boolean;
-  onOpenChange: (open: boolean) => void;
-}) {
-  const t = useT();
-
-  return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-2xl">
-        <DialogHeader>
-          <DialogTitle>{t("appSettings.title")}</DialogTitle>
-          <DialogDescription>{t("appSettings.description")}</DialogDescription>
-        </DialogHeader>
-        <div className="max-h-[70vh] space-y-6 overflow-y-auto pr-1">
-          <AppSettingsGroups />
-        </div>
-      </DialogContent>
-    </Dialog>
   );
 }

@@ -1512,11 +1512,16 @@ export default function TraeAccountsPage() {
             },
             {
               label: t("trae.comp.card.detail.jwtAutoRefresh"),
-              value: detail.hasRefreshToken
-                ? detail.jwtAutoRefresh
-                  ? t("trae.comp.card.detail.jwtAutoOn")
-                  : t("trae.comp.card.detail.jwtAutoOff")
-                : t("trae.comp.card.detail.noRefreshToken"),
+              /* 三态：没 refresh_token（换不了）／总开关关着（只能手动）／开着（分「本次将续期」
+                 与「未到期」）。★ 判据与后台续期任务同源（`account::needs_jwt_refresh`
+                 → `jwtAutoRefresh`），所以这里说「本次将续期」的账号，正是下一轮会被换掉的那批。 */
+              value: !detail.hasRefreshToken
+                ? t("trae.comp.card.detail.noRefreshToken")
+                : schedule?.trae_jwt_refresh_enabled === false
+                  ? t("trae.comp.card.detail.jwtAutoDisabled")
+                  : detail.jwtAutoRefresh
+                    ? t("trae.comp.card.detail.jwtAutoOn")
+                    : t("trae.comp.card.detail.jwtAutoOff"),
             },
             {
               label: t("trae.comp.card.detail.deviceId"),

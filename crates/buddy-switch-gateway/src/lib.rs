@@ -43,6 +43,10 @@ pub mod timeutil;
 /// 独立模块而非 `GatewayState` 的一个分支：两者归属域、凭据形态、上游协议、
 /// 响应格式、路由挂载方式全不相同，详见 [`trae`] 模块文档。
 pub mod trae;
+// 统一网关（第三个产品线）：把两个产品线的模型合成一个入口。
+// ⚠️ 它是**独立端口**上的**第三个** `GatewayProduct` —— 永不与另两个 router merge
+// （axum 同路径 merge 会运行期 panic）。详见模块头与 `docs/redesign/UNIFIED-GATEWAY-ARCH.md`。
+pub mod unified;
 
 pub use account_strategy::{AccountSelector, AccountStrategy};
 pub use apikey::{ApiKeyRecord, ApiKeyStore};
@@ -89,7 +93,13 @@ pub fn router(state: GatewayState) -> axum::Router {
         //   0.7 的 path-router 会把 `{*path}` 判为非法 catch-all，在**构建期 panic**
         //   （报错信息 "catch-all parameters are only allowed at the end of a route"
         //   具有误导性，真因是花括号不被识别）⇒ 整个网关起不来，且 `cargo check` 全绿。
-        .route("/biz/*path", post(routes::biz::handler))
+        // ★ 业务转发**同时接 GET 与 POST**：白名单按前缀收，同前缀下 GET-only 与
+        //   POST-only 混在一起（`/activity/growth/streak` 是 GET、`/lottery/draw` 是 POST）。
+        //   只挂 POST 会让 GET-only 的路径经网关报 405 / 上游 404（真实环境实测）。
+        .route(
+            "/biz/*path",
+            get(routes::biz::handler).post(routes::biz::handler),
+        )
         .layer(axum::extract::DefaultBodyLimit::max(body_limit))
         .with_state(state)
     // 注意：不设 fallback，避免与宿主 merge 时的 fallback 冲突
@@ -401,6 +411,51 @@ mod tests {
         assert!(overlap.contains(&&"/v1/chat/completions"), "{overlap:?}");
     }
 
+    /// ★★ 第三个产品线（统一网关）**也**与两者重叠 ⇒ 它同样**必须**独立端口。
+    ///
+    /// 与 [`two_products_own_overlapping_paths`] 互补：那条钉「wb 与 trae 重叠」，
+    /// 本条钉「统一网关也与两者重叠」—— 三个 `OWNED_PATHS` **两两相交**，
+    /// ⇒ **任意两个 router merge 都会运行期 panic**，故必须三个端口。
+    ///
+    /// 可证伪：若哪天统一网关改成挂在自己的前缀下（不再重叠），本用例变红 ——
+    /// 那是提醒「可以复核是否还需要第三个端口」，不是缺陷。
+    #[test]
+    fn unified_gateway_also_overlaps_both_products() {
+        let unified: BTreeSet<&str> = crate::unified::UnifiedGateway::OWNED_PATHS
+            .iter()
+            .copied()
+            .collect();
+        let wb: BTreeSet<&str> = WbGateway::OWNED_PATHS.iter().copied().collect();
+        let trae: BTreeSet<&str> = trae::TraeGateway::OWNED_PATHS.iter().copied().collect();
+
+        assert!(
+            !unified.intersection(&wb).collect::<Vec<_>>().is_empty(),
+            "统一网关与 WB 网关必须存在路径重叠（否则端口分离的前提已变）"
+        );
+        assert!(
+            !unified.intersection(&trae).collect::<Vec<_>>().is_empty(),
+            "统一网关与 Trae 网关必须存在路径重叠"
+        );
+        // 重叠点必须含 `/v1/models` —— 它正是「同名模型能并列」的对外出口
+        assert!(
+            unified.contains(&"/v1/models"),
+            "统一网关必须拥有 /v1/models（聚合清单是它的核心职责）"
+        );
+        // 三个产品线各占一个端口
+        assert_eq!(
+            [
+                WbGateway::OWNED_PATHS.len(),
+                trae::TraeGateway::OWNED_PATHS.len(),
+                crate::unified::UnifiedGateway::OWNED_PATHS.len(),
+            ]
+            .iter()
+            .filter(|len| **len > 0)
+            .count(),
+            3,
+            "三条产品线的路径所有权表都不该为空"
+        );
+    }
+
     /// P12 T03：业务转发路由**必须**在册，且**真的挂在 `router()` 里**。
     ///
     /// 可证伪：删掉 `router()` 里的 `.route("/biz/*path", …)` ⇒ 本用例变红。
@@ -429,8 +484,12 @@ mod tests {
             .nth(1)
             .and_then(|rest| rest.split("/// 已启动的网关监听句柄").next())
             .expect("找不到 router 函数体（结构已变，请更新本断言）");
+        // ⚠️ 断言**实现无关**：只要求「确实挂了 /biz/*path 且绑到 biz::handler」。
+        //   原先写死了 `post(...)`，于是给业务路由**加 GET** 时这条守卫会误报
+        //   —— 而「加 GET」正是修掉「GET-only 白名单路径不可达」所必需的改动。
+        //   「挂载是否正确」由下一条**真的构建 router + 真的发请求**的用例守（那条才是硬判据）。
         assert!(
-            body.contains(r#".route("/biz/*path", post(routes::biz::handler))"#),
+            body.contains(r#"/biz/*path"#) && body.contains("routes::biz::handler"),
             "router() 里没挂业务转发路由 —— handler 写了但没人调（本项目已出过三次同类事故）"
         );
     }

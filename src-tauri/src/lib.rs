@@ -2,6 +2,8 @@
 mod commands;
 mod gateway;
 mod trae_gateway;
+// 统一网关（第三个产品线，默认 57892）：跨产品线的单一入口 —— 独立端口，不与另两个 merge。
+mod unified_gateway;
 #[cfg(desktop)]
 mod companion;
 #[cfg(desktop)]
@@ -221,9 +223,21 @@ pub fn run() {
             app.manage(gateway::GatewayRuntime::new());
             // Trae 网关运行时句柄（与上面那份**互不相干**：配置 / Key / 日志全独立）。
             app.manage(trae_gateway::TraeGatewayRuntime::new());
+            app.manage(unified_gateway::UnifiedGatewayRuntime::new());
             // README 截图模式只渲染前端虚构数据，禁止读取账号后执行签到、轮换或保活。
             if !is_screenshot_demo() {
                 spawn_background_loops();
+                // P15 · 外部 Agent hook 的本地接收端：只绑 `127.0.0.1`。
+                //
+                // ★ **它不是后台任务**：`serve()` 是事件驱动的常驻 accept，没有周期动作
+                //   ⇒ 不进 `background.rs` 的 `TASKS` 注册表（`P15-SPIKE-RESULTS §2 Q2`）。
+                // ★ 绑定失败（端口被占 / 沙箱限制）**不阻断启动**：这是可选能力，
+                //   宿主照常可用；用户从哪里看得到？——设置页的监听开关会显示连接不上。
+                tauri::async_runtime::spawn(async {
+                    if let Err(error) = buddy_switch_core::modules::agent_hook_rx::serve().await {
+                        eprintln!("[agent-hook] {error}");
+                    }
+                });
                 // 按配置启动 API 网关独立监听（默认关闭；默认 127.0.0.1:57891）。
                 let handle = app.handle().clone();
                 tauri::async_runtime::spawn(async move {
@@ -300,9 +314,8 @@ pub fn run() {
             commands::switch_account,
             commands::switch_progress,
             commands::list_sessions,
-            // P8 T02 · 只读：copy ledger 连通成「会话副本组」（两宿主同步）。
+            // P8 T02 · 只读：copy ledger 连通成「会话副本组」（两宿主同步；含内容状态 `content`）。
             commands::list_session_replicas,
-            commands::session_fingerprints,
             commands::sync_session_replicas,
             // P8 · **分歧处理（覆盖式统一）**：目标分歧内容会被丢弃 ⇒ 前端二次确认（两宿主同步）。
             commands::unify_session_replicas,
@@ -363,6 +376,8 @@ pub fn run() {
             commands::save_github_config,
             commands::check_update,
             commands::relaunch_app,
+            commands::get_app_prefs,
+            commands::set_app_prefs,
             commands::get_launch_at_login_enabled,
             commands::set_launch_at_login_enabled,
             commands::get_gateway_config,
@@ -375,7 +390,16 @@ pub fn run() {
             commands::list_api_keys,
             commands::create_api_key,
             commands::revoke_api_key,
+            commands::restore_api_key,
             commands::delete_api_key,
+            commands::get_unified_gateway_config,
+            commands::save_unified_gateway_config,
+            commands::get_unified_gateway_models,
+            commands::list_unified_api_keys,
+            commands::create_unified_api_key,
+            commands::revoke_unified_api_key,
+            commands::restore_unified_api_key,
+            commands::delete_unified_api_key,
             commands::get_gateway_models,
             commands::refresh_gateway_models,
             commands::get_account_strategy,
@@ -430,6 +454,7 @@ pub fn run() {
             commands::list_trae_api_keys,
             commands::create_trae_api_key,
             commands::revoke_trae_api_key,
+            commands::restore_trae_api_key,
             commands::delete_trae_api_key,
             commands::open_trae_data_dir,
             commands::trae_launch_client,
@@ -440,6 +465,9 @@ pub fn run() {
             commands::companion_set_visible,
             commands::companion_toggle,
             commands::companion_jump,
+            // P15 · 外部 Agent 会话监听：hook 安装状态（只读）+ 开关（写客户端配置）。
+            commands::get_agent_hook_status,
+            commands::set_agent_hook_enabled,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");

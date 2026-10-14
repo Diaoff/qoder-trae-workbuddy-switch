@@ -10,6 +10,8 @@
 mod api;
 mod gateway_host;
 mod trae_gateway_host;
+// 统一网关（第三个产品线，默认 57892）：跨产品线的单一入口 —— 独立端口，不与另两个 merge。
+mod unified_gateway_host;
 
 use serde_json::json;
 
@@ -277,10 +279,11 @@ fn refuse_when_home_override_is_invalid(cmd: &str) {
 /// [`refuse_when_home_override_is_invalid`] 的**纯决策**部分（入参即取值，可并行单测）。
 ///
 /// `None` = 放行。两种放行情形：
-/// 1. 纯查询命令（版本号）不碰任何数据，不该被环境变量拦住；
+/// 1. **不碰 store** 的命令（版本号查询、`hook` 转发）不该被环境变量拦住 ——
+///    `hook` 只把 stdin 转给本地接收端，读不到任何账号 / 会话数据；
 /// 2. 环境变量未设置 / 空白 / 合法。
 fn home_override_problem(cmd: &str, value: Option<&str>) -> Option<String> {
-    if matches!(cmd, "version" | "--version" | "-V") {
+    if matches!(cmd, "version" | "--version" | "-V" | "hook") {
         return None;
     }
     buddy_switch_core::modules::config::home_override_refusal(value)
@@ -296,6 +299,11 @@ async fn main() {
         "version" | "--version" | "-V" => {
             println!("Buddy Switch {}", env!("CARGO_PKG_VERSION"));
         }
+        // P15 · 客户端 hook 调用的入口（与桌面宿主 `src-tauri/src/main.rs` 同一份实现）。
+        // 走 core 的 `try_run_hook_cli` ⇒ 两个宿主的 hook 行为不可能分叉。
+        "hook" => std::process::exit(
+            buddy_switch_core::modules::agent_hook_rx::try_run_hook_cli(&args).unwrap_or(0),
+        ),
         "serve" | _ => serve(&args).await,
     }
 }
@@ -329,6 +337,16 @@ async fn serve(args: &[String]) {
 
     spawn_background_loops();
 
+    // P15 · 外部 Agent hook 接收端（与桌面宿主 `src-tauri/src/lib.rs` 同款）。
+    // ★ 只绑 `127.0.0.1:57893`，**事件驱动**（不是周期任务 ⇒ 不进 `background.rs` 的注册表）。
+    // ★ 起不来（端口被占 / 桌面版已持有）**不阻断 webui** —— 两者同时跑时只有一处能收，
+    //   而「客户端 hook 指向哪一个」由用户最后装的 hook 决定。
+    tokio::spawn(async {
+        if let Err(error) = buddy_switch_core::modules::agent_hook_rx::serve().await {
+            eprintln!("[agent-hook] {error}");
+        }
+    });
+
     // 按配置启动 API 网关独立监听（默认关闭；默认 127.0.0.1:57891）。
     match gateway_host::apply().await {
         Ok(Some(addr)) => println!("API 网关: http://{addr}"),
@@ -341,6 +359,14 @@ async fn serve(args: &[String]) {
         Ok(Some(addr)) => println!("Trae API 网关: http://{addr}"),
         Ok(None) => {}
         Err(error) => eprintln!("[trae-gateway] 启动失败: {error}"),
+    }
+
+    // 按配置启动**统一网关**独立监听（默认关闭；默认 127.0.0.1:57892）。
+    // ⚠️ 起不来**不阻断**另两个入口 —— 三个入口互不牵连（关掉统一入口不影响任何既有客户端）。
+    match unified_gateway_host::apply().await {
+        Ok(Some(addr)) => println!("统一 API 网关: http://{addr}"),
+        Ok(None) => {}
+        Err(error) => eprintln!("[unified-gateway] 启动失败: {error}"),
     }
 
     axum::serve(listener, app).await.unwrap();

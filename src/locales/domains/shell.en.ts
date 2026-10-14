@@ -118,11 +118,8 @@ export const en = {
   "undo.undone": "Restored",
   "undo.failedTitle": "Undo failed",
 
-  // ---- General settings (app-level settings dialog) ----
-  "appSettings.title": "General settings",
-  "appSettings.description":
-    "Shared by WorkBuddy and TraeWork; applies to Buddy Switch itself.",
-  "appSettings.entry": "General settings",
+  // ---- App-level settings (settings page "General" + top-bar gear drawer; one implementation, two shells) ----
+  "appSettings.drawer.more": "More",
 
   "appSettings.appearance.title": "Appearance",
   "appSettings.appearance.theme.label": "Theme",
@@ -140,14 +137,22 @@ export const en = {
   "appSettings.language.zh": "简体中文",
   "appSettings.language.en": "English",
 
-  "appSettings.startup.title": "Startup",
+  "appSettings.startup.title": "Startup & tray",
   "appSettings.startup.silent.label": "Start minimized to tray at login",
   "appSettings.startup.silent.description":
     "Reflects the system login item directly; reopen from the tray later",
   "appSettings.startup.enabled": "Launch at login enabled",
   "appSettings.startup.disabled": "Launch at login disabled",
+  "appSettings.tray.closeToTray.label": "Keep running in the tray when the window is closed",
+  "appSettings.tray.closeToTray.description":
+    "Closing the main window hides it to the tray and keeps running; turn this off to quit the app on close",
+  "appSettings.tray.saveMismatch":
+    "Setting not applied: the read-back value differs from the requested one. Try again.",
 
   "appSettings.update.title": "Updates",
+  "appSettings.update.auto.label": "Check for updates automatically",
+  "appSettings.update.auto.description":
+    "Checks every 30 minutes; you can still check manually below when this is off",
   "appSettings.update.current": "Current version: ",
   "appSettings.update.source": "Public update source",
   "appSettings.update.openRelease": "Open GitHub Releases",
@@ -190,10 +195,78 @@ export const en = {
   "gateway.subnav.proxy": "Request proxy",
   "gateway.subnav.logs": "Request logs",
 
-  // ---- Settings "Logs" section (WorkBuddy has no standalone runtime log) ----
+  // ---- 统一网关（第三个产品线 · 跨作用域）----
+  "gateway.subnav.unified": "Unified entry",
+  "unifiedGateway.title": "Unified gateway",
+  "unifiedGateway.running": "Running",
+  "unifiedGateway.stopped": "Stopped",
+  "unifiedGateway.crossScope": "This entry spans all scopes; the scope selector above does not affect it.",
+  "unifiedGateway.summary": "{namespaces} namespaces · {keys} active keys · listening on {addr}",
+  "unifiedGateway.enable": "Enable the unified gateway",
+  "unifiedGateway.enableHint": "One namespaced entry — every platform and version through a single provider",
+  "unifiedGateway.bindAddr": "Bind address",
+  "unifiedGateway.bindLan": "Allow LAN",
+  "unifiedGateway.bindLoopback": "Loopback only",
+  "unifiedGateway.port": "Port",
+  "unifiedGateway.portHint": "Restart required; the two existing gateways (57891 / 7864) are left untouched",
+  "unifiedGateway.portInvalid": "Invalid port: enter an integer between 1 and 65535",
+  "unifiedGateway.nsTitle": "Enabled namespaces",
+  "unifiedGateway.nsHint": "Disabled ones are not parsed or listed, and calls return 400. Keep at least one enabled.",
+  "unifiedGateway.showMore": "Show more program lines",
+  "unifiedGateway.showLess": "Hide extra program lines",
+  "unifiedGateway.keepOne": "Keep at least one namespace enabled",
+  "unifiedGateway.nsOff": "Disabled on this entry — calls return 400",
+  "unifiedGateway.keysTitle": "Unified keys",
+  "unifiedGateway.createKey": "Create key",
+  "unifiedGateway.noKeys": "No unified keys yet",
+  "unifiedGateway.noKeysHint": "One key can authorize several namespaces at once (e.g. WorkBuddy CN plus Trae CN).",
+  "unifiedGateway.colName": "Name",
+  "unifiedGateway.colNamespaces": "Authorized namespaces",
+  "unifiedGateway.colMasked": "Key",
+  "unifiedGateway.colCreated": "Created",
+  "unifiedGateway.colLastUsed": "Last used",
+  "unifiedGateway.colStatus": "Status",
+  "unifiedGateway.colActions": "Actions",
+  "unifiedGateway.neverUsed": "Never used",
+  "unifiedGateway.revoked": "Revoked",
+  "unifiedGateway.active": "Active",
+  "unifiedGateway.restore": "Restore",
+  "unifiedGateway.delete": "Delete",
+  "unifiedGateway.revoke": "Revoke",
+  "unifiedGateway.loadFailed": "Failed to load the unified gateway config",
+  "unifiedGateway.saveFailed": "Save failed",
+  "unifiedGateway.created": "Key created",
+  "unifiedGateway.createdHint": "The plaintext is shown only once (the store keeps sha256 only). Copy it now — it cannot be retrieved later.",
+  "unifiedGateway.copy": "Copy",
+  "unifiedGateway.savedClose": "I've saved it, close",
+  "unifiedGateway.keyName": "Name",
+  "unifiedGateway.keyNamePlaceholder": "e.g. My main key",
+  "unifiedGateway.authorize": "Authorized namespaces (at least one)",
+  "unifiedGateway.authorizeRequired": "Select at least one. Disabled namespaces may be authorized too — they take effect once enabled.",
+  "unifiedGateway.bizTitle": "Business-forwarding namespace",
+  "unifiedGateway.bizNone": "No business forwarding",
+  "unifiedGateway.bizHint": "Business requests carry no model name, so the namespace can only come from the key; Trae namespaces are invalid.",
+  "unifiedGateway.cancel": "Cancel",
+  "unifiedGateway.create": "Create",
+  "unifiedGateway.unnamed": "Untitled",
+  "unifiedGateway.previewTitle": "Namespaces and model preview",
+  "unifiedGateway.previewTotal": "{count} models in total",
+  "unifiedGateway.previewEmpty": "No namespace is enabled — pick one under \"Enabled namespaces\" above.",
+  "unifiedGateway.previewCount": "{count} models",
+  "unifiedGateway.showModels": "Show models",
+  "unifiedGateway.hideModels": "Hide",
+  "unifiedGateway.previewNoModels": "No catalog for this segment yet",
+  "unifiedGateway.source.live": "Live",
+  "unifiedGateway.source.cached": "Cached",
+  "unifiedGateway.source.builtin": "Built-in",
+
+  // ---- Settings "Logs" section ----
+  // ⚠️ Corrected after measuring on 2026-10-14: WorkBuddy DOES keep its own runtime logs
+  //    (`~/.workbuddy/logs/`: per-day folders plus `automation.log`). The earlier wording
+  //    pointed users at the gateway page, which shows THIS tool's request log — a different thing.
   "settings.logs.emptyTitle": "No runtime log in this section",
   "settings.logs.emptyBody":
-    "WorkBuddy runtime logs live on the gateway page; this section is the settings and backup entry point.",
+    "This section only holds this tool's settings and backup entries; WorkBuddy's own runtime logs live in a logs subdirectory of its data dir (not surfaced here yet).",
   "settings.logs.emptyAction": "Open gateway settings",
 
   // ---- Shared fallbacks ----

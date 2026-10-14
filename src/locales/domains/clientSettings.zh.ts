@@ -34,10 +34,10 @@ export const zh = {
 
   "clientSettings.slot.workbuddyCn": "WorkBuddy 国内版",
   "clientSettings.slot.workbuddyGlobal": "WorkBuddy 国际版",
-  "clientSettings.slot.traeCodeCn": "Trae 国内版",
-  "clientSettings.slot.traeCodeGlobal": "Trae 国际版",
-  "clientSettings.slot.traeWorkCn": "TRAE SOLO CN",
-  "clientSettings.slot.traeWorkGlobal": "TRAE SOLO",
+  "clientSettings.slot.traeCodeCn": "TraeCode CN",
+  "clientSettings.slot.traeCodeGlobal": "TraeCode",
+  "clientSettings.slot.traeWorkCn": "TraeWork CN",
+  "clientSettings.slot.traeWorkGlobal": "TraeWork",
 
   "clientSettings.status.installed": "已安装",
   "clientSettings.status.notInstalled": "未安装",

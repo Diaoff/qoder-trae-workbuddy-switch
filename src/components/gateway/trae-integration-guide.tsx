@@ -8,6 +8,7 @@ import { copyText } from "@/lib/clipboard";
 import {
   GATEWAY_PROTOCOLS,
   accessTools,
+  gatewayCurl,
   gatewaySnippet,
   protocolOf,
   type GatewayProtocolKey,
@@ -60,6 +61,9 @@ export function TraeIntegrationGuide({
   const rootUrl = baseUrl.replace(/\/v1\/?$/, "");
   const key = keyPrefix ? `${keyPrefix}…` : t("trae.gateway.guide.noKey");
   const snippet = gatewaySnippet({ t, protocol, tool: activeTool, baseUrl, rootUrl, key, model });
+  /* 「原始请求（调试用）」：认证头随协议 Tab 变化（Anthropic → x-api-key；OpenAI → Bearer）。
+     与 WB 侧 `integration-guide.tsx` 同一算法、同一来源函数。 */
+  const curl = gatewayCurl({ protocol, rootUrl, model });
 
   async function onCopy() {
     await copyText(snippet, t("trae.gateway.guide.copied"));
@@ -122,6 +126,12 @@ export function TraeIntegrationGuide({
           <p className="mt-1 text-xs text-muted-foreground">
             {t("trae.gateway.guide.autoDiscover")}
           </p>
+          {/* ★「原始请求（调试用）」（2026-10-13 跨平台对齐）：WB 侧一直有这一块 ——
+              方法 + URL + 协议对应的认证头，用户可直接粘贴核验网关是否通。 */}
+          <p className="mt-3 text-xs text-muted-foreground">{t("trae.gateway.guide.rawRequest")}</p>
+          <pre className="mt-1.5 min-w-0 overflow-x-auto rounded-[10px] bg-card-2 p-3 font-mono text-xs leading-6">
+            {curl}
+          </pre>
         </div>
       </Tabs>
     </Card>

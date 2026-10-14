@@ -257,8 +257,28 @@ pub async fn chat_completions(
     _headers: HeaderMap,
     body: Bytes,
 ) -> Response {
+    // 归属产品线由鉴权中间件经请求扩展传入 ⇒ 这里只是把它转成**显式参数**交给共用实现，
+    // 让统一网关（没有 Key 归属、只有命名空间）也能调用同一份中继。
+    chat_for_variant(state, key_variant.0, body).await
+}
+
+/// 一趟 Trae chat 中继（**认证之后的全部逻辑**）—— 产品线入口与统一网关**共用**这一份实现。
+///
+/// # 为什么抽出来
+///
+/// 与 WB 侧 [`crate::routes::chat::chat_for_region`] 同一个理由：中继**外面**那一层
+/// （出站改写 / 停用判定 / 选号换号 / 冷却 / 粘性 / 日志）**不能有两份** ——
+/// 两份必然漂移，而漂移点恰恰是「换号 + 流内失败」这类最难复现的行为。
+///
+/// `state` **按值**传入（[`TraeGatewayState`] 是 `Arc` 句柄，克隆极廉价）⇒ 函数体内既有的
+/// `&state` 写法一行都不用改，抽取的 diff 面最小。`variant` 由调用方给：
+/// 产品线入口来自 Key 归属，统一入口来自**命名空间**。
+pub async fn chat_for_variant(
+    state: TraeGatewayState,
+    variant: TraeVariant,
+    body: Bytes,
+) -> Response {
     let started = Instant::now();
-    let variant = key_variant.0;
     let parsed: Value = match serde_json::from_slice(&body) {
         Ok(value) => value,
         Err(error) => {
@@ -344,8 +364,20 @@ pub async fn messages(
     Extension(key_variant): Extension<TraeKeyVariant>,
     body: Bytes,
 ) -> Response {
+    // 同 `/v1/chat/completions`：把扩展里的归属转成显式参数，交给共用实现。
+    messages_for_variant(state, key_variant.0, body).await
+}
+
+/// 一趟 Trae **Anthropic** 中继（认证之后的全部逻辑）—— 产品线入口与统一网关共用。
+///
+/// 与 [`chat_for_variant`] 的差别只在协议层（入站 Anthropic → 上游 OpenAI 形态，
+/// 出站上游 SSE → Anthropic 事件流）；选号 / 换号 / 冷却 / 粘性 / 日志**完全同一份**。
+pub async fn messages_for_variant(
+    state: TraeGatewayState,
+    variant: TraeVariant,
+    body: Bytes,
+) -> Response {
     let started = Instant::now();
-    let variant = key_variant.0;
 
     let config = state.config_snapshot().await;
     let Ok(parsed) = serde_json::from_slice::<Value>(&body) else {
@@ -1307,7 +1339,10 @@ mod tests {
         let cn = no_account_message(TraeVariant::TraeWork, &[], None);
         assert!(cn.contains("账号管理"), "{cn}");
         assert!(cn.contains("一键签到"), "{cn}");
-        assert!(cn.contains("国内版"), "文案必须点名选中的区域: {cn}");
+        // ⚠️ 区域名现在是**客户端产品名**（`Trae CN` / `Trae`，2026-10-13 用户定）。
+        // ★ 判据用**带「」的整名**（文案格式是 `「{name}」没有可用账号`）——
+        //   裸 `contains("Trae")` 会因为 `Trae` 是 `Trae CN` 的子串而**恒真**。
+        assert!(cn.contains("「Trae CN」"), "文案必须点名选中的区域: {cn}");
 
         // ⚠️ 契约在 2026-09-21 变了：网关的号池按**区域**分区（`pool.rs::sync_for`
         // 走 `entries_for_region`），Key 的归属也是区域，因此文案按区域取名。
@@ -1318,7 +1353,7 @@ mod tests {
 
         // 国际版必须是另一个名字（否则用户分不清该去哪一版加账号）。
         let global = no_account_message(TraeVariant::Global, &[], None);
-        assert!(global.contains("国际版"), "{global}");
+        assert!(global.contains("「Trae」"), "{global}");
         assert_ne!(cn, global, "两个区域的文案必须可区分: {cn} / {global}");
 
         // 有逐账号原因时，原因必须出现在文案里。
@@ -1327,26 +1362,26 @@ mod tests {
             &["主号(7481920:冷却中,积分=0)".to_string()],
             None,
         );
-        assert!(with_reason.contains("国内版"), "{with_reason}");
+        assert!(with_reason.contains("「Trae CN」"), "{with_reason}");
         assert!(with_reason.contains("冷却中"), "{with_reason}");
 
         // 「另一个区域有账号」的提示必须**双向**都给。
         // 方向①：国际版 Key + 只有国内账号（R8①的原始场景）。
         let hinted_global = no_account_message(TraeVariant::Global, &[], Some(TraeRegion::Cn));
         assert!(
-            hinted_global.contains("国际版"),
+            hinted_global.contains("「Trae」"),
             "选中的区域必须出现: {hinted_global}"
         );
         assert!(
-            hinted_global.contains("国内版"),
+            hinted_global.contains("检测到 Trae CN 有账号"),
             "另一个有账号的区域必须出现（否则用户不知道该往哪加 Key）: {hinted_global}"
         );
         // 方向②：国内版 Key + 只有国际版账号。**这条在修复前做不到** ——
         // 旧实现遍历的是 `TraeVariant::all()`（两条国内程序位），候选里根本没有国际版。
         let hinted_cn = no_account_message(TraeVariant::TraeWork, &[], Some(TraeRegion::Global));
-        assert!(hinted_cn.contains("国内版"), "{hinted_cn}");
+        assert!(hinted_cn.contains("「Trae CN」"), "{hinted_cn}");
         assert!(
-            hinted_cn.contains("国际版"),
+            hinted_cn.contains("检测到 Trae 有账号"),
             "另一个有账号的区域必须出现: {hinted_cn}"
         );
     }

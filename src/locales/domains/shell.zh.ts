@@ -111,10 +111,8 @@ export const zh = {
   "undo.undone": "已恢复",
   "undo.failedTitle": "撤销失败",
 
-  // ---- 通用设置（应用级设置弹层）----
-  "appSettings.title": "通用设置",
-  "appSettings.description": "不区分 WorkBuddy 与 TraeWork，对 Buddy Switch 本身全局生效。",
-  "appSettings.entry": "通用设置",
+  // ---- 应用级设置（设置页「通用」分区 + 顶栏 ⚙「应用设置」抽屉，同一份实现两种外壳）----
+  "appSettings.drawer.more": "更多入口",
 
   "appSettings.appearance.title": "外观",
   "appSettings.appearance.theme.label": "主题",
@@ -130,13 +128,18 @@ export const zh = {
   "appSettings.language.zh": "简体中文",
   "appSettings.language.en": "English",
 
-  "appSettings.startup.title": "启动设置",
+  "appSettings.startup.title": "启动与托盘",
   "appSettings.startup.silent.label": "开机时静默启动到托盘",
   "appSettings.startup.silent.description": "开关直接反映系统登录项状态；之后可从托盘「打开主界面」恢复",
   "appSettings.startup.enabled": "已开启开机自启",
   "appSettings.startup.disabled": "已关闭开机自启",
+  "appSettings.tray.closeToTray.label": "关闭窗口时保持后台运行",
+  "appSettings.tray.closeToTray.description": "关闭主窗口后隐藏到托盘并继续运行；关掉此项则点关闭即退出应用",
+  "appSettings.tray.saveMismatch": "设置未生效：后端回读值与请求值不一致，请重试",
 
   "appSettings.update.title": "自动更新",
+  "appSettings.update.auto.label": "自动检查更新",
+  "appSettings.update.auto.description": "每 30 分钟检查一次；关闭后仍可在下方手动检查",
   "appSettings.update.current": "当前版本：",
   "appSettings.update.source": "公开更新源",
   "appSettings.update.openRelease": "打开 GitHub Release",
@@ -169,7 +172,7 @@ export const zh = {
   "settings.subnav.logs": "日志",
   "settings.subnav.backup": "备份与恢复",
 
-  // ---- 网关工作台子导航（PLAN §3.9：6 项，两个产品线共用同一份表）----
+  // ---- 网关工作台子导航（PLAN §3.9 / §3.20：7 项，两个产品线共用同一份表；Trae 侧去掉「请求代理」）----
   "gateway.subnav.aria": "网关分区",
   "gateway.subnav.overview": "概览",
   "gateway.subnav.keys": "密钥",
@@ -178,9 +181,79 @@ export const zh = {
   "gateway.subnav.proxy": "请求代理",
   "gateway.subnav.logs": "请求日志",
 
-  // ---- 设置页「日志」分区（WorkBuddy 无独立运行日志，给空态 + 出口）----
+  // ---- 统一网关（第三个产品线 · 跨作用域）----
+  "gateway.subnav.unified": "统一入口",
+  "unifiedGateway.title": "统一网关",
+  "unifiedGateway.running": "运行中",
+  "unifiedGateway.stopped": "已停用",
+  "unifiedGateway.crossScope": "本入口跨全部作用域；上方的作用域选择器对它不生效。",
+  "unifiedGateway.summary": "{namespaces} 个命名空间 · {keys} 把可用密钥 · 监听 {addr}",
+  "unifiedGateway.enable": "启用统一网关",
+  "unifiedGateway.enableHint": "带命名空间前缀的单一入口 —— 一个 provider 用遍全部平台与版本",
+  "unifiedGateway.bindAddr": "监听地址",
+  "unifiedGateway.bindLan": "改为局域网",
+  "unifiedGateway.bindLoopback": "改回仅本机",
+  "unifiedGateway.port": "端口",
+  "unifiedGateway.portHint": "改端口需重启；旧的两个网关（57891 / 7864）保留不动",
+  "unifiedGateway.portInvalid": "端口不合法：请输入 1–65535 之间的整数",
+  "unifiedGateway.nsTitle": "启用的命名空间",
+  "unifiedGateway.nsHint": "未启用的：不解析、不列清单、调用返回 400。至少保留一个。",
+  "unifiedGateway.showMore": "显示更多程序线",
+  "unifiedGateway.showLess": "收起额外程序线",
+  "unifiedGateway.keepOne": "至少保留一个命名空间",
+  "unifiedGateway.nsOff": "本入口已停用该命名空间，调用会返回 400",
+  "unifiedGateway.keysTitle": "统一密钥",
+  "unifiedGateway.createKey": "创建密钥",
+  "unifiedGateway.noKeys": "还没有统一密钥",
+  "unifiedGateway.noKeysHint": "一把密钥可同时授权多个命名空间（如 WorkBuddy 国内 + Trae 国内）。",
+  "unifiedGateway.colName": "名称",
+  "unifiedGateway.colNamespaces": "授权命名空间",
+  "unifiedGateway.colMasked": "密钥",
+  "unifiedGateway.colCreated": "创建于",
+  "unifiedGateway.colLastUsed": "最后使用",
+  "unifiedGateway.colStatus": "状态",
+  "unifiedGateway.colActions": "操作",
+  "unifiedGateway.neverUsed": "从未使用",
+  "unifiedGateway.revoked": "已吊销",
+  "unifiedGateway.active": "启用",
+  "unifiedGateway.restore": "恢复",
+  "unifiedGateway.delete": "删除",
+  "unifiedGateway.revoke": "吊销",
+  "unifiedGateway.loadFailed": "读取统一网关配置失败",
+  "unifiedGateway.saveFailed": "保存失败",
+  "unifiedGateway.created": "密钥已创建",
+  "unifiedGateway.createdHint": "明文只展示这一次（库中只存 sha256），关闭后无法再查看，请立刻复制。",
+  "unifiedGateway.copy": "复制",
+  "unifiedGateway.savedClose": "我已保存，关闭",
+  "unifiedGateway.keyName": "名称",
+  "unifiedGateway.keyNamePlaceholder": "例如：我的主力 Key",
+  "unifiedGateway.authorize": "授权命名空间（至少一个）",
+  "unifiedGateway.authorizeRequired": "不勾任何一项则无法创建。已停用的命名空间也可以先授权（启用后自动生效）。",
+  "unifiedGateway.bizTitle": "业务转发命名空间",
+  "unifiedGateway.bizNone": "不使用业务转发",
+  "unifiedGateway.bizHint": "业务请求没有模型名，命名空间只能来自密钥本身；Trae 命名空间不合法。",
+  "unifiedGateway.cancel": "取消",
+  "unifiedGateway.create": "创建",
+  "unifiedGateway.unnamed": "未命名",
+  "unifiedGateway.previewTitle": "命名空间与清单预览",
+  "unifiedGateway.previewTotal": "共 {count} 条模型",
+  "unifiedGateway.previewEmpty": "没有启用任何命名空间 —— 在上方「启用的命名空间」里勾一个。",
+  "unifiedGateway.previewCount": "{count} 条",
+  "unifiedGateway.showModels": "看清单",
+  "unifiedGateway.hideModels": "收起",
+  "unifiedGateway.previewNoModels": "该段暂无清单（未识别到模型）",
+  "unifiedGateway.source.live": "实时",
+  "unifiedGateway.source.cached": "已保存",
+  "unifiedGateway.source.builtin": "内置",
+
+  // ---- 设置页「日志」分区 ----
+  // ⚠️ 2026-10-14 实测更正：WorkBuddy **有**自己的运行日志目录
+  //    （`~/.workbuddy/logs/`，按日分目录 + `automation.log`）。
+  //    此前这里写「WorkBuddy 分区的运行日志在网关页可见」—— 网关页显示的是
+  //    **本工具的请求日志**，与客户端的运行日志不是一回事，照着找会白费功夫。
   "settings.logs.emptyTitle": "本分区暂无运行日志",
-  "settings.logs.emptyBody": "WorkBuddy 分区的运行日志在网关页可见；这里是设置与备份入口。",
+  "settings.logs.emptyBody":
+    "这里只有本工具的设置与备份入口；WorkBuddy 客户端自己的运行日志在其数据目录的 logs 子目录下（本工具暂未接入展示）。",
   "settings.logs.emptyAction": "查看网关设置",
 
   // ---- 通用兜底 ----

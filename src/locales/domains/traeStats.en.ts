@@ -120,6 +120,11 @@ export const en = {
   "trae.stats.api.endpoint.copied": "Base URL copied",
   "trae.stats.api.endpoint.keyPrefix": "Latest key prefix",
   "trae.stats.api.endpoint.noKey": "No usable key yet",
+  "trae.stats.api.overview.models": "Available models",
+  "trae.stats.api.overview.modelsCount": "{count}",
+  "trae.stats.api.overview.pool": "Account pool",
+  "trae.stats.api.overview.poolCount": "{count} entries",
+  "trae.stats.api.overview.view": "View",
 
   // ---- Action feedback ----
   "trae.stats.api.toast.savedStarted": "Gateway saved and started",
