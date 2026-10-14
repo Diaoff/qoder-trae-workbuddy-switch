@@ -12,7 +12,7 @@ use buddy_switch_core::modules::config as core_config;
 use buddy_switch_core::modules::credits;
 use buddy_switch_core::modules::region::{self, Region, RegionMismatch};
 
-use crate::error::GatewayError;
+use crate::error::{GatewayError, NoCredentialCause};
 
 /// 账号选择策略（按 region 各自独立配置）。
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -69,21 +69,36 @@ impl AccountSelector {
                 // 且不发起任何上游请求），再导入账号并二次防御校验。
                 auth_file::read_auth_file_checked_for(region)
                     .map_err(GatewayError::RegionMismatch)?;
-                let account = auth_file::import_from_auth_file_for(region)
-                    .ok_or(GatewayError::NoCredential { region })?;
+                // 认证文件缺失 / 存在但读不出凭据 ⇒ 这一档**确实**该让人去登录，
+                // 文案保留桌面端指引（并补 headless 的替代做法）。
+                let account = auth_file::import_from_auth_file_for(region).ok_or(
+                    GatewayError::NoCredential {
+                        region,
+                        cause: NoCredentialCause::AuthFileMissing,
+                    },
+                )?;
                 ensure_region(&account, region)?;
                 Ok(account)
             }
             AccountStrategy::Pinned { account_id } => {
-                let account = account::find_account_for(region, account_id)
-                    .ok_or(GatewayError::NoCredential { region })?;
+                // 「指定的账号不在库里」与「没登录」是两回事：登录救不了被删的账号，
+                // 该做的是重新指定或改回自动择优。
+                let account = account::find_account_for(region, account_id).ok_or(
+                    GatewayError::NoCredential {
+                        region,
+                        cause: NoCredentialCause::PinnedMissing,
+                    },
+                )?;
                 ensure_region(&account, region)?;
                 Ok(account)
             }
             AccountStrategy::MaxCredits => {
                 let accounts = account::load_accounts_for(region);
                 if accounts.is_empty() {
-                    return Err(GatewayError::NoCredential { region });
+                    return Err(GatewayError::NoCredential {
+                        region,
+                        cause: NoCredentialCause::StoreEmpty,
+                    });
                 }
                 let mut candidates = Vec::with_capacity(accounts.len());
                 for account in accounts {

@@ -22,9 +22,9 @@ use buddy_switch_core::modules::region::Region;
 use buddy_switch_core::modules::upstream::UpstreamChatResult;
 
 use crate::account_strategy::{AccountSelector, AccountStrategy};
-use crate::error::GatewayError;
+use crate::error::{GatewayError, NoCredentialCause};
 use crate::outbound::{self, DegradeGate, OutboundMeta};
-use crate::pool::{classify_event, RealmTag, UpstreamEvent};
+use crate::pool::{classify_event, PoolSummary, RealmTag, UpstreamEvent};
 use crate::session_headers::{self, ConversationContext};
 
 /// 会话 id 提取已提到共用层（[`crate::session_headers`]）—— Trae 网关复用同一份实现。
@@ -305,14 +305,30 @@ pub async fn relay(
         }
     }
 
-    let failure = last.unwrap_or(RelayFailure {
-        error: GatewayError::NoCredential {
-            region: request.region,
-        },
-        account: String::new(),
-        uid: String::new(),
-        upstream_message: String::new(),
-    });
+    let failure = match last {
+        Some(failure) => failure,
+        // 首轮就选不出账号 ⇒ 这里能给出**具体原因**，而不是笼统的「未找到已登录账号」。
+        //
+        // ★ issue #26：改造前这一档与「从没登录过」共用同一句文案（「请在桌面端登录
+        //   该版本后重试」），于是「号在库里、但全被禁用 / 冷却」的用户被引去做了一件
+        //   **不可能有用**的事（报障人：切换过多个账号、桌面端和 Buddy Switch 都试过）。
+        //   池快照就在手边，把事实摆出来即可。
+        None => {
+            let summary = {
+                let pool = state.pool.read().await;
+                pool.summary(now_ms, Some(realm))
+            };
+            RelayFailure {
+                error: GatewayError::NoCredential {
+                    region: request.region,
+                    cause: no_credential_cause_of(&summary),
+                },
+                account: String::new(),
+                uid: String::new(),
+                upstream_message: String::new(),
+            }
+        }
+    };
     // 唯一失败出口 ⇒ 在这里记一次即可覆盖全部失败路径（含「没有可用账号」）。
     // 上游原文优先于错误码文案：用户排查时「402 余额不足」比「no_credential」有用。
     state
@@ -405,6 +421,27 @@ async fn select_account(
             }
         }
         Err(_) => None,
+    }
+}
+
+/// 池快照 → `no_credential` 的具体原因（**唯一判据**）。
+///
+/// `total == 0` ⇒ 该区域在池里一条都没有：账号库为空，或库里的账号都没有 `uid`
+/// 而被 `sync_accounts` 跳过。否则是「有号，但一个都不可用」—— 这两种处境的可行动
+/// 指引完全不同（见 [`NoCredentialCause`]）。
+///
+/// 刻意用 `total` 而不是「`available == 0`」：后者只说「不可用」，前者才能区分
+/// 「一个号都没有」与「有号但全不可用」，而正是这个区分决定了文案该不该让人去登录。
+fn no_credential_cause_of(summary: &PoolSummary) -> NoCredentialCause {
+    if summary.total == 0 {
+        NoCredentialCause::StoreEmpty
+    } else {
+        NoCredentialCause::PoolExhausted {
+            total: summary.total,
+            disabled: summary.disabled,
+            cooling: summary.cooling,
+            zero_credits: summary.zero_credits,
+        }
     }
 }
 
@@ -588,6 +625,37 @@ mod tests {
     fn realm_mapping_covers_both_regions() {
         assert_eq!(realm_of(Region::Cn), RealmTag::Cn);
         assert_eq!(realm_of(Region::Global), RealmTag::Global);
+    }
+
+    /// ★ 池快照必须能区分「一个号都没有」与「有号但全不可用」。
+    ///
+    /// 这两者的可行动指引相反（去登录 / 别去登录），所以判据本身要能被测住。
+    /// 阳性对照：把两个分支合并成同一个返回值 ⇒ 本用例必红。
+    #[test]
+    fn no_credential_cause_splits_empty_store_from_exhausted_pool() {
+        assert_eq!(
+            no_credential_cause_of(&PoolSummary::default()),
+            NoCredentialCause::StoreEmpty,
+            "池内该区域 0 条 ⇒ 「账号库为空」这一档"
+        );
+
+        let exhausted = PoolSummary {
+            total: 5,
+            available: 0,
+            cooling: 2,
+            disabled: 3,
+            ..PoolSummary::default()
+        };
+        assert_eq!(
+            no_credential_cause_of(&exhausted),
+            NoCredentialCause::PoolExhausted {
+                total: 5,
+                disabled: 3,
+                cooling: 2,
+                zero_credits: 0,
+            },
+            "有号但全不可用 ⇒ 必须带上分类计数，不能退化成「未登录」"
+        );
     }
 
     #[test]
