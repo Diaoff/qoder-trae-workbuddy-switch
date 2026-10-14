@@ -204,7 +204,11 @@ pub async fn chat_for_region(
             uid,
         }) => {
             if wants_stream {
-                state.log.record(
+                // ★ 流式请求的日志**推迟到流结束**才写（`StreamingLogSink`）：写日志的
+                //   那一刻用量还没到达，此前只能把 token 写死 0（实测本机 200/200 条全 0）。
+                //   账本同理 —— 两者共用 `UsageTap` 的结束回调。
+                let sinks = relay::stream_sinks(
+                    &state,
                     RequestMeta {
                         endpoint: "/v1/chat/completions",
                         method: "POST",
@@ -213,19 +217,21 @@ pub async fn chat_for_region(
                         account_uid: uid.clone(),
                         model: model.clone(),
                         status: 200,
-                        latency_ms: started.elapsed().as_millis() as i64,
+                        // 占位：由 sink 在流结束时按**总耗时**覆盖。
+                        latency_ms: 0,
                         prompt_tokens: 0,
                         completion_tokens: 0,
                         stream: true,
-                    }
-                    .to_value(),
+                    },
+                    started,
+                    &uid,
+                    &model,
                 );
-                // 流式也要回填成本账本，否则「账本择优」在实际流量上等于未启用。
-                // 组合顺序：上游字节流 -> UsageTap (旁观原始字节记账) -> ReasoningDelta (快照差分) -> SsePassthrough (补发 [DONE])
-                let sink = relay::pool_usage_sink(&state, &uid, &model);
+                // 组合顺序：上游字节流 -> UsageTap (旁观原始字节 + 结束回报) -> ReasoningDelta
+                // (快照差分) -> SsePassthrough (补发 [DONE])
                 sse_response(SsePassthrough::new(
                     crate::protocol::reasoning::ReasoningDelta::new(
-                        crate::protocol::usage_tap::UsageTap::new(response.bytes_stream(), sink),
+                        crate::protocol::usage_tap::UsageTap::new(response.bytes_stream(), sinks),
                     ),
                 ))
             } else {

@@ -557,7 +557,8 @@ mod tests {
         tokens: AtomicI64,
     }
     impl UsageSink for RecordingSink {
-        fn record(&self, _credit: f64, tokens: i64) {
+        fn finish(&self, usage: Option<crate::protocol::usage_tap::UsageReport>) {
+            let tokens = usage.map(|usage| usage.total_tokens()).unwrap_or(0);
             self.tokens.store(tokens, Ordering::SeqCst);
         }
     }
@@ -575,7 +576,7 @@ mod tests {
         let chunks: Vec<Result<Bytes, io::Error>> = vec![Ok(Bytes::from(raw))];
         let stream = SsePassthrough::new(ReasoningDelta::new(UsageTap::new(
             futures_util::stream::iter(chunks),
-            Some(sink.clone()),
+            vec![sink.clone()],
         )));
         let _ = collect_stream_lines(stream).await;
 

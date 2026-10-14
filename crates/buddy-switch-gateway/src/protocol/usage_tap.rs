@@ -3,18 +3,23 @@
 //! # 为什么需要它
 //!
 //! 出站改写管线**强制 `stream: true`**（上游不接受非流式），客户端默认也是流式；
-//! 而成本账本（`(账号, 模型)` 每千 token 单价）此前**只在非流式客户端路径**上回填
-//! （见 `routes/chat.rs` 的聚合分支）。后果是：在实际流量上账本几乎永远为空 →
-//! `cost_tier` 恒为「无观测」→ **选号的成本分层硬过滤退化成空操作**，整个
-//! 「账本择优」能力形同未启用。
+//! 而请求日志与成本账本此前**只在非流式客户端路径**上回填（见 `routes/chat.rs` 的
+//! 聚合分支）。后果是：在实际流量上
+//! - 账本几乎永远为空 → `cost_tier` 恒为「无观测」→ **选号的成本分层硬过滤退化成
+//!   空操作**，整个「账本择优」能力形同未启用；
+//! - 请求日志的 `promptTokens` / `completionTokens` **只能写死 0**（写日志时用量还没
+//!   到达）⇒ 请求日志的 Token 列与「今日 Token」的网关列**恒为 0**
+//!   （2026-10-14 实测本机 200/200 条全为 0）。
 //!
 //! # 设计约束
 //!
 //! - 探针**嵌在** [`super::openai::SsePassthrough`] **之内**（更靠近上游），只观察字节、
 //!   不修改字节，因此透传语义与「恰好补发一个 `[DONE]`」的保证完全不受影响。
-//! - **只在拿到真实 `credit` 且 `tokens > 0` 时回报**。宁可不记，也不能记一个
-//!   0 成本样本——那会把账号误标成「免费」，比没有样本更糟（会误导成本分层）。
+//! - 探针在**流结束时**（正常结束 / 上游出错 / 流被丢弃）向每个 sink 回报**恰好一次**
+//!   （幂等）。「结束」而不是「开始」是刻意的：用量只在末帧才出现。
 //! - 回报是**尽力而为**：拿不到池的写锁就跳过本次样本，绝不阻塞流式响应。
+//! - **`None` 的处置由 sink 自己决定**（见 [`UsageSink::finish`]）：账本类跳过、
+//!   日志类照写。探针不替它们做取舍。
 
 use std::pin::Pin;
 use std::sync::Arc;
@@ -27,20 +32,51 @@ use serde_json::Value;
 /// 单帧缓冲区上限：畸形流（永不出现 `\n\n`）不得让内存无界增长。
 const MAX_FRAME_BUFFER_BYTES: usize = 256 * 1024;
 
-/// 用量回报接收方。
+/// 一次上游用量回报。
 ///
-/// 抽象成 trait 是为了让单测用记录型替身，不必真的起账号池；
-/// 与 `cat.rs` 的 `CatIo` / `school.rs` 的 `SchoolIo` 是同一套可注入缝思路。
-pub trait UsageSink: Send + Sync + 'static {
-    /// 收到一次上游用量回报；`tokens` 为 prompt + completion 之和。
-    fn record(&self, credit: f64, tokens: i64);
+/// `prompt` / `completion` **分开保留**（而不是只给总和）：请求日志要写两个独立字段，
+/// 只给总和就再也拆不开了。
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct UsageReport {
+    /// 上游上报的积分消耗（`usage.credit`）。
+    pub credit: f64,
+    /// 输入 token（`usage.prompt_tokens`，负数已钳到 0）。
+    pub prompt_tokens: i64,
+    /// 输出 token（`usage.completion_tokens`，负数已钳到 0）。
+    pub completion_tokens: i64,
 }
 
-/// 从一帧 JSON 里提取 `(credit, tokens)`。
+impl UsageReport {
+    /// 输入 + 输出（账本按总量折算单价）。
+    pub fn total_tokens(&self) -> i64 {
+        self.prompt_tokens + self.completion_tokens
+    }
+}
+
+/// 用量回报接收方。
+///
+/// 抽象成 trait 是为了让单测用记录型替身，不必真的起账号池 / 日志文件；
+/// 与 `cat.rs` 的 `CatIo` / `school.rs` 的 `SchoolIo` 是同一套可注入缝思路。
+pub trait UsageSink: Send + Sync + 'static {
+    /// 流结束时调用**恰好一次**。
+    ///
+    /// `usage` 为 `None` 表示本次**未观测到可用用量**（上游没带 `usage` / 缺 `credit` /
+    /// tokens 为 0 / 流被客户端中途掐断）。两类 sink 对 `None` 的处置**必须分家**：
+    ///
+    /// - **账本类**（`PoolUsageSink`）：**跳过**。写一个 0 成本样本会把账号误标成
+    ///   「免费」，比没有样本更糟（会误导成本分层）。
+    /// - **日志类**（`StreamingLogSink`）：**照写**（用量填 0）。「这次请求发生过」
+    ///   本身就是事实，不该因为拿不到用量就从日志里消失。
+    fn finish(&self, usage: Option<UsageReport>);
+}
+
+/// 从一帧 JSON 里提取用量。
 ///
 /// 返回 `None` 的情形（都**不得**写入账本）：无 `usage` 字段、`usage` 为 `null`、
-/// **缺 `credit`**（拿不到单价就得不出成本）、`tokens <= 0`。
-pub fn extract_usage(frame: &Value) -> Option<(f64, i64)> {
+/// **缺 `credit`**（拿不到单价就得不出成本）、`prompt + completion <= 0`。
+///
+/// ⚠️ 显式 `credit = 0` 是**合法**样本（免费模型），与「缺 `credit`」是两件事。
+pub fn extract_usage(frame: &Value) -> Option<UsageReport> {
     let usage = frame.get("usage")?;
     if usage.is_null() {
         return None;
@@ -49,35 +85,41 @@ pub fn extract_usage(frame: &Value) -> Option<(f64, i64)> {
     let prompt = usage
         .get("prompt_tokens")
         .and_then(Value::as_i64)
-        .unwrap_or(0);
+        .unwrap_or(0)
+        .max(0);
     let completion = usage
         .get("completion_tokens")
         .and_then(Value::as_i64)
-        .unwrap_or(0);
-    let tokens = prompt.max(0) + completion.max(0);
-    if tokens <= 0 {
+        .unwrap_or(0)
+        .max(0);
+    if prompt + completion <= 0 {
         return None;
     }
-    Some((credit, tokens))
+    Some(UsageReport {
+        credit,
+        prompt_tokens: prompt,
+        completion_tokens: completion,
+    })
 }
 
-/// `usage` 探针流包装。**不改变字节流**，只在流结束（或出错）时回报一次用量。
+/// `usage` 探针流包装。**不改变字节流**，只在流结束（或出错、或被丢弃）时回报一次用量。
 pub struct UsageTap<S> {
     inner: Pin<Box<S>>,
-    sink: Option<Arc<dyn UsageSink>>,
+    /// 回报接收方（日志 / 账本各一个；空则只做缓冲，等价于不加探针）。
+    sinks: Vec<Arc<dyn UsageSink>>,
     buffer: Vec<u8>,
     /// 最近一次见到的用量（后到的帧覆盖先到的）。
-    latest: Option<(f64, i64)>,
+    latest: Option<UsageReport>,
     reported: bool,
     finished: bool,
 }
 
 impl<S> UsageTap<S> {
-    /// 包装上游流；`sink` 为 `None` 时只做缓冲（等价于不加探针）。
-    pub fn new(inner: S, sink: Option<Arc<dyn UsageSink>>) -> Self {
+    /// 包装上游流；`sinks` 为空时只做缓冲（等价于不加探针）。
+    pub fn new(inner: S, sinks: Vec<Arc<dyn UsageSink>>) -> Self {
         Self {
             inner: Box::pin(inner),
-            sink,
+            sinks,
             buffer: Vec::new(),
             latest: None,
             reported: false,
@@ -123,9 +165,19 @@ impl<S> UsageTap<S> {
             return;
         }
         self.reported = true;
-        if let (Some(sink), Some((credit, tokens))) = (self.sink.as_ref(), self.latest) {
-            sink.record(credit, tokens);
+        for sink in &self.sinks {
+            sink.finish(self.latest);
         }
+    }
+}
+
+impl<S> Drop for UsageTap<S> {
+    /// 流**被丢弃**（客户端中途断开 / 响应体从未被消费）时也要回报一次。
+    ///
+    /// 少了它，被掐断的请求会从日志里**彻底消失** —— 连一条「发生过」的记录都没有。
+    /// 正常结束与出错路径已在 `poll_next` 里回报过，这里由 `reported` 幂等挡住。
+    fn drop(&mut self) {
+        self.report();
     }
 }
 
@@ -178,21 +230,35 @@ mod tests {
     use serde_json::json;
     use std::sync::Mutex;
 
+    /// 记录型替身：把每次 `finish` 的入参**原样**存下来（含 `None`）。
     #[derive(Default)]
     struct RecordingSink {
-        calls: Mutex<Vec<(f64, i64)>>,
+        calls: Mutex<Vec<Option<UsageReport>>>,
     }
 
     impl RecordingSink {
-        fn calls(&self) -> Vec<(f64, i64)> {
+        fn calls(&self) -> Vec<Option<UsageReport>> {
             self.calls.lock().expect("lock").clone()
         }
     }
 
     impl UsageSink for RecordingSink {
-        fn record(&self, credit: f64, tokens: i64) {
-            self.calls.lock().expect("lock").push((credit, tokens));
+        fn finish(&self, usage: Option<UsageReport>) {
+            self.calls.lock().expect("lock").push(usage);
         }
+    }
+
+    /// 单个 sink → `UsageTap::new` 需要的 `Vec`。
+    fn only(sink: &Arc<RecordingSink>) -> Vec<Arc<dyn UsageSink>> {
+        vec![sink.clone()]
+    }
+
+    fn report(credit: f64, prompt: i64, completion: i64) -> Option<UsageReport> {
+        Some(UsageReport {
+            credit,
+            prompt_tokens: prompt,
+            completion_tokens: completion,
+        })
     }
 
     fn stream_of(chunks: Vec<&'static str>) -> impl Stream<Item = Result<Bytes, std::io::Error>> {
@@ -214,9 +280,13 @@ mod tests {
             USAGE_FRAME,
             "data: [DONE]\n\n",
         ]);
-        let collected: Vec<_> = UsageTap::new(stream, Some(sink.clone())).collect().await;
+        let collected: Vec<_> = UsageTap::new(stream, only(&sink)).collect().await;
         assert_eq!(collected.len(), 3, "字节必须原样透传，一帧不少");
-        assert_eq!(sink.calls(), vec![(1.5, 15)], "tokens = prompt + completion");
+        assert_eq!(
+            sink.calls(),
+            vec![report(1.5, 10, 5)],
+            "prompt / completion 必须**分开**回报（请求日志要写两个独立字段）"
+        );
     }
 
     #[tokio::test]
@@ -228,8 +298,8 @@ mod tests {
             "age\":{\"credit\":2.0,\"prompt_tokens\":7,\"completion_tokens\":3}}",
             "\n\ndata: [DONE]\n\n",
         ]);
-        let _ = UsageTap::new(stream, Some(sink.clone())).collect::<Vec<_>>().await;
-        assert_eq!(sink.calls(), vec![(2.0, 10)], "跨块帧必须被重组");
+        let _ = UsageTap::new(stream, only(&sink)).collect::<Vec<_>>().await;
+        assert_eq!(sink.calls(), vec![report(2.0, 7, 3)], "跨块帧必须被重组");
     }
 
     #[tokio::test]
@@ -239,34 +309,42 @@ mod tests {
             "data: {\"usage\":{\"credit\":1.0,\"prompt_tokens\":1,\"completion_tokens\":1}}\n\n",
             "data: {\"usage\":{\"credit\":9.0,\"prompt_tokens\":10,\"completion_tokens\":10}}\n\n",
         ]);
-        let _ = UsageTap::new(stream, Some(sink.clone())).collect::<Vec<_>>().await;
-        assert_eq!(sink.calls(), vec![(9.0, 20)], "后到的用量应覆盖先到的");
+        let _ = UsageTap::new(stream, only(&sink)).collect::<Vec<_>>().await;
+        assert_eq!(sink.calls(), vec![report(9.0, 10, 10)], "后到的用量应覆盖先到的");
     }
 
+    /// ★ 没有可用用量时**仍要回报一次 `None`** —— 日志类 sink 靠它记下「这次请求发生过」。
+    ///
+    /// 可证伪：把 `report()` 改回「只在 `latest.is_some()` 时调 sink」⇒ 本用例变红
+    /// （`calls` 会是空 Vec 而不是 `[None]`）。
     #[tokio::test]
-    async fn missing_or_unusable_usage_reports_nothing() {
+    async fn reports_none_when_no_usable_usage_was_observed() {
         for chunks in vec![
             vec!["data: {\"choices\":[]}\n\n"],
             vec!["data: {\"usage\":null}\n\n"],
-            // 缺 credit：拿不到单价，不得写样本
+            // 缺 credit：拿不到单价，不得写账本样本
             vec!["data: {\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":5}}\n\n"],
-            // tokens 为 0：不得写样本
+            // tokens 为 0：不得写账本样本
             vec!["data: {\"usage\":{\"credit\":1.0,\"prompt_tokens\":0,\"completion_tokens\":0}}\n\n"],
             // 非 JSON 帧
             vec!["data: not json\n\n"],
         ] {
             let sink = Arc::new(RecordingSink::default());
-            let _ = UsageTap::new(stream_of(chunks), Some(sink.clone()))
+            let _ = UsageTap::new(stream_of(chunks), only(&sink))
                 .collect::<Vec<_>>()
                 .await;
-            assert!(sink.calls().is_empty(), "不该产生账本样本");
+            assert_eq!(
+                sink.calls(),
+                vec![None],
+                "无可用用量时必须回报一次 None（由 sink 决定「账本跳过 / 日志照写」）"
+            );
         }
     }
 
     #[tokio::test]
     async fn works_without_sink_and_still_passes_bytes_through() {
         let stream = stream_of(vec![USAGE_FRAME, "data: [DONE]\n\n"]);
-        let collected: Vec<_> = UsageTap::new(stream, None).collect().await;
+        let collected: Vec<_> = UsageTap::new(stream, Vec::new()).collect().await;
         assert_eq!(collected.len(), 2);
         assert!(collected.iter().all(|item| item.is_ok()));
     }
@@ -278,13 +356,49 @@ mod tests {
             Ok(Bytes::from_static(USAGE_FRAME.as_bytes())),
             Err(std::io::Error::other("upstream boomed")),
         ]);
-        let collected: Vec<_> = UsageTap::new(stream, Some(sink.clone())).collect().await;
+        let collected: Vec<_> = UsageTap::new(stream, only(&sink)).collect().await;
         assert_eq!(collected.len(), 2, "错误必须原样向上游调用方传播");
         assert!(collected[1].is_err());
         assert_eq!(
             sink.calls(),
-            vec![(1.5, 15)],
+            vec![report(1.5, 10, 5)],
             "流中途异常时已见到的用量仍应回报（否则该次调用永远不记账）"
+        );
+    }
+
+    /// ★★ 流被**丢弃**（客户端读到一半就断开）时也必须回报一次。
+    ///
+    /// 这是「日志推迟到流结束」这个改动的**安全网**：没有它，被掐断的请求会从日志里
+    /// **彻底消失** —— 比原来「写一条 token=0」更糟（连「发生过」都看不到）。
+    ///
+    /// 可证伪：删掉 `impl Drop for UsageTap` ⇒ 本用例变红（`calls` 为空）。
+    #[tokio::test]
+    async fn dropping_a_half_consumed_stream_still_reports_once() {
+        let sink = Arc::new(RecordingSink::default());
+        let stream = stream_of(vec![USAGE_FRAME, "data: [DONE]\n\n"]);
+        {
+            let mut tap = UsageTap::new(stream, only(&sink));
+            // 只取第一块（模拟客户端读到一半就断开），随后 tap 离开作用域被 drop。
+            assert!(tap.next().await.is_some(), "第一块应正常取出");
+        }
+        assert_eq!(
+            sink.calls(),
+            vec![report(1.5, 10, 5)],
+            "流被掐断时也必须回报已见到的用量"
+        );
+    }
+
+    /// 从未被 poll 的流（响应体被直接丢弃）同样要回报 —— 否则「请求发生过」会丢失。
+    #[tokio::test]
+    async fn never_polled_stream_still_reports_none() {
+        let sink = Arc::new(RecordingSink::default());
+        {
+            let _tap = UsageTap::new(stream_of(vec![USAGE_FRAME]), only(&sink));
+        }
+        assert_eq!(
+            sink.calls(),
+            vec![None],
+            "从未被 poll 的流也要回报一次（用量未知 ⇒ None）"
         );
     }
 
@@ -302,16 +416,16 @@ mod tests {
             None,
             "tokens 为 0 必须拒绝"
         );
-        // 负数 token 被钳到 0 后仍为 0 → 拒绝
+        // 负数 token 被钳到 0；另一项非 0 ⇒ 仍是合法样本
         assert_eq!(
             extract_usage(&json!({"usage": {"credit": 1.0, "prompt_tokens": -5, "completion_tokens": 2}})),
-            Some((1.0, 2)),
+            Some(UsageReport { credit: 1.0, prompt_tokens: 0, completion_tokens: 2 }),
             "负数项应被钳制为 0，而不是让求和变成负数"
         );
         // 只有 prompt_tokens 也应可用
         assert_eq!(
             extract_usage(&json!({"usage": {"credit": 0.0, "prompt_tokens": 3}})),
-            Some((0.0, 3)),
+            Some(UsageReport { credit: 0.0, prompt_tokens: 3, completion_tokens: 0 }),
             "显式 credit=0 是合法样本（免费模型），不同于「缺 credit」"
         );
     }

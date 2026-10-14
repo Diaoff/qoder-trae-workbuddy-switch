@@ -509,11 +509,22 @@ struct PoolUsageSink {
 }
 
 impl crate::protocol::usage_tap::UsageSink for PoolUsageSink {
-    fn record(&self, credit: f64, tokens: i64) {
+    fn finish(&self, usage: Option<crate::protocol::usage_tap::UsageReport>) {
+        // ★ 与日志类 sink **相反**：只在拿到真实用量时记账本。
+        //   写一个 0 成本样本会把账号误标成「免费」，比没有样本更糟。
+        let Some(usage) = usage else {
+            return;
+        };
         let Ok(mut pool) = self.pool.try_write() else {
             return;
         };
-        pool.record_ledger(&self.uid, &self.model, credit, tokens, timeutil::now_ms());
+        pool.record_ledger(
+            &self.uid,
+            &self.model,
+            usage.credit,
+            usage.total_tokens(),
+            timeutil::now_ms(),
+        );
     }
 }
 
@@ -534,6 +545,38 @@ pub fn pool_usage_sink(
         uid: uid.to_string(),
         model: model.to_string(),
     }))
+}
+
+/// 流式路径的 sink 组合：**请求日志**（必写）+ **成本账本**（有真实用量才写）。
+///
+/// ## 为什么日志也走 sink（而不是在路由里就地写）
+///
+/// 流式响应的 `usage` 只在 SSE 末帧才到达，而日志条目此前在响应返回前就落盘 ⇒
+/// token 只能写死 0（2026-10-14 实测本机 200/200 条全 0）。⇒ 日志改挂到**流结束回调**
+/// （[`crate::logging::StreamingLogSink`]），与账本共用同一个结束点。
+///
+/// 三条 WB 路由（`chat` / `messages` / `responses`）的流式分支**必须都走这里** ——
+/// 各自拼一份就会出现「修了两条、漏了一条」。
+///
+/// `meta` 的 token / 耗时字段是**占位**，由 sink 在流结束时覆盖。
+pub fn stream_sinks(
+    state: &GatewayState,
+    meta: crate::logging::RequestMeta,
+    started: std::time::Instant,
+    uid: &str,
+    model: &str,
+) -> Vec<std::sync::Arc<dyn crate::protocol::usage_tap::UsageSink>> {
+    let mut sinks: Vec<std::sync::Arc<dyn crate::protocol::usage_tap::UsageSink>> = vec![
+        std::sync::Arc::new(crate::logging::StreamingLogSink::new(
+            state.log.clone(),
+            meta,
+            started,
+        )),
+    ];
+    if let Some(ledger) = pool_usage_sink(state, uid, model) {
+        sinks.push(ledger);
+    }
+    sinks
 }
 
 #[cfg(test)]

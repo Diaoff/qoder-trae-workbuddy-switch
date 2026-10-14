@@ -180,7 +180,10 @@ pub async fn messages_for_region(
             uid,
         }) => {
             if wants_stream {
-                state.log.record(
+                // ★ 流式请求的日志**推迟到流结束**才写（见 `StreamingLogSink`）：
+                //   写日志时用量还没到达，此前只能写死 0（实测本机 200/200 条全 0）。
+                let sinks = relay::stream_sinks(
+                    &state,
                     RequestMeta {
                         endpoint: "/v1/messages",
                         method: "POST",
@@ -189,16 +192,18 @@ pub async fn messages_for_region(
                         account_uid: uid.clone(),
                         model: model.clone(),
                         status: 200,
-                        latency_ms: started.elapsed().as_millis() as i64,
+                        // 占位：由 sink 在流结束时按**总耗时**覆盖。
+                        latency_ms: 0,
                         prompt_tokens: 0,
                         completion_tokens: 0,
                         stream: true,
-                    }
-                    .to_value(),
+                    },
+                    started,
+                    &uid,
+                    &model,
                 );
-                let sink = relay::pool_usage_sink(&state, &uid, &model);
                 sse_response(AnthropicSseStream::new(
-                    crate::protocol::usage_tap::UsageTap::new(response.bytes_stream(), sink),
+                    crate::protocol::usage_tap::UsageTap::new(response.bytes_stream(), sinks),
                     model,
                 ))
             } else {

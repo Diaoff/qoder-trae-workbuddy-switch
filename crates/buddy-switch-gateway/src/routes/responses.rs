@@ -182,7 +182,10 @@ pub async fn responses_for_region(
             uid,
         }) => {
             if wants_stream {
-                state.log.record(
+                // ★ 流式请求的日志**推迟到流结束**才写（与 chat / messages 同源）：
+                //   写日志时用量还没到达，此前只能写死 0（实测本机 200/200 条全 0）。
+                let sinks = relay::stream_sinks(
+                    &state,
                     RequestMeta {
                         endpoint: "/v1/responses",
                         method: "POST",
@@ -191,17 +194,18 @@ pub async fn responses_for_region(
                         account_uid: uid.clone(),
                         model: model.clone(),
                         status: 200,
-                        latency_ms: started.elapsed().as_millis() as i64,
+                        // 占位：由 sink 在流结束时按**总耗时**覆盖。
+                        latency_ms: 0,
                         prompt_tokens: 0,
                         completion_tokens: 0,
                         stream: true,
-                    }
-                    .to_value(),
+                    },
+                    started,
+                    &uid,
+                    &model,
                 );
-                // 流式也要回填成本账本（与 chat 端点同源）：UsageTap 旁观原始字节记账。
-                let sink = relay::pool_usage_sink(&state, &uid, &model);
                 sse_response(ResponsesSseStream::new(
-                    crate::protocol::usage_tap::UsageTap::new(response.bytes_stream(), sink),
+                    crate::protocol::usage_tap::UsageTap::new(response.bytes_stream(), sinks),
                     model,
                 ))
             } else {
