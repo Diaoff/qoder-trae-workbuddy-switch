@@ -8,8 +8,19 @@
 //! 200/200 条全为 0）。⇒ 改用 [`StreamingLogSink`]：日志挂在 `UsageTap` 的结束回调上，
 //! 流结束时才落盘，此时用量已知。
 //!
-//! 副作用（有意）：流式条目的 `latencyMs` 从「首字节前耗时」变成**整次请求总耗时** ——
-//! 对用户而言后者才是可感知的耗时。
+//! ## ⚠️ 两个耗时字段**语义不同，不得合并**（2026-10-15 收紧）
+//!
+//! [`StreamingLogSink`] 的第一版顺手把 `latencyMs` 也改成了「流结束时的总耗时」，
+//! 结果日志页的耗时列凭空放大 **10~100 倍**（实测 p50 从数百 ms 变成 8.7 s、
+//! p90 变成 204 s）—— 用户合理地读成了「网关变慢了」。**一个字段名不能承载两种
+//! 语义**：那次改动本身没有引入任何真实延迟（`RequestLog::record` 实测 p50 ≈ 2 ms，
+//! 且落盘只是从「请求开始前」挪到「流结束后」）。
+//!
+//! ⇒ 现在固定为：
+//! - [`RequestMeta::latency_ms`]（`latencyMs`）= **上游首字节延迟**（TTFB），
+//!   由 handler 在拿到响应头时就地填 —— 与本次改造**之前逐字同语义**，历史可比；
+//! - [`RequestMeta::total_ms`]（`totalMs`）= **整次请求总耗时**，
+//!   流式由 sink 在流结束时补齐（那是新增信息，不覆盖任何旧字段）。
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -35,7 +46,16 @@ pub struct RequestMeta {
     pub account_uid: String,
     pub model: String,
     pub status: u16,
+    /// **上游首字节延迟**（请求进入 → 上游响应头到达）。
+    ///
+    /// ⚠️ 这是 **TTFB，不是总耗时** —— 总耗时另见 [`Self::total_ms`]。两者混用会让
+    /// 日志页的耗时列在流式场景下凭空放大（见模块头）。
     pub latency_ms: i64,
+    /// **整次请求总耗时**（请求进入 → 流结束 / 响应体读完）。
+    ///
+    /// 流式路径由 [`StreamingLogSink`] 在流结束时补齐（`template` 里传 0 占位）；
+    /// 非流式与失败路径就地填。
+    pub total_ms: i64,
     pub prompt_tokens: u64,
     pub completion_tokens: u64,
     pub stream: bool,
@@ -54,6 +74,7 @@ impl RequestMeta {
             "model": self.model,
             "status": self.status,
             "latencyMs": self.latency_ms,
+            "totalMs": self.total_ms,
             "promptTokens": self.prompt_tokens,
             "completionTokens": self.completion_tokens,
             "stream": self.stream,
@@ -74,18 +95,19 @@ impl RequestMeta {
 ///
 /// - **拿不到用量也要写**（填 0）：这次请求**发生过**（状态码 / 账号 / 模型 / 耗时
 ///   都是事实），不该因为拿不到用量就从日志里消失。
-/// - `latency_ms` 由本 sink 在流结束时按**总耗时**覆盖 —— `template` 里的那个值是占位，
-///   不参与输出。
+/// - `prompt_tokens` / `completion_tokens` / **`total_ms`** 由本 sink 在流结束时补齐；
+///   **`latency_ms` 原样取自 `template`**（handler 在拿到上游响应头时已填实）
+///   —— 本 sink **不碰**它，见模块头「两个耗时字段语义不同」。
 pub struct StreamingLogSink {
     log: Arc<RequestLog>,
-    /// 除 token 与耗时外的全部字段（流开始时即已确定）。
+    /// 除 token 与**总**耗时外的全部字段（流开始时即已确定，含 `latency_ms`）。
     template: RequestMeta,
     started: Instant,
 }
 
 impl StreamingLogSink {
-    /// `template` 的 `prompt_tokens` / `completion_tokens` / `latency_ms` 会被覆盖，
-    /// 传 0 即可（其余字段必须填实）。
+    /// `template` 的 `prompt_tokens` / `completion_tokens` / `total_ms` 会被覆盖
+    /// （传 0 占位即可）；**`latency_ms` 必须填实**（上游响应头到达时的耗时）。
     pub fn new(log: Arc<RequestLog>, template: RequestMeta, started: Instant) -> Self {
         Self {
             log,
@@ -109,7 +131,9 @@ impl UsageSink for StreamingLogSink {
             RequestMeta {
                 prompt_tokens,
                 completion_tokens,
-                latency_ms: self.started.elapsed().as_millis() as i64,
+                // ★ 只补总耗时；`latency_ms` 保留 `template` 里的 TTFB —— 覆盖它正是
+                //   2026-10-15 那次「日志数字放大 10~100 倍」的事故来源。
+                total_ms: self.started.elapsed().as_millis() as i64,
                 ..self.template.clone()
             }
             .to_value(),
@@ -202,7 +226,8 @@ impl RequestLog {
 mod tests {
     use super::*;
 
-    /// 日志条目必须携带写入时的**精确 uid**（`accountUid`），且 `account`（展示名）语义不变。
+    /// 日志条目必须携带写入时的**精确 uid**（`accountUid`），且 `account`（展示名）语义不变；
+    /// 两个**耗时字段必须各自独立**（2026-10-15：合并它们是「数字放大」事故的根因）。
     #[test]
     fn request_meta_carries_account_uid_alongside_display_name() {
         let meta = RequestMeta {
@@ -214,6 +239,7 @@ mod tests {
             model: "hy4".to_string(),
             status: 200,
             latency_ms: 12,
+            total_ms: 3456,
             prompt_tokens: 10,
             completion_tokens: 2,
             stream: false,
@@ -222,9 +248,46 @@ mod tests {
         let value = meta.to_value();
         assert_eq!(value["accountUid"], "uid-b", "必须写入选中账号的精确 uid");
         assert_eq!(value["account"], "重名展示名", "account 仍是展示名，语义不变");
+        assert_eq!(value["latencyMs"], 12, "latencyMs = 首字节延迟（TTFB）");
+        assert_eq!(value["totalMs"], 3456, "totalMs = 总耗时");
     }
 
-    /// 造一个「流式请求」的日志模板（token / 耗时留 0，由 sink 覆盖）。
+    /// 日志条目的**键集合钉死** —— 防止字段被悄悄增删（前端按名读，`token_daily` 也读）。
+    #[test]
+    fn log_entry_key_set_is_pinned() {
+        let value = streaming_template().to_value();
+        let keys: std::collections::BTreeSet<&str> = value
+            .as_object()
+            .expect("日志条目是对象")
+            .keys()
+            .map(String::as_str)
+            .collect();
+        assert_eq!(
+            keys,
+            std::collections::BTreeSet::from([
+                "ts",
+                "endpoint",
+                "method",
+                "region",
+                "account",
+                "accountUid",
+                "model",
+                "status",
+                "latencyMs",
+                "totalMs",
+                "promptTokens",
+                "completionTokens",
+                "stream",
+            ]),
+            "键集合变了就要同步前端 GatewayLogEntry 与 token_daily 的读法"
+        );
+    }
+
+    /// 造一个「流式请求」的日志模板。
+    ///
+    /// `latency_ms` 刻意填 **37**（一个不可能由 `elapsed()` 真实产生的哨兵值）：
+    /// sink **必须原样保留**它 —— 这是「TTFB 不被总耗时覆盖」的直接证据。
+    /// `total_ms` 与 token 字段是占位，由 sink 在流结束时补齐。
     fn streaming_template() -> RequestMeta {
         RequestMeta {
             endpoint: "/v1/chat/completions",
@@ -234,7 +297,8 @@ mod tests {
             account_uid: "uid-1".to_string(),
             model: "hy4".to_string(),
             status: 200,
-            latency_ms: 0,
+            latency_ms: 37,
+            total_ms: 0,
             prompt_tokens: 0,
             completion_tokens: 0,
             stream: true,
@@ -284,6 +348,51 @@ mod tests {
         assert_eq!(entries[0]["completionTokens"], 5);
         assert_eq!(entries[0]["accountUid"], "uid-1", "静态字段不得丢");
         assert_eq!(entries[0]["stream"], true);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// ★★ **TTFB 与总耗时必须各归各的字段**（2026-10-15 事故的回归护栏）。
+    ///
+    /// 事故：`StreamingLogSink` 第一版在流结束时把 `latencyMs` 覆盖成「总耗时」⇒
+    /// 日志页的耗时列凭空放大 **10~100 倍**（实测 p50 8.7 s、p90 204 s），
+    /// 用户合理地读成「网关变慢了」。**那次改动没有引入任何真实延迟** ——
+    /// 纯粹是字段语义被偷换。
+    ///
+    /// 本用例用哨兵值 **37** 钉死：sink 只能**新增** `totalMs`，不得改动 `latencyMs`。
+    ///
+    /// 可证伪：把 `finish` 改回 `latency_ms: self.started.elapsed()…`（即覆盖 template
+    /// 里的 TTFB）⇒ `latencyMs != 37` ⇒ 本用例变红。
+    #[tokio::test]
+    async fn streaming_log_sink_keeps_ttfb_and_adds_total_separately() {
+        use crate::protocol::usage_tap::UsageTap;
+        use futures_util::StreamExt;
+
+        let (log, dir) = temp_log("ttfb");
+        // `started` 刻意早于「现在」一点点，好让 totalMs 有真实的非零值。
+        let started = Instant::now();
+        let sink: Arc<dyn UsageSink> =
+            Arc::new(StreamingLogSink::new(log.clone(), streaming_template(), started));
+        let stream = futures_util::stream::iter(vec![Ok::<_, std::io::Error>(
+            axum::body::Bytes::from_static(
+                "data: {\"choices\":[],\"usage\":{\"credit\":1.0,\"prompt_tokens\":3,\"completion_tokens\":4}}\n\n"
+                    .as_bytes(),
+            ),
+        )]);
+        let _ = UsageTap::new(stream, vec![sink]).collect::<Vec<_>>().await;
+
+        let entries = log.list();
+        assert_eq!(entries.len(), 1, "应恰好写一条日志");
+        assert_eq!(
+            entries[0]["latencyMs"], 37,
+            "latencyMs 必须**原样保留** handler 填入的 TTFB —— sink 覆盖它正是「数字放大」\
+             事故的根因（日志页的耗时列会从数百 ms 跳到数百 s）"
+        );
+        assert!(
+            entries[0]["totalMs"].as_i64().is_some_and(|value| value >= 0),
+            "totalMs 必须由 sink 在流结束时补齐，实际：{}",
+            entries[0]["totalMs"]
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }

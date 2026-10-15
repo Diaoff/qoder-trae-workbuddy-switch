@@ -1569,7 +1569,20 @@ export interface GatewayLogEntry {
   account: string | null;
   model: string | null;
   status: number;
+  /**
+   * **上游首字节延迟**（TTFB，毫秒）。
+   *
+   * ⚠️ 这不是整次请求的总耗时 —— 总耗时是 `totalMs`。两者在流式场景下能差
+   * **10~100 倍**（实测同一批请求 TTFB 数百 ms、总耗时 8.7 s 以上），
+   * 合并成一个字段会让日志页看起来像性能回退。
+   */
   latencyMs: number;
+  /**
+   * **整次请求总耗时**（毫秒，流结束 / 响应体读完）。
+   *
+   * 可选：改造前的旧日志没有这个字段（那时流式条目只有 TTFB）。
+   */
+  totalMs?: number | null;
   promptTokens?: number | null;
   completionTokens?: number | null;
   stream: boolean;

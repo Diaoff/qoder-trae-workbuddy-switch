@@ -156,6 +156,7 @@ pub async fn messages_for_region(
     match attempt {
         Err(failure) => {
             let http_status = failure.error.status();
+            let elapsed_ms = started.elapsed().as_millis() as i64;
             state.log.record(
                 RequestMeta {
                     endpoint: "/v1/messages",
@@ -165,7 +166,9 @@ pub async fn messages_for_region(
                     account_uid: failure.uid,
                     model,
                     status: http_status,
-                    latency_ms: started.elapsed().as_millis() as i64,
+                    // 失败时没有「首字节」，两字段同值（诚实：不编 TTFB）。
+                    latency_ms: elapsed_ms,
+                    total_ms: elapsed_ms,
                     prompt_tokens: 0,
                     completion_tokens: 0,
                     stream: wants_stream,
@@ -179,6 +182,8 @@ pub async fn messages_for_region(
             account,
             uid,
         }) => {
+            // ★ 上游**响应头**已到 ⇒ 此刻的耗时就是 `latencyMs`（TTFB）；总耗时是 `totalMs`。
+            let header_at_ms = started.elapsed().as_millis() as i64;
             if wants_stream {
                 // ★ 流式请求的日志**推迟到流结束**才写（见 `StreamingLogSink`）：
                 //   写日志时用量还没到达，此前只能写死 0（实测本机 200/200 条全 0）。
@@ -192,8 +197,10 @@ pub async fn messages_for_region(
                         account_uid: uid.clone(),
                         model: model.clone(),
                         status: 200,
-                        // 占位：由 sink 在流结束时按**总耗时**覆盖。
-                        latency_ms: 0,
+                        // TTFB：现在就填实（sink **不会**覆盖它）。
+                        latency_ms: header_at_ms,
+                        // 占位：由 sink 在流结束时补齐。
+                        total_ms: 0,
                         prompt_tokens: 0,
                         completion_tokens: 0,
                         stream: true,
@@ -228,7 +235,8 @@ pub async fn messages_for_region(
                         account_uid: uid,
                         model,
                         status: 200,
-                        latency_ms: started.elapsed().as_millis() as i64,
+                        latency_ms: header_at_ms,
+                        total_ms: started.elapsed().as_millis() as i64,
                         prompt_tokens,
                         completion_tokens,
                         stream: false,
