@@ -79,6 +79,22 @@ pub const AUTO_ROTATE_CHECK_INTERVAL: Duration = Duration::from_secs(30);
 /// 的日子（同实测：10/11 及之前全空）⇒ 网关用量**永远成不了趋势**。
 pub const GATEWAY_USAGE_RECORD_INTERVAL: Duration = Duration::from_secs(2 * 60);
 
+/// 客户端（登录态）用量「今日」快照的记录周期。
+///
+/// 与 [`GATEWAY_USAGE_RECORD_INTERVAL`] 同值、同理由：两者服务**同一张卡片**
+/// （账号卡片「今日 Token」= `client` 桶 + `gateway` 桶相加），同一管理面不该有两种节奏。
+/// 也都对齐 `token_daily::CLIENT_SCAN_TTL_MS`（2 分钟）—— 扫描闸门本身会挡掉重复轮次，
+/// 周期再短也只是空转。
+///
+/// 代价：每轮对每个 region 走一次客户端语料扫描，但三重代价控制兜着 ——
+/// **mtime 预筛**（只读「当天动过」的文件）+ **尾部窗口读取**（当日记录只可能在文件尾）
+/// + **TTL 闸门**（刚被账号页扫过就跳过）。实测稳态 ≈ 0.7 s / 轮。
+///
+/// ⚠️ 为什么必须是**周期**任务：`record_client_today` 此前的唯一调用点是「打开账号页」
+/// 的命令 ⇒ **不进账号页，卡片上的 client 列一直是旧值**（2026-10-15 用户报障原文：
+/// 「client 数字不动」）。服务端常驻进程**从不打开账号页**，在它上面这条尤其致命。
+pub const CLIENT_USAGE_RECORD_INTERVAL: Duration = Duration::from_secs(2 * 60);
+
 /// 后台任务的**种类**（L2）—— 与产品线（[`TaskSpec::product`]）**正交**。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TaskKind {
@@ -141,6 +157,31 @@ pub enum TaskKind {
     /// `api_account_token_today`）⇒ 不进账号页就没人写 gateway 桶，
     /// `token_daily` 的 90 天保留窗里大片空洞，「网关用量进趋势图」永远缺原始素材。
     GatewayUsageRecord,
+    /// **客户端（登录态）用量「今日」快照**（2026-10-15 新增，用户报障修复）。
+    ///
+    /// 周期调用 `token_daily::record_client_today(region, false)`，把客户端会话日志
+    /// （`{data_dir}/projects` 下的 jsonl）的**今日**用量聚合进 `token_daily` 的
+    /// **client 桶**并落盘。宿主侧遍历
+    /// [`crate::modules::region::Region::all`] 覆盖**两个 region**（语料按区域分目录：
+    /// CN = `.workbuddy/projects`，Global = `.workbuddy-ai/projects`）。
+    ///
+    /// ## 为什么必须有它（与 [`Self::GatewayUsageRecord`] 同一形态的事故）
+    ///
+    /// `record_client_today` 此前唯一的调用点是「打开账号页」的命令 ⇒ 不进账号页，
+    /// 卡片「今日 Token」的 **client 列一直是旧值**（2026-10-15 用户报障：「client
+    /// 数字不动」）。而 `gateway` 桶当天已有周期任务 ⇒ 同一张卡片的两个桶**一新一旧**，
+    /// 用户看到的是自相矛盾的数字。
+    ///
+    /// ## ⚠️ 为什么与网关那条**分成两个 kind**（而不是合并进一个循环）
+    ///
+    /// 节奏相同、服务同一张卡片，但**失败面完全不同**：这条要读盘扫 jsonl（I/O 密集、
+    /// 路径/权限都可能出问题），网关那条只读一份受 `log_keep` 封顶的日志。合并成一个
+    /// 循环 ⇒ 客户端扫描一旦 panic，**网关记录会一起停摆**（tokio 任务 panic 只杀自己
+    /// 那个循环）。分 kind = 天然隔离，且两条各自的「必须登记」护栏独立可读。
+    ///
+    /// `force = false`：走 `token_daily::CLIENT_SCAN_TTL_MS` 闸门。本循环周期与闸门同值，
+    /// 闸门挡掉的只是「刚被账号页扫过」的重复轮次，不挡新鲜度。
+    ClientUsageRecord,
     /// 八类积分定时任务之一（按 `schedule_config` 的小时表，各自独立排程）。
     Scheduled(ScheduleTask),
 }
@@ -162,6 +203,7 @@ impl TaskKind {
             TaskKind::AutoBackup => "auto_backup".to_string(),
             TaskKind::GatewayCatalogProbe => "gateway_catalog_probe".to_string(),
             TaskKind::GatewayUsageRecord => "gateway_usage_record".to_string(),
+            TaskKind::ClientUsageRecord => "client_usage_record".to_string(),
             TaskKind::Scheduled(task) => format!("scheduled:{}", task.as_str()),
         }
     }
@@ -252,6 +294,16 @@ pub const TASKS: &[TaskSpec] = &[
         product: Product::Workbuddy,
         kind: TaskKind::GatewayUsageRecord,
         interval: GATEWAY_USAGE_RECORD_INTERVAL,
+    },
+    // ★ 客户端（登录态）用量「今日」快照（2026-10-15 新增，用户报障修复）。
+    //
+    // 与上一条同形态：`record_client_today` 只剩「打开账号页」一个调用点 ⇒ 不进账号页，
+    // 卡片「今日 Token」的 client 列一直是旧值（用户报障原文：「client 数字不动」），
+    // 而同卡片的 gateway 桶已被上一条周期刷新 ⇒ 两个桶一新一旧。
+    TaskSpec {
+        product: Product::Workbuddy,
+        kind: TaskKind::ClientUsageRecord,
+        interval: CLIENT_USAGE_RECORD_INTERVAL,
     },
     TaskSpec {
         product: Product::Workbuddy,
@@ -353,6 +405,7 @@ mod tests {
             TaskKind::AutoBackup => "TaskKind::AutoBackup =>",
             TaskKind::GatewayCatalogProbe => "TaskKind::GatewayCatalogProbe =>",
             TaskKind::GatewayUsageRecord => "TaskKind::GatewayUsageRecord =>",
+            TaskKind::ClientUsageRecord => "TaskKind::ClientUsageRecord =>",
             TaskKind::Scheduled(_) => "TaskKind::Scheduled(",
         }
     }
@@ -411,6 +464,14 @@ mod tests {
             has_task(Product::Workbuddy, TaskKind::GatewayUsageRecord),
             "缺网关用量今日快照 ⇒ record_gateway_today 只剩账号页一个调用点，\
              90 天历史大片空洞、账号卡片的 gateway 桶长时间不刷新"
+        );
+        // ★ 客户端（登录态）用量「今日」快照（2026-10-15 用户报障修复）：不登记 ⇒
+        // 卡片「今日 Token」的 client 列只在打开账号页时才刷新，而同卡片的 gateway 桶
+        // 已被周期刷新 ⇒ 两个桶一新一旧，用户看到自相矛盾的数字。
+        assert!(
+            has_task(Product::Workbuddy, TaskKind::ClientUsageRecord),
+            "缺客户端用量今日快照 ⇒ record_client_today 只剩账号页一个调用点，\
+             账号卡片「今日 Token」的 client 列长时间不刷新（用户报障原文）"
         );
         assert!(
             has_task(Product::Workbuddy, TaskKind::StartupMaintenance),
@@ -524,6 +585,59 @@ mod tests {
         );
     }
 
+    /// ★ 客户端快照周期同样必须是「今日读数」的节奏（与网关那条同判据）。
+    ///
+    /// 可证伪：改成 1 小时 ⇒ 第一条断言变红（卡片 client 列又会长时间不动）；
+    /// 改成 5 秒 ⇒ 第二条变红（TTL 闸门挡得住，但循环本身变成无谓空转）。
+    #[test]
+    fn client_usage_record_interval_is_a_today_metric_cadence() {
+        assert!(
+            CLIENT_USAGE_RECORD_INTERVAL <= Duration::from_secs(10 * 60),
+            "周期过长（{:?}）—— 账号卡片的 client 桶又会长时间不刷新",
+            CLIENT_USAGE_RECORD_INTERVAL
+        );
+        assert!(
+            CLIENT_USAGE_RECORD_INTERVAL >= Duration::from_secs(30),
+            "周期过短（{:?}）—— 无谓地反复扫客户端语料、写 token_daily 存储",
+            CLIENT_USAGE_RECORD_INTERVAL
+        );
+    }
+
+    /// ★★ 两侧宿主的客户端用量循环必须覆盖**两个 region** 且**走 TTL 闸门**（非 force）。
+    ///
+    /// 两种失效形态都很安静：
+    /// ① 只扫一个 region ⇒ 另一个的 client 桶永远旧值（`Region::all()` 写成 `[Region::Cn]`
+    ///    时分支标记仍在，`both_hosts_register_every_task_kind` 照样绿）；
+    /// ② `force = true` ⇒ 每轮都全量重扫，`CLIENT_SCAN_TTL_MS` 闸门形同虚设（代价失控）。
+    /// 故这里把**分支体**抠出来逐条断言（与网关那条同一手法）。
+    ///
+    /// 可证伪：把任一侧的 `false` 改成 `true`，或把 `Region::all()` 改成 `[Region::Cn]`
+    /// ⇒ 本用例变红。
+    #[test]
+    fn both_hosts_record_client_usage_for_every_region_without_forcing_rescans() {
+        let marker = "TaskKind::ClientUsageRecord =>";
+        for host in [TAURI_LIB_RS, SERVER_MAIN_RS] {
+            let source = read_source(host);
+            let start = source
+                .find(marker)
+                .unwrap_or_else(|| panic!("宿主 {host} 的 spawn 派发缺少分支 `{marker}`"));
+            // 只看分支体：从标记往后到下一个 `TaskKind::` 分支（或文件尾）。
+            let rest = &source[start + marker.len()..];
+            let end = rest.find("TaskKind::").unwrap_or(rest.len());
+            let body = &rest[..end];
+            assert!(
+                body.contains("record_client_today(region, false)"),
+                "宿主 {host} 的客户端用量分支必须调用 `record_client_today(region, false)`\
+                 （`false` = 走 TTL 闸门；`true` 会每轮全量重扫，闸门形同虚设）"
+            );
+            assert!(
+                body.contains("Region::all()"),
+                "宿主 {host} 的客户端用量分支必须遍历 Region::all()（两个 region）——\
+                 只扫一个，另一个的 client 桶会永远旧值"
+            );
+        }
+    }
+
     /// ★★ 两侧宿主的网关用量循环必须覆盖**两个 region**（不是只有 CN）。
     ///
     /// 失效形态很安静：把分支里的 `Region::all()` 写成 `[Region::Cn]` ⇒ Global 的
@@ -569,6 +683,7 @@ mod tests {
             TaskKind::AutoBackup,
             TaskKind::GatewayCatalogProbe,
             TaskKind::GatewayUsageRecord,
+            TaskKind::ClientUsageRecord,
             TaskKind::Scheduled(ScheduleTask::Checkin),
         ] {
             assert!(!spawn_arm_marker(kind).is_empty(), "{kind:?}");

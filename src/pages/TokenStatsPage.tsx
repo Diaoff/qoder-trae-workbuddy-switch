@@ -37,6 +37,9 @@
  * - 空数组**不渲染**该图；整视图空 ⇒ 区块级 `EmptyState`（含出口）；
  * - 区分「真的没有」与「被视图参数筛没」；
  * - 所有展示字段过 `displayText`（白屏防线）；
+ * - ★ **四个视图都必须消费 `viewWindow`**（趋势 / 模型 / 积分接口不变，会话是
+ *   2026-10-15 补的口径）：会话此前吃全时数据、切时间纹丝不动（用户报障），
+ *   现在按 `sessions[].daily`（后端逐日拆分）在 `sessionPoints` 里按窗口求和；
  * - ★ **会话视图只渲染前 `SESSION_RENDER_LIMIT` 个**（**有意偏离** P3 契约 8
  *   「排行条数 = 气泡数 = 会话数」—— 会话数可达 1.5 万，全量渲染要等数秒；
  *   截断由渲染层显式说明「共 M 个」，统计 tile 仍按全量算。理由见该常量注释）。
@@ -354,15 +357,26 @@ function ModelsView({
 
 function SessionsView({
   source,
+  viewWindow,
+  onViewWindowChange,
   onRefresh,
 }: {
   source: TokenStatsSource;
+  viewWindow: UsageWindow;
+  onViewWindowChange: (next: UsageWindow) => void;
   onRefresh: () => void | Promise<void>;
 }) {
   const t = useT();
+  const windowLabel = useUsageWindowLabel();
   const { busy, run } = useRefreshAction();
-  /* **统计口径**：全量点 —— tile 的「会话数 / 总 Token / 均值 / 最高消耗」按它算。 */
-  const points = useMemo(() => sessionPoints(source), [source]);
+  /**
+   * **统计口径**：窗口内的全量点 —— tile 的「会话数 / 总 Token / 均值 / 最高消耗」按它算。
+   *
+   * ★ 2026-10-15：改为**窗口口径**（`sessionPoints(source, viewWindow)`）——
+   * 用户报障「切换时间没有变化」之前，这里吃的是全时数据，切窗口时四个 tile 与两张图
+   * 都不动。素材是后端下发的 `sessions[].daily`（逐日拆分），与趋势 / 模型视图同构。
+   */
+  const points = useMemo(() => sessionPoints(source, viewWindow), [source, viewWindow]);
   /**
    * **渲染口径**：只画前 `SESSION_RENDER_LIMIT` 个。
    *
@@ -381,6 +395,24 @@ function SessionsView({
       : null;
 
   if (points.length === 0) {
+    /* 两种空态必须分开（同趋势视图的「筛没 / 真没有」判据）：
+       - 全时有会话、当前窗口为 0 ⇒ 「筛没」：给「看近 30 天」这个**出口**；
+       - 全时也没有 ⇒ 「还没有产生会话」，只留刷新。
+       把两者合成一个「暂无会话记录」会**谎报**——用户明明有会话，只是不在这个窗口里。 */
+    const hasAnySession = source.sessions.some(
+      (session) => session.total > 0 || session.records > 0,
+    );
+    if (hasAnySession) {
+      return (
+        <ViewEmpty
+          icon={Users}
+          title={t("wbStats.usage.empty.filtered")}
+          description={t("wbStats.usage.empty.filteredHint")}
+          actionLabel={t("wbStats.usage.empty.viewAll")}
+          onAction={() => onViewWindowChange({ kind: "preset", days: 30 })}
+        />
+      );
+    }
     /* 区块级空态（§1.6）——**四要素含出口**。 */
     return (
       <EmptyState
@@ -403,8 +435,10 @@ function SessionsView({
   }
 
   const tiles: StatTile[] = [
-    { icon: Users, label: t("wbStats.usage.sessions.count"), value: exactTokens(points.length) },
-    { icon: MessagesSquare, label: t("wbStats.usage.sessions.total"), value: compactTokens(total) },
+    /* 「会话数」的 hint 用**当前窗口**标签（原型同款语义：区间内活跃）——
+       没有它，用户看不出这个数字随参数条变化。 */
+    { icon: Users, label: t("wbStats.usage.sessions.count"), value: exactTokens(points.length), hint: windowLabel(viewWindow) },
+    { icon: MessagesSquare, label: t("wbStats.usage.sessions.total"), value: compactTokens(total), hint: windowLabel(viewWindow) },
     { icon: Gauge, label: t("wbStats.usage.sessions.avg"), value: compactTokens(Math.round(total / points.length)) },
     { icon: TrendingUp, label: t("wbStats.usage.sessions.max"), value: compactTokens(points[0].value), hint: points[0].title },
   ];
@@ -576,7 +610,12 @@ export default function TokenStatsPage({
       ) : view === "models" ? (
         <ModelsView source={source} viewWindow={viewWindow} onRefresh={() => setReload((value) => value + 1)} />
       ) : view === "sessions" ? (
-        <SessionsView source={source} onRefresh={() => setReload((value) => value + 1)} />
+        <SessionsView
+          source={source}
+          viewWindow={viewWindow}
+          onViewWindowChange={onViewWindowChange}
+          onRefresh={() => setReload((value) => value + 1)}
+        />
       ) : (
         <TrendView
           source={source}

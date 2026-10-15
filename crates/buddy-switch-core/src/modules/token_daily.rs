@@ -10,12 +10,20 @@
 //! 设计取向（对齐 `credit_usage.rs` 的持久化 / 保留 / 原子写风格）：
 //!
 //! - **只读上游**：绝不改网关写路径、绝不写 `workbuddy.db`（`SQLITE_OPEN_READ_ONLY`）。
+//! - **增量记账**（2026-10-15 修正）：网关日志是**环形裁剪**的滚动窗口（只留最近
+//!   `log_keep` 条）⇒ 当日网关桶按**水位线增量**累加（`ts > watermark` 才加，见
+//!   [`gateway_round`]），**不是**「当前窗口快照」—— 否则窗口一滚，今天的数字会**倒退**
+//!   （实测 CN 桶 10.3M → 3.6M → 18.7M）。已计入的量永不因裁剪消失；水位线缺失
+//!   （升级过渡 / 新的一天）时先做一次**校正轮**（逐账号取 `max(现有, 当前窗口)`）。
 //! - **诚实**：网关日志的**今日**部分可能被裁过（条数到达 `log_keep` **且**最旧存活
 //!   条目就是今天，见 [`gateway_log_truncated_today`]）时透出 `gatewayTruncated`；
 //!   无法归属的客户端会话落 `unknownClient` 桶，**绝不猜**到别的账号，也**绝不静默丢弃**。
 //! - **重扫有界**：客户端扫描带 **TTL 闸门**（[`CLIENT_SCAN_TTL_MS`]，`force` 可强制重扫），
 //!   且**两道代价控制**：**mtime 预筛**（只有「当天动过」的文件才可能含当天记录）
 //!   + **尾部窗口读取**（当天记录只可能在文件尾部）。见 [`scan_client_rows`]。
+//!   ★ 驱动它的**两个调用点缺一不可**：账号页命令（主动看时立刻刷新）+ 后台周期任务
+//!   （`modules::background` 的 `ClientUsageRecord`，每 2 分钟）—— 后者是 2026-10-15
+//!   用户报障「client 数字不动」的修法（此前只有账号页一个调用点）。
 //!
 //!   ⚠️ 闸门**曾经**是「当天扫过一次就不再扫」，那是**错的**（2026-10-12 实测）：
 //!   当天第一次扫描通常发生在**任何用量产生之前**，于是当日值被冻结成空，
@@ -90,6 +98,12 @@ const DEFAULT_GATEWAY_LOG_KEEP: usize = 200;
 /// 「今日 Token」是仪表盘读数：**不需要实时**，但绝不能整天不动。2 分钟足够短
 /// （用户切到账号页基本都能看到当前值），又足够长（一次页面停留不会反复重扫）。
 /// 真正的代价控制在 [`scan_client_rows`]：mtime 预筛 + 尾部窗口 + 并行。
+///
+/// ★ 2026-10-15：本闸门同时是**后台周期任务**（`modules::background` 的
+/// `ClientUsageRecord`）的节流阀 —— 那条任务每 2 分钟调一次
+/// [`record_client_today`]`(region, false)`，与本值同值 ⇒ 闸门挡掉的只是「刚被账号页
+/// 扫过」的重复轮次，不挡新鲜度。**周期任务的存在理由**：此前唯一调用点是账号页命令，
+/// 不进账号页卡片 client 列就一直不动（用户报障）。
 pub const CLIENT_SCAN_TTL_MS: i64 = 2 * 60 * 1000;
 
 /// mtime 预筛的**回退余量**（毫秒）：允许文件在本地日界之前一点点被写入。
@@ -135,6 +149,13 @@ struct DayRecord {
     /// 网关卡是否可能被裁剪（条数到达 `log_keep`）。
     #[serde(default)]
     gateway_truncated: bool,
+    /// ★ 网关聚合的**增量水位线**（毫秒，见 [`gateway_round`]）：只有 `ts > watermark`
+    /// 的日志条目才会被累加进当日网关桶。
+    ///
+    /// `None` = **旧版本写入的记录**（或从未计过数的新日）——升级到增量语义时会先做
+    /// 一次**校正轮**（逐账号取 `max(现有, 当前窗口)`，见 [`GatewayWrite::Correct`]）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    gateway_watermark_ts: Option<i64>,
 }
 
 /// 落盘存储：`{ version, days: { "YYYY-MM-DD": DayRecord }, clientScannedAtMs }`。
@@ -314,6 +335,8 @@ fn gateway_log_truncated_today(
 
 #[derive(Clone, Debug)]
 struct GatewayRow {
+    /// 写入时刻（毫秒）—— **增量水位线**的判据（见 [`gateway_round`]）。
+    ts: i64,
     region: String,
     /// 展示名（仅作**旧行**回落的解析输入）。
     account: String,
@@ -349,6 +372,7 @@ fn parse_gateway_rows(entries: &[Value]) -> Vec<GatewayRow> {
                 .unwrap_or_default()
                 .to_string();
             Some(GatewayRow {
+                ts,
                 region,
                 account,
                 account_uid,
@@ -363,20 +387,26 @@ fn parse_gateway_rows(entries: &[Value]) -> Vec<GatewayRow> {
         .collect()
 }
 
-/// 按归属键分桶，只保留「该 region + 该本地日」的行。
+/// 按归属键分桶，只保留「该 region + 该本地日 + `ts > since`」的行。
 ///
 /// 归属键：**优先**行内写入时的 `accountUid`（精确身份）；仅当其为空（**旧日志**，
 /// 本改动之前写入）才回落到把展示名 `account` 解析回 uid。
+///
+/// `since` 是**增量水位线**（见 [`gateway_round`]）：`None` = 不过滤（选整窗）。
 fn bucket_gateway(
     rows: &[GatewayRow],
     region: Region,
     day: &str,
     uids: &HashSet<String>,
     names: &HashMap<String, Option<String>>,
+    since: Option<i64>,
 ) -> BTreeMap<String, Bucket> {
     let mut out: BTreeMap<String, Bucket> = BTreeMap::new();
     for row in rows {
         if row.region != region.as_str() || row.day != day {
+            continue;
+        }
+        if since.is_some_and(|watermark| row.ts <= watermark) {
             continue;
         }
         let key = match row.account_uid.as_deref() {
@@ -388,6 +418,74 @@ fn bucket_gateway(
         bucket.output = bucket.output.saturating_add(row.output);
     }
     out
+}
+
+/// 一轮网关聚合的**写入意图**（[`gateway_round`] 的输出）。
+#[derive(Debug)]
+enum GatewayWrite {
+    /// 与现有桶**相加**：水位线已存在，只加 `ts > watermark` 的新条目。
+    Add(BTreeMap<String, Bucket>),
+    /// 与现有桶**逐字段取大**：水位线缺失（旧版本记录 / 今天首次记录）时的一次性校正 ——
+    /// 每个账号的桶 = `max(现有, 当前窗口合计)`。之后从新水位线起走 [`Self::Add`]。
+    ///
+    /// 取大而不是相加：两边的值都是「今天某个子集的读数」，相加会把重叠部分**双计**；
+    /// 取大则**既不倒退也不双计**，且比「原样不动」更贴近真实（旧快照可能比当前窗口小）。
+    Correct(BTreeMap<String, Bucket>),
+}
+
+/// 一轮网关聚合：返回 `(写入意图, 新水位线)`。
+///
+/// ## 为什么是「增量 + 水位线」而不是「整窗快照」（2026-10-15 实测驱动的修正）
+///
+/// 上游 `gateway_logs.json` 是**环形裁剪**的滚动日志（只留最近 `log_keep` 条，缺省 200，
+/// 见网关 `logging.rs`）。旧实现把当日网关桶**整体覆盖**成「当前窗口合计」——
+/// 于是窗口一旦滚过某条今天早些时候的请求，它的 token 就**凭空消失**，数字可**倒退**。
+/// 本机实测（CN 桶，2026-10-15）：17:31 快照 10.3M → 17:36 快照 3.6M → 17:43 反而 18.7M，
+/// 每个账号的值都是「各自随机时点的窗口读数」拼出来的混合物。
+///
+/// 改为：**只把 `ts > watermark` 的新条目累加进桶**，桶只增不减；每轮把水位线推到
+/// 「本轮已见到的（本 region + 本日）最大 `ts`」。滚动裁剪从此只影响「还没读到就滚走的
+/// 条目」（丢的是增量，不丢已记的量），`gatewayTruncated` 的「下界」语义不变。
+///
+/// ## 水位线缺失时的校正轮（见 [`GatewayWrite::Correct`]）
+///
+/// - **旧版本记录**（缺字段，升级过渡态）：桶里是旧的窗口读数 ⇒ 逐账号取大校正一次；
+/// - **今天首次记录**（新的一天、空桶）：`max(0, 窗口)` = 整窗计入 —— 与「每天都从
+///   当前窗口起步」的旧行为自然衔接（不丢当天开头仍在窗口里的流量）。
+///
+/// ⚠️ 同毫秒边界：增量比较用**严格大于**。若一条条目与水位线同毫秒（罕见），它会被跳过
+/// —— 方向是「少算」，与 `gatewayTruncated` 的「下界」披露一致；反过来用 `>=` 会让
+/// 边界条目**每轮重复计一次**（跨轮双计），更坏。
+fn gateway_round(
+    watermark: Option<i64>,
+    rows: &[GatewayRow],
+    region: Region,
+    day: &str,
+    uids: &HashSet<String>,
+    names: &HashMap<String, Option<String>>,
+) -> (GatewayWrite, Option<i64>) {
+    let max_ts = rows
+        .iter()
+        .filter(|row| row.region == region.as_str() && row.day == day)
+        .map(|row| row.ts)
+        .max();
+    let write = match watermark {
+        Some(watermark) => GatewayWrite::Add(bucket_gateway(
+            rows,
+            region,
+            day,
+            uids,
+            names,
+            Some(watermark),
+        )),
+        None => GatewayWrite::Correct(bucket_gateway(rows, region, day, uids, names, None)),
+    };
+    let next_watermark = match (watermark, max_ts) {
+        (Some(current), Some(max)) => Some(current.max(max)),
+        (Some(current), None) => Some(current),
+        (None, max) => max,
+    };
+    (write, next_watermark)
 }
 
 /// 网关日志的 `account` 是**展示名**（`account_display_name` 的回落链：email → nickname →
@@ -788,6 +886,11 @@ fn bucket_client(
 // ---------------------------------------------------------------------------
 
 /// 聚合网关日志到「今日」的 gateway 桶并落盘，返回今日记录。
+///
+/// ## 增量语义（2026-10-15 修正，见 [`gateway_round`] 的长注释）
+///
+/// 桶是**累加**的，不是「当前窗口快照」。每轮只把 `ts > 水位线` 的新条目加进桶，
+/// 水位线随轮次前移 ⇒ 滚动日志把老条目裁掉时，**已记的量不会跟着消失**（数字不倒退）。
 pub fn record_gateway_today(region: Region) -> Value {
     let at = now_ms();
     let day = local_date_string(at).unwrap_or_default();
@@ -801,15 +904,38 @@ pub fn record_gateway_today(region: Region) -> Value {
     let truncated =
         gateway_log_truncated_today(entries.len(), gateway_log_keep(), oldest_day.as_deref(), &day);
     let (uids, names) = load_gateway_identity(region);
-    let per_account = bucket_gateway(&parse_gateway_rows(&entries), region, &day, &uids, &names);
+    let rows = parse_gateway_rows(&entries);
 
     let _guard = TOKEN_DAILY_WRITE_LOCK.lock().unwrap();
     let mut store = load_store(region);
     {
         let record = store.days.entry(day.clone()).or_default();
-        for (account, bucket) in per_account {
-            record.accounts.entry(account).or_default().gateway = bucket;
+        let (write, next_watermark) = gateway_round(
+            record.gateway_watermark_ts,
+            &rows,
+            region,
+            &day,
+            &uids,
+            &names,
+        );
+        match write {
+            GatewayWrite::Add(increments) => {
+                for (account, bucket) in increments {
+                    let entry = record.accounts.entry(account).or_default();
+                    entry.gateway.input = entry.gateway.input.saturating_add(bucket.input);
+                    entry.gateway.output = entry.gateway.output.saturating_add(bucket.output);
+                }
+            }
+            GatewayWrite::Correct(snapshot) => {
+                for (account, bucket) in snapshot {
+                    let entry = record.accounts.entry(account).or_default();
+                    // 逐字段取大：不倒退、不双计（两个读数都只是今天的**子集**）。
+                    entry.gateway.input = entry.gateway.input.max(bucket.input);
+                    entry.gateway.output = entry.gateway.output.max(bucket.output);
+                }
+            }
         }
+        record.gateway_watermark_ts = next_watermark;
         record.gateway_truncated = truncated;
     }
     prune_store(&mut store, at);
@@ -842,6 +968,10 @@ fn client_scan_is_fresh(force: bool, scanned_at_ms: Option<i64>, now: i64, day: 
 ///
 /// ⚠️ 闸门**不是**「当天扫过就不再扫」（那会把当日值冻结在当天首次扫描那一刻，
 /// 见 [`CLIENT_SCAN_TTL_MS`]）。重扫的代价由 [`scan_client_rows`] 的 mtime 预筛兜住。
+///
+/// ★ 调用点（两处，都必须存在）：① 账号页命令（用户主动看时立刻刷新）；
+/// ② 后台周期任务 `modules::background` 的 `ClientUsageRecord`（每 2 分钟，`force = false`）
+/// —— 缺了 ②，不进账号页卡片上的 client 列就一直不动（2026-10-15 用户报障）。
 pub fn record_client_today(region: Region, force: bool) -> Value {
     let at = now_ms();
     let day = local_date_string(at).unwrap_or_default();
@@ -1171,6 +1301,7 @@ mod tests {
             &day,
             &HashSet::new(),
             &HashMap::new(),
+            None,
         );
 
         assert_eq!(per_account.len(), 1);
@@ -1216,8 +1347,14 @@ mod tests {
         names.insert("a@example.com".to_string(), Some("uid-a".to_string()));
         names.insert("重名".to_string(), None);
 
-        let per_account =
-            bucket_gateway(&parse_gateway_rows(&entries), Region::Cn, &day, &uids, &names);
+        let per_account = bucket_gateway(
+            &parse_gateway_rows(&entries),
+            Region::Cn,
+            &day,
+            &uids,
+            &names,
+            None,
+        );
 
         assert_eq!(
             per_account.get("uid-b").unwrap().input,
@@ -1233,6 +1370,257 @@ mod tests {
             !per_account.contains_key("重名"),
             "歧义展示名不得成为归属键"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // 2026-10-15：网关桶改为**增量累计**（修「数字会倒退」）
+    // -----------------------------------------------------------------------
+
+    /// 造一行网关日志条目（`uid-a` / cn / 今天）。
+    fn gw_row(ts: i64, input: u64, output: u64) -> Value {
+        gw_row_for("uid-a", ts, input, output)
+    }
+
+    fn gw_row_for(uid: &str, ts: i64, input: u64, output: u64) -> Value {
+        json!({
+            "ts": ts,
+            "region": "cn",
+            "account": uid,
+            "accountUid": uid,
+            "promptTokens": input,
+            "completionTokens": output,
+        })
+    }
+
+    fn gw_round_cn(watermark: Option<i64>, entries: &[Value]) -> (GatewayWrite, Option<i64>) {
+        let day = local_date_string(at_local_date(0, 12)).expect("today");
+        gateway_round(
+            watermark,
+            &parse_gateway_rows(entries),
+            Region::Cn,
+            &day,
+            &HashSet::new(),
+            &HashMap::new(),
+        )
+    }
+
+    /// 从写入意图里取出值表；变体不符合预期直接 panic（把「语义」也钉进断言）。
+    fn add_map(write: GatewayWrite) -> BTreeMap<String, Bucket> {
+        match write {
+            GatewayWrite::Add(map) => map,
+            other => panic!("期望 Add（增量），实得 {other:?}"),
+        }
+    }
+
+    fn correct_map(write: GatewayWrite) -> BTreeMap<String, Bucket> {
+        match write {
+            GatewayWrite::Correct(map) => map,
+            other => panic!("期望 Correct（校正），实得 {other:?}"),
+        }
+    }
+
+    /// ★★ 滚动窗口滚过后，**已计入的量不倒退**（本次缺陷的回归护栏）。
+    ///
+    /// 缺陷现场（2026-10-15 实测，CN 桶）：旧实现每轮「整窗覆盖」⇒ 日志 FIFO 裁掉
+    /// 今天早些时候的条目后，当日值**变小**（10.3M → 3.6M → 18.7M，毫无规律）。
+    ///
+    /// 本用例模拟三轮：
+    /// - 第 1 轮：水位线缺失 + 整窗 `[100]=10、[200]=20` ⇒ 校正轮 = 30，水位线 200；
+    /// - 第 2 轮：窗口滚动，`[100]` 已被裁掉，剩 `[200]=20` + 新增 `[300]=7`
+    ///   ⇒ 增量只加 7 ⇒ **37**（旧实现会覆盖成 27，数值倒退）；
+    /// - 第 3 轮：同窗再跑一次 ⇒ 增量必须为空（**不双计**）。
+    #[test]
+    fn gateway_today_never_goes_back_when_the_log_window_rolls() {
+        let t1 = at_local_date(0, 9);
+        let t2 = t1 + 1_000;
+        let t3 = t1 + 2_000;
+
+        // 第 1 轮：水位线缺失 ⇒ 校正轮（空桶时 = 整窗）。
+        let (first, wm) = gw_round_cn(None, &[gw_row(t1, 10, 1), gw_row(t2, 20, 2)]);
+        let first = correct_map(first);
+        assert_eq!(first.get("uid-a").unwrap().input, 30, "空桶首轮应计整窗");
+        assert_eq!(first.get("uid-a").unwrap().output, 3);
+        assert_eq!(wm, Some(t2), "水位线推进到本轮最大 ts");
+
+        // 把校正值落进「桶」（等价 record_gateway_today 的取大应用）。
+        let mut bucket = Bucket { input: 30, output: 3 };
+
+        // 第 2 轮：t1 被裁、t3 新增 ⇒ 走增量。
+        let (second, wm2) = gw_round_cn(wm, &[gw_row(t2, 20, 2), gw_row(t3, 7, 1)]);
+        let second = add_map(second);
+        assert_eq!(
+            second.get("uid-a").unwrap().input,
+            7,
+            "只应累加水位线之后的新增（旧实现整窗覆盖 ⇒ 20+7=27，比上一轮还小）"
+        );
+        bucket.input = bucket.input.saturating_add(second.get("uid-a").unwrap().input);
+        assert_eq!(bucket.input, 37, "累计值必须只增不减");
+        assert_eq!(wm2, Some(t3));
+
+        // 第 3 轮：同窗重复读取 ⇒ 零增量（幂等，不双计）。
+        let (third, wm3) = gw_round_cn(wm2, &[gw_row(t2, 20, 2), gw_row(t3, 7, 1)]);
+        assert!(add_map(third).is_empty(), "同一批条目不得被重复累加");
+        assert_eq!(wm3, Some(t3), "无新条目时水位线保持不动");
+    }
+
+    /// 升级过渡态的**校正轮**语义：输出 = 当前窗口读数；应用端逐账号 `max(现有, 窗口)`。
+    ///
+    /// 两个方向都要成立（应用端取大是 `record_gateway_today` 的一行代码，
+    /// 由真文件用例覆盖；这里钉住校正轮的**输出**与水位线的播种）：
+    /// - 窗口 > 旧值 ⇒ 抬升（旧实现覆盖也会抬升，但新语义后续增量不丢）；
+    /// - 窗口 < 旧值 ⇒ 保持旧值（**不倒退**）。
+    #[test]
+    fn gateway_round_corrects_legacy_bucket_with_the_window_reading() {
+        let t1 = at_local_date(0, 9);
+        let t2 = t1 + 1_000;
+        let t3 = t1 + 2_000;
+
+        // 旧版本的遗留桶没有水位线 ⇒ 走校正轮：输出 = 整窗读数，水位线播种。
+        let (write, wm) = gw_round_cn(None, &[gw_row(t1, 10, 1), gw_row(t2, 20, 2)]);
+        let corrected = correct_map(write);
+        assert_eq!(corrected.get("uid-a").unwrap().input, 30, "校正轮输出 = 当前窗口合计");
+        assert_eq!(wm, Some(t2), "校正轮同时播种水位线");
+
+        // 应用端取大（两个方向）：
+        assert_eq!(
+            900u64.max(corrected.get("uid-a").unwrap().input),
+            900,
+            "旧值更大 ⇒ 保持旧值（不倒退）"
+        );
+        assert_eq!(
+            5u64.max(corrected.get("uid-a").unwrap().input),
+            30,
+            "窗口更大 ⇒ 抬升到窗口值"
+        );
+
+        // 播种之后走增量：只加水位线之后的新条目。
+        let (next, _) = gw_round_cn(wm, &[gw_row(t2, 20, 2), gw_row(t3, 5, 5)]);
+        let next = add_map(next);
+        assert_eq!(next.get("uid-a").unwrap().input, 5, "播种后只加新条目");
+        assert_eq!(next.get("uid-a").unwrap().output, 5);
+    }
+
+    /// 水位线的推进只看**本 region + 本日**的行（别的 region / 别的日不得把它顶起）。
+    #[test]
+    fn gateway_round_isolates_watermark_by_region_and_day() {
+        let t1 = at_local_date(0, 9);
+        let t_other_day = at_local_date(1, 9);
+        let entries = vec![
+            gw_row(t1, 10, 1),
+            // 别的 region（ts 更大）不得顶起 cn 的水位线、也不得进 cn 桶。
+            json!({"ts": t1 + 500, "region": "global", "account": "uid-g",
+                   "accountUid": "uid-g", "promptTokens": 99, "completionTokens": 9}),
+            // 别的日（本 region）同样不计。
+            json!({"ts": t_other_day, "region": "cn", "account": "uid-a",
+                   "accountUid": "uid-a", "promptTokens": 77, "completionTokens": 7}),
+        ];
+
+        let (write, wm) = gw_round_cn(None, &entries);
+        assert_eq!(wm, Some(t1), "水位线 = 本 region 本日的最大 ts（99/77 那两行都不算）");
+        let corrected = correct_map(write);
+        assert_eq!(corrected.get("uid-a").unwrap().input, 10, "只计 cn + 今日的行");
+        assert!(!corrected.contains_key("uid-g"), "global 行不得进 cn 桶");
+    }
+
+    /// ★★ **真文件**回归：`record_gateway_today` 的累计语义（滚动裁剪 + 升级校正）。
+    ///
+    /// 走生产函数 + 真 store（临时 home 定向，见 `HomeOverrideGuard`）：
+    ///
+    /// - **升级过渡（校正轮）**：预置一份**旧版本形态**的 store（有桶、无水位线）——
+    ///   `uid-a` 旧值 5/0（比窗口小 ⇒ 抬升到窗口值 33）、`uid-b` 旧值 999/9
+    ///   （比窗口大 ⇒ **保持 999**，不倒退）；
+    /// - **滚动裁剪**：第 2 轮日志被裁成 `[1 条旧 + 1 条新]`，断言值 = 校正后 + 新增，
+    ///   而**不是**「当前窗口合计」（那是缺陷行为）；
+    /// - **幂等**：同窗再跑一轮 ⇒ 数值不变（不双计）。
+    ///
+    /// 可证伪：把 `record_gateway_today` 改回 `record.accounts[...].gateway = bucket`
+    /// （整窗覆盖）⇒ 第 2 轮断言与 `uid-b` 的保持断言都会变红。
+    #[test]
+    fn record_gateway_today_accumulates_across_rollover_and_corrects_legacy_buckets() {
+        let dir = std::env::temp_dir().join(format!(
+            "buddy-switch-token-daily-gw-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        std::fs::create_dir_all(&dir).expect("create home dir");
+        let guard = crate::modules::config::HomeOverrideGuard::set(&dir);
+        let store = dir.join(".buddy-switch");
+        std::fs::create_dir_all(&store).expect("create store dir");
+
+        let t1 = now_ms() - 3_000;
+        let t2 = now_ms() - 2_000;
+        let t3 = now_ms() - 1_000;
+        let day = local_date_string(now_ms()).expect("today");
+
+        // 预置「旧版本形态」的 store：桶有值、**没有** `gatewayWatermarkTs`。
+        let legacy_store = json!({
+            "version": 1,
+            "days": {
+                day.clone(): {
+                    "accounts": {
+                        "uid-a": { "client": {"input":0,"output":0}, "gateway": {"input":5,"output":0} },
+                        "uid-b": { "client": {"input":0,"output":0}, "gateway": {"input":999,"output":9} }
+                    },
+                    "gatewayTruncated": false
+                }
+            }
+        });
+        std::fs::write(
+            store.join("token_daily.json"),
+            serde_json::to_string(&legacy_store).unwrap(),
+        )
+        .expect("pre-write legacy store");
+
+        // 第 1 轮：窗口 = [t1, t2]；uid-b 也在窗口里（但读数小于其旧值）。
+        let log = json!([
+            gw_row(t1, 10, 1),
+            gw_row(t2, 20, 2),
+            gw_row_for("uid-b", t1, 7, 1),
+        ]);
+        std::fs::write(
+            store.join("gateway_logs.json"),
+            serde_json::to_string(&log).unwrap(),
+        )
+        .expect("write log v1");
+        let first = record_gateway_today(Region::Cn);
+        let value_of = |response: &Value, uid: &str| -> u64 {
+            response["accounts"]
+                .as_array()
+                .and_then(|accounts| accounts.iter().find(|a| a["uid"] == uid))
+                .map(|account| {
+                    account["gatewayIn"].as_u64().unwrap_or(0)
+                        + account["gatewayOut"].as_u64().unwrap_or(0)
+                })
+                .unwrap_or(0)
+        };
+        assert_eq!(value_of(&first, "uid-a"), 33, "旧值 5 比窗口 33 小 ⇒ 校正轮抬升");
+        assert_eq!(
+            value_of(&first, "uid-b"),
+            1008,
+            "旧值 999+9 比窗口读数大 ⇒ 保持（取大，不倒退、不双计）"
+        );
+
+        // 第 2 轮：t1 被 FIFO 裁掉，t3 新增。旧实现会覆盖成 23（倒退）。
+        let log = json!([gw_row(t2, 20, 2), gw_row(t3, 30, 3)]);
+        std::fs::write(
+            store.join("gateway_logs.json"),
+            serde_json::to_string(&log).unwrap(),
+        )
+        .expect("write log v2");
+        let second = record_gateway_today(Region::Cn);
+        assert_eq!(
+            value_of(&second, "uid-a"),
+            66,
+            "滚动裁剪后只能**追加新增**（33 + 33）；若等于 55 说明又被整窗覆盖了"
+        );
+        assert_eq!(value_of(&second, "uid-b"), 1008, "窗口外的账号不受滚动影响");
+
+        // 幂等：同一份日志再跑一轮 ⇒ 数值不变。
+        let third = record_gateway_today(Region::Cn);
+        assert_eq!(value_of(&third, "uid-a"), 66, "同窗重复记录不得双计");
+        assert_eq!(value_of(&third, "uid-b"), 1008);
+
+        drop(guard);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// (d) `gatewayTruncated` 要求**同时**满足「条数到上限」与「最旧存活条目是今天」。

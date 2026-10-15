@@ -41,6 +41,16 @@ struct SessionTotals {
     project: String,
     session_id: String,
     totals: Totals,
+    /// ★ **会话逐日拆分**（2026-10-15 新增）—— 前端「会话」视图按时间窗口切片的**唯一素材**。
+    ///
+    /// 为什么必须由后端给：会话 = 一个 jsonl 一条，`totals` 只有全时合计，没有时间维度
+    /// ⇒ 前端拿到它也无法回答「近 7 天这个会话用了多少」（用户报障：切时间统计不变）。
+    /// 逐日拆分在**解析单个文件时就能顺手算出**（记录自带 `timestamp`），与文件级
+    /// `daily` 同源同口径（`date()`、缺失时间戳的记录两边都不落键）。
+    ///
+    /// ⚠️ 与文件级 `daily` 的区别：那个是**跨会话**按日合并，这个是**单会话**的
+    /// （单文件 = 单会话 ⇒ 就是该文件的 `daily`，但现有实现里两者各自独立累加）。
+    daily: HashMap<String, Totals>,
 }
 
 impl Totals {
@@ -325,6 +335,9 @@ fn session_groups(sessions: Vec<SessionTotals>) -> Vec<Value> {
             value["title"] = json!(session.title);
             value["project"] = json!(session.project);
             value["sessionId"] = json!(session.session_id);
+            // ★ 逐日拆分（前端按窗口切片用；空表也**照发** —— 「有字段但空」与
+            //   「旧后端没有字段」是两件事，前端据此选择「窗口口径」还是「全时回落」）。
+            value["daily"] = Value::Array(groups(session.daily));
             value
         })
         .collect();
@@ -409,6 +422,7 @@ impl SourceCollector {
         title: Option<String>,
         project: String,
         totals: Totals,
+        daily: HashMap<String, Totals>,
     ) {
         if totals.records == 0 {
             return;
@@ -427,6 +441,7 @@ impl SourceCollector {
             project,
             session_id,
             totals,
+            daily,
         });
     }
 
@@ -470,6 +485,7 @@ impl SourceCollector {
                 session.title.clone(),
                 session.project.clone(),
                 session.totals.clone(),
+                session.daily.clone(),
             );
         }
     }
@@ -519,6 +535,7 @@ fn parse_file(root: &Path, path: &Path, cutoff: Option<i64>) -> SourceCollector 
     };
 
     let mut session_totals = Totals::default();
+    let mut session_daily: HashMap<String, Totals> = HashMap::new();
     let mut session_project: Option<String> = None;
     let mut ai_title: Option<String> = None;
     let mut summary: Option<String> = None;
@@ -555,6 +572,10 @@ fn parse_file(root: &Path, path: &Path, cutoff: Option<i64>) -> SourceCollector 
             session_project = Some(project.clone());
         }
         session_totals.add(usage);
+        // 会话逐日拆分：与文件级 `daily` 同判据（`date()` 可算才落键）。
+        if let Some(day) = date(&value) {
+            session_daily.entry(day).or_default().add(usage);
+        }
         collector.add(usage, &value, &project);
     }
 
@@ -563,6 +584,7 @@ fn parse_file(root: &Path, path: &Path, cutoff: Option<i64>) -> SourceCollector 
         ai_title.or(summary),
         session_project.unwrap_or(fallback_project),
         session_totals,
+        session_daily,
     );
     collector
 }
@@ -645,7 +667,10 @@ fn clear_scan_cache_entry(path: &Path) {
 
 /// 落盘格式版本。**任何字段语义变化都必须 +1** —— 不匹配时整体丢弃
 /// （宁可重扫一次，不可读出错值）。
-const SCAN_CACHE_VERSION: u32 = 1;
+///
+/// v2（2026-10-15）：`PersistedSession` 新增 `daily`（会话逐日拆分，供「会话」视图
+/// 按时间窗口切片）。旧 v1 缓存整体丢弃 ⇒ 首次全量重扫一次；这正是版本机制的目的。
+const SCAN_CACHE_VERSION: u32 = 2;
 
 /// `Totals` 的紧凑表示：`[input, output, read, write, records]`。
 ///
@@ -732,6 +757,10 @@ struct PersistedSession {
     title: Option<String>,
     project: String,
     totals: PersistedTotals,
+    /// ★ 会话逐日拆分（v2 新增；键是本地日 `YYYY-MM-DD`）。空表照省 ——
+    /// 「空」与「旧格式没有」在消费端是两回事（前端据字段有无选择窗口口径或全时回落）。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    daily: Vec<(String, PersistedTotals)>,
 }
 
 /// 一个文件的落盘条目：内容指纹 + 该文件的全部贡献。
@@ -781,6 +810,7 @@ impl ScanCacheEntry {
             title: session.title.clone(),
             project: session.project.clone(),
             totals: totals_to_persisted(&session.totals),
+            daily: totals_map_to_persisted(&session.daily),
         });
         PersistedFileEntry {
             mtime: self.mtime_ms,
@@ -820,6 +850,7 @@ impl ScanCacheEntry {
                 project: session.project,
                 session_id: session.session_id,
                 totals: totals_from_persisted(session.totals),
+                daily: totals_map_from_persisted(session.daily),
             });
         }
         ScanCacheEntry {
@@ -1289,6 +1320,7 @@ fn ide_source(
             .cloned()
             .unwrap_or_else(|| "未知项目".to_string());
         let mut session_totals = Totals::default();
+        let mut session_daily: HashMap<String, Totals> = HashMap::new();
         let mut session_project: Option<String> = None;
 
         for request in requests {
@@ -1304,14 +1336,14 @@ fn ide_source(
                 session_project = Some(project.clone());
             }
             session_totals.add(usage);
-            collector.add(
-                usage,
-                &json!({
-                    "timestamp": ts,
-                    "providerData": { "model": model_name },
-                }),
-                &project,
-            );
+            let meta = json!({
+                "timestamp": ts,
+                "providerData": { "model": model_name },
+            });
+            if let Some(day) = date(&meta) {
+                session_daily.entry(day).or_default().add(usage);
+            }
+            collector.add(usage, &meta, &project);
         }
 
         collector.push_session(
@@ -1319,6 +1351,7 @@ fn ide_source(
             title,
             session_project.unwrap_or(fallback_project),
             session_totals,
+            session_daily,
         );
     }
 
@@ -1362,6 +1395,16 @@ fn merge_group_item(base: &mut Value, other: &Value) {
             } else {
                 base_obj.insert(field.clone(), other_value.clone());
             }
+        } else if field == "daily" && other_value.is_array() {
+            // ★ 会话的逐日拆分（数组）**不是数值字段**，不能走下面的「保留首个」——
+            //   两版各自的每日量必须按日**求和合并**，否则合并作用域下会丢一整版的逐日。
+            let merged = match base_obj.get("daily").and_then(Value::as_array) {
+                Some(base_daily) => {
+                    merge_grouped_list_from_arrays("key", &[Value::Array(base_daily.clone()), other_value.clone()])
+                }
+                None => other_value.as_array().cloned().unwrap_or_default(),
+            };
+            base_obj.insert("daily".into(), Value::Array(merged));
         } else if !base_obj.contains_key(field.as_str())
             || base_obj.get(field.as_str()).is_some_and(Value::is_null)
         {
@@ -1943,6 +1986,77 @@ mod tests {
         fs::remove_dir_all(root).expect("remove fixture");
     }
 
+    /// ★★ 会话**逐日拆分**（2026-10-15 新增）：前端「会话」视图按时间窗口切片的素材。
+    ///
+    /// 用户报障「会话的统计数据切换时间没有变化」——根因是会话只有全时合计、没有时间
+    /// 维度，前端拿到也无从按窗计算。本用例钉住三件事：
+    /// ① 每个会话带 `daily`，键 = 该会话记录所在的本地日；
+    /// ② **逐日之和 == 会话总量**（窗口切片的正确性前提：近 30 天窗口 = 全部时，
+    ///    数字必须回到全时口径，不许比它多或少了某天的量）；
+    /// ③ 无时间戳的记录不落任何日键（与文件级 `daily` 同判据），但其总量仍在会话里
+    ///    —— 「进不了任何窗口」与「不存在」是两件事，由总量 vs 逐日之差体现。
+    ///
+    /// 可证伪：把 `parse_file` 里 `session_daily` 的累加删掉 ⇒ 断言①变红
+    /// （`daily` 为空数组）。
+    #[test]
+    fn session_daily_splits_usage_by_local_day_for_window_slicing() {
+        let now = crate::modules::config::now_ms();
+        let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+        let yesterday = (chrono::Local::now() - chrono::Duration::days(1))
+            .format("%Y-%m-%d")
+            .to_string();
+        let root = std::env::temp_dir().join(format!(
+            "buddy-switch-token-stats-session-daily-{}-{now}",
+            std::process::id()
+        ));
+        let project = root.join("fixture-project");
+        fs::create_dir_all(&project).expect("create fixture dirs");
+
+        let record = |timestamp: i64, input: u64, output: u64| {
+            json!({
+                "timestamp": timestamp,
+                "cwd": "/fixture/example-project",
+                "message": { "usage": { "input_tokens": input, "output_tokens": output } }
+            })
+        };
+        fs::write(
+            project.join("session-a.jsonl"),
+            format!(
+                "{}\n{}\n{}\n",
+                record(now - 86_400_000, 10, 1), // 昨天
+                record(now, 30, 3),              // 今天
+                // 无时间戳：进不了任何窗口，但必须留在会话总量里。
+                json!({
+                    "cwd": "/fixture/example-project",
+                    "message": { "usage": { "input_tokens": 5, "output_tokens": 0 } }
+                }),
+            ),
+        )
+        .expect("write fixture");
+
+        let result = source(root.clone(), "fixture", None);
+        let session = &result["sessions"][0];
+        assert_eq!(session["total"], 49, "会话总量 = 10+1+30+3+5");
+        let daily = session["daily"].as_array().expect("daily 必须下发");
+        assert_eq!(daily.len(), 2, "两个有日期的记录 ⇒ 两个日键：{daily:?}");
+        let by_key: HashMap<&str, &Value> = daily
+            .iter()
+            .map(|point| (point["key"].as_str().unwrap_or_default(), point))
+            .collect();
+        assert_eq!(by_key[&today.as_str()]["total"], 33, "今天 = 30+3");
+        assert_eq!(by_key[&yesterday.as_str()]["total"], 11, "昨天 = 10+1");
+        let daily_sum: u64 = daily
+            .iter()
+            .map(|point| point["total"].as_u64().unwrap_or(0))
+            .sum();
+        assert_eq!(
+            daily_sum, 44,
+            "逐日之和 = 有日期部分（44）—— 与总量的差（5）正是无时间戳的那条"
+        );
+
+        fs::remove_dir_all(root).expect("remove fixture");
+    }
+
     /// P0-4「无争议的那一半」：同一 workspace 下的 N 个会话**只解析一次** `index.json`。
     ///
     /// 断言三件事：
@@ -2432,6 +2546,55 @@ mod tests {
             .collect();
         assert_eq!(day.len(), 1, "同日期必须合并为一条");
         assert_eq!(day[0]["total"], 40);
+    }
+
+    /// ★ 会话 `daily`（逐日拆分）在合并路径上必须**按日求和**，不得走「保留首个」。
+    ///
+    /// 变异：把 `merge_group_item` 里 `daily` 的分支删掉 ⇒ 只剩第一版的逐日
+    /// （2024-01-02 整条丢失）⇒ 本条变红。合并作用域（两版同名源）下，
+    /// 会话窗口切片的素材就是靠这条保住完整性的。
+    #[test]
+    fn merge_source_values_merges_session_daily_by_day() {
+        let session = |total: u64, days: Vec<(&str, u64)>| {
+            json!({
+                "key": "p · s1",
+                "sessionId": "s1",
+                "total": total,
+                "input": total,
+                "output": 0,
+                "cacheRead": 0,
+                "cacheWrite": 0,
+                "uncachedInput": total,
+                "records": 1,
+                "cacheHitRate": null,
+                "daily": days
+                    .into_iter()
+                    .map(|(key, value)| json!({ "key": key, "total": value, "records": 1 }))
+                    .collect::<Vec<Value>>(),
+            })
+        };
+        let cn = json!({ "source": "workbuddy", "sessions": [session(40, vec![("2024-01-01", 40)])] });
+        let global = json!({
+            "source": "workbuddy",
+            "sessions": [session(30, vec![("2024-01-01", 10), ("2024-01-02", 20)])]
+        });
+
+        let merged = merge_source_values(&[cn, global]);
+        let sessions = merged["sessions"].as_array().expect("sessions");
+        assert_eq!(sessions.len(), 1, "同 sessionId 合并为一条");
+        let daily = sessions[0]["daily"].as_array().expect("daily 必须保留");
+        let by_key: HashMap<&str, u64> = daily
+            .iter()
+            .map(|point| {
+                (
+                    point["key"].as_str().unwrap_or_default(),
+                    point["total"].as_u64().unwrap_or(0),
+                )
+            })
+            .collect();
+        assert_eq!(daily.len(), 2, "两版并集逐日：{daily:?}");
+        assert_eq!(by_key.get("2024-01-01"), Some(&50), "同一天 = 40 + 10");
+        assert_eq!(by_key.get("2024-01-02"), Some(&20), "只有第二版有的天不得丢");
     }
 
     /* ───────────────────── 扫描缓存 / 并行的等价性护栏 ─────────────────────

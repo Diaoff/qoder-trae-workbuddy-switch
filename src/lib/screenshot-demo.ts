@@ -538,6 +538,67 @@ function demoTokenSession(key: string, title: string, project: string, input: nu
 }
 
 /**
+ * 会话在演示日轴上的活动跨度（偏移区间，闭区间；偏移 0 = 今天）。
+ *
+ * ⚠️ 刻意让第 4 个会话**不含今天**（只活跃在 8–13 天前）⇒ 切「今天 / 近 7 天」时
+ * 它会从窗口里**整个消失**，演示能覆盖「会话集合随窗口变化」与「筛没」空态路径；
+ * 其余三个跨度不同 ⇒ 「近 7 天」与「近 30 天」的集合也不同（2 vs 4）。
+ */
+const SESSION_DAY_SPANS: [number, number][] = [
+  [0, 13], // 全程活跃（含今天）
+  [1, 8], // 从昨天开始
+  [3, 9],
+  [8, 13], // 只在 8–13 天前活跃：今天 / 近 7 天窗口里不出现
+];
+
+/**
+ * 会话的**逐日拆分**（演示数据）—— 五个字段按同一组权重分配，**和恒等于种子总量**
+ * （余数补在最近一天；有 token 的天至少 1 条记录）。
+ *
+ * ⚠️ 没有它，演示站的「会话」视图就退回全时口径（`sessionPoints` 对缺失 `daily` 的
+ * 回落，供旧后端用）——切「今天 / 近 7 天」时统计纹丝不动，恰是用户报障的那个形态。
+ */
+function demoSessionDaily(
+  seedIndex: number,
+  input: number,
+  output: number,
+  cacheRead: number,
+  cacheWrite: number,
+  records: number,
+): TokenStatsGroup[] {
+  const [start, end] = SESSION_DAY_SPANS[seedIndex % SESSION_DAY_SPANS.length];
+  const offsets = Array.from({ length: end - start + 1 }, (_, index) => start + index);
+  const weights = offsets.map((_, index) => offsets.length - index); // 越靠今天越重
+  const weightSum = weights.reduce((sum, weight) => sum + weight, 0);
+  const split = (value: number): number[] => {
+    const parts = weights.map((weight) => Math.floor((value * weight) / weightSum));
+    parts[0] += value - parts.reduce((sum, part) => sum + part, 0); // 余数补最近一天
+    return parts;
+  };
+  const inputs = split(input);
+  const outputs = split(output);
+  const reads = split(cacheRead);
+  const writes = split(cacheWrite);
+  const recordParts = split(records);
+  for (let index = 1; index < offsets.length; index += 1) {
+    if (inputs[index] > 0 && recordParts[index] === 0) {
+      recordParts[index] = 1;
+      recordParts[0] = Math.max(0, recordParts[0] - 1);
+    }
+  }
+  return offsets.map((offset, index) =>
+    demoTokenGroup(
+      localDate(offset),
+      inputs[index],
+      outputs[index],
+      reads[index],
+      writes[index],
+      recordParts[index],
+    ),
+  );
+}
+
+/**
  * 演示会话标题（**存键不存文案**）。
  *
  * 结构：`[会话 key, 标题键, 项目名, 输入, 输出, 缓存读, 缓存写, 记录数]`。
@@ -573,9 +634,20 @@ function demoTokenSource(source: TokenStatsSource["source"], scale: number): Tok
     demoTokenGroup("glm-5.2", 6_600_000 * scale, 630_000 * scale, 5_400_000 * scale, 80_000 * scale, Math.round(24 * scale)),
   ];
   // 会话标题在**这里**取（`t(key)`），而不是写进模块级常量 —— 常量会在切语言时定格。
-  const sessions = tokenSessionSeeds.map(([key, titleKey, project, input, output, cacheRead, cacheWrite, records]) =>
-    demoTokenSession(key, t(titleKey), project, input * scale, output * scale, cacheRead * scale, cacheWrite * scale, Math.round(records * scale)),
-  );
+  const sessions = tokenSessionSeeds.map(([key, titleKey, project, input, output, cacheRead, cacheWrite, records], index) => {
+    const scaled = {
+      input: input * scale,
+      output: output * scale,
+      cacheRead: cacheRead * scale,
+      cacheWrite: cacheWrite * scale,
+      records: Math.round(records * scale),
+    };
+    return {
+      ...demoTokenSession(key, t(titleKey), project, scaled.input, scaled.output, scaled.cacheRead, scaled.cacheWrite, scaled.records),
+      // 逐日拆分：与 `daily` 同一演示日轴（近 14 天，偏移 0 = 今天）。
+      daily: demoSessionDaily(index, scaled.input, scaled.output, scaled.cacheRead, scaled.cacheWrite, scaled.records),
+    };
+  });
   /**
    * 逐模型 × 逐日 —— 堆叠柱 / 模型环形 / 排行迷你趋势线的**唯一**数据源。
    *

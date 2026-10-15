@@ -158,6 +158,27 @@ function addTotals(a: TokenStatsTotals, b: TokenStatsTotals): TokenStatsTotals {
   };
 }
 
+/**
+ * 合并两个分组的**逐日拆分**（`sessions[].daily`）。
+ *
+ * 两版（如 cn + global 的同名源）各自的逐日必须**按日求和**；任何一侧缺字段
+ * （旧后端）就原样保留另一侧 —— 不得凭「有/无」把已有数据丢掉。
+ */
+function mergeDayList(
+  base?: TokenStatsGroup[],
+  extra?: TokenStatsGroup[],
+): TokenStatsGroup[] | undefined {
+  if (!base) return extra;
+  if (!extra) return base;
+  const map = new Map<string, TokenStatsGroup>();
+  for (const group of base) map.set(group.key, { ...group });
+  for (const group of extra) {
+    const current = map.get(group.key);
+    map.set(group.key, current ? addGroup(current, group) : { ...group });
+  }
+  return [...map.values()];
+}
+
 function addGroup(a: TokenStatsGroup, b: TokenStatsGroup): TokenStatsGroup {
   return {
     ...addTotals(a, b),
@@ -165,6 +186,8 @@ function addGroup(a: TokenStatsGroup, b: TokenStatsGroup): TokenStatsGroup {
     title: a.title ?? b.title ?? null,
     project: a.project ?? b.project,
     sessionId: a.sessionId ?? b.sessionId,
+    // 逐日拆分同样要合并（`sessions[].daily`）；缺字段时保留存在的那侧。
+    daily: mergeDayList(a.daily, b.daily),
   };
 }
 
@@ -555,19 +578,51 @@ export function modelSlices(source: TokenStatsSource, window: UsageWindow): Mode
  */
 export const SESSION_RENDER_LIMIT = 100;
 
-/** 会话 · 散点（契约 8/9）：x = records（**记录数**），y = total tokens。 */
-export function sessionPoints(source: TokenStatsSource): SessionPoint[] {
+/**
+ * 会话 · 散点（契约 8/9）：x = records（**记录数**），y = total tokens。
+ *
+ * ## ★ 窗口口径（2026-10-15 用户报障的修法）
+ *
+ * 报障原文：「会话的统计数据切换时间没有变化」—— 改造前本函数**不看窗口**，
+ * 四个 tile 与两张图永远是全时口径，切「今天 / 近 7 天 / 自定义」纹丝不动。
+ * 而趋势 / 模型两视图早已按窗口切片（`lastDays` / `dailyModelSeries`）——
+ * 「切了时间只有会话不变」既是谎报，也是同一页面内的口径分裂。
+ *
+ * 修法的**素材来自后端**：`sessions[].daily`（逐日拆分，与文件级 `daily` 同判据）。
+ * 后端给不了「按窗口的会话合计」（窗口可能锚在任意日期段），所以后端给**逐日**、
+ * 前端按窗口键求和 —— 与 dailyByModel 的分工完全同构。
+ *
+ * ## 回落（旧后端 / 演示数据）
+ *
+ * `daily` **缺失**（字段不存在的旧后端）⇒ 保留全时口径（宁可少一个能力，不编数据）；
+ * `daily` **为空数组**（新后端明确告知「该会话无任何可定位到日期的记录」）⇒ 窗口内
+ * 恒为 0，会话**不进任何窗口** —— 与趋势图对无时间戳记录的处理同判据。
+ * 两者的区别就是「字段有没有」：`??` 不能替代 `in` 判断，否则空数组会被当成缺失。
+ */
+export function sessionPoints(source: TokenStatsSource, window: UsageWindow): SessionPoint[] {
+  const inWindow = new Set(usageWindowKeys(window));
   return source.sessions
-    .filter((session) => session.total > 0 || session.records > 0)
     .map((session) => {
+      if (!session.daily) return { session, total: session.total, records: session.records };
+      let total = 0;
+      let records = 0;
+      for (const day of session.daily) {
+        if (!inWindow.has(day.key)) continue;
+        total += day.total;
+        records += day.records;
+      }
+      return { session, total, records };
+    })
+    .filter(({ total, records }) => total > 0 || records > 0)
+    .map(({ session, total, records }) => {
       const rawTitle = displayText(session.title);
       const title = rawTitle && rawTitle.trim().length > 0 ? rawTitle.trim() : session.key;
       return {
         id: session.key,
         title,
-        x: session.records,
-        y: session.total,
-        value: session.total,
+        x: records,
+        y: total,
+        value: total,
       };
     })
     .sort((left, right) => right.value - left.value);

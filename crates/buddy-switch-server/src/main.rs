@@ -135,6 +135,14 @@ const AUTO_BACKUP_CHECK_INTERVAL_MS: u64 = 60 * 60 * 1000;
 /// `log_keep` 封顶的日志 + 账号库，代价极低。
 const GATEWAY_USAGE_RECORD_INTERVAL_MS: u64 = 2 * 60 * 1000;
 
+/// 客户端（登录态）用量「今日」快照的记录周期（毫秒）—— 与 core
+/// [`buddy_switch_core::modules::background::CLIENT_USAGE_RECORD_INTERVAL`] 同值。
+///
+/// 取 2 分钟（对齐 `token_daily::CLIENT_SCAN_TTL_MS`）：卡片「今日 Token」的 client 列
+/// 是仪表盘读数，不需要实时，但绝不能长时间不动；扫描本身受 mtime 预筛 + 尾部窗口
+/// + TTL 闸门三重代价控制（稳态 ≈ 0.7 s）。
+const CLIENT_USAGE_RECORD_INTERVAL_MS: u64 = 2 * 60 * 1000;
+
 /// 启动全部后台任务（以 core 的 [`TASKS`] 为**唯一事实来源**）。
 ///
 /// ⚠️ **登记即执行**——不要在本函数之外直接 `tokio::spawn` 后台循环；新增「写状态 /
@@ -302,6 +310,35 @@ fn spawn_background_task(spec: TaskSpec) {
                     }
                     tokio::time::sleep(std::time::Duration::from_millis(
                         GATEWAY_USAGE_RECORD_INTERVAL_MS,
+                    ))
+                    .await;
+                }
+            });
+        }
+        // ★ 客户端（登录态）用量「今日」快照（2026-10-15 用户报障修复）：周期把客户端
+        // 会话日志的**今日**用量聚合进 `token_daily` 的 client 桶并落盘。
+        //
+        // 为什么必须有它：`record_client_today` 此前唯一的调用点是「打开账号页」的命令
+        // （`api_account_token_today`）⇒ 不进账号页，卡片上的 client 列一直是旧值
+        // （用户报障：「client 数字不动」）。**服务端常驻进程从不打开账号页**，这条在
+        // 服务端尤其致命；桌面端同形（见 `src-tauri/src/lib.rs` 同分支）。
+        //
+        // `force = false`：走 `CLIENT_SCAN_TTL_MS` 闸门 —— 本循环周期与闸门同值，
+        // 挡掉的只是「刚被账号页扫过」的重复轮次，不挡新鲜度。
+        //
+        // 覆盖**两个 region**：客户端语料按区域分目录（CN = `.workbuddy/projects`，
+        // Global = `.workbuddy-ai/projects`），只扫一个另一个永远是旧值。
+        //
+        // ⚠️ 与网关那条**刻意分成两个循环**：失败面不同（读盘扫 jsonl vs 读一份日志），
+        // 合并后客户端扫描 panic 会把网关记录一起带停。
+        TaskKind::ClientUsageRecord => {
+            tokio::spawn(async move {
+                loop {
+                    for region in Region::all() {
+                        let _ = token_daily::record_client_today(region, false);
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(
+                        CLIENT_USAGE_RECORD_INTERVAL_MS,
                     ))
                     .await;
                 }
@@ -704,6 +741,21 @@ mod tests {
             has_task(Product::Workbuddy, TaskKind::GatewayUsageRecord),
             "后台任务表必须登记 (Workbuddy, GatewayUsageRecord)（网关用量今日快照）；缺了它 \
              record_gateway_today 只剩账号页一个调用点，token_daily 的 90 天历史大片空洞。\
+             当前表：{TASKS:?}"
+        );
+    }
+
+    /// 护栏：**客户端用量今日快照**任务必须登记在 core 后台任务表里（2026-10-15 用户报障修复）。
+    ///
+    /// 回归背景：`record_client_today` 此前只有「打开账号页」一个调用点 ⇒ 服务端常驻进程
+    /// 从不打开账号页，卡片「今日 Token」的 **client 列永远不刷新**（而同卡片的 gateway
+    /// 桶已被周期刷新 ⇒ 两个桶一新一旧）。
+    #[test]
+    fn background_task_registry_includes_client_usage_record() {
+        assert!(
+            has_task(Product::Workbuddy, TaskKind::ClientUsageRecord),
+            "后台任务表必须登记 (Workbuddy, ClientUsageRecord)（客户端用量今日快照）；缺了它 \
+             record_client_today 只剩账号页一个调用点，卡片 client 列长时间不刷新。\
              当前表：{TASKS:?}"
         );
     }
