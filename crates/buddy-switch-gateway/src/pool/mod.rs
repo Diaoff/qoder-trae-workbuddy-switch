@@ -792,8 +792,19 @@ impl Pool {
         let Some(entry) = self.entries.get_mut(uid) else {
             return false;
         };
-        entry.note_error(now_ms);
         self.dirty = true;
+        // ★ 调用方错误（其它 4xx）与账号侧错误**分家**。
+        //
+        // 下面 `UpstreamEvent::Client` 分支**不做任何治理动作** —— 判定就是「不是这个账号的问题」。
+        // 既然不处置，就不该再扣它的健康度：`error_ema` 的用途是选号权重，而调用方的坏请求
+        // 不构成「这个号靠不住」的证据。混在一起会把健康账号的 `error_ema` 拖到 0.9
+        // （实测：某账号 88.8% 的错误率全部来自这类不治理的 4xx，但它其实一直可用）。
+        // 这类错误只累计 `err_total` 供诊断，不推进 EMA / `fails`。
+        if matches!(event, UpstreamEvent::Client) {
+            entry.note_caller_error(now_ms);
+        } else {
+            entry.note_error(now_ms);
+        }
 
         match event {
             UpstreamEvent::HardCredit => {
@@ -904,11 +915,24 @@ impl Pool {
     ///
     /// 管理面「账号池」卡两侧共用，故键名即契约：`uid` / `name` / `realm` /
     /// `status` / `credits` / `cooling` / `cooldownUntil` / `cooldownReason` / `disabled`。
+    ///
+    /// ★ `cooldownUntil` / `cooldownReason` **只在真的处于冷却 / 禁用时**才给 —— 与 Trae 侧
+    /// `account_view` 的 `active_cooldown.filter(|e| e.until > now && …)` 同义。
+    /// 冷却靠**墙钟**到期，而 `reason` 没有任何人在到期时清掉 ⇒ 若照搬字段，
+    /// 一条两天前的 `429 rate limit` 会被当成**当前**原因复述出去，
+    /// 前端就渲染出「徽标=可用，旁边却写着 429」这种自相矛盾的行
+    /// （症状：用户报「这个号在网关里是冷却的，可我在客户端明明能用」）。
+    ///
+    /// ★★ 判据是 `cooling || disabled`，**不能只判 `cooling`**：`reason` 是**双语义字段**
+    /// （冷却原因与禁用原因共用它，见 [`PoolEntry::disable`] 的注释）。本函数**没有**
+    /// `disabled_reason` 这个独立出口（`snapshot` 才有），只判 `cooling` 会把禁用原因一起藏掉。
     pub fn status_list(&self, now_ms: i64) -> Vec<Value> {
         self.entries
             .values()
             .map(|entry| {
                 let status = entry.status_of(now_ms);
+                let cooling = status == "cooling";
+                let reason_visible = cooling || entry.disabled;
                 let cooldown_until = entry.expiry_ms();
                 json!({
                     "uid": entry.uid,
@@ -917,9 +941,11 @@ impl Pool {
                     "status": status,
                     // 余额未知 ⇒ `null`（Trae 侧同义），前端显示为「—」。
                     "credits": (entry.credits_refreshed_ms > 0).then_some(entry.credits as f64),
-                    "cooling": status == "cooling",
-                    "cooldownUntil": (cooldown_until > 0).then_some(cooldown_until),
-                    "cooldownReason": (!entry.reason.is_empty()).then(|| entry.reason.clone()),
+                    "cooling": cooling,
+                    "cooldownUntil": (cooling && cooldown_until > 0).then_some(cooldown_until),
+                    "cooldownReason": reason_visible
+                        .then(|| entry.reason.clone())
+                        .filter(|reason| !reason.is_empty()),
                     "disabled": entry.disabled,
                 })
             })
@@ -955,31 +981,38 @@ impl Pool {
             .entries
             .values()
             .map(|entry| {
+                // ★ 冷却三件套（`cool_kind` / `until_ms` / `reason`）**只在真的冷却中**才给。
+                // 它们靠墙钟到期，而没有任何人在到期时清字段 ⇒ 照搬会把两天前的
+                // `429 rate limit` 当成**当前**原因发出去（与 `status_list` 同一处缺陷，
+                // 见那里的注释；这个出口走网关 `/status`，同样有外部读者）。
+                let cooling = now_ms < entry.until_ms;
                 let mut item = json!({
                     "uid": entry.uid,
                     "realm": realm_key(entry.realm),
                     "nickname": entry.nickname,
                     "credits": entry.credits,
-                    "cooling": now_ms < entry.until_ms,
+                    "cooling": cooling,
                     "disabled": entry.disabled,
                     "in_flight": entry.in_flight,
                     "breaker_fails": entry.fails,
                 });
-                if let Some(kind) = entry.cool_kind {
-                    item["cool_kind"] = json!(match kind {
-                        CoolKind::Hard => "hard",
-                        CoolKind::Soft => "soft",
-                    });
+                if cooling {
+                    if let Some(kind) = entry.cool_kind {
+                        item["cool_kind"] = json!(match kind {
+                            CoolKind::Hard => "hard",
+                            CoolKind::Soft => "soft",
+                        });
+                    }
+                    if entry.until_ms > 0 {
+                        item["until_ms"] = json!(entry.until_ms);
+                    }
+                    if !entry.reason.is_empty() {
+                        item["reason"] = json!(entry.reason);
+                    }
                 }
                 let remaining = entry.cool_remaining_ms(now_ms);
                 if remaining > 0 {
                     item["cool_remaining_sec"] = json!(remaining / 1000);
-                }
-                if entry.until_ms > 0 {
-                    item["until_ms"] = json!(entry.until_ms);
-                }
-                if !entry.reason.is_empty() {
-                    item["reason"] = json!(entry.reason);
                 }
                 if entry.soft_streak > 0 {
                     item["soft_streak"] = json!(entry.soft_streak);
@@ -1907,6 +1940,164 @@ mod tests {
             object["cooldownReason"].as_str().unwrap_or("").len() > 0,
             "有冷却原因"
         );
+    }
+
+    /// 冷却**自然到期**后，`cooldownUntil` / `cooldownReason` 必须不再外发。
+    ///
+    /// 回归：`reason` 没有任何人在墙钟到期时清掉 ⇒ 一条两天前的 `429 rate limit`
+    /// 会被当成**当前**原因复述出去，前端渲染出「徽标=可用、旁边写着 429」的行
+    /// （用户症状：「这个号在网关里是冷却的，可我在客户端明明能用」）。
+    #[test]
+    fn status_list_drops_cooldown_fields_once_the_cooldown_expires() {
+        let mut pool = Pool::new(PoolConfig::default());
+        pool.upsert("u1", Some(RealmTag::Cn), "一号");
+        // `reset_at` 落在过去 ⇒ `until = NOW + 1`，即「1ms 后自然到期」。
+        pool.apply_upstream_error(
+            "u1",
+            "",
+            &UpstreamEvent::SoftRate {
+                reset_at_ms: Some(NOW - 10_000),
+                model_scoped: false,
+            },
+            NOW,
+        );
+
+        // 阳性对照：**冷却中**必须照常给出解冻时刻与原因，否则下面的断言可能是「永远绿」。
+        let cooling = pool.status_list(NOW)[0].as_object().expect("对象").clone();
+        assert_eq!(cooling["status"], json!("cooling"));
+        assert!(
+            cooling["cooldownUntil"].as_i64().unwrap_or(0) > NOW,
+            "冷却中必须有解冻时刻"
+        );
+        assert!(
+            cooling["cooldownReason"].as_str().unwrap_or("").len() > 0,
+            "冷却中必须有原因"
+        );
+
+        // 墙钟走过 1ms ⇒ 冷却自然到期；`reason` 字段仍留在条目里，但**不得外发**。
+        let expired = pool
+            .status_list(NOW + 2)[0]
+            .as_object()
+            .expect("对象")
+            .clone();
+        assert_eq!(expired["status"], json!("available"), "墙钟已过 ⇒ 判可用");
+        assert_eq!(
+            expired["cooldownUntil"],
+            Value::Null,
+            "到期后不得再给解冻时刻"
+        );
+        assert_eq!(
+            expired["cooldownReason"],
+            Value::Null,
+            "到期后不得复述陈旧原因"
+        );
+    }
+
+    /// ★ 回归护栏：**禁用**账号的原因必须照常给出。
+    ///
+    /// `reason` 是**双语义字段**（冷却原因 / 禁用原因共用，见 `PoolEntry::disable` 的注释），
+    /// 而 `status_list` **没有** `disabled_reason` 这个独立出口（`snapshot` 才有）。
+    /// ⇒ 「只按 `cooling` 门控」会把禁用原因**一起藏掉**：徽标写着「已禁用」，
+    /// 却不告诉用户为什么，用户只能去猜。判据必须是 `cooling || disabled`。
+    #[test]
+    fn status_list_keeps_the_reason_for_disabled_accounts() {
+        let mut pool = Pool::new(PoolConfig::default());
+        pool.upsert("u1", Some(RealmTag::Cn), "会话失效");
+        for _ in 0..3 {
+            pool.apply_upstream_error("u1", "", &UpstreamEvent::SessionDead, NOW);
+        }
+
+        // 先确认前提：这确实是「禁用」而不是「冷却」，否则下面的断言打的不是同一个分支。
+        {
+            let dead = pool.entries.get("u1").expect("条目");
+            assert!(dead.disabled, "连续 3 次 SessionDead 必须禁用");
+            assert_eq!(dead.status_of(NOW), "disabled");
+        }
+
+        let object = pool.status_list(NOW)[0].as_object().expect("对象").clone();
+        assert_eq!(object["status"], json!("disabled"));
+        assert_eq!(
+            object["cooldownReason"],
+            json!("12153 session dead"),
+            "禁用原因（与冷却原因共用 `reason`）不得被门控藏掉"
+        );
+        assert_eq!(
+            object["cooldownUntil"],
+            Value::Null,
+            "禁用是终态，没有「解冻时刻」可给"
+        );
+    }
+
+    /// 网关 `/status` 出口（`snapshot`）同样不得复述**已到期**的冷却残留。
+    #[test]
+    fn snapshot_drops_cooldown_fields_once_the_cooldown_expires() {
+        let mut pool = Pool::new(PoolConfig::default());
+        pool.upsert("u1", Some(RealmTag::Cn), "一号");
+        pool.apply_upstream_error(
+            "u1",
+            "",
+            &UpstreamEvent::SoftRate {
+                reset_at_ms: Some(NOW - 10_000),
+                model_scoped: false,
+            },
+            NOW,
+        );
+
+        let cooling = pool.snapshot(NOW)["accounts"][0].clone();
+        assert_eq!(cooling["cooling"], json!(true));
+        assert!(cooling["reason"].is_string(), "冷却中必须给原因（阳性对照）");
+        assert!(cooling["until_ms"].as_i64().unwrap_or(0) > NOW);
+        assert_eq!(cooling["cool_kind"], json!("soft"));
+
+        let expired = pool.snapshot(NOW + 2)["accounts"][0].clone();
+        assert_eq!(expired["cooling"], json!(false));
+        assert!(expired["reason"].is_null(), "到期后不得复述陈旧原因");
+        assert!(expired["until_ms"].is_null(), "到期后不得给解冻时刻");
+        assert!(
+            expired["cool_kind"].is_null(),
+            "到期后不得给冷却类型（它不是「当前状态」，是残留）"
+        );
+    }
+
+    /// 调用方错误（其它 4xx）在池这一层：诊断计数照记，**不污染账号健康度**。
+    ///
+    /// 回归对象：`apply_upstream_error` 曾**无条件** `note_error` —— 而 `Client` 分支
+    /// 明确不做任何治理动作。判定「不是账号的问题」却又扣它的分，是自相矛盾的，
+    /// 后果是健康账号的 `error_ema` 被别人的坏请求一路拖到 0.9。
+    #[test]
+    fn client_errors_are_recorded_without_touching_account_health() {
+        let mut pool = Pool::new(PoolConfig::default());
+        pool.upsert("u1", Some(RealmTag::Cn), "一号");
+        let before = {
+            let entry = pool.entries.get("u1").expect("条目");
+            (
+                entry.success_ema,
+                entry.error_ema,
+                entry.err_total,
+                entry.fails,
+            )
+        };
+
+        let disabled = pool.apply_upstream_error("u1", "", &UpstreamEvent::Client, NOW);
+        assert!(!disabled, "调用方错误不做治理动作");
+        {
+            let entry = pool.entries.get("u1").expect("条目");
+            assert_eq!(entry.err_total, before.2 + 1, "错误数照记（诊断用）");
+            assert_eq!(entry.success_ema, before.0, "不得动成功率");
+            assert_eq!(entry.error_ema, before.1, "不得动错误率");
+            assert_eq!(entry.fails, before.3, "不得推进熔断计数");
+        }
+
+        // 阳性对照：换账号侧错误（5xx），EMA 必须动 —— 否则上面的断言可能是「永远绿」。
+        pool.apply_upstream_error("u1", "", &UpstreamEvent::Server, NOW);
+        {
+            let entry = pool.entries.get("u1").expect("条目");
+            assert!(
+                entry.error_ema > before.1,
+                "账号侧错误必须推进错误率（阳性对照）"
+            );
+            assert!(entry.fails > before.3, "账号侧错误必须推进熔断计数");
+        }
     }
 
     /// 余额未知 ⇒ `credits: null`（与 Trae 侧同义），前端显示为「—」。

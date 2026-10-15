@@ -278,11 +278,17 @@ export function AccountPoolCard({
                         >
                           {meta.label}
                         </Badge>
-                        {account.cooldownReason && (
-                          <span className="truncate text-xs text-muted-foreground">
-                            {account.cooldownReason}
-                          </span>
-                        )}
+                        {/* ★ 只有**真的不可用**（冷却 / 禁用）时才复述原因。
+                            `cooldownReason` 是墙钟到期的字段，后端已被门控（两平台的 `status_list`
+                            都只在 `cooling || disabled` 时给），这里再兜一层 —— 否则一条早已过期的
+                            `429 rate limit` 会挂在「可用」徽标旁边，读起来像「这个号被限流了」。
+                            ★ 判据必须含 `disabled`：它与禁用原因**共用**后端同一个 `reason` 字段。 */}
+                        {(account.status === "cooling" || account.status === "disabled") &&
+                          account.cooldownReason && (
+                            <span className="truncate text-xs text-muted-foreground">
+                              {account.cooldownReason}
+                            </span>
+                          )}
                       </div>
                     </td>
                     <td className="px-5 py-2.5 text-right">

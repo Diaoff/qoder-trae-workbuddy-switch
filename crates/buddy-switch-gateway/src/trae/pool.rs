@@ -458,15 +458,30 @@ impl TraePool {
                 } else {
                     "available"
                 };
+                let cooling = entry.cooldown_until > now;
                 json!({
                     "uid": entry.uid,
                     "name": entry.name,
                     "status": status,
                     "credits": entry.credits,
                     "creditsExpireAt": entry.credits_expire_at,
-                    "cooling": entry.cooldown_until > now,
-                    "cooldownUntil": if entry.cooldown_until > 0 { Some(entry.cooldown_until) } else { None },
-                    "cooldownReason": if entry.cooldown_reason.is_empty() { None } else { Some(entry.cooldown_reason.clone()) },
+                    "cooling": cooling,
+                    // ★ 冷却三件套只在**真的冷却 / 禁用**时给（与 WorkBuddy 侧 `Pool::status_list`
+                    //   同一规则、同一张前端卡）。`cooldown_until` / `cooldown_reason` 是在
+                    //   `sync_for` 里从落盘冷却文件**原样拷来**的，不做到期门控就会把一条
+                    //   早已过期的冷却当成当前原因复述出去（徽标=可用、旁边写着限流原因）。
+                    "cooldownUntil": if cooling && entry.cooldown_until > 0 {
+                        Some(entry.cooldown_until)
+                    } else {
+                        None
+                    },
+                    // `SessionDead` 走 `disabled`（终态），其原因是**禁用原因**而非冷却原因，
+                    // 因此判据是 `cooling || disabled`，不能只判 `cooling`。
+                    "cooldownReason": if (cooling || entry.disabled) && !entry.cooldown_reason.is_empty() {
+                        Some(entry.cooldown_reason.clone())
+                    } else {
+                        None
+                    },
                     "disabled": entry.disabled,
                     "deviceIdMasked": mask_device(&entry.device_id),
                 })
@@ -992,6 +1007,56 @@ mod tests {
         // 不得出现 snake_case 键。
         assert!(!object.contains_key("credits_expire_at"));
         assert!(!object.contains_key("cooldown_until"));
+    }
+
+    /// ★ 冷却**自然到期**后不得再复述原因；**禁用**账号的原因必须保留。
+    ///
+    /// 回归对象：`cooldown_until` / `cooldown_reason` 是 `sync_for` 从落盘冷却文件
+    /// **原样拷来**的，不做到期门控就会把一条早已过期的冷却当成当前原因发出去 ——
+    /// 与 WorkBuddy 侧 `Pool::status_list` 同一处缺陷、同一张前端卡。
+    #[test]
+    fn status_list_drops_expired_cooldown_but_keeps_disable_reason() {
+        let now = 1_000_000;
+
+        // ① 冷却中 ⇒ 给原因与解冻时刻（阳性对照：证明下面两条不是「永远绿」）。
+        let mut cooling = entry("u-cool", Some(50.0), None);
+        cooling.cooldown_until = now + 60_000;
+        cooling.cooldown_reason = "429 rate limit".to_string();
+        let list = pool_with(vec![cooling]).status_list(now);
+        assert_eq!(list[0]["status"], "cooling");
+        assert_eq!(list[0]["cooldownReason"], "429 rate limit");
+        assert_eq!(list[0]["cooldownUntil"], now + 60_000);
+
+        // ② 已到期 ⇒ 两个字段都不得外发。
+        let mut expired = entry("u-expired", Some(50.0), None);
+        expired.cooldown_until = now - 1;
+        expired.cooldown_reason = "429 rate limit".to_string();
+        let list = pool_with(vec![expired]).status_list(now);
+        assert_eq!(list[0]["status"], "available");
+        assert!(
+            list[0]["cooldownUntil"].is_null(),
+            "到期后不得再给解冻时刻"
+        );
+        assert!(
+            list[0]["cooldownReason"].is_null(),
+            "到期后不得复述陈旧原因"
+        );
+
+        // ③ 禁用（`SessionDead` 是终态）⇒ 原因是**禁用原因**，必须保留。
+        let mut dead = entry("u-dead", Some(50.0), None);
+        dead.disabled = true;
+        dead.cooldown_reason = "会话失效（需重新登录）".to_string();
+        let list = pool_with(vec![dead]).status_list(now);
+        assert_eq!(list[0]["status"], "disabled");
+        assert_eq!(
+            list[0]["cooldownReason"],
+            "会话失效（需重新登录）",
+            "禁用原因不得被门控藏掉"
+        );
+        assert!(
+            list[0]["cooldownUntil"].is_null(),
+            "禁用是终态，没有「解冻时刻」可给"
+        );
     }
 
     #[test]

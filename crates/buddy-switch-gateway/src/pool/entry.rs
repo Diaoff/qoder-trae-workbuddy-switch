@@ -224,7 +224,35 @@ impl PoolEntry {
         self.model_cooldowns.clear();
     }
 
-    /// 成功回调：清空熔断域与软冷却退避。
+    /// 惰性清理**已自然到期**的账号级冷却；返回是否真的清掉了东西。
+    ///
+    /// ## 为什么需要它
+    ///
+    /// 冷却到期靠的是**墙钟比较**（[`Self::status_of`] / [`Self::cool_remaining_ms`] 都带
+    /// `now_ms`），`until_ms` / `cool_kind` / `reason` 这三个字段**没有任何人会在到期时清掉**：
+    /// [`Self::clear_cooling`] 只在「禁用 / 复活」与硬冷却自动解冻时调用。
+    ///
+    /// 于是会产生一条**永远不消失的假冷却记录**：某账号两天前被 429 一次，
+    /// 冷却早已过期、账号也早已恢复可用，但 `reason` 还挂着「429 rate limit」。
+    /// 一旦某个出口（如 `Pool::status_list`）直接复述 `reason`，用户就会看到
+    /// 「徽标=可用，旁边却写着 429」——症状是「客户端明明能用，网关却显示它在冷却」。
+    ///
+    /// ★ **不清 `soft_streak`**：它是软冷却的**指数退避记忆**，清掉会让反复被限流的账号
+    /// 每次都从最短退避重来（退避形同虚设）。到期只意味着「这次可以再试」，不是「历史归零」。
+    ///
+    /// ★ **只在已到期时清**：`until_ms > now_ms` 时原样保留 —— 正在冷却的账号，
+    /// 其 `reason` 正是要展示给用户看的东西。
+    pub fn prune_expired_cooling(&mut self, now_ms: i64) -> bool {
+        if self.cool_kind.is_none() || self.until_ms > now_ms {
+            return false;
+        }
+        self.until_ms = 0;
+        self.cool_kind = None;
+        self.reason.clear();
+        true
+    }
+
+    /// 成功回调：清空熔断域与软冷却退避，并清掉**已自然到期**的冷却残留。
     ///
     /// **不清模型级冷却**——该模型刚失败过，让它自然过期更安全。
     pub fn note_success(&mut self, now_ms: i64) {
@@ -237,15 +265,41 @@ impl PoolEntry {
         self.breaker_until_ms = 0;
         self.soft_streak = 0;
         self.session_dead_fails = 0;
+        // 成功即证明「那次冷却早就不成立了」⇒ 顺手清掉过期的 `reason` 残留
+        // （否则它会在状态出口里被当成「当前冷却原因」复述出去）。
+        // ★ 只清**已过期**的：仍在冷却中的条目本就选不中，也不在成功路径上偷改冷却语义。
+        self.prune_expired_cooling(now_ms);
     }
 
     /// 失败回调：累计成功率 EMA，并推进熔断计数。
+    ///
+    /// ★ 只用于**账号侧**错误（限流 / 封禁 / 5xx / 会话失效 / 余额不足）。
+    /// 调用方自己的坏请求请走 [`Self::note_caller_error`] —— 两者混用会让健康度说谎。
     pub fn note_error(&mut self, now_ms: i64) {
         self.err_total += 1;
         self.last_err_ms = now_ms;
         self.success_ema = ema_step(self.success_ema, 0.0);
         self.error_ema = ema_step(self.error_ema, 1.0);
         self.fails += 1;
+    }
+
+    /// 调用方错误回调：**只累计诊断计数，不动健康度**。
+    ///
+    /// ## 为什么必须与 [`Self::note_error`] 分家
+    ///
+    /// `UpstreamEvent::Client`（其它 4xx，见 `Pool::apply_upstream_error`）是网关
+    /// **明确不做任何治理动作**的一类 —— 判定就是「这不是这个账号的问题，别处置它」。
+    /// 既然不处置，就不该再扣它的健康分：`success_ema` / `error_ema` 的用途是
+    /// **选号权重**（回答「这个号靠不靠得住」），而调用方发来的坏请求不构成任何证据。
+    ///
+    /// 混在一起的后果是可观测的：一个完全健康的账号被别人的坏请求反复打到，
+    /// `error_ema` 会一路爬到 0.9，选号权重被压到几乎不被选中 ——
+    /// 症状正是「客户端里明明能正常用，网关却像是把它当坏号」。
+    ///
+    /// ★ `err_total` 仍然累计（诊断用）：错误确实发生过，只是**不归因给账号**。
+    pub fn note_caller_error(&mut self, now_ms: i64) {
+        self.err_total += 1;
+        self.last_err_ms = now_ms;
     }
 
     /// 推进熔断：达到阈值则按 `retry_count` 做指数退避并**清零 fails、递增 retry_count**。
@@ -963,6 +1017,87 @@ mod tests {
         );
         assert_eq!(item.success_count, 1);
         assert!(item.success_ema > 0.0);
+    }
+
+    /// 自然到期的软冷却：三件套（`until_ms`/`cool_kind`/`reason`）可被清掉，
+    /// 但 `soft_streak`（指数退避记忆）**不得**被顺手清零。
+    ///
+    /// 回归对象：这些字段靠**墙钟**到期，没有任何人在到期时清 ⇒ 一条两天前的
+    /// `429 rate limit` 会被状态出口当成「当前冷却原因」复述出去
+    /// （用户症状：徽标=可用，旁边写着 429）。
+    #[test]
+    fn prune_expired_cooling_clears_stale_fields_but_keeps_soft_streak() {
+        let mut item = entry();
+        item.cooldown_soft_backoff(1_000, 1_000, 10_000, "429 rate limit");
+        let until = item.until_ms;
+        assert_eq!(until, 2_000, "streak=1 ⇒ 退避一个 base");
+        assert_eq!(item.cool_kind, Some(CoolKind::Soft));
+        assert_eq!(item.reason, "429 rate limit");
+        let streak = item.soft_streak;
+        assert!(streak > 0);
+
+        // 还没到期 ⇒ 原样保留（正在冷却的原因正是要展示给用户看的东西）。
+        assert!(!item.prune_expired_cooling(until - 1));
+        assert_eq!(item.reason, "429 rate limit", "冷却中不得清原因");
+        assert_eq!(item.cool_kind, Some(CoolKind::Soft));
+        assert_eq!(item.until_ms, until);
+
+        // 到期那一刻 ⇒ 清三件套。
+        assert!(item.prune_expired_cooling(until));
+        assert_eq!(item.until_ms, 0);
+        assert_eq!(item.cool_kind, None);
+        assert!(item.reason.is_empty(), "到期后不得留下陈旧原因");
+        assert_eq!(
+            item.soft_streak, streak,
+            "退避记忆必须保留：下次再被限流要按「第 N 次」退避，不能从最短重来"
+        );
+
+        // 幂等：没有冷却域时再清一次不报错、返回 false。
+        assert!(!item.prune_expired_cooling(until + 1));
+    }
+
+    /// 成功路径顺手清掉**已过期**的冷却残留（但不动仍在冷却中的）。
+    #[test]
+    fn note_success_prunes_only_already_expired_cooling() {
+        let mut item = entry();
+        item.cooldown_soft_backoff(1_000, 1_000, 10_000, "429 rate limit");
+        // until = 2000；在 2500 成功 ⇒ 冷却早已自然到期，残留必须被清掉。
+        item.note_success(2_500);
+        assert_eq!(item.until_ms, 0);
+        assert_eq!(item.cool_kind, None);
+        assert!(item.reason.is_empty());
+
+        // 反例：在冷却**仍在生效**时成功（强试探测）⇒ 不偷改冷却语义。
+        let mut item = entry();
+        item.cooldown_soft_backoff(1_000, 1_000, 10_000, "429 rate limit");
+        item.note_success(1_500);
+        assert_eq!(item.until_ms, 2_000, "未到期的冷却不得被成功路径清掉");
+        assert_eq!(item.reason, "429 rate limit");
+    }
+
+    /// 调用方错误只动诊断计数：**不得**推进 EMA / `fails`。
+    ///
+    /// 回归对象：`UpstreamEvent::Client`（其它 4xx）在网关里不做任何治理动作，
+    /// 却又无条件 `note_error` ⇒ 健康账号被别人的坏请求把 `error_ema` 拖到 0.9。
+    #[test]
+    fn caller_error_moves_only_the_diagnostic_counter() {
+        let mut item = entry();
+        item.note_success(1_000);
+        let errs = item.err_total;
+
+        // 阳性对照：账号侧错误必须推进 EMA 与熔断计数。
+        item.note_error(1_000);
+        assert_eq!(item.err_total, errs + 1);
+        assert_eq!(item.fails, 1);
+        let (ema_success, ema_error) = (item.success_ema, item.error_ema);
+
+        // 调用方错误：只累计 `err_total`。
+        item.note_caller_error(1_000);
+        assert_eq!(item.err_total, errs + 2, "诊断计数仍要累计");
+        assert_eq!(item.success_ema, ema_success, "调用方错误不得动成功率");
+        assert_eq!(item.error_ema, ema_error, "调用方错误不得动错误率");
+        assert_eq!(item.fails, 1, "调用方错误不得推进熔断计数");
+        assert_eq!(item.last_err_ms, 1_000, "「最后一次出错」仍要如实更新");
     }
 
     #[test]
