@@ -17,9 +17,16 @@ import type {
   GatewayStatus,
   Region,
 } from "@/lib/types";
+import { SCOPES, type Scope } from "@/lib/scope";
 
 /** 网关配置缺省值（与后端 GatewayConfig::default 对齐）。 */
 export { DEFAULT_GATEWAY_CONFIG };
+
+/**
+ * 未拉取到的作用域回落的**稳定空集**（引用稳定 ⇒ 不触发无谓重渲染）。
+ * 消费者：模型列表组件（`s.disabled[scope]` 可能尚未加载）。
+ */
+export const EMPTY_DISABLED_SET: ReadonlySet<string> = new Set();
 
 function defaultStrategyView(region?: Region): AccountStrategyView {
   return {
@@ -47,15 +54,18 @@ interface GatewayState {
   keys: ApiKeyRecord[];
   models: Record<Region, CatalogSnapshot | null>;
   /**
-   * 每个 region 被用户**禁用**的模型 id 集合（P11）。
+   * 每个**作用域**被用户**禁用**的模型 id 集合（P11）。
    *
    * 它是**用户偏好**（§2.7，不进 `capabilities`），与后端 `/v1/models` 过滤（出口 ①）、
    * 调用拒绝（出口 ②）**同源** —— 后端读的是同一份存储（`gateway_disabled_models.json`），
-   * 故这里看到的禁用集合就是两个出口真正在用的那份。
+   * 故这里看到的禁用集合就是各出口真正在用的那份。
+   *
+   * ⚠️ 键是**作用域**（2026-10-15 从 region 升级）：三个平台互不相通的模型目录各自分家，
+   * 同区域的 WB / Trae / Qoder 不再共用一把键。懒加载 ⇒ `Partial`（未拉取的作用域为 `undefined`）。
    *
    * ⚠️ 用 `Set` 是为了 O(1) 命中；更新时**必须换一个新 `Set`**（zustand 靠引用变化触发重渲染）。
    */
-  disabled: Record<Region, Set<string>>;
+  disabled: Partial<Record<Scope, Set<string>>>;
   strategies: Record<Region, AccountStrategyView>;
   logs: GatewayLogEntry[];
   loading: boolean;
@@ -74,10 +84,10 @@ interface GatewayState {
   deleteKey: (id: string) => Promise<void>;
   loadModels: (region: Region) => Promise<void>;
   refreshModels: (region: Region) => Promise<void>;
-  /** 读取某 region 的禁用模型集合（P11）。 */
-  loadDisabled: (region: Region) => Promise<void>;
-  /** 置位 / 清位某 region 的一个模型（禁用 / 启用）—— 后端幂等。 */
-  setModelDisabled: (region: Region, modelId: string, disabled: boolean) => Promise<void>;
+  /** 读取某**作用域**的禁用模型集合（P11）。 */
+  loadDisabled: (scope: Scope) => Promise<void>;
+  /** 置位 / 清位某**作用域**的一个模型（禁用 / 启用）—— 后端幂等。 */
+  setModelDisabled: (scope: Scope, modelId: string, disabled: boolean) => Promise<void>;
   loadStrategies: () => Promise<void>;
   saveStrategy: (region: Region, strategy: AccountStrategy) => Promise<void>;
   loadLogs: () => Promise<void>;
@@ -91,8 +101,8 @@ export const useGatewayStore = create<GatewayState>((set, get) => ({
   status: null,
   keys: [],
   models: { cn: null, global: null },
-  // 默认全开（D27）：新 scope 的 `disabled` 初始为空，不替用户做决定。
-  disabled: { cn: new Set<string>(), global: new Set<string>() },
+  // 默认全开（D27）：各作用域的 `disabled` 懒加载，未拉取即视为空集，不替用户做决定。
+  disabled: {},
   strategies: defaultStrategies(),
   logs: [],
   loading: false,
@@ -182,23 +192,23 @@ export const useGatewayStore = create<GatewayState>((set, get) => ({
     set((s) => ({ models: { ...s.models, [region]: snapshot } }));
   },
 
-  async loadDisabled(region) {
+  async loadDisabled(scope) {
     try {
-      const { ids } = await api.getDisabledModels(region);
-      set((s) => ({ disabled: { ...s.disabled, [region]: new Set(ids ?? []) } }));
+      const { ids } = await api.getDisabledModels(scope);
+      set((s) => ({ disabled: { ...s.disabled, [scope]: new Set(ids ?? []) } }));
     } catch (e) {
       set({ error: api.asError(e) });
     }
   },
 
-  async setModelDisabled(region, modelId, disabled) {
+  async setModelDisabled(scope, modelId, disabled) {
     // 先落库（后端幂等），成功后再更新内存 —— 失败时集合保持不变，行不会「假装切了」。
-    await api.setModelDisabled(region, modelId, disabled);
+    await api.setModelDisabled(scope, modelId, disabled);
     set((s) => {
-      const next = new Set(s.disabled[region]);
+      const next = new Set(s.disabled[scope]);
       if (disabled) next.add(modelId);
       else next.delete(modelId);
-      return { disabled: { ...s.disabled, [region]: next } };
+      return { disabled: { ...s.disabled, [scope]: next } };
     });
   },
 
@@ -241,8 +251,9 @@ export const useGatewayStore = create<GatewayState>((set, get) => ({
         get().loadLogs(),
         get().loadModels("cn"),
         get().loadModels("global"),
-        get().loadDisabled("cn"),
-        get().loadDisabled("global"),
+        /* 禁用偏好按**作用域**键控 ⇒ 六个作用域全拉（每个只是一次小 GET），
+           任一平台的模型页进入时都已有数据，不必各自等待。 */
+        ...SCOPES.map((scope) => get().loadDisabled(scope)),
       ]);
       set({ lastLoadedAt: Date.now() });
     } finally {

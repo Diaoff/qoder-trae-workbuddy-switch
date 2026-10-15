@@ -1,0 +1,275 @@
+//! Qoder 请求整形 / 模型清单（**薄层**）—— 协议实现在
+//! [`buddy_switch_core::modules::qoder::api`]，这里只做网关特有的取数选择：
+//! 默认模型回落、粘性键、模型清单响应形状、清单元数据查找。
+
+use std::collections::{BTreeSet, HashSet};
+
+use serde_json::{json, Value};
+
+use buddy_switch_core::modules::qoder::region::QoderRegion;
+
+/// 本次请求要用的模型名：显式 `model` → 配置默认 →（调用方保证非空）。
+pub fn model_of(parsed: &Value, default_model: &str) -> String {
+    if let Some(model) = parsed.get("model").and_then(Value::as_str) {
+        if !model.is_empty() {
+            return model.to_string();
+        }
+    }
+    default_model.to_string()
+}
+
+/// 是否流式（OpenAI 语义：缺省 `false`；上游**恒**走流式，由聚合层本地折叠）。
+pub fn wants_stream(parsed: &Value) -> bool {
+    parsed
+        .get("stream")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+}
+
+/// 会话粘性键（`metadata.conversation_id` 优先，回落 `metadata.session_id`；
+/// 都没有 ⇒ `None`，调用方整段跳过粘性——绝不退化成轮级键）。
+pub fn sticky_key_of(parsed: &Value) -> Option<String> {
+    let metadata = parsed.get("metadata")?;
+    for key in ["conversation_id", "session_id"] {
+        if let Some(value) = metadata.get(key).and_then(Value::as_str) {
+            if !value.is_empty() {
+                return Some(value.to_string());
+            }
+        }
+    }
+    None
+}
+
+/// 本次请求声明的工具名集合（供泄漏回声回读的守卫；无 tools ⇒ `None`）。
+pub fn allowed_tool_names(parsed: &Value) -> Option<HashSet<String>> {
+    let tools = parsed.get("tools").and_then(Value::as_array)?;
+    let mut names = HashSet::new();
+    for tool in tools {
+        let name = tool
+            .get("function")
+            .and_then(|function| function.get("name"))
+            .and_then(Value::as_str)
+            .or_else(|| tool.get("name").and_then(Value::as_str));
+        if let Some(name) = name {
+            if !name.is_empty() {
+                names.insert(name.to_string());
+            }
+        }
+    }
+    if names.is_empty() {
+        None
+    } else {
+        Some(names)
+    }
+}
+
+/// `/v1/models` 响应：清单元数据 + **禁用过滤**（`disabled` 是该区域作用域的集合）。
+pub fn models_response(catalog: &[Value], disabled: &BTreeSet<String>) -> Value {
+    let data: Vec<Value> = catalog
+        .iter()
+        .filter(|entry| {
+            let id = entry
+                .get("id")
+                .or_else(|| entry.get("key"))
+                .and_then(Value::as_str)
+                .unwrap_or("");
+            !crate::disabled_models::is_disabled_in(disabled, id)
+        })
+        .map(|entry| {
+            let id = entry
+                .get("id")
+                .or_else(|| entry.get("key"))
+                .and_then(Value::as_str)
+                .unwrap_or("");
+            json!({
+                "id": id,
+                "object": "model",
+                "created": 0,
+                "owned_by": "qoder",
+                "display_name": entry.get("display_name").cloned().unwrap_or(Value::String(id.to_string())),
+                "is_reasoning": entry.get("is_reasoning").cloned().unwrap_or(Value::Bool(false)),
+                "max_input_tokens": entry.get("max_input_tokens").cloned(),
+            })
+        })
+        .collect();
+    json!({ "object": "list", "data": data })
+}
+
+/// 管理面模型清单（**未过滤**禁用 + 逐条 `disabled` 标记 + 来源三级）—— 两宿主共用的**唯一**形状。
+///
+/// ## 与 [`models_response`]（网关出口 ①）的分工
+///
+/// - 出口 ①：**过滤掉**被禁用的模型（外部客户端就该看不到它们）；
+/// - 管理面：**全都给**（否则用户会以为禁用过的模型从上游消失了），逐条标 `disabled`，
+///   由前端据此渲染「已禁用 + 启用」那一行 —— 「网关真正暴露的条数」= 全量 − 已禁用，
+///   与出口 ① **同源同判据**（`is_disabled_in`）。
+///
+/// ⚠️ 形状由本函数**唯一产出**（`MEMORY.md §二`：两条通道不得各自拼装 JSON ——
+/// `copy_sessions` 事故的直接对策：webui 与桌面端各自拼形状，一处改了另一处静默漂移）。
+pub fn admin_models_response(
+    region: QoderRegion,
+    catalog: &super::CatalogView,
+    disabled: &BTreeSet<String>,
+) -> Value {
+    let data: Vec<Value> = catalog
+        .models
+        .iter()
+        .map(|entry| {
+            let id = entry
+                .get("id")
+                .or_else(|| entry.get("key"))
+                .and_then(Value::as_str)
+                .unwrap_or("");
+            json!({
+                "id": id,
+                "object": "model",
+                "owned_by": "qoder",
+                "display_name": entry
+                    .get("display_name")
+                    .cloned()
+                    .unwrap_or_else(|| Value::String(id.to_string())),
+                "is_reasoning": entry
+                    .get("is_reasoning")
+                    .cloned()
+                    .unwrap_or(Value::Bool(false)),
+                "max_input_tokens": entry.get("max_input_tokens").cloned(),
+                "disabled": crate::disabled_models::is_disabled_in(disabled, id),
+            })
+        })
+        .collect();
+    json!({
+        "object": "list",
+        "region": region.as_str(),
+        "source": catalog.source,
+        "fetchedAt": catalog.fetched_at,
+        "note": catalog.note,
+        "data": data,
+    })
+}
+
+/// 从清单里找某模型的元数据（大小写不敏感 —— 上游对模型名大小写不敏感）。
+///
+/// 找不到 ⇒ 合成一份**中性元数据**（`key = 用户传的名字`）：不虚构
+/// `is_reasoning` / 上下文长度，上游收到不认识的 key 会自己报错 ——
+/// 比本地猜一个「像真的」的值诚实。
+pub fn meta_for(catalog: &[Value], model: &str) -> buddy_switch_core::modules::qoder::api::ModelMeta {
+    for entry in catalog {
+        let key = entry
+            .get("key")
+            .or_else(|| entry.get("id"))
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        if key.eq_ignore_ascii_case(model) {
+            return buddy_switch_core::modules::qoder::api::ModelMeta::from_catalog_entry(entry);
+        }
+    }
+    buddy_switch_core::modules::qoder::api::ModelMeta {
+        key: model.to_string(),
+        display_name: model.to_string(),
+        is_vl: false,
+        is_reasoning: false,
+        max_input_tokens: 180_000,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn model_defaulting_and_stream_flag() {
+        assert_eq!(model_of(&json!({"model": "ultimate"}), "x"), "ultimate");
+        assert_eq!(model_of(&json!({}), "fallback"), "fallback");
+        assert_eq!(model_of(&json!({"model": ""}), "fallback"), "fallback");
+        assert!(!wants_stream(&json!({})));
+        assert!(wants_stream(&json!({"stream": true})));
+    }
+
+    #[test]
+    fn sticky_key_requires_metadata_ids() {
+        assert_eq!(
+            sticky_key_of(&json!({"metadata": {"conversation_id": "c-1"}})),
+            Some("c-1".into())
+        );
+        assert_eq!(
+            sticky_key_of(&json!({"metadata": {"session_id": "s-1"}})),
+            Some("s-1".into())
+        );
+        assert_eq!(sticky_key_of(&json!({})), None);
+        assert_eq!(sticky_key_of(&json!({"metadata": {}})), None);
+    }
+
+    /// 禁用过滤走**唯一判断点**的 `is_disabled_in`（大小写不敏感）。
+    #[test]
+    fn models_response_filters_disabled() {
+        let catalog = vec![
+            json!({"id": "Ultimate", "display_name": "Ultimate"}),
+            json!({"id": "Qwen3.8-Max", "display_name": "Qwen3.8-Max"}),
+        ];
+        let mut disabled = BTreeSet::new();
+        disabled.insert("ultimate".to_string());
+        let response = models_response(&catalog, &disabled);
+        let ids: Vec<&str> = response["data"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|entry| entry["id"].as_str().unwrap())
+            .collect();
+        assert_eq!(ids, vec!["Qwen3.8-Max"], "被禁模型必须消失（大小写不敏感）");
+    }
+
+    #[test]
+    fn meta_lookup_is_case_insensitive_with_neutral_fallback() {
+        let catalog = vec![json!({"key": "qwen3.8-max", "display_name": "Qwen3.8-Max", "is_reasoning": true})];
+        let meta = meta_for(&catalog, "QWEN3.8-MAX");
+        assert_eq!(meta.key, "qwen3.8-max");
+        assert!(meta.is_reasoning);
+        // 未知名 ⇒ 中性合成（不猜 is_reasoning）。
+        let unknown = meta_for(&catalog, "mystery-model");
+        assert_eq!(unknown.key, "mystery-model");
+        assert!(!unknown.is_reasoning);
+    }
+
+    #[test]
+    fn allowed_tool_names_reads_both_shapes() {
+        let parsed = json!({"tools": [
+            {"type": "function", "function": {"name": "a"}},
+            {"type": "function", "name": "b"},
+        ]});
+        let names = allowed_tool_names(&parsed).unwrap();
+        assert!(names.contains("a") && names.contains("b"));
+        assert!(allowed_tool_names(&json!({})).is_none());
+    }
+
+    /// 管理面清单：**未过滤**（禁用的仍在，但带标记）+ 来源三级原样透出。
+    ///
+    /// 变异：把 `admin_models_response` 改成走 [`models_response`] 的过滤 ⇒
+    /// 第一条断言红（禁用行消失，用户会以为它从上游没了）。
+    #[test]
+    fn admin_models_response_keeps_disabled_rows_but_marks_them() {
+        let catalog = super::super::CatalogView {
+            models: vec![
+                json!({"id": "Ultimate", "display_name": "Ultimate", "is_reasoning": true}),
+                json!({"key": "glm-5.1", "display_name": "GLM-5.1"}),
+            ],
+            source: "cached",
+            fetched_at: Some(1_700_000_000_000),
+            note: Some("本次拉取失败".to_string()),
+        };
+        let mut disabled = BTreeSet::new();
+        disabled.insert("ultimate".to_string());
+
+        let body = admin_models_response(QoderRegion::Global, &catalog, &disabled);
+        assert_eq!(body["region"], "global");
+        assert_eq!(body["source"], "cached");
+        assert_eq!(body["fetchedAt"], 1_700_000_000_000i64);
+        assert_eq!(body["note"], "本次拉取失败");
+        let rows = body["data"].as_array().unwrap();
+        assert_eq!(rows.len(), 2, "禁用的行**必须留着**（全量清单）");
+        assert_eq!(rows[0]["id"], "Ultimate");
+        assert_eq!(rows[0]["disabled"], true, "大小写不敏感（`ultimate` ↔ `Ultimate`）");
+        assert_eq!(rows[0]["is_reasoning"], true);
+        assert_eq!(rows[1]["id"], "glm-5.1", "无 `id` 时回落 `key`");
+        assert_eq!(rows[1]["disabled"], false);
+    }
+}

@@ -96,6 +96,16 @@ export interface AddAccountDrawerProps {
   /** 当前作用域是否检测到客户端 —— 未检测到时禁用「从本机导入」并给提示。 */
   installed: boolean;
   onPick: (way: AddAccountWay) => void;
+  /**
+   * ★ 实际渲染的**基础方式**子集（缺省 = 原型三张全出）。
+   *
+   * 平台能力子集：某方式尚未落地的平台**不渲染对应卡** —— 摆一张点下去必然失败的卡，
+   * 与「禁用按钮不给解释」一样糟（与 `account-batch-bar`「缺哪个就不渲染哪个」
+   * 同一条纪律）。⚠️ 收窄前先确认该方式在**该平台的后端命令链**里真的不存在：
+   * Qoder 侧「OAuth 设备码 / 导入备份」都尚未落地 ⇒ 只留 `["local"]`，
+   * 「粘贴 PAT」走 `extraOptions`（那是已落地的真实命令）。
+   */
+  ways?: AddAccountWay[];
   /** 平台专属的**额外**添加方式（如 Trae 的「粘贴 JWT」），接在基础三张卡之后。 */
   extraOptions?: DrawerOption[];
   /** 「更多操作」分区内容（平台开关 + 不属「添加」的动作）。 */
@@ -211,6 +221,7 @@ export function AddAccountDrawer({
   scopeLabel,
   installed,
   onPick,
+  ways = ["oauth", "local", "backup"],
   extraOptions,
   moreTools,
   labels,
@@ -234,34 +245,41 @@ export function AddAccountDrawer({
         {/* `.dsec` = `flex flex-col gap:9px`（`demo.css:490`） */}
         <div className="flex flex-col gap-2.5 overflow-y-auto p-4">
           <div className="flex flex-col gap-2.5">
-            <Option
-              icon={LogIn}
-              title={labels.oauthTitle}
-              desc={labels.oauthDesc}
-              onClick={() => {
-                onOpenChange(false);
-                onPick("oauth");
-              }}
-            />
-            <Option
-              icon={Upload}
-              title={labels.localTitle}
-              desc={labels.localDesc}
-              disabled={!installed}
-              onClick={() => {
-                onOpenChange(false);
-                onPick("local");
-              }}
-            />
-            <Option
-              icon={Download}
-              title={labels.backupTitle}
-              desc={labels.backupDesc}
-              onClick={() => {
-                onOpenChange(false);
-                onPick("backup");
-              }}
-            />
+            {/* 基础三张卡按 `ways` 收窄（缺省全出）；平台尚未落地的方式**不渲染**（见 Props）。 */}
+            {ways.includes("oauth") && (
+              <Option
+                icon={LogIn}
+                title={labels.oauthTitle}
+                desc={labels.oauthDesc}
+                onClick={() => {
+                  onOpenChange(false);
+                  onPick("oauth");
+                }}
+              />
+            )}
+            {ways.includes("local") && (
+              <Option
+                icon={Upload}
+                title={labels.localTitle}
+                desc={labels.localDesc}
+                disabled={!installed}
+                onClick={() => {
+                  onOpenChange(false);
+                  onPick("local");
+                }}
+              />
+            )}
+            {ways.includes("backup") && (
+              <Option
+                icon={Download}
+                title={labels.backupTitle}
+                desc={labels.backupDesc}
+                onClick={() => {
+                  onOpenChange(false);
+                  onPick("backup");
+                }}
+              />
+            )}
             {/* 平台专属的额外方式（Trae：粘贴 JWT 兜底）—— 由页面注入，壳内不含平台判断。 */}
             {extraOptions?.map((option) => (
               <Option

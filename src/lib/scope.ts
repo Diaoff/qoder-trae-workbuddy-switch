@@ -47,7 +47,14 @@ import {
 export type Scope = `${PlatformSlug}-${Region}`;
 
 /** 全部作用域，按 UI 展示顺序（平台顺序 → 该平台的区域顺序）。 */
-export const SCOPES: readonly Scope[] = ["wb-cn", "wb-global", "trae-cn", "trae-global"];
+export const SCOPES: readonly Scope[] = [
+  "wb-cn",
+  "wb-global",
+  "trae-cn",
+  "trae-global",
+  "qoder-cn",
+  "qoder-global",
+];
 
 /**
  * 默认作用域。

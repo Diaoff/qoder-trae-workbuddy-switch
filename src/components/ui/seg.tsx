@@ -32,6 +32,10 @@
  * `Tabs` 管**内容面板切换**（有 `TabsContent`、有 roving tabindex 语义）；
  * 本原语只管**一个参数取哪一档**（`role="group"` + `aria-pressed`，不承载面板）。
  * 用法用量页的「趋势 / 模型 / 会话 / 积分」仍走 `Tabs`，参数条上的两枚走这里。
+ *
+ * ★ 唯一例外是 `popup` 那一档（用量页的「自定义时间」）：它**不是取值，而是开浮层**，
+ * 于是需要 `aria-haspopup` / `aria-expanded`。仍**留在本原语里**、不交给调用点写按钮 ——
+ * 否则同一个 `.seg` 里会出现两套按钮类名。
  */
 
 import { cn } from "@/lib/utils";
@@ -48,6 +52,15 @@ export interface SegProps<T extends string | number> {
   /** 无障碍分组名（读屏会先念它，再念每一档）。 */
   ariaLabel: string;
   disabled?: boolean;
+  /**
+   * 某一档**不是「直接取值」而是「打开浮层」**时，给它补上 `aria-haspopup` / `aria-expanded`。
+   *
+   * 目前只有一档需要（用量页的「自定义时间」——它开一个日期弹层）。
+   * ⚠️ 刻意**不做成 ReactNode 插槽**：插槽会让调用点自己写按钮类名，
+   * 而那正是本原语要消灭的漂移（同一个 `.seg` 里两枚按钮长得不一样）。
+   * 少了这两个属性，读屏用户听到的只是一枚普通按钮 —— 不知道它会开浮层、也不知道开没开。
+   */
+  popup?: { value: T; expanded: boolean };
   className?: string;
 }
 
@@ -57,6 +70,7 @@ export function Seg<T extends string | number>({
   options,
   ariaLabel,
   disabled = false,
+  popup,
   className,
 }: SegProps<T>) {
   return (
@@ -69,24 +83,29 @@ export function Seg<T extends string | number>({
       role="group"
       aria-label={ariaLabel}
     >
-      {options.map((option) => (
-        <button
-          key={String(option.value)}
-          type="button"
-          className={cn(
-            "h-[26px] cursor-pointer rounded-sm px-[11px] text-xs transition-colors",
-            value === option.value
-              ? "bg-card font-[550] text-foreground shadow-sm"
-              : "text-muted-foreground hover:text-foreground",
-            disabled && "cursor-not-allowed",
-          )}
-          onClick={() => onChange(option.value)}
-          disabled={disabled}
-          aria-pressed={value === option.value}
-        >
-          {option.label}
-        </button>
-      ))}
+      {options.map((option) => {
+        const isPopup = popup !== undefined && option.value === popup.value;
+        return (
+          <button
+            key={String(option.value)}
+            type="button"
+            className={cn(
+              "h-[26px] cursor-pointer rounded-sm px-[11px] text-xs transition-colors",
+              value === option.value
+                ? "bg-card font-[550] text-foreground shadow-sm"
+                : "text-muted-foreground hover:text-foreground",
+              disabled && "cursor-not-allowed",
+            )}
+            onClick={() => onChange(option.value)}
+            disabled={disabled}
+            aria-haspopup={isPopup ? "dialog" : undefined}
+            aria-expanded={isPopup ? popup.expanded : undefined}
+            aria-pressed={value === option.value}
+          >
+            {option.label}
+          </button>
+        );
+      })}
     </div>
   );
 }

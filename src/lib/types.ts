@@ -69,12 +69,18 @@ export interface AccountTokenTodayEntry {
 /**
  * `get_account_token_today` 的返回 —— 「今日 Token」按账号聚合（对照后端契约，camelCase）。
  *
- * ## 三条诚实边界（UI 渲染红线）
+ * ## 四条诚实边界（UI 渲染红线）
  *
  * 1. `accounts` 里**缺失**某账号 = 「今日无记录 / 未知」⇒ 必须渲染 **「—」**，**不得**当 0；
  * 2. 出现在 `accounts` 里的 `0` 是**真实 0**（当日确实没用）；
- * 3. `gatewayTruncated: true` ⇒ 网关日志已到保留上限，**网关部分只是下界** ⇒
- *    必须渲染成 **`≥N`** 并说明（tooltip / 行内注），**绝不**把网关数当完整值呈现。
+ * 3. `gatewayTruncated: true` ⇒ 网关日志的**今日**部分可能已被裁掉（滚动窗口滑过今天），
+ *    **网关部分只是下界** ⇒ 必须渲染成 **`≥N`** 并说明（tooltip / 行内注），
+ *    **绝不**把网关数当完整值呈现。注意判据**不是**「日志到过上限」——窗口可能被昨天的
+ *    流量顶满而今天的条目全在，那种情况下不报；
+ * 4. `client*` 与 `gateway*` 是**两条独立记录**（客户端自己的会话日志 / 网关请求日志），
+ *    正常情况下互不相交；但用户可把某个被统计的客户端**指向本网关**，那样同一请求两处
+ *    各记一次 ⇒ 两者之和**可能重复计数**。后端无法识别这种重叠（无 join 键），故不做
+ *    去重；UI 必须在明细里披露（两侧都非零时）。
  */
 export interface AccountTokenTodayResponse {
   /** 本地日期键，如 `"2026-10-10"`（与签到日志 / 积分统计事件同口径）。 */
@@ -83,8 +89,38 @@ export interface AccountTokenTodayResponse {
   accounts: AccountTokenTodayEntry[];
   /** 会话所属账号解析不出（未知账号）的汇总。 */
   unknownClient: { in: number; out: number };
-  /** 网关日志已到保留上限 ⇒ 网关部分为下界。 */
+  /** 网关日志的**今日**部分可能已被裁掉（滚动窗口滑过今天）⇒ 网关部分为下界。 */
   gatewayTruncated: boolean;
+}
+
+/** 网关逐日趋势的一天（`get_gateway_token_trend` 的一条；全区服合计）。 */
+export interface GatewayTrendPoint {
+  /** 本地日期键 `YYYY-MM-DD`。 */
+  key: string;
+  input: number;
+  output: number;
+  total: number;
+  /** 当日网关日志可能被裁 ⇒ 该日 `total` 只是**下界**（见 {@link AccountTokenTodayResponse} 边界 3）。 */
+  truncated: boolean;
+}
+
+/**
+ * `get_gateway_token_trend` 的返回 —— 网关**逐日**用量（全账号合计，趋势图用）。
+ *
+ * ⚠️ **诚实边界**：`days` **只含落库过的日子**（App 运行过 + 后台周期记录在跑，
+ * 见 `modules::background` 的 `GatewayUsageRecord`）⇒ **缺日 = 未记录，不是 0**。
+ * join 窗口后必须算覆盖率并披露；未记录日按 0 画柱只是「没有可画的值」，
+ * **不等于**「当天没有网关用量」。
+ */
+export interface GatewayTokenTrend {
+  /** 本地日期键（今天）。 */
+  date: string;
+  /** 落库保留天数（90）。 */
+  retentionDays: number;
+  /** 逐日点，**日期升序**、只含落库日。 */
+  days: GatewayTrendPoint[];
+  /** `days` 的合计。 */
+  total: number;
 }
 
 /** 认证文件 domain 与目标 region 不符时的结构化信息（安全红线 F）。 */
@@ -1423,6 +1459,14 @@ export interface GatewayPoolSummary {
   expired: number;
   zeroCredits: number;
   totalCredits: number;
+  /**
+   * **账号本身可用、但有模型级冷却**的条目数（目前只有 Qoder 侧产出）。
+   *
+   * 上游 429 按**模型**报 ⇒ 一个账号可能「对 A 模型冷却、对 B 模型仍可服务」；
+   * 它与账号级 `cooling` **正交**，因此单独一格（`QODER_POOL_TILES`）。
+   * 其余平台没有这一维 ⇒ 缺失时按 0 处理（不渲染该格）。
+   */
+  modelCooling?: number;
 }
 
 /** 池内单个账号的可路由状态（两侧同形）。 */

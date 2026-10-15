@@ -42,7 +42,7 @@ use serde_json::Value;
 use tokio::net::TcpListener;
 
 use super::agent_watch::{
-    self, parse_event, AgentEvent, SOURCE_CODEX, SOURCE_WORKBUDDY_CN, SOURCE_WORKBUDDY_GLOBAL,
+    self, canonical_source, parse_event, AgentEvent, SOURCE_WORKBUDDY_CN,
 };
 
 /// 接收端监听的端口。
@@ -255,26 +255,36 @@ pub fn try_run_hook_cli(args: &[String]) -> Option<i32> {
     if args.get(1).map(String::as_str) != Some("hook") {
         return None;
     }
+    Some(run_hook_cli(source_from_args(args)))
+}
+
+/// 从 hook 命令的参数里解析来源 id —— **纯函数**，白名单行为由单测钉死。
+///
+/// ## ★ 白名单 = [`agent_watch::HOOK_SOURCES`]（唯一事实来源）
+///
+/// 认不出的取值**一律回落国内版**：不能把用户传的任意串当成来源，
+/// 那会让会话表里出现一个谁都不认识的 `source`，窗口里显示成裸 id。
+///
+/// ⚠️ **早先这里是硬编码的 `match`（只有 `codex` / `workbuddy-global` 两条）** ——
+/// 新客户端（trae / qoder / claude / codebuddy）会被**静默**回落成 `workbuddy-cn`，
+/// 于是「Trae 里正在跑的会话」在悬浮窗里显示成「WorkBuddy 国内版」。
+/// 这类错标没有任何报错，只能靠注册表 + 单测防住（见
+/// [`hook_sources_are_all_accepted_by_source_arg`]）。
+pub fn source_from_args(args: &[String]) -> &'static str {
     let mut source = SOURCE_WORKBUDDY_CN;
     let mut index = 2;
     while index < args.len() {
         match args[index].as_str() {
             "--source" => {
                 if let Some(value) = args.get(index + 1) {
-                    // **白名单**：认不出的取值一律回落国内版 —— 不能把用户传的
-                    // 任意串当成来源，那会让会话表里出现一个谁都不认识的 source。
-                    source = match value.as_str() {
-                        "codex" => SOURCE_CODEX,
-                        "workbuddy-global" => SOURCE_WORKBUDDY_GLOBAL,
-                        _ => SOURCE_WORKBUDDY_CN,
-                    };
+                    source = canonical_source(value).unwrap_or(SOURCE_WORKBUDDY_CN);
                 }
                 index += 2;
             }
             _ => index += 1,
         }
     }
-    Some(run_hook_cli(source))
+    source
 }
 
 /// hook 命令本体：stdin → 接收端。**恒返回 0**。
@@ -441,5 +451,75 @@ mod tests {
         let addr = addr();
         assert!(addr.ip().is_loopback(), "接收端绝不能绑到非回环地址：{addr}");
         assert_eq!(addr.port(), HOOK_PORT);
+    }
+
+    /// hook 命令参数 → 来源 id（`["app.exe", "hook", "--source", <id>]`）。
+    fn hook_args(source: Option<&str>) -> Vec<String> {
+        let mut args = vec!["app.exe".to_string(), "hook".to_string()];
+        if let Some(source) = source {
+            args.push("--source".to_string());
+            args.push(source.to_string());
+        }
+        args
+    }
+
+    /// ★★ **注册表里的每个来源都必须被 `--source` 认出来**。
+    ///
+    /// 这是本文件最重要的一条断言：早先 `--source` 是硬编码 `match`（只有两条），
+    /// 新客户端会被**静默**回落成 `workbuddy-cn` —— 悬浮窗里显示成别人的会话。
+    ///
+    /// 可证伪性：把 [`source_from_args`] 换回「只认 `codex` / `workbuddy-global` 的 match」
+    /// ⇒ 下面那个遍历断言立刻变红，并逐字报出是哪个来源没被认出来。
+    #[test]
+    fn hook_sources_are_all_accepted_by_source_arg() {
+        for id in agent_watch::HOOK_SOURCES {
+            assert_eq!(
+                source_from_args(&hook_args(Some(id))),
+                *id,
+                "来源 {id} 没有被 --source 认出来 —— 它会被静默错标成 {SOURCE_WORKBUDDY_CN}"
+            );
+        }
+    }
+
+    /// 缺 `--source` ⇒ 回落国内版（保持既有行为，不引入新的默认值）。
+    #[test]
+    fn missing_source_arg_falls_back_to_workbuddy_cn() {
+        assert_eq!(source_from_args(&hook_args(None)), SOURCE_WORKBUDDY_CN);
+    }
+
+    /// ★ 认不出的取值**回落**而不是原样透传（会话表里不得出现野生 source）。
+    ///
+    /// 可证伪性：把 `canonical_source(value).unwrap_or(...)` 改成 `value`（原样透传）
+    /// ⇒ 前两条断言变红。
+    #[test]
+    fn unknown_source_arg_falls_back_instead_of_passing_through() {
+        for raw in ["evil", "", "   ", "codex-desktop", "trae-cn-x", "wb-cn-x"] {
+            assert_eq!(
+                source_from_args(&hook_args(Some(raw))),
+                SOURCE_WORKBUDDY_CN,
+                "{raw:?} 不得被当成来源原样透传（前缀形态尤其不行）"
+            );
+        }
+    }
+
+    /// 无关参数不干扰解析（客户端可能给命令加别的开关）。
+    #[test]
+    fn unrelated_args_do_not_break_source_parsing() {
+        let args = vec![
+            "app.exe".to_string(),
+            "hook".to_string(),
+            "--verbose".to_string(),
+            "--source".to_string(),
+            "trae-global".to_string(),
+            "--extra".to_string(),
+        ];
+        assert_eq!(source_from_args(&args), agent_watch::SOURCE_TRAE_GLOBAL);
+    }
+
+    /// `--source` 是**最后一个**参数（缺值）⇒ 不得 panic，回落国内版。
+    #[test]
+    fn dangling_source_flag_is_harmless() {
+        let args = vec!["app.exe".to_string(), "hook".to_string(), "--source".to_string()];
+        assert_eq!(source_from_args(&args), SOURCE_WORKBUDDY_CN);
     }
 }

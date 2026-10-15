@@ -124,6 +124,38 @@ const SCOPE_PARAMETERIZED = new Set([
      或结构化 `Unsupported`）。判为区域纯的依据：**只读**客户端数据目录的**路径**并交文件管理器
      打开，**不写**程序位状态（区别于会关/重启进程的 `switch_account`）。旧命令保留为别名。 */
   "open_data_dir",
+  /* ✅ 2026-10-15：Qoder（第三个平台）账号族 —— **6 条生来参数化**（不是「折叠」出来的）：
+     双区域是**两本互不相通的账号库**，`scope` 是唯一的区域判据，缺它不该读任何一本。
+     登记的价值在**防回退**：任一侧漏改（前端不传 scope / 后端签名丢 scope）都会红。 */
+  "get_qoder_accounts",
+  "get_qoder_local_sources",
+  "qoder_import_local",
+  "qoder_import_pat",
+  "qoder_set_account_remark",
+  "qoder_delete_account",
+  /* ✅ 2026-10-15：模型禁用偏好 —— **作用域纯**（只读写 `gateway_disabled_models.json`，
+     不触碰任何客户端 / 程序位）且三平台同构（共用同一份存储，键 = 作用域）。
+     ⚠️ 本次同时是**存量缺陷修复**：旧契约用 `region`（`cn`/`global`）作键，
+     而 Qoder 的 cn/global 会与 WB/Trae **共用同一把键**（三套互不相通的模型目录互相串权）。
+     升级为 `scope` 后，旧文件键在加载时**扇出迁移**（`cn` → `wb-cn` + `trae-cn`，见
+     `disabled_models.rs` 的模块文档）；命令面 `scope` 必填且 fail-closed。 */
+  "get_disabled_models",
+  "set_model_disabled",
+  /* ✅ 2026-10-15（续）：Qoder 账号运维四件 —— **区域纯**（只读写该区域账号库 +
+     该区域 openapi 端点，不触碰客户端 / 程序位）。`scope` 必填且 fail-closed
+     （`require_qoder_region`：非 Qoder 作用域 ⇒ 可读错误，不静默另投别家）。 */
+  "qoder_refresh_account",
+  "qoder_checkin_status",
+  "qoder_checkin_claim",
+  "qoder_credits",
+  /* ✅ 2026-10-15（续）：Qoder 网关管理面三条 —— `qoder_gateway_status` /
+     `get_qoder_gateway_models` / `create_qoder_api_key`。判为**必须带 scope**的依据：
+     网关**一个监听服务两个区域**，池 / 清单 / Key 归属都按区域分家 —— 缺 scope 就无从
+     判断该读哪本账号库（不是「有个默认值可以回落」）。配置 / 吊销 / 恢复 / 删除 / 日志
+     不在此列：它们是**跨区域**的（同一份配置文件、按 id 操作、一本共享日志）。 */
+  "qoder_gateway_status",
+  "get_qoder_gateway_models",
+  "create_qoder_api_key",
 ]);
 
 /**
@@ -720,7 +752,32 @@ function main() {
     for (const hint of hints) process.stdout.write(`${hint}\n`);
   }
 
-  if (errors.length > 0) {
+  
+  // 11) ★ 服务端 handler 的多词 snake JSON 键必须 **camelCase 双读**（`.get("xY")` 在前、
+  //     `.get("x_y")` 兜底）—— 前端经 `call()` **原样发 camelCase**，服务端只读 snake 会
+  //     拿到空值走静默 no-op（2026-10-15 实测：webui 通道的 `set_model_disabled` 曾因此
+  //     「后端没禁用、界面已翻转」= 假开关；tauri 侧因自动驼峰转换而看不出来）。
+  //     变异：删掉任一 `.get("camelKey")` 双读行 ⇒ 本条红。
+  {
+    const source = stripComments(serverRs);
+    const camelOf = (snake) => snake.replace(/_([a-z])/g, (_, c) => c.toUpperCase());
+    /* ⚠️ **接收者无关**（`body` / `value` / 任意链式）：初版只匹配 `body.get(`,
+       把「body 换行 + .get(...)」的形态整段漏掉 —— 变异验证实测假绿（2026-10-15）。 */
+    const re = /\.get\("([a-z]+(?:_[a-z]+)+)"\)/g;
+    let hit;
+    while ((hit = re.exec(source)) !== null) {
+      const snake = hit[1];
+      const camelKey = camelOf(snake);
+      const head = source.slice(Math.max(0, hit.index - 160), hit.index);
+      if (!head.includes(`.get("${camelKey}")`)) {
+        errors.push(
+          `[naming] api.rs 的 \`body.get("${snake}")\` 缺 camelCase 双读（应先 \`.get("${camelKey}")\`）` +
+            `—— 前端发 camelCase，只读 snake 会静默 no-op`,
+        );
+      }
+    }
+  }
+if (errors.length > 0) {
     process.stderr.write(`API 契约校验失败（共 ${errors.length} 项）：\n`);
     for (const error of errors) process.stderr.write(`  - ${error}\n`);
     process.exit(1);

@@ -1,0 +1,374 @@
+/**
+ * Qoder 网关字段归一化（与 `@/lib/gateway`、`@/lib/trae-gateway` 平行的第三套）。
+ *
+ * ## 为什么又是独立一份，而不是扩既有两个
+ *
+ * 与 `trae-gateway.ts` 的模块头同一条理由：三套网关的类型**没有任何共用字段**
+ * （region / 程序位 / Key 库形状都不同），混在一个文件里只会让「这个 helper 是给谁用的」
+ * 变成需要读实现才能回答的问题。
+ *
+ * ## 序列化风格
+ *
+ * Rust 侧 `QoderGatewayConfig` 与状态视图都是 **snake_case**（与 WB / Trae 刻意一致），
+ * 因此这里以 snake_case 为准，camelCase 只作防御性兜底。
+ *
+ * ## 一个 Qoder 特有的形状：**一个监听、两个区域**
+ *
+ * 状态视图里 `enabled` / `port` / `running` 是两个区域**共用**的事实（同一个监听），
+ * 只有 `pool` / `accounts` / `diagnose` / `api_key_prefix` 按 `scope` 分家
+ * —— 因此「哪本账号库」由**请求参数**决定，响应体里刻意没有 `region` 字段。
+ */
+
+import type { GatewayPoolSummary } from "@/lib/types";
+import type { TraeGatewayLogEntry } from "@/lib/trae-types";
+import { normalizeTraeGatewayLogs } from "@/lib/trae-gateway";
+
+/** 默认配置（与 Rust `QoderGatewayConfig::default` 对齐；默认**关**，与另两条产品线同口径）。 */
+export const DEFAULT_QODER_GATEWAY_CONFIG: QoderGatewayConfig = {
+  enabled: false,
+  bindAddr: "127.0.0.1",
+  port: 7865,
+  allowNonLoopback: false,
+  logKeep: 200,
+  logBodies: false,
+  maxBodyMb: 0,
+  // 空串 = 由清单第一条兜底（不硬编码一个可能不存在的模型名）。
+  defaultModel: "",
+  maxRotate: 3,
+  // 空串 = 不指定账号（自动择优 / 会话粘性）。
+  preferredUid: "",
+  stickyTtlMs: 30 * 60 * 1000,
+};
+
+/** 网关配置（前端形状）。 */
+export interface QoderGatewayConfig {
+  enabled: boolean;
+  bindAddr: string;
+  port: number;
+  allowNonLoopback: boolean;
+  logKeep: number;
+  logBodies: boolean;
+  maxBodyMb: number;
+  defaultModel: string;
+  maxRotate: number;
+  preferredUid: string;
+  stickyTtlMs: number;
+}
+
+/** 配置的线上形状（snake_case；写回时用）。 */
+export interface QoderGatewayConfigRaw {
+  enabled: boolean;
+  bind_addr: string;
+  port: number;
+  allow_non_loopback: boolean;
+  log_keep: number;
+  log_bodies: boolean;
+  max_body_mb: number;
+  default_model: string;
+  max_rotate: number;
+  preferred_uid: string;
+  sticky_ttl_ms: number;
+}
+
+/**
+ * 池计数（共用卡的 `GatewayPoolSummary` + Qoder 独有的一格 `modelCooling`）。
+ *
+ * 直接**扩展**共用形状（而不是另立一份同名字段）：卡片读的就是 `GatewayPoolSummary`，
+ * 少一个字段会在传参处报类型错（真踩过）——扩展后两个平台各自多带自己的格，
+ * 缺的格由卡片按 0 兜底。
+ */
+export interface QoderGatewayPoolSummary extends GatewayPoolSummary {
+  /**
+   * 账号本身可用、但有**模型级**冷却的条目数。
+   *
+   * Qoder 上游的 429 是**按模型**报的 ⇒ 一个账号可能「对 A 模型冷却、对 B 模型仍可用」。
+   * 这一格与 `cooling`（账号级）正交，不是它的子集。
+   */
+  modelCooling: number;
+}
+
+/** 一条池内账号（与共用池卡 `GatewayPoolAccount` 同形）。 */
+export interface QoderGatewayPoolAccount {
+  uid: string;
+  name: string;
+  status: "available" | "cooling" | "disabled";
+  /** Qoder 池不建模积分 ⇒ 恒 `null`（卡片显示「—」）。 */
+  credits: number | null;
+  cooling: boolean;
+  cooldownUntil: number | null;
+  cooldownReason: string | null;
+  /** `true` = **需人工干预**（无凭据 / 凭据失效），「恢复」出口据此渲染。 */
+  disabled: boolean;
+}
+
+/** 状态视图。 */
+export interface QoderGatewayStatus {
+  enabled: boolean;
+  running: boolean;
+  addr: string | null;
+  baseUrl: string;
+  bindAddr: string;
+  port: number;
+  allowNonLoopback: boolean;
+  version: string;
+  totalRequests: number;
+  lastError: string | null;
+  apiKeyPrefix: string;
+  pool: QoderGatewayPoolSummary;
+  accounts: QoderGatewayPoolAccount[];
+  diagnose: string[];
+  /** 本区域的官方候选主机（按顺序）。 */
+  upstream: string;
+}
+
+/** 清单来源三级（与后端 `CatalogView::source` 逐字对齐）。 */
+export type QoderCatalogSource = "live" | "cached" | "unavailable";
+
+/** 一条上游模型（管理面全量清单，**未过滤**禁用的）。 */
+export interface QoderGatewayModelRow {
+  id: string;
+  /** 展示名（后端 `display_name`，缺失时回落 id）。 */
+  name: string;
+  isReasoning: boolean;
+  maxInputTokens: number | null;
+  /** 后端现算的一份禁用标记（渲染以 store 为准；这里用于交叉校验与计数）。 */
+  disabled: boolean;
+}
+
+/** 模型清单视图（含来源与原因）。 */
+export interface QoderGatewayCatalog {
+  region: string;
+  source: QoderCatalogSource;
+  /** 上次成功拉取时刻（毫秒）；`unavailable` 时 `null`。 */
+  fetchedAt: number | null;
+  /** 拉取失败 / 无账号时的可读原因；`live` 时 `null`。 */
+  note: string | null;
+  rows: QoderGatewayModelRow[];
+}
+
+/** 一条 API Key（列表脱敏返回；**永不含明文与哈希**）。 */
+export interface QoderApiKeyRecord {
+  id: string;
+  name: string;
+  /** 归属区域：`"cn"` / `"global"`。 */
+  region: string;
+  prefix: string;
+  suffix: string;
+  createdAt: number;
+  revokedAt: number | null;
+  revoked: boolean;
+  lastUsedAt: number | null;
+}
+
+/**
+ * 请求日志条目 —— 形状与 Trae / WB **逐字相同**（字段名是三平台刻意对齐的，
+ * 见 Rust 侧三处 `record_request` 的注释）⇒ 直接复用 Trae 侧的类型与归一化，
+ * 不另立第二份（第二份必然漂移）。
+ *
+ * ⚠️ Qoder 的日志条目**多一个 `region`**（一个监听记两个区域的请求）：
+ * 这里用交叉类型附加，不放进共用形状（Trae / WB 的归一化不产出它）。
+ */
+export type QoderGatewayLogEntry = TraeGatewayLogEntry & { region?: string };
+
+function asString(value: unknown): string | undefined {
+  return typeof value === "string" && value.length > 0 ? value : undefined;
+}
+
+function asNumber(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+function asBoolean(value: unknown): boolean | undefined {
+  return typeof value === "boolean" ? value : undefined;
+}
+
+/** 取 camelCase 优先、snake_case 兜底的字段。 */
+function pick<T>(record: Record<string, unknown>, camel: string, snake: string): T | undefined {
+  return (record[camel] ?? record[snake]) as T | undefined;
+}
+
+/** 归一化 `get_qoder_gateway_config` 的返回。 */
+export function normalizeQoderGatewayConfig(raw: unknown): QoderGatewayConfig {
+  const record = (raw && typeof raw === "object" ? raw : {}) as Record<string, unknown>;
+  const read = (camel: string, snake: string) => record[camel] ?? record[snake];
+  return {
+    enabled: asBoolean(record.enabled) ?? DEFAULT_QODER_GATEWAY_CONFIG.enabled,
+    bindAddr: asString(read("bindAddr", "bind_addr")) ?? DEFAULT_QODER_GATEWAY_CONFIG.bindAddr,
+    port: asNumber(record.port) ?? DEFAULT_QODER_GATEWAY_CONFIG.port,
+    allowNonLoopback:
+      asBoolean(read("allowNonLoopback", "allow_non_loopback")) ??
+      DEFAULT_QODER_GATEWAY_CONFIG.allowNonLoopback,
+    logKeep: asNumber(read("logKeep", "log_keep")) ?? DEFAULT_QODER_GATEWAY_CONFIG.logKeep,
+    logBodies: asBoolean(read("logBodies", "log_bodies")) ?? DEFAULT_QODER_GATEWAY_CONFIG.logBodies,
+    maxBodyMb: asNumber(read("maxBodyMb", "max_body_mb")) ?? DEFAULT_QODER_GATEWAY_CONFIG.maxBodyMb,
+    // 空串是**合法值**（= 由清单第一条兜底）⇒ `asString` 对空串返回 undefined 时
+    // 必须回落到空串，而不是某个「默认模型」（那会让用户以为配置里写了它）。
+    defaultModel:
+      asString(read("defaultModel", "default_model")) ?? DEFAULT_QODER_GATEWAY_CONFIG.defaultModel,
+    maxRotate: asNumber(read("maxRotate", "max_rotate")) ?? DEFAULT_QODER_GATEWAY_CONFIG.maxRotate,
+    preferredUid:
+      asString(read("preferredUid", "preferred_uid")) ??
+      DEFAULT_QODER_GATEWAY_CONFIG.preferredUid,
+    stickyTtlMs:
+      asNumber(read("stickyTtlMs", "sticky_ttl_ms")) ?? DEFAULT_QODER_GATEWAY_CONFIG.stickyTtlMs,
+  };
+}
+
+/**
+ * 前端形状 → 后端 snake_case。
+ *
+ * 后端同时接受两种写法（`#[serde(alias)]`），但**写回时统一用 snake_case**：
+ * 磁盘上的配置文件应该只有一种风格。
+ */
+export function toQoderGatewayConfigRaw(config: QoderGatewayConfig): QoderGatewayConfigRaw {
+  return {
+    enabled: config.enabled,
+    bind_addr: config.bindAddr,
+    port: config.port,
+    allow_non_loopback: config.allowNonLoopback,
+    log_keep: config.logKeep,
+    log_bodies: config.logBodies,
+    max_body_mb: config.maxBodyMb,
+    default_model: config.defaultModel,
+    max_rotate: config.maxRotate,
+    preferred_uid: config.preferredUid,
+    sticky_ttl_ms: config.stickyTtlMs,
+  };
+}
+
+/** 归一化 `qoder_gateway_status` 的返回。非法值 ⇒ `null`（调用方回退到「未启动」空态）。 */
+export function normalizeQoderGatewayStatus(raw: unknown): QoderGatewayStatus | null {
+  if (!raw || typeof raw !== "object") return null;
+  const record = raw as Record<string, unknown>;
+  const pool = (record.pool && typeof record.pool === "object" ? record.pool : {}) as Record<
+    string,
+    unknown
+  >;
+  const accounts = Array.isArray(record.accounts)
+    ? record.accounts
+        .map((item): QoderGatewayPoolAccount | null => {
+          if (!item || typeof item !== "object") return null;
+          const entry = item as Record<string, unknown>;
+          const uid = asString(entry.uid);
+          if (!uid) return null;
+          const status = asString(entry.status) ?? "available";
+          return {
+            uid,
+            name: asString(entry.name) ?? uid,
+            status:
+              status === "cooling" || status === "disabled"
+                ? (status as QoderGatewayPoolAccount["status"])
+                : "available",
+            credits: asNumber(entry.credits) ?? null,
+            cooling: asBoolean(entry.cooling) ?? false,
+            cooldownUntil: asNumber(pick(entry, "cooldownUntil", "cooldown_until")) ?? null,
+            cooldownReason: asString(pick(entry, "cooldownReason", "cooldown_reason")) ?? null,
+            disabled: asBoolean(entry.disabled) ?? false,
+          };
+        })
+        .filter((item): item is QoderGatewayPoolAccount => item !== null)
+    : [];
+  const diagnose = Array.isArray(record.diagnose)
+    ? record.diagnose.filter((item): item is string => typeof item === "string")
+    : [];
+  return {
+    enabled: asBoolean(record.enabled) ?? false,
+    running: asBoolean(record.running) ?? false,
+    addr: asString(record.addr) ?? null,
+    baseUrl: asString(pick(record, "baseUrl", "base_url")) ?? "",
+    bindAddr: asString(pick(record, "bindAddr", "bind_addr")) ?? "127.0.0.1",
+    port: asNumber(record.port) ?? DEFAULT_QODER_GATEWAY_CONFIG.port,
+    allowNonLoopback: asBoolean(pick(record, "allowNonLoopback", "allow_non_loopback")) ?? false,
+    version: asString(record.version) ?? "",
+    totalRequests: asNumber(pick(record, "totalRequests", "total_requests")) ?? 0,
+    lastError: asString(pick(record, "lastError", "last_error")) ?? null,
+    apiKeyPrefix: asString(pick(record, "apiKeyPrefix", "api_key_prefix")) ?? "",
+    pool: {
+      total: asNumber(pool.total) ?? 0,
+      available: asNumber(pool.available) ?? 0,
+      cooling: asNumber(pool.cooling) ?? 0,
+      disabled: asNumber(pool.disabled) ?? 0,
+      // Qoder 池不建模积分 ⇒ 后端恒给 0；这里照实归一（不造数），卡片也不渲染这两格。
+      expired: asNumber(pool.expired) ?? 0,
+      zeroCredits: asNumber(pick(pool, "zeroCredits", "zero_credits")) ?? 0,
+      totalCredits: asNumber(pick(pool, "totalCredits", "total_credits")) ?? 0,
+      modelCooling: asNumber(pick(pool, "modelCooling", "model_cooling")) ?? 0,
+    },
+    accounts,
+    diagnose,
+    upstream: asString(record.upstream) ?? "",
+  };
+}
+
+/** 归一化 `get_qoder_gateway_models` 的返回（清单 + 来源 + 原因）。 */
+export function normalizeQoderGatewayCatalog(raw: unknown): QoderGatewayCatalog {
+  const record = (raw && typeof raw === "object" ? raw : {}) as Record<string, unknown>;
+  const source = asString(record.source);
+  const rows = Array.isArray(record.data)
+    ? record.data
+        .map((item): QoderGatewayModelRow | null => {
+          if (!item || typeof item !== "object") return null;
+          const entry = item as Record<string, unknown>;
+          const id = asString(entry.id);
+          if (!id) return null;
+          return {
+            id,
+            name: asString(pick(entry, "displayName", "display_name")) ?? id,
+            isReasoning: asBoolean(pick(entry, "isReasoning", "is_reasoning")) ?? false,
+            maxInputTokens:
+              asNumber(pick(entry, "maxInputTokens", "max_input_tokens")) ?? null,
+            disabled: asBoolean(entry.disabled) ?? false,
+          };
+        })
+        .filter((item): item is QoderGatewayModelRow => item !== null)
+    : [];
+  return {
+    region: asString(record.region) ?? "",
+    source:
+      source === "live" || source === "cached" || source === "unavailable"
+        ? (source as QoderCatalogSource)
+        : "unavailable",
+    fetchedAt: asNumber(pick(record, "fetchedAt", "fetched_at")) ?? null,
+    note: asString(record.note) ?? null,
+    rows,
+  };
+}
+
+/** 归一化 `list_qoder_api_keys` 的返回。 */
+export function normalizeQoderApiKeys(raw: unknown): QoderApiKeyRecord[] {
+  const record = (raw && typeof raw === "object" ? raw : {}) as Record<string, unknown>;
+  const list = Array.isArray(record.keys) ? record.keys : Array.isArray(raw) ? raw : [];
+  return (list as unknown[])
+    .map((item): QoderApiKeyRecord | null => {
+      if (!item || typeof item !== "object") return null;
+      const entry = item as Record<string, unknown>;
+      const id = asString(entry.id);
+      if (!id) return null;
+      return {
+        id,
+        name: asString(entry.name) ?? id,
+        region: asString(entry.region) ?? "cn",
+        prefix: asString(entry.prefix) ?? "",
+        suffix: asString(entry.suffix) ?? "",
+        createdAt: asNumber(pick(entry, "createdAt", "created_at")) ?? 0,
+        revokedAt: asNumber(pick(entry, "revokedAt", "revoked_at")) ?? null,
+        revoked: asBoolean(entry.revoked) ?? false,
+        lastUsedAt: asNumber(pick(entry, "lastUsedAt", "last_used_at")) ?? null,
+      };
+    })
+    .filter((item): item is QoderApiKeyRecord => item !== null);
+}
+
+/** 归一化 `get_qoder_gateway_logs` 的返回（复用 Trae 侧同一实现 + 附加 `region`）。 */
+export function normalizeQoderGatewayLogs(raw: unknown): QoderGatewayLogEntry[] {
+  const entries = normalizeTraeGatewayLogs(raw);
+  const list = (raw && typeof raw === "object" && Array.isArray((raw as { logs?: unknown[] }).logs)
+    ? (raw as { logs: unknown[] }).logs
+    : []) as unknown[];
+  return entries.map((entry, index) => {
+    const item = list[index];
+    const region =
+      item && typeof item === "object" ? asString((item as Record<string, unknown>).region) : undefined;
+    return region ? { ...entry, region } : entry;
+  });
+}

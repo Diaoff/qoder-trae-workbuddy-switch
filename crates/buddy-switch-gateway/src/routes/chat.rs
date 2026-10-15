@@ -8,6 +8,7 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::Response;
 
 use buddy_switch_core::modules::region::Region;
+use buddy_switch_core::modules::product::scope_of_wb_region;
 
 use crate::logging::RequestMeta;
 use crate::outbound::PromptMode;
@@ -121,9 +122,11 @@ pub async fn chat_for_region(
     // ★ 出口 ②（P11）：被禁用的模型**直接拒绝** —— 与 `/v1/models` 读**同一份** `disabled`
     //   （`is_disabled` 是唯一判断点）。只改过滤不拒绝 = 假开关（用户以为禁用了、实际还能调）。
     {
+        // ★ 禁用集合按**作用域**分家（2026-10-15 起）—— WB 路由把 region 升成 Scope。
+        let scope = scope_of_wb_region(region);
         let disabled = state.disabled.read().await;
-        if crate::disabled_models::is_disabled(&disabled, region, &model) {
-            return openai_error(crate::error::GatewayError::ModelDisabled { region, model });
+        if crate::disabled_models::is_disabled(&disabled, scope, &model) {
+            return openai_error(crate::error::GatewayError::ModelDisabled { scope, model });
         }
     }
 

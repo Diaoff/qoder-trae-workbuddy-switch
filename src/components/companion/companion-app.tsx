@@ -36,7 +36,7 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 
 import { listen } from "@tauri-apps/api/event";
-import { Inbox, TriangleAlert, X } from "lucide-react";
+import { Inbox, Loader2, RefreshCw, TriangleAlert, X } from "lucide-react";
 
 import { CompanionRow } from "@/components/companion/companion-row";
 import { Button } from "@/components/ui/button";
@@ -47,6 +47,7 @@ import { asError, companionJump, companionSetVisible } from "@/lib/api";
 import { useCompanionStatus } from "@/lib/companion";
 import { displayText } from "@/lib/display-text";
 import { useT } from "@/lib/i18n";
+import { useRefreshAction } from "@/lib/use-refresh-action";
 import { cn } from "@/lib/utils";
 
 /** 点击条目后的反馈（**明确反馈，不静默失败**，P9 B5 / ✅ #1）。 */
@@ -72,6 +73,8 @@ function CompanionSkeleton({ label }: { label: string }) {
 export function CompanionApp() {
   const t = useT();
   const { snapshot, loading, error, refresh } = useCompanionStatus();
+  /* 两个空态（读取失败 / 空列表）共用同一枚「刷新」按钮的进行中态。 */
+  const { busy, run } = useRefreshAction();
   const [feedback, setFeedback] = useState<CompanionFeedback | null>(null);
   // 防重入：一次只允许一个 `companion_jump` 在途（用 ref 而非 state，避免多余重渲染）。
   const jumpingRef = useRef(false);
@@ -178,7 +181,14 @@ export function CompanionApp() {
   }, []);
 
   const refreshButton = (
-    <Button type="button" variant="outline" size="sm" onClick={() => void refresh()}>
+    <Button
+      type="button"
+      variant="outline"
+      size="sm"
+      disabled={busy}
+      onClick={() => void run(() => refresh())}
+    >
+      {busy ? <Loader2 className="animate-spin" /> : <RefreshCw />}
       {t("shared.companion.empty.refresh")}
     </Button>
   );

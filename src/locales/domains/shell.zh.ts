@@ -9,6 +9,8 @@ export const zh = {
   "app.demoBadge": "演示模式",
   "product.workbuddy": "WorkBuddy",
   "product.trae": "TraeWork",
+  /* Qoder 是商标，两种语言下写法相同，但仍走词表（与上面两条同款）。 */
+  "product.qoder": "Qoder",
   "product.switchAria": "切换产品",
   "product.navAria": "{product} 导航",
 
@@ -44,6 +46,11 @@ export const zh = {
   "topbar.run.missing": "未检测到",
   "topbar.search": "搜索账号、页面或动作",
   "topbar.refresh": "刷新当前作用域",
+  // 刷新完成的 toast（原型 `doRefresh` 的成功提示）。文案从实：顶栏刷新重读的是
+  // 账号列表 + 运行状态（原型文案提「积分」但本项目顶栏刷新不含积分口径）。
+  "topbar.refreshDone": "已刷新",
+  "topbar.refreshDoneDesc": "{scope} 的账号与状态已更新",
+  "topbar.refreshFailed": "刷新失败",
   "topbar.theme": "切换明暗主题",
   "topbar.appMenu": "应用设置",
 

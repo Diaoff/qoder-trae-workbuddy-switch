@@ -26,7 +26,7 @@
  */
 
 /** 平台标识。**刻意保持 `trae` 而非 `traework`**：路由前缀 `/trae/...` 与既有键名都依赖它。 */
-export type Product = "workbuddy" | "trae";
+export type Product = "workbuddy" | "trae" | "qoder";
 
 /**
  * 平台能力（PLAN §2.7）—— **平台固有，用户不可改**。
@@ -176,10 +176,28 @@ export const PLATFORM_DESCRIPTORS: Record<Product, PlatformDescriptor> = {
     regions: ["cn", "global"],
     capabilities: ["checkin", "credits", "oauth", "gateway"],
   },
+  /**
+   * Qoder —— 阿里出品的 AI 编程 IDE，国内版 / 国际版两套账号体系。
+   *
+   * ⚠️ **双区域是一个平台内的两个 realm，不是两个平台**：两版共用同一套客户端形态
+   * （同一份协议、同一套令牌家族、同一组能力），差别只在端点 / 客户端 id / 本地目录
+   * 这几张常量表上 ⇒ 建模成 `qoder-cn` / `qoder-global` 两个作用域。
+   *
+   * 能力**刻意只有四项**：没有 `sessionCopy`（会话复制依赖客户端自身的会话存储与云端
+   * 归属，当前只有 WorkBuddy 桌面具备）、没有 `travel` / `autoRotate`（WorkBuddy 独有）、
+   * 没有 `snapshot` / `group`（Trae 有，Qoder 侧无等价物）。
+   */
+  qoder: {
+    id: "qoder",
+    labelKey: "product.qoder",
+    home: "/qoder/accounts",
+    regions: ["cn", "global"],
+    capabilities: ["checkin", "credits", "oauth", "gateway"],
+  },
 };
 
 /** 全部平台，按 UI 展示顺序。 */
-export const PRODUCTS: readonly Product[] = ["workbuddy", "trae"];
+export const PRODUCTS: readonly Product[] = ["workbuddy", "trae", "qoder"];
 
 /**
  * 目的地（Destination）—— 侧栏的一级页面（VOCABULARY 第 1 节的 L4）。
@@ -301,16 +319,18 @@ export function destinationAvailable(product: Product, dest: Destination): boole
  * ⚠️ **映射只有这一处**（下面两张表）。别在别处再写一份 `"wb"` 字面量 ——
  * 那会让「改标识」变成全仓搜索。
  */
-export type PlatformSlug = "wb" | "trae";
+export type PlatformSlug = "wb" | "trae" | "qoder";
 
 export const PLATFORM_SLUG: Record<Product, PlatformSlug> = {
   workbuddy: "wb",
   trae: "trae",
+  qoder: "qoder",
 };
 
 export const SLUG_TO_PRODUCT: Record<PlatformSlug, Product> = {
   wb: "workbuddy",
   trae: "trae",
+  qoder: "qoder",
 };
 
 /**
@@ -326,6 +346,10 @@ export const SLUG_TO_PRODUCT: Record<PlatformSlug, Product> = {
  *
  * ⚠️ 这里**内联**解析 scope 而不 import `lib/scope`：`scope.ts` 依赖本文件的
  * `PlatformSlug`，反向 import 会形成循环依赖。
+ *
+ * ⚠️ **每个平台的旧前缀都要显式列出**（不能只写 `/trae`）：旧路由形态是
+ * 「WorkBuddy 在根、其余平台在自己的前缀下」，漏一个就会把该平台的旧链接
+ * **静默判成 WorkBuddy** —— 用户看到的是「切到别的平台的账号页」。
  */
 export function platformOfPath(pathname: string): Product {
   const m = /^\/s\/([^/]+)/.exec(pathname);
@@ -335,7 +359,10 @@ export function platformOfPath(pathname: string): Product {
       return SLUG_TO_PRODUCT[slug];
     }
   }
-  return pathname === "/trae" || pathname.startsWith("/trae/") ? "trae" : "workbuddy";
+  /* 前缀必须带分隔符：`/traeish` / `/qoderish` 不是这两个分区（见门禁用例）。 */
+  if (pathname === "/trae" || pathname.startsWith("/trae/")) return "trae";
+  if (pathname === "/qoder" || pathname.startsWith("/qoder/")) return "qoder";
+  return "workbuddy";
 }
 
 /** 该路径是否属于该平台（用于「切平台时判断当前路由是否要跳走」）。 */

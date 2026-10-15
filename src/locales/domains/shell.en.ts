@@ -17,6 +17,7 @@ export const en = {
   "app.demoBadge": "Demo",
   "product.workbuddy": "WorkBuddy",
   "product.trae": "TraeWork",
+  "product.qoder": "Qoder",
   "product.switchAria": "Switch product",
   "product.navAria": "{product} navigation",
 
@@ -51,6 +52,11 @@ export const en = {
   "topbar.run.missing": "Not detected",
   "topbar.search": "Search accounts, pages, or actions",
   "topbar.refresh": "Refresh current scope",
+  // Refresh-complete toast (prototype `doRefresh` success note). Wording follows what the
+  // top-bar refresh actually rereads: the account list + running status (no credits).
+  "topbar.refreshDone": "Refreshed",
+  "topbar.refreshDoneDesc": "{scope}: accounts and status updated",
+  "topbar.refreshFailed": "Refresh failed",
   "topbar.theme": "Switch light/dark theme",
   "topbar.appMenu": "App settings",
 

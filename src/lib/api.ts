@@ -37,6 +37,7 @@ import type {
   GatewayConfig,
   GatewayLogEntry,
   GatewayStatus,
+  GatewayTokenTrend,
   AppPrefs,
   GithubConfig,
   ImportPreview,
@@ -83,8 +84,7 @@ import { localizeCodedStrings, localizeError } from "./error-code";
 import { t } from "./i18n";
 import { screenshotDemoResponse } from "./screenshot-demo";
 // P5 T03：参数化命令需要把「平台 + 区域」拼成 `scope`（值导入，非类型）。
-import { scopeOf } from "./scope";
-import type { Scope } from "./scope";
+import { scopeOf, type Scope } from "./scope";
 import { traeRegionOf } from "./trae-types";
 import type {
   TraeAccount,
@@ -120,6 +120,9 @@ import type {
 // P9 · 悬浮窗只读快照的类型（**type-only**：`companion.ts` 反向引用本模块的 `call`，
 // 用 `import type` 把运行期依赖收成单向，避免循环导入）。
 import type { CompanionSnapshot } from "./companion";
+// Qoder 网关配置的**写回形状**（snake_case）—— 同样是 type-only（`qoder-gateway.ts`
+// 不依赖本模块，这里只是复用它的形状定义，避免两处各写一份会漂移的接口）。
+import type { QoderGatewayConfigRaw } from "./qoder-gateway";
 
 /**
  * 双通道适配层：
@@ -173,6 +176,8 @@ const DEMO_READ_COMMANDS = new Set([
   "get_account_strategy", "get_disabled_models", "get_gateway_logs",
   // 「今日 Token」（**只读**观测）：演示站需返回虚构数据，否则 build:demo 报错。
   "get_account_token_today",
+  // 网关**逐日**趋势（只读 `token_daily` 历史）：趋势页的网关小图用，演示站同样要虚构数据。
+  "get_gateway_token_trend",
   // Trae 分区只读命令（演示站需返回虚构数据，否则 build:demo 报错）。
   // 只登记**只读**命令：写操作（签到 / 增删账号 / 切换 / 重置设备…）一律不进这里，
   // 由 `DemoAction` 包裹后在演示模式下统一提示不可操作。
@@ -202,6 +207,13 @@ const DEMO_READ_COMMANDS = new Set([
   // ⚠️ patch（写）/ restore（写）是写操作，一律不进这里（由页面侧处理不可用）。
   "list_client_settings_slots", "read_client_settings",
   "list_client_settings_backups", "diff_client_settings",
+  // Qoder 平台（**只读**）：演示站需返回虚构数据，否则 build:demo 报错。
+  // ⚠️ 导入 / 改备注 / 删除都是**写**，一律不进这里（由页面侧处理不可用）。
+  // 网关五条只读：config / status / models / keys / logs —— 同样不进写操作
+  //（保存配置 / 建 Key / 吊销 / 恢复 / 删除 / 清日志）。
+  "get_qoder_accounts", "get_qoder_local_sources",
+  "get_qoder_gateway_config", "qoder_gateway_status", "get_qoder_gateway_models",
+  "list_qoder_api_keys", "get_qoder_gateway_logs",
 ]);
 
 export function isDemoMode(): boolean {
@@ -280,6 +292,9 @@ const ROUTES: Record<string, Route> = {
   set_account_group: { method: "POST", path: "/api/account/group" },
   // 「今日 Token」按账号聚合（**只读**）：`region` / `force` 走 query ⇒ GET。
   get_account_token_today: { method: "GET", path: "/api/account/token-today" },
+  // 网关**逐日**用量趋势（只读落库历史）：`region` 走 query ⇒ GET。
+  // ⚠️ `days` 只含落库日 ⇒ 缺日 = 未记录（不是 0），前端按覆盖率披露。
+  get_gateway_token_trend: { method: "GET", path: "/api/account/token-trend" },
   oauth_start: { method: "POST", path: "/api/oauth/start" },
   oauth_status: { method: "POST", path: "/api/oauth/status" },
   import_local: { method: "POST", path: "/api/import-local" },
@@ -464,6 +479,39 @@ const ROUTES: Record<string, Route> = {
   trae_launch_client: { method: "POST", path: "/api/trae/launch-client" },
   get_trae_gateway_logs: { method: "GET", path: "/api/trae/gateway/logs" },
   clear_trae_gateway_logs: { method: "POST", path: "/api/trae/gateway/logs/clear" },
+  // ---- Qoder 模块（第三个平台）----
+  // 键名必须与 src-tauri/src/lib.rs 的 invoke_handler 登记名、
+  // 以及 crates/buddy-switch-server/src/api.rs 的路由 path+method 三方一致，
+  // 由 scripts/check-api-contract.cjs 在构建前校验。
+  //
+  // ⚠️ 全部命令都**参数化 `scope`**（`qoder-cn` / `qoder-global`）：Qoder 的双区域是
+  // 两本互不相通的账号库，缺 scope 就无从判断该读哪本 —— 故不许有「不带 scope」的重载。
+  get_qoder_accounts: { method: "GET", path: "/api/qoder/accounts" },
+  get_qoder_local_sources: { method: "GET", path: "/api/qoder/local-sources" },
+  qoder_import_local: { method: "POST", path: "/api/qoder/accounts/import-local" },
+  qoder_import_pat: { method: "POST", path: "/api/qoder/accounts/import-pat" },
+  qoder_set_account_remark: { method: "POST", path: "/api/qoder/accounts/remark" },
+  qoder_delete_account: { method: "POST", path: "/api/qoder/accounts/delete" },
+  qoder_refresh_account: { method: "POST", path: "/api/qoder/accounts/refresh" },
+  qoder_checkin_status: { method: "GET", path: "/api/qoder/checkin/status" },
+  qoder_checkin_claim: { method: "POST", path: "/api/qoder/checkin/claim" },
+  qoder_credits: { method: "GET", path: "/api/qoder/credits" },
+  // Qoder API 网关管理面（网关本体走独立端口 7865，见 src/pages/QoderApiServicePage）。
+  // ⚠️ **一个监听、两个区域**：状态 / 清单两条按 `scope` 看对应的那本账号库（fail-closed）；
+  //   配置与监听是否起来是两区域共用的事实（故 config 不带 scope）。
+  get_qoder_gateway_config: { method: "GET", path: "/api/qoder/gateway/config" },
+  save_qoder_gateway_config: { method: "POST", path: "/api/qoder/gateway/config" },
+  qoder_gateway_status: { method: "GET", path: "/api/qoder/gateway/status" },
+  get_qoder_gateway_models: { method: "GET", path: "/api/qoder/gateway/models" },
+  // 多 Key 管理（含归属区域）：GET 列表 / POST 创建同一路径。
+  list_qoder_api_keys: { method: "GET", path: "/api/qoder/gateway/keys" },
+  create_qoder_api_key: { method: "POST", path: "/api/qoder/gateway/keys" },
+  revoke_qoder_api_key: { method: "POST", path: "/api/qoder/gateway/keys/revoke" },
+  // 撤销吊销（恢复）：与另两条产品线同形同语义。
+  restore_qoder_api_key: { method: "POST", path: "/api/qoder/gateway/keys/restore" },
+  delete_qoder_api_key: { method: "POST", path: "/api/qoder/gateway/keys/delete" },
+  get_qoder_gateway_logs: { method: "GET", path: "/api/qoder/gateway/logs" },
+  clear_qoder_gateway_logs: { method: "POST", path: "/api/qoder/gateway/logs/clear" },
   // ---- 桌面悬浮窗（P9 · 只读 + 显隐 + 聚焦；与 src-tauri commands.rs / server api.rs 一一对应）----
   companion_status: { method: "GET", path: "/api/companion/status" },
   companion_set_visible: { method: "POST", path: "/api/companion/visibility" },
@@ -992,10 +1040,13 @@ export function setAccountGroup(
  * ## 数据来源与诚实边界（UI 渲染红线）
  *
  * 后端把**两路**用量合到一起：① 客户端自身 CLI 落盘的用量；② 经本网关的请求日志。
- * 三条边界（见 {@link AccountTokenTodayResponse}）：
+ * 四条边界（见 {@link AccountTokenTodayResponse}）：
  * - `accounts` 里**缺失**某账号 = 「今日无记录 / 未知」⇒ UI 渲染 **「—」**，**不得**当 0；
  * - 出现在 `accounts` 里的 `0` 是**真实 0**；
- * - `gatewayTruncated: true` ⇒ 网关部分只是**下界** ⇒ UI 渲染 **`≥N`** 并说明。
+ * - `gatewayTruncated: true` ⇒ 网关的**今日**部分可能被裁 ⇒ 网关部分只是**下界**
+ *   ⇒ UI 渲染 **`≥N`** 并说明（判据不是「日志到过上限」，见后端注释）；
+ * - 两路是**独立记录**，客户端被指向本网关时同一请求会两处各记一次 ⇒ 合计**可能重复
+ *   计数**，UI 明细须披露（后端无 join 键、不做去重）。
  *
  * @param force 强制重算（忽略后端当日缓存）；缺省 `false`。
  */
@@ -1008,6 +1059,22 @@ export function getAccountTokenToday(
   if (force) args.force = true;
   return call<AccountTokenTodayResponse>(
     "get_account_token_today",
+    Object.keys(args).length > 0 ? args : undefined,
+  );
+}
+
+/**
+ * 网关**逐日**用量趋势（只读 `token_daily` 的 90 天落库历史；不扫盘、不触发记录）。
+ *
+ * ⚠️ `days` **只含落库过的日子**（App 运行过 + 后台周期记录在跑）⇒ **缺日 = 未记录，
+ * 不是 0**。`region: "all"`（合并作用域）时由前端分两区各取一次再求和
+ * （与 `mergeSources` 同哲学；后端命令是单 region 的）。
+ */
+export function getGatewayTokenTrend(region?: Region): Promise<GatewayTokenTrend> {
+  const args: Record<string, unknown> = {};
+  if (region) args.region = region;
+  return call<GatewayTokenTrend>(
+    "get_gateway_token_trend",
     Object.keys(args).length > 0 ? args : undefined,
   );
 }
@@ -1884,29 +1951,30 @@ export function saveAccountStrategy(region: Region, strategy: AccountStrategy): 
 }
 
 /**
- * 读取某 region 被用户禁用的模型 id 列表（P11）。
+ * 读取某**作用域**被用户禁用的模型 id 列表（P11）。
  *
- * 后端读的是**进程内唯一**的禁用存储 —— 与 `/v1/models` 过滤（出口 ①）、
- * 调用拒绝（出口 ②）是同一份数据，因此这里看到的禁用集合就是两个出口真正在用的那份。
+ * 后端读的是**进程内唯一**的禁用存储 —— 与各网关 `/v1/models` 过滤（出口 ①）、
+ * 调用拒绝（出口 ②）是同一份数据，因此这里看到的禁用集合就是各出口真正在用的那份。
  *
- * 形状 `{ region, ids }`；`ids` 为空即「该 region 没有禁用任何模型」（默认全开，D27）。
+ * 形状 `{ scope, ids }`；`ids` 为空即「该作用域没有禁用任何模型」（默认全开，D27）。
+ * ⚠️ 键是**作用域**（`wb-cn` / `qoder-global` …）—— 三个平台互不相通的模型目录各自分家。
  */
-export function getDisabledModels(region: Region): Promise<{ region: Region; ids: string[] }> {
-  return call("get_disabled_models", { region });
+export function getDisabledModels(scope: Scope): Promise<{ scope: Scope; ids: string[] }> {
+  return call("get_disabled_models", { scope });
 }
 
 /**
- * 置位 / 清位某 region 的一个模型（P11）—— 禁用（`disabled=true`）/ 启用（`false`）。
+ * 置位 / 清位某**作用域**的一个模型（P11）—— 禁用（`disabled=true`）/ 启用（`false`）。
  *
  * 后端幂等：重复置位 / 清位返回 `changed: false` 且不落盘。
- * `region` 按**后端 region 粒度**传（`cn` / `global`）—— 两个出口都按 region 键控（决策 #4）。
+ * `scope` 必填且 **fail-closed**（拼错即 400，绝不回落默认作用域）。
  */
 export function setModelDisabled(
-  region: Region,
+  scope: Scope,
   modelId: string,
   disabled: boolean,
-): Promise<{ ok: boolean; region: Region; model_id: string; disabled: boolean; changed: boolean }> {
-  return call("set_model_disabled", { region, modelId, disabled });
+): Promise<{ ok: boolean; scope: Scope; model_id: string; disabled: boolean; changed: boolean }> {
+  return call("set_model_disabled", { scope, modelId, disabled });
 }
 
 export function getGatewayLogs(): Promise<{ logs: GatewayLogEntry[] }> {
@@ -2694,6 +2762,282 @@ export function getTraeGatewayLogs(): Promise<unknown> {
 /** 清空网关请求日志。 */
 export function clearTraeGatewayLogs(): Promise<{ ok: boolean }> {
   return call("clear_trae_gateway_logs");
+}
+
+// ---------------------------------------------------------------------------
+// Qoder（第三个平台）
+// ---------------------------------------------------------------------------
+//
+// ★ 全部命令**参数化 `scope`**：双区域是两本互不相通的账号库，缺 scope 就无从判断
+//   该读哪本。`scope` 由 `resolve_scope_param` 在 core 侧 **fail-closed** 解析
+//   （拼错即拒，绝不回落默认作用域）—— 前端这边只负责**如实传**。
+
+/** Qoder 账号列表（按区域）。 */
+export function getQoderAccounts(scope: Scope): Promise<QoderAccountsView> {
+  return call<QoderAccountsView>("get_qoder_accounts", { scope });
+}
+
+/** 本机凭据来源探测（只读；**不落库**）。 */
+export function getQoderLocalSources(scope: Scope): Promise<QoderLocalSourcesView> {
+  return call<QoderLocalSourcesView>("get_qoder_local_sources", { scope });
+}
+
+/** 从本机已登录的 Qoder 客户端导入账号。 */
+export function qoderImportLocal(scope: Scope): Promise<QoderImportOutcome> {
+  return call<QoderImportOutcome>("qoder_import_local", { scope });
+}
+
+/** 由 PAT 导入一条账号（纯本地，不访问上游）。 */
+export function qoderImportPat(
+  scope: Scope,
+  pat: string,
+  nickname?: string,
+): Promise<QoderImportOutcome> {
+  return call<QoderImportOutcome>("qoder_import_pat", { scope, pat, nickname: nickname ?? null });
+}
+
+/** 改备注（唯一的「只改一个字段」入口）。 */
+export function qoderSetAccountRemark(
+  scope: Scope,
+  uid: string,
+  remark: string | null,
+): Promise<{ ok: boolean }> {
+  return call<{ ok: boolean }>("qoder_set_account_remark", { scope, uid, remark });
+}
+
+/** 删除一条账号。 */
+export function qoderDeleteAccount(scope: Scope, uid: string): Promise<{ ok: boolean }> {
+  return call<{ ok: boolean }>("qoder_delete_account", { scope, uid });
+}
+
+/** 刷新一条 Qoder 账号的令牌（device / job / PAT 三路由；见 `qoder::refresh` 模块头）。 */
+export interface QoderRefreshResult {
+  ok: boolean;
+  uid: string;
+  /** `device` / `job` / `pat-exchange`。 */
+  plan: string;
+  accessTokenMasked: string;
+  /** 新令牌过期时刻（毫秒时间戳）。 */
+  expiresAt: number;
+}
+
+export function qoderRefreshAccount(scope: Scope, uid: string): Promise<QoderRefreshResult> {
+  return call<QoderRefreshResult>("qoder_refresh_account", { scope, uid });
+}
+
+/** 一条账号的签到状态行（`ok=false` 时带 `error`；`unavailable` 是区域级结论）。 */
+export interface QoderCheckinRow {
+  uid: string;
+  name: string;
+  ok: boolean;
+  error?: string;
+  unavailable?: boolean;
+  status?: string;
+  active?: boolean;
+  todayCheckedIn?: boolean;
+  streakDays?: number;
+  totalClaimDays?: number;
+  rewardCredits?: number;
+  totalRewardCredits?: number;
+  nextClaimAt?: number;
+  lastClaimedAt?: number;
+}
+
+/** 区域签到视图（国际版 `unavailable=true` + `reason`，不代表失败）。 */
+export interface QoderCheckinStatusView {
+  region: string;
+  unavailable: boolean;
+  reason: string | null;
+  summary: { total: number; checked: number; claimable: number };
+  accounts: QoderCheckinRow[];
+}
+
+export function qoderCheckinStatus(scope: Scope): Promise<QoderCheckinStatusView> {
+  return call<QoderCheckinStatusView>("qoder_checkin_status", { scope });
+}
+
+/** 单账号签到结果（状态驱动：`already` 幂等 / `disabled` 活动未开放）。 */
+export interface QoderCheckinClaimResult {
+  ok: boolean;
+  uid: string;
+  already?: boolean;
+  disabled?: boolean;
+  rewardCredits?: number;
+  status?: string;
+  rechecked?: boolean;
+}
+
+export function qoderCheckinClaim(scope: Scope, uid: string): Promise<QoderCheckinClaimResult> {
+  return call<QoderCheckinClaimResult>("qoder_checkin_claim", { scope, uid });
+}
+
+/** 一条账号的额度行（`ok=false` 时带 `error`；部分失败不被伪装成全额）。 */
+export interface QoderCreditsRow {
+  uid: string;
+  name: string;
+  ok: boolean;
+  error?: string;
+  remaining?: number;
+  used?: number;
+  total?: number;
+  isExceeded?: boolean;
+  plan?: string | null;
+  raw?: unknown;
+}
+
+/** 区域额度 / 套餐视图。 */
+export interface QoderCreditsView {
+  region: string;
+  summary: { okAccounts: number; failedAccounts: number; remaining: number; total: number };
+  accounts: QoderCreditsRow[];
+}
+
+export function qoderCredits(scope: Scope): Promise<QoderCreditsView> {
+  return call<QoderCreditsView>("qoder_credits", { scope });
+}
+
+// ---------------------------------------------------------------------------
+// Qoder API 网关管理面（Tauri 命令 + webui 路由同源）
+// ---------------------------------------------------------------------------
+//
+// ⚠️ 形状与 WB / Trae 两条网关线路**刻意对齐**（snake_case 状态视图 / 同一个脱敏
+// `{keys:[…]}` 列表 / 同一份日志字段）；差异只有两处：归属轴是**区域**、
+// **一个监听服务两个区域**。
+//
+// ⚠️ 三条命令登记在 `SCOPE_PARAMETERIZED`（`qoder_gateway_status` /
+//   `get_qoder_gateway_models` / `create_qoder_api_key`）—— 参数化只做一半会在
+//   桌面端与 webui 之间分叉，而构建全绿（见 `check-api-contract.cjs` 第 8 条）。
+
+/** Qoder 网关配置（snake_case 原始形状，交给 `normalizeQoderGatewayConfig`）。 */
+export function getQoderGatewayConfig(): Promise<unknown> {
+  return call("get_qoder_gateway_config");
+}
+
+/** 保存配置并应用（启动 / 重启独立监听）。 */
+export function saveQoderGatewayConfig(config: QoderGatewayConfigRaw): Promise<unknown> {
+  return call("save_qoder_gateway_config", { config });
+}
+
+/** 网关运行状态 + 该区域账号池（`scope` 决定看哪本账号库）。 */
+export function qoderGatewayStatus(scope: Scope): Promise<unknown> {
+  return call("qoder_gateway_status", { scope });
+}
+
+/** 对外暴露的模型清单（**未过滤**禁用 + 来源 / 原因）。`refresh` ⇒ 绕过 10 分钟缓存。 */
+export function getQoderGatewayModels(scope: Scope, refresh = false): Promise<unknown> {
+  // ⚠️ 两个分支都必须是**对象字面量**：门禁 `check-api-contract.cjs` 第 8 条据此校验
+  //    `scope` 在场 —— 写成 `call("<cmd>", args)`（变量实参）会让「参数化只做一半」的
+  //    漂移无法被机器拦住（桌面端与 webui 行为分叉，而构建全绿）。
+  return refresh
+    ? call("get_qoder_gateway_models", { scope, refresh: true })
+    : call("get_qoder_gateway_models", { scope });
+}
+
+/** 多 Key 列表（含归属区域；脱敏）。 */
+export function listQoderApiKeys(): Promise<unknown> {
+  return call("list_qoder_api_keys");
+}
+
+/** 新建 Key —— **明文仅此一次返回**。 */
+export interface QoderCreateApiKeyResult {
+  ok: boolean;
+  /** 一次性明文（`qd-` 前缀）。 */
+  key?: string;
+  record?: { id: string; name: string; region: string; prefix: string };
+}
+
+export function createQoderApiKey(scope: Scope, name: string): Promise<QoderCreateApiKeyResult> {
+  return call<QoderCreateApiKeyResult>("create_qoder_api_key", { scope, name });
+}
+
+/** 吊销 Key（置 `revokedAt`；可逆）。 */
+export function revokeQoderApiKey(id: string): Promise<{ ok: boolean }> {
+  return call<{ ok: boolean }>("revoke_qoder_api_key", { id });
+}
+
+/** 撤销吊销（Key 重新可用；明文未变，客户端无需改配置）。 */
+export function restoreQoderApiKey(id: string): Promise<{ ok: boolean }> {
+  return call<{ ok: boolean }>("restore_qoder_api_key", { id });
+}
+
+/** 物理删除**已吊销**的 Key。 */
+export function deleteQoderApiKey(id: string): Promise<{ ok: boolean }> {
+  return call<{ ok: boolean }>("delete_qoder_api_key", { id });
+}
+
+/** 请求日志（元数据；条目含 `region` 归属）。 */
+export function getQoderGatewayLogs(): Promise<unknown> {
+  return call("get_qoder_gateway_logs");
+}
+
+/** 清空日志。 */
+export function clearQoderGatewayLogs(): Promise<{ ok: boolean }> {
+  return call<{ ok: boolean }>("clear_qoder_gateway_logs");
+}
+
+/** 一条 Qoder 账号的**下发形态**（**不含令牌明文**）。 */
+export interface QoderAccountView {
+  uid: string;
+  name: string;
+  nickname: string | null;
+  domain: string;
+  region: string;
+  source: string | null;
+  remark: string | null;
+  expiresAt: number | null;
+  hasAccessToken: boolean;
+  hasRefreshToken: boolean;
+  hasPersonalToken: boolean;
+  accessTokenMasked: string | null;
+  credential: {
+    access: string | null;
+    refresh: string | null;
+    pat: boolean;
+    unrecognized: boolean;
+  };
+  credentialSummary: string;
+  hasCredential: boolean;
+  domainMismatch: boolean;
+  addedAt: string | null;
+  updatedAt: string | null;
+}
+
+/** 账号列表（含归属不符计数）。 */
+export interface QoderAccountsView {
+  region: string;
+  domain: string;
+  accounts: QoderAccountView[];
+  foreignDomainCount: number;
+}
+
+/** 一处本机凭据来源的探测结果。 */
+export interface QoderLocalSource {
+  kind: string;
+  label: string;
+  path: string;
+  /** `missing` / `unreadable` / `empty` / `ready` —— 四态必须分开（引导动作不同）。 */
+  state: "missing" | "unreadable" | "empty" | "ready";
+  detail: string | null;
+}
+
+/** 本机来源探测视图。 */
+export interface QoderLocalSourcesView {
+  region: string;
+  domain: string;
+  sources: QoderLocalSource[];
+}
+
+/** 导入结果（新增 / 更新分开报，以及逐来源的问题说明）。 */
+export interface QoderImportOutcome {
+  region: string;
+  imported?: number;
+  updated?: number;
+  found?: number;
+  uid?: string;
+  outcome?: "added" | "updated";
+  masked?: string;
+  problems?: Array<{ kind: string; label: string; state: string; detail: string }>;
+  failed?: Array<{ uid: string; kind: string; error: string }>;
 }
 
 // ---------------------------------------------------------------------------

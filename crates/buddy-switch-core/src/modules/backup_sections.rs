@@ -23,7 +23,10 @@ use crate::modules::config;
 use crate::modules::export_import::{
     merge_import_record, ConflictPolicy, MergeOutcome, TokenPolicy,
 };
-use crate::modules::product::{require_trae_region, require_wb_region, Product, Scope};
+use crate::modules::product::{
+    require_qoder_region, require_trae_region, require_wb_region, Product, Scope,
+};
+use crate::modules::qoder;
 use crate::modules::region::catalog_cache_file;
 use crate::modules::trae;
 
@@ -121,6 +124,11 @@ fn read_accounts(scope: Scope) -> Result<Value, String> {
             let accounts = trae::account::load_accounts_for_region(region).accounts;
             Ok(serde_json::to_value(accounts).unwrap_or_else(|_| Value::Array(vec![])))
         }
+        Product::Qoder => {
+            let region = require_qoder_region(scope)?;
+            let accounts = qoder::account::load_accounts_for(region).accounts;
+            Ok(serde_json::to_value(accounts).unwrap_or_else(|_| Value::Array(vec![])))
+        }
     }
 }
 
@@ -140,6 +148,8 @@ fn read_config(scope: Scope) -> Result<Value, String> {
             "switch": config::load_switch_config(),
         })),
         Product::Trae => Ok(serde_json::to_value(trae::settings::load()).unwrap_or(Value::Null)),
+        // Qoder 侧设置目前是**纯文件**（无强类型 struct），直接读回原样即可。
+        Product::Qoder => Ok(read_json_file(&qoder::paths::settings_file())),
     }
 }
 
@@ -164,6 +174,13 @@ fn read_gateway(scope: Scope) -> Result<Value, String> {
         Product::Trae => Ok(json!({
             "config": read_json_file(&trae::paths::api_gateway_file()),
             "keys": read_json_file(&trae::paths::api_gateway_keys_file()),
+            "models": Value::Null,
+        })),
+        // Qoder 的模型清单三层优先级里，只有**本机客户端目录缓存**在客户端侧（只读、不入备份），
+        // 另两层由网关现取 ⇒ 与 Trae 同款给 `null`。
+        Product::Qoder => Ok(json!({
+            "config": read_json_file(&qoder::paths::gateway_config_file()),
+            "keys": read_json_file(&qoder::paths::gateway_keys_file()),
             "models": Value::Null,
         })),
     }
@@ -266,6 +283,15 @@ fn write_accounts(scope: Scope, merged: &Value) -> Result<(), String> {
                 .map_err(|error| format!("导入的账号记录形状不合法：{error}"))?;
             trae::account::save_accounts_for_region(region, &file)
         }
+        Product::Qoder => {
+            let region = require_qoder_region(scope)?;
+            // ⚠️ 与 Trae 同款：**先读回容器、只替换 `accounts` 字段**，不字面重建
+            // （将来容器上加字段时不会被清空）。
+            let mut file = qoder::account::load_accounts_checked_for(region)?;
+            file.accounts = serde_json::from_value(Value::Array(items))
+                .map_err(|error| format!("导入的账号记录形状不合法：{error}"))?;
+            qoder::account::save_accounts_for(region, &file)
+        }
     }
 }
 
@@ -302,6 +328,7 @@ fn write_config(scope: Scope, merged: &Value) -> Result<(), String> {
                 .map_err(|error| format!("Trae 设置形状不合法：{error}"))?;
             trae::settings::save(&settings)
         }
+        Product::Qoder => write_json_section(Some(merged), &qoder::paths::settings_file()),
     }
 }
 
@@ -324,6 +351,11 @@ fn write_gateway(scope: Scope, merged: &Value) -> Result<(), String> {
         Product::Trae => {
             write_json_section(merged.get("config"), &trae::paths::api_gateway_file())?;
             write_json_section(merged.get("keys"), &trae::paths::api_gateway_keys_file())?;
+            Ok(())
+        }
+        Product::Qoder => {
+            write_json_section(merged.get("config"), &qoder::paths::gateway_config_file())?;
+            write_json_section(merged.get("keys"), &qoder::paths::gateway_keys_file())?;
             Ok(())
         }
     }

@@ -38,6 +38,7 @@ import {
   AlertTriangle,
   Gauge,
   Info,
+  Loader2,
   MessagesSquare,
   RefreshCw,
   Server,
@@ -61,7 +62,7 @@ import { ModelRanking } from "@/components/usage/model-ranking";
 import { StackedDailyBar } from "@/components/usage/stacked-daily-bar";
 import { StatTiles, type StatTile } from "@/components/usage/stat-tiles";
 import { UsageHeatmap } from "@/components/usage/usage-heatmap";
-import type { UsageViewProps } from "@/components/usage/view-param-bar";
+import { useUsageWindowLabel, type UsageViewProps } from "@/components/usage/view-param-bar";
 import * as api from "@/lib/api";
 import { cumulativeCaption } from "@/lib/chart-caption";
 import { useT } from "@/lib/i18n";
@@ -69,13 +70,14 @@ import { scopeOf } from "@/lib/scope";
 import { toTokenStatsSource } from "@/lib/trae-usage-charts";
 import type { TraeTokenScope, TraeTokenStatistics, TraeUnsupported } from "@/lib/trae-types";
 import { useCachedResource } from "@/lib/use-cached-resource";
+import { useRefreshAction } from "@/lib/use-refresh-action";
 import { useScope } from "@/lib/use-scope";
 import {
   dailyModelSeries,
   heatmapMatrix,
   modelSlices,
-  type UsageRange,
 } from "@/lib/usage-charts";
+import { usageWindowDays, usageWindowSpanDays, type UsageWindow } from "@/lib/usage-window";
 
 /** 本页承载的视图（积分视图在 `TraeCreditsPage`）。与原型 `tabs` 的前两项同名。 */
 export type TraeUsageView = "trend" | "models";
@@ -87,7 +89,7 @@ export type TraeUsageView = "trend" | "models";
  */
 export default function TraeTokenStatsPage({
   view = "trend",
-  range,
+  viewWindow,
   combineAll,
 }: { view?: TraeUsageView } & UsageViewProps) {
   const t = useT();
@@ -100,11 +102,15 @@ export default function TraeTokenStatsPage({
    * 与 WorkBuddy 的 `RegionFilter` 是**同一根轴的两个取值形态** ⇒ 共用同一枚控件。
    */
   const tokenScope: TraeTokenScope = combineAll ? "all" : region;
-  const days: UsageRange = range;
+  /* ★ Trae 的统计接口按「最近 N 天」拉日志（`days <= 0` = 不限）⇒ 必须拉**覆盖整个窗口**
+     的跨度，而不是窗口自己的天数：窗口可能是**锚在过去**的一段（如 9/1–9/5），
+     拉 5 天只会拉到最后 5 天，那段历史**根本不在返回里**，图表会**静默全 0**。
+     拉回来之后再按窗口的日历日切片 —— 多拉的日在这两步之间被丢掉。 */
+  const spanDays = usageWindowSpanDays(viewWindow);
 
   const load = useCallback(
-    () => api.getTraeTokenStatistics(days, tokenScope),
-    [days, tokenScope],
+    () => api.getTraeTokenStatistics(spanDays, tokenScope),
+    [spanDays, tokenScope],
   );
 
   const {
@@ -112,12 +118,21 @@ export default function TraeTokenStatsPage({
     loading,
     error,
     refresh,
-  } = useCachedResource<TraeTokenStatistics>(`trae:token-stats:${days}:${tokenScope}`, load);
+  } = useCachedResource<TraeTokenStatistics>(`trae:token-stats:${spanDays}:${tokenScope}`, load);
+
+  /** 重试按钮的进行中态（`loading` 只在无值时 true，点重试那一刻它恒为 false）。 */
+  const { busy, run } = useRefreshAction();
 
   /** 映射成共用形状后，下面全部走与 WorkBuddy 同一批适配函数（见 `lib/trae-usage-charts.ts`）。 */
   const source = useMemo(() => (stats ? toTokenStatsSource(stats) : null), [stats]);
-  const columns = useMemo(() => (source ? dailyModelSeries(source, range) : []), [source, range]);
-  const slices = useMemo(() => (source ? modelSlices(source, range) : []), [source, range]);
+  const columns = useMemo(
+    () => (source ? dailyModelSeries(source, viewWindow) : []),
+    [source, viewWindow],
+  );
+  const slices = useMemo(
+    () => (source ? modelSlices(source, viewWindow) : []),
+    [source, viewWindow],
+  );
   const matrix = useMemo(() => (source ? heatmapMatrix(source.hours) : null), [source]);
 
   /* ⚠️ 加载 / 失败态不带页头与页容器：页头由上层 `UsagePage` 统一渲染。 */
@@ -140,8 +155,8 @@ export default function TraeTokenStatsPage({
           <AlertDescription className="flex flex-col gap-3">
             <span>{error}</span>
             <div>
-              <Button variant="outline" size="sm" onClick={() => void refresh()}>
-                <RefreshCw />
+              <Button variant="outline" size="sm" disabled={busy} onClick={() => void run(() => refresh())}>
+                {busy ? <Loader2 className="animate-spin" /> : <RefreshCw />}
                 {t("trae.stats.token.retry")}
               </Button>
             </div>
@@ -193,7 +208,7 @@ export default function TraeTokenStatsPage({
           matrix={matrix}
           accounts={accounts.length}
           summaryTotal={summary?.total ?? 0}
-          range={range}
+          viewWindow={viewWindow}
           scopeName={combineAll ? t("shared.region.combine.all") : scopeLabel(t, scope)}
         />
       )}
@@ -223,7 +238,7 @@ function TrendView({
   matrix,
   accounts,
   summaryTotal,
-  range,
+  viewWindow,
   scopeName,
 }: {
   columns: ReturnType<typeof dailyModelSeries>;
@@ -231,14 +246,15 @@ function TrendView({
   matrix: ReturnType<typeof heatmapMatrix> | null;
   accounts: number;
   summaryTotal: number;
-  range: UsageRange;
+  viewWindow: UsageWindow;
   scopeName: string;
 }) {
   const t = useT();
+  const windowLabel = useUsageWindowLabel();
 
   const total = columns.reduce((sum, column) => sum + column.total, 0);
   /* 日均的分母是**窗口天数**（不是「有数据的天数」）—— 与 WB 的 A1-3 同一口径。 */
-  const average = range > 0 ? Math.round(total / range) : 0;
+  const average = Math.round(total / usageWindowDays(viewWindow));
   const peak = columns.reduce(
     (best, column) => (column.total > best.total ? column : best),
     columns[0] ?? { day: "", label: "", total: 0, segments: [] },
@@ -261,7 +277,7 @@ function TrendView({
       icon: MessagesSquare,
       label: t("wbStats.usage.trend.total"),
       value: compactTokens(summaryTotal),
-      hint: t(`wbStats.usage.range.${range}`),
+      hint: windowLabel(viewWindow),
     },
     {
       icon: TrendingUp,

@@ -1,6 +1,8 @@
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
 mod commands;
 mod gateway;
+// Qoder 网关（第三个平台，默认 7865）：独立端口，不与另三个 merge（axum 同路径 merge 会 panic）。
+mod qoder_gateway;
 mod trae_gateway;
 // 统一网关（第三个产品线，默认 57892）：跨产品线的单一入口 —— 独立端口，不与另两个 merge。
 mod unified_gateway;
@@ -33,6 +35,14 @@ const TRAE_CREDITS_REFRESH_INTERVAL_MS: u64 = 30 * 60 * 1000;
 /// 取 1 小时：`backup::auto_backup()` 当日已备份时**幂等直接返回**（不重复读全量），
 /// 故检查本身开销极低；小时级足以在跨日后尽快产生当日备份。
 const AUTO_BACKUP_CHECK_INTERVAL_MS: u64 = 60 * 60 * 1000;
+
+/// 网关用量「今日」快照的记录周期（毫秒）—— 与 core
+/// [`buddy_switch_core::modules::background::GATEWAY_USAGE_RECORD_INTERVAL`] 同值。
+///
+/// 取 2 分钟（对齐 `token_daily::CLIENT_SCAN_TTL_MS`）：账号卡片的「今日 Token」
+/// gateway 桶是仪表盘读数，不需要实时，但绝不能长时间不动；而每轮只读一份受
+/// `log_keep` 封顶的日志 + 账号库，代价极低。
+const GATEWAY_USAGE_RECORD_INTERVAL_MS: u64 = 2 * 60 * 1000;
 
 pub(crate) fn is_screenshot_demo() -> bool {
     std::env::var(SCREENSHOT_DEMO_ENV).as_deref() == Ok("1")
@@ -128,6 +138,15 @@ fn spawn_background_task(spec: TaskSpec) {
                     }
                 });
             }
+            /* Qoder：**尚未有余额刷新循环**（额度要调上游，属网关层，未落地）。
+               ⚠️ 与 server 侧同款：core 的 `TASKS` 表里没有任何 Qoder 任务 ⇒ 本分支当前
+               不可达；一旦登记了，这行警告会出现在日志里，而不是悄悄空转。 */
+            Product::Qoder => {
+                eprintln!(
+                    "[background] Qoder 的 CreditsRefresh 已登记但**尚无实现** —— \
+                     请补刷新循环，或从 core 的 TASKS 表里移除该条目。"
+                );
+            }
         },
         // WorkBuddy 账号池治理状态落盘（只在有改动时真正写盘）。
         TaskKind::PoolPersist => {
@@ -157,6 +176,27 @@ fn spawn_background_task(spec: TaskSpec) {
             tauri::async_runtime::spawn(async move {
                 let state = gateway::shared_state();
                 let _ = buddy_switch_gateway::catalog_probe::probe_stale_regions(&state).await;
+            });
+        }
+        // ★ 网关用量「今日」快照（2026-10-15 新增，缺陷修复，与服务端同语义）：周期把
+        // 网关日志聚合进 `token_daily` 的 gateway 桶并落盘。
+        //
+        // 为什么必须有它：`record_gateway_today` 此前唯一的调用点是「打开账号页」的
+        // 命令（`get_account_token_today`）⇒ ① 不进账号页，gateway 桶一直是旧值；
+        // ② `token_daily` 保留 90 天，但历史只覆盖「当天 App 被打开过」的日子
+        //    （实测大片空洞）⇒ 网关用量永远成不了趋势。
+        //
+        // 覆盖**两个 region**：`gateway_logs.json` 是单文件、行内带 `region`，
+        // 只记一个 region 会让另一个的历史永远空着。
+        TaskKind::GatewayUsageRecord => {
+            tauri::async_runtime::spawn(async move {
+                loop {
+                    for region in modules::region::Region::all() {
+                        let _ = modules::token_daily::record_gateway_today(region);
+                    }
+                    tokio::time::sleep(Duration::from_millis(GATEWAY_USAGE_RECORD_INTERVAL_MS))
+                        .await;
+                }
             });
         }
         // 六类定时任务各自独立排程：每类一个循环，按自己的小时表 sleep 到点。
@@ -223,6 +263,8 @@ pub fn run() {
             app.manage(gateway::GatewayRuntime::new());
             // Trae 网关运行时句柄（与上面那份**互不相干**：配置 / Key / 日志全独立）。
             app.manage(trae_gateway::TraeGatewayRuntime::new());
+            // Qoder 网关运行时句柄（同样独立；**一个监听服务两个区域**）。
+            app.manage(qoder_gateway::QoderGatewayRuntime::new());
             app.manage(unified_gateway::UnifiedGatewayRuntime::new());
             // README 截图模式只渲染前端虚构数据，禁止读取账号后执行签到、轮换或保活。
             if !is_screenshot_demo() {
@@ -256,6 +298,17 @@ pub fn run() {
                         Ok(Some(addr)) => eprintln!("[trae-gateway] 已启动: http://{addr}"),
                         Ok(None) => {}
                         Err(error) => eprintln!("[trae-gateway] 启动失败: {error}"),
+                    }
+                });
+                // 按配置启动 Qoder 网关独立监听（默认关闭；默认 127.0.0.1:7865）。
+                // ⚠️ 一个监听、两个区域（区域由请求所用 API Key 的归属决定）。
+                let handle = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    let runtime = handle.state::<qoder_gateway::QoderGatewayRuntime>();
+                    match runtime.apply().await {
+                        Ok(Some(addr)) => eprintln!("[qoder-gateway] 已启动: http://{addr}"),
+                        Ok(None) => {}
+                        Err(error) => eprintln!("[qoder-gateway] 启动失败: {error}"),
                     }
                 });
             }
@@ -355,6 +408,8 @@ pub fn run() {
             commands::get_credit_statistics,
             commands::get_token_statistics,
             commands::get_account_token_today,
+            // 网关逐日用量趋势（只读 `token_daily` 90 天落库历史；两宿主同步）。
+            commands::get_gateway_token_trend,
             commands::checkin,
             commands::checkin_all,
             commands::get_auto_checkin_config,
@@ -439,6 +494,19 @@ pub fn run() {
             commands::trae_refresh_jwt,
             commands::trae_clear_cooldown,
             commands::trae_switch_account,
+            // Qoder（第三个平台）—— 6 条命令，全部参数化 `scope`。
+            // ⚠️ 与 `crates/buddy-switch-server/src/api.rs` 的路由表**一一对应**，
+            // 由 `scripts/check-api-contract.cjs` 校验。
+            commands::get_qoder_accounts,
+            commands::get_qoder_local_sources,
+            commands::qoder_import_local,
+            commands::qoder_import_pat,
+            commands::qoder_set_account_remark,
+            commands::qoder_delete_account,
+            commands::qoder_refresh_account,
+            commands::qoder_checkin_status,
+            commands::qoder_checkin_claim,
+            commands::qoder_credits,
             commands::trae_merge_legacy_regions,
             commands::trae_save_login,
             commands::trae_backup_profile,
@@ -461,6 +529,18 @@ pub fn run() {
             commands::trae_launch_client,
             commands::get_trae_gateway_logs,
             commands::clear_trae_gateway_logs,
+            // Qoder API 网关（管理面）—— 与上面两套网关命令平行（**一个监听两个区域**）。
+            commands::get_qoder_gateway_config,
+            commands::save_qoder_gateway_config,
+            commands::qoder_gateway_status,
+            commands::get_qoder_gateway_models,
+            commands::list_qoder_api_keys,
+            commands::create_qoder_api_key,
+            commands::revoke_qoder_api_key,
+            commands::restore_qoder_api_key,
+            commands::delete_qoder_api_key,
+            commands::get_qoder_gateway_logs,
+            commands::clear_qoder_gateway_logs,
             // P9 T02 · 桌面悬浮窗**只读数据层**（命令面只有读 / 显隐 / 聚焦，无写操作）。
             commands::companion_status,
             commands::companion_set_visible,
@@ -534,6 +614,14 @@ mod tests {
             has_task(Product::Workbuddy, TaskKind::GatewayCatalogProbe),
             "注册表缺少网关启动补识别（P10 T03 / ✅ #7）—— 缺了它「内置 / 陈旧」的模型清单\
              永远不会在启动时被补成实时，用户只能看到「内置」来源条"
+        );
+        // ★ 网关用量「今日」快照（2026-10-15 缺陷修复）：不登记 ⇒ 桌面端不会周期记录
+        // gateway 桶 ⇒ `token_daily` 的 90 天历史只有「当天打开过账号页」的日子，
+        // 网关用量成不了趋势。
+        assert!(
+            has_task(Product::Workbuddy, TaskKind::GatewayUsageRecord),
+            "注册表缺少网关用量今日快照 —— 缺了它 record_gateway_today 只剩账号页一个\
+             调用点，token_daily 的 90 天历史大片空洞、账号卡片的 gateway 桶长时间不刷新"
         );
     }
 }

@@ -42,6 +42,7 @@ import { regionDescriptor } from "@/lib/region";
 import { scopeOf } from "@/lib/scope";
 import { cn } from "@/lib/utils";
 import type { AccountStrategy, ApiKeyRecord, GatewayConfig, Region } from "@/lib/types";
+import { useRefreshAction } from "@/lib/use-refresh-action";
 import { useWorkbuddyRegion } from "@/lib/use-workbuddy-region";
 import { useGatewayStore } from "@/stores/gateway";
 
@@ -100,6 +101,9 @@ export default function ApiServicePage() {
   const [openingDir, setOpeningDir] = useState(false);
   /** 「上游账号凭据 · 校验」进行中（只驱动按钮转圈）。 */
   const [verifying, setVerifying] = useState(false);
+  /* 错误条「重试」与概览「刷新」两处出口各自的进行中态（两处可能同屏）。 */
+  const { busy: retryBusy, run: runRetry } = useRefreshAction();
+  const { busy: refreshBusy, run: runRefresh } = useRefreshAction();
   /* ★ 子导航选中项：**初值从 URL 读**（`?sub=logs`），非法值 fail-closed 回 `overview`。
      与设置页（`?section=`）同一口径：深链能直达某个分区，而不是永远落到第一项。 */
   const [searchParams, setSearchParams] = useSearchParams();
@@ -268,8 +272,13 @@ export default function ApiServicePage() {
             <span>{error}</span>
             {/* 与 Trae 页同构：错误条自带重试，用户不必去猜「怎么再试一次」。 */}
             <div>
-              <Button variant="outline" size="sm" onClick={() => void loadAll()}>
-                <RefreshCw />
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={retryBusy}
+                onClick={() => void runRetry(() => loadAll())}
+              >
+                {retryBusy ? <Loader2 className="animate-spin" /> : <RefreshCw />}
                 {t("wbStats.gateway.retry")}
               </Button>
             </div>
@@ -309,8 +318,13 @@ export default function ApiServicePage() {
                     </DemoAction>
                     {/* 与 Trae 页同构：手动重读配置 / 状态 / 池（池是实时状态，不刷新就看不到变化）。 */}
                     <DemoAction>
-                      <Button variant="outline" size="sm" onClick={() => void loadAll()}>
-                        <RefreshCw />
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        disabled={refreshBusy}
+                        onClick={() => void runRefresh(() => loadAll())}
+                      >
+                        {refreshBusy ? <Loader2 className="animate-spin" /> : <RefreshCw />}
                         {t("wbStats.gateway.refresh")}
                       </Button>
                     </DemoAction>

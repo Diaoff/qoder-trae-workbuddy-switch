@@ -7,6 +7,7 @@
 const MARK = {
   workbuddy: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2.6 20.5 12 12 21.4 3.5 12Z"/><path d="M12 7.6 16.6 12 12 16.4 7.4 12Z"/></svg>`,
   trae: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2.8 21.2 20H2.8Z"/><path d="M12 9.6 16.4 17H7.6Z"/></svg>`,
+  qoder: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="8.6"/><circle cx="12" cy="12" r="4.2"/><path d="m15.3 15.3 4.1 4.1"/></svg>`,
 };
 
 const ICON = {
@@ -85,6 +86,32 @@ const PLATFORMS = {
       { id: "trae_code", label: "TraeCode", short: "Code", installed: true },
     ],
     capabilities: ["checkin", "credits", "oauth", "snapshot", "group", "gateway"],
+  },
+  qoder: {
+    id: "qoder",
+    label: "Qoder",
+    mark: MARK.qoder,
+    accent: "oklch(0.68 0.15 245)",
+    regions: [
+      { id: "cn", label: "国内版", short: "CN" },
+      { id: "global", label: "国际版", short: "Global" },
+    ],
+    /* 程序位 = **能承载「当前登录」的官方客户端**。Qoder 有两处官方凭据存储：
+         ① 桌面 App —— `%APPDATA%\com.qoder[.cn].app.stable\auth.v1.dat`
+            （Chromium v10 布局，AES-256-GCM，密钥经 DPAPI 解出）
+         ② Qoder CLI —— `~/.qoder[.cn]/.auth/user`（AES-128-CBC，key=iv=machine_id[:16]）
+       两者各是一个程序位。⚠️ 与 WorkBuddy 一样，**程序位名不含区域** ——
+       区域由作用域（qoder-cn / qoder-global）承担，写进名字会让「国内版/国际版」
+       看起来像两个客户端。 */
+    programs: [
+      { id: "qoder_app", label: "Qoder 桌面版", short: "App", installed: true },
+      { id: "qoder_cli", label: "Qoder CLI", short: "CLI", installed: true },
+    ],
+    /* Qoder 的能力集：签到（每日 100 Credits 由网关代领）、积分/额度、
+       OAuth 设备授权（PKCE S256）、API 网关（OpenAI + Anthropic 双协议）。
+       ⚠️ 刻意**没有** sessionCopy（会话复制只有 WorkBuddy 桌面有），
+       也**没有** travel（自动旅行是 WorkBuddy 独有）、autoRotate、snapshot、group。 */
+    capabilities: ["checkin", "credits", "oauth", "gateway"],
   },
 };
 
@@ -280,6 +307,55 @@ const SCOPES = {
     todayCredits: 0, gatewayRequests: 0, gatewayKeys: 0, checkinReward: 50,
     accounts: [],
   },
+  "qoder-cn": {
+    id: "qoder-cn", platform: "qoder", region: "cn",
+    running: true, installed: true, version: "1.1.64",
+    todayCredits: 52, gatewayRequests: 184, gatewayKeys: 2, checkinReward: 100,
+    accounts: [
+      makeAccount("q1", "jackey", "jackey@qoder.cn", {
+        remark: "主号 · 长期", credits: 1180, creditsTotal: 2000, expiring: 260, expireInDays: 4,
+        programs: { qoder_app: true, qoder_cli: true }, priority: true, group: "常用",
+        lastUsed: "3 分钟前", todayTokens: 38400, totalTokens: 512000,
+      }),
+      makeAccount("q2", "team-qoder", "shared@qoder.cn", {
+        remark: "团队共用", credits: 620, creditsTotal: 1000, expireInDays: 19,
+        programs: { qoder_app: false, qoder_cli: true }, group: "团队",
+        lastUsed: "1 小时前", todayTokens: 12600, totalTokens: 208000,
+      }),
+      makeAccount("q3", "trial-01", "trial@qoder.cn", {
+        remark: "新人试用", credits: 80, creditsTotal: 500, expiring: 80, expireInDays: 2,
+        checkedIn: false, programs: { qoder_app: false, qoder_cli: false }, group: "测试",
+        lastUsed: "20 分钟前", todayTokens: 5200, totalTokens: 34800,
+      }),
+      makeAccount("q4", "legacy-acc", "legacy@qoder.cn", {
+        remark: "旧凭据", credits: 320, creditsTotal: 1000, expireInDays: 12,
+        checkedIn: false, expired: true, programs: { qoder_app: false, qoder_cli: false },
+        group: "闲置", lastUsed: "9 天前", todayTokens: 0, totalTokens: 76200, status: "expired",
+      }),
+      makeAccount("q5", "spare-02", "spare@qoder.cn", {
+        remark: "备用", credits: 1520, creditsTotal: 2000, expireInDays: 41,
+        needsRelogin: true, programs: { qoder_app: false, qoder_cli: false },
+        group: "闲置", lastUsed: "13 天前", todayTokens: 0, totalTokens: 91300, status: "relogin",
+      }),
+    ],
+  },
+  "qoder-global": {
+    id: "qoder-global", platform: "qoder", region: "global",
+    running: false, installed: true, version: "1.1.64",
+    todayCredits: 18, gatewayRequests: 21, gatewayKeys: 1, checkinReward: 100,
+    accounts: [
+      makeAccount("qg1", "jackey-global", "jackey@qoder.com", {
+        remark: "国际版主号", credits: 900, creditsTotal: 1500, expiring: 150, expireInDays: 6,
+        programs: { qoder_app: true, qoder_cli: false }, priority: true,
+        lastUsed: "2 小时前", todayTokens: 21800, totalTokens: 176400,
+      }),
+      makeAccount("qg2", "intl-spare", "intl@qoder.com", {
+        remark: "", credits: 240, creditsTotal: 1000, expireInDays: 22,
+        checkedIn: false, programs: { qoder_app: false, qoder_cli: false },
+        lastUsed: "5 天前", todayTokens: 3400, totalTokens: 41200,
+      }),
+    ],
+  },
 };
 
 /* ─────────── 用量数据 ─────────── */
@@ -445,6 +521,46 @@ const USAGE = {
     ],
   },
   "trae-global": { days: series(30, 0, 7, 0), models: [], sessions: [], credits: [] },
+  "qoder-cn": {
+    days: series(30, 54000, 11, 56200),
+    models: [
+      { name: "Qwen3.8-Max", tokens: 240000, pct: 43 },
+      { name: "GLM-5.1", tokens: 138000, pct: 25 },
+      { name: "Kimi-K3", tokens: 96000, pct: 17 },
+      { name: "MiniMax-M3", tokens: 52000, pct: 9 },
+      { name: "其他", tokens: 33000, pct: 6 },
+    ],
+    sessions: [
+      { title: "Qoder 多账号轮询", account: "jackey", tokens: 64200, msgs: 38, when: "今天 09:40" },
+      { title: "COSY 签名链路排查", account: "jackey", tokens: 41800, msgs: 26, when: "今天 08:55" },
+      { title: "模型清单三源优先级", account: "team-qoder", tokens: 28700, msgs: 17, when: "昨天 20:12" },
+      { title: "试用号额度探测", account: "trial-01", tokens: 12400, msgs: 9, when: "昨天 15:30" },
+    ],
+    credits: [
+      credit("今天 10:12", 28, "jackey", -52, "对话消耗"),
+      credit("今天 08:00", 175, "jackey", +100, "每日签到"),
+      credit("昨天 22:35", 700, "team-qoder", -96, "对话消耗"),
+      credit("昨天 08:00", 1620, "jackey", +100, "每日签到"),
+      credit("昨天 08:00", 1621, "team-qoder", +100, "每日签到"),
+    ],
+  },
+  "qoder-global": {
+    days: series(30, 20000, 13, 25200),
+    models: [
+      { name: "Qwen3.8-Max", tokens: 96000, pct: 40 },
+      { name: "Ultimate", tokens: 62000, pct: 26 },
+      { name: "DeepSeek-V4-Pro", tokens: 48000, pct: 20 },
+      { name: "其他", tokens: 34000, pct: 14 },
+    ],
+    sessions: [
+      { title: "国际版端点故障切换", account: "jackey-global", tokens: 21800, msgs: 13, when: "今天 11:05" },
+      { title: "Ultimate 模型评测", account: "jackey-global", tokens: 9600, msgs: 7, when: "2 天前" },
+    ],
+    credits: [
+      credit("今天 09:30", 105, "jackey-global", -18, "对话消耗"),
+      credit("昨天 08:00", 1610, "jackey-global", +100, "每日签到"),
+    ],
+  },
 };
 
 /* ─────────── 网关数据 ─────────── */
@@ -527,6 +643,55 @@ const GATEWAY = {
     enabled: false, port: 57893, baseUrl: "http://127.0.0.1:57893", keys: [], models: [], pool: [], logs: [],
     /* 从未探测成功过 ⇒ 内置兜底。UI 必须显示「内置」+ 原因 + 重试出口，而不是静默给一份清单。 */
     catalog: { source: "builtin", fetchedAt: null, fetchedAbs: null, note: "尚未成功识别过（上游未响应）" },
+  },
+  "qoder-cn": {
+    enabled: true, port: 57894, baseUrl: "http://127.0.0.1:57894",
+    keys: [
+      { id: "k7", name: "Qoder 默认 Key", masked: "qd_live_5b2e••••••••••••c14f", scope: "国内版", created: "2026-09-22", lastUsed: "3 分钟前", requests: 1176 },
+      /* 已吊销（与 wb-cn 的 k2、trae-cn 的 k6 同形）：三个平台各留一条，
+         确认「恢复 + 删除」这条三态动作在**每个**平台上都同形。 */
+      { id: "k8", name: "Qoder CLI", masked: "qd_live_9a07••••••••••••4e83", scope: "国内版", created: "2026-10-02", lastUsed: "2 小时前", requests: 214, revoked: true },
+    ],
+    models: [
+      { name: "Qwen3.8-Max", provider: "qoder", scope: "国内版", available: true },
+      { name: "GLM-5.1", provider: "qoder", scope: "国内版", available: true },
+      { name: "Kimi-K3", provider: "qoder", scope: "国内版", available: true, disabled: true },
+      { name: "MiniMax-M3", provider: "qoder", scope: "国内版", available: true },
+      /* 区域独占模型（国际版独有）也列出来 —— 与 WB 网关页的跨区域清单同形，
+         用来暴露「Key 出口与模型区域不匹配」这个真实存在的错配。 */
+      { name: "Ultimate", provider: "qoder", scope: "国际版", available: true },
+    ],
+    catalog: { source: "live", fetchedAt: "8 分钟前", fetchedAbs: "2026-10-14 16:35", note: null },
+    pool: [
+      { account: "jackey", credits: 1180, weight: 100, state: "可用", sticky: true },
+      { account: "team-qoder", credits: 620, weight: 70, state: "可用", sticky: false },
+      { account: "trial-01", credits: 80, weight: 15, state: "余额偏低", sticky: false },
+      { account: "legacy-acc", credits: 0, weight: 0, state: "已排除", sticky: false },
+    ],
+    logs: [
+      { time: "10:41:07", model: "Qwen3.8-Max", account: "jackey", status: 200, ms: 764, tokens: 1120 },
+      { time: "10:39:52", model: "GLM-5.1", account: "team-qoder", status: 200, ms: 588, tokens: 486 },
+      { time: "10:38:20", model: "Qwen3.8-Max", account: "jackey", status: 200, ms: 1310, tokens: 2874 },
+      { time: "10:36:44", model: "MiniMax-M3", account: "trial-01", status: 429, ms: 96, tokens: 0 },
+      { time: "10:35:11", model: "GLM-5.1", account: "jackey", status: 200, ms: 702, tokens: 934 },
+    ],
+  },
+  "qoder-global": {
+    enabled: false, port: 57895, baseUrl: "http://127.0.0.1:57895",
+    keys: [{ id: "k9", name: "Qoder 国际版 Key", masked: "qd_live_3f61••••••••••••b7d2", scope: "国际版", created: "2026-09-30", lastUsed: "昨天", requests: 21 }],
+    models: [
+      { name: "Ultimate", provider: "qoder", scope: "国际版", available: true },
+      { name: "Qwen3.8-Max", provider: "qoder", scope: "国际版", available: true },
+    ],
+    catalog: { source: "cached", fetchedAt: "昨天 22:10", fetchedAbs: "2026-10-13 22:10", note: "本次探测超时（8s），使用上次成功的结果" },
+    pool: [
+      { account: "jackey-global", credits: 900, weight: 100, state: "可用", sticky: true },
+      { account: "intl-spare", credits: 240, weight: 30, state: "余额偏低", sticky: false },
+    ],
+    logs: [
+      { time: "11:05:33", model: "Ultimate", account: "jackey-global", status: 200, ms: 918, tokens: 1416 },
+      { time: "11:02:07", model: "Qwen3.8-Max", account: "jackey-global", status: 200, ms: 655, tokens: 522 },
+    ],
   },
 };
 
@@ -646,6 +811,7 @@ const PROXY = {
     { host: "www.codebuddy.cn", on: true, note: "WorkBuddy CN" },
     { host: "www.workbuddy.ai", on: true, note: "WorkBuddy Global" },
     { host: "api.trae.cn", on: true, note: "Trae CN" },
+    { host: "qoder.com.cn", on: true, note: "Qoder CN" },
   ],
 };
 
@@ -789,9 +955,21 @@ const SETTINGS = [
 /* ─────────── 全局备份（PLAN §3.14）───────────
    分区与条目数**全部由已有数据推导**（§3.10 第 1 条：渲染层不写死数字），
    所以「预计大小」会随勾选实时变化，而不是一个装饰性的假数字。 */
+/* 作用域展示名（平台名 + 区域名）—— **唯一定义在数据层**。
+   ⚠️ 不能定义在 `demo-app.js`：`BACKUP_SECTIONS` 在本文件**加载时**就要取值，
+   那时 `demo-app.js` 里的 `scopeLabel` 还不存在（两个 <script> 的顶层 const
+   共享同一个全局词法环境，但求值顺序仍是数据层在前）。
+   ⚠️ 也不许再写一份：`SCOPES[id]` 上**没有** `label` 字段，曾经写成
+   `SCOPES[id].label` ⇒ 每行都渲染成空串（连 `aria-label` 都退化成「全选 」）。 */
+const scopeDisplayName = (id) => {
+  const s = SCOPES[id];
+  const p = PLATFORMS[s.platform];
+  return `${p.label} ${p.regions.find((r) => r.id === s.region).label}`;
+};
+
 const BACKUP_SECTIONS = Object.keys(SCOPES).map((id) => ({
   id,
-  label: SCOPES[id].label,
+  label: scopeDisplayName(id),
   accounts: SCOPES[id].accounts.length,
   configs: 4,                                  // 签到 / 旅行 / 自动轮换 / 切换行为
   gatewayKeys: SCOPES[id].gatewayKeys || 0,

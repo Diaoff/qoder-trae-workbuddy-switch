@@ -538,7 +538,7 @@ function LanguageCard({ variant }: { variant: AppSettingsVariant }) {
  *
  * ## 为什么降级时**不显示开关**
  *
- * 快捷键在「作用域 > 5 个」时降级为不绑定（`planScopeShortcuts`）。此时**没有可开启之物**
+ * 快捷键在「作用域 > 9 个」时降级为不绑定（`planScopeShortcuts`）。此时**没有可开启之物**
  * —— 再摆一个开关就是假控件（§1.7）。因此 `reason === "too-many"` 时改为一句说明，
  * 与快捷键的真实绑定状态**同源**（都读 `planScopeShortcuts` 的结果）。
  *

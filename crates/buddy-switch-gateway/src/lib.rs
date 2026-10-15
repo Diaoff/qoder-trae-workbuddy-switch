@@ -43,6 +43,8 @@ pub mod timeutil;
 /// 独立模块而非 `GatewayState` 的一个分支：两者归属域、凭据形态、上游协议、
 /// 响应格式、路由挂载方式全不相同，详见 [`trae`] 模块文档。
 pub mod trae;
+/// Qoder 的 OpenAI / Anthropic 兼容网关（**平行第三套实现**，独立端口 7865）。
+pub mod qoder;
 // 统一网关（第三个产品线）：把两个产品线的模型合成一个入口。
 // ⚠️ 它是**独立端口**上的**第三个** `GatewayProduct` —— 永不与另两个 router merge
 // （axum 同路径 merge 会运行期 panic）。详见模块头与 `docs/redesign/UNIFIED-GATEWAY-ARCH.md`。

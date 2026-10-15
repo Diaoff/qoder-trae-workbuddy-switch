@@ -99,6 +99,9 @@ export const en = {
   "shared.gateway.pool.tile.disabled": "Session dead",
   "shared.gateway.pool.tile.expired": "Credits expired",
   "shared.gateway.pool.tile.zeroCredits": "No credits",
+  // Qoder-only tile: upstream 429 is reported per model, so an account can be usable
+  // while individual models cool down.
+  "shared.gateway.pool.tile.modelCooling": "Model cooling",
   "shared.gateway.pool.empty": "The pool is empty. Add accounts under Accounts first.",
   "shared.gateway.pool.credits": "{credits} credits",
   "shared.gateway.pool.diagnoseNote": "When a request reports \"no available account\", check these reasons one by one:",
@@ -154,9 +157,18 @@ export const en = {
   "shared.companion.state.done": "Done",
   "shared.companion.state.failed": "Failed",
   // Source id → display name (ids are backend data; see SOURCE_LABEL_KEY in companion-row).
+  // ★ Must cover every entry of `agent_watch::HOOK_SOURCES`; enforced by check-agent-sources.cjs.
   "shared.companion.source.workbuddyCn": "WorkBuddy (CN)",
   "shared.companion.source.workbuddyGlobal": "WorkBuddy (Global)",
+  "shared.companion.source.claude": "Claude Code",
+  "shared.companion.source.codebuddy": "CodeBuddy",
   "shared.companion.source.codex": "Codex",
+  "shared.companion.source.traeCn": "Trae (CN)",
+  "shared.companion.source.traeGlobal": "Trae (Global)",
+  "shared.companion.source.qoderCn": "Qoder (CN)",
+  "shared.companion.source.qoderGlobal": "Qoder (Global)",
+  // This tool's own long-running operations (check-in etc., `agent_watch::SOURCE_THIS_TOOL`).
+  "shared.companion.source.thisTool": "This tool",
   // Fallback when a session has no title (clients only send one on some events).
   "shared.companion.untitled": "Untitled session",
   "shared.companion.row.aria": "{source} · {state} · {hint}",
@@ -304,6 +316,25 @@ export const en = {
   "shared.demo.cap.projectDimensionReason": "The gateway log's project_id / session_id are freshly generated uuids per request and do not correspond to client projects",
   "shared.demo.cap.sessionCost": "Most expensive session",
   "shared.demo.cap.sessionCostReason": "No stable session identifier, so multiple requests cannot be merged into one session cost",
+  // ---- Qoder: demo accounts (read-only pair; names are data, same in both languages) ----
+  "shared.demo.qoder.name.jackey": "jackey",
+  "shared.demo.qoder.name.team": "team-qoder",
+  "shared.demo.qoder.name.intl": "jackey-global",
+  "shared.demo.qoder.name.trial": "trial-01",
+  // ---- Qoder: gateway demo data (pool reasons / catalog source / log error / key names) ----
+  "shared.demo.qoder.gateway.reasonSessionDead": "credentials expired (refresh token required)",
+  "shared.demo.qoder.gateway.reasonCooling": "upstream temporarily unavailable (cooling down)",
+  "shared.demo.qoder.gateway.catalogCached": "this probe timed out (8s) — showing the last successful result",
+  "shared.demo.qoder.gateway.modelRateLimited": "model \"MiniMax-M3\" hit its rate limit, rotated to another model",
+  "shared.demo.qoder.key.defaultCn": "Qoder default key",
+  "shared.demo.qoder.key.cliCn": "Qoder CLI",
+  "shared.demo.qoder.key.global": "Qoder global key",
+  "shared.demo.qoder.remark.main": "Main · long-term",
+  "shared.demo.qoder.remark.team": "Shared by team",
+  "shared.demo.qoder.remark.intl": "Main account (global)",
+  // Credential summary format matches core `CredentialShape::describe` verbatim (demo mirrors the real shape).
+  "shared.demo.qoder.cred.device": "access token (device_access) · refresh token (device_refresh)",
+  "shared.demo.qoder.cred.deviceOnly": "access token (device_access) · no refresh token",
   // ---- Demo mode write-action replies ----
   "shared.demo.switchDone": "Demo switch completed",
   "shared.demo.updateTitle": "Update prompt demo",

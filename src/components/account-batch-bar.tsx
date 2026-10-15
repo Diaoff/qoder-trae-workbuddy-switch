@@ -1,4 +1,4 @@
-import { CircleCheck, Download, RefreshCw, Trash2, XIcon } from "lucide-react";
+import { CircleCheck, Download, Loader2, RefreshCw, Trash2, XIcon } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -6,7 +6,7 @@ import { useT } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
 
 /**
- * 最小批量操作条（**两平台共用**，PLAN §3.3 的「勾选 + 批量」本期最小形态）。
+ * 最小批量操作条（**三平台共用**：WorkBuddy / Trae / Qoder，PLAN §3.3 的「勾选 + 批量」本期最小形态）。
  *
  * ## 位置与形态：**文档流内**横条，位于工具栏与列表之间（照原型）
  *
@@ -20,12 +20,7 @@ import { cn } from "@/lib/utils";
  *
  * ## 动作是可选的（`onCheckin?` / `onRefresh?` / `onDelete?`）
  *
- * 平台能力不同（WB 有积分刷新、Trae 侧动作集不同），**缺哪个就不渲染哪个**，
- * 而不是渲染一枚点了没反应的按钮 —— 后者比不渲染更差。
- *
- * ## 动作是可选的（`onCheckin?` / `onRefresh?` / `onDelete?`）
- *
- * 平台能力不同（WB 有积分刷新、Trae 侧动作集不同），**缺哪个就不渲染哪个**，
+ * 平台能力不同（WB 有积分刷新、Trae 侧动作集不同、Qoder 只有删除），**缺哪个就不渲染哪个**，
  * 而不是渲染一枚点了没反应的按钮 —— 后者比不渲染更差。
  *
  * ## 为什么是自定义组件（AGENTS.md 要求记录理由）
@@ -76,7 +71,7 @@ export function AccountBatchBar({
             disabled={busy}
             onClick={onRefresh}
           >
-            <RefreshCw />
+            {busy ? <Loader2 className="animate-spin" /> : <RefreshCw />}
             {t("shared.batch.refresh")}
           </Button>
         )}

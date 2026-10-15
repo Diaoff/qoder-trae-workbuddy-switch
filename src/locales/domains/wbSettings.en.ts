@@ -77,6 +77,12 @@ export const en = {
     "Install hooks in the clients so their session status shows up in the companion window. This edits the client's settings.json (reversible), and is off by default.",
   "wbSettings.agentWatch.slot.workbuddy-cn": "WorkBuddy (CN)",
   "wbSettings.agentWatch.slot.workbuddy-global": "WorkBuddy (Global)",
+  // CLI clients (slots live under the home dir; see HOOK_FILE_SLOTS in client_settings).
+  "wbSettings.agentWatch.slot.claude": "Claude Code",
+  "wbSettings.agentWatch.slot.codebuddy": "CodeBuddy",
+  // Trae's **hooks file** (`~/.trae-cn/hooks.json` / `~/.trae/hooks.json`, split by region).
+  "wbSettings.agentWatch.slot.trae-hooks-cn": "Trae (CN)",
+  "wbSettings.agentWatch.slot.trae-hooks-global": "Trae (Global)",
   "wbSettings.agentWatch.state.running": "Client is running — quit it first",
   "wbSettings.agentWatch.state.installed": "{count} hooks installed",
   "wbSettings.agentWatch.state.off": "Off",

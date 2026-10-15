@@ -6,6 +6,7 @@ use axum::response::Response;
 use serde_json::json;
 
 use crate::disabled_models::is_disabled;
+use buddy_switch_core::modules::product::scope_of_wb_region;
 use crate::routes::{authenticate, json_response, openai_error};
 use crate::state::GatewayState;
 
@@ -24,7 +25,7 @@ pub async fn handler(State(state): State<GatewayState>, headers: HeaderMap) -> R
     let data: Vec<serde_json::Value> = snapshot
         .models
         .iter()
-        .filter(|model| !is_disabled(&disabled, record.region, &model.id))
+        .filter(|model| !is_disabled(&disabled, scope_of_wb_region(record.region), &model.id))
         .map(|model| {
             json!({
                 "id": model.id,

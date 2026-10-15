@@ -10,14 +10,15 @@ use std::sync::Mutex;
 use tauri::{Emitter, Manager};
 use buddy_switch_core::modules::{
     account, app_prefs, auth_file, backup, capability, checkin, client_limits, client_settings,
-    config, credit_usage, credits, diagnostics, export_import, migrate, oauth, process, programs,
+    config, credit_usage, credits, diagnostics, export_import, migrate, oauth, process, programs, qoder,
     refresh, region::Region, region::RegionFilter, rotate, session, skill, switch, token_daily,
     token_stats, trae, travel, update, vscode_session,
 };
 // P5 §2.5 第 (2) 条：capability **默认拒绝**。表数据只在 core（`product_spec`），本文件只查表。
 // ⚠️ 本文件在 `crates/buddy-switch-server/src/api.rs` 有**同款**接线（刻意不去重，见共享知识）。
 use buddy_switch_core::modules::product::{
-    require_capability, require_trae_region, require_wb_region, resolve_scope_param, Product,
+    require_capability, require_qoder_region, require_trae_region, require_wb_region,
+    resolve_scope_param, Product,
 };
 use buddy_switch_core::modules::trae::region::TraeRegion;
 // P9 · 悬浮窗**只读**数据模型 + provider（core）。⚠️ 与桌面窗口模块 `crate::companion`
@@ -35,6 +36,7 @@ use buddy_switch_gateway::{AccountStrategy, GatewayConfig, GatewayStatusView};
 use buddy_switch_gateway::unified::UnifiedGatewayConfig;
 
 use crate::gateway;
+use crate::qoder_gateway;
 use crate::trae_gateway;
 use crate::unified_gateway;
 
@@ -236,6 +238,7 @@ pub async fn accounts_list(scope: String) -> Result<Value, String> {
                 .await
                 .map_err(|error| format!("读取 Trae 账号总览失败: {error}"))
         }
+        Product::Qoder => return qoder_scope_not_applicable(),
     }
 }
 
@@ -263,6 +266,7 @@ pub fn account_remark(
             let remark = remark.unwrap_or_default();
             trae::handlers::set_remark_for(variant, &account_id, Some(remark.as_str()))
         }
+        Product::Qoder => return qoder_scope_not_applicable(),
     }
 }
 
@@ -294,6 +298,7 @@ pub async fn account_delete(
             .await
             .map_err(|error| format!("删除账号失败: {error}"))?
         }
+        Product::Qoder => return qoder_scope_not_applicable(),
     }
 }
 
@@ -320,6 +325,7 @@ pub fn account_trash_list(scope: String) -> Result<Value, String> {
         Product::Trae => Ok(trae::account::trash_list_value_for_region(require_trae_region(
             scope,
         )?)),
+        Product::Qoder => return qoder_scope_not_applicable(),
     }
 }
 
@@ -341,6 +347,7 @@ pub fn account_restore(scope: String, key: String) -> Result<Value, String> {
             trae::account::restore_for_region(require_trae_region(scope)?, &key)?;
             Ok(json!({ "ok": true }))
         }
+        Product::Qoder => return qoder_scope_not_applicable(),
     }
 }
 
@@ -362,6 +369,7 @@ pub fn account_purge(scope: String, key: String) -> Result<Value, String> {
             trae::account::purge_for_region(require_trae_region(scope)?, &key)?;
             Ok(json!({ "ok": true }))
         }
+        Product::Qoder => return qoder_scope_not_applicable(),
     }
 }
 
@@ -374,6 +382,7 @@ pub fn account_trash_clear(scope: String) -> Result<Value, String> {
     let removed = match scope.product() {
         Product::Workbuddy => account::clear_trash_for(require_wb_region(scope)?),
         Product::Trae => trae::account::clear_trash_for_region(require_trae_region(scope)?),
+        Product::Qoder => return qoder_scope_not_applicable(),
     };
     Ok(json!({ "ok": true, "removed": removed }))
 }
@@ -401,6 +410,7 @@ pub fn accounts_export(scope: String, account_ids: Vec<String>) -> Result<Value,
             let variant = trae_variant_of_region(require_trae_region(scope)?);
             trae::handlers::export_accounts_for(variant, &account_ids)
         }
+        Product::Qoder => return qoder_scope_not_applicable(),
     }
 }
 
@@ -424,6 +434,7 @@ pub fn accounts_export_to_path(
             let variant = trae_variant_of_region(require_trae_region(scope)?);
             trae::handlers::export_accounts_to_path_for(variant, &account_ids, &path)
         }
+        Product::Qoder => return qoder_scope_not_applicable(),
     }
 }
 
@@ -452,6 +463,7 @@ pub fn accounts_import(
             let variant = trae_variant_of_region(require_trae_region(scope)?);
             trae::handlers::import_accounts_for(variant, &file_text, &indexes)
         }
+        Product::Qoder => return qoder_scope_not_applicable(),
     }
 }
 
@@ -496,6 +508,7 @@ pub async fn accounts_import_local(scope: String) -> Result<Value, String> {
             .await
             .map_err(|error| format!("导入本机账号失败: {error}"))?
         }
+        Product::Qoder => return qoder_scope_not_applicable(),
     }
 }
 
@@ -533,6 +546,7 @@ pub async fn credits(scope: String, account_id: Option<String>) -> Result<Value,
             let variant = trae_variant_of_region(require_trae_region(scope)?);
             Ok(trae::handlers::credits_overview_for(variant))
         }
+        Product::Qoder => return qoder_scope_not_applicable(),
     }
 }
 
@@ -570,6 +584,7 @@ pub async fn checkin_status(scope: String, account_id: Option<String>) -> Result
             let variant = trae_variant_of_region(require_trae_region(scope)?);
             Ok(trae::handlers::checkin_status_for(variant))
         }
+        Product::Qoder => return qoder_scope_not_applicable(),
     }
 }
 
@@ -595,6 +610,7 @@ pub fn open_data_dir(scope: String) -> Result<Value, String> {
             let variant = trae_variant_of_region(require_trae_region(scope)?);
             trae::handlers::open_data_dir(variant)
         }
+        Product::Qoder => return qoder_scope_not_applicable(),
     }
 }
 
@@ -1698,6 +1714,20 @@ pub async fn get_token_statistics(days: Option<i64>, region: Option<String>) -> 
         .map_err(|error| format!("扫描 Token 统计失败: {error}"))
 }
 
+/// 网关逐日用量趋势（读 `token_daily` 的 90 天落库历史；**只读**，不扫盘、不触发记录）。
+///
+/// 返回 `{ date, retentionDays, days: [{ key, input, output, total, truncated }], total }`（camelCase）。
+/// ⚠️ `days` **只含落库过的日子**（App 运行过 + 后台周期记录在跑）⇒ 缺日 = 未记录、
+/// **不是 0**；某日 `truncated: true` ⇒ 该日总量只是**下界**（网关日志被裁）。
+/// 前端按窗口 join 后必须算覆盖率并披露（见 `usage-charts.ts` 的网关适配）。
+#[tauri::command]
+pub async fn get_gateway_token_trend(region: Option<String>) -> Result<Value, String> {
+    let region = parse_region(region.as_deref());
+    tauri::async_runtime::spawn_blocking(move || token_daily::gateway_token_trend(region))
+        .await
+        .map_err(|error| format!("读取网关用量趋势失败: {error}"))
+}
+
 /// 今日 Token：账号 × 来源（client / gateway）的当日累计。
 ///
 /// 返回 `{ date, accounts: [{ uid, clientIn, clientOut, gatewayIn, gatewayOut }],
@@ -2446,26 +2476,29 @@ pub async fn save_account_strategy(region: Option<String>, strategy: Value) -> R
     Ok(json!({ "ok": true }))
 }
 
-/// GET /api/gateway/disabled-models —— 某 region 被用户禁用的模型 id 列表（P11）。
+/// GET /api/gateway/disabled-models —— 某**作用域**被用户禁用的模型 id 列表（P11）。
 ///
-/// ## 为什么这条命令**不区分** WB / Trae 网关
+/// ## 为什么这条命令**不区分** WB / Trae / Qoder 网关
 ///
 /// 禁用存储是**进程内唯一**实例（[`buddy_switch_gateway::disabled_models::shared`]），
-/// WB 网关（`/v1/models` + `/v1/chat/completions`）、Trae 网关与命令面读的是**同一个 `Arc`**。
-/// 因此这里读到的就是两个出口此刻真正在用的那份 —— 不是「命令写一份、网关读另一份」的假开关。
+/// 三个网关（各自的 `/v1/models` + `/v1/chat/completions`）与命令面读的是**同一个 `Arc`**。
+/// 因此这里读到的就是各出口此刻真正在用的那份 —— 不是「命令写一份、网关读另一份」的假开关。
 ///
-/// 形状 `{ "region": …, "ids": [ … ] }`：`ids` 是该 region 被禁用的模型 id 集合
+/// ⚠️ 键是**作用域**（`wb-cn` / `qoder-global` …），不是裸 region —— 三个平台互不相通的
+/// 模型目录各自分家（2026-10-15 升级，含旧键迁移）。`scope` **必填且 fail-closed**。
+///
+/// 形状 `{ "scope": …, "ids": [ … ] }`：`ids` 是该作用域被禁用的模型 id 集合
 /// （`BTreeSet` ⇒ 稳定有序，前端可直接比对）。
 #[tauri::command]
-pub async fn get_disabled_models(region: Option<String>) -> Value {
-    let region = parse_region(region.as_deref());
+pub async fn get_disabled_models(scope: String) -> Result<Value, String> {
+    let scope = resolve_scope_param(Some(&scope))?;
     let store = buddy_switch_gateway::disabled_models::shared();
     let disabled = store.read().await;
-    let ids: Vec<String> = disabled.get(region).iter().cloned().collect();
-    json!({ "region": region.as_str(), "ids": ids })
+    let ids: Vec<String> = disabled.get(scope).iter().cloned().collect();
+    Ok(json!({ "scope": scope.as_str(), "ids": ids }))
 }
 
-/// POST /api/gateway/disabled-models —— 置位 / 清位某 region 的一个模型（P11）。
+/// POST /api/gateway/disabled-models —— 置位 / 清位某**作用域**的一个模型（P11）。
 ///
 /// ## 为什么返回 `changed`
 ///
@@ -2474,15 +2507,15 @@ pub async fn get_disabled_models(region: Option<String>) -> Value {
 /// 空白 `model_id` 被 `set` 拒绝 ⇒ `changed: false`（不写脏数据）。
 #[tauri::command]
 pub async fn set_model_disabled(
-    region: Option<String>,
+    scope: String,
     model_id: String,
     disabled: bool,
 ) -> Result<Value, String> {
-    let region = parse_region(region.as_deref());
+    let scope = resolve_scope_param(Some(&scope))?;
     let store = buddy_switch_gateway::disabled_models::shared();
     let changed = {
         let mut guard = store.write().await;
-        let changed = guard.set(region, &model_id, disabled);
+        let changed = guard.set(scope, &model_id, disabled);
         // 只在**真的变了**时落盘；写失败必须回传（否则用户以为禁用了、重启后又出现）。
         if changed {
             guard.save()?;
@@ -2491,7 +2524,7 @@ pub async fn set_model_disabled(
     };
     Ok(json!({
         "ok": true,
-        "region": region.as_str(),
+        "scope": scope.as_str(),
         "model_id": model_id.trim(),
         "disabled": disabled,
         "changed": changed,
@@ -3030,7 +3063,9 @@ pub fn get_trae_gateway_models(variant: Option<String>) -> Value {
         .try_read()
         .map(|guard| {
             guard
-                .get(buddy_switch_gateway::trae::region_of_variant(variant))
+                .get(buddy_switch_core::modules::product::scope_of_trae_region(
+                    variant.region(),
+                ))
                 .clone()
         })
         .unwrap_or_default();
@@ -3293,14 +3328,29 @@ pub async fn companion_jump(id: String) -> Result<(), String> {
 //   本段改的是**上游客户端的配置文件**（装 / 卸 hook），是用户显式同意的动作，
 //   不是窗口上的写操作。两者的可见性开关也各自独立。
 
-/// hook 的安装目标：**先做 WorkBuddy 两个区域**。
+/// hook 的安装目标：**只列「机制已取证」的客户端**。
 ///
-/// ⚠️ 为什么不是 [`client_settings::CLIENT_SLOTS`] 的全部 6 个：**Trae 的 hook 机制未取证**
-/// （`P15-SPIKE-RESULTS §4 #4`）—— 没有证据说明 Trae 支持 command hooks。
-/// 往一个不存在的机制上写配置只会污染用户文件。先做 WorkBuddy，其余按需再扩。
+/// ## 逐个来源为什么在 / 不在表里
+///
+/// | 目标 | 在表里？ | 依据 |
+/// |:---|:---|:---|
+/// | `workbuddy-cn` / `workbuddy-global` | ✅ | `settings.json` 的 `hooks` 键（`client_settings::CLIENT_SLOTS`） |
+/// | `claude`（Claude Code） | ✅ | `~/.claude/settings.json` 的 `hooks` 键 —— **本机实测**（已有一条第三方 hook） |
+/// | `codebuddy`（CodeBuddy CLI） | ✅ | `~/.codebuddy/settings.json` 的 `hooks` 键 —— **本机实测**（已抓过真实 payload） |
+/// | `trae-hooks-cn` / `trae-hooks-global` | ✅ | `~/.trae-cn/hooks.json` / `~/.trae/hooks.json`；结构由 Trae 自带 hook 执行器的 serde 结构取证。★ **文件不存在则不创建**（见 `agent_hook_install::missing_config_message`） |
+/// | `codex` | ❌ | 机制存在（`~/.codex/hooks.json`），但**路径与 schema 未一手取证**（本机未安装） |
+/// | `qoder-*` | ❌ | **对 Qoder 是否有 hooks 机制没有任何取证** |
+///
+/// ⚠️ 未取证的客户端**刻意不进本表**：往一个不存在的机制上写配置，只会污染用户的
+/// 客户端文件 —— 比「暂时不支持」糟得多。它们**仍然是合法的来源**
+/// （`agent_watch::HOOK_SOURCES`），用户自行接好 hook 后悬浮窗照常显示。
 const AGENT_HOOK_TARGETS: &[(&str, &str)] = &[
     ("workbuddy-cn", agent_watch::SOURCE_WORKBUDDY_CN),
     ("workbuddy-global", agent_watch::SOURCE_WORKBUDDY_GLOBAL),
+    ("claude", agent_watch::SOURCE_CLAUDE),
+    ("codebuddy", agent_watch::SOURCE_CODEBUDDY),
+    ("trae-hooks-cn", agent_watch::SOURCE_TRAE_CN),
+    ("trae-hooks-global", agent_watch::SOURCE_TRAE_GLOBAL),
 ];
 
 /// 组装 hook 安装状态（**只读**，无副作用）。
@@ -3317,7 +3367,10 @@ fn agent_hook_status() -> Value {
             let events = if values.is_null() {
                 Vec::new()
             } else {
-                agent_hook_install::installed_events_of(&values)
+                agent_hook_install::installed_events_of(
+                    &values,
+                    agent_hook_install::profile_for(slot_key),
+                )
             };
             json!({
                 "slot": slot_key,
@@ -3776,4 +3829,325 @@ pub fn restore_unified_api_key(id: String) -> Result<Value, String> {
 pub fn delete_unified_api_key(id: String) -> Result<Value, String> {
     unified_gateway::shared_state().keys.delete(&id)?;
     Ok(json!({ "ok": true }))
+}
+
+// ---------------------------------------------------------------------------
+// Qoder（第三个平台）
+// ---------------------------------------------------------------------------
+//
+// ★ 全部命令**参数化 `scope`**，且一律经 `resolve_scope_param` **fail-closed** 解析
+//   （拼错即拒，绝不回落默认作用域）—— 与既有 `accounts_list` 等参数化命令同一纪律。
+//   Qoder 的双区域是**两本互不相通的账号库**，缺 scope 就无从判断该读哪本。
+//
+// ⚠️ 本文件在 `crates/buddy-switch-server/src/api.rs` 有**同款**接线（刻意不去重，
+//   见文件头说明）。改一处必须 grep 另一处。
+
+/// 该端点**只服务 WorkBuddy / Trae** —— Qoder 作用域一律给可诊断的错误。
+///
+/// ★ **刻意不回落**到任何既有平台：把 Qoder 的请求静默打到 WorkBuddy 的账号库上，
+/// 比报错坏得多（用户会看到「账号凭空消失」或「改错了别的平台的号」）。
+/// Qoder 有自己的命令族（`qoder_*`）。
+fn qoder_scope_not_applicable() -> Result<Value, String> {
+    Err("该端点只服务 WorkBuddy / Trae 作用域，不支持 Qoder —— \
+         Qoder 的账号管理请用 Qoder 分区自己的命令（qoder_*）。"
+        .to_string())
+}
+
+/// GET /api/qoder/accounts —— 账号列表（**不含令牌明文**）。
+#[tauri::command]
+pub async fn get_qoder_accounts(scope: String) -> Result<Value, String> {
+    let scope = resolve_scope_param(Some(&scope))?;
+    let region = require_qoder_region(scope)?;
+    tauri::async_runtime::spawn_blocking(move || qoder::account::accounts_view_for(region))
+        .await
+        .map_err(|error| format!("读取 Qoder 账号失败: {error}"))
+}
+
+/// GET /api/qoder/local-sources —— 本机凭据来源探测（**只读、不落库**）。
+#[tauri::command]
+pub async fn get_qoder_local_sources(scope: String) -> Result<Value, String> {
+    let scope = resolve_scope_param(Some(&scope))?;
+    let region = require_qoder_region(scope)?;
+    tauri::async_runtime::spawn_blocking(move || qoder::profile::probe_view_for(region))
+        .await
+        .map_err(|error| format!("探测 Qoder 本机凭据失败: {error}"))
+}
+
+/// POST /api/qoder/accounts/import-local —— 从本机已登录的客户端导入账号。
+#[tauri::command]
+pub async fn qoder_import_local(scope: String) -> Result<Value, String> {
+    let scope = resolve_scope_param(Some(&scope))?;
+    let region = require_qoder_region(scope)?;
+    tauri::async_runtime::spawn_blocking(move || qoder::profile::import_from_local_for(region))
+        .await
+        .map_err(|error| format!("导入 Qoder 本机账号失败: {error}"))?
+}
+
+/// POST /api/qoder/accounts/import-pat —— 由 PAT 导入一条账号（**纯本地**，不访问上游）。
+#[tauri::command]
+pub async fn qoder_import_pat(
+    scope: String,
+    pat: String,
+    nickname: Option<String>,
+) -> Result<Value, String> {
+    let scope = resolve_scope_param(Some(&scope))?;
+    let region = require_qoder_region(scope)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        qoder::profile::import_from_pat_for(region, &pat, nickname)
+    })
+    .await
+    .map_err(|error| format!("导入 Qoder PAT 失败: {error}"))?
+}
+
+/// POST /api/qoder/accounts/remark —— 改备注（唯一的「只改一个字段」入口）。
+#[tauri::command]
+pub async fn qoder_set_account_remark(
+    scope: String,
+    uid: String,
+    remark: Option<String>,
+) -> Result<Value, String> {
+    let scope = resolve_scope_param(Some(&scope))?;
+    let region = require_qoder_region(scope)?;
+    let changed = tauri::async_runtime::spawn_blocking(move || {
+        qoder::account::set_remark_for(region, &uid, remark)
+    })
+    .await
+    .map_err(|error| format!("保存 Qoder 备注失败: {error}"))??;
+    Ok(json!({ "ok": changed }))
+}
+
+/// POST /api/qoder/accounts/delete —— 删除一条账号（**硬删除**）。
+#[tauri::command]
+pub async fn qoder_delete_account(scope: String, uid: String) -> Result<Value, String> {
+    let scope = resolve_scope_param(Some(&scope))?;
+    let region = require_qoder_region(scope)?;
+    let removed = tauri::async_runtime::spawn_blocking(move || {
+        qoder::account::remove_account_for(region, &uid)
+    })
+    .await
+    .map_err(|error| format!("删除 Qoder 账号失败: {error}"))??;
+    Ok(json!({ "ok": removed }))
+}
+
+/// POST /api/qoder/accounts/refresh —— 刷新一条账号的令牌（device / job / PAT 三路由）。
+#[tauri::command]
+pub async fn qoder_refresh_account(scope: String, uid: String) -> Result<Value, String> {
+    let scope = resolve_scope_param(Some(&scope))?;
+    let region = require_qoder_region(scope)?;
+    qoder::refresh::refresh_for(region, &uid).await
+}
+
+/// GET /api/qoder/checkin/status —— 区域签到状态（逐账号 + 汇总；国际版如实报未开放）。
+#[tauri::command]
+pub async fn qoder_checkin_status(scope: String) -> Result<Value, String> {
+    let scope = resolve_scope_param(Some(&scope))?;
+    let region = require_qoder_region(scope)?;
+    Ok(qoder::checkin::status_for(region).await)
+}
+
+/// POST /api/qoder/checkin/claim —— 单账号签到（状态驱动；见 checkin 模块头）。
+#[tauri::command]
+pub async fn qoder_checkin_claim(scope: String, uid: String) -> Result<Value, String> {
+    let scope = resolve_scope_param(Some(&scope))?;
+    let region = require_qoder_region(scope)?;
+    qoder::checkin::claim_for(region, &uid).await
+}
+
+/// GET /api/qoder/credits —— 区域额度 / 套餐视图（逐账号 + 汇总；部分失败如实报）。
+#[tauri::command]
+pub async fn qoder_credits(scope: String) -> Result<Value, String> {
+    let scope = resolve_scope_param(Some(&scope))?;
+    let region = require_qoder_region(scope)?;
+    Ok(qoder::credits::region_view(region).await)
+}
+
+// ---------------------------------------------------------------------------
+// Qoder API 网关（管理面）
+// ---------------------------------------------------------------------------
+//
+// 与 Trae 侧的管理命令**形状对齐**（get config / save config / status /
+// models / keys / logs / clear logs）。差异有两处：
+// ① 归属轴是**区域**而不是程序位（Key 绑定 `region`）；
+// ② **一个监听服务两个区域** —— `enabled` / `port` / `running` 是两区域共用的事实，
+//    只有池 / Key 前缀 / 清单按 `scope` 分家。
+//
+// 多 Key 管理走 `qoder_gateway::shared_state().key_store`：Key 只存哈希 + 前缀 +
+// `region`，明文仅在创建时一次性返回；形状由 gateway crate 的 `QoderApiKeyStore`
+// 唯一产出（`MEMORY.md §二`：两条通道不得各自拼装）。
+
+/// GET /api/qoder/gateway/config —— Qoder 网关配置（**全局唯一**，不分区域）。
+#[tauri::command]
+pub fn get_qoder_gateway_config() -> Value {
+    serde_json::to_value(buddy_switch_gateway::qoder::QoderGatewayConfig::load())
+        .unwrap_or(Value::Null)
+}
+
+/// POST /api/qoder/gateway/config —— 保存配置并应用（启动 / 重启独立监听）。
+///
+/// 注意 `max_body_mb` 是**构造期**固化进 axum `DefaultBodyLimit` 的（与另两个网关
+/// 同理），改它要等下一次 `apply()` —— 而本命令每次都会重建监听，所以只要走这里就一定生效。
+#[tauri::command]
+pub async fn save_qoder_gateway_config(
+    app: tauri::AppHandle,
+    config: Value,
+) -> Result<Value, String> {
+    require_capability(Product::Qoder, capability::Capability::Gateway)?;
+    let submitted = config.get("config").cloned().unwrap_or(config);
+    let parsed: buddy_switch_gateway::qoder::QoderGatewayConfig =
+        serde_json::from_value(submitted).map_err(|error| format!("配置格式错误: {error}"))?;
+    parsed.save()?;
+
+    let state = qoder_gateway::shared_state();
+    *state.config.write().await = parsed.clone();
+    state.log.set_keep(parsed.log_keep);
+    state.log.set_log_bodies(parsed.log_bodies);
+
+    let runtime = app.state::<qoder_gateway::QoderGatewayRuntime>();
+    let addr = runtime.apply().await?;
+    Ok(json!({
+        "ok": true,
+        "config": parsed,
+        "running": addr.is_some(),
+        "addr": addr,
+    }))
+}
+
+/// GET /api/qoder/gateway/status —— 运行状态 + **该区域**账号池 + 账号明细 + 诊断。
+///
+/// `scope` 必填且 fail-closed（`qoder-cn` / `qoder-global`）：Qoder 的双区域是两本
+/// 互不相通的账号库，缺 scope 就无从判断该看哪本 —— **不**回落任意一本。
+#[tauri::command]
+pub async fn qoder_gateway_status(app: tauri::AppHandle, scope: String) -> Result<Value, String> {
+    let scope = resolve_scope_param(Some(&scope))?;
+    let region = require_qoder_region(scope)?;
+    let (running, addr) = {
+        let runtime = app.state::<qoder_gateway::QoderGatewayRuntime>();
+        (runtime.is_running(), runtime.addr())
+    };
+    Ok(buddy_switch_gateway::qoder::status_view(
+        &qoder_gateway::shared_state(),
+        running,
+        addr,
+        update::APP_VERSION,
+        region,
+    )
+    .await)
+}
+
+/// GET /api/qoder/gateway/models —— 对外暴露的模型清单（**随上游刷新**）。
+///
+/// 与 Trae 侧不同：Qoder **没有静态常量清单**，清单只能向官方拉（需账号凭据）。
+/// 拉不到时给空清单 + 可读 `note` + `source`（`live` / `cached` / `unavailable`），
+/// **绝不**伪造一份「像真的」清单（`source = unavailable` 时前端呈现空态与原因）。
+///
+/// 返回的是**未过滤**的全量清单 + 逐条 `disabled` 标记：表格要能同时显示
+/// 「已禁用」的行（过滤掉的话，用户会以为这个模型从上游消失了）；「网关真正暴露的
+/// 条数」= 全量 − 已禁用，由前端按同一份 `disabled` 现算（与出口 ① 同源）。
+///
+/// 响应形状由 gateway crate 的 `payload::admin_models_response` **唯一产出**
+/// （两宿主共用，本层不拼装）。`refresh = true` ⇒ 绕过 10 分钟缓存强制重拉。
+#[tauri::command]
+pub async fn get_qoder_gateway_models(
+    scope: String,
+    refresh: Option<bool>,
+) -> Result<Value, String> {
+    let scope = resolve_scope_param(Some(&scope))?;
+    let region = require_qoder_region(scope)?;
+    let state = qoder_gateway::shared_state();
+    let catalog = if refresh.unwrap_or(false) {
+        state.refresh_catalog(region).await
+    } else {
+        state.catalog_for(region).await
+    };
+    // 本命令是**异步**的（清单可能要向上游拉，属网络 IO），故用 `.read().await`；
+    // 与网关本体（`qoder/routes.rs`）读的是**同一份** `disabled`（按作用域键控）。
+    let disabled = {
+        let guard = state.disabled.read().await;
+        guard
+            .get(buddy_switch_core::modules::product::scope_of_qoder_region(
+                region,
+            ))
+            .clone()
+    };
+    Ok(buddy_switch_gateway::qoder::payload::admin_models_response(
+        region, &catalog, &disabled,
+    ))
+}
+
+/// GET /api/qoder/gateway/keys —— 多 Key 列表（含归属区域）。
+///
+/// 形状唯一来源：gateway crate 的 `QoderApiKeyStore::list`（HTTP 通道同款）。
+#[tauri::command]
+pub fn list_qoder_api_keys() -> Value {
+    let state = qoder_gateway::shared_state();
+    json!({ "keys": state.key_store.list() })
+}
+
+/// POST /api/qoder/gateway/keys —— 新建 Key（`{name, scope}`，明文仅此一次返回）。
+#[tauri::command]
+pub fn create_qoder_api_key(scope: String, name: Option<String>) -> Result<Value, String> {
+    let scope = resolve_scope_param(Some(&scope))?;
+    let region = require_qoder_region(scope)?;
+    let name = name
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| "未命名 Key".to_string());
+    let state = qoder_gateway::shared_state();
+    let (record, plaintext) = state.key_store.create(name, region)?;
+    Ok(json!({
+        "ok": true,
+        "key": plaintext,
+        "record": record.masked(),
+    }))
+}
+
+/// POST /api/qoder/gateway/keys/revoke —— 吊销 Key（`{id}`）。
+#[tauri::command]
+pub fn revoke_qoder_api_key(id: String) -> Result<Value, String> {
+    let id = id.trim();
+    if id.is_empty() {
+        return Err("缺少 id".to_string());
+    }
+    let state = qoder_gateway::shared_state();
+    state.key_store.revoke(id)?;
+    Ok(json!({ "ok": true }))
+}
+
+/// POST /api/qoder/gateway/keys/restore —— 撤销吊销（Key 重新可用，`{id}`）。
+#[tauri::command]
+pub fn restore_qoder_api_key(id: String) -> Result<Value, String> {
+    let id = id.trim();
+    if id.is_empty() {
+        return Err("缺少 id".to_string());
+    }
+    let state = qoder_gateway::shared_state();
+    state.key_store.restore(id)?;
+    Ok(json!({ "ok": true }))
+}
+
+/// POST /api/qoder/gateway/keys/delete —— 物理删除**已吊销**的 Key（`{id}`）。
+#[tauri::command]
+pub fn delete_qoder_api_key(id: String) -> Result<Value, String> {
+    let id = id.trim();
+    if id.is_empty() {
+        return Err("缺少 id".to_string());
+    }
+    let state = qoder_gateway::shared_state();
+    state.key_store.delete(id)?;
+    Ok(json!({ "ok": true }))
+}
+
+/// GET /api/qoder/gateway/logs —— 最近 N 条请求日志（元数据；含 `region` 归属）。
+#[tauri::command]
+pub fn get_qoder_gateway_logs() -> Value {
+    let state = qoder_gateway::shared_state();
+    json!({ "logs": state.log.list() })
+}
+
+/// POST /api/qoder/gateway/logs/clear —— 清空日志。
+#[tauri::command]
+pub fn clear_qoder_gateway_logs() -> Value {
+    let state = qoder_gateway::shared_state();
+    state.log.clear();
+    json!({ "ok": true })
 }

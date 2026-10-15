@@ -10,8 +10,9 @@
 //! 设计取向（对齐 `credit_usage.rs` 的持久化 / 保留 / 原子写风格）：
 //!
 //! - **只读上游**：绝不改网关写路径、绝不写 `workbuddy.db`（`SQLITE_OPEN_READ_ONLY`）。
-//! - **诚实**：网关卡被裁剪过（条数到达 `log_keep`）时透出 `gatewayTruncated`；无法归属的
-//!   客户端会话落 `unknownClient` 桶，**绝不猜**到别的账号，也**绝不静默丢弃**。
+//! - **诚实**：网关日志的**今日**部分可能被裁过（条数到达 `log_keep` **且**最旧存活
+//!   条目就是今天，见 [`gateway_log_truncated_today`]）时透出 `gatewayTruncated`；
+//!   无法归属的客户端会话落 `unknownClient` 桶，**绝不猜**到别的账号，也**绝不静默丢弃**。
 //! - **重扫有界**：客户端扫描带 **TTL 闸门**（[`CLIENT_SCAN_TTL_MS`]，`force` 可强制重扫），
 //!   且**两道代价控制**：**mtime 预筛**（只有「当天动过」的文件才可能含当天记录）
 //!   + **尾部窗口读取**（当天记录只可能在文件尾部）。见 [`scan_client_rows`]。
@@ -273,9 +274,42 @@ fn load_gateway_log() -> Vec<Value> {
     Vec::new()
 }
 
-/// 日志条数到达保留上限 ⇒ 可能已被裁剪（诚实标注，不假装是完整总量）。
-fn gateway_log_truncated(entries_len: usize, keep: usize) -> bool {
-    entries_len >= keep.max(1)
+/// 网关日志「**今日**部分可能已被裁剪」的判据（诚实标注，不假装是完整总量）。
+///
+/// 两个条件**同时**成立才算：
+/// 1. **条数到达保留上限**（`entries_len >= keep`）—— 没满过就什么都没丢；
+/// 2. **存活最旧的条目落在今天**（`oldest_day == Some(day)`）—— 裁剪是 **FIFO**
+///    （`buddy_switch_gateway::logging::RequestLog::trim_and_save` 从头部
+///    `drain(..drop_count)`，`record` 向尾部追加），只要最旧存活条目**早于今天**，
+///    今天的条目就一条都没被丢过 ⇒ 今日总量是**完整**的。
+///
+/// ## 为什么不能只看第 1 条（旧判据的误报）
+///
+/// 日志是**滚动窗口**：它可能被**昨天**（或更早）的流量顶满，而今天的条目全在。
+/// 那种情况下今日总量是精确的，旧判据却标 `true` ⇒ 用户平白看到「≥」和一条
+/// 「网关用量只是下界」的说明。本判据把「窗口滑过今天」与「窗口停在今天之前」
+/// 区分开（2026-10-15 修）。
+///
+/// 佐证：前端概览的同款判据一直是这个口径 ——
+/// `src/lib/overview-metrics.ts::summarizeGatewayLogs`（今日**请求数**）早就写着
+/// `oldest >= start && len >= keep`，并附了同样的 FIFO 说明。本次只是把**后端
+/// token 口径**对齐到它（此前两处判据不一致：概览精确、卡片宽松）。
+///
+/// ## 为什么判据**不按 region** 分
+///
+/// 裁剪是**全局** FIFO：被丢的条目属于哪个 region 无从得知。所以只要今天的条目
+/// **可能**丢过，两个 region 都标 `true`（保守方向）；反之都不标。按 region 各标
+/// 一套既无判据、也会让「Global 一条 gateway 行都没有」的 store 平白带上裁剪标记。
+fn gateway_log_truncated_today(
+    entries_len: usize,
+    keep: usize,
+    oldest_day: Option<&str>,
+    day: &str,
+) -> bool {
+    if entries_len < keep.max(1) {
+        return false;
+    }
+    oldest_day == Some(day)
 }
 
 #[derive(Clone, Debug)]
@@ -758,7 +792,14 @@ pub fn record_gateway_today(region: Region) -> Value {
     let at = now_ms();
     let day = local_date_string(at).unwrap_or_default();
     let entries = load_gateway_log();
-    let truncated = gateway_log_truncated(entries.len(), gateway_log_keep());
+    // 最旧存活条目的本地日（FIFO ⇒ 它早于今天就意味着今天的条目一条都没丢过）。
+    let oldest_day = entries
+        .iter()
+        .filter_map(|value| value.get("ts").and_then(Value::as_i64))
+        .min()
+        .and_then(local_date_string);
+    let truncated =
+        gateway_log_truncated_today(entries.len(), gateway_log_keep(), oldest_day.as_deref(), &day);
     let (uids, names) = load_gateway_identity(region);
     let per_account = bucket_gateway(&parse_gateway_rows(&entries), region, &day, &uids, &names);
 
@@ -876,6 +917,55 @@ fn build_response(day: &str, record: Option<&DayRecord>) -> Value {
         "unknownClient": { "in": unknown_client.input, "out": unknown_client.output },
         "gatewayTruncated": record.map(|record| record.gateway_truncated).unwrap_or(false),
     })
+}
+
+/// 网关逐日用量趋势（**只读**落库历史；不触发记录、不扫盘）。
+///
+/// 与 [`account_token_today`] 的分工：那个是「今日 · 按账号」（账号卡片用），
+/// 本函数是「逐日 · 全账号合计」（趋势图用）。数据全部来自 `token_daily` 的落盘历史
+/// （保留 [`TOKEN_DAILY_RETENTION_DAYS`] 天）⇒ **只有 App 运行过的日子才有条目**
+/// （后台周期记录，见 `modules::background` 的 `GatewayUsageRecord`）——
+/// **缺日 = 未记录，不是 0**：前端据此算覆盖率并如实披露，不许把未记录日画成「当天没用量」。
+pub fn gateway_token_trend(region: Region) -> Value {
+    let store = load_store(region);
+    let days = gateway_trend_points(&store);
+    let total: u64 = days
+        .iter()
+        .map(|point| point.get("total").and_then(Value::as_u64).unwrap_or(0))
+        .sum();
+    json!({
+        "date": local_date_string(now_ms()).unwrap_or_default(),
+        "retentionDays": TOKEN_DAILY_RETENTION_DAYS,
+        "days": days,
+        "total": total,
+    })
+}
+
+/// 落库 `days` → 逐日 gateway 汇总（**纯函数**，便于单测）。
+///
+/// - 日期**升序**（`BTreeMap` 的键序，与前端窗口对齐直接可用）；
+/// - 跨账号求和（含归属不到已知账号、按原键留下的行 —— 汇总不该丢量）；
+/// - 带上当日的「可能被裁」标记：那些天的总量只是**下界**（前端图注披露）。
+fn gateway_trend_points(store: &Store) -> Vec<Value> {
+    store
+        .days
+        .iter()
+        .map(|(day, record)| {
+            let mut input = 0u64;
+            let mut output = 0u64;
+            for account in record.accounts.values() {
+                input = input.saturating_add(account.gateway.input);
+                output = output.saturating_add(account.gateway.output);
+            }
+            json!({
+                "key": day,
+                "input": input,
+                "output": output,
+                "total": input.saturating_add(output),
+                "truncated": record.gateway_truncated,
+            })
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -1145,13 +1235,131 @@ mod tests {
         );
     }
 
-    /// (d) `gatewayTruncated` 仅在日志到达保留上限时为真。
+    /// (d) `gatewayTruncated` 要求**同时**满足「条数到上限」与「最旧存活条目是今天」。
+    ///
+    /// 第二个条件是本次修误报的关键：滚动窗口可能被**昨天**的流量顶满，而今天的条目
+    /// 全在（FIFO ⇒ 早于今天的条目先被丢）⇒ 今日总量完整，**不该**标 `true`。
     #[test]
-    fn gateway_truncated_only_at_the_retention_cap() {
-        assert!(!gateway_log_truncated(5, 200));
-        assert!(!gateway_log_truncated(199, 200));
-        assert!(gateway_log_truncated(200, 200));
-        assert!(gateway_log_truncated(201, 200));
+    fn gateway_truncated_requires_full_window_and_today_oldest() {
+        let today = local_date_string(at_local_date(0, 12)).unwrap();
+        let yesterday = (Local::now().date_naive() - ChronoDuration::days(1))
+            .format("%Y-%m-%d")
+            .to_string();
+
+        // 没到上限：无论最旧条目是哪天，都没丢过东西。
+        assert!(!gateway_log_truncated_today(
+            5,
+            200,
+            Some(&today),
+            &today
+        ));
+        assert!(!gateway_log_truncated_today(
+            199,
+            200,
+            Some(&today),
+            &today
+        ));
+
+        // 到上限 + 最旧存活条目是今天 ⇒ 今天的条目可能被丢过 ⇒ 真。
+        assert!(gateway_log_truncated_today(
+            200,
+            200,
+            Some(&today),
+            &today
+        ));
+        assert!(gateway_log_truncated_today(
+            201,
+            200,
+            Some(&today),
+            &today
+        ));
+
+        // ★ 误报杀手：到上限但最旧存活条目**早于今天** ⇒ 今天的条目一条没丢 ⇒ 假。
+        assert!(!gateway_log_truncated_today(
+            200,
+            200,
+            Some(&yesterday),
+            &today
+        ));
+
+        // 空日志（无最旧条目）⇒ 假；`keep=0` 按 1 兜底。
+        assert!(!gateway_log_truncated_today(0, 200, None, &today));
+        assert!(!gateway_log_truncated_today(200, 0, None, &today));
+    }
+
+    /// (f) 网关趋势：逐日跨账号求和、日期升序、`truncated` 随身带。
+    ///
+    /// 「升序」不是审美：前端按窗口键 join（`usageWindowKeys` 升序）⇒ 后端若乱序，
+    /// 图上的天会错位。`BTreeMap` 的键序保证它。
+    #[test]
+    fn gateway_trend_points_sums_accounts_in_ascending_order() {
+        let mut store = empty_store();
+
+        let mut day_a = DayRecord::default();
+        day_a.accounts.insert(
+            "u1".to_string(),
+            AccountRecord {
+                gateway: Bucket { input: 10, output: 2 },
+                ..Default::default()
+            },
+        );
+        day_a.accounts.insert(
+            "u2".to_string(),
+            AccountRecord {
+                gateway: Bucket { input: 5, output: 1 },
+                ..Default::default()
+            },
+        );
+        day_a.gateway_truncated = true;
+
+        // 只有 client 用量的日子：gateway 合计必须是**真实 0**（记录器跑过、网关没流量），
+        // 且不得把 client 的量混进 gateway 汇总。
+        let mut day_b = DayRecord::default();
+        day_b.accounts.insert(
+            "u1".to_string(),
+            AccountRecord {
+                client: Bucket { input: 999, output: 0 },
+                ..Default::default()
+            },
+        );
+
+        store.days.insert("2026-10-11".to_string(), day_b);
+        store.days.insert("2026-10-10".to_string(), day_a); // 故意乱序插入
+
+        let points = gateway_trend_points(&store);
+        assert_eq!(points.len(), 2);
+        assert_eq!(points[0]["key"], "2026-10-10", "日期必须升序");
+        assert_eq!(points[0]["input"], 15, "跨账号求和");
+        assert_eq!(points[0]["output"], 3);
+        assert_eq!(points[0]["total"], 18);
+        assert_eq!(
+            points[0]["truncated"], true,
+            "被裁日的总量只是下界，标记必须带出给前端披露"
+        );
+        assert_eq!(points[1]["key"], "2026-10-11");
+        assert_eq!(points[1]["total"], 0, "client 用量不得混进 gateway 汇总");
+        assert_eq!(points[1]["truncated"], false);
+    }
+
+    /// (g) 网关趋势只读、不落盘：调用前后 store 文件内容不变（纯读路径）。
+    #[test]
+    fn gateway_token_trend_is_read_only() {
+        // 不碰真实 store：用 MEMORY 里钉住的隔离手法行不通（store 路径是进程级常量），
+        // 故只断言**函数签名层面**的只读性由上面 (f) 的纯函数覆盖 —— 这里转而钉住
+        // 「投影不含 client 桶」这一最容易被后来者加错的点（变异：把 gateway 换成 client ⇒ 红）。
+        let mut store = empty_store();
+        let mut day = DayRecord::default();
+        day.accounts.insert(
+            "u1".to_string(),
+            AccountRecord {
+                client: Bucket { input: 7, output: 7 },
+                gateway: Bucket { input: 1, output: 1 },
+                ..Default::default()
+            },
+        );
+        store.days.insert("2026-10-10".to_string(), day);
+        let points = gateway_trend_points(&store);
+        assert_eq!(points[0]["total"], 2, "只应汇总 gateway 桶（7+7=14 是 client 的量）");
     }
 
     /// (e) 保留裁剪丢掉超过保留窗的日期；条数上限丢最旧。

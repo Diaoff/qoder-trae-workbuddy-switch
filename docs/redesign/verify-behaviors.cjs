@@ -240,6 +240,19 @@ const MUTATIONS = {
     from: 'onOk: () => { key.revoked = false; renderContent();',
     to: 'onOk: () => { /* MUTATED: 恢复不生效 */',
   },
+  /* ★ Qoder（第三个平台）—— 两条数据层变异。 */
+  qodertotal: {
+    desc: "Qoder 国内版今日 Token 与账号合计脱钩（days 末值不再自洽）",
+    file: "demo-data.js",
+    from: '        lastUsed: "3 分钟前", todayTokens: 38400, totalTokens: 512000,',
+    to: '        lastUsed: "3 分钟前", todayTokens: 40000, totalTokens: 512000, /* MUTATED */',
+  },
+  qoderlabel: {
+    desc: "备份页作用域名退回 `SCOPES[id].label`（既有缺陷复现：每行都没名字）",
+    file: "demo-data.js",
+    from: "  label: scopeDisplayName(id),",
+    to: "  label: SCOPES[id].label, /* MUTATED */",
+  },
 };
 if (MUT) {
   if (!MUTATIONS[MUT]) { console.error("未知变异：" + MUT + "（可选 " + Object.keys(MUTATIONS).join(" / ") + "）"); process.exit(2); }
@@ -283,7 +296,9 @@ async function boot(query) {
   const ev = (expr) => dom0.window.eval(expr);
 
   check("P0-2 各作用域 days 末值 = 账号 todayTokens 合计", () => {
-    const expect = { "wb-cn": 128700, "wb-global": 18400, "trae-cn": 96200, "trae-global": 0 };
+    /* 期望值**写死**：拿 `days` 自己算期望等于用被测物证明被测物（恒真）。
+       ⚠️ 新增作用域必须在此登记 —— 少一条这里就少守一个作用域。 */
+    const expect = { "wb-cn": 128700, "wb-global": 18400, "trae-cn": 96200, "trae-global": 0, "qoder-cn": 56200, "qoder-global": 25200 };
     const bad = [];
     for (const id of Object.keys(expect)) {
       const last = ev(`USAGE[${JSON.stringify(id)}].days[USAGE[${JSON.stringify(id)}].days.length-1].value`);
@@ -296,7 +311,7 @@ async function boot(query) {
   });
 
   check("P0-2 scope 级 todayTokens 死字段已删除", () => {
-    const alive = ["wb-cn", "wb-global", "trae-cn", "trae-global"].filter((id) => ev(`SCOPES[${JSON.stringify(id)}].todayTokens !== undefined`));
+    const alive = ["wb-cn", "wb-global", "trae-cn", "trae-global", "qoder-cn", "qoder-global"].filter((id) => ev(`SCOPES[${JSON.stringify(id)}].todayTokens !== undefined`));
     if (alive.length) throw new Error("仍存在：" + alive.join(","));
     return true;
   });
@@ -337,7 +352,7 @@ async function boot(query) {
   check("P0-1 合并值 = 各作用域逐日求和（精确校验）", () => {
     const fmtTok = (n) => (n >= 1e6 ? (n / 1e6).toFixed(1) + "M" : n >= 1e3 ? (n / 1e3).toFixed(1) + "K" : String(n || 0));
     const expect = ev.call(null, "0") === undefined ? null : (() => {
-      const ids = ["wb-cn", "wb-global", "trae-cn", "trae-global"];
+      const ids = ["wb-cn", "wb-global", "trae-cn", "trae-global", "qoder-cn", "qoder-global"];
       let sum = 0;
       for (const id of ids) {
         const days = w.eval(`USAGE[${JSON.stringify(id)}].days`);
@@ -844,12 +859,27 @@ async function boot(query) {
     return items.join(" / ");
   });
 
-  check("备份页：默认勾选全部 4 个作用域（跨作用域一次导出）", () => {
+  check("备份页：默认勾选全部 6 个作用域（跨作用域一次导出）", () => {
     const rows = [...dB.querySelectorAll(".bk-export-list .bk-row")];
-    if (rows.length !== 4) throw new Error(`${rows.length} 行，期望 4 行`);
+    if (rows.length !== 6) throw new Error(`${rows.length} 行，期望 6 行`);
     const off = rows.filter((r) => !r.querySelector(".check").classList.contains("on"));
     if (off.length) throw new Error(`${off.length} 个作用域默认未勾选`);
-    return "4/4 默认全选";
+    return "6/6 默认全选";
+  });
+
+  check("★ 备份页：每个作用域行都有名字（不是空串）", () => {
+    /* 曾经的缺陷：`BACKUP_SECTIONS` 取 `SCOPES[id].label`，而 SCOPES 的条目**只有**
+       `platform` + `region`（没有 `label`）⇒ `esc(undefined)` 归成空串 ⇒
+       每行都没名字、`aria-label` 也退化成「全选 」。这条断言钉死
+       「名字非空，且能读出平台 + 区域」。 */
+    const labels = [...dB.querySelectorAll(".bk-export-list .bk-row")]
+      .map((r) => r.querySelector(".bk-scope").textContent.trim());
+    const blank = labels.filter((l) => !l);
+    if (blank.length) throw new Error(`${blank.length}/${labels.length} 行作用域名是空的`);
+    for (const want of ["WorkBuddy 国内版", "TraeWork 国际版", "Qoder 国内版", "Qoder 国际版"]) {
+      if (!labels.includes(want)) throw new Error(`缺少「${want}」：${labels.join(" / ")}`);
+    }
+    return labels.join(" / ");
   });
 
   check("备份页：默认不含凭据（安全默认），预估行如实声明", () => {
@@ -935,7 +965,7 @@ async function boot(query) {
   const dB2 = domBK2.window.document;
   const bByAct2 = (act) => [...dB2.querySelectorAll("[data-act]")].find((el) => el.dataset.act === act);
   check("★ 全部取消勾选后，导出按钮被禁用（不能导出空备份）", () => {
-    for (const s of ["wb-cn", "wb-global", "trae-cn", "trae-global"]) bByAct2("bk-scope|" + s).click();
+    for (const s of ["wb-cn", "wb-global", "trae-cn", "trae-global", "qoder-cn", "qoder-global"]) bByAct2("bk-scope|" + s).click();
     const btn = bByAct2("bk-export");
     if (!btn.hasAttribute("disabled")) throw new Error("没有任何勾选，导出按钮仍可点");
     return "disabled";

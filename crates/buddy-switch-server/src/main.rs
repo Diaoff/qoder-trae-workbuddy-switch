@@ -23,6 +23,8 @@
 
 mod api;
 mod gateway_host;
+// Qoder 网关（第三个平台，默认 7865）：独立端口，不与另三个 merge（axum 同路径 merge 会 panic）。
+mod qoder_gateway_host;
 mod trae_gateway_host;
 // 统一网关（第三个产品线，默认 57892）：跨产品线的单一入口 —— 独立端口，不与另两个 merge。
 mod unified_gateway_host;
@@ -30,8 +32,8 @@ mod unified_gateway_host;
 use serde_json::json;
 
 use buddy_switch_core::modules::{
-    account, auth_file, backup, config, process, region::Region, rotate, schedule, scheduler, trae,
-    update,
+    account, auth_file, backup, config, process, region::Region, rotate, schedule, scheduler,
+    token_daily, trae, update,
 };
 use buddy_switch_core::modules::background::{TaskKind, TaskSpec, TASKS};
 use buddy_switch_core::modules::product::Product;
@@ -125,6 +127,14 @@ const TRAE_CREDITS_REFRESH_INTERVAL_MS: u64 = 30 * 60 * 1000;
 /// 故检查本身开销极低；小时级足以在跨日后尽快产生当日备份。
 const AUTO_BACKUP_CHECK_INTERVAL_MS: u64 = 60 * 60 * 1000;
 
+/// 网关用量「今日」快照的记录周期（毫秒）—— 与 core
+/// [`buddy_switch_core::modules::background::GATEWAY_USAGE_RECORD_INTERVAL`] 同值。
+///
+/// 取 2 分钟（对齐 `token_daily::CLIENT_SCAN_TTL_MS`）：账号卡片的「今日 Token」
+/// gateway 桶是仪表盘读数，不需要实时，但绝不能长时间不动；而每轮只读一份受
+/// `log_keep` 封顶的日志 + 账号库，代价极低。
+const GATEWAY_USAGE_RECORD_INTERVAL_MS: u64 = 2 * 60 * 1000;
+
 /// 启动全部后台任务（以 core 的 [`TASKS`] 为**唯一事实来源**）。
 ///
 /// ⚠️ **登记即执行**——不要在本函数之外直接 `tokio::spawn` 后台循环；新增「写状态 /
@@ -216,6 +226,16 @@ fn spawn_background_task(spec: TaskSpec) {
                     }
                 });
             }
+            /* Qoder：**尚未有余额刷新循环**（额度要调上游，属网关层，未落地）。
+               ⚠️ 这里**不是**「静默吞掉」：core 的 `TASKS` 表里没有任何 Qoder 任务
+               ⇒ 本分支当前不可达。一旦有人往 `TASKS` 里加了 Qoder 的 `CreditsRefresh`，
+               这行警告会立刻出现在日志里，而不是让它悄悄空转。 */
+            Product::Qoder => {
+                eprintln!(
+                    "[background] Qoder 的 CreditsRefresh 已登记但**尚无实现** —— \
+                     请补刷新循环，或从 core 的 TASKS 表里移除该条目。"
+                );
+            }
         },
         // 账号池治理状态落盘：**周期**刷新，且只在有改动时写（`flush_if_dirty`）。
         //
@@ -262,6 +282,29 @@ fn spawn_background_task(spec: TaskSpec) {
             tokio::spawn(async move {
                 let state = gateway_host::shared_state();
                 let _ = buddy_switch_gateway::catalog_probe::probe_stale_regions(&state).await;
+            });
+        }
+        // ★ 网关用量「今日」快照（2026-10-15 新增，缺陷修复）：周期把网关日志聚合进
+        // `token_daily` 的 gateway 桶并落盘。
+        //
+        // 为什么必须有它：`record_gateway_today` 此前唯一的调用点是「打开账号页」的
+        // 命令（`api_account_token_today`）⇒ ① 不进账号页，gateway 桶一直是旧值；
+        // ② `token_daily` 保留 90 天，但历史只覆盖「当天 App 被打开过」的日子
+        //    （实测大片空洞）⇒ 网关用量永远成不了趋势。
+        //
+        // 覆盖**两个 region**：`gateway_logs.json` 是单文件、行内带 `region`，
+        // 只记一个 region 会让另一个的历史永远空着。
+        TaskKind::GatewayUsageRecord => {
+            tokio::spawn(async move {
+                loop {
+                    for region in Region::all() {
+                        let _ = token_daily::record_gateway_today(region);
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(
+                        GATEWAY_USAGE_RECORD_INTERVAL_MS,
+                    ))
+                    .await;
+                }
             });
         }
         // 六类积分任务各自独立排程。
@@ -432,6 +475,14 @@ async fn serve(args: &[String]) {
         Ok(Some(addr)) => println!("Trae API 网关: http://{addr}"),
         Ok(None) => {}
         Err(error) => eprintln!("[trae-gateway] 启动失败: {error}"),
+    }
+
+    // 按配置启动 Qoder 网关独立监听（默认关闭；默认 127.0.0.1:7865）。
+    // ⚠️ 一个监听、两个区域（区域由请求所用 API Key 的归属决定）。
+    match qoder_gateway_host::apply().await {
+        Ok(Some(addr)) => println!("Qoder API 网关: http://{addr}"),
+        Ok(None) => {}
+        Err(error) => eprintln!("[qoder-gateway] 启动失败: {error}"),
     }
 
     // 按配置启动**统一网关**独立监听（默认关闭；默认 127.0.0.1:57892）。
@@ -638,6 +689,22 @@ mod tests {
             has_task(Product::Workbuddy, TaskKind::GatewayCatalogProbe),
             "后台任务表必须登记 (Workbuddy, GatewayCatalogProbe)（网关启动补识别）；缺了它\
              启动时不会补识别「内置 / 陈旧」的清单。当前表：{TASKS:?}"
+        );
+    }
+
+    /// 护栏：**网关用量今日快照**任务必须登记在 core 后台任务表里（2026-10-15 缺陷修复）。
+    ///
+    /// 回归背景：`record_gateway_today` 此前只有「打开账号页」一个调用点 ⇒
+    /// ① 服务端常驻进程从不打开账号页，gateway 桶永远不刷新；② `token_daily` 的
+    /// 90 天历史只覆盖「当天打开过账号页」的日子（实测大片空洞）⇒ 网关用量成不了趋势。
+    /// 与上面几条同一类事故：能力存在、单测全绿，但生产上没有调用点。
+    #[test]
+    fn background_task_registry_includes_gateway_usage_record() {
+        assert!(
+            has_task(Product::Workbuddy, TaskKind::GatewayUsageRecord),
+            "后台任务表必须登记 (Workbuddy, GatewayUsageRecord)（网关用量今日快照）；缺了它 \
+             record_gateway_today 只剩账号页一个调用点，token_daily 的 90 天历史大片空洞。\
+             当前表：{TASKS:?}"
         );
     }
 

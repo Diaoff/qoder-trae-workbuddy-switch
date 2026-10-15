@@ -200,12 +200,22 @@ export const zh = {
   "wbStats.usage.view.sessions": "会话",
   "wbStats.usage.view.credits": "积分",
 
-  // 视图参数条（每页唯一：范围 + 合并）
+  // 视图参数条（每页唯一：窗口 + 合并）
   "wbStats.usage.param.title": "视图参数",
   "wbStats.usage.param.aria": "时间范围",
+  "wbStats.usage.range.today": "今天",
   "wbStats.usage.range.7": "近 7 天",
   "wbStats.usage.range.14": "近 14 天",
   "wbStats.usage.range.30": "近 30 天",
+  // 自定义时间（弹层）
+  "wbStats.usage.param.custom": "自定义时间",
+  "wbStats.usage.param.custom.title": "自定义时间区间",
+  "wbStats.usage.param.custom.from": "起",
+  "wbStats.usage.param.custom.to": "止",
+  "wbStats.usage.param.custom.hint": "可选范围 {from} – {to}（最近 90 天）",
+  "wbStats.usage.param.custom.incomplete": "起止日期都要填",
+  "wbStats.usage.param.custom.cancel": "取消",
+  "wbStats.usage.param.custom.apply": "应用",
 
   // 图表外壳（ChartFrame）
   "wbStats.usage.chart.chart": "图表",
@@ -228,6 +238,10 @@ export const zh = {
   "wbStats.usage.trend.heatmapDesc": "越亮 = 该时段越忙（相对强度，非绝对量）",
   "wbStats.usage.trend.heatmapAria": "一周七天 × 24 小时的使用强度热力图",
   "wbStats.usage.trend.totalSegment": "合计",
+  // 网关逐日图（**独立小图**，不并进主堆叠柱 —— 见 TokenStatsPage 文件头「为什么」）。
+  "wbStats.usage.trend.gatewayTitle": "网关逐日用量",
+  "wbStats.usage.trend.gatewayAria": "网关逐日用量柱状图",
+  "wbStats.usage.trend.gatewaySegment": "网关",
 
   // 模型视图
   "wbStats.usage.models.count": "模型数",
@@ -286,6 +300,9 @@ export const zh = {
   "wbStats.usage.caption.balanceZero": "{first} → {last}（回推值）",
   "wbStats.usage.caption.scatterAxis": "横轴 = 记录数",
   "wbStats.usage.caption.singleSide": "入账明细不可得，仅画消耗侧",
+  // 网关逐日图：**恒披露覆盖率** —— 历史只覆盖 App 运行过的日子，未记录日不是 0。
+  "wbStats.usage.caption.gateway": "网关独立记录 · 已记录 {recorded}/{total} 天，未记录日按 0 计",
+  "wbStats.usage.caption.gatewayLower": "{n} 天为下界",
 
   // 空态（四要素含出口）
   "wbStats.usage.empty.noData": "还没有产生用量",

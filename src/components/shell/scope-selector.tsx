@@ -30,7 +30,7 @@ import { cn } from "@/lib/utils";
  *
  * ## `⌘N` 只是提示
  *
- * 序号来自 `planScopeShortcuts` 的绑定结果 —— 降级（>5 个作用域或用户关闭）时 Map 为空
+ * 序号来自 `planScopeShortcuts` 的绑定结果 —— 降级（>9 个作用域或用户关闭）时 Map 为空
  * ⇒ 提示**自动消失**（不显示一个按了没反应的假快捷键）。快捷键本身在 `Layout` 里注册。
  */
 export function ScopeSelector({

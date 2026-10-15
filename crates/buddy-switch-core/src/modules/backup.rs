@@ -1011,18 +1011,22 @@ mod tests {
         assert!(resolve_scope_key("foo-cn").is_err());
     }
 
-    /// 导出**必须覆盖全部 4 个作用域**（§1.11：加平台后自动 5/5）。
+    /// 导出**必须覆盖全部作用域**（§1.11：加平台后自动 6/6）。
     ///
     /// 可证伪：把导出改成「只导出当前 scope」，本用例立即变红。
     #[test]
-    fn export_backup_covers_all_four_scopes() {
+    fn export_backup_covers_all_scopes() {
         let home = isolated_home("scopes");
         let _guard = crate::modules::config::HomeOverrideGuard::set(&home);
 
         let selection = BackupSelection::default();
         let envelope = export_backup(&selection).expect("导出应成功");
         let scopes = envelope["scopes"].as_object().expect("scopes 应为对象");
-        assert_eq!(scopes.len(), 4, "必须 4/4 覆盖：{envelope}");
+        assert_eq!(
+            scopes.len(),
+            6,
+            "必须 6/6 覆盖（3 平台 × 2 区域）：{envelope}"
+        );
         for scope in Scope::all() {
             assert!(scopes.contains_key(scope.as_str()), "缺作用域 {}", scope.as_str());
         }

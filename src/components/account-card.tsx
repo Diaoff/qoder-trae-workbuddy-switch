@@ -153,10 +153,12 @@ export function formatCredits(value: number): string {
 /**
  * 「今日 Token」的**诚实**展示串（卡片与表格**同一份**实现，避免两处口径漂移）。
  *
- * 三条边界（见 `AccountTokenTodayResponse`）：
+ * 四条边界（见 `AccountTokenTodayResponse`）：
  * - `entry` 缺失 = 该账号今日**无记录 / 未知** ⇒ **「—」**（**绝不**当 0）；
  * - 出现在 `entry` 里的 `0` 是**真实 0**（`compactTokens(0)` = `"0"`）；
- * - `truncated`（网关日志已到保留上限）⇒ 网关部分是**下界** ⇒ 整串渲染成 **`≥N`**。
+ * - `truncated`（网关日志的**今日**部分可能被裁）⇒ 网关部分是**下界** ⇒ 整串渲染成 **`≥N`**；
+ * - 客户端 / 网关**两侧都非零** ⇒ 合计可能重复计数（两条独立记录），说明由明细
+ *   （{@link todayTokensBreakdown}）带上 —— headline 只负责数字，不负责解释。
  */
 export function formatTodayTokens(
   entry: AccountTokenTodayEntry | null | undefined,
@@ -174,6 +176,12 @@ export function formatTodayTokens(
  *
  * ⚠️ `truncated` 时**必须**把「下界」的说明一并带上 —— 只给数字不说口径就是误导。
  * `entry` 缺失时返回空串（无明细可讲）。
+ *
+ * ★ **双桶重叠披露**（2026-10-15）：客户端与网关是**两条独立记录**（前者来自客户端
+ * 自己的会话日志，后者来自网关请求日志），正常情况下互不相交；但用户可以把某个被统计
+ * 的客户端**指向本网关**，那样同一请求会两处各记一次 ⇒  headline 的合计**可能重复
+ * 计数**。没有可靠判据能识别这种重叠（网关行不带客户端会话 id，反向也没有），按本模块
+ * 「绝不猜」的取向**不做启发式去重** —— 改为在明细里说清楚：两侧都非零时追加一行说明。
  */
 export function todayTokensBreakdown(
   entry: AccountTokenTodayEntry | null | undefined,
@@ -191,6 +199,12 @@ export function todayTokensBreakdown(
       output: exactTokens(entry.gatewayOut),
     }),
   ];
+  // 只有一侧为 0 时，合计就是另一侧、没有歧义 ⇒ 不必加噪音。
+  const clientTotal = entry.clientIn + entry.clientOut;
+  const gatewayTotal = entry.gatewayIn + entry.gatewayOut;
+  if (clientTotal > 0 && gatewayTotal > 0) {
+    parts.push(t("wbAccounts.card.metric.todayTokensOverlap"));
+  }
   if (truncated) parts.push(t("wbAccounts.card.metric.todayTokensTruncated"));
   return parts.join(t("shared.punct.comma"));
 }
@@ -536,7 +550,8 @@ const isCurrentAccount = programSlots.some((slot) => slot.active);
    * - **积分 剩余/总额**：剩余取 `credit.totalRemaining`；总额由 `resources[].total` 汇总；
    *   未就绪 ⇒ 值渲染「—」；
    * - **今日 Token**：`get_account_token_today` 按账号聚合；账号**缺席** ⇒ 「—」（**绝不当 0**）；
-   *   网关日志被裁剪（`todayTokensTruncated`）⇒ 下界 `≥N`，明细与下界说明放 tooltip；
+   *   网关日志的**今日**部分可能被裁（`todayTokensTruncated`）⇒ 下界 `≥N`，明细与下界说明放 tooltip；
+   *   客户端 / 网关**两侧都非零** ⇒ 明细追加「可能重复计数」说明（两条独立记录，无 join 键可去重）；
    * - **最后使用**：`AccountMeta.lastUsedAt`（epoch 毫秒）；**缺席则整项省略**（不打印「—」）。
    *
    * ⚠️ 整行**始终渲染**（含数据全缺时）—— 不闪不藏，缺值以「—」如实呈现。

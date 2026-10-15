@@ -72,6 +72,11 @@ const NAMESPACE_META: readonly NamespaceMeta[] = [
   { id: "traework-global", platform: "Trae", client: "TraeWork（老程序线）", defaultOn: false },
   { id: "traecode-cn", platform: "Trae", client: "TraeCode CN（遗留 IDE）", defaultOn: false },
   { id: "traecode-global", platform: "Trae", client: "TraeCode（遗留 IDE）", defaultOn: false },
+  /* Qoder（第三个平台）的两个命名空间 —— 属**派生层**（平台 × 区域，由后端 `Scope::all()`
+     生成），与上面四条一样进默认启用集。缺了这两条，后端下发的新命名空间会在界面上
+     落到「其他」分组并显示原始 id（`metaOf` 的兜底），看起来像未知平台。 */
+  { id: "qoder-cn", platform: "Qoder", client: "Qoder CN（桌面版）", defaultOn: true },
+  { id: "qoder-global", platform: "Qoder", client: "Qoder（桌面版）", defaultOn: true },
 ];
 
 /** 一条展示记录：镜像表里有则用它的说明，没有（后端新增了平台而前端还没跟上）则**原样显示 id** —— 不隐藏。 */

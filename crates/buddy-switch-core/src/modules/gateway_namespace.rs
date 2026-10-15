@@ -46,6 +46,7 @@ use std::sync::LazyLock;
 
 use crate::modules::client_settings::variant_for_program;
 use crate::modules::product::{Product, Scope};
+use crate::modules::qoder::region::QoderRegion;
 use crate::modules::region::Region;
 use crate::modules::trae::region::{TraeProgram, TraeRegion};
 use crate::modules::trae::variant::TraeVariant;
@@ -272,6 +273,8 @@ pub fn program_of(spec: &NamespaceSpec) -> Option<TraeProgram> {
             // WorkBuddy 只有一个程序位（桌面端），不出这一维。
             Product::Workbuddy => None,
             Product::Trae => Some(MAIN_TRAE_PROGRAM),
+            // Qoder 没有 Trae 程序位这一维（它的程序位是「桌面版 / CLI」，见 `modules::qoder`）。
+            Product::Qoder => None,
         },
         NamespaceTarget::TraeProgram { program, .. } => Some(program),
     }
@@ -307,18 +310,30 @@ pub enum RelayTarget {
     Wb(Region),
     /// 交给 Trae 中继（按变体选池 + 决定上游 `function`）。
     Trae(TraeVariant),
+    /// 交给 Qoder 中继（按区域选池）。
+    Qoder(QoderRegion),
 }
 
-/// 命名空间 → 中继目标。**穷举、无 `_ =>` 兜底** —— 新增目标轴时编译失败，
-/// 而不是静默落到错误的池。
+/// 命名空间 → 中继目标。
+///
+/// ★ **穷举、无 `_ =>` 兜底**：外层按 [`NamespaceTarget`] 穷举，内层按 [`Product`] 穷举
+/// ⇒ 新增平台或新增目标轴时**编译失败**，而不是静默落到错误的池。
+///
+/// ⚠️ 内层**必须按 `scope.product()` 分派**，不能沿用旧的「`wb_region()` 有值就走 WB、
+/// 否则走 Trae」写法 —— Qoder 作用域的 `wb_region()` 同样是 `None`，那种写法会把它
+/// 误判成 Trae 并在 `expect` 上 panic。
 pub fn relay_target_of(spec: &NamespaceSpec) -> RelayTarget {
     match spec.target {
-        // WB 派生层：`wb_region_of` 对 WB 作用域恒 `Some`；对 Trae 作用域则走下面那支。
-        NamespaceTarget::Scope(scope) => match scope.wb_region() {
-            Some(region) => RelayTarget::Wb(region),
-            None => RelayTarget::Trae(
-                trae_variant_of(spec).expect("Trae 作用域恒能取到变体（Scope::trae_region 为 Some）"),
-            ),
+        NamespaceTarget::Scope(scope) => match scope.product() {
+            Product::Workbuddy => {
+                RelayTarget::Wb(scope.wb_region().expect("WB 作用域恒有 WB 区域"))
+            }
+            Product::Trae => {
+                RelayTarget::Trae(trae_variant_of(spec).expect("Trae 作用域恒能取到变体"))
+            }
+            Product::Qoder => {
+                RelayTarget::Qoder(scope.qoder_region().expect("Qoder 作用域恒有 Qoder 区域"))
+            }
         },
         NamespaceTarget::TraeProgram { .. } => {
             RelayTarget::Trae(trae_variant_of(spec).expect("扩展层恒是 Trae 程序线"))
@@ -333,6 +348,8 @@ fn scope_label_key(scope: Scope) -> &'static str {
         Scope::WbGlobal => "gateway.namespace.wbGlobal",
         Scope::TraeCn => "gateway.namespace.traeCn",
         Scope::TraeGlobal => "gateway.namespace.traeGlobal",
+        Scope::QoderCn => "gateway.namespace.qoderCn",
+        Scope::QoderGlobal => "gateway.namespace.qoderGlobal",
     }
 }
 
@@ -340,11 +357,19 @@ fn scope_label_key(scope: Scope) -> &'static str {
 mod tests {
     use super::*;
 
-    /// 表规模：4 派生 + 4 扩展。**硬编码** —— 与数据源比较会两端同源，失去回归价值。
+    /// 表规模：**6 派生 + 4 扩展 = 10**。**硬编码** —— 与数据源比较会两端同源，失去回归价值。
     #[test]
-    fn table_covers_four_derived_plus_four_extension() {
-        assert_eq!(all_specs().len(), 8, "命名空间总数应为 8（§2.3 四条 + §2.4 四条）");
-        assert_eq!(default_specs().count(), 4, "默认启用集应恰好是派生层那 4 条");
+    fn table_covers_six_derived_plus_four_extension() {
+        assert_eq!(
+            all_specs().len(),
+            10,
+            "命名空间总数应为 10（6 条派生 = 3 平台 × 2 区域，+ 4 条扩展）"
+        );
+        assert_eq!(
+            default_specs().count(),
+            6,
+            "默认启用集应恰好是派生层那 6 条（新增平台后自动多出 2 条）"
+        );
         assert_eq!(
             all_specs()
                 .iter()
@@ -355,6 +380,8 @@ mod tests {
                 "wb-global",
                 "trae-cn",
                 "trae-global",
+                "qoder-cn",
+                "qoder-global",
                 "traework-cn",
                 "traework-global",
                 "traecode-cn",
@@ -362,6 +389,29 @@ mod tests {
             ],
             "命名空间 id 序列变更需同步更新本断言"
         );
+    }
+
+    /// ★ Qoder 的两条派生命名空间落到 Qoder 中继，且**不**被误判成 Trae。
+    ///
+    /// 这条专治一种缺陷形态：`relay_target_of` 若沿用「`wb_region()` 为空就当 Trae」的
+    /// 旧写法，Qoder 命名空间会走 Trae 分支并在 `expect` 上 panic（或更糟：静默落到
+    /// Trae 的池）。可证伪：把 `relay_target_of` 的内层改回按 `wb_region()` 分派，
+    /// 本用例立即变红。
+    #[test]
+    fn qoder_namespaces_target_the_qoder_relay() {
+        for (id, region) in [
+            ("qoder-cn", QoderRegion::Cn),
+            ("qoder-global", QoderRegion::Global),
+        ] {
+            let spec = parse(id).unwrap_or_else(|| panic!("{id} 应在册"));
+            assert_eq!(relay_target_of(spec), RelayTarget::Qoder(region), "{id} 中继目标不对");
+            assert_eq!(spec.product, Product::Qoder);
+            assert!(spec.default_on, "派生层必须默认启用");
+            // Qoder 没有 Trae 的程序位轴 / 变体 / WB 区域。
+            assert_eq!(program_of(spec), None);
+            assert_eq!(trae_variant_of(spec), None);
+            assert_eq!(wb_region_of(spec), None);
+        }
     }
 
     /// ★ 派生层：**每个 `Scope` 都必须能解析到命名空间**。

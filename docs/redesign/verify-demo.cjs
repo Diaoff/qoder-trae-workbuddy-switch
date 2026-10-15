@@ -45,6 +45,30 @@ const MUTATIONS = {
       return src.replace(from, to);
     },
   },
+  /* ★ Qoder（第三个平台）—— 数据层变异：区域标签错位。
+     命中「作用域菜单含 Qoder 的两个区域」这条断言。 */
+  qoderregion: {
+    desc: "Qoder 国际版被误标成国内版（区域标签错位）",
+    file: "demo-data.js",
+    apply: (src) => {
+      const from = '    id: "qoder-global", platform: "qoder", region: "global",';
+      const to = '    id: "qoder-global", platform: "qoder", region: "cn", /* MUTATED */';
+      if (!src.includes(from)) throw new Error("未匹配到 qoder-global 的 region 行");
+      return src.replace(from, to);
+    },
+  },
+  /* ★ 顶栏刷新按钮的进行中反馈（2026-10-15）：去掉 doRefresh 的 spinning/禁用注入，
+     期望「点击后进入进行中态」那条断言变红（只删注入、不碰 500ms 计时与 toast）。 */
+  refresh: {
+    desc: "刷新按钮点击后无进行中反馈（去掉 spinning + 禁用）",
+    file: "demo-app.js",
+    apply: (src) => {
+      const from = '  if (btn) { btn.classList.add("spinning"); btn.disabled = true; }\n';
+      const to = '  /* MUTATED: 进行中反馈被移除 */\n';
+      if (!src.includes(from)) throw new Error("未匹配到 spinning 注入行");
+      return src.replace(from, to);
+    },
+  },
 };
 
 let dir = BASE;
@@ -237,10 +261,22 @@ function check(name, fn) {
   /* ── 作用域切换 ── */
   click("#scope-trigger");
   await sleep(30);
-  check("作用域菜单列出 4 个作用域", () => {
+  /* ⚠️ 这里**写死 6**，不拿 `Object.keys(SCOPES).length` 对拍 ——
+     菜单本就是从 SCOPES 生成的，对拍恒真（永远绿）。写死才是对
+     「3 平台 × 2 区域」这条**设计意图**的钉死。 */
+  check("作用域菜单列出 6 个作用域（3 平台 × 2 区域）", () => {
     const n = $$("#scope-menu .scope-item").length;
-    if (n !== 4) throw new Error("实际 " + n + " 个");
+    if (n !== 6) throw new Error("实际 " + n + " 个，期望 6 个");
     return true;
+  });
+  check("作用域菜单含 Qoder 的两个区域", () => {
+    /* ⚠️ 按钮的 textContent 含换行（模板是多行的）⇒ 必须归一成单行再比对，
+       否则失败信息会被换行撑成一大段，读不出到底缺哪个。 */
+    const labels = $$("#scope-menu .scope-item").map((b) => b.textContent.replace(/\s+/g, " ").trim());
+    for (const want of ["Qoder 国内版", "Qoder 国际版"]) {
+      if (!labels.some((l) => l.includes(want))) throw new Error("缺少「" + want + "」：" + labels.join(" / "));
+    }
+    return "Qoder 国内版 / Qoder 国际版";
   });
   click('[data-act="scope|trae-global"]');
   await sleep(360);
@@ -351,6 +387,29 @@ function check(name, fn) {
   await sleep(30);
   check("明暗主题可切换", () => {
     if (doc.documentElement.classList.contains("dark") === wasDark) throw new Error("class 未变化");
+    return true;
+  });
+
+  /* ── 顶栏刷新：进行中反馈（点击 → 图标旋转 + 禁用 → 完成复原 + toast）。
+     断言锚在**按钮自身状态**（DOM 探针）而非时长猜测：删掉 doRefresh 的注入
+     （变异 `refresh`）第一条必红；「复原」那条守住「加了不移除」的反向缺陷。 ── */
+  const refreshBtn = $("#refresh-btn");
+  click("#refresh-btn");
+  await sleep(50);
+  check("刷新：点击后按钮进入进行中态（spinning + disabled）", () => {
+    if (!refreshBtn.classList.contains("spinning")) throw new Error("缺少 spinning（点击无动效）");
+    if (!refreshBtn.disabled) throw new Error("未 disabled（可重复点击）");
+    return true;
+  });
+  await sleep(700);
+  check("刷新：完成后复原（不再 spinning / 不再禁用）", () => {
+    if (refreshBtn.classList.contains("spinning")) throw new Error("spinning 残留未移除");
+    if (refreshBtn.disabled) throw new Error("完成后仍处于禁用");
+    return true;
+  });
+  check("刷新：完成 toast 标题为「已刷新」（精确匹配标题，防批量条文案冒充）", () => {
+    const titles = [...doc.querySelectorAll("#toasts .toast b")].map((b) => b.textContent.trim());
+    if (!titles.includes("已刷新")) throw new Error("toast 标题：" + titles.join(" / "));
     return true;
   });
 

@@ -1,5 +1,5 @@
 /**
- * 账号列表的**共享零件**（两平台共用）。
+ * 账号列表的**共享零件**（三平台共用：WorkBuddy / Trae / Qoder）。
  *
  * ## 为什么单独一个文件
  *
@@ -12,13 +12,14 @@
  * ⚠️ 本文件内**禁止**出现 `platform === ...` 判断 —— 与 `account-toolbar.tsx` 同一条纪律。
  */
 
-import { CircleCheck, RefreshCw, TriangleAlert } from "lucide-react";
+import { CircleCheck, Loader2, RefreshCw, TriangleAlert } from "lucide-react";
 
 import { AVATAR_TEXT_CLASS, accountInitials, avatarTone } from "@/components/account-card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useT } from "@/lib/i18n";
+import { useRefreshAction } from "@/lib/use-refresh-action";
 import { cn } from "@/lib/utils";
 
 /**
@@ -97,7 +98,7 @@ export interface CheckinResultBarProps {
   /** **失败账号的显示名**（不是 id）—— 由页面装配，本组件只渲染。 */
   failedNames: string[];
   /** 有失败项时的「只重试失败项」出口；无失败传 `undefined`（不渲染该按钮）。 */
-  onRetry?: () => void;
+  onRetry?: () => void | Promise<void>;
   /** 「知道了」：关闭结果条。 */
   onDismiss: () => void;
 }
@@ -116,6 +117,7 @@ export interface CheckinResultBarProps {
 export function CheckinResultBar({ okCount, failedNames, onRetry, onDismiss }: CheckinResultBarProps) {
   const t = useT();
   const hasFail = failedNames.length > 0;
+  const { busy, run } = useRefreshAction();
 
   return (
     <div
@@ -140,8 +142,14 @@ export function CheckinResultBar({ okCount, failedNames, onRetry, onDismiss }: C
           : t("shared.checkinResult.allOk")}
       </span>
       {hasFail && onRetry ? (
-        <Button size="sm" variant="outline" className="shrink-0" onClick={onRetry}>
-          <RefreshCw />
+        <Button
+          size="sm"
+          variant="outline"
+          className="shrink-0"
+          disabled={busy}
+          onClick={() => void run(() => onRetry?.())}
+        >
+          {busy ? <Loader2 className="animate-spin" /> : <RefreshCw />}
           {t("shared.checkinResult.retryFailed")}
         </Button>
       ) : null}

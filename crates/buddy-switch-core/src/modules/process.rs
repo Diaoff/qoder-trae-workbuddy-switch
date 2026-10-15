@@ -1323,6 +1323,60 @@ pub fn is_workbuddy_running_for(region: Region) -> bool {
     }
 }
 
+/// 通用「某个**映像名**的客户端进程是否在运行」。
+///
+/// ## 用途
+///
+/// **非 WorkBuddy** 客户端的**写前进程守卫**（Claude Code / CodeBuddy CLI 的
+/// `settings.json`，见 `client_settings` 的 `SlotKind::HomeFile`）。这些客户端不像
+/// WorkBuddy / Trae 那样「退出时把内存态整体写回」，但用户完全可能在另一个终端里
+/// 正在改同一个文件 —— 守卫的价值不变。
+///
+/// ## ★ 语义：**查询失败视为「在运行」**
+///
+/// 与 [`alive_pids_from`] 同一条纪律：本函数唯一的调用方是**写入前的守卫**，
+/// 把一次 `tasklist` 抖动当成「已退出」会让我们去改客户端可能正在写的文件；
+/// 误判成「在运行」的代价只是用户重试一次。
+///
+/// `image` 是**完整映像名**（如 `claude.exe`）；Windows 上映像名大小写不敏感。
+/// 空映像名 ⇒ 判不出来 ⇒ 保守返回 `true`（守卫拒绝写入）。
+pub fn is_image_running(image: &str) -> bool {
+    let image = image.trim();
+    if image.is_empty() {
+        return true;
+    }
+    #[cfg(target_os = "windows")]
+    {
+        match run_cmd_timeout(
+            "tasklist",
+            &["/FI", &format!("IMAGENAME eq {image}"), "/FO", "CSV", "/NH"],
+            5,
+        ) {
+            Some(out) => windows_rows_match_image(
+                &parse_tasklist_csv(&String::from_utf8_lossy(&out.stdout)),
+                image,
+            ),
+            // 查询失败 ⇒ 保守视为在运行（见文档）。
+            None => true,
+        }
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        // macOS / Linux：`pgrep -x` 按**完整进程名**匹配（那里不带 `.exe`）。
+        let stem = image.strip_suffix(".exe").unwrap_or(image);
+        match cmd_builder("pgrep").args(["-x", stem]).output() {
+            Ok(out) => out.status.success(),
+            Err(_) => true,
+        }
+    }
+}
+
+/// tasklist 行里有没有映像名匹配的（**纯函数**，单测据此钉住大小写不敏感 + 精确匹配）。
+#[cfg(target_os = "windows")]
+fn windows_rows_match_image(rows: &[WindowsProcessRow], image: &str) -> bool {
+    rows.iter().any(|row| row.name.eq_ignore_ascii_case(image))
+}
+
 /// 轮询等待 WorkBuddy 进程全部退出，返回是否已退出（CN）。对照 `_wait_process_gone`。
 pub fn wait_process_gone(timeout_secs: f64) -> bool {
     wait_process_gone_for(Region::Cn, timeout_secs)
@@ -1755,8 +1809,46 @@ INFO: No tasks are running which match the specified criteria.
         assert_eq!(kept.iter().map(|r| r.pid).collect::<Vec<_>>(), vec![1234]);
     }
 
-    /// P0-1 的语义护栏：**枚举失败不得被当成「进程已退出」**。
+    /// ★ 通用映像名匹配（[`is_image_running`] 的纯逻辑部分）：
+    /// **大小写不敏感 + 精确匹配**，且**不**把 `claude-code.exe` 认成 `claude.exe`。
     ///
+    /// 可证伪性：把 `eq_ignore_ascii_case` 换成 `contains` ⇒ 第三条断言变红
+    /// （`claude-helper.exe` 会被当成 `claude.exe` 在运行 —— 守卫会永远拒绝写入）。
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn image_matching_is_case_insensitive_and_exact() {
+        let csv = "\
+\"CLAUDE.EXE\",\"1234\",\"Console\",\"1\",\"50,123 K\"
+\"claude-code.exe\",\"1235\",\"Console\",\"1\",\"40,000 K\"
+INFO: No tasks are running which match the specified criteria.
+";
+        let rows = parse_tasklist_csv(csv);
+        assert!(windows_rows_match_image(&rows, "claude.exe"), "映像名大小写不敏感");
+        assert!(windows_rows_match_image(&rows, "CLAUDE.EXE"));
+        assert!(
+            !windows_rows_match_image(&rows, "claude"),
+            "不带扩展名不得匹配（精确匹配，不是前缀）"
+        );
+        assert!(
+            !windows_rows_match_image(&rows, "claude-code"),
+            "不得把别的映像名当成目标（`contains` 实现会在这里变红）"
+        );
+        assert!(!windows_rows_match_image(&rows, "codex.exe"));
+        assert!(!windows_rows_match_image(&[], "claude.exe"), "空表 = 没在跑");
+    }
+
+    /// ★ 空映像名 ⇒ 判不出来 ⇒ 保守视为「在运行」（守卫据此**拒绝写入**）。
+    ///
+    /// 可证伪性：把 `is_image_running` 开头的空串分支删掉 ⇒ 变红
+    /// （空映像名会走到 `tasklist` 分支并返回「没在跑」，于是一个配置写错的槽位
+    /// 会**绕过进程守卫**）。
+    #[test]
+    fn blank_image_name_is_treated_as_running() {
+        assert!(is_image_running(""));
+        assert!(is_image_running("   "));
+    }
+
+    /// P0-1 的语义护栏：**枚举失败不得被当成「进程已退出」**。    ///
     /// 修前这条逻辑散在 `wait_windows_pids_gone` 的 `is_windows_pid_running` 里
     /// （`None => true`），无法单独测；抽成纯函数后可以把三条分支都钉死。
     #[cfg(target_os = "windows")]

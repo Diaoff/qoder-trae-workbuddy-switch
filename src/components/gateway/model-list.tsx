@@ -14,7 +14,7 @@ import { scopeOf } from "@/lib/scope";
 import { servedCount } from "@/lib/types";
 import type { GatewayModelRow, Region } from "@/lib/types";
 import { cn } from "@/lib/utils";
-import { useGatewayStore } from "@/stores/gateway";
+import { EMPTY_DISABLED_SET, useGatewayStore } from "@/stores/gateway";
 
 /**
  * 模型列表：来源条（实时 / 已保存 / 内置 + 上次识别 + 原因）+ 重新识别 + **模型表格**（P0-4 / P0-12 / P1-7 / P10 / P11）。
@@ -52,16 +52,18 @@ export function ModelList({ region, className }: { region: Region; className?: s
   const [refreshing, setRefreshing] = useState(false);
   /** 正在切换禁用状态的行 id（驱动该行按钮的 `<Loader2>` + `disabled`）。 */
   const [pendingId, setPendingId] = useState<string | null>(null);
+  /** 本页所在**作用域**（禁用偏好按作用域键控；`models` 快照仍按 region 键控）。 */
+  const scope = scopeOf("workbuddy", region);
   const snapshot = useGatewayStore((s) => s.models[region]);
   const refreshModels = useGatewayStore((s) => s.refreshModels);
-  const disabledSet = useGatewayStore((s) => s.disabled[region]);
+  const disabledSet = useGatewayStore((s) => s.disabled[scope]) ?? EMPTY_DISABLED_SET;
   const loadDisabled = useGatewayStore((s) => s.loadDisabled);
   const setModelDisabled = useGatewayStore((s) => s.setModelDisabled);
 
-  /* 进入 / 切 region 时读一次该 region 的禁用偏好（页面级 `loadAll` 也会拉，幂等）。 */
+  /* 进入 / 切作用域时读一次该作用域的禁用偏好（页面级 `loadAll` 也会拉，幂等）。 */
   useEffect(() => {
-    void loadDisabled(region);
-  }, [loadDisabled, region]);
+    void loadDisabled(scope);
+  }, [loadDisabled, scope]);
 
   /* 来源视图由**快照**归一而来（契约在 `lib/catalog-source`）：`kind !== "live"` ⇒ 原因非空。 */
   const view = describeCatalogSource(snapshot, t);
@@ -72,12 +74,12 @@ export function ModelList({ region, className }: { region: Region; className?: s
       (snapshot?.models ?? []).map((model) => ({
         id: model.id,
         name: model.name,
-        scope: scopeOf("workbuddy", region),
+        scope,
         // WB 无「非可服务」概念：在清单里即可用（决策 #3）。
         available: true,
         disabled: disabledSet.has(model.id),
       })),
-    [snapshot, disabledSet, region],
+    [snapshot, disabledSet, scope],
   );
   const { served, total } = servedCount(rows);
 
@@ -117,7 +119,7 @@ export function ModelList({ region, className }: { region: Region; className?: s
   async function onToggleDisabled(row: GatewayModelRow, disabled: boolean) {
     setPendingId(row.id);
     try {
-      await setModelDisabled(region, row.id, disabled);
+      await setModelDisabled(scope, row.id, disabled);
       toast.success(
         t(
           disabled

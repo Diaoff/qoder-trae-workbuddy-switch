@@ -1,4 +1,6 @@
-import { TraeVariantMark, WorkBuddyMark } from "@/components/product-marks";
+import type { ReactElement } from "react";
+
+import { QoderMark, TraeVariantMark, WorkBuddyMark } from "@/components/product-marks";
 import { useT, type Translate } from "@/lib/i18n";
 import { platformDescriptor, type Product } from "@/lib/platforms/registry";
 import { regionLabel } from "@/lib/region";
@@ -17,10 +19,27 @@ export function scopeLabel(t: Translate, scope: Scope): string {
 }
 
 /**
+ * 平台 → 官方图标（**查找表**，不是二元式）。
+ *
+ * ⚠️ 这里曾是 `product === "workbuddy" ? … : …` —— 第三个平台一来，
+ * 新平台就会**静默落到 else 分支**（Qoder 会被渲染成 Trae 图标，且构建全绿）。
+ * 改成 `Record<Product, …>`：新增平台由**编译器**点名，补一行才能过。
+ *
+ * 作用域只到**平台**粒度（区域不换图标）⇒ 不按区域分支。
+ */
+const PRODUCT_MARKS: Record<
+  Product,
+  (props: { size: number; className?: string }) => ReactElement
+> = {
+  workbuddy: (props) => <WorkBuddyMark {...props} />,
+  trae: (props) => <TraeVariantMark variant="trae_work" {...props} />,
+  qoder: (props) => <QoderMark {...props} />,
+};
+
+/**
  * 平台 → 官方图标。
  *
- * 作用域只到**平台**粒度（区域不换图标）⇒ 不按区域分支。顶栏与页头 `ScopeChip`
- * 共用这一个实现，避免两处各写一份 `product === "workbuddy" ? ... : ...`。
+ * 顶栏与页头 `ScopeChip` 共用这一个实现，避免两处各写一份平台分支。
  */
 export function ScopeMark({
   product,
@@ -37,11 +56,8 @@ export function ScopeMark({
    * ⚠️ 不能用比例尺（`rounded-lg` = 12px）—— 26px 的方块配 12px 圆角会「近似圆形」。
    */
   const radius = size <= 14 ? "rounded-[4px]" : size <= 26 ? "rounded-[8px]" : "rounded-[9px]";
-  return product === "workbuddy" ? (
-    <WorkBuddyMark size={size} className={cn(radius, className)} />
-  ) : (
-    <TraeVariantMark variant="trae_work" size={size} className={cn(radius, className)} />
-  );
+  const Mark = PRODUCT_MARKS[product];
+  return <Mark size={size} className={cn(radius, className)} />;
 }
 
 /**

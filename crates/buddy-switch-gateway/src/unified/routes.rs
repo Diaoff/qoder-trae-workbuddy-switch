@@ -232,6 +232,37 @@ async fn relay_llm(
                 }
             }
         }
+        /* ★ Qoder 产品线（2026-10-15 接入）：与 WB / Trae 同一条中继纪律 ——
+           复用 `qoder::routes::chat_for_region`（**认证之后的逻辑只有一份**），
+           绝不在这里另写一套选号 / 换号 / 流式转发。 */
+        RelayTarget::Qoder(region) => {
+            let qoder = <crate::qoder::QoderGateway as crate::GatewayProduct>::shared_state();
+            match endpoint {
+                LlmEndpoint::Chat => {
+                    crate::qoder::routes::chat_for_region(
+                        qoder,
+                        region,
+                        rewritten,
+                        crate::qoder::routes::Protocol::OpenAi,
+                    )
+                    .await
+                }
+                LlmEndpoint::Messages => {
+                    crate::qoder::routes::chat_for_region(
+                        qoder,
+                        region,
+                        rewritten,
+                        crate::qoder::routes::Protocol::Anthropic,
+                    )
+                    .await
+                }
+                // `/v1/responses` 对 Qoder 分区无意义（上游没有等价协议）——
+                // 明确 501，不许 404（那是「路径写错了」的语义）。
+                LlmEndpoint::Responses => {
+                    endpoint_error(endpoint, endpoint_not_supported_for(spec.id))
+                }
+            }
+        }
     }
 }
 
@@ -242,8 +273,8 @@ fn endpoint_not_supported_for(namespace: &str) -> HttpError {
         kind: "invalid_request_error",
         code: "endpoint_not_supported_for_namespace",
         message: format!(
-            "Trae 分区没有 /v1/responses 端点（只有 WorkBuddy 有），而 `{namespace}` 是 Trae 命名空间。\
-             请改用 /v1/chat/completions，或把模型前缀换成 wb-cn: / wb-global:。"
+            "该分区没有 /v1/responses 端点（只有 WorkBuddy 有），而 `{namespace}` 不是 WorkBuddy 命名空间。\
+             请改用 /v1/chat/completions 或 /v1/messages，或把模型前缀换成 wb-cn: / wb-global:。"
         ),
     }
 }
@@ -561,16 +592,24 @@ async fn collect_namespace_models(specs: &[&'static NamespaceSpec]) -> Vec<Names
     let wb_disabled = wb.disabled.read().await;
     let trae_disabled = trae.disabled.read().await;
 
-    specs
-        .iter()
-        .map(|spec| match gateway_namespace::relay_target_of(spec) {
+    /* ⚠️ `Qoder` 分支需要 async 取数（清单要经账号凭据向官方拉取，带缓存）⇒
+       这里用 for 循环逐项 await（`.map` 的闭包不是 async）。顺序保持不变。 */
+    let mut collected: Vec<NamespaceModels> = Vec::with_capacity(specs.len());
+    for spec in specs.iter() {
+        collected.push(match gateway_namespace::relay_target_of(spec) {
             RelayTarget::Wb(region) => {
                 let snapshot = wb.catalogs.current(region);
                 let models = snapshot
                     .models
                     .iter()
                     // ★ 出口 ① 与调用路径读**同一份** `disabled`（`is_disabled` 是唯一判断点）
-                    .filter(|model| !is_disabled(&wb_disabled, region, &model.id))
+                    .filter(|model| {
+                        !is_disabled(
+                            &wb_disabled,
+                            buddy_switch_core::modules::product::scope_of_wb_region(region),
+                            &model.id,
+                        )
+                    })
                     .map(|model| {
                         json!({
                             "id": model.id,
@@ -599,8 +638,11 @@ async fn collect_namespace_models(specs: &[&'static NamespaceSpec]) -> Vec<Names
                     buddy_switch_core::modules::trae::model_list::read_client_model_list(variant);
                 // 客户端拉过清单 ⇒ 视作「实时」（它的新鲜度 = 客户端最后一次刷新）
                 let from_client = !list.groups.is_empty();
-                let region = crate::trae::region_of_variant(variant);
-                let models = crate::trae::payload::models_response_for(variant, trae_disabled.get(region))
+                let models = crate::trae::payload::models_response_for(
+                    variant,
+                    trae_disabled
+                        .get(buddy_switch_core::modules::product::scope_of_trae_region(variant.region())),
+                )
                     .get("data")
                     .and_then(|data| data.as_array())
                     .cloned()
@@ -620,9 +662,35 @@ async fn collect_namespace_models(specs: &[&'static NamespaceSpec]) -> Vec<Names
                     models,
                 }
             }
-        })
-        .collect()
+            /* Qoder 产品线（2026-10-15 接入）：清单来自官方接口（需账号凭据），
+               带缓存；拉不到时**空清单 + 可读 note**（契约：非 `live` ⇒ note 非空）。 */
+            RelayTarget::Qoder(region) => {
+                let qoder = <crate::qoder::QoderGateway as crate::GatewayProduct>::shared_state();
+                let catalog = qoder.catalog_for(region).await;
+                let scope = buddy_switch_core::modules::product::scope_of_qoder_region(region);
+                let disabled_store = crate::disabled_models::shared();
+                let disabled = disabled_store.read().await;
+                let models = crate::qoder::payload::models_response(&catalog.models, disabled.get(scope))
+                    .get("data")
+                    .and_then(|data| data.as_array())
+                    .cloned()
+                    .unwrap_or_default();
+                drop(disabled);
+                NamespaceModels {
+                    namespace: spec.id,
+                    source: if catalog.models.is_empty() { "unavailable" } else { "live" },
+                    fetched_at: Some(buddy_switch_core::modules::config::now_ms()),
+                    note: catalog.note,
+                    models,
+                }
+            }
+        });
+    }
+    collected
 }
+
+/* `qoder_not_wired` 已于 2026-10-15 删除：Qoder 产品线正式接入统一网关，
+   501/`namespace_product_line_not_wired` 不再是任何路径的出口（不保留死代码）。 */
 
 /// 目录来源 → 稳定字符串（供 `/v1/models` 的 `namespaces[].source`）。
 ///

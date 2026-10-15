@@ -179,9 +179,18 @@ export const en = {
 
   "wbStats.usage.param.title": "View parameters",
   "wbStats.usage.param.aria": "Time range",
+  "wbStats.usage.range.today": "Today",
   "wbStats.usage.range.7": "Last 7 days",
   "wbStats.usage.range.14": "Last 14 days",
   "wbStats.usage.range.30": "Last 30 days",
+  "wbStats.usage.param.custom": "Custom range",
+  "wbStats.usage.param.custom.title": "Custom date range",
+  "wbStats.usage.param.custom.from": "From",
+  "wbStats.usage.param.custom.to": "To",
+  "wbStats.usage.param.custom.hint": "Available {from} – {to} (last 90 days)",
+  "wbStats.usage.param.custom.incomplete": "Both dates are required",
+  "wbStats.usage.param.custom.cancel": "Cancel",
+  "wbStats.usage.param.custom.apply": "Apply",
 
   "wbStats.usage.chart.chart": "Chart",
   "wbStats.usage.chart.table": "Table",
@@ -202,6 +211,9 @@ export const en = {
   "wbStats.usage.trend.heatmapDesc": "Brighter = busier (relative intensity, not absolute)",
   "wbStats.usage.trend.heatmapAria": "Usage intensity heatmap for 7 weekdays × 24 hours",
   "wbStats.usage.trend.totalSegment": "Total",
+  "wbStats.usage.trend.gatewayTitle": "Gateway usage by day",
+  "wbStats.usage.trend.gatewayAria": "Gateway usage by day bar chart",
+  "wbStats.usage.trend.gatewaySegment": "Gateway",
 
   "wbStats.usage.models.count": "Models",
   "wbStats.usage.models.top": "Top model",
@@ -254,6 +266,8 @@ export const en = {
   "wbStats.usage.caption.balanceZero": "{first} → {last} (back-derived)",
   "wbStats.usage.caption.scatterAxis": "X axis = records",
   "wbStats.usage.caption.singleSide": "Inflow detail unavailable; usage side only",
+  "wbStats.usage.caption.gateway": "Gateway-only log · {recorded}/{total} days recorded; unrecorded days count as 0",
+  "wbStats.usage.caption.gatewayLower": "{n} days are lower bounds",
 
   "wbStats.usage.empty.noData": "No usage yet",
   "wbStats.usage.empty.noDataHint": "This scope has not produced any calls yet.",

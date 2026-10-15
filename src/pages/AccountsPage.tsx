@@ -65,6 +65,7 @@ import { displayText } from "@/lib/display-text";
 import { formatDate } from "@/lib/format";
 import { regionDescriptor } from "@/lib/region";
 import { scopeOf } from "@/lib/scope";
+import { useRefreshAction } from "@/lib/use-refresh-action";
 import type {
   AccountMeta,
   AccountTokenTodayEntry,
@@ -256,6 +257,10 @@ function RegionPanel({ region }: { region: Region }) {
   const importLocalStore = useAccountsStore((s) => s.importLocal);
 
   const descriptor = regionDescriptor(region);
+
+  /* 「重新检测」两处入口（错误 Alert / 详情抽屉空态）各自的进行中态。 */
+  const { busy: recheckAlertBusy, run: runRecheckAlert } = useRefreshAction();
+  const { busy: recheckDrawerBusy, run: runRecheckDrawer } = useRefreshAction();
 
   const [oauthOpen, setOauthOpen] = useState(false);
   const [exportOpen, setExportOpen] = useState(false);
@@ -2014,7 +2019,7 @@ function RegionPanel({ region }: { region: Region }) {
               region={region}
               installed={presence !== "absent"}
               expectedAuthFile={expectedAuthFile}
-              onRecheck={() => void onRecheck()}
+              onRecheck={onRecheck}
               onImport={() => void onImport()}
               importing={importing}
             />
@@ -2032,8 +2037,10 @@ function RegionPanel({ region }: { region: Region }) {
                   className="mt-2"
                   size="sm"
                   variant="outline"
-                  onClick={() => void onRecheck()}
+                  disabled={recheckAlertBusy}
+                  onClick={() => void runRecheckAlert(() => onRecheck())}
                 >
+                  {recheckAlertBusy ? <Loader2 className="animate-spin" /> : <RefreshCw />}
                   {t("wbAccounts.empty.recheck")}
                 </Button>
               </AlertDescription>
@@ -2121,7 +2128,7 @@ function RegionPanel({ region }: { region: Region }) {
                   .map((account) => wbAccountName(account)),
                 onRetry:
                   checkinResult.failedIds.length > 0
-                    ? () => void batchCheckin(checkinResult.failedIds)
+                    ? () => batchCheckin(checkinResult.failedIds)
                     : undefined,
               }
             : null
@@ -2571,7 +2578,13 @@ function RegionPanel({ region }: { region: Region }) {
           title: t("shared.drawer.empty.title"),
           description: t("shared.drawer.empty.description"),
           action: (
-            <Button size="sm" variant="outline" onClick={() => void onRecheck()}>
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={recheckDrawerBusy}
+              onClick={() => void runRecheckDrawer(() => onRecheck())}
+            >
+              {recheckDrawerBusy ? <Loader2 className="animate-spin" /> : <RefreshCw />}
               {t("wbAccounts.empty.recheck")}
             </Button>
           ),
@@ -2611,12 +2624,13 @@ function EmptyRegionCard({
   region: Region;
   installed: boolean;
   expectedAuthFile: string;
-  onRecheck: () => void;
+  onRecheck: () => void | Promise<void>;
   onImport: () => void;
   importing: boolean;
 }) {
   const descriptor = regionDescriptor(region);
   const t = useT();
+  const { busy, run } = useRefreshAction();
   return (
     <Card className="gap-0 py-0">
       <div className="flex items-start gap-3 px-5 py-5">
@@ -2657,8 +2671,13 @@ function EmptyRegionCard({
           </div>
 
           <div className="mt-4 flex flex-wrap gap-2">
-            <Button size="sm" variant="outline" onClick={onRecheck}>
-              <RefreshCw />
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={busy}
+              onClick={() => void run(() => onRecheck())}
+            >
+              {busy ? <Loader2 className="animate-spin" /> : <RefreshCw />}
               {t("wbAccounts.empty.recheck")}
             </Button>
             <Button size="sm" onClick={onImport} disabled={importing}>

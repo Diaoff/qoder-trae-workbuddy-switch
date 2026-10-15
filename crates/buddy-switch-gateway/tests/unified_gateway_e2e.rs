@@ -222,8 +222,8 @@ async fn healthz_is_public_and_reflects_the_config() {
     assert_eq!(body["enabled"], true);
     assert_eq!(
         body["namespaces"].as_array().unwrap().len(),
-        4,
-        "默认启用集应是派生层 4 条"
+        6,
+        "默认启用集应是派生层 6 条（3 平台 × 2 区域；Qoder 于 2026-10-15 加入）"
     );
     assert_eq!(body["keys"]["total"], 1);
 

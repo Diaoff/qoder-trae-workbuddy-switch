@@ -65,6 +65,20 @@ pub const AUTO_BACKUP_CHECK_INTERVAL: Duration = Duration::from_secs(60 * 60);
 /// 「多久看一眼配置」的心跳。
 pub const AUTO_ROTATE_CHECK_INTERVAL: Duration = Duration::from_secs(30);
 
+/// 网关用量「今日」快照的记录周期。
+///
+/// 与 `token_daily::CLIENT_SCAN_TTL_MS`（2 分钟）对齐：两者服务同一个仪表盘读数
+/// （账号卡片「今日 Token」的 gateway 桶），同一管理面不该有两种节奏。
+///
+/// 代价：每轮对每个 region 各读一次 `gateway_logs.json`（受 `log_keep` 封顶，
+/// 缺省 200 条）+ 账号库，再写一份几十 KB 的 `token_daily[.global].json`。
+///
+/// ⚠️ 为什么必须是**周期**任务：`record_gateway_today` 此前的唯一调用点是
+/// 「打开账号页」的命令 ⇒ ① 不进账号页，gateway 桶一直是旧值（2026-10-15 实测
+/// 滞后 50+ 分钟）；② `token_daily` 保留 90 天，但历史只覆盖「当天 App 被打开过」
+/// 的日子（同实测：10/11 及之前全空）⇒ 网关用量**永远成不了趋势**。
+pub const GATEWAY_USAGE_RECORD_INTERVAL: Duration = Duration::from_secs(2 * 60);
+
 /// 后台任务的**种类**（L2）—— 与产品线（[`TaskSpec::product`]）**正交**。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TaskKind {
@@ -113,6 +127,20 @@ pub enum TaskKind {
     /// ⚠️ **两宿主必须同步登记**（登记即执行 / P5 R9）：缺了它启动时不会补识别
     /// 「内置 / 陈旧」的清单，用户只能看到「内置」来源条。
     GatewayCatalogProbe,
+    /// **网关用量「今日」快照**（2026-10-15 新增，缺陷修复）。
+    ///
+    /// 周期调用 `token_daily::record_gateway_today`，把 `gateway_logs.json` 聚合进
+    /// `token_daily` 的 **gateway 桶**并落盘。由宿主侧遍历
+    /// [`crate::modules::region::Region::all`] 覆盖**两个 region**（网关日志是单文件、
+    /// 行内带 `region`，只记一个 region 会让另一个的历史永远空着）。
+    ///
+    /// ## 为什么必须有它（模块头那三类事故的同一形态）
+    ///
+    /// 「函数存在、类型全对、单测全绿，但生产上没有调用点」：`record_gateway_today`
+    /// 此前唯一的调用点是账号页命令（`get_account_token_today` /
+    /// `api_account_token_today`）⇒ 不进账号页就没人写 gateway 桶，
+    /// `token_daily` 的 90 天保留窗里大片空洞，「网关用量进趋势图」永远缺原始素材。
+    GatewayUsageRecord,
     /// 八类积分定时任务之一（按 `schedule_config` 的小时表，各自独立排程）。
     Scheduled(ScheduleTask),
 }
@@ -133,6 +161,7 @@ impl TaskKind {
             TaskKind::PoolPersist => "pool_persist".to_string(),
             TaskKind::AutoBackup => "auto_backup".to_string(),
             TaskKind::GatewayCatalogProbe => "gateway_catalog_probe".to_string(),
+            TaskKind::GatewayUsageRecord => "gateway_usage_record".to_string(),
             TaskKind::Scheduled(task) => format!("scheduled:{}", task.as_str()),
         }
     }
@@ -212,6 +241,17 @@ pub const TASKS: &[TaskSpec] = &[
         product: Product::Workbuddy,
         kind: TaskKind::GatewayCatalogProbe,
         interval: Duration::ZERO,
+    },
+    // ★ 网关用量「今日」快照（2026-10-15 新增，缺陷修复）。
+    //
+    // 不登记的后果与上面那些同类：`record_gateway_today` 只剩「打开账号页」一个
+    // 调用点 ⇒ ① 不进账号页，卡片上的 gateway 桶长时间是旧值；② `token_daily`
+    // 的 90 天历史只覆盖「当天 App 被打开过」的日子（实测大片空洞），
+    // 网关用量永远成不了趋势。登记后两个宿主都会起这个循环，历史自然生长。
+    TaskSpec {
+        product: Product::Workbuddy,
+        kind: TaskKind::GatewayUsageRecord,
+        interval: GATEWAY_USAGE_RECORD_INTERVAL,
     },
     TaskSpec {
         product: Product::Workbuddy,
@@ -312,6 +352,7 @@ mod tests {
             TaskKind::PoolPersist => "TaskKind::PoolPersist =>",
             TaskKind::AutoBackup => "TaskKind::AutoBackup =>",
             TaskKind::GatewayCatalogProbe => "TaskKind::GatewayCatalogProbe =>",
+            TaskKind::GatewayUsageRecord => "TaskKind::GatewayUsageRecord =>",
             TaskKind::Scheduled(_) => "TaskKind::Scheduled(",
         }
     }
@@ -362,6 +403,14 @@ mod tests {
             has_task(Product::Workbuddy, TaskKind::GatewayCatalogProbe),
             "缺网关启动补识别（P10 T03 / ✅ #7）⇒ 「内置 / 陈旧」的模型清单永远不会在启动时\
              被补成实时，用户只能看到「内置」来源条"
+        );
+        // ★ 网关用量「今日」快照（2026-10-15 缺陷修复）：不登记 ⇒ 两个宿主都不会
+        // 周期记录 gateway 桶 ⇒ `token_daily` 的 90 天历史只有「当天打开过账号页」
+        // 的日子（大片空洞），网关用量成不了趋势。
+        assert!(
+            has_task(Product::Workbuddy, TaskKind::GatewayUsageRecord),
+            "缺网关用量今日快照 ⇒ record_gateway_today 只剩账号页一个调用点，\
+             90 天历史大片空洞、账号卡片的 gateway 桶长时间不刷新"
         );
         assert!(
             has_task(Product::Workbuddy, TaskKind::StartupMaintenance),
@@ -457,6 +506,55 @@ mod tests {
         }
     }
 
+    /// ★ 快照周期必须是「今日读数」的节奏：短到不陈旧、长到不折腾。
+    ///
+    /// 可证伪：把 `GATEWAY_USAGE_RECORD_INTERVAL` 改成 1 小时 ⇒ 第一条断言变红
+    /// （账号卡片的 gateway 桶又会长时间不动）；改成 5 秒 ⇒ 第二条变红（无谓刷盘）。
+    #[test]
+    fn gateway_usage_record_interval_is_a_today_metric_cadence() {
+        assert!(
+            GATEWAY_USAGE_RECORD_INTERVAL <= Duration::from_secs(10 * 60),
+            "周期过长（{:?}）—— 账号卡片的 gateway 桶又会长时间不刷新",
+            GATEWAY_USAGE_RECORD_INTERVAL
+        );
+        assert!(
+            GATEWAY_USAGE_RECORD_INTERVAL >= Duration::from_secs(30),
+            "周期过短（{:?}）—— 无谓地反复读网关日志、写 token_daily 存储",
+            GATEWAY_USAGE_RECORD_INTERVAL
+        );
+    }
+
+    /// ★★ 两侧宿主的网关用量循环必须覆盖**两个 region**（不是只有 CN）。
+    ///
+    /// 失效形态很安静：把分支里的 `Region::all()` 写成 `[Region::Cn]` ⇒ Global 的
+    /// gateway 历史永远空着，而分支标记仍在（`both_hosts_register_every_task_kind`
+    /// 照样绿）—— 正是本模块要防的那类「静默」。故这里把**分支体**抠出来单独断言。
+    ///
+    /// 可证伪：把任一侧分支里的 `Region::all()` 改成 `[Region::Cn]` ⇒ 本用例变红。
+    #[test]
+    fn both_hosts_record_gateway_usage_for_every_region() {
+        let marker = "TaskKind::GatewayUsageRecord =>";
+        for host in [TAURI_LIB_RS, SERVER_MAIN_RS] {
+            let source = read_source(host);
+            let start = source
+                .find(marker)
+                .unwrap_or_else(|| panic!("宿主 {host} 的 spawn 派发缺少分支 `{marker}`"));
+            // 只看分支体：从标记往后到下一个 `TaskKind::` 分支（或文件尾）。
+            let rest = &source[start + marker.len()..];
+            let end = rest.find("TaskKind::").unwrap_or(rest.len());
+            let body = &rest[..end];
+            assert!(
+                body.contains("record_gateway_today"),
+                "宿主 {host} 的网关用量分支没有调用 record_gateway_today"
+            );
+            assert!(
+                body.contains("Region::all()"),
+                "宿主 {host} 的网关用量分支必须遍历 Region::all()（两个 region）——\
+                 只记一个 region，另一个的 gateway 历史会永远空着"
+            );
+        }
+    }
+
     /// 反向护栏：`spawn_arm_marker` 必须覆盖 `TaskKind` 的**全部**取值。
     ///
     /// 可证伪：新增一个 [`TaskKind`] 变体却忘了给 `spawn_arm_marker` 加分支 ⇒ 本 `match`
@@ -470,6 +568,7 @@ mod tests {
             TaskKind::PoolPersist,
             TaskKind::AutoBackup,
             TaskKind::GatewayCatalogProbe,
+            TaskKind::GatewayUsageRecord,
             TaskKind::Scheduled(ScheduleTask::Checkin),
         ] {
             assert!(!spawn_arm_marker(kind).is_empty(), "{kind:?}");

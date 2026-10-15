@@ -24,7 +24,7 @@
  * 侧栏一颗圆点，现在是一张跨作用域的状态表 —— 信息的范围变了，取数范围随之改变。
  */
 
-import { useEffect, useMemo } from "react";
+import { useCallback, useEffect, useMemo } from "react";
 
 import * as api from "@/lib/api";
 import type { AccountMeta, AppStatus } from "@/lib/types";
@@ -39,6 +39,7 @@ import {
 import { useCachedResource } from "@/lib/use-cached-resource";
 import { useDocumentVisible } from "@/lib/use-document-visible";
 import { useAccountsStore } from "@/stores/accounts";
+import { useResourceStore } from "@/stores/resources";
 import { identityDisplayName } from "@/components/account-card";
 
 /** 单个作用域的环境状态。 */
@@ -198,7 +199,16 @@ function workbuddyStatus(status: AppStatus | null, accounts: AccountMeta[]): Sco
  */
 export function useScopeStatus(): {
   statuses: ScopeStatusMap;
-  refreshTrae: () => Promise<void>;
+  /**
+   * 强制刷新 Trae 侧快照；**返回刷新后的错误文案**（`null` = 成功）。
+   *
+   * ⚠️ 为什么返回值不是 `void`：`useCachedResource.refresh` 吞掉异常（失败写进
+   * 快照的 `error`，见 `stores/resources.ts` 的 `load`）⇒ 顶栏刷新若只看
+   * 「await 有没有抛」，Trae 的失败会被当成成功去报「已刷新」。这里在刷新结束
+   * 后直接读 store 的**最新** entry（不受 React 渲染时序影响），把结果转成
+   * 显式值给调用方。
+   */
+  refreshTrae: () => Promise<string | null>;
 } {
   const cnStatus = useAccountsStore((s) => s.status);
   const cnAccounts = useAccountsStore((s) => s.accounts);
@@ -227,9 +237,21 @@ export function useScopeStatus(): {
       "wb-global": workbuddyStatus(globalStatus, globalAccounts),
       "trae-cn": trae.data?.cn ?? UNKNOWN_STATUS,
       "trae-global": trae.data?.global ?? UNKNOWN_STATUS,
+      /* ⚠️ Qoder 侧**尚无运行状态数据源**（客户端探测与账号库计数都还没接）。
+         这里给 `UNKNOWN_STATUS` 而不是编一个「未运行」—— 后者会被读成
+         「装了但没开」，而事实是我们还不知道。 */
+      "qoder-cn": UNKNOWN_STATUS,
+      "qoder-global": UNKNOWN_STATUS,
     }),
     [cnStatus, cnAccounts, globalStatus, globalAccounts, trae.data],
   );
 
-  return { statuses, refreshTrae: trae.refresh };
+  // 见返回类型处的说明：refresh 不抛错 ⇒ 刷新完成后从 store 读最新 entry 判成败。
+  const refreshTrae = useCallback(async (): Promise<string | null> => {
+    await trae.refresh();
+    const entry = useResourceStore.getState().entries[TRAE_SCOPE_STATUS_KEY];
+    return entry?.error == null ? null : api.asError(entry.error);
+  }, [trae.refresh]);
+
+  return { statuses, refreshTrae };
 }

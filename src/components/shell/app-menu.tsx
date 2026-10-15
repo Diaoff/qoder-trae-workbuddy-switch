@@ -132,6 +132,13 @@ export function ThemeMenu() {
 /** 顶栏图标按钮样式（与原型 `.icon-btn` 对齐：34px 方角圆角 + hover 底色）。 */
 export const iconButtonClass = cn(
   /* 尺寸对齐原型 `.icon-btn`（`buddy-switch-prototype.html:143-147`）：34×34 / 圆角 10px。 */
-  "grid size-[34px] shrink-0 place-items-center rounded-[10px] text-muted-foreground outline-none transition-colors",
+  "grid size-[34px] shrink-0 place-items-center rounded-[10px] text-muted-foreground outline-none",
+  /* 过渡在原型 `background .14s, color .14s` 之上**多一项 transform**（压反弹所需的缩放）。 */
+  "transition-[color,background-color,transform]",
   "hover:bg-accent hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/40",
+  /* ★ 按压反馈：按下时轻微缩小。原型静态 demo 表达不了「按下」这一帧，但真机上手
+     缺了它，点击**瞬间**零视觉变化 —— 这正是本次要修的「点击没有任何反馈」。 */
+  "active:scale-95",
+  /* 进行中（如刷新）/ 不可用的禁用态：对齐 `Button` 的 `disabled:opacity-45`。 */
+  "disabled:pointer-events-none disabled:opacity-45",
 );

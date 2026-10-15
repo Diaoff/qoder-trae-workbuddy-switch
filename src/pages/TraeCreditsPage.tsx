@@ -69,7 +69,8 @@ import {
 import type { TraeRegionId, TraeTokenScope, TraeTokenStatistics } from "@/lib/trae-types";
 import { useCachedResource } from "@/lib/use-cached-resource";
 import { useTraeVariant } from "@/lib/use-trae-variant";
-import { balanceCurve, expiryBuckets, type UsageRange } from "@/lib/usage-charts";
+import { balanceCurve, expiryBuckets } from "@/lib/usage-charts";
+import { usageWindowSpanDays } from "@/lib/usage-window";
 
 /** 原型的两个环形只展示**前 6 名**账号（`accountShare.slice(0, 6)`）。 */
 const ACCOUNT_SHARE_LIMIT = 6;
@@ -79,13 +80,15 @@ const ACCOUNT_SHARE_LIMIT = 6;
  *
  * `range` / `combineAll` 由 `UsagePage` 传入（受控）；本页不放任何页内区域选择器。
  */
-export default function TraeCreditsPage({ range, combineAll }: UsageViewProps) {
+export default function TraeCreditsPage({ viewWindow, combineAll }: UsageViewProps) {
   const t = useT();
   /** 当前区域（由路径作用域 / `?line=` 决定），决定默认读哪一份积分与账号数据。 */
   const [region] = useTraeVariant();
   const [refreshing, setRefreshing] = useState(false);
   const scope: TraeTokenScope = combineAll ? "all" : region;
-  const days: UsageRange = range;
+  /* ★ 同 `TraeTokenStatsPage`：拉**覆盖整个窗口**的跨度，再按日历日切片。
+     窗口锚在过去时只拉「窗口天数」会让那段历史根本不在返回里。 */
+  const spanDays = usageWindowSpanDays(viewWindow);
 
   /**
    * 积分与账号两份数据都按**区域**读：它们分家存放，混读会让「积分趋势」是国内版的、
@@ -123,11 +126,11 @@ export default function TraeCreditsPage({ range, combineAll }: UsageViewProps) {
    * 升级成整页错误）。
    */
   const loadTokens = useCallback(
-    () => api.getTraeTokenStatistics(days, scope),
-    [days, scope],
+    () => api.getTraeTokenStatistics(spanDays, scope),
+    [spanDays, scope],
   );
   const { data: tokenStats } = useCachedResource<TraeTokenStatistics>(
-    `trae:token-stats:${days}:${scope}`,
+    `trae:token-stats:${spanDays}:${scope}`,
     loadTokens,
   );
 
@@ -135,7 +138,10 @@ export default function TraeCreditsPage({ range, combineAll }: UsageViewProps) {
   const merged = useMemo(() => mergeTraeCredits(snapshot ?? []), [snapshot]);
   const credits = snapshot?.[0]?.credits ?? null;
 
-  const bars = useMemo(() => traeCreditBars(merged.daily, range), [merged.daily, range]);
+  const bars = useMemo(
+    () => traeCreditBars(merged.daily, viewWindow),
+    [merged.daily, viewWindow],
+  );
   const balancePoints = useMemo(() => balanceCurve(bars, merged.total), [bars, merged.total]);
   const buckets = useMemo(() => expiryBuckets(traeCreditExpiry(merged.rows)), [merged.rows]);
   const hasExpiry = buckets.some((bucket) => bucket.value > 0);
@@ -250,6 +256,7 @@ export default function TraeCreditsPage({ range, combineAll }: UsageViewProps) {
           description={t("trae.stats.credits.trendEmptyData")}
           action={
             <Button size="sm" variant="outline" disabled={refreshing} onClick={() => void refreshCredits()}>
+              {refreshing ? <Loader2 className="animate-spin" /> : <RefreshCw />}
               {t("trae.stats.credits.sync")}
             </Button>
           }
@@ -394,6 +401,7 @@ export default function TraeCreditsPage({ range, combineAll }: UsageViewProps) {
               description={t("trae.stats.credits.flowEmptyBody")}
               action={
                 <Button size="sm" variant="outline" disabled={refreshing} onClick={() => void refreshCredits()}>
+                  {refreshing ? <Loader2 className="animate-spin" /> : <RefreshCw />}
                   {t("trae.stats.credits.sync")}
                 </Button>
               }

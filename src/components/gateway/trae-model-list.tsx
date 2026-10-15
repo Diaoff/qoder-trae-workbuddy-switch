@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { Cpu, RefreshCw } from "lucide-react";
+import { Cpu, Loader2, RefreshCw } from "lucide-react";
 import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
@@ -18,7 +18,8 @@ import { servedCount } from "@/lib/types";
 import type { GatewayModelRow, Region } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import type { TraeModelSource, TraeVariantId } from "@/lib/trae-types";
-import { useGatewayStore } from "@/stores/gateway";
+import { useRefreshAction } from "@/lib/use-refresh-action";
+import { EMPTY_DISABLED_SET, useGatewayStore } from "@/stores/gateway";
 
 /**
  * Trae 模型清单 —— 读**客户端（上游下发）**的清单缓存。
@@ -71,8 +72,9 @@ import { useGatewayStore } from "@/stores/gateway";
  * - **计数 = `available && !disabled`**（`servedCount`）—— 与出口 ① **同源**。
  * - **「两个出口」说明必须出现**：禁用的模型不会出现在 `/v1/models`，**直接调用也会被拒绝**。
  *
- * ⚠️ 禁用偏好按 **region** 键控（**决策 #4**）：同区域两条程序位**共用**同一份禁用集合，
- * 因此 `region` 由宿主页传入（不是从 `sources` 猜）。
+ * ⚠️ 禁用偏好按**作用域**键控（2026-10-15 从 region 升级）：同区域两条程序位**共用**
+ * 同一份禁用集合（同一作用域），跨平台不再串键。`region` 由宿主页传入（不是从 `sources` 猜），
+ * 本组件把它升成 `trae-*` 作用域。
  */
 export function TraeModelList({
   sources,
@@ -89,15 +91,17 @@ export function TraeModelList({
    * 因此切换程序位是纯前端行为，不需要新命令、也不会出现两份互不一致的快照。
    */
   sources: TraeModelSource[];
-  /** 本区域的禁用偏好键（**决策 #4**：region 粒度，两条程序位共用）。 */
+  /** 本区域的禁用偏好来源（region 由宿主页传入；本组件升成 `trae-*` 作用域后读写）。 */
   region: Region;
   /** 网关配置里的默认模型（仅用于摘要文案）。 */
   defaultModel: string;
   refreshing: boolean;
-  onRefresh: () => void;
+  onRefresh: () => void | Promise<void>;
   className?: string;
 }) {
   const t = useT();
+  /** 「重新读取」的进行中态（点击后立刻转圈/禁用，覆盖 `refreshing` 之外的即时反馈）。 */
+  const { busy, run } = useRefreshAction();
 
   /**
    * 用户手动选中的程序位。
@@ -114,14 +118,16 @@ export function TraeModelList({
   const active = sources.find((source) => source.variant === picked) ?? sources[0] ?? null;
   const data = active?.data ?? null;
 
-  const disabledSet = useGatewayStore((s) => s.disabled[region]);
+  /** 本区域的**作用域**（禁用偏好按作用域键控；同区域两条程序位共用一个作用域）。 */
+  const scope = scopeOf("trae", region);
+  const disabledSet = useGatewayStore((s) => s.disabled[scope]) ?? EMPTY_DISABLED_SET;
   const loadDisabled = useGatewayStore((s) => s.loadDisabled);
   const setModelDisabled = useGatewayStore((s) => s.setModelDisabled);
 
-  /* 进入 / 切 region 时读一次该 region 的禁用偏好。 */
+  /* 进入 / 切作用域时读一次该作用域的禁用偏好。 */
   useEffect(() => {
-    void loadDisabled(region);
-  }, [loadDisabled, region]);
+    void loadDisabled(scope);
+  }, [loadDisabled, scope]);
 
   /** 当前程序位的**网关对外清单** id 集合（见 `TraeModelSource.gatewayNames`）。 */
   const servableNames = useMemo(
@@ -143,7 +149,7 @@ export function TraeModelList({
         out.push({
           id,
           name: displayText(model.displayName) ?? id,
-          scope: scopeOf("trae", region),
+          scope,
           // 上游状态：∈ 网关对外清单即可服务；清单未取到（null）时不谎称「不可用」。
           available: servableNames ? servableNames.has(model.name) : true,
           disabled: disabledSet.has(id),
@@ -151,7 +157,7 @@ export function TraeModelList({
       }
     }
     return out;
-  }, [data, servableNames, disabledSet, region]);
+  }, [data, servableNames, disabledSet, scope]);
 
   const { served, total } = servedCount(rows);
   const loaded = data?.source === "client-cache" && total > 0;
@@ -192,7 +198,7 @@ export function TraeModelList({
   async function onToggleDisabled(row: GatewayModelRow, disabled: boolean) {
     setPendingId(row.id);
     try {
-      await setModelDisabled(region, row.id, disabled);
+      await setModelDisabled(scope, row.id, disabled);
       toast.success(
         t(
           disabled
@@ -291,8 +297,13 @@ export function TraeModelList({
             description={t("trae.gateway.models.emptyDesc")}
             action={
               <DemoAction>
-                <Button variant="outline" size="sm" onClick={() => onRefresh()} disabled={refreshing}>
-                  <RefreshCw />
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={refreshing || busy}
+                  onClick={() => void run(() => onRefresh())}
+                >
+                  {busy ? <Loader2 className="animate-spin" /> : <RefreshCw />}
                   {t("trae.gateway.models.refresh")}
                 </Button>
               </DemoAction>

@@ -74,6 +74,7 @@ import {
 import { displayText } from "@/lib/display-text";
 import { formatDate } from "@/lib/format";
 import { useT } from "@/lib/i18n";
+import { useRefreshAction } from "@/lib/use-refresh-action";
 import { SCOPES, type Scope } from "@/lib/scope";
 import type { AutoBackupEntry, ImportPreviewScopeRow } from "@/lib/types";
 import { useBackupStore } from "@/stores/backup";
@@ -200,6 +201,9 @@ export function BackupSection() {
   const [restoring, setRestoring] = useState(false);
   const [restoreTarget, setRestoreTarget] = useState<AutoBackupEntry | null>(null);
 
+  /** 自动备份空态「刷新」按钮的进行中态（该块转 Skeleton 由 `autoLoading` 承担）。 */
+  const { busy: autoRefreshBusy, run: runAutoRefresh } = useRefreshAction();
+
   const fileInputRef = useRef<HTMLInputElement>(null);
   const fileTextRef = useRef("");
 
@@ -224,14 +228,26 @@ export function BackupSection() {
         .getTraeAccounts("global")
         .then((r) => r.total)
         .catch(() => 0),
+      api
+        .getQoderAccounts("qoder-cn")
+        .then((r) => r.accounts.length)
+        .catch(() => 0),
+      api
+        .getQoderAccounts("qoder-global")
+        .then((r) => r.accounts.length)
+        .catch(() => 0),
     ])
-      .then(([wbCn, wbGlobal, traeCn, traeGlobal]) => {
+      .then(([wbCn, wbGlobal, traeCn, traeGlobal, qoderCn, qoderGlobal]) => {
         if (cancelled) return;
         setStats({
           "wb-cn": { accounts: wbCn, config: CONFIG_SECTIONS_PER_SCOPE, gateway: 0 },
           "wb-global": { accounts: wbGlobal, config: CONFIG_SECTIONS_PER_SCOPE, gateway: 0 },
           "trae-cn": { accounts: traeCn, config: CONFIG_SECTIONS_PER_SCOPE, gateway: 0 },
           "trae-global": { accounts: traeGlobal, config: CONFIG_SECTIONS_PER_SCOPE, gateway: 0 },
+          /* Qoder：账号数是**真实**读到的（账号库已落地）；配置与网关两个分区尚未落地
+             ⇒ 报 0 而不是编一个数。 */
+          "qoder-cn": { accounts: qoderCn, config: 0, gateway: 0 },
+          "qoder-global": { accounts: qoderGlobal, config: 0, gateway: 0 },
         });
         setStatsError("");
         setStatsLoading(false);
@@ -709,8 +725,13 @@ export function BackupSection() {
               title={t("backup.auto.empty")}
               description={t("backup.auto.emptyBody")}
               action={
-                <Button size="sm" variant="outline" onClick={() => void loadAuto()}>
-                  <RefreshCw />
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={autoRefreshBusy}
+                  onClick={() => void runAutoRefresh(() => loadAuto())}
+                >
+                  {autoRefreshBusy ? <Loader2 className="animate-spin" /> : <RefreshCw />}
                   {t("backup.auto.refresh")}
                 </Button>
               }

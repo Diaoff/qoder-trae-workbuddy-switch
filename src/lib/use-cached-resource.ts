@@ -22,6 +22,15 @@ export interface CachedResource<T> {
   data: T | undefined;
   /** **仅在没有可用值**时为 true。有旧值时后台刷新不会让页面退回骨架屏。 */
   loading: boolean;
+  /**
+   * 是否有请求在飞（含**有旧值时的后台刷新**与轮询）。
+   *
+   * ⚠️ 与 `loading` 的分工：`loading` 是**骨架屏判据**（没有可用值才为 true），
+   * 而「点刷新按钮」发生在**有旧值**的时候 —— 那时 `loading` 恒为 false。
+   * 刷新类控件若绑 `loading`，图标永远不会转，用户读到的就是「点了没反应」。
+   * 需要展示「正在刷新」的地方绑本字段（可再叠最小展示时长，见 `useRefreshAction`）。
+   */
+  pending: boolean;
   /** 已经格式化过的错误文案（用 `api.asError`，与页面改造前的 `setError` 同源）。 */
   error: string | null;
   /** 强制取一次新值并等待完成。**变更操作之后必须调用它**，否则界面停在变更前。 */
@@ -107,6 +116,7 @@ export function useCachedResource<T>(
     data,
     // 出错且无值时不留在 loading：让页面渲染错误提示 + 空态，而不是永远转圈。
     loading: key !== null && data === undefined && entry?.error == null,
+    pending: entry?.pending === true,
     error: entry?.error == null ? null : asError(entry.error),
     refresh,
     revalidate,

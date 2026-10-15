@@ -24,6 +24,7 @@ use tower::ServiceExt;
 
 use buddy_switch_core::modules::catalog::{FALLBACK_CN_MODELS, FALLBACK_GLOBAL_MODELS};
 use buddy_switch_core::modules::region::Region;
+use buddy_switch_core::modules::product::scope_of_wb_region;
 use buddy_switch_gateway::{router, GatewayConfig, GatewayState};
 
 /// 串行化所有触碰 `BUDDY_SWITCH_HOME` 的用例。
@@ -116,7 +117,7 @@ async fn wb_disabled_model_is_hidden_from_models_and_rejected_on_call() {
     // 禁用该模型（写进**进程内唯一**的禁用存储 —— 与两个出口读的是同一份）。
     {
         let mut lock = state.disabled.write().await;
-        lock.set(Region::Cn, target, true);
+        lock.set(scope_of_wb_region(Region::Cn), target, true);
     }
 
     // 出口①：真的少一条。
@@ -157,7 +158,7 @@ async fn wb_disabled_model_is_hidden_from_models_and_rejected_on_call() {
     // 清理：禁用存储是**进程级全局**（同进程其余用例会读到它）。
     {
         let mut lock = state.disabled.write().await;
-        lock.set(Region::Cn, target, false);
+        lock.set(scope_of_wb_region(Region::Cn), target, false);
     }
     let _ = std::fs::remove_dir_all(&home);
 }
@@ -182,7 +183,7 @@ async fn wb_disabled_in_one_region_does_not_hide_the_other() {
     // 只在 Global 禁用。
     {
         let mut lock = state.disabled.write().await;
-        lock.set(Region::Global, target, true);
+        lock.set(scope_of_wb_region(Region::Global), target, true);
     }
 
     // Global 少一条。
@@ -201,7 +202,7 @@ async fn wb_disabled_in_one_region_does_not_hide_the_other() {
     // 清理。
     {
         let mut lock = state.disabled.write().await;
-        lock.set(Region::Global, target, false);
+        lock.set(scope_of_wb_region(Region::Global), target, false);
     }
     let _ = std::fs::remove_dir_all(&home);
 }

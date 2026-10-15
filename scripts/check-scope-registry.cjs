@@ -13,7 +13,7 @@
  *
  * ## 判据
  *
- * 1. 注册表能列出 **4 个作用域**（P0 验收项）；
+ * 1. 注册表能列出 **6 个作用域**（3 平台 × 2 区域，P0 验收项）；
  * 2. `parseScope` **fail-closed**：非法值返回 `null`，**绝不回落默认值**（§2.5）；
  * 3. `scopeOf` / `scopeParts` **往返一致**；
  * 4. `platformOfPath` 能映射旧路由（**兼容旧版本的关键**，D4）；
@@ -53,6 +53,9 @@ const STUBS = {
  * 而 Node 的 ESM 解析器要求扩展名 ⇒ 不能直接 `import`，只能自己解析。
  * 这也顺带绕开了路径别名（本项目源码内部用相对路径，别名只在 tsconfig 里）。
  */
+/** 预设窗口构造器：参数条上就是「近 N 天」那一档。 */
+const presetWin = (days) => ({ kind: "preset", days });
+
 function loadTs(file, seen = new Map()) {
   const abs = path.resolve(file);
   if (seen.has(abs)) return seen.get(abs);
@@ -122,10 +125,10 @@ function check(name, fn) {
 
 console.log("\n作用域与平台注册表门禁\n");
 
-check("注册表能列出 4 个作用域（P0 验收项）", () => {
+check("注册表能列出 6 个作用域（3 平台 × 2 区域，P0 验收项）", () => {
   const got = [...scope.SCOPES];
-  if (got.length !== 4) throw new Error(`实际 ${got.length} 个：${got.join(",")}`);
-  for (const s of ["wb-cn", "wb-global", "trae-cn", "trae-global"]) {
+  if (got.length !== 6) throw new Error(`实际 ${got.length} 个：${got.join(",")}`);
+  for (const s of ["wb-cn", "wb-global", "trae-cn", "trae-global", "qoder-cn", "qoder-global"]) {
     if (!got.includes(s)) throw new Error(`缺少 ${s}`);
   }
   return got.join(" / ");
@@ -336,16 +339,16 @@ check("★ P2 路由：`/s/:scope/:dest` 已注册，且旧路由**保留**（�
   return `新路由 1 条 + 旧路由 ${legacy.length} 条并存`;
 });
 
-check("★ P2 目的地映射覆盖 2 平台 × 6 目的地（侧栏固定 6 项的依据）", () => {
+check("★ P2 目的地映射覆盖 3 平台 × 6 目的地（侧栏固定 6 项的依据）", () => {
   const app = stripComments(fs.readFileSync(path.join(ROOT, "src/App.tsx"), "utf8"));
   const m = app.match(/const SCOPED_ROUTES[\s\S]*?\n\};/);
   if (!m) throw new Error("找不到 SCOPED_ROUTES");
   const block = m[0];
   const bad = [];
   for (const dest of registry.DESTINATIONS) {
-    // 每个 dest 应在表里出现两次（WorkBuddy 一次、Trae 一次）
+    // 每个 dest 应在表里出现三次（WorkBuddy / Trae / Qoder 各一次）
     const n = (block.match(new RegExp(`\\b${dest}:`, "g")) || []).length;
-    if (n !== 2) bad.push(`${dest}(${n} 次，期望 2)`);
+    if (n !== 3) bad.push(`${dest}(${n} 次，期望 3)`);
   }
   if (bad.length) throw new Error(`映射不完整：${bad.join(", ")}`);
   return `${registry.PRODUCTS.length} 平台 × ${registry.DESTINATIONS.length} 目的地`;
@@ -392,6 +395,10 @@ check("★ P3 空态迁移：已迁移处必须继续用 `EmptyState`（防回�
     "src/components/gateway/trae-api-key-table.tsx",
     "src/components/gateway/trae-model-list.tsx",
     "src/components/gateway/trae-request-log.tsx",
+    /* Qoder 网关三件（2026-10-15）：新写的两个组件**一开始就用** `EmptyState`，
+       登记在此防回退（与上面几条同一纪律）。 */
+    "src/components/gateway/qoder-api-key-table.tsx",
+    "src/components/gateway/qoder-model-list.tsx",
     "src/components/trae-export-accounts-dialog.tsx",
     /* 用量四视图（2026-10-12 跨平台对齐）：Trae 两页原来的「一行虚线框」空态
        已换成 `EmptyState`（含出口），并登记在此防回退。 */
@@ -511,6 +518,8 @@ check("★ P3 `formatDate` 已共享（且不许把时间戳 0 渲染成假时�
   const consumers = [
     "src/components/gateway/api-key-table.tsx",
     "src/components/gateway/trae-api-key-table.tsx",
+    // Qoder 侧同款（2026-10-15）：新写的 Key 表也必须用共享 `formatDate`。
+    "src/components/gateway/qoder-api-key-table.tsx",
   ];
   for (const f of consumers) {
     const code = stripComments(fs.readFileSync(path.join(ROOT, f), "utf8"));
@@ -546,6 +555,34 @@ check("★ P3 用量页：Token + 积分合并为一个目的地，且旧路径�
   return `目的地 ${registry.DESTINATIONS.length} 项 · 三条旧路径映射到 usage`;
 });
 
+check("★ 默认窗口：原型与项目**必须同一个数**（否则又是「原型一个数、项目一个数」）", () => {
+  /* 2026-10-15 实测分叉：原型默认近 **7** 天、`UsagePage` 默认近 **30** 天。
+     ⚠️ 翻遍 `PLAN.md` / `DECISIONS.md` / `P3-ARCH.md` / 提交历史：**两侧都没有决策记录**，
+     都是整体快照里带进来的巧合 ⇒ 这是「意外分叉」，不是设计。
+     判据支持 30：① 项目「被视图参数筛没」的兜底按钮就是「看近 30 天」；
+     ② `A1` 系列注释与门禁全以 30 天为基准（`cols.length === 30`）；
+     ③ 7 天趋势在宽图上稀；④ **改项目 = 静默改老用户首屏**（本仓最忌那类 bug）。
+     ⇒ 统一到 30 天，**只改原型**。
+     ⚠️ 原型文件**不过 `stripComments`**：它是朴素正则，而原型里有大量含 `//` 的字符串
+     （URL 等），strip 后锚点可能被吃掉 ⇒ 直接读原文 + 行级正则。 */
+  const win = fs.readFileSync(path.join(ROOT, "src/lib/usage-window.ts"), "utf8");
+  const mWin = win.match(/DEFAULT_USAGE_WINDOW[^\n]*?days:\s*(\d+)/);
+  if (!mWin) throw new Error("取不到 `DEFAULT_USAGE_WINDOW` 的天数");
+  const projectDays = Number(mWin[1]);
+
+  const protos = ["docs/redesign/demo-app.js", "docs/redesign/buddy-switch-prototype.html"];
+  for (const p of protos) {
+    const code = fs.readFileSync(path.join(ROOT, p), "utf8");
+    const hits = code.match(/usageTab:\s*"trend",\s*range:\s*(\d+)/g) || [];
+    if (hits.length !== 1) throw new Error(`${p} 默认 range 的锚点命中 ${hits.length} 次（期望 1）`);
+    const got = Number(hits[0].match(/range:\s*(\d+)/)[1]);
+    if (got !== projectDays) {
+      throw new Error(`${p} 默认近 ${got} 天 ≠ 项目近 ${projectDays} 天 —— 原型与项目又分叉了`);
+    }
+  }
+  return `原型两侧 + 项目默认一致 = 近 ${projectDays} 天`;
+});
+
 check("★ P3 用量页视图参数条**只有一条**：由 `UsagePage` 渲染，四个视图页内不许有区域选择器", () => {
   /* 原型 `viewUsage` 的结构是「页头 → seg（子 Tab）→ params → body」：
      **一条**参数条管全部子 Tab，`state.range` / `state.merge` 是**页面级**的。
@@ -555,8 +592,13 @@ check("★ P3 用量页视图参数条**只有一条**：由 `UsagePage` 渲染�
   if (!/<ViewParamBar\b/.test(page)) {
     throw new Error("`UsagePage` 没有渲染 `ViewParamBar` —— 参数条必须由页面级渲染一次");
   }
-  if (!/useState<UsageRange>/.test(page) || !/readPreferredCombineAll/.test(page)) {
-    throw new Error("`UsagePage` 没有持有页面级视图参数（`range` / `combineAll`）");
+  if (!/useState<UsageWindow>/.test(page) || !/readPreferredCombineAll/.test(page)) {
+    throw new Error("`UsagePage` 没有持有页面级视图参数（`window` / `combineAll`）");
+  }
+  /* ⚠️ 局部变量不许叫 `window`：那会**静默**屏蔽全局 `window`（`localStorage` / 事件 /
+     任何 `window.*` 都会指向这个对象，而 `tsc` 不报错）。用 `viewWindow`。 */
+  if (/const \[window, setWindow\] = useState/.test(page)) {
+    throw new Error("`UsagePage` 用 `window` 当局部变量名 —— 会屏蔽全局 `window`");
   }
 
   /* 合并态控件（`RegionBar`）的唯一落点：参数条内部。 */
@@ -565,6 +607,63 @@ check("★ P3 用量页视图参数条**只有一条**：由 `UsagePage` 渲染�
   );
   if (!/<RegionBar value=\{combineAll\}/.test(bar)) {
     throw new Error("视图参数条没有把合并态绑到 `combineAll`（`RegionBar`）");
+  }
+  /* ★ 时间窗口的两枚新出口必须都在参数条上：**今天**与**自定义时间**。
+     少了任何一枚，UI 就退回「只有 7/14/30」——而原型已经不是那样了。 */
+  for (const [label, pattern] of [
+    ["今天", /\btoday:\s*"wbStats\.usage\.range\.today"/],
+    ["自定义时间", /custom:\s*"wbStats\.usage\.param\.custom"/],
+  ]) {
+    if (!pattern.test(bar)) throw new Error(`参数条缺少「${label}」档位映射`);
+  }
+  if (!/USAGE_WINDOW_MODES/.test(bar)) {
+    throw new Error("参数条的档位顺序没有走 `USAGE_WINDOW_MODES`（档位表散成了两份）");
+  }
+  /* ★ 弹层里「可选范围」的边界必须是**两个独立日期**。
+     拿区间文案去渲染单个日期会得到 `7/18 – 7/18`，套进 `{from} – {to}` 就成了
+     `7/18 – 7/18 – 10/15`（实测踩到，截图里看得见）。 */
+  if (!/shortDateLabel\(/.test(bar)) {
+    throw new Error("自定义弹层的「可选范围」提示没有用 `shortDateLabel`（会渲染出双破折号）");
+  }
+  if (/custom\.hint[\s\S]{0,200}usageCustomRangeLabel/.test(bar)) {
+    throw new Error("「可选范围」提示用了区间文案 —— 单个日期会渲染成 `x – x`");
+  }
+  /* ★「空日期不得静默变成今天」（2026-10-15 修）。
+     原型是**拒绝**（`toast("err","请选择起止日期")`），React 侧修复前是**静默应用**
+     ⇒ `clampCustom` 把空串兜底成「今天」，用户以为生效的是自己选的那段。
+     实测（CDP 变异对照）没这道守卫时窗口从「近 7 天」变成「10/15 – 10/15」。
+     两道防线都要在：**禁用态**挡住正常操作，**守卫**挡住键盘/程序化绕过。 */
+  if (!/if \(!draft\.from \|\| !draft\.to\) return;/.test(bar)) {
+    throw new Error("自定义弹层没有「起止为空 ⇒ 拒绝应用」的守卫 —— 会静默把窗口改成「今天」");
+  }
+  if (!/disabled=\{customIncomplete\}/.test(bar)) {
+    throw new Error("起止为空时「应用」没有禁用（守卫可被绕过，禁用才是第一道防线）");
+  }
+  if (!/customIncomplete/.test(bar)) {
+    throw new Error("没有 `customIncomplete` 判据 —— 禁用态与守卫会各自漂移");
+  }
+  if (!/t\("wbStats\.usage\.param\.custom\.incomplete"\)/.test(bar)) {
+    throw new Error("起止为空时没有解释原因（无解释的禁用是新的静默失败）");
+  }
+  /* ★ 开浮层的那一档必须声明 `aria-haspopup` / `aria-expanded`（原型有，React 侧曾漏）。 */
+  if (!/popup=\{\{ value: "custom", expanded: open \}\}/.test(bar)) {
+    throw new Error("参数条没有把「自定义时间」标成 popup 档（读屏不知道它会开浮层）");
+  }
+  const seg = stripComments(fs.readFileSync(path.join(ROOT, "src/components/ui/seg.tsx"), "utf8"));
+  if (!/isPopup/.test(seg) || !/aria-haspopup=\{isPopup \? "dialog" : undefined\}/.test(seg)) {
+    throw new Error("`Seg` 没有 popup 档能力（aria-haspopup / aria-expanded 无处落地）");
+  }
+  /* ★ 窗口的类型与纯函数只有一处定义：`lib/usage-window.ts`。
+     `usage-charts.ts` 是消费方 —— 它自己再定义一次 `UsageWindow` 就是两份真值。 */
+  const win = stripComments(fs.readFileSync(path.join(ROOT, "src/lib/usage-window.ts"), "utf8"));
+  if (!/export type UsageWindow\b/.test(win)) {
+    throw new Error("`lib/usage-window.ts` 没有导出 `UsageWindow`（窗口的唯一真值）");
+  }
+  for (const name of ["usage-charts", "trae-usage-charts"]) {
+    const code = stripComments(fs.readFileSync(path.join(ROOT, `src/lib/${name}.ts`), "utf8"));
+    if (/=\s*7 \| 14 \| 30/.test(code)) {
+      throw new Error(`\`${name}.ts\` 又定义了一份「7|14|30」天数类型 —— 天数已不能表达窗口`);
+    }
   }
 
   /* 四个视图页：**都不许**自己再放参数条 / 区域选择器 / 自持参数状态。 */
@@ -582,7 +681,7 @@ check("★ P3 用量页视图参数条**只有一条**：由 `UsagePage` 渲染�
     if (/const \[[A-Za-z]+, set[A-Za-z]+\] = useScope\(/.test(code)) {
       throw new Error(`${name} 又取了 \`useScope\` 的 setter —— 页面内不该能切区域`);
     }
-    if (/useState<UsageRange>|useState\(\(\) => readPreferredCombineAll/.test(code)) {
+    if (/useState<UsageWindow>|useState\(\(\) => readPreferredCombineAll/.test(code)) {
       throw new Error(`${name} 又自持视图参数状态了 —— 那是页面级的（切子 Tab 不重置）`);
     }
   }
@@ -708,7 +807,7 @@ check("★ Trae 用量适配层：映射成共用形状后走**同一批**图表
   if (matrix.cells[6][23] !== 7) throw new Error(`周日 23 点应为 7，实得 ${matrix.cells[6][23]}`);
   if (matrix.cells.flat().reduce((a, b) => a + b, 0) !== 13) throw new Error("非法槽位键没有被忽略");
 
-  const cols = uc.dailyModelSeries(source, 30);
+  const cols = uc.dailyModelSeries(source, presetWin(30));
   if (cols.length !== 30) throw new Error(`堆叠柱列数应 = 窗口天数 30，实得 ${cols.length}`);
   for (const col of cols) {
     const sum = col.segments.reduce((acc, seg) => acc + seg.value, 0);
@@ -719,11 +818,11 @@ check("★ Trae 用量适配层：映射成共用形状后走**同一批**图表
     throw new Error(`今天应有 2 段共 60，实得 ${today.segments.length} 段 / ${today.total}`);
   }
 
-  const slices = uc.modelSlices(source, 30);
+  const slices = uc.modelSlices(source, presetWin(30));
   if (slices.length !== 2) throw new Error(`扇区数应 = 窗口内有量的模型数 2，实得 ${slices.length}`);
   if (slices[0].value !== 49) throw new Error(`头部模型窗口内应为 49（40+9），实得 ${slices[0].value}`);
 
-  const bars = tu.traeCreditBars([{ date: dayKey(0), total: 10, earned: 3, consumed: 1 }], 7);
+  const bars = tu.traeCreditBars([{ date: dayKey(0), total: 10, earned: 3, consumed: 1 }], presetWin(7));
   if (bars.length !== 7) throw new Error(`逐日柱应铺满窗口 7 天，实得 ${bars.length}`);
   const last = bars[bars.length - 1];
   if (last.inAmt !== 3 || last.outAmt !== 1) {
@@ -1480,6 +1579,63 @@ check("★「添加账号」抽屉 = 原工具栏「⋯」内容的唯一落点�
   return "两页抽屉各 4 行 · 键序一致 · 分区有标题 · 文案同源 · 无「已放出来」的重复项";
 });
 
+check("★ Qoder 账号页 = 原型工作台同构（工具栏一行 + 卡开抽屉 + 备注在抽屉 · 第三平台不另起炉灶）", () => {
+  /* 原型的账号页是**平台无关**的（`viewAccounts` / `accountCard` / `drawerAccount`：
+     工具栏一行 + 卡点击开详情 + 备注在抽屉里编辑），三个平台的差异只在数据。
+     Qoder 必须复用共享壳，而不是再写一版自建卡片。
+     变异：把 Qoder 页退回「自建卡片 / 无工具栏 / 备注内联在卡上」⇒ 本条变红。 */
+  const page = readCode("src/pages/QoderAccountsPage.tsx");
+  // ① 复用共享工作台，且原型 `viewAccounts` :2406-2429 的控件全部接线
+  const wi = page.indexOf("<AccountWorkbench");
+  if (wi < 0) throw new Error("Qoder 账号页没有复用 AccountWorkbench");
+  for (const anchor of [
+    "query={",
+    "sortOptions={",
+    "groupOptions={",
+    "onViewChange={",
+    "addAction={{",
+    "selection={{",
+    "buckets={",
+    "columns={",
+    "renderCard={",
+    "onOpenRow={",
+    "onToggleSelect={",
+  ]) {
+    if (!page.slice(wi).includes(anchor)) {
+      throw new Error(`Qoder 工作台缺 \`${anchor}\`（原型工具栏 / 列表不全）`);
+    }
+  }
+  // ② 卡点击 → 共享详情抽屉；备注编辑在抽屉里接线（卡上不得再出现就地编辑）
+  if (!/AccountDetailDrawer/.test(page)) throw new Error("Qoder 没有共用详情抽屉");
+  if (!/onSaveRemark=/.test(page) || !/autoEditRemark=/.test(page)) {
+    throw new Error("抽屉没有备注编辑接线（原型：编辑备注 → 抽屉内就地编辑）");
+  }
+  const card = readCode("src/components/qoder/qoder-account-card.tsx");
+  if (/RemarkField|<Input/.test(card)) {
+    throw new Error("Qoder 卡又出现就地备注编辑 —— 备注归抽屉（原型：「点账号卡打开抽屉即可操作」）");
+  }
+  if (!/onOpenDetail/.test(card)) throw new Error("Qoder 卡没有整卡点击开详情");
+  // ③ 添加抽屉 = 原型方式卡机制下的**能力子集**（只出已落地的两条方式）
+  if (!/ways=\{\["local"\]\}/.test(page)) {
+    throw new Error("Qoder 添加抽屉没有把基础方式收窄到已落地子集（OAuth / 导入备份尚未落地）");
+  }
+  if (!/paste-pat/.test(page)) throw new Error("Qoder 添加抽屉缺「粘贴 PAT」的 extraOption");
+  // ④ 批量条只出**已实现**的动作（Qoder 后端没有签到 / 刷新 / 导出账号命令）
+  if (!/onDelete:/.test(page)) throw new Error("Qoder 批量条缺删除接线");
+  if (/onCheckin:|onRefresh:|onExport:/.test(page)) {
+    throw new Error("Qoder 批量条出现未实现的动作（假控件）—— 批量动作必须与后端命令集一致");
+  }
+  // ⑤ 删除是**硬删除**：单删 + 批删都必须走确认弹层，且文案不许抄「可在回收站恢复」
+  if (!/pendingDelete/.test(page) || !/batchDeleteOpen/.test(page)) {
+    throw new Error("Qoder 删除没有确认弹层（硬删除必须先确认）");
+  }
+  const zh = stripComments(fs.readFileSync(path.join(ROOT, "src/locales/domains/qoderPages.zh.ts"), "utf8"));
+  if (/回收站恢复|可在回收站/.test(zh)) {
+    throw new Error("Qoder 删除文案抄了 WB / Trae 的「可在回收站恢复」—— Qoder 没有回收站");
+  }
+  return "工作台同构 · 备注在抽屉 · 添加方式子集 · 批量仅删除（+确认）";
+});
+
 check("★ 卡片栅格不得用 `items-start`（同行卡片必须等高，原型 `.grid` 默认 stretch）", () => {
   /* 原型 `.grid { display:grid; gap:12px }`（`buddy-switch-prototype.html:242`）**没有**
      `align-items` ⇒ 默认 `stretch` ⇒ 同一行卡片**等高**，页脚自然落在底部对齐。
@@ -1598,13 +1754,24 @@ check("★ 「今日 Token」诚实边界：卡片指标行三项齐备，—/�
   const body = fnBody(card, "formatTodayTokens");
   if (!/"—"/.test(body)) throw new Error("`formatTodayTokens` 未把「缺席」渲染成「—」（会误显示成 0）");
   if (!/metric\.atLeast/.test(body)) throw new Error("`formatTodayTokens` 未把「网关被裁剪」渲染成下界「≥」");
+  // ★ 双桶重叠披露（2026-10-15）：客户端与网关是**两条独立记录**，某个被统计的客户端
+  // 被指向本网关时，同一请求会两处各记一次 ⇒ 合计**可能重复计数**。后端无 join 键、
+  // 不做启发式去重，披露只能落在明细里：两侧都非零时必须带上说明。
+  // 变异：删掉 `todayTokensOverlap` 分支（或换成不渲染）⇒ 本条变红。
+  const breakdown = fnBody(card, "todayTokensBreakdown");
+  if (!/metric\.todayTokensOverlap/.test(breakdown)) {
+    throw new Error("`todayTokensBreakdown` 未披露双桶重叠 —— 两侧非零时同一请求可能被重复计数，只给数字就是误导");
+  }
+  if (!/export function todayTokensBreakdown\(/.test(card)) {
+    throw new Error("缺少 `todayTokensBreakdown` —— 明细（客户端 / 网关分开）必须与 headline 同源");
+  }
   if (!/account\.lastUsedAt/.test(card)) throw new Error("账号卡片未读取 `AccountMeta.lastUsedAt`");
   /* 第三格：原型是**相对时间**（`2 分钟前`），且复用共享 `formatRelativeTime`
      （`lib/catalog-source.ts`）—— 不许在本组件里另写一份相对时间格式化。 */
   if (!/formatRelativeTime\(lastUsedAt, t\)/.test(card)) {
     throw new Error("「最后使用」未经共享 `formatRelativeTime` 渲染（另写一份会与网关口径漂移）");
   }
-  return "三项齐备 · 缺席「—」/ 裁剪「≥」由 formatTodayTokens 统一承担 · lastUsedAt 走 formatRelativeTime";
+  return "三项齐备 · 缺席「—」/ 裁剪「≥」由 formatTodayTokens 统一承担 · 双桶重叠由 todayTokensBreakdown 披露 · lastUsedAt 走 formatRelativeTime";
 });
 
 check("★ 「今日 Token」命令两端接线：路由 + 调用 + 命令名 + 结果类型", () => {
@@ -2336,17 +2503,21 @@ check("★ P11 大小写不敏感：禁用 `X` 后调用 `X` 的大小写变体�
   return "判断点走 eq_ignore_ascii_case";
 });
 
-check("★ P11 Trae 出口① 按**该 region** 的禁用集合过滤（串了 region 即变红）", () => {
-  /* Trae 的禁用集合按 region 分家（决策 #4）。出口① 必须把 `region_of_variant(variant)`
-     对应的集合交给清单构造器，而不是全局集合 / 别的 region 的集合（那会误伤另一套账号体系）。 */
+check("★ P11 Trae 出口① 按**该作用域**的禁用集合过滤（串了作用域即变红）", () => {
+  /* Trae 的禁用集合按**作用域**分家（2026-10-15 从 region 升级：三个平台互不相通的模型
+     目录不得共用一把键）。出口① 必须把 `scope_of_trae_region(variant.region())`
+     对应的集合交给清单构造器，而不是全局集合 / 别的作用域的集合。
+     变异：把取集键换成裸 region / 固定作用域 ⇒ 本条变红。 */
   const routes = readCode(GW_TRAE_ROUTES_RS);
-  if (!/region_of_variant\(variant\)/.test(routes)) {
-    throw new Error("Trae 出口① 未按 `region_of_variant(variant)` 取禁用集合（可能串了 region）");
+  if (!/scope_of_trae_region\(variant\.region\(\)\)/.test(routes)) {
+    throw new Error(
+      "Trae 出口① 未按 `scope_of_trae_region(variant.region())` 取禁用集合（可能串了作用域）",
+    );
   }
   if (!/models_response_for\(\s*variant\s*,\s*&disabled\s*\)/.test(routes)) {
-    throw new Error("Trae 出口① 未把该 region 的禁用集合传给 `models_response_for`");
+    throw new Error("Trae 出口① 未把该作用域的禁用集合传给 `models_response_for`");
   }
-  return "region_of_variant → models_response_for(&disabled)";
+  return "scope_of_trae_region → models_response_for(&disabled)";
 });
 
 /* ── P11 T04 修复的**独立复核**（另派验证者 · 2026-10-06）─────────────────────────
@@ -2358,7 +2529,7 @@ check("★ P11 Trae 出口① 按**该 region** 的禁用集合过滤（串了 r
  * ⚠️ 锚只落在**代码**上（`readCode` 先剥注释）；每条写明变异落点。
  */
 
-check("★ P11 T04 #4：禁用存储键是 `String`（不是 `Region`）—— 未知 region 键不清空已知键", () => {
+check("★ P11 T04 #4：禁用存储键是 `String`（不是 `Scope`）—— 未知作用域键不清空已知键", () => {
   /* 变异：把 `HashMap<String, BTreeSet<String>>` 改回 `HashMap<Region, …>` ⇒ 未知 region 键让
      整份反序列化失败 ⇒ `load()` 回落空表 ⇒ **全部** region 的偏好被静默清空（T04 #4 的脚枪）。 */
   const code = readCode(GW_DISABLED_RS);
@@ -2368,11 +2539,15 @@ check("★ P11 T04 #4：禁用存储键是 `String`（不是 `Region`）—— �
   if (/HashMap<\s*Region\s*,/.test(code)) {
     throw new Error("禁用存储又用 `Region` 作键了（未知键 ⇒ 整份失败 ⇒ 静默清空）");
   }
-  // `get` 必须按 `region.as_str()` 取（与落盘的字符串键同口径），否则取不到。
-  if (!/regions\.get\(region\.as_str\(\)\)/.test(code)) {
-    throw new Error("`get` 未按 `region.as_str()` 取集合（与字符串键不同口径 ⇒ 恒空集）");
+  // `get` 必须按**作用域 id** 取（与落盘的字符串键同口径），否则取不到。
+  if (!/scopes\.get\(scope\.as_str\(\)\)/.test(code)) {
+    throw new Error("`get` 未按 `scope.as_str()` 取集合（与字符串键不同口径 ⇒ 恒空集）");
   }
-  return "String 键 · get 按 as_str()";
+  // 旧 region 键的迁移必须存在（否则升级会把老用户的禁用偏好整体丢掉）。
+  if (!/fn migrate_legacy_keys/.test(code)) {
+    throw new Error("缺 `migrate_legacy_keys` —— 旧 region 键的禁用偏好会整体丢失");
+  }
+  return "String 键 · get 按 as_str() · 旧键迁移在";
 });
 
 check("★ P11 T04 #3：`deny_unknown_fields`（裸 map 形状响亮报错，不再静默空表）", () => {
@@ -2487,8 +2662,8 @@ check("★ P11 Codex 给 base_url+env_key；Claude Code 给 ANTHROPIC_*（删即
  * ⚠️ 三条纪律（与 P10/P11 段一致）：
  *   ① 断言**只锚在代码上**（`readCode` 先剥注释）；
  *   ② 能跑真代码就跑真代码（`planScopeShortcuts` / `buildPaletteItems` / 归一函数直接调用）；
- *   ③ **降级分支必须有断言模拟 ≥6 个作用域**：真实应用只有 4 个 ⇒ `>5` 分支**永不触发**，
- *      而「永不执行」和「正确」在测试里长得一样 —— 不模拟就是死代码。
+ *   ③ **降级分支必须有断言模拟 >9 个作用域**：真实应用 6 个（3 平台 × 2 区域）⇒ 降级分支
+ *      **仍走不到**，而「永不执行」和「正确」在测试里长得一样 —— 不模拟就是死代码。
  *
  * ⚠️ **两套验收，各验各的对象**：本文件验**真实应用**（`src/`）；
  *    原型套件 `docs/redesign/verify-behaviors.cjs` / `verify-demo.cjs` 验**原型**，**不动**。
@@ -2508,8 +2683,18 @@ const APP_SETTINGS = "src/components/app-settings.tsx";
 const APP_TSX = "src/App.tsx";
 
 const FOUR_SCOPES = ["wb-cn", "wb-global", "trae-cn", "trae-global"];
-/** ★ 模拟 ≥6 个作用域，逼出「永不触发」的降级分支。 */
-const SIX_SCOPES = [...FOUR_SCOPES, "future-cn", "future-global"];
+/** 真实注册表的作用域（6 个：3 平台 × 2 区域）—— 从 `scope.ts` 现取，不写死。 */
+const REAL_SCOPES = [...scope.SCOPES];
+/** ★ 模拟「超过上限（9）」的规模，逼出降级分支（真实 6 个 ≤ 9 ⇒ 走不到）。 */
+const TEN_SCOPES = [
+  ...FOUR_SCOPES,
+  "future-cn",
+  "future-global",
+  "future3-cn",
+  "future3-global",
+  "future4-cn",
+  "future4-global",
+];
 
 /** 内存版 storage（门禁不跑浏览器）。 */
 function memStorage() {
@@ -2527,7 +2712,7 @@ function paletteCtx(overrides = {}) {
   return {
     t: (key) => key,
     currentScope: "wb-cn",
-    scopes: FOUR_SCOPES,
+    scopes: REAL_SCOPES,
     scopeShortcutIndex: new Map(),
     accounts: [],
     destinations: registry.DESTINATIONS,
@@ -2547,12 +2732,12 @@ function fnBody(code, name) {
   return body;
 }
 
-check("★ P6 降级分支：作用域 >5 ⇒ 不绑定 + reason=too-many（真实应用只有 4 个 ⇒ 必须模拟 6 个）", () => {
-  /* 变异①：删掉 `> SCOPE_SHORTCUT_LIMIT` 判断（>5 仍返回绑定）⇒ 本条变红。 */
-  const six = scopeShortcutsLib.planScopeShortcuts({ scopes: SIX_SCOPES, enabled: true });
-  if (six.bindings.size !== 0) throw new Error(`6 个作用域仍绑定了 ${six.bindings.size} 个 —— 降级失效`);
-  if (!six.degraded || six.reason !== "too-many") {
-    throw new Error(`应 degraded=true / reason=too-many，实际 ${six.degraded}/${six.reason}`);
+check("★ P6 降级分支：作用域 >9 ⇒ 不绑定 + reason=too-many（真实应用 6 个 ⇒ 必须模拟 10 个）", () => {
+  /* 变异①：删掉 `> SCOPE_SHORTCUT_LIMIT` 判断（超限仍返回绑定）⇒ 本条变红。 */
+  const ten = scopeShortcutsLib.planScopeShortcuts({ scopes: TEN_SCOPES, enabled: true });
+  if (ten.bindings.size !== 0) throw new Error(`10 个作用域仍绑定了 ${ten.bindings.size} 个 —— 降级失效`);
+  if (!ten.degraded || ten.reason !== "too-many") {
+    throw new Error(`应 degraded=true / reason=too-many，实际 ${ten.degraded}/${ten.reason}`);
   }
   const off = scopeShortcutsLib.planScopeShortcuts({ scopes: FOUR_SCOPES, enabled: false });
   if (off.bindings.size !== 0 || !off.degraded || off.reason !== "user-disabled") {
@@ -2561,22 +2746,30 @@ check("★ P6 降级分支：作用域 >5 ⇒ 不绑定 + reason=too-many（真�
   const on = scopeShortcutsLib.planScopeShortcuts({ scopes: FOUR_SCOPES, enabled: true });
   if (on.bindings.size !== 4 || on.degraded || on.reason !== null) throw new Error("4 个作用域应正常绑定");
   if (on.bindings.get("wb-cn") !== 1 || on.bindings.get("trae-global") !== 4) throw new Error("序号不是 1..N");
-  if (scopeShortcutsLib.SCOPE_SHORTCUT_LIMIT !== 5) throw new Error("阈值应为 5");
-  return "6 个→too-many / 关闭→user-disabled / 4 个→1..4";
+  /* ★ 真实规模（6 个）必须**照常绑定** —— 加 Qoder 不能让既有用户的 1..4 一起消失
+     （变异②：把上限改回 5 ⇒ 本条变红）。 */
+  if (REAL_SCOPES.length !== 6) throw new Error(`真实作用域应 6 个，实际 ${REAL_SCOPES.length}`);
+  const real = scopeShortcutsLib.planScopeShortcuts({ scopes: REAL_SCOPES, enabled: true });
+  if (real.bindings.size !== 6 || real.degraded || real.reason !== null) {
+    throw new Error(`真实 6 个作用域应正常绑定，实际 ${real.bindings.size}/${real.degraded}/${real.reason}`);
+  }
+  if (real.bindings.get("qoder-global") !== 6) throw new Error("第 6 个作用域应绑到 ⌘6");
+  if (scopeShortcutsLib.SCOPE_SHORTCUT_LIMIT !== 9) throw new Error("阈值应为 9（数字键天然上限）");
+  return "10 个→too-many / 关闭→user-disabled / 4 个→1..4 / 真实 6 个→1..6";
 });
 
 check("★ P6 绑定与序号提示同源：空 bindings ⇒ 作用域条目一律无 shortcutHint（假控件护栏）", () => {
   /* 变异：在 buildPaletteItems 里硬编码 ⌘1..⌘4 ⇒ 降级（空 bindings）时仍渲染提示 ⇒ 变红。 */
   const degraded = paletteLib.buildPaletteItems(paletteCtx());
   const degradedScopes = degraded.filter((i) => i.group === "scope");
-  if (degradedScopes.length !== FOUR_SCOPES.length) {
-    throw new Error(`作用域条目应 ${FOUR_SCOPES.length} 条，实际 ${degradedScopes.length}`);
+  if (degradedScopes.length !== REAL_SCOPES.length) {
+    throw new Error(`作用域条目应 ${REAL_SCOPES.length} 条，实际 ${degradedScopes.length}`);
   }
   if (degradedScopes.some((i) => i.shortcutHint)) {
     throw new Error("降级（空 bindings）时仍渲染了 ⌘N 提示 —— 假控件");
   }
 
-  const boundIndex = new Map(FOUR_SCOPES.map((scope, index) => [scope, index + 1]));
+  const boundIndex = new Map(REAL_SCOPES.map((scope, index) => [scope, index + 1]));
   const boundScopes = paletteLib
     .buildPaletteItems(paletteCtx({ scopeShortcutIndex: boundIndex }))
     .filter((i) => i.group === "scope");
@@ -3456,7 +3649,7 @@ check("★ P6 边界：空账号列表 ⇒ buildPaletteItems 不产账号条目�
     throw new Error(`空账号应 0 条账号条目，实际 ${accountItems.length}`);
   }
   // 其余组仍在（面板不是整块空 —— 仍可导航 / 执行动作）
-  if (items.filter((i) => i.group === "scope").length !== FOUR_SCOPES.length) {
+  if (items.filter((i) => i.group === "scope").length !== REAL_SCOPES.length) {
     throw new Error("空账号不应影响作用域组");
   }
   if (!/if \(groupItems\.length === 0\) return null;/.test(readCode(PALETTE_COMPONENT))) {
@@ -4140,13 +4333,15 @@ check("★ P7 预估由实际勾选推导（全不勾 ⇒ 无可导出；勾选�
     "wb-global": { accounts: 2, config: 4, gateway: 1 },
     "trae-cn": { accounts: 5, config: 4, gateway: 0 },
     "trae-global": { accounts: 1, config: 4, gateway: 0 },
+    "qoder-cn": { accounts: 2, config: 4, gateway: 2 },
+    "qoder-global": { accounts: 1, config: 4, gateway: 1 },
   };
   const all = lib.defaultBackupSelection();
-  if (lib.selectedScopeCount(all) !== 4) throw new Error("默认应全选 4 个作用域（D14）");
+  if (lib.selectedScopeCount(all) !== 6) throw new Error("默认应全选 6 个作用域（3 平台 × 2 区域，D14）");
   if (!lib.hasAnySelection(all)) throw new Error("默认应可导出");
 
   const none = { ...all };
-  for (const scope of ["wb-cn", "wb-global", "trae-cn", "trae-global"]) {
+  for (const scope of ["wb-cn", "wb-global", "trae-cn", "trae-global", "qoder-cn", "qoder-global"]) {
     none[scope] = { accounts: false, config: false, gateway: false };
   }
   if (lib.hasAnySelection(none)) throw new Error("全不勾仍判为可导出 —— R10（空备份）");
@@ -4156,22 +4351,22 @@ check("★ P7 预估由实际勾选推导（全不勾 ⇒ 无可导出；勾选�
   }
 
   const estAll = lib.estimateBackup(all, false, stats);
-  if (estAll.scopes !== 4 || estAll.parts !== 12) {
-    throw new Error(`全选应 4 作用域 × 3 分区，实际 ${estAll.scopes}/${estAll.parts}`);
+  if (estAll.scopes !== 6 || estAll.parts !== 18) {
+    throw new Error(`全选应 6 作用域 × 3 分区，实际 ${estAll.scopes}/${estAll.parts}`);
   }
-  if (estAll.accounts !== 11) throw new Error(`账号合计应 11，实际 ${estAll.accounts}`);
+  if (estAll.accounts !== 14) throw new Error(`账号合计应 14，实际 ${estAll.accounts}`);
 
   // 关掉 trae-cn 的「账号」分区 ⇒ 账号数 / 分区数必须变（写死数字即不通过）
   const tweaked = lib.toggleScopePart(all, "trae-cn", "accounts");
   const estTweak = lib.estimateBackup(tweaked, false, stats);
-  if (estTweak.accounts !== 6) throw new Error(`关掉 trae-cn 账号后应 6，实际 ${estTweak.accounts}`);
-  if (estTweak.parts !== 11) throw new Error(`分区数应 11，实际 ${estTweak.parts}`);
+  if (estTweak.accounts !== 9) throw new Error(`关掉 trae-cn 账号后应 9，实际 ${estTweak.accounts}`);
+  if (estTweak.parts !== 17) throw new Error(`分区数应 17，实际 ${estTweak.parts}`);
   if (lib.scopeCheckState(tweaked, "trae-cn") !== "mixed") throw new Error("半选应为 mixed");
   if (lib.scopeCheckState(all, "trae-cn") !== "all") throw new Error("全选应为 all");
   if (!(lib.estimateBackup(all, true, stats).bytes > estAll.bytes)) {
     throw new Error("含凭据的预估体积应更大");
   }
-  return "默认 4×3 · 全不勾=0 · 勾选变则预估变 · 半选=mixed";
+  return "默认 6×3 · 全不勾=0 · 勾选变则预估变 · 半选=mixed";
 });
 
 check("★ P7 设置页接线：子导航 + 备份分区 + 全不勾禁用导出", () => {
@@ -4429,7 +4624,9 @@ check("★ P7 边界：损坏文件（非法 JSON）返回可读错误、不崩�
  *
  * ⚠️ 判据只锚**代码**（`readCode` 先剥注释）—— 锚在注释上会被「注释里写着反例」骗过去。
  * ⚠️ 第 ④ 条的 api.rs 一侧是**文件级**「读到了 scope」（与 `check-api-contract.cjs` 第 8 条
- *    同款粗粒度）；逐命令的四处同步由 `check:api` 兜住，本段只锁「恰 10 条 + 后端带 scope」。
+ *    同款粗粒度）；逐命令的四处同步由 `check:api` 兜住，本段只锁「恰 18 条 + 后端带 scope」
+ *    （2026-10-15：模型禁用两条从 region 升级为 scope、Qoder 账号运维四件 ——
+ *     刷新 / 签到状态 / 签到领取 / 额度 —— 一并并入）。
  */
 
 const P5_PRODUCT_RS = "crates/buddy-switch-core/src/modules/product.rs";
@@ -4448,7 +4645,7 @@ check("★ P5-① `Scope::parse` fail-closed：未知 / 空 / 拼错 ⇒ Err，�
   const m = product.match(/pub fn parse\(s: &str\) -> Result<Scope, ScopeError> \{([\s\S]*?)\n    \}/);
   if (!m) throw new Error("找不到 `Scope::parse -> Result<Scope, ScopeError>`（fail-closed 的前提）");
   const body = m[1];
-  for (const lit of ['"wb-cn"', '"wb-global"', '"trae-cn"', '"trae-global"']) {
+  for (const lit of ['"wb-cn"', '"wb-global"', '"trae-cn"', '"trae-global"', '"qoder-cn"', '"qoder-global"']) {
     if (!body.includes(lit)) throw new Error(`Scope::parse 缺合法字面量 ${lit}`);
   }
   if (!/other\s*=>\s*Err\(ScopeError::new\(other\)\)/.test(body)) {
@@ -4498,7 +4695,7 @@ check("★ P5-③ `id|uid` 统一谓词：软删除 / 查找 / 备注共用 `res
   return "谓词 = id||uid · 软删除走谓词 · 按 uid 删除单测在";
 });
 
-check("★ P5-④ 参数化命令**恰 10 条**且后端带 scope（commands.rs 签名 + api.rs 读取）", () => {
+check("★ P5-④ 参数化命令**恰 25 条**且后端带 scope（commands.rs 签名 + api.rs 读取）", () => {
   /* 变异④（落点 = commands.rs / check-api-contract.cjs）：删掉某参数化命令的 `scope` 参数
      ⇒ 本条变红（桌面端与 webui 行为分叉，而构建全绿）。 */
   const contract = stripComments(fs.readFileSync(path.join(ROOT, P5_API_CONTRACT_CJS), "utf8"));
@@ -4508,10 +4705,15 @@ check("★ P5-④ 参数化命令**恰 10 条**且后端带 scope（commands.rs 
   const EXPECTED = [
     "account_delete", "account_remark", "accounts_export", "accounts_export_to_path",
     "accounts_import", "accounts_import_local", "accounts_list", "checkin_status",
-    "credits", "open_data_dir",
+    "create_qoder_api_key", "credits", "get_disabled_models", "get_qoder_accounts",
+    "get_qoder_gateway_models", "get_qoder_local_sources", "open_data_dir",
+    "qoder_checkin_claim", "qoder_checkin_status", "qoder_credits",
+    "qoder_delete_account", "qoder_gateway_status", "qoder_import_local",
+    "qoder_import_pat", "qoder_refresh_account", "qoder_set_account_remark",
+    "set_model_disabled",
   ];
   if (JSON.stringify([...names].sort()) !== JSON.stringify(EXPECTED)) {
-    throw new Error(`参数化命令集变了（应恰 10 条）：${JSON.stringify([...names].sort())}`);
+    throw new Error(`参数化命令集变了（应恰 25 条）：${JSON.stringify([...names].sort())}`);
   }
   const commands = readCode(COMMANDS_RS);
   const apiTs = readCode(P5_API_TS);
@@ -5605,7 +5807,7 @@ check("★ P3(独立) 适配层①：堆叠柱每列分段之和 === 当日总�
       "m-b": [{ key: key(1), total: 20, records: 1 }, { key: key(0), total: 39.4, records: 1 }],
     },
   });
-  const cols = uc.dailyModelSeries(src, 30);
+  const cols = uc.dailyModelSeries(src, presetWin(30));
   // ★ A1：列数 === 天数窗口（原原型断言 `cols.length === 30`），缺日补 0。
   if (cols.length !== 30) {
     throw new Error(`窗口 30 天应得 30 列（缺日补 0），实得 ${cols.length}`);
@@ -5659,6 +5861,68 @@ check("★ P3(独立) 适配层③：会话散点 x = records（不是 msgs，�
   const types = fs.readFileSync(path.join(ROOT, "src/lib/types.ts"), "utf8");
   if (/\bmsgs\b/.test(stripComments(types))) throw new Error("types.ts 出现了 `msgs` —— 真实后端没有该字段");
   return "x=records · y=total · types.ts 无 msgs";
+});
+
+check("★ P3(独立) 适配层⑤：网关逐日柱同窗对齐，未记录日**不画段**（跑真代码）", () => {
+  /* 2026-10-15 新增网关小图（TokenStatsPage）。三条契约：
+     ① 列数 = 窗口天数（与主堆叠柱同轴，两天可比）；
+     ② **缺日不画段** —— 缺日 = 未记录（App 没在跑），**不是 0**；画 0 段视觉相同，
+        故口径必须靠 `gatewayCoverage` + 图注披露（变异：给缺日填 0 段 ⇒ 本条变红）；
+     ③ `mergeGatewayTrends` 的求和口径（`region: "all"` 时前端合两区）。
+     变异：覆盖率漏算 truncated / 合并 truncated 不取或 ⇒ 本条变红。 */
+  const uc = loadTs(path.join(ROOT, USAGE_CHARTS));
+  const today = new Date();
+  const pad = (n) => String(n).padStart(2, "0");
+  const key = (offset) => {
+    const d = new Date(today.getTime() - offset * 86400000);
+    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+  };
+  const trend = {
+    date: key(0),
+    retentionDays: 90,
+    total: 100,
+    days: [
+      { key: key(2), input: 90, output: 10, total: 100, truncated: true },
+      // 昨天**缺**（未记录）；今天是**真实 0**（记录器跑过、网关没流量）。
+      { key: key(0), input: 0, output: 0, total: 0, truncated: false },
+    ],
+  };
+  const cols = uc.gatewayDailyColumns(trend, presetWin(7));
+  if (cols.length !== 7) throw new Error(`窗口 7 天应得 7 列，实得 ${cols.length}`);
+  const byDay = new Map(cols.map((c) => [c.day, c]));
+  const twoDaysAgo = byDay.get(key(2));
+  if (twoDaysAgo.segments.length !== 1 || twoDaysAgo.segments[0].value !== 100) {
+    throw new Error(`前天应有 1 段 100，实得 ${JSON.stringify(twoDaysAgo.segments)}`);
+  }
+  if (twoDaysAgo.segments[0].name !== uc.GATEWAY_SEGMENT) {
+    throw new Error("网关段名必须走哨兵 `GATEWAY_SEGMENT`（渲染层翻译，数据不带语言）");
+  }
+  if (byDay.get(key(1)).segments.length !== 0) throw new Error("未记录日不得画段（它不是 0）");
+  if (byDay.get(key(0)).segments.length !== 0) throw new Error("真实 0 也不画段（没有可画的值）");
+  const cov = uc.gatewayCoverage(trend, presetWin(7));
+  if (cov.recorded !== 2 || cov.total !== 7 || cov.truncated !== 1) {
+    throw new Error(`覆盖率应 recorded=2/total=7/truncated=1，实得 ${JSON.stringify(cov)}`);
+  }
+  const merged = uc.mergeGatewayTrends([
+    trend,
+    {
+      date: key(0),
+      retentionDays: 90,
+      total: 60,
+      days: [
+        { key: key(2), input: 40, output: 10, total: 50, truncated: false },
+        { key: key(1), input: 5, output: 5, total: 10, truncated: false },
+      ],
+    },
+  ]);
+  if (merged.days.length !== 3) throw new Error(`合并后应 3 天（100 天 / 补一天 / 0 天），实得 ${merged.days.length}`);
+  if (merged.days[0].key !== key(2) || merged.days[0].total !== 150) {
+    throw new Error(`同一天应求和 100+50=150，实得 ${merged.days[0].total}`);
+  }
+  if (merged.days[0].truncated !== true) throw new Error("任一侧是下界 ⇒ 合并后仍是下界");
+  if (merged.total !== 160) throw new Error(`合计应 150+10+0=160，实得 ${merged.total}`);
+  if (uc.mergeGatewayTrends([null, null]) !== null) throw new Error("全空合并应为 null（调用方据此不出图）");
+  return "7 列同窗 · 缺日/真实 0 不画段 · recorded=2 truncated=1 · 合并求和 160";
 });
 
 check("★ P3(独立) 适配层④：余额曲线回推（末值 === currentRemaining）+ 基线非 0（跑真代码）", () => {
@@ -6975,8 +7239,9 @@ check("★ A1 堆叠柱：列数 === 天数窗口，缺日补 0（不再切稀�
     daily: [{ key: key(0), total: 10, records: 1 }],
     dailyByModel: { "m-a": [{ key: key(0), total: 10, records: 1 }] },
   });
-  for (const range of [7, 30, 90]) {
-    const cols = uc.dailyModelSeries(src, range);
+  /* 只跑**参数条上真实存在的**预设档 —— 90 天不是一档（它是自定义的封顶值）。 */
+  for (const range of [7, 14, 30]) {
+    const cols = uc.dailyModelSeries(src, presetWin(range));
     if (cols.length !== range) {
       throw new Error(`range=${range} 应得 ${range} 列，实得 ${cols.length}（仍在按稀疏数组切片？）`);
     }
@@ -6990,10 +7255,75 @@ check("★ A1 堆叠柱：列数 === 天数窗口，缺日补 0（不再切稀�
     daily: [{ key: key(59), total: 999, records: 9 }],
     dailyByModel: { "m-a": [{ key: key(59), total: 999, records: 9 }] },
   });
-  const cols7 = uc.dailyModelSeries(stale, 7);
+  const cols7 = uc.dailyModelSeries(stale, presetWin(7));
   const sum7 = cols7.reduce((sum, c) => sum + c.total, 0);
   if (sum7 !== 0) throw new Error(`range=7 混入了窗口外的数据（和=${sum7}）—— 「近 7 天」图文不符`);
   return "7/30/90 窗口列数恒等于 range，窗口外数据不混入";
+});
+
+check("★ 窗口语义：今天 / 自定义**锚在日期上**（不是被天数拟合出来的）", () => {
+  /* 加「自定义时间」后，窗口的真值是**一对日期键**，「近 N 天」只是生成它的一种方式。
+     本用例钉住这条：自定义窗口的日期边界**逐字等于**用户选的那两天，
+     且它 **不随「今天」漂移**（这是「用天数拟合」必然做不到的）。 */
+  const w = loadTs(path.join(ROOT, "src/lib/usage-window.ts"));
+  const pad = (n) => String(n).padStart(2, "0");
+  const key = (offset) => {
+    const d = new Date(Date.now() - offset * 86400000);
+    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+  };
+
+  /* ① 今天 = 1 天，且就是今天。 */
+  const todayKeys = w.usageWindowKeys({ kind: "today" });
+  if (todayKeys.length !== 1 || todayKeys[0] !== key(0)) {
+    throw new Error(`「今天」应是 1 个键且等于今天，实得 ${JSON.stringify(todayKeys)}`);
+  }
+
+  /* ② 自定义：锚在**过去**的一段。取 4 天前 → 1 天前（不含今天）。 */
+  const custom = { kind: "custom", from: key(4), to: key(1) };
+  const customKeys = w.usageWindowKeys(custom);
+  if (customKeys.length !== 4) {
+    throw new Error(`自定义 ${key(4)}–${key(1)} 应是 4 天，实得 ${customKeys.length}`);
+  }
+  if (customKeys[0] !== key(4) || customKeys[customKeys.length - 1] !== key(1)) {
+    throw new Error(
+      `自定义边界必须逐字等于所选（期望 ${key(4)}..${key(1)}，实得 ${customKeys[0]}..${customKeys[customKeys.length - 1]}）`,
+    );
+  }
+  /* ★ 关键：末列 **不是今天**。若窗口退化成「最后 N 天」，末列必然落到今天。 */
+  if (customKeys[customKeys.length - 1] === key(0)) {
+    throw new Error("自定义窗口的末列落到了今天 —— 它已经退化成「最后 N 天」");
+  }
+
+  /* ③ 倒序输入被交换（不静默产出空窗口）。 */
+  const swapped = w.usageWindowBounds({ kind: "custom", from: key(1), to: key(4) });
+  if (swapped.from !== key(4) || swapped.to !== key(1)) {
+    throw new Error(`倒序日期应被交换，实得 ${swapped.from}..${swapped.to}`);
+  }
+
+  /* ④ 越界被夹到边界（fail-closed，不猜）。最早可选 = 今天 - 89 天。 */
+  const clamped = w.usageWindowBounds({ kind: "custom", from: "1999-01-01", to: "2999-01-01" });
+  if (clamped.from !== w.usageWindowEarliestKey() || clamped.to !== key(0)) {
+    throw new Error(`越界日期应夹到 [最早, 今天]，实得 ${clamped.from}..${clamped.to}`);
+  }
+  /* 非法日期键 ⇒ 退回今天（不产生 NaN 键）。 */
+  const bad = w.usageWindowBounds({ kind: "custom", from: "不是日期", to: "" });
+  if (bad.from !== key(0) || bad.to !== key(0)) {
+    throw new Error(`非法日期应退回今天，实得 ${bad.from}..${bad.to}`);
+  }
+
+  /* ⑤ 取数跨度：自定义必须是「从今天回到 from」，而不是窗口自己的天数 ——
+     否则锚在过去的那段历史**根本不在返回里**（图表会静默全 0）。 */
+  const span = w.usageWindowSpanDays(custom);
+  if (span !== 5) throw new Error(`自定义 ${key(4)}–${key(1)} 的取数跨度应是 5，实得 ${span}`);
+  if (w.usageWindowSpanDays({ kind: "preset", days: 7 }) !== 7) throw new Error("预设 7 天的跨度应是 7");
+  if (w.usageWindowSpanDays({ kind: "today" }) !== 1) throw new Error("今天的跨度应是 1");
+
+  /* ⑥ 天数上限：窗口不会超过后端承认的最宽档。 */
+  if (w.usageWindowDays({ kind: "custom", from: "1999-01-01", to: key(0) }) !== w.USAGE_WINDOW_MAX_DAYS) {
+    throw new Error(`窗口天数应封顶在 ${w.USAGE_WINDOW_MAX_DAYS}`);
+  }
+
+  return `今天=1 · 自定义 ${key(4)}..${key(1)} 末列非今天 · 倒序交换 · 越界夹取 · 跨度 5`;
 });
 
 check("★ A1-3 日均的分母是窗口天数，不是「有数据的天数」", () => {
@@ -7006,15 +7336,15 @@ check("★ A1-3 日均的分母是窗口天数，不是「有数据的天数」"
   if (/total\s*\/\s*columns\.length/.test(page)) {
     throw new Error("日均又退回除以 `columns.length`（有数据的天数）—— 与「按自然日平均」矛盾");
   }
-  if (!/total\s*\/\s*range/.test(page)) {
-    throw new Error("日均应除以窗口天数 `range`");
+  if (!/total\s*\/\s*usageWindowDays\(/.test(page)) {
+    throw new Error("日均应除以窗口天数（`usageWindowDays(viewWindow)`）");
   }
-  // 窗口判定也不得再用 `slice(-range)`（稀疏数组会把窗口外的天算进来）。
-  if (/sort\([\s\S]{0,120}localeCompare[\s\S]{0,120}\)\.slice\(-range\)/.test(page)) {
-    throw new Error("窗口内记录数仍用 `slice(-range)` 统计 —— 会把窗口外的天算进来");
+  // 窗口判定也不得再用 `slice(-n)`（稀疏数组会把窗口外的天算进来）。
+  if (/sort\([\s\S]{0,120}localeCompare[\s\S]{0,120}\)\.slice\(-/.test(page)) {
+    throw new Error("窗口内记录数仍用 `slice(-n)` 统计 —— 会把窗口外的天算进来");
   }
-  if (!/calendarWindowKeys\(range\)/.test(page)) {
-    throw new Error("窗口内记录数未改用 `calendarWindowKeys`（日历窗口）");
+  if (!/calendarWindowKeys\(viewWindow\)/.test(page)) {
+    throw new Error("窗口内记录数未改用 `calendarWindowKeys(viewWindow)`（日历窗口）");
   }
   return "日均除以 range + 窗口内记录数用日历窗口";
 });
@@ -7039,7 +7369,7 @@ check("★ A2 环形与堆叠同源：只取 dailyByModel，不回落 model.tota
     ],
     dailyByModel: { "m-a": [{ key: key(0), total: 10, records: 1 }] },
   });
-  const slices = uc.modelSlices(src, 30);
+  const slices = uc.modelSlices(src, presetWin(30));
   if (slices.length !== 1 || slices[0].name !== "m-a") {
     throw new Error(
       `环形只应有 1 个扇区（m-a），实得 ${slices.map((s) => s.name).join(",")} —— 无明细的模型不得回落 model.total`,
@@ -7060,7 +7390,7 @@ check("★ A2 环形与堆叠同源：只取 dailyByModel，不回落 model.tota
       "m-idle": [{ key: key(59), total: 99, records: 9 }], // 窗口外
     },
   });
-  const idleSlices = uc.modelSlices(idle, 30);
+  const idleSlices = uc.modelSlices(idle, presetWin(30));
   if (idleSlices.some((s) => s.name === "m-idle")) {
     throw new Error(
       `m-idle 在 30 天窗口内**没有用量**，却因回落 model.total 而产出扇区（和=${idleSlices
@@ -7068,7 +7398,7 @@ check("★ A2 环形与堆叠同源：只取 dailyByModel，不回落 model.tota
         .value}）—— 全时段累计混进了窗口占比图`,
     );
   }
-  const cols = uc.dailyModelSeries(src, 30);
+  const cols = uc.dailyModelSeries(src, presetWin(30));
   const withSegments = cols.filter((c) => c.segments.length > 0);
   if (withSegments.length > 0) {
     const distinct = new Set(withSegments.flatMap((c) => c.segments.map((s) => s.name)));

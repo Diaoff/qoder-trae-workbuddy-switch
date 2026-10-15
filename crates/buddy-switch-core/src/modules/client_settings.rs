@@ -57,14 +57,14 @@ use std::path::{Path, PathBuf};
 
 use serde_json::{json, Value};
 
-use crate::modules::config::{atomic_write, backup_dir, utc_iso};
+use crate::modules::config::{atomic_write, backup_dir, home_dir, utc_iso};
 use crate::modules::error_code::{AppError, ErrorCode};
 use crate::modules::process;
 use crate::modules::region::Region;
 use crate::modules::session::session_data_dir;
 use crate::modules::trae::platform as trae_platform;
 use crate::modules::trae::region::{TraeProgram, TraeRegion};
-use crate::modules::trae::variant::TraeVariant;
+use crate::modules::trae::variant::{all_specs, TraeVariant};
 
 // ---------------------------------------------------------------------------
 // 槽位规格表
@@ -82,7 +82,8 @@ pub struct ClientSlot {
     kind: SlotKind,
 }
 
-/// 槽位的内部实现维度：WorkBuddy 按 [`Region`]，Trae 按 [`TraeVariant`]。
+/// 槽位的内部实现维度：WorkBuddy 按 [`Region`]，Trae 按 [`TraeVariant`]，
+/// CLI 系客户端按 [`HomeFile`]。
 ///
 /// ⚠️ Trae 侧存**变体**而不是 `(区域, 程序)`：`is_running_for` 直接吃变体；
 /// 路径侧再由 [`program_of_variant`] 推 `(TraeRegion, TraeProgram)`。
@@ -90,6 +91,43 @@ pub struct ClientSlot {
 enum SlotKind {
     Workbuddy(Region),
     Trae(TraeVariant),
+    HomeFile(HomeFile),
+    /// Trae 的 **hooks 文件**（`hooks.json`），按**区域**分家。
+    ///
+    /// ## 为什么不能复用 [`SlotKind::Trae`]
+    ///
+    /// - **路径不同**：`SlotKind::Trae` 指向 `%APPDATA%\<userDataDirName>\User\settings.json`
+    ///   （`user_data_dir_for_program`）；hooks 文件在产品数据目录 `~/.trae-cn` / `~/.trae` 下
+    ///   （客户端 `product.json` 的 `dataFolderName`，见 [`trae_hooks_dir`]）。
+    /// - **粒度不同**：Trae 有 6 个变体，但**只有 2 个 hooks 文件**（国内 / 国际各一）。
+    ///   按变体建模会得到 6 个槽位指向 2 个文件 —— 用户会看到「Trae Work CN」和
+    ///   「TraeCode CN」两条状态，其实改的是同一个文件。
+    ///
+    /// 进程守卫则相反：**要按区域跨变体判**（任何一个该区域的 Trae 在跑都要拦）——
+    /// 它们都会在退出时把内存态写回同一份全局资产。
+    TraeHooks(TraeRegion),
+}
+
+/// 用户主目录下的一个 JSON 配置文件（CLI 系客户端的槽位形态）。
+///
+/// ## 为什么单独一档，而不是复用 Workbuddy / Trae
+///
+/// 这两档的路径都由「客户端自己的目录约定」推出（`session_data_dir` /
+/// `user_data_dir_for_program`）。Claude Code / CodeBuddy CLI 把配置直接放在
+/// 家目录下的点目录里（`~/.claude/settings.json`），**没有** `%APPDATA%` 那一层，
+/// 也没有区域 / 程序位之分 ⇒ 硬套现有两档会把路径算错（算错的表现是
+/// `installed: false`，看起来像「没装」）。
+#[derive(Debug, Clone, Copy)]
+struct HomeFile {
+    /// 家目录下的目录名（如 `.claude`）。
+    dir: &'static str,
+    /// 配置文件名（如 `settings.json`）。
+    file: &'static str,
+    /// 进程映像名（写前守卫用；见 `process::is_image_running`）。
+    ///
+    /// ⚠️ 必须是**完整映像名**（Windows 上带 `.exe`）。填错的表现是守卫永远放行
+    /// —— 那不是「少一道检查」，而是「看起来有、实际没有」的假护栏。
+    image: &'static str,
 }
 
 const WORKBUDDY_CN: ClientSlot = ClientSlot {
@@ -138,6 +176,10 @@ const TRAE_WORK_GLOBAL: ClientSlot = ClientSlot {
 ///
 /// ⚠️ 未安装者**不从列表消失**（`installed: false` 照常列出）—— 沿用「不因探测失败而消失、
 /// 不伪造成功」的纪律。
+///
+/// ⚠️ **本表只放「VS Code 系代理设置槽位」**：`语义映射表与槽位表对齐` 那条单测要求
+/// 每个成员都在 [`PROXY_FIELDS`] 里有代理路径声明。CLI 系客户端（没有 `http.proxy`
+/// 这类字段）**不进本表**，见 [`HOOK_FILE_SLOTS`]。
 pub const CLIENT_SLOTS: &[ClientSlot] = &[
     WORKBUDDY_CN,
     WORKBUDDY_GLOBAL,
@@ -146,6 +188,89 @@ pub const CLIENT_SLOTS: &[ClientSlot] = &[
     TRAE_WORK_CN,
     TRAE_WORK_GLOBAL,
 ];
+
+// ---------------------------------------------------------------------------
+// hook 安装目标槽位（CLI 系客户端）
+// ---------------------------------------------------------------------------
+
+/// Claude Code（`~/.claude/settings.json` 的 command hooks）。
+const CLAUDE: ClientSlot = ClientSlot {
+    key: "claude",
+    display_key: "clientSettings.slot.claude",
+    product: "agent",
+    kind: SlotKind::HomeFile(HomeFile {
+        dir: ".claude",
+        file: "settings.json",
+        image: "claude.exe",
+    }),
+};
+
+/// CodeBuddy CLI（`~/.codebuddy/settings.json` 的 command hooks）。
+const CODEBUDDY: ClientSlot = ClientSlot {
+    key: "codebuddy",
+    display_key: "clientSettings.slot.codebuddy",
+    product: "agent",
+    kind: SlotKind::HomeFile(HomeFile {
+        dir: ".codebuddy",
+        file: "settings.json",
+        image: "codebuddy.exe",
+    }),
+};
+
+/// **只服务 hook 安装**的槽位表（CLI 系客户端 + Trae 的 hooks 文件）。
+///
+/// ## 为什么与 [`CLIENT_SLOTS`] 分开
+///
+/// `CLIENT_SLOTS` 的语义是「VS Code 系客户端里我们托管**代理设置**的槽位」——
+/// 它被 [`PROXY_FIELDS`] 的语义表**逐槽位**要求声明代理路径（有单测钉住）。
+/// Claude Code / CodeBuddy CLI 是**命令行客户端**，没有 `http.proxy` /
+/// `trae.network.proxy.effectiveMode` 这类字段；Trae 的 `hooks.json` 更是一个**独立文件**
+/// （不是 settings.json 的键）。塞进 `CLIENT_SLOTS` 只会让两张表互相说谎。
+///
+/// ## 但写入仍然只有一条路
+///
+/// 本表只影响「哪些槽位**存在**」；读 / 写 / 备份 / 进程守卫 / 格式指纹保持
+/// 全部复用本模块同一套原语（[`read_settings`] / [`patch_settings`] / [`patch_at`]）。
+/// 换言之：**分开的是「表」，不是「写入路径」**（`P15-SPIKE-RESULTS §6 D41` 那条纪律）。
+pub const HOOK_FILE_SLOTS: &[ClientSlot] = &[CLAUDE, CODEBUDDY, TRAE_HOOKS_CN, TRAE_HOOKS_GLOBAL];
+
+/// Trae 的 **产品数据目录名**（客户端 `product.json` 的 `dataFolderName`）。
+///
+/// ## 取证
+///
+/// - `D:\Programs\Trae CN\resources\app\product.json` 的 `dataFolderName` = `.trae-cn`；
+///   国际版 `D:\Programs\Trae\...\product.json` = `.trae`。
+/// - 该目录在**本机确实存在**且承载全局资产：`~/.trae-cn/{skills,commands,rules,permission,plugins,builtin}`。
+/// - Trae 的 hook 资产注册表（`resources/app/out/vs/workbench/workbench.desktop.main.js`）：
+///   `{assetType:"hook", scope:3, projectRelPath:".trae/hooks.json", globalRelPath:"hooks.json"}`
+///   —— `scope:3` = 项目 + 全局两侧；**全局侧是 `<产品数据目录>/hooks.json`**。
+///
+/// ⇒ 全局 hooks 文件 = `~/.trae-cn/hooks.json`（国内）/ `~/.trae/hooks.json`（国际）。
+///
+/// ⚠️ **不要**用 `%APPDATA%\<userDataDirName>`（那是 [`SlotKind::Trae`] 的 settings.json 所在处，
+/// 两者刻意不同源）。
+fn trae_hooks_dir(region: TraeRegion) -> &'static str {
+    match region {
+        TraeRegion::Cn => ".trae-cn",
+        TraeRegion::Global => ".trae",
+    }
+}
+
+/// Trae **国内版**的 hooks 文件（`~/.trae-cn/hooks.json`）。
+const TRAE_HOOKS_CN: ClientSlot = ClientSlot {
+    key: "trae-hooks-cn",
+    display_key: "clientSettings.slot.traeHooksCn",
+    product: "agent",
+    kind: SlotKind::TraeHooks(TraeRegion::Cn),
+};
+
+/// Trae **国际版**的 hooks 文件（`~/.trae/hooks.json`）。
+const TRAE_HOOKS_GLOBAL: ClientSlot = ClientSlot {
+    key: "trae-hooks-global",
+    display_key: "clientSettings.slot.traeHooksGlobal",
+    product: "agent",
+    kind: SlotKind::TraeHooks(TraeRegion::Global),
+};
 
 /// 变体 → `(区域, 程序)`。
 ///
@@ -204,6 +329,13 @@ impl ClientSlot {
                 trae_platform::user_data_dir_for_program(region, program)
                     .map(|dir| dir.join("User").join("settings.json"))
             }
+            // CLI 系：配置直接在家目录的点目录里，没有 `%APPDATA%` 那一层。
+            // ⚠️ 走 `config::home_dir()` 而**不是** `dirs::home_dir()`：前者尊重
+            //    `BUDDY_SWITCH_HOME` 覆盖（测试据此把整个家目录挪到临时目录）。
+            //    绕过它会让测试**写到真实用户的 `~/.claude/settings.json`**。
+            SlotKind::HomeFile(spec) => Some(home_dir().join(spec.dir).join(spec.file)),
+            // Trae 的 hooks 文件在产品数据目录（`~/.trae-cn` / `~/.trae`）下，见 [`trae_hooks_dir`]。
+            SlotKind::TraeHooks(region) => Some(home_dir().join(trae_hooks_dir(region)).join("hooks.json")),
         }
     }
 
@@ -212,13 +344,43 @@ impl ClientSlot {
         match self.kind {
             SlotKind::Workbuddy(region) => process::is_workbuddy_running_for(region),
             SlotKind::Trae(variant) => trae_platform::is_running_for(variant),
+            SlotKind::HomeFile(spec) => process::is_image_running(spec.image),
+            // ★ **按区域跨变体判**：该区域**任何一个** Trae 变体在跑都拦。
+            //   6 个变体共享 2 个 hooks 文件，只判一个变体会让另一个变体现在退出时
+            //   把内存态写回、把我们刚写的内容覆盖掉（正是守卫要防的事）。
+            //   遍历一律走 `all_specs()`（6 条），**不用** `TraeVariant::all()`（只有国内 2 条）。
+            SlotKind::TraeHooks(region) => all_specs()
+                .iter()
+                .filter(|spec| spec.variant.region() == region)
+                .any(|spec| trae_platform::is_running_for(spec.variant)),
         }
     }
 }
 
 /// 按 key 查槽位；未知返回 `None`。
+///
+/// ⚠️ **两张表都查**：[`CLIENT_SLOTS`]（代理设置槽位）+ [`HOOK_FILE_SLOTS`]（hook 安装槽位）。
+/// 这样 `read_settings` / `patch_settings` / 备份 / 进程守卫对 CLI 系槽位**原样生效** ——
+/// 写入路径只有一条，不因为多了一张表就分叉。
 pub fn slot_by_key(key: &str) -> Option<&'static ClientSlot> {
-    CLIENT_SLOTS.iter().find(|slot| slot.key == key)
+    CLIENT_SLOTS
+        .iter()
+        .chain(HOOK_FILE_SLOTS.iter())
+        .find(|slot| slot.key == key)
+}
+
+/// 该槽位是不是 **Trae 的 hooks 文件**。
+///
+/// 唯一用途：`agent_hook_install::profile_for` 据此选格式档位（Trae 的事件集与
+/// handler 字段与 Claude 系**不同**，见 `HookProfile` 的表）。
+///
+/// ⚠️ 判据落在**槽位的实现维度**上（`SlotKind`），而不是让调用方再抄一份槽位 key 列表 ——
+/// 抄一份就会在两处漂移（新增 Trae 槽位时漏掉一处 ⇒ 用错格式档位 ⇒ 写出客户端不认的字段）。
+pub fn is_trae_hooks_slot(key: &str) -> bool {
+    matches!(
+        slot_by_key(key).map(|slot| slot.kind),
+        Some(SlotKind::TraeHooks(_))
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -1465,6 +1627,116 @@ mod tests {
             assert!(slot_by_key(key).is_some(), "缺槽位 {key}");
         }
         assert!(slot_by_key("nope").is_none());
+    }
+
+    // ---- hook 安装目标槽位（CLI 系）---------------------------------------
+
+    /// ★ hook 目标槽位：key 唯一、与代理槽位**不撞**、且 `slot_by_key` 都能查到。
+    ///
+    /// 可证伪性：把某个 hook 槽位的 key 改成 `workbuddy-cn` ⇒ 变红
+    /// （`slot_by_key` 会先命中代理表，hook 会被装到**错的客户端**上）。
+    #[test]
+    fn hook_file_slots_are_disjoint_from_proxy_slots_and_lookupable() {
+        assert!(!HOOK_FILE_SLOTS.is_empty(), "hook 目标表不得为空（否则安装面是空转）");
+
+        let mut keys: Vec<&str> = HOOK_FILE_SLOTS.iter().map(|s| s.key).collect();
+        keys.sort_unstable();
+        keys.dedup();
+        assert_eq!(keys.len(), HOOK_FILE_SLOTS.len(), "hook 目标 key 有重复");
+
+        for slot in HOOK_FILE_SLOTS {
+            assert!(
+                CLIENT_SLOTS.iter().all(|s| s.key != slot.key),
+                "hook 目标 {} 与代理槽位重名 —— 代理页会把它当代理槽位渲染",
+                slot.key
+            );
+            assert_eq!(
+                slot_by_key(slot.key).map(|s| s.key),
+                Some(slot.key),
+                "hook 目标 {} 必须能被 slot_by_key 查到（否则读写会报「未知槽位」）",
+                slot.key
+            );
+            assert_eq!(slot.product, "agent", "hook 目标的产品分组必须是 agent");
+        }
+    }
+
+    /// ★ **进程守卫不是空转**：每个 hook 目标都要能算出「在不在跑」。
+    ///
+    /// 可证伪性（两档各一条）：
+    /// - `HomeFile.image` 留空 ⇒ 变红（`process::is_image_running` 会保守返回 true，
+    ///   守卫永远拒绝写入 —— 用户看到「请先退出客户端」，而客户端根本没开，是**假护栏**）；
+    /// - `TraeHooks` 的目录名留空 ⇒ 路径断言变红。
+    #[test]
+    fn hook_file_slots_declare_enough_to_guard_writes() {
+        for slot in HOOK_FILE_SLOTS {
+            match slot.kind {
+                SlotKind::HomeFile(spec) => {
+                    assert!(!spec.image.trim().is_empty(), "{} 缺映像名", slot.key);
+                    assert!(!spec.dir.trim().is_empty(), "{} 缺目录名", slot.key);
+                    assert!(!spec.file.trim().is_empty(), "{} 缺文件名", slot.key);
+                }
+                SlotKind::TraeHooks(region) => {
+                    assert!(
+                        !trae_hooks_dir(region).trim().is_empty(),
+                        "{} 缺产品数据目录名",
+                        slot.key
+                    );
+                    // 该区域必须至少有一个变体可供判进程（否则守卫恒为 false ⇒ 空转）。
+                    assert!(
+                        all_specs().iter().any(|spec| spec.variant.region() == region),
+                        "{} 所属区域没有任何变体 —— 进程守卫会恒为「没在跑」",
+                        slot.key
+                    );
+                }
+                other => panic!("hook 目标 {} 的 kind 不受支持：{other:?}", slot.key),
+            }
+        }
+    }
+
+    /// hook 目标的路径：CLI 系 = `家目录/<dir>/<file>`；Trae = `家目录/<产品数据目录>/hooks.json`。
+    ///
+    /// ⚠️ 这里的 `home` 必须走 [`home_dir`]（与实现同一函数）—— 换成 `dirs::home_dir()`
+    /// 会在设了 `BUDDY_SWITCH_HOME` 的测试里拿**真实**家目录，于是断言在
+    /// 「实现也走 dirs」时假绿、在「实现走 config」时假红。
+    ///
+    /// 可证伪性：把 `TraeHooks` 分支改成拼 `%APPDATA%\<userDataDirName>`（`SlotKind::Trae` 那一套）
+    /// ⇒ Trae 两条路径断言变红 —— 那正是「hooks 文件与 settings.json 不同源」这条事实。
+    #[test]
+    fn hook_file_paths_live_under_the_home_directory() {
+        let home = home_dir();
+        for slot in HOOK_FILE_SLOTS {
+            let path = slot.settings_path().expect("家目录可解析 ⇒ 路径必须可解析");
+            assert!(path.starts_with(&home), "hook 目标必须在家目录下：{}", path.display());
+            let expected = match slot.kind {
+                SlotKind::HomeFile(spec) => home.join(spec.dir).join(spec.file),
+                SlotKind::TraeHooks(region) => {
+                    home.join(trae_hooks_dir(region)).join("hooks.json")
+                }
+                other => panic!("不受支持的 kind：{other:?}"),
+            };
+            assert_eq!(path, expected, "{} 的路径不对", slot.key);
+        }
+        // ★ 两个 Trae 槽位必须是**两个不同区域**的文件（否则国际版会写进国内版的 hooks）。
+        let cn = slot_by_key("trae-hooks-cn").expect("缺 trae-hooks-cn");
+        let global = slot_by_key("trae-hooks-global").expect("缺 trae-hooks-global");
+        assert_ne!(
+            cn.settings_path(),
+            global.settings_path(),
+            "国内 / 国际的 hooks 文件必须分开"
+        );
+        // ⚠️ 断言比较**完整期望路径**，不要用 `Path::ends_with("trae-cn/hooks.json")`：
+        //    它按**路径分量**比较，而真实目录名是 `.trae-cn`（**带前导点**）⇒
+        //    写成不带点会恒假（假红），而且这条假红会掩盖真正的漂移。
+        assert_eq!(
+            cn.settings_path().unwrap(),
+            home.join(".trae-cn").join("hooks.json"),
+            "国内版 hooks 文件必须落在 `~/.trae-cn` 下"
+        );
+        assert_eq!(
+            global.settings_path().unwrap(),
+            home.join(".trae").join("hooks.json"),
+            "国际版 hooks 文件必须落在 `~/.trae` 下"
+        );
     }
 
     /// 未安装者 `installed: false` 且**仍在列表**（不因探测失败而消失）。

@@ -519,16 +519,48 @@ fn decrypt_secret_payload(
     data_root: &Path,
     target: &VscodeSafeStorageTarget,
 ) -> Result<Vec<u8>, String> {
+    decrypt_electron_safe_storage(
+        encrypted,
+        data_root,
+        target.display_name,
+        target.macos_keychain_service,
+        target.linux_secret_tool_app_names,
+    )
+}
+
+/// 解密**任意 Electron / Chromium 应用**的 `safeStorage` 密文（`v10` 布局）。
+///
+/// ## 为什么抽成公开入口
+///
+/// 本仓已有两个 Electron 系客户端要读凭据（CodeBuddy CN IDE、**Qoder 桌面版**），
+/// 将来还会更多。DPAPI / Keychain / secret-tool 这三条平台分支与 `v10` 的
+/// `[前缀 3B][nonce 12B][GCM 密文]` 布局是**同一份协议**，复制第二份必然漂移
+/// （本仓在别处已经为「同款实现散落两处」付过代价）。
+///
+/// 因此把平台差异收敛到本函数，调用方只提供**该应用自己的**密钥环标识：
+///
+/// - `macos_keychain_service`：Keychain 里「<App> Safe Storage」的服务名；
+/// - `linux_secret_tool_app_names`：`secret-tool` 的应用名候选（按顺序尝试）。
+///
+/// ⚠️ 两个标识是**每个应用各不相同**的，猜错会得到「密钥环里查不到」而不是解密失败
+/// —— 调用方应在文案里把试过的名字带出来，便于用户/维护者定位。
+pub(crate) fn decrypt_electron_safe_storage(
+    encrypted: &[u8],
+    data_root: &Path,
+    display_name: &str,
+    macos_keychain_service: &str,
+    linux_secret_tool_app_names: &[&str],
+) -> Result<Vec<u8>, String> {
     #[cfg(target_os = "windows")]
     {
-        let _ = target;
+        let _ = (display_name, macos_keychain_service, linux_secret_tool_app_names);
         let key = get_windows_encryption_key(data_root)?;
         return decrypt_windows_gcm_v10(&key, encrypted);
     }
     #[cfg(target_os = "macos")]
     {
-        let _ = data_root;
-        let password = get_macos_safe_storage_password(target.macos_keychain_service)?;
+        let _ = (data_root, display_name);
+        let password = get_macos_safe_storage_password(macos_keychain_service)?;
         let key = pbkdf2_sha1_key(&password, 1003);
         decrypt_cbc_prefixed(encrypted, V10_PREFIX, &key)
     }
@@ -537,8 +569,11 @@ fn decrypt_secret_payload(
         let _ = data_root;
         match detect_prefix(encrypted) {
             Some("v11") => {
-                let key = get_linux_v11_key(target.linux_secret_tool_app_names)
-                    .ok_or_else(|| linux_v11_key_error(target))?;
+                let key = get_linux_v11_key(linux_secret_tool_app_names).ok_or_else(|| {
+                    format!(
+                        "无法从系统密钥环读取「{display_name}」的登录凭证密钥（v11）。请确认 gnome-keyring / KWallet 已启动、登录密钥环已解锁，并先用 {display_name} 手动登录一次。"
+                    )
+                })?;
                 match decrypt_cbc_prefixed(encrypted, V11_PREFIX, &key) {
                     Ok(value) => Ok(value),
                     Err(_) => decrypt_cbc_prefixed(encrypted, V11_PREFIX, &LINUX_EMPTY_KEY),
@@ -556,7 +591,13 @@ fn decrypt_secret_payload(
     }
     #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
     {
-        let _ = (encrypted, data_root, target);
+        let _ = (
+            encrypted,
+            data_root,
+            display_name,
+            macos_keychain_service,
+            linux_secret_tool_app_names,
+        );
         Err("Unsupported platform".to_string())
     }
 }

@@ -96,6 +96,11 @@ const TOKEN_SERIES: Record<Product, (region: Region) => Promise<OverviewDay[]>> 
         records: point.records ?? 0,
       }));
   },
+  /* ⚠️ Qoder 侧**尚无本机 Token 台账**：逐日序列来自本地 jsonl 记录，而 Qoder 的
+     用量要等网关把请求日志落盘之后才有数据源。
+     这里返回**空序列**（不是一串 0）—— 0 会被读成「今天确实没用量」，
+     而事实是「还没有这个数据源」。 */
+  qoder: async () => [],
 };
 
 /** 今日积分消耗 + 剩余合计；**无数据源可读时返回 `null`**（不回落 0）。 */
@@ -117,6 +122,9 @@ const CREDIT_SNAPSHOT: Record<
     const snapshot = (credits.daily ?? []).find((point) => point.date === today);
     return { today: snapshot?.consumed ?? 0, remaining };
   },
+  /* ⚠️ Qoder 的额度要调上游才拿得到，而「概览」是**纯本地**视图（不联网）。
+     没有本地缓存时返回 `null`（= 「无数据源」），**不回落 0** —— 0 是「确实没积分」。 */
+  qoder: async () => null,
 };
 
 /** 今日网关请求数（**仅本机请求日志**）。 */
@@ -138,6 +146,10 @@ const GATEWAY_TODAY: Record<Product, () => Promise<{ today: number; truncated: b
       normalizeTraeGatewayConfig(rawConfig).logKeep,
     );
   },
+  /* ⚠️ Qoder 网关尚未落地 ⇒ 没有请求日志可读。
+     `today: 0` 在这里是**真话**（确实一次请求都没有），不是「无数据源」的伪装 ——
+     与上面两个表的处理不同，因为「请求数」的零值语义本就明确。 */
+  qoder: async () => ({ today: 0, truncated: false }),
 };
 
 /**

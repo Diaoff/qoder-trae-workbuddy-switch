@@ -38,13 +38,14 @@
 //! 不误伤旧的 `region` 兼容解析。
 
 use crate::modules::capability::Capability;
+use crate::modules::qoder::region::QoderRegion;
 use crate::modules::region::Region;
 use crate::modules::trae::region::TraeRegion;
 
 /// 一条产品线（L1）。
 ///
-/// `Workbuddy` 与 `Trae` 是「新增平台」时的注册点之一 —— 新增平台 = 这里加一个取值 +
-/// `Scope` 加对应作用域 + `ProductSpec` 加一条（T02）。
+/// `Workbuddy` / `Trae` / `Qoder` 是「新增平台」时的注册点之一 —— 新增平台 = 这里加一个
+/// 取值 + `Scope` 加对应作用域 + `ProductSpec` 加一条（T02）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Product {
@@ -52,48 +53,55 @@ pub enum Product {
     Workbuddy,
     /// Trae（国内版 / 国际版两套账号体系）。
     Trae,
+    /// Qoder（国内版 / 国际版两套账号体系）。
+    Qoder,
 }
 
 impl Product {
-    /// scope 短标识 —— 与前端 `PLATFORM_SLUG`（`registry.ts`）**逐字对齐**：`"wb"` / `"trae"`。
+    /// scope 短标识 —— 与前端 `PLATFORM_SLUG`（`registry.ts`）**逐字对齐**：
+    /// `"wb"` / `"trae"` / `"qoder"`。
     ///
     /// ⚠️ 改这里必须同步改前端注册表，否则 `/s/{scope}/...` 路由与后端作用域会漂移。
     pub fn slug(self) -> &'static str {
         match self {
             Product::Workbuddy => "wb",
             Product::Trae => "trae",
+            Product::Qoder => "qoder",
         }
     }
 
-    /// 稳定的完整标识：`"workbuddy"` / `"trae"`。
+    /// 稳定的完整标识：`"workbuddy"` / `"trae"` / `"qoder"`。
     pub fn as_str(self) -> &'static str {
         match self {
             Product::Workbuddy => "workbuddy",
             Product::Trae => "trae",
+            Product::Qoder => "qoder",
         }
     }
 
     /// 从字符串解析平台（**宽容**，供诊断 / 旧值兼容用；`scope` 路径请用 [`Scope::parse`]）。
     ///
-    /// 接受完整标识与短标识（`workbuddy` / `wb` / `trae`），大小写不敏感。
+    /// 接受完整标识与短标识（`workbuddy` / `wb` / `trae` / `qoder`），大小写不敏感。
     pub fn parse(s: &str) -> Option<Product> {
         match s.trim().to_ascii_lowercase().as_str() {
             "workbuddy" | "wb" => Some(Product::Workbuddy),
             "trae" => Some(Product::Trae),
+            "qoder" => Some(Product::Qoder),
             _ => None,
         }
     }
 
     /// 全部平台，供遍历用（顺序即 UI 展示顺序）。
-    pub fn all() -> [Product; 2] {
-        [Product::Workbuddy, Product::Trae]
+    pub fn all() -> [Product; 3] {
+        [Product::Workbuddy, Product::Trae, Product::Qoder]
     }
 }
 
 /// 作用域 = **平台 × 区域**（L3）。**fail-closed** 的解析载体。
 ///
-/// 四个取值对应前端 `scope.ts` 的 `SCOPES`（`wb-cn` / `wb-global` / `trae-cn` / `trae-global`），
-/// 由 `scripts/check-scope-registry.cjs` 在前端侧、本模块在后端侧共同钉住。
+/// 六个取值对应前端 `scope.ts` 的 `SCOPES`（`wb-cn` / `wb-global` / `trae-cn` /
+/// `trae-global` / `qoder-cn` / `qoder-global`），由 `scripts/check-scope-registry.cjs`
+/// 在前端侧、本模块在后端侧共同钉住。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum Scope {
     /// WorkBuddy 国内版。
@@ -104,13 +112,17 @@ pub enum Scope {
     TraeCn,
     /// Trae 国际版。
     TraeGlobal,
+    /// Qoder 国内版。
+    QoderCn,
+    /// Qoder 国际版。
+    QoderGlobal,
 }
 
 impl Scope {
     /// ★ **fail-closed**：未知 / 空 / 缺一律 `Err`，**绝不 default**（P5 §2.5 第 (1) 条）。
     ///
     /// 判据与前端 `scope.ts::parseScope` **逐字一致**：**不做 trim、不做大小写折叠**，
-    /// 只接受下面四个字面量。理由（真实缺陷形态）：拼错 `trae-glboal` 若被静默当成
+    /// 只接受下面六个字面量。理由（真实缺陷形态）：拼错 `trae-glboal` 若被静默当成
     /// `trae-cn`，会**读写错误的库** —— 用户看到「账号凭空消失」，而错误是无声的。
     ///
     /// 为什么连「大小写宽容」都不做：宽容解析正是 fail-open 的入口 —— 一旦允许折叠，
@@ -122,17 +134,21 @@ impl Scope {
             "wb-global" => Ok(Scope::WbGlobal),
             "trae-cn" => Ok(Scope::TraeCn),
             "trae-global" => Ok(Scope::TraeGlobal),
+            "qoder-cn" => Ok(Scope::QoderCn),
+            "qoder-global" => Ok(Scope::QoderGlobal),
             other => Err(ScopeError::new(other)),
         }
     }
 
-    /// 稳定标识（进 URL 路径段与序列化）：`"wb-cn"` / `"wb-global"` / `"trae-cn"` / `"trae-global"`。
+    /// 稳定标识（进 URL 路径段与序列化）：`"wb-cn"` … `"qoder-global"`。
     pub fn as_str(self) -> &'static str {
         match self {
             Scope::WbCn => "wb-cn",
             Scope::WbGlobal => "wb-global",
             Scope::TraeCn => "trae-cn",
             Scope::TraeGlobal => "trae-global",
+            Scope::QoderCn => "qoder-cn",
+            Scope::QoderGlobal => "qoder-global",
         }
     }
 
@@ -141,36 +157,56 @@ impl Scope {
         match self {
             Scope::WbCn | Scope::WbGlobal => Product::Workbuddy,
             Scope::TraeCn | Scope::TraeGlobal => Product::Trae,
+            Scope::QoderCn | Scope::QoderGlobal => Product::Qoder,
         }
     }
 
-    /// WorkBuddy 侧区域（Trae 作用域调用它返回 `None`）。
+    /// WorkBuddy 侧区域（其余平台的作用域调用它返回 `None`）。
     pub fn wb_region(self) -> Option<Region> {
         match self {
             Scope::WbCn => Some(Region::Cn),
             Scope::WbGlobal => Some(Region::Global),
-            Scope::TraeCn | Scope::TraeGlobal => None,
+            Scope::TraeCn | Scope::TraeGlobal | Scope::QoderCn | Scope::QoderGlobal => None,
         }
     }
 
-    /// Trae 侧区域（WorkBuddy 作用域调用它返回 `None`）。
+    /// Trae 侧区域（其余平台的作用域调用它返回 `None`）。
     pub fn trae_region(self) -> Option<TraeRegion> {
         match self {
             Scope::TraeCn => Some(TraeRegion::Cn),
             Scope::TraeGlobal => Some(TraeRegion::Global),
-            Scope::WbCn | Scope::WbGlobal => None,
+            Scope::WbCn | Scope::WbGlobal | Scope::QoderCn | Scope::QoderGlobal => None,
+        }
+    }
+
+    /// Qoder 侧区域（其余平台的作用域调用它返回 `None`）。
+    pub fn qoder_region(self) -> Option<QoderRegion> {
+        match self {
+            Scope::QoderCn => Some(QoderRegion::Cn),
+            Scope::QoderGlobal => Some(QoderRegion::Global),
+            Scope::WbCn | Scope::WbGlobal | Scope::TraeCn | Scope::TraeGlobal => None,
         }
     }
 
     /// 全部作用域，供遍历用。
-    pub fn all() -> [Scope; 4] {
-        [Scope::WbCn, Scope::WbGlobal, Scope::TraeCn, Scope::TraeGlobal]
+    pub fn all() -> [Scope; 6] {
+        [
+            Scope::WbCn,
+            Scope::WbGlobal,
+            Scope::TraeCn,
+            Scope::TraeGlobal,
+            Scope::QoderCn,
+            Scope::QoderGlobal,
+        ]
     }
 
-    /// 由平台 + 该平台的区域标识拼出作用域（**只接受两平台各自合法的区域**）。
+    /// 由平台 + 该平台的区域标识拼出作用域（**只接受各平台各自合法的区域**）。
     ///
     /// 与 [`Scope::parse`] 的分工：本函数用于**已结构化**的入参（前端路由已知 product 与
     /// region）；`parse` 用于**裸字符串**入口，且是 fail-closed 的唯一判据。
+    ///
+    /// ⚠️ 已持有**强类型区域**时用 [`scope_of_wb_region`] / [`scope_of_trae_region`] /
+    /// [`scope_of_qoder_region`]（穷举匹配、不经过字符串），别拿本函数绕一圈。
     pub fn from_parts(product: Product, region: &str) -> Result<Scope, ScopeError> {
         let raw = format!("{}-{}", product.slug(), region.trim().to_ascii_lowercase());
         Scope::parse(&raw)
@@ -211,7 +247,8 @@ impl ScopeError {
             self.raw.clone()
         };
         format!(
-            "未知的作用域「{}」：合法取值为 wb-cn / wb-global / trae-cn / trae-global。\
+            "未知的作用域「{}」：合法取值为 wb-cn / wb-global / trae-cn / trae-global / \
+             qoder-cn / qoder-global。\
              作用域非法时**拒绝操作**（不会回落到任何默认作用域），以免读写错误的账号库。",
             shown
         )
@@ -285,6 +322,19 @@ pub fn require_trae_region(scope: Scope) -> Result<TraeRegion, String> {
     })
 }
 
+/// 参数化命令的 **Qoder 分支**：取 Qoder 区域；非 Qoder 作用域 ⇒ 可读 `Err`。
+///
+/// 与 [`require_wb_region`] / [`require_trae_region`] 同款：把「这个作用域不属于本命令的
+/// 平台分支」明确报出来，而不是静默返回 `None` 让调用方自己猜。
+pub fn require_qoder_region(scope: Scope) -> Result<QoderRegion, String> {
+    scope.qoder_region().ok_or_else(|| {
+        format!(
+            "作用域「{}」不是 Qoder 作用域：该命令的 Qoder 分支只接受 qoder-cn / qoder-global。",
+            scope.as_str()
+        )
+    })
+}
+
 /// WorkBuddy 区域 → 作用域（穷举，**无回落**）。
 ///
 /// 回收站条目要冗余记 `origin_scope`（§2.7 的数据结构），而软删除只拿到 **region**；
@@ -302,6 +352,14 @@ pub fn scope_of_trae_region(region: TraeRegion) -> Scope {
     match region {
         TraeRegion::Cn => Scope::TraeCn,
         TraeRegion::Global => Scope::TraeGlobal,
+    }
+}
+
+/// Qoder 区域 → 作用域（穷举，**无回落**）。理由同 [`scope_of_wb_region`]。
+pub fn scope_of_qoder_region(region: QoderRegion) -> Scope {
+    match region {
+        QoderRegion::Cn => Scope::QoderCn,
+        QoderRegion::Global => Scope::QoderGlobal,
     }
 }
 
@@ -351,6 +409,8 @@ impl ProductSpec {
 const WB_SCOPES: &[Scope] = &[Scope::WbCn, Scope::WbGlobal];
 /// Trae 的作用域。
 const TRAE_SCOPES: &[Scope] = &[Scope::TraeCn, Scope::TraeGlobal];
+/// Qoder 的作用域。
+const QODER_SCOPES: &[Scope] = &[Scope::QoderCn, Scope::QoderGlobal];
 
 /// WorkBuddy 能力（与 `registry.ts` 的 `workbuddy.capabilities` 逐字对齐）。
 const WB_CAPABILITIES: &[Capability] = &[
@@ -364,6 +424,17 @@ const WB_CAPABILITIES: &[Capability] = &[
 ];
 /// Trae 能力（与 `registry.ts` 的 `trae.capabilities` 逐字对齐）。
 const TRAE_CAPABILITIES: &[Capability] = &[
+    Capability::Checkin,
+    Capability::Credits,
+    Capability::Oauth,
+    Capability::Gateway,
+];
+/// Qoder 能力（与 `registry.ts` 的 `qoder.capabilities` 逐字对齐）。
+///
+/// ★ **刻意没有** `sessionCopy`（会话复制依赖客户端自身的会话存储与云端归属，
+/// 当前只有 WorkBuddy 桌面具备）、`travel` / `autoRotate`（WorkBuddy 独有）、
+/// `snapshot` / `group`（Trae 有，Qoder 侧无等价物）。
+const QODER_CAPABILITIES: &[Capability] = &[
     Capability::Checkin,
     Capability::Credits,
     Capability::Oauth,
@@ -388,11 +459,21 @@ const TRAE_SPEC: ProductSpec = ProductSpec {
     capabilities: TRAE_CAPABILITIES,
 };
 
+/// Qoder 描述符。
+const QODER_SPEC: ProductSpec = ProductSpec {
+    id: Product::Qoder,
+    slug: "qoder",
+    dir_name: "qoder",
+    regions: QODER_SCOPES,
+    capabilities: QODER_CAPABILITIES,
+};
+
 /// 取产品线的描述符（**两宿主的唯一查表入口**）。
 pub fn product_spec(product: Product) -> &'static ProductSpec {
     match product {
         Product::Workbuddy => &WB_SPEC,
         Product::Trae => &TRAE_SPEC,
+        Product::Qoder => &QODER_SPEC,
     }
 }
 
@@ -433,13 +514,23 @@ mod tests {
         // 与 `src/lib/platforms/registry.ts` 的 `PLATFORM_SLUG` 逐字对齐。
         assert_eq!(Product::Workbuddy.slug(), "wb");
         assert_eq!(Product::Trae.slug(), "trae");
+        assert_eq!(Product::Qoder.slug(), "qoder");
         assert_eq!(Product::Workbuddy.as_str(), "workbuddy");
         assert_eq!(Product::Trae.as_str(), "trae");
-        assert_eq!(Product::all().len(), 2);
+        assert_eq!(Product::Qoder.as_str(), "qoder");
+        assert_eq!(Product::all().len(), 3);
+        // 宽容解析接受完整标识与短标识。
+        assert_eq!(Product::parse("qoder"), Some(Product::Qoder));
+        assert_eq!(Product::parse("QODER"), Some(Product::Qoder));
+        assert_eq!(Product::parse("qd"), None, "短标识只有 wb，qoder 与 trae 都用全名");
     }
 
+    /// ★ 每个**声明过**的作用域都必须能被解析回自身。
+    ///
+    /// 刻意不把数量写进测试名：新增平台时这条不用改，改的是 `Scope::all()` 的长度断言
+    /// （那条**必须**显式改，才能逼作者确认「我真的要加一个平台」）。
     #[test]
-    fn scope_parse_accepts_the_four_known_scopes() {
+    fn scope_parse_accepts_every_declared_scope() {
         for scope in Scope::all() {
             assert_eq!(Scope::parse(scope.as_str()), Ok(scope), "{}", scope.as_str());
         }
@@ -447,6 +538,9 @@ mod tests {
         assert_eq!(Scope::parse("wb-global"), Ok(Scope::WbGlobal));
         assert_eq!(Scope::parse("trae-cn"), Ok(Scope::TraeCn));
         assert_eq!(Scope::parse("trae-global"), Ok(Scope::TraeGlobal));
+        assert_eq!(Scope::parse("qoder-cn"), Ok(Scope::QoderCn));
+        assert_eq!(Scope::parse("qoder-global"), Ok(Scope::QoderGlobal));
+        assert_eq!(Scope::all().len(), 6, "作用域数量变更需显式确认（3 平台 × 2 区域）");
     }
 
     /// ★★ **本用例就是门禁第 9 条要找的「未知 scope ⇒ `Err`」证明**（函数名与
@@ -461,19 +555,32 @@ mod tests {
         for bad in [
             "trae-glboal", // 真实拼错（本模块存在的理由）
             "wb-gloabl",
+            "qoder-glboal",
             "trae",
             "wb",
+            "qoder",
             "cn",
             "global",
             "workbuddy-cn",
             "trae_global",
+            "qoder_global",
             "",
             "   ",
-            "wb-cn ",   // 尾随空白：不 trim ⇒ Err（与前端 parseScope 一致）
-            " wb-cn",   // 前导空白
-            "WB-CN",    // 大写：不折叠 ⇒ Err
-            "Trae-Cn",  // 混合大小写
-            "wb-cn\n",  // 换行
+            "wb-cn ",    // 尾随空白：不 trim ⇒ Err（与前端 parseScope 一致）
+            " wb-cn",    // 前导空白
+            "WB-CN",     // 大写：不折叠 ⇒ Err
+            "Trae-Cn",   // 混合大小写
+            "Qoder-CN",
+            "wb-cn\n",   // 换行
+            // ★★ 「比基准长一截」的形状 —— **必须有**。
+            // 只测「拼错」的话，一个 `starts_with` 式的前缀实现与精确实现在现有输入集上
+            // **完全等价**（`wb-cnx` 不会被任何一条拼错样例覆盖）⇒ 断言恒绿。
+            // 这三条专门钉死「前缀实现」这个缺陷形态。
+            "wb-cn-x",
+            "trae-cn-x",
+            "qoder-cn-x",
+            "qoder-global-x",
+            "wb-global-",
         ] {
             let got = Scope::parse(bad);
             assert!(
@@ -492,6 +599,9 @@ mod tests {
         assert!(message.contains("trae-glboal"), "{message}");
         assert!(message.contains("wb-cn"), "{message}");
         assert!(message.contains("trae-global"), "{message}");
+        // 新增平台必须出现在合法取值列表里，否则用户拼错时看不到正确写法。
+        assert!(message.contains("qoder-cn"), "{message}");
+        assert!(message.contains("qoder-global"), "{message}");
 
         // 空输入在文案里要显式标出，而不是留一段空白。
         let empty = Scope::parse("").unwrap_err();
@@ -507,6 +617,7 @@ mod tests {
         assert!(resolve_scope_opt(None).is_err());
         assert!(resolve_scope_opt(Some("")).is_err());
         assert_eq!(resolve_scope_opt(Some("trae-cn")), Ok(Scope::TraeCn));
+        assert_eq!(resolve_scope_opt(Some("qoder-global")), Ok(Scope::QoderGlobal));
     }
 
     /// `resolve_scope_param`（命令/HTTP 通道统一入口）—— fail-closed，错误文案可读。
@@ -519,13 +630,14 @@ mod tests {
         for bad in [None, Some(""), Some("trae-glboal"), Some("WB-CN")] {
             let error = resolve_scope_param(bad).unwrap_err();
             assert!(
-                error.contains("wb-cn") && error.contains("trae-global"),
+                error.contains("wb-cn") && error.contains("trae-global") && error.contains("qoder-cn"),
                 "错误文案必须列出合法取值，实际：{error}"
             );
         }
     }
 
-    /// `require_wb_region` / `require_trae_region` —— 平台分支取区域，跨平台作用域 ⇒ Err。
+    /// `require_wb_region` / `require_trae_region` / `require_qoder_region`
+    /// —— 平台分支取区域，跨平台作用域 ⇒ Err。
     ///
     /// 可证伪：若把 `require_wb_region` 改成「非 WB 就回落 `Region::Cn`」，
     /// 第二条断言立即变红 —— 那正是「用 A 平台的作用域去打 B 平台的库」的缺陷形态。
@@ -536,20 +648,30 @@ mod tests {
         assert_eq!(require_wb_region(Scope::WbGlobal), Ok(Region::Global));
         assert_eq!(require_trae_region(Scope::TraeCn), Ok(TraeRegion::Cn));
         assert_eq!(require_trae_region(Scope::TraeGlobal), Ok(TraeRegion::Global));
+        assert_eq!(require_qoder_region(Scope::QoderCn), Ok(QoderRegion::Cn));
+        assert_eq!(
+            require_qoder_region(Scope::QoderGlobal),
+            Ok(QoderRegion::Global)
+        );
 
         // 反例：跨平台作用域必须 Err（绝不静默落到某平台的默认区域）。
-        for scope in [Scope::TraeCn, Scope::TraeGlobal] {
+        for scope in [Scope::TraeCn, Scope::TraeGlobal, Scope::QoderCn, Scope::QoderGlobal] {
             assert!(require_wb_region(scope).is_err(), "{:?}", scope);
         }
-        for scope in [Scope::WbCn, Scope::WbGlobal] {
+        for scope in [Scope::WbCn, Scope::WbGlobal, Scope::QoderCn, Scope::QoderGlobal] {
             assert!(require_trae_region(scope).is_err(), "{:?}", scope);
+        }
+        for scope in [Scope::WbCn, Scope::WbGlobal, Scope::TraeCn, Scope::TraeGlobal] {
+            assert!(require_qoder_region(scope).is_err(), "{:?}", scope);
         }
         // 错误文案可读、且带上原始作用域。
         let error = require_wb_region(Scope::TraeCn).unwrap_err();
         assert!(error.contains("trae-cn"), "{error}");
+        let error = require_qoder_region(Scope::TraeCn).unwrap_err();
+        assert!(error.contains("trae-cn") && error.contains("qoder-cn"), "{error}");
     }
 
-    /// `scope_of_*_region` 与 [`Scope`] 的两条正交轴**往返一致**（回收站 `origin_scope` 用）。
+    /// `scope_of_*_region` 与 [`Scope`] 的三条正交轴**往返一致**（回收站 `origin_scope` 用）。
     ///
     /// 可证伪：把某个区域映射到**另一个平台**的作用域 ⇒ 本用例变红 ——
     /// 那正是「回收站条目记错来源作用域」的形态。
@@ -560,17 +682,31 @@ mod tests {
             assert_eq!(scope.product(), Product::Workbuddy);
             assert_eq!(scope.wb_region(), Some(region));
             assert_eq!(scope.trae_region(), None);
+            assert_eq!(scope.qoder_region(), None);
         }
         for region in TraeRegion::all() {
             let scope = scope_of_trae_region(region);
             assert_eq!(scope.product(), Product::Trae);
             assert_eq!(scope.trae_region(), Some(region));
             assert_eq!(scope.wb_region(), None);
+            assert_eq!(scope.qoder_region(), None);
+        }
+        for region in QoderRegion::all() {
+            let scope = scope_of_qoder_region(region);
+            assert_eq!(scope.product(), Product::Qoder);
+            assert_eq!(scope.qoder_region(), Some(region));
+            assert_eq!(scope.wb_region(), None);
+            assert_eq!(scope.trae_region(), None);
         }
         assert_eq!(scope_of_wb_region(Region::Cn), Scope::WbCn);
         assert_eq!(scope_of_wb_region(Region::Global), Scope::WbGlobal);
         assert_eq!(scope_of_trae_region(TraeRegion::Cn), Scope::TraeCn);
         assert_eq!(scope_of_trae_region(TraeRegion::Global), Scope::TraeGlobal);
+        assert_eq!(scope_of_qoder_region(QoderRegion::Cn), Scope::QoderCn);
+        assert_eq!(
+            scope_of_qoder_region(QoderRegion::Global),
+            Scope::QoderGlobal
+        );
     }
 
     #[test]
@@ -579,18 +715,23 @@ mod tests {
         assert_eq!(Scope::WbGlobal.product(), Product::Workbuddy);
         assert_eq!(Scope::TraeCn.product(), Product::Trae);
         assert_eq!(Scope::TraeGlobal.product(), Product::Trae);
+        assert_eq!(Scope::QoderCn.product(), Product::Qoder);
+        assert_eq!(Scope::QoderGlobal.product(), Product::Qoder);
 
-        // WB 轴：Trae 作用域取 WB 区域返回 None（正交）。
-        assert_eq!(Scope::WbCn.wb_region(), Some(Region::Cn));
-        assert_eq!(Scope::WbGlobal.wb_region(), Some(Region::Global));
-        assert_eq!(Scope::TraeCn.wb_region(), None);
-        assert_eq!(Scope::TraeGlobal.wb_region(), None);
-
-        // Trae 轴：WB 作用域取 Trae 区域返回 None。
-        assert_eq!(Scope::TraeCn.trae_region(), Some(TraeRegion::Cn));
-        assert_eq!(Scope::TraeGlobal.trae_region(), Some(TraeRegion::Global));
-        assert_eq!(Scope::WbCn.trae_region(), None);
-        assert_eq!(Scope::WbGlobal.trae_region(), None);
+        // WB 轴：其余作用域取 WB 区域返回 None（正交）。
+        for scope in [Scope::TraeCn, Scope::TraeGlobal, Scope::QoderCn, Scope::QoderGlobal] {
+            assert_eq!(scope.wb_region(), None, "{scope:?}");
+        }
+        // Trae 轴。
+        for scope in [Scope::WbCn, Scope::WbGlobal, Scope::QoderCn, Scope::QoderGlobal] {
+            assert_eq!(scope.trae_region(), None, "{scope:?}");
+        }
+        // Qoder 轴。
+        assert_eq!(Scope::QoderCn.qoder_region(), Some(QoderRegion::Cn));
+        assert_eq!(Scope::QoderGlobal.qoder_region(), Some(QoderRegion::Global));
+        for scope in [Scope::WbCn, Scope::WbGlobal, Scope::TraeCn, Scope::TraeGlobal] {
+            assert_eq!(scope.qoder_region(), None, "{scope:?}");
+        }
     }
 
     #[test]
@@ -601,11 +742,16 @@ mod tests {
                 .wb_region()
                 .map(|r| r.as_str())
                 .or_else(|| scope.trae_region().map(|r| r.as_str()))
+                .or_else(|| scope.qoder_region().map(|r| r.as_str()))
                 .expect("每个作用域必有区域");
             assert_eq!(Scope::from_parts(product, region), Ok(scope));
         }
         // 平台与区域不匹配（WB 平台 + 不存在的区域）⇒ Err，不猜。
         assert!(Scope::from_parts(Product::Workbuddy, "sg").is_err());
+        // 跨平台区域：Qoder 平台 + Trae 的区域名，只有 `cn`/`global` 是合法值 ⇒ 仍能拼出。
+        assert_eq!(Scope::from_parts(Product::Qoder, "cn"), Ok(Scope::QoderCn));
+        // 但 `qoder` 平台 + 非法区域必须 Err。
+        assert!(Scope::from_parts(Product::Qoder, "sg").is_err());
     }
 
     // ── ProductSpec 表 + capability 默认拒绝 ──────────────────────────────────
@@ -723,6 +869,28 @@ mod tests {
                 "WorkBuddy 缺「{}」",
                 cap.as_str()
             );
+        }
+        // ★ Qoder：**只有** checkin / credits / oauth / gateway。
+        // 其余能力必须默认拒绝 —— 尤其是 sessionCopy（会话复制依赖客户端自身的会话存储，
+        // 当前只有 WorkBuddy 桌面具备）与 travel / autoRotate（WorkBuddy 独有）。
+        for missing in [
+            Capability::Travel,
+            Capability::AutoRotate,
+            Capability::SessionCopy,
+        ] {
+            assert!(
+                require_capability(Product::Qoder, missing).is_err(),
+                "Qoder 缺「{}」却放行了 —— 违反默认拒绝",
+                missing.as_str()
+            );
+        }
+        for present in [
+            Capability::Checkin,
+            Capability::Credits,
+            Capability::Oauth,
+            Capability::Gateway,
+        ] {
+            assert!(require_capability(Product::Qoder, present).is_ok());
         }
         // 错误信息可读、且带上能力名（前端可直接渲染）。
         let error = require_capability(Product::Trae, Capability::Travel).unwrap_err();

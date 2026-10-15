@@ -44,8 +44,15 @@ export type CatalogSourceKind = CatalogSource;
  *   这是「不能只给一个灰徽标让用户猜」的可证伪落点。
  */
 export interface CatalogSourceView {
-  /** 来源种类（驱动徽标语义色）。 */
-  kind: CatalogSourceKind;
+  /**
+   * 来源种类（驱动徽标语义色）。
+   *
+   * ⚠️ 除 WB 的三级（live / cached / builtin）外，还有 **`unavailable`**（Qoder 侧：
+   * 向上游拉清单失败且**没有任何缓存**，即「真的拿不到」——它没有「内置兜底清单」，
+   * 硬塞进 `builtin` 会撒谎）。共用壳只按 `badgeLabel` / `badgeVariant` / `reason`
+   * 渲染，**不消费 `kind` 本身**，因此多一个取值不影响 WB / Trae 两处。
+   */
+  kind: CatalogSourceKind | "unavailable";
   /** 徽标文案（**已 i18n**；调用方用 `t()` 渲染）。 */
   badgeLabel: string;
   /** 徽标语义色（`success` = 实时；`secondary` = 已保存；`warning` = 内置）。 */

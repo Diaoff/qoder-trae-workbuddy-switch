@@ -22,7 +22,7 @@ import { cn } from "@/lib/utils";
 export const AUTO_OPTION = "__auto__";
 
 /** 五态计数格。 */
-export type PoolTileKey = "available" | "cooling" | "disabled" | "expired" | "zeroCredits";
+export type PoolTileKey = "available" | "cooling" | "disabled" | "expired" | "zeroCredits" | "modelCooling";
 
 /** 默认五格（Trae 侧：积分过期有判据）。 */
 export const DEFAULT_POOL_TILES: PoolTileKey[] = [
@@ -41,12 +41,22 @@ export const DEFAULT_POOL_TILES: PoolTileKey[] = [
  */
 export const WB_POOL_TILES: PoolTileKey[] = ["available", "cooling", "disabled", "zeroCredits"];
 
+/**
+ * Qoder 侧的四格 —— **没有积分两格**（池不建模积分），多一格**模型冷却**。
+ *
+ * 上游 429 是**按模型**报的（「…switch to the other models」）⇒ 一个账号可能
+ * 「对 A 模型冷却、对 B 模型仍可服务」。这一格与 `cooling`（账号级）**正交**，
+ * 是真数据、不是把零值摆出来凑数（与 WB 去掉「积分过期」同一判据）。
+ */
+export const QODER_POOL_TILES: PoolTileKey[] = ["available", "cooling", "disabled", "modelCooling"];
+
 const TILE_META: Record<PoolTileKey, { labelKey: TranslationKey; tone: "ok" | "warn" | "danger" | "muted" }> = {
   available: { labelKey: "shared.gateway.pool.tile.available", tone: "ok" },
   cooling: { labelKey: "shared.gateway.pool.tile.cooling", tone: "warn" },
   disabled: { labelKey: "shared.gateway.pool.tile.disabled", tone: "danger" },
   expired: { labelKey: "shared.gateway.pool.tile.expired", tone: "warn" },
   zeroCredits: { labelKey: "shared.gateway.pool.tile.zeroCredits", tone: "muted" },
+  modelCooling: { labelKey: "shared.gateway.pool.tile.modelCooling", tone: "warn" },
 };
 
 function formatCredits(value: number | null | undefined): string {

@@ -9,6 +9,8 @@ import { zh as skillManager } from "./domains/skillManager.zh";
 import { zh as traeComponents } from "./domains/traeComponents.zh";
 import { zh as traeGateway } from "./domains/traeGateway.zh";
 import { zh as traePages } from "./domains/traePages.zh";
+import { zh as qoderPages } from "./domains/qoderPages.zh";
+import { zh as qoderGateway } from "./domains/qoderGateway.zh";
 import { zh as traeStats } from "./domains/traeStats.zh";
 import { zh as wbAccounts } from "./domains/wbAccounts.zh";
 import { zh as wbOverview } from "./domains/wbOverview.zh";
@@ -43,6 +45,8 @@ export const zh = {
   ...wbOverview,
   ...wbStats,
   ...traePages,
+  ...qoderPages,
+  ...qoderGateway,
   ...traeStats,
   ...traeComponents,
   ...traeGateway,

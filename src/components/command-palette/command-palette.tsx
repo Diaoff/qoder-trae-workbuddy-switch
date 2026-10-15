@@ -62,6 +62,7 @@ import { DESTINATIONS, platformOfPath } from "@/lib/platforms/registry";
 import { SCOPES, scopeOf, scopeParts } from "@/lib/scope";
 import { planScopeShortcuts } from "@/lib/scope-shortcuts";
 import { useShortcutsEnabled } from "@/lib/shortcut-preference";
+import { useRefreshAction } from "@/lib/use-refresh-action";
 import { useScope } from "@/lib/use-scope";
 import { useT } from "@/lib/i18n";
 import type { TranslationKey } from "@/locales/zh";
@@ -135,6 +136,11 @@ export function CommandPalette({ open, onOpenChange }: CommandPaletteProps) {
   const [accounts, setAccounts] = useState<readonly PaletteAccount[] | null>(null);
   const [loading, setLoading] = useState(false);
   const [runningActionId, setRunningActionId] = useState<string | null>(null);
+  /* 动作行的进行中态走 `useRefreshAction`：它的**最小展示时长**（500ms）保证
+     「当帧即完成」的本地动作（如刷新面板列表）行内 spinner 也能被看见 ——
+     此前 `Promise.resolve(action.run(...)).finally(...)` 对同步返回的动作
+     当帧就把 spinner 清掉，实际从未可见（= 点了没反应）。 */
+  const { run: runWithFloor } = useRefreshAction();
 
   /** 重新拉取账号（首次打开 + 「刷新当前作用域」动作共用）。 */
   const reload = useCallback(async () => {
@@ -169,21 +175,23 @@ export function CommandPalette({ open, onOpenChange }: CommandPaletteProps) {
   /**
    * 动作副作用（注入 `PaletteContext.services`）。
    *
-   * - `refreshScope`：刷新面板账号列表；WorkBuddy 侧顺带让账号页的 store 重读（数据同源）；
+   * - `refreshScope`：刷新面板账号列表；WorkBuddy 侧顺带让账号页的 store 重读（数据同源）。
+   *   ★ 必须 **await 到完成**（返回 Promise）：行内 spinner 的可见时长由动作驱动 ——
+   *   同步返回会让 `runWithFloor` 之外的 finally 当帧清掉 spinner（此前即如此）。
    * - `addAccount`：导航到该作用域账号页（新增入口在那里）；
    * - `openDataDir`：调既有命令打开数据目录，失败走 `toast.error`（**不静默**）。
    */
   const services = useMemo<PaletteServices>(
     () => ({
-      refreshScope: (scope) => {
+      refreshScope: async (scope) => {
         const parts = scopeParts(scope);
         if (parts.product === "workbuddy") {
-          void useAccountsStore
+          await useAccountsStore
             .getState()
             .reconcileAccounts(parts.region)
             .catch(() => undefined);
         }
-        void reload();
+        await reload();
       },
       addAccount: (scope) => {
         onOpenChange(false);
@@ -226,7 +234,7 @@ export function CommandPalette({ open, onOpenChange }: CommandPaletteProps) {
       const action = context.actions.find((candidate) => `action:${candidate.id}` === item.id);
       if (action) {
         setRunningActionId(action.id);
-        void Promise.resolve(action.run(context)).finally(() =>
+        void runWithFloor(() => action.run(context)).finally(() =>
           setRunningActionId((current) => (current === action.id ? null : current)),
         );
         return;

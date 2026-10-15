@@ -17,7 +17,14 @@ import { useT } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
 
 /**
- * Trae 接入说明（P11 §1.7）—— **协议 Tab × 工具 Tab** 两段式，与 WorkBuddy 侧同构。
+ * 接入说明（P11 §1.7）—— **协议 Tab × 工具 Tab** 两段式，与 WorkBuddy 侧同构。
+ *
+ * ## 由谁使用（2026-10-15：Qoder 接入后**两处分区共用**）
+ *
+ * 本组件最初为 Trae 写，但它的**全部差异都是数据**（base URL / 默认模型 / Key 前缀 /
+ * 两处平台化文案），因此 Qoder 分区直接复用同一份 —— 另写一份必然让「协议 Tab ×
+ * 认证头」这类契约各自漂移。平台化的两处文案走 **[`noKeyLabel`]** 与 **[`streamNote`]**
+ * props（缺省 = Trae 侧文案），不在这里写 `platform === …`。
  *
  * ## 为什么升级为两段式（与 WB 侧同一理由）
  *
@@ -27,13 +34,13 @@ import { cn } from "@/lib/utils";
  * ## 与 WorkBuddy 版的差别：**单条 Base URL**，没有「按版本」双条目
  *
  * WorkBuddy 版顶部有一排 region Tabs（国内版 / 国际版各自一个 Base URL）；
- * Trae 没有 region —— 一个网关、一条上游、一个 Base URL，因此这里只展示一条。
+ * Trae / Qoder 的页面本身已由**作用域**（URL）承载区域 ⇒ 一个分区一条 Base URL，
  * 把 `REGIONS.map` 搬过来会造出一个「切了也没差别」的假维度。
  *
  * `keyPrefix` 由页面从网关状态（`apiKeyPrefix`，最近一把未吊销 Key 的前缀）传入；
  * 为空时给出「请先在上方创建 Key」的占位，而不是伪造一段看起来可用的 Key。
  *
- * `model` 由页面传入（Trae 的默认模型）—— 不在这里硬编码模型名（那正是 P3 修掉的缺陷）。
+ * `model` 由页面传入（该分区配置里的默认模型）—— 不在这里硬编码模型名（那正是 P3 修掉的缺陷）。
  */
 
 export function TraeIntegrationGuide({
@@ -41,11 +48,17 @@ export function TraeIntegrationGuide({
   model,
   keyPrefix,
   className,
+  /** 无 Key 时占位文案里的前缀示例（缺省 = Trae 的 `sk-trae-…`）。 */
+  noKeyLabel,
+  /** 「上游只支持流式」那条说明（缺省 = Trae 侧文案）。 */
+  streamNote,
 }: {
   baseUrl: string;
   model: string;
   keyPrefix?: string;
   className?: string;
+  noKeyLabel?: string;
+  streamNote?: string;
 }) {
   const t = useT();
   const [protocol, setProtocol] = useState<GatewayProtocolKey>("openai");
@@ -59,7 +72,7 @@ export function TraeIntegrationGuide({
   // Anthropic 系客户端（Claude Code）自己会拼 `/v1/messages`，因此要给它**根地址**。
   // 与 WorkBuddy 侧的 `integration-guide.tsx` 同算法。
   const rootUrl = baseUrl.replace(/\/v1\/?$/, "");
-  const key = keyPrefix ? `${keyPrefix}…` : t("trae.gateway.guide.noKey");
+  const key = keyPrefix ? `${keyPrefix}…` : (noKeyLabel ?? t("trae.gateway.guide.noKey"));
   const snippet = gatewaySnippet({ t, protocol, tool: activeTool, baseUrl, rootUrl, key, model });
   /* 「原始请求（调试用）」：认证头随协议 Tab 变化（Anthropic → x-api-key；OpenAI → Bearer）。
      与 WB 侧 `integration-guide.tsx` 同一算法、同一来源函数。 */
@@ -120,7 +133,9 @@ export function TraeIntegrationGuide({
           <p className="mt-1 text-xs text-muted-foreground">
             {t("shared.gateway.access.authNote", { header: protocolOf(protocol).authHeader })}
           </p>
-          <p className="mt-1 text-xs text-muted-foreground">{t("trae.gateway.guide.streamNote")}</p>
+          <p className="mt-1 text-xs text-muted-foreground">
+            {streamNote ?? t("trae.gateway.guide.streamNote")}
+          </p>
           {/* 自动发现说明（P10 §1.7）：与本仓 WB 侧 `integration-guide.tsx` 同构 ——
               外部客户端会从本网关的 `/v1/models` 自动读取清单，不需要手填模型名。 */}
           <p className="mt-1 text-xs text-muted-foreground">

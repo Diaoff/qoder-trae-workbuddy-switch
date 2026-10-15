@@ -146,7 +146,13 @@ export const zh = {
   "wbAccounts.card.metric.todayTokensClient": "客户端 入 {input} · 出 {output}",
   "wbAccounts.card.metric.todayTokensGateway": "网关 入 {input} · 出 {output}",
   // 下界说明：`gatewayTruncated` 时**必须**带上，只给数字不说口径就是误导。
-  "wbAccounts.card.metric.todayTokensTruncated": "网关日志已达保留上限，网关用量为下界（实际更多）",
+  // ⚠️ 措辞锚定**判据**（今日部分可能被裁），不是「日志到过上限」—— 滚动窗口可能被
+  // 昨天的流量顶满而今天的条目全在，那种情况下不报（见 core `gateway_log_truncated_today`）。
+  "wbAccounts.card.metric.todayTokensTruncated": "网关日志或已裁去今日部分，网关用量为下界（实际更多）",
+  // 双桶重叠披露：客户端与网关是**两条独立记录**，同一请求只应落在其中一处；若某个
+  // 客户端既写自己的会话日志、又被指向本网关，两处会各记一次 ⇒ 合计**可能重复计数**。
+  // 两侧都非零时才出现（一侧为 0 时合计就是另一侧，无歧义）。
+  "wbAccounts.card.metric.todayTokensOverlap": "客户端与网关为两条独立记录，同一请求可能被重复计数",
   "wbAccounts.card.editGroup": "设置分组",
   "wbAccounts.card.manageAria": "管理账号 {name}",
   "wbAccounts.card.moreActions": "更多账号操作",

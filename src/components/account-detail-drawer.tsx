@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { ArrowRight, Check, Download, Info, MessageSquare, Pencil, RefreshCw, ShieldCheck, Sparkles, StickyNote, Tag, Trash2, XIcon } from "lucide-react";
+import { ArrowRight, Check, Download, Info, Loader2, MessageSquare, Pencil, RefreshCw, ShieldCheck, Sparkles, StickyNote, Tag, Trash2, XIcon } from "lucide-react";
 
 import { avatarTone, formatCredits } from "@/components/account-card";
 import { EmptyState } from "@/components/ui/empty-state";
@@ -10,6 +10,7 @@ import { Sheet, SheetClose, SheetContent, SheetDescription, SheetHeader, SheetTi
 import { Skeleton } from "@/components/ui/skeleton";
 import { displayText } from "@/lib/display-text";
 import { useT } from "@/lib/i18n";
+import { useRefreshAction } from "@/lib/use-refresh-action";
 import { cn } from "@/lib/utils";
 
 /**
@@ -263,6 +264,8 @@ export function AccountDetailDrawer({
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState("");
   const [saving, setSaving] = useState(false);
+  /** 「刷新 Token」按钮的进行中态（回调是 fire-and-forget ⇒ 最小展示时长保证可见）。 */
+  const { busy: refreshBusy, run: runRefresh } = useRefreshAction();
   const inputRef = useRef<HTMLInputElement | null>(null);
   /**
    * 取消编辑时置位，用来抵掉紧随其后的那次 blur。
@@ -859,8 +862,18 @@ export function AccountDetailDrawer({
                   </h3>
                   <div className="flex flex-wrap gap-2">
                     {actions?.onRefresh && (
-                      <Button type="button" variant="outline" size="sm" onClick={actions.onRefresh}>
-                        <RefreshCw className="size-4" />
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        disabled={refreshBusy}
+                        onClick={() => void runRefresh(() => actions.onRefresh?.())}
+                      >
+                        {refreshBusy ? (
+                          <Loader2 className="size-4 animate-spin" />
+                        ) : (
+                          <RefreshCw className="size-4" />
+                        )}
                         {t("shared.drawer.actions.refresh")}
                       </Button>
                     )}

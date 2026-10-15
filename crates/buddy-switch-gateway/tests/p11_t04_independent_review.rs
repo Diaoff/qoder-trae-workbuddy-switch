@@ -16,6 +16,13 @@ use std::sync::Mutex;
 use buddy_switch_core::modules::region::Region;
 use buddy_switch_gateway::{is_disabled, is_disabled_in, DisabledModels};
 
+use buddy_switch_core::modules::product::{scope_of_wb_region, Scope};
+
+/// 旧 `region` 轴 → 作用域（P11 键升级后，WB 侧的等价转换）。
+fn wb(region: Region) -> Scope {
+    scope_of_wb_region(region)
+}
+
 /// 串行化所有触碰 `BUDDY_SWITCH_HOME` 的用例（env 是进程级全局状态）。
 static ENV_LOCK: Mutex<()> = Mutex::new(());
 
@@ -58,7 +65,7 @@ fn unknown_top_level_field_rejects_the_whole_file() {
     // `load()` 的等价路径：解析失败 ⇒ 回落空表 ⇒ 已禁用的模型**全部复活**。
     let loaded = serde_json::from_str::<DisabledModels>(text).unwrap_or_default();
     assert!(
-        !is_disabled(&loaded, Region::Cn, "glm-5.3"),
+        !is_disabled(&loaded, wb(Region::Cn), "glm-5.3"),
         "文件里明明禁用了 glm-5.3，但一个无关顶层字段就让偏好**静默丢失**"
     );
 }
@@ -72,19 +79,20 @@ fn unknown_top_level_field_rejects_the_whole_file() {
 #[test]
 fn unknown_region_key_is_preserved_but_inert() {
     let text = r#"{"regions":{"cn":["glm-5.3"],"mars":["x"]}}"#;
-    let store: DisabledModels = serde_json::from_str(text).expect("未知 region 键不得让整份失败");
+    let mut store: DisabledModels = serde_json::from_str(text).expect("未知 region 键不得让整份失败");
+    assert!(store.migrate_legacy_keys(), "旧 cn 键必须迁移（扇出到 wb-cn / trae-cn）");
 
-    // 已知键照常命中。
-    assert!(is_disabled(&store, Region::Cn, "glm-5.3"), "已知键不受未知键影响");
+    // 迁移后的已知作用域照常命中。
+    assert!(is_disabled(&store, wb(Region::Cn), "glm-5.3"), "已知键不受未知键影响");
 
-    // 未知键的条目**不被**任何 Region 命中（`Region` 枚举只产 cn / global）。
-    assert!(!is_disabled(&store, Region::Cn, "x"), "未知 region 的条目不得串进 cn");
-    assert!(!is_disabled(&store, Region::Global, "x"), "未知 region 的条目不得串进 global");
+    // 未知键的条目**不被**任何作用域命中。
+    assert!(!is_disabled(&store, wb(Region::Cn), "x"), "未知键的条目不得串进 wb-cn");
+    assert!(!is_disabled(&store, wb(Region::Global), "x"), "未知键的条目不得串进 wb-global");
 
     // 未知键**被保留**（序列化写回后仍在）—— 不是被丢弃，故无「静默丢数据」。
     let round = serde_json::to_string(&store).expect("序列化");
-    assert!(round.contains("\"mars\""), "未知 region 键应原样保留（写回仍在）：{round}");
-    assert!(round.contains("\"cn\""), "{round}");
+    assert!(round.contains("\"mars\""), "未知键应原样保留（写回仍在）：{round}");
+    assert!(round.contains("\"wb-cn\""), "{round}");
 }
 
 /// ★ 复核 ③（损坏文件）：非法 JSON ⇒ **可理解回落**（空表），不 panic、不报错。
@@ -102,7 +110,7 @@ fn load_falls_back_to_empty_on_corrupted_file_without_panicking() {
     std::fs::write(&file, r#"{"regions":{"cn":["glm-5.3"]}}"#).expect("写合法文件");
     let good = DisabledModels::load();
     assert!(
-        is_disabled(&good, Region::Cn, "glm-5.3"),
+        is_disabled(&good, wb(Region::Cn), "glm-5.3"),
         "前提：合法文件必须能被 load() 读到（否则本用例是空断言）"
     );
 
@@ -110,10 +118,10 @@ fn load_falls_back_to_empty_on_corrupted_file_without_panicking() {
     std::fs::write(&file, "{ this is not json").expect("写损坏文件");
     let broken = DisabledModels::load();
     assert!(
-        !is_disabled(&broken, Region::Cn, "glm-5.3"),
+        !is_disabled(&broken, wb(Region::Cn), "glm-5.3"),
         "损坏文件应回落空表（可理解行为），而不是把上次的值留着或崩溃"
     );
-    assert!(broken.get(Region::Cn).is_empty(), "损坏文件 ⇒ 空表");
+    assert!(broken.get(wb(Region::Cn)).is_empty(), "损坏文件 ⇒ 空表");
 
     let _ = std::fs::remove_dir_all(&home);
 }
@@ -124,26 +132,26 @@ fn load_falls_back_to_empty_on_corrupted_file_without_panicking() {
 #[test]
 fn same_model_disabled_in_both_regions_stays_isolated_across_round_trip() {
     let mut store = DisabledModels::default();
-    store.set(Region::Cn, "glm-5.3", true);
+    store.set(wb(Region::Cn), "glm-5.3", true);
     // 只在 cn 禁用；global 未动。
     let text = serde_json::to_string(&store).expect("序列化");
     let back: DisabledModels = serde_json::from_str(&text).expect("反序列化");
 
-    assert!(is_disabled(&back, Region::Cn, "glm-5.3"), "cn 的禁用必须往返保留");
-    assert!(!is_disabled(&back, Region::Global, "glm-5.3"), "global 不得被 cn 的禁用串味");
+    assert!(is_disabled(&back, wb(Region::Cn), "glm-5.3"), "cn 的禁用必须往返保留");
+    assert!(!is_disabled(&back, wb(Region::Global), "glm-5.3"), "global 不得被 cn 的禁用串味");
 
     // 再在 global 禁**同一**模型 ⇒ 两者各自独立命中，互不覆盖。
     let mut both = back;
-    both.set(Region::Global, "glm-5.3", true);
+    both.set(wb(Region::Global), "glm-5.3", true);
     let text2 = serde_json::to_string(&both).expect("序列化");
     let back2: DisabledModels = serde_json::from_str(&text2).expect("反序列化");
-    assert!(is_disabled(&back2, Region::Cn, "glm-5.3"));
-    assert!(is_disabled(&back2, Region::Global, "glm-5.3"));
+    assert!(is_disabled(&back2, wb(Region::Cn), "glm-5.3"));
+    assert!(is_disabled(&back2, wb(Region::Global), "glm-5.3"));
     // 解除 cn 的禁用，global 仍保持禁用（region 独立清位）。
     let mut only_global = back2;
-    only_global.set(Region::Cn, "glm-5.3", false);
-    assert!(!is_disabled(&only_global, Region::Cn, "glm-5.3"));
-    assert!(is_disabled(&only_global, Region::Global, "glm-5.3"), "清 cn 不得影响 global");
+    only_global.set(wb(Region::Cn), "glm-5.3", false);
+    assert!(!is_disabled(&only_global, wb(Region::Cn), "glm-5.3"));
+    assert!(is_disabled(&only_global, wb(Region::Global), "glm-5.3"), "清 cn 不得影响 global");
 }
 
 /// 复核：`is_disabled_in`（大小写不敏感的核心）对**混合大小写存储**也成立。
@@ -152,18 +160,18 @@ fn same_model_disabled_in_both_regions_stays_isolated_across_round_trip() {
 #[test]
 fn is_disabled_in_is_case_insensitive_regardless_of_stored_case() {
     let mut store = DisabledModels::default();
-    store.set(Region::Cn, "DeepSeek-V4-Flash-Official", true);
+    store.set(wb(Region::Cn), "DeepSeek-V4-Flash-Official", true);
     assert!(
-        is_disabled_in(store.get(Region::Cn), "deepseek-v4-flash-official"),
+        is_disabled_in(store.get(wb(Region::Cn)), "deepseek-v4-flash-official"),
         "存混合大小写、查小写也必须命中"
     );
     assert!(
-        is_disabled_in(store.get(Region::Cn), "DEEPSEEK-V4-FLASH-OFFICIAL"),
+        is_disabled_in(store.get(wb(Region::Cn)), "DEEPSEEK-V4-FLASH-OFFICIAL"),
         "存混合大小写、查全大写也必须命中"
     );
     // 存储保持原样（前端 `disabledSet.has(model.id)` 依赖精确匹配）。
     assert!(
-        store.get(Region::Cn).contains("DeepSeek-V4-Flash-Official"),
+        store.get(wb(Region::Cn)).contains("DeepSeek-V4-Flash-Official"),
         "存储不得被归一（否则前端精确匹配会对不上）"
     );
 }

@@ -80,6 +80,7 @@ import {
 } from "@/lib/trae-types";
 import { cn } from "@/lib/utils";
 import { useCachedResource } from "@/lib/use-cached-resource";
+import { useRefreshAction } from "@/lib/use-refresh-action";
 import { useT } from "@/lib/i18n";
 import type { TranslationKey } from "@/locales/zh";
 
@@ -165,6 +166,10 @@ function RuntimeLogsSection() {
     `trae:logs:${variant}:${kind}:${date}:${keyword}`,
     load,
   );
+
+  /* 刷新按钮的进行中态走本 hook 而不是上面的 `loading`：该资源有 2 秒轮询、且
+     「有旧值时的后台刷新」`loading` 恒为 false —— 用它驱动按钮是伪反馈（永远不转）。 */
+  const { busy, run } = useRefreshAction();
 
   // 自动刷新只在「没有未提交的输入」时跑：否则用户正在输入关键字，
   // 每次刷新都会把列表换成旧条件的结果，看起来像在抖。
@@ -317,8 +322,8 @@ function RuntimeLogsSection() {
               <Download />
               {t("trae.page.settings.exportCsv")}
             </Button>
-            <Button variant="outline" size="sm" disabled={loading} onClick={() => void refresh()}>
-              {loading ? <Loader2 className="animate-spin" /> : <RefreshCw />}
+            <Button variant="outline" size="sm" disabled={busy} onClick={() => void run(() => refresh())}>
+              {busy ? <Loader2 className="animate-spin" /> : <RefreshCw />}
               {t("trae.page.settings.refresh")}
             </Button>
           </div>
@@ -478,6 +483,10 @@ function GatewayLogsSection() {
   const logs = data ?? [];
   const failure = error ?? actionError;
 
+  /* 刷新按钮的进行中态（该资源无轮询，但「有旧值时 loading 恒 false」的伪反馈问题
+     与运行日志组相同 ⇒ 同样走 `useRefreshAction`）。 */
+  const { busy, run } = useRefreshAction();
+
   const clear = async () => {
     setClearing(true);
     try {
@@ -540,8 +549,8 @@ function GatewayLogsSection() {
               className="h-8 pl-8"
             />
           </div>
-          <Button variant="outline" size="sm" disabled={loading} onClick={() => void refresh()}>
-            {loading ? <Loader2 className="animate-spin" /> : <RefreshCw />}
+          <Button variant="outline" size="sm" disabled={busy} onClick={() => void run(() => refresh())}>
+            {busy ? <Loader2 className="animate-spin" /> : <RefreshCw />}
             {t("trae.page.settings.refresh")}
           </Button>
           <DemoAction>
@@ -694,10 +703,14 @@ function ProfilesSection({
   busy: string | null;
   /** 当前产品线：快照按变体分家，备份/恢复/删除都必须带上它。 */
   variant: TraeVariantId;
-  onReload: () => void;
+  onReload: () => void | Promise<void>;
   onRun: (key: string, label: string, action: () => Promise<unknown>) => Promise<void>;
 }) {
   const t = useT();
+  /* 「刷新」按钮的点击反馈。名字避开 prop `busy`（那是备份/恢复/删除的按键 busy）。
+     `loading` 之外的 `pending` 由父组件叠进 `loading` prop（见挂载处注释），
+     因此这里的判据同时覆盖「有旧值时的后台刷新」。 */
+  const { busy: reloadBusy, run: runReload } = useRefreshAction();
   const [backupSlot, setBackupSlot] = useState("");
   const [pendingDelete, setPendingDelete] = useState<TraeProfileInfo | null>(null);
   const [pendingRestore, setPendingRestore] = useState<TraeProfileInfo | null>(null);
@@ -742,8 +755,13 @@ function ProfilesSection({
             {t("trae.page.settings.snapshotCount", { count: profiles.length })}
           </span>
         </div>
-        <Button variant="ghost" size="sm" onClick={onReload} disabled={loading}>
-          <RefreshCw className={cn(loading && "animate-spin")} />
+        <Button
+          variant="ghost"
+          size="sm"
+          disabled={reloadBusy || loading}
+          onClick={() => void runReload(() => onReload())}
+        >
+          {reloadBusy || loading ? <Loader2 className="animate-spin" /> : <RefreshCw />}
           {t("trae.page.settings.refresh")}
         </Button>
       </SettingsRow>
@@ -1001,6 +1019,7 @@ export default function TraeSettingsPage() {
   const {
     data: pageSnapshot,
     loading,
+    pending,
     error,
     refresh: load,
   } = useCachedResource<SettingsPageSnapshot>(`trae:settings-page:${variant}`, loadSnapshot);
@@ -1484,10 +1503,12 @@ export default function TraeSettingsPage() {
         {section === "account" && (
         <ProfilesSection
           data={profiles}
-          loading={loading}
+          /* `pending` 覆盖「有旧值时的后台刷新」：只传 `loading` 时该场景恒为 false，
+             刷新按钮点了不转、看起来像没反应（首屏骨架仍由 `loading` 负责）。 */
+          loading={loading || pending}
           busy={busy}
           variant={variant}
-          onReload={() => void load()}
+          onReload={() => load()}
           onRun={runProfileAction}
         />
         )}

@@ -30,9 +30,14 @@
  */
 
 import { displayText } from "@/lib/display-text";
+/* ★ 窗口的**定义处**在 `usage-window.ts`（含 `dateKey`）：本模块只是它的一个消费方。
+   改造前 `UsageRange = 7 | 14 | 30` 与 `dateKey` 都住在这里 —— 加「今天 / 自定义时间」后
+   天数不再能表达用户选的东西（见该文件头），窗口换成联合类型，故下沉。 */
+import { usageWindowKeys, type UsageWindow } from "@/lib/usage-window";
 import type {
   CreditExpiry,
   CreditStatistics,
+  GatewayTokenTrend,
   TokenStatsGroup,
   TokenStatsSource,
   TokenStatsTotals,
@@ -40,9 +45,6 @@ import type {
 
 /** 四视图标识（与原型 `tabs` 一一对应）。 */
 export type UsageView = "trend" | "models" | "sessions" | "credits";
-
-/** 视图参数：时间范围（天）。与原型 `[7,14,30]` 一致。 */
-export type UsageRange = 7 | 14 | 30;
 
 /** 趋势 · 堆叠柱：一天一列，`segments` 之和 === `total`（契约 1）。 */
 export interface DailyModelColumn {
@@ -93,7 +95,10 @@ export interface SessionPoint {
  * 因此消费侧（`outAmt`）真实、入账侧留 0；渲染层据此**只画消耗侧**（单向柱）。
  */
 export interface CreditDailyBar {
+  /** 轴短标签（`MM/DD`）。 */
   label: string;
+  /** 本地日期键 `YYYY-MM-DD` —— 窗口切片要靠它，**不能**靠 `label`。 */
+  date: string;
   inAmt: number;
   outAmt: number;
 }
@@ -115,6 +120,16 @@ export interface ExpiryBucket {
 /** 堆叠柱 / 环形在「无模型明细」时使用的哨兵名，由渲染层翻译。 */
 export const TOTAL_SEGMENT = "__total__";
 
+/**
+ * 网关逐日图的**哨兵段名**（单段柱），由渲染层翻成「网关」。
+ *
+ * 为什么是哨兵而不是直接穿文案：系列名会进 `ChartConfig` 的键与 legend，
+ * 穿本地化字符串进去等于让**数据带语言**（与模型名保持 id 的做法分叉）。
+ */
+export const GATEWAY_SEGMENT = "__gateway__";
+
+/** 一天毫秒数。⚠️ 只用于「按天回推日期键」这类**整除**场景；
+ *  「窗口内有几天」一律走 `usageWindowKeys`（夏令时那天不是 24 小时）。 */
 const DAY_MS = 24 * 60 * 60 * 1000;
 
 function emptyTotals(): TokenStatsTotals {
@@ -244,55 +259,47 @@ export function mergeSources(sources: TokenStatsSource[]): TokenStatsSource {
   };
 }
 
-/** 本地日期键 `YYYY-MM-DD`（与后端逐日桶同口径，不走 `toISOString` —— 那会偏时区）。 */
-function dateKey(date: Date): string {
-  const pad = (value: number) => String(value).padStart(2, "0");
-  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
-}
-
 /**
- * ★ A1：最近 `range` 个**日历日**的日期键（升序，恒 `range` 项）。
+ * ★ A1：窗口内的**日历日**日期键（升序）—— 委托给 `usage-window.ts` 的
+ * `usageWindowKeys`，本函数只保留「用量图表」这一层的名字与文档。
  *
  * 给「日均」这类**需要知道窗口天数**的调用方用 —— 分母必须是**窗口天数**，
  * 不能是「有数据的天数」（否则 5 天数据显示成「日均 300」，而真实 30 天日均是 50）。
+ *
+ * ★ 签名从 `(range: 7|14|30)` 改成 `(window)`：**日期的真值是一对日期键**，
+ * 「近 N 天」只是生成它的一种方式。「今天」碰巧是 1 天，但「9/20 – 9/22」是
+ * 锚在日期上的一段，用天数拟合会让它随「今天」漂移（见 `usage-window.ts` 文件头）。
  */
-export function calendarWindowKeys(range: UsageRange, now: number = Date.now()): string[] {
-  return Array.from({ length: range }, (_, offset) =>
-    dateKey(new Date(now - (range - 1 - offset) * DAY_MS)),
-  );
+export function calendarWindowKeys(window: UsageWindow, now: number = Date.now()): string[] {
+  return usageWindowKeys(window, now);
 }
 
 /**
- * ★ A1：取**最近 `range` 个日历日**的逐日点（升序），**缺失日补 0**。
+ * ★ A1：取窗口内的逐日点（升序），**缺失日补 0**。
  *
- * ## 为什么不 `.slice(-range)`
+ * ## 为什么不 `.slice(-n)`
  *
  * `daily` 是**稀疏**的：后端 `token_stats.rs` 的 `daily: HashMap<String, Totals>`
  * 只在**有记录的日子**落条目（`.or_default()` 不会给缺失日补键）⇒
  * 「最近 N 天」不等于「数组最后 N 项」。
  *
  * 旧实现 `slice(-range)` 的两个实测后果：
- * 1. `daily` 只有 5 天数据而 `range=30` ⇒ **只出 5 列**（原型断言要求 `cols.length === 30`）；
- * 2. `range=7` 时首列落在 **59 天前** —— 却配着「近 7 天」的标签 ⇒ **图文不符**。
+ * 1. `daily` 只有 5 天数据而窗口 30 天 ⇒ **只出 5 列**（原型断言要求 `cols.length === 30`）；
+ * 2. 窗口 7 天时首列落在 **59 天前** —— 却配着「近 7 天」的标签 ⇒ **图文不符**。
  *
  * ## 修法
  *
- * 按 `Date.now()` 倒推 N 个**日历日**建轴，缺失日补 0（与 `expiryBuckets` 补 0、
- * `heatmap` 补 0 同一手法）。**后端不动** —— 前端补齐即可，避免动 `HashMap` 契约。
+ * 按窗口的日期键建轴，缺失日补 0（与 `expiryBuckets` 补 0、`heatmap` 补 0 同一手法）。
+ * **后端不动** —— 前端补齐即可，避免动 `HashMap` 契约。
  *
  * ⚠️ 补 0 会改变下游的「空态」判定路径（过去「只有 5 天数据」可能让某些图判空），
  * 这是**预期**的：现在 0 天的柱子**本就该显示为 0**，而不是让窗口悄悄缩成 5 天。
  */
-function lastDays(daily: TokenStatsGroup[], range: UsageRange): TokenStatsGroup[] {
+function lastDays(daily: TokenStatsGroup[], window: UsageWindow): TokenStatsGroup[] {
   const byKey = new Map(daily.map((point) => [point.key, point]));
-  const days: TokenStatsGroup[] = [];
-  for (let offset = range - 1; offset >= 0; offset -= 1) {
-    const key = dateKey(new Date(Date.now() - offset * DAY_MS));
-    // 缺失日补 0（`records: 0`）—— 这是「当天确实没有记录」，不是「读不到」。
-    // 补的是**零值分组**，各分项字段一并归零，避免下游读到 `undefined`。
-    days.push(byKey.get(key) ?? emptyDay(key));
-  }
-  return days;
+  // 缺失日补 0（`records: 0`）—— 这是「当天确实没有记录」，不是「读不到」。
+  // 补的是**零值分组**，各分项字段一并归零，避免下游读到 `undefined`。
+  return usageWindowKeys(window).map((key) => byKey.get(key) ?? emptyDay(key));
 }
 
 /** 一个「当天无记录」的零值日（补 0 用；字段与 `TokenStatsGroup` 严格同形）。 */
@@ -327,8 +334,8 @@ export function dateAxisLabel(date: string): string {
  * 模型来自 `dailyByModel`；某天某模型的缺失值补 0。若某天**没有**模型明细
  * （旧后端 / 无 `dailyByModel`），退化为单段（哨兵 `TOTAL_SEGMENT`）。
  */
-export function dailyModelSeries(source: TokenStatsSource, range: UsageRange): DailyModelColumn[] {
-  const days = lastDays(source.daily, range);
+export function dailyModelSeries(source: TokenStatsSource, window: UsageWindow): DailyModelColumn[] {
+  const days = lastDays(source.daily, window);
   if (days.length === 0) return [];
 
   const dailyByModel = source.dailyByModel ?? {};
@@ -369,6 +376,100 @@ export function dailyModelSeries(source: TokenStatsSource, range: UsageRange): D
     }
     return { day: day.key, label: dateAxisLabel(day.key), total: day.total, segments };
   });
+}
+
+/**
+ * 趋势 · **网关**逐日柱（与主堆叠柱同窗对齐；复用 {@link StackedDailyBar} 渲染）。
+ *
+ * ## 为什么不并进主堆叠柱（`dailyModelSeries`）
+ *
+ * ① 主柱的「末柱 = 概览统计块 = 账号卡今日合计」是**跨视图一致性契约**，
+ *    把网关量并进去会静默改变那个口径（老用户的首屏数字全变）；
+ * ② 客户端与网关是**两条独立记录**（配置重叠时同一请求两处各记一次），
+ *    求和会让重复计数**看不见** —— 卡片至少在明细里披露，图不能比卡片更不诚实。
+ *
+ * ## 未记录日怎么画
+ *
+ * `trend.days` **只含落库日**（App 运行过 + 后台记录在跑）⇒ 缺日是「未记录」而**不是 0**。
+ * 这里给缺日**空分段**（不画柱）而不是 0 段：两者视觉相同，但覆盖率由
+ * {@link gatewayCoverage} 单独给出、由图注披露 —— 「没有可画的值」与「当天没用量」
+ * 必须能区分。
+ */
+export function gatewayDailyColumns(
+  trend: GatewayTokenTrend | null,
+  window: UsageWindow,
+): DailyModelColumn[] {
+  if (!trend) return [];
+  const byDate = new Map(trend.days.map((point) => [point.key, point]));
+  return usageWindowKeys(window).map((key) => {
+    const point = byDate.get(key);
+    return {
+      day: key,
+      label: dateAxisLabel(key),
+      total: point?.total ?? 0,
+      segments: point && point.total > 0 ? [{ name: GATEWAY_SEGMENT, value: point.total }] : [],
+    };
+  });
+}
+
+/**
+ * 网关趋势在窗口内的**覆盖率**（图注披露用）。
+ *
+ * - `recorded`：窗口内**有落库记录**的天数（含 gateway 量为 0 的 —— 那是**真实 0**）；
+ * - `truncated`：其中有几天标了「可能被裁」（那些天的值是**下界**）；
+ * - `total`：窗口天数。
+ */
+export function gatewayCoverage(
+  trend: GatewayTokenTrend | null,
+  window: UsageWindow,
+): { recorded: number; total: number; truncated: number } {
+  if (!trend) return { recorded: 0, total: 0, truncated: 0 };
+  const byDate = new Map(trend.days.map((point) => [point.key, point]));
+  let recorded = 0;
+  let truncated = 0;
+  const keys = usageWindowKeys(window);
+  for (const key of keys) {
+    const point = byDate.get(key);
+    if (!point) continue;
+    recorded += 1;
+    if (point.truncated) truncated += 1;
+  }
+  return { recorded, total: keys.length, truncated };
+}
+
+/**
+ * 合并两个 region 的网关趋势（`region === "all"` 时前端求和）。
+ *
+ * 与 {@link mergeSources} 同哲学：**合并作用域是前端的事**，后端命令保持单 region。
+ * 同一天两区都有记录时逐字段求和；`truncated` 取**或**（任一侧可能是下界就是下界）。
+ */
+export function mergeGatewayTrends(
+  trends: readonly (GatewayTokenTrend | null)[],
+): GatewayTokenTrend | null {
+  const present = trends.filter((trend): trend is GatewayTokenTrend => Boolean(trend));
+  if (present.length === 0) return null;
+  if (present.length === 1) return present[0];
+  const byDate = new Map<string, GatewayTokenTrend["days"][number]>();
+  for (const trend of present) {
+    for (const point of trend.days) {
+      const current = byDate.get(point.key);
+      if (!current) {
+        byDate.set(point.key, { ...point });
+        continue;
+      }
+      current.input += point.input;
+      current.output += point.output;
+      current.total += point.total;
+      current.truncated = current.truncated || point.truncated;
+    }
+  }
+  const days = [...byDate.values()].sort((left, right) => left.key.localeCompare(right.key));
+  return {
+    date: present[0].date,
+    retentionDays: present[0].retentionDays,
+    days,
+    total: days.reduce((sum, point) => sum + point.total, 0),
+  };
 }
 
 /**
@@ -416,8 +517,8 @@ function alignSeries(series: TokenStatsGroup[], days: TokenStatsGroup[]): number
  * 代价是「一个模型都没出现在 `dailyByModel`」时环形图为空 ——
  * 那种情况下堆叠柱同样没有分段，两图**自洽**（原型断言两处都等于 `modelDays.length`）。
  */
-export function modelSlices(source: TokenStatsSource, range: UsageRange): ModelSlice[] {
-  const days = lastDays(source.daily, range);
+export function modelSlices(source: TokenStatsSource, window: UsageWindow): ModelSlice[] {
+  const days = lastDays(source.daily, window);
   const dailyByModel = source.dailyByModel ?? {};
   const slices: ModelSlice[] = Object.keys(dailyByModel).map((name) => {
     const series = dailyByModel[name];
@@ -478,9 +579,20 @@ export function sessionPoints(source: TokenStatsSource): SessionPoint[] {
  * ★ 入账**不可得**（P3-ARCH §6 #1，已核实）⇒ `inAmt` 恒为 0；
  * 渲染层据此只画**消耗侧**（单向柱）+ 图注说明「入账明细不可得」。
  */
-export function creditDailyBars(stats: CreditStatistics): CreditDailyBar[] {
+/**
+ * 积分 · 逐日柱（**按窗口对齐**，缺失日补 0）。
+ *
+ * ★ 为什么要窗口：改造前是 `bars.slice(-range)` —— 那是「最后 N 个**有数据的**日子」，
+ * 不是「最后 N 个**日历日**」。稀疏数据下两者不同：某段日子没有消耗，
+ * 「近 30 天」就会静默滑到 35 天前。这与 `lastDays` 修的是同一个 bug，判据同源。
+ * ★ 加「自定义时间」后它更是**必须**的：窗口锚在过去的某一段上，`slice` 无法表达。
+ */
+export function creditDailyBars(stats: CreditStatistics, window: UsageWindow): CreditDailyBar[] {
   /* WB 的入账**不可得**（`events` 无金额字段）⇒ `inAmt` 恒 0，渲染层据此只画消耗侧。 */
-  return creditBars(stats.daily.map((point) => ({ date: point.date, outAmt: point.usage })));
+  const byDate = new Map(stats.daily.map((point) => [point.date, point.usage]));
+  return creditBars(
+    usageWindowKeys(window).map((key) => ({ date: key, outAmt: byDate.get(key) ?? 0 })),
+  );
 }
 
 /**
@@ -497,6 +609,7 @@ export function creditBars(
     .sort((left, right) => left.date.localeCompare(right.date))
     .map((point) => ({
       label: dateAxisLabel(point.date),
+      date: point.date,
       inAmt: point.inAmt ?? 0,
       outAmt: point.outAmt,
     }));

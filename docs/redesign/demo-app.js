@@ -13,7 +13,7 @@ const state = {
   q: "", sort: "priority", group: "none", view: "card",
   selected: new Set(),
   /* 用量工作台 */
-  usageTab: "trend", range: 7, merge: false,
+  usageTab: "trend", range: 30, rangeMode: "preset", customFrom: "", customTo: "", rangeOpen: false, merge: false,
   /* 子导航 */
   gwSub: "overview",
   gwApi: "openai",      // 快速接入的协议 Tab：openai / anthropic
@@ -76,11 +76,9 @@ const fmt = (n) => Number(n || 0).toLocaleString("zh-CN");
 const fmtTok = (n) => (n >= 1e6 ? (n / 1e6).toFixed(1) + "M" : n >= 1e3 ? (n / 1e3).toFixed(1) + "K" : String(n || 0));
 const curScope = () => SCOPES[state.scope];
 const curPlatform = () => PLATFORMS[curScope().platform];
-const scopeLabel = (id) => {
-  const s = SCOPES[id];
-  const p = PLATFORMS[s.platform];
-  return `${p.label} ${p.regions.find((r) => r.id === s.region).label}`;
-};
+/* 展示名的拼装**只有一处实现**（`demo-data.js` 的 `scopeDisplayName`）——
+   这里只是取个短名字，方便页面代码继续读作 `scopeLabel(...)`。 */
+const scopeLabel = (id) => scopeDisplayName(id);
 const currentAccount = (id) => {
   const s = SCOPES[id];
   const p = PLATFORMS[s.platform];
@@ -795,25 +793,90 @@ function mergeExt(ids) {
 }
 
 const WEEKDAYS = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"];
-const takeLast = (arr, n) => arr.slice(-n);
+
+/* ── 用量视图参数：区间 = 今天 / 近 N 天 / 自定义时间 ──
+   数据窗口是「最近 30 天」，标签形如 M/D（见 demo-data.js 的 series）。
+   自定义区间**按标签对齐到真实那一天**，不退化成「最后 N 天」——
+   否则用户选了 9/20–9/22 却看到 9/28–9/30 的柱子，是能被一眼看穿的谎报。 */
+const DAY_LABELS = USAGE[Object.keys(USAGE)[0]].days.map((d) => d.label);
+const dayIndexOf = (label) => DAY_LABELS.indexOf(label);
+function isoOfLabel(label) {
+  const i = dayIndexOf(label);
+  if (i < 0) return "";
+  const d = new Date();
+  d.setHours(0, 0, 0, 0);
+  d.setDate(d.getDate() - (DAY_LABELS.length - 1 - i));
+  const p = (n) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+}
+const mdOfIso = (iso) => {
+  if (!iso) return "";
+  const d = new Date(`${iso}T00:00:00`);
+  return `${d.getMonth() + 1}/${d.getDate()}`;
+};
+/** 当前视图参数 → 取 days 的哪一段（闭区间下标）。 */
+function rangeWindow(len) {
+  if (state.rangeMode === "today") return { from: len - 1, to: len - 1 };
+  if (state.rangeMode === "custom") {
+    let i = dayIndexOf(mdOfIso(state.customFrom));
+    let j = dayIndexOf(mdOfIso(state.customTo));
+    if (i < 0) i = 0;
+    if (j < 0) j = len - 1;
+    if (j < i) { const t = i; i = j; j = t; }
+    return { from: i, to: j };
+  }
+  return { from: Math.max(0, len - state.range), to: len - 1 };
+}
+function rangeLabel() {
+  if (state.rangeMode === "today") return "今天";
+  if (state.rangeMode === "custom") {
+    const f = mdOfIso(state.customFrom), t = mdOfIso(state.customTo);
+    return f && t ? `${f} – ${t}` : `近 ${state.range} 天`;
+  }
+  return `近 ${state.range} 天`;
+}
+/** 自定义时间弹层：原生 date 输入，范围锁在数据窗口（最近 30 天）内。 */
+function rangePopover() {
+  const first = DAY_LABELS[0], last = DAY_LABELS[DAY_LABELS.length - 1];
+  const min = isoOfLabel(first), max = isoOfLabel(last);
+  return `<div class="range-pop" role="dialog" aria-label="自定义时间区间">
+    <div class="grp">自定义时间区间</div>
+    <div class="rp-row">
+      <label class="rp-field">起<input type="date" id="range-from" value="${state.customFrom || min}" min="${min}" max="${max}"></label>
+      <span class="rp-sep">–</span>
+      <label class="rp-field">止<input type="date" id="range-to" value="${state.customTo || max}" min="${min}" max="${max}"></label>
+    </div>
+    <div class="rp-hint tiny muted">可选范围 ${first} – ${last}（最近 30 天）</div>
+    <div class="rp-actions">
+      <button class="btn ghost sm" data-act="range-custom-cancel">取消</button>
+      <button class="btn sm" data-act="range-custom-apply">应用</button>
+    </div>
+  </div>`;
+}
 
 function viewUsage() {
   const u = usageFor();
   const e = u.ext;
-  const days = takeLast(u.days, state.range);
+  const win = rangeWindow(u.days.length);
+  const days = u.days.slice(win.from, win.to + 1);
   const tab = state.usageTab;
   const tabs = [["trend", "趋势"], ["models", "模型"], ["sessions", "会话"], ["credits", "积分"]];
   const scopeName = state.merge ? "全部作用域" : scopeLabel(state.scope);
-  const rangeName = `近 ${state.range} 天`;
+  const rangeName = rangeLabel();
 
   const params = `<div class="toolbar">
     <span class="tiny muted">视图参数</span>
-    <div class="seg">${[7, 14, 30].map((n) => `<button class="${state.range === n ? "on" : ""}" data-act="range|${n}">近 ${n} 天</button>`).join("")}</div>
+    <div class="seg">
+      <button class="${state.rangeMode === "today" ? "on" : ""}" data-act="range|today">今天</button>
+      ${[7, 14, 30].map((n) => `<button class="${state.rangeMode === "preset" && state.range === n ? "on" : ""}" data-act="range|${n}">近 ${n} 天</button>`).join("")}
+      <button class="${state.rangeMode === "custom" ? "on" : ""}" data-act="range-custom-open" aria-haspopup="dialog" aria-expanded="${state.rangeOpen}">自定义时间</button>
+    </div>
     <div class="grow"></div>
     <div class="seg">
       <button class="${!state.merge ? "on" : ""}" data-act="merge|0">仅本作用域</button>
       <button class="${state.merge ? "on" : ""}" data-act="merge|1">合并全部作用域</button>
     </div>
+    ${state.rangeOpen ? rangePopover() : ""}
   </div>`;
 
   let body = "";
@@ -824,7 +887,7 @@ function viewUsage() {
     const peak = days.reduce((m, d) => (d.value > m.value ? d : m), days[0]);
     let run = 0;
     const cum = days.map((d) => ({ label: d.label, value: (run += d.value) }));
-    const modelSlices = e.modelDays.map((m) => ({ name: m.name, values: takeLast(m.values, state.range) }));
+    const modelSlices = e.modelDays.map((m) => ({ name: m.name, values: m.values.slice(win.from, win.to + 1) }));
     const modelTotals = modelSlices.map((m) => ({ name: m.name, value: m.values.reduce((s, v) => s + v, 0) }));
 
     body = `
@@ -860,7 +923,7 @@ function viewUsage() {
     </section>`;
   } else if (tab === "models") {
     const items = e.modelDays
-      .map((m) => ({ name: m.name, values: takeLast(m.values, state.range) }))
+      .map((m) => ({ name: m.name, values: m.values.slice(win.from, win.to + 1) }))
       .map((m) => ({ name: m.name, spark: m.values, value: m.values.reduce((s, v) => s + v, 0) }))
       .sort((a, b) => b.value - a.value);
     const totalM = items.reduce((s, i) => s + i.value, 0) || 1;
@@ -931,8 +994,8 @@ function viewUsage() {
       /* 合并态下这些数字也要跟着变，不能只有趋势图变。 */
       const statScopes = state.merge ? Object.keys(SCOPES) : [state.scope];
       const allAcc = statScopes.flatMap((id) => SCOPES[id].accounts);
-      const daily = takeLast(e.creditDaily, state.range);
-      const bal = takeLast(e.balance, state.range);
+      const daily = e.creditDaily.slice(win.from, win.to + 1);
+      const bal = e.balance.slice(win.from, win.to + 1);
       const totalIn = daily.reduce((s, d) => s + d.inAmt, 0);
       const totalOut = daily.reduce((s, d) => s + d.outAmt, 0);
       const netAmt = totalIn - totalOut;
@@ -2216,8 +2279,15 @@ function toggleTheme() {
   toast("ok", state.theme === "dark" ? "已切换到深色主题" : "已切换到浅色主题");
 }
 function doRefresh() {
+  /* 顶栏 ⟳ 的进行中反馈：图标旋转 + 禁用（点击必有动效，不再「点了没反应」）。 */
+  const btn = $("#refresh-btn");
+  if (btn) { btn.classList.add("spinning"); btn.disabled = true; }
   state.loading = true; renderContent();
-  setTimeout(() => { state.loading = false; renderContent(); toast("ok", "已刷新", scopeLabel(state.scope) + " 的账号与积分状态已更新"); }, 500);
+  setTimeout(() => {
+    state.loading = false; renderContent();
+    if (btn) { btn.classList.remove("spinning"); btn.disabled = false; }
+    toast("ok", "已刷新", scopeLabel(state.scope) + " 的账号与积分状态已更新");
+  }, 500);
 }
 /* 批量签到：目标 = 已勾选账号（若有），否则整个作用域。
    批量操作必然可能部分失败——凭据过期 / 需重新登录是结构性失败，
@@ -2255,7 +2325,10 @@ document.addEventListener("click", (e) => {
   if (!e.target.closest("#scope-menu")) closeScopeMenu();
 
   const node = e.target.closest("[data-act]");
-  if (!node) return;
+  /* 自定义时间弹层：点弹层外部收起（触发器与弹层内部除外），与本次动作同帧生效。 */
+  const willCloseRange = state.rangeOpen && !e.target.closest(".range-pop") && !(node && node.dataset.act === "range-custom-open");
+  if (willCloseRange) state.rangeOpen = false;
+  if (!node) { if (willCloseRange) renderContent(); return; }
   const [act, a1, a2] = node.dataset.act.split("|");
   const stop = () => { e.preventDefault(); e.stopPropagation(); };
 
@@ -2263,7 +2336,28 @@ document.addEventListener("click", (e) => {
     case "nav": stop(); state.dest = a1; state.selected.clear(); renderAll(); break;
     case "scope": stop(); switchScope(a1); break;
     case "view": stop(); state.view = a1; renderAccountList(); break;
-    case "range": stop(); state.range = Number(a1); renderContent(); break;
+    case "range": stop();
+      if (a1 === "today") { state.rangeMode = "today"; state.range = 1; }
+      else { state.rangeMode = "preset"; state.range = Number(a1); }
+      state.rangeOpen = false;
+      renderContent(); break;
+    /* 自定义时间：先开弹层选日期，再「应用」——不选就不改当前区间。 */
+    case "range-custom-open": stop(); state.rangeOpen = !state.rangeOpen; renderContent(); break;
+    case "range-custom-cancel": stop(); state.rangeOpen = false; renderContent(); break;
+    case "range-custom-apply": {
+      stop();
+      const fromEl = $("#range-from"), toEl = $("#range-to");
+      const from = fromEl ? fromEl.value : "", to = toEl ? toEl.value : "";
+      if (!from || !to) { toast("err", "请选择起止日期"); break; }
+      state.customFrom = from <= to ? from : to;
+      state.customTo = from <= to ? to : from;
+      state.rangeMode = "custom";
+      const i = dayIndexOf(mdOfIso(state.customFrom)), j = dayIndexOf(mdOfIso(state.customTo));
+      state.range = i >= 0 && j >= 0 ? Math.abs(j - i) + 1 : state.range;
+      state.rangeOpen = false;
+      renderContent();
+      break;
+    }
     case "merge": stop(); state.merge = a1 === "1"; renderContent(); break;
     case "usage-tab": stop(); state.usageTab = a1; renderContent(); break;
     case "gw-sub": stop(); state.gwSub = a1; renderContent(); break;
@@ -2764,7 +2858,7 @@ document.addEventListener("change", (e) => {
 document.addEventListener("keydown", (e) => {
   const mod = e.metaKey || e.ctrlKey;
   if (mod && e.key.toLowerCase() === "k") { e.preventDefault(); state.palette.open ? closePalette() : openPalette(); return; }
-  if (mod && /^[1-4]$/.test(e.key)) {
+  if (mod && /^[1-9]$/.test(e.key)) {
     const ids = Object.keys(SCOPES); const id = ids[Number(e.key) - 1];
     if (id) { e.preventDefault(); switchScope(id); }
     return;
@@ -2831,7 +2925,13 @@ function bootFromUrl() {
   if (p.get("usage")) state.usageTab = p.get("usage");
   if (p.get("view")) state.view = p.get("view");
   if (p.get("group")) state.group = p.get("group");
-  if (p.get("range")) state.range = Number(p.get("range")) || 7;
+  if (p.get("range")) {
+    const r = p.get("range");
+    if (r === "today") { state.rangeMode = "today"; state.range = 1; }
+    else if (r === "custom" && p.get("from") && p.get("to")) {
+      state.rangeMode = "custom"; state.customFrom = p.get("from"); state.customTo = p.get("to");
+    } else { state.rangeMode = "preset"; state.range = Number(r) || 30; }
+  }
   if (p.get("q")) state.q = p.get("q");
   /* 错误态也走深链：?err=gateway / ?err=usage（可逗号分隔），便于直接复现。 */
   if (p.get("err")) p.get("err").split(",").forEach((k) => { if (k) state.errors[k] = true; });

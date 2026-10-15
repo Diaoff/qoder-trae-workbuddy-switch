@@ -3,6 +3,7 @@ import workbuddyIcon from "@/assets/workbuddy-official-icon.png";
 import codebuddyCnIdeIcon from "@/assets/codebuddy-cn-ide-icon.png";
 import traeIcon from "@/assets/trae.png";
 import traeworkIcon from "@/assets/traework.png";
+import qoderIcon from "@/assets/qoder.png";
 
 const appIconUrl = `${import.meta.env.BASE_URL}icon-transparent.png`;
 
@@ -111,6 +112,34 @@ export function TraeMark({ size = 32, className }: MarkProps) {
     >
       <img
         src={traeIcon}
+        alt=""
+        className="absolute left-1/2 top-1/2 size-[118%] max-w-none -translate-x-1/2 -translate-y-1/2 object-cover"
+      />
+    </span>
+  );
+}
+
+/**
+ * Qoder 官方图标（黑色「Q」字标 + 自带浅色底）。
+ *
+ * 源图为官方 logo 原图，已按 `WorkBuddyMark` / `TraeMark` 的**同一参数**归一化：
+ * 内容占画布 **80.4%**、严格居中、底色取原图自带色 ⇒ 直接复用
+ * 「放大 118% 居中 + 容器 `rounded-[22%]` 收口」的同款手法，
+ * 保证同排产品图标视觉体量一致。
+ *
+ * ⚠️ 曾经这里是一枚**手绘圆环字形**（本仓当时没有官方资产，形状只是原型的
+ * 抽象占位符）—— 2026-10-15 换用官方 logo 后**不要**回退到自绘字形：
+ * 作用域选择器 / 页头 chip 上的图标会被用户拿来和官方客户端比对。
+ */
+export function QoderMark({ size = 32, className }: MarkProps) {
+  return (
+    <span
+      aria-hidden
+      className={cn("relative inline-flex shrink-0 overflow-hidden rounded-[22%]", className)}
+      style={{ width: size, height: size }}
+    >
+      <img
+        src={qoderIcon}
         alt=""
         className="absolute left-1/2 top-1/2 size-[118%] max-w-none -translate-x-1/2 -translate-y-1/2 object-cover"
       />

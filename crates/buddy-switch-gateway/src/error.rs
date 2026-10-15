@@ -2,6 +2,7 @@
 
 use serde_json::{json, Value};
 
+use buddy_switch_core::modules::product::Scope;
 use buddy_switch_core::modules::region::{self, Region, RegionMismatch};
 use buddy_switch_core::modules::upstream::UpstreamErrorKind;
 
@@ -36,7 +37,7 @@ pub enum GatewayError {
     ///
     /// 与 `/v1/models` 的过滤**同源**（读同一份 `disabled` 存储 + 同一个 [`crate::disabled_models::is_disabled`]）——
     /// 否则禁用就是「假开关」。
-    ModelDisabled { region: Region, model: String },
+    ModelDisabled { scope: Scope, model: String },
     /// 网关自身错误（端口占用/目录失败/内部）→ 502（不返回裸堆栈）
     Internal(String),
 }
@@ -149,8 +150,8 @@ impl GatewayError {
             GatewayError::Upstream { message, .. } => message.chars().take(400).collect(),
             GatewayError::BadRequest(message) => message.clone(),
             // 与 Trae 侧共用同一句文案（`disabled_models::disabled_message`），避免两处漂移。
-            GatewayError::ModelDisabled { region, model } => {
-                crate::disabled_models::disabled_message(*region, model)
+            GatewayError::ModelDisabled { scope, model } => {
+                crate::disabled_models::disabled_message(*scope, model)
             }
             GatewayError::Internal(message) => message.clone(),
         }

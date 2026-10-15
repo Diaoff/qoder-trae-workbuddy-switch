@@ -10,7 +10,7 @@ import type { AccountViewMode } from "@/lib/account-list-view";
 import { useT } from "@/lib/i18n";
 
 /**
- * 账号列表工具栏（**两平台共用壳**）。
+ * 账号列表工具栏（**三平台共用壳**：WorkBuddy / Trae / Qoder）。
  *
  * ## 为什么共用而不是各写一份
  *

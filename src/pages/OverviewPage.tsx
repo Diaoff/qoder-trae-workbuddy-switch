@@ -24,6 +24,7 @@ import {
 } from "@/lib/platforms/registry";
 import { SCOPES, scopeOf, scopeParts, writeLastScope, type Scope } from "@/lib/scope";
 import { scopeShortcutTarget } from "@/lib/scope-shortcuts";
+import { useRefreshAction } from "@/lib/use-refresh-action";
 import { useScope } from "@/lib/use-scope";
 import { useScopeStatus, type ScopeStatus } from "@/lib/use-scope-status";
 import { cn } from "@/lib/utils";
@@ -95,6 +96,8 @@ export default function OverviewPage() {
   const loading = useAccountsStore((s) => s.loading);
   const globalSlice = useAccountsStore((s) => s.global);
   const fetchAllRegions = useAccountsStore((s) => s.fetchAllRegions);
+  /* 页头刷新的**进行中态**：`loading` 仍驱动骨架屏，本 hook 只负责按钮的转圈与禁用。 */
+  const { busy, run } = useRefreshAction();
 
   useEffect(() => {
     void fetchAllRegions();
@@ -399,11 +402,11 @@ export default function OverviewPage() {
         <Button
           variant="outline"
           size="default"
-          onClick={() => void fetchAllRegions()}
-          disabled={loading}
+          onClick={() => void run(() => fetchAllRegions())}
+          disabled={busy || loading}
           aria-label={t("wbOverview.refresh")}
         >
-          <RefreshCw className={cn(loading && "animate-spin")} />
+          {busy || loading ? <Loader2 className="animate-spin" /> : <RefreshCw />}
           {t("wbOverview.refresh")}
         </Button>
       </header>

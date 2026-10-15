@@ -1,6 +1,7 @@
 import { Suspense, lazy, useEffect, useMemo, useState, type ComponentType, type ElementType } from "react";
 import { BrowserRouter, HashRouter, Navigate, NavLink, Outlet, Route, Routes, useLocation, useNavigate, useParams } from "react-router-dom";
 import { ArrowUp, Coffee, GitBranch, LayoutDashboard, MessagesSquare, Monitor, Server, Settings, User } from "lucide-react";
+import { toast } from "sonner";
 
 import { cn } from "@/lib/utils";
 import * as api from "@/lib/api";
@@ -18,6 +19,7 @@ import { Toaster } from "@/components/ui/sonner";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { demoModeEnabled, pagesDemoHostingEnabled } from "@/lib/demo-mode";
 import { useT } from "@/lib/i18n";
+import { scopeLabel } from "@/lib/command-palette";
 import type { TranslationKey } from "@/locales/zh";
 import { planScopeShortcuts, scopeShortcutTarget } from "@/lib/scope-shortcuts";
 import { useShortcutsEnabled } from "@/lib/shortcut-preference";
@@ -57,6 +59,14 @@ const TraeSettingsPage = lazy(() => import("@/pages/TraeSettingsPage"));
    ⚠️ Trae 侧**不渲染入口**（能力门控），但 URL 直达仍可达 ⇒ 仍需一个组件接住。 */
 const SessionsPage = lazy(() => import("@/pages/SessionsPage"));
 const TraeSessionsPage = lazy(() => import("@/pages/TraeSessionsPage"));
+/* Qoder（第三个平台）：账号页 / 概览页 / 设置页是**真实页面**（真实数据 + 应用级设置）；
+   用量 / 网关 / 会话依赖网关请求日志与额度缓存，尚未落地 ⇒ 共用「尚未接入」的结构化空态
+   （**不**复用其它平台的页面，否则会把别的平台的账号渲染进来，用户会以为 Qoder 已经在用）。 */
+const QoderAccountsPage = lazy(() => import("@/pages/QoderAccountsPage"));
+const QoderOverviewPage = lazy(() => import("@/pages/QoderOverviewPage"));
+const QoderSettingsPage = lazy(() => import("@/pages/QoderSettingsPage"));
+const QoderPendingPage = lazy(() => import("@/pages/QoderPendingPage"));
+const QoderApiServicePage = lazy(() => import("@/pages/QoderApiServicePage"));
 /* P0 收敛清单第 1 项：`Product` 的类型定义**已搬进注册表**，这里改为 import。
    （原来 App.tsx 里有一份局部 `type Product`，两处重复 —— 现在只剩一处。） */
 import { DESTINATION_CAPABILITY, type Destination, DESTINATIONS, destinationOfLegacyPath, hasCapability, platformDescriptor, type Product, platformOfPath } from "@/lib/platforms/registry";
@@ -166,6 +176,19 @@ const SCOPED_ROUTES: Record<Product, Record<Destination, ElementType>> = {
     sessions: TraeSessionsPage,
     gateway: TraeApiServicePage,
     settings: TraeSettingsPage,
+  },
+  qoder: {
+    /* 概览 / 设置是**真实页面**（概览：账号数 + 本机客户端四态；设置：应用级设置 + 备份）。
+       网关也已落地（**第三个平台的产品线**：独立监听 7865 + 按区域分家的池与 Key 库）。
+       用量 / 会话**尚未落地** —— 它们的数据源（用量台账 / 会话副本）不存在，
+       给「尚未接入」空态而不是空壳 KPI。刻意**不复用** `OverviewPage` / `UsagePage`：
+       那两个组件读的是 WorkBuddy 的 store，会给 Qoder 分区渲染出**别的平台的数据**。 */
+    overview: QoderOverviewPage,
+    accounts: QoderAccountsPage,
+    usage: QoderPendingPage,
+    sessions: QoderPendingPage,
+    gateway: QoderApiServicePage,
+    settings: QoderSettingsPage,
   },
 };
 
@@ -518,7 +541,7 @@ function Layout() {
      状态放在 `Layout`（而非 `App`）里，是为了与顶栏入口共享、且都处于 Router 上下文内。 */
   const [paletteOpen, setPaletteOpen] = useState(false);
 
-  /* P6：作用域快捷键规划。降级（>5 个作用域或用户关闭）⇒ 空绑定 ⇒ 序号提示同步消失。 */
+  /* P6：作用域快捷键规划。降级（>9 个作用域或用户关闭）⇒ 空绑定 ⇒ 序号提示同步消失。 */
   const [shortcutsEnabled] = useShortcutsEnabled();
   const shortcutPlan = useMemo(
     () => planScopeShortcuts({ scopes: SCOPES, enabled: shortcutsEnabled }),
@@ -669,14 +692,29 @@ function Layout() {
    * - **WorkBuddy**：走账号 store 自己的命令（`refreshRegionStatus` + `reconcileAccounts`），
    *   与命令面板的「刷新当前作用域」同口径；
    * - **Trae**：走 `useScopeStatus` 聚合快照的 `refreshTrae`（顶栏状态的数据源）。
+   *
+   * ★ 返回 Promise 且**自带结果反馈**（原型 `doRefresh` 的「已刷新」toast）：
+   * 成功/失败都给出显式提示，不再让请求静默跑完 —— 顶栏按钮的进行中态由它驱动
+   * （`top-bar.tsx` 用 `useRefreshAction` 包装）。
    */
-  function refreshCurrentScope() {
-    if (product === "workbuddy") {
-      const store = useAccountsStore.getState();
-      void store.refreshRegionStatus(navRegion);
-      void store.reconcileAccounts(navRegion).catch(() => undefined);
-    } else {
-      void refreshTrae();
+  async function refreshCurrentScope() {
+    try {
+      if (product === "workbuddy") {
+        const store = useAccountsStore.getState();
+        // 运行状态探测沿用「静默」口径（`refreshRegionStatus` 内部吞错，下一轮轮询会再探）；
+        // 账号列表重读是本轮刷新的主判据，失败必须冒泡给下面的 toast。
+        void store.refreshRegionStatus(navRegion);
+        await store.reconcileAccounts(navRegion);
+      } else {
+        // Trae 的刷新失败不抛错（写进快照的 `error` 字段）⇒ 用显式结果判成败。
+        const traeError = await refreshTrae();
+        if (traeError) throw new Error(traeError);
+      }
+      toast.success(t("topbar.refreshDone"), {
+        description: t("topbar.refreshDoneDesc", { scope: scopeLabel(scope, t) }),
+      });
+    } catch (error) {
+      toast.error(t("topbar.refreshFailed"), { description: api.asError(error) });
     }
   }
 

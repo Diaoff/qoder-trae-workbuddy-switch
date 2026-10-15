@@ -123,10 +123,15 @@ kbd {
 
 .icon-btn {
   width: 34px; height: 34px; border-radius: 10px; display: grid; place-items: center;
-  color: var(--muted-fg); transition: background .14s, color .14s;
+  color: var(--muted-fg); transition: background .14s, color .14s, transform .14s;
 }
 .icon-btn:hover { background: var(--accent); color: var(--foreground); }
+/* 按压反馈：按下时轻微缩小（点击瞬间的视觉确认）。 */
+.icon-btn:active { transform: scale(.95); }
+.icon-btn:disabled { opacity: .45; cursor: not-allowed; pointer-events: none; }
 .icon-btn:focus-visible { outline: 2px solid var(--ring); outline-offset: 1px; }
+/* 刷新进行中：顶栏 ⟳ 原地旋转（doRefresh 的 500ms 期间；图标不动会被读成「点了没反应」）。 */
+.icon-btn.spinning svg { animation: spin .7s linear infinite; }
 
 /* ─────────────── 侧栏 ─────────────── */
 .sidebar {
@@ -257,6 +262,7 @@ kbd {
   display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
   padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--radius);
   background: var(--card); margin-bottom: 14px;
+  position: relative;   /* 用量页「自定义时间」弹层的定位锚 */
 }
 .field {
   display: flex; align-items: center; gap: 6px; height: 32px; padding: 0 10px;
@@ -279,6 +285,22 @@ kbd {
 }
 .seg button:hover { color: var(--foreground); }
 .seg button.on { background: var(--card); color: var(--foreground); font-weight: 550; box-shadow: var(--shadow-sm); }
+
+/* 自定义时间弹层（用量页视图参数） */
+.range-pop {
+  position: absolute; top: calc(100% - 4px); left: 12px; z-index: 40; width: 300px; padding: 10px;
+  border-radius: 12px; background: var(--popover); border: 1px solid var(--border); box-shadow: var(--shadow-lg);
+}
+.range-pop .grp { padding: 2px 4px 8px; font-size: 10.5px; color: var(--muted-fg); font-weight: 500; }
+.range-pop .rp-row { display: flex; align-items: center; gap: 8px; }
+.range-pop .rp-field { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px; font-size: 11px; color: var(--muted-fg); }
+.range-pop .rp-field input {
+  height: 32px; width: 100%; padding: 0 8px; border-radius: 9px; border: 1px solid var(--border);
+  background: var(--card-2); color: var(--foreground); font-size: 12px;
+}
+.range-pop .rp-sep { color: var(--muted-fg); }
+.range-pop .rp-hint { padding: 8px 4px 2px; }
+.range-pop .rp-actions { display: flex; justify-content: flex-end; gap: 8px; padding-top: 8px; }
 
 /* 批量操作条 */
 .batch-bar {

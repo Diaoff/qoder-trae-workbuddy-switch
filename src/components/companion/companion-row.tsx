@@ -68,11 +68,23 @@ const STATE_LABEL_KEY: Record<CompanionState, TranslationKey> = {
  * ⚠️ 来源 id 是**后端的数据**（`agent_watch::SOURCE_*` / `process::region_app_stems`），
  * 不是给用户看的字符串 —— 界面上必须走这张表，否则窗口里会出现 `workbuddy-cn`
  * 这种裸标识。**表里没有的 id 原样透传**（不吞未知来源，便于排查）。
+ *
+ * ★ **这张表必须覆盖 `agent_watch::HOOK_SOURCES` 的每一项** ——
+ * 漏一个的症状是窗口里显示裸 id（`trae-cn`），门禁
+ * `scripts/check-agent-sources.cjs` 会拦住（它同时校验 zh/en 两套词条存在）。
  */
 const SOURCE_LABEL_KEY: Record<string, TranslationKey> = {
   "workbuddy-cn": "shared.companion.source.workbuddyCn",
   "workbuddy-global": "shared.companion.source.workbuddyGlobal",
+  claude: "shared.companion.source.claude",
+  codebuddy: "shared.companion.source.codebuddy",
   codex: "shared.companion.source.codex",
+  "trae-cn": "shared.companion.source.traeCn",
+  "trae-global": "shared.companion.source.traeGlobal",
+  "qoder-cn": "shared.companion.source.qoderCn",
+  "qoder-global": "shared.companion.source.qoderGlobal",
+  // 本工具自己的操作（`agent_watch::SOURCE_THIS_TOOL`）—— 不是客户端 hook 来源。
+  "buddy-switch": "shared.companion.source.thisTool",
 };
 
 /** `CompanionRow` 的入参。 */

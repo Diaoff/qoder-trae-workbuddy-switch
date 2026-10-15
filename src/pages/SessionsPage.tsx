@@ -18,6 +18,7 @@ import { scopeOf } from "@/lib/scope";
 import { buildSyncItems, buildUnifyItems, failedGroupKeys } from "@/lib/session-replicas";
 import type { SessionGroupStatus, SessionGroupView } from "@/lib/session-replicas";
 import type { SyncSessionReplicaItem, UnifySessionReplicaItem } from "@/lib/types";
+import { useRefreshAction } from "@/lib/use-refresh-action";
 import { useScope } from "@/lib/use-scope";
 import { useSessionsStore } from "@/stores/sessions";
 
@@ -62,6 +63,8 @@ export default function SessionsPage() {
   const load = useSessionsStore((s) => s.load);
   const syncItems = useSessionsStore((s) => s.syncItems);
   const unifyItems = useSessionsStore((s) => s.unifyItems);
+  /* 错误态「重试」的进行中态（按钮态，同 `syncBusy` 用 Loader2 的语言）。 */
+  const { busy: retryBusy, run: runRetry } = useRefreshAction();
 
   /* region 变化即重载（副本按 region 分文件，P8 ✅ #2）。 */
   useEffect(() => {
@@ -342,8 +345,17 @@ export default function SessionsPage() {
         <Card className="items-center gap-3 py-8">
           <AlertTriangle className="size-8 text-muted-foreground/60" aria-hidden="true" />
           <p className="max-w-md text-center text-sm text-muted-foreground">{error}</p>
-          <Button variant="outline" size="sm" onClick={() => void load(region)}>
-            <RefreshCw className="size-3.5" aria-hidden="true" />
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={retryBusy}
+            onClick={() => void runRetry(() => load(region))}
+          >
+            {retryBusy ? (
+              <Loader2 className="size-3.5 animate-spin" aria-hidden="true" />
+            ) : (
+              <RefreshCw className="size-3.5" aria-hidden="true" />
+            )}
             {t("sessions.error.retry")}
           </Button>
         </Card>

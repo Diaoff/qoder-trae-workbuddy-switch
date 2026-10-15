@@ -98,6 +98,7 @@ import type {
 import { cn } from "@/lib/utils";
 import { scopeOf } from "@/lib/scope";
 import { useCachedResource } from "@/lib/use-cached-resource";
+import { useRefreshAction } from "@/lib/use-refresh-action";
 import { showUndoToast } from "@/lib/undo-toast";
 import { useTraeVariant } from "@/lib/use-trae-variant";
 
@@ -280,6 +281,10 @@ export default function TraeAccountsPage() {
   const logins = snapshot?.logins ?? {};
 
   const [busy, setBusy] = useState<string | null>(null);
+  /* 「重新检测」两处入口（错误 Alert / 详情抽屉空态）各自的进行中态 —— 与 WorkBuddy
+     账号页同一做法：`void loadAll()` 是 fire-and-forget，点击后按钮必须立刻有转圈反馈。 */
+  const { busy: recheckAlertBusy, run: runRecheckAlert } = useRefreshAction();
+  const { busy: recheckDrawerBusy, run: runRecheckDrawer } = useRefreshAction();
   /** 「跳过已签到」（签到策略，写 `trae:settings`）的保存中标志。 */
   const [autoCheckinSaving, setAutoCheckinSaving] = useState(false);
   /**
@@ -1761,7 +1766,7 @@ export default function TraeAccountsPage() {
           installed={regionStatus?.installed ?? false}
           dataDir={regionStatus?.dataDir ?? null}
           dataDirExists={regionStatus?.dataDirExists ?? false}
-          onRecheck={() => void loadAll()}
+          onRecheck={() => loadAll()}
           onImport={() => void importLocal()}
           onOAuth={() => setOauthOpen(true)}
           onLaunch={() =>
@@ -1785,8 +1790,13 @@ export default function TraeAccountsPage() {
                   {/* ★ 失败态**必须给一条出路**（本仓约定，与 WorkBuddy 同形）：
                       没有它，用户唯一能做的就是重启应用。此前 Trae 侧这条 Alert 只有文字。 */}
                   <div className="mt-2">
-                    <Button size="sm" variant="outline" onClick={() => void loadAll()}>
-                      <RefreshCw />
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      disabled={recheckAlertBusy}
+                      onClick={() => void runRecheckAlert(() => loadAll())}
+                    >
+                      {recheckAlertBusy ? <Loader2 className="animate-spin" /> : <RefreshCw />}
                       {t("trae.page.accounts.emptyRecheck")}
                     </Button>
                   </div>
@@ -1804,7 +1814,7 @@ export default function TraeAccountsPage() {
                   .map((account) => displayText(account.name) || account.userId),
                 onRetry:
                   checkinResult.failedIds.length > 0
-                    ? () => void batchCheckin(checkinResult.failedIds)
+                    ? () => batchCheckin(checkinResult.failedIds)
                     : undefined,
               }
             : null
@@ -2210,7 +2220,13 @@ export default function TraeAccountsPage() {
           title: t("shared.drawer.empty.title"),
           description: t("shared.drawer.empty.description"),
           action: (
-            <Button size="sm" variant="outline" onClick={() => void loadAll()}>
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={recheckDrawerBusy}
+              onClick={() => void runRecheckDrawer(() => loadAll())}
+            >
+              {recheckDrawerBusy ? <Loader2 className="animate-spin" /> : <RefreshCw />}
               {t("trae.page.accounts.emptyRecheck")}
             </Button>
           ),
@@ -2282,7 +2298,7 @@ function EmptyTraeCard({
    */
   dataDir: string | null;
   dataDirExists: boolean;
-  onRecheck: () => void;
+  onRecheck: () => void | Promise<void>;
   onImport: () => void;
   onOAuth: () => void;
   onLaunch: () => void;
@@ -2290,6 +2306,8 @@ function EmptyTraeCard({
   launching: boolean;
 }) {
   const t = useT();
+  /** 「重新检测」的进行中态（最小展示 500ms，本地探测快于 500ms 时也能看见转圈）。 */
+  const { busy, run } = useRefreshAction();
   return (
     <Card className="gap-0 py-0">
       <div className="flex items-start gap-3 px-5 py-5">
@@ -2331,8 +2349,13 @@ function EmptyTraeCard({
               {launching ? <Loader2 className="animate-spin" /> : <Rocket />}
               {t("trae.page.accounts.emptyLaunchClient")}
             </Button>
-            <Button size="sm" variant="outline" onClick={onRecheck}>
-              <RefreshCw />
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={busy}
+              onClick={() => void run(() => onRecheck())}
+            >
+              {busy ? <Loader2 className="animate-spin" /> : <RefreshCw />}
               {t("trae.page.accounts.emptyRecheck")}
             </Button>
             <Button

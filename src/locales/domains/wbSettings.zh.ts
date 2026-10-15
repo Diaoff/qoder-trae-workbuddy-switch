@@ -84,6 +84,12 @@ export const zh = {
     "给客户端装 hook，把会话状态显示在悬浮窗里。会修改客户端的 settings.json（可一键还原），默认关闭。",
   "wbSettings.agentWatch.slot.workbuddy-cn": "WorkBuddy（国内版）",
   "wbSettings.agentWatch.slot.workbuddy-global": "WorkBuddy（国际版）",
+  // CLI 系客户端（槽位在家目录，见 client_settings 的 HOOK_FILE_SLOTS）。
+  "wbSettings.agentWatch.slot.claude": "Claude Code",
+  "wbSettings.agentWatch.slot.codebuddy": "CodeBuddy",
+  // Trae 的 **hooks 文件**（`~/.trae-cn/hooks.json` / `~/.trae/hooks.json`，按区域分家）。
+  "wbSettings.agentWatch.slot.trae-hooks-cn": "Trae（国内版）",
+  "wbSettings.agentWatch.slot.trae-hooks-global": "Trae（国际版）",
   "wbSettings.agentWatch.state.running": "客户端运行中，请先退出再开启",
   "wbSettings.agentWatch.state.installed": "已装 {count} 条",
   "wbSettings.agentWatch.state.off": "未开启",

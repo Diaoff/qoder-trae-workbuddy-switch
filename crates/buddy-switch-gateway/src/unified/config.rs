@@ -88,8 +88,8 @@ impl Default for UnifiedGatewayConfig {
             prompt_file: None,
             sticky_ttl_ms: DEFAULT_STICKY_TTL_MS,
             max_body_mb: DEFAULT_MAX_BODY_MB,
-            // ★ 默认启用集由命名空间表给出（派生层 4 条），**不在这里抄字面量** ——
-            //   新增平台时默认集自动跟着走。
+            // ★ 默认启用集由命名空间表给出（派生层 = `Scope::all()` 的每一条，
+            //   当前 6 条），**不在这里抄字面量** —— 新增平台时默认集自动跟着走。
             namespaces: gateway_namespace::default_specs()
                 .map(|spec| spec.id.to_string())
                 .collect(),
@@ -260,14 +260,20 @@ mod tests {
         assert_eq!(config.namespaces, default.namespaces);
     }
 
-    /// 默认启用集 **= 派生层那 4 条**（不硬编码字面量，避免与表漂移）。
+    /// 默认启用集 **= 派生层全部条目**（不硬编码字面量，避免与表漂移）。
+    ///
+    /// ★ 2026-10-15：Qoder 加入派生层 ⇒ 4 → **6 条**（3 平台 × 2 区域）。
     #[test]
     fn default_namespaces_are_the_derived_layer() {
         let config = UnifiedGatewayConfig::default();
         let ids: Vec<&str> = config.namespaces.iter().map(|s| s.as_str()).collect();
         let expected: Vec<&str> = gateway_namespace::default_specs().map(|s| s.id).collect();
         assert_eq!(ids, expected);
-        assert_eq!(ids.len(), 4);
+        assert_eq!(ids.len(), 6, "派生层 = 3 平台 × 2 区域（Qoder 于 2026-10-15 加入）");
+        assert!(
+            ids.contains(&"qoder-cn") && ids.contains(&"qoder-global"),
+            "Qoder 两条必须在默认启用集里"
+        );
         // 扩展层默认**不在**启用集里（老程序线的客户端已被合并版取代 ⇒ 会「假可用」）
         assert!(!ids.contains(&"traework-cn"));
         assert!(!ids.contains(&"traecode-global"));
@@ -289,7 +295,7 @@ mod tests {
         let mut config = UnifiedGatewayConfig::default();
         config.namespaces.clear();
         let ids: Vec<&str> = config.enabled_namespaces().iter().map(|s| s.id).collect();
-        assert_eq!(ids.len(), 4, "空列表必须回落默认集，不能变成死入口");
+        assert_eq!(ids.len(), 6, "空列表必须回落默认集，不能变成死入口");
     }
 
     /// 未在册的 id **在保存时报错**，并给出在册清单（用户一次就能改对）。

@@ -123,6 +123,8 @@ export const zh = {
   "shared.gateway.pool.tile.disabled": "会话失效",
   "shared.gateway.pool.tile.expired": "积分过期",
   "shared.gateway.pool.tile.zeroCredits": "零积分",
+  // Qoder 独有的一格：上游 429 按**模型**报 ⇒ 账号本身可用、但有模型级冷却。
+  "shared.gateway.pool.tile.modelCooling": "模型冷却",
   "shared.gateway.pool.empty": "账号池为空。请先在「账号管理」中添加账号。",
   "shared.gateway.pool.credits": "{credits} 积分",
   "shared.gateway.pool.diagnoseNote": "请求报「没有可用账号」时，按下面的原因逐条排查：",
@@ -184,9 +186,18 @@ export const zh = {
   "shared.companion.state.done": "已完成",
   "shared.companion.state.failed": "失败",
   // 来源 id → 展示名（id 是**后端数据**，见 companion-row 的 SOURCE_LABEL_KEY）。
+  // ★ 必须覆盖 `agent_watch::HOOK_SOURCES` 的每一项，门禁 `check-agent-sources.cjs` 会校验。
   "shared.companion.source.workbuddyCn": "WorkBuddy 国内版",
   "shared.companion.source.workbuddyGlobal": "WorkBuddy 国际版",
+  "shared.companion.source.claude": "Claude Code",
+  "shared.companion.source.codebuddy": "CodeBuddy",
   "shared.companion.source.codex": "Codex",
+  "shared.companion.source.traeCn": "Trae 国内版",
+  "shared.companion.source.traeGlobal": "Trae 国际版",
+  "shared.companion.source.qoderCn": "Qoder 国内版",
+  "shared.companion.source.qoderGlobal": "Qoder 国际版",
+  // 本工具自己的长操作（签到等，`agent_watch::SOURCE_THIS_TOOL`）—— 与客户端来源分开。
+  "shared.companion.source.thisTool": "本工具",
   // 会话没有标题时的兜底（客户端只在部分事件里带标题，空标题是常态）。
   "shared.companion.untitled": "未命名会话",
   // ★ 无障碍描述：**脱敏**——只报来源 / 状态 / 时间，**不含标题**
@@ -349,6 +360,26 @@ export const zh = {
   "shared.demo.cap.projectDimensionReason": "网关日志的 project_id / session_id 是每请求新生成的 uuid，不对应客户端项目",
   "shared.demo.cap.sessionCost": "调用最贵的会话",
   "shared.demo.cap.sessionCostReason": "无稳定会话标识，无法把多次请求归并成一个会话成本",
+  // ---- Qoder：演示账号（只读两条；名字是**数据**，中英同形） ----
+  "shared.demo.qoder.name.jackey": "jackey",
+  "shared.demo.qoder.name.team": "team-qoder",
+  "shared.demo.qoder.name.intl": "jackey-global",
+  "shared.demo.qoder.name.trial": "trial-01",
+  "shared.demo.qoder.remark.main": "主号 · 长期",
+  "shared.demo.qoder.remark.team": "团队共用",
+  "shared.demo.qoder.remark.intl": "国际版主号",
+  // ---- Qoder：网关演示（池状态原因 / 清单来源 / 日志错误 / Key 名） ----
+  // 原因文案与真机同义（真机的两处分别来自 `apply_error` 与 `unusable_reason`）。
+  "shared.demo.qoder.gateway.reasonSessionDead": "凭据失效（需刷新令牌）",
+  "shared.demo.qoder.gateway.reasonCooling": "上游暂时不可用（冷却中）",
+  "shared.demo.qoder.gateway.catalogCached": "本次探测超时（8s），使用上次成功的结果",
+  "shared.demo.qoder.gateway.modelRateLimited": "模型「MiniMax-M3」触及频率上限，已切到其它模型",
+  "shared.demo.qoder.key.defaultCn": "Qoder 默认 Key",
+  "shared.demo.qoder.key.cliCn": "Qoder CLI",
+  "shared.demo.qoder.key.global": "Qoder 国际版 Key",
+  // 凭据摘要的**格式**与 core `CredentialShape::describe` 逐字一致（演示站与真机同形）。
+  "shared.demo.qoder.cred.device": "访问令牌(device_access) · 刷新令牌(device_refresh)",
+  "shared.demo.qoder.cred.deviceOnly": "访问令牌(device_access) · 无刷新令牌",
   // ---- 演示模式的写操作应答（DemoAction 拦截后仍要给出「像真的」的回执） ----
   "shared.demo.switchDone": "演示切换已完成",
   "shared.demo.updateTitle": "更新提示演示",

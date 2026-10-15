@@ -11,22 +11,127 @@
  *
  * recharts 的 `dataKey` 是**点分路径**：模型名 `gpt-4.1` 里的 `.` 会被当成嵌套字段
  * ⇒ 取值失败、柱子全空。故先映射成安全键 `m{index}`，模型名只放进 `config.label`。
+ *
+ * ## 为什么自带 shape 而不是直接给 `<Bar>` 描边
+ *
+ * 纵轴是**线性**的，且被单日峰值撑满（实测某日 603.1B ⇒ 轴上限 800B、每像素 ≈ 4.7B）。
+ * 于是「10B 的一天」只有约 2px，而「0.5B 的一天」不足 0.2px —— 在浏览器里**一个像素
+ * 都不产生**。叠加原实现给每根柱子加的 `stroke="var(--background)" strokeWidth={2}`
+ * （背景色描边，视觉上用来分隔堆叠段），任何 **≤ 2px 的柱子都会被自己的描边整根涂掉**：
+ * 实测「23 个有量的日列里只有 6 个画出了像素」，用户看到的就是「后面明明有量却没有柱子」。
+ *
+ * 修法两条，都落在 {@link visibleBar} 里：
+ * 1. **矮柱不描边** —— 高度不足 {@link BAR_STROKE_MIN_PX} 的分段一律不描边，
+ *    否则描边会把填充盖掉；够高的分段保持原样式（堆叠段之间的分隔线不变）。
+ * 2. **每列保底高度** —— 见 {@link MIN_VISIBLE_BAR_PX}，保证「有量必有柱」。
  */
 
-import { useMemo } from "react";
-import { Bar, BarChart, CartesianGrid, XAxis, YAxis } from "recharts";
+import { useMemo, type ReactElement } from "react";
+import { Bar, BarChart, CartesianGrid, Rectangle, XAxis, YAxis } from "recharts";
 
 import { ChartContainer, ChartTooltip, ChartTooltipContent, type ChartConfig } from "@/components/ui/chart";
 import { useT } from "@/lib/i18n";
-import { TOTAL_SEGMENT, type DailyModelColumn } from "@/lib/usage-charts";
+import { GATEWAY_SEGMENT, TOTAL_SEGMENT, type DailyModelColumn } from "@/lib/usage-charts";
 
 import { compactTokens } from "./format";
 import { seriesColor } from "./palette";
 
+/**
+ * 有量的日列**最小可见高度**（px）。
+ *
+ * ## 为什么必须有
+ *
+ * 轴被单日峰值撑满时（实测 800B / 约 171px ⇒ 每像素 ≈ 4.7B），0.5B ~ 1B 的一天
+ * 只有 0.1 ~ 0.2px —— **不产生任何可见像素**。没有保底，用户看到的就是
+ * 「这些天没有数据」，而这与事实相反（「图不能撒谎」红线）。
+ *
+ * ## 为什么只抬「每列最上面那一段」
+ *
+ * 抬高度就是**轻微失真**，所以要把失真压到最小：只保证**整列**至少
+ * `MIN_VISIBLE_BAR_PX` 高，而不是每个分段都保底。后者在「7 个模型都很小」的一天
+ * 会把 1px 的一天画成 14px（放大一个数量级）。逐列保底时失真上界是
+ * **每列 2px**，且只对本来就不足 2px 的列生效。
+ *
+ * ## 为什么不用 recharts 的 `minPointSize`
+ *
+ * 它**逐段**生效，且**数字型**对 `value` 为 0 的分段同样返回保底值。实测：
+ * `minPointSize={2}` 下 30 天 × 7 模型 = **210 根柱子**（连「当天零用量」的
+ * 10/02 也被画出 2px 的假柱）—— 那是编造数据，直接违反「图不能撒谎」。
+ * 实测数据见 `logs/_v-numeric-min.json`（DOM 列数 30）对
+ * `logs/_v-shape-min2.json`（DOM 列数 23）。
+ */
+const MIN_VISIBLE_BAR_PX = 2;
+
+/**
+ * 低于此高度的分段**不描边**（px）。
+ *
+ * 描边是 2px 宽、颜色等于背景色，画在填充之上 ⇒ 高度 ≤ 2px 的柱子会被完全涂掉。
+ * 取 6 是为了给「上下各 1px 描边」留出至少 4px 的可见填充。
+ */
+const BAR_STROKE_MIN_PX = 6;
+
+/** recharts 传给 `Bar.shape` 的入参（只列用到的字段）。 */
+interface BarShapeProps {
+  x?: number | string;
+  y?: number | string;
+  width?: number | string;
+  height?: number | string;
+  radius?: number | [number, number, number, number];
+  fill?: string;
+  /** 类别下标（= 日列下标），由 recharts 在 `renderRectanglesStatically` 注入。 */
+  index?: number;
+}
+
+/**
+ * 渲染一个堆叠分段：**零值不画**，非零且为「本列最高段」时保底 {@link MIN_VISIBLE_BAR_PX}。
+ *
+ * `topKeyByColumn` 由本组件按 `rows` 算出（每列最后一个值 > 0 的系列键）。
+ */
+function visibleBar(
+  props: BarShapeProps,
+  seriesKey: string,
+  topKeyByColumn: (string | null)[],
+): ReactElement | null {
+  const height = Number(props.height ?? 0);
+  // 真·零值：不画。这里必须返回 null —— 给 0 值一个保底高度就是编造柱子。
+  if (!(height > 0)) return null;
+
+  const columnIndex = Number(props.index ?? -1);
+  const lifted =
+    topKeyByColumn[columnIndex] === seriesKey ? Math.max(height, MIN_VISIBLE_BAR_PX) : height;
+  const outlined = lifted >= BAR_STROKE_MIN_PX;
+
+  return (
+    <Rectangle
+      x={Number(props.x ?? 0)}
+      // 向上补齐：底边仍贴住堆叠基座，不改变分段在栈里的相对位置。
+      y={Number(props.y ?? 0) + height - lifted}
+      width={Number(props.width ?? 0)}
+      height={lifted}
+      radius={props.radius}
+      fill={props.fill}
+      stroke={outlined ? "var(--background)" : "none"}
+      strokeWidth={outlined ? 2 : 0}
+    />
+  );
+}
+
+/**
+ * 把 {@link visibleBar} 适配成 recharts `Bar.shape` 需要的签名。
+ *
+ * recharts 的类型是 `(props: unknown) => JSX.Element`，**不接受 `null`**；但 React 运行时
+ * 支持返回 `null`，而「零值分段不画节点」正是本组件要的语义 ⇒ 在边界处做一次显式收窄，
+ * 而不是为了迁就类型去渲染一堆空 `<g>`（30 天 × 7 模型 = 210 个）。
+ */
+function barShape(seriesKey: string, topKeyByColumn: (string | null)[]) {
+  return ((props: unknown) =>
+    visibleBar(props as BarShapeProps, seriesKey, topKeyByColumn)) as (props: unknown) => ReactElement;
+}
+
 export function StackedDailyBar({ columns }: { columns: DailyModelColumn[] }) {
   const t = useT();
 
-  const { rows, series, config } = useMemo(() => {
+  const { rows, series, config, topKeyByColumn } = useMemo(() => {
     const names: string[] = [];
     for (const column of columns) {
       for (const segment of column.segments) {
@@ -46,14 +151,30 @@ export function StackedDailyBar({ columns }: { columns: DailyModelColumn[] }) {
       return row;
     });
 
+    // 每列「最上面那一段」的系列键 —— 只有它需要保底高度（见 MIN_VISIBLE_BAR_PX）。
+    const topKeyByColumn = rows.map((row) => {
+      let top: string | null = null;
+      for (const item of series) {
+        if (Number(row[item.key]) > 0) top = item.key;
+      }
+      return top;
+    });
+
     const config: ChartConfig = {};
     for (const item of series) {
       config[item.key] = {
-        label: item.name === TOTAL_SEGMENT ? t("wbStats.usage.trend.totalSegment") : item.name,
+        // 两个哨兵名由渲染层翻译：`__total__`（无模型明细时的合计段）与
+        // `__gateway__`（网关逐日图的单段）——其余名字是模型 id，原样进 legend。
+        label:
+          item.name === TOTAL_SEGMENT
+            ? t("wbStats.usage.trend.totalSegment")
+            : item.name === GATEWAY_SEGMENT
+              ? t("wbStats.usage.trend.gatewaySegment")
+              : item.name,
         color: item.color,
       };
     }
-    return { rows, series, config };
+    return { rows, series, config, topKeyByColumn };
   }, [columns, t]);
 
   if (columns.length === 0 || series.length === 0) return null;
@@ -75,11 +196,11 @@ export function StackedDailyBar({ columns }: { columns: DailyModelColumn[] }) {
               dataKey={item.key}
               stackId="tokens"
               fill={`var(--color-${item.key})`}
-              stroke="var(--background)"
-              strokeWidth={2}
               maxBarSize={28}
               radius={index === series.length - 1 ? [4, 4, 0, 0] : 0}
               isAnimationActive={false}
+              // 描边与否由 visibleBar 逐段决定（矮柱描边会被自己涂掉），故不在此处设 stroke。
+              shape={barShape(item.key, topKeyByColumn)}
             />
           ))}
         </BarChart>

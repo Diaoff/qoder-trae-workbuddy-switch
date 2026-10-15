@@ -48,6 +48,7 @@ import type { TraeGatewayConfig, TraeGatewayLogEntry, TraeGatewayStatus, TraeMod
 import { traeRegionOf } from "@/lib/trae-types";
 import { cn } from "@/lib/utils";
 import { useCachedResource } from "@/lib/use-cached-resource";
+import { useRefreshAction } from "@/lib/use-refresh-action";
 import { useTraeVariant } from "@/lib/use-trae-variant";
 
 const LOOPBACK = "127.0.0.1";
@@ -135,6 +136,11 @@ export default function TraeApiServicePage() {
   const [revivingUid, setRevivingUid] = useState<string | null>(null);
   /** 模型清单「重新读取」的进行中状态（只驱动按钮的转圈，不参与快照）。 */
   const [refreshingModels, setRefreshingModels] = useState(false);
+  /* 快照刷新两处入口（错误 Alert 重试 / 概览刷新）各自的进行中态：`void loadAll()` 是
+     fire-and-forget —— `loading` 在「有旧值」时恒为 false，只有本 hook 才给得出点击反馈。
+     与 WorkBuddy 的 `ApiServicePage` **同一做法**（两处入口各一个 hook，互不串转圈）。 */
+  const { busy: retryBusy, run: runRetry } = useRefreshAction();
+  const { busy: refreshBusy, run: runRefresh } = useRefreshAction();
   /* ★ 子导航选中项：**初值从 URL 读**（`?sub=logs`），非法值 fail-closed 回 `overview`
      （与设置页 `?section=`、WB 网关页同一口径）。
      ⚠️ 原实现只**读**不**写** —— 注释承诺了「同一口径」，但点击子导航后 URL 不变，
@@ -409,8 +415,8 @@ export default function TraeApiServicePage() {
           <AlertDescription className="flex flex-col gap-3">
             <span>{error}</span>
             <div>
-              <Button variant="outline" size="sm" onClick={() => void loadAll()}>
-                <RefreshCw />
+              <Button variant="outline" size="sm" disabled={retryBusy} onClick={() => void runRetry(() => loadAll())}>
+                {retryBusy ? <Loader2 className="animate-spin" /> : <RefreshCw />}
                 {t("trae.stats.api.retry")}
               </Button>
             </div>
@@ -454,8 +460,13 @@ export default function TraeApiServicePage() {
                       />
                     </DemoAction>
                     <DemoAction>
-                      <Button variant="outline" size="sm" onClick={() => void loadAll()}>
-                        <RefreshCw />
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        disabled={refreshBusy}
+                        onClick={() => void runRefresh(() => loadAll())}
+                      >
+                        {refreshBusy ? <Loader2 className="animate-spin" /> : <RefreshCw />}
                         {t("trae.stats.api.refresh")}
                       </Button>
                     </DemoAction>
@@ -618,7 +629,7 @@ export default function TraeApiServicePage() {
               region={traeRegionOf(variant)}
               defaultModel={config.defaultModel}
               refreshing={refreshingModels}
-              onRefresh={() => void onRefreshModels()}
+              onRefresh={() => onRefreshModels()}
             />
           )}
 

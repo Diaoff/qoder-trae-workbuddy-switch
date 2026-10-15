@@ -1,5 +1,5 @@
 /**
- * 账号工作台（**两平台共用容器**）。
+ * 账号工作台（**三平台共用容器**：WorkBuddy / Trae / Qoder）。
  *
  * ## 为什么要有这个组件
  *
@@ -114,12 +114,21 @@ export interface AccountWorkbenchProps<T> {
   /* ────────── 结果条与批量条 ────────── */
   /** 批量签到结果（`failedNames` 由页面按各自 id 字段装配好）。 */
   checkinResult?: { okCount: number; failedNames: string[]; onRetry?: () => void } | null;
-  onDismissCheckinResult: () => void;
+  /** 结果条「知道了」的回执（只在有结果条时用得到；不传 = 不渲染结果条也就无所谓）。 */
+  onDismissCheckinResult?: () => void;
+  /**
+   * 批量动作 —— **与 `AccountBatchBar` 同为可选**（缺哪个就不渲染哪个）。
+   *
+   * ⚠️ 2026-10-15：此前这里把 `onCheckin` / `onRefresh` 写成必填，与批量条自己的
+   * 契约（「平台能力不同，缺哪个就不渲染哪个」）相矛盾 —— 逼第三个平台
+   * （Qoder 只有删除）为不存在的动作造一个空函数，而空函数**点下去什么都不会发生**，
+   * 正是「假控件」。改为可选后，Qoder 只传 `onDelete`，其余按钮自动消失。
+   */
   batch: {
     selectedCount: number;
     busy: boolean;
-    onCheckin: () => void;
-    onRefresh: () => void;
+    onCheckin?: () => void;
+    onRefresh?: () => void;
     onExport?: () => void;
     onDelete: () => void;
     onClear: () => void;
@@ -248,7 +257,7 @@ export function AccountWorkbench<T>({
             okCount={checkinResult.okCount}
             failedNames={checkinResult.failedNames}
             onRetry={checkinResult.onRetry}
-            onDismiss={onDismissCheckinResult}
+            onDismiss={onDismissCheckinResult ?? (() => undefined)}
           />
         ) : null}
 

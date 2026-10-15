@@ -48,8 +48,67 @@ pub const SOURCE_WORKBUDDY_CN: &str = "workbuddy-cn";
 /// 与国内版**分家**：两边是两个独立的客户端、两套 `settings.json`，
 /// 用户可能同时开着 —— 混在一个 source 下就分不清哪条会话来自哪个版本。
 pub const SOURCE_WORKBUDDY_GLOBAL: &str = "workbuddy-global";
+/// Claude Code 来源 id（`~/.claude/settings.json` 的 command hooks）。
+pub const SOURCE_CLAUDE: &str = "claude";
+/// CodeBuddy CLI 来源 id（`~/.codebuddy/settings.json` 的 command hooks）。
+pub const SOURCE_CODEBUDDY: &str = "codebuddy";
 /// Codex 来源 id。
+///
+/// ⚠️ **只作来源，不作安装目标**：本仓对它的 hook 配置**路径与 schema 未取证**
+/// （本机未安装、只有二手文档），写错形态会污染用户配置。等取证后再接安装面。
 pub const SOURCE_CODEX: &str = "codex";
+/// Trae **国内版**来源 id。
+///
+/// ⚠️ 同 [`SOURCE_CODEX`]：Trae 的 hook 是**文件式**（`hooks.json`），
+/// 其**事件名与 handler 结构未取证** ⇒ 只作来源，不写它的配置。
+pub const SOURCE_TRAE_CN: &str = "trae-cn";
+/// Trae **国际版**来源 id。
+pub const SOURCE_TRAE_GLOBAL: &str = "trae-global";
+/// Qoder **国内版**来源 id。
+///
+/// ⚠️ **本仓对 Qoder 是否有 hooks 机制没有任何取证** ⇒ 只作来源。
+pub const SOURCE_QODER_CN: &str = "qoder-cn";
+/// Qoder **国际版**来源 id。
+pub const SOURCE_QODER_GLOBAL: &str = "qoder-global";
+
+/// **全部可作为 hook 来源**的客户端 id —— **唯一事实来源**。
+///
+/// ## 它为什么必须是一张表
+///
+/// 来源 id 出现在**四处**：① hook 命令的 `--source` 白名单（[`canonical_source`]）；
+/// ② 客户端配置里的命令串；③ payload 里的 `agent_source`；④ 前端展示名映射
+/// （`companion-row.tsx` 的 `SOURCE_LABEL_KEY` + `shared.companion.source.*` 词条）。
+/// 四处散着写 ⇒ 加一个客户端时**必然漏一处**，而漏掉的症状是**静默的**：
+/// 新来源被回落成 WorkBuddy（见 [`canonical_source`] 的调用方），窗口里显示成别人的会话。
+/// 故收敛成一张表，并用门禁 `scripts/check-agent-sources.cjs` 钉住 ①↔④ 一致。
+///
+/// ⚠️ 加一个来源时**同时**要改：本表 + 前端 `SOURCE_LABEL_KEY` + zh/en 两套词条。
+pub const HOOK_SOURCES: &[&str] = &[
+    SOURCE_WORKBUDDY_CN,
+    SOURCE_WORKBUDDY_GLOBAL,
+    SOURCE_CLAUDE,
+    SOURCE_CODEBUDDY,
+    SOURCE_CODEX,
+    SOURCE_TRAE_CN,
+    SOURCE_TRAE_GLOBAL,
+    SOURCE_QODER_CN,
+    SOURCE_QODER_GLOBAL,
+];
+
+/// 把任意串**收敛成登记在册的来源 id**；不在表里 ⇒ `None`。
+///
+/// ## 为什么是「整段精确匹配」
+///
+/// 与统一网关命名空间同一条纪律：**禁前缀 / 禁 `contains` 兜底**。
+/// 带兜底的实现会把 `codex-desktop` 认成 `codex`、把 `trae-cn-x` 认成 `trae-cn` ——
+/// 那等于让一个谁都不认识的来源**冒充**成某个真实客户端，比拒绝更难查。
+pub fn canonical_source(raw: &str) -> Option<&'static str> {
+    let raw = raw.trim();
+    if raw.is_empty() {
+        return None;
+    }
+    HOOK_SOURCES.iter().copied().find(|id| *id == raw)
+}
 
 /// **已终态**的会话在窗口里保留多久（惰性过期）。
 ///
@@ -1078,6 +1137,78 @@ mod tests {
         assert!(!watch.ingest(local_event("checkin", "重复完成", CompanionState::Done, 1_300)));
         assert!(watch.ingest(local_event("checkin", "第二轮", CompanionState::Running, 1_400)));
         assert_eq!(watch.operations(1_400)[0].state, CompanionState::Running);
+    }
+
+    /// ★ 来源注册表：**每个常量都在表里、且表里没有重复**。
+    ///
+    /// 可证伪性：往 [`HOOK_SOURCES`] 里塞一个重复项 / 删掉一条 ⇒ 变红。
+    /// 这条钉的是「加客户端时忘了进表」——那会让新来源在 `--source` 白名单里被拒，
+    /// 症状是**静默回落成 WorkBuddy**（见 [`canonical_source`] 的调用方）。
+    #[test]
+    fn hook_sources_cover_every_constant_without_duplicates() {
+        for constant in [
+            SOURCE_WORKBUDDY_CN,
+            SOURCE_WORKBUDDY_GLOBAL,
+            SOURCE_CLAUDE,
+            SOURCE_CODEBUDDY,
+            SOURCE_CODEX,
+            SOURCE_TRAE_CN,
+            SOURCE_TRAE_GLOBAL,
+            SOURCE_QODER_CN,
+            SOURCE_QODER_GLOBAL,
+        ] {
+            assert!(
+                HOOK_SOURCES.contains(&constant),
+                "来源常量 {constant} 不在 HOOK_SOURCES 表里 —— 它会被 --source 白名单拒掉"
+            );
+        }
+        let mut sorted = HOOK_SOURCES.to_vec();
+        sorted.sort_unstable();
+        sorted.dedup();
+        assert_eq!(sorted.len(), HOOK_SOURCES.len(), "来源表里有重复项：{HOOK_SOURCES:?}");
+    }
+
+    /// ★ 来源 id **不带空格**（它会被嵌进客户端配置的命令串，带空格会被按空格拆开）。
+    #[test]
+    fn hook_source_ids_are_shell_safe() {
+        for id in HOOK_SOURCES {
+            assert!(!id.contains(char::is_whitespace), "来源 id 不得含空白：{id:?}");
+            assert_eq!(id.trim(), *id, "来源 id 不得有首尾空白：{id:?}");
+        }
+    }
+
+    /// ★ **整段精确匹配**：前缀 / 后缀 / 含子串的形态一律不认。
+    ///
+    /// 可证伪性：把 `canonical_source` 换成 `HOOK_SOURCES.iter().find(|id| raw.contains(**id))`
+    /// ⇒ 下面每一条「必须 None」的断言变红（`trae-cn-x` 会被认成 `trae-cn`）。
+    #[test]
+    fn canonical_source_is_exact_match_only() {
+        for id in HOOK_SOURCES {
+            assert_eq!(canonical_source(id), Some(*id), "表内 id 必须自认：{id}");
+        }
+        // ⚠️ 输入里必须含「比基准长一截」的形状，否则前缀实现与精确实现在现有输入集上**等价**
+        //    （本仓的既有教训：断言会恒绿）。
+        for unknown in [
+            "codex-desktop",
+            "trae-cn-x",
+            "wb-cn-x",
+            "claude-code",
+            "qoder-cn-cli",
+            "codebuddy-ide",
+            "trae",
+            "qoder",
+            "",
+            "   ",
+        ] {
+            assert_eq!(canonical_source(unknown), None, "{unknown:?} 不该被认成任何来源");
+        }
+    }
+
+    /// 首尾空白可容错（hook 命令的参数可能被加引号），中间空白不行。
+    #[test]
+    fn canonical_source_trims_outer_whitespace_only() {
+        assert_eq!(canonical_source("  trae-cn  "), Some(SOURCE_TRAE_CN));
+        assert_eq!(canonical_source("trae cn"), None);
     }
 
     /// 四态 → hook 种类的映射，以及**往返一致**（写进去什么状态，读出来还是那个状态）。

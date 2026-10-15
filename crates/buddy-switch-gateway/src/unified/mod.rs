@@ -300,8 +300,8 @@ mod tests {
         assert_eq!(body["running"], true);
         assert_eq!(
             body["namespaces"].as_array().unwrap().len(),
-            4,
-            "默认启用集应是派生层 4 条"
+            6,
+            "默认启用集应是派生层 6 条（3 平台 × 2 区域）"
         );
         std::fs::remove_dir_all(dir).unwrap();
     }

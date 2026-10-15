@@ -33,7 +33,7 @@
  */
 
 import { lazy, Suspense, useState, type ElementType } from "react";
-import { RefreshCw } from "lucide-react";
+import { Loader2, RefreshCw } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { useLocation } from "react-router-dom";
@@ -45,9 +45,10 @@ import { ViewParamBar } from "@/components/usage/view-param-bar";
 import { useT } from "@/lib/i18n";
 import { type Product, platformOfPath } from "@/lib/platforms/registry";
 import { scopeOf } from "@/lib/scope";
+import { useRefreshAction } from "@/lib/use-refresh-action";
 import { useScope } from "@/lib/use-scope";
 import { readPreferredCombineAll } from "@/lib/usage-params";
-import type { UsageRange } from "@/lib/usage-charts";
+import { DEFAULT_USAGE_WINDOW, type UsageWindow } from "@/lib/usage-window";
 import type { TranslationKey } from "@/locales/zh";
 
 /* 四个页面**各自 lazy**（见文件头注释）。 */
@@ -55,6 +56,7 @@ const TokenStatsPage = lazy(() => import("@/pages/TokenStatsPage"));
 const CreditStatsPage = lazy(() => import("@/pages/CreditStatsPage"));
 const TraeTokenStatsPage = lazy(() => import("@/pages/TraeTokenStatsPage"));
 const TraeCreditsPage = lazy(() => import("@/pages/TraeCreditsPage"));
+const QoderUsagePending = lazy(() => import("@/pages/QoderUsagePending"));
 
 /** 一级四视图（与原型 `tabs` 一一对应）。 */
 export type UsageTab = "trend" | "models" | "sessions" | "credits";
@@ -82,6 +84,10 @@ const TAB_LABEL: Record<UsageTab, TranslationKey> = {
 const PLATFORM_TABS: Record<Product, UsageTab[]> = {
   workbuddy: ["trend", "models", "sessions", "credits"],
   trae: ["trend", "models", "credits"],
+  /* ⚠️ Qoder **只开「趋势」**：模型 / 积分两个视图的数据源是网关日志与本地积分缓存，
+     两者都还没落地 ⇒ 缺数据源就**不画空壳**（同 Trae 不渲染「会话」的判据）。
+     等网关把请求日志与额度缓存落盘后，这里按**数据**补齐（不是按习惯）。 */
+  qoder: ["trend"],
 };
 
 /** 平台 → 子页面（Token 页 / 积分页）。 */
@@ -95,6 +101,9 @@ const USAGE_PAGES: Record<
      而不是「现在恰好都为 true」就可以删掉的巧合。 */
   workbuddy: { tokens: TokenStatsPage, credits: CreditStatsPage, tokenViews: true },
   trae: { tokens: TraeTokenStatsPage, credits: TraeCreditsPage, tokenViews: true },
+  /* Qoder：Token 台账尚未落地 ⇒ 两个子页都是同一张「尚未接入」的说明页。
+     `tokenViews: false` 因为它不消费 `view` 参数（没有视图可切）。 */
+  qoder: { tokens: QoderUsagePending, credits: QoderUsagePending, tokenViews: false },
 };
 
 export default function UsagePage({ defaultTab = "trend" }: { defaultTab?: UsageTab } = {}) {
@@ -110,15 +119,18 @@ export default function UsagePage({ defaultTab = "trend" }: { defaultTab?: Usage
   const active = tabs.includes(tab) ? tab : tabs[0];
 
   /**
-   * ★ **页面级**视图参数（原型 `state.range` / `state.merge`）。
+   * ★ **页面级**视图参数（原型 `state.range` / `state.rangeMode` / `state.merge`）。
    *
    * 放在这里而不是各视图页里，是为了「切子 Tab 不重置」这条原型交互 ——
    * 也是「一条参数条」的实现前提（放在子页里就必然变成四条）。
    *
+   * ⚠️ 局部变量**不叫 `window`**：那会屏蔽全局 `window`（`localStorage`、事件、
+   * 未来任何一处 `window.*` 都会静默指向这个对象，`tsc` 也不报错）。
+   *
    * `combineAll` 的初始值读**历史偏好键**（`readPreferredCombineAll`，只读不回写）：
    * 老用户存过 `all` 时不该被静默重置成「仅本作用域」。
    */
-  const [range, setRange] = useState<UsageRange>(30);
+  const [viewWindow, setViewWindow] = useState<UsageWindow>(DEFAULT_USAGE_WINDOW);
   const [combineAll, setCombineAll] = useState(() => readPreferredCombineAll());
 
   const { tokens: TokenPage, credits: CreditPage, tokenViews } = USAGE_PAGES[product];
@@ -126,9 +138,16 @@ export default function UsagePage({ defaultTab = "trend" }: { defaultTab?: Usage
      ⚠️ 不做「全局刷新信号」：四个视图数据源不同，重挂当前视图是唯一不会
      让「另一个视图的空请求」也一起打的方案。 */
   const [reloadKey, setReloadKey] = useState(0);
+  /* 页头刷新的**进行中态**：动作本身只是重挂当前视图（`setReloadKey`），
+     真正的取数由子页面自身呈现 —— 按钮侧给「至少 500ms」的吸底反馈即可。 */
+  const { busy, run } = useRefreshAction();
 
   /** 四个视图页共用的受控 props（骨架相同、数据不同）。 */
-  const viewProps = { range, combineAll, onRangeChange: setRange };
+  const viewProps = {
+    viewWindow,
+    combineAll,
+    onViewWindowChange: setViewWindow,
+  };
 
   return (
     <div className="mx-auto flex w-full max-w-[1240px] min-w-0 flex-col px-7 pt-[26px] pb-[60px]">
@@ -146,9 +165,10 @@ export default function UsagePage({ defaultTab = "trend" }: { defaultTab?: Usage
           className="shrink-0"
           variant="outline"
           size="default"
-          onClick={() => setReloadKey((value) => value + 1)}
+          disabled={busy}
+          onClick={() => void run(() => setReloadKey((value) => value + 1))}
         >
-          <RefreshCw />
+          {busy ? <Loader2 className="animate-spin" /> : <RefreshCw />}
           {t("wbStats.token.refresh")}
         </Button>
         <ScopeChip scope={scope} />
@@ -168,8 +188,8 @@ export default function UsagePage({ defaultTab = "trend" }: { defaultTab?: Usage
 
       {/* ★ 视图参数条：**整页唯一一条**，四个视图共用（含 Trae）。 */}
       <ViewParamBar
-        range={range}
-        onRangeChange={setRange}
+        viewWindow={viewWindow}
+        onViewWindowChange={setViewWindow}
         combineAll={combineAll}
         onCombineAllChange={setCombineAll}
       />

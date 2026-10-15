@@ -9,6 +9,8 @@ import { en as skillManager } from "./domains/skillManager.en";
 import { en as traeComponents } from "./domains/traeComponents.en";
 import { en as traeGateway } from "./domains/traeGateway.en";
 import { en as traePages } from "./domains/traePages.en";
+import { en as qoderPages } from "./domains/qoderPages.en";
+import { en as qoderGateway } from "./domains/qoderGateway.en";
 import { en as traeStats } from "./domains/traeStats.en";
 import { en as wbAccounts } from "./domains/wbAccounts.en";
 import { en as wbOverview } from "./domains/wbOverview.en";
@@ -43,6 +45,8 @@ export const en: Partial<Record<TranslationKey, string>> = {
   ...wbOverview,
   ...wbStats,
   ...traePages,
+  ...qoderPages,
+  ...qoderGateway,
   ...traeStats,
   ...traeComponents,
   ...traeGateway,

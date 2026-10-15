@@ -85,6 +85,25 @@ export function singleSideCaption(t: CaptionTranslate): string {
 }
 
 /**
+ * 网关逐日图图注：**恒披露覆盖率**。
+ *
+ * 为什么恒披露：网关历史只覆盖「App 运行过」的日子（后台周期记录在跑才有条目）——
+ * 未记录日**不是 0**。只说「悬停看明细」而不说覆盖了多少天，读者会把缺口读成「那天没用量」。
+ * 有几天标了「可能被裁」时再追加下界说明（那些天的总量只是**下界**）。
+ */
+export function gatewayTrendCaption(
+  t: CaptionTranslate,
+  recorded: number,
+  total: number,
+  truncatedDays: number,
+): string {
+  const base = t("wbStats.usage.caption.gateway", { recorded, total });
+  return truncatedDays > 0
+    ? `${base} · ${t("wbStats.usage.caption.gatewayLower", { n: truncatedDays })}`
+    : base;
+}
+
+/**
  * 概览 · 近 14 天逐日 Token 柱状图的图注：`合计 + 单日峰值`。
  *
  * 与累计曲线同口径（写**峰值**而不是「峰值 = 末值」这类废话）：概览的柱子是**逐日**的，

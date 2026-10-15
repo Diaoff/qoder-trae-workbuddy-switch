@@ -1,4 +1,4 @@
-import { RefreshCw, Search } from "lucide-react";
+import { Loader2, RefreshCw, Search } from "lucide-react";
 
 import { AppMenu, ThemeMenu, iconButtonClass } from "@/components/shell/app-menu";
 import { RunPill } from "@/components/shell/run-pill";
@@ -6,6 +6,7 @@ import { ScopeSelector } from "@/components/shell/scope-selector";
 import { useT } from "@/lib/i18n";
 import { isMacOverlayTitleBar } from "@/lib/platform";
 import type { Scope } from "@/lib/scope";
+import { useRefreshAction } from "@/lib/use-refresh-action";
 import type { ScopeStatusMap } from "@/lib/use-scope-status";
 import { cn } from "@/lib/utils";
 
@@ -46,9 +47,14 @@ export function TopBar({
   /** 搜索按钮文案（传 `t("palette.entry")`——沿用既有词条，不新增同义键）。 */
   searchLabel: string;
   onOpenSearch: () => void;
-  onRefresh: () => void;
+  /**
+   * 刷新当前作用域；**返回 Promise**——进行中态归本组件（`useRefreshAction` 包装），
+   * 结果反馈（toast）由调用方在 Promise 内自行给出。
+   */
+  onRefresh: () => Promise<void>;
 }) {
   const t = useT();
+  const { busy: refreshing, run: runRefresh } = useRefreshAction();
 
   return (
     <header
@@ -92,13 +98,20 @@ export function TopBar({
 
       <button
         type="button"
-        onClick={onRefresh}
+        disabled={refreshing}
+        aria-busy={refreshing}
+        onClick={() => void runRefresh(onRefresh)}
         aria-label={t("topbar.refresh")}
         title={t("topbar.refresh")}
         className={iconButtonClass}
       >
-        {/* 原型 `.topbar svg`：16×16（原为 17）。 */}
-        <RefreshCw className="size-4" aria-hidden="true" />
+        {/* 进行中 ⇒ Loader2 旋转（仓内「按钮内 Loader2 = 操作进行中」的既定口径）；
+            图标同为 16px（原 `size-4`），切换无布局跳动。 */}
+        {refreshing ? (
+          <Loader2 className="size-4 animate-spin" aria-hidden="true" />
+        ) : (
+          <RefreshCw className="size-4" aria-hidden="true" />
+        )}
       </button>
 
       <ThemeMenu />

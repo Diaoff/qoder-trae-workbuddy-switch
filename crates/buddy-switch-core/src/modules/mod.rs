@@ -59,6 +59,8 @@ pub mod programs;
 // P12 · C 路（base URL 重定向）的**本地状态** —— 只记标记，**不改任何系统设置**
 // （T02 定的是**引导式**：应用只显示要设的 env，由用户手动设；见 `P12-ARCH.md`）。
 pub mod proxy;
+// Qoder（第三个产品线）：双区账号管理。与 WorkBuddy / Trae 平行，**不复用**彼此的区域表。
+pub mod qoder;
 pub mod refresh;
 pub mod region;
 // 统一网关的**模型命名空间**（`wb-cn:` / `trae-global:` 前缀）——

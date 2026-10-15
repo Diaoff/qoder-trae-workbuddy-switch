@@ -6,7 +6,7 @@ import type {
   ClientSettingsBackupsResponse, ClientSettingsDiffResponse, ClientSettingsFingerprint,
   ClientSettingsProxyGroup, ClientSettingsReadResponse, ClientSettingsSlot, ClientSettingsSlotsResponse,
   CreditOfficialUsageModel, CreditStatistics, GatewayConfig, GatewayLogEntry, GatewayPoolAccount,
-  GatewayStatus, GithubConfig, Region, RotateLog, RotateStatus, ScheduleConfig, TokenStatistics,
+  GatewayStatus, GatewayTokenTrend, GithubConfig, Region, RotateLog, RotateStatus, ScheduleConfig, TokenStatistics,
   Session, SessionReplicaResponse,
   SkillListResponse,
   TokenStatsGroup, TokenStatsSource,
@@ -35,6 +35,7 @@ import { t } from "./i18n";
 import type { TranslationKey } from "@/locales/zh";
 import type { CompanionSnapshot } from "./companion";
 import type { AgentHookStatus } from "./api";
+import type { QoderGatewayConfigRaw } from "./qoder-gateway";
 
 export const screenshotDemoEnabled = demoModeEnabled;
 
@@ -849,10 +850,11 @@ function demoSessionReplicas(): SessionReplicaResponse {
 /**
  * 演示：「今日 Token」按账号聚合（`get_account_token_today`）。
  *
- * 演示数据**刻意覆盖三条诚实边界**（见 `AccountTokenTodayResponse`）：
+ * 演示数据**刻意覆盖四条诚实边界**（见 `AccountTokenTodayResponse`）：
  * - `demo-user-001`（有真值）+ `demo-user-003`（**真实 0**）出现在 `accounts`；
  * - `demo-user-002` **缺席** ⇒ 界面渲染「—」（今日无记录 / 未知，**不是 0**）；
- * - `gatewayTruncated: true` ⇒ 网关部分是下界 ⇒ 界面渲染 `≥N` 并说明。
+ * - `gatewayTruncated: true` ⇒ 网关部分是下界 ⇒ 界面渲染 `≥N` 并说明；
+ * - `client*` 与 `gateway*` **两侧都非零** ⇒ 明细追加「可能重复计数」说明。
  * 非有限值不会出现在这里（演示数据是「看起来像真的」的样本，不造脏值）。
  */
 function demoAccountTokenToday(): AccountTokenTodayResponse {
@@ -881,6 +883,47 @@ function demoAccountTokenToday(): AccountTokenTodayResponse {
     ],
     unknownClient: { in: 0, out: 0 },
     gatewayTruncated: false,
+  };
+}
+
+/**
+ * 演示：网关**逐日**用量趋势（`get_gateway_token_trend`，只读）。
+ *
+ * 演示数据**刻意覆盖三条边界**（与 `demoAccountTokenToday` 同一取向）：
+ * ① 有量的天（柱子）；② **缺日**（中间空一天 —— 覆盖率披露「已记录 X/N 天」要能看见）；
+ * ③ 一天标 `truncated: true` ⇒ 图注追加「1 天为下界」。
+ * 尺度与演示账号的今日 Token（42.1K 等）同量级，保证小图看起来不违和。
+ */
+function demoGatewayTokenTrend(): GatewayTokenTrend {
+  const pad = (n: number) => String(n).padStart(2, "0");
+  const dateKey = (daysAgo: number) => {
+    const date = new Date(Date.now() - daysAgo * 86_400_000);
+    return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
+  };
+  // 索引 0 = 最早一天；`-1` = **未记录**（App 没在跑），要被过滤掉以制造缺口。
+  const perDay = [
+    18600, 24300, 9800, 31500, 12400, 7600, -1, 41200, 28700, 15300, 22800, 19400, 8600, 33100,
+    26800, 11200, 47500, 20900, 16700, 24300, 13800, 39400, 21600, 18400, 9200, 28700, 35600,
+    24100, 17900, 26300,
+  ];
+  const days = perDay
+    .map((total, index) => ({ total, key: dateKey(perDay.length - 1 - index) }))
+    .filter((point) => point.total >= 0)
+    .map((point, index) => {
+      const input = Math.round(point.total * 0.86);
+      return {
+        key: point.key,
+        input,
+        output: point.total - input,
+        total: point.total,
+        truncated: index === 8,
+      };
+    });
+  return {
+    date: dateKey(0),
+    retentionDays: 90,
+    days,
+    total: days.reduce((sum, point) => sum + point.total, 0),
   };
 }
 
@@ -1578,6 +1621,319 @@ function demoTraeAccounts(): unknown {
     ],
     total: list.length, cooling: 0, ungrouped: 0,
   };
+}
+
+/**
+ * Qoder 演示账号（**只读**）—— 形状与真机 `qoder::account::accounts_view_for` 同构
+ * （字段名 / 掩码 / 凭据形态逐字段对齐）。⚠️ 令牌**只给掩码**：演示数据也**不出现**明文。
+ *
+ * 账号与原型 `SCOPES["qoder-cn"|"qoder-global"].accounts` 的前两条对应，
+ * 演示站因此可以与原型逐卡对照。
+ */
+function demoQoderAccounts(scope: string): unknown {
+  const global = scope.endsWith("global");
+  const region = global ? "global" : "cn";
+  const domain = global ? "qoder.com" : "qoder.com.cn";
+  const account = (
+    uid: string,
+    name: string,
+    remark: string,
+    accessMasked: string,
+    canRefresh: boolean,
+  ): unknown => ({
+    uid,
+    name,
+    nickname: null,
+    domain,
+    region,
+    /* ★ 与后端常量逐字一致（`qoder::account::SOURCE_DESKTOP_APP = "desktop-app"`）——
+       写 "desktop" 会让来源徽章查表落空、回落显示原始值（演示站与真机不同形）。 */
+    source: "desktop-app",
+    remark,
+    expiresAt: futureAt(21, 0, 0),
+    hasAccessToken: true,
+    hasRefreshToken: canRefresh,
+    hasPersonalToken: false,
+    accessTokenMasked: accessMasked,
+    credential: {
+      access: "device_access",
+      refresh: canRefresh ? "device_refresh" : null,
+      pat: false,
+      unrecognized: false,
+    },
+    credentialSummary: canRefresh
+      ? t("shared.demo.qoder.cred.device")
+      : t("shared.demo.qoder.cred.deviceOnly"),
+    hasCredential: true,
+    domainMismatch: false,
+    addedAt: "2026-09-22T03:00:00Z",
+    updatedAt: new Date(Date.now() - 5 * 60_000).toISOString(),
+  });
+  const accounts = global
+    ? [account("qg1", t("shared.demo.qoder.name.intl"), t("shared.demo.qoder.remark.intl"), "dt-9a3f…2c", true)]
+    : [
+        account("q1", t("shared.demo.qoder.name.jackey"), t("shared.demo.qoder.remark.main"), "dt-a1b2…9f", true),
+        account("q2", t("shared.demo.qoder.name.team"), t("shared.demo.qoder.remark.team"), "dt-c3d4…7e", false),
+      ];
+  return { region, domain, accounts, foreignDomainCount: 0 };
+}
+
+/**
+ * Qoder 本机来源探测（**只读**）。
+ *
+ * ⚠️ 演示场景**如实**取「有客户端、只有桌面版登录过」：桌面来源 `ready`（可导入）、
+ * CLI `missing`（没装 / 没登录过）—— 四态是四种不同的引导动作，压成布尔会给错方向。
+ * 路径按 Windows 形态写（演示环境即 Windows），与 `qoder::paths` 的派生一致。
+ */
+function demoQoderLocalSources(scope: string): unknown {
+  const global = scope.endsWith("global");
+  const region = global ? "global" : "cn";
+  const domain = global ? "qoder.com" : "qoder.com.cn";
+  return {
+    region,
+    domain,
+    sources: [
+      {
+        kind: "desktop",
+        label: "Qoder 桌面版",
+        path: `%APPDATA%\\${global ? "com.qoder.app.stable" : "com.qodercn.app.stable"}\\auth.v1.dat`,
+        state: "ready",
+        detail: null,
+      },
+      {
+        kind: "cli",
+        label: "Qoder CLI",
+        path: `~/${global ? ".qoder" : ".qoder-cn"}/.auth/user`,
+        state: "missing",
+        detail: null,
+      },
+    ],
+  };
+}
+
+/**
+ * Qoder 网关配置（**snake_case 原始形状**，与 HTTP 通道逐字同形 ⇒ 页面走同一套归一化）。
+ *
+ * ⚠️ `default_model` 演示**空串**（真机默认就是空，由清单第一条兜底）—— 演示站若填一个
+ * 编出来的模型名，会掩盖「不清空就不写默认模型」的真实行为。
+ * `preferred_uid` 指向下方账号池里那个可用的主账号（uid 必须对得上，否则选择器会显示
+ * 「已指定的账号（当前不在池中）」，看起来像 bug）。
+ */
+function demoQoderGatewayConfig(): QoderGatewayConfigRaw {
+  return {
+    enabled: true,
+    bind_addr: "127.0.0.1",
+    port: 7865,
+    allow_non_loopback: false,
+    log_keep: 200,
+    log_bodies: false,
+    max_body_mb: 0,
+    default_model: "",
+    max_rotate: 3,
+    preferred_uid: "q1",
+    sticky_ttl_ms: 30 * 60 * 1000,
+  };
+}
+
+/**
+ * Qoder 网关状态（**snake_case**；一个监听、两个区域 —— 池按 `scope` 分家）。
+ *
+ * ★ 三处数字**必须自洽**（本仓红线：同一个量在各处显示成不同的数就是图在撒谎）：
+ * - `pool` 的三格 = `accounts` 里逐条状态数出来的（available + cooling + disabled = total）；
+ * - `pool.modelCooling` = 带模型级冷却的条目数（与账号级 `cooling` 正交）；
+ * - `api_key_prefix` = 下方 Key 列表里该区域那把**未吊销**的 Key 的前缀。
+ */
+function demoQoderGatewayStatus(scope: string): unknown {
+  const global = scope.endsWith("global");
+  const coolingUntil = Math.floor(Date.now() / 1000) + 5400;
+  const accounts = global
+    ? [
+        {
+          uid: "qg1",
+          name: t("shared.demo.qoder.name.intl"),
+          status: "available",
+          credits: null,
+          cooling: false,
+          cooldownUntil: null,
+          cooldownReason: null,
+          disabled: false,
+        },
+      ]
+    : [
+        {
+          uid: "q1",
+          name: t("shared.demo.qoder.name.jackey"),
+          status: "available",
+          credits: null,
+          cooling: false,
+          cooldownUntil: null,
+          cooldownReason: null,
+          disabled: false,
+        },
+        {
+          uid: "q2",
+          name: t("shared.demo.qoder.name.team"),
+          status: "disabled",
+          credits: null,
+          cooling: false,
+          cooldownUntil: null,
+          // 需人工干预（刷新令牌）—— 与「临时冷却」是两个状态，卡片据此给「恢复」出口。
+          cooldownReason: t("shared.demo.qoder.gateway.reasonSessionDead"),
+          disabled: true,
+        },
+        {
+          uid: "q3",
+          name: t("shared.demo.qoder.name.trial"),
+          status: "cooling",
+          credits: null,
+          cooling: true,
+          cooldownUntil: coolingUntil,
+          cooldownReason: t("shared.demo.qoder.gateway.reasonCooling"),
+          disabled: false,
+        },
+      ];
+  const available = accounts.filter((item) => item.status === "available").length;
+  const cooling = accounts.filter((item) => item.status === "cooling").length;
+  const disabled = accounts.filter((item) => item.status === "disabled").length;
+  return {
+    enabled: true,
+    running: true,
+    addr: "127.0.0.1:7865",
+    base_url: "http://127.0.0.1:7865",
+    bind_addr: "127.0.0.1",
+    port: 7865,
+    allow_non_loopback: false,
+    version: "2026.9.17",
+    total_requests: global ? 43 : 268,
+    last_error: null,
+    api_key_prefix: global ? "qd-3f61" : "qd-5b2e",
+    pool: {
+      total: accounts.length,
+      available,
+      cooling,
+      disabled,
+      expired: 0,
+      zero_credits: 0,
+      total_credits: 0,
+      // 演示：国内版有一个账号「对某个模型冷着、对其它模型仍可用」（Qoder 的 429 是按模型报的）。
+      model_cooling: global ? 0 : 1,
+    },
+    accounts,
+    diagnose: global
+      ? [`${t("shared.demo.qoder.name.intl")}(qg1:可用)`]
+      : [
+          `${t("shared.demo.qoder.name.jackey")}(q1:可用（模型冷却：MiniMax-M3）)`,
+          `${t("shared.demo.qoder.name.team")}(q2:${t("shared.demo.qoder.gateway.reasonSessionDead")})`,
+          `${t("shared.demo.qoder.name.trial")}(q3:${t("shared.demo.qoder.gateway.reasonCooling")})`,
+        ],
+    upstream: global
+      ? "https://api1.qoder.com / https://api2.qoder.com / https://api3.qoder.com"
+      : "https://api1.qoder.com.cn / https://api2.qoder.com.cn",
+  };
+}
+
+/**
+ * Qoder 对外模型清单（**未过滤** + 逐条 `disabled`；与真机同形）。
+ *
+ * ★ 与真机同一条纪律：管理面给**全量**清单（禁用的也在），才能让「已禁用」的行可见；
+ * 「网关真正暴露的条数」= 全量 − 已禁用（前端按同一份偏好现算，与出口 ① 同源）。
+ *
+ * 两个区域**刻意不同**（国内 4 条、国际 2 条，且有 `Ultimate` 这样的区域独占模型），
+ * 并**演示来源三级**：国内 = `live`；国际 = `cached` + 原因（「本次探测超时，用上次成功的结果」）
+ * —— 「非实时必须带原因」是本仓的来源契约，演示站也必须遵守。
+ */
+function demoQoderGatewayModels(scope: string): unknown {
+  const global = scope.endsWith("global");
+  const model = (name: string, displayName: string, reasoning: boolean, disabled = false) => ({
+    id: name,
+    object: "model",
+    owned_by: "qoder",
+    display_name: displayName,
+    is_reasoning: reasoning,
+    max_input_tokens: 180_000,
+    disabled,
+  });
+  return global
+    ? {
+        object: "list",
+        region: "global",
+        source: "cached",
+        fetchedAt: Date.now() - 15 * 60 * 60 * 1000,
+        note: t("shared.demo.qoder.gateway.catalogCached"),
+        data: [model("Ultimate", "Ultimate", true), model("Qwen3.8-Max", "Qwen3.8-Max", true)],
+      }
+    : {
+        object: "list",
+        region: "cn",
+        source: "live",
+        fetchedAt: Date.now() - 8 * 60 * 1000,
+        note: null,
+        data: [
+          model("Qwen3.8-Max", "Qwen3.8-Max", true),
+          model("GLM-5.1", "GLM-5.1", true),
+          // 已禁用：**仍留在清单里**（标灰 + 「启用」出口），与真机同形。
+          model("Kimi-K3", "Kimi-K3", false, true),
+          model("MiniMax-M3", "MiniMax-M3", false),
+        ],
+      };
+}
+
+/**
+ * Qoder 多 Key（脱敏；**明文 / 哈希一律不出现**）。
+ *
+ * 每个区域各一组，且**都带一条已吊销的**（与 WB / Trae 演示数据同形）：已吊销行必须
+ * 同时给出「恢复 + 删除」两个出口，这条产品纪律要在演示里就能看见。
+ */
+function demoQoderApiKeys(): { keys: unknown[] } {
+  return {
+    keys: [
+      {
+        id: "demo-qoder-key-1",
+        name: t("shared.demo.qoder.key.defaultCn"),
+        region: "cn",
+        prefix: "qd-5b2e",
+        suffix: "c14f",
+        createdAt: atLocalTime(23, 10, 12),
+        revokedAt: null,
+        revoked: false,
+        lastUsedAt: atLocalTime(0, 17, 5),
+      },
+      {
+        id: "demo-qoder-key-2",
+        name: t("shared.demo.qoder.key.cliCn"),
+        region: "cn",
+        prefix: "qd-9a07",
+        suffix: "4e83",
+        createdAt: atLocalTime(13, 15, 40),
+        revokedAt: atLocalTime(1, 9, 20),
+        revoked: true,
+        lastUsedAt: atLocalTime(0, 15, 2),
+      },
+      {
+        id: "demo-qoder-key-3",
+        name: t("shared.demo.qoder.key.global"),
+        region: "global",
+        prefix: "qd-3f61",
+        suffix: "b7d2",
+        createdAt: atLocalTime(15, 8, 0),
+        revokedAt: null,
+        revoked: false,
+        lastUsedAt: atLocalTime(1, 22, 10),
+      },
+    ],
+  };
+}
+
+/** Qoder 请求日志（元数据；条目带 `region` —— 一本日志记两个区域的请求）。 */
+function demoQoderGatewayLogs(): unknown {
+  const now = Math.floor(Date.now() / 1000);
+  const logs = [
+    { ts: (now - 70) * 1000, endpoint: "/v1/chat/completions", method: "POST", region: "cn", account: "q1", model: "Qwen3.8-Max", status: 200, latencyMs: 764, promptTokens: 1420, completionTokens: 386, stream: true, error: null },
+    { ts: (now - 620) * 1000, endpoint: "/v1/messages", method: "POST", region: "cn", account: "q1", model: "GLM-5.1", status: 200, latencyMs: 588, promptTokens: 986, completionTokens: 254, stream: false, error: null },
+    { ts: (now - 1800) * 1000, endpoint: "/v1/chat/completions", method: "POST", region: "cn", account: "q3", model: "MiniMax-M3", status: 429, latencyMs: 96, promptTokens: 0, completionTokens: 0, stream: true, error: t("shared.demo.qoder.gateway.modelRateLimited") },
+    { ts: (now - 4200) * 1000, endpoint: "/v1/chat/completions", method: "POST", region: "global", account: "qg1", model: "Ultimate", status: 200, latencyMs: 918, promptTokens: 1104, completionTokens: 312, stream: true, error: null },
+  ];
+  return { logs };
 }
 
 function demoTraeCheckinStatus(): TraeCheckinStatus {
@@ -2295,6 +2651,8 @@ export function screenshotDemoResponse(command: string, args?: Record<string, un
        demo-user-002 **刻意缺席** ⇒ 卡片渲染「—」（今日无记录/未知，非 0）；
        demo-user-003 值为**全 0** ⇒ 渲染真实 `0`；`gatewayTruncated: true` ⇒ 渲染下界 `≥N`。 */
     case "get_account_token_today": return demoAccountTokenToday();
+    /* 网关逐日趋势（只读）。演示数据覆盖「有量 / 缺日 / 下界」三条边界（见上）。 */
+    case "get_gateway_token_trend": return demoGatewayTokenTrend();
     /* Skill 管理清单（只读）。演示数据覆盖启用 / 停用 / 不一致 / 无 frontmatter 四种形态。 */
     case "list_skills": return demoSkills(args?.region === "global" ? "global" : "cn");
     /* 上游客户端 settings.json 托管（**只读** 4 条）。演示数据**虚构**，覆盖
@@ -2315,11 +2673,16 @@ export function screenshotDemoResponse(command: string, args?: Record<string, un
     case "get_gateway_models": return demoCatalog(args?.region === "global" ? "global" : "cn");
     case "get_account_strategy": return demoStrategyMap();
     /* P11：禁用偏好只读命令。演示数据**如实为空**（默认全开，D27）——
-       截图里若凭空标出「已禁用」会误导用户以为装上就有模型被关掉。 */
-    case "get_disabled_models": return {
-      region: args?.region === "global" ? "global" : "cn",
-      ids: [],
-    };
+       截图里若凭空标出「已禁用」会误导用户以为装上就有模型被关掉。
+       ⚠️ **例外**：Qoder 国内版演示里**真的**有一条被禁用（`demoQoderGatewayModels`
+       把 `Kimi-K3` 标成 `disabled`，与原型 `GATEWAY["qoder-cn"]` 一致）。
+       两份数据必须**同源**：清单说「已禁用」而这里说「没禁用」，表格与计数就会各说各话
+       （实测：行不标灰、计数显示 4/4 —— 正是「图在撒谎」）。 */
+    case "get_disabled_models": {
+      /* 形状与真机同构（键 = **作用域**）。 */
+      const scope = String((args as { scope?: unknown } | undefined)?.scope ?? "wb-cn");
+      return { scope, ids: scope === "qoder-cn" ? ["Kimi-K3"] : [] };
+    }
     case "get_gateway_logs": return { logs: demoGatewayLogs() };
     // ---- Trae 分区（只读；写操作不进这里，由 DemoAction 统一拦截）----
     case "get_trae_env": return demoTraeEnv();
@@ -2358,6 +2721,30 @@ export function screenshotDemoResponse(command: string, args?: Record<string, un
       port: 57893,
       slots: [],
     } satisfies AgentHookStatus;
+    /* Qoder（第三个平台）· 只读两条 —— 与 `DEMO_READ_COMMANDS` 的登记一一对应
+       （门禁 `check-api-contract.cjs` 校验 case 存在，缺了演示模式会抛
+       「演示模式缺少只读数据」）。 */
+    case "get_qoder_accounts": {
+      const scope = String((args as { scope?: unknown } | undefined)?.scope ?? "");
+      return demoQoderAccounts(scope);
+    }
+    case "get_qoder_local_sources": {
+      const scope = String((args as { scope?: unknown } | undefined)?.scope ?? "");
+      return demoQoderLocalSources(scope);
+    }
+    /* Qoder 网关（只读五条）—— 形状与真机逐字段同构（snake_case / 未过滤清单 +
+       逐条 `disabled` / 来源三级）。写操作（保存配置 / 建 Key / 吊销…）不进演示只读面。 */
+    case "get_qoder_gateway_config": return demoQoderGatewayConfig();
+    case "qoder_gateway_status": {
+      const scope = String((args as { scope?: unknown } | undefined)?.scope ?? "qoder-cn");
+      return demoQoderGatewayStatus(scope);
+    }
+    case "get_qoder_gateway_models": {
+      const scope = String((args as { scope?: unknown } | undefined)?.scope ?? "qoder-cn");
+      return demoQoderGatewayModels(scope);
+    }
+    case "list_qoder_api_keys": return demoQoderApiKeys();
+    case "get_qoder_gateway_logs": return demoQoderGatewayLogs();
     /* P7 全局备份：只登记**只读**命令（导出 / 预览 / 导入 / 恢复是动作，不进演示只读面 ——
        由页面侧的错误提示处理）。`get_auto_backup_config` **如实返回默认开**（§7 #7），
        否则截图会误导成「装上就是关着的」。 */

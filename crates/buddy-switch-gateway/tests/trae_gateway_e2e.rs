@@ -963,7 +963,7 @@ async fn p11_disabled_model_is_hidden_from_models_and_rejected_on_call() {
         "断言前提：目标模型必须在静态兜底清单里"
     );
 
-    let region = buddy_switch_gateway::trae::region_of_variant(variant);
+    let region = buddy_switch_core::modules::product::scope_of_trae_region(variant.region());
     let store = buddy_switch_gateway::disabled_models::shared();
 
     // 基线：未禁用 ⇒ 出现在 /v1/models。

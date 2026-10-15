@@ -44,6 +44,7 @@ import { balanceCaption, singleSideCaption } from "@/lib/chart-caption";
 import { displayText } from "@/lib/display-text";
 import { useT } from "@/lib/i18n";
 import type { CreditExpiry, CreditResource, CreditStatistics, RegionFilter } from "@/lib/types";
+import { useRefreshAction } from "@/lib/use-refresh-action";
 import { useScope } from "@/lib/use-scope";
 import { balanceCurve, creditDailyBars, expiryBuckets } from "@/lib/usage-charts";
 import { useAccountsStore } from "@/stores/accounts";
@@ -66,13 +67,15 @@ function formatDateTime(timestamp: number | null | undefined): string {
   });
 }
 
-export default function CreditStatsPage({ range, combineAll }: UsageViewProps) {
+export default function CreditStatsPage({ viewWindow, combineAll }: UsageViewProps) {
   const t = useT();
   const [scopeRegion] = useScope("workbuddy");
   const region: RegionFilter = combineAll ? "all" : scopeRegion;
   const [stats, setStats] = useState<CreditStatistics | null>(() => statisticsCache[region] ?? null);
   const [loading, setLoading] = useState(() => !statisticsCache[region]);
   const [error, setError] = useState<string | null>(null);
+  /* 三处「刷新积分」出口（错误重试 / 空态 / 顶部条）共用同一个 `load(region, true)`。 */
+  const { busy, run } = useRefreshAction();
 
   /* ★ 必须带 selector（本页含图表，store 的高频刷新不该牵动整页重渲染）。 */
   const { creditMap, fetchAllRegions } = useAccountsStore(
@@ -108,13 +111,19 @@ export default function CreditStatsPage({ range, combineAll }: UsageViewProps) {
     void load(region);
   }, [load, region]);
 
-  const bars = useMemo(() => (stats ? creditDailyBars(stats) : []), [stats]);
-  const rangedBars = useMemo(() => bars.slice(-range), [bars, range]);
-  const totalOut = rangedBars.reduce((sum, bar) => sum + bar.outAmt, 0);
+  /* ★ 窗口直接进 `creditDailyBars`（**按日历日对齐、缺失日补 0**）。
+     改造前是 `bars.slice(-range)` —— 那是「最后 N 个**有数据的**日子」，不是
+     「最后 N 个**日历日**」：某段没消耗的日子会被静默跳过，窗口悄悄变长。
+     加「自定义时间」后 `slice` 更是无法表达（窗口锚在过去的某一段上）。 */
+  const bars = useMemo(
+    () => (stats ? creditDailyBars(stats, viewWindow) : []),
+    [stats, viewWindow],
+  );
+  const totalOut = bars.reduce((sum, bar) => sum + bar.outAmt, 0);
 
   const balancePoints = useMemo(
-    () => (stats ? balanceCurve(rangedBars, stats.summary.currentRemaining) : []),
-    [rangedBars, stats],
+    () => (stats ? balanceCurve(bars, stats.summary.currentRemaining) : []),
+    [bars, stats],
   );
 
   /** 到期分布数据源：把各账号的资源包并成一份（`CreditExpiry` 形状）。 */
@@ -181,7 +190,13 @@ export default function CreditStatsPage({ range, combineAll }: UsageViewProps) {
           <AlertTitle>{t("wbStats.credit.loadFailed")}</AlertTitle>
           <AlertDescription className="flex flex-wrap items-center gap-3">
             <span>{error}</span>
-            <Button size="sm" variant="outline" onClick={() => void load(region, true)}>
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={busy}
+              onClick={() => void run(() => load(region, true))}
+            >
+              {busy ? <Loader2 className="animate-spin" /> : <RefreshCw />}
               {t("wbStats.credit.retry")}
             </Button>
           </AlertDescription>
@@ -200,7 +215,13 @@ export default function CreditStatsPage({ range, combineAll }: UsageViewProps) {
           title={t("wbStats.usage.empty.credits")}
           description={t("wbStats.usage.empty.creditsHint")}
           action={
-            <Button size="sm" variant="outline" onClick={() => void load(region, true)}>
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={busy}
+              onClick={() => void run(() => load(region, true))}
+            >
+              {busy ? <Loader2 className="animate-spin" /> : <RefreshCw />}
               {t("wbStats.usage.empty.refresh")}
             </Button>
           }
@@ -214,23 +235,23 @@ export default function CreditStatsPage({ range, combineAll }: UsageViewProps) {
             <Button
               size="sm"
               variant="outline"
-              onClick={() => void load(region, true)}
-              disabled={loading}
+              onClick={() => void run(() => load(region, true))}
+              disabled={busy || loading}
             >
-              {loading ? <Loader2 className="animate-spin" /> : <RefreshCw />}
+              {busy || loading ? <Loader2 className="animate-spin" /> : <RefreshCw />}
               {t("wbStats.credit.refreshCredits")}
             </Button>
           </div>
 
           <StatTiles tiles={tiles} ariaLabel={t("wbStats.credit.overviewAria")} />
 
-          {rangedBars.length > 0 ? (
+          {bars.length > 0 ? (
             <ChartFrame
               title={t("wbStats.usage.credits.dailyTitle")}
               caption={singleSideCaption(t)}
               ariaLabel={t("wbStats.usage.credits.dailyAria")}
             >
-              <CreditDivergingBar bars={rangedBars} />
+              <CreditDivergingBar bars={bars} />
             </ChartFrame>
           ) : null}
 

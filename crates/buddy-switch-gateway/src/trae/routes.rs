@@ -34,6 +34,7 @@ use tokio::sync::mpsc;
 
 use buddy_switch_core::modules::trae::account;
 use buddy_switch_core::modules::trae::region::TraeRegion;
+use buddy_switch_core::modules::product::scope_of_trae_region;
 use buddy_switch_core::modules::trae::variant::TraeVariant;
 
 use crate::protocol::anthropic;
@@ -237,7 +238,7 @@ pub async fn models(
         .disabled
         .read()
         .await
-        .get(super::region_of_variant(variant))
+        .get(scope_of_trae_region(variant.region()))
         .clone();
     let fallback = disabled.clone();
     // `models_response_for` 自己**不失败**（读不到就回落静态清单），所以这里的
@@ -295,13 +296,14 @@ pub async fn chat_for_variant(
     // ★ 出口 ②（P11）：被禁用的模型直接拒绝 —— 与 `/v1/models` 读**同一份** `disabled`
     //   （`is_disabled` 是唯一判断点）。只改过滤不拒绝 = 假开关。
     {
-        let region = super::region_of_variant(variant);
+        // ★ 禁用集合按**作用域**分家（2026-10-15 起）—— Trae 路由把区域升成 Scope。
+        let scope = scope_of_trae_region(variant.region());
         let disabled = state.disabled.read().await;
-        if crate::disabled_models::is_disabled(&disabled, region, &model) {
+        if crate::disabled_models::is_disabled(&disabled, scope, &model) {
             return openai_error(
                 StatusCode::FORBIDDEN,
                 "model_disabled",
-                &crate::disabled_models::disabled_message(region, &model),
+                &crate::disabled_models::disabled_message(scope, &model),
             );
         }
     }
@@ -403,13 +405,13 @@ pub async fn messages_for_variant(
     let model = payload::model_of(&upstream, &config.default_model);
     // ★ 出口 ②（P11）：与 `/v1/chat/completions` 同源 —— 被禁用的模型直接拒绝（Anthropic 错误体）。
     {
-        let region = super::region_of_variant(variant);
+        let scope = scope_of_trae_region(variant.region());
         let disabled = state.disabled.read().await;
-        if crate::disabled_models::is_disabled(&disabled, region, &model) {
+        if crate::disabled_models::is_disabled(&disabled, scope, &model) {
             return anthropic_error(
                 StatusCode::FORBIDDEN,
                 "model_disabled",
-                &crate::disabled_models::disabled_message(region, &model),
+                &crate::disabled_models::disabled_message(scope, &model),
             );
         }
     }
