@@ -321,6 +321,10 @@ fn api_routes() -> Router {
         )
         .route("/api/unified-gateway/models", get(api_unified_gateway_models))
         .route(
+            "/api/unified-gateway/pool-overview",
+            get(api_unified_gateway_pool_overview),
+        )
+        .route(
             "/api/unified-gateway/keys",
             get(api_unified_gateway_list_keys).post(api_unified_gateway_create_key),
         )
@@ -5716,8 +5720,29 @@ async fn api_save_unified_gateway_config(Json(body): Json<Value>) -> Response {
 }
 
 /// GET /api/unified-gateway/models —— 已启用命名空间的清单预览（管理面专用，不过滤 Key 授权）。
-async fn api_unified_gateway_models() -> Response {
-    json_ok(buddy_switch_gateway::unified::routes::models_preview().await)
+///
+/// `?refresh=true` ⇒ 绕过各产品线的识别缓存重取（同桌面端
+/// `get_unified_gateway_models(refresh)`；见 `unified::routes::models_preview` 的文档）。
+/// ⚠️ 与 `src-tauri/src/commands.rs` 的同名命令**刻意不去重**（两宿主各一份）。
+async fn api_unified_gateway_models(RawQuery(query): RawQuery) -> Response {
+    // 查询串只做「是否为真」判定：`true` / `1` 都算（手工调 API 的人两种都会写）。
+    let refresh = matches!(
+        query_value(query.as_deref(), "refresh").as_deref(),
+        Some("true") | Some("1")
+    );
+    json_ok(buddy_switch_gateway::unified::routes::models_preview(refresh).await)
+}
+
+/// GET /api/unified-gateway/pool-overview —— 已启用命名空间指向的**账号池总览**（只读投影）。
+///
+/// 统一网关没有自己的池：它按命名空间把请求分派到三条产品线各自的池。本 handler 把它们
+/// **已有的**池视图投影成一份跨平台汇总（**不新增任何选号逻辑**）。
+///
+/// ★ 形状 / 分组的**唯一构造点**在 gateway crate 的
+///   `unified::admin::pool_overview_payload`（两处宿主不各自拼 JSON，见那里的模块文档）。
+/// ⚠️ 与桌面端 `unified_gateway_pool_overview` **刻意不去重**。
+async fn api_unified_gateway_pool_overview() -> Response {
+    json_ok(buddy_switch_gateway::unified::admin::pool_overview_payload().await)
 }
 
 /// GET /api/unified-gateway/keys —— 统一密钥列表（**只出脱敏**）。

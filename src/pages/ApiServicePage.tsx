@@ -12,10 +12,13 @@ import { ModelList } from "@/components/gateway/model-list";
 // ⚠️ 只接 WB 侧：C 路本期不做 Trae（`proxy.rs` 的 `PROXY_GATEWAY_BASE` 只覆盖 WB 网关端口）。
 import { ProxyPanel } from "@/components/gateway/proxy-panel";
 import { RequestLog } from "@/components/gateway/request-log";
+import { GatewayShell } from "@/components/gateway/gateway-shell";
 import {
-  GatewaySubnav,
-  parseGatewaySubnav,
-  type GatewaySubnavId,
+  GW_SECTIONS,
+  parseGatewayDeepLink,
+  unifiedSectionId,
+  type GatewaySectionId,
+  type GatewayType,
 } from "@/components/gateway/gateway-subnav";
 import { ScopeChip, scopeLabel } from "@/components/scope-chip";
 import { DemoAction } from "@/components/demo-action";
@@ -104,20 +107,33 @@ export default function ApiServicePage() {
   /* 错误条「重试」与概览「刷新」两处出口各自的进行中态（两处可能同屏）。 */
   const { busy: retryBusy, run: runRetry } = useRefreshAction();
   const { busy: refreshBusy, run: runRefresh } = useRefreshAction();
-  /* ★ 子导航选中项：**初值从 URL 读**（`?sub=logs`），非法值 fail-closed 回 `overview`。
-     与设置页（`?section=`）同一口径：深链能直达某个分区，而不是永远落到第一项。 */
+  /* ★ 网关页的两个轴（`?type=` + `?sub=`）—— 深链解析兼容两代旧链（见 `parseGatewayDeepLink`）。
+     与设置页（`?section=`）同一口径：深链能直达，刷新 / 分享 / 前进后退都成立。 */
   const [searchParams, setSearchParams] = useSearchParams();
-  const [sub, setSub] = useState<GatewaySubnavId>(() => parseGatewaySubnav(searchParams.get("sub")));
+  const [{ type, section }, setNav] = useState(() => parseGatewayDeepLink(searchParams));
 
-  /* ★ 子导航切分的**唯一入口**：更新 state **并**写回 URL（`?sub=models`）——
-     概览的「查看」行与左侧子导航都走它，深链因此可刷新、可分享（与设置页 `?section=` 同口径）。
-     ★ 与 Trae 页同一写法：**保留查询串里的其他参数**（`new URLSearchParams(searchParams)`
-     再 `set`），而不是整体覆盖 —— 后者会把别的参数一起抹掉。 */
-  function goSub(id: GatewaySubnavId) {
-    setSub(id);
-    const next = new URLSearchParams(searchParams);
-    next.set("sub", id);
-    setSearchParams(next, { replace: true });
+  /** 写回 URL（保留查询串里的其他参数，而不是整体覆盖）。 */
+  function writeNav(next: GatewayType, sub: GatewaySectionId) {
+    setNav({ type: next, section: sub });
+    const params = new URLSearchParams(searchParams);
+    params.set("type", next);
+    params.set("sub", sub);
+    setSearchParams(params, { replace: true });
+  }
+
+  /* ★ 切类型**必须重置分区**到该类型的第一项：两个类型的分区 id 集合不相交，
+     停在另一个类型的分区上会渲染成空（原型 `GW_SECTIONS[a1][0][0]` 同款做法）。 */
+  function goType(next: GatewayType) {
+    writeNav(next, GW_SECTIONS[next][0].id);
+  }
+
+  /** 统一网关分区内的跳转（裸分区名 → 带 `u-` 前缀的分区 id；约定只在 `unifiedSectionId` 里写一次）。 */
+  function goUnified(next: string) {
+    goSub(unifiedSectionId(next));
+  }
+
+  function goSub(id: GatewaySectionId) {
+    writeNav(type, id);
   }
 
   useEffect(() => {
@@ -289,12 +305,14 @@ export default function ApiServicePage() {
       {/* ---- 主区：子导航 + 分区内容（PLAN §3.9：替代原来的 6 卡纵向堆叠）----
           方向 / 对齐 / 间距整组在 `index.css` 的 `[data-split-layout]`（原型 `.split`，
           含 900px 转纵向），故这里不再写 `flex-col` / `lg:flex-row` / `gap-*`。 */}
-      <div data-split-layout className="min-w-0">
-        <GatewaySubnav active={sub} onSelect={goSub} />
-
-        <div className="min-w-0 flex-1">
+      <GatewayShell
+        type={type}
+        section={section}
+        onTypeChange={goType}
+        onSelect={goSub}
+      >
           {/* ---- 概览：服务状态 + 接入地址 + 接入指引 ---- */}
-          {sub === "overview" && (
+          {section === "overview" && (
             <>
               {/* 网关 */}
               <Card className="mb-6 gap-0 py-0">
@@ -481,24 +499,28 @@ export default function ApiServicePage() {
           )}
 
           {/* ---- 密钥 ---- */}
-          {sub === "keys" && <ApiKeyTable />}
+          {section === "keys" && <ApiKeyTable />}
 
           {/* ---- 模型 ---- */}
-          {sub === "models" && <ModelList region={region} />}
+          {section === "models" && <ModelList region={region} />}
 
           {/* ---- 账号池 ---- */}
           {/* 只渲染当前版本的池（版本在页头切换）。 */}
-          {sub === "pool" && <RegionPoolCard region={region} />}
+          {section === "pool" && <RegionPoolCard region={region} />}
 
           {/* ---- 请求代理（P12 · 默认关）：面板里必须**同时**给出风险与不劫持声明（原型断言 2）。 ---- */}
-          {sub === "proxy" && <ProxyPanel />}
+          {section === "proxy" && <ProxyPanel />}
 
           {/* ---- 请求日志 ---- */}
           {/* Key 表与请求日志**不做版本过滤**：它们是「跨版本的管理视图」，逐行带归属即可。 */}
-          {sub === "logs" && <RequestLog />}
-          {sub === "unified" && <UnifiedGatewayView />}
-        </div>
-      </div>
+          {section === "logs" && <RequestLog />}
+          {/* ---- 统一网关（第二个**类型**，跨全部作用域）----
+              四个分区各自渲染一段：`UnifiedGatewayView` 只认 `section`，不自己持有导航。 */}
+          {section === "u-overview" && <UnifiedGatewayView section="overview" onGoSection={goUnified} />}
+          {section === "u-namespaces" && <UnifiedGatewayView section="namespaces" onGoSection={goUnified} />}
+          {section === "u-keys" && <UnifiedGatewayView section="keys" onGoSection={goUnified} />}
+          {section === "u-pool" && <UnifiedGatewayView section="pool" onGoSection={goUnified} />}
+      </GatewayShell>
 
       {/* 非回环监听风险确认 */}
       <Dialog open={riskOpen} onOpenChange={setRiskOpen}>

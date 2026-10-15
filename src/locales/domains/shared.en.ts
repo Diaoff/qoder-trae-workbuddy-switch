@@ -5,6 +5,8 @@
  * 键必须与 `shared.zh.ts` **一一对应**（缺哪条就回落中文）。
  */
 export const en = {
+  "shared.gateway.keys.note":
+    "The plaintext key is shown once at creation; only the mask is kept here. Request counts are lifetime totals for that key, not the “today” figure on the overview. Revocation is reversible: a revoked key stays in the list and can be restored (the same key is stored, so clients need no changes) or deleted.",
   // ---- Version regions (region.ts / trae-types.ts / trae-variant-status.ts) ----
   "shared.region.version.cn": "CN version",
   "shared.region.version.global": "Global version",

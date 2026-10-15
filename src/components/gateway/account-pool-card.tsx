@@ -1,9 +1,8 @@
-import { Loader2, Users } from "lucide-react";
+import { Loader2 } from "lucide-react";
 import type { ReactNode } from "react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Card } from "@/components/ui/card";
 import { DemoAction } from "@/components/demo-action";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { POOL_STATUS_LABELS } from "@/lib/gateway";
@@ -83,6 +82,14 @@ function formatCount(value: number | null | undefined): string {
  * 它是**偏好而非约束**：指定账号不可用（冷却 / 禁用 / 零积分 / 已在本轮试过）时，
  * 网关会**回落到自动择优**，不会因为指定账号不可用而拒绝服务。
  * 因此这里不把「当前不可用」的账号禁用掉 —— 用户仍然可以指定它，等它恢复后自动生效。
+ *
+ * ## 2026-10-15 骨架对齐原型：去掉 `<Card>` 外壳
+ *
+ * 原型（`viewGateway()` 的 `pool` 分支）= 裸表 + 说明段（「选号优先级…指定是排他的」）。
+ * 本卡里的**计数格（tiles）**、**「指定账号」下拉**、**「恢复」出口**与 **diagnose 列表**
+ * 都是原型简化版没有的真实功能，一处不删 —— 重排为：工具条（下拉 + 累计请求，
+ * 与 `KeysBar` / 来源条同一套 `cat-bar` 表面）→ 计数格 → 裸表 → 说明段 → diagnose。
+ * 卡头标题（`title`）已去掉：三个调用点都不传它（版本由页头切换器承担），且无卡头可挂。
  */
 export function AccountPoolCard({
   pool,
@@ -95,8 +102,6 @@ export function AccountPoolCard({
   tiles = DEFAULT_POOL_TILES,
   autoOptions,
   emptyHint,
-  /** 卡片标题（WorkBuddy 一页有两张卡 ⇒ 带版本名；缺省用共用文案）。 */
-  title,
   /**
    * 「恢复」出口（**可选插槽**）：`disabled` 是终态且落盘持久化，没有出口该账号
    * **永久不可用**（余额刷新被 `disabled` 挡住、`PoolEntry::revive` 在生产代码里
@@ -125,8 +130,6 @@ export function AccountPoolCard({
   autoOptions?: { value: string; label: string }[];
   /** 空态文案（缺省用共用文案）。 */
   emptyHint?: ReactNode;
-  /** 卡片标题（缺省「账号池」）。 */
-  title?: ReactNode;
   /** 「恢复」出口；未传则不渲染该按钮（差异走插槽，见解构处的 ★ 说明）。 */
   onRevive?: (uid: string) => void;
   /** 正在恢复的 uid。 */
@@ -142,56 +145,52 @@ export function AccountPoolCard({
   const selectValue = preferredUid === "" ? AUTO_OPTION : preferredUid;
 
   return (
-    <Card className={cn("gap-0 py-0", className)}>
-      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border/60 px-5 py-3">
-        <div className="flex items-center gap-2 text-sm font-semibold">
-          <Users className="size-4 stroke-[1.75]" />
-          {title ?? t("shared.gateway.pool.title")}
-        </div>
-        <div className="flex flex-wrap items-center gap-3">
-          <div className="flex items-center gap-2">
-            <span className="text-xs text-muted-foreground">
-              {t("shared.gateway.pool.preferredLabel")}
-            </span>
-            <Select
-              value={selectValue}
-              onValueChange={(next) => onPreferredUidChange(next === AUTO_OPTION ? "" : next)}
-              disabled={saving}
-            >
-              <SelectTrigger
-                size="sm"
-                className="w-48"
-                aria-label={t("shared.gateway.pool.preferredAria")}
-              >
-                <SelectValue placeholder={t("shared.gateway.pool.preferredAuto")} />
-              </SelectTrigger>
-              <SelectContent>
-                {options.map((option) => (
-                  <SelectItem key={option.value} value={option.value}>
-                    {option.label}
-                  </SelectItem>
-                ))}
-                {accounts.map((account) => (
-                  <SelectItem key={account.uid} value={account.uid}>
-                    {account.name}
-                  </SelectItem>
-                ))}
-                {/* 指定的账号已不在池中（被删除 / 换了产品线）：仍要显示出来，
-                    否则 Select 找不到匹配项会显示成空白，用户以为「没指定」。 */}
-                {preferredUid !== "" && !preferredInPool && (
-                  <SelectItem value={preferredUid}>
-                    {t("shared.gateway.pool.preferredMissing")}
-                  </SelectItem>
-                )}
-              </SelectContent>
-            </Select>
-          </div>
-          {totalRequests !== null && (
-            <span className="text-xs text-muted-foreground">
-              {t("shared.gateway.pool.totalRequests", { count: formatCount(totalRequests) })}
-            </span>
-          )}
-        </div>
+    <div className={cn(className)}>
+      {/* 工具条：指定账号（偏好入口）+ 累计请求 —— 与 `KeysBar` / `CatalogSourceBar`
+          同一套 `cat-bar` 表面（`bg-muted` + 圆角 + 10px/12px 内距）。
+          标题（`title`）已去掉：无卡头且三个调用点都不传（版本由页头切换器承担）。 */}
+      <div className="mb-3 flex flex-wrap items-center gap-2.5 rounded-[10px] bg-muted px-3 py-2.5">
+        <span className="text-xs text-muted-foreground">
+          {t("shared.gateway.pool.preferredLabel")}
+        </span>
+        <Select
+          value={selectValue}
+          onValueChange={(next) => onPreferredUidChange(next === AUTO_OPTION ? "" : next)}
+          disabled={saving}
+        >
+          <SelectTrigger
+            size="sm"
+            className="w-48"
+            aria-label={t("shared.gateway.pool.preferredAria")}
+          >
+            <SelectValue placeholder={t("shared.gateway.pool.preferredAuto")} />
+          </SelectTrigger>
+          <SelectContent>
+            {options.map((option) => (
+              <SelectItem key={option.value} value={option.value}>
+                {option.label}
+              </SelectItem>
+            ))}
+            {accounts.map((account) => (
+              <SelectItem key={account.uid} value={account.uid}>
+                {account.name}
+              </SelectItem>
+            ))}
+            {/* 指定的账号已不在池中（被删除 / 换了产品线）：仍要显示出来，
+                否则 Select 找不到匹配项会显示成空白，用户以为「没指定」。 */}
+            {preferredUid !== "" && !preferredInPool && (
+              <SelectItem value={preferredUid}>
+                {t("shared.gateway.pool.preferredMissing")}
+              </SelectItem>
+            )}
+          </SelectContent>
+        </Select>
+        <div className="grow" />
+        {totalRequests !== null && (
+          <span className="text-xs text-muted-foreground">
+            {t("shared.gateway.pool.totalRequests", { count: formatCount(totalRequests) })}
+          </span>
+        )}
       </div>
 
       <div
@@ -377,6 +376,6 @@ export function AccountPoolCard({
           </ul>
         </div>
       )}
-    </Card>
+    </div>
   );
 }

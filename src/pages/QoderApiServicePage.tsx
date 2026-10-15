@@ -10,11 +10,14 @@ import {
   AccountPoolCard,
   QODER_POOL_TILES,
 } from "@/components/gateway/account-pool-card";
+import { GatewayShell } from "@/components/gateway/gateway-shell";
 import {
-  GATEWAY_SUBNAV,
-  GatewaySubnav,
-  parseGatewaySubnav,
-  type GatewaySubnavId,
+  GW_INDEPENDENT_SECTIONS_NO_PROXY,
+  GW_SECTIONS,
+  parseGatewayDeepLink,
+  unifiedSectionId,
+  type GatewaySectionId,
+  type GatewayType,
 } from "@/components/gateway/gateway-subnav";
 import { QoderApiKeyTable } from "@/components/gateway/qoder-api-key-table";
 import { QoderModelList } from "@/components/gateway/qoder-model-list";
@@ -65,7 +68,7 @@ const LAN = "0.0.0.0";
  * `PROXY_GATEWAY_BASE`），Qoder 侧没有对应后端 ⇒ 不渲染该项 ——
  * 一个点进去什么都没有的项，比不渲染更糟（§3.4 规则 1：缺能力不画空壳）。
  */
-const QODER_GATEWAY_SUBNAV = GATEWAY_SUBNAV.filter((item) => item.id !== "proxy");
+const QODER_GATEWAY_SUBNAV = GW_INDEPENDENT_SECTIONS_NO_PROXY;
 
 /**
  * 本页快照：配置 / 状态 / 模型清单 / 请求日志。
@@ -113,14 +116,30 @@ export default function QoderApiServicePage() {
   /* ★ 子导航选中项：**初值从 URL 读**（`?sub=logs`），非法值 fail-closed 回 `overview`
      （与设置页 `?section=`、另两个网关页同一口径），点击时写回 URL（深链可刷新、可分享）。 */
   const [searchParams, setSearchParams] = useSearchParams();
-  const [sub, setSub] = useState<GatewaySubnavId>(() => parseGatewaySubnav(searchParams.get("sub")));
+  /* ★ 两个轴（`?type=` + `?sub=`）；深链解析兼容两代旧链，见 `parseGatewayDeepLink`。 */
+  const [{ type, section }, setNav] = useState(() => parseGatewayDeepLink(searchParams));
 
-  /** 切换子分区并写回 URL（保留其他查询参数，只覆盖 `sub`）。 */
-  function goSub(id: GatewaySubnavId) {
-    setSub(id);
-    const next = new URLSearchParams(searchParams);
-    next.set("sub", id);
-    setSearchParams(next, { replace: true });
+  /** 写回 URL（保留查询串里的其他参数，而不是整体覆盖）。 */
+  function writeNav(next: GatewayType, sub: GatewaySectionId) {
+    setNav({ type: next, section: sub });
+    const params = new URLSearchParams(searchParams);
+    params.set("type", next);
+    params.set("sub", sub);
+    setSearchParams(params, { replace: true });
+  }
+
+  /* ★ 切类型**必须重置分区**到该类型的第一项（两个类型的分区 id 集合不相交）。 */
+  function goType(next: GatewayType) {
+    writeNav(next, GW_SECTIONS[next][0].id);
+  }
+
+  /** 统一网关分区内的跳转（裸分区名 → 带 `u-` 前缀的分区 id；约定只在 `unifiedSectionId` 里写一次）。 */
+  function goUnified(next: string) {
+    goSub(unifiedSectionId(next));
+  }
+
+  function goSub(id: GatewaySectionId) {
+    writeNav(type, id);
   }
 
   const loadSnapshot = useCallback(async (): Promise<ApiServiceSnapshot> => {
@@ -348,12 +367,15 @@ export default function QoderApiServicePage() {
       )}
 
       {/* ---- 主区：子导航 + 分区内容（与另两个分区同一套骨架）---- */}
-      <div data-split-layout className="min-w-0">
-        <GatewaySubnav active={sub} items={QODER_GATEWAY_SUBNAV} onSelect={goSub} />
-
-        <div className="min-w-0 flex-1">
+      <GatewayShell
+        type={type}
+        section={section}
+        sections={type === "independent" ? QODER_GATEWAY_SUBNAV : undefined}
+        onTypeChange={goType}
+        onSelect={goSub}
+      >
           {/* ---- 概览：服务状态 + 接入地址 + 接入指引 ---- */}
-          {sub === "overview" && (
+          {section === "overview" && (
             <>
               <Card className="mb-6 gap-0 py-0">
                 <div className="flex items-center justify-between gap-3 border-b border-border/60 px-5 py-4">
@@ -512,12 +534,12 @@ export default function QoderApiServicePage() {
           )}
 
           {/* ---- 密钥（多 Key + 归属区域） ---- */}
-          {sub === "keys" && (
+          {section === "keys" && (
             <QoderApiKeyTable defaultRegion={region} onChanged={() => void loadAll()} />
           )}
 
           {/* ---- 模型清单（向上游实时拉取 + 禁用 / 启用） ---- */}
-          {sub === "models" && (
+          {section === "models" && (
             <QoderModelList
               catalog={catalog}
               region={region}
@@ -527,7 +549,7 @@ export default function QoderApiServicePage() {
           )}
 
           {/* ---- 账号池（三平台共用同一张卡；tiles 与「恢复」动作走数据 / 插槽） ---- */}
-          {sub === "pool" && (
+          {section === "pool" && (
             <AccountPoolCard
               pool={status?.pool ?? null}
               accounts={status?.accounts ?? []}
@@ -545,12 +567,14 @@ export default function QoderApiServicePage() {
           )}
 
           {/* ---- 请求日志 ---- */}
-          {sub === "logs" && (
+          {section === "logs" && (
             <TraeRequestLog logs={logs} clearing={clearing} onClear={() => void onClearLogs()} />
           )}
-          {sub === "unified" && <UnifiedGatewayView />}
-        </div>
-      </div>
+          {section === "u-overview" && <UnifiedGatewayView section="overview" onGoSection={goUnified} />}
+          {section === "u-namespaces" && <UnifiedGatewayView section="namespaces" onGoSection={goUnified} />}
+          {section === "u-keys" && <UnifiedGatewayView section="keys" onGoSection={goUnified} />}
+          {section === "u-pool" && <UnifiedGatewayView section="pool" onGoSection={goUnified} />}
+      </GatewayShell>
 
       {/* ---- 局域网风险确认 ---- */}
       <Dialog open={riskOpen} onOpenChange={setRiskOpen}>

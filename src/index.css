@@ -384,6 +384,31 @@
 }
 
 /**
+ * ★ 网关页左栏 = **类型切换 + 该类型的分区子导航**（原型 `.side-col`，2026-10-15）。
+ *
+ * 为什么多一层：网关页现在有**两个类型**（独立网关 / 统一网关），
+ * 类型与分区是**两个正交的轴** —— 类型回答「哪个网关」，子导航回答「这个网关的哪个分区」。
+ * 两个轴同处一列，所以这一列接手原来的 `186px + sticky`，子导航退化成普通纵向列表
+ * （否则两处 `sticky` 叠加，内层会失去可滚动余量、静默失效）。
+ *
+ * ⚠️ `align-items: flex-start` 由父级 `[data-split-layout]` 提供，**不是可选的美化** ——
+ * 见那段注释（sticky 需要可滚动余量）。
+ */
+[data-gateway-sidebar] {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  width: 186px;
+  flex-shrink: 0;
+  position: sticky;
+  top: 26px;
+}
+[data-gateway-sidebar] [data-side-subnav] {
+  width: 100%;
+  position: static;
+}
+
+/**
  * ★ 「子导航 + 内容」两栏容器 `.split`（原型 `demo.css:369-379`）。
  *
  * 逐值：`display:flex` · `align-items:flex-start` · `gap:22px`。
@@ -416,5 +441,10 @@
   }
   [data-side-subnav] [data-subnav-marker] {
     display: none;
+  }
+  /* 左栏整体转满宽 + 取消 sticky（原型 `.side-col` 的 900px 断点）。 */
+  [data-gateway-sidebar] {
+    width: 100%;
+    position: static;
   }
 }

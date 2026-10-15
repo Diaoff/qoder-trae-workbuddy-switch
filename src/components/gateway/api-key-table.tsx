@@ -4,9 +4,9 @@ import { toast } from "sonner";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Card } from "@/components/ui/card";
 import { EmptyState } from "@/components/ui/empty-state";
 import { DemoAction } from "@/components/demo-action";
+import { KeysBar } from "@/components/gateway/keys-bar";
 import {
   Dialog,
   DialogContent,
@@ -30,7 +30,19 @@ import { useGatewayStore } from "@/stores/gateway";
 /* P3：本地 `formatDate` 已移到 `@/lib/format` —— 它与 Trae 侧各写一份且**已经漂移**：
    本版把时间戳 `0` 渲染成 `01-01 08:00` 这种**假时间**，共享版会返回 `—`。 */
 
-/** API Key 列表 + 创建对话框 + 一次性明文展示 + 吊销 / 删除（P0-3）。 */
+/** API Key 列表 + 创建对话框 + 一次性明文展示 + 吊销 / 恢复 / 删除（P0-3）。
+ *
+ * ## 2026-10-15 骨架对齐原型：卡头 → `KeysBar` 工具条 + 裸表
+ *
+ * 原型（`viewGateway()` 的 `keys` 分支）= **工具条 + 裸表 + 说明段**，没有卡头。
+ * 本组件此前套了一整张 `<Card>`（卡头放「API Key」标题 + 创建按钮）：标题与左栏分区
+ * 导航重复，已去掉；创建出口挪进 `KeysBar` 的 `children` —— 它与统一网关侧**共用同一个
+ * 构件**，两个类型的密钥分区同形（此前独立网关只有空态才有创建出口，有 Key 时反而找不到）。
+ *
+ * 原型表下的**说明段**（掩码口径 / 累计口径 / 吊销可逆）在表下方渲染，走**三条产品线
+ * 共用**的键 `shared.gateway.keys.note`（各侧差异只在表里的「归属」列）；空态时不附
+ * 说明段（原型如此：空态只给 `emptyBlock`）。
+ */
 export function ApiKeyTable({ className }: { className?: string }) {
   const t = useT();
   const keys = useGatewayStore((s) => s.keys);
@@ -153,100 +165,107 @@ export function ApiKeyTable({ className }: { className?: string }) {
   }
 
   return (
-    <Card className={cn("gap-0 py-0", className)}>
-      <div className="flex items-center justify-between gap-3 border-b border-border/60 px-5 py-3">
-        <span className="text-sm font-semibold">API Key</span>
+    <div className={cn(className)}>
+      {/* 工具条与统一网关**共用同一个构件**：计数 + 说明 + 创建出口。
+          创建出口此前只在空态出现 —— 有密钥时反而找不到，现在恒在。 */}
+      <KeysBar total={keys.length} live={keys.filter((key) => !key.revoked).length}>
         <DemoAction>
           <Button size="sm" onClick={openCreate}>
             <KeyRound />
             {t("wbStats.gateway.createKey")}
           </Button>
         </DemoAction>
-      </div>
+      </KeysBar>
 
-      <div className="px-5 py-3">
-        {keys.length === 0 ? (
-          /* ★ 空态用全应用唯一的 `EmptyState`（§3.6）—— 与 Trae 侧 `trae-api-key-table.tsx`
-             同一形态。原来这里是「一行灰字」，两平台的 Key 表空态长得不一样。 */
-          <EmptyState icon={KeyRound} title={t("wbStats.gateway.noKeys")} className="py-4" />
-        ) : (
-          <div className="min-w-0 overflow-x-auto">
-            <table className="w-full min-w-[560px] text-left text-sm">
-              <thead>
-                <tr className="text-xs text-muted-foreground">
-                  <th className="pb-2 pr-4 font-medium">{t("wbStats.table.name")}</th>
-                  <th className="pb-2 pr-4 font-medium">{t("wbStats.table.version")}</th>
-                  <th className="pb-2 pr-4 font-medium">{t("wbStats.table.prefix")}</th>
-                  <th className="pb-2 pr-4 font-medium">{t("wbStats.table.createdAt")}</th>
-                  <th className="pb-2 pr-4 font-medium">{t("wbStats.table.lastUsed")}</th>
-                  <th className="pb-2 pr-4 font-medium">{t("wbStats.table.status")}</th>
-                  <th className="pb-2 font-medium">{t("wbStats.table.actions")}</th>
-                </tr>
-              </thead>
-              <tbody>
-                {keys.map((key) => {
-                  const revoked = key.revoked;
-                  return (
-                    <tr key={key.id} className="border-t border-border/60">
-                      <td className="py-2 pr-4 font-medium">{key.name}</td>
-                      <td className="py-2 pr-4">
-                        <Badge variant="secondary" className="rounded-md">
-                          {regionDescriptor(key.region).versionLabel}
+      {keys.length === 0 ? (
+        /* ★ 空态用全应用唯一的 `EmptyState`（§3.6）—— 与 Trae 侧 `trae-api-key-table.tsx`
+           同一形态。原来这里是「一行灰字」，两平台的 Key 表空态长得不一样。 */
+        <EmptyState icon={KeyRound} title={t("wbStats.gateway.noKeys")} className="py-4" />
+      ) : (
+        <div className="min-w-0 overflow-x-auto">
+          <table className="w-full min-w-[560px] text-left text-sm">
+            <thead>
+              <tr className="text-xs text-muted-foreground">
+                <th className="pb-2 pr-4 font-medium">{t("wbStats.table.name")}</th>
+                <th className="pb-2 pr-4 font-medium">{t("wbStats.table.version")}</th>
+                <th className="pb-2 pr-4 font-medium">{t("wbStats.table.prefix")}</th>
+                <th className="pb-2 pr-4 font-medium">{t("wbStats.table.createdAt")}</th>
+                <th className="pb-2 pr-4 font-medium">{t("wbStats.table.lastUsed")}</th>
+                <th className="pb-2 pr-4 font-medium">{t("wbStats.table.status")}</th>
+                <th className="pb-2 font-medium">{t("wbStats.table.actions")}</th>
+              </tr>
+            </thead>
+            <tbody>
+              {keys.map((key) => {
+                const revoked = key.revoked;
+                return (
+                  <tr key={key.id} className="border-t border-border/60">
+                    <td className="py-2 pr-4 font-medium">{key.name}</td>
+                    <td className="py-2 pr-4">
+                      <Badge variant="secondary" className="rounded-md">
+                        {regionDescriptor(key.region).versionLabel}
+                      </Badge>
+                    </td>
+                    {/* ★ E3：掩码补上尾部 4 位（`prefix••••••••suffix`）——
+                    用户靠它**确认是哪一把**。旧台账无 suffix ⇒ 只显示前缀 + 省略号。 */}
+                    <td className="py-2 pr-4 font-mono text-xs text-muted-foreground">
+                      {key.suffix
+                        ? `${key.prefix}••••••••${key.suffix}`
+                        : `${key.prefix}…`}
+                    </td>
+                    <td className="py-2 pr-4 text-xs text-muted-foreground">{formatDate(key.createdAt)}</td>
+                    {/* ★ 与 Trae 侧同列同序：`lastUsedAt` 字段后端一直有（`ApiKeyRecord`），
+                        此前 WB 表**没有渲染**它 —— 用户看不出哪把 Key 还在被用。 */}
+                    <td className="py-2 pr-4 text-xs text-muted-foreground">
+                      {key.lastUsedAt ? formatDate(key.lastUsedAt) : t("wbStats.table.neverUsed")}
+                    </td>
+                    <td className="py-2 pr-4">
+                      {revoked ? (
+                        <Badge variant="secondary" className="rounded-md text-muted-foreground">
+                          {t("wbStats.gateway.revoked")}
                         </Badge>
-                      </td>
-                      {/* ★ E3：掩码补上尾部 4 位（`prefix••••••••suffix`）——
-                      用户靠它**确认是哪一把**。旧台账无 suffix ⇒ 只显示前缀 + 省略号。 */}
-                      <td className="py-2 pr-4 font-mono text-xs text-muted-foreground">
-                        {key.suffix
-                          ? `${key.prefix}••••••••${key.suffix}`
-                          : `${key.prefix}…`}
-                      </td>
-                      <td className="py-2 pr-4 text-xs text-muted-foreground">{formatDate(key.createdAt)}</td>
-                      {/* ★ 与 Trae 侧同列同序：`lastUsedAt` 字段后端一直有（`ApiKeyRecord`），
-                          此前 WB 表**没有渲染**它 —— 用户看不出哪把 Key 还在被用。 */}
-                      <td className="py-2 pr-4 text-xs text-muted-foreground">
-                        {key.lastUsedAt ? formatDate(key.lastUsedAt) : t("wbStats.table.neverUsed")}
-                      </td>
-                      <td className="py-2 pr-4">
-                        {revoked ? (
-                          <Badge variant="secondary" className="rounded-md text-muted-foreground">
-                            {t("wbStats.gateway.revoked")}
-                          </Badge>
-                        ) : (
-                          <Badge variant="success" className="rounded-md">
-                            {t("wbStats.gateway.enabled")}
-                          </Badge>
-                        )}
-                      </td>
-                      <td className="py-2">
-                        {/* ★ 已吊销 ⇒ **两个出口都在**：恢复（可逆，回到「启用」）+ 删除（不可逆，清记录）。
-                            「吊销」与「启用」是同一把 Key 的两种状态，恢复不需要重建 Key、
-                            也不需要改动任何客户端的配置。 */}
-                        {revoked ? (
-                          <div className="flex items-center gap-1">
-                            <Button variant="ghost" size="sm" onClick={() => setRestoreTarget(key)}>
-                              <RotateCcw />
-                              {t("wbStats.gateway.restore")}
-                            </Button>
-                            <Button variant="ghost" size="sm" className="text-destructive hover:text-destructive" onClick={() => setDeleteTarget(key)}>
-                              <Trash2 />
-                              {t("wbStats.gateway.delete")}
-                            </Button>
-                          </div>
-                        ) : (
-                          <Button variant="ghost" size="sm" onClick={() => setRevokeTarget(key)}>
-                            {t("wbStats.gateway.revoke")}
+                      ) : (
+                        <Badge variant="success" className="rounded-md">
+                          {t("wbStats.gateway.enabled")}
+                        </Badge>
+                      )}
+                    </td>
+                    <td className="py-2">
+                      {/* ★ 已吊销 ⇒ **两个出口都在**：恢复（可逆，回到「启用」）+ 删除（不可逆，清记录）。
+                          「吊销」与「启用」是同一把 Key 的两种状态，恢复不需要重建 Key、
+                          也不需要改动任何客户端的配置。 */}
+                      {revoked ? (
+                        <div className="flex items-center gap-1">
+                          <Button variant="ghost" size="sm" onClick={() => setRestoreTarget(key)}>
+                            <RotateCcw />
+                            {t("wbStats.gateway.restore")}
                           </Button>
-                        )}
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
+                          <Button variant="ghost" size="sm" className="text-destructive hover:text-destructive" onClick={() => setDeleteTarget(key)}>
+                            <Trash2 />
+                            {t("wbStats.gateway.delete")}
+                          </Button>
+                        </div>
+                      ) : (
+                        <Button variant="ghost" size="sm" onClick={() => setRevokeTarget(key)}>
+                          {t("wbStats.gateway.revoke")}
+                        </Button>
+                      )}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
           </div>
         )}
-      </div>
+
+      {/* 说明段（原型 `<p class="tiny muted" style="margin:10px 2px 0">`）：掩码口径 /
+          累计口径 / 吊销可逆。三条产品线共用一条键，差异只在表里的「归属」列。 */}
+      {keys.length > 0 && (
+        <p className="mt-2.5 text-[11.5px] leading-5 text-muted-foreground">
+          {t("shared.gateway.keys.note")}
+        </p>
+      )}
 
       {/* 创建对话框 */}
       <Dialog open={createOpen} onOpenChange={setCreateOpen}>
@@ -387,6 +406,6 @@ export function ApiKeyTable({ className }: { className?: string }) {
           </DialogFooter>
         </DialogContent>
       </Dialog>
-    </Card>
+    </div>
   );
 }

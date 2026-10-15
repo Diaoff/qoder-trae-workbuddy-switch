@@ -4,9 +4,9 @@ import { toast } from "sonner";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Card } from "@/components/ui/card";
 import { EmptyState } from "@/components/ui/empty-state";
 import { DemoAction } from "@/components/demo-action";
+import { KeysBar } from "@/components/gateway/keys-bar";
 import {
   Dialog,
   DialogContent,
@@ -95,6 +95,17 @@ function programLabelOf(variant: TraeVariantId): string {
  *    本组件自持数据（无 store），列表直接调 `list_trae_api_keys`。
  *
  * 明文只在创建时一次性返回（`create_trae_api_key`），列表接口永远只给脱敏前缀。
+ *
+ * ## 2026-10-15 骨架对齐原型：卡头 → `KeysBar` 工具条 + 裸表
+ *
+ * 原型（`viewGateway()` 的 `keys` 分支）= **工具条 + 裸表 + 说明段**，没有卡头。
+ * 本组件此前套了一整张 `<Card>`（卡头放「API Key」标题 + 创建按钮）：标题与左栏分区
+ * 导航重复，已去掉；创建出口挪进 `KeysBar` 的 `children` —— 它与统一网关侧**共用同一个
+ * 构件**，两个类型的密钥分区同形。三条产品线的差异仍只走数据与文案键。
+ *
+ * 原型表下的**说明段**（掩码口径 / 累计口径 / 吊销可逆）在表下方渲染，走**三条产品线
+ * 共用**的键 `shared.gateway.keys.note`（各侧差异只在表里的「归属程序位」列）；
+ * 空态时不附说明段（原型如此：空态只给 `emptyBlock`）。
  */
 export function TraeApiKeyTable({
   className,
@@ -256,115 +267,121 @@ export function TraeApiKeyTable({
   }
 
   return (
-    <Card className={cn("gap-0 py-0", className)}>
-      <div className="flex items-center justify-between gap-3 border-b border-border/60 px-5 py-3">
-        <span className="text-sm font-semibold">API Key</span>
+    <div className={cn(className)}>
+      {/* 工具条与统一网关**共用同一个构件**：计数 + 说明 + 创建出口（此前只有空态才有出口）。 */}
+      <KeysBar total={keys.length} live={keys.filter((key) => !key.revoked).length}>
         <DemoAction>
           <Button size="sm" onClick={openCreate}>
             <KeyRound />
             {t("trae.gateway.key.create")}
           </Button>
         </DemoAction>
-      </div>
+      </KeysBar>
 
-      <div className="px-5 py-3">
-        {loading && keys.length === 0 ? (
-          /* 区块**首次加载** ⇒ 用 `<Skeleton>` 占位（§3.6）。
-             ⚠️ 此前这里是「文字型『加载中』+ `<Loader2>`」—— 那是**按钮操作中**态的语言，
-             两者不可混用（本仓同一条规则在 `ApiServicePage` / `ModelList` 都有注释钉着）。 */
-          <div className="space-y-2 py-4" aria-busy="true">
-            <Skeleton className="h-4 w-40" />
-            <Skeleton className="h-4 w-64" />
-            <Skeleton className="h-4 w-52" />
-          </div>
-        ) : keys.length === 0 ? (
-          <EmptyState icon={KeyRound} title={t("trae.gateway.key.empty")} className="py-4" />
-        ) : (
-          <div className="min-w-0 overflow-x-auto">
-            <table className="w-full min-w-[640px] text-left text-sm">
-              <thead>
-                <tr className="text-xs text-muted-foreground">
-                  <th className="pb-2 pr-4 font-medium">{t("trae.gateway.key.name")}</th>
-                  <th className="pb-2 pr-4 font-medium">{t("trae.gateway.key.col.variant")}</th>
-                  <th className="pb-2 pr-4 font-medium">{t("trae.gateway.key.col.prefix")}</th>
-                  <th className="pb-2 pr-4 font-medium">{t("trae.gateway.key.col.createdAt")}</th>
-                  <th className="pb-2 pr-4 font-medium">{t("trae.gateway.key.col.lastUsed")}</th>
-                  <th className="pb-2 pr-4 font-medium">{t("trae.gateway.key.col.status")}</th>
-                  <th className="pb-2 font-medium">{t("trae.gateway.key.col.actions")}</th>
-                </tr>
-              </thead>
-              <tbody>
-                {keys.map((key) => {
-                  const revoked = key.revoked;
-                  return (
-                    <tr key={key.id} className="border-t border-border/60">
-                      <td className="py-2 pr-4 font-medium">{key.name}</td>
-                      <td className="py-2 pr-4">
-                        <Badge
-                          variant="secondary"
-                          className="rounded-md"
-                          title={traeRegionLabelOf(key.variant)}
-                        >
-                          {programLabelOf(key.variant)}
+      {loading && keys.length === 0 ? (
+        /* 区块**首次加载** ⇒ 用 `<Skeleton>` 占位（§3.6）。
+           ⚠️ 此前这里是「文字型『加载中』+ `<Loader2>`」—— 那是**按钮操作中**态的语言，
+           两者不可混用（本仓同一条规则在 `ApiServicePage` / `ModelList` 都有注释钉着）。 */
+        <div className="space-y-2 py-4" aria-busy="true">
+          <Skeleton className="h-4 w-40" />
+          <Skeleton className="h-4 w-64" />
+          <Skeleton className="h-4 w-52" />
+        </div>
+      ) : keys.length === 0 ? (
+        <EmptyState icon={KeyRound} title={t("trae.gateway.key.empty")} className="py-4" />
+      ) : (
+        <div className="min-w-0 overflow-x-auto">
+          <table className="w-full min-w-[640px] text-left text-sm">
+            <thead>
+              <tr className="text-xs text-muted-foreground">
+                <th className="pb-2 pr-4 font-medium">{t("trae.gateway.key.name")}</th>
+                <th className="pb-2 pr-4 font-medium">{t("trae.gateway.key.col.variant")}</th>
+                <th className="pb-2 pr-4 font-medium">{t("trae.gateway.key.col.prefix")}</th>
+                <th className="pb-2 pr-4 font-medium">{t("trae.gateway.key.col.createdAt")}</th>
+                <th className="pb-2 pr-4 font-medium">{t("trae.gateway.key.col.lastUsed")}</th>
+                <th className="pb-2 pr-4 font-medium">{t("trae.gateway.key.col.status")}</th>
+                <th className="pb-2 font-medium">{t("trae.gateway.key.col.actions")}</th>
+              </tr>
+            </thead>
+            <tbody>
+              {keys.map((key) => {
+                const revoked = key.revoked;
+                return (
+                  <tr key={key.id} className="border-t border-border/60">
+                    <td className="py-2 pr-4 font-medium">{key.name}</td>
+                    <td className="py-2 pr-4">
+                      <Badge
+                        variant="secondary"
+                        className="rounded-md"
+                        title={traeRegionLabelOf(key.variant)}
+                      >
+                        {programLabelOf(key.variant)}
+                      </Badge>
+                    </td>
+                    {/* ★ E3：掩码补上尾部 4 位（`prefix••••••••suffix`）——
+                        用户靠它**确认是哪一把**（同时建两把时前缀可能只差一两位）。
+                        旧台账 / 短 legacy Key 无 `suffix` ⇒ 只显示前缀 + 省略号，
+                        与 WorkBuddy 侧 `api-key-table.tsx` **同一规则**。 */}
+                    <td className="py-2 pr-4 font-mono text-xs text-muted-foreground">
+                      {key.suffix
+                        ? `${key.prefix}••••••••${key.suffix}`
+                        : `${key.prefix}…`}
+                    </td>
+                    <td className="py-2 pr-4 text-xs text-muted-foreground">{formatDate(key.createdAt)}</td>
+                    <td className="py-2 pr-4 text-xs text-muted-foreground">
+                      {key.lastUsedAt ? formatDate(key.lastUsedAt) : t("trae.gateway.key.neverUsed")}
+                    </td>
+                    <td className="py-2 pr-4">
+                      {revoked ? (
+                        <Badge variant="secondary" className="rounded-md text-muted-foreground">
+                          {t("trae.gateway.key.statusRevoked")}
                         </Badge>
-                      </td>
-                      {/* ★ E3：掩码补上尾部 4 位（`prefix••••••••suffix`）——
-                          用户靠它**确认是哪一把**（同时建两把时前缀可能只差一两位）。
-                          旧台账 / 短 legacy Key 无 `suffix` ⇒ 只显示前缀 + 省略号，
-                          与 WorkBuddy 侧 `api-key-table.tsx` **同一规则**。 */}
-                      <td className="py-2 pr-4 font-mono text-xs text-muted-foreground">
-                        {key.suffix
-                          ? `${key.prefix}••••••••${key.suffix}`
-                          : `${key.prefix}…`}
-                      </td>
-                      <td className="py-2 pr-4 text-xs text-muted-foreground">{formatDate(key.createdAt)}</td>
-                      <td className="py-2 pr-4 text-xs text-muted-foreground">
-                        {key.lastUsedAt ? formatDate(key.lastUsedAt) : t("trae.gateway.key.neverUsed")}
-                      </td>
-                      <td className="py-2 pr-4">
-                        {revoked ? (
-                          <Badge variant="secondary" className="rounded-md text-muted-foreground">
-                            {t("trae.gateway.key.statusRevoked")}
-                          </Badge>
-                        ) : (
-                          <Badge variant="success" className="rounded-md">
-                            {t("trae.gateway.key.statusActive")}
-                          </Badge>
-                        )}
-                      </td>
-                      <td className="py-2">
-                        {/* ★ 已吊销 ⇒ **两个出口都在**：恢复（可逆）+ 删除（不可逆）。
-                            与 WorkBuddy 侧同形同序（恢复在前、删除在后）。 */}
-                        {revoked ? (
-                          <div className="flex items-center gap-1">
-                            <Button variant="ghost" size="sm" onClick={() => setRestoreTarget(key)}>
-                              <RotateCcw />
-                              {t("trae.gateway.key.restore")}
-                            </Button>
-                            <Button
-                              variant="ghost"
-                              size="sm"
-                              className="text-destructive hover:text-destructive"
-                              onClick={() => setDeleteTarget(key)}
-                            >
-                              <Trash2 />
-                              {t("trae.gateway.key.delete")}
-                            </Button>
-                          </div>
-                        ) : (
-                          <Button variant="ghost" size="sm" onClick={() => setRevokeTarget(key)}>
-                            {t("trae.gateway.key.revoke")}
+                      ) : (
+                        <Badge variant="success" className="rounded-md">
+                          {t("trae.gateway.key.statusActive")}
+                        </Badge>
+                      )}
+                    </td>
+                    <td className="py-2">
+                      {/* ★ 已吊销 ⇒ **两个出口都在**：恢复（可逆）+ 删除（不可逆）。
+                          与 WorkBuddy 侧同形同序（恢复在前、删除在后）。 */}
+                      {revoked ? (
+                        <div className="flex items-center gap-1">
+                          <Button variant="ghost" size="sm" onClick={() => setRestoreTarget(key)}>
+                            <RotateCcw />
+                            {t("trae.gateway.key.restore")}
                           </Button>
-                        )}
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </div>
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            className="text-destructive hover:text-destructive"
+                            onClick={() => setDeleteTarget(key)}
+                          >
+                            <Trash2 />
+                            {t("trae.gateway.key.delete")}
+                          </Button>
+                        </div>
+                      ) : (
+                        <Button variant="ghost" size="sm" onClick={() => setRevokeTarget(key)}>
+                          {t("trae.gateway.key.revoke")}
+                        </Button>
+                      )}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {/* 说明段（原型 `<p class="tiny muted" style="margin:10px 2px 0">`）：掩码口径 /
+          累计口径 / 吊销可逆。三条产品线共用一条键，差异只在表里的「归属程序位」列。 */}
+      {keys.length > 0 && (
+        <p className="mt-2.5 text-[11.5px] leading-5 text-muted-foreground">
+          {t("shared.gateway.keys.note")}
+        </p>
+      )}
 
       {/* 创建对话框 */}
       <Dialog open={createOpen} onOpenChange={setCreateOpen}>
@@ -506,6 +523,6 @@ export function TraeApiKeyTable({
           </DialogFooter>
         </DialogContent>
       </Dialog>
-    </Card>
+    </div>
   );
 }

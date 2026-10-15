@@ -1,5 +1,5 @@
 /**
- * 统一网关（第三个产品线）**跨作用域**的管理页 —— 网关页子导航第 7 项「统一入口」。
+ * 统一网关（第三个产品线）**跨作用域**的管理页 —— 网关页子导航第 7 项「统一网关」。
  *
  * 设计依据：`docs/redesign/UNIFIED-GATEWAY-UI.md`（三张卡 / 状态矩阵 / 危险动作分档）。
  * 本组件落地**全部三张卡**：
@@ -9,7 +9,7 @@
  *
  * ## ★ 它是**跨作用域**的
  *
- * 与「请求日志不做版本过滤」同性质：统一入口把两个产品线的模型合成一个入口，
+ * 与「请求日志不做版本过滤」同性质：统一网关把两个产品线的模型合成一个入口，
  * 因此**上方的作用域选择器对它不生效**（卡 1 顶部有一行明确说明，否则用户切作用域没变化会当成 bug）。
  * 也因此这些命令**不进** `SCOPE_PARAMETERIZED`。
  *
@@ -20,11 +20,13 @@
  * —— 与「命名空间镜像表」同一个判断标准。
  */
 
-import { useCallback, useEffect, useMemo, useState } from "react";
-import { Copy, KeyRound, Loader2, Plus, RotateCcw, Trash2 } from "lucide-react";
+import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
+import { Copy, KeyRound, Loader2, Plus, RotateCcw, ShieldAlert, Trash2, Users } from "lucide-react";
 import { toast } from "sonner";
 
 import { Badge } from "@/components/ui/badge";
+import { DemoAction } from "@/components/demo-action";
+import { KeysBar } from "@/components/gateway/keys-bar";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -40,6 +42,8 @@ import { EmptyState } from "@/components/ui/empty-state";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Seg } from "@/components/ui/seg";
+import { Skeleton } from "@/components/ui/skeleton";
 import { Switch } from "@/components/ui/switch";
 import * as api from "@/lib/api";
 import { copyText } from "@/lib/clipboard";
@@ -119,8 +123,49 @@ function keysOf(payload: unknown): api.UnifiedApiKeyView[] {
   return Array.isArray(inner) ? (inner as api.UnifiedApiKeyView[]) : [];
 }
 
-/** 统一网关工作台（跨作用域）。 */
-export function UnifiedGatewayView({ className }: { className?: string }) {
+/** 代码样例里的模型 —— **带命名空间前缀**，这正是统一网关最容易踩的坑。 */
+const SAMPLE_MODEL = "wb-cn:deepseek-v4.1-flash";
+
+/**
+ * 错误响应样例（原型 UNI_ERRORS）。
+ *
+ * 只放**能确认**的码与出路；不确定的一律不写（编错的错误码比没有更糟）。
+ * 文案走 unifiedGateway.err.<key>.title|body，与抽屉逐条对应。
+ */
+const UNIFIED_ERROR_SAMPLES = [
+  { key: "bareModel", code: "400 namespace_prefix_required" },
+  { key: "forbidden", code: "403 namespace_forbidden" },
+  { key: "responses", code: "501 endpoint_not_supported_for_namespace" },
+  { key: "notEnabled", code: "400 namespace_not_enabled" },
+  { key: "oldPort", code: "400 namespace_not_parsed_here" },
+] as const;
+
+/** 回环 / 局域网两个字面量（与三个既有网关页同款，避免各处写死字符串）。 */
+const LOOPBACK = "127.0.0.1";
+const LAN = "0.0.0.0";
+
+/** 统一网关的分区（与 `GW_UNIFIED_SECTIONS` 一一对应）。 */
+export type UnifiedGatewaySection = "overview" | "namespaces" | "keys" | "pool";
+
+/**
+ * 统一网关工作台 —— **按 `section` 只渲染一个分区**（导航归 `GatewayShell` 管）。
+ *
+ * ⚠️ 本组件**不持有导航状态**：分区真值在 URL（`?type=unified&sub=u-*`），
+ * 由页面解析后以 `section` 传入。自持一份 state 就会出现「URL 与界面各说各话」。
+ */
+export function UnifiedGatewayView({
+  section,
+  onGoSection,
+  className,
+}: {
+  section: UnifiedGatewaySection;
+  /**
+   * 分区之间的跳转（如「账号池」为空时引导去「命名空间」）。
+   * ⚠️ **可选**：不传时相关出口**不渲染**，而不是渲染一枚点了没反应的按钮。
+   */
+  onGoSection?: (next: UnifiedGatewaySection) => void;
+  className?: string;
+}) {
   const t = useT();
   const [snapshot, setSnapshot] = useState<api.UnifiedGatewaySnapshot | null>(null);
   const [keys, setKeys] = useState<api.UnifiedApiKeyView[]>([]);
@@ -135,6 +180,24 @@ export function UnifiedGatewayView({ className }: { className?: string }) {
   const [models, setModels] = useState<api.UnifiedModelsPreview | null>(null);
   /** 展开查看清单的命名空间（受控展开；不用 details/summary —— 本仓 AGENTS.md 禁止）。 */
   const [expandedNs, setExpandedNs] = useState<string[]>([]);
+  /** 开放局域网的**危险确认**（与三个既有网关页同一文案、同一形态）。 */
+  const [riskOpen, setRiskOpen] = useState(false);
+
+  /**
+   * 监听地址变更（下拉）。
+   *
+   * ★ **开放局域网是危险动作，必须两步确认** —— 与三个既有网关页**同一文案、同一形态**
+   * （`ShieldAlert` + `destructive`）。改造前这里是一枚按钮、**点了直接生效**：
+   * 同一件危险事（暴露到局域网 ⇒ 任何设备都能消耗你的额度）别处两步、这里一步，是安全缺陷。
+   */
+  function onBindChange(next: string) {
+    if (!snapshot || next === snapshot.config.bind_addr) return;
+    if (next === LOOPBACK) {
+      void save({ bind_addr: LOOPBACK, allow_non_loopback: false });
+      return;
+    }
+    setRiskOpen(true);
+  }
 
   const load = useCallback(async () => {
     try {
@@ -157,6 +220,87 @@ export function UnifiedGatewayView({ className }: { className?: string }) {
   useEffect(() => {
     void load();
   }, [load]);
+
+  /**
+   * 账号池总览（**跨平台只读汇总**）。与主快照**分开取**：只有「账号池」分区与命名空间表用得上，
+   * 且失败不该把整页拖成错误态 —— 那两处显示「—」即可（**未知 ≠ 零**，本仓硬规矩）。
+   */
+  const [pools, setPools] = useState<api.UnifiedGatewayPool[] | null>(null);
+  useEffect(() => {
+    let alive = true;
+    void (async () => {
+      try {
+        const data = await api.getUnifiedGatewayPoolOverview();
+        if (alive) setPools(data.pools);
+      } catch {
+        /* 静默：消费点用「—」表达「未知」，不把页面变成错误态。 */
+      }
+    })();
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  /** 接入说明的协议 Tab（与独立网关同形：卡头一枚 Seg）。 */
+  const [guideApi, setGuideApi] = useState<"openai" | "anthropic">("openai");
+  /** 「看错误响应」抽屉。 */
+  const [errorsOpen, setErrorsOpen] = useState(false);
+  /** 展开「看池」的命名空间（与 `expandedNs` 分开记：两个展开是**不同的问题**）。 */
+  const [poolOpen, setPoolOpen] = useState<string[]>([]);
+
+  /**
+   * 该命名空间背后的池。
+   *
+   * ⚠️ 用后端 `pools[].namespaces` **反查**，**不在前端另建「命名空间 → 池」映射表** ——
+   * 那是后端 `relay_target_of` 的职责，写死一份必然漂移。
+   * ⚠️ `pools === null`（未到 / 取失败）⇒ `undefined`，消费点一律显示「—」而**不是 0**
+   * （未知 ≠ 零，本仓硬规矩）。
+   */
+  function poolOf(id: string): api.UnifiedGatewayPool | undefined {
+    return pools?.find((pool) => pool.namespaces.includes(id));
+  }
+
+  /**
+   * 该命名空间的**可用性** —— **四态，顺序即优先级**：
+   * 未启用 → 池里没账号 → 池里没有可用账号 → 没识别到模型 → 可调用。
+   *
+   * ⚠️ 「已识别」只是清单识别过，**不等于可用** ⇒ 两个判据分开给，不合成一个总徽标。
+   * ⚠️ 池数据未到 ⇒ `null`，消费点**不渲染**徽标（不给一个假的「可调用」）。
+   */
+  function healthOf(id: string): { key: string; tone: "ok" | "warn" | "bad" | "muted" } | null {
+    if (!enabledIds.includes(id)) return { key: "disabled", tone: "muted" };
+    const pool = poolOf(id);
+    if (!pool) return null;
+    if (pool.total === 0) return { key: "noAccount", tone: "bad" };
+    if (pool.available === 0) return { key: "noAvailable", tone: "bad" };
+    const rows = (models?.data ?? []).filter((row) => row["namespace"] === id);
+    if (rows.length === 0) return { key: "noModels", tone: "warn" };
+    return { key: "ready", tone: "ok" };
+  }
+
+  /**
+   * 概览的**一句话结论** —— 用户不该自己把「N 个命名空间 / M 个可用账号」翻译成「现在能不能用」。
+   *
+   * 判据顺序（**顺序即优先级**）：未启用 → 没启用任何命名空间 → 池数据未到 → 全部不可用 →
+   * 部分不可用 → 可用。与命名空间的「可用性」列**同源**（同一份 `pools`），不另算一套。
+   * ⚠️ 池数据未到（`pools === null`）时**不猜** —— 给中性态「已启用」，而**不是**谎报「可用」。
+   */
+  function verdictOf(): {
+    key: string;
+    tone: "ok" | "warn" | "bad" | "muted" | "neutral";
+    count: number;
+  } {
+    if (!snapshot?.config.enabled) return { key: "disabled", tone: "muted", count: 0 };
+    if (enabledIds.length === 0) return { key: "noNamespace", tone: "warn", count: 0 };
+    if (!pools) return { key: "enabled", tone: "neutral", count: 0 };
+    const dead = enabledIds.filter((id) => {
+      const pool = poolOf(id);
+      return !pool || pool.available === 0;
+    });
+    if (dead.length === enabledIds.length) return { key: "dead", tone: "bad", count: dead.length };
+    if (dead.length > 0) return { key: "partial", tone: "warn", count: dead.length };
+    return { key: "ready", tone: "ok", count: 0 };
+  }
 
   /** 保存配置：**先落库再更新内存态** —— 否则行会「假装切了」（状态矩阵里的既有约定）。 */
   const save = useCallback(
@@ -187,6 +331,21 @@ export function UnifiedGatewayView({ className }: { className?: string }) {
   );
   const platforms = useMemo(() => platformOrder(visibleIds), [visibleIds]);
   const activeKeyCount = keys.filter((key) => !key.revoked).length;
+  /** 接入地址（与「独立网关」同款：`bind_addr:port`）—— 概览里要能一眼看到 + 一键复制。 */
+  const baseUrl = `http://${snapshot?.config.bind_addr ?? LOOPBACK}:${snapshot?.config.port ?? ""}`;
+  /** 概览的一句话结论（见 `verdictOf`）。 */
+  const verdict = verdictOf();
+
+  /** 接入说明的代码样例（两种协议的认证头不同 —— 把协议做成 Tab，认证头就不可能给错）。 */
+  const guideSnippet =
+    guideApi === "anthropic"
+      ? `curl ${baseUrl}/v1/messages \\
+  -H "x-api-key: $BUDDY_SWITCH_KEY" \\
+  -H "anthropic-version: 2023-06-01" \\
+  -d '{"model":"${SAMPLE_MODEL}","max_tokens":256,"messages":[{"role":"user","content":"hi"}]}'`
+      : `curl ${baseUrl}/v1/chat/completions \\
+  -H "Authorization: Bearer $BUDDY_SWITCH_KEY" \\
+  -d '{"model":"${SAMPLE_MODEL}","messages":[{"role":"user","content":"hi"}]}'`;
 
   /** 勾选 / 取消一个命名空间。★ 守卫：**至少保留一个**（取消最后一条时给 toast 并还原）。 */
   function toggleNamespace(id: string, next: boolean) {
@@ -253,12 +412,33 @@ export function UnifiedGatewayView({ className }: { className?: string }) {
 
   return (
     <div className={cn("space-y-4", className)}>
+      {/* ── 分区 ① · 概览 ── */}
+      {section === "overview" && (
+      <>
       {/* ── 卡 1 · 统一网关 ── */}
       <Card className="gap-0 py-0">
         <div className="flex items-center justify-between gap-3 border-b border-border/60 px-5 py-3">
           <span className="text-sm font-semibold">{t("unifiedGateway.title")}</span>
-          <Badge variant={snapshot?.running ? "success" : "secondary"} className="rounded-md">
-            {snapshot?.running ? t("unifiedGateway.running") : t("unifiedGateway.stopped")}
+          {/* ★ 「一句话结论」而不是「运行中 / 已停用」—— 后者只回答「进程在不在」，
+              前者回答用户真正问的「现在能不能用」。判据与命名空间「可用性」列同源。 */}
+          <Badge
+            variant={
+              verdict.tone === "ok"
+                ? "success"
+                : verdict.tone === "bad"
+                  ? "destructive"
+                  : verdict.tone === "warn"
+                    ? "secondary"
+                    : "outline"
+            }
+            className="rounded-md"
+            title={t(
+              `unifiedGateway.verdict.${verdict.key}Hint` as "unifiedGateway.verdict.readyHint",
+            )}
+          >
+            {verdict.key === "partial"
+              ? t("unifiedGateway.verdict.partial", { count: verdict.count })
+              : t(`unifiedGateway.verdict.${verdict.key}` as "unifiedGateway.verdict.ready")}
           </Badge>
         </div>
 
@@ -267,15 +447,33 @@ export function UnifiedGatewayView({ className }: { className?: string }) {
           {t("unifiedGateway.crossScope")}
         </div>
 
-        {/* 摘要条：一眼看全（与两个既有网关卡同构） */}
-        <div className="flex flex-wrap items-center gap-x-4 gap-y-1 border-b border-border/60 px-5 py-2.5 text-xs text-muted-foreground">
-          <span>
-            {t("unifiedGateway.summary", {
-              namespaces: enabledIds.length,
-              keys: activeKeyCount,
-              addr: `${snapshot?.config.bind_addr ?? "127.0.0.1"}:${snapshot?.config.port ?? ""}`,
-            })}
-          </span>
+        {/* 用哪个网关：两个类型的**分工**说清楚，避免用户在两个入口之间反复试。 */}
+        <div className="border-b border-border/60 px-5 py-2.5 text-xs text-muted-foreground">
+          {t("unifiedGateway.whichGateway")}
+        </div>
+
+        {/* 未启用态：关着开关时改配置，用户不确定有没有生效 ⇒ 如实说「会保存，启用后生效」。 */}
+        {!snapshot?.config.enabled && (
+          <div className="border-b border-border/60 px-5 py-2.5 text-xs text-warning">
+            {t("unifiedGateway.notEnabled")}
+          </div>
+        )}
+
+        {/* 接入地址（与两个既有网关卡同构的一行：值 + 复制出口）——
+            改造前这一行只在摘要条里露了个 `addr`，没有完整 URL、也没有复制。 */}
+        <div className="flex items-center gap-3 border-b border-border/60 px-5 py-3">
+          <div className="min-w-0 flex-1">
+            <div className="text-xs font-medium">{t("unifiedGateway.addr")}</div>
+            <div className="mt-0.5 break-all font-mono text-[11.5px] text-muted-foreground">{baseUrl}</div>
+          </div>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => void copyText(baseUrl, t("wbStats.gateway.baseUrlCopied"))}
+          >
+            <Copy />
+            {t("unifiedGateway.copyBaseUrl")}
+          </Button>
         </div>
 
         <div className="flex items-center gap-3 border-b border-border/60 px-5 py-3">
@@ -300,22 +498,21 @@ export function UnifiedGatewayView({ className }: { className?: string }) {
               {snapshot?.config.bind_addr}
             </div>
           </div>
-          <Button
-            variant="outline"
-            size="sm"
+          {/* ★ 与三个既有网关页**同形**：下拉（不是按钮切换）+ 开放局域网走危险确认。
+              按钮只能表达「下一步动作」，下拉能同时表达「当前值」。 */}
+          <Select
+            value={snapshot?.config.bind_addr ?? LOOPBACK}
+            onValueChange={onBindChange}
             disabled={saving}
-            onClick={() =>
-              void save({
-                bind_addr: snapshot?.config.bind_addr === "0.0.0.0" ? "127.0.0.1" : "0.0.0.0",
-                // 开非回环必须同时置真，否则后端会拒绝（安全默认）
-                allow_non_loopback: snapshot?.config.bind_addr !== "0.0.0.0",
-              })
-            }
           >
-            {snapshot?.config.bind_addr === "0.0.0.0"
-              ? t("unifiedGateway.bindLoopback")
-              : t("unifiedGateway.bindLan")}
-          </Button>
+            <SelectTrigger size="sm" className="w-52" aria-label={t("unifiedGateway.bindAddr")}>
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value={LOOPBACK}>{t("unifiedGateway.loopback")}</SelectItem>
+              <SelectItem value={LAN}>{t("unifiedGateway.lan")}</SelectItem>
+            </SelectContent>
+          </Select>
         </div>
 
         <div className="flex items-center gap-3 border-b border-border/60 px-5 py-3">
@@ -338,7 +535,61 @@ export function UnifiedGatewayView({ className }: { className?: string }) {
             aria-label={t("unifiedGateway.port")}
           />
         </div>
+        {/* 裸模型名：统一网关**必须**带命名空间前缀，这是最容易踩的坑 ⇒ 给错误样例出口 */}
+        <div className="flex items-center gap-3 px-5 py-3">
+          <div className="min-w-0 flex-1">
+            <div className="text-xs font-medium">{t("unifiedGateway.bareModel")}</div>
+            <div className="mt-0.5 text-[11.5px] text-muted-foreground">
+              {t("unifiedGateway.bareModelHint")}
+            </div>
+          </div>
+          <Button variant="outline" size="sm" onClick={() => setErrorsOpen(true)}>
+            {t("unifiedGateway.showErrors")}
+          </Button>
+        </div>
+      </Card>
+      {/* ── 接入说明 ──
+          ★ 与「独立网关」的接入说明**同形**：卡头放协议 Tab，卡体放代码样例 + 说明段落。
+          ★ 样例里的模型名**必须**带命名空间前缀 —— 这正是统一网关最容易踩的坑。 */}
+      <Card className="gap-0 py-0">
+        <div className="flex items-center justify-between gap-3 border-b border-border/60 px-5 py-3">
+          <span className="text-sm font-semibold">{t("unifiedGateway.guideTitle")}</span>
+          <Seg<"openai" | "anthropic">
+            value={guideApi}
+            onChange={setGuideApi}
+            options={[
+              { value: "openai", label: t("unifiedGateway.guideOpenai") },
+              { value: "anthropic", label: t("unifiedGateway.guideAnthropic") },
+            ]}
+            ariaLabel={t("unifiedGateway.guideTitle")}
+          />
+        </div>
+        <div className="px-5 py-3">
+          <pre className="overflow-x-auto rounded-[10px] bg-muted p-3 font-mono text-[11.5px] leading-5">
+            {guideSnippet}
+          </pre>
+          <p className="mt-2.5 text-[11.5px] leading-5 text-muted-foreground">
+            {t("unifiedGateway.guideBase", { openai: `${baseUrl}/v1`, anthropic: baseUrl })}
+          </p>
+          <p className="mt-1.5 text-[11.5px] leading-5 text-muted-foreground">
+            {t("unifiedGateway.guideModels", { sample: SAMPLE_MODEL })}
+          </p>
+          <p className="mt-1.5 text-[11.5px] leading-5 text-muted-foreground">
+            {t("unifiedGateway.guideResponses")}
+          </p>
+          <p className="mt-1.5 text-[11.5px] leading-5 text-muted-foreground">
+            {t("unifiedGateway.guideKey")}
+          </p>
+        </div>
+      </Card>
+      </>
+      )}
 
+      {/* ── 分区 ② · 命名空间 ──
+          勾选与逐段状态**在同一分区里**（设计文档 §2 的结论：拆开就要「改一处看两个地方」）。 */}
+      {section === "namespaces" && (
+      <>
+      <Card className="gap-0 py-0">
         {/* 命名空间启用集：**按平台分组遍历渲染** —— 新增平台/命名空间时前端零改动 */}
         <div className="px-5 py-3">
           <div className="text-xs font-medium">{t("unifiedGateway.nsTitle")}</div>
@@ -387,18 +638,211 @@ export function UnifiedGatewayView({ className }: { className?: string }) {
           </Button>
         </div>
       </Card>
-
-      {/* ── 卡 2 · 统一密钥 ── */}
+      {/* ── 卡 3 · 命名空间与清单预览 ──
+          逐段给出**来源与原因**（非实时必有原因）—— 一个总徽标糊过去是不允许的：
+          用户要能看出哪段是实时、哪段是兜底、为什么。 */}
       <Card className="gap-0 py-0">
         <div className="flex items-center justify-between gap-3 border-b border-border/60 px-5 py-3">
-          <span className="text-sm font-semibold">{t("unifiedGateway.keysTitle")}</span>
-          <Button size="sm" onClick={() => setCreateOpen(true)}>
-            <Plus />
-            {t("unifiedGateway.createKey")}
-          </Button>
+          <span className="text-sm font-semibold">{t("unifiedGateway.previewTitle")}</span>
+          <span className="text-xs text-muted-foreground">
+            {t("unifiedGateway.previewTotal", { count: models?.data.length ?? 0 })}
+          </span>
         </div>
+        <div className="divide-y divide-border/60">
+          {enabledIds.length === 0 && (
+            <div className="px-5 py-4 text-xs text-muted-foreground">
+              {t("unifiedGateway.previewEmpty")}
+            </div>
+          )}
+          {enabledIds.map((id) => {
+            const meta = metaOf(id);
+            const catalog = models?.namespaces[id];
+            const expanded = expandedNs.includes(id);
+            const rows = (models?.data ?? []).filter((row) => row["namespace"] === id);
+            const pool = poolOf(id);
+            const poolExpanded = poolOpen.includes(id);
+            const health = healthOf(id);
+            return (
+              <div key={id} className="px-5 py-3">
+                <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+                  <code className="font-mono text-xs font-medium">{id}</code>
+                  <span className="text-[11.5px] text-muted-foreground" title={meta.client}>
+                    {meta.client}
+                  </span>
+                  {catalog && (
+                    <Badge
+                      variant={
+                        catalog.source === "live"
+                          ? "success"
+                          : catalog.source === "cached"
+                            ? "secondary"
+                            : "destructive"
+                      }
+                      className="rounded-md"
+                    >
+                      {t(`unifiedGateway.source.${catalog.source}` as "unifiedGateway.source.live")}
+                    </Badge>
+                  )}
+                  <span className="text-[11.5px] text-muted-foreground">
+                    {t("unifiedGateway.previewCount", { count: rows.length })}
+                  </span>
 
-        <div className="px-5 py-3">
+                  {/* ── 「账号池」：该段背后的池（跨平台只读汇总的一部分）。
+                      ⚠️ 池数据未到时显示「—」而**不是「0 可用」**（未知 ≠ 零）。 */}
+                  {pool ? (
+                    <span className="flex items-center gap-1.5">
+                      <Badge
+                        variant={pool.available > 0 ? "secondary" : "destructive"}
+                        className="rounded-md"
+                      >
+                        {t("unifiedGateway.pool.available", { count: pool.available })}
+                      </Badge>
+                      <span className="text-[11.5px] text-muted-foreground">
+                        {t("unifiedGateway.nsPoolOf", { total: pool.total, target: pool.target })}
+                      </span>
+                      {/* 空池不给「看池」（无明细可展开）—— 说明在下面的展开块与说明段里 */}
+                      {pool.total > 0 && (
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          aria-expanded={poolExpanded}
+                          onClick={() =>
+                            setPoolOpen((list) =>
+                              list.includes(id) ? list.filter((item) => item !== id) : [...list, id],
+                            )
+                          }
+                        >
+                          {poolExpanded
+                            ? t("unifiedGateway.pool.hide")
+                            : t("unifiedGateway.pool.show")}
+                        </Button>
+                      )}
+                    </span>
+                  ) : (
+                    <span className="text-[11.5px] text-muted-foreground">—</span>
+                  )}
+
+                  {/* ── 「可用性」：**四态，顺序即优先级**。这才是「能不能调通」的判据 ——
+                      「已识别」只是清单识别过，**不等于可用**。 */}
+                  {health && (
+                    <Badge
+                      variant={
+                        health.tone === "ok"
+                          ? "success"
+                          : health.tone === "warn"
+                            ? "secondary"
+                            : health.tone === "bad"
+                              ? "destructive"
+                              : "outline"
+                      }
+                      className="rounded-md"
+                      title={t(
+                        `unifiedGateway.health.${health.key}Hint` as "unifiedGateway.health.readyHint",
+                      )}
+                    >
+                      {t(`unifiedGateway.health.${health.key}` as "unifiedGateway.health.ready")}
+                    </Badge>
+                  )}
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() =>
+                      setExpandedNs((list) =>
+                        list.includes(id) ? list.filter((item) => item !== id) : [...list, id],
+                      )
+                    }
+                  >
+                    {expanded ? t("unifiedGateway.hideModels") : t("unifiedGateway.showModels")}
+                  </Button>
+                </div>
+                {/* ★ 非实时必有原因：把接口给的原因**原样透出**，不在这里另编一套解释 */}
+                {catalog?.note && (
+                  <div className="mt-1 text-[11.5px] text-muted-foreground">{catalog.note}</div>
+                )}
+                {expanded && (
+                  <div className="mt-2 flex flex-wrap gap-1.5">
+                    {rows.length === 0 ? (
+                      <span className="text-[11.5px] text-muted-foreground">
+                        {t("unifiedGateway.previewNoModels")}
+                      </span>
+                    ) : (
+                      rows.map((row) => (
+                        <code
+                          key={String(row["id"])}
+                          className="rounded-md border border-border bg-muted/40 px-1.5 py-0.5 font-mono text-[11px]"
+                        >
+                          {String(row["id"])}
+                        </code>
+                      ))
+                    )}
+                  </div>
+                )}
+                {/* 「看池」**就地展开** —— 不跳走：跳走会丢掉本页**唯一**的价值：跨平台视野。 */}
+                {poolExpanded && pool && (
+                  <div className="mt-2 rounded-md border border-border bg-muted/30 px-2.5 py-2">
+                    {pool.accounts.length === 0 ? (
+                      <span className="text-[11.5px] text-muted-foreground">
+                        {t("unifiedGateway.pool.noAccount")}
+                      </span>
+                    ) : (
+                      <table className="w-full text-left text-[11.5px]">
+                        <thead className="text-muted-foreground">
+                          <tr>
+                            <th scope="col" className="py-1 pr-3 font-medium">
+                              {t("unifiedGateway.pool.account")}
+                            </th>
+                            <th scope="col" className="py-1 pr-3 font-medium">
+                              {t("unifiedGateway.pool.credits")}
+                            </th>
+                            <th scope="col" className="py-1 pr-3 font-medium">
+                              {t("unifiedGateway.pool.state")}
+                            </th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {pool.accounts.map((account) => (
+                            <tr key={account.uid} className="border-t border-border/60">
+                              <td className="py-1 pr-3">{account.name}</td>
+                              <td className="py-1 pr-3 tabular-nums">
+                                {/* ★ 不可知时给「—」，**不给 0**（未知 ≠ 零）。 */}
+                                {account.credits === null ? "—" : account.credits}
+                              </td>
+                              <td className="py-1 pr-3">{account.status}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    )}
+                    <p className="mt-1.5 text-[11px] text-muted-foreground">
+                      {t("unifiedGateway.pool.readOnly")}
+                    </p>
+                  </div>
+                )}              </div>
+            );
+          })}
+        </div>
+      </Card>
+      </>
+      )}
+
+      {/* ── 分区 ③ · 密钥 ── */}
+      {section === "keys" && (
+      <>
+      {/* ── 卡 2 · 统一密钥 ── */}
+      <div>
+        {/* ★ 与「独立网关」的密钥分区**共用同一个工具条**（`KeysBar`），不再自己写卡头。
+            ★ `DemoAction`：演示模式下拦住写操作 —— 独立网关侧三个密钥表都有，这里此前**漏了**，
+              于是演示模式下统一网关的「创建密钥」是真能点的（不一致）。 */}
+        <KeysBar total={keys.length} live={activeKeyCount}>
+          <DemoAction>
+            <Button size="sm" onClick={() => setCreateOpen(true)}>
+              <Plus />
+              {t("unifiedGateway.createKey")}
+            </Button>
+          </DemoAction>
+        </KeysBar>
+
+        <div className="min-w-0">
           {keys.length === 0 ? (
             <EmptyState
               icon={KeyRound}
@@ -507,92 +951,177 @@ export function UnifiedGatewayView({ className }: { className?: string }) {
             </div>
           )}
         </div>
-      </Card>
+        {/* 说明段：与独立网关三张密钥表**同一段话**（抽到 `shared.gateway.keys.note`）。 */}
+        <p className="mt-2.5 text-[11.5px] leading-5 text-muted-foreground">
+          {t("shared.gateway.keys.note")}
+        </p>
+      </div>
+      </>
+      )}
 
-      {/* ── 卡 3 · 命名空间与清单预览 ──
-          逐段给出**来源与原因**（非实时必有原因）—— 一个总徽标糊过去是不允许的：
-          用户要能看出哪段是实时、哪段是兜底、为什么。 */}
-      <Card className="gap-0 py-0">
-        <div className="flex items-center justify-between gap-3 border-b border-border/60 px-5 py-3">
-          <span className="text-sm font-semibold">{t("unifiedGateway.previewTitle")}</span>
-          <span className="text-xs text-muted-foreground">
-            {t("unifiedGateway.previewTotal", { count: models?.data.length ?? 0 })}
-          </span>
-        </div>
-        <div className="divide-y divide-border/60">
-          {enabledIds.length === 0 && (
-            <div className="px-5 py-4 text-xs text-muted-foreground">
-              {t("unifiedGateway.previewEmpty")}
-            </div>
-          )}
-          {enabledIds.map((id) => {
-            const meta = metaOf(id);
-            const catalog = models?.namespaces[id];
-            const expanded = expandedNs.includes(id);
-            const rows = (models?.data ?? []).filter((row) => row["namespace"] === id);
-            return (
-              <div key={id} className="px-5 py-3">
-                <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
-                  <code className="font-mono text-xs font-medium">{id}</code>
-                  <span className="text-[11.5px] text-muted-foreground" title={meta.client}>
-                    {meta.client}
-                  </span>
-                  {catalog && (
-                    <Badge
-                      variant={
-                        catalog.source === "live"
-                          ? "success"
-                          : catalog.source === "cached"
-                            ? "secondary"
-                            : "destructive"
-                      }
-                      className="rounded-md"
-                    >
-                      {t(`unifiedGateway.source.${catalog.source}` as "unifiedGateway.source.live")}
-                    </Badge>
-                  )}
-                  <span className="text-[11.5px] text-muted-foreground">
-                    {t("unifiedGateway.previewCount", { count: rows.length })}
-                  </span>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    onClick={() =>
-                      setExpandedNs((list) =>
-                        list.includes(id) ? list.filter((item) => item !== id) : [...list, id],
-                      )
-                    }
-                  >
-                    {expanded ? t("unifiedGateway.hideModels") : t("unifiedGateway.showModels")}
+      {/* ── 分区 ④ · 账号池 ──
+          统一网关**没有自己的池** —— 它按模型名的命名空间前缀把请求分派到三条产品线各自的池，
+          所以这一区是**跨平台的只读汇总**（独立网关那一区是「管理当前这一个池」）。
+          ⚠️ 选号 / 粘性 / 恢复等**管理动作按产品线设**，本区只读 —— 摆一个改不动的控件就是假的。
+          ⚠️ 数据未到（`pools === null`）时给骨架，**不给「0 可用」**（未知 ≠ 零）。 */}
+      {section === "pool" && (
+        <>
+          {pools === null ? (
+            <Skeleton className="h-24 w-full rounded-[10px]" />
+          ) : pools.length === 0 ? (
+            <EmptyState
+              icon={Users}
+              title={t("unifiedGateway.pool.empty")}
+              description={t("unifiedGateway.pool.emptyHint")}
+              action={
+                /* 出口只在调用方传了 `onGoSection` 时渲染 —— 点了没反应的按钮比不摆更糟。 */
+                onGoSection ? (
+                  <Button size="sm" onClick={() => onGoSection("namespaces")}>
+                    {t("unifiedGateway.subnav.namespaces")}
                   </Button>
-                </div>
-                {/* ★ 非实时必有原因：把接口给的原因**原样透出**，不在这里另编一套解释 */}
-                {catalog?.note && (
-                  <div className="mt-1 text-[11.5px] text-muted-foreground">{catalog.note}</div>
-                )}
-                {expanded && (
-                  <div className="mt-2 flex flex-wrap gap-1.5">
-                    {rows.length === 0 ? (
-                      <span className="text-[11.5px] text-muted-foreground">
-                        {t("unifiedGateway.previewNoModels")}
-                      </span>
-                    ) : (
-                      rows.map((row) => (
-                        <code
-                          key={String(row["id"])}
-                          className="rounded-md border border-border bg-muted/40 px-1.5 py-0.5 font-mono text-[11px]"
-                        >
-                          {String(row["id"])}
-                        </code>
-                      ))
-                    )}
-                  </div>
-                )}
+                ) : undefined
+              }
+            />
+          ) : (
+            <>
+              <div className="mb-3 flex flex-wrap items-center gap-2.5 rounded-[10px] bg-muted px-3 py-2.5">
+                <Badge variant="secondary" className="rounded-md">
+                  {t("unifiedGateway.pool.count", { count: pools.length })}
+                </Badge>
+                <span className="text-[11.5px] text-muted-foreground">
+                  {t("unifiedGateway.pool.totals", {
+                    available: pools.reduce((sum, pool) => sum + pool.available, 0),
+                    total: pools.reduce((sum, pool) => sum + pool.total, 0),
+                  })}
+                </span>
+                <div className="grow" />
+                <span className="text-[11.5px] text-muted-foreground">
+                  {t("unifiedGateway.pool.readOnly")}
+                </span>
               </div>
-            );
-          })}
-        </div>
-      </Card>
+
+              <div className="min-w-0 overflow-x-auto">
+                <table className="w-full min-w-[560px] text-left text-sm">
+                  <thead className="text-[11.5px] text-muted-foreground">
+                    <tr>
+                      <th scope="col" className="py-2 pr-4 font-medium">
+                        {t("unifiedGateway.pool.account")}
+                      </th>
+                      <th scope="col" className="py-2 pr-4 font-medium">
+                        {t("unifiedGateway.pool.credits")}
+                      </th>
+                      <th scope="col" className="py-2 pr-4 font-medium">
+                        {t("unifiedGateway.pool.state")}
+                      </th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {pools.map((pool) => (
+                      <Fragment key={pool.target}>
+                        {/* 分组行：池标识 + 指向它的已启用命名空间 + 五态计数**摊平**。
+                            多条命名空间共用一个池时只出一条（后端已按池分组）。 */}
+                        <tr className="bg-muted/40 text-[11.5px] text-muted-foreground">
+                          <td colSpan={3} className="py-2 pr-4">
+                            <div className="flex flex-wrap items-center gap-2">
+                              <code className="font-mono">{pool.target}</code>
+                              <span>{pool.namespaces.join(" / ")}</span>
+                              <Badge
+                                variant={pool.available > 0 ? "secondary" : "destructive"}
+                                className="rounded-md"
+                              >
+                                {t("unifiedGateway.pool.available", { count: pool.available })}
+                              </Badge>
+                              <span>{t("unifiedGateway.pool.total", { count: pool.total })}</span>
+                              {pool.cooling > 0 && (
+                                <span>{t("unifiedGateway.pool.cooling", { count: pool.cooling })}</span>
+                              )}
+                              {pool.disabled > 0 && (
+                                <span>{t("unifiedGateway.pool.disabled", { count: pool.disabled })}</span>
+                              )}
+                              {(pool.expired ?? 0) > 0 && (
+                                <span>{t("unifiedGateway.pool.expired", { count: pool.expired ?? 0 })}</span>
+                              )}
+                              {(pool.zero_credits ?? 0) > 0 && (
+                                <span>{t("unifiedGateway.pool.zeroCredits", { count: pool.zero_credits ?? 0 })}</span>
+                              )}
+                              {(pool.model_cooling ?? 0) > 0 && (
+                                <span>{t("unifiedGateway.pool.modelCooling", { count: pool.model_cooling ?? 0 })}</span>
+                              )}
+                            </div>
+                          </td>
+                        </tr>
+                        {pool.accounts.length === 0 ? (
+                          <tr>
+                            <td colSpan={3} className="py-2 pr-4 text-[11.5px] text-muted-foreground">
+                              {t("unifiedGateway.pool.noAccount")}
+                            </td>
+                          </tr>
+                        ) : (
+                          pool.accounts.map((account) => (
+                            <tr key={account.uid} className="border-t border-border/60">
+                              <td className="py-2 pr-4">{account.name}</td>
+                              <td className="py-2 pr-4 tabular-nums">
+                                {/* ★ 不可知时给「—」，**不给 0**（未知 ≠ 零）。 */}
+                                {account.credits === null ? "—" : account.credits}
+                              </td>
+                              <td className="py-2 pr-4">
+                                <Badge
+                                  variant={account.status === "available" ? "secondary" : "outline"}
+                                  className="rounded-md"
+                                >
+                                  {account.status}
+                                </Badge>
+                              </td>
+                            </tr>
+                          ))
+                        )}
+                      </Fragment>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+
+              <p className="mt-2.5 text-[11.5px] leading-5 text-muted-foreground">
+                {t("unifiedGateway.pool.note")}
+              </p>
+            </>
+          )}
+        </>
+      )}
+
+
+      {/* ★ 错误响应样例抽屉：**每一条都带出路** —— 只说「不支持」会让人反复试错。
+          统一网关的坑集中在「模型名要带前缀」，所以这里逐条给出「怎么改」。 */}
+      <Dialog open={errorsOpen} onOpenChange={setErrorsOpen}>
+        <DialogContent className="sm:max-w-lg">
+          <DialogHeader>
+            <DialogTitle>{t("unifiedGateway.errorsTitle")}</DialogTitle>
+            <DialogDescription>{t("unifiedGateway.errorsHint")}</DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3">
+            {UNIFIED_ERROR_SAMPLES.map((sample) => (
+              <div key={sample.code} className="rounded-[10px] border border-border bg-muted/30 px-3 py-2.5">
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="text-xs font-medium">
+                    {t(`unifiedGateway.err.${sample.key}.title` as "unifiedGateway.err.bareModel.title")}
+                  </span>
+                  <Badge variant="destructive" className="rounded-md font-mono">
+                    {sample.code}
+                  </Badge>
+                </div>
+                <p className="mt-1.5 whitespace-pre-line text-[11.5px] leading-5 text-muted-foreground">
+                  {t(`unifiedGateway.err.${sample.key}.body` as "unifiedGateway.err.bareModel.body")}
+                </p>
+              </div>
+            ))}
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setErrorsOpen(false)}>
+              {t("unifiedGateway.confirm")}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <CreateKeyDialog
         open={createOpen}
@@ -634,6 +1163,35 @@ export function UnifiedGatewayView({ className }: { className?: string }) {
           )}
           <DialogFooter>
             <Button onClick={() => setPlaintext(null)}>{t("unifiedGateway.savedClose")}</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* ★ 非回环监听的危险确认 —— 与三个既有网关页**同一文案、同一形态**
+          （`ShieldAlert` + `destructive` 确认按钮）。少了它，暴露局域网就是**一键生效**。 */}
+      <Dialog open={riskOpen} onOpenChange={setRiskOpen}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <ShieldAlert className="size-4 text-warning" />
+              {t("unifiedGateway.allowLanTitle")}
+            </DialogTitle>
+            <DialogDescription>{t("unifiedGateway.allowLanDesc")}</DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setRiskOpen(false)}>
+              {t("unifiedGateway.cancel")}
+            </Button>
+            <Button
+              variant="destructive"
+              onClick={() => {
+                setRiskOpen(false);
+                // 开非回环必须同时置真，否则后端会拒绝（安全默认）
+                void save({ bind_addr: LAN, allow_non_loopback: true });
+              }}
+            >
+              {t("unifiedGateway.confirmOpen")}
+            </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

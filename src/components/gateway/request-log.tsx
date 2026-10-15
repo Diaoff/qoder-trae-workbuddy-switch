@@ -3,7 +3,6 @@ import { Eraser, Loader2, ScrollText } from "lucide-react";
 import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
-import { Card } from "@/components/ui/card";
 import { EmptyState } from "@/components/ui/empty-state";
 import { DemoAction } from "@/components/demo-action";
 import * as api from "@/lib/api";
@@ -49,6 +48,13 @@ function statusTone(status: number): string {
  * - **条数上限 50** 提到常量，与 Trae 侧同值。
  *
  * 保留 WB 特有的**版本列**：每条日志都带 `region`，用户需要知道这次调用走的哪条产品线。
+ *
+ * ## 2026-10-15 骨架对齐原型：去掉 `<Card>`
+ *
+ * 原型（`viewGateway()` 的 `logs` 分支）= **纯裸表**（无工具条、无卡头、无说明段）。
+ * 本组件此前套了一整张 `<Card>`（卡头 = 「请求日志（最近 50 条）」标题 + 清空按钮）。
+ * 标题与左栏分区导航重复，已去掉；**清空按钮必须保留**（它是本分区唯一的写操作出口），
+ * 独占表前一行（真实实现比原型多出的功能，宁可多一行也不删出口）。
  */
 export function RequestLog({ className }: { className?: string }) {
   const t = useT();
@@ -74,9 +80,9 @@ export function RequestLog({ className }: { className?: string }) {
   const rows = logs.slice(0, MAX_LOG_ROWS);
 
   return (
-    <Card className={cn("gap-0 py-0", className)}>
-      <div className="flex items-center justify-between gap-3 border-b border-border/60 px-5 py-3">
-        <span className="text-sm font-semibold">{t("wbStats.gateway.requestLog")}</span>
+    <div className={cn(className)}>
+      {/* 清空出口独占一行（分区名由左栏导航承担，不再有标题）。 */}
+      <div className="mb-3 flex items-center justify-end">
         <DemoAction>
           <Button variant="ghost" size="sm" onClick={() => void onClear()} disabled={clearing || logs.length === 0}>
             {clearing ? <Loader2 className="animate-spin" /> : <Eraser />}
@@ -113,7 +119,7 @@ export function RequestLog({ className }: { className?: string }) {
           </table>
         </div>
       )}
-    </Card>
+    </div>
   );
 }
 

@@ -30,7 +30,7 @@ const MUTATIONS = {
     to: '    id: "qoder-global", platform: "qoder", region: "cn", /* MUTATED */',
   },
   uninamespace: {
-    desc: "统一入口漏掉 Qoder 的两个命名空间（派生层没跟着平台长出来）",
+    desc: "统一网关漏掉 Qoder 的两个命名空间（派生层没跟着平台长出来）",
     from: '  { id: "qoder-cn",       plat: "Qoder",     program: "Qoder 桌面版",   client: "Qoder CN",     fn: "—",              tier: "core" },\n'
         + '  { id: "qoder-global",   plat: "Qoder",     program: "Qoder 桌面版",   client: "Qoder",        fn: "—",              tier: "core" },\n',
     to: "",
@@ -189,13 +189,15 @@ const flat = (s) => String(s || "").replace(/\s+/g, " ").trim();
     return "已吊销 → 恢复 + 删除";
   });
 
-  /* ── 5. 统一入口（单文件独有）也要认得 Qoder ── */
-  const domN = await boot("scope=wb-cn&dest=gateway&gw=unified&hint=0");
+  /* ── 5. 统一网关（单文件独有）也要认得 Qoder ──
+     ★ 2026-10-15 第三轮：它已从「网关页子导航第 7 项」升为**独立目的地**（`dest=unified`）。
+     旧深链 `dest=gateway&gw=unified` 的兼容性由 `verify-unified-pool.cjs` 单独钉住。 */
+  const domN = await boot("scope=wb-cn&dest=unified&hint=0");
   const dN = domN.window.document;
-  check("单文件：统一入口的命名空间表含 Qoder 两条（派生层）", () => {
+  check("单文件：统一网关的命名空间表含 Qoder 两条（派生层）", () => {
     const t = flat(dN.querySelector("#content").textContent);
     for (const want of ["qoder-cn", "qoder-global"]) {
-      if (!t.includes(want)) throw new Error("统一入口没有命名空间 " + want);
+      if (!t.includes(want)) throw new Error("统一网关没有命名空间 " + want);
     }
     const n = domN.window.eval("UNI_NS.length");
     if (n !== 10) throw new Error(`UNI_NS ${n} 条，期望 10（6 派生 + 4 扩展）`);

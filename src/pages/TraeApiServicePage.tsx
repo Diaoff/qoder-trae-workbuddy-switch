@@ -7,11 +7,14 @@ import { toast } from "sonner";
 import { DemoAction } from "@/components/demo-action";
 import { ScopeChip, scopeLabel } from "@/components/scope-chip";
 import { AccountPoolCard } from "@/components/gateway/account-pool-card";
+import { GatewayShell } from "@/components/gateway/gateway-shell";
 import {
-  GATEWAY_SUBNAV,
-  GatewaySubnav,
-  parseGatewaySubnav,
-  type GatewaySubnavId,
+  GW_INDEPENDENT_SECTIONS_NO_PROXY,
+  GW_SECTIONS,
+  parseGatewayDeepLink,
+  unifiedSectionId,
+  type GatewaySectionId,
+  type GatewayType,
 } from "@/components/gateway/gateway-subnav";
 import { TraeApiKeyTable } from "@/components/gateway/trae-api-key-table";
 import { TraeIntegrationGuide } from "@/components/gateway/trae-integration-guide";
@@ -61,7 +64,7 @@ const LAN = "0.0.0.0";
  * `PROXY_GATEWAY_BASE`），Trae 侧没有对应后端 ⇒ 不渲染该项 ——
  * 一个点进去什么都没有的项，比不渲染更糟（§3.4 规则 1：缺能力不画空壳）。
  */
-const TRAE_GATEWAY_SUBNAV = GATEWAY_SUBNAV.filter((item) => item.id !== "proxy");
+const TRAE_GATEWAY_SUBNAV = GW_INDEPENDENT_SECTIONS_NO_PROXY;
 
 /**
  * 本页快照：网关配置 / 监听状态 / 模型清单（按程序位）/ 请求日志。
@@ -146,14 +149,30 @@ export default function TraeApiServicePage() {
      ⚠️ 原实现只**读**不**写** —— 注释承诺了「同一口径」，但点击子导航后 URL 不变，
      刷新就回到 `overview`。这里补齐写入，与 WB 网关页 / 两平台设置页完全同构。 */
   const [searchParams, setSearchParams] = useSearchParams();
-  const [sub, setSub] = useState<GatewaySubnavId>(() => parseGatewaySubnav(searchParams.get("sub")));
+  /* ★ 两个轴（`?type=` + `?sub=`）；深链解析兼容两代旧链，见 `parseGatewayDeepLink`。 */
+  const [{ type, section }, setNav] = useState(() => parseGatewayDeepLink(searchParams));
 
-  /** 切换子分区并写回 URL（保留其他查询参数，只覆盖 `sub`）。 */
-  function goSub(id: GatewaySubnavId) {
-    setSub(id);
-    const next = new URLSearchParams(searchParams);
-    next.set("sub", id);
-    setSearchParams(next, { replace: true });
+  /** 写回 URL（保留查询串里的其他参数，而不是整体覆盖）。 */
+  function writeNav(next: GatewayType, sub: GatewaySectionId) {
+    setNav({ type: next, section: sub });
+    const params = new URLSearchParams(searchParams);
+    params.set("type", next);
+    params.set("sub", sub);
+    setSearchParams(params, { replace: true });
+  }
+
+  /* ★ 切类型**必须重置分区**到该类型的第一项（两个类型的分区 id 集合不相交）。 */
+  function goType(next: GatewayType) {
+    writeNav(next, GW_SECTIONS[next][0].id);
+  }
+
+  /** 统一网关分区内的跳转（裸分区名 → 带 `u-` 前缀的分区 id；约定只在 `unifiedSectionId` 里写一次）。 */
+  function goUnified(next: string) {
+    goSub(unifiedSectionId(next));
+  }
+
+  function goSub(id: GatewaySectionId) {
+    writeNav(type, id);
   }
 
   const loadSnapshot = useCallback(async (): Promise<ApiServiceSnapshot> => {
@@ -428,12 +447,15 @@ export default function TraeApiServicePage() {
           方向 / 对齐 / 间距整组在 `index.css` 的 `[data-split-layout]`（原型 `.split`，
           含 900px 转纵向）。⚠️ 此前这里**缺 `data-split-layout`** ⇒ 900px 以下不转纵向、
           子导航也不换行，与 WB 网关页行为不同。 */}
-      <div data-split-layout className="min-w-0">
-        <GatewaySubnav active={sub} items={TRAE_GATEWAY_SUBNAV} onSelect={goSub} />
-
-        <div className="min-w-0 flex-1">
+      <GatewayShell
+        type={type}
+        section={section}
+        sections={type === "independent" ? TRAE_GATEWAY_SUBNAV : undefined}
+        onTypeChange={goType}
+        onSelect={goSub}
+      >
           {/* ---- 概览：服务状态 + 接入地址 + 接入指引 ---- */}
-          {sub === "overview" && (
+          {section === "overview" && (
             <>
               {/* ---- 网关 ---- */}
               <Card className="mb-6 gap-0 py-0">
@@ -618,12 +640,12 @@ export default function TraeApiServicePage() {
 
           {/* ---- 密钥（多 Key + 归属产品线） ---- */}
           {/* 替代 WorkBuddy 的单 Key 卡：这里支持多把 Key，每把绑定一条产品线。 */}
-          {sub === "keys" && (
+          {section === "keys" && (
             <TraeApiKeyTable defaultVariant={variant} onChanged={() => void loadAll()} />
           )}
 
           {/* ---- 模型清单（按程序位读客户端缓存，可重新读取：见 TraeModelList 的模块头） ---- */}
-          {sub === "models" && (
+          {section === "models" && (
             <TraeModelList
               sources={modelSources}
               region={traeRegionOf(variant)}
@@ -634,7 +656,7 @@ export default function TraeApiServicePage() {
           )}
 
           {/* ---- 账号池（与 WorkBuddy 侧共用同一张卡） ---- */}
-          {sub === "pool" && (
+          {section === "pool" && (
             <AccountPoolCard
               pool={status?.pool ?? null}
               accounts={status?.accounts ?? []}
@@ -651,12 +673,14 @@ export default function TraeApiServicePage() {
           )}
 
           {/* ---- 请求日志 ---- */}
-          {sub === "logs" && (
+          {section === "logs" && (
             <TraeRequestLog logs={logs} clearing={clearing} onClear={() => void onClearLogs()} />
           )}
-          {sub === "unified" && <UnifiedGatewayView />}
-        </div>
-      </div>
+          {section === "u-overview" && <UnifiedGatewayView section="overview" onGoSection={goUnified} />}
+          {section === "u-namespaces" && <UnifiedGatewayView section="namespaces" onGoSection={goUnified} />}
+          {section === "u-keys" && <UnifiedGatewayView section="keys" onGoSection={goUnified} />}
+          {section === "u-pool" && <UnifiedGatewayView section="pool" onGoSection={goUnified} />}
+      </GatewayShell>
 
       {/* ---- 局域网风险确认 ---- */}
       <Dialog open={riskOpen} onOpenChange={setRiskOpen}>

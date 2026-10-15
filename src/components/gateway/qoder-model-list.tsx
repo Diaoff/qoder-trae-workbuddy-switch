@@ -3,7 +3,6 @@ import { Cpu, RefreshCw } from "lucide-react";
 import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
-import { Card } from "@/components/ui/card";
 import { EmptyState } from "@/components/ui/empty-state";
 import { CatalogSourceBar } from "@/components/gateway/catalog-source-bar";
 import { ModelTable } from "@/components/gateway/model-table";
@@ -40,6 +39,12 @@ import { EMPTY_DISABLED_SET, useGatewayStore } from "@/stores/gateway";
  * 后端管理面给的是**全量**清单（禁用的也在），因此：
  * - 行渲染用的 `disabled` 取**store**（与网关出口 ① 同源，且切换后立即可见）；
  * - 计数 `served = total − 已禁用`（`servedCount`，与出口 ① 同源）。
+ *
+ * ## 2026-10-15 骨架对齐原型：卡头 → 来源条工具条 + 裸表 + 说明段
+ *
+ * 原型（`viewGateway()` 的 `models` 分支）= `catalogBar(来源条)` + 裸表 + 说明段，
+ * **没有卡头**（「Qoder 模型清单」标题与左栏分区导航重复，已去掉）。
+ * 表下的计数与「两个出口」说明即原型说明段，保持不变。
  */
 export function QoderModelList({
   catalog,
@@ -149,66 +154,58 @@ export function QoderModelList({
   }
 
   return (
-    <Card className={cn("gap-0 py-0", className)}>
-      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border/60 px-5 py-3">
-        <div className="flex items-center gap-2 text-sm font-semibold">
-          <Cpu className="size-4 stroke-[1.75]" />
-          {t("qoder.gateway.models.title")}
-        </div>
-      </div>
+    <div className={cn(className)}>
+      {/* 无卡头 —— 分区名由左栏导航承担（与 WB / Trae 侧同口径）。 */}
+      <p className="mb-3 text-xs text-muted-foreground">{t("qoder.gateway.models.note")}</p>
 
-      <div className="px-5 py-4">
-        <p className="mb-3 text-xs text-muted-foreground">{t("qoder.gateway.models.note")}</p>
+      <CatalogSourceBar
+        view={view}
+        scanning={refreshing}
+        onRescan={onRefresh}
+        rescanLabel={t("qoder.gateway.models.refresh")}
+        scanningLabel={t("qoder.gateway.models.scanning")}
+        identifiedAtTitle={view.identifiedAt ? formatAbsoluteTime(view.identifiedAt) : undefined}
+      />
 
-        <CatalogSourceBar
-          view={view}
-          scanning={refreshing}
-          onRescan={onRefresh}
-          rescanLabel={t("qoder.gateway.models.refresh")}
-          scanningLabel={t("qoder.gateway.models.scanning")}
-          identifiedAtTitle={view.identifiedAt ? formatAbsoluteTime(view.identifiedAt) : undefined}
+      {total === 0 ? (
+        <EmptyState
+          icon={Cpu}
+          title={t("qoder.gateway.models.empty")}
+          description={t("qoder.gateway.models.emptyDesc")}
+          action={
+            <DemoAction>
+              <Button variant="outline" size="sm" onClick={() => onRefresh()} disabled={refreshing}>
+                <RefreshCw />
+                {t("qoder.gateway.models.refresh")}
+              </Button>
+            </DemoAction>
+          }
+          className="py-4"
         />
-
-        {total === 0 ? (
-          <EmptyState
-            icon={Cpu}
-            title={t("qoder.gateway.models.empty")}
-            description={t("qoder.gateway.models.emptyDesc")}
-            action={
-              <DemoAction>
-                <Button variant="outline" size="sm" onClick={() => onRefresh()} disabled={refreshing}>
-                  <RefreshCw />
-                  {t("qoder.gateway.models.refresh")}
-                </Button>
-              </DemoAction>
-            }
-            className="py-4"
+      ) : (
+        <>
+          {/* Qoder **不渲染「上游状态」列**（在清单里即可用，决策 #3）⇒ showUpstream={false}。 */}
+          <ModelTable
+            rows={rows}
+            pendingId={pendingId}
+            onToggleDisabled={(row, disabled) => void onToggleDisabled(row, disabled)}
+            showUpstream={false}
+            labels={labels}
           />
-        ) : (
-          <>
-            {/* Qoder **不渲染「上游状态」列**（在清单里即可用，决策 #3）⇒ showUpstream={false}。 */}
-            <ModelTable
-              rows={rows}
-              pendingId={pendingId}
-              onToggleDisabled={(row, disabled) => void onToggleDisabled(row, disabled)}
-              showUpstream={false}
-              labels={labels}
-            />
-            {/* 计数 = available && !disabled，与出口 ① 同源。
-                ★ 守卫是 `total > 0`（**有清单就显示**）—— `served === 0` 不是「无数据」，
-                而是「**全部被禁用**」这一真实且正需被看见的状态。 */}
-            {total > 0 && (
-              <p className="mt-3 text-xs text-muted-foreground" data-act="gw-model-count">
-                {t("shared.gateway.models.count", { served, total })}
-              </p>
-            )}
-            {/* ★ 两个出口同时生效的说明：否则用户不知道禁用真的生效了（会以为是假开关）。 */}
-            <p className="mt-1 text-xs text-muted-foreground" data-act="gw-two-exits">
-              {t("shared.gateway.models.twoExits")}
+          {/* 计数 = available && !disabled，与出口 ① 同源。
+              ★ 守卫是 `total > 0`（**有清单就显示**）—— `served === 0` 不是「无数据」，
+              而是「**全部被禁用**」这一真实且正需被看见的状态。 */}
+          {total > 0 && (
+            <p className="mt-3 text-xs text-muted-foreground" data-act="gw-model-count">
+              {t("shared.gateway.models.count", { served, total })}
             </p>
-          </>
-        )}
-      </div>
-    </Card>
+          )}
+          {/* ★ 两个出口同时生效的说明：否则用户不知道禁用真的生效了（会以为是假开关）。 */}
+          <p className="mt-1 text-xs text-muted-foreground" data-act="gw-two-exits">
+            {t("shared.gateway.models.twoExits")}
+          </p>
+        </>
+      )}
+    </div>
   );
 }

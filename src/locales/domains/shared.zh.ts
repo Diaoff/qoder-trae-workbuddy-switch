@@ -17,6 +17,10 @@
  * 键前缀：`shared.`
  */
 export const zh = {
+  /* 密钥表下方的说明段 —— **三个平台的密钥表共用同一段话**（差异只有「归属」那一列）。
+     ★ 抽取理由：改造前这段文案在 WB / Trae / Qoder 三个组件里各写一遍，措辞已经漂移过。 */
+  "shared.gateway.keys.note":
+    "密钥明文只在创建时展示一次；此处永远只显示掩码。请求数为该密钥创建以来的累计值，与概览的「今日」口径不同。吊销可逆：已吊销的密钥仍留在表里，可「恢复」回启用态（库中存的是同一把 Key，明文未变，客户端无需改配置），也可「删除」清掉记录。",
   // ---- 版本区域（region.ts / trae-types.ts / trae-variant-status.ts） ----
   "shared.region.version.cn": "国内版",
   "shared.region.version.global": "国际版",

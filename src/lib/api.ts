@@ -400,6 +400,9 @@ const ROUTES: Record<string, Route> = {
   // 因此这些命令**不进** SCOPE_PARAMETERIZED（拿不到也不该拿 scope）。
   get_unified_gateway_config: { method: "GET", path: "/api/unified-gateway/config" },
   get_unified_gateway_models: { method: "GET", path: "/api/unified-gateway/models" },
+  // 账号池总览（只读投影）：已启用命名空间 → 三条产品线**已有的**池状态（按池分组）。
+  // 形状的唯一构造点在 gateway crate 的 `unified::admin::pool_overview_payload`。
+  unified_gateway_pool_overview: { method: "GET", path: "/api/unified-gateway/pool-overview" },
   save_unified_gateway_config: { method: "POST", path: "/api/unified-gateway/config" },
   list_unified_api_keys: { method: "GET", path: "/api/unified-gateway/keys" },
   create_unified_api_key: { method: "POST", path: "/api/unified-gateway/keys" },
@@ -1870,8 +1873,64 @@ export interface UnifiedModelsPreview {
   namespaces: Record<string, UnifiedNamespaceCatalog>;
 }
 
-export function getUnifiedGatewayModels(): Promise<UnifiedModelsPreview> {
-  return call("get_unified_gateway_models");
+export function getUnifiedGatewayModels(refresh = false): Promise<UnifiedModelsPreview> {
+  // `refresh = true` ⇒ 后端绕过识别缓存重取（WB / Qoder；Trae 直读客户端文件）。
+  // 不传时保持 `call` 的零参形态（webui 走裸 GET，不多一个假查询参数）。
+  return call("get_unified_gateway_models", refresh ? { refresh: true } : undefined);
+}
+
+/**
+ * 一条池内账号 —— 三个产品线**共用的池卡形状**（`GatewayPoolAccount`，见 `lib/gateway.ts`）。
+ *
+ * 字段由各产品线自己的 `status_list` / `accounts_view` 产出，本层**原样透传**：
+ * - `credits` 为 `null` = **不可知**（前端渲染「—」；绝不是 0「没额度了」）；
+ * - Qoder 的账号行另有 `modelCooldowns`（按模型冷却，与账号级 `cooling` 正交）。
+ */
+export interface UnifiedPoolAccount {
+  uid: string;
+  name: string;
+  status: string;
+  credits: number | null;
+  [key: string]: unknown;
+}
+
+/**
+ * 一个**池**（按 `relay_target_of` 的池标识分组的结果）。
+ *
+ * ★ 多条命名空间可共用一个池（如 `traework-cn` / `traecode-cn` 复用 `trae-cn` 的区域池）
+ * ⇒ 计数与账号行**只出一条**，`namespaces` 列出指向它的已启用段。
+ */
+export interface UnifiedGatewayPool {
+  /** 池标识 —— 作用域字面量（`wb-cn` / `trae-global` / `qoder-cn` …）。 */
+  target: string;
+  /** 指向该池的**已启用**命名空间（命名空间表顺序）。 */
+  namespaces: string[];
+  /** 五态计数（WB / Trae / Qoder 各自已有的摘要摊平）。 */
+  total: number;
+  available: number;
+  cooling: number;
+  disabled: number;
+  expired?: number;
+  zero_credits?: number;
+  total_credits?: number;
+  /** Qoder 独有：此刻有模型级冷却的账号数（与账号级 `cooling` 正交）。 */
+  model_cooling?: number;
+  accounts: UnifiedPoolAccount[];
+}
+
+/** `GET /api/unified-gateway/pool-overview` 的响应：只列**已启用**命名空间指向的池。 */
+export interface UnifiedGatewayPoolOverview {
+  pools: UnifiedGatewayPool[];
+}
+
+/**
+ * 账号池总览（**只读投影**：复用三条产品线已有的池状态，不新增选号逻辑）。
+ *
+ * 统一网关没有自己的池 —— 数据来自各产品线自己的池视图，因此与独立网关页
+ * 「账号池」看到的是**同一份**状态。
+ */
+export function getUnifiedGatewayPoolOverview(): Promise<UnifiedGatewayPoolOverview> {
+  return call("unified_gateway_pool_overview");
 }
 
 export function saveUnifiedGatewayConfig(

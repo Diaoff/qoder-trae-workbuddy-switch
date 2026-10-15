@@ -3,7 +3,6 @@ import { Cpu, Loader2, RefreshCw } from "lucide-react";
 import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
-import { Card } from "@/components/ui/card";
 import { EmptyState } from "@/components/ui/empty-state";
 import { CatalogSourceBar } from "@/components/gateway/catalog-source-bar";
 import { ModelTable } from "@/components/gateway/model-table";
@@ -75,6 +74,15 @@ import { EMPTY_DISABLED_SET, useGatewayStore } from "@/stores/gateway";
  * ⚠️ 禁用偏好按**作用域**键控（2026-10-15 从 region 升级）：同区域两条程序位**共用**
  * 同一份禁用集合（同一作用域），跨平台不再串键。`region` 由宿主页传入（不是从 `sources` 猜），
  * 本组件把它升成 `trae-*` 作用域。
+ *
+ * ## 2026-10-15 骨架对齐原型：卡头 → 工具条 + 来源条 + 裸表 + 说明段
+ *
+ * 原型（`viewGateway()` 的 `models` 分支）= `catalogBar(来源条)` + 裸表 + 说明段，
+ * 没有卡头（「Trae 模型清单」标题与左栏分区导航重复，已去掉）。
+ * Trae 比原型多出的**程序位选择器 + 摘要**（卡头旧内容，属取数参数，见上方「为什么卡上
+ * 要有一个程序位选择器」）改为一条与 `cat-bar` 同形的**工具条** —— 它不是卡头，是
+ * 该分区的一处工具区（与来源条、`KeysBar` 同一套表面）。表下的计数与「两个出口」
+ * 说明即原型说明段，保持不变。
  */
 export function TraeModelList({
   sources,
@@ -215,128 +223,122 @@ export function TraeModelList({
   }
 
   return (
-    <Card className={cn("gap-0 py-0", className)}>
-      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border/60 px-5 py-3">
-        <div className="flex items-center gap-2 text-sm font-semibold">
-          <Cpu className="size-4 stroke-[1.75]" />
-          {t("trae.gateway.models.title")}
-        </div>
-        <div className="flex flex-wrap items-center gap-3">
-          {sources.length > 1 && (
-            <div
-              className="inline-flex items-center gap-1 rounded-xl border border-border bg-muted/40 p-1"
-              role="tablist"
-              aria-label={t("trae.gateway.models.program")}
-            >
-              {sources.map((source) => {
-                const selected = source.variant === active?.variant;
-                return (
-                  <button
-                    key={source.variant}
-                    type="button"
-                    role="tab"
-                    aria-selected={selected}
-                    onClick={() => setPicked(source.variant)}
-                    title={t("trae.gateway.models.programTip", { label: source.label })}
-                    className={cn(
-                      "inline-flex items-center gap-1.5 rounded-lg px-2 py-1 text-xs outline-none transition-colors",
-                      "focus-visible:ring-2 focus-visible:ring-ring/50",
-                      selected
-                        ? "bg-background font-medium text-foreground shadow-sm"
-                        : "text-muted-foreground hover:bg-background/60 hover:text-foreground",
-                    )}
-                  >
-                    <TraeVariantMark variant={source.variant} size={15} />
-                    <span>{source.label}</span>
-                  </button>
-                );
-              })}
-            </div>
-          )}
-          <span className="text-xs text-muted-foreground">
-            {t("trae.gateway.models.summary", { count: total, model: defaultModel })}
-          </span>
-        </div>
-      </div>
-
-      <div className="px-5 py-4">
-        <p className="mb-3 text-xs text-muted-foreground">{t("trae.gateway.models.note")}</p>
-
-        <CatalogSourceBar
-          view={view}
-          scanning={refreshing}
-          onRescan={onRefresh}
-          rescanLabel={t("trae.gateway.models.refresh")}
-          scanningLabel={t("trae.gateway.models.scanning")}
-          identifiedAtTitle={view.identifiedAt ? formatAbsoluteTime(view.identifiedAt) : undefined}
-        />
-
-        {/* 读的是**哪个客户端**的缓存：同机两条程序位各有一份，必须写出来，
-            否则用户看到数字对不上时无从判断「这是哪条线的清单」。 */}
-        {active && (
-          <div className="mb-3 flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-muted-foreground">
-            <span title={data?.dataDir ?? undefined}>
-              {t("trae.gateway.models.readFrom", { label: active.label })}
-            </span>
-            {gatewayCount !== null && (
-              <span>
-                {active
-                  ? t("trae.gateway.models.gatewayCountFor", {
-                      count: gatewayCount,
-                      program: active.label,
-                    })
-                  : t("trae.gateway.models.gatewayCount", { count: gatewayCount })}
-              </span>
-            )}
+    <div className={cn(className)}>
+      {/* 工具条（无卡头）：程序位选择是**取数参数**（见头部文档「为什么卡上要有一个程序位选择器」），
+          摘要随行 —— 与来源条 / `KeysBar` 同一套 `cat-bar` 表面（`bg-muted` + 圆角 + 10px/12px 内距）。 */}
+      <div className="mb-3 flex flex-wrap items-center gap-2.5 rounded-[10px] bg-muted px-3 py-2.5">
+        {sources.length > 1 && (
+          <div
+            className="inline-flex items-center gap-1 rounded-xl border border-border bg-muted/40 p-1"
+            role="tablist"
+            aria-label={t("trae.gateway.models.program")}
+          >
+            {sources.map((source) => {
+              const selected = source.variant === active?.variant;
+              return (
+                <button
+                  key={source.variant}
+                  type="button"
+                  role="tab"
+                  aria-selected={selected}
+                  onClick={() => setPicked(source.variant)}
+                  title={t("trae.gateway.models.programTip", { label: source.label })}
+                  className={cn(
+                    "inline-flex items-center gap-1.5 rounded-lg px-2 py-1 text-xs outline-none transition-colors",
+                    "focus-visible:ring-2 focus-visible:ring-ring/50",
+                    selected
+                      ? "bg-background font-medium text-foreground shadow-sm"
+                      : "text-muted-foreground hover:bg-background/60 hover:text-foreground",
+                  )}
+                >
+                  <TraeVariantMark variant={source.variant} size={15} />
+                  <span>{source.label}</span>
+                </button>
+              );
+            })}
           </div>
         )}
-
-        {!loaded ? (
-          <EmptyState icon={Cpu}
-            title={t("trae.gateway.models.empty")}
-            description={t("trae.gateway.models.emptyDesc")}
-            action={
-              <DemoAction>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  disabled={refreshing || busy}
-                  onClick={() => void run(() => onRefresh())}
-                >
-                  {busy ? <Loader2 className="animate-spin" /> : <RefreshCw />}
-                  {t("trae.gateway.models.refresh")}
-                </Button>
-              </DemoAction>
-            }
-            className="py-4"
-          />
-        ) : (
-          <>
-            {/* Trae **渲染「上游状态」列**（有 `servable` 判据）⇒ showUpstream={true}。 */}
-            <ModelTable
-              rows={rows}
-              pendingId={pendingId}
-              onToggleDisabled={(row, disabled) => void onToggleDisabled(row, disabled)}
-              showUpstream={true}
-              labels={labels}
-            />
-            {/* 计数 = available && !disabled，与出口 ① 同源。
-                ★ 守卫是 `total > 0`（**有清单就显示**），不是 `served > 0` ——
-                `served === 0` 不是「无数据」，而是「**全部被禁用**」这一真实且正需被看见的状态。
-                （WB 侧 `model-list.tsx` 已按同一判据改过；Trae 侧此前漏跟进，两平台
-                在「全部禁用」时一个显示计数、一个不显示。） */}
-            {total > 0 && (
-              <p className="mt-3 text-xs text-muted-foreground" data-act="gw-model-count">
-                {t("shared.gateway.models.count", { served, total })}
-              </p>
-            )}
-            {/* ★ 两个出口同时生效的说明：否则用户不知道禁用真的生效了（会以为是假开关）。 */}
-            <p className="mt-1 text-xs text-muted-foreground" data-act="gw-two-exits">
-              {t("shared.gateway.models.twoExits")}
-            </p>
-          </>
-        )}
+        <span className="text-xs text-muted-foreground">
+          {t("trae.gateway.models.summary", { count: total, model: defaultModel })}
+        </span>
       </div>
-    </Card>
+
+      <p className="mb-3 text-xs text-muted-foreground">{t("trae.gateway.models.note")}</p>
+
+      <CatalogSourceBar
+        view={view}
+        scanning={refreshing}
+        onRescan={onRefresh}
+        rescanLabel={t("trae.gateway.models.refresh")}
+        scanningLabel={t("trae.gateway.models.scanning")}
+        identifiedAtTitle={view.identifiedAt ? formatAbsoluteTime(view.identifiedAt) : undefined}
+      />
+
+      {/* 读的是**哪个客户端**的缓存：同机两条程序位各有一份，必须写出来，
+          否则用户看到数字对不上时无从判断「这是哪条线的清单」。 */}
+      {active && (
+        <div className="mb-3 flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-muted-foreground">
+          <span title={data?.dataDir ?? undefined}>
+            {t("trae.gateway.models.readFrom", { label: active.label })}
+          </span>
+          {gatewayCount !== null && (
+            <span>
+              {active
+                ? t("trae.gateway.models.gatewayCountFor", {
+                    count: gatewayCount,
+                    program: active.label,
+                  })
+                : t("trae.gateway.models.gatewayCount", { count: gatewayCount })}
+            </span>
+          )}
+        </div>
+      )}
+
+      {!loaded ? (
+        <EmptyState icon={Cpu}
+          title={t("trae.gateway.models.empty")}
+          description={t("trae.gateway.models.emptyDesc")}
+          action={
+            <DemoAction>
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={refreshing || busy}
+                onClick={() => void run(() => onRefresh())}
+              >
+                {busy ? <Loader2 className="animate-spin" /> : <RefreshCw />}
+                {t("trae.gateway.models.refresh")}
+              </Button>
+            </DemoAction>
+          }
+          className="py-4"
+        />
+      ) : (
+        <>
+          {/* Trae **渲染「上游状态」列**（有 `servable` 判据）⇒ showUpstream={true}。 */}
+          <ModelTable
+            rows={rows}
+            pendingId={pendingId}
+            onToggleDisabled={(row, disabled) => void onToggleDisabled(row, disabled)}
+            showUpstream={true}
+            labels={labels}
+          />
+          {/* 计数 = available && !disabled，与出口 ① 同源。
+              ★ 守卫是 `total > 0`（**有清单就显示**），不是 `served > 0` ——
+              `served === 0` 不是「无数据」，而是「**全部被禁用**」这一真实且正需被看见的状态。
+              （WB 侧 `model-list.tsx` 已按同一判据改过；Trae 侧此前漏跟进，两平台
+              在「全部禁用」时一个显示计数、一个不显示。） */}
+          {total > 0 && (
+            <p className="mt-3 text-xs text-muted-foreground" data-act="gw-model-count">
+              {t("shared.gateway.models.count", { served, total })}
+            </p>
+          )}
+          {/* ★ 两个出口同时生效的说明：否则用户不知道禁用真的生效了（会以为是假开关）。 */}
+          <p className="mt-1 text-xs text-muted-foreground" data-act="gw-two-exits">
+            {t("shared.gateway.models.twoExits")}
+          </p>
+        </>
+      )}
+    </div>
   );
 }

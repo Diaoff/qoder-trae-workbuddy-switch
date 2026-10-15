@@ -3773,9 +3773,27 @@ pub async fn save_unified_gateway_config(
 ///
 /// ★ **管理面专用**：它不过滤 Key 授权、也不需要 Key（看的是「本入口启用了哪些」），
 /// 因此**只在管理面暴露**，绝不挂在网关监听端口上。
+///
+/// `refresh = true` ⇒ 绕过各产品线的识别缓存重取（WB 走唯一探测入口、Qoder 忽略 TTL；
+/// Trae 无缓存）—— 「重新识别全部」按钮靠它才不是假控件。
+/// ⚠️ 与 server 侧 `api_unified_gateway_models` **刻意不去重**（两宿主各一份），
+/// 行为必须一致（见 `crates/buddy-switch-server/src/api.rs` 的同名 handler）。
 #[tauri::command]
-pub async fn get_unified_gateway_models() -> Value {
-    buddy_switch_gateway::unified::routes::models_preview().await
+pub async fn get_unified_gateway_models(refresh: Option<bool>) -> Value {
+    buddy_switch_gateway::unified::routes::models_preview(refresh.unwrap_or(false)).await
+}
+
+/// GET /api/unified-gateway/pool-overview —— 已启用命名空间指向的**账号池总览**（只读投影）。
+///
+/// 统一网关没有自己的池：它按命名空间把请求分派到三条产品线各自的池。本命令把它们
+/// **已有的**池视图投影成一份跨平台汇总（**不新增任何选号逻辑**）。
+///
+/// ★ 形状 / 分组的**唯一构造点**在 `buddy_switch_gateway::unified::admin::pool_overview_payload`
+///   （见那里的模块文档：两处宿主曾各拼一份 JSON 导致桌面端与 webui 形状分裂）。
+/// ⚠️ 与 server 侧 `api_unified_gateway_pool_overview` **刻意不去重**。
+#[tauri::command]
+pub async fn unified_gateway_pool_overview() -> Value {
+    buddy_switch_gateway::unified::admin::pool_overview_payload().await
 }
 
 /// GET /api/unified-gateway/keys —— 统一密钥列表（**只出脱敏**，绝不含 hash/明文）。

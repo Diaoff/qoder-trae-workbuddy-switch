@@ -106,8 +106,17 @@ impl GatewayProduct for UnifiedGateway {
 pub mod admin {
     use serde_json::{json, Value};
 
+    use buddy_switch_core::modules::gateway_namespace::{self, NamespaceSpec, RelayTarget};
+    use buddy_switch_core::modules::product::{
+        scope_of_qoder_region, scope_of_trae_region, scope_of_wb_region,
+    };
+    use buddy_switch_core::modules::qoder::region::QoderRegion;
+    use buddy_switch_core::modules::region::Region;
+    use buddy_switch_core::modules::trae::variant::TraeVariant;
+
     use super::apikey::UnifiedApiKeyStore;
     use super::state::UnifiedGatewayState;
+    use crate::pool::RealmTag;
 
     /// `GET /api/unified-gateway/keys` 的响应体：`{ "keys": [ …脱敏… ] }`。
     ///
@@ -141,6 +150,174 @@ pub mod admin {
                 "active": keys.iter().filter(|key| key.is_active()).count(),
             },
         })
+    }
+
+    // ─────────────────── 账号池总览（只读投影）───────────────────
+    //
+    // 统一网关**没有自己的池** —— 它按命名空间把请求分派到三条产品线各自的池
+    // （`gateway_namespace::relay_target_of`）。管理面此前**完全没有池数据**
+    // （只有 keys / config），前端「账号池」分区因此无从渲染。
+    // 本组函数把三条产品线**已有的**池视图投影成一份跨平台汇总：
+    // **纯投影，不新增任何选号 / 冷却判定**。
+
+    /// 一组「已启用命名空间 → 同一个池」的归并结果。
+    #[derive(Debug, Clone, PartialEq)]
+    pub struct PoolGroup {
+        /// 池标识 —— 作用域字面量（`wb-cn` / `trae-global` / `qoder-cn` …）。
+        pub target: &'static str,
+        /// 指向该池的**已启用**命名空间（命名空间表顺序；分组依据 = 去重后的 target）。
+        pub namespaces: Vec<&'static str>,
+        /// 该组**首个**命名空间的中继目标 —— 取池数据时的依据。
+        pub relay: RelayTarget,
+    }
+
+    /// 中继目标 → **池标识**（唯一折算点；不另建映射表）。
+    ///
+    /// ★ Trae 刻意折算到**区域**（`variant.region()` → `trae-cn` / `trae-global`），
+    /// 而不是变体自身：Trae 的账号库 / 冷却 / 积分缓存都按区域分家
+    /// （core `trae::paths::scoped_file` → `scoped_file_for_region`），
+    /// `traework-*` / `traecode-*` 只是同一本区域库的另外两条程序线
+    /// ⇒ 它们与 `trae-*` 必须是**同一个池**（否则「看池」会列出两份互相打架的账号）。
+    pub fn pool_target_of(relay: RelayTarget) -> &'static str {
+        match relay {
+            RelayTarget::Wb(region) => scope_of_wb_region(region).as_str(),
+            RelayTarget::Trae(variant) => scope_of_trae_region(variant.region()).as_str(),
+            RelayTarget::Qoder(region) => scope_of_qoder_region(region).as_str(),
+        }
+    }
+
+    /// 已启用命名空间按池归并（**纯函数**；顺序 = 命名空间表顺序 = 首次出现顺序）。
+    ///
+    /// 归并依据一律来自 [`gateway_namespace::relay_target_of`]（+ [`pool_target_of`]），
+    /// ⇒ 「哪条命名空间落在哪个池」与真实分派**同源**，不存在第二份映射。
+    pub fn group_pools(specs: &[&'static NamespaceSpec]) -> Vec<PoolGroup> {
+        let mut groups: Vec<PoolGroup> = Vec::new();
+        for spec in specs {
+            let relay = gateway_namespace::relay_target_of(spec);
+            let target = pool_target_of(relay);
+            match groups.iter_mut().find(|group| group.target == target) {
+                Some(group) => group.namespaces.push(spec.id),
+                None => groups.push(PoolGroup {
+                    target,
+                    namespaces: vec![spec.id],
+                    relay,
+                }),
+            }
+        }
+        groups
+    }
+
+    /// 组装一个池对象 —— **唯一形状构造点**（两处宿主只调 [`pool_overview_payload`]，不各自拼装）。
+    ///
+    /// 计数从摘要对象**摊平**到顶层（`total` / `available` / `cooling` / `disabled` /
+    /// `expired` / `zero_credits` / `total_credits`，Qoder 另有 `model_cooling`）；
+    /// 账号行由三条产品线既有视图**原样透出**（同一张共用池卡的形状，见各自的
+    /// `status_list` / `accounts_view`）—— `credits: null` 必须保持 `null`：
+    /// 0 会被读成「这个账号没额度了」，而真相是「不可知」（前端渲染成「—」）。
+    pub fn pool_object(
+        target: &str,
+        namespaces: &[&'static str],
+        summary: Value,
+        accounts: Vec<Value>,
+    ) -> Value {
+        let mut object = serde_json::Map::new();
+        object.insert("target".to_string(), json!(target));
+        object.insert("namespaces".to_string(), json!(namespaces));
+        object.insert("accounts".to_string(), json!(accounts));
+        if let Value::Object(counts) = summary {
+            for (key, value) in counts {
+                object.insert(key, value);
+            }
+        }
+        Value::Object(object)
+    }
+
+    /// `GET /api/unified-gateway/pool-overview` 的响应体：`{ "pools": [ …按池分组… ] }`。
+    ///
+    /// ## 数据从哪来（**纯投影**）
+    ///
+    /// 池状态全部来自三条产品线**已有的**视图，本函数一行选号 / 冷却判定都不做：
+    /// - WB → `Pool::summary` / `Pool::status_list`（与 `/status`、`gateway_status` 同一对函数）；
+    /// - Trae → `TraePool::summary` / `TraePool::status_list`（与 `trae_gateway_status` 同一对）；
+    /// - Qoder → `QoderPool::summary` / `QoderPool::accounts_view`（与 `qoder_gateway_status` 同一对）。
+    ///
+    /// 只列**已启用**命名空间指向的池（未启用段不出现）；多条命名空间共用一个池时
+    /// 只出一条（见 [`group_pools`] 的 `namespaces`）。
+    pub async fn pool_overview_payload() -> Value {
+        let specs = super::state::shared_state()
+            .config_snapshot()
+            .await
+            .enabled_namespaces();
+        let mut pools: Vec<Value> = Vec::new();
+        for group in group_pools(&specs) {
+            pools.push(pool_of(&group).await);
+        }
+        json!({ "pools": pools })
+    }
+
+    /// 取一个池的状态并组装（分派依据 = 分组时记下的 `relay`）。
+    async fn pool_of(group: &PoolGroup) -> Value {
+        let (summary, accounts) = match group.relay {
+            RelayTarget::Wb(region) => wb_pool(region).await,
+            RelayTarget::Trae(variant) => trae_pool(variant).await,
+            RelayTarget::Qoder(region) => qoder_pool(region).await,
+        };
+        pool_object(group.target, &group.namespaces, summary, accounts)
+    }
+
+    /// WorkBuddy：与账号库对齐（同 `gateway_status`，否则「刚导入、还没发过请求」的账号不在池里）
+    /// 后，取**该域**的摘要与账号。
+    ///
+    /// ★ 账号行按 `realm` 过滤 —— 与 `summary(now, Some(realm))` 的域过滤**同一口径**
+    /// （否则计数与行数会互相打架；`realm = "unknown"` 的游离条目两侧都不算）。
+    async fn wb_pool(region: Region) -> (Value, Vec<Value>) {
+        let state = <crate::WbGateway as crate::GatewayProduct>::shared_state();
+        let now = crate::timeutil::now_ms();
+        let realm = match region {
+            Region::Cn => RealmTag::Cn,
+            Region::Global => RealmTag::Global,
+        };
+        let mut pool = state.pool.write().await;
+        crate::state::sync_pool_with_accounts(&mut pool);
+        let summary = serde_json::to_value(pool.summary(now, Some(realm))).unwrap_or(Value::Null);
+        let realm_key = crate::pool::realm_key(Some(realm));
+        let accounts = pool
+            .status_list(now)
+            .into_iter()
+            .filter(|row| row["realm"].as_str() == Some(realm_key))
+            .collect();
+        (summary, accounts)
+    }
+
+    /// Trae：池按**变体**取（分组首个命名空间的变体）。同一区域的三条程序线读的是
+    /// 同一本区域库 / 同一份冷却（见 [`pool_target_of`]）⇒ 取哪个变体都得到同一份数据。
+    async fn trae_pool(variant: TraeVariant) -> (Value, Vec<Value>) {
+        let state = <crate::trae::TraeGateway as crate::GatewayProduct>::shared_state();
+        // ★ Trae 的池用**秒**（与 `trae::now_secs` / 冷却文件同口径），不是毫秒。
+        let now = crate::trae::now_secs();
+        let (summary, accounts) = {
+            let mut pools = state.pools.lock().await;
+            let pool = pools
+                .entry(variant)
+                .or_insert_with(|| crate::trae::pool::TraePool::for_variant(variant));
+            pool.sync_for(variant);
+            (
+                serde_json::to_value(pool.summary(now)).unwrap_or(Value::Null),
+                pool.status_list(now),
+            )
+        };
+        (summary, accounts)
+    }
+
+    /// Qoder：区域池的摘要（含 Qoder 独有的一格 `model_cooling` —— 上游 429 是**按模型**
+    /// 报的，与账号级 `cooling` 正交，有现成字段故一并透出）。
+    async fn qoder_pool(region: QoderRegion) -> (Value, Vec<Value>) {
+        let state = <crate::qoder::QoderGateway as crate::GatewayProduct>::shared_state();
+        let now = buddy_switch_core::modules::config::now_ms();
+        let mut pools = state.pools.lock().await;
+        let pool = pools.entry(region).or_default();
+        pool.sync_for(region);
+        (pool.summary(now), pool.accounts_view(now))
     }
 }
 
@@ -268,6 +445,91 @@ mod tests {
         assert!(config.get("running").is_none(), "running 应由各宿主补，不在共享载荷里");
         assert!(config.get("addr").is_none(), "addr 应由各宿主补，不在共享载荷里");
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// ★★ 账号池总览的**分组**：已启用命名空间按 `relay_target_of` 归并到池；
+    /// 扩展层四条（`traework-*` / `traecode-*`）必须归并进 Trae 的**两个区域池**。
+    ///
+    /// 可证伪：把 `admin::pool_target_of` 改成拿 `spec.id` 当池标识 ⇒ 第二个断言的池数
+    /// 变成 10（每条命名空间各算一个池）立即变红；改成 `variant.as_str()` ⇒ 第一个断言的
+    /// 目标序列变成 `trae_merged` 这类变体标识，同样红。
+    #[test]
+    fn pool_groups_merge_extension_namespaces_into_the_trae_region_pools() {
+        use buddy_switch_core::modules::gateway_namespace;
+
+        // 默认启用集 = 派生层 6 条 ⇒ 6 个池，每条命名空间一个。
+        let defaults: Vec<&'static gateway_namespace::NamespaceSpec> =
+            gateway_namespace::default_specs().collect();
+        let groups = super::admin::group_pools(&defaults);
+        assert_eq!(
+            groups.iter().map(|group| group.target).collect::<Vec<_>>(),
+            vec!["wb-cn", "wb-global", "trae-cn", "trae-global", "qoder-cn", "qoder-global"],
+            "池标识必须是作用域字面量（由 relay_target_of 折算，不另建映射表）"
+        );
+        assert!(
+            groups.iter().all(|group| group.namespaces.len() == 1),
+            "默认集里不该有两条命名空间共用一个池"
+        );
+
+        // 扩展层 4 条也启用 ⇒ **池数仍是 6**（它们复用 Trae 的两个区域池）。
+        let all: Vec<&'static gateway_namespace::NamespaceSpec> =
+            gateway_namespace::all_specs().iter().collect();
+        let groups = super::admin::group_pools(&all);
+        assert_eq!(
+            groups.len(),
+            6,
+            "扩展层必须归并进 Trae 的区域池，而不是各算一个池：{:?}",
+            groups.iter().map(|group| group.target).collect::<Vec<_>>()
+        );
+        let trae_cn = groups.iter().find(|group| group.target == "trae-cn").unwrap();
+        assert_eq!(trae_cn.namespaces, vec!["trae-cn", "traework-cn", "traecode-cn"]);
+        let trae_global = groups.iter().find(|group| group.target == "trae-global").unwrap();
+        assert_eq!(
+            trae_global.namespaces,
+            vec!["trae-global", "traework-global", "traecode-global"]
+        );
+    }
+
+    /// ★★ 池对象形状：计数从摘要**摊平**到顶层、账号行**原样**透出
+    /// （`credits: null` 不许被 0 顶替）。
+    ///
+    /// 可证伪：把计数嵌回 `summary` 子对象（前端按 `pool.total` 取 ⇒ 全 0）⇒ 计数断言红；
+    /// 把 `credits` 的 `null` 兜成 0 ⇒ 最后一条断言红。
+    #[test]
+    fn pool_object_flattens_summary_and_keeps_null_credits() {
+        let object = super::admin::pool_object(
+            "qoder-cn",
+            &["qoder-cn"],
+            serde_json::json!({
+                "total": 2,
+                "available": 1,
+                "cooling": 0,
+                "disabled": 1,
+                "expired": 0,
+                "zero_credits": 0,
+                "total_credits": 0,
+                "model_cooling": 1,
+            }),
+            vec![serde_json::json!({
+                "uid": "u1",
+                "name": "jackey",
+                "status": "available",
+                "credits": serde_json::Value::Null,
+            })],
+        );
+        assert!(object.is_object(), "池对象必须是对象（裸数组曾让桌面端整页白屏）：{object}");
+        assert_eq!(object["target"], "qoder-cn");
+        assert_eq!(object["namespaces"][0], "qoder-cn");
+        assert_eq!(object["total"], 2, "计数必须摊平到池对象顶层（前端按 `pool.total` 取）");
+        assert_eq!(object["available"], 1);
+        assert_eq!(object["disabled"], 1);
+        assert_eq!(object["model_cooling"], 1, "Qoder 的按模型冷却计数应一并透出");
+        assert_eq!(object["accounts"][0]["uid"], "u1");
+        assert_eq!(
+            object["accounts"][0]["credits"],
+            serde_json::Value::Null,
+            "credits 不可知必须保持 null（0 会被读成「这个账号没额度了」）"
+        );
     }
 
     /// ★★ 护栏：**统一网关的路由必须真的能构建出来，且真的能应答**。

@@ -3,7 +3,6 @@ import { Server } from "lucide-react";
 import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
-import { Card } from "@/components/ui/card";
 import { EmptyState } from "@/components/ui/empty-state";
 import { CatalogSourceBar } from "@/components/gateway/catalog-source-bar";
 import { ModelTable } from "@/components/gateway/model-table";
@@ -46,6 +45,14 @@ import { EMPTY_DISABLED_SET, useGatewayStore } from "@/stores/gateway";
  * - **「两个出口」说明必须出现**：禁用的模型不会出现在 `/v1/models`，**直接调用也会被拒绝**
  *   并说明原因 —— 两个出口同时生效，否则禁用就是假开关。
  * - 切换按钮是**按钮操作中**态（`<Loader2>` + `disabled`）；展示字段过 `displayText`（白屏防线）。
+ *
+ * ## 2026-10-15 骨架对齐原型：卡头 → 来源条工具条 + 裸表 + 说明段
+ *
+ * 原型（`viewGateway()` 的 `models` 分支）= `catalogBar(来源条)` + 裸表 + 说明段，
+ * **没有卡头**（「模型清单」标题与左栏分区导航重复，已去掉）。
+ * `CatalogSourceBar` 本身就是原型 `<div class="cat-bar">` 的复刻，形态不变；
+ * 表下的计数（`shared.gateway.models.count`）与「两个出口」说明（`twoExits`）即原型的
+ * 说明段，保持在表后**恒渲染**（见下方 `total > 0` 守卫的 ★ 说明）。
  */
 export function ModelList({ region, className }: { region: Region; className?: string }) {
   const t = useT();
@@ -136,60 +143,55 @@ export function ModelList({ region, className }: { region: Region; className?: s
   }
 
   return (
-    <Card className={cn("gap-0 py-0", className)}>
-      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border/60 px-5 py-3">
-        {/* 版本不在这里显示也不在这里切：页头切换器是唯一入口（与 Trae 侧同口径）。 */}
-        <span className="text-sm font-semibold">{t("wbStats.gateway.modelList")}</span>
-      </div>
-
-      <div className="px-5 py-4">
-        <CatalogSourceBar
-          view={view}
-          scanning={refreshing}
-          onRescan={() => void onRescan()}
-          rescanLabel={t("wbStats.gateway.rescan")}
-          scanningLabel={t("wbStats.gateway.scanning")}
-          identifiedAtTitle={view.identifiedAt ? formatAbsoluteTime(view.identifiedAt) : undefined}
+    <div className={cn(className)}>
+      {/* 无卡头 —— 分区名由左栏导航承担（与 Trae / Qoder 侧同口径）。
+          版本也不在这里显示 / 切换：页头切换器是唯一入口。 */}
+      <CatalogSourceBar
+        view={view}
+        scanning={refreshing}
+        onRescan={() => void onRescan()}
+        rescanLabel={t("wbStats.gateway.rescan")}
+        scanningLabel={t("wbStats.gateway.scanning")}
+        identifiedAtTitle={view.identifiedAt ? formatAbsoluteTime(view.identifiedAt) : undefined}
+      />
+      {!snapshot || snapshot.models.length === 0 ? (
+        <EmptyState
+          icon={Server}
+          title={t("wbStats.gateway.noModels")}
+          description={t("wbStats.gateway.noModelsDesc")}
+          action={
+            <Button variant="outline" size="sm" onClick={() => void onRescan()} disabled={refreshing}>
+              {t("wbStats.gateway.rescan")}
+            </Button>
+          }
         />
-        {!snapshot || snapshot.models.length === 0 ? (
-          <EmptyState
-            icon={Server}
-            title={t("wbStats.gateway.noModels")}
-            description={t("wbStats.gateway.noModelsDesc")}
-            action={
-              <Button variant="outline" size="sm" onClick={() => void onRescan()} disabled={refreshing}>
-                {t("wbStats.gateway.rescan")}
-              </Button>
-            }
+      ) : (
+        <>
+          {/* WB 不渲染「上游状态」列（恒可用，决策 #3）⇒ showUpstream={false}。 */}
+          <ModelTable
+            rows={rows}
+            pendingId={pendingId}
+            onToggleDisabled={(row, disabled) => void onToggleDisabled(row, disabled)}
+            showUpstream={false}
+            labels={labels}
           />
-        ) : (
-          <>
-            {/* WB 不渲染「上游状态」列（恒可用，决策 #3）⇒ showUpstream={false}。 */}
-            <ModelTable
-              rows={rows}
-              pendingId={pendingId}
-              onToggleDisabled={(row, disabled) => void onToggleDisabled(row, disabled)}
-              showUpstream={false}
-              labels={labels}
-            />
-            {/* 计数 = available && !disabled，与出口 ① 同源。
-                ★ Q5/D39：守卫是 `total > 0`（**有清单就显示**），不是 `served > 0` ——
-                `served === 0` 不是「无数据」，而是「**全部被禁用**」这一真实且正需被看见的状态。
-                旧守卫恰好在最该出现的场景下把整条信息藏了起来，且与下一行「两个出口」说明
-                **恒渲染**的处理自相矛盾（那里同样认为「禁用生效了必须看得见」）。
-                文案沿用既有词条，不新增措辞（避免踩「禁止 N 个模型可用」的反向断言）。 */}
-            {total > 0 && (
-              <p className="mt-3 text-xs text-muted-foreground" data-act="gw-model-count">
-                {t("shared.gateway.models.count", { served, total })}
-              </p>
-            )}
-            {/* ★ 两个出口同时生效的说明：否则用户不知道禁用真的生效了（会以为是假开关）。 */}
-            <p className="mt-1 text-xs text-muted-foreground" data-act="gw-two-exits">
-              {t("shared.gateway.models.twoExits")}
+          {/* 计数 = available && !disabled，与出口 ① 同源。
+              ★ Q5/D39：守卫是 `total > 0`（**有清单就显示**），不是 `served > 0` ——
+              `served === 0` 不是「无数据」，而是「**全部被禁用**」这一真实且正需被看见的状态。
+              旧守卫恰好在最该出现的场景下把整条信息藏了起来，且与下一行「两个出口」说明
+              **恒渲染**的处理自相矛盾（那里同样认为「禁用生效了必须看得见」）。
+              文案沿用既有词条，不新增措辞（避免踩「禁止 N 个模型可用」的反向断言）。 */}
+          {total > 0 && (
+            <p className="mt-3 text-xs text-muted-foreground" data-act="gw-model-count">
+              {t("shared.gateway.models.count", { served, total })}
             </p>
-          </>
-        )}
-      </div>
-    </Card>
+          )}
+          {/* ★ 两个出口同时生效的说明：否则用户不知道禁用真的生效了（会以为是假开关）。 */}
+          <p className="mt-1 text-xs text-muted-foreground" data-act="gw-two-exits">
+            {t("shared.gateway.models.twoExits")}
+          </p>
+        </>
+      )}
+    </div>
   );
 }

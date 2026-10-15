@@ -4382,38 +4382,65 @@ check("★ P7 设置页接线：子导航 + 备份分区 + 全不勾禁用导出
   return "子导航接线 · 备份分区 · 全不勾禁用导出";
 });
 
-check("★ P3 网关 7 项子导航：7 项齐备 + 三页接线（替代 6 卡纵向堆叠，PLAN §3.9；第 7 项 = 统一入口）", () => {
-  /* 变异①：把子导航退回「6 张卡纵向堆叠」⇒ 表或 `useState<GatewaySubnavId>` 失配即变红。 */
+check("★ 网关页两个轴：类型表 + 分区表按类型分家 + 三页接线（2026-10-15 起，替代原「7 项子导航」）", () => {
+  /* 为什么改：统一网关**跨全部作用域**，而独立网关的 6 个分区**都随作用域过滤** ——
+     两个正交的轴挤在同一层是结构错位。现在拆成「类型 × 分区」，类型切换在左栏顶部。
+     变异①：把类型表删掉 / 退回单表 ⇒ 下面任一断言变红。 */
   const nav = readCode("src/components/gateway/gateway-subnav.tsx");
-  const m = nav.match(/GATEWAY_SUBNAV[\s\S]*?=\s*\[([\s\S]*?)\];/);
-  if (!m) throw new Error("找不到 `GATEWAY_SUBNAV` 表");
-  const ids = [...m[1].matchAll(/id:\s*"([a-z]+)"/g)].map((x) => x[1]);
-  // ★ 第 7 项「统一入口」= 统一网关（第三个产品线）：跨作用域的单一入口，
-  //   与「请求日志不做版本过滤」同性质。加/删子导航项必须同步本表。
-  const want = ["overview", "keys", "models", "pool", "proxy", "logs", "unified"];
-  if (ids.join(",") !== want.join(",")) {
-    throw new Error(`子导航应为 ${want.join(" / ")}，实际 ${ids.join(" / ")}`);
+  const idsOf = (re, what) => {
+    const m = nav.match(re);
+    if (!m) throw new Error("找不到表：" + what);
+    return [...m[1].matchAll(/id:\s*"([a-z-]+)"/g)].map((x) => x[1]);
+  };
+  const types = idsOf(/GW_TYPES[\s\S]*?=\s*\[([\s\S]*?)\];/, "GW_TYPES");
+  if (types.join(",") !== "independent,unified") {
+    throw new Error(`类型应为 independent / unified，实际 ${types.join(" / ")}`);
   }
-  for (const page of ["src/pages/ApiServicePage.tsx", "src/pages/TraeApiServicePage.tsx"]) {
+  const indep = idsOf(/GW_INDEPENDENT_SECTIONS[\s\S]*?=\s*\[([\s\S]*?)\];/, "GW_INDEPENDENT_SECTIONS");
+  const wantIndep = ["overview", "keys", "models", "pool", "proxy", "logs"];
+  if (indep.join(",") !== wantIndep.join(",")) {
+    throw new Error(`独立网关分区应为 ${wantIndep.join(" / ")}，实际 ${indep.join(" / ")}`);
+  }
+  const uni = idsOf(/GW_UNIFIED_SECTIONS[\s\S]*?=\s*\[([\s\S]*?)\];/, "GW_UNIFIED_SECTIONS");
+  /* ⚠️ 统一网关侧的分区 id **必须带 \`u-\` 前缀**：两个类型的分区 id 集合必须**不相交**，
+     否则切类型会停在另一个类型的同名分区上（渲染成空）。 */
+  for (const id of uni) {
+    if (!id.startsWith("u-")) throw new Error(`统一网关分区 id 必须带 u- 前缀：${id}`);
+  }
+  if (indep.some((id) => uni.includes(id))) throw new Error("两个类型的分区 id 不得相交");
+  /* 分区必须**按类型 fail-closed**（\`gatewaySection\`），不能整表查找。 */
+  if (!/export function gatewaySection\(type: GatewayType/.test(nav)) {
+    throw new Error("缺按类型 fail-closed 的 `gatewaySection`");
+  }
+  if (!/export function parseGatewayDeepLink\(/.test(nav)) {
+    throw new Error("缺 `parseGatewayDeepLink`（两代旧深链兼容）");
+  }
+  /* ★ 表里的每一项都必须在页面上**真的接线** —— 摆了入口没接实现比不摆更糟
+     （本项目已出过同类事故）。统一网关的分区走同一个 \`<UnifiedGatewayView section=…>\`。 */
+  for (const page of ["src/pages/ApiServicePage.tsx", "src/pages/TraeApiServicePage.tsx", "src/pages/QoderApiServicePage.tsx"]) {
     const code = readCode(page);
-    if (!/<GatewaySubnav\b/.test(code)) throw new Error(`${page} 没有接网关子导航`);
-    if (!/useState<GatewaySubnavId>/.test(code)) throw new Error(`${page} 子导航选中态未接线`);
-    /* ★ 「统一入口」子导航项必须在**两页都真的接线**：只加表项不接线 = 点了没反应
-       （本项目已出过「摆了入口没接实现」的同类事故）。 */
-    if (!/<UnifiedGatewayView\b/.test(code)) {
-      throw new Error(`${page} 未渲染 <UnifiedGatewayView> —— 「统一入口」子项点了没反应`);
+    if (!/<GatewayShell\b/.test(code)) throw new Error(`${page} 没有接网关外壳`);
+    if (!/parseGatewayDeepLink/.test(code)) throw new Error(`${page} 未接线两个轴的深链解析`);
+    if (!/function goType\(/.test(code)) throw new Error(`${page} 切类型未接线（缺 goType）`);
+    if (!/function goSub\(/.test(code)) throw new Error(`${page} 切换分区未写 URL（缺 goSub）`);
+    if (!/<UnifiedGatewayView\b/.test(code)) throw new Error(`${page} 未渲染 <UnifiedGatewayView>`);
+    for (const id of uni) {
+      if (!code.includes(`section="${id.replace(/^u-/, "")}"`)) {
+        throw new Error(`${page} 未渲染统一网关分区 ${id}（表里有、页面上没接线）`);
+      }
     }
-    /* 两页必须同构：`data-split-layout`（900px 转纵向）与 `goSub`（写 URL）缺一即红。
-       ⚠️ Trae 页此前两样都缺 —— 点击子导航 URL 不变、窄屏也不转纵向。 */
-    if (!/data-split-layout/.test(code)) throw new Error(`${page} 缺 data-split-layout（900px 以下不转纵向）`);
-    if (!/function goSub\(/.test(code)) throw new Error(`${page} 切换子分区未写 URL（缺 goSub）`);
   }
-  /* 变异②：Trae 页若把「请求代理」也渲染出来（P12 的 C 路只覆盖 WorkBuddy 网关端口）⇒ 变红。 */
-  const trae = readCode("src/pages/TraeApiServicePage.tsx");
-  if (!/GATEWAY_SUBNAV\.filter\([\s\S]*?id !== "proxy"/.test(trae)) {
-    throw new Error("Trae 网关页未去掉「请求代理」（该能力只覆盖 WorkBuddy）");
+  /* 外壳自带 \`data-split-layout\`（900px 转纵向）与左栏容器 —— 三页共用一份。 */
+  const shell = readCode("src/components/gateway/gateway-shell.tsx");
+  if (!/data-split-layout/.test(shell)) throw new Error("GatewayShell 缺 data-split-layout（900px 以下不转纵向）");
+  if (!/data-gateway-sidebar/.test(shell)) throw new Error("GatewayShell 缺 data-gateway-sidebar（左栏容器）");
+  /* 变异②：Trae / Qoder 若把「请求代理」也渲染出来（P12 的 C 路只覆盖 WorkBuddy 网关端口）⇒ 变红。 */
+  for (const page of ["src/pages/TraeApiServicePage.tsx", "src/pages/QoderApiServicePage.tsx"]) {
+    if (!/GW_INDEPENDENT_SECTIONS_NO_PROXY/.test(readCode(page))) {
+      throw new Error(`${page} 未去掉「请求代理」（该能力只覆盖 WorkBuddy）`);
+    }
   }
-  return `${ids.join(" / ")} · 两页接线 · Trae 去 proxy`;
+  return `类型 ${types.join("/")} · 独立 ${indep.length} 项 · 统一 ${uni.join("/")} · 三页接线 · Trae/Qoder 去 proxy`;
 });
 
 check("★ P7 冲突策略只有三种（不渲染「逐条询问」，§7 #5）", () => {
@@ -5851,13 +5878,10 @@ check("★ P3(独立) 适配层②：热力图 7 行 × 24 列，缺失补 0，�
 });
 
 check("★ P3(独立) 适配层③：会话散点 x = records（不是 msgs，跑真代码）", () => {
-  /* 变异：`sessionPoints` 的 `x` 改成读别的字段（如 0）⇒ 本条变红（§1.4 字段归属）。
-     ⚠️ 2026-10-15：`sessionPoints` 增了**必填**的窗口参数 —— 本夹具的会话没有
-     `daily`（= 旧后端形态）⇒ 走全时回落路径，x/y 判据不变；窗口口径的行为断言见
-     下面「会话统计必须随窗口变化」那一条。 */
+  /* 变异：`sessionPoints` 的 `x` 改成读别的字段（如 0）⇒ 本条变红（§1.4 字段归属）。 */
   const uc = loadTs(path.join(ROOT, USAGE_CHARTS));
   const src = usageSource({ sessions: [{ key: "s1", title: "会话甲", total: 100, records: 7 }] });
-  const pts = uc.sessionPoints(src, presetWin(30));
+  const pts = uc.sessionPoints(src);
   if (pts.length !== 1) throw new Error(`应得 1 个点，实得 ${pts.length}`);
   if (pts[0].x !== 7) throw new Error(`x 应取 records=7，实得 ${pts[0].x}`);
   if (pts[0].y !== 100) throw new Error(`y 应取 total=100，实得 ${pts[0].y}`);
@@ -6305,83 +6329,6 @@ check("★ 会话视图必须**截断渲染**（会话可达 1.5 万，全量渲
     throw new Error("「会话数」tile 不是按全量 points 算的（数字会随渲染上限漂移）");
   }
   return `limit=${limit} · 两图同源切片 · tile 仍按全量`;
-});
-
-check("★ 会话统计必须随窗口变化（2026-10-15 用户报障「切时间不变」，跑真代码）", () => {
-  /* ## 报障与根因
-     用户：「会话的统计数据切换时间没有变化」。根因是 SessionsView 不消费 `viewWindow`，
-     `sessionPoints` 只吃全时合计 —— 而趋势 / 模型两视图早已按窗口切片，
-     「同一参数条只有会话不动」既是谎报也是口径分裂。
-     修法：后端下发 `sessions[].daily`（逐日拆分，与文件级 daily 同判据）+
-     `sessionPoints(source, window)` 按窗口键求和。
-
-     ## 变异对照（任一都会变红）
-     ① `sessionPoints` 忽略窗口 / 忽略 daily ⇒ 前四条行为断言红；
-     ② 把「无 daily ⇒ 回落全时」改成「无 daily ⇒ 计 0」⇒ 回落断言红（旧后端会整屏消失）；
-     ③ SessionsView 不把 `viewWindow` 传进 `sessionPoints` ⇒ 末尾静态断言红。 */
-  const uc = loadTs(path.join(ROOT, USAGE_CHARTS));
-  const today = new Date();
-  const pad = (n) => String(n).padStart(2, "0");
-  const key = (offset) => {
-    const d = new Date(today.getTime() - offset * 86400000);
-    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
-  };
-  const src = usageSource({
-    sessions: [
-      {
-        key: "s-today",
-        title: "今天的会话",
-        // 全时总量 = 逐日之和（与真实数据同构）；窗口切片的正确性由 daily 决定。
-        total: 100,
-        records: 5,
-        daily: [
-          { key: key(0), total: 40, records: 2 },
-          { key: key(10), total: 60, records: 3 },
-        ],
-      },
-      {
-        key: "s-old",
-        title: "十天前的会话",
-        total: 5,
-        records: 1,
-        daily: [{ key: key(10), total: 5, records: 1 }],
-      },
-    ],
-  });
-
-  // 今天：只有 s-today 在窗口内，且只算今天那一段。
-  const todayPts = uc.sessionPoints(src, { kind: "today" });
-  if (todayPts.length !== 1 || todayPts[0].id !== "s-today" || todayPts[0].y !== 40 || todayPts[0].x !== 2) {
-    throw new Error(`「今天」窗口应得仅 s-today（40 / 2 条），实得 ${JSON.stringify(todayPts)}`);
-  }
-  // 近 7 天：s-old（10 天前）仍在窗口外 ⇒ 集合不变、数值不变（该会话今天以外的贡献不计）。
-  const weekPts = uc.sessionPoints(src, presetWin(7));
-  if (weekPts.length !== 1 || weekPts[0].id !== "s-today" || weekPts[0].y !== 40) {
-    throw new Error(`「近 7 天」应得仅 s-today（40），实得 ${JSON.stringify(weekPts)}`);
-  }
-  // 近 30 天：两个会话都进窗，s-today 变为窗口内合计（40+60 / 2+3）。
-  const monthPts = uc.sessionPoints(src, presetWin(30));
-  const sToday = monthPts.find((point) => point.id === "s-today");
-  if (monthPts.length !== 2 || !sToday || sToday.y !== 100 || sToday.x !== 5) {
-    throw new Error(`「近 30 天」应得 2 个会话、s-today=100/5，实得 ${JSON.stringify(monthPts)}`);
-  }
-  // 旧后端回落：没有 daily ⇒ 全时口径（不编 0、也不炸）。
-  const legacy = usageSource({
-    sessions: [{ key: "s-legacy", title: "旧后端", total: 77, records: 4 }],
-  });
-  const legacyPts = uc.sessionPoints(legacy, { kind: "today" });
-  if (legacyPts.length !== 1 || legacyPts[0].y !== 77 || legacyPts[0].x !== 4) {
-    throw new Error(`无 daily 必须回落全时口径，实得 ${JSON.stringify(legacyPts)}`);
-  }
-  // 静态：组件必须真的把窗口喂进去（缺了它，上面修好的纯函数永远不被窗口驱动）。
-  const page = readCode("src/pages/TokenStatsPage.tsx");
-  if (!/sessionPoints\(source,\s*viewWindow\)/.test(page)) {
-    throw new Error("SessionsView 的 sessionPoints 没吃 viewWindow —— 会话统计又会不随窗口变化");
-  }
-  if (!/<SessionsView[\s\S]{0,300}?viewWindow=\{viewWindow\}/.test(page)) {
-    throw new Error("SessionsView 没收到 viewWindow prop —— 组件内无从消费");
-  }
-  return "今天/近7天/近30天 集合与数值正确 · 旧后端回落 · 组件吃到窗口";
 });
 
 check("★ P3 权限自愈：授权恢复后**自动重试**上次切换（且只重试一次）", () => {

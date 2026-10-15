@@ -94,7 +94,9 @@ pub async fn models(State(state): State<UnifiedGatewayState>, headers: HeaderMap
         .into_iter()
         .filter(|spec| record.authorizes(spec.id))
         .collect();
-    let entries = collect_namespace_models(&specs).await;
+    // 监听端口**不触发重识别**（`refresh = false`）：它给客户端用，不该由一次拉清单
+    // 触发上游探测。「重新识别」只在管理面（`models_preview(true)`）。
+    let entries = collect_namespace_models(&specs, false).await;
     json_response(StatusCode::OK, build_models_response(&entries))
 }
 
@@ -516,10 +518,22 @@ fn enabled_prefixes(config: &UnifiedGatewayConfig) -> String {
 /// 与「某一把握钥的权限」无关。
 /// ⇒ **它绕过鉴权**（不需要 Key），因此**只允许两处宿主的管理面调用**，
 /// **绝不注册进 [`super::router`]**（那条由 e2e 用例逐条钉住实际挂载集合来守）。
-pub async fn models_preview() -> Value {
+///
+/// ## `refresh = true`（管理面「重新识别全部」）
+///
+/// 绕过各产品线的**识别缓存**重取一次：
+/// - WorkBuddy：走 [`crate::catalog_probe::probe_region`]（全仓**唯一**探测入口）——
+///   重新向上游识别并写回目录缓存；失败静默（下面读到的仍是缓存 / 内置快照，
+///   具体原因由 `CatalogStore::refresh` 写进 `note`）；
+/// - Qoder：走 [`crate::qoder::QoderGatewayState::refresh_catalog`]（忽略 TTL 缓存）；
+/// - Trae：**无缓存可绕** —— 清单直接读客户端文件（`read_client_model_list`），
+///   本次读到的就是客户端那份最新的。
+///
+/// ⚠️ 监听端口上的 `/v1/models` **不走这条路**（`refresh = false`）：它给客户端用。
+pub async fn models_preview(refresh: bool) -> Value {
     let config = super::state::shared_state().config_snapshot().await;
     let specs: Vec<&'static NamespaceSpec> = config.enabled_namespaces();
-    let entries = collect_namespace_models(&specs).await;
+    let entries = collect_namespace_models(&specs, refresh).await;
     build_models_response(&entries)
 }
 
@@ -583,14 +597,23 @@ pub fn build_models_response(entries: &[NamespaceModels]) -> Value {
 ///
 /// ★ 两个产品线的状态都是**进程内单例**，此处直接借用 ⇒ 「三个入口看到同一份池/清单」
 /// 是结构性成立的，不靠同步逻辑维持。
-async fn collect_namespace_models(specs: &[&'static NamespaceSpec]) -> Vec<NamespaceModels> {
+///
+/// `refresh = true` ⇒ 先绕过各产品线的识别缓存重取（WB 走唯一探测入口、Qoder 忽略 TTL），
+/// 再按原路径读取；Trae 无缓存（直读客户端文件）。失败一律**静默降级**到缓存 / 内置，
+/// 原因由各产品线自己的 `note` 如实给出（契约：非 `live` ⇒ note 非空）。
+async fn collect_namespace_models(
+    specs: &[&'static NamespaceSpec],
+    refresh: bool,
+) -> Vec<NamespaceModels> {
     if specs.is_empty() {
         return Vec::new();
     }
     let wb = <crate::WbGateway as crate::GatewayProduct>::shared_state();
     let trae = <crate::trae::TraeGateway as crate::GatewayProduct>::shared_state();
-    let wb_disabled = wb.disabled.read().await;
-    let trae_disabled = trae.disabled.read().await;
+    // ⚠️ **取快照，不跨 await 持读锁**（本仓既有纪律）：循环里的 WB 探测 / Qoder 拉清单
+    //    都是网络 IO，持锁会卡住「禁用模型」这类写操作（`set_model_disabled` 要写锁）。
+    let wb_disabled = wb.disabled.read().await.clone();
+    let trae_disabled = trae.disabled.read().await.clone();
 
     /* ⚠️ `Qoder` 分支需要 async 取数（清单要经账号凭据向官方拉取，带缓存）⇒
        这里用 for 循环逐项 await（`.map` 的闭包不是 async）。顺序保持不变。 */
@@ -598,6 +621,11 @@ async fn collect_namespace_models(specs: &[&'static NamespaceSpec]) -> Vec<Names
     for spec in specs.iter() {
         collected.push(match gateway_namespace::relay_target_of(spec) {
             RelayTarget::Wb(region) => {
+                if refresh {
+                    // 管理面「重新识别」：唯一探测入口（内部只用该 region 自己的凭据）。
+                    // 失败静默 —— 下面读到的仍是缓存 / 内置快照，并把原因写进 `note`。
+                    let _ = crate::catalog_probe::probe_region(&wb, region).await;
+                }
                 let snapshot = wb.catalogs.current(region);
                 let models = snapshot
                     .models
@@ -666,7 +694,12 @@ async fn collect_namespace_models(specs: &[&'static NamespaceSpec]) -> Vec<Names
                带缓存；拉不到时**空清单 + 可读 note**（契约：非 `live` ⇒ note 非空）。 */
             RelayTarget::Qoder(region) => {
                 let qoder = <crate::qoder::QoderGateway as crate::GatewayProduct>::shared_state();
-                let catalog = qoder.catalog_for(region).await;
+                // `refresh` ⇒ 忽略 TTL 强制重拉（失败仍退回上次成功的结果 + note）。
+                let catalog = if refresh {
+                    qoder.refresh_catalog(region).await
+                } else {
+                    qoder.catalog_for(region).await
+                };
                 let scope = buddy_switch_core::modules::product::scope_of_qoder_region(region);
                 let disabled_store = crate::disabled_models::shared();
                 let disabled = disabled_store.read().await;

@@ -1,7 +1,6 @@
 import { Eraser, Loader2, ScrollText } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
-import { Card } from "@/components/ui/card";
 import { EmptyState } from "@/components/ui/empty-state";
 import { DemoAction } from "@/components/demo-action";
 import { useT } from "@/lib/i18n";
@@ -36,6 +35,13 @@ function statusTone(status: number): string {
  *
  * 本组件是**纯展示**：数据与清空动作由页面持有（页面的 `loadAll` 已经拉了日志，
  * 组件再自拉一次只会得到两份可能不同步的快照）。
+ *
+ * ## 2026-10-15 骨架对齐原型：去掉 `<Card>`
+ *
+ * 原型（`viewGateway()` 的 `logs` 分支）= **纯裸表**（无工具条、无卡头、无说明段）。
+ * 本组件此前套了一整张 `<Card>`（卡头 = 「请求日志」标题 + 清空按钮）。标题与左栏
+ * 分区导航重复，已去掉；**清空按钮必须保留**（本分区唯一的写操作出口），独占表前一行
+ * （与 WB 侧 `request-log.tsx` 同口径）。
  */
 export function TraeRequestLog({
   logs,
@@ -56,11 +62,9 @@ export function TraeRequestLog({
   const rows = [...logs].sort((a, b) => b.ts - a.ts).slice(0, MAX_LOG_ROWS);
 
   return (
-    <Card className={cn("gap-0 py-0", className)}>
-      <div className="flex items-center justify-between gap-3 border-b border-border/60 px-5 py-3">
-        <span className="text-sm font-semibold">
-          {t("trae.gateway.log.title")}
-        </span>
+    <div className={cn(className)}>
+      {/* 清空出口独占一行（分区名由左栏导航承担，不再有标题）。 */}
+      <div className="mb-3 flex items-center justify-end">
         <DemoAction>
           <Button variant="ghost" size="sm" disabled={clearing || logs.length === 0} onClick={onClear}>
             {clearing ? <Loader2 className="animate-spin" /> : <Eraser />}
@@ -120,6 +124,6 @@ export function TraeRequestLog({
           </table>
         </div>
       )}
-    </Card>
+    </div>
   );
 }
