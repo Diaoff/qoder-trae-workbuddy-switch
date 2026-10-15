@@ -44,6 +44,14 @@ const AUTO_BACKUP_CHECK_INTERVAL_MS: u64 = 60 * 60 * 1000;
 /// `log_keep` 封顶的日志 + 账号库，代价极低。
 const GATEWAY_USAGE_RECORD_INTERVAL_MS: u64 = 2 * 60 * 1000;
 
+/// 客户端（登录态）用量「今日」快照的记录周期（毫秒）—— 与 core
+/// [`buddy_switch_core::modules::background::CLIENT_USAGE_RECORD_INTERVAL`] 同值。
+///
+/// 取 2 分钟（对齐 `token_daily::CLIENT_SCAN_TTL_MS`）：卡片「今日 Token」的 client 列
+/// 是仪表盘读数，不需要实时，但绝不能长时间不动；扫描本身受 mtime 预筛 + 尾部窗口
+/// + TTL 闸门三重代价控制（稳态 ≈ 0.7 s）。
+const CLIENT_USAGE_RECORD_INTERVAL_MS: u64 = 2 * 60 * 1000;
+
 pub(crate) fn is_screenshot_demo() -> bool {
     std::env::var(SCREENSHOT_DEMO_ENV).as_deref() == Ok("1")
 }
@@ -196,6 +204,32 @@ fn spawn_background_task(spec: TaskSpec) {
                     }
                     tokio::time::sleep(Duration::from_millis(GATEWAY_USAGE_RECORD_INTERVAL_MS))
                         .await;
+                }
+            });
+        }
+        // ★ 客户端（登录态）用量「今日」快照（2026-10-15 用户报障修复，与服务端同语义）：
+        // 周期把客户端会话日志的**今日**用量聚合进 `token_daily` 的 client 桶并落盘。
+        //
+        // 为什么必须有它：`record_client_today` 此前唯一的调用点是「打开账号页」的命令
+        // （`get_account_token_today`）⇒ 不进账号页，卡片上的 client 列一直是旧值
+        // （用户报障：「client 数字不动」），而同卡片的 gateway 桶已被上一条周期刷新
+        // ⇒ 两个桶一新一旧，用户看到自相矛盾的数字。
+        //
+        // `force = false`：走 `CLIENT_SCAN_TTL_MS` 闸门 —— 本循环周期与闸门同值，
+        // 挡掉的只是「刚被账号页扫过」的重复轮次，不挡新鲜度。
+        //
+        // 覆盖**两个 region**：客户端语料按区域分目录（CN = `.workbuddy/projects`，
+        // Global = `.workbuddy-ai/projects`），只扫一个另一个永远是旧值。
+        //
+        // ⚠️ 与网关那条**刻意分成两个循环**：失败面不同（读盘扫 jsonl vs 读一份日志），
+        // 合并后客户端扫描 panic 会把网关记录一起带停。
+        TaskKind::ClientUsageRecord => {
+            tauri::async_runtime::spawn(async move {
+                loop {
+                    for region in modules::region::Region::all() {
+                        let _ = modules::token_daily::record_client_today(region, false);
+                    }
+                    tokio::time::sleep(Duration::from_millis(CLIENT_USAGE_RECORD_INTERVAL_MS)).await;
                 }
             });
         }
@@ -623,6 +657,14 @@ mod tests {
             has_task(Product::Workbuddy, TaskKind::GatewayUsageRecord),
             "注册表缺少网关用量今日快照 —— 缺了它 record_gateway_today 只剩账号页一个\
              调用点，token_daily 的 90 天历史大片空洞、账号卡片的 gateway 桶长时间不刷新"
+        );
+        // ★ 客户端（登录态）用量「今日」快照（2026-10-15 用户报障修复）：不登记 ⇒ 桌面端
+        // 不周期扫客户端语料 ⇒ 卡片「今日 Token」的 client 列只在打开账号页时才刷新，
+        // 而同卡片的 gateway 桶已被周期刷新（用户看到的「client 数字不动」）。
+        assert!(
+            has_task(Product::Workbuddy, TaskKind::ClientUsageRecord),
+            "注册表缺少客户端用量今日快照 —— 缺了它 record_client_today 只剩账号页一个\
+             调用点，账号卡片「今日 Token」的 client 列长时间不刷新"
         );
     }
 }

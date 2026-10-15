@@ -5878,10 +5878,13 @@ check("★ P3(独立) 适配层②：热力图 7 行 × 24 列，缺失补 0，�
 });
 
 check("★ P3(独立) 适配层③：会话散点 x = records（不是 msgs，跑真代码）", () => {
-  /* 变异：`sessionPoints` 的 `x` 改成读别的字段（如 0）⇒ 本条变红（§1.4 字段归属）。 */
+  /* 变异：`sessionPoints` 的 `x` 改成读别的字段（如 0）⇒ 本条变红（§1.4 字段归属）。
+     ⚠️ 2026-10-15：`sessionPoints` 增了**必填**的窗口参数 —— 本夹具的会话没有
+     `daily`（= 旧后端形态）⇒ 走全时回落路径，x/y 判据不变；窗口口径的行为断言见
+     下面「会话统计必须随窗口变化」那一条。 */
   const uc = loadTs(path.join(ROOT, USAGE_CHARTS));
   const src = usageSource({ sessions: [{ key: "s1", title: "会话甲", total: 100, records: 7 }] });
-  const pts = uc.sessionPoints(src);
+  const pts = uc.sessionPoints(src, presetWin(30));
   if (pts.length !== 1) throw new Error(`应得 1 个点，实得 ${pts.length}`);
   if (pts[0].x !== 7) throw new Error(`x 应取 records=7，实得 ${pts[0].x}`);
   if (pts[0].y !== 100) throw new Error(`y 应取 total=100，实得 ${pts[0].y}`);
@@ -6329,6 +6332,83 @@ check("★ 会话视图必须**截断渲染**（会话可达 1.5 万，全量渲
     throw new Error("「会话数」tile 不是按全量 points 算的（数字会随渲染上限漂移）");
   }
   return `limit=${limit} · 两图同源切片 · tile 仍按全量`;
+});
+
+check("★ 会话统计必须随窗口变化（2026-10-15 用户报障「切时间不变」，跑真代码）", () => {
+  /* ## 报障与根因
+     用户：「会话的统计数据切换时间没有变化」。根因是 SessionsView 不消费 `viewWindow`，
+     `sessionPoints` 只吃全时合计 —— 而趋势 / 模型两视图早已按窗口切片，
+     「同一参数条只有会话不动」既是谎报也是口径分裂。
+     修法：后端下发 `sessions[].daily`（逐日拆分，与文件级 daily 同判据）+
+     `sessionPoints(source, window)` 按窗口键求和。
+
+     ## 变异对照（任一都会变红）
+     ① `sessionPoints` 忽略窗口 / 忽略 daily ⇒ 前四条行为断言红；
+     ② 把「无 daily ⇒ 回落全时」改成「无 daily ⇒ 计 0」⇒ 回落断言红（旧后端会整屏消失）；
+     ③ SessionsView 不把 `viewWindow` 传进 `sessionPoints` ⇒ 末尾静态断言红。 */
+  const uc = loadTs(path.join(ROOT, USAGE_CHARTS));
+  const today = new Date();
+  const pad = (n) => String(n).padStart(2, "0");
+  const key = (offset) => {
+    const d = new Date(today.getTime() - offset * 86400000);
+    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+  };
+  const src = usageSource({
+    sessions: [
+      {
+        key: "s-today",
+        title: "今天的会话",
+        // 全时总量 = 逐日之和（与真实数据同构）；窗口切片的正确性由 daily 决定。
+        total: 100,
+        records: 5,
+        daily: [
+          { key: key(0), total: 40, records: 2 },
+          { key: key(10), total: 60, records: 3 },
+        ],
+      },
+      {
+        key: "s-old",
+        title: "十天前的会话",
+        total: 5,
+        records: 1,
+        daily: [{ key: key(10), total: 5, records: 1 }],
+      },
+    ],
+  });
+
+  // 今天：只有 s-today 在窗口内，且只算今天那一段。
+  const todayPts = uc.sessionPoints(src, { kind: "today" });
+  if (todayPts.length !== 1 || todayPts[0].id !== "s-today" || todayPts[0].y !== 40 || todayPts[0].x !== 2) {
+    throw new Error(`「今天」窗口应得仅 s-today（40 / 2 条），实得 ${JSON.stringify(todayPts)}`);
+  }
+  // 近 7 天：s-old（10 天前）仍在窗口外 ⇒ 集合不变、数值不变（该会话今天以外的贡献不计）。
+  const weekPts = uc.sessionPoints(src, presetWin(7));
+  if (weekPts.length !== 1 || weekPts[0].id !== "s-today" || weekPts[0].y !== 40) {
+    throw new Error(`「近 7 天」应得仅 s-today（40），实得 ${JSON.stringify(weekPts)}`);
+  }
+  // 近 30 天：两个会话都进窗，s-today 变为窗口内合计（40+60 / 2+3）。
+  const monthPts = uc.sessionPoints(src, presetWin(30));
+  const sToday = monthPts.find((point) => point.id === "s-today");
+  if (monthPts.length !== 2 || !sToday || sToday.y !== 100 || sToday.x !== 5) {
+    throw new Error(`「近 30 天」应得 2 个会话、s-today=100/5，实得 ${JSON.stringify(monthPts)}`);
+  }
+  // 旧后端回落：没有 daily ⇒ 全时口径（不编 0、也不炸）。
+  const legacy = usageSource({
+    sessions: [{ key: "s-legacy", title: "旧后端", total: 77, records: 4 }],
+  });
+  const legacyPts = uc.sessionPoints(legacy, { kind: "today" });
+  if (legacyPts.length !== 1 || legacyPts[0].y !== 77 || legacyPts[0].x !== 4) {
+    throw new Error(`无 daily 必须回落全时口径，实得 ${JSON.stringify(legacyPts)}`);
+  }
+  // 静态：组件必须真的把窗口喂进去（缺了它，上面修好的纯函数永远不被窗口驱动）。
+  const page = readCode("src/pages/TokenStatsPage.tsx");
+  if (!/sessionPoints\(source,\s*viewWindow\)/.test(page)) {
+    throw new Error("SessionsView 的 sessionPoints 没吃 viewWindow —— 会话统计又会不随窗口变化");
+  }
+  if (!/<SessionsView[\s\S]{0,300}?viewWindow=\{viewWindow\}/.test(page)) {
+    throw new Error("SessionsView 没收到 viewWindow prop —— 组件内无从消费");
+  }
+  return "今天/近7天/近30天 集合与数值正确 · 旧后端回落 · 组件吃到窗口";
 });
 
 check("★ P3 权限自愈：授权恢复后**自动重试**上次切换（且只重试一次）", () => {
