@@ -144,11 +144,37 @@ pub fn conversation_id_of(body: &Value) -> Option<String> {
         .map(str::to_string)
 }
 
+/// 解析本轮 `conversation_id`（恒非空）。
+///
+/// 上游渠道校验（400 + code: 11128）要求 `X-Conversation-ID`、
+/// `X-Conversation-Request-ID` 与 `X-Conversation-Message-ID` 三件套齐全；
+/// 缺任一头即被判定为「非官方客户端」（`displayTips: 这次调用没通过渠道校验...`）。
+///
+/// 优先级（透传优先，不改变原值）：
+/// 1. 客户端显式提供的非空 `conversation_id`；
+/// 2. `session_key` 存在时调用 `request_id_for_session("conversation", session_key)` 派生跨轮稳定的 32 字符 hex ID（利于上游 prompt cache 与会话聚合）；
+/// 3. `new_hex_id()` 随机生成 32 字符十六进制 ID。
+pub fn resolve_conversation_id(
+    inbound_conversation_id: Option<&str>,
+    session_key: Option<&str>,
+) -> String {
+    if let Some(id) = inbound_conversation_id
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        return id.to_string();
+    }
+    if let Some(key) = session_key.map(str::trim).filter(|s| !s.is_empty()) {
+        return request_id_for_session("conversation", key);
+    }
+    new_hex_id()
+}
+
 /// 一轮请求的会话上下文。轮内**所有**重试必须复用同一实例。
 #[derive(Debug, Clone)]
 pub struct ConversationContext {
-    /// 客户端会话 id（可为空）。
-    pub conversation_id: Option<String>,
+    /// 客户端会话 id（恒非空：出站必带 X-Conversation-ID）。
+    pub conversation_id: String,
     /// 轮主键。
     pub conversation_request_id: String,
     /// 调用方 trace id（可为空）。
@@ -156,7 +182,7 @@ pub struct ConversationContext {
 }
 
 impl ConversationContext {
-    /// 新建一轮上下文（内部生成轮主键）。
+    /// 新建一轮上下文（内部生成轮主键与会话主键）。
     pub fn new(
         conversation_id: Option<String>,
         inbound_request_id: Option<&str>,
@@ -165,7 +191,7 @@ impl ConversationContext {
         trace_id: Option<String>,
     ) -> Self {
         Self {
-            conversation_id: conversation_id.filter(|value| !value.is_empty()),
+            conversation_id: resolve_conversation_id(conversation_id.as_deref(), session_key),
             conversation_request_id: resolve_conversation_request_id(
                 inbound_request_id,
                 session_key,
@@ -183,12 +209,11 @@ pub fn conversation_headers(
 ) -> HashMap<String, String> {
     let mut headers = HashMap::new();
 
-    if let Some(conversation_id) = context.conversation_id.as_deref() {
-        if !conversation_id.is_empty() {
-            headers.insert("X-Conversation-ID".to_string(), conversation_id.to_string());
-        }
-    }
-
+    // 渠道校验三件套之首：X-Conversation-ID 恒发，绝不留空
+    headers.insert(
+        "X-Conversation-ID".to_string(),
+        context.conversation_id.clone(),
+    );
     headers.insert(
         "X-Conversation-Request-ID".to_string(),
         context.conversation_request_id.clone(),
@@ -433,15 +458,44 @@ mod tests {
     }
 
     #[test]
-    fn conversation_id_is_omitted_when_absent() {
+    fn conversation_id_falls_back_when_absent() {
         let context = ConversationContext::new(None, None, None, None, None);
         let headers = conversation_headers(&context, "msg-1");
-        assert!(
-            !headers.contains_key("X-Conversation-ID"),
-            "空会话 id 不得发送空头"
+        assert_eq!(
+            headers["X-Conversation-ID"], context.conversation_id,
+            "渠道校验要求 X-Conversation-ID 恒非空"
         );
+        assert_eq!(context.conversation_id.len(), 32, "兜底现造 32 位 hex");
+        assert!(valid_trace_id(&context.conversation_id));
         // 轮主键为随机 32 hex → 恰好是合法 trace id，故 B3 采用轮主键
         assert_eq!(headers["X-B3-TraceId"], context.conversation_request_id);
+    }
+
+    #[test]
+    fn resolve_conversation_id_priority_matches_design() {
+        // 1. 显式透传优先
+        let direct = resolve_conversation_id(Some("custom-conv-id"), Some("session-key"));
+        assert_eq!(direct, "custom-conv-id");
+
+        // 2. 缺失但有 session_key 时稳定派生
+        let from_session = resolve_conversation_id(None, Some("my-session-key"));
+        assert_eq!(from_session.len(), 32);
+        assert_eq!(
+            from_session,
+            resolve_conversation_id(None, Some("my-session-key")),
+            "同 session_key 必须生成相同的稳定 ID"
+        );
+        assert_ne!(
+            from_session,
+            resolve_conversation_id(None, Some("other-session-key")),
+            "不同 session_key 应生成不同 ID"
+        );
+
+        // 3. 均无时全新随机
+        let random1 = resolve_conversation_id(None, None);
+        let random2 = resolve_conversation_id(None, None);
+        assert_eq!(random1.len(), 32);
+        assert_ne!(random1, random2);
     }
 
     #[test]

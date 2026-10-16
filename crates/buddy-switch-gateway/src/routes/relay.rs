@@ -137,9 +137,15 @@ pub async fn relay(
         pool.sync_accounts(&accounts, Some(realm));
     }
 
+    // 会话粘性键；客户端没给会话 id 时为 `None`（整段跳过粘性，保持原行为）。
+    let sticky_key = sticky_key_of(&request);
+
     // 会话上下文：轮内所有重试复用同一实例。
     let context = ConversationContext {
-        conversation_id: request.conversation_id.clone(),
+        conversation_id: session_headers::resolve_conversation_id(
+            request.conversation_id.as_deref(),
+            sticky_key.as_deref(),
+        ),
         conversation_request_id: request.conversation_request_id.clone(),
         trace_id: request.trace_id.clone(),
     };
@@ -147,9 +153,6 @@ pub async fn relay(
 
     let mut tried: HashSet<String> = HashSet::new();
     let mut last: Option<RelayFailure> = None;
-
-    // 会话粘性键；客户端没给会话 id 时为 `None`（整段跳过粘性，保持原行为）。
-    let sticky_key = sticky_key_of(&request);
 
     for attempt in 0..tries {
         // 粘性只是**偏好**：查不到就按原逻辑选号（读锁，不占选号要用的写锁）。
@@ -527,8 +530,26 @@ pub async fn degrade_gate(state: &GatewayState) -> DegradeGate {
     state.degrade.read().await.clone()
 }
 
+/// 判断是否为渠道校验拦截（400 + conversation id missing / channel verification / 渠道校验）。
+///
+/// 上游对内容审核与渠道校验回同一个 HTTP 400 + code: 11128，但两者处置截然不同：
+/// - 内容审核（blocked by security policy 等）：属于提示词风控，走降级重试；
+/// - 渠道校验（conversation id missing / 渠道校验）：属于客户端请求头族不齐或渠道未认证，
+///   重试换号或降级提示词毫无意义，换多少次都是同一套头，白耗账号配额。
+pub fn is_channel_invalid(message: &str) -> bool {
+    let lower = message.to_lowercase();
+    lower.contains("conversation id missing")
+        || lower.contains("channel verification")
+        || message.contains("渠道校验")
+        || lower.contains("unapproved channel")
+}
+
 /// 判断是否为「内容拦截」类失败（用于决定是否启用降级重试）。
 pub fn is_content_blocked(status: u16, message: &str) -> bool {
+    // 渠道校验先排除：虽同为 11128，但绝不能走降级重试链
+    if is_channel_invalid(message) {
+        return false;
+    }
     if status == 400 && (message.contains("11128") || message.contains("content_blocked")) {
         return true;
     }
@@ -682,6 +703,23 @@ mod tests {
         assert!(!is_content_blocked(400, "invalid request"));
         assert!(!is_content_blocked(429, "rate limited"));
         assert!(!is_content_blocked(500, "boom"));
+
+        // 渠道校验拦截（同为 11128）不得被判为内容拦截
+        assert!(!is_content_blocked(
+            400,
+            r#"{"code":11128,"msg":"conversation id missing"}"#
+        ));
+        assert!(!is_content_blocked(
+            400,
+            r#"{"code":11128,"displayTips":{"en":"This call failed channel verification"}}"#
+        ));
+        assert!(!is_content_blocked(
+            400,
+            r#"{"code":11128,"displayTips":{"zh":"这次调用没通过渠道校验，可能不是官方客户端发出的。"}}"#
+        ));
+        assert!(!is_content_blocked(400, "unapproved channel"));
+        assert!(is_channel_invalid("conversation id missing"));
+        assert!(is_channel_invalid("这次调用没通过渠道校验"));
     }
 
     #[test]
