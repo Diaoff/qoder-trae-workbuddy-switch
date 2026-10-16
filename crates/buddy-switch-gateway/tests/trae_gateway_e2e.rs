@@ -644,12 +644,14 @@ async fn legacy_settings_key_routes_to_work_pool_unchanged() {
     let mut state = TraeGatewayState::new(TraeGatewayConfig::default());
     state.upstream = base;
 
-    // legacy 合成记录的归属必须是 TraeWork（第二条零回归前提）。
+    // legacy 合成记录的归属必须是**默认变体**（第二条零回归前提）。
+    // ★ issue #28：默认变体已改为**合并版**（`TraeMerged`）—— 老默认 `TraeWork`
+    //   指向已被官方合并卸载的 `TRAE SOLO CN`，继续拿它当默认就是给流量打给死客户端。
     let record = state
         .key_store
         .verify(legacy)
         .expect("旧 settings.apiKey 必须可用（否则升级即全量 401）");
-    assert_eq!(record.variant, TraeVariant::TraeWork);
+    assert_eq!(record.variant, TraeVariant::default());
 
     let response = router(state)
         .oneshot(chat_request(

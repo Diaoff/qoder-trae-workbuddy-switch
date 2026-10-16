@@ -271,7 +271,11 @@ mod tests {
     /// 签到侧常量与变体表**逐字相同**（本轮零改动的证据）。
     #[test]
     fn checkin_constants_stay_aligned_with_variant_table() {
-        for variant in variant::TraeVariant::all() {
+        // ★ 只校验**国内区域**的可选变体（收敛后 `all()` 覆盖两个区域）。
+        for variant in variant::TraeVariant::all()
+            .into_iter()
+            .filter(|v| v.region() == region::TraeRegion::Cn)
+        {
             assert_eq!(
                 endpoints_for(variant).account_base,
                 TRAE_API_BASE_CN,

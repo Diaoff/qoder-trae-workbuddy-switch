@@ -469,8 +469,10 @@ mod tests {
         assert_eq!(record.name, "旧版 Key（升级迁移）");
         assert_eq!(
             record.variant,
-            TraeVariant::TraeWork,
-            "legacy 记录必须归 TraeWork —— 升级前网关只从 TraeWork 池选号"
+            TraeVariant::default(),
+            // ★ issue #28：默认变体已改为**合并版**（`TraeMerged`）——
+            //   老默认 `TraeWork` 指向已被官方合并卸载的客户端。
+            "legacy 记录必须归默认变体（升级前网关只从那个池选号）"
         );
         // ★ legacy 的 prefix / suffix 是**分段**的（见 `legacy_prefix` / `legacy_suffix`）：
         // 省略号由展示层统一补，这里若带 `…` 会拼出双省略号。
@@ -633,7 +635,7 @@ mod tests {
         // 隔离目录里没有 settings.json，确保走的是文件而非 legacy 回落。
         let _ = guard.home;
         let record = store.verify("sk-trae-cccccccccccccccccccccccccccccccc").unwrap();
-        assert_eq!(record.variant, TraeVariant::TraeWork);
+        assert_eq!(record.variant, TraeVariant::default(), "缺 variant 字段须回落默认变体");
     }
 
     #[test]
@@ -650,7 +652,7 @@ mod tests {
         }]);
         std::fs::write(store.path(), raw.to_string()).unwrap();
         let record = &store.list()[0];
-        assert_eq!(record.variant, TraeVariant::TraeWork, "未知变体应回落默认");
+        assert_eq!(record.variant, TraeVariant::default(), "未知变体应回落默认");
     }
 
     #[test]

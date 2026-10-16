@@ -1245,31 +1245,23 @@ mod tests {
             .and_then(Value::as_array)
             .expect("必须回报 variants 数组");
 
-        // 字面量钉死：顺序 = `all_specs()` 的顺序（合并版排在遗留 TraeCode 之前）。
+        // 字面量钉死：顺序 = `all_specs()` 的顺序（收敛后 = 两个区域各一个合并版）。
+        // ★ issue #28：退役的四条变体不再被周期任务遍历 —— 它们没有对应客户端，
+        //   遍历它们等于对着一个已卸载的目录反复重试。
         let labels: Vec<&str> = variants
             .iter()
             .filter_map(|item| item.get("variant").and_then(Value::as_str))
             .collect();
         assert_eq!(
             labels,
-            vec![
-                "trae_work",
-                "trae_merged",
-                "trae_cn",
-                "global",
-                "global_trae_merged",
-                "global_trae_code"
-            ],
-            "续期必须覆盖全部 6 条变体（漏掉国际版 / TraeCode 会让那些账号永远续不上）"
+            vec!["trae_merged", "global_trae_merged"],
+            "续期必须覆盖全部可选变体（漏掉国际版会让那些账号永远续不上）"
         );
         let regions: Vec<&str> = variants
             .iter()
             .filter_map(|item| item.get("region").and_then(Value::as_str))
             .collect();
-        assert_eq!(
-            regions,
-            vec!["cn", "cn", "cn", "global", "global", "global"]
-        );
+        assert_eq!(regions, vec!["cn", "global"]);
 
         for item in variants {
             for key in ["total", "refreshed", "skipped", "failed", "results"] {
@@ -1297,7 +1289,7 @@ mod tests {
         let _env = crate::modules::trae::test_support::TempEnv::with_device_fixture();
 
         account::save_accounts_for(
-            TraeVariant::TraeWork,
+            TraeVariant::TraeMerged,
             &account::AccountsFile {
                 accounts: vec![account::RawAccount {
                     name: "far-from-expiry".into(),
@@ -1321,9 +1313,9 @@ mod tests {
             .and_then(|items| {
                 items
                     .iter()
-                    .find(|item| item.get("variant").and_then(Value::as_str) == Some("trae_work"))
+                    .find(|item| item.get("variant").and_then(Value::as_str) == Some("trae_merged"))
             })
-            .expect("必须有 trae_work 段");
+            .expect("必须有 trae_merged 段");
 
         assert_eq!(segment.get("total").and_then(Value::as_u64), Some(1));
         assert_eq!(

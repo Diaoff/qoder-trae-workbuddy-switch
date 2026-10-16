@@ -471,23 +471,34 @@ mod tests {
             "默认集里不该有两条命名空间共用一个池"
         );
 
-        // 扩展层 4 条也启用 ⇒ **池数仍是 6**（它们复用 Trae 的两个区域池）。
+        // ★ issue #28：Trae 的四条扩展层命名空间随程序位**一并退役**（扩展层已空）
+        //   ⇒ 全量表 = 6 条派生层，且**每个命名空间自成一个池**（不再有「多个命名空间
+        //   共用一个池」这种归并关系可断言）。退役后仍留着它们 = 给已卸载的客户端开入口。
         let all: Vec<&'static gateway_namespace::NamespaceSpec> =
             gateway_namespace::all_specs().iter().collect();
+        assert_eq!(all.len(), 6, "全量命名空间应恰为 6 条派生层");
+        assert!(
+            all.iter().all(|spec| spec.default_on),
+            "全量表此时应只有派生层（扩展层已清空）"
+        );
         let groups = super::admin::group_pools(&all);
         assert_eq!(
             groups.len(),
             6,
-            "扩展层必须归并进 Trae 的区域池，而不是各算一个池：{:?}",
+            "收敛后每个作用域各成一个池：{:?}",
             groups.iter().map(|group| group.target).collect::<Vec<_>>()
         );
         let trae_cn = groups.iter().find(|group| group.target == "trae-cn").unwrap();
-        assert_eq!(trae_cn.namespaces, vec!["trae-cn", "traework-cn", "traecode-cn"]);
+        assert_eq!(trae_cn.namespaces, vec!["trae-cn"]);
         let trae_global = groups.iter().find(|group| group.target == "trae-global").unwrap();
-        assert_eq!(
-            trae_global.namespaces,
-            vec!["trae-global", "traework-global", "traecode-global"]
-        );
+        assert_eq!(trae_global.namespaces, vec!["trae-global"]);
+        // 退役的四条**不得**再出现（它们指向已卸载的客户端）。
+        for retired in ["traework-cn", "traework-global", "traecode-cn", "traecode-global"] {
+            assert!(
+                gateway_namespace::parse(retired).is_none(),
+                "退役命名空间 {retired} 仍在册"
+            );
+        }
     }
 
     /// ★★ 池对象形状：计数从摘要**摊平**到顶层、账号行**原样**透出

@@ -1027,14 +1027,39 @@ mod tests {
         std::fs::remove_dir_all(dir).unwrap();
     }
 
-    /// ★ 未启用的命名空间 ⇒ 400（且**先于**授权判定：换一把 Key 也没用）。
+    /// ★ 退役的命名空间必须在**鉴权之前**就被拒（issue #28 收敛后的等价判据）。
+    ///
+    /// ## 为什么换掉了原来那条用例
+    ///
+    /// 原用例拿 `traecode-cn`（扩展层、`default_on: false`）验「在册但未启用 ⇒ 400」。
+    /// 收敛后 Trae 的四条扩展层命名空间随程序位一并退役、扩展层**清空**，
+    /// 全表只剩 6 条派生层且**全部 `default_on: true`** ⇒ 「在册但未启用」这个状态
+    /// 在本仓**不再存在**，原用例的前提消失。
+    ///
+    /// 收敛后的等价风险是「**已退役的 id 仍被当成合法命名空间**」—— 那会让用户给
+    /// 一个已卸载的客户端发流量，得到的是更难排查的 503/空池而不是 400。
+    /// ⇒ 这里改验「退役 id fail-closed」。
     #[tokio::test]
-    async fn disabled_namespace_is_rejected_before_the_authorization_check() {
-        let (app, dir, key) = app_with_key(&["wb-cn", "traecode-cn"]).await;
-        // `traecode-cn` 属扩展层，默认**不启用**；Key 虽然授权了它，仍应被拒
-        let (status, body) = post(&app, Some(&key), r#"{"model":"traecode-cn:glm-5.3"}"#).await;
-        assert_eq!(status, StatusCode::BAD_REQUEST, "未启用应报 400 而不是 403");
-        assert_eq!(body["error"]["code"], "namespace_not_enabled");
+    async fn retired_namespace_is_rejected_before_the_authorization_check() {
+        let (app, dir, key) = app_with_key(&["wb-cn"]).await;
+        for retired in [
+            "traework-cn",
+            "traework-global",
+            "traecode-cn",
+            "traecode-global",
+        ] {
+            let (status, body) =
+                post(&app, Some(&key), &format!(r#"{{"model":"{retired}:glm-5.3"}}"#)).await;
+            assert_eq!(
+                status,
+                StatusCode::BAD_REQUEST,
+                "退役命名空间 {retired} 必须 400（而不是放行去打上游）"
+            );
+            assert_ne!(
+                body["error"]["code"], "namespace_not_enabled",
+                "{retired} 已不在册，不该报「未启用」"
+            );
+        }
         std::fs::remove_dir_all(dir).unwrap();
     }
 

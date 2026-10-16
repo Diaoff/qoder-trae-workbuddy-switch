@@ -1177,20 +1177,6 @@ function demoClientSettingsSlots(): ClientSettingsSlotsResponse {
       installed: true,
       path: "C:\\Users\\demo\\AppData\\Roaming\\Trae\\User\\settings.json",
     },
-    {
-      key: "trae-work-cn",
-      displayKey: "clientSettings.slot.traeWorkCn",
-      product: "trae",
-      installed: true,
-      path: "C:\\Users\\demo\\AppData\\Roaming\\TRAE SOLO CN\\User\\settings.json",
-    },
-    {
-      key: "trae-work-global",
-      displayKey: "clientSettings.slot.traeWorkGlobal",
-      product: "trae",
-      installed: false,
-      path: "C:\\Users\\demo\\AppData\\Roaming\\TRAE SOLO\\User\\settings.json",
-    },
   ];
   return { slots };
 }
@@ -1486,7 +1472,7 @@ function demoTraeEnv(): TraeEnvStatus {
     configuredPathsExist: { cn: false, global: false },
     // 变体字段必须与真实 HTTP 响应同形状：fixture 少一个键，演示站就看不到
     // 产品线标签，而这个差异只会在真机暴露。
-    variant: "trae_work", variantLabel: t("trae.program.traeWork"),
+    variant: "trae_merged", variantLabel: t("trae.program.traeCn"),
   };
 }
 
@@ -1508,16 +1494,16 @@ function demoTraeEnv(): TraeEnvStatus {
 function demoTraeVariants(): TraeVariantsStatus {
   /** 程序位展示名走词表（`shared.demo.trae.program.*`）；`variant` 是回传后端的标识，保持英文。 */
   const program = (
-    program: "trae_work" | "trae_code" | "trae",
     labelKey: TranslationKey,
     nameAliasKey: TranslationKey,
-    variant: "trae_work" | "trae_cn" | "global" | "global_trae_code" | "trae_merged" | "global_trae_merged",
+    variant: "trae_merged" | "global_trae_merged",
     installed: boolean,
     running: boolean,
     path: string,
     dataDir: string,
   ) => ({
-    program,
+    // ★ issue #28 收敛：程序位标识恒为 `trae`（合并版），区域差异由 `variant` 承载。
+    program: "trae" as const,
     label: t(labelKey),
     nameAlias: t(nameAliasKey),
     variant,
@@ -1543,42 +1529,21 @@ function demoTraeVariants(): TraeVariantsStatus {
         installed: true,
         running: true,
         version: "1.107.1",
-        path: "D:\\Programs\\TRAE SOLO CN\\TRAE SOLO CN.exe",
-        dataDir: "C:\\Users\\demo\\AppData\\Roaming\\TRAE SOLO CN",
+        path: "D:\\Programs\\Trae CN\\Trae CN.exe",
+        dataDir: "C:\\Users\\demo\\AppData\\Roaming\\Trae CN",
         dataDirExists: true,
-        writeDataDir: "C:\\Users\\demo\\AppData\\Roaming\\TRAE SOLO CN",
+        writeDataDir: "C:\\Users\\demo\\AppData\\Roaming\\Trae CN",
         writeDataDirExists: true,
         programs: [
+          // ★ issue #28 收敛：每区域**只有一个**程序位（官方合并后的单一客户端）。
+          //   演示数据让国内区「已安装 + 运行中」、国际区「未安装」，
+          //   这样截图里能看出**两个区域各自的客户端状态**是独立探测的。
           program(
-            "trae_work",
-            "shared.demo.trae.program.work",
-            "shared.demo.trae.program.workCn",
-            "trae_work",
-            true,
-            true,
-            "D:\\Programs\\TRAE SOLO CN\\TRAE SOLO CN.exe",
-            "C:\\Users\\demo\\AppData\\Roaming\\TRAE SOLO CN",
-          ),
-          program(
-            "trae_code",
-            "shared.demo.trae.program.code",
-            "shared.demo.trae.program.codeCn",
-            "trae_cn",
-            true,
-            false,
-            "D:\\Programs\\Trae CN\\Trae CN.exe",
-            "C:\\Users\\demo\\AppData\\Roaming\\Trae CN",
-          ),
-          // 合并后的客户端（issue #20）：与上面的 TraeCode **同名同物**（客户端复用目录名），
-          // 但变体是它**自己的** `trae_merged`（快照目录 / Key 归属 / 日志分档各自独立）。
-          // 演示数据让它已安装、未运行 —— 卡片上三枚按钮的状态各不相同。
-          program(
-            "trae",
             "shared.demo.trae.program.trae",
-            "shared.demo.trae.program.codeCn",
+            "shared.demo.trae.program.trae",
             "trae_merged",
             true,
-            false,
+            true,
             "D:\\Programs\\Trae CN\\Trae CN.exe",
             "C:\\Users\\demo\\AppData\\Roaming\\Trae CN",
           ),
@@ -1588,46 +1553,20 @@ function demoTraeVariants(): TraeVariantsStatus {
         variant: "global",
         variantLabel: t("trae.region.global"),
         consoleBase: "https://www.trae.ai",
-        installed: true,
+        installed: false,
         running: false,
-        version: "1.107.1",
-        path: "C:\\Users\\demo\\AppData\\Local\\Programs\\TRAE SOLO\\TRAE SOLO.exe",
-        dataDir: "C:\\Users\\demo\\AppData\\Roaming\\TRAE SOLO",
-        dataDirExists: true,
-        writeDataDir: "C:\\Users\\demo\\AppData\\Roaming\\TRAE SOLO",
-        writeDataDirExists: true,
+        version: null,
+        path: null,
+        dataDir: null,
+        dataDirExists: false,
+        writeDataDir: null,
+        writeDataDirExists: false,
         programs: [
+          // 国际区的同一个客户端：演示数据里**未安装**（与国内区形成对比），
+          // 便于截图展示「某区域没装客户端」时按钮的禁用态与文案。
           program(
-            "trae_work",
-            "shared.demo.trae.program.workGlobalLabel",
-            "shared.demo.trae.program.workGlobal",
-            "global",
-            true,
-            false,
-            "C:\\Users\\demo\\AppData\\Local\\Programs\\TRAE SOLO\\TRAE SOLO.exe",
-            "C:\\Users\\demo\\AppData\\Roaming\\TRAE SOLO",
-          ),
-          // 国际版 TraeCode：**已建模但本机未安装**（issue #3 之前的形态是
-          // `variant: null` = 未建模 ⇒ 按钮禁用）。现在它有真实标识
-          // `global_trae_code`，只是 `installed: false` —— 演示数据保持
-          // 「未安装」以便截图里能看到禁用态，但**不再**用 `null` 表达。
-          program(
-            "trae_code",
-            "shared.demo.trae.program.codeGlobalLabel",
-            "shared.demo.trae.program.codePending",
-            "global_trae_code",
-            false,
-            false,
-            "",
-            "",
-          ),
-          // 合并版国际客户端（issue #20）：与上面的国际 TraeCode 同名同物，
-          // 变体是它自己的 `global_trae_merged`。演示数据同样保持「未安装」，
-          // 与 CN 区域形成对比。
-          program(
-            "trae",
             "shared.demo.trae.program.traeGlobalLabel",
-            "shared.demo.trae.program.codePending",
+            "shared.demo.trae.program.traeGlobalLabel",
             "global_trae_merged",
             false,
             false,
@@ -2076,13 +2015,14 @@ function demoTraeCredits(): TraeCreditsOverview {
  * 国内 TraeWork / 国内 TraeCode / 国际版 TraeWork 三者槽位与目录都不同 ——
  * 截图上必须能一眼看出「这是各自独立的快照」，而不是同一份数据被渲染了两次。
  *
- * 入参 `variant` 兼容**区域标识**（`cn` / `global`，页面传的就是它）与**程序位标识**
- * （`trae_work` / `trae_cn`）：前者落到该区域的**主程序**（TraeWork），
- * 与 Rust 侧 `TraeVariant::parse` 的映射保持一致。
+ * ★ issue #28 收敛后**只有两个程序位**：CN 合并版（`trae_merged`）与国际合并版
+ * （`global_trae_merged`）。入参 `variant` 仍兼容**历史标识**（`cn` / `trae_work` /
+ * `trae_cn` / `trae_code` …）—— 老界面、老链接、老脚本都还在传它们 ——
+ * 判据只看它**落在哪个区域**，与后端 `variant.region()` 的映射一致。
  */
 function demoTraeProfiles(args?: Record<string, unknown>): TraeProfilesOverview {
-  const raw = typeof args?.variant === "string" ? args.variant : "cn";
-  if (raw === "global") {
+  const raw = typeof args?.variant === "string" ? args.variant : "trae_merged";
+  if (raw.startsWith("global")) {
     return {
       profiles: [
         { slot: "7481920", sizeBytes: 3_180_000, fileCount: 9, lastModified: `${localDate(2)} 09:31`, sizeText: "3.0 MB" },

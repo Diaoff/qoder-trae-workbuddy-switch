@@ -62,9 +62,14 @@ fn parse_region(value: Option<&str>) -> Region {
 fn trae_variant_of_region(region: TraeRegion) -> trae::variant::TraeVariant {
     // 显式穷举，不用 `unwrap_or_default()`：回落分支在这里是不可达的（区域只有两个取值），
     // 显式匹配让「区域 → 主程序」这条约定在代码里可读，也避免引入 fail-open 形态。
+    //
+    // ★ issue #28：必须给**合并版**。原先这里给 `TraeWork` / `Global`（两条老程序线），
+    // 而它们的客户端（`TRAE SOLO CN` / `TRAE SOLO`）已被官方合并卸载 ⇒
+    // 「从本机客户端导入账号」永远报「未检测到【TraeWork CN】客户端」
+    // （issue #28 报障原文），而用户明明装的是合并版 `Trae CN`。
     match region {
-        TraeRegion::Cn => trae::variant::TraeVariant::TraeWork,
-        TraeRegion::Global => trae::variant::TraeVariant::Global,
+        TraeRegion::Cn => trae::variant::TraeVariant::TraeMerged,
+        TraeRegion::Global => trae::variant::TraeVariant::GlobalTraeMerged,
     }
 }
 

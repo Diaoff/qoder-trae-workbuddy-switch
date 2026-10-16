@@ -1192,26 +1192,21 @@ check("★ 账号页只渲染**本区域**的程序位（国内版不得出现�
   return "programsFor 按区域过滤 · 卡片无跨区域分支 · 切换目标 = program.variant";
 });
 
-check("★ Trae 六个程序位展示名两两不同，且与后端下发的真值逐字一致", () => {
-  /* 展示名是用户区分程序位的**唯一**依据（Key 归属下拉 / 按钮 tooltip / 切换 toast）。
-     撞名时下拉里出现两个一模一样的选项，选错就是把登录态写进另一条线，
-     而界面上看不出异常。本仓真实踩过：国际 TraeCode 曾叫 `Trae AI`，
-     与合并版客户端（`nameShort` = `Trae`）撞名。
+check("★ Trae 每区域恰好一个程序位，展示名与后端真值逐字一致（issue #28 收敛）", () => {
+  /* 官方已把 TraeWork 与 TraeCode 合并成**一个**客户端（CN `Trae CN` / 国际 `Trae`），
+     老客户端被卸载。本仓因此收敛为**每区域一个程序位** —— 继续渲染三条会让用户点到
+     已退役的客户端，得到「未检测到 TraeWork CN」这类死路（issue #28 报障原文）。
 
-     ★ 两条判据，各有分工：
-       ① **两两不同**：钉 `TRAE_VARIANT_FALLBACK` 这张**兜底表** ——
-          后端不可用时（演示站 / 截图构建）界面上显示的就是它；
-       ② **与后端逐字一致**（跨语言）：兜底表与 `region.rs` 的
-          `ProgramSpec.display_name` 必须同值。漂了会让「演示站」与「真机」
-          显示不同的名字 —— 这类漂移只在截图里看得出来。
-     Rust 侧 `region::tests::六个程序位的展示名两两不同` 钉的是另一侧（后端真值）。
-
-     反例（改坏会红）：把任一条 `programStub` 的 label 改成另一条的 ⇒ ① 红；
-     改掉 region.rs 里任一条 `display_name` ⇒ ② 红。 */
+     三条判据：
+       ① **恰好 2 条**（2 区域 × 1）：兜底表里多一条就是有人把退役程序位塞回来了；
+       ② **与后端逐字一致**（跨语言）：兜底表与 `region.rs` 的 `ProgramSpec.display_name`
+          必须同值 —— 漂了会让「演示站」与「真机」显示不同的名字，只在截图里看得出来；
+       ③ **两个名字互不相同**（`Trae CN` vs `Trae`）：撞名时用户在下拉里分不清。
+     Rust 侧 `region::tests::每区域恰好一个程序位且是合并版` 钉的是另一侧（后端真值）。 */
   const fallback = readCode("src/lib/trae-variant-status.ts");
   const labels = [...fallback.matchAll(/programStub\("[a-z_]+",\s*"([^"]+)"/g)].map((m) => m[1]);
-  if (labels.length !== 6) {
-    throw new Error(`应解析出 6 个程序位展示名，实际 ${labels.length} —— 判据失效（改名了？）`);
+  if (labels.length !== 2) {
+    throw new Error(`应解析出 2 个程序位展示名（每区域一个），实际 ${labels.length} —— 判据失效（改动程序位表了？）`);
   }
   const dup = labels.find((label, i) => labels.indexOf(label) !== i);
   if (dup) {
@@ -1222,8 +1217,8 @@ check("★ Trae 六个程序位展示名两两不同，且与后端下发的真�
   const backend = [
     ...region.matchAll(/const [A-Z_]+: ProgramSpec = ProgramSpec \{[\s\S]*?display_name: "([^"]+)"/g),
   ].map((m) => m[1]);
-  if (backend.length !== 6) {
-    throw new Error(`应解析出 6 条 ProgramSpec 的 display_name，实际 ${backend.length} —— 判据失效`);
+  if (backend.length !== 2) {
+    throw new Error(`应解析出 2 条 ProgramSpec 的 display_name，实际 ${backend.length} —— 判据失效`);
   }
   const sorted = (list) => [...list].sort();
   if (sorted(labels).join("|") !== sorted(backend).join("|")) {
@@ -1231,7 +1226,7 @@ check("★ Trae 六个程序位展示名两两不同，且与后端下发的真�
       `兜底表与后端展示名不一致：兜底 ${sorted(labels).join(" / ")} · 后端 ${sorted(backend).join(" / ")}`,
     );
   }
-  return `${sorted(labels).join(" / ")}（两两不同 · 与后端一致）`;
+  return `${sorted(labels).join(" / ")}（每区域一个 · 与后端一致）`;
 });
 
 check("★ Trae 区域名在前端词条 / 后端 display_name / 兜底表三处逐字一致", () => {

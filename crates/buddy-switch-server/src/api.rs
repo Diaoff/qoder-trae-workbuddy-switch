@@ -597,9 +597,12 @@ async fn api_status(RawQuery(query): RawQuery) -> Response {
 /// 与 `src-tauri/src/commands.rs` 的同名函数**同款实现**（刻意不去重，见共享知识）。
 /// 只对**区域纯**的命令（账号列表 / 备注 / 删除）使用 —— 理由见那边的文档注释。
 fn trae_variant_of_region(region: TraeRegion) -> trae::variant::TraeVariant {
+    // ★ issue #28：必须给**合并版**（与 `src-tauri/src/commands.rs` 同款）。
+    // 原先给 `TraeWork` / `Global` 两条老程序线，而它们的客户端已被官方合并卸载 ⇒
+    // 「从本机客户端导入账号」永远报「未检测到【TraeWork CN】客户端」（issue #28 报障原文）。
     match region {
-        TraeRegion::Cn => trae::variant::TraeVariant::TraeWork,
-        TraeRegion::Global => trae::variant::TraeVariant::Global,
+        TraeRegion::Cn => trae::variant::TraeVariant::TraeMerged,
+        TraeRegion::Global => trae::variant::TraeVariant::GlobalTraeMerged,
     }
 }
 

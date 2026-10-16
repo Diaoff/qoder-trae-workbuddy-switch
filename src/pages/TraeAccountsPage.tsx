@@ -92,6 +92,7 @@ import type {
   TraeCreditsOverview,
   TraeEnvStatus,
   TraeSettings,
+  TraeSnapshotCarryReport,
   TraeVariantId,
   TraeVariantStatus,
 } from "@/lib/trae-types";
@@ -281,6 +282,14 @@ export default function TraeAccountsPage() {
   const logins = snapshot?.logins ?? {};
 
   const [busy, setBusy] = useState<string | null>(null);
+  /**
+   * 收敛迁移的**一次性升级引导**内容（issue #28）。
+   *
+   * 只在 `snapshots.firstRun` 为真时由遗留迁移链写入；用户关掉后不再写
+   * （后端标记已落 ⇒ 整条链再次执行时 `firstRun` 为假）。
+   * `null` = 不展示（正常态 / 演示模式）。
+   */
+  const [mergeGuide, setMergeGuide] = useState<TraeSnapshotCarryReport | null>(null);
   /* 「重新检测」两处入口（错误 Alert / 详情抽屉空态）各自的进行中态 —— 与 WorkBuddy
      账号页同一做法：`void loadAll()` 是 fire-and-forget，点击后按钮必须立刻有转圈反馈。 */
   const { busy: recheckAlertBusy, run: runRecheckAlert } = useRefreshAction();
@@ -475,6 +484,11 @@ export default function TraeAccountsPage() {
         if (disposed) return;
         const snapshots = report.snapshots;
         const snapshotsChanged = snapshots?.changed ?? false;
+        // ★ 一次性升级引导（issue #28）：收敛迁移**首次**执行时弹一次。
+        //   判据是 `firstRun` 而不是 `changed` —— 全新安装没有存量快照（`changed`
+        //   为假），用户同样需要知道「Trae 已合并、老程序位已退役、按钮只剩一个」。
+        //   后端落盘的一次性标记保证只弹一次（那个链每次进账号页都会跑）。
+        if (snapshots?.firstRun) setMergeGuide(snapshots);
         // 两个 changed 任一为真才提示（见上方说明）。
         if (!report.changed && !snapshotsChanged) return;
         toast.success(
@@ -1698,8 +1712,62 @@ export default function TraeAccountsPage() {
      与 WorkBuddy 侧的 `needsRelogin` 同一层语义。 */
   const expiredCount = accounts.filter((account) => account.jwtStatus === "expired").length;
 
+  /**
+   * 收敛迁移的**一次性升级引导**（issue #28）。
+   *
+   * 为什么值得单独一个对话框而不是 toast：这次收敛**移除了用户看得见的按钮**
+   * （每个区域从三枚程序位按钮变成一枚），并**改写了登录态快照的存放目录** ——
+   * toast 会被下一条消息顶掉，而这两件事用户都需要能回看。
+   *
+   * 只在 `mergeGuide != null` 时渲染（后端的一次性标记保证只弹一次）。
+   */
+  const mergeGuideDialog = (
+    <Dialog
+      open={mergeGuide != null}
+      onOpenChange={(open) => {
+        if (!open) setMergeGuide(null);
+      }}
+    >
+      <DialogContent className="max-w-[560px]">
+        <DialogHeader>
+          <DialogTitle>{t("trae.page.accounts.mergeGuide.title")}</DialogTitle>
+          <DialogDescription>{t("trae.page.accounts.mergeGuide.desc")}</DialogDescription>
+        </DialogHeader>
+        <div className="space-y-2 text-[13px] text-muted-foreground">
+          <p>
+            {mergeGuide && mergeGuide.slotsCopied > 0
+              ? t("trae.page.accounts.mergeGuide.copied", { count: mergeGuide.slotsCopied })
+              : t("trae.page.accounts.mergeGuide.none")}
+          </p>
+          {mergeGuide && mergeGuide.slotsKept > 0 && (
+            <p>{t("trae.page.accounts.mergeGuide.kept", { count: mergeGuide.slotsKept })}</p>
+          )}
+          {mergeGuide && mergeGuide.errors.length > 0 && (
+            <p className="text-destructive">
+              {t("trae.page.accounts.mergeGuide.errors", { count: mergeGuide.errors.length })}
+            </p>
+          )}
+        </div>
+        <div className="rounded-[10px] border border-warning/40 bg-warning/8 px-3.5 py-3">
+          <p className="text-[13px] font-medium text-foreground">
+            {t("trae.page.accounts.mergeGuide.adviceTitle")}
+          </p>
+          <p className="mt-1 text-[12.5px] leading-relaxed text-muted-foreground">
+            {t("trae.page.accounts.mergeGuide.advice")}
+          </p>
+        </div>
+        <DialogFooter>
+          <Button size="sm" onClick={() => setMergeGuide(null)}>
+            {t("trae.page.accounts.mergeGuide.close")}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+
   return (
     <div className="mx-auto w-full max-w-[1240px] px-7 pt-[26px] pb-[60px]">
+      {mergeGuideDialog}
       {/* 页头与 WorkBuddy 逐字同构：**只有标题与说明，不放任何动作按钮**。
           动作一律下沉到「添加与迁移账号」横幅与账号工具栏，
           这样两个分区的动作位置、视觉重量完全一致。

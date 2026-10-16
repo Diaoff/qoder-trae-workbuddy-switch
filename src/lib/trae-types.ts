@@ -128,30 +128,29 @@ export type TraeVariantId =
   | TraeProgramId;
 
 /**
- * 程序位的展示名（`TraeWork` / `TraeCode`）。
+ * 程序位的展示名（收敛后只剩合并版 `Trae`）。
  *
- * ⚠️ 与 {@link traeVariantLabel} 的区别：本函数**只接程序位标识**，返回的就是客户端
- * 自己的名字。`TraeWork` / `TraeCode` 是品牌名，中英两语相同 —— 之所以仍然过词表，
- * 是为了让「程序位有哪些、各自叫什么」只有**一处**可查，将来新增程序位时
- * `zh.ts` 的 `TranslationKey` 会编译期提醒补英文条目。
+ * ⚠️ 与 {@link traeVariantLabel} 的区别：本函数**只接程序位标识**。
+ * 之所以仍然过词表，是为了让「程序位有哪些、各自叫什么」只有**一处**可查，
+ * 将来新增程序位时 `zh.ts` 的 `TranslationKey` 会编译期提醒补英文条目。
  */
 export function traeProgramLabel(program: TraeProgramId): string {
-  switch (program) {
-    case "trae_code":
-      return t("trae.program.traeCode");
-    case "trae":
-      // 合并后的客户端（issue #20）：客户端现在就叫 `Trae`，不再叫 `TraeCode`。
-      return t("trae.program.trae");
-    default:
-      return t("trae.program.traeWork");
-  }
+  // 收敛后唯一可选取值。`TraeWork` / `TraeCode` 是**退役**程序位：官方已把它们
+  // 合并进 `Trae`（issue #28），界面上不再出现，返回合并版的名字才是事实。
+  void program;
+  return t("trae.program.trae");
 }
 
 /**
  * `TraeVariantId` → 展示名。
  *
- * 区域 → `国内版` / `国际版`；程序位 → 客户端的官方别名写法。
+ * 区域 → 客户端产品名；程序位 → 客户端的官方别名写法。
  * 与 Rust 侧 `TraeRegion::display_name()` / `program_spec().display_name` 同源。
+ *
+ * ★ **退役变体按其现在的落点显示**（issue #28 收敛）：`trae_work` / `trae_cn` /
+ * `global` / `global_trae_code` 这四个历史标识在**老 Key 记录 / 老网关日志**里仍有，
+ * 它们现在全部落到该区域的**合并版客户端** ⇒ 显示合并版的名字才是准确描述。
+ * 显示 `TraeWork CN` 反而会指向一个已被卸载、不再可切换的客户端。
  *
  * **什么场景用它**：手上只有标识、需要**立刻**显示名字时（例如登录弹窗要说清
  * 「正在为哪条线登录」）。能拿到后端探测结果时优先用 `variantLabel`，避免前端多维护文案。
@@ -163,30 +162,27 @@ export function traeVariantLabel(variant: TraeVariantId): string {
       return t("trae.region.cn");
     case "global":
       return t("trae.region.global");
-    // 国内 TraeCode（`trae_cn` 是它的落盘标识；`trae_code` 是程序位标识）
-    // ⇒ 展示名 `TraeCode CN`（国内带 ` CN` 后缀）。
-    case "trae_cn":
-    case "trae_code":
-      return t("trae.program.traeCodeCn");
-    // `trae` 作为**变体**参数时与 `trae_cn` 同源（后端 `TraeVariant::parse("trae")
-    // == Trae`，即国内 TraeCode）⇒ 同一个展示名。注意它**不是**合并版：
-    // 合并版的变体标识是 `trae_merged`。
-    case "trae":
-      return t("trae.program.traeCodeCn");
-    // 国内 TraeWork（`trae_work` 既是变体标识也是程序位标识）。
-    case "trae_work":
-      return t("trae.program.traeWorkCn");
-    // 国际版 TraeCode：**不是** `trae_code` 那条（那是国内），见 `TraeVariantId`。
-    case "global_trae_code":
-      return t("trae.program.traeCodeGlobal");
-    // 合并后的客户端（issue #20）：各自独立变体，展示名就是客户端现在的名字。
+    // 合并后的客户端：两个区域各一个。
     case "trae_merged":
       return t("trae.program.traeCn");
     case "global_trae_merged":
       return t("trae.program.traeGlobal");
+    // ⚠️ `trae` 有两种身份：作为**程序位标识**是合并版；作为**变体参数**是
+    //   改造前的国内 TraeCode 落盘标识（`TraeVariant::parse("trae")`）。两者现在
+    //   指向同一个客户端，故共用同一个展示名。
+    case "trae":
+      return t("trae.program.traeCn");
+    // 退役的国内两条：老记录里出现，一律显示合并版的名字（见函数头）。
+    case "trae_cn":
+    case "trae_code":
+    case "trae_work":
+      return t("trae.program.traeCn");
+    // 退役的国际两条：同上，落国际合并版。
+    case "global_trae_code":
+      return t("trae.program.traeGlobal");
     // 不可达（上面的分支已覆盖 `TraeVariantId` 的全部取值）；保留旧兜底值不动。
     default:
-      return t("trae.program.traeWork");
+      return t("trae.program.trae");
   }
 }
 
@@ -527,10 +523,8 @@ export interface TraeSnapshotCarryReport {
   /** 逐条搬运明细。 */
   carried: {
     region: string;
-    /** 源程序位标识（`trae_work` / `trae_code`）。 */
+    /** 来源**历史池目录名**（`profiles` / `profiles_trae_cn` / `profiles_global*`）。 */
     from: string;
-    /** 目标程序位标识（合并版为 `trae`）。 */
-    to: string;
     /** 账号槽位名（userId）。 */
     slot: string;
     files: number;
@@ -541,6 +535,14 @@ export interface TraeSnapshotCarryReport {
   notes: string[];
   /** 本次是否真的搬了东西（`false` = 幂等空转）。 */
   changed: boolean;
+  /**
+   * 本次是**首次**执行收敛迁移（后端落的一次性标记）。
+   *
+   * ★ 它**不是** `changed`：`changed` 只在真搬了东西时为真，而全新安装没有存量快照
+   * ⇒ `changed === false` 但用户**仍然需要**知道「Trae 已合并、旧程序位已退役」。
+   * 前端的一次性升级引导只认这个字段。
+   */
+  firstRun: boolean;
 }
 
 /** 单账号签到结果。 */

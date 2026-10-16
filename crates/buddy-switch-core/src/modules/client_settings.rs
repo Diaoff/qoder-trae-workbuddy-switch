@@ -13,8 +13,8 @@
 //! | `workbuddy-global` | WorkBuddy | `~/.workbuddy-ai/settings.json` |
 //! | `trae-code-cn` | Trae | `%APPDATA%\Trae CN\User\settings.json` |
 //! | `trae-code-global` | Trae | `%APPDATA%\Trae\User\settings.json` |
-//! | `trae-work-cn` | Trae | `%APPDATA%\TRAE SOLO CN\User\settings.json` |
-//! | `trae-work-global` | Trae | `%APPDATA%\TRAE SOLO\User\settings.json` |
+//! | ~~`trae-work-cn`~~ | ~~Trae~~ | ★ issue #28 **已退役**（客户端被合并卸载） |
+//! | ~~`trae-work-global`~~ | ~~Trae~~ | ★ 同上 |
 //!
 //! - WorkBuddy 侧走 [`session_data_dir`]（CN `.workbuddy` / Global `.workbuddy-ai`）；
 //! - Trae 侧**必须**走 [`trae_platform::user_data_dir_for_program`]（按**程序位**精确取
@@ -144,35 +144,31 @@ const WORKBUDDY_GLOBAL: ClientSlot = ClientSlot {
     kind: SlotKind::Workbuddy(Region::Global),
 };
 
+/// Trae **国内版**的代理设置槽位（客户端 `Trae CN`）。
+///
+/// ★ issue #28 收敛后每区域**只有这一个**槽位：`trae-code-cn` / `trae-code-global`
+/// 曾与 `trae-work-cn` / `trae-work-global` **编辑同一个文件**
+/// （`%APPDATA%\Trae CN\User\settings.json` —— 合并版复用了 TraeCode 的 userData），
+/// 两条槽位各写各的键必然互相覆盖。收敛后只剩一个写者，问题从根上消失。
+///
+/// ⚠️ **键名沿用 `trae-code-*` 而不改名**：它是**写进客户端 settings.json 的键**，
+/// 改名等于让用户已配置的代理设置「凭空消失」（读路径只认新键）。
 const TRAE_CODE_CN: ClientSlot = ClientSlot {
     key: "trae-code-cn",
     display_key: "clientSettings.slot.traeCodeCn",
     product: "trae",
-    kind: SlotKind::Trae(TraeVariant::Trae),
+    kind: SlotKind::Trae(TraeVariant::TraeMerged),
 };
 
+/// Trae **国际版**的代理设置槽位（客户端 `Trae`）。
 const TRAE_CODE_GLOBAL: ClientSlot = ClientSlot {
     key: "trae-code-global",
     display_key: "clientSettings.slot.traeCodeGlobal",
     product: "trae",
-    kind: SlotKind::Trae(TraeVariant::GlobalTraeCode),
+    kind: SlotKind::Trae(TraeVariant::GlobalTraeMerged),
 };
 
-const TRAE_WORK_CN: ClientSlot = ClientSlot {
-    key: "trae-work-cn",
-    display_key: "clientSettings.slot.traeWorkCn",
-    product: "trae",
-    kind: SlotKind::Trae(TraeVariant::TraeWork),
-};
-
-const TRAE_WORK_GLOBAL: ClientSlot = ClientSlot {
-    key: "trae-work-global",
-    display_key: "clientSettings.slot.traeWorkGlobal",
-    product: "trae",
-    kind: SlotKind::Trae(TraeVariant::Global),
-};
-
-/// 声明式规格表：6 个槽位，**顺序稳定**。新增变体只加一行、不改逻辑。
+/// 声明式规格表：**4 个**槽位，**顺序稳定**。新增变体只加一行、不改逻辑。
 ///
 /// ⚠️ 未安装者**不从列表消失**（`installed: false` 照常列出）—— 沿用「不因探测失败而消失、
 /// 不伪造成功」的纪律。
@@ -180,14 +176,11 @@ const TRAE_WORK_GLOBAL: ClientSlot = ClientSlot {
 /// ⚠️ **本表只放「VS Code 系代理设置槽位」**：`语义映射表与槽位表对齐` 那条单测要求
 /// 每个成员都在 [`PROXY_FIELDS`] 里有代理路径声明。CLI 系客户端（没有 `http.proxy`
 /// 这类字段）**不进本表**，见 [`HOOK_FILE_SLOTS`]。
-pub const CLIENT_SLOTS: &[ClientSlot] = &[
-    WORKBUDDY_CN,
-    WORKBUDDY_GLOBAL,
-    TRAE_CODE_CN,
-    TRAE_CODE_GLOBAL,
-    TRAE_WORK_CN,
-    TRAE_WORK_GLOBAL,
-];
+///
+/// ★ issue #28：Trae 原先 4 个槽位（Work / Code × 两区域），收敛后**只剩 2 个**
+/// （每区域一个合并版客户端）。退役槽位**不得**留在本表里 —— 它们指向已卸载的客户端，
+/// 留着会让「客户端环境」页报出四个程序位，其中两个永远未安装。
+pub const CLIENT_SLOTS: &[ClientSlot] = &[WORKBUDDY_CN, WORKBUDDY_GLOBAL, TRAE_CODE_CN, TRAE_CODE_GLOBAL];
 
 // ---------------------------------------------------------------------------
 // hook 安装目标槽位（CLI 系客户端）
@@ -274,46 +267,27 @@ const TRAE_HOOKS_GLOBAL: ClientSlot = ClientSlot {
 
 /// 变体 → `(区域, 程序)`。
 ///
-/// ★ 与 `trae/variant.rs` 的 `as_str` / `region` **同源**，六处取值**一一对应**：
-/// `TraeWork=(Cn, TraeWork)`、`Trae=(Cn, TraeCode)`、`TraeMerged=(Cn, Trae)`、
-/// `Global=(Global, TraeWork)`、`GlobalTraeCode=(Global, TraeCode)`、
-/// `GlobalTraeMerged=(Global, Trae)`。
+/// ★ issue #28 收敛后**只看区域**：每个区域只有一个程序位（合并版），
+/// 所以退役变体（`TraeWork` / `Trae` / `Global` / `GlobalTraeCode`）解析到
+/// **本区域的合并版程序位**。它们的槽位已退役，老记录里的 variant 字段仍要能解码。
 ///
 /// ⚠️ **本函数与 [`variant_for_program`] 互为逆**（有单测钉住双向一致）。
-/// 这个双射是刻意的：变体是快照目录 / Key 归属 / 网关日志分档的唯一派生来源，
-/// 一旦两个程序位共用一个变体，它们的**快照就会挤进同一个目录** ——
-/// 那正是 issue #20 用户报的「Trae 与 TraeCode 共用快照目录」。
 fn program_of_variant(variant: TraeVariant) -> (TraeRegion, TraeProgram) {
-    match variant {
-        TraeVariant::TraeWork => (TraeRegion::Cn, TraeProgram::TraeWork),
-        TraeVariant::Trae => (TraeRegion::Cn, TraeProgram::TraeCode),
-        TraeVariant::Global => (TraeRegion::Global, TraeProgram::TraeWork),
-        TraeVariant::GlobalTraeCode => (TraeRegion::Global, TraeProgram::TraeCode),
-        // 合并后的客户端（issue #20）：各自对应**合并版**程序位。
-        TraeVariant::TraeMerged => (TraeRegion::Cn, TraeProgram::Trae),
-        TraeVariant::GlobalTraeMerged => (TraeRegion::Global, TraeProgram::Trae),
-    }
+    let region = variant.region();
+    (region, TraeProgram::Trae)
 }
 
 /// `(区域, 程序)` → 变体，即 [`program_of_variant`] 的逆映射（**唯一事实来源**）。
 ///
-/// 仓库里**没有** `variant_for_program`（`platform::variant_for_program` 是**私有**的），
+/// 仓库里**没有**别的 `variant_for_program`（`platform::variant_for_program` 是**私有**的），
 /// 故在此提供一份公开的、与 [`program_of_variant`] 互为逆的映射，并有单测钉住双向一致。
 ///
-/// ## 它是**单射**（issue #20 收尾）
-///
-/// 合并版 `Trae` 与遗留 `TraeCode` 候选名逐字相同（客户端合并时复用了目录名），
-/// 但**各自有自己的变体** —— 变体决定账号库 / 登录态快照 / Key 归属 / 网关日志分档，
-/// 两者共用一个变体会让快照挤进同一个目录（用户报障原文）。
-/// 因此六个 `(区域, 程序)` 组合 → 六个不同变体，往返逐字一致。
-pub fn variant_for_program(region: TraeRegion, program: TraeProgram) -> TraeVariant {
-    match (region, program) {
-        (TraeRegion::Cn, TraeProgram::TraeWork) => TraeVariant::TraeWork,
-        (TraeRegion::Cn, TraeProgram::TraeCode) => TraeVariant::Trae,
-        (TraeRegion::Cn, TraeProgram::Trae) => TraeVariant::TraeMerged,
-        (TraeRegion::Global, TraeProgram::TraeWork) => TraeVariant::Global,
-        (TraeRegion::Global, TraeProgram::TraeCode) => TraeVariant::GlobalTraeCode,
-        (TraeRegion::Global, TraeProgram::Trae) => TraeVariant::GlobalTraeMerged,
+/// ★ issue #28：程序位退化成「每区域一个」后，本函数是**区域 → 合并版变体**的纯映射；
+/// `program` 参数被刻意忽略（任何程序位都写到该区域那一个客户端）。
+pub fn variant_for_program(region: TraeRegion, _program: TraeProgram) -> TraeVariant {
+    match region {
+        TraeRegion::Cn => TraeVariant::TraeMerged,
+        TraeRegion::Global => TraeVariant::GlobalTraeMerged,
     }
 }
 
@@ -429,8 +403,6 @@ pub const PROXY_FIELDS: &[(&str, &str, &str)] = &[
     ("proxy", "workbuddy-global", "http.proxySupport"),
     ("proxy", "trae-code-cn", "trae.network.proxy.effectiveMode"),
     ("proxy", "trae-code-global", "trae.network.proxy.effectiveMode"),
-    ("proxy", "trae-work-cn", "trae.network.proxy.effectiveMode"),
-    ("proxy", "trae-work-global", "trae.network.proxy.effectiveMode"),
 ];
 
 /// 某槽位在 [`PROXY_FIELDS`] 里声明的**全部**代理字段路径。
@@ -1602,17 +1574,19 @@ mod tests {
     // ---- 槽位表 ----------------------------------------------------------
 
     #[test]
-    fn 六个槽位在表内且键互不重复() {
-        assert_eq!(CLIENT_SLOTS.len(), 6, "槽位数必须是 6");
+    fn 槽位表只含在用槽位且键互不重复() {
+        // ★ issue #28：Trae 的 4 个槽位收敛为 2 个（每区域一个合并版客户端），
+        //   整表 6 → 4。退役槽位**不得**留在表里（它们指向已卸载的客户端）。
+        assert_eq!(CLIENT_SLOTS.len(), 4, "槽位数必须是 4（WB 2 + Trae 2）");
         let mut keys: Vec<&str> = CLIENT_SLOTS.iter().map(|s| s.key).collect();
         keys.sort_unstable();
         keys.dedup();
-        assert_eq!(keys.len(), 6, "槽位 key 必须互不重复");
+        assert_eq!(keys.len(), 4, "槽位 key 必须互不重复");
 
         let mut displays: Vec<&str> = CLIENT_SLOTS.iter().map(|s| s.display_key).collect();
         displays.sort_unstable();
         displays.dedup();
-        assert_eq!(displays.len(), 6, "槽位 display_key 必须互不重复");
+        assert_eq!(displays.len(), 4, "槽位 display_key 必须互不重复");
 
         // 预期 key 集合逐字钉住（改名即断前端传参与备份目录）。
         let expected = [
@@ -1620,9 +1594,15 @@ mod tests {
             "workbuddy-global",
             "trae-code-cn",
             "trae-code-global",
-            "trae-work-cn",
-            "trae-work-global",
         ];
+        // ★ 退役的两个 key 必须**查不到** —— 它们仍可能出现在用户备份目录名里，
+        //   留着就会让「恢复备份」把配置写进一个已卸载的客户端。
+        for retired in ["trae-work-cn", "trae-work-global"] {
+            assert!(
+                slot_by_key(retired).is_none(),
+                "退役槽位 {retired} 仍可查 —— 备份/恢复会把配置写进已卸载的客户端"
+            );
+        }
         for key in expected {
             assert!(slot_by_key(key).is_some(), "缺槽位 {key}");
         }
@@ -1744,7 +1724,7 @@ mod tests {
     fn 未安装槽位仍在列表且installed为false() {
         let out = list_slots();
         let slots = out["slots"].as_array().expect("slots 必须是数组");
-        assert_eq!(slots.len(), 6, "未安装者不得从列表消失");
+        assert_eq!(slots.len(), 4, "未安装者不得从列表消失（且退役槽位已移除）");
         for slot in slots {
             assert!(slot["key"].is_string());
             assert!(slot["displayKey"].is_string());
@@ -1765,10 +1745,10 @@ mod tests {
     /// 变体 ↔ (区域, 程序) 必须一致 —— **合并版是刻意的多对一**（issue #20）。
     #[test]
     fn 变体与区域程序双向一致() {
-        // ★★ **双射**：六个程序位 ↔ 六个变体，往返**逐字**一致（issue #20 收尾后恢复）。
-        // 反例（改坏会红）：让合并版 `Trae` 与遗留 `TraeCode` 共用一个变体 ⇒
-        // 往返不再逐字一致，而且两条程序位的**快照会挤进同一个目录**
-        // （用户报障原文：「Trae 与 TraeCode 目前仍共用同一个快照目录」）。
+        // ★★ issue #28 收敛后：映射是「**区域 → 该区域的合并版变体**」的纯函数，
+        //   程序轴只剩一个取值 ⇒ 往返一致性退化成「区域自洽」。
+        //   反例（改坏会红）：让两个区域落到同一个变体 ⇒ 两套账号体系的登录态
+        //   会写进同一个快照目录（不报错，只是数据串了）。
         for region in TraeRegion::all() {
             for program in TraeProgram::all() {
                 let variant = variant_for_program(region, program);
@@ -1788,25 +1768,22 @@ mod tests {
             TraeVariant::GlobalTraeMerged,
         ] {
             let (region, program) = program_of_variant(variant);
-            assert_eq!(variant_for_program(region, program), variant);
+            // 退役变体往返后落到**本区域的合并版**（收敛后它们不再可切换）。
+            assert_eq!(variant_for_program(region, program).region(), variant.region());
             // 区域必须与 `variant.region()` 同源。
             assert_eq!(region, variant.region(), "{variant:?} 的区域漂了");
         }
-
-        // ★ 六个程序位必须映射到**六个互不相同**的变体 —— 任何一个变体被两个程序位
-        //   共用，那两条程序位的快照目录就会重合（不报错，只是数据串了）。
+        // 两个区域 → 两个互不相同的合并版变体。
         let mut seen: Vec<TraeVariant> = Vec::new();
         for region in TraeRegion::all() {
-            for program in TraeProgram::all() {
-                let variant = variant_for_program(region, program);
-                assert!(
-                    !seen.contains(&variant),
-                    "{variant:?} 被两个程序位共用 —— 它们的快照目录会重合"
-                );
-                seen.push(variant);
-            }
+            let variant = variant_for_program(region, TraeProgram::Trae);
+            assert!(
+                !seen.contains(&variant),
+                "{variant:?} 被两个区域共用 —— 两套账号体系的快照目录会重合"
+            );
+            seen.push(variant);
         }
-        assert_eq!(seen.len(), 6, "程序位数量与变体数量必须一致");
+        assert_eq!(seen.len(), 2, "两个区域必须各映射到一个独立变体");
     }
 
     // ---- 格式指纹 --------------------------------------------------------
@@ -2189,7 +2166,7 @@ mod tests {
                 other => panic!("未知产品：{other}"),
             }
         }
-        // 6 个槽位**都**要在语义表里有声明，否则跨产品比对会漏归并。
+        // 每个槽位**都**要在语义表里有声明，否则跨产品比对会漏归并。
         for slot in CLIENT_SLOTS {
             assert!(
                 PROXY_FIELDS.iter().any(|(_, key, _)| *key == slot.key),

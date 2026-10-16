@@ -35,12 +35,6 @@ export const zh = {
   //
   // ⚠️ `traeWork` / `traeCode` / `trae` 三个**区域无关**的键（`traeProgramLabel` 用）
   // 保持不带区域后缀的家族名；带区域的那几个键见下。
-  "trae.program.traeWork": "TraeWork",
-  "trae.program.traeWorkCn": "TraeWork CN",
-  "trae.program.traeWorkGlobal": "TraeWork",
-  "trae.program.traeCode": "TraeCode",
-  "trae.program.traeCodeCn": "TraeCode CN",
-  "trae.program.traeCodeGlobal": "TraeCode",
   // 合并后的客户端（issue #20）：客户端自己就叫 `Trae CN` / `Trae`。
   // 两者是**各自独立的变体**（`trae_merged` / `global_trae_merged`），
   // 标识与快照目录都与 `traeCode*` 不同。

@@ -25,8 +25,6 @@ export const en = {
   "clientSettings.slot.workbuddyGlobal": "WorkBuddy Global",
   "clientSettings.slot.traeCodeCn": "TraeCode CN",
   "clientSettings.slot.traeCodeGlobal": "TraeCode",
-  "clientSettings.slot.traeWorkCn": "TraeWork CN",
-  "clientSettings.slot.traeWorkGlobal": "TraeWork",
   // Hook install targets (CLI clients; see HOOK_FILE_SLOTS in client_settings) —
   // they never appear on the proxy settings page; these keys only serve `displayKey` echo.
   "clientSettings.slot.claude": "Claude Code",

@@ -340,21 +340,17 @@ impl TraeVariant {
         }
     }
 
-    /// **国内区域**的两条程序位，供遍历用。
+    /// 全部**可选变体**（issue #28 收敛后 = 2 条：CN 合并版 + 国际合并版）。
     ///
-    /// ## ⚠️ 它不是「全部变体」（要全部请用 [`all_specs`]）
+    /// ## ⚠️ 它**不是**「全部已知变体」（要全部请用 [`all_known_specs`]）
     ///
-    /// 本函数是改造前**单轴（产品线）**时代的遍历入口，只含国内两条线，
-    /// 而它被两类**只关心国内**的护栏消费：
-    /// `checkin_constants_stay_aligned_with_variant_table`、
-    /// `checkin_url_uses_trae_api_base`（都把 CN 端点写死）。
-    /// 把两个国际区域取值塞进来会让那些断言对国际端点变红 ——
-    /// 那不是缺陷被暴露，而是**遍历口径被换掉了**。
+    /// 本函数是「**有哪些可切换目标**」的遍历入口。收敛前它只含国内两条遗留线，
+    /// 被两类只关心国内的护栏消费；收敛后它含两个区域各一个，
+    /// 因此**只关心国内**的护栏必须显式筛区域，不能再靠「本函数只有国内」这个巧合。
     ///
-    /// ⇒ 区域轴上的完整遍历一律走 [`super::region::TraeRegion::all`]（界面/网关）
-    /// 或 [`all_specs`]（变体表）；本函数**只**表示「国内两条程序位」。
+    /// ⇒ 完整遍历一律走 [`all_specs`]（可选变体）或 [`all_known_specs`]（含退役）。
     pub fn all() -> [TraeVariant; 2] {
-        [TraeVariant::TraeWork, TraeVariant::Trae]
+        [TraeVariant::TraeMerged, TraeVariant::GlobalTraeMerged]
     }
 
     /// 本变体的**授权页产品线**（决定 `auth_from` / `client_id` / `hide_saas_login`）。
@@ -463,13 +459,17 @@ impl OAuthLine {
 }
 
 impl Default for TraeVariant {
-    /// 默认 `TraeWork`。
+    /// 默认 `TraeMerged`（CN 合并版客户端）。
     ///
-    /// 选它而非 `Trae` 的理由与参考实现一致：`TraeWorkAssistant` 的
-    /// `TargetApp::parse` 对未知值**回退 `TraeWork`**，且 `TRAE SOLO CN` 是本机
-    /// 最近活跃的产品线。**注意这只是一处"缺省"**，不是"另一条线不支持"。
+    /// ★ issue #28 收敛后**必须**是合并版：默认值的落点决定「不传变体」时读写的是
+    /// 哪个客户端的数据 —— 老默认 `TraeWork` 指向的 `TRAE SOLO CN` 客户端已被官方
+    /// 卸载（合并进 `Trae CN`），继续拿它当默认就是「读一个死目录」。
+    ///
+    /// 兼容面：所有 `*_for(variant)` 的无参兼容壳都走这里 ⇒ 老调用点
+    /// （`import_local_account()` / `parse_trae_variant()` 的回落分支等）
+    /// 收敛后自动指向**活的**那个客户端，无需逐个改调用点。
     fn default() -> Self {
-        TraeVariant::TraeWork
+        TraeVariant::TraeMerged
     }
 }
 
@@ -764,26 +764,33 @@ pub fn variant_spec(variant: TraeVariant) -> &'static VariantSpec {
     }
 }
 
-/// 全部**变体**的描述符（6 条），供**反查与不变式**遍历用。
+/// 全部**可选变体**（issue #28 收敛后 = 2 条：两个区域各一个合并版）。
 ///
-/// ## 与 [`TraeVariant::all`] 的分工（别混用）
+/// ★ 这是「界面上有哪几个切换目标 / 哪些变体会被周期任务遍历」的**唯一口径**。
+/// 退役的四个遗留变体（`TraeWork` / `Trae` / `Global` / `GlobalTraeCode`）**不在此表**。
+///
+/// ## ⚠️ 顺序**不是**任意的
+///
+/// [`variant_of_name`] 按 [`all_known_specs`] 的顺序取**首个**精确命中的 spec；
+/// 合并版必须排在遗留 TraeCode 之前（两者候选名逐字相同）。本表也沿用
+/// 「先 CN、后国际」的稳定顺序，便于 UI 与日志复现。
+pub fn all_specs() -> [&'static VariantSpec; 2] {
+    [&CN_TRAE_MERGED_SPEC, &GLOBAL_TRAE_MERGED_SPEC]
+}
+
+/// **全部已知**变体（含退役的 4 条），顺序稳定：合并版排在同名的遗留位之前。
+///
+/// ## 为什么它与 [`all_specs`] 并存
 ///
 /// | 函数 | 口径 | 用途 |
 /// |:---|:---|:---|
-/// | [`all_specs`] | 6 条（区域 × 程序全覆盖） | [`variant_of_name`] 反查、端点/授权线不变式 |
-/// | [`TraeVariant::all`] | **只**国内两条遗留程序位 | 只关心 CN 的历史护栏与 fixture |
+/// | [`all_specs`] | **2 条**（可选程序位） | 周期任务遍历、槽位、Key 归属、界面 |
+/// | [`all_known_specs`] | 6 条（含退役） | [`variant_of_name`] 反查、端点/授权线不变式 |
 ///
-/// 两者并存是**过渡态**：单轴（产品线）时代的遍历入口还没删，而区域轴的完整
-/// 遍历入口是 [`super::region::TraeRegion::all`] / [`super::region::all_program_specs`]。
-///
-/// ## ⚠️ 顺序**不是**任意的：合并版必须排在遗留 TraeCode 之前
-///
-/// [`variant_of_name`] 按本顺序取**首个**精确命中的 spec。合并版与遗留 TraeCode 的
-/// 候选名逐字相同（`Trae CN` / `Trae`），所以顺序决定了「一台机器上的 `Trae CN`
-/// 该被认成哪一代客户端」。合并版在前 ⇒ 反查给 `TraeMerged`，
-/// 界面上那条「探测到的是哪条产品线」才会说 **Trae** 而不是 TraeCode ——
-/// 用户已经因为「点 Trae 却提示 TraeCode」报过一次障。
-pub fn all_specs() -> [&'static VariantSpec; 6] {
+/// 退役变体**不是死代码**：它们仍被 [`TraeVariant::parse`] 认（老参数、老 Key 记录、
+/// 老网关日志的 `variant` 字段都是这四个字符串），也仍要能反查出「哪个客户端名对应哪一代」。
+/// 但它们**不得**出现在任何「有哪些可切换目标」的遍历里 —— 那正是 issue #28 的报障成因。
+pub fn all_known_specs() -> [&'static VariantSpec; 6] {
     [
         &TRAE_WORK_SPEC,
         &CN_TRAE_MERGED_SPEC,
@@ -810,7 +817,11 @@ pub fn variant_of_name(name: &str) -> Option<TraeVariant> {
     let lowered = lowered.strip_suffix(".exe").unwrap_or(&lowered).to_string();
 
     // 先精确匹配全部候选名（含大小写差异）。
-    for spec in all_specs() {
+    //
+    // ★ 走 `all_known_specs()`（含退役）而不是 `all_specs()`（只有两个合并版）：
+    //   本函数回答的是「这个名字是**哪一代客户端**」，老客户端名（`TRAE SOLO CN` 等）
+    //   必须仍能认出 —— 否则设置里那条指向老客户端的路径会被判成「不属于任何 Trae」。
+    for spec in all_known_specs() {
         for candidate in spec.data_dir_names.iter().chain(spec.exe_names.iter()) {
             if candidate.eq_ignore_ascii_case(&lowered) {
                 return Some(spec.variant);
@@ -859,7 +870,9 @@ mod tests {
         // 与 `region::GLOBAL_TRAE_CODE.display_name` / 前端国际化程序名同源。
         // 国际版不带后缀，但**保留家族名** ⇒ `TraeCode`（若简称 `Trae` 会与合并版撞名）。
         assert_eq!(TraeVariant::GlobalTraeCode.display_name(), "TraeCode");
-        assert_eq!(TraeVariant::default(), TraeVariant::TraeWork);
+        // ★ issue #28：默认变体是**合并版**。它决定「不传变体」时读写哪个客户端 ——
+        //   老默认 `TraeWork` 指向已被官方卸载的 `TRAE SOLO CN`，继续用它就是读死目录。
+        assert_eq!(TraeVariant::default(), TraeVariant::TraeMerged);
         // 标识符已正名为 `Trae`，但历史字符串仍可解析（两侧都可读）。
         assert_eq!(TraeVariant::parse("trae"), Some(TraeVariant::Trae));
         assert_eq!(TraeVariant::parse("trae_cn"), Some(TraeVariant::Trae));
@@ -940,7 +953,7 @@ mod tests {
         assert_eq!(TraeVariant::GlobalTraeMerged.region(), TraeRegion::Global);
         // `all_specs()` 的口径必须与 `region()` 自洽（每条 spec 的 `variant` 字段
         // 与它自己的 region 对得上），否则「表里写着 A、跑起来落 B」。
-        for spec in all_specs() {
+        for spec in all_known_specs() {
             assert_eq!(
                 variant_spec(spec.variant).variant.region(),
                 spec.variant.region(),
@@ -1052,7 +1065,10 @@ mod tests {
     /// 所以下面单独再钉一遍：**TraeCode 的两个程序位与所有其它槽位都不重叠**。
     #[test]
     fn 四个程序位的候选名互不重叠() {
-        let specs = all_specs();
+        // ★ 走 `all_known_specs()`（含退役）：这条不变式说的是「**已知变体表**内部
+        //   的候选名不得互相抢」，退役变体仍在表里 ⇒ 仍要守住。
+        //   可选程序位之间的零重叠由 `region::tests::两个区域程序位候选名互不重叠` 断言。
+        let specs = all_known_specs();
         let mut overlaps: Vec<String> = Vec::new();
         for (i, a) in specs.iter().enumerate() {
             for b in specs.iter().skip(i + 1) {
@@ -1106,7 +1122,7 @@ mod tests {
                 TraeVariant::GlobalTraeMerged,
             ),
         ] {
-            for other in all_specs() {
+            for other in all_known_specs() {
                 if other.variant == code.variant || other.variant == merged {
                     continue;
                 }
@@ -1286,8 +1302,10 @@ mod tests {
             ws_base: Some("wss://wss-normal.trae.ai/custom_model"),
             console_base: "https://www.trae.ai",
         };
+        // ★ 走 `all_known_specs()`（含退役）：端点表对退役变体**仍然有效**，
+        //   收敛的是「可选程序位」，不是「把老变体的端点删掉」。
         let (declared, global_only): (Vec<&'static VariantSpec>, Vec<&'static VariantSpec>) =
-            all_specs().into_iter().partition(|s| s.global_endpoints.is_some());
+            all_known_specs().into_iter().partition(|s| s.global_endpoints.is_some());
         // 前置：两拨都不能为空，否则本用例会**恒真**（没有对象可校验）。
         // 3/3 = 三条 CN 区域变体（TraeWork / TraeCode / 合并版）各声明了一套国际端点，
         // 三条国际区域变体各只有自己那一套（issue #20 后由 2/2 变 3/3）。
@@ -1328,7 +1346,8 @@ mod tests {
     #[test]
     fn 国际化端点与cn端点主机全不同() {
         let mut checked = 0usize;
-        for spec in all_specs() {
+        // ★ 同上：走全表（含退役），端点分家不变量对老变体一样成立。
+        for spec in all_known_specs() {
             let Some(global) = spec.global_endpoints else {
                 continue;
             };

@@ -333,16 +333,29 @@ async fn namespace_guards_reject_in_the_documented_order() {
     assert_eq!(status, StatusCode::BAD_REQUEST);
     assert_eq!(body["error"]["code"], "empty_model_name");
 
-    // 3) 未启用（扩展层默认不启用）⇒ **400，先于**授权判定
-    let (status, body) = post(
+    // 3) 已退役的命名空间 ⇒ **400，先于**授权判定
+    //
+    // ★ issue #28 删掉了原来这一步（「在册但未启用 ⇒ 400」）：它靠 Trae 的四条扩展层
+    //   命名空间（`traework-cn` 等、`default_on: false`）构造，而那些已随程序位退役、
+    //   扩展层清空 ⇒ 全表只剩 6 条派生层、全部 `default_on: true`。
+    //   **「在册但未启用」这个状态在本仓不再存在**，留着一条恒绿的断言毫无意义。
+    //   收敛后的等价风险是「已退役的 id 仍被当成合法命名空间」⇒ 改验它 fail-closed。
+    let (status, retired_body) = post(
         &base,
         "/v1/chat/completions",
         Some(&key),
         r#"{"model":"traework-cn:glm-5.3"}"#,
     )
     .await;
-    assert_eq!(status, StatusCode::BAD_REQUEST);
-    assert_eq!(body["error"]["code"], "namespace_not_enabled");
+    assert_eq!(status, StatusCode::BAD_REQUEST, "退役命名空间必须 400");
+    assert_ne!(
+        retired_body["error"]["code"], "namespace_not_enabled",
+        "退役 id 已不在册，不该报「未启用」"
+    );
+    assert_ne!(
+        retired_body["error"]["code"], "namespace_forbidden",
+        "退役 id 已不在册，不该走到授权判定（那说明它在册）"
+    );
 
     // 4) 已启用但未授权 ⇒ 403
     let (status, body) = post(

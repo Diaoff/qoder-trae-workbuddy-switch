@@ -22,7 +22,7 @@
 //! | 层 | 内容 | 新增时 |
 //! |:--|:--|:--|
 //! | **派生层** | 每个 [`Scope`] 一条，程序位 = 该平台的主程序位 | **零手写**：`Product` / `Scope` / `ProductSpec` 三处声明一加，命名空间自动出现 |
-//! | **扩展层** | 平台内部的**额外程序线**（当前只有 Trae 的两条老程序线 × 两区域） | 手写一行（[`TRAE_PROGRAM_NAMESPACES`]） |
+//! | **扩展层** | 平台内部的**额外程序线**（issue #28 收敛后**当前为空**） | 手写一行（[`TRAE_PROGRAM_NAMESPACES`]） |
 //!
 //! # ⚠️ 三条硬规则（改动前必读）
 //!
@@ -66,55 +66,23 @@ pub const NAMESPACE_SEPARATOR: char = ':';
 /// 用户会「列得出来、调不动」。
 pub const MAIN_TRAE_PROGRAM: TraeProgram = TraeProgram::Trae;
 
-/// 扩展层：平台内部的**额外程序线**（不属于「平台 × 区域」派生集）。
+/// 扩展层：平台内部的**额外程序线**。
 ///
-/// 只有 Trae 有这一层 —— WorkBuddy 只有一个程序位（桌面端），故没有扩展项。
+/// ★ issue #28：**整层已清空**。原先这里有 Trae 的四条老程序线
+/// （`traework-cn` / `traework-global` / `traecode-cn` / `traecode-global`，
+/// `default_on: false`），客户端合并后它们对应的程序位已退役 —— 留着等于给
+/// 「已卸载的客户端」继续开一个命名空间，用户勾上后必然「列得出来、调不动」。
 ///
-/// ⚠️ **默认不启用**（`default_on: false`）：这两条老程序线对应的客户端在当前机器上
-/// 已被合并版取代（`TRAE SOLO CN` 已卸载）⇒ 默认开着会读不到模型清单、只能回落静态清单
-/// ⇒ **假可用**。要用户显式勾选才启用。
-static TRAE_PROGRAM_NAMESPACES: [NamespaceSpec; 4] = [
-    NamespaceSpec {
-        id: "traework-cn",
-        product: Product::Trae,
-        label_key: "gateway.namespace.traeworkCn",
-        target: NamespaceTarget::TraeProgram {
-            region: TraeRegion::Cn,
-            program: TraeProgram::TraeWork,
-        },
-        default_on: false,
-    },
-    NamespaceSpec {
-        id: "traework-global",
-        product: Product::Trae,
-        label_key: "gateway.namespace.traeworkGlobal",
-        target: NamespaceTarget::TraeProgram {
-            region: TraeRegion::Global,
-            program: TraeProgram::TraeWork,
-        },
-        default_on: false,
-    },
-    NamespaceSpec {
-        id: "traecode-cn",
-        product: Product::Trae,
-        label_key: "gateway.namespace.traecodeCn",
-        target: NamespaceTarget::TraeProgram {
-            region: TraeRegion::Cn,
-            program: TraeProgram::TraeCode,
-        },
-        default_on: false,
-    },
-    NamespaceSpec {
-        id: "traecode-global",
-        product: Product::Trae,
-        label_key: "gateway.namespace.traecodeGlobal",
-        target: NamespaceTarget::TraeProgram {
-            region: TraeRegion::Global,
-            program: TraeProgram::TraeCode,
-        },
-        default_on: false,
-    },
-];
+/// 层级本身**保留**：它是「平台内部的额外程序线」这一扩展点的位置，
+/// 下一个需要它的平台直接往这里加行即可（[`SPECS`] 仍按 `specs.extend(...)` 装配）。
+///
+/// ## 存量配置里的这四个 id 会怎样
+///
+/// [`all_specs`] 查不到 ⇒ [`enabled_namespaces`] 的过滤器自然忽略它们；
+/// 若某份配置**只**勾了这四条（不太可能：它们 `default_on: false`），
+/// 则命中空列表回落默认集（见该函数），统一入口不会变成死入口。
+/// 这条「未知 id 静默忽略 + 空列表回落」的顺序是本模块既有纪律，本层删除不改变它。
+static TRAE_PROGRAM_NAMESPACES: [NamespaceSpec; 0] = [];
 
 /// 命名空间要落到哪个轴（**表内显式**，不是运行时推断）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -359,11 +327,13 @@ mod tests {
 
     /// 表规模：**6 派生 + 4 扩展 = 10**。**硬编码** —— 与数据源比较会两端同源，失去回归价值。
     #[test]
-    fn table_covers_six_derived_plus_four_extension() {
+    fn table_is_six_derived_with_an_empty_extension_layer() {
+        // ★ issue #28：Trae 的四条扩展命名空间（老程序线）随程序位一并退役，
+        //   扩展层清空 ⇒ 全表 = 6 条派生层。
         assert_eq!(
             all_specs().len(),
-            10,
-            "命名空间总数应为 10（6 条派生 = 3 平台 × 2 区域，+ 4 条扩展）"
+            6,
+            "命名空间总数应为 6（3 平台 × 2 区域的派生层；扩展层已清空）"
         );
         assert_eq!(
             default_specs().count(),
@@ -382,13 +352,14 @@ mod tests {
                 "trae-global",
                 "qoder-cn",
                 "qoder-global",
-                "traework-cn",
-                "traework-global",
-                "traecode-cn",
-                "traecode-global",
             ],
             "命名空间 id 序列变更需同步更新本断言"
         );
+        // ★ 退役的四条 id 必须**不在册** —— 留着会让老配置里的勾选「静默复活」
+        //   一个指向已卸载客户端的入口。
+        for retired in ["traework-cn", "traework-global", "traecode-cn", "traecode-global"] {
+            assert!(parse(retired).is_none(), "退役命名空间 {retired} 仍在册");
+        }
     }
 
     /// ★ Qoder 的两条派生命名空间落到 Qoder 中继，且**不**被误判成 Trae。
@@ -448,30 +419,22 @@ mod tests {
         );
     }
 
-    /// 扩展层四条各自落到对的 (区域, 程序位)，且与既有双射函数一致。
+    /// ★ 扩展层**当前为空**（issue #28 收敛）：Trae 的四条老程序线命名空间随程序位退役。
+    ///
+    /// 反例（改坏会红）：把任何一条老程序线命名空间加回扩展层 ⇒ 用户勾上后
+    /// 「列得出来、调不动」（上游清单里没有对应 `function` 的分组）。
     #[test]
-    fn extension_layer_maps_to_expected_variants() {
-        let cases = [
-            ("traework-cn", TraeRegion::Cn, TraeProgram::TraeWork, TraeVariant::TraeWork),
-            ("traework-global", TraeRegion::Global, TraeProgram::TraeWork, TraeVariant::Global),
-            ("traecode-cn", TraeRegion::Cn, TraeProgram::TraeCode, TraeVariant::Trae),
-            (
-                "traecode-global",
-                TraeRegion::Global,
-                TraeProgram::TraeCode,
-                TraeVariant::GlobalTraeCode,
-            ),
-        ];
-        for (id, region, program, variant) in cases {
-            let spec = parse(id).unwrap_or_else(|| panic!("{id} 应在册"));
-            assert_eq!(
-                spec.target,
-                NamespaceTarget::TraeProgram { region, program },
-                "{id} 目标轴不对"
+    fn extension_layer_is_empty_after_convergence() {
+        assert!(
+            TRAE_PROGRAM_NAMESPACES.is_empty(),
+            "扩展层应为空：退役程序位不得再开命名空间"
+        );
+        for spec in all_specs() {
+            assert!(
+                matches!(spec.target, NamespaceTarget::Scope(_)),
+                "{} 不该再是扩展层目标",
+                spec.id
             );
-            assert_eq!(trae_variant_of(spec), Some(variant), "{id} 变体不对");
-            assert!(!spec.default_on, "{id} 属扩展层，默认不应启用");
-            assert!(wb_region_of(spec).is_none(), "{id} 不应有 WB 区域");
         }
     }
 
@@ -625,12 +588,11 @@ mod tests {
             "wb-cn-x",
             "wb-global2",
             "trae-cnX",
-            "traework-cn2",
-            "traecode-global-extra",
+            "trae-cn2",
         ] {
             assert!(parse(bad).is_none(), "{bad:?} 不该被当作命名空间");
         }
-        for good in ["wb-cn", "wb-global", "trae-cn", "trae-global", "traework-cn"] {
+        for good in ["wb-cn", "wb-global", "trae-cn", "trae-global", "qoder-cn"] {
             assert!(parse(good).is_some(), "{good:?} 应在册");
         }
     }
@@ -658,9 +620,11 @@ mod tests {
     /// ★ 扩展层 id 不会被派生层「吃掉」：`traework-cn` 必须整段命中扩展项，而不是被切掉前缀。
     #[test]
     fn extension_ids_win_exactly_not_by_prefix() {
-        let hit = split("traework-cn:glm-5.3");
-        assert_eq!(hit.spec.map(|spec| spec.id), Some("traework-cn"));
+        // ★ issue #28 后扩展层为空 ⇒ 「多一段后缀」只能落派生层那条，且仍要逐段精确匹配。
+        let hit = split("trae-cn:glm-5.3");
+        assert_eq!(hit.spec.map(|spec| spec.id), Some("trae-cn"));
         assert_eq!(hit.bare, "glm-5.3");
+        assert!(split("trae-cn-x:glm-5.3").spec.is_none(), "前缀匹配仍必须拒绝");
     }
 
     /// `relay_target_of`：WB → 区域，Trae → 变体。
@@ -676,8 +640,9 @@ mod tests {
             RelayTarget::Trae(TraeVariant::TraeMerged)
         );
         assert_eq!(
-            relay_target_of(parse("traecode-global").unwrap()),
-            RelayTarget::Trae(TraeVariant::GlobalTraeCode)
+            relay_target_of(parse("trae-global").unwrap()),
+            RelayTarget::Trae(TraeVariant::GlobalTraeMerged),
+            "国际 Trae 命名空间必须落国际合并版变体"
         );
     }
 

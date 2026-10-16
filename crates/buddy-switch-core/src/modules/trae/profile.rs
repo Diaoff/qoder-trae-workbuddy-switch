@@ -2500,8 +2500,9 @@ mod tests {
 
         let base = std::env::temp_dir().join(format!("trae-profile-appdata-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&base);
-        // 候选目录名必须取自 `platform::data_dir_names()` 的固定列表。
-        let client = base.join("TRAE SOLO CN");
+        // 候选目录名必须取自 `platform::data_dir_names()` 的固定列表
+        // （★ issue #28 收敛后主候选是 `Trae CN` —— 老值 `TRAE SOLO CN` 已不在跨变体候选里）。
+        let client = base.join(platform::data_dir_names()[0]);
         std::fs::create_dir_all(client.join("User").join("globalStorage")).unwrap();
         // 造一个「活跃标志」文件，使该候选按最近活跃排到第一。
         std::fs::write(
@@ -2833,26 +2834,29 @@ mod tests {
         // 只断言 basename：这些是无参全局路径函数，每次调用都重读进程级
         // `BUDDY_SWITCH_HOME`。断言绝对路径会被并行跑的其它用例改 home 而"假红"
         // （症状是左右目录名差一个 PID 后缀），只比 basename 天然免疫。
-        let work = paths::profiles_dir_for(TraeVariant::TraeWork);
-        let cn = paths::profiles_dir_for(TraeVariant::Trae);
+        let cn = paths::profiles_dir_for(TraeVariant::TraeMerged);
+        let global = paths::profiles_dir_for(TraeVariant::GlobalTraeMerged);
 
-        assert_eq!(
-            work.file_name().and_then(|n| n.to_str()),
-            Some("profiles"),
-            "默认变体必须沿用旧目录名，否则老用户的既有快照全部失效"
-        );
+        // ★ issue #28：默认变体是 CN 合并版，目录名一律走 `profiles_<as_str>` 规则。
+        //   老目录 `profiles` 不再是任何写路径的落点（它只是迁移来源），
+        //   所以这里**不再**断言「默认变体沿用旧名」。
         assert_eq!(
             cn.file_name().and_then(|n| n.to_str()),
-            Some("profiles_trae_cn"),
-            "非默认变体用独立目录名"
+            Some("profiles_trae_merged"),
+            "默认变体（CN 合并版）的目录名必须是 profiles_<as_str>"
         );
-        assert_ne!(work, cn, "两条产品线的快照目录绝不该是同一个");
+        assert_eq!(
+            global.file_name().and_then(|n| n.to_str()),
+            Some("profiles_global_trae_merged"),
+            "国际合并版用独立目录名"
+        );
+        assert_ne!(cn, global, "两个区域的快照目录绝不该是同一个");
 
         // 单个账号的快照目录同样分家。
         assert_ne!(
-            paths::profile_dir_for(TraeVariant::TraeWork, "u1"),
-            paths::profile_dir_for(TraeVariant::Trae, "u1"),
-            "同一个 uid 在两条产品线下必须是两个槽位"
+            paths::profile_dir_for(TraeVariant::TraeMerged, "u1"),
+            paths::profile_dir_for(TraeVariant::GlobalTraeMerged, "u1"),
+            "同一个 uid 在两个区域下必须是两个槽位"
         );
     }
 

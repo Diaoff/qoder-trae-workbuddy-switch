@@ -442,19 +442,40 @@ pub fn profiles_dir() -> PathBuf {
 
 /// 登录态快照根目录（按变体分家）。
 ///
-/// **必须分家**：快照目录名就是 `user_id`，而两条产品线的 `user_id` 是两套空间。
+/// **必须分家**：快照目录名就是 `user_id`，而各条产品线的 `user_id` 是独立空间。
 /// 更关键的是——快照恢复会把文件写回**该变体客户端**的 userData，
-/// 若把 Trae CN 账号的快照误用于 Trae Work，等于把一个未知格式的登录态灌进另一个客户端。
+/// 若把某个变体的快照误用于另一个变体，等于把一个未知格式的登录态灌进另一个客户端。
+///
+/// ★ issue #28：原先这里对「默认变体」特判成目录名 `profiles`（老用户的零迁移）。
+/// 收敛后默认变体是 `TraeMerged`，而**合并版的目录名必须是 `profiles_trae_merged`**
+/// （与 [`profiles_dir_for_program`] 逐字一致，有单测钉住）⇒ 特判**已删除**。
+/// 老目录 `profiles` 现在只作为**迁移来源**被读取（见 [`LEGACY_PROFILE_DIRS`]）。
 pub fn profiles_dir_for(variant: TraeVariant) -> PathBuf {
-    // 默认变体沿用旧目录名 `profiles`（老用户的既有快照仍可用）；
-    // 其余变体用 `profiles_trae_cn` 这样的独立目录。
-    let name = if variant == TraeVariant::default() {
-        "profiles".to_string()
-    } else {
-        format!("profiles_{}", variant.as_str())
-    };
-    ensured(trae_dir().join(name))
+    ensured(trae_dir().join(format!("profiles_{}", variant.as_str())))
 }
+
+/// **历史快照池目录名**（issue #28 收敛前的产物），只作**迁移来源**。
+///
+/// ## 为什么必须列在这张表里而不是「按需算」
+///
+/// 目录名是**持久化事实**（用户数据就躺在这儿），不能靠「把旧规则重跑一遍」推出来：
+/// 收敛前的规则里有两条分叉 —— ①默认变体特判成 `profiles`；②国际 TraeWork
+/// 走 `profiles_global`（按变体）还是 `profiles_global_trae_work`（按程序位）取决于调用点。
+/// 两条分叉各产生过**真实的用户目录**，两者都要搬。
+///
+/// ⚠️ 这些目录**只读不写**：任何写路径都不得落在这里（`profiles_dir_for` 只产出
+/// `profiles_<as_str>`）。新增条目前先确认「真的有用户的快照躺在那儿」。
+pub const LEGACY_PROFILE_DIRS: &[(&str, TraeRegion)] = &[
+    // CN TraeWork（老默认变体特判出来的目录名）
+    ("profiles", TraeRegion::Cn),
+    // CN TraeCode（遗留 IDE 程序位）
+    ("profiles_trae_cn", TraeRegion::Cn),
+    // 国际 TraeWork —— 两条分叉各一个，都要搬
+    ("profiles_global", TraeRegion::Global),
+    ("profiles_global_trae_work", TraeRegion::Global),
+    // 国际 TraeCode（遗留 IDE 程序位）
+    ("profiles_global_trae_code", TraeRegion::Global),
+];
 
 /// 单个账号的登录态快照目录（默认变体，兼容壳）。
 pub fn profile_dir(user_id: &str) -> Option<PathBuf> {
@@ -651,7 +672,9 @@ mod tests {
             credits_history_file(),
             trae_dir().join("credits_history.json")
         );
-        assert_eq!(profiles_dir(), trae_dir().join("profiles"));
+        // ★ issue #28：默认变体是合并版 ⇒ 目录名 `profiles_trae_merged`。
+        //   老目录 `profiles` 只作**迁移来源**（`LEGACY_PROFILE_DIRS`），不再被读写。
+        assert_eq!(profiles_dir(), trae_dir().join("profiles_trae_merged"));
 
         // 兼容壳 == 显式传默认变体。
         assert_eq!(accounts_file(), accounts_file_for(TraeVariant::default()));
@@ -942,8 +965,9 @@ mod tests {
         std::fs::create_dir_all(&dir).expect("临时 home 应能创建");
         let guard = crate::modules::config::HomeOverrideGuard::set(&dir);
 
+        // ★ issue #28：默认变体是合并版，下面全部按它取（`profiles_trae_merged/`）。
         let slot = profile_dir("1234567890123456").expect("安全槽位名应有快照目录");
-        let bak = profile_bak_dir_for(TraeVariant::TraeWork, "1234567890123456")
+        let bak = profile_bak_dir_for(TraeVariant::default(), "1234567890123456")
             .expect("安全槽位名应有 .bak 路径");
         assert_eq!(
             bak.file_name().and_then(|s| s.to_str()),
@@ -953,21 +977,21 @@ mod tests {
         assert_eq!(bak.parent(), slot.parent(), ".bak 必须与槽位同目录");
         assert_eq!(
             bak.parent().and_then(|p| p.file_name()).and_then(|s| s.to_str()),
-            Some("profiles"),
-            "默认变体的槽位目录名必须沿用旧名 profiles"
+            Some("profiles_trae_merged"),
+            "默认变体（合并版）的槽位目录名必须与 `profiles_<as_str>` 规则一致"
         );
-        // 另一变体落在自己的 profiles_<variant>/ 下，互不干扰。
-        let cn_bak = profile_bak_dir_for(TraeVariant::Global, "1234567890123456").unwrap();
+        // 另一区域落在自己的 profiles_<variant>/ 下，互不干扰。
+        let cn_bak = profile_bak_dir_for(TraeVariant::GlobalTraeMerged, "1234567890123456").unwrap();
         assert_eq!(
             cn_bak.parent().and_then(|p| p.file_name()).and_then(|s| s.to_str()),
-            Some("profiles_global")
+            Some("profiles_global_trae_merged")
         );
         assert_ne!(cn_bak.parent(), bak.parent());
 
         // 不安全的名字一律拒绝，绝不拼出越界路径。
-        assert!(profile_bak_dir_for(TraeVariant::TraeWork, "../escape").is_none());
-        assert!(profile_bak_dir_for(TraeVariant::TraeWork, "").is_none());
-        assert!(profile_bak_dir_for(TraeVariant::Global, "a/b").is_none());
+        assert!(profile_bak_dir_for(TraeVariant::default(), "../escape").is_none());
+        assert!(profile_bak_dir_for(TraeVariant::default(), "").is_none());
+        assert!(profile_bak_dir_for(TraeVariant::GlobalTraeMerged, "a/b").is_none());
 
         drop(guard);
         let _ = std::fs::remove_dir_all(&dir);
@@ -1156,7 +1180,7 @@ mod tests {
     /// （`_for_program` 家族目前只被测试使用），不在本轮范围内 ——
     /// 本用例因此把它**显式白名单化**，而不是假装一致。
     #[test]
-    fn 快照目录两套命名对全部程序位一致除登记在案的一格() {
+    fn 快照目录两套命名对全部程序位一致() {
         let dir = std::env::temp_dir().join(format!(
             "buddy-switch-profile-naming-{}",
             uuid::Uuid::new_v4().simple()
@@ -1168,6 +1192,10 @@ mod tests {
             path.file_name().and_then(|s| s.to_str()).map(str::to_string)
         };
 
+        // ★ issue #28 收敛后**零分歧**：每区域只有一个程序位，两套命名入口必然一致。
+        //   收敛前那条「国际 TraeWork 两套命名不一致」的白名单也随之作废 ——
+        //   那个程序位已退役，`profiles_global` / `profiles_global_trae_work`
+        //   现在都只是历史迁移来源（见 `LEGACY_PROFILE_DIRS`）。
         let mut checked = 0usize;
         let mut diverged: Vec<(TraeRegion, TraeProgram)> = Vec::new();
         for region in TraeRegion::all() {
@@ -1180,23 +1208,28 @@ mod tests {
                 }
             }
         }
-        // 前置：6 格全过了一遍，否则本用例会**恒真**。
-        assert_eq!(checked, 6, "应遍历 6 条程序位");
+        // 前置：所有可选程序位都过了一遍，否则本用例会**恒真**。
+        assert_eq!(checked, 2, "应遍历 2 条可选程序位（2 区域 × 1）");
         assert_eq!(
             diverged,
-            vec![(TraeRegion::Global, TraeProgram::TraeWork)],
-            "两套命名入口的分歧集合变了 —— 白名单外的分歧必须修掉（快照会写错目录）"
+            Vec::new(),
+            "两套命名入口出现分歧 —— 快照会写进另一个目录"
         );
 
-        // ★ 合并版两格**必须**一致（issue #20 的核心验收）：它是本轮新增、
-        //   也最容易漂的一格 —— 漂了的症状是「切到 Trae 后快照不见了」。
-        for region in [TraeRegion::Cn, TraeRegion::Global] {
-            let variant = crate::modules::client_settings::variant_for_program(region, TraeProgram::Trae);
-            assert_eq!(
-                name_of(profiles_dir_for(variant)),
-                name_of(profiles_dir_for_program(region, TraeProgram::Trae)),
-                "{region:?} 合并版的两套命名入口不一致 —— 快照会写进另一个目录"
-            );
+        // ★ 每个区域的历史池名都**不得**与该区域的合并池重名
+        //   （重名 ⇒ 迁移会「把源搬进自己」，既不报错也不搬）。
+        for region in TraeRegion::all() {
+            let merged = name_of(profiles_dir_for_program(region, TraeProgram::Trae))
+                .expect("合并池目录名恒可取");
+            for (legacy, owner) in LEGACY_PROFILE_DIRS {
+                if *owner == region {
+                    assert_ne!(
+                        *legacy,
+                        merged.as_str(),
+                        "历史池 `{legacy}` 与 {region:?} 的合并池重名"
+                    );
+                }
+            }
         }
 
         drop(guard);

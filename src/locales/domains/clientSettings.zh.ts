@@ -36,8 +36,6 @@ export const zh = {
   "clientSettings.slot.workbuddyGlobal": "WorkBuddy 国际版",
   "clientSettings.slot.traeCodeCn": "TraeCode CN",
   "clientSettings.slot.traeCodeGlobal": "TraeCode",
-  "clientSettings.slot.traeWorkCn": "TraeWork CN",
-  "clientSettings.slot.traeWorkGlobal": "TraeWork",
   // hook 安装目标（CLI 系，见 client_settings 的 HOOK_FILE_SLOTS）——
   // 它们**不进代理设置页**，这两个键只服务后端 `displayKey` 的回显。
   "clientSettings.slot.claude": "Claude Code",

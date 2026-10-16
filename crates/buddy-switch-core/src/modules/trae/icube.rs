@@ -1039,10 +1039,26 @@ MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEc5xtFi4XpzYjFuYwN0sBaUzcnrds\n\
         exp: i64,
     ) -> Vec<(String, String)> {
         let mut out = Vec::new();
-        for (variant_index, variant) in TraeVariant::all().into_iter().enumerate() {
+        // ★ 走 `all_known_specs()`（含退役）而不是 `TraeVariant::all()`（只有两个合并版）：
+        //   夹具的职责是「把**本机可能出现的全部候选目录**都铺出来」，
+        //   按变体粒度的用例仍会指名 `TraeWork` 等退役变体来验证「按变体限定」。
+        //
+        // ★★ 但**同一个目录名只能写一次**：收敛前后有变体共用候选名
+        //   （`TRAE SOLO` 既是 CN TraeWork 的次候选、又是国际 TraeWork 的主候选），
+        //   写两次会让同一目录出现两个 uid，「按目录名过滤」的用例数到 3 个、
+        //   且「活跃目录里的账号」取决于谁最后写 —— 两条用例都跟着假红。
+        //   uid 因此按**目录序号**分配，与变体序号解耦。
+        let mut written: Vec<&str> = Vec::new();
+        for spec in crate::modules::trae::variant::all_known_specs() {
+            let variant = spec.variant;
             let names = crate::modules::trae::platform::data_dir_names_for(variant);
-            for (index, name) in names.iter().enumerate() {
-                let user_id = format!("900000000000{:04}", variant_index * 10 + index);
+            for name in names.iter() {
+                if written.contains(name) {
+                    continue;
+                }
+                written.push(name);
+                let index = written.len() - 1;
+                let user_id = format!("900000000000{:04}", index);
                 let dir = base.join(name).join("User").join("globalStorage");
                 std::fs::create_dir_all(&dir).expect("fixture 目录应能创建");
                 let storage = serde_json::json!({
@@ -1051,7 +1067,7 @@ MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEc5xtFi4XpzYjFuYwN0sBaUzcnrds\n\
                 let file = dir.join("storage.json");
                 std::fs::write(&file, serde_json::to_vec_pretty(&storage).unwrap())
                     .expect("fixture storage.json 应能写入");
-                pin_activity(&file, names.len() - 1 - index);
+                pin_activity(&file, written.len() - 1 - index);
                 out.push((user_id, (*name).to_string()));
             }
         }
@@ -1300,14 +1316,20 @@ MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEc5xtFi4XpzYjFuYwN0sBaUzcnrds\n\
     /// 目录结构：`<base>/<产品线目录>/User/globalStorage/storage.json`。
     pub(crate) fn write_synthetic_user_data(base: &std::path::Path) -> Vec<(String, String)> {
         let mut out = Vec::new();
-        for (variant_index, variant) in TraeVariant::all().into_iter().enumerate() {
-            for (index, name) in crate::modules::trae::platform::data_dir_names_for(variant)
-                .iter()
-                .enumerate()
-            {
+        // ★ 同上：夹具铺的是**全部已知候选目录**（含退役变体的），且**按目录名去重**
+        //   （共用候选名只写一次），见 `write_cloudide_only_user_data`。
+        let mut written: Vec<&str> = Vec::new();
+        for spec in crate::modules::trae::variant::all_known_specs() {
+            let variant = spec.variant;
+            for name in crate::modules::trae::platform::data_dir_names_for(variant) {
+                if written.contains(name) {
+                    continue;
+                }
+                written.push(name);
+                let index = written.len() - 1;
                 // 每个候选目录给**不同** deviceId：这样「按变体限定」若退化成
                 // 「跨变体扫第一个命中」，断言会立刻发现读错了目录。
-                let device_id = format!("22929298067{:06}", variant_index * 100 + index);
+                let device_id = format!("22929298067{:06}", index);
                 let dir = base
                     .join(name)
                     .join("User")

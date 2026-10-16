@@ -314,18 +314,10 @@ export const zh = {
   "shared.demo.trae.checkin.sessionDead": "会话已失效，需重新登录",
   "shared.demo.trae.warn.altBSessionDead": "小号 B 会话已失效，请重新登录后再签到",
   // ---- Trae：程序位展示名（`label` / `nameAlias`） ----
-  "shared.demo.trae.program.work": "TraeWork CN",
-  "shared.demo.trae.program.workCn": "TraeWork CN",
-  "shared.demo.trae.program.code": "TraeCode CN",
-  "shared.demo.trae.program.codeCn": "TraeCode CN",
-  "shared.demo.trae.program.workGlobalLabel": "TraeWork",
-  "shared.demo.trae.program.workGlobal": "TraeWork",
-  "shared.demo.trae.program.codeGlobalLabel": "TraeCode",
   // 合并后的客户端（issue #20）：客户端自己就叫 `Trae`。
   "shared.demo.trae.program.trae": "Trae CN",
   "shared.demo.trae.program.traeGlobalLabel": "Trae",
   // 「待实测」是**状态标注**，不是品牌名 —— 它是这条目唯一需要翻译的部分。
-  "shared.demo.trae.program.codePending": "TraeCode（待实测）",
   // ---- Trae：API Key 名 / 网关诊断 / 日志 ----
   "shared.demo.trae.key.cursorCn": "Cursor (TraeWork)",
   "shared.demo.trae.key.cherryGlobal": "Cherry (TraeWork AI)",

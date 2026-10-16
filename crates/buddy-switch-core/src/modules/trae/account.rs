@@ -2390,7 +2390,12 @@ mod tests {
         );
         // 变体化之后两条产品线的 CN 签到端点必须仍然逐字相同
         // （实测：产品线不改变端点，region 才改变端点）。
-        for variant in TraeVariant::all() {
+        // ★ 只断言**国内区域**的可选变体：收敛后 `all()` 覆盖两个区域，
+        //   而国际区域的签到端点本就不同（`grow-normal.trae.ai`）。
+        for variant in TraeVariant::all()
+            .into_iter()
+            .filter(|v| v.region() == crate::modules::trae::region::TraeRegion::Cn)
+        {
             assert_eq!(
                 checkin_url_for(variant),
                 "https://api.trae.cn/trae/api/v2/ug/checkin_credits/claim",
@@ -2704,7 +2709,7 @@ hLkrYGiVNhsErnjKIgS7/EIHdsihRANCAARznG0WLhenNiMW5jA3SwFpTNyet2zw\n\
     /// ★ 无设备凭证时**只**试旧协议兜底（并且调用方能从错误里看出是「没凭证」）。
     #[test]
     fn refresh_chain_uses_legacy_only_when_credential_missing() {
-        let variants = build_refresh_variants(TraeVariant::TraeWork, "cid", "rt", None);
+        let variants = build_refresh_variants(TraeVariant::TraeMerged, "cid", "rt", None);
         assert_eq!(variants.len(), 1, "无凭证时不该出现带 Proof 的变体");
         assert_eq!(variants[0].tag, "Refresh/Legacy");
         assert!(!variants[0].with_cloudide_token);
@@ -2726,11 +2731,28 @@ hLkrYGiVNhsErnjKIgS7/EIHdsihRANCAARznG0WLhenNiMW5jA3SwFpTNyet2zw\n\
         // 现在锚两处**稳定标记**：
         //   ① `kind()` —— 结构化判据，调用方与日志真正依赖的那一个（换文案不会动它）；
         //   ② 文案必须**点明产品线**且**提到「设备凭证」** —— 领域名词，跨改写稳定。
+        // ★ 判据必须与**真机装没装**无关：文案分两支（装了但没启动过 / 根本没装），
+        //   只有前者带「设备凭证」三个字。这里显式给该区域配一条指向真实存在的
+        //   假 exe 的自定义路径，把「装好了但没启动过」这一支钉死
+        //   （这条用例此前就栽在「依赖真机恰好没装 TraeWork」上，记忆里有登记）。
+        let _env = crate::modules::trae::test_support::TempEnv::empty();
+        let fake_exe = std::env::temp_dir().join(format!(
+            "fake-trae-refresh-{}.exe",
+            uuid::Uuid::new_v4().simple()
+        ));
+        std::fs::write(&fake_exe, b"fake").expect("假 exe 应能写入");
+        let mut settings = crate::modules::trae::settings::load();
+        settings.set_path_for(
+            crate::modules::trae::region::TraeRegion::Cn,
+            Some(&fake_exe.to_string_lossy()),
+        );
+        crate::modules::trae::settings::save(&settings).expect("自定义客户端路径应能落盘");
+
         let credential_error = crate::modules::trae::icube::IcubeError::DataDirMissing;
-        let message = credential_error.user_message(TraeVariant::TraeWork);
+        let message = credential_error.user_message(TraeVariant::TraeMerged);
         assert!(
-            message.contains(TraeVariant::TraeWork.display_name()),
-            "文案必须点明是哪条产品线: {message}"
+            message.contains(TraeVariant::TraeMerged.display_name()),
+            "文案必须点明是哪个客户端: {message}"
         );
         assert!(
             message.contains("设备凭证"),

@@ -269,17 +269,9 @@ export const en = {
   "shared.demo.trae.checkin.sessionDead": "Session expired, please sign in again",
   "shared.demo.trae.warn.altBSessionDead": "Alt B's session expired; sign in again before checking in",
   // ---- Trae: program display names (`label` / `nameAlias`) ----
-  "shared.demo.trae.program.work": "TraeWork CN",
-  "shared.demo.trae.program.workCn": "TraeWork CN",
-  "shared.demo.trae.program.code": "TraeCode CN",
-  "shared.demo.trae.program.codeCn": "TraeCode CN",
-  "shared.demo.trae.program.workGlobalLabel": "TraeWork",
-  "shared.demo.trae.program.workGlobal": "TraeWork",
-  "shared.demo.trae.program.codeGlobalLabel": "TraeCode",
   // Merged client (issue #20): the client is literally named `Trae`.
   "shared.demo.trae.program.trae": "Trae CN",
   "shared.demo.trae.program.traeGlobalLabel": "Trae",
-  "shared.demo.trae.program.codePending": "TraeCode (untested)",
   // ---- Trae: API key names / gateway diagnostics / logs ----
   "shared.demo.trae.key.cursorCn": "Cursor (TraeWork)",
   "shared.demo.trae.key.cherryGlobal": "Cherry (TraeWork AI)",

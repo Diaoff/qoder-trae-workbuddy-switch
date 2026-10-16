@@ -1747,6 +1747,20 @@ mod tests {
     use crate::modules::trae::test_support::TempEnv;
 
     /// 造一个合成的 [`DeviceIdentity`]（无私钥字段，AuthCode 路径唯一需要的结构）。
+    /// 造一条**真实存在的**假客户端 exe（内容任意），供「自定义路径」用。
+    ///
+    /// 为什么需要它：`data_dir_missing_reason` 的文案分两支（装了但没启动过 / 根本没装），
+    /// 只有前者带「设备凭证」三个字。不钉住这一支，用例就会随**真机装没装 TraeWork**
+    /// 而时绿时红 —— 这条用例此前就栽在这上面。
+    fn fake_client_exe() -> std::path::PathBuf {
+        let path = std::env::temp_dir().join(format!(
+            "fake-trae-{}.exe",
+            uuid::Uuid::new_v4().simple()
+        ));
+        std::fs::write(&path, b"fake").expect("假 exe 应能写入");
+        path
+    }
+
     fn synthetic_identity() -> DeviceIdentity {
         DeviceIdentity {
             variant: TraeVariant::TraeWork,
@@ -2671,7 +2685,7 @@ mod tests {
         )
         .expect("Trae Work 账号应能落库");
         account::login_with_exchanged_tokens_for(
-            TraeVariant::Global,
+            TraeVariant::GlobalTraeMerged,
             make_jwt("cn-user"),
             None,
             Some("CN".to_string()),
@@ -2680,12 +2694,16 @@ mod tests {
         .expect("Trae CN 账号应能落库");
 
         let login_id = "test-status-variant";
-        insert_finished_session(login_id, TraeVariant::Global, json!({"userId": "cn-user"}));
+        insert_finished_session(
+            login_id,
+            TraeVariant::GlobalTraeMerged,
+            json!({"userId": "cn-user"}),
+        );
 
         let value = crate::modules::trae::handlers::oauth_login_status(login_id);
         assert_eq!(
             value.get("variant").and_then(Value::as_str),
-            Some("global")
+            Some("global_trae_merged")
         );
         let accounts = value
             .get("accounts")
@@ -2708,16 +2726,20 @@ mod tests {
         let _gate = lock_the_callback_port();
         let _env = temp_env();
 
-        let started = crate::modules::trae::handlers::oauth_login_start_for(TraeVariant::Global)
-            .await
-            .expect("发起登录不应失败");
-        assert_eq!(started["variant"].as_str(), Some("global"));
-        assert_eq!(started["variantLabel"].as_str(), Some("TraeWork"));
+        // ★ issue #28：国际区的**唯一**程序位是合并版（`global_trae_merged`）。
+        let started = crate::modules::trae::handlers::oauth_login_start_for(
+            TraeVariant::GlobalTraeMerged,
+        )
+        .await
+        .expect("发起登录不应失败");
+        assert_eq!(started["variant"].as_str(), Some("global_trae_merged"));
+        assert_eq!(started["variantLabel"].as_str(), Some("Trae"));
         // 授权 URL 的 `device_id` 必须与**该变体**的 icube 设备身份同源
         // （fixture 里两条产品线的候选目录给了不同 deviceId ⇒ 读错变体会露馅）。
         let uri = started["verificationUri"].as_str().unwrap();
         let params = parse_query(uri.split_once('?').unwrap().1);
-        let cn_identity = icube::device_identity_for(TraeVariant::Global).expect("fixture 身份应可读");
+        let cn_identity =
+            icube::device_identity_for(TraeVariant::GlobalTraeMerged).expect("fixture 身份应可读");
         assert_eq!(
             params.get("device_id").map(String::as_str),
             Some(cn_identity.device_id.as_str())
@@ -2737,18 +2759,28 @@ mod tests {
     async fn login_start_fails_loudly_when_device_identity_missing() {
         let _gate = lock_the_callback_port();
         let _env = temp_env();
-        // 把该变体的候选目录全部删掉 ⇒ 模拟「客户端没启动过 / 没登录过」。
+        // ★★ 判据必须**与真机状态无关**（issue #28 前这条用例依赖真机恰好没装
+        //   TraeWork，否则文案会走「已检测到客户端但从未启动过」那一支而 flaky）。
+        //   这里显式给该区域配一条**指向真实存在的假 exe** 的自定义路径，
+        //   于是 `detect_install_for` 必然命中，`data_dir_missing_reason` 必然走
+        //   「装了但从没启动过」那一支 —— 文案里就有「设备凭证」三个字。
         let appdata = std::env::var_os("APPDATA").expect("temp_env 应已设置 APPDATA");
-        for name in crate::modules::trae::platform::data_dir_names_for(TraeVariant::TraeWork) {
+        for name in crate::modules::trae::platform::data_dir_names_for(TraeVariant::TraeMerged) {
             let _ = std::fs::remove_dir_all(std::path::PathBuf::from(&appdata).join(name));
         }
+        let mut settings = crate::modules::trae::settings::load();
+        settings.set_path_for(
+            TraeVariant::TraeMerged.region(),
+            Some(&fake_client_exe().to_string_lossy()),
+        );
+        crate::modules::trae::settings::save(&settings).expect("自定义客户端路径应能落盘");
 
-        let error = login_start_for(TraeVariant::TraeWork)
+        let error = login_start_for(TraeVariant::TraeMerged)
             .await
             .expect_err("设备身份缺失时必须失败，不得回落自造 device_id");
         assert!(
-            error.contains("TraeWork CN"),
-            "错误文案必须点明是哪条产品线（否则用户不知道该启动哪个客户端）: {error}"
+            error.contains("Trae CN"),
+            "错误文案必须点明是哪个客户端（否则用户不知道该启动哪个）: {error}"
         );
         assert!(
             error.contains("设备凭证"),
@@ -2786,7 +2818,7 @@ mod tests {
         // 终态分支也要带出 variant。
         assert_eq!(
             first.get("variant").and_then(|v| v.as_str()),
-            Some("trae_work")
+            Some("trae_merged")
         );
 
         // 终态会被摘除，再轮询就是「不存在」——这正是前端停止轮询后的正常收尾路径。
@@ -2885,12 +2917,12 @@ mod tests {
         // 新增契约：变体、PKCE、CSRF 必须出现在响应 / 授权 URL 里。
         assert_eq!(
             started.get("variant").and_then(|v| v.as_str()),
-            Some("trae_work"),
-            "默认变体必须是 trae_work"
+            Some("trae_merged"),
+            "★ issue #28：默认变体是**合并版**（老默认 `trae_work` 指向已卸载的客户端）"
         );
         assert_eq!(
             started.get("variantLabel").and_then(|v| v.as_str()),
-            Some("TraeWork CN")
+            Some("Trae CN")
         );
         let params = parse_query(uri.split_once('?').unwrap().1);
         assert_eq!(
@@ -2915,7 +2947,7 @@ mod tests {
         assert_eq!(polled.get("port").and_then(|v| v.as_u64()), Some(port as u64));
         assert_eq!(
             polled.get("variant").and_then(|v| v.as_str()),
-            Some("trae_work")
+            Some("trae_merged")
         );
 
         // 收尾，避免把监听任务留给后续用例。
@@ -2927,7 +2959,7 @@ mod tests {
     async fn login_start_response_carries_variant_and_device_credential_diagnostics() {
         let _gate = lock_the_callback_port();
         let _env = temp_env();
-        let started = login_start_for(TraeVariant::Global)
+        let started = login_start_for(TraeVariant::GlobalTraeMerged)
             .await
             .expect("发起登录不应失败");
         let login_id = started
@@ -2938,11 +2970,11 @@ mod tests {
 
         assert_eq!(
             started.get("variant").and_then(|v| v.as_str()),
-            Some("global")
+            Some("global_trae_merged")
         );
         assert_eq!(
             started.get("variantLabel").and_then(|v| v.as_str()),
-            Some("TraeWork")
+            Some("Trae")
         );
         let credential = started
             .get("deviceCredential")
@@ -3231,7 +3263,7 @@ mod tests {
         let body = json!({"Result": {"Token": jwt, "RefreshToken": "rt-1"}}).to_string();
         let (mock_port, _captured) = mock_upstream(2, body).await;
 
-        let started = login_start_for(TraeVariant::TraeWork)
+        let started = login_start_for(TraeVariant::TraeMerged)
             .await
             .expect("发起登录不应失败");
         let login_id = started["loginId"].as_str().unwrap().to_string();
@@ -3299,7 +3331,7 @@ mod tests {
                 );
                 assert_eq!(
                     polled.get("variant").and_then(|v| v.as_str()),
-                    Some("trae_work")
+                    Some("trae_merged")
                 );
                 break;
             }
@@ -3333,7 +3365,7 @@ mod tests {
         // 三个交换变体全都会拿到这个 body：既无 Token 也无 RefreshToken ⇒ 全部失败。
         let (mock_port, _captured) = mock_upstream(3, json!({"Result": {}}).to_string()).await;
 
-        let started = login_start_for(TraeVariant::TraeWork)
+        let started = login_start_for(TraeVariant::TraeMerged)
             .await
             .expect("发起登录不应失败");
         let login_id = started["loginId"].as_str().unwrap().to_string();

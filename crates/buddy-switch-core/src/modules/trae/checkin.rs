@@ -920,8 +920,10 @@ mod tests {
             TraeVariant::default(),
             "签到选项的默认变体必须跟随 TraeVariant::default()，否则老用户数据白失效"
         );
-        // 变体默认值必须等于「沿用旧文件名」的那一个。
-        assert_eq!(TraeVariant::default(), TraeVariant::TraeWork);
+        // ★ issue #28：默认变体是**合并版**（CN），它才是「有客户端在跑」的那一个。
+        //   老默认 `TraeWork` 指向已被官方合并卸载的 `TRAE SOLO CN`，
+        //   继续拿它当默认会让所有未显式传变体的调用读到死客户端。
+        assert_eq!(TraeVariant::default(), TraeVariant::TraeMerged);
     }
 
     /// ★ 护栏：签到链路里的**每一个**落盘/读取点都必须使用 `options.variant`。

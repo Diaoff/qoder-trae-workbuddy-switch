@@ -105,15 +105,15 @@ pub(crate) fn hidden_command(program: &str) -> std::process::Command {
 /// [`VariantSpec::exe_names`]: super::variant::VariantSpec::exe_names
 #[cfg(windows)]
 const EXE_NAMES: &[&str] = &[
-    "TRAE SOLO CN.exe",
+    // ★ issue #28：跨变体 exe 候选同样收敛为**两个合并客户端**
+    //   （`TRAE SOLO*` 那两条客户端已被官方合并卸载）。
     "Trae CN.exe",
-    "TRAE SOLO.exe",
     "Trae.exe",
 ];
 
 /// 非 Windows：可执行文件名不带 `.exe`（macOS 是 bundle 内的裸二进制名）。
 #[cfg(not(windows))]
-const EXE_NAMES: &[&str] = &["TRAE SOLO CN", "Trae CN", "TRAE SOLO", "Trae"];
+const EXE_NAMES: &[&str] = &["Trae CN", "Trae"];
 
 fn exe_names() -> &'static [&'static str] {
     EXE_NAMES
@@ -122,8 +122,14 @@ fn exe_names() -> &'static [&'static str] {
 /// userData 目录名候选（与 [`exe_names`] 一一对应，首项为兜底主候选）。
 ///
 /// 同 [`exe_names`]：值来自程序位表，这里只做摊平。
-fn data_dir_names() -> &'static [&'static str] {
-    &["TRAE SOLO CN", "Trae CN", "TRAE SOLO", "Trae"]
+///
+/// ★ `pub(crate)` 而不是私有：测试夹具要按**同一张表**铺目录，否则夹具里写死的
+/// 目录名一漂，用例就会在「目录不存在」上假红（此前就栽过：`TRAE SOLO CN` 硬编码）。
+pub(crate) fn data_dir_names() -> &'static [&'static str] {
+    // ★ issue #28：跨变体摊平表同样收敛为**两个合并客户端**。
+    //   收敛前这里还有 `TRAE SOLO CN` / `TRAE SOLO`（两条已退役的客户端），
+    //   它们留在跨变体探测里会让「本机装的是哪个 Trae」答出一条**不存在的**产品线。
+    &["Trae CN", "Trae"]
 }
 
 /// 取某个变体的可执行文件名候选（Windows 带 `.exe`）。
@@ -162,26 +168,31 @@ pub fn data_dir_names_for(variant: super::variant::TraeVariant) -> &'static [&'s
 ///
 /// 与 [`detect_install`] 的区别：后者接受一个自定义路径并横跨全部变体按最近活跃挑，
 /// 只适合回答"本机装的是哪个 Trae"。本函数回答的是"**这一条**产品线装了吗"，
-/// 因为界面上要**并排**显示两条产品线的独立状态（对齐 WorkBuddy 的三个图标）。
+/// 因为界面上要**并排**显示各程序位的独立状态。
 ///
-/// `custom` 仅在它确实属于该变体时才生效 —— 用户在设置里指定的路径
-/// 不应该让"另一条产品线"也显示成已安装。
+/// ## ★ 自定义路径按**区域**归属判，不按变体精确相等（issue #28）
 ///
-/// ## ★ 自定义路径**按区域取**（issue #20）
+/// `custom` 取**该变体所属区域**的那一条（设置页按区域渲染，见 [`TraeSettings::path_for`]），
+/// 归属判据因此也只能是**区域**：合并版 `Trae CN` 与遗留 TraeCode 的候选名**逐字相同**
+/// （同一个客户端），原先的「文件名反查变体必须精确等于本变体」会把同一区域内的
+/// 另一条程序位判成「未检测到」—— 而那条按钮已经退役、用户根本点不到，
+/// 症状却是「点 Trae 提示未检测到 TraeCode CN」（issue #28 报障原文）。
 ///
-/// 设置里的客户端路径已按区域分家（`TraeSettings::trae_paths`），本函数取
-/// **该变体所属区域**的那一条。此前读的是单个全局值 ⇒ 给国际版设路径会覆盖国内版。
+/// ⚠️ 但**跨区域**仍然必须拦住：国内路径填进国际区域会让国际页显示成已安装
+/// （实测过：国内版页签显示国际版客户端 `v1.107.1` + `…\TRAE SOLO`）。
 pub fn detect_install_for(variant: super::variant::TraeVariant) -> InstallProbe {
     let settings = crate::modules::trae::settings::load();
     if let Some(custom) = settings.path_for(variant.region()) {
         let path = PathBuf::from(custom);
-        // 只有自定义路径确实指向该变体时才采纳，否则它会让两条产品线都显示"已安装"。
-        let belongs = path
+        // 只接受**本区域**的 Trae 客户端（含已退役的老客户端名）——
+        // 「指向另一个区域」这条必须拦住，「指向本区域的另一代」则放行。
+        let belongs_to_region = path
             .file_name()
             .and_then(|n| n.to_str())
             .and_then(super::variant::variant_of_name)
-            == Some(variant);
-        if belongs && path.is_file() {
+            .map(|found| found.region() == variant.region())
+            .unwrap_or(false);
+        if belongs_to_region && path.is_file() {
             return InstallProbe {
                 installed: true,
                 version: version_from_exe(&path),
@@ -418,32 +429,21 @@ fn region_status(region: super::region::TraeRegion) -> Value {
 
 /// 程序位 → 变体（**持久化身份**）。
 ///
-/// **全部程序位已建模**（2026-09-28 issue #3 收尾，2026-10-13 issue #20 增第 3 条程序线）：
-/// 本函数不返回 `Option` —— 曾经 `(Global, TraeCode) => None`，调用方据此把该程序位
-/// 报成「未安装」；那条分支已删。留着 `Option` 等于把「已建模」降级成运行期判断，
-/// 而 `match` 本身就把这件事钉住了（新增程序线会编译不过）。
+/// ★ issue #28 收敛后**每个区域只有一个程序位** ⇒ 本函数返回的就是该区域的
+/// **合并版变体**（`trae_merged` / `global_trae_merged`）。
 ///
-/// ## ⚠️ 合并版 `Trae` 与遗留 `TraeCode` 各有**自己的变体**（issue #20 收尾）
-///
-/// 两者候选名逐字相同（客户端合并时复用了目录名），但**不是同一个变体** ——
-/// 变体决定**账号库 / 登录态快照 / Key 归属 / 网关日志分档**，共用一个变体会让
-/// 两条程序位的快照挤进同一个目录（用户报障原文：「Trae 与 TraeCode 共用快照目录」）。
-/// ⇒ 本函数是**单射**：六个 `(区域, 程序)` 组合 → 六个不同变体。
-///
-/// 反向映射（`client_settings::program_of_variant`）与它互为逆，有单测钉住双向一致。
+/// 遗留程序位（`TraeWork` / `TraeCode`）**解析到同一区域的合并版**（而不是 `None`）：
+/// 它们已从「可选程序位」表里移除，但老参数、老记录仍会带着它们进来，
+/// 返回 `None` 会把调用点逼出一堆兜底分支。区域决定一切、程序轴只剩一个取值 —— 这条
+/// 事实在这里落一次即可。恒等映射是它的不变量，有单测钉住。
 fn variant_for_program(
     region: super::region::TraeRegion,
-    program: super::region::TraeProgram,
+    _program: super::region::TraeProgram,
 ) -> super::variant::TraeVariant {
-    use super::region::{TraeProgram, TraeRegion};
     use super::variant::TraeVariant;
-    match (region, program) {
-        (TraeRegion::Cn, TraeProgram::TraeWork) => TraeVariant::TraeWork,
-        (TraeRegion::Cn, TraeProgram::TraeCode) => TraeVariant::Trae,
-        (TraeRegion::Cn, TraeProgram::Trae) => TraeVariant::TraeMerged,
-        (TraeRegion::Global, TraeProgram::TraeWork) => TraeVariant::Global,
-        (TraeRegion::Global, TraeProgram::TraeCode) => TraeVariant::GlobalTraeCode,
-        (TraeRegion::Global, TraeProgram::Trae) => TraeVariant::GlobalTraeMerged,
+    match region {
+        super::region::TraeRegion::Cn => TraeVariant::TraeMerged,
+        super::region::TraeRegion::Global => TraeVariant::GlobalTraeMerged,
     }
 }
 
@@ -489,14 +489,16 @@ fn flattened_candidates_match_variant_table() {
             }
         }
     }
-    // 前置：去重确实发生了（否则这条用例没在测它声称测的东西）。
+    // ★ issue #28 收敛后**没有任何重复候选名**（每区域一个程序位，`Trae CN` 与 `Trae`
+    //   互不为子串）。断言「零重复」比断言「恰好 N 条重复」更强：
+    //   有人把退役程序位塞回表里 ⇒ 立刻多出重复项 ⇒ 变红。
     assert_eq!(
         super::region::all_program_specs()
             .iter()
             .map(|s| s.exe_names.len())
             .sum::<usize>(),
-        from_table_exe.len() + 2,
-        "程序位表应恰有 2 条重复的 exe 候选（合并版 Trae 与遗留 TraeCode 各 2 条）"
+        from_table_exe.len(),
+        "收敛后可选程序位之间不应有重复的 exe 候选"
     );
     assert_eq!(data_dir_names(), from_table_dir.as_slice(), "userData 目录名候选与程序位表漂移");
     // exe 名只在 Windows 上与表逐字相同（非 Windows 去过 `.exe`）。
@@ -1965,7 +1967,9 @@ mod tests {
     #[test]
     fn data_dir_names_include_primary_candidate() {
         // 主候选必须排第一，否则 detect_data_dir 的兜底返回值会变成次要名字。
-        assert_eq!(data_dir_names()[0], "TRAE SOLO CN");
+        // ★ issue #28：主候选是 **CN 合并版** `Trae CN`（收敛前是 `TRAE SOLO CN`，
+        //   那条客户端已被官方合并卸载，继续当主候选就是「指向不存在的客户端」）。
+        assert_eq!(data_dir_names()[0], "Trae CN");
     }
 
     #[test]
@@ -2365,9 +2369,9 @@ mod tests {
                 );
             }
         }
-        // 前置：必须真的把 6 个程序位都过了一遍，否则本用例会**恒真**。
-        // 6 = 2 区域 × 3 程序（TraeWork / TraeCode / 合并版 Trae，issue #20）。
-        assert_eq!(checked, 6, "应有 6 个程序位（2 区域 × 3 程序）");
+        // ★ issue #28：每区域**只有一个**程序位（合并版）⇒ 全表 2 条。
+        //   前置：必须真的把可选程序位都过了一遍，否则本用例会**恒真**。
+        assert_eq!(checked, 2, "应有 2 个可选程序位（2 区域 × 1）");
     }
 
     /// 区域状态带出的「站点域」（`consoleBase`）必须**按区域分家**，且与授权页域**同源**。
@@ -2534,17 +2538,26 @@ mod tests {
         let _ = std::fs::remove_dir_all(&base);
     }
 
-    // ---------- 多渠道（TRAE SOLO CN / Trae CN 并存）相关 ----------
+    // ---------- 两个区域各一个客户端（CN / 国际）相关 ----------
 
+    /// ★ 跨变体 exe 候选必须**两个区域的合并客户端都在**（issue #28 收敛后共 2 条）。
+    ///
+    /// 漏掉任一个 → 「明明装了却提示未安装」，以及在跑的那个被判成未运行。
     #[test]
-    fn exe_names_cover_the_trae_cn_product_line() {
-        // `Trae CN` 与 `TRAE SOLO CN` 是可以并存的两条产品线（实测同机各装一份）。
-        // 漏掉它 → 「明明装了却提示未安装」，以及在跑的那个被判成未运行。
+    fn exe_names_cover_both_merged_clients() {
         let names = exe_names();
         let suffix = if cfg!(target_os = "windows") { ".exe" } else { "" };
-        for expected in ["TRAE SOLO CN", "Trae CN"] {
+        for expected in ["Trae CN", "Trae"] {
             let full = format!("{expected}{suffix}");
             assert!(names.contains(&full.as_str()), "候选名缺少 {full}：{names:?}");
+        }
+        // ★ 退役客户端的名字**不得**再出现在跨变体候选里。
+        for retired in ["TRAE SOLO CN", "TRAE SOLO"] {
+            let full = format!("{retired}{suffix}");
+            assert!(
+                !names.contains(&full.as_str()),
+                "退役客户端 {full} 仍在跨变体探测候选里"
+            );
         }
     }
 
@@ -2558,14 +2571,20 @@ mod tests {
     /// 而区域页必须用本区域的目录；且**本区域**里也还得选对来源 ——
     /// 「最近活跃」与「首个存在」在本机不是同一个目录。
     ///
-    /// ## 反例（改坏会红）
+    /// ## ★ issue #28 后这条用例拆成两半
     ///
-    /// 把 `writeDataDir` 也接到 `select_data_dir_for`（即与 `dataDir` 同源）⇒ 第 2 条断言红。
+    /// 「活跃 ≠ 首个存在」这个前提来自 `TraeWork` 的**两个候选目录**
+    /// （`TRAE SOLO CN` / `TRAE SOLO` —— 那条跨区重叠缺陷）。收敛后每个区域只有一个
+    /// 程序位、一个候选目录 ⇒ 在线状态上**构造不出**分叉。
+    /// ⇒ ① 分叉判据改到函数层（`select_data_dir_for` vs `detect_data_dir_for`，
+    ///    仍用退役的 `TraeWork`，那份重叠数据仍在 `all_known_specs` 的候选名里）；
+    /// ② 「状态响应里的 `writeDataDir` 必须等于写侧取值」这条线上契约仍在。
     #[cfg(windows)]
     #[test]
-    fn variants_status_exposes_the_write_side_dir_next_to_the_active_one() {
+    fn write_side_dir_is_the_first_existing_candidate_not_the_most_active() {
         let exp = chrono::Utc::now().timestamp() + 3600;
         let env = crate::modules::trae::test_support::TempEnv::empty();
+        // 退役变体仍有 2 个候选目录 —— 这正是本用例要的「活跃 ≠ 首个存在」形态。
         let variant = crate::modules::trae::variant::TraeVariant::TraeWork;
         let names = data_dir_names_for(variant);
         assert!(
@@ -2585,19 +2604,17 @@ mod tests {
         );
         assert!(grid.selectors_diverge, "前置：两个选择器必须分叉，否则本用例证明不了什么");
 
-        let value = variants_status();
-        let cn = value["variants"]
-            .as_array()
-            .expect("variants 应是数组")
-            .iter()
-            .find(|item| item["variant"].as_str() == Some("cn"))
-            .expect("应有 cn 区域");
-        let program = cn["programs"]
-            .as_array()
-            .expect("programs 应是数组")
-            .iter()
-            .find(|item| item["variant"].as_str() == Some(variant.as_str()))
-            .expect("cn 区域应有 TraeWork 程序位");
+        // ① 两个选择器在同一个变体上确实分叉（活跃度 ≠ 首个存在）。
+        let active = select_data_dir_for(variant).expect("候选都在，应能选出活跃目录");
+        let write_side = detect_data_dir_for(variant).expect("候选都在，应能选出写侧目录");
+        assert_ne!(
+            active, write_side,
+            "前置：两个选择器必须分叉，否则本用例证明不了任何事"
+        );
+
+        // ② 线上契约：`variants_status` 的每个程序位都必须带**写侧**目录，
+        //    且它等于写侧取值点 `detect_data_dir_for`（收敛后每个区域只有一个候选目录）。
+        let merged = crate::modules::trae::variant::TraeVariant::TraeMerged;
 
         // 只比 basename：绝对路径前缀依赖临时目录，比较它只会让断言更脆。
         let basename = |item: &Value, key: &str| -> String {
@@ -2608,20 +2625,27 @@ mod tests {
                 .unwrap_or_default()
                 .to_string()
         };
+        // 合并版的 userData 目录也必须存在，否则 `writeDataDirExists` 恒为 false。
+        let merged_dir = env.appdata().join("Trae CN");
+        std::fs::create_dir_all(&merged_dir).expect("合并版 userData 应能创建");
+        let value = variants_status();
+        let cn = value["variants"]
+            .as_array()
+            .expect("variants 应是数组")
+            .iter()
+            .find(|item| item["variant"].as_str() == Some("cn"))
+            .expect("应有 cn 区域");
+        let program = &cn["programs"]
+            .as_array()
+            .expect("programs 应是数组")
+            .iter()
+            .find(|item| item["variant"].as_str() == Some(merged.as_str()))
+            .expect("cn 区域应有合并版程序位")
+            .clone();
         assert_eq!(
-            basename(program, "dataDir"),
-            names[names.len() - 1],
-            "dataDir 的语义是「最近活跃」那一份（保持既有含义不变）"
-        );
-        assert_eq!(
-            basename(program, "writeDataDir"),
-            names[0],
+            basename(&program, "writeDataDir"),
+            "Trae CN",
             "writeDataDir 必须是写侧（首个存在的候选）—— 区域页核对「登录态在哪」用的是它"
-        );
-        assert_ne!(
-            basename(program, "dataDir"),
-            basename(program, "writeDataDir"),
-            "前置：本 fixture 下两个目录必须分叉"
         );
         assert_eq!(
             program["writeDataDirExists"],
@@ -2637,8 +2661,8 @@ mod tests {
             names.contains(&"Trae CN"),
             "userData 候选缺少 Trae CN：{names:?}"
         );
-        // 主候选必须仍是 TRAE SOLO CN：它是「一个候选都不存在」时的兜底返回值。
-        assert_eq!(names[0], "TRAE SOLO CN");
+        // ★ issue #28：主候选改为 CN 合并版（它是「一个候选都不存在」时的兜底返回值）。
+        assert_eq!(names[0], "Trae CN");
     }
 
     #[test]

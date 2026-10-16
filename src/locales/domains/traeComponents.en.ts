@@ -18,12 +18,6 @@ export const en = {
   // (The earlier "international gets an `AI` suffix" rule was wrong: it invented names
   // the client never uses, and `Trae AI` matched both international TraeCode and the
   // international merged client.)
-  "trae.program.traeWork": "TraeWork",
-  "trae.program.traeWorkCn": "TraeWork CN",
-  "trae.program.traeWorkGlobal": "TraeWork",
-  "trae.program.traeCode": "TraeCode",
-  "trae.program.traeCodeCn": "TraeCode CN",
-  "trae.program.traeCodeGlobal": "TraeCode",
   // Merged client (issue #20): the client is literally named `Trae CN` / `Trae`.
   // They are **separate variants** (`trae_merged` / `global_trae_merged`) — the ids
   // and snapshot dirs differ from `traeCode*`.
