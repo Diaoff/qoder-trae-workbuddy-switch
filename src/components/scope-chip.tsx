@@ -32,7 +32,7 @@ const PRODUCT_MARKS: Record<
   (props: { size: number; className?: string }) => ReactElement
 > = {
   workbuddy: (props) => <WorkBuddyMark {...props} />,
-  trae: (props) => <TraeVariantMark variant="trae_work" {...props} />,
+  trae: (props) => <TraeVariantMark variant="trae_merged" {...props} />,
   qoder: (props) => <QoderMark {...props} />,
 };
 

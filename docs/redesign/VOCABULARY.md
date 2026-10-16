@@ -1,6 +1,6 @@
 # 词汇表（P0 冻结）
 
-> **状态**：已冻结（2026-10-03，P0 产出）；**2026-10-14 增补**「命名空间」一词（P16 统一入口引入）。
+> **状态**：已冻结（2026-10-03，P0 产出）；**2026-10-14 增补**「命名空间」一词（P16 统一网关引入）。
 > **约束**：新代码一律用「新词汇」；「旧词汇」只允许出现在兼容层，并按「删除时点」清退。
 > **配套代码**：`src/lib/scope.ts`（作用域）· `src/lib/platforms/registry.ts`（平台与能力）· `crates/buddy-switch-core/src/modules/gateway_namespace.rs`（命名空间）。
 > **门禁**：`npm run check:scope`（**291 条断言** @2026-10-14，含 fail-closed 与旧路由映射；初版为 9 条）。
@@ -35,11 +35,11 @@
 
 ## 2.1 命名空间（Namespace）—— 与作用域**同形**，但**不是**作用域
 
-> 2026-10-14 新增（P16 统一入口引入）。定义在 `crates/buddy-switch-core/src/modules/gateway_namespace.rs`。
+> 2026-10-14 新增（P16 统一网关引入）。定义在 `crates/buddy-switch-core/src/modules/gateway_namespace.rs`。
 
 | 词 | 定义 | 取值 |
 |:---|:---|:---|
-| **命名空间**（Namespace） | **统一入口**（端口 `57892`）里，**模型 id 的来源前缀** —— 让 id 自己携带「这条模型来自哪套上游」 | 默认 4 条：`wb-cn` / `wb-global` / `trae-cn` / `trae-global`；可选 4 条：`traework-cn` / `traework-global` / `traecode-cn` / `traecode-global` |
+| **命名空间**（Namespace） | **统一网关**（端口 `57892`）里，**模型 id 的来源前缀** —— 让 id 自己携带「这条模型来自哪套上游」 | 默认 4 条：`wb-cn` / `wb-global` / `trae-cn` / `trae-global`；可选 4 条：`traework-cn` / `traework-global` / `traecode-cn` / `traecode-global` |
 
 ★★ **它与作用域的字面量逐字相同（`wb-cn` 既是作用域也是命名空间），但语义完全不同，别混**：
 
@@ -58,7 +58,7 @@
 2. **禁止用 `TraeVariant::parse` / `TraeProgram::parse` 反推** —— 那是**宽容**解析，会把 `traework-cn` 吞进去；
 3. **区域轴与程序位轴的映射一律经既有派生函数**（`Scope::wb_region` / `Scope::trae_region` / `variant_for_program`），**不手搓字符串**。
 
-⚠️ **与 WB 旧前缀（`cn:` / `global:`）不是一回事**：旧前缀属 **WB 独立端口**，语义是「跨域重路由」；命名空间属**统一入口**，语义是「选择来源」。**两套前缀不跨入口混用**。
+⚠️ **与 WB 旧前缀（`cn:` / `global:`）不是一回事**：旧前缀属 **WB 独立端口**，语义是「跨域重路由」；命名空间属**统一网关**，语义是「选择来源」。**两套前缀不跨入口混用**。
 
 ## 3. 能力（Capability）vs 偏好（Preference）—— **别混**
 

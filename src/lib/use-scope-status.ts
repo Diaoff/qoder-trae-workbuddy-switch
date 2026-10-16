@@ -133,11 +133,12 @@ function regionLoginName(
 
 async function loadTraeScopeSnapshot(): Promise<TraeScopeSnapshot> {
   const statuses = await loadTraeVariantStatuses();
-  // 三次请求互不依赖：登录态按程序位、账号数按区域（国内取任一条国内程序位即可）。
+  // 三次请求互不依赖：登录态按程序位、账号数按区域（每区域恰一个合并版程序位，
+  // issue #28 收敛 ⇒ 国内取 `trae_merged`、国际取 `global_trae_merged`）。
   const [logins, cnAccounts, globalAccounts] = await Promise.all([
     loadTraeVariantLogins(statuses),
-    api.getTraeAccounts("trae_work").catch(() => null),
-    api.getTraeAccounts("global").catch(() => null),
+    api.getTraeAccounts("trae_merged").catch(() => null),
+    api.getTraeAccounts("global_trae_merged").catch(() => null),
   ]);
 
   const build = (region: TraeRegionId, accountCount: number): ScopeStatus => {

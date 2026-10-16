@@ -29,8 +29,8 @@ import type { TraeApiKeyRecord, TraeVariantId } from "@/lib/trae-types";
 import { cn } from "@/lib/utils";
 
 /**
- * 归属取值集合 = **4 个变体**（区域 × 程序；合并版 `trae` 与 `trae_code` 共用变体，
- * 已在 `allPrograms()` 里按 `variant` 去重，见该函数的说明）。
+ * 归属取值集合 = **2 个变体**（每区域一个合并版客户端，issue #28 收敛；见
+ * `allPrograms()` 的说明）。
  *
  * ## ⚠️ 2026-09-30 由「区域」改为「程序位」（issue #4 的实测结论）
  *
@@ -53,19 +53,31 @@ import { cn } from "@/lib/utils";
 const PROGRAMS = allPrograms();
 
 /**
- * 区域标识 → 程序位：`cn` 落到该区域的**主程序**（TraeWork）。
+ * 标识 → **可选变体**：区域标识与四个退役标识一律落到该区域的合并版客户端。
  *
- * 与后端 `TraeVariant::parse("cn") == TraeWork` **同向**（见 Rust 侧该函数的说明：
- * 区域标识必须落到主程序才安全，否则「保存登录态」这类程序级操作会读错客户端）。
+ * ★★ issue #28 收敛：每个区域只剩一个程序位（合并版），退役标识（`trae_work` /
+ * `trae_cn` / `trae_code` / `global` / `global_trae_code`）在**老 Key 记录**里仍有，
+ * 但它们现在全部指向合并版客户端（与 `traeVariantLabel` 的退役显示规则同向：
+ * 显示 `TraeWork CN` 会指向一个已被卸载的客户端）。
  *
  * 用途有两处，都不能省：
  * 1. `Select` 的 value 必须是选项集合里的值，否则下拉显示空白（页面只有区域维度）；
  * 2. 归属列展示 —— 否则「两把行为完全相同的 Key」一个显示「国内版」、一个显示「TraeWork」。
- *
- * `global` / `trae_work` / `trae_cn` / `global_trae_code` 原样返回（它们本来就是程序位标识）。
  */
 function normalizeProgramId(variant: TraeVariantId): TraeVariantId {
-  return variant === "cn" ? "trae_work" : variant;
+  switch (variant) {
+    case "cn":
+    case "trae":
+    case "trae_cn":
+    case "trae_code":
+    case "trae_work":
+      return "trae_merged";
+    case "global":
+    case "global_trae_code":
+      return "global_trae_merged";
+    default:
+      return variant;
+  }
 }
 
 /**

@@ -92,7 +92,7 @@ async function loadPaletteAccounts(): Promise<PaletteAccount[]> {
   const [wbCn, wbGlobal, traeCn, traeGlobal] = await Promise.allSettled([
     api.getAccounts("cn"),
     api.getAccounts("global"),
-    api.getTraeAccounts("trae_work"), // 国内 Trae（区域纯，任取该区域一条产品线即可）
+    api.getTraeAccounts("trae_merged"), // 国内 Trae（issue #28 收敛后每区域只有一个合并版程序位）
     api.getTraeAccounts("global"),
   ]);
 

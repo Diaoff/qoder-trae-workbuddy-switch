@@ -40,7 +40,7 @@
 //!
 //! 1. **解码老数据**：[`TraeProgram::parse`] 仍认 `trae_work` / `trae_code` /
 //!    `TRAE SOLO CN` 这些历史写法（老参数、老日志、老配置里都有）；
-//! 2. **标识迁移来源**：[`super::merge_adaptation`] 按遗留程序位枚举**旧快照池目录**，
+//! 2. **标识迁移来源**：[`super::snapshot_migrate`] 按遗留程序位枚举**旧快照池目录**，
 //!    把它们整组搬进合并版池。
 //!
 //! ⚠️ 因此 [`program_spec`] 对遗留程序位**返回本区域的合并版 spec**（不是 `None`、
@@ -183,7 +183,7 @@ pub enum TraeProgram {
     /// [`programs_of`] 里、不进界面、不参与探测与启动。
     ///
     /// ⚠️ **仍然保留**（不是死代码）：[Self::parse] 要认它的历史写法（老参数 / 老日志 /
-    /// 老配置），[`super::merge_adaptation`] 要靠它枚举**旧快照池目录**。
+    /// 老配置），[`super::snapshot_migrate`] 要靠它枚举**旧快照池目录**。
     TraeWork,
     /// **退役**：Trae 代码编辑器程序线（客户端 `Trae CN` / `Trae`）。
     ///
@@ -258,7 +258,7 @@ impl TraeProgram {
     ///
     /// ⚠️ 本函数**不再**包含 `TraeWork` / `TraeCode` —— 那两条是退役的遗留标识
     /// （见模块头「每区域恰好一个」）。需要枚举**旧快照池**时走
-    /// [`super::merge_adaptation`] 的历史池名表，**不要**把遗留值塞回这里：
+    /// [`super::snapshot_migrate`] 的历史池名表，**不要**把遗留值塞回这里：
     /// 这个函数是「界面上有哪几枚按钮」的唯一事实来源。
     pub fn all() -> [TraeProgram; 1] {
         [TraeProgram::Trae]
@@ -432,7 +432,7 @@ mod tests {
                 "遗留标识必须落 TraeCode，不能被裸名规则抢走: {s}"
             );
         }
-        // 三个程序位的标识两两不同 —— `parse` 与 `as_str` 必须互为往返。
+        // 退役标识仍能被 `parse` 认出（老数据解码）；**唯一可选**程序位的标识往返自洽。
         for program in TraeProgram::all() {
             assert_eq!(TraeProgram::parse(program.as_str()), Some(program));
         }
