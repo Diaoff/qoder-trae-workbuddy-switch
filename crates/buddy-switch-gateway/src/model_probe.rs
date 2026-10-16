@@ -1475,11 +1475,14 @@ mod tests {
     fn trae_region_maps_to_current_variant() {
         assert_eq!(trae_variant_of(TraeRegion::Cn), TraeVariant::TraeMerged);
         assert_eq!(trae_variant_of(TraeRegion::Global), TraeVariant::GlobalTraeMerged);
-        assert_eq!(trae_variant_of(TraeRegion::Cn), TraeVariant::parse("cn").unwrap());
-        assert_eq!(
-            trae_variant_of(TraeRegion::Global),
-            TraeVariant::parse("global").unwrap()
-        );
+        // ⚠️ 刻意**不**断言 `== TraeVariant::parse("cn")`。
+        //
+        // `parse` 的口径正在被 issue #28 那笔改动从「遗留 `TraeWork`」迁到「合并版
+        // `TraeMerged`」，而那是**另一笔**改动。把本用例绑上去，会让**本提交依赖那笔
+        // 未落地的改动** —— 实测：在只有本提交的树上，`parse("cn")` 仍是 `TraeWork`，
+        // 于是断言红（`left: TraeMerged / right: TraeWork`）。
+        //
+        // 本模块的契约只有一条：**区域 → 合并版变体**（上面两条断言），不依赖 `parse`。
     }
 
     /// ★ Trae 判据映射：复用 `trae::pool` 的两个分类入口，全枚举覆盖。
