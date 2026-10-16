@@ -1756,9 +1756,13 @@ export default function TraeSettingsPage() {
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
             <DialogTitle>{t("trae.page.settings.resetLabel")}</DialogTitle>
-            <DialogDescription>{t("trae.page.settings.resetDialogDesc")}</DialogDescription>
-            {/* 点明操作目标：重置是程序级操作，目标客户端随上面的程序位选择。 */}
+            {/* 点明操作目标：重置是程序级操作，目标客户端随上面的程序位选择。
+                ⚠️ 必须与上一句同处**一个** `DialogDescription`：Radix 的 Description 用
+                同一个 `useId()` 当 `id`，并排写两个会产出**重复 DOM id**，而 `DialogContent`
+                的 `aria-describedby` 只认第一个 ⇒ 第二行读屏软件读不到（HTML 也不合法）。 */}
             <DialogDescription>
+              {t("trae.page.settings.resetDialogDesc")}
+              <br />
               {t("trae.page.settings.programLabel")}: {program.programLabel || program.programVariant}
             </DialogDescription>
           </DialogHeader>

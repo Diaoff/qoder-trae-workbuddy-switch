@@ -1744,6 +1744,13 @@ function RegionPanel({ region }: { region: Region }) {
         },
       ]
     : [];
+  /**
+   * 判定「临期」的**同一时刻**。
+   *
+   * 后端口径是 `expire_at > now && expire_at - now <= 7 天`（core `credits.rs`），
+   * 下界与上界必须取**同一个** `now` —— 各写一次 `Date.now()` 会跨毫秒各算一次。
+   */
+  const now = Date.now();
   const detailPacks: DetailPack[] =
     detail && detailCredit?.ok
       ? (detailCredit.resources ?? [])
@@ -1769,8 +1776,16 @@ function RegionPanel({ region }: { region: Region }) {
                 ? t("wbAccounts.card.expiresOn", { date: formatCreditExpiry(resource.expireAt, t) })
                 : t("wbAccounts.card.forever"),
             expired: resource.expired,
+            /* ⚠️ 与后端**逐条同口径**：`expired` 只覆盖「`expire_at <= now`」，
+               所以**下界 `> now` 不能省**。此前只判上界，靠的是「`expired` 恒等于
+               `expire_at <= now`」这条后端不变量 —— 隐式耦合，后端口径一改就会把
+               「已过期」的包标成「临期」。
+               `resource.expireAt` 是**毫秒**（`CreditResource.expireAt`，WB 侧口径）。 */
             expiringSoon:
-              !resource.expired && resource.expireAt != null && resource.expireAt - Date.now() <= 7 * 86_400_000,
+              !resource.expired &&
+              resource.expireAt != null &&
+              resource.expireAt > now &&
+              resource.expireAt - now <= 7 * 86_400_000,
             ratio: resource.total > 0 ? Math.min(100, Math.max(0, (resource.remaining / resource.total) * 100)) : 0,
           }))
       : [];

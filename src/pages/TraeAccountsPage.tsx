@@ -1551,6 +1551,8 @@ export default function TraeAccountsPage() {
         },
       ]
     : [];
+  /** 判定「临期」的同一时刻（下界与上界取同一个 `now`，口径见后端 `trae/credits.rs`）。 */
+  const now = Date.now();
   const detailPacks: DetailPack[] = detail
     ? (detail.creditPackages ?? [])
         .filter((item) => item.remaining > 0)
@@ -1574,8 +1576,15 @@ export default function TraeAccountsPage() {
               ? t("trae.comp.card.expiry.short", { date: shortTime(item.expireAt) })
               : t("trae.comp.card.expiry.permanent"),
           expired: item.expired,
+          /* ⚠️ `item.expireAt` 是**秒**（后端 `expire_times`，与 WB `CreditResource.expireAt`
+             的毫秒口径**不同** —— 见 `trae-usage-charts.ts` 的同款说明）⇒ 必须 `* 1000`。
+             下界 `> now` 与上界取**同一个** `now`：只判上界会依赖「`expired` 已覆盖过去时刻」
+             这条隐式不变量。 */
           expiringSoon:
-            !item.expired && item.expireAt != null && item.expireAt > 0 && item.expireAt * 1000 - Date.now() <= 7 * 86_400_000,
+            !item.expired &&
+            item.expireAt != null &&
+            item.expireAt * 1000 > now &&
+            item.expireAt * 1000 - now <= 7 * 86_400_000,
           ratio: item.total > 0 ? Math.min(100, Math.max(0, (item.remaining / item.total) * 100)) : 0,
         }))
     : [];
