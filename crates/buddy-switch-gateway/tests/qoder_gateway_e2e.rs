@@ -116,7 +116,11 @@ async fn mock_chat(State(behavior): State<Behavior>, headers: HeaderMap) -> Resp
         _ => 0,
     };
     let should_fail = match &behavior {
-        Behavior::FailFirstTimes(counter) => {
+        // `counter` 在上一段已经 `fetch_add` 过了，这里只需**匹配到变体**，
+        // 不读它的值 ⇒ 用 `_` 占位。写成 `counter` 会触发
+        // `unused_variables` 警告，而 CI 的 `-D warnings`（见 pr-check.yml）
+        // 会把它升级成编译错误。
+        Behavior::FailFirstTimes(_) => {
             // 第一次调用（返回值为 0）失败；之后放行。
             request_count == 0
         }
