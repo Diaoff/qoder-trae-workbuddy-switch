@@ -1,0 +1,125 @@
+name: pr-check
+
+# PR /主干推送的**门禁**：只做「合得进main 吗」的判定，不产出任何发布物。
+# 与 `build.yml` 的职责边界必须清楚：
+#   · build.yml —— tag 触发，产出安装包 / updater 清单 / Release 资产，需要签名密钥。
+#   · pr-check.yml —— PR 触发，只需要能编过、测过、lint 过。**不碰任何 secrets**。
+# 别把两者合并：合并后 PR 上没有 updater 签名密钥，`Build desktop app` 会在
+# 编完 ~5 分钟 Rust 之后才抛「找不到私钥」，把一次格式问题的评审拖成 5 分钟等待。
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# 同一分支的新 push 取消旧 run —— 否则连推 5 次会排 5 轮完整编译。
+concurrency:
+  group: pr-check-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  frontend:
+    name: Frontend typecheck + contract checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      # 用 `npm ci` 不用 `npm install`：PR 校验的前提是**锁文件与本次变更一致**。
+      # `npm install` 会在 lock 与 package.json 不一致时静默改写锁文件，
+      # 于是本地能过、CI 才炸的「幽灵失败」和本地复现不了的通过都会出现。
+      - run: npm ci
+
+      # `npm run build` = tsc --noEmit + 6 个契约检查（check:api / check:docker /
+      # check:store-selectors / check:scope / check:npm-platforms / check:agent-sources）
+      # + vite build。⚠️ 不要拆成 `tsc` + `vite build` 两条：那 6 个检查会静默消失，
+      # 而它们才是这仓真正的「架构契约」门禁（API 契约、store 选择器、scope 注册表…）。
+      - name: Build (tsc + contract checks + vite)
+        run: npm run build
+
+  rust:
+    name: Rust fmt / clippy / test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Tauri 需要 webkit2gtk；`cargo test --workspace` 会编 src-tauri，
+      # 少了这些系统包会在链接期报一堆看不懂的 undefined symbol。
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev
+
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          components: rustfmt, clippy
+          # ⚠️ 这个 action 的 `rustflags` 默认就是 `-D warnings`（构造日志里逐字输出）。
+          # 也就是说**不做任何配置，CI 就会把警告当错误**。这是好事，但必须知道：
+          # 本机 Windows 上看不到的 linux/mac 目标代码，其警告只有这里会暴露。
+          # 别再往里加 `build-warnings: deny` —— `@v1` tag 没有这个输入（会报
+          # Unexpected input），详见 build.yml 里同一处的长注释。
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-
+
+      # ⚠️ **fmt 现在是真门禁**（2026-10-16 起）。此前它必然失败：仓库基线
+      # 173/201 个 .rs 文件不符合 rustfmt，共 1675 处违规。已用一次独立的纯格式
+      # 提交（`style: 全量 rustfmt 落地`）还清，并新增 `rustfmt.toml` 钉住配置。
+      #
+      # ★ 本地复现失败时**不要**手改：直接 `cargo fmt --all`，它就是唯一的真相。
+      #   ⚠️ 本机 `cargo` 若指向非 rustup 的副本，`cargo fmt` 会报
+      #     `%1 不是有效的 Win32 应用程序`（os error 193）—— 那是 cargo-fmt.exe
+      #     架构不匹配，不是代码问题。绕过：`& "$(rustc --print sysroot)\bin\cargo-fmt.exe" fmt --all`。
+      #
+      # fmt 单独成step 而不是与 clippy 合并：它是秒级的纯文本 diff，
+      # 不该让评审者等两分钟 clippy 跑完才看到格式错。
+      - name: Format check
+        run: cargo fmt --all -- --check
+
+      # ⚠️ **不要加 `-- -D warnings`**：`setup-rust-toolchain@v1` 的 `rustflags`
+      # 默认已是 `-D warnings`（构造日志逐字输出），警告在 CI 上**本来就**是
+      # 错误。再显式加一遍不会更严，只会让失败信息里出现两处来源、更难定位。
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets
+
+      # 单元 + 集成测试（crates/*/tests 下的 e2e / 迁移 / 网关契约用例都在这里跑）。
+      # `--workspace` 会带上 src-tauri —— 它没有测试 target 也不影响。
+      - name: Test
+        run: cargo test --workspace
+
+  pr-summary:
+    name: PR summary
+    runs-on: ubuntu-latest
+    # 汇总门禁：任一 job 失败 ⇒ 整体红。放在最后而不是让前端/Rust 互相 `needs`，
+    # 是为了让两个 job 并行跑完、失败信息一次性看全。
+    if: always()
+    needs: [frontend, rust]
+    steps:
+      # `skipped` 视为通过：某个 job 因条件未触发而跳过时，不该把整轮门禁判成红。
+      # 只有 failure / cancelled 才算不通过。
+      - name: Verdict
+        run: |
+          FAIL=""
+          for r in "${{ needs.frontend.result }}" "${{ needs.rust.result }}"; do
+            if [ "$r" = "failure" ] || [ "$r" = "cancelled" ]; then FAIL=1; fi
+          done
+          if [ -n "$FAIL" ]; then
+            echo "::error::PR 校验未通过（frontend=${{ needs.frontend.result }}, rust=${{ needs.rust.result }}）"
+            exit 1
+          fi
+          echo "PR 校验通过"
