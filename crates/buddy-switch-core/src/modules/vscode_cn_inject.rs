@@ -559,14 +559,14 @@ pub(crate) fn decrypt_electron_safe_storage(
     }
     #[cfg(target_os = "macos")]
     {
-        let _ = (data_root, display_name);
+        let _ = (data_root, display_name, linux_secret_tool_app_names);
         let password = get_macos_safe_storage_password(macos_keychain_service)?;
         let key = pbkdf2_sha1_key(&password, 1003);
         decrypt_cbc_prefixed(encrypted, V10_PREFIX, &key)
     }
     #[cfg(target_os = "linux")]
     {
-        let _ = data_root;
+        let _ = (data_root, macos_keychain_service);
         match detect_prefix(encrypted) {
             Some("v11") => {
                 let key = get_linux_v11_key(linux_secret_tool_app_names).ok_or_else(|| {
