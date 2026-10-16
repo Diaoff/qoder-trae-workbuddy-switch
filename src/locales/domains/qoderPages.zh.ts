@@ -3,7 +3,7 @@
  *
  * 归属文件：
  * `src/pages/QoderAccountsPage.tsx`、`src/pages/QoderPendingPage.tsx`、
- * `src/pages/QoderUsagePending.tsx`
+ * `src/pages/QoderUsagePage.tsx`
  *
  * ⚠️ 命名空间用 `qoder`（与 `trae` 同款：页面与组件共用一个前缀、靠二级段区分），
  * 键前缀：`qoder.page.`
@@ -83,13 +83,13 @@ export const zh = {
   "qoder.page.accounts.drawer.credential": "凭据",
   "qoder.page.accounts.drawer.accessToken": "访问令牌",
 
-  // ---- 删除（Qoder 是**硬删除**、没有回收站 ⇒ 文案不许抄「可在回收站恢复」） ----
+  // ---- 删除（**软删除**：进回收站可恢复 ⇒ 文案如实说「可恢复」，别再写「永久删除」） ----
   "qoder.page.accounts.removed": "已删除 {name}",
   "qoder.page.accounts.domainMismatch": "归属不属于当前区域",
   "qoder.page.accounts.delete.title": "删除账号",
-  "qoder.page.accounts.delete.desc": "确定删除「{name}」？Qoder 侧是永久删除，没有回收站。",
+  "qoder.page.accounts.delete.desc": "确定删除「{name}」？删除后会进入回收站，可以恢复。",
   "qoder.page.accounts.delete.batchTitle": "批量删除账号",
-  "qoder.page.accounts.delete.batchDesc": "确定删除选中的 {n} 个账号？Qoder 侧是永久删除，没有回收站。",
+  "qoder.page.accounts.delete.batchDesc": "确定删除选中的 {n} 个账号？删除后会进入回收站，可以恢复。",
   "qoder.page.accounts.delete.confirm": "删除",
   "qoder.page.accounts.delete.cancel": "取消",
   "qoder.page.accounts.delete.done": "已删除 {n} 个账号",
@@ -104,15 +104,107 @@ export const zh = {
   "qoder.page.accounts.origin.cli": "CLI 导入",
   "qoder.page.accounts.origin.oauth": "设备码登录",
 
+  // ── 程序位 / 切换 / 昵称 / 分组（2026-10-15 补齐）──
+  "qoder.page.accounts.program.desktop": "Qoder 桌面版",
+  "qoder.page.accounts.program.cli": "Qoder CLI",
+  "qoder.page.accounts.program.current": "当前登录",
+  "qoder.page.accounts.program.switchTo": "切换到此账号",
+  "qoder.page.accounts.program.running": "客户端正在运行",
+  "qoder.page.accounts.program.runningHint": "请先退出该客户端再切换 —— 否则它退出时会把内存里的登录态写回，覆盖这次切换。",
+  "qoder.page.accounts.program.missing": "未检测到",
+  "qoder.page.accounts.program.unreadable": "读不出来",
+  "qoder.page.accounts.program.empty": "未登录",
+  "qoder.page.accounts.switch.title": "切换账号",
+  "qoder.page.accounts.switch.desc":
+    "把「{name}」的凭据写入 {program} 的登录态。原登录态会先备份，写入后校验失败会自动还原。",
+  "qoder.page.accounts.switch.confirm": "切换",
+  "qoder.page.accounts.switch.cancel": "取消",
+  "qoder.page.accounts.switch.done": "已切换到 {name}",
+  "qoder.page.accounts.switch.backup": "原登录态已备份到 {path}",
+  "qoder.page.accounts.group.label": "分组",
+  "qoder.page.accounts.group.placeholder": "留空表示未分组",
+  "qoder.page.accounts.group.saved": "分组已保存",
+  "qoder.page.accounts.group.missing": "这条账号已不在库里 —— 分组未保存",
+  "qoder.page.accounts.toolbar.group.group": "按分组",
+  "qoder.page.accounts.toolbar.group.program": "按程序位",
+  "qoder.page.accounts.toolbar.programBucket.none": "未登录到任何程序位",
+  "qoder.page.accounts.toolbar.groupBucket.ungrouped": "未分组",
+  "qoder.page.accounts.card.setGroup": "设置分组",
+  "qoder.page.accounts.refresh.batchPartial": "刷新成功 {ok} 个，失败 {fail} 个",
+
+  // ── 用量（单位是 credits，不是 token）──
+  "qoder.page.usage.title": "用量",
+  "qoder.page.usage.subtitle": "{scope} · 近 {days} 天 · 单位 {unit}",
+  "qoder.page.usage.unit.credits": "积分（credits）",
+  "qoder.page.usage.sourceNote":
+    "数据来自本机 Qoder 客户端的会话记录。Qoder 按 credits 计费，客户端记录的 token 计数恒为 0 —— 因此本视图统计的是 credits，不是 token。",
+  "qoder.page.usage.totals.credits": "合计积分",
+  "qoder.page.usage.totals.requests": "请求数",
+  "qoder.page.usage.totals.sessions": "会话数",
+  "qoder.page.usage.totals.models": "模型数",
+  "qoder.page.usage.trend": "每日积分",
+  "qoder.page.usage.byModel": "按模型拆分",
+  "qoder.page.usage.empty.title": "这段时间没有用量记录",
+  "qoder.page.usage.empty.description": "本机客户端的会话记录里没有落在该窗口内的请求。",
+  "qoder.page.usage.missing.title": "没有找到客户端会话记录",
+  "qoder.page.usage.missing.description":
+    "本机没有 Qoder 客户端的会话目录（{path}）—— 装好客户端并至少对话一次后这里会有数据。",
+  "qoder.page.usage.loadFailed": "用量读取失败",
+  "qoder.page.usage.recheck": "重新读取",
+  "qoder.page.usage.window.label": "窗口",
+  "qoder.page.usage.window.d7": "近 7 天",
+  "qoder.page.usage.window.d30": "近 30 天",
+  "qoder.page.usage.window.d90": "近 90 天",
+  "qoder.page.usage.window.all": "全部",
+  "qoder.page.usage.creditsValue": "{value} credits",
+  "qoder.page.usage.caption": "合计 {total} credits · 单日峰值 {peak}",
+
+  // ── OAuth 设备授权（2026-10-15 补齐：能力声明里早就有 oauth，此前是空头支票） ──
+  "qoder.page.accounts.oauth.title": "设备码登录",
+  "qoder.page.accounts.oauth.description":
+    "在浏览器里完成 Qoder 授权，回到这里会自动采集账号（双区域的授权页不同，由当前作用域决定）。",
+  "qoder.page.accounts.oauth.start": "开始登录",
+  "qoder.page.accounts.oauth.starting": "正在发起…",
+  "qoder.page.accounts.oauth.waiting": "等待浏览器完成授权…",
+  "qoder.page.accounts.oauth.collected": "已采集账号：{name}",
+  "qoder.page.accounts.oauth.failed": "登录失败",
+  "qoder.page.accounts.oauth.close": "关闭",
+  "qoder.page.accounts.oauth.entry": "设备码登录",
+  "qoder.page.accounts.oauth.entryDesc": "用浏览器授权，适合本机还没装 Qoder 客户端的情况",
+
+  // ── 回收站（软删除）──
+  "qoder.page.accounts.trash.restored": "已恢复 {name}",
+  "qoder.page.accounts.trash.undo": "撤销",
+
+  // ── 签到 / 额度（后端早已就绪，此前无 UI 入口）──
+  "qoder.page.accounts.chip.checkedIn": "今日已签",
+  "qoder.page.accounts.chip.notCheckedIn": "今日未签",
+  "qoder.page.accounts.chip.checkinUnavailable": "签到不可用",
+  "qoder.page.accounts.metric.credits": "积分",
+  "qoder.page.accounts.metric.creditsValue": "{remaining} / {total}",
+  "qoder.page.accounts.metric.plan": "套餐",
+  "qoder.page.accounts.credits.loading": "额度查询中…",
+  "qoder.page.accounts.checkin.action": "签到",
+  "qoder.page.accounts.checkin.already": "{name} 今日已签到",
+  "qoder.page.accounts.checkin.done": "{name} 签到成功",
+  "qoder.page.accounts.checkin.batchDone": "已签到 {n} 个账号",
+  "qoder.page.accounts.checkin.batchPartial": "成功 {ok} 个，失败 {fail} 个",
+  "qoder.page.accounts.checkin.resultOk": "签到成功 {n} 个",
+  "qoder.page.accounts.checkin.resultFail": "签到失败 {n} 个",
+  "qoder.page.accounts.refresh.done": "{name} 的令牌已刷新",
+  "qoder.page.accounts.refresh.batchDone": "已刷新 {n} 个账号的令牌",
+
+  "qoder.page.accounts.toolbar.sort.credits": "积分余额",
+  "qoder.page.accounts.toolbar.group.source": "按来源",
+  "qoder.page.accounts.toolbar.group.checkin": "按签到",
+  "qoder.page.accounts.toolbar.checkinBucket.checkedIn": "今日已签",
+  "qoder.page.accounts.toolbar.checkinBucket.notCheckedIn": "今日未签",
+  "qoder.page.accounts.toolbar.checkinBucket.unknown": "签到状态未知",
+
   "qoder.page.pending.title": "这个页面尚未接入 Qoder",
   "qoder.page.pending.description":
     "Qoder 平台的账号管理、概览与设置已经可用；用量 / 网关依赖网关请求日志与用量台账，尚未落地。",
   "qoder.page.pending.action": "去账号页",
-
-  "qoder.page.usage.pending.title": "Qoder 用量尚未接入",
-  "qoder.page.usage.pending.description":
-    "逐日 Token 与额度都来自网关请求日志与本地额度缓存，两者尚未落地 ⇒ 这里不画空壳。",
-  "qoder.page.usage.pending.action": "去账号页",
 
   // ---- 概览 ----
   "qoder.page.overview.title": "概览",

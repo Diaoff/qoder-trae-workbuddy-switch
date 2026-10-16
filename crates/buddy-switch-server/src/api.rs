@@ -394,6 +394,15 @@ fn api_routes() -> Router {
         .route("/api/qoder/checkin/status", get(api_qoder_checkin_status))
         .route("/api/qoder/checkin/claim", post(api_qoder_checkin_claim))
         .route("/api/qoder/credits", get(api_qoder_credits))
+        // OAuth 设备授权（PKCE S256）：发起 + 轮询。与 WB 的 `/api/oauth/*` 同形，
+        // 但**按 scope 分家**（Qoder 的双区域各有自己的授权页与 client_id）。
+        .route("/api/qoder/oauth/start", post(api_qoder_oauth_start))
+        .route("/api/qoder/oauth/status", post(api_qoder_oauth_status))
+        // 程序位 / 切换 / 昵称 / 分组 / 用量（2026-10-15 补齐）
+        .route("/api/qoder/programs", get(api_qoder_program_status))
+        .route("/api/qoder/accounts/switch", post(api_qoder_switch_account))
+        .route("/api/qoder/accounts/group", post(api_qoder_set_account_group))
+        .route("/api/qoder/usage", get(api_qoder_usage))
         // ---- Qoder API 网关（管理面；网关本体走独立端口 7865，**不** merge 进本 Router）----
         // ⚠️ 一个监听、两个区域：区域由请求所用 API Key 的归属决定（`QoderKeyRegion`），
         //   状态 / 模型两条按 `scope` 看对应的那本账号库（fail-closed）。
@@ -751,7 +760,10 @@ async fn api_account_trash_list(RawQuery(query): RawQuery) -> Response {
             Ok(region) => json_ok(trae::account::trash_list_value_for_region(region)),
             Err(error) => json_err(error, StatusCode::BAD_REQUEST),
         },
-        Product::Qoder => return qoder_scope_not_applicable(),
+        Product::Qoder => match require_qoder_region(scope) {
+            Ok(region) => json_ok(qoder::trash::trash_list_value(region)),
+            Err(error) => json_err(error, StatusCode::BAD_REQUEST),
+        },
     }
 }
 
@@ -780,7 +792,13 @@ async fn api_account_restore(Json(body): Json<Value>) -> Response {
             },
             Err(error) => json_err(error, StatusCode::BAD_REQUEST),
         },
-        Product::Qoder => return qoder_scope_not_applicable(),
+        Product::Qoder => match require_qoder_region(scope) {
+            Ok(region) => match qoder::trash::restore_account_for(region, key) {
+                Ok(_) => json_ok(json!({ "ok": true })),
+                Err(error) => json_err(error, StatusCode::BAD_REQUEST),
+            },
+            Err(error) => json_err(error, StatusCode::BAD_REQUEST),
+        },
     }
 }
 
@@ -809,7 +827,13 @@ async fn api_account_purge(Json(body): Json<Value>) -> Response {
             },
             Err(error) => json_err(error, StatusCode::BAD_REQUEST),
         },
-        Product::Qoder => return qoder_scope_not_applicable(),
+        Product::Qoder => match require_qoder_region(scope) {
+            Ok(region) => match qoder::trash::purge_account_for(region, key) {
+                Ok(_) => json_ok(json!({ "ok": true })),
+                Err(error) => json_err(error, StatusCode::BAD_REQUEST),
+            },
+            Err(error) => json_err(error, StatusCode::BAD_REQUEST),
+        },
     }
 }
 
@@ -828,7 +852,10 @@ async fn api_account_trash_clear(Json(body): Json<Value>) -> Response {
             Ok(region) => trae::account::clear_trash_for_region(region),
             Err(error) => return json_err(error, StatusCode::BAD_REQUEST),
         },
-        Product::Qoder => return qoder_scope_not_applicable(),
+        Product::Qoder => match require_qoder_region(scope) {
+            Ok(region) => qoder::trash::clear_trash_for(region),
+            Err(error) => return json_err(error, StatusCode::BAD_REQUEST),
+        },
     };
     json_ok(json!({ "ok": true, "removed": removed }))
 }
@@ -877,7 +904,13 @@ async fn api_accounts_export(Json(body): Json<Value>) -> Response {
             }
             Err(error) => json_err(error, StatusCode::BAD_REQUEST),
         },
-        Product::Qoder => return qoder_scope_not_applicable(),
+        Product::Qoder => match require_qoder_region(scope) {
+            Ok(region) => match qoder::export_import::export_accounts_for(region, Some(&account_ids)) {
+                Ok(value) => json_ok(value),
+                Err(error) => json_err(error, StatusCode::BAD_REQUEST),
+            },
+            Err(error) => json_err(error, StatusCode::BAD_REQUEST),
+        },
     }
 }
 
@@ -909,7 +942,15 @@ async fn api_accounts_export_to_path(Json(body): Json<Value>) -> Response {
             }
             Err(error) => json_err(error, StatusCode::BAD_REQUEST),
         },
-        Product::Qoder => return qoder_scope_not_applicable(),
+        Product::Qoder => match require_qoder_region(scope) {
+            Ok(region) => {
+                match qoder::export_import::export_accounts_to_path_for(region, Some(&account_ids), path) {
+                    Ok(value) => json_ok(value),
+                    Err(error) => json_err(error, StatusCode::BAD_REQUEST),
+                }
+            }
+            Err(error) => json_err(error, StatusCode::BAD_REQUEST),
+        },
     }
 }
 
@@ -955,7 +996,15 @@ async fn api_accounts_import(Json(body): Json<Value>) -> Response {
             }
             Err(error) => json_err(error, StatusCode::BAD_REQUEST),
         },
-        Product::Qoder => return qoder_scope_not_applicable(),
+        Product::Qoder => match require_qoder_region(scope) {
+            Ok(region) => {
+                match qoder::export_import::import_accounts_for(region, text, Some(&indexes), true) {
+                    Ok(value) => json_ok(value),
+                    Err(error) => json_err(error, StatusCode::BAD_REQUEST),
+                }
+            }
+            Err(error) => json_err(error, StatusCode::BAD_REQUEST),
+        },
     }
 }
 
@@ -1418,6 +1467,29 @@ async fn api_preview_import(Json(body): Json<Value>) -> Response {
         .and_then(|v| v.as_str())
         .unwrap_or("")
         .to_string();
+    // ★ 2026-10-15：新增**可选** `scope`。Qoder 的预览要按区域判「归属不符」（跨区条目
+    //   导入时会被拒）—— 而裸 `region=cn` 分不出 `wb-cn` 与 `qoder-cn`。
+    //   缺省 / 非 Qoder 作用域 ⇒ 走既有的「纯解析、不做归属诊断」分支（旧行为逐字不变）。
+    if let Some(raw) = body
+        .get("scope")
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+    {
+        match resolve_scope_param(Some(raw)) {
+            Ok(scope) if scope.product() == Product::Qoder => {
+                return match require_qoder_region(scope) {
+                    Ok(region) => match qoder::export_import::preview_accounts(region, &text) {
+                        Ok(value) => json_ok(value),
+                        Err(error) => json_err(error, StatusCode::BAD_REQUEST),
+                    },
+                    Err(error) => json_err(error, StatusCode::BAD_REQUEST),
+                };
+            }
+            // 非 Qoder 作用域：继续走下面的通用分支（不看 scope，保持旧行为）。
+            Ok(_) => {}
+            Err(error) => return json_err(error, StatusCode::BAD_REQUEST),
+        }
+    }
     match export_import::preview_accounts(&text) {
         Ok(v) => json_ok(v),
         Err(e) => json_err(e, StatusCode::BAD_REQUEST),
@@ -5931,14 +6003,14 @@ async fn api_qoder_set_account_remark(Json(body): Json<Value>) -> Response {
     }
 }
 
-/// POST /api/qoder/accounts/delete —— 删除一条账号（**硬删除**）。
+/// POST /api/qoder/accounts/delete —— 删除一条账号（**软删除**：移入回收站，可恢复）。
 async fn api_qoder_delete_account(Json(body): Json<Value>) -> Response {
     let region = match qoder_region_from_body(&body) {
         Ok(region) => region,
         Err(error) => return json_err(error, StatusCode::BAD_REQUEST),
     };
     let uid = body.get("uid").and_then(Value::as_str).unwrap_or("").to_string();
-    match tokio::task::spawn_blocking(move || qoder::account::remove_account_for(region, &uid)).await
+    match tokio::task::spawn_blocking(move || qoder::trash::trash_account_for(region, &uid)).await
     {
         Ok(Ok(removed)) => json_ok(json!({ "ok": removed })),
         Ok(Err(error)) => json_err(error, StatusCode::BAD_REQUEST),
@@ -5988,6 +6060,125 @@ async fn api_qoder_credits(RawQuery(query): RawQuery) -> Response {
     match qoder_region_from_query(query.as_deref()) {
         Ok(region) => json_ok(qoder::credits::region_view(region).await),
         Err(error) => json_err(error, StatusCode::BAD_REQUEST),
+    }
+}
+
+/// POST /api/qoder/oauth/start —— 发起设备授权，返回 `{ loginId, verificationUri, expiresIn }`。
+///
+/// ⚠️ **不发网络**（只读本机 machine_id + 本地算 PKCE），故无需 `spawn_blocking`。
+async fn api_qoder_oauth_start(Json(body): Json<Value>) -> Response {
+    let region = match qoder_region_from_body(&body) {
+        Ok(region) => region,
+        Err(error) => return json_err(error, StatusCode::BAD_REQUEST),
+    };
+    match qoder::oauth::login_start_for(region).await {
+        Ok(value) => json_ok(value),
+        Err(error) => json_err(error, StatusCode::BAD_REQUEST),
+    }
+}
+
+/// POST /api/qoder/oauth/status —— 轮询一次登录结果（`{ done, result?, error? }`）。
+///
+/// ★ 形状与 WB 的 `/api/oauth/status` **逐字一致**：前端 `OAuthLoginDialog` 是共用壳，
+/// 它只读 `done` / `result` / `error` 三个键。
+async fn api_qoder_oauth_status(Json(body): Json<Value>) -> Response {
+    let region = match qoder_region_from_body(&body) {
+        Ok(region) => region,
+        Err(error) => return json_err(error, StatusCode::BAD_REQUEST),
+    };
+    let login_id = body
+        .get("loginId")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
+    json_ok(qoder::oauth::login_poll_for(region, &login_id).await)
+}
+
+/// GET /api/qoder/programs —— 程序位状态（只读；界面据此渲染胶囊行与「当前登录」徽章）。
+async fn api_qoder_program_status(RawQuery(query): RawQuery) -> Response {
+    match qoder_region_from_query(query.as_deref()) {
+        Ok(region) => match tokio::task::spawn_blocking(move || {
+            qoder::switch::program_status_for(region)
+        })
+        .await
+        {
+            Ok(value) => json_ok(value),
+            Err(error) => json_err(
+                format!("读取 Qoder 程序位状态失败: {error}"),
+                StatusCode::INTERNAL_SERVER_ERROR,
+            ),
+        },
+        Err(error) => json_err(error, StatusCode::BAD_REQUEST),
+    }
+}
+
+/// POST /api/qoder/accounts/switch —— 切换账号（把凭据写回指定程序位的登录态）。
+///
+/// ⚠️ 写客户端文件（与 `switch_account` 同级）：客户端在跑时被守卫拒绝，失败自动还原备份。
+async fn api_qoder_switch_account(Json(body): Json<Value>) -> Response {
+    let region = match qoder_region_from_body(&body) {
+        Ok(region) => region,
+        Err(error) => return json_err(error, StatusCode::BAD_REQUEST),
+    };
+    let raw_program = body
+        .get("program")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
+    let Some(program) = qoder::switch::QoderProgram::parse(&raw_program) else {
+        return json_err(format!("未知的 Qoder 程序位: {raw_program}"), StatusCode::BAD_REQUEST);
+    };
+    let uid = body.get("uid").and_then(Value::as_str).unwrap_or("").to_string();
+    match tokio::task::spawn_blocking(move || {
+        qoder::switch::switch_account_for(region, program, &uid)
+    })
+    .await
+    {
+        Ok(Ok(value)) => json_ok(value),
+        Ok(Err(error)) => json_err(error, StatusCode::BAD_REQUEST),
+        Err(error) => json_err(
+            format!("切换 Qoder 账号失败: {error}"),
+            StatusCode::INTERNAL_SERVER_ERROR,
+        ),
+    }
+}
+
+/// POST /api/qoder/accounts/group —— 改自定义分组（与备注同构）。
+async fn api_qoder_set_account_group(Json(body): Json<Value>) -> Response {
+    let region = match qoder_region_from_body(&body) {
+        Ok(region) => region,
+        Err(error) => return json_err(error, StatusCode::BAD_REQUEST),
+    };
+    let uid = body.get("uid").and_then(Value::as_str).unwrap_or("").to_string();
+    let group = body.get("group").and_then(Value::as_str).map(str::to_string);
+    match tokio::task::spawn_blocking(move || {
+        qoder::account::set_group_for(region, &uid, group)
+    })
+    .await
+    {
+        Ok(Ok(changed)) => json_ok(json!({ "ok": changed })),
+        Ok(Err(error)) => json_err(error, StatusCode::BAD_REQUEST),
+        Err(error) => json_err(
+            format!("保存 Qoder 分组失败: {error}"),
+            StatusCode::INTERNAL_SERVER_ERROR,
+        ),
+    }
+}
+
+/// GET /api/qoder/usage —— 逐日用量（**单位是 credits，不是 token**；理由见 `qoder::usage`）。
+async fn api_qoder_usage(RawQuery(query): RawQuery) -> Response {
+    let region = match qoder_region_from_query(query.as_deref()) {
+        Ok(region) => region,
+        Err(error) => return json_err(error, StatusCode::BAD_REQUEST),
+    };
+    let days = query_value(query.as_deref(), "days")
+        .and_then(|raw| raw.trim().parse::<u32>().ok());
+    match tokio::task::spawn_blocking(move || qoder::usage::usage_view_for(region, days)).await {
+        Ok(value) => json_ok(value),
+        Err(error) => json_err(
+            format!("读取 Qoder 用量失败: {error}"),
+            StatusCode::INTERNAL_SERVER_ERROR,
+        ),
     }
 }
 

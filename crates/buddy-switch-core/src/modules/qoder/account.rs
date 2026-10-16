@@ -70,6 +70,13 @@ pub struct RawAccount {
     /// 用户备注。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub remark: Option<String>,
+    /// 自定义分组（自由文本；缺省 = 未分组）。
+    ///
+    /// ⚠️ 与 WorkBuddy 的 `groupName` **同语义**（自由文本，不是枚举 id）：用户在界面上
+    /// 随手写「工作 / 测试 / 客户 A」这类词，硬塞进枚举就得先让用户「创建分组」——
+    /// 那是我方凭空多出来的一步。自由文本也让「按分组分桶」这条视图能力零成本落地。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group: Option<String>,
     /// 加入时刻（ISO-8601）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub added_at: Option<String>,
@@ -254,19 +261,13 @@ pub fn set_tokens_for(
     Ok(true)
 }
 
-/// 删除一条账号（**硬删除**；软删除走回收站，见 `paths::accounts_trash_file_for`）。
-///
-/// 返回是否真的删到了东西 —— 调用方据此区分「删掉了」与「本来就没有」。
-pub fn remove_account_for(region: QoderRegion, uid: &str) -> Result<bool, String> {
-    let mut file = load_accounts_checked_for(region)?;
-    let before = file.accounts.len();
-    file.accounts.retain(|account| account.uid != uid);
-    if file.accounts.len() == before {
-        return Ok(false);
-    }
-    save_accounts_for(region, &file)?;
-    Ok(true)
-}
+// ⚠️ 这里**刻意没有** `remove_account_for`（硬删除）。
+//
+// 2026-10-15 起 Qoder 的删除与另两个平台同构 = **软删除**（[`super::trash::trash_account_for`]
+// 移入回收站，可恢复）。原硬删除函数已**删除**，而不是留着 —— 留着它就意味着
+// 「命令面可能再次接错」（真机实测踩到过：删除端点仍调硬删，`ok:true` 但回收站里
+// 一条都没有 ⇒ **账号凭空消失、不可恢复**）。唯一不可逆的动作只剩
+// [`super::trash::purge_account_for`]，它只动回收站文件。
 
 /// 更新备注（唯一的「只改一个字段」入口；避免调用方走 upsert 把令牌一起覆盖）。
 pub fn set_remark_for(
@@ -279,6 +280,22 @@ pub fn set_remark_for(
         return Ok(false);
     };
     account.remark = remark.filter(|text| !text.trim().is_empty());
+    account.updated_at = Some(store::now_iso());
+    save_accounts_for(region, &file)?;
+    Ok(true)
+}
+
+/// 更新自定义分组（与 [`set_remark_for`] 完全同构）。
+pub fn set_group_for(
+    region: QoderRegion,
+    uid: &str,
+    group: Option<String>,
+) -> Result<bool, String> {
+    let mut file = load_accounts_checked_for(region)?;
+    let Some(account) = file.accounts.iter_mut().find(|a| a.uid == uid) else {
+        return Ok(false);
+    };
+    account.group = group.filter(|text| !text.trim().is_empty());
     account.updated_at = Some(store::now_iso());
     save_accounts_for(region, &file)?;
     Ok(true)
@@ -319,6 +336,7 @@ pub fn account_view(account: &RawAccount, region: QoderRegion) -> Value {
         "region": region.as_str(),
         "source": display_opt(&account.source),
         "remark": display_opt(&account.remark),
+        "group": display_opt(&account.group),
         "expiresAt": account.expires_at,
         // 令牌**永不下发明文**：只给「有没有」与掩码。
         "hasAccessToken": shape.can_call(),

@@ -211,7 +211,7 @@ const DEMO_READ_COMMANDS = new Set([
   // ⚠️ 导入 / 改备注 / 删除都是**写**，一律不进这里（由页面侧处理不可用）。
   // 网关五条只读：config / status / models / keys / logs —— 同样不进写操作
   //（保存配置 / 建 Key / 吊销 / 恢复 / 删除 / 清日志）。
-  "get_qoder_accounts", "get_qoder_local_sources",
+  "get_qoder_accounts", "get_qoder_local_sources", "qoder_program_status", "qoder_usage",
   "get_qoder_gateway_config", "qoder_gateway_status", "get_qoder_gateway_models",
   "list_qoder_api_keys", "get_qoder_gateway_logs",
 ]);
@@ -499,6 +499,12 @@ const ROUTES: Record<string, Route> = {
   qoder_checkin_status: { method: "GET", path: "/api/qoder/checkin/status" },
   qoder_checkin_claim: { method: "POST", path: "/api/qoder/checkin/claim" },
   qoder_credits: { method: "GET", path: "/api/qoder/credits" },
+  qoder_oauth_start: { method: "POST", path: "/api/qoder/oauth/start" },
+  qoder_oauth_status: { method: "POST", path: "/api/qoder/oauth/status" },
+  qoder_program_status: { method: "GET", path: "/api/qoder/programs" },
+  qoder_switch_account: { method: "POST", path: "/api/qoder/accounts/switch" },
+  qoder_set_account_group: { method: "POST", path: "/api/qoder/accounts/group" },
+  qoder_usage: { method: "GET", path: "/api/qoder/usage" },
   // Qoder API 网关管理面（网关本体走独立端口 7865，见 src/pages/QoderApiServicePage）。
   // ⚠️ **一个监听、两个区域**：状态 / 清单两条按 `scope` 看对应的那本账号库（fail-closed）；
   //   配置与监听是否起来是两区域共用的事实（故 config 不带 scope）。
@@ -849,21 +855,29 @@ export function importLocal(region?: Region): Promise<{ ok: boolean; account: Ac
   }).then((result) => ({ ...result, account: normalizeAccountMeta(result.account) }));
 }
 
-export function exportAccounts(accountIds: string[], region?: Region): Promise<{ ok: boolean; accounts: AccountRecord[] }> {
+export function exportAccounts(
+  accountIds: string[],
+  scope?: Scope,
+): Promise<{ ok: boolean; accounts: AccountRecord[] }> {
   // P5 T03：改调参数化命令 `accounts_export`（`scope` 决定平台与区域）。旧 `export_accounts`
   // 保留为别名（见 `ALIASES`），桌面端仍登记、webui 仍路由。
-  return call("accounts_export", { scope: scopeOf("workbuddy", region ?? "cn"), accountIds });
+  //
+  // ⚠️ 2026-10-15：参数由 `region` 升为 `scope` —— 三个平台的账号库互不相通，
+  // `region` 只能表达 WB/Trae 的区域轴，Qoder 的 `qoder-cn` 与 WB 的 `cn` 会撞车。
+  // 缺省仍是 `wb-cn`（旧调用点未传时行为不变）。
+  return call("accounts_export", { scope: scope ?? scopeOf("workbuddy", "cn"), accountIds });
 }
 
 /** 桌面端：把完整记录写入用户选择的路径（系统保存对话框产物）。 */
 export function exportAccountsToPath(
   accountIds: string[],
   path: string,
-  region?: Region,
+  scope?: Scope,
 ): Promise<{ ok: boolean; path: string }> {
   // P5 T03：改调参数化命令 `accounts_export_to_path`。旧 `export_accounts_to_path` 保留为别名。
+  // 参数由 `region` 升为 `scope`（理由同 `exportAccounts`）。
   return call("accounts_export_to_path", {
-    scope: scopeOf("workbuddy", region ?? "cn"),
+    scope: scope ?? scopeOf("workbuddy", "cn"),
     accountIds,
     path,
   });
@@ -871,14 +885,25 @@ export function exportAccountsToPath(
 
 export function previewImportAccounts(
   fileText: string,
-  region?: Region,
+  scope?: Scope,
 ): Promise<{ accounts: ImportPreviewAccount[]; total: number }> {
-  return call("preview_import_accounts", { fileText, ...regionArg(region) });
+  // ⚠️ 2026-10-15：参数由 `region` 升为 `scope`。预览本身是纯函数，但 Qoder 的预览要按
+  // **区域**判「归属不符」（跨区条目导入时会被拒）—— 而 `region=cn` 无法区分 `wb-cn` 与
+  // `qoder-cn`。不传则走后端既有的「纯解析、不做归属诊断」分支（旧行为不变）。
+  return call("preview_import_accounts", {
+    fileText,
+    scope: scope ?? scopeOf("workbuddy", "cn"),
+  });
 }
 
-export function importAccounts(fileText: string, indexes: number[], region?: Region): Promise<ImportResult> {
+export function importAccounts(fileText: string, indexes: number[], scope?: Scope): Promise<ImportResult> {
   // P5 T03：改调参数化命令 `accounts_import`。旧 `import_accounts` 保留为别名。
-  return call("accounts_import", { scope: scopeOf("workbuddy", region ?? "cn"), fileText, indexes });
+  // 参数由 `region` 升为 `scope`（理由同 `exportAccounts`）。
+  return call("accounts_import", {
+    scope: scope ?? scopeOf("workbuddy", "cn"),
+    fileText,
+    indexes,
+  });
 }
 
 /**
@@ -2955,6 +2980,131 @@ export function qoderCredits(scope: Scope): Promise<QoderCreditsView> {
   return call<QoderCreditsView>("qoder_credits", { scope });
 }
 
+/**
+ * 发起 Qoder 设备授权登录（PKCE S256）。
+ *
+ * ★ 形状与 WB 的 `oauthStart` **逐字同构**（`{loginId, verificationUri, expiresIn}`），
+ * 因为前端复用同一套「发起 → 打开浏览器 → 轮询」的交互壳。差异只有一处：**必须带 scope**
+ * —— 双区域各有自己的授权页与 `client_id`，缺 scope 无从判断该发哪一区的登录。
+ */
+export function qoderOauthStart(scope: Scope): Promise<QoderOAuthStartResult> {
+  return call<QoderOAuthStartResult>("qoder_oauth_start", { scope });
+}
+
+/** 轮询一次 Qoder 登录结果（`{done, result?, error?}`；形状同 WB 的 `oauthStatus`）。 */
+export function qoderOauthStatus(scope: Scope, loginId: string): Promise<QoderOAuthPollResult> {
+  return call<QoderOAuthPollResult>("qoder_oauth_status", { scope, loginId });
+}
+
+/** OAuth 发起结果（与 `OAuthStartResult` 同形，独立命名以便按平台演进）。 */
+export interface QoderOAuthStartResult {
+  loginId: string;
+  verificationUri: string;
+  expiresIn: number;
+}
+
+/** OAuth 轮询结果：`result` 是**下发形态**的账号视图（不含令牌明文）。 */
+export interface QoderOAuthPollResult {
+  done: boolean;
+  result?: QoderAccountView;
+  error?: string;
+}
+
+/**
+ * 一个程序位的状态（只读）。
+ *
+ * ★ `state` 是**四态**（`ready` / `missing` / `unreadable` / `empty`），不是布尔 ——
+ * 四种状态对应四种不同的用户动作，压成「未检测到」会把用户引去重装一个装好的客户端。
+ * ★ `running` 单独给：客户端在跑时不能切换（退出时内存态会覆盖我们写的）。
+ */
+export interface QoderProgramStatus {
+  id: string;
+  label: string;
+  state: string;
+  detail: string | null;
+  running: boolean;
+  /** 该程序位当前登着的账号 uid（`null` = 读不到）。 */
+  currentUid: string | null;
+}
+
+export interface QoderProgramsView {
+  region: string;
+  programs: QoderProgramStatus[];
+}
+
+/** 切换结果（**不含令牌明文**，只有掩码与写入目标）。 */
+export interface QoderSwitchResult {
+  ok: boolean;
+  program: string;
+  region: string;
+  uid: string;
+  backupPath: string | null;
+  written: { path: string; form: string; tokenMasked: string };
+}
+
+/** 程序位状态（只读）。 */
+export function qoderProgramStatus(scope: Scope): Promise<QoderProgramsView> {
+  return call<QoderProgramsView>("qoder_program_status", { scope });
+}
+
+/**
+ * 切换账号：把该账号的凭据**写回**指定程序位的登录态。
+ *
+ * ⚠️ 这是写客户端文件的动作：客户端在跑时后端会拒绝（进程守卫），写后校验失败会自动还原备份。
+ */
+export function qoderSwitchAccount(
+  scope: Scope,
+  program: string,
+  uid: string,
+): Promise<QoderSwitchResult> {
+  return call<QoderSwitchResult>("qoder_switch_account", { scope, program, uid });
+}
+
+/** 改自定义分组（与备注同构；`null` / 空串 = 未分组）。 */
+export function qoderSetAccountGroup(
+  scope: Scope,
+  uid: string,
+  group: string | null,
+): Promise<{ ok: boolean }> {
+  return call<{ ok: boolean }>("qoder_set_account_group", { scope, uid, group });
+}
+
+/** 逐日用量的一天（**单位是 credits，不是 token** —— 见 `qoder::usage` 模块头）。 */
+export interface QoderUsageDay {
+  date: string;
+  credits: number;
+  requests: number;
+  byModel: Array<{ model: string; credits: number }>;
+}
+
+/** 逐日用量视图。`unit` 恒为 `"credits"`；`source` 说明数据来源与局限（要展示给用户）。 */
+export interface QoderUsageView {
+  region: string;
+  unit: string;
+  days: QoderUsageDay[];
+  totals: { credits: number; requests: number; sessions: number; models: number };
+  byModel: Array<{ model: string; credits: number }>;
+  source: {
+    kind: string;
+    paths: string[];
+    sessions: number;
+    exists: boolean;
+    tokenCountsAvailable: boolean;
+    note: string;
+  };
+}
+
+/**
+ * 逐日用量（`days` = 回看窗口，含今天；缺省由调用方决定）。
+ *
+ * ★ 单位是 **credits**：Qoder 客户端按 credits 计费，token 计数恒为 0 ⇒ 不伪造 token。
+ */
+export function qoderUsage(scope: Scope, days?: number): Promise<QoderUsageView> {
+  // ⚠️ 实参必须是**对象字面量**（`check:api` 第 8 条要静态读出顶层 `scope`）——
+  // 写成三元表达式会让门禁无法校验，从而漏掉「参数化只做一半」。
+  return call<QoderUsageView>("qoder_usage", { scope, days: days ?? null });
+}
+
 // ---------------------------------------------------------------------------
 // Qoder API 网关管理面（Tauri 命令 + webui 路由同源）
 // ---------------------------------------------------------------------------
@@ -3043,6 +3193,8 @@ export interface QoderAccountView {
   region: string;
   source: string | null;
   remark: string | null;
+  /** 自定义分组（自由文本；`null` = 未分组）。 */
+  group: string | null;
   expiresAt: number | null;
   hasAccessToken: boolean;
   hasRefreshToken: boolean;

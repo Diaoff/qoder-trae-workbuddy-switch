@@ -1677,6 +1677,9 @@ function demoQoderAccounts(scope: string): unknown {
       : t("shared.demo.qoder.cred.deviceOnly"),
     hasCredential: true,
     domainMismatch: false,
+    /* ★ 2026-10-15 起 `account_view` 多一个 `group`（自定义分组，自由文本）——
+       演示数据缺它会让「按分组分桶」在演示站里永远落空。 */
+    group: null,
     addedAt: "2026-09-22T03:00:00Z",
     updatedAt: new Date(Date.now() - 5 * 60_000).toISOString(),
   });
@@ -1687,6 +1690,106 @@ function demoQoderAccounts(scope: string): unknown {
         account("q2", t("shared.demo.qoder.name.team"), t("shared.demo.qoder.remark.team"), "dt-c3d4…7e", false),
       ];
   return { region, domain, accounts, foreignDomainCount: 0 };
+}
+
+/**
+ * Qoder 程序位状态（**只读**）。
+ *
+ * ⚠️ 演示场景与 `demoQoderLocalSources` **必须同源**：那边说「桌面版 ready、CLI missing」，
+ * 这边就不能给 CLI 一个 `ready` —— 同一份事实显示成两种状态，用户会以为界面在随机跳。
+ * `currentUid` 取演示账号里那个「主号」（cn = `q1` / global = `qg1`），这样卡片上的
+ * 「当前登录」徽章与「切换到此账号」的可用性在演示站里也能看到真实形态。
+ */
+function demoQoderPrograms(scope: string): unknown {
+  const global = scope.endsWith("global");
+  return {
+    region: global ? "global" : "cn",
+    programs: [
+      {
+        id: "desktop-app",
+        label: t("qoder.page.accounts.program.desktop"),
+        state: "ready",
+        detail: null,
+        /* 演示：桌面客户端「在跑」—— 界面上「切换」按钮应呈置灰并说明原因
+           （客户端运行时写回会被它退出时的内存态覆盖）。 */
+        running: true,
+        currentUid: global ? "qg1" : "q1",
+      },
+      {
+        id: "cli",
+        label: t("qoder.page.accounts.program.cli"),
+        state: "missing",
+        detail: null,
+        running: false,
+        currentUid: null,
+      },
+    ],
+  };
+}
+
+/**
+ * Qoder 逐日用量（**只读**）。
+ *
+ * ★★ 单位是 **credits，不是 token** —— 演示数据也必须是 credits：Qoder CN 客户端按
+ * credits 计费，客户端三处存储里的 token 计数**恒为 0**（见 `qoder::usage` 模块头）。
+ * 演示站若把 credits 画成 token，等于把「图在撒谎」搬进演示环境。
+ */
+function demoQoderUsage(scope: string): unknown {
+  const global = scope.endsWith("global");
+  const model = global ? "ultimate" : "dfmodel";
+  const model2 = global ? "performance" : "gm51model";
+  /* 固定偏移（不用随机）：演示截图要可复现，随机数会让同一份数据每次截图都不一样。 */
+  const rows: Array<[number, number, number]> = [
+    [6, 12.4, 9],
+    [5, 0, 0],
+    [4, 31.7, 22],
+    [3, 8.2, 6],
+    [2, 44.9, 31],
+    [1, 17.3, 12],
+    [0, 5.6, 4],
+  ];
+  const days = rows
+    .filter(([, credits]) => credits > 0)
+    .map(([offset, credits, requests]) => {
+      const date = new Date();
+      date.setDate(date.getDate() - offset);
+      const key = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+      return {
+        date: key,
+        credits,
+        requests,
+        byModel: [
+          { model, credits: Math.round(credits * 0.62 * 1000) / 1000 },
+          { model: model2, credits: Math.round(credits * 0.38 * 1000) / 1000 },
+        ],
+      };
+    })
+    .reverse();
+  const totalCredits = days.reduce((sum, day) => sum + day.credits, 0);
+  const totalRequests = days.reduce((sum, day) => sum + day.requests, 0);
+  return {
+    region: global ? "global" : "cn",
+    unit: "credits",
+    days,
+    totals: {
+      credits: Math.round(totalCredits * 1000) / 1000,
+      requests: totalRequests,
+      sessions: days.length,
+      models: 2,
+    },
+    byModel: [
+      { model, credits: Math.round(totalCredits * 0.62 * 1000) / 1000 },
+      { model: model2, credits: Math.round(totalCredits * 0.38 * 1000) / 1000 },
+    ],
+    source: {
+      kind: "client-sessions",
+      paths: [],
+      sessions: days.length,
+      exists: true,
+      tokenCountsAvailable: false,
+      note: t("qoder.page.usage.sourceNote"),
+    },
+  };
 }
 
 /**
@@ -2743,6 +2846,14 @@ export function screenshotDemoResponse(command: string, args?: Record<string, un
     case "get_qoder_local_sources": {
       const scope = String((args as { scope?: unknown } | undefined)?.scope ?? "");
       return demoQoderLocalSources(scope);
+    }
+    case "qoder_program_status": {
+      const scope = String((args as { scope?: unknown } | undefined)?.scope ?? "");
+      return demoQoderPrograms(scope);
+    }
+    case "qoder_usage": {
+      const scope = String((args as { scope?: unknown } | undefined)?.scope ?? "");
+      return demoQoderUsage(scope);
     }
     /* Qoder 网关（只读五条）—— 形状与真机逐字段同构（snake_case / 未过滤清单 +
        逐条 `disabled` / 来源三级）。写操作（保存配置 / 建 Key / 吊销…）不进演示只读面。 */

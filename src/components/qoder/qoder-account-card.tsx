@@ -32,7 +32,7 @@
  *    按毫秒渲染会把秒值显示成 1970 = 谎报。
  */
 
-import { Ellipsis, Info, StickyNote, Trash2 } from "lucide-react";
+import { Ellipsis, FolderTree, Info, StickyNote, Trash2 } from "lucide-react";
 
 import { AVATAR_TEXT_CLASS, accountInitials, avatarTone } from "@/components/account-card";
 import { Badge } from "@/components/ui/badge";
@@ -46,7 +46,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import type { QoderAccountView } from "@/lib/api";
+import type { QoderAccountView, QoderProgramStatus } from "@/lib/api";
 import { demoModeEnabled } from "@/lib/demo-mode";
 import { displayText } from "@/lib/display-text";
 import { useT, type Translate } from "@/lib/i18n";
@@ -90,11 +90,23 @@ export function qoderAccountName(account: QoderAccountView): string {
 /**
  * 账号的**状态徽章**（卡片 chips 行与表格「状态」列**同一份实现**，避免两处口径漂移）。
  *
- * 与原型 `.acct-chips` 的第 2 槽同义（WB「已签到」/ Trae 的默认成功徽章）：**恒有一枚** ——
- * 问题态是警示色，正常态是成功色「凭据可用」。`正常` 不渲染的写法会让 chips 行
- * 在两种视图间跳变，也与另两个平台不同形。
+ * 优先级（顺序即优先级，与 WB 侧同一纪律）：**凭据问题 > 签到态 > 正常**。
+ * 凭据坏了的账号，「今天签没签到」是次要信息 —— 它根本调不动上游；反过来，
+ * 把「今日未签」盖在「无可用凭据」上会让用户去点一个必然失败的签到按钮。
+ *
+ * ⚠️ `checkinToday` 的**三态**必须区分：
+ * - `true` / `false` = 上游明确答复了；
+ * - `null` / `undefined` = **还没查到**（额度查询在途、或该区域没有签到接口）。
+ *   ⇒ 落回「凭据可用」而不是硬报「今日未签」—— 后者是**把未知说成已知**。
  */
-export function QoderStatusChips({ account }: { account: QoderAccountView }) {
+export function QoderStatusChips({
+  account,
+  checkinToday,
+}: {
+  account: QoderAccountView;
+  /** 三态：`true` 已签 / `false` 未签 / `null|undefined` 未知。 */
+  checkinToday?: boolean | null;
+}) {
   const t = useT();
   if (!account.hasCredential) {
     return (
@@ -107,6 +119,20 @@ export function QoderStatusChips({ account }: { account: QoderAccountView }) {
     return (
       <Badge variant="warning" className={CHIP_CLASS}>
         {t("qoder.page.accounts.chip.unrecognized")}
+      </Badge>
+    );
+  }
+  if (checkinToday === true) {
+    return (
+      <Badge variant="success" className={CHIP_CLASS}>
+        {t("qoder.page.accounts.chip.checkedIn")}
+      </Badge>
+    );
+  }
+  if (checkinToday === false) {
+    return (
+      <Badge variant="warning" className={CHIP_CLASS}>
+        {t("qoder.page.accounts.chip.notCheckedIn")}
       </Badge>
     );
   }
@@ -128,6 +154,27 @@ export function QoderForeignBadge({ account }: { account: QoderAccountView }) {
   );
 }
 
+/** 一条账号的额度快照（来自 `qoder_credits`；取不到就是 `null`，**不编 0**）。 */
+/** 程序位四态 → 展示文案（四态是四种不同的用户动作，压成一个布尔会给错引导）。 */
+export function stateLabel(t: Translate, state: string): string {
+  switch (state) {
+    case "ready":
+      return t("qoder.page.accounts.program.switchTo");
+    case "unreadable":
+      return t("qoder.page.accounts.program.unreadable");
+    case "empty":
+      return t("qoder.page.accounts.program.empty");
+    default:
+      return t("qoder.page.accounts.program.missing");
+  }
+}
+
+export interface QoderCardCredits {
+  remaining: number;
+  total: number;
+  plan?: string | null;
+}
+
 export interface QoderAccountCardProps {
   account: QoderAccountView;
   /** 是否被勾选（批量操作）。 */
@@ -138,8 +185,28 @@ export interface QoderAccountCardProps {
   onOpenDetail?: (account: QoderAccountView) => void;
   /** 「更多 → 编辑备注」：打开抽屉并进入编辑态。 */
   onEditRemark?: (account: QoderAccountView) => void;
-  /** 「更多 → 删除账号」：页面弹确认（Qoder 侧是**硬删除**，没有回收站，必须先确认）。 */
+  /**
+   * 「更多 → 删除账号」：页面弹确认。
+   *
+   * ⚠️ 自 2026-10-15 起 Qoder 侧是**软删除**（进回收站，可恢复）—— 弹层文案随之改了，
+   * 别再写「没有回收站」。
+   */
   onDelete?: (account: QoderAccountView) => void;
+  /** 额度快照；`null` / 不传 ⇒ 不渲染积分指标（无数据不渲染，不摆「0 / 0」）。 */
+  credits?: QoderCardCredits | null;
+  /** 今日签到三态（`null` / 不传 = 未知）。 */
+  checkinToday?: boolean | null;
+  /**
+   * 程序位状态（只读）。
+   *
+   * 传入才渲染页脚的**程序位行** —— 未传入（例如程序位数据还没回来）时不渲染，
+   * 不摆一排「未检测到」的灰胶囊：那是「没数据」伪装成「没装」。
+   */
+  programs?: QoderProgramStatus[] | null;
+  /** 点击某个程序位胶囊 → 页面弹切换确认。未传 ⇒ 胶囊只读（不可点）。 */
+  onSwitch?: (program: QoderProgramStatus) => void;
+  /** 「更多 → 设置分组」。 */
+  onSetGroup?: (account: QoderAccountView) => void;
 }
 
 export function QoderAccountCard({
@@ -149,6 +216,11 @@ export function QoderAccountCard({
   onOpenDetail,
   onEditRemark,
   onDelete,
+  credits = null,
+  checkinToday,
+  programs = null,
+  onSwitch,
+  onSetGroup,
 }: QoderAccountCardProps) {
   const t = useT();
   const name = qoderAccountName(account);
@@ -156,6 +228,10 @@ export function QoderAccountCard({
   const identity = uid ? `UID · ${uid}` : "—";
   const sourceLabel = qoderSourceLabel(t, account.source);
   const credentialSummary = displayText(account.credentialSummary);
+  /* 「当前登录」= **任一**程序位当前登着的就是这个 uid。
+     判定放在卡片里（同一个 currentUid 要跟列表每条账号比），后端只给事实。 */
+  const currentPrograms = (programs ?? []).filter((program) => program.currentUid === account.uid);
+  const isCurrent = currentPrograms.length > 0;
 
   const menu = demoModeEnabled ? (
     <DemoAction>
@@ -192,8 +268,12 @@ export function QoderAccountCard({
           <StickyNote />
           {t("qoder.page.accounts.card.editRemark")}
         </DropdownMenuItem>
+        <DropdownMenuItem disabled={!onSetGroup} onSelect={() => onSetGroup?.(account)}>
+          <FolderTree />
+          {t("qoder.page.accounts.card.setGroup")}
+        </DropdownMenuItem>
         <DropdownMenuSeparator />
-        {/* 删除是**危险动作**且无回收站兜底（Qoder 侧硬删除）⇒ 落到页面统一弹确认。 */}
+        {/* 删除是**危险动作**（虽可恢复，但会移出账号库）⇒ 落到页面统一弹确认。 */}
         <DropdownMenuItem
           className="text-destructive focus:bg-destructive/5 focus:text-destructive"
           onSelect={() => onDelete?.(account)}
@@ -265,8 +345,13 @@ export function QoderAccountCard({
 
       {/* chips：状态槽（恒一枚） + 归属异常（正交） + 来源徽章。 */}
       <div className="flex min-w-0 flex-wrap items-center gap-[5px]">
-        <QoderStatusChips account={account} />
+        <QoderStatusChips account={account} checkinToday={checkinToday} />
         <QoderForeignBadge account={account} />
+        {isCurrent ? (
+          <Badge variant="info" className={CHIP_CLASS}>
+            {t("qoder.page.accounts.program.current")}
+          </Badge>
+        ) : null}
         {sourceLabel ? (
           <Badge variant="secondary" className={cn(CHIP_CLASS, "text-muted-foreground")}>
             {sourceLabel}
@@ -274,8 +359,27 @@ export function QoderAccountCard({
         ) : null}
       </div>
 
-      {/* body：凭据摘要 + 访问令牌掩码（**只给掩码**，绝不出明文）。 */}
+      {/* body：积分指标（有额度快照才渲染）+ 凭据摘要 + 访问令牌掩码（**只给掩码**）。 */}
       <section className="flex min-w-0 flex-1 flex-col gap-1">
+        {credits ? (
+          <div className="flex min-w-0 flex-wrap items-baseline gap-x-3 gap-y-0.5 text-[11.5px]">
+            <span className="text-muted-foreground">
+              {t("qoder.page.accounts.metric.credits")}{" "}
+              <span className="font-medium tabular-nums text-foreground">
+                {t("qoder.page.accounts.metric.creditsValue", {
+                  remaining: String(credits.remaining),
+                  total: String(credits.total),
+                })}
+              </span>
+            </span>
+            {credits.plan ? (
+              <span className="text-muted-foreground">
+                {t("qoder.page.accounts.metric.plan")}{" "}
+                <span className="text-foreground">{credits.plan}</span>
+              </span>
+            ) : null}
+          </div>
+        ) : null}
         {credentialSummary ? (
           <div className="truncate text-[11.5px] text-muted-foreground" title={credentialSummary}>
             {credentialSummary}
@@ -288,8 +392,42 @@ export function QoderAccountCard({
         ) : null}
       </section>
 
-      {/* footer：原型 `.acct-actions`（程序位行 + 更多菜单）—— 程序位未落地 ⇒ 仅菜单。 */}
+      {/* footer：原型 `.acct-actions`（程序位行 + 更多菜单）。
+          程序位行只在**拿到程序位状态**时渲染 —— 没数据时不摆一排「未检测到」的灰胶囊。 */}
       <footer className="flex items-center gap-1.5 border-t border-border pt-2.5">
+        {programs && programs.length > 0 ? (
+          <div className="flex min-w-0 flex-wrap items-center gap-1">
+            {programs.map((program) => {
+              const active = program.currentUid === account.uid;
+              /* 三态：当前（✓） / 可切换（可点） / 未就绪（禁用 + 原因 tooltip）。
+                 ★ 客户端在跑时**不可切换** —— 后端会拒绝（进程守卫），界面提前置灰并说明，
+                 而不是让用户点了才失败。 */
+              const ready = program.state === "ready" && !program.running;
+              const title = program.running
+                ? t("qoder.page.accounts.program.runningHint")
+                : stateLabel(t, program.state);
+              return (
+                <button
+                  key={program.id}
+                  type="button"
+                  disabled={active || !ready || !onSwitch}
+                  title={title}
+                  onClick={() => onSwitch?.(program)}
+                  className={cn(
+                    "rounded-md border px-1.5 py-[2px] text-[11px] transition-colors",
+                    active
+                      ? "border-primary/40 bg-primary/10 font-medium text-foreground"
+                      : ready && onSwitch
+                        ? "border-border text-muted-foreground hover:border-border-strong hover:text-foreground"
+                        : "border-dashed border-border text-muted-foreground/60",
+                  )}
+                >
+                  {program.label}
+                </button>
+              );
+            })}
+          </div>
+        ) : null}
         <div className="grow" />
         {menu}
       </footer>

@@ -116,6 +116,23 @@ pub fn probe_cli(region: QoderRegion) -> LocalProbe {
     }
 }
 
+/// 某个程序位**当前登录的账号 uid**（只读；读不到 / 没登录 ⇒ `None`）。
+///
+/// 供「切换账号」判断「哪个程序位已经登着这个号」—— 卡片上的「当前登录」徽章与
+/// 「切换到此账号」的可用性都由它决定。
+///
+/// ⚠️ **读不到 ≠ 没登录**：文件缺失 / 解不开都会给 `None`。调用方展示时要区分
+/// 「这个程序位没装 / 没登录」与「读不出来」——用 [`probe_local_sources`] 拿四态，
+/// 本函数只回答「uid 是多少」。
+pub fn current_uid_for(region: QoderRegion, kind: &str) -> Option<String> {
+    let account = match kind {
+        KIND_DESKTOP => read_desktop_credential(region).ok().flatten(),
+        KIND_CLI => read_cli_credential(region).ok().flatten(),
+        _ => None,
+    }?;
+    Some(account.uid).filter(|uid| !uid.trim().is_empty())
+}
+
 /// 探测结果的**下发形态**（含区域与域名，供界面解释「为什么这个区域没有账号」）。
 pub fn probe_view_for(region: QoderRegion) -> Value {
     let probes: Vec<Value> = probe_local_sources(region)
@@ -240,6 +257,7 @@ fn account_from_record(region: QoderRegion, raw: &Value, source: &str) -> Option
             .and_then(|v| v.as_i64().or_else(|| v.as_f64().map(|f| f as i64))),
         source: Some(source.to_string()),
         remark: None,
+        group: None,
         added_at: None,
         updated_at: None,
     })
@@ -445,6 +463,7 @@ pub fn account_from_pat(region: QoderRegion, pat: &str, nickname: Option<String>
         expires_at: None,
         source: Some(SOURCE_PAT.to_string()),
         remark: None,
+        group: None,
         added_at: None,
         updated_at: None,
     })

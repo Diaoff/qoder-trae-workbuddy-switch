@@ -1034,13 +1034,29 @@ pub fn parse_refresh_response(kind: RefreshKind, data: &Value, previous_refresh:
     }
 }
 
+/// 从 JSON 里读一个整数 —— **同时接受浮点**。
+///
+/// ★★ 这条不是「顺手兼容」，是**真机取证后的必修项**：上游的额度响应里
+/// `remaining` / `total` / `used` 都是 **浮点**（实测 `{"remaining":99.0,"total":100.0}`），
+/// 而 `Value::as_i64()` 对 `99.0` 返回 `None`。只认整数的写法会让**有余额的账号显示成
+/// 0 / 0** —— 界面上那是「这个号没积分了」，而它其实还有 99 —— **谎报**，比报错坏得多。
+///
+/// 取整用 `round`（额度是 credits 的整数语义；上游给 `.0` 是序列化形态，不是真小数）。
+/// 非数值（字符串 / null / 对象）仍返回 `None`，由调用方决定是 0 还是「未知」。
+pub(crate) fn as_num(value: &Value) -> Option<i64> {
+    value
+        .as_i64()
+        .or_else(|| value.as_f64().map(|number| number.round() as i64))
+        .or_else(|| value.as_str().and_then(|text| text.trim().parse::<f64>().ok()).map(|n| n.round() as i64))
+}
+
 /// `expires_in`（毫秒）/ `expires_at`（RFC3339）→ unix 秒；都没有按 30 天。
 pub fn token_expiry(data: &Value) -> i64 {
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_secs() as i64)
         .unwrap_or(0);
-    if let Some(expires_in) = data.get("expires_in").and_then(Value::as_i64) {
+    if let Some(expires_in) = data.get("expires_in").and_then(as_num) {
         return now + expires_in / 1000;
     }
     if let Some(text) = data.get("expires_at").and_then(Value::as_str) {
@@ -1090,7 +1106,9 @@ pub fn parse_checkin_status(payload: &Value, today: &str) -> CheckinStatus {
     } else {
         String::new()
     };
-    let num = |key: &str| payload.get(key).and_then(Value::as_i64).unwrap_or(0);
+    // ⚠️ 走 [`as_num`] 而不是 `as_i64`：上游把计数写成浮点（`1.0`）时 `as_i64` 会返回 None
+    //    ⇒ 连续签到天数 / 累计领取次数全部静默变 0。
+    let num = |key: &str| payload.get(key).and_then(as_num).unwrap_or(0);
     CheckinStatus {
         active: status == "CLAIMABLE" || status == "CLAIMED",
         today_checked_in: status == "CLAIMED" && last_day == today,
@@ -1127,10 +1145,12 @@ pub fn parse_quota(payload: &Value) -> Result<QuotaView, String> {
     if user_quota.is_none() && add_on_quota.is_none() {
         return Err("额度响应缺少 userQuota / addOnQuota（解析不了，拒绝写 0）".to_string());
     }
+    // ⚠️ 走 [`as_num`]（同时接受浮点）—— 实测上游给的就是 `99.0 / 100.0 / 1.0`，
+    //    用 `as_i64` 会把一份**有余额**的额度解析成 `0 / 0 / 0`（谎报「已用完」）。
     let num = |source: Option<&Map<String, Value>>, key: &str| {
         source
             .and_then(|object| object.get(key))
-            .and_then(Value::as_i64)
+            .and_then(as_num)
             .unwrap_or(0)
     };
     let remaining = num(user_quota, "remaining") + num(add_on_quota, "remaining");
@@ -1821,6 +1841,44 @@ mod tests {
         }))
         .unwrap();
         assert_eq!(exhausted.remaining, 0);
+    }
+
+    /// ★★ 上游把额度写成**浮点** ⇒ 必须解析成真实数值，不能变成 0。
+    ///
+    /// 这不是构造出来的边界，是**真机取证**（2026-10-15，本机 Qoder CN 账号）：
+    /// `GET /api/v2/quota/usage` 实际返回
+    /// `{"addOnQuota":{"remaining":99.0,"total":100.0,"used":1.0,"unit":"credits"}}`。
+    /// 而 `Value::as_i64()` 对 `99.0` 返回 `None` ⇒ 旧实现把它解析成 `0 / 0 / 0`
+    /// ⇒ 界面上「积分 0 / 0」，用户以为号已用完，**而它还有 99** —— 谎报。
+    ///
+    /// 可证伪：把 `parse_quota` 的 `as_num` 换回 `Value::as_i64`，本用例立即变红
+    /// （`left: 0, right: 99`）。
+    #[test]
+    fn quota_accepts_the_floating_point_shape_the_upstream_actually_returns() {
+        let view = parse_quota(&serde_json::json!({
+            "addOnQuota": {
+                "detailUrl": "https://qoder.com.cn/account/usage",
+                "percentage": 0.02,
+                "remaining": 99.0,
+                "total": 100.0,
+                "unit": "credits",
+                "used": 1.0,
+            },
+            "isQuotaExceeded": false,
+            "usageType": "credits",
+            "userQuota": {"percentage": 0.0, "remaining": 0.0, "total": 0.0, "used": 0.0},
+        }))
+        .unwrap();
+        assert_eq!(view.remaining, 99, "浮点余额必须读出来，不能被当成 0");
+        assert_eq!(view.total, 100);
+        assert_eq!(view.used, 1);
+
+        // 字符串形态也认（有些上游会把数字序列化成字符串）。
+        let as_text = parse_quota(&serde_json::json!({
+            "userQuota": {"remaining": "12", "used": "3.0", "total": "15"},
+        }))
+        .unwrap();
+        assert_eq!((as_text.remaining, as_text.used, as_text.total), (12, 3, 15));
     }
 
     #[test]

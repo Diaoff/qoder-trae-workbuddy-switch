@@ -148,6 +148,23 @@ const SCOPE_PARAMETERIZED = new Set([
   "qoder_checkin_status",
   "qoder_checkin_claim",
   "qoder_credits",
+  /* ✅ 2026-10-15（续）：Qoder OAuth 设备授权两条 —— **生来参数化**。判据：双区域各有
+     自己的授权页 / `client_id` / redirect_uri（`send_redirect_uri` 与 `nonce_dashed`
+     两区相反），缺 scope 就无从构造授权 URL，也没有「默认区域」可以回落。 */
+  "qoder_oauth_start",
+  "qoder_oauth_status",
+  /* ✅ 2026-10-15（续）：Qoder 程序位 / 切换 / 分组 / 用量 —— 四条**生来参数化**。
+     `qoder_switch_account` 虽写客户端登录态，但**区域是必填**：双区各有自己的客户端目录
+     （`.qoder-cn` / `.qoder`），缺 scope 无从判断该写哪一处的登录态 ——
+     与 WB 的 `switch_account`（收 `region`、非本集合）不是同一情形。 */
+  "qoder_program_status",
+  "qoder_switch_account",
+  "qoder_set_account_group",
+  "qoder_usage",
+  /* ✅ 2026-10-15（续）：导入预览 —— 原签名第二个参数是 `region` 且**后端一直忽略**它
+     （纯函数解析）。Qoder 的预览要按区域判「归属不符」，而裸 `region=cn` 分不出
+     `wb-cn` 与 `qoder-cn` ⇒ 升级为 `scope`（前端传、服务端读、桌面端读）。 */
+  "preview_import_accounts",
   /* ✅ 2026-10-15（续）：Qoder 网关管理面三条 —— `qoder_gateway_status` /
      `get_qoder_gateway_models` / `create_qoder_api_key`。判为**必须带 scope**的依据：
      网关**一个监听服务两个区域**，池 / 清单 / Key 归属都按区域分家 —— 缺 scope 就无从

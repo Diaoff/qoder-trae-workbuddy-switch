@@ -42,12 +42,17 @@ pub mod checkin;
 pub mod cosy;
 pub mod credits;
 pub mod device;
+pub mod export_import;
+pub mod oauth;
 pub mod paths;
 pub mod profile;
 pub mod refresh;
 pub mod region;
 pub mod store;
+pub mod switch;
 pub mod token;
+pub mod trash;
+pub mod usage;
 
 // ---------------------------------------------------------------------------
 // 上游 API 路径（两个区域共用；端点基址在 `region::realm_spec` 里按区查表）

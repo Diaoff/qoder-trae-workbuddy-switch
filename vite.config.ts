@@ -17,8 +17,14 @@ const host = process.env.TAURI_DEV_HOST;
 // `/trae-workbuddy-switch/assets/*`（embed 中不存在）→ 回退成 HTML → 模块脚本 MIME 校验失败
 // → webui/桌面端空白页。`api::tests::embedded_index_html_references_only_embedded_assets`
 // 是这条约定的回归护栏。
+// ⚠️ `VITE_PAGES_DEMO` 同时决定两件事：**资源 base** 与 **路由类型**
+// （`App.tsx` 用它选 `HashRouter`）。但本地验证需要「HashRouter + base=/」这一组合：
+// Pages 形态的产物在本地预览下资源全部 404（`/trae-workbuddy-switch/assets/*` 不存在于
+// 本地静态根）⇒ 页面一行都不渲染，CDP 断言全假红。
+// ⇒ 把 base 抽成可覆盖的 `VITE_BASE`（缺省行为**逐字不变**）。
 // @ts-expect-error process is a nodejs global
-const base = process.env.VITE_PAGES_DEMO === "1" ? "/trae-workbuddy-switch/" : "/";
+const base =
+  process.env.VITE_BASE ?? (process.env.VITE_PAGES_DEMO === "1" ? "/trae-workbuddy-switch/" : "/");
 
 // https://vite.dev/config/
 export default defineConfig(async () => ({

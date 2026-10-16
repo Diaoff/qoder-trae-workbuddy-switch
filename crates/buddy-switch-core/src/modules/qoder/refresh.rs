@@ -128,6 +128,7 @@ mod tests {
             expires_at: None,
             source: None,
             remark: None,
+            group: None,
             added_at: None,
             updated_at: None,
         }

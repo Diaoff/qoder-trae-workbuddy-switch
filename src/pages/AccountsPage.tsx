@@ -2350,15 +2350,18 @@ function RegionPanel({ region }: { region: Region }) {
           // 关闭即清掉「导出所选」的目标：下次从工具栏进来仍是「全部」，不残留上一次的范围。
           if (!open) setExportTargets(null);
         }}
-        accounts={exportTargets ?? accounts}
+        accounts={(exportTargets ?? accounts).map((item) => ({
+          id: item.id,
+          label: accountDisplayName(item),
+        }))}
         onExported={onExported}
-        region={region}
+        scope={scope}
       />
       <ImportAccountsDialog
         open={importOpen}
         onOpenChange={setImportOpen}
         onImported={onImported}
-        region={region}
+        scope={scope}
       />
       {/* ★ P14 S4a · 插件会话抽屉（VS Code 插件 / CodeBuddy IDE）。
           与切换向导**并列而不是嵌套**：两者是不同流程，嵌套会让「关一个开一个」无法表达。 */}

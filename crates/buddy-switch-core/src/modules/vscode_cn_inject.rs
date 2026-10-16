@@ -645,6 +645,55 @@ fn encrypt_secret_payload(
     }
 }
 
+/// 目标描述符里「不参与加密」的字段的占位值。
+///
+/// [`VscodeSafeStorageTarget`] 还携带 `state.vscdb` 专用的 secret key 与扩展 id，
+/// 而 [`encrypt_electron_safe_storage`] 只做「Electron safeStorage 加解密」这一件事，
+/// 用不到它们；这里给一个恒定返回 `None` 的解析器，避免调用方为凑字段去编一个
+/// 假的目录解析函数。
+fn no_data_dir() -> Option<PathBuf> {
+    None
+}
+
+/// 加密**任意 Electron / Chromium 应用**的 `safeStorage` 明文（`v10` 布局）。
+///
+/// 与 [`decrypt_electron_safe_storage`] 严格对称：调用方只提供**该应用自己的**
+/// 密钥环标识（macOS Keychain 服务名 / Linux `secret-tool` 应用名候选），
+/// 平台差异（DPAPI / Keychain / secret-tool）与 `v10` 布局全部收敛在本模块。
+///
+/// ## 新调用方
+///
+/// **Qoder 桌面版账号切换**（`qoder::switch`）需要把指定账号的凭据**写回**
+/// `auth.v1.dat`：它先用 [`decrypt_electron_safe_storage`] 解出明文，改完字段后
+/// 必须用同一套 `v10` 布局重新加密回去。本函数就是那条写回路径的加密入口。
+///
+/// ⚠️ **不重写 AES 密钥本身**：Windows 下密钥来自同目录 `Local State` 的
+/// `os_crypt.encrypted_key`（DPAPI 解出），本函数只**读出来复用**，不做任何
+/// `CryptProtectData` 之类的密钥写回。
+///
+/// `data_root` 必须与 [`decrypt_electron_safe_storage`] 传入的一致（Windows 下
+/// 它就是 `Local State` 的父目录），否则会取到另一把密钥。
+pub(crate) fn encrypt_electron_safe_storage(
+    plaintext: &[u8],
+    data_root: &Path,
+    display_name: &'static str,
+    macos_keychain_service: &'static str,
+    linux_secret_tool_app_names: &'static [&'static str],
+) -> Result<Vec<u8>, String> {
+    // 平台分发入口 `encrypt_secret_payload` 接收的是 `state.vscdb` 专用的目标描述符，
+    // 这里按调用方给的密钥环标识拼一个「只管加解密」的描述符；`preferred_prefix` 传
+    // `None` ⇒ Linux 下沿用既有自动判定（有密钥环走 v11、否则退回 v10）。
+    let target = VscodeSafeStorageTarget {
+        data_dir_resolver: no_data_dir,
+        display_name,
+        secret_item_prefix_extension_id: "",
+        secret_key: "",
+        macos_keychain_service,
+        linux_secret_tool_app_names,
+    };
+    encrypt_secret_payload(plaintext, None, data_root, &target)
+}
+
 fn decode_secret_storage_value(
     raw_value: &str,
     data_root: &Path,

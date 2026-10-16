@@ -330,7 +330,7 @@ pub fn account_trash_list(scope: String) -> Result<Value, String> {
         Product::Trae => Ok(trae::account::trash_list_value_for_region(require_trae_region(
             scope,
         )?)),
-        Product::Qoder => return qoder_scope_not_applicable(),
+        Product::Qoder => Ok(qoder::trash::trash_list_value(require_qoder_region(scope)?)),
     }
 }
 
@@ -352,7 +352,10 @@ pub fn account_restore(scope: String, key: String) -> Result<Value, String> {
             trae::account::restore_for_region(require_trae_region(scope)?, &key)?;
             Ok(json!({ "ok": true }))
         }
-        Product::Qoder => return qoder_scope_not_applicable(),
+        Product::Qoder => {
+            qoder::trash::restore_account_for(require_qoder_region(scope)?, &key)?;
+            Ok(json!({ "ok": true }))
+        }
     }
 }
 
@@ -374,7 +377,10 @@ pub fn account_purge(scope: String, key: String) -> Result<Value, String> {
             trae::account::purge_for_region(require_trae_region(scope)?, &key)?;
             Ok(json!({ "ok": true }))
         }
-        Product::Qoder => return qoder_scope_not_applicable(),
+        Product::Qoder => {
+            qoder::trash::purge_account_for(require_qoder_region(scope)?, &key)?;
+            Ok(json!({ "ok": true }))
+        }
     }
 }
 
@@ -387,7 +393,7 @@ pub fn account_trash_clear(scope: String) -> Result<Value, String> {
     let removed = match scope.product() {
         Product::Workbuddy => account::clear_trash_for(require_wb_region(scope)?),
         Product::Trae => trae::account::clear_trash_for_region(require_trae_region(scope)?),
-        Product::Qoder => return qoder_scope_not_applicable(),
+        Product::Qoder => qoder::trash::clear_trash_for(require_qoder_region(scope)?),
     };
     Ok(json!({ "ok": true, "removed": removed }))
 }
@@ -415,7 +421,9 @@ pub fn accounts_export(scope: String, account_ids: Vec<String>) -> Result<Value,
             let variant = trae_variant_of_region(require_trae_region(scope)?);
             trae::handlers::export_accounts_for(variant, &account_ids)
         }
-        Product::Qoder => return qoder_scope_not_applicable(),
+        Product::Qoder => {
+            qoder::export_import::export_accounts_for(require_qoder_region(scope)?, Some(&account_ids))
+        }
     }
 }
 
@@ -439,7 +447,11 @@ pub fn accounts_export_to_path(
             let variant = trae_variant_of_region(require_trae_region(scope)?);
             trae::handlers::export_accounts_to_path_for(variant, &account_ids, &path)
         }
-        Product::Qoder => return qoder_scope_not_applicable(),
+        Product::Qoder => qoder::export_import::export_accounts_to_path_for(
+            require_qoder_region(scope)?,
+            Some(&account_ids),
+            &path,
+        ),
     }
 }
 
@@ -468,7 +480,12 @@ pub fn accounts_import(
             let variant = trae_variant_of_region(require_trae_region(scope)?);
             trae::handlers::import_accounts_for(variant, &file_text, &indexes)
         }
-        Product::Qoder => return qoder_scope_not_applicable(),
+        Product::Qoder => qoder::export_import::import_accounts_for(
+            require_qoder_region(scope)?,
+            &file_text,
+            Some(&indexes),
+            true,
+        ),
     }
 }
 
@@ -908,7 +925,16 @@ pub fn export_accounts_to_path(
 /// **无需 region**：预览是纯函数（只解析请求里的文件文本，不触及任何 region 账号库），
 /// 因此显式忽略前端可能一并带来的 `region` 参数。
 #[tauri::command(rename_all = "camelCase")]
-pub fn preview_import_accounts(file_text: String, _region: Option<String>) -> Result<Value, String> {
+pub fn preview_import_accounts(file_text: String, scope: Option<String>) -> Result<Value, String> {
+    // ⚠️ 2026-10-15：第二个参数由 `region`（一直被忽略）升为 `scope`。Qoder 的预览要按
+    // **区域**判「归属不符」，而 `region=cn` 分不出 `wb-cn` 与 `qoder-cn`。
+    // 缺省 / 非 Qoder 作用域 ⇒ 走既有的纯解析分支（旧行为逐字不变）。
+    if let Some(raw) = scope.as_deref().filter(|value| !value.trim().is_empty()) {
+        let parsed = resolve_scope_param(Some(raw))?;
+        if parsed.product() == Product::Qoder {
+            return qoder::export_import::preview_accounts(require_qoder_region(parsed)?, &file_text);
+        }
+    }
     export_import::preview_accounts(&file_text)
 }
 
@@ -3734,7 +3760,7 @@ mod parameterized_scope_tests {
 //   能力门控表是按平台组织的，这里取 WorkBuddy 的 `gateway` 能力作门控 ——
 //   桌面端恒具备，且「网关类能力可用与否」对两个产品线是一致的。
 //
-// ★ 七个命令的名字与路径前缀（`/api/unified-gateway/...`）刻意与
+// ★ 这组命令（9 条）的名字与路径前缀（`/api/unified-gateway/...`）刻意与
 //   `*_trae_api_key` / `list_api_keys` 两条既有线路**同形**：命名面一致，
 //   前端与门禁（`scripts/check-api-contract.cjs`）都能按同一套规则校验。
 // ---------------------------------------------------------------------------
@@ -3939,13 +3965,13 @@ pub async fn qoder_set_account_remark(
     Ok(json!({ "ok": changed }))
 }
 
-/// POST /api/qoder/accounts/delete —— 删除一条账号（**硬删除**）。
+/// POST /api/qoder/accounts/delete —— 删除一条账号（**软删除**：移入回收站，可恢复）。
 #[tauri::command]
 pub async fn qoder_delete_account(scope: String, uid: String) -> Result<Value, String> {
     let scope = resolve_scope_param(Some(&scope))?;
     let region = require_qoder_region(scope)?;
     let removed = tauri::async_runtime::spawn_blocking(move || {
-        qoder::account::remove_account_for(region, &uid)
+        qoder::trash::trash_account_for(region, &uid)
     })
     .await
     .map_err(|error| format!("删除 Qoder 账号失败: {error}"))??;
@@ -3983,6 +4009,88 @@ pub async fn qoder_credits(scope: String) -> Result<Value, String> {
     let region = require_qoder_region(scope)?;
     Ok(qoder::credits::region_view(region).await)
 }
+
+/// POST /api/qoder/oauth/start —— 发起设备授权，返回 `{ loginId, verificationUri, expiresIn }`。
+///
+/// 与 WB 的 `oauth_start` **同形**（前端 `OAuthLoginDialog` 是共用壳），但**必须带 scope**：
+/// 双区域各有自己的授权页与 `client_id`，缺 scope 无从判断该发哪一区的登录。
+#[tauri::command]
+pub async fn qoder_oauth_start(scope: String) -> Result<Value, String> {
+    let scope = resolve_scope_param(Some(&scope))?;
+    let region = require_qoder_region(scope)?;
+    qoder::oauth::login_start_for(region).await
+}
+
+/// POST /api/qoder/oauth/status —— 轮询一次登录结果（`{ done, result?, error? }`）。
+#[tauri::command]
+pub async fn qoder_oauth_status(scope: String, login_id: String) -> Result<Value, String> {
+    let scope = resolve_scope_param(Some(&scope))?;
+    let region = require_qoder_region(scope)?;
+    Ok(qoder::oauth::login_poll_for(region, &login_id).await)
+}
+
+/// GET /api/qoder/programs —— 程序位状态（只读；界面据此渲染胶囊行与「当前登录」徽章）。
+#[tauri::command]
+pub async fn qoder_program_status(scope: String) -> Result<Value, String> {
+    let scope = resolve_scope_param(Some(&scope))?;
+    let region = require_qoder_region(scope)?;
+    tauri::async_runtime::spawn_blocking(move || qoder::switch::program_status_for(region))
+        .await
+        .map_err(|error| format!("读取 Qoder 程序位状态失败: {error}"))
+}
+
+/// POST /api/qoder/accounts/switch —— 切换账号（把凭据写回指定程序位的登录态）。
+///
+/// ⚠️ 这是**写客户端文件**的动作（本项目里与 `switch_account` 同级）：客户端在跑时会被
+/// 拒绝（`switch::program_running` 守卫），失败自动还原备份。
+#[tauri::command]
+pub async fn qoder_switch_account(
+    scope: String,
+    program: String,
+    uid: String,
+) -> Result<Value, String> {
+    let scope = resolve_scope_param(Some(&scope))?;
+    let region = require_qoder_region(scope)?;
+    let program = qoder::switch::QoderProgram::parse(&program)
+        .ok_or_else(|| format!("未知的 Qoder 程序位: {program}"))?;
+    tauri::async_runtime::spawn_blocking(move || {
+        qoder::switch::switch_account_for(region, program, &uid)
+    })
+    .await
+    .map_err(|error| format!("切换 Qoder 账号失败: {error}"))?
+}
+
+/// POST /api/qoder/accounts/group —— 改自定义分组（与备注同构）。
+#[tauri::command]
+pub async fn qoder_set_account_group(
+    scope: String,
+    uid: String,
+    group: Option<String>,
+) -> Result<Value, String> {
+    let scope = resolve_scope_param(Some(&scope))?;
+    let region = require_qoder_region(scope)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        qoder::account::set_group_for(region, &uid, group)
+    })
+    .await
+    .map_err(|error| format!("保存 Qoder 分组失败: {error}"))?
+    .map(|changed| json!({ "ok": changed }))
+}
+
+/// GET /api/qoder/usage —— 逐日用量（**单位是 credits，不是 token**）。
+///
+/// ★ 为什么不是 token：Qoder CN 客户端按 credits 计费，客户端三处存储里的 token 计数
+/// **恒为 0**（会话 jsonl / 运行日志 / 客户端 SQLite 的 `tokenCountsAvailable:false`）。
+/// 详见 `qoder::usage` 模块头。**宁可换个诚实的单位，也不伪造 token 数字。**
+#[tauri::command]
+pub async fn qoder_usage(scope: String, days: Option<u32>) -> Result<Value, String> {
+    let scope = resolve_scope_param(Some(&scope))?;
+    let region = require_qoder_region(scope)?;
+    tauri::async_runtime::spawn_blocking(move || qoder::usage::usage_view_for(region, days))
+        .await
+        .map_err(|error| format!("读取 Qoder 用量失败: {error}"))
+}
+
 
 // ---------------------------------------------------------------------------
 // Qoder API 网关（管理面）

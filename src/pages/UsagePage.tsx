@@ -56,7 +56,7 @@ const TokenStatsPage = lazy(() => import("@/pages/TokenStatsPage"));
 const CreditStatsPage = lazy(() => import("@/pages/CreditStatsPage"));
 const TraeTokenStatsPage = lazy(() => import("@/pages/TraeTokenStatsPage"));
 const TraeCreditsPage = lazy(() => import("@/pages/TraeCreditsPage"));
-const QoderUsagePending = lazy(() => import("@/pages/QoderUsagePending"));
+const QoderUsagePage = lazy(() => import("@/pages/QoderUsagePage"));
 
 /** 一级四视图（与原型 `tabs` 一一对应）。 */
 export type UsageTab = "trend" | "models" | "sessions" | "credits";
@@ -101,9 +101,11 @@ const USAGE_PAGES: Record<
      而不是「现在恰好都为 true」就可以删掉的巧合。 */
   workbuddy: { tokens: TokenStatsPage, credits: CreditStatsPage, tokenViews: true },
   trae: { tokens: TraeTokenStatsPage, credits: TraeCreditsPage, tokenViews: true },
-  /* Qoder：Token 台账尚未落地 ⇒ 两个子页都是同一张「尚未接入」的说明页。
+  /* Qoder：**单位是 credits，不是 Token**（客户端按 credits 计费、token 计数恒为 0，
+     三处取证见 `QoderUsagePage` 文件头）⇒ 只有一张 credits 视图。
+     「积分」页也指向同一张：quota 是**余额快照**（实时查询），与「逐日用量」是两个口径。
      `tokenViews: false` 因为它不消费 `view` 参数（没有视图可切）。 */
-  qoder: { tokens: QoderUsagePending, credits: QoderUsagePending, tokenViews: false },
+  qoder: { tokens: QoderUsagePage, credits: QoderUsagePage, tokenViews: false },
 };
 
 export default function UsagePage({ defaultTab = "trend" }: { defaultTab?: UsageTab } = {}) {

@@ -1610,25 +1610,89 @@ check("★ Qoder 账号页 = 原型工作台同构（工具栏一行 + 卡开抽
     throw new Error("Qoder 卡又出现就地备注编辑 —— 备注归抽屉（原型：「点账号卡打开抽屉即可操作」）");
   }
   if (!/onOpenDetail/.test(card)) throw new Error("Qoder 卡没有整卡点击开详情");
-  // ③ 添加抽屉 = 原型方式卡机制下的**能力子集**（只出已落地的两条方式）
-  if (!/ways=\{\["local"\]\}/.test(page)) {
-    throw new Error("Qoder 添加抽屉没有把基础方式收窄到已落地子集（OAuth / 导入备份尚未落地）");
+  // ③ 添加抽屉 = 原型方式卡机制下的**能力子集**。
+  //   ★ 2026-10-15：OAuth 设备授权与导入备份已落地（后端 + 命令 + 弹层全在）⇒ 基础三张卡
+  //   **全部**渲染。这条断言因此从「只许 local」反转为「三条都要在」—— 它编码的是
+  //   「渲染的方式必须真的能用」，实现补齐后必须同步，否则护栏会反过来锁住功能。
+  if (!/ways=\{\["oauth", "local", "backup"\]\}/.test(page)) {
+    throw new Error("Qoder 添加抽屉没有渲染全部三种基础方式（OAuth / 本机导入 / 导入备份均已落地）");
   }
   if (!/paste-pat/.test(page)) throw new Error("Qoder 添加抽屉缺「粘贴 PAT」的 extraOption");
-  // ④ 批量条只出**已实现**的动作（Qoder 后端没有签到 / 刷新 / 导出账号命令）
-  if (!/onDelete:/.test(page)) throw new Error("Qoder 批量条缺删除接线");
-  if (/onCheckin:|onRefresh:|onExport:/.test(page)) {
-    throw new Error("Qoder 批量条出现未实现的动作（假控件）—— 批量动作必须与后端命令集一致");
+  if (!/QoderOAuthDialog/.test(page)) throw new Error("Qoder 添加抽屉的 OAuth 卡没有接线到弹层（假控件）");
+  // ④ 批量条出**已实现**的动作：删除 + 签到 + 刷新 + 导出（后端命令齐备）。
+  for (const anchor of ["onDelete:", "onCheckin:", "onRefresh:", "onExport:"]) {
+    if (!page.includes(anchor)) {
+      throw new Error(`Qoder 批量条缺 \`${anchor}\` 接线（对应后端命令已存在）`);
+    }
   }
-  // ⑤ 删除是**硬删除**：单删 + 批删都必须走确认弹层，且文案不许抄「可在回收站恢复」
+  // ⑤ 删除是**软删除**：单删 + 批删都必须走确认弹层；且文案必须如实说「可恢复」，
+  //   并给回收站入口（有恢复路径却没入口 = 假承诺）。
   if (!/pendingDelete/.test(page) || !/batchDeleteOpen/.test(page)) {
-    throw new Error("Qoder 删除没有确认弹层（硬删除必须先确认）");
+    throw new Error("Qoder 删除没有确认弹层（软删除也必须先确认）");
+  }
+  if (!/RecycleBinSheet/.test(page) || !/onOpenRecycleBin=/.test(page)) {
+    throw new Error("Qoder 有回收站却没有入口（onOpenRecycleBin / RecycleBinSheet 缺一）");
   }
   const zh = stripComments(fs.readFileSync(path.join(ROOT, "src/locales/domains/qoderPages.zh.ts"), "utf8"));
-  if (/回收站恢复|可在回收站/.test(zh)) {
-    throw new Error("Qoder 删除文案抄了 WB / Trae 的「可在回收站恢复」—— Qoder 没有回收站");
+  if (/永久删除，没有回收站/.test(zh)) {
+    throw new Error("Qoder 删除文案仍写「永久删除，没有回收站」—— 已是软删除，文案在谎报");
   }
-  return "工作台同构 · 备注在抽屉 · 添加方式子集 · 批量仅删除（+确认）";
+  if (!/回收站/.test(zh)) {
+    throw new Error("Qoder 删除文案没有提到回收站（软删除必须告知可恢复）");
+  }
+  return "工作台同构 · 备注在抽屉 · 添加方式三张全在 · 批量四动作 · 软删除 + 回收站入口";
+});
+
+check("★ Qoder 程序位 id 必须与**凭据来源 id 同源**（一事实一 id）", () => {
+  /* 真机实测踩到的缺陷（2026-10-15）：`switch.rs` 里 `QoderProgram::Desktop.as_str()`
+     返回 `"desktop"`，而 `profile.rs` 的 `KIND_DESKTOP` 是 `"desktop-app"`。
+     两套 id 让 `program_status_for` 按 `"desktop"` 去查来源表**永远落空** ——
+     真机表现是「桌面版明明登着，界面却显示未检测到」。单测测不到：两边各自都自洽。
+
+     ⇒ 这条护栏扫的是**是否引用了同一个常量**，而不是「值对不对」：
+     写死字符串字面量就红（哪怕这次值恰好对），因为下次改一处就会再次分叉。
+
+     变异：把 `as_str` 的 `super::profile::KIND_DESKTOP` 换回 `"desktop-app"` 字面量 ⇒ 本条变红。 */
+  const sw = readCode("crates/buddy-switch-core/src/modules/qoder/switch.rs");
+  const prof = readCode("crates/buddy-switch-core/src/modules/qoder/profile.rs");
+  const m = /pub fn as_str\(self\) -> &'static str \{([\s\S]*?)\n    \}/.exec(sw);
+  if (!m) throw new Error("找不到 `QoderProgram::as_str`");
+  if (!/profile::KIND_DESKTOP/.test(m[1]) || !/profile::KIND_CLI/.test(m[1])) {
+    throw new Error("`QoderProgram::as_str` 没有引用 `profile::KIND_*` —— 又出现了两套 id");
+  }
+  if (/=>\s*"desktop"|=>\s*"cli"/.test(m[1])) {
+    throw new Error("`QoderProgram::as_str` 里写死了字面量 —— 必须与 `profile::KIND_*` 同源");
+  }
+  if (!/pub const KIND_DESKTOP/.test(prof) || !/pub const KIND_CLI/.test(prof)) {
+    throw new Error("`profile::KIND_DESKTOP` / `KIND_CLI` 不再是 pub —— 同源关系断了");
+  }
+  return "程序位 id = 凭据来源 id（引用同一常量）· 无字面量分叉";
+});
+
+check("★ Qoder 删除端点必须走**软删除**（core 有对的函数 ≠ 命令面接对了）", () => {
+  /* 真机实测踩到的缺陷（2026-10-15）：`qoder/trash.rs` 写得好好的、单测全绿，
+     但两个宿主的 `/accounts/delete` handler 仍调 `account::remove_account_for`（硬删）
+     ⇒ 删除返回 `{ok:true}`、账号离开 live、**回收站里一条都没有** ⇒ 账号凭空消失、不可恢复。
+     单测测的是 `trash_account_for` 本体，**测不到命令面接错了哪个函数** —— 所以这条护栏
+     扫的是**调用点**，不是实现。
+
+     变异：把任一宿主的删除 handler 改回硬删函数 ⇒ 本条变红。 */
+  const server = readCode("crates/buddy-switch-server/src/api.rs");
+  const commands = readCode("src-tauri/src/commands.rs");
+  const accountRs = readCode("crates/buddy-switch-core/src/modules/qoder/account.rs");
+  for (const [name, source] of [["server/api.rs", server], ["commands.rs", commands]]) {
+    if (!/qoder::trash::trash_account_for/.test(source)) {
+      throw new Error(`${name} 的 Qoder 删除没有走 \`qoder::trash::trash_account_for\`（软删除）`);
+    }
+    if (/qoder::account::remove_account_for/.test(source)) {
+      throw new Error(`${name} 仍在调 Qoder 硬删除（回收站会静默丢数据）`);
+    }
+  }
+  // 硬删函数必须**不存在**（留着它就留了一条「再次接错」的路）。
+  if (/fn remove_account_for/.test(accountRs)) {
+    throw new Error("qoder/account.rs 又出现了硬删除函数 —— 软删除是唯一删除路径");
+  }
+  return "两宿主删除端点 = trash_account_for · 硬删函数已删 · 唯一不可逆步 = purge";
 });
 
 check("★ 卡片栅格不得用 `items-start`（同行卡片必须等高，原型 `.grid` 默认 stretch）", () => {
@@ -4717,7 +4781,7 @@ check("★ P5-③ `id|uid` 统一谓词：软删除 / 查找 / 备注共用 `res
   return "谓词 = id||uid · 软删除走谓词 · 按 uid 删除单测在";
 });
 
-check("★ P5-④ 参数化命令**恰 25 条**且后端带 scope（commands.rs 签名 + api.rs 读取）", () => {
+check("★ P5-④ 参数化命令**恰 32 条**且后端带 scope（commands.rs 签名 + api.rs 读取）", () => {
   /* 变异④（落点 = commands.rs / check-api-contract.cjs）：删掉某参数化命令的 `scope` 参数
      ⇒ 本条变红（桌面端与 webui 行为分叉，而构建全绿）。 */
   const contract = stripComments(fs.readFileSync(path.join(ROOT, P5_API_CONTRACT_CJS), "utf8"));
@@ -4729,13 +4793,15 @@ check("★ P5-④ 参数化命令**恰 25 条**且后端带 scope（commands.rs 
     "accounts_import", "accounts_import_local", "accounts_list", "checkin_status",
     "create_qoder_api_key", "credits", "get_disabled_models", "get_qoder_accounts",
     "get_qoder_gateway_models", "get_qoder_local_sources", "open_data_dir",
-    "qoder_checkin_claim", "qoder_checkin_status", "qoder_credits",
+    "preview_import_accounts", "qoder_checkin_claim", "qoder_checkin_status", "qoder_credits",
     "qoder_delete_account", "qoder_gateway_status", "qoder_import_local",
-    "qoder_import_pat", "qoder_refresh_account", "qoder_set_account_remark",
+    "qoder_import_pat", "qoder_oauth_start", "qoder_oauth_status",
+    "qoder_program_status", "qoder_refresh_account", "qoder_set_account_group",
+    "qoder_set_account_remark", "qoder_switch_account", "qoder_usage",
     "set_model_disabled",
   ];
   if (JSON.stringify([...names].sort()) !== JSON.stringify(EXPECTED)) {
-    throw new Error(`参数化命令集变了（应恰 25 条）：${JSON.stringify([...names].sort())}`);
+    throw new Error(`参数化命令集变了（应恰 32 条）：${JSON.stringify([...names].sort())}`);
   }
   const commands = readCode(COMMANDS_RS);
   const apiTs = readCode(P5_API_TS);
@@ -7572,7 +7638,7 @@ check("★ B2 账号页任何位置不得出现完整邮箱（回落链也不许
   const card = fs.readFileSync(path.join(ROOT, "src/components/account-card.tsx"), "utf8");
   for (const fn of ["accountDisplayName", "identityDisplayName"]) {
     if (!new RegExp(`export function ${fn}\\(`).test(card)) {
-      throw new Error(`缺少收口函数 \`${fn}\` —— 展示名与脱敏没有统一入口`);
+      throw new Error(`缺少收口函数 \`${fn}\` —— 展示名与脱敏没有统一网关`);
     }
   }
   return "无裸回落 + 两个收口函数齐备";

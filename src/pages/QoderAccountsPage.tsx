@@ -7,7 +7,8 @@
  * 视图切换 / 全选 / 添加账号）+ `accountCard()`（勾选 → 整卡可点开详情 → 页脚更多菜单）
  * + `drawerAccount()`（详情抽屉：账号信息 / 备注编辑 / 操作区含删除）+ `batchBarHtml()`
  * （批量条）。本页**逐件复用**了共享壳 —— `AccountWorkbench`（工具栏 / 批量条 / 空态 /
- * 分桶 / 卡片栅格与表格切换）、`AccountDetailDrawer`、`AddAccountDrawer` —— 与
+ * 分桶 / 卡片栅格与表格切换）、`AccountDetailDrawer`、`AddAccountDrawer`、
+ * `RecycleBinSheet`、`ImportAccountsDialog`、`ExportAccountsDialog` —— 与
  * `AccountsPage`（WB）/ `TraeAccountsPage` 是**同一条交互链**，差异只有数据。
  *
  * ## ★ 备注编辑在**抽屉**里（不在卡上）
@@ -18,26 +19,52 @@
  *
  * ## 与后端能力的对齐（缺的就不渲染，绝不摆假控件）
  *
- * - **添加方式**只出「从本机导入 + 粘贴 PAT」两条（OAuth / 导入备份尚未落地 ⇒
- *   `AddAccountDrawer` 的 `ways` 收窄 + `extraOptions` 注入 PAT）。
- * - **批量条只出「删除」**（Qoder 没有签到 / 刷新 / 导出账号的命令；
- *   `AccountWorkbench` 的批量动作已按「缺哪个不渲染哪个」对齐批量条契约）。
- * - **删除必须确认**：Qoder 是**硬删除**、没有回收站 ⇒ 弹层文案**不许**抄
- *   「可在回收站恢复」（那是 WB / Trae 的话）。
- * - 状态槽**恒有一枚**（凭据可用 / 凭据未识别 / 无可用凭据，与另两平台的状态槽同义）；
- *   「归属异常」是正交的独立徽章（正常时不渲染）。
+ * 2026-10-15 本轮把三块「后端早就绪、前端没接线」的能力补齐，并新增两块：
+ *
+ * | 能力 | 落点 |
+ * |:--|:--|
+ * | **OAuth 设备授权** | 添加抽屉第一张卡 → `QoderOAuthDialog`（后端 PKCE S256 设备流） |
+ * | **回收站**（软删除） | 工具栏回收站按钮 → 共用 `RecycleBinSheet`；删除文案随之改 |
+ * | **导入 / 导出备份** | 添加抽屉「导入备份」卡 + 抽屉 / 批量条的「导出」 |
+ * | **签到 / 额度** | 卡片指标行（积分）+ 状态槽（今日已签 / 未签）+ 抽屉签到区与积分包 + 批量签到 |
+ *
+ * 仍**不渲染**的：程序位胶囊（Qoder 的「切换客户端登录态」尚未落地）、`expiresAt`
+ * （单位未取证 —— 按毫秒渲染会把秒值显示成 1970 = 谎报）。
+ *
+ * ## 两处刻意的加载策略
+ *
+ * 1. **账号列表与「额度 / 签到」分开加载**：前者是本地文件（快），后者要打上游（慢，且
+ *    可能失败）。串在一起会让「上游 401」变成「整页打不开」——而账号列表本来是可读的。
+ * 2. **额度 / 签到失败只影响那两块**：不弹错误条、不清空列表，卡片自然回落成
+ *    「没有积分指标 / 状态槽显示凭据可用」。**未知不伪装成已知**。
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useLocation, useSearchParams } from "react-router-dom";
-import { AlertTriangle, KeyRound, Loader2, Plus, RefreshCw, ShieldAlert, UserRound } from "lucide-react";
+import {
+  AlertTriangle,
+  KeyRound,
+  Loader2,
+  Plus,
+  RefreshCw,
+  ShieldAlert,
+  UserRound,
+} from "lucide-react";
 import { toast } from "sonner";
 
-import { AccountDetailDrawer } from "@/components/account-detail-drawer";
+import {
+  AccountDetailDrawer,
+  type DetailActions,
+  type DetailPack,
+  type DetailSwitchTarget,
+} from "@/components/account-detail-drawer";
 import type { AccountColumn } from "@/components/account-table";
 import { AccountsTableAvatar } from "@/components/account-list-parts";
 import { AccountWorkbench } from "@/components/account-workbench";
 import { AddAccountDrawer } from "@/components/add-account-drawer";
+import { ExportAccountsDialog } from "@/components/export-accounts-dialog";
+import { ImportAccountsDialog } from "@/components/import-accounts-dialog";
+import { RecycleBinSheet } from "@/components/recycle-bin-sheet";
 import {
   QoderAccountCard,
   QoderForeignBadge,
@@ -46,6 +73,7 @@ import {
   qoderSourceLabel,
 } from "@/components/qoder/qoder-account-card";
 import { QoderLocalSourceRow } from "@/components/qoder/qoder-local-source-row";
+import { QoderOAuthDialog } from "@/components/qoder/qoder-oauth-dialog";
 import { ScopeChip, scopeLabel } from "@/components/scope-chip";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
@@ -55,7 +83,13 @@ import { EmptyState } from "@/components/ui/empty-state";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import * as api from "@/lib/api";
-import type { QoderAccountView, QoderLocalSourcesView } from "@/lib/api";
+import type {
+  QoderAccountView,
+  QoderCheckinRow,
+  QoderCreditsRow,
+  QoderLocalSourcesView,
+  QoderProgramStatus,
+} from "@/lib/api";
 import { accountSearchText } from "@/lib/account-search";
 import {
   filterAccounts,
@@ -83,6 +117,12 @@ const stampToMs = (iso: string | null | undefined): number | null => {
   return Number.isNaN(ts) ? null : ts;
 };
 
+/** 批量签到 / 批量刷新的失败项（`uid` 用于只重试失败项，`name` 用于展示）。 */
+interface FailedItem {
+  uid: string;
+  name: string;
+}
+
 export default function QoderAccountsPage() {
   const t = useT();
   const location = useLocation();
@@ -94,6 +134,12 @@ export default function QoderAccountsPage() {
   const [sources, setSources] = useState<QoderLocalSourcesView | null>(null);
   const [error, setError] = useState("");
   const [importing, setImporting] = useState(false);
+
+  /* ── 额度 / 签到（**上游调用**，与账号列表分开加载；见文件头「加载策略」） ── */
+  const [credits, setCredits] = useState<Record<string, QoderCreditsRow>>({});
+  const [checkinRows, setCheckinRows] = useState<Record<string, QoderCheckinRow>>({});
+  /* 程序位状态（只读）：决定页脚程序位行、「当前登录」徽章与「切换到此账号」的可用性。 */
+  const [programs, setPrograms] = useState<QoderProgramStatus[] | null>(null);
 
   /* ── 视图参数（页内 state，不进 URL、不进全局 store —— `account-list-view.ts` 的纪律） ── */
   const [query, setQuery] = useState("");
@@ -109,14 +155,27 @@ export default function QoderAccountsPage() {
   /* ── 抽屉 / 弹层 ── */
   const [addDrawerOpen, setAddDrawerOpen] = useState(false);
   const [patOpen, setPatOpen] = useState(false);
+  const [oauthOpen, setOauthOpen] = useState(false);
+  const [recycleOpen, setRecycleOpen] = useState(false);
+  const [importOpen, setImportOpen] = useState(false);
+  const [exportOpen, setExportOpen] = useState(false);
+  const [exportTargets, setExportTargets] = useState<QoderAccountView[] | null>(null);
   const [detail, setDetail] = useState<QoderAccountView | null>(null);
   const [detailAutoEditRemark, setDetailAutoEditRemark] = useState(false);
+  const [detailAutoEditGroup, setDetailAutoEditGroup] = useState(false);
+  /** 待确认的切换（账号 × 程序位）。 */
+  const [switchTarget, setSwitchTarget] = useState<{ account: QoderAccountView; program: QoderProgramStatus } | null>(null);
+  const [switchBusy, setSwitchBusy] = useState(false);
   const [pendingDelete, setPendingDelete] = useState<QoderAccountView | null>(null);
   const [batchDeleteOpen, setBatchDeleteOpen] = useState(false);
-  const [deleteBusy, setDeleteBusy] = useState(false);
+
+  /** 批量动作 / 删除的进行中态（**按钮态**，与区块加载态分家）。 */
+  const [busy, setBusy] = useState(false);
+  /** 批量签到结果条（含失败项，可只重试失败项）。`null` = 不渲染。 */
+  const [checkinResult, setCheckinResult] = useState<{ okCount: number; failed: FailedItem[] } | null>(null);
 
   /** 失败态「重新检测」按钮的进行中态（操作进行中 ⇒ 按钮内 Loader2）。 */
-  const { busy, run } = useRefreshAction();
+  const { busy: refreshBusy, run } = useRefreshAction();
 
   const reload = useCallback(async () => {
     setError("");
@@ -136,6 +195,41 @@ export default function QoderAccountsPage() {
   useEffect(() => {
     void reload();
   }, [reload]);
+
+  /**
+   * 拉额度与签到状态。
+   *
+   * ⚠️ `allSettled`：两条互不依赖，**一条失败不该拖垮另一条**（区域未开放签到 ≠ 额度也拿不到）。
+   * 失败时**保持上一份快照**（不清空）—— 清空会把「暂时取不到」显示成「没有额度」。
+   */
+  const loadEnrichment = useCallback(async () => {
+    const [creditsView, checkinView, programView] = await Promise.allSettled([
+      api.qoderCredits(scope),
+      api.qoderCheckinStatus(scope),
+      api.qoderProgramStatus(scope),
+    ]);
+    if (programView.status === "fulfilled") {
+      setPrograms(programView.value.programs ?? []);
+    }
+    if (creditsView.status === "fulfilled") {
+      setCredits(Object.fromEntries(creditsView.value.accounts.map((row) => [row.uid, row])));
+    }
+    if (checkinView.status === "fulfilled") {
+      setCheckinRows(Object.fromEntries(checkinView.value.accounts.map((row) => [row.uid, row])));
+    }
+  }, [scope]);
+
+  const hasAccounts = accounts !== null && accounts.length > 0;
+  useEffect(() => {
+    if (!hasAccounts) {
+      // 空库时清掉旧快照：切到另一个区域后残留上一个区域的额度 = 撒谎。
+      setCredits({});
+      setCheckinRows({});
+      setPrograms(null);
+      return;
+    }
+    void loadEnrichment();
+  }, [hasAccounts, loadEnrichment]);
 
   /** `/` 键聚焦搜索框（与另两平台同一条规则）；在输入框里打字时不劫持。 */
   useEffect(() => {
@@ -184,9 +278,13 @@ export default function QoderAccountsPage() {
   /**
    * 列表配置 —— 差异**全部以数据表达**（共享组件里不写平台判断）。
    *
-   * 排序键只提供有数据支撑的两个：`名称` 与 `最近更新`（`updatedAt`，记录最后一次
-   * 被导入 / 改备注的时刻）。**不提供**「积分优先级」（没有积分数据源 —— 摆一个
-   * 按不存在字段排的选项就是假选项）。
+   * 排序键三个，各有数据支撑：
+   * - `priority`（复用共享的排序键名，语义 = **积分余额降序**，与 WB 的「优先级」同义）：
+   *   额度来自 `qoder_credits`；**未取到额度的账号排最后**（`-1`），不是排最前
+   *   —— 把「不知道」当成「最高」会让用户去用一个可能没余额的号。
+   * - `name` / `recent`（`updatedAt`，记录最后一次被导入 / 改备注的时刻）。
+   *
+   * **不提供**「按到期」：`expiresAt` 单位未取证（见文件头）。
    */
   const listConfig = useMemo<AccountListConfig<QoderAccountView>>(() => {
     const nameComparator: AccountComparator<QoderAccountView> = (left, right) =>
@@ -196,6 +294,8 @@ export default function QoderAccountsPage() {
       });
     const recentComparator: AccountComparator<QoderAccountView> = (left, right) =>
       (stampToMs(right.updatedAt) ?? -Infinity) - (stampToMs(left.updatedAt) ?? -Infinity);
+    const creditComparator: AccountComparator<QoderAccountView> = (left, right) =>
+      (credits[right.uid]?.remaining ?? -1) - (credits[left.uid]?.remaining ?? -1);
     return {
       searchText: (account) =>
         accountSearchText({
@@ -203,24 +303,38 @@ export default function QoderAccountsPage() {
           uid: displayText(account.uid),
           remark: displayText(account.remark),
         }),
-      comparators: { name: nameComparator, recent: recentComparator },
+      comparators: { priority: creditComparator, name: nameComparator, recent: recentComparator },
       bucketKey: (account, key) => {
         if (key === "status") {
           if (!account.hasCredential) return t("qoder.page.accounts.toolbar.statusBucket.noCredential");
           if (account.credential.unrecognized) return t("qoder.page.accounts.toolbar.statusBucket.unrecognized");
           return t("qoder.page.accounts.toolbar.statusBucket.normal");
         }
+        if (key === "program") {
+          /* 按**程序位**分桶（与 WB 的 `program` 桶同义）：这条账号当前登在哪个程序位里。
+             没登在任何程序位 ⇒ 单独的桶名（**不能返回 null** —— 那会让这些行落进「无桶名」桶，
+             与其它桶的渲染不一致）。 */
+          const hit = (programs ?? []).filter((program) => program.currentUid === account.uid);
+          if (hit.length === 0) return t("qoder.page.accounts.toolbar.programBucket.none");
+          return hit.map((program) => program.label).join(" + ");
+        }
+        if (key === "group") {
+          // 未分组**必须有自己的桶名**（不能返回 null）—— 返回 null 会让这些行落进
+          // 「无桶名」桶、与其它桶的渲染不一致（WB 侧同样的处理）。
+          return displayText(account.group) ?? t("qoder.page.accounts.toolbar.groupBucket.ungrouped");
+        }
         return null;
       },
-      availableSorts: ["name", "recent"],
-      availableGroups: ["none", "status"],
+      availableSorts: ["priority", "name", "recent"],
+      availableGroups: ["none", "program", "status", "group"],
     };
-  }, [t]);
+  }, [t, credits, programs]);
 
   const sortOptions = useMemo(
     () =>
       (
         [
+          ["priority", t("qoder.page.accounts.toolbar.sort.credits")],
           ["name", t("qoder.page.accounts.toolbar.sort.name")],
           ["recent", t("qoder.page.accounts.toolbar.sort.recent")],
         ] as const
@@ -232,7 +346,9 @@ export default function QoderAccountsPage() {
       (
         [
           ["none", t("qoder.page.accounts.toolbar.group.none")],
+          ["program", t("qoder.page.accounts.toolbar.group.program")],
           ["status", t("qoder.page.accounts.toolbar.group.status")],
+          ["group", t("qoder.page.accounts.toolbar.group.group")],
         ] as const
       ).map(([value, label]) => ({ value, label })),
     [t],
@@ -241,6 +357,16 @@ export default function QoderAccountsPage() {
   const filtered = useMemo(() => filterAccounts(rows, listConfig, query), [rows, listConfig, query]);
   const sorted = useMemo(() => sortAccounts(filtered, sort, listConfig), [filtered, sort, listConfig]);
   const buckets = useMemo(() => groupAccounts(sorted, group, listConfig), [sorted, group, listConfig]);
+
+  /** 今日签到三态（`null` = 未知，**不伪装成未签**）。 */
+  const checkinTodayOf = useCallback(
+    (account: QoderAccountView): boolean | null => {
+      const row = checkinRows[account.uid];
+      if (!row || !row.ok) return null;
+      return row.todayCheckedIn === true;
+    },
+    [checkinRows],
+  );
 
   /* ── 选择（照 Trae：全选只作用于**当前可见**的行） ── */
 
@@ -280,6 +406,9 @@ export default function QoderAccountsPage() {
       return next;
     });
   }
+
+  /** 当前选中的账号行（按列表顺序，不是 Set 的插入顺序）。 */
+  const selectedRows = useMemo(() => rows.filter((a) => selected.has(a.uid)), [rows, selected]);
 
   /* ── 动作 ── */
 
@@ -340,42 +469,200 @@ export default function QoderAccountsPage() {
     }
   }
 
+  /**
+   * 抽屉里的「切换到此账号」目标（原型 :3480-3486）。
+   *
+   * `available` 的判据 = **该程序位已就绪且客户端没在跑**：
+   * - 四态不是 `ready` ⇒ 没装 / 没登录 / 读不出来，切换无处可写；
+   * - 客户端在跑 ⇒ 后端会拒绝（退出时内存态会覆盖），界面提前置灰。
+   * `current` 为真时不再重复切换（只读高亮）。
+   */
+  const switchTargetsFor = useCallback(
+    (account: QoderAccountView): DetailSwitchTarget[] =>
+      (programs ?? []).map((program) => ({
+        key: program.id,
+        label: program.label,
+        current: program.currentUid === account.uid,
+        available: program.state === "ready" && !program.running,
+        busy: switchBusy,
+        onSwitch: () => setSwitchTarget({ account, program }),
+      })),
+    [programs, switchBusy],
+  );
+
+  /** 保存自定义分组（与备注同构）。 */
+  async function saveGroup(account: QoderAccountView, group: string): Promise<boolean> {
+    const value = group.trim();
+    try {
+      const result = await api.qoderSetAccountGroup(scope, account.uid, value === "" ? null : value);
+      if (!result.ok) {
+        toast.error(t("qoder.page.accounts.group.missing"));
+        return false;
+      }
+      setDetail((prev) => (prev && prev.uid === account.uid ? { ...prev, group: value === "" ? null : value } : prev));
+      await reload();
+      toast.success(t("qoder.page.accounts.group.saved"));
+      return true;
+    } catch (e) {
+      toast.error(api.asError(e));
+      return false;
+    }
+  }
+
+  /**
+   * 执行切换（把凭据写回指定程序位的登录态）。
+   *
+   * ⚠️ 后端会在客户端运行时拒绝、写后校验失败时自动还原备份 —— 前端**如实转述**后端的话，
+   * 不要自己编「切换成功」。
+   */
+  async function confirmSwitch() {
+    if (!switchTarget || switchBusy) return;
+    const { account, program } = switchTarget;
+    setSwitchBusy(true);
+    try {
+      const result = await api.qoderSwitchAccount(scope, program.id, account.uid);
+      toast.success(t("qoder.page.accounts.switch.done", { name: qoderAccountName(account) }), {
+        description: result.backupPath
+          ? t("qoder.page.accounts.switch.backup", { path: result.backupPath })
+          : undefined,
+      });
+      setSwitchTarget(null);
+      /* 切换改的是**客户端登录态**⇒ 必须重取程序位状态（「当前登录」徽章才会跟着动）。 */
+      await loadEnrichment();
+    } catch (e) {
+      toast.error(api.asError(e));
+    } finally {
+      setSwitchBusy(false);
+    }
+  }
+
+  /**
+   * 刷新一条账号的令牌。
+   *
+   * ★ 走的是**同一份** `qoder_refresh_account`（网关页的「恢复」用的也是它）——
+   * 不另造一条「账号页专用刷新」。
+   */
+  async function refreshOne(account: QoderAccountView) {
+    try {
+      await api.qoderRefreshAccount(scope, account.uid);
+      toast.success(t("qoder.page.accounts.refresh.done", { name: qoderAccountName(account) }));
+      await loadEnrichment();
+    } catch (e) {
+      toast.error(api.asError(e));
+    }
+  }
+
+  /**
+   * 批量 / 单条签到。
+   *
+   * ⚠️ 后端只有**单账号** `qoder_checkin_claim` ⇒ 这里顺序逐条调，并**如实汇报成败**
+   * （批量操作必然可能部分失败，不能让「批量签到」看起来永远 100% 成功）。
+   * `baseOk` 用于「只重试失败项」时把上一轮的成果累计进去。
+   */
+  async function runCheckin(targets: QoderAccountView[], baseOk = 0) {
+    if (targets.length === 0 || busy) return;
+    setBusy(true);
+    const failed: FailedItem[] = [];
+    let ok = 0;
+    for (const account of targets) {
+      try {
+        const res = await api.qoderCheckinClaim(scope, account.uid);
+        if (res.ok) ok += 1;
+        else failed.push({ uid: account.uid, name: qoderAccountName(account) });
+      } catch {
+        failed.push({ uid: account.uid, name: qoderAccountName(account) });
+      }
+    }
+    setBusy(false);
+    setCheckinResult({ okCount: baseOk + ok, failed });
+    await loadEnrichment();
+  }
+
+  /** 批量刷新令牌（同样顺序逐条；后端只有单账号命令）。 */
+  async function runRefresh(targets: QoderAccountView[]) {
+    if (targets.length === 0 || busy) return;
+    setBusy(true);
+    let ok = 0;
+    let fail = 0;
+    for (const account of targets) {
+      try {
+        await api.qoderRefreshAccount(scope, account.uid);
+        ok += 1;
+      } catch {
+        fail += 1;
+      }
+    }
+    setBusy(false);
+    if (fail === 0) toast.success(t("qoder.page.accounts.refresh.batchDone", { n: String(ok) }));
+    else
+      toast.error(
+        t("qoder.page.accounts.checkin.batchPartial", { ok: String(ok), fail: String(fail) }),
+      );
+    await loadEnrichment();
+  }
+
   function openDetail(account: QoderAccountView) {
     setDetailAutoEditRemark(false);
+    setDetailAutoEditGroup(false);
     setDetail(account);
   }
 
   /** 「更多 → 编辑备注」：打开抽屉并**直接进入编辑态**（原型 `drawerAccount(id, true)`）。 */
   function openRemark(account: QoderAccountView) {
     setDetailAutoEditRemark(true);
+    setDetailAutoEditGroup(false);
     setDetail(account);
   }
 
-  /** 单账号删除（**硬删除**：弹层确认是唯一的机会窗口）。 */
+  /** 「更多 → 设置分组」。 */
+  function openGroup(account: QoderAccountView) {
+    setDetailAutoEditRemark(false);
+    setDetailAutoEditGroup(true);
+    setDetail(account);
+  }
+
+  /**
+   * 单账号删除（**软删除**：移入回收站，可恢复）。
+   *
+   * 弹层确认仍是必需的（账号会离开列表），但文案已从「永久删除、没有回收站」改成
+   * 「可在回收站恢复」—— 后端自 2026-10-15 起就是软删除，旧文案会**谎报**。
+   * 删完给「撤销」入口（`accountRestore`），与回收站同一条命令。
+   */
   async function confirmSingleDelete() {
-    if (!pendingDelete || deleteBusy) return;
-    setDeleteBusy(true);
+    if (!pendingDelete || busy) return;
+    const target = pendingDelete;
+    setBusy(true);
     try {
-      await api.qoderDeleteAccount(scope, pendingDelete.uid);
-      toast.success(t("qoder.page.accounts.removed", { name: qoderAccountName(pendingDelete) }));
+      await api.qoderDeleteAccount(scope, target.uid);
       setPendingDelete(null);
+      toast.success(t("qoder.page.accounts.removed", { name: qoderAccountName(target) }), {
+        action: {
+          label: t("qoder.page.accounts.trash.undo"),
+          onClick: () => {
+            void api
+              .accountRestore(scope, target.uid)
+              .then(() => {
+                toast.success(t("qoder.page.accounts.trash.restored", { name: qoderAccountName(target) }));
+                return reload();
+              })
+              .catch((e) => toast.error(api.asError(e)));
+          },
+        },
+      });
       await reload();
     } catch (e) {
       toast.error(api.asError(e));
     } finally {
-      setDeleteBusy(false);
+      setBusy(false);
     }
   }
 
-  /**
-   * 批量删除：**顺序逐条**调单删命令（后端只有单删），并如实汇报成败 ——
-   * 批量操作必然可能部分失败，不能让「批量删除」看起来永远 100% 成功。
-   */
+  /** 批量删除：顺序逐条调单删命令，并如实汇报成败。 */
   async function confirmBatchDelete() {
-    if (deleteBusy) return;
-    const targets = rows.filter((a) => selected.has(a.uid));
+    if (busy) return;
+    const targets = selectedRows;
     if (targets.length === 0) return;
-    setDeleteBusy(true);
+    setBusy(true);
     let ok = 0;
     let fail = 0;
     for (const account of targets) {
@@ -386,7 +673,7 @@ export default function QoderAccountsPage() {
         fail += 1;
       }
     }
-    setDeleteBusy(false);
+    setBusy(false);
     setBatchDeleteOpen(false);
     if (fail === 0) toast.success(t("qoder.page.accounts.delete.done", { n: String(ok) }));
     else toast.error(t("qoder.page.accounts.delete.partial", { ok: String(ok), fail: String(fail) }));
@@ -418,6 +705,67 @@ export default function QoderAccountsPage() {
     return rowsOut;
   }, [detail, t]);
 
+  /**
+   * 抽屉的积分包 —— **只在拿到额度时**渲染（`packs` 空数组 = 抽屉不渲染该区块）。
+   *
+   * ⚠️ `expiryText` 给 `—`：额度响应里的 `expiresAt` 单位未取证，按毫秒渲染会把秒值
+   * 显示成 1970（谎报）。宁可写「未知」。
+   */
+  const detailPacks = useMemo<DetailPack[]>(() => {
+    if (!detail) return [];
+    const row = credits[detail.uid];
+    if (!row || !row.ok) return [];
+    const remaining = row.remaining ?? 0;
+    const total = row.total ?? 0;
+    const used = row.used ?? 0;
+    return [
+      {
+        key: detail.uid,
+        name: displayText(row.plan) ?? t("qoder.page.accounts.metric.credits"),
+        remainingText: String(remaining),
+        totalText: String(total),
+        usedText: String(used),
+        expiryText: "—",
+        expired: false,
+        expiringSoon: false,
+        ratio: total > 0 ? Math.min(100, Math.max(0, (remaining / total) * 100)) : 0,
+      },
+    ];
+  }, [detail, credits, t]);
+
+  /** 抽屉的签到区 —— 只在签到状态**明确可读**时渲染（未知 = 不摆「+0」）。 */
+  const detailCheckin = useMemo(() => {
+    if (!detail) return null;
+    const row = checkinRows[detail.uid];
+    if (!row || !row.ok || row.todayCheckedIn === undefined) return null;
+    return {
+      todayCheckedIn: row.todayCheckedIn === true,
+      rewardCredits: row.rewardCredits ?? null,
+      streakDays: row.streakDays ?? null,
+    };
+  }, [detail, checkinRows]);
+
+  const detailActions = useMemo<DetailActions | null>(() => {
+    if (!detail) return null;
+    const credentialUnavailable = !detail.hasCredential;
+    return {
+      onRefresh: () => void refreshOne(detail),
+      onCheckin: () => void runCheckin([detail]),
+      /* 「手动签到」只在凭据可用时出现（凭据坏了点它必然失败）。 */
+      showCheckin: detail.hasCredential,
+      onExport: () => {
+        setExportTargets([detail]);
+        setExportOpen(true);
+      },
+      onDelete: () => {
+        const target = detail;
+        setDetail(null);
+        setPendingDelete(target);
+      },
+      credentialUnavailable,
+    };
+  }, [detail]);
+
   const columns: AccountColumn<QoderAccountView>[] = [
     {
       key: "account",
@@ -442,10 +790,26 @@ export default function QoderAccountsPage() {
       header: t("qoder.page.accounts.table.status"),
       render: (account) => (
         <div className="flex flex-wrap items-center gap-1">
-          <QoderStatusChips account={account} />
+          <QoderStatusChips account={account} checkinToday={checkinTodayOf(account)} />
           <QoderForeignBadge account={account} />
         </div>
       ),
+    },
+    {
+      key: "credits",
+      header: t("qoder.page.accounts.metric.credits"),
+      render: (account) => {
+        const row = credits[account.uid];
+        if (!row || !row.ok) return <span className="text-muted-foreground">—</span>;
+        return (
+          <span className="tabular-nums">
+            {t("qoder.page.accounts.metric.creditsValue", {
+              remaining: String(row.remaining ?? 0),
+              total: String(row.total ?? 0),
+            })}
+          </span>
+        );
+      },
     },
     {
       key: "source",
@@ -529,6 +893,8 @@ export default function QoderAccountsPage() {
           label: t("shared.addDrawer.title"),
           onClick: () => setAddDrawerOpen(true),
         }}
+        /* ★ 回收站入口（软删除的唯一恢复路径；后端已是软删除，没有入口 = 假承诺）。 */
+        onOpenRecycleBin={() => setRecycleOpen(true)}
         loading={accounts === null}
         emptyState={emptyState}
         notices={
@@ -541,8 +907,8 @@ export default function QoderAccountsPage() {
                   <span>{error}</span>
                   {/* ★ 失败态**必须给一条出路**：没有它，用户唯一能做的就是重启应用。 */}
                   <div className="mt-2">
-                    <Button size="sm" variant="outline" onClick={() => void run(() => reload())} disabled={busy}>
-                      {busy ? <Loader2 className="animate-spin" /> : <RefreshCw />}
+                    <Button size="sm" variant="outline" onClick={() => void run(() => reload())} disabled={refreshBusy}>
+                      {refreshBusy ? <Loader2 className="animate-spin" /> : <RefreshCw />}
                       {t("qoder.page.accounts.recheck")}
                     </Button>
                   </div>
@@ -564,12 +930,35 @@ export default function QoderAccountsPage() {
             ) : null}
           </>
         }
-        checkinResult={null}
+        checkinResult={
+          checkinResult
+            ? {
+                okCount: checkinResult.okCount,
+                failedNames: checkinResult.failed.map((item) => item.name),
+                /* 只重试失败项（原型 `checkin-bar` 的既有语义）。 */
+                onRetry:
+                  checkinResult.failed.length > 0
+                    ? () => {
+                        const failedUids = new Set(checkinResult.failed.map((item) => item.uid));
+                        void runCheckin(
+                          rows.filter((a) => failedUids.has(a.uid)),
+                          checkinResult.okCount,
+                        );
+                      }
+                    : undefined,
+              }
+            : null
+        }
+        onDismissCheckinResult={() => setCheckinResult(null)}
         batch={{
           selectedCount: selected.size,
-          busy: deleteBusy,
-          /* 只有删除是已实现动作（签到 / 刷新 Token / 导出账号的命令尚未落地）——
-             其余按钮由批量条按「缺哪个不渲染哪个」自动消失。 */
+          busy,
+          onCheckin: () => void runCheckin(selectedRows),
+          onRefresh: () => void runRefresh(selectedRows),
+          onExport: () => {
+            setExportTargets(selectedRows);
+            setExportOpen(true);
+          },
           onDelete: () => setBatchDeleteOpen(true),
           onClear: () => setSelected(new Set()),
         }}
@@ -604,21 +993,35 @@ export default function QoderAccountsPage() {
         bucketAllSelected={bucketAllSelected}
         bucketSomeSelected={bucketSomeSelected}
         onOpenRow={openDetail}
-        /* Qoder 没有「当前登录」概念（程序位未落地）⇒ 恒 false，不亮竖条。 */
-        isRowCurrent={() => false}
+        /* 「当前登录」= 任一程序位登着这条账号（与卡片上的徽章**同一判据**）。 */
+        isRowCurrent={(account) =>
+          (programs ?? []).some((program) => program.currentUid === account.uid)
+        }
         rowSelectLabel={(account) => t("shared.table.selectRowAria", { name: qoderAccountName(account) })}
         rowOpenLabel={(account) => t("shared.table.openRowAria", { name: qoderAccountName(account) })}
-        renderCard={(account) => (
-          <QoderAccountCard
-            key={account.uid}
-            account={account}
-            selected={selected.has(account.uid)}
-            onToggleSelect={toggleSelect}
-            onOpenDetail={openDetail}
-            onEditRemark={openRemark}
-            onDelete={setPendingDelete}
-          />
-        )}
+        renderCard={(account) => {
+          const row = credits[account.uid];
+          return (
+            <QoderAccountCard
+              key={account.uid}
+              account={account}
+              selected={selected.has(account.uid)}
+              onToggleSelect={toggleSelect}
+              onOpenDetail={openDetail}
+              onEditRemark={openRemark}
+              onDelete={setPendingDelete}
+              onSetGroup={openGroup}
+              credits={
+                row && row.ok
+                  ? { remaining: row.remaining ?? 0, total: row.total ?? 0, plan: row.plan ?? null }
+                  : null
+              }
+              checkinToday={checkinTodayOf(account)}
+              programs={programs}
+              onSwitch={(program) => setSwitchTarget({ account, program })}
+            />
+          );
+        }}
       />
 
       {/* 产品名走注册表（唯一来源）—— 本页在 Qoder 分区下渲染，但产品名不写死。 */}
@@ -630,11 +1033,13 @@ export default function QoderAccountsPage() {
         onOpenChange={setAddDrawerOpen}
         scopeLabel={scopeLabel(t, scope)}
         installed={localInstalled}
-        /* 只出**已落地**的两条方式：从本机导入（基础卡）+ 粘贴 PAT（extraOptions）。
-           OAuth / 导入备份尚未落地 ⇒ 不渲染对应卡（免得点下去必然失败）。 */
-        ways={["local"]}
+        /* 基础三张卡**全部已落地**：OAuth 设备授权（本轮新增）/ 从本机导入 / 导入备份。
+           粘贴 PAT 走 extraOptions（它不属于原型的三种「添加方式」）。 */
+        ways={["oauth", "local", "backup"]}
         onPick={(way) => {
+          if (way === "oauth") setOauthOpen(true);
           if (way === "local") void onImportLocal();
+          if (way === "backup") setImportOpen(true);
         }}
         extraOptions={[
           {
@@ -655,10 +1060,18 @@ export default function QoderAccountsPage() {
           localDesc: t("shared.addDrawer.localDesc"),
           backupTitle: t("shared.addDrawer.backupTitle"),
           backupDesc: t("shared.addDrawer.backupDesc"),
-          /* ⚠️ 不抄 shared 那句「可先用 OAuth 登录」—— Qoder 的 OAuth 尚未落地，
-             照抄会把用户引向一个不存在的能力。 */
-          notInstalled: t("qoder.page.accounts.addDrawer.notInstalled"),
+          notInstalled: t("shared.addDrawer.notInstalled"),
           moreTools: t("shared.addDrawer.moreTools"),
+        }}
+      />
+
+      {/* ── OAuth 设备授权弹窗（本轮新增） ── */}
+      <QoderOAuthDialog
+        open={oauthOpen}
+        onOpenChange={setOauthOpen}
+        scope={scope}
+        onCollected={() => {
+          void reload().then(() => loadEnrichment());
         }}
       />
 
@@ -670,7 +1083,70 @@ export default function QoderAccountsPage() {
         onImported={() => void reload()}
       />
 
-      {/* ── 账号详情抽屉（备注编辑在这里；操作区只有删除） ── */}
+      {/* ── 导入 / 导出备份（**共用壳**，按 scope 分家） ── */}
+      <ImportAccountsDialog
+        open={importOpen}
+        onOpenChange={setImportOpen}
+        scope={scope}
+        onImported={(result) => {
+          toast.success(
+            t("qoder.page.accounts.import.result", {
+              imported: String(result.imported),
+              updated: String(result.overwritten),
+            }),
+          );
+          void reload();
+        }}
+      />
+      <ExportAccountsDialog
+        open={exportOpen}
+        onOpenChange={(open) => {
+          setExportOpen(open);
+          // 关闭即清掉「导出所选」的目标：下次从抽屉进来仍是「全部」，不残留上一次的范围。
+          if (!open) setExportTargets(null);
+        }}
+        accounts={(exportTargets ?? rows).map((account) => ({
+          id: account.uid,
+          label: qoderAccountName(account),
+        }))}
+        scope={scope}
+      />
+
+      {/* ── 回收站抽屉（**三平台共用壳**；恢复 = 移回 live，必须重取列表） ── */}
+      <RecycleBinSheet
+        open={recycleOpen}
+        onOpenChange={setRecycleOpen}
+        scope={scope}
+        onRestored={() => void reload()}
+      />
+
+      {/* ── 切换确认（**写客户端登录态**，与 WB 的切换同级 ⇒ 必须先确认） ── */}
+      <Dialog open={switchTarget !== null} onOpenChange={(open) => !open && setSwitchTarget(null)}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>{t("qoder.page.accounts.switch.title")}</DialogTitle>
+            <DialogDescription>
+              {switchTarget
+                ? t("qoder.page.accounts.switch.desc", {
+                    name: qoderAccountName(switchTarget.account),
+                    program: switchTarget.program.label,
+                  })
+                : ""}
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setSwitchTarget(null)} disabled={switchBusy}>
+              {t("qoder.page.accounts.switch.cancel")}
+            </Button>
+            <Button onClick={() => void confirmSwitch()} disabled={switchBusy}>
+              {switchBusy ? <Loader2 className="size-4 animate-spin" /> : null}
+              {t("qoder.page.accounts.switch.confirm")}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* ── 账号详情抽屉（备注编辑在这里；操作区 = 刷新 / 签到 / 导出 / 删除） ── */}
       <AccountDetailDrawer
         open={detail !== null}
         onOpenChange={(open) => {
@@ -687,25 +1163,21 @@ export default function QoderAccountsPage() {
         }
         avatarSeed={detail ? qoderAccountName(detail) : ""}
         sections={detail ? [{ key: "account", title: t("qoder.page.accounts.drawer.info"), rows: detailRows }] : []}
+        packs={detailPacks}
+        checkin={detailCheckin}
         remark={detail?.remark ?? ""}
         onSaveRemark={detail ? (remark) => saveRemark(detail, remark) : undefined}
         autoEditRemark={detailAutoEditRemark}
+        group={detail?.group ?? ""}
+        onSaveGroup={detail ? (group) => saveGroup(detail, group) : undefined}
+        autoEditGroup={detailAutoEditGroup}
+        switchTargets={detail ? switchTargetsFor(detail) : []}
         /* 与 WB / Trae 抽屉**同一取值**（备注是否可编辑不受演示模式影响）。 */
         featuresDisabled={false}
-        actions={
-          detail
-            ? {
-                onDelete: () => {
-                  const target = detail;
-                  setDetail(null);
-                  setPendingDelete(target);
-                },
-              }
-            : null
-        }
+        actions={detailActions}
       />
 
-      {/* ── 单账号删除确认（硬删除 ⇒ 必须先确认；不提供「回收站恢复」的说法） ── */}
+      {/* ── 单账号删除确认（**软删除** ⇒ 文案如实说「可在回收站恢复」） ── */}
       <Dialog open={pendingDelete !== null} onOpenChange={(open) => !open && setPendingDelete(null)}>
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
@@ -717,11 +1189,11 @@ export default function QoderAccountsPage() {
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setPendingDelete(null)} disabled={deleteBusy}>
+            <Button variant="outline" onClick={() => setPendingDelete(null)} disabled={busy}>
               {t("qoder.page.accounts.delete.cancel")}
             </Button>
-            <Button variant="destructive" onClick={() => void confirmSingleDelete()} disabled={deleteBusy}>
-              {deleteBusy ? <Loader2 className="size-4 animate-spin" /> : null}
+            <Button variant="destructive" onClick={() => void confirmSingleDelete()} disabled={busy}>
+              {busy ? <Loader2 className="size-4 animate-spin" /> : null}
               {t("qoder.page.accounts.delete.confirm")}
             </Button>
           </DialogFooter>
@@ -738,11 +1210,11 @@ export default function QoderAccountsPage() {
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setBatchDeleteOpen(false)} disabled={deleteBusy}>
+            <Button variant="outline" onClick={() => setBatchDeleteOpen(false)} disabled={busy}>
               {t("qoder.page.accounts.delete.cancel")}
             </Button>
-            <Button variant="destructive" onClick={() => void confirmBatchDelete()} disabled={deleteBusy}>
-              {deleteBusy ? <Loader2 className="size-4 animate-spin" /> : null}
+            <Button variant="destructive" onClick={() => void confirmBatchDelete()} disabled={busy}>
+              {busy ? <Loader2 className="size-4 animate-spin" /> : null}
               {t("qoder.page.accounts.delete.confirm")}
             </Button>
           </DialogFooter>

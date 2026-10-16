@@ -161,10 +161,9 @@ pub async fn claim_for(region: QoderRegion, uid: &str) -> Result<Value, String> 
                 let detail: String = detail.chars().take(160).collect();
                 return Err(format!("签到失败: {detail}"));
             }
-            let reward = result
-                .get("rewardCredits")
-                .and_then(Value::as_i64)
-                .unwrap_or(0);
+            // ⚠️ 走 `api::as_num`（同时接受浮点）：上游把额度写成 `100.0` 时 `as_i64` 返回
+            //    None ⇒ 签到成功却报「+0」，用户会以为没领到。
+            let reward = result.get("rewardCredits").and_then(api::as_num).unwrap_or(0);
             Ok(json!({ "ok": true, "uid": uid, "rewardCredits": reward }))
         }
     }
