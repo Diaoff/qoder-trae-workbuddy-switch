@@ -150,6 +150,13 @@ jobs:
           #   rustflags: "-D warnings"   或 job 级 env: CARGO_BUILD_WARNINGS: deny
           # 但两者都会波及依赖的 build script（通常被 cap-lints 兜住），
           # 先在 linux-x64 / mac-arm64 / mac-x64 三个目标上验过再开。
+          #
+          # ⚠️ **更正（2026-10-16）**：上面「无 `-D warnings`」的结论**不对** —— 该 action 的
+          # `rustflags` **默认就是 `-D warnings`**（构造日志逐字输出 `rustflags: -D warnings`，
+          # 全平台生效）⇒ 警告在所有 CI 目标上都会被升级成**编译错误**。
+          # 非 Windows 目标（linux/mac）才编到的那部分代码，本机 Windows 永远看不到它的警告 ——
+          # **发布前先跑 `scripts/check-cross.ps1`**（默认三目标；加 `-IncludeDesktop` 连 mac 桌面端），
+          # 否则只能等 CI 红。
 
       # cargo 缓存：依赖 + 编译产物，增量编译大幅提速（Cargo.lock 不变时命中）
       - name: Cache cargo
