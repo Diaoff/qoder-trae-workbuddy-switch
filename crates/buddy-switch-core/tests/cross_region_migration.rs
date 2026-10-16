@@ -57,7 +57,10 @@ fn unique_temp_dir(label: &str) -> PathBuf {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_nanos())
         .unwrap_or(0);
-    std::env::temp_dir().join(format!("buddy-switch-{label}-{}-{nanos}", std::process::id()))
+    std::env::temp_dir().join(format!(
+        "buddy-switch-{label}-{}-{nanos}",
+        std::process::id()
+    ))
 }
 
 /// 隔离 home 守卫：设置 `BUDDY_SWITCH_HOME`、持有 [`ENV_LOCK`]，Drop 时恢复并清理。
@@ -69,7 +72,9 @@ struct IsolatedHome {
 
 impl IsolatedHome {
     fn new(label: &str) -> Self {
-        let lock = ENV_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let lock = ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let previous = std::env::var(BUDDY_SWITCH_HOME_ENV).ok();
         let dir = unique_temp_dir(label);
         fs::create_dir_all(&dir).expect("create isolated home");
@@ -362,7 +367,11 @@ fn cross_region_memory_and_connectors_merge_into_target_region() {
         "连接器的新条目必须进目标版本：{mcp}"
     );
     let list = mcp["list"].as_array().expect("list array");
-    assert_eq!(list.len(), 2, "数组应做并集去重：[1] + [1,2] → [1,2]：{mcp}");
+    assert_eq!(
+        list.len(),
+        2,
+        "数组应做并集去重：[1] + [1,2] → [1,2]：{mcp}"
+    );
 
     // 源侧只读
     assert_eq!(

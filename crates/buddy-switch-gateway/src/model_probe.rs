@@ -137,8 +137,13 @@ pub enum ProbeState {
 /// ★ **唯一映射点**：上游事件 → 单元格状态。纯函数，单测 + 变异覆盖。
 pub fn probe_state_of(event: &UpstreamEvent) -> ProbeState {
     match event {
-        UpstreamEvent::SoftRate { model_scoped: true, .. } => ProbeState::RateLimitedModel,
-        UpstreamEvent::SoftRate { model_scoped: false, .. } => ProbeState::RateLimitedAccount,
+        UpstreamEvent::SoftRate {
+            model_scoped: true, ..
+        } => ProbeState::RateLimitedModel,
+        UpstreamEvent::SoftRate {
+            model_scoped: false,
+            ..
+        } => ProbeState::RateLimitedAccount,
         UpstreamEvent::ModelBlocked => ProbeState::ModelBlocked,
         UpstreamEvent::HardCredit => ProbeState::NoCredits,
         UpstreamEvent::SessionDead => ProbeState::AuthDead,
@@ -387,10 +392,9 @@ pub fn probe_state_of_trae(kind: TraeErrKind) -> ProbeState {
         TraeErrKind::NotFound => ProbeState::ModelUnavailable,
         // 5xx / 4xx / 业务码 / 「不归因于账号」（如 code 0 断流、4001 模型配置为空）：
         // 中性归「上游异常」—— 都不是限流。
-        TraeErrKind::Server
-        | TraeErrKind::Client
-        | TraeErrKind::Business
-        | TraeErrKind::None => ProbeState::UpstreamError,
+        TraeErrKind::Server | TraeErrKind::Client | TraeErrKind::Business | TraeErrKind::None => {
+            ProbeState::UpstreamError
+        }
     }
 }
 
@@ -465,7 +469,10 @@ impl ProbeTarget {
                 // `sync_for` 按**变体**（其实按区域）从账号库重建 —— 与网关选号同源，
                 // 保证「导入即入池」；`sync_for` 会滤掉空 JWT 的账号。
                 pool.sync_for(*variant);
-                pool.entries().iter().map(|entry| entry.uid.clone()).collect()
+                pool.entries()
+                    .iter()
+                    .map(|entry| entry.uid.clone())
+                    .collect()
             }
         }
     }
@@ -502,8 +509,10 @@ impl ProbeTarget {
                 // `spawn_blocking`）⇒ 这里也搬进阻塞线程池，别卡住异步运行时。
                 let variant = *variant;
                 tokio::task::spawn_blocking(move || {
-                    let body =
-                        trae_payload::models_response_for(variant, &std::collections::BTreeSet::new());
+                    let body = trae_payload::models_response_for(
+                        variant,
+                        &std::collections::BTreeSet::new(),
+                    );
                     body.get("data")
                         .and_then(Value::as_array)
                         .map(|rows| {
@@ -1376,13 +1385,31 @@ mod tests {
     fn only_three_states_count_as_rate_limited() {
         assert_eq!(probe_state_of(&soft(true)), ProbeState::RateLimitedModel);
         assert_eq!(probe_state_of(&soft(false)), ProbeState::RateLimitedAccount);
-        assert_eq!(probe_state_of(&UpstreamEvent::ModelBlocked), ProbeState::ModelBlocked);
+        assert_eq!(
+            probe_state_of(&UpstreamEvent::ModelBlocked),
+            ProbeState::ModelBlocked
+        );
 
-        assert_eq!(probe_state_of(&UpstreamEvent::HardCredit), ProbeState::NoCredits);
-        assert_eq!(probe_state_of(&UpstreamEvent::SessionDead), ProbeState::AuthDead);
-        assert_eq!(probe_state_of(&UpstreamEvent::NotFound), ProbeState::ModelUnavailable);
-        assert_eq!(probe_state_of(&UpstreamEvent::Server), ProbeState::UpstreamError);
-        assert_eq!(probe_state_of(&UpstreamEvent::Client), ProbeState::UpstreamError);
+        assert_eq!(
+            probe_state_of(&UpstreamEvent::HardCredit),
+            ProbeState::NoCredits
+        );
+        assert_eq!(
+            probe_state_of(&UpstreamEvent::SessionDead),
+            ProbeState::AuthDead
+        );
+        assert_eq!(
+            probe_state_of(&UpstreamEvent::NotFound),
+            ProbeState::ModelUnavailable
+        );
+        assert_eq!(
+            probe_state_of(&UpstreamEvent::Server),
+            ProbeState::UpstreamError
+        );
+        assert_eq!(
+            probe_state_of(&UpstreamEvent::Client),
+            ProbeState::UpstreamError
+        );
     }
 
     /// 模型级与账号级**不能混**（判反了会让「换模型可用」的用户白等）。
@@ -1398,12 +1425,20 @@ mod tests {
     /// 采纳语义：只有三档限流 + `ok` 会动冷却，其余一律 `Other`。
     #[test]
     fn only_limit_states_and_ok_touch_cooling() {
-        assert_eq!(probe_outcome_of(ProbeState::Ok, None), ProbeOutcome::Available);
+        assert_eq!(
+            probe_outcome_of(ProbeState::Ok, None),
+            ProbeOutcome::Available
+        );
         assert!(matches!(
             probe_outcome_of(ProbeState::RateLimitedModel, Some(1)),
-            ProbeOutcome::ModelRateLimited { reset_at_ms: Some(1) }
+            ProbeOutcome::ModelRateLimited {
+                reset_at_ms: Some(1)
+            }
         ));
-        assert_eq!(probe_outcome_of(ProbeState::ModelBlocked, None), ProbeOutcome::ModelBlocked);
+        assert_eq!(
+            probe_outcome_of(ProbeState::ModelBlocked, None),
+            ProbeOutcome::ModelBlocked
+        );
         assert!(matches!(
             probe_outcome_of(ProbeState::RateLimitedAccount, None),
             ProbeOutcome::AccountRateLimited { reset_at_ms: None }
@@ -1474,7 +1509,10 @@ mod tests {
     #[test]
     fn trae_region_maps_to_current_variant() {
         assert_eq!(trae_variant_of(TraeRegion::Cn), TraeVariant::TraeMerged);
-        assert_eq!(trae_variant_of(TraeRegion::Global), TraeVariant::GlobalTraeMerged);
+        assert_eq!(
+            trae_variant_of(TraeRegion::Global),
+            TraeVariant::GlobalTraeMerged
+        );
         // ⚠️ 刻意**不**断言 `== TraeVariant::parse("cn")`。
         //
         // `parse` 的口径正在被 issue #28 那笔改动从「遗留 `TraeWork`」迁到「合并版
@@ -1493,14 +1531,38 @@ mod tests {
     ///   （Trae **无法细分**账号级 ⇒ 一律模型级）。
     #[test]
     fn trae_err_kind_maps_to_probe_state() {
-        assert_eq!(probe_state_of_trae(TraeErrKind::SoftRate), ProbeState::RateLimitedModel);
-        assert_eq!(probe_state_of_trae(TraeErrKind::PlanLimit), ProbeState::NoCredits);
-        assert_eq!(probe_state_of_trae(TraeErrKind::SessionDead), ProbeState::AuthDead);
-        assert_eq!(probe_state_of_trae(TraeErrKind::NotFound), ProbeState::ModelUnavailable);
-        assert_eq!(probe_state_of_trae(TraeErrKind::Server), ProbeState::UpstreamError);
-        assert_eq!(probe_state_of_trae(TraeErrKind::Client), ProbeState::UpstreamError);
-        assert_eq!(probe_state_of_trae(TraeErrKind::Business), ProbeState::UpstreamError);
-        assert_eq!(probe_state_of_trae(TraeErrKind::None), ProbeState::UpstreamError);
+        assert_eq!(
+            probe_state_of_trae(TraeErrKind::SoftRate),
+            ProbeState::RateLimitedModel
+        );
+        assert_eq!(
+            probe_state_of_trae(TraeErrKind::PlanLimit),
+            ProbeState::NoCredits
+        );
+        assert_eq!(
+            probe_state_of_trae(TraeErrKind::SessionDead),
+            ProbeState::AuthDead
+        );
+        assert_eq!(
+            probe_state_of_trae(TraeErrKind::NotFound),
+            ProbeState::ModelUnavailable
+        );
+        assert_eq!(
+            probe_state_of_trae(TraeErrKind::Server),
+            ProbeState::UpstreamError
+        );
+        assert_eq!(
+            probe_state_of_trae(TraeErrKind::Client),
+            ProbeState::UpstreamError
+        );
+        assert_eq!(
+            probe_state_of_trae(TraeErrKind::Business),
+            ProbeState::UpstreamError
+        );
+        assert_eq!(
+            probe_state_of_trae(TraeErrKind::None),
+            ProbeState::UpstreamError
+        );
 
         // ★ 红线：PlanLimit（套餐额度用尽）**不是限流**，必须与 SoftRate 分列。
         assert_ne!(
@@ -1520,7 +1582,11 @@ mod tests {
             TraeErrKind::None,
         ] {
             let state = probe_state_of_trae(kind);
-            assert_ne!(state, ProbeState::RateLimitedAccount, "{kind:?} 不得落账号级");
+            assert_ne!(
+                state,
+                ProbeState::RateLimitedAccount,
+                "{kind:?} 不得落账号级"
+            );
             assert_ne!(state, ProbeState::ModelBlocked, "{kind:?} 不得落模型封禁");
         }
     }
@@ -1541,7 +1607,13 @@ mod tests {
             ProbeState::Skipped,
         ]
         .into_iter()
-        .map(|state| serde_json::to_value(state).unwrap().as_str().unwrap().to_string())
+        .map(|state| {
+            serde_json::to_value(state)
+                .unwrap()
+                .as_str()
+                .unwrap()
+                .to_string()
+        })
         .collect();
         assert_eq!(
             names,
@@ -1641,16 +1713,22 @@ mod tests {
 
         // ── 作业位原子抢占（TOCTOU 修复点）──
         assert!(
-            busy_flag().compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst).is_ok(),
+            busy_flag()
+                .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+                .is_ok(),
             "空位应能抢占"
         );
         assert!(
-            busy_flag().compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst).is_err(),
+            busy_flag()
+                .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+                .is_err(),
             "★ 已被占时第二次必须失败（TOCTOU 修复点）"
         );
         busy_flag().store(false, Ordering::SeqCst);
         assert!(
-            busy_flag().compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst).is_ok(),
+            busy_flag()
+                .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+                .is_ok(),
             "释放后必须能再抢（否则一次异常就永久起不来）"
         );
 
@@ -1658,7 +1736,10 @@ mod tests {
         reset_for_test(); // 作业槽 = None、三个位归零
         busy_flag().store(true, Ordering::SeqCst); // 模拟「没有作业，却占着作业位」
         cancel();
-        assert!(cancel_flag().load(Ordering::SeqCst), "cancel() 仍应置取消位");
+        assert!(
+            cancel_flag().load(Ordering::SeqCst),
+            "cancel() 仍应置取消位"
+        );
         assert!(
             !busy_flag().load(Ordering::SeqCst),
             "★ 无在跑作业时 cancel() 必须释放作业位（用户能自救，不必重启进程）"
@@ -1704,7 +1785,10 @@ mod tests {
         );
 
         reset_for_test();
-        assert!(!cancel_flag().load(Ordering::SeqCst), "复位后必须能再跑一轮");
+        assert!(
+            !cancel_flag().load(Ordering::SeqCst),
+            "复位后必须能再跑一轮"
+        );
         assert!(!busy_flag().load(Ordering::SeqCst));
         assert_eq!(status()["phase"], json!("idle"));
     }
@@ -1733,12 +1817,16 @@ mod tests {
     /// 或删那行 `spawn`。
     #[test]
     fn both_hosts_wire_every_probe_exit() {
-        const TAURI_COMMANDS_RS: &str =
-            concat!(env!("CARGO_MANIFEST_DIR"), "/../../src-tauri/src/commands.rs");
+        const TAURI_COMMANDS_RS: &str = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../src-tauri/src/commands.rs"
+        );
         const TAURI_LIB_RS: &str =
             concat!(env!("CARGO_MANIFEST_DIR"), "/../../src-tauri/src/lib.rs");
-        const SERVER_API_RS: &str =
-            concat!(env!("CARGO_MANIFEST_DIR"), "/../../crates/buddy-switch-server/src/api.rs");
+        const SERVER_API_RS: &str = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../crates/buddy-switch-server/src/api.rs"
+        );
 
         let read = |path: &str| {
             std::fs::read_to_string(path).unwrap_or_else(|error| panic!("读不到 {path}: {error}"))

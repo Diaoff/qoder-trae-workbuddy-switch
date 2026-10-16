@@ -76,9 +76,10 @@ pub fn request_id_for_session(salt: &str, key: &str) -> String {
 /// 用于客户端未提供任何会话键时，仍让**同一轮对话**（最后一条用户输入相同）复用主键。
 pub fn turn_key(body: &Value) -> Option<String> {
     let messages = body.get("messages")?.as_array()?;
-    let last_user = messages.iter().rev().find(|message| {
-        message.get("role").and_then(Value::as_str) == Some("user")
-    })?;
+    let last_user = messages
+        .iter()
+        .rev()
+        .find(|message| message.get("role").and_then(Value::as_str) == Some("user"))?;
     let content = last_user.get("content")?;
     let text = match content {
         Value::String(text) => text.clone(),
@@ -231,8 +232,14 @@ pub fn device_headers(uid: &str) -> HashMap<String, String> {
     if uid.is_empty() {
         return headers;
     }
-    headers.insert("X-Machine-ID".to_string(), derived_device_id("machine", uid));
-    headers.insert("X-Session-ID".to_string(), derived_device_id("session", uid));
+    headers.insert(
+        "X-Machine-ID".to_string(),
+        derived_device_id("machine", uid),
+    );
+    headers.insert(
+        "X-Session-ID".to_string(),
+        derived_device_id("session", uid),
+    );
     headers
 }
 
@@ -299,7 +306,11 @@ mod tests {
         let second = derived_device_id("machine", "u1");
         assert_eq!(first, second, "同 uid 同 purpose 必须稳定");
         assert_eq!(first.len(), 36, "18 字节 → 36 位十六进制");
-        assert_ne!(first, derived_device_id("session", "u1"), "purpose 必须区分");
+        assert_ne!(
+            first,
+            derived_device_id("session", "u1"),
+            "purpose 必须区分"
+        );
         assert_ne!(first, derived_device_id("machine", "u2"), "uid 必须区分");
         assert_eq!(derived_device_id("machine", ""), "", "空 uid 不派生");
     }
@@ -315,11 +326,8 @@ mod tests {
 
     #[test]
     fn inbound_request_id_wins_over_everything() {
-        let resolved = resolve_conversation_request_id(
-            Some("inbound-id"),
-            Some("sess"),
-            Some("turn"),
-        );
+        let resolved =
+            resolve_conversation_request_id(Some("inbound-id"), Some("sess"), Some("turn"));
         assert_eq!(resolved, "inbound-id", "入站值必须直接透传");
         // 空白入站值视为未提供
         assert_ne!(
@@ -337,7 +345,10 @@ mod tests {
             resolve_conversation_request_id(None, Some("sess"), None),
             "会话键派生必须稳定"
         );
-        assert_ne!(from_session, resolve_conversation_request_id(None, None, Some("turn")));
+        assert_ne!(
+            from_session,
+            resolve_conversation_request_id(None, None, Some("turn"))
+        );
     }
 
     #[test]
@@ -366,8 +377,14 @@ mod tests {
         assert_eq!(turn_key(&multimodal).as_deref(), Some("ab"));
 
         assert_eq!(turn_key(&json!({"messages": []})), None);
-        assert_eq!(turn_key(&json!({"messages": [{"role": "assistant", "content": "x"}]})), None);
-        assert_eq!(turn_key(&json!({"messages": [{"role": "user", "content": ""}]})), None);
+        assert_eq!(
+            turn_key(&json!({"messages": [{"role": "assistant", "content": "x"}]})),
+            None
+        );
+        assert_eq!(
+            turn_key(&json!({"messages": [{"role": "user", "content": ""}]})),
+            None
+        );
         assert_eq!(turn_key(&json!({})), None);
     }
 
@@ -382,10 +399,16 @@ mod tests {
         );
         let headers = conversation_headers(&context, "msg-1");
         assert_eq!(headers["X-Conversation-ID"], "conv-1");
-        assert_eq!(headers["X-Conversation-Request-ID"], context.conversation_request_id);
+        assert_eq!(
+            headers["X-Conversation-Request-ID"],
+            context.conversation_request_id
+        );
         assert_eq!(headers["X-Conversation-Message-ID"], "msg-1");
         assert_eq!(headers["X-Request-ID"], "msg-1");
-        assert_eq!(headers["X-Root-Request-ID"], context.conversation_request_id);
+        assert_eq!(
+            headers["X-Root-Request-ID"],
+            context.conversation_request_id
+        );
         assert_eq!(headers["X-Trace-ID"], "trace-1");
         assert_eq!(
             headers["X-B3-TraceId"], context.conversation_request_id,
@@ -399,13 +422,7 @@ mod tests {
     fn b3_trace_falls_back_when_request_id_is_not_a_valid_trace_id() {
         // 客户端透传一个非十六进制、非 16/32 位的 id → B3 必须回落 message id，
         // 否则会把上游无法解析的值发出去。
-        let context = ConversationContext::new(
-            None,
-            Some("req-abc-123"),
-            None,
-            None,
-            None,
-        );
+        let context = ConversationContext::new(None, Some("req-abc-123"), None, None, None);
         assert_eq!(context.conversation_request_id, "req-abc-123");
         let headers = conversation_headers(&context, "deadbeefdeadbeef");
         assert_eq!(headers["X-B3-TraceId"], "deadbeefdeadbeef");
@@ -453,6 +470,9 @@ mod tests {
             first["X-Conversation-Request-ID"], second["X-Conversation-Request-ID"],
             "换号重试必须复用同一轮主键"
         );
-        assert_ne!(first["X-Request-ID"], second["X-Request-ID"], "单次请求 id 必须各自独立");
+        assert_ne!(
+            first["X-Request-ID"], second["X-Request-ID"],
+            "单次请求 id 必须各自独立"
+        );
     }
 }

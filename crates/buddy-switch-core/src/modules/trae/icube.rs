@@ -97,9 +97,9 @@ const JOE_T: [u8; 64] = [
 ];
 const HOE_T: [u8; 64] = [
     246, 204, 26, 232, 232, 70, 129, 109, 223, 146, 169, 242, 23, 241, 105, 145, 50, 196, 165, 42,
-    254, 120, 3, 54, 244, 207, 209, 85, 53, 6, 138, 106, 175, 148, 31, 204, 186, 186, 165, 182,
-    87, 142, 49, 10, 39, 110, 26, 154, 86, 56, 173, 125, 18, 64, 198, 225, 99, 99, 83, 82, 191,
-    134, 76, 170,
+    254, 120, 3, 54, 244, 207, 209, 85, 53, 6, 138, 106, 175, 148, 31, 204, 186, 186, 165, 182, 87,
+    142, 49, 10, 39, 110, 26, 154, 86, 56, 173, 125, 18, 64, 198, 225, 99, 99, 83, 82, 191, 134,
+    76, 170,
 ];
 
 /// storage.json 里设备凭证键的前缀（键名内嵌 `<deviceId>`）。
@@ -961,8 +961,8 @@ MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEc5xtFi4XpzYjFuYwN0sBaUzcnrds\n\
         let mut plain = Vec::with_capacity(SHA512_LEN + body.len());
         plain.extend_from_slice(tag);
         plain.extend_from_slice(body);
-        let cipher = Aes128CbcEnc::new((&key).into(), (&iv).into())
-            .encrypt_padded_vec_mut::<Pkcs7>(&plain);
+        let cipher =
+            Aes128CbcEnc::new((&key).into(), (&iv).into()).encrypt_padded_vec_mut::<Pkcs7>(&plain);
         let mut raw = Vec::with_capacity(HEADER_LEN + RANDOM_LEN + cipher.len());
         raw.extend_from_slice(&TC_HEADER);
         raw.extend_from_slice(&TEST_RANDOM);
@@ -996,9 +996,8 @@ MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEc5xtFi4XpzYjFuYwN0sBaUzcnrds\n\
     /// `Cloud-IDE-JWT ` 前缀的裸 token，而落库必须补前缀 —— 这里复刻该形态，
     /// 使「补前缀」这条护栏有真实输入可测。
     pub(crate) fn bare_jwt(user_id: &str, exp: i64) -> String {
-        let b64 = |text: &str| {
-            base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(text.as_bytes())
-        };
+        let b64 =
+            |text: &str| base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(text.as_bytes());
         format!(
             "{}.{}.{}",
             b64(r#"{"alg":"RS256","typ":"JWT"}"#),
@@ -1205,8 +1204,8 @@ MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEc5xtFi4XpzYjFuYwN0sBaUzcnrds\n\
     /// `pub(crate)` 是给 `account.rs` 的「活跃目录**翻转**后绑定仍指向来源设备」用例用的：
     /// 那需要先铺好 fixture、再**事后**改活跃度，而网格构造器只在构造时钉一次。
     pub(crate) fn pin_activity(file: &std::path::Path, age_hours: usize) {
-        let pinned = std::time::SystemTime::now()
-            - std::time::Duration::from_secs(age_hours as u64 * 3_600);
+        let pinned =
+            std::time::SystemTime::now() - std::time::Duration::from_secs(age_hours as u64 * 3_600);
         // 必须带 `write(true)`：Windows 上 `SetFileTime` 需要 `FILE_WRITE_ATTRIBUTES`，
         // 只读句柄会 `ERROR_ACCESS_DENIED`。
         std::fs::OpenOptions::new()
@@ -1330,10 +1329,7 @@ MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEc5xtFi4XpzYjFuYwN0sBaUzcnrds\n\
                 // 每个候选目录给**不同** deviceId：这样「按变体限定」若退化成
                 // 「跨变体扫第一个命中」，断言会立刻发现读错了目录。
                 let device_id = format!("22929298067{:06}", index);
-                let dir = base
-                    .join(name)
-                    .join("User")
-                    .join("globalStorage");
+                let dir = base.join(name).join("User").join("globalStorage");
                 std::fs::create_dir_all(&dir).expect("fixture 目录应能创建");
                 let storage = serde_json::json!({
                     format!("{ICUBE_DC_PREFIX}{device_id}"): synthetic_device_envelope(),
@@ -1386,7 +1382,9 @@ mod tests {
         let error = tc_decrypt(&bad, TcMode::Aes).expect_err("magic 不匹配必须报错");
         assert_eq!(error.kind(), "decryptFailed");
         assert!(
-            error.user_message(TraeVariant::TraeWork).contains("TraeWork CN"),
+            error
+                .user_message(TraeVariant::TraeWork)
+                .contains("TraeWork CN"),
             "错误文案必须点明产品线"
         );
     }
@@ -1399,7 +1397,8 @@ mod tests {
     #[test]
     fn tc_decrypt_rejects_short_envelope() {
         // magic 正确但总长不足。
-        let short = base64::engine::general_purpose::STANDARD.encode([116u8, 99, 5, 16, 0, 0, 1, 2]);
+        let short =
+            base64::engine::general_purpose::STANDARD.encode([116u8, 99, 5, 16, 0, 0, 1, 2]);
         assert!(tc_decrypt(&short, TcMode::Aes).is_err());
     }
 
@@ -1416,7 +1415,9 @@ mod tests {
         let envelope = seal_envelope(body, &wrong_tag);
         let error = tc_decrypt(&envelope, TcMode::Aes).expect_err("摘要不匹配必须报错");
         assert!(
-            error.user_message(TraeVariant::TraeWork).contains("解密失败"),
+            error
+                .user_message(TraeVariant::TraeWork)
+                .contains("解密失败"),
             "文案应说明是解密环节: {error:?}"
         );
     }
@@ -1459,7 +1460,10 @@ mod tests {
         .expect("信封含 publicKeyPEM，必须解析成功");
 
         // 逐字直取：解析出来的 PEM 必须与信封里的原值（含真实换行）完全一致。
-        assert_eq!(identity.public_key_pem, TEST_PUBLIC_KEY_PEM, "公钥必须逐字直取");
+        assert_eq!(
+            identity.public_key_pem, TEST_PUBLIC_KEY_PEM,
+            "公钥必须逐字直取"
+        );
 
         // 直取的公钥必须是标准 EC P-256 SPKI（DER 头 + 总长 91B）。
         let body: String = identity
@@ -1482,19 +1486,19 @@ mod tests {
     #[test]
     fn device_identity_never_contains_private_key() {
         let plain = device_plain_with_both_keys();
-        let identity = identity_from_plain(
-            &plain,
-            TraeVariant::TraeWork,
-            "d",
-            "m",
-            "v",
-            "TRAE SOLO CN",
-        )
-        .unwrap();
+        let identity =
+            identity_from_plain(&plain, TraeVariant::TraeWork, "d", "m", "v", "TRAE SOLO CN")
+                .unwrap();
         let debug = format!("{identity:?}");
-        assert!(!debug.contains("PRIVATE"), "Debug 里出现了私钥标记: {debug}");
+        assert!(
+            !debug.contains("PRIVATE"),
+            "Debug 里出现了私钥标记: {debug}"
+        );
         assert!(!debug.contains("privateKeyPEM"));
-        assert!(!debug.contains("MIGHAgEAMBMGByqGSM49"), "Debug 里出现了私钥正文");
+        assert!(
+            !debug.contains("MIGHAgEAMBMGByqGSM49"),
+            "Debug 里出现了私钥正文"
+        );
         // 序列化同样不得含私钥（诊断视图按白名单构造）。
         let json = serde_json::to_string(&credential_status_value(
             &Ok(identity),
@@ -1512,7 +1516,10 @@ mod tests {
         let credential = test_credential();
         let debug = format!("{credential:?}");
         assert!(debug.contains("<redacted>"), "应打印占位符: {debug}");
-        assert!(!debug.contains("MIGHAgEAMBMGByqGSM49"), "私钥正文泄漏: {debug}");
+        assert!(
+            !debug.contains("MIGHAgEAMBMGByqGSM49"),
+            "私钥正文泄漏: {debug}"
+        );
         assert!(!debug.contains("BEGIN PRIVATE KEY"));
         // device_id / source_app 属于允许展示的诊断字段。
         assert!(debug.contains("2292929806738024"));
@@ -1550,15 +1557,18 @@ mod tests {
     /// 信封缺 `privateKeyPEM` ⇒ `PrivateKeyMissing`（refresh 路径专用）。
     #[test]
     fn credential_without_private_key_errors() {
-        let error = credential_from_plain(r#"{"publicKeyPEM":"x"}"#, TraeVariant::TraeWork, "d", "app")
-            .expect_err("缺私钥必须报错");
+        let error =
+            credential_from_plain(r#"{"publicKeyPEM":"x"}"#, TraeVariant::TraeWork, "d", "app")
+                .expect_err("缺私钥必须报错");
         assert_eq!(error, IcubeError::PrivateKeyMissing);
     }
 
     /// 明文不是 JSON ⇒ 结构化错误（不 panic）。
     #[test]
     fn non_json_plaintext_is_structured_error() {
-        assert!(identity_from_plain("not-json", TraeVariant::TraeWork, "d", "m", "v", "a").is_err());
+        assert!(
+            identity_from_plain("not-json", TraeVariant::TraeWork, "d", "m", "v", "a").is_err()
+        );
         assert!(cloudide_from_plain("not-json", TraeVariant::TraeWork).is_err());
     }
 
@@ -1572,12 +1582,19 @@ mod tests {
         let plain = device_plain_with_both_keys();
         let envelope = seal(plain.as_bytes());
         let mut object = Map::new();
-        object.insert(format!("{ICUBE_DC_PREFIX}2292929806738024"), json!(envelope));
+        object.insert(
+            format!("{ICUBE_DC_PREFIX}2292929806738024"),
+            json!(envelope),
+        );
         object.insert(CLOUDIDE_KEY.to_string(), json!(envelope));
 
         let before = TC_DECRYPT_CALLS.load(Ordering::SeqCst);
-        let from_dc = decrypt_storage_key(&object, &format!("{ICUBE_DC_PREFIX}2292929806738024"), TcMode::Aes)
-            .expect("icube-dc 键必须能解开");
+        let from_dc = decrypt_storage_key(
+            &object,
+            &format!("{ICUBE_DC_PREFIX}2292929806738024"),
+            TcMode::Aes,
+        )
+        .expect("icube-dc 键必须能解开");
         let from_cloudide =
             decrypt_storage_key(&object, CLOUDIDE_KEY, TcMode::Aes).expect("cloudide 键必须能解开");
         let after = TC_DECRYPT_CALLS.load(Ordering::SeqCst);
@@ -1594,10 +1611,7 @@ mod tests {
             decrypt_storage_key(&object, CLOUDIDE_KEY, TcMode::Aes),
             Err(IcubeError::KeyMissing)
         );
-        assert_eq!(
-            find_icube_dc_entry(&object),
-            Err(IcubeError::KeyMissing)
-        );
+        assert_eq!(find_icube_dc_entry(&object), Err(IcubeError::KeyMissing));
     }
 
     /// `find_icube_dc_entry` 必须从键名里取出 `<deviceId>`。
@@ -1625,11 +1639,16 @@ mod tests {
         .expect("签名不应失败");
 
         let signature = proof.get("Signature").and_then(|v| v.as_str()).unwrap();
-        let raw = base64::engine::general_purpose::STANDARD.decode(signature).unwrap();
+        let raw = base64::engine::general_purpose::STANDARD
+            .decode(signature)
+            .unwrap();
         assert_eq!(raw.len(), 64, "P1363 必须是 raw r‖s 64 字节");
 
         assert!(
-            proof.get("Timestamp").map(|v| v.is_i64() || v.is_u64()).unwrap_or(false),
+            proof
+                .get("Timestamp")
+                .map(|v| v.is_i64() || v.is_u64())
+                .unwrap_or(false),
             "Timestamp 必须是 JSON int（字符串会被服务端 schema 拒绝）: {proof}"
         );
         assert_eq!(
@@ -1637,7 +1656,12 @@ mod tests {
             Some(32)
         );
         // 字段名 PascalCase，逐字。
-        let keys: Vec<&str> = proof.as_object().unwrap().keys().map(String::as_str).collect();
+        let keys: Vec<&str> = proof
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect();
         assert!(keys.contains(&"Signature"));
         assert!(keys.contains(&"Timestamp"));
         assert!(keys.contains(&"Nonce"));
@@ -1665,10 +1689,14 @@ mod tests {
     #[test]
     fn device_proof_error_never_leaks_private_key() {
         let mut credential = test_credential();
-        credential.private_key_pem = "-----BEGIN PRIVATE KEY-----\nnot-a-key\n-----END PRIVATE KEY-----".into();
+        credential.private_key_pem =
+            "-----BEGIN PRIVATE KEY-----\nnot-a-key\n-----END PRIVATE KEY-----".into();
         let error = device_proof(&credential, "/p", "cid", "rt", ProofSigFormat::P1363)
             .expect_err("非法 PEM 必须报错");
-        assert!(!error.contains("not-a-key"), "错误文案泄漏了私钥正文: {error}");
+        assert!(
+            !error.contains("not-a-key"),
+            "错误文案泄漏了私钥正文: {error}"
+        );
         assert!(!error.contains("BEGIN PRIVATE KEY"));
     }
 
@@ -1688,7 +1716,8 @@ mod tests {
             }),
             TraeVariant::TraeWork,
         );
-        let failed = credential_status_value(&Err(IcubeError::PrivateKeyMissing), TraeVariant::Trae);
+        let failed =
+            credential_status_value(&Err(IcubeError::PrivateKeyMissing), TraeVariant::Trae);
         for value in [&ok, &failed] {
             let text = serde_json::to_string(value).unwrap();
             let upper = text.to_ascii_uppercase();
@@ -1696,12 +1725,21 @@ mod tests {
             // `errorKind` 里的 `"privateKeyMissing"` 是**类型标签**、不是凭据，
             // 因此按「PRIVATE KEY」这个带空格的 PEM 标记判定，而不是按裸 `privateKey`。
             assert!(!upper.contains("PRIVATE KEY"), "{text}");
-            assert!(!upper.contains("PUBLIC KEY"), "诊断视图不展示 PEM 原文: {text}");
+            assert!(
+                !upper.contains("PUBLIC KEY"),
+                "诊断视图不展示 PEM 原文: {text}"
+            );
             assert!(!text.contains("MIGHAgEAMBMGByqGSM49"), "{text}");
         }
         assert_eq!(ok.get("available").and_then(|v| v.as_bool()), Some(true));
-        assert_eq!(ok.get("sourceApp").and_then(|v| v.as_str()), Some("TRAE SOLO CN"));
-        assert_eq!(failed.get("available").and_then(|v| v.as_bool()), Some(false));
+        assert_eq!(
+            ok.get("sourceApp").and_then(|v| v.as_str()),
+            Some("TRAE SOLO CN")
+        );
+        assert_eq!(
+            failed.get("available").and_then(|v| v.as_bool()),
+            Some(false)
+        );
         assert_eq!(
             failed.get("errorKind").and_then(|v| v.as_str()),
             Some("privateKeyMissing")
@@ -1721,12 +1759,18 @@ mod tests {
     fn every_error_variant_has_a_stable_kind() {
         let cases = [
             (IcubeError::DataDirMissing, "dataDirMissing"),
-            (IcubeError::StorageUnreadable("x".into()), "storageUnreadable"),
+            (
+                IcubeError::StorageUnreadable("x".into()),
+                "storageUnreadable",
+            ),
             (IcubeError::KeyMissing, "keyMissing"),
             (IcubeError::DecryptFailed("x".into()), "decryptFailed"),
             (IcubeError::PublicKeyMissing, "publicKeyMissing"),
             (IcubeError::PrivateKeyMissing, "privateKeyMissing"),
-            (IcubeError::PrivateKeyInvalid("x".into()), "privateKeyInvalid"),
+            (
+                IcubeError::PrivateKeyInvalid("x".into()),
+                "privateKeyInvalid",
+            ),
             (IcubeError::DeviceIdentityMissing, "deviceIdentityMissing"),
             (
                 IcubeError::DeviceIdentityMismatch("请求 aaaa…bbbb，本机仅有 cccc…dddd".into()),
@@ -1749,7 +1793,9 @@ mod tests {
             let value = random_hex(len);
             assert_eq!(value.len(), len);
             assert!(
-                value.chars().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()),
+                value
+                    .chars()
+                    .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()),
                 "{value}"
             );
         }
@@ -1766,7 +1812,8 @@ mod tests {
         let variant = TraeVariant::TraeWork;
         // 首位**不活跃**、次位**活跃** —— 断言必须落在「被喂进去的那个目录」上，
         // 而不是活跃目录。
-        let cells = write_device_entries_grid(&env.appdata(), variant, &[(true, false), (true, true)]);
+        let cells =
+            write_device_entries_grid(&env.appdata(), variant, &[(true, false), (true, true)]);
         let (device_id, name, dir) = &cells[1];
 
         let identity =

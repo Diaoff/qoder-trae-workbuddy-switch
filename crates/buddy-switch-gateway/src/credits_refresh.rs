@@ -163,7 +163,11 @@ fn refresh_targets(pool: &Pool, now_ms: i64, interval_ms: i64) -> Vec<(String, R
     let interval = normalized_interval(interval_ms);
     pool.entries()
         .filter(|entry| needs_refresh(entry.credits_refreshed_ms, now_ms, interval))
-        .filter_map(|entry| entry.realm.map(|realm| (entry.uid.clone(), region_of(realm))))
+        .filter_map(|entry| {
+            entry
+                .realm
+                .map(|realm| (entry.uid.clone(), region_of(realm)))
+        })
         .collect()
 }
 
@@ -246,12 +250,7 @@ fn parse_credits(result: &Value) -> Option<(i64, i64)> {
     let resources = result.get("resources").and_then(Value::as_array)?;
     let expiring_soon: f64 = resources
         .iter()
-        .filter(|resource| {
-            resource
-                .get("expiringSoon")
-                .and_then(Value::as_bool)
-                == Some(true)
-        })
+        .filter(|resource| resource.get("expiringSoon").and_then(Value::as_bool) == Some(true))
         .filter_map(|resource| resource.get("remaining").and_then(Value::as_f64))
         .sum();
     Some((to_credits(total), to_credits(expiring_soon)))
@@ -452,7 +451,10 @@ mod tests {
         assert_eq!(count, 0, "取数失败不计入刷新数");
         let entry = pool.get("u1").unwrap();
         assert_eq!(entry.credits, 77, "未知不得把余额写成 0");
-        assert_eq!(entry.credits_refreshed_ms, 0, "未知不标记已刷新（下轮重试）");
+        assert_eq!(
+            entry.credits_refreshed_ms, 0,
+            "未知不标记已刷新（下轮重试）"
+        );
         assert_eq!(entry.cool_kind, Some(CoolKind::Hard), "未知不得解冻");
     }
 
@@ -511,7 +513,11 @@ mod tests {
     #[test]
     fn parse_credits_requires_ok_and_resources() {
         assert_eq!(parse_credits(&failed_response()), None, "ok=false → 未知");
-        assert_eq!(parse_credits(&json!({"ok": true})), None, "缺 totalRemaining → 未知");
+        assert_eq!(
+            parse_credits(&json!({"ok": true})),
+            None,
+            "缺 totalRemaining → 未知"
+        );
         assert_eq!(
             parse_credits(&json!({"ok": true, "totalRemaining": 5.0})),
             None,
@@ -587,9 +593,17 @@ mod tests {
         let handle = Arc::new(tokio::sync::RwLock::new(cn_pool("u1")));
         let direct = {
             let mut pool = cn_pool("u1");
-            refresh_with(&mut pool, &FakeFetcher::new(ok_response(77.0, json!([]))), NOW, INTERVAL)
-                .await;
-            (pool.get("u1").unwrap().credits, pool.get("u1").unwrap().credits_refreshed_ms)
+            refresh_with(
+                &mut pool,
+                &FakeFetcher::new(ok_response(77.0, json!([]))),
+                NOW,
+                INTERVAL,
+            )
+            .await;
+            (
+                pool.get("u1").unwrap().credits,
+                pool.get("u1").unwrap().credits_refreshed_ms,
+            )
         };
 
         let via_pool = refresh_pool(
@@ -602,7 +616,10 @@ mod tests {
         let guard = handle.read().await;
         assert_eq!(via_pool, 1);
         assert_eq!(
-            (guard.get("u1").unwrap().credits, guard.get("u1").unwrap().credits_refreshed_ms),
+            (
+                guard.get("u1").unwrap().credits,
+                guard.get("u1").unwrap().credits_refreshed_ms
+            ),
             direct,
             "两条路径必须产出完全相同的池状态"
         );

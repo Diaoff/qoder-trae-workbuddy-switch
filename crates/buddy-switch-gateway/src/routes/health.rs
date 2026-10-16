@@ -28,5 +28,6 @@ pub async fn handler(State(state): State<GatewayState>) -> Response {
 
 /// 某 region 是否具备可用账号（认证文件或账号库非空）。
 fn region_available(region: Region) -> bool {
-    auth_file::read_auth_file_for(region).is_some() || !account::load_accounts_for(region).is_empty()
+    auth_file::read_auth_file_for(region).is_some()
+        || !account::load_accounts_for(region).is_empty()
 }

@@ -222,7 +222,9 @@ pub fn pick<E: PoolEntryLike>(
         .filter(|entry| {
             !tried.contains(entry.uid())
                 && entry_usable(*entry, policy, now_ms, model)
-                && realm.map(|wanted| entry.realm() == Some(wanted)).unwrap_or(true)
+                && realm
+                    .map(|wanted| entry.realm() == Some(wanted))
+                    .unwrap_or(true)
         })
         .map(|entry| entry.uid().to_string())
         .collect();
@@ -491,7 +493,10 @@ mod tests {
         let big_weight = weight_of(&big, 1000, NOW, &policy());
 
         // 基准 1 + 积分项 10 + 闲置项 5（从未使用）+ 成功率项 1.5 = 17.5
-        assert!((big_weight - 17.5).abs() < 1e-9, "满配应约 17.5，实际 {big_weight}");
+        assert!(
+            (big_weight - 17.5).abs() < 1e-9,
+            "满配应约 17.5，实际 {big_weight}"
+        );
         assert!(
             (small_weight - (1.0 + 1.0 + 5.0 + 1.5)).abs() < 1e-9,
             "实际 {small_weight}"
@@ -514,14 +519,17 @@ mod tests {
         entry.credits = 1000;
         entry.credits_expiring = 500;
         entry.last_used_ms = NOW; // 闲置项归零
-        // 1 + 10 + 0.5*8 + 1.5 = 16.5
+                                  // 1 + 10 + 0.5*8 + 1.5 = 16.5
         let weight = weight_of(&entry, 1000, NOW, &policy());
         assert!((weight - 16.5).abs() < 1e-9, "实际 {weight}");
 
         // 占比超过 100% 时必须钳制（脏数据防御）
         entry.credits_expiring = 5000;
         let clamped = weight_of(&entry, 1000, NOW, &policy());
-        assert!((clamped - 20.5).abs() < 1e-9, "占比应钳到 1.0，实际 {clamped}");
+        assert!(
+            (clamped - 20.5).abs() < 1e-9,
+            "占比应钳到 1.0，实际 {clamped}"
+        );
     }
 
     #[test]
@@ -563,7 +571,16 @@ mod tests {
         let mut pool = pool_of(vec![entry]);
         let mut seq = 0;
         assert_eq!(
-            pick(&mut pool, &mut seq, &policy(), NOW, None, "", &HashSet::new(), 1),
+            pick(
+                &mut pool,
+                &mut seq,
+                &policy(),
+                NOW,
+                None,
+                "",
+                &HashSet::new(),
+                1
+            ),
             None,
             "占满在途的账号不得被选中"
         );
@@ -577,7 +594,17 @@ mod tests {
         let mut seq = 0;
         let mut relaxed = policy();
         relaxed.max_in_flight = 0;
-        assert!(pick(&mut pool, &mut seq, &relaxed, NOW, None, "", &HashSet::new(), 1).is_some());
+        assert!(pick(
+            &mut pool,
+            &mut seq,
+            &relaxed,
+            NOW,
+            None,
+            "",
+            &HashSet::new(),
+            1
+        )
+        .is_some());
     }
 
     #[test]
@@ -590,11 +617,29 @@ mod tests {
         let mut seq = 0;
 
         assert_eq!(
-            pick(&mut pool, &mut seq, &policy(), NOW, Some(RealmTag::Global), "", &HashSet::new(), 1),
+            pick(
+                &mut pool,
+                &mut seq,
+                &policy(),
+                NOW,
+                Some(RealmTag::Global),
+                "",
+                &HashSet::new(),
+                1
+            ),
             Some("global-1".to_string())
         );
         assert_eq!(
-            pick(&mut pool, &mut seq, &policy(), NOW, Some(RealmTag::Cn), "", &HashSet::new(), 2),
+            pick(
+                &mut pool,
+                &mut seq,
+                &policy(),
+                NOW,
+                Some(RealmTag::Cn),
+                "",
+                &HashSet::new(),
+                2
+            ),
             Some("cn-1".to_string())
         );
     }
@@ -604,7 +649,17 @@ mod tests {
         let mut pool = pool_of(vec![base_entry("a"), base_entry("b")]);
         let mut seq = 0;
 
-        let first = pick(&mut pool, &mut seq, &policy(), NOW, None, "", &HashSet::new(), 1).unwrap();
+        let first = pick(
+            &mut pool,
+            &mut seq,
+            &policy(),
+            NOW,
+            None,
+            "",
+            &HashSet::new(),
+            1,
+        )
+        .unwrap();
         let mut tried = HashSet::new();
         tried.insert(first.clone());
         let second = pick(&mut pool, &mut seq, &policy(), NOW, None, "", &tried, 2).unwrap();
@@ -625,10 +680,28 @@ mod tests {
         let mut seq = 0;
 
         for _ in 0..30 {
-            let chosen = pick(&mut pool, &mut seq, &policy(), NOW, None, "", &HashSet::new(), 7)
-                .expect("有候选");
-            let next = pick(&mut pool, &mut seq, &policy(), NOW, None, "", &HashSet::new(), 7)
-                .expect("有候选");
+            let chosen = pick(
+                &mut pool,
+                &mut seq,
+                &policy(),
+                NOW,
+                None,
+                "",
+                &HashSet::new(),
+                7,
+            )
+            .expect("有候选");
+            let next = pick(
+                &mut pool,
+                &mut seq,
+                &policy(),
+                NOW,
+                None,
+                "",
+                &HashSet::new(),
+                7,
+            )
+            .expect("有候选");
             assert_ne!(chosen, next, "100ms 内不得重复选中同一账号");
         }
     }
@@ -638,10 +711,32 @@ mod tests {
         // 单账号池：它刚被选中 → 防惊群会剔除它 → 走 LRU 兜底仍返回它
         let mut pool = pool_of(vec![base_entry("only")]);
         let mut seq = 0;
-        let first = pick(&mut pool, &mut seq, &policy(), NOW, None, "", &HashSet::new(), 1);
+        let first = pick(
+            &mut pool,
+            &mut seq,
+            &policy(),
+            NOW,
+            None,
+            "",
+            &HashSet::new(),
+            1,
+        );
         assert_eq!(first, Some("only".to_string()));
-        let second = pick(&mut pool, &mut seq, &policy(), NOW, None, "", &HashSet::new(), 2);
-        assert_eq!(second, Some("only".to_string()), "LRU 兜底必须保证不空手而回");
+        let second = pick(
+            &mut pool,
+            &mut seq,
+            &policy(),
+            NOW,
+            None,
+            "",
+            &HashSet::new(),
+            2,
+        );
+        assert_eq!(
+            second,
+            Some("only".to_string()),
+            "LRU 兜底必须保证不空手而回"
+        );
     }
 
     #[test]
@@ -657,8 +752,17 @@ mod tests {
         let mut pool = pool_of(vec![free, paid]);
         let mut seq = 0;
         for seed in 0..20 {
-            let chosen = pick(&mut pool, &mut seq, &policy(), NOW, None, "m", &HashSet::new(), seed)
-                .expect("有候选");
+            let chosen = pick(
+                &mut pool,
+                &mut seq,
+                &policy(),
+                NOW,
+                None,
+                "m",
+                &HashSet::new(),
+                seed,
+            )
+            .expect("有候选");
             assert_eq!(chosen, "free", "实测免费号必须硬胜过积分高的收费号");
         }
     }
@@ -673,8 +777,17 @@ mod tests {
 
         let mut pool = pool_of(vec![paid, unknown]);
         let mut seq = 0;
-        let chosen = pick(&mut pool, &mut seq, &policy(), NOW, None, "m", &HashSet::new(), 3)
-            .expect("有候选");
+        let chosen = pick(
+            &mut pool,
+            &mut seq,
+            &policy(),
+            NOW,
+            None,
+            "m",
+            &HashSet::new(),
+            3,
+        )
+        .expect("有候选");
         assert_eq!(chosen, "unknown", "无观测号应保留被观测的机会");
     }
 
@@ -693,7 +806,16 @@ mod tests {
     fn pick_marks_last_used_and_advances_sequence() {
         let mut pool = pool_of(vec![base_entry("a")]);
         let mut seq = 0;
-        pick(&mut pool, &mut seq, &policy(), NOW, None, "", &HashSet::new(), 1);
+        pick(
+            &mut pool,
+            &mut seq,
+            &policy(),
+            NOW,
+            None,
+            "",
+            &HashSet::new(),
+            1,
+        );
         let entry = pool.get("a").expect("存在");
         assert_eq!(entry.last_used_ms, NOW);
         assert_eq!(entry.used_seq, 1);
@@ -708,8 +830,26 @@ mod tests {
         let mut seq_a = 0;
         let mut seq_b = 0;
         for _ in 0..10 {
-            let left = pick(&mut pool_a, &mut seq_a, &policy(), NOW, None, "", &HashSet::new(), 42);
-            let right = pick(&mut pool_b, &mut seq_b, &policy(), NOW, None, "", &HashSet::new(), 42);
+            let left = pick(
+                &mut pool_a,
+                &mut seq_a,
+                &policy(),
+                NOW,
+                None,
+                "",
+                &HashSet::new(),
+                42,
+            );
+            let right = pick(
+                &mut pool_b,
+                &mut seq_b,
+                &policy(),
+                NOW,
+                None,
+                "",
+                &HashSet::new(),
+                42,
+            );
             assert_eq!(left, right, "同种子必须选出同一账号");
         }
     }
@@ -718,7 +858,19 @@ mod tests {
     fn empty_pool_returns_none() {
         let mut pool: BTreeMap<String, PoolEntry> = BTreeMap::new();
         let mut seq = 0;
-        assert_eq!(pick(&mut pool, &mut seq, &policy(), NOW, None, "", &HashSet::new(), 1), None);
+        assert_eq!(
+            pick(
+                &mut pool,
+                &mut seq,
+                &policy(),
+                NOW,
+                None,
+                "",
+                &HashSet::new(),
+                1
+            ),
+            None
+        );
     }
 
     #[test]
@@ -730,7 +882,16 @@ mod tests {
         let mut pool = pool_of(vec![soon, late]);
         let mut seq = 0;
         assert_eq!(
-            pick(&mut pool, &mut seq, &policy(), NOW, None, "", &HashSet::new(), 1),
+            pick(
+                &mut pool,
+                &mut seq,
+                &policy(),
+                NOW,
+                None,
+                "",
+                &HashSet::new(),
+                1
+            ),
             Some("soon".to_string()),
             "全冷却时选最早解冻者"
         );
@@ -743,7 +904,16 @@ mod tests {
         let mut pool = pool_of(vec![hard]);
         let mut seq = 0;
         assert_eq!(
-            pick(&mut pool, &mut seq, &policy(), NOW, None, "", &HashSet::new(), 1),
+            pick(
+                &mut pool,
+                &mut seq,
+                &policy(),
+                NOW,
+                None,
+                "",
+                &HashSet::new(),
+                1
+            ),
             None,
             "硬冷却（余额不足）不得被兜底强试"
         );
@@ -755,7 +925,19 @@ mod tests {
         disabled.disable("12153 session dead");
         let mut pool = pool_of(vec![disabled]);
         let mut seq = 0;
-        assert_eq!(pick(&mut pool, &mut seq, &policy(), NOW, None, "", &HashSet::new(), 1), None);
+        assert_eq!(
+            pick(
+                &mut pool,
+                &mut seq,
+                &policy(),
+                NOW,
+                None,
+                "",
+                &HashSet::new(),
+                1
+            ),
+            None
+        );
     }
 
     #[test]
@@ -765,12 +947,30 @@ mod tests {
         let mut pool = pool_of(vec![entry]);
         let mut seq = 0;
         assert_eq!(
-            pick(&mut pool, &mut seq, &policy(), NOW, None, "glm-5.2", &HashSet::new(), 1),
+            pick(
+                &mut pool,
+                &mut seq,
+                &policy(),
+                NOW,
+                None,
+                "glm-5.2",
+                &HashSet::new(),
+                1
+            ),
             None,
             "触发限流的模型应被跳过"
         );
         assert_eq!(
-            pick(&mut pool, &mut seq, &policy(), NOW, None, "deepseek-v4-flash", &HashSet::new(), 1),
+            pick(
+                &mut pool,
+                &mut seq,
+                &policy(),
+                NOW,
+                None,
+                "deepseek-v4-flash",
+                &HashSet::new(),
+                1
+            ),
             Some("a".to_string()),
             "其它模型应立即可用"
         );
@@ -802,7 +1002,10 @@ mod tests {
                 heavy_wins += 1;
             }
         }
-        assert!(heavy_wins > 900, "权重 1000:1 应几乎必胜，实际 {heavy_wins}/1000");
+        assert!(
+            heavy_wins > 900,
+            "权重 1000:1 应几乎必胜，实际 {heavy_wins}/1000"
+        );
     }
 
     #[test]
@@ -845,16 +1048,38 @@ mod tests {
 
         let map = pool_of(vec![healthy, saturated, cooling]);
 
-        assert!(is_usable(&map, &policy, "healthy", NOW, ""), "健康账号应可用");
-        assert!(!is_usable(&map, &policy, "saturated", NOW, ""), "在途占满应不可用");
-        assert!(!is_usable(&map, &policy, "cooling", NOW, ""), "冷却中应不可用");
-        assert!(!is_usable(&map, &policy, "absent", NOW, ""), "不在池里应不可用");
+        assert!(
+            is_usable(&map, &policy, "healthy", NOW, ""),
+            "健康账号应可用"
+        );
+        assert!(
+            !is_usable(&map, &policy, "saturated", NOW, ""),
+            "在途占满应不可用"
+        );
+        assert!(
+            !is_usable(&map, &policy, "cooling", NOW, ""),
+            "冷却中应不可用"
+        );
+        assert!(
+            !is_usable(&map, &policy, "absent", NOW, ""),
+            "不在池里应不可用"
+        );
 
         // 同一组条目下 `pick` 必须只挑到 `healthy` —— 与上面三条否定断言互为印证。
         let mut for_pick = map.clone();
         let mut seq = 0;
         assert_eq!(
-            pick(&mut for_pick, &mut seq, &policy, NOW, None, "", &HashSet::new(), 1).as_deref(),
+            pick(
+                &mut for_pick,
+                &mut seq,
+                &policy,
+                NOW,
+                None,
+                "",
+                &HashSet::new(),
+                1
+            )
+            .as_deref(),
             Some("healthy"),
             "pick 只能选到 `is_usable` 为 true 的那个"
         );
@@ -920,7 +1145,17 @@ mod tests {
         let mut for_pick = pool_of(vec![recovered]);
         let mut seq = 0;
         assert_eq!(
-            pick(&mut for_pick, &mut seq, &policy, NOW, None, "m1", &HashSet::new(), 1).as_deref(),
+            pick(
+                &mut for_pick,
+                &mut seq,
+                &policy,
+                NOW,
+                None,
+                "m1",
+                &HashSet::new(),
+                1
+            )
+            .as_deref(),
             Some("recovered")
         );
     }

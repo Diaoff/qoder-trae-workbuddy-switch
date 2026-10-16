@@ -46,7 +46,9 @@ pub fn is_allowed_path(path: &str) -> bool {
     if path.contains("..") || path.contains("//") {
         return false;
     }
-    BIZ_PATH_PREFIXES.iter().any(|prefix| path.starts_with(prefix))
+    BIZ_PATH_PREFIXES
+        .iter()
+        .any(|prefix| path.starts_with(prefix))
 }
 
 #[cfg(test)]
@@ -62,7 +64,10 @@ mod tests {
 
     #[test]
     fn rejects_unknown_paths_fail_closed() {
-        assert!(!is_allowed_path("/v2/chat/completions"), "LLM 路径不走业务白名单");
+        assert!(
+            !is_allowed_path("/v2/chat/completions"),
+            "LLM 路径不走业务白名单"
+        );
         assert!(!is_allowed_path("/admin/secret"));
         assert!(!is_allowed_path(""), "空路径必须拒绝");
         assert!(!is_allowed_path("v2/billing/meter"), "相对路径必须拒绝");
@@ -71,6 +76,9 @@ mod tests {
     #[test]
     fn rejects_traversal_attempts() {
         assert!(!is_allowed_path("/v2/billing/../../etc/passwd"));
-        assert!(!is_allowed_path("/v2//billing/meter"), "双斜杠必须拒绝（不靠归一化兜底）");
+        assert!(
+            !is_allowed_path("/v2//billing/meter"),
+            "双斜杠必须拒绝（不靠归一化兜底）"
+        );
     }
 }

@@ -46,7 +46,10 @@ pub async fn probe_region(
     // 安全边界 F：`AccountSelector::select` 已按 region 校验凭据（区域不符直接拒），
     // 因此本探测**不可能**用别的 region 的凭据去写本 region 的清单。
     let account = AccountSelector.select(region, &strategy).await?;
-    Ok(state.catalogs.refresh(region, &state.upstream, &account).await)
+    Ok(state
+        .catalogs
+        .refresh(region, &state.upstream, &account)
+        .await)
 }
 
 /// 需要「启动补识别」的 region（**纯函数**，只读 store，便于单测）。
@@ -169,14 +172,20 @@ mod tests {
     /// 又是调用（`(region)`），裸名会在删掉调用点后仍被定义行「满足」⇒ 护栏空转。
     #[test]
     fn both_hosts_wire_the_catalog_probe() {
-        const TAURI_COMMANDS_RS: &str =
-            concat!(env!("CARGO_MANIFEST_DIR"), "/../../src-tauri/src/commands.rs");
+        const TAURI_COMMANDS_RS: &str = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../src-tauri/src/commands.rs"
+        );
         const TAURI_LIB_RS: &str =
             concat!(env!("CARGO_MANIFEST_DIR"), "/../../src-tauri/src/lib.rs");
-        const SERVER_API_RS: &str =
-            concat!(env!("CARGO_MANIFEST_DIR"), "/../../crates/buddy-switch-server/src/api.rs");
-        const SERVER_MAIN_RS: &str =
-            concat!(env!("CARGO_MANIFEST_DIR"), "/../../crates/buddy-switch-server/src/main.rs");
+        const SERVER_API_RS: &str = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../crates/buddy-switch-server/src/api.rs"
+        );
+        const SERVER_MAIN_RS: &str = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../crates/buddy-switch-server/src/main.rs"
+        );
 
         let read = |path: &str| {
             std::fs::read_to_string(path).unwrap_or_else(|error| panic!("读不到 {path}: {error}"))

@@ -112,7 +112,11 @@ async fn body_within_limit_reaches_the_handler() {
 #[test]
 fn body_limit_derivation_covers_zero_and_extremes() {
     // 8MB 默认
-    assert_eq!(body_limit_bytes(0), 8 * 1024 * 1024, "0 视为未设置 → 默认 8MB");
+    assert_eq!(
+        body_limit_bytes(0),
+        8 * 1024 * 1024,
+        "0 视为未设置 → 默认 8MB"
+    );
     assert_eq!(body_limit_bytes(1), 1024 * 1024);
     assert_eq!(body_limit_bytes(8), 8 * 1024 * 1024);
     // 极大值不得溢出（saturating）

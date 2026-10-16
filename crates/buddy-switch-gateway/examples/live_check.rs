@@ -19,7 +19,9 @@ use axum::http::{Request, StatusCode};
 use tower::ServiceExt;
 
 use buddy_switch_core::modules::trae::{paths, variant::TraeVariant};
-use buddy_switch_gateway::trae::{apikey::TraeApiKeyStore, router, TraeGatewayConfig, TraeGatewayState};
+use buddy_switch_gateway::trae::{
+    apikey::TraeApiKeyStore, router, TraeGatewayConfig, TraeGatewayState,
+};
 
 #[tokio::main]
 async fn main() {
@@ -66,10 +68,7 @@ fn sweep_leftovers(store: &TraeApiKeyStore) {
     }
 }
 
-async fn run_checks(
-    state: &TraeGatewayState,
-    key: &str,
-) -> Result<(), Box<dyn std::error::Error>> {
+async fn run_checks(state: &TraeGatewayState, key: &str) -> Result<(), Box<dyn std::error::Error>> {
     // ---- 1. 非流式：Anthropic 协议 ----
     let body = serde_json::json!({
         "model": "deepseek-v4-flash",
@@ -155,5 +154,9 @@ fn preview(text: &str, limit: usize) -> String {
     if trimmed.chars().count() <= limit {
         return trimmed.to_string();
     }
-    format!("{}…（共 {} 字）", trimmed.chars().take(limit).collect::<String>(), trimmed.chars().count())
+    format!(
+        "{}…（共 {} 字）",
+        trimmed.chars().take(limit).collect::<String>(),
+        trimmed.chars().count()
+    )
 }

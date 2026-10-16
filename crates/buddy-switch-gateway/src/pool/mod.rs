@@ -395,7 +395,8 @@ fn parse_reset_at_ms_from_text(body: &str) -> Option<i64> {
     let (year, month, day) = (part(1)?, part(2)?, part(3)?);
     let (hour, minute, second) = (part(4)?, part(5)?, part(6)?);
     // 越界日期/时刻由 chrono 拒绝（`None`），不 panic —— 输入是不可信的上游文本。
-    let naive = NaiveDate::from_ymd_opt(year as i32, month, day)?.and_hms_opt(hour, minute, second)?;
+    let naive =
+        NaiveDate::from_ymd_opt(year as i32, month, day)?.and_hms_opt(hour, minute, second)?;
     crate::timeutil::cst_offset()
         .from_local_datetime(&naive)
         .single()
@@ -779,7 +780,9 @@ impl Pool {
             return false;
         };
         let limit = match entry.realm {
-            Some(RealmTag::Global) if policy.max_in_flight_global > 0 => policy.max_in_flight_global,
+            Some(RealmTag::Global) if policy.max_in_flight_global > 0 => {
+                policy.max_in_flight_global
+            }
             _ => policy.max_in_flight,
         };
         if limit > 0 && entry.in_flight >= limit {
@@ -1255,8 +1258,8 @@ impl Pool {
         for entry in self.entries.values() {
             let is_healthy = entry.healthy(now_ms);
             let is_cooling = now_ms < entry.until_ms || now_ms < entry.breaker_until_ms;
-            let full = self.policy().max_in_flight > 0
-                && entry.in_flight >= self.policy().max_in_flight;
+            let full =
+                self.policy().max_in_flight > 0 && entry.in_flight >= self.policy().max_in_flight;
             if is_healthy {
                 healthy += 1;
             }
@@ -1269,9 +1272,7 @@ impl Pool {
             if full {
                 in_flight_full += 1;
             }
-            let bucket = realm_totals
-                .entry(realm_key(entry.realm))
-                .or_insert([0; 4]);
+            let bucket = realm_totals.entry(realm_key(entry.realm)).or_insert([0; 4]);
             bucket[0] += 1;
             if is_healthy {
                 bucket[1] += 1;
@@ -1531,7 +1532,10 @@ mod tests {
         .normalized();
 
         assert_eq!(config.max_in_flight, 0, "负值归 0（=不限）");
-        assert_eq!(config.max_in_flight_global, 2, "0 必须归一到 2，无「不限」语义");
+        assert_eq!(
+            config.max_in_flight_global, 2,
+            "0 必须归一到 2，无「不限」语义"
+        );
         assert_eq!(config.breaker_threshold, 3);
         assert_eq!(config.idle_weight_per_hour, 0.5);
         assert_eq!(config.idle_weight_max, 5.0);
@@ -1590,7 +1594,10 @@ mod tests {
     #[test]
     fn parse_reset_at_handles_seconds_milliseconds_and_nesting() {
         // 秒级
-        assert_eq!(parse_reset_at_ms("{\"resetTime\":1700000000}"), Some(1_700_000_000_000));
+        assert_eq!(
+            parse_reset_at_ms("{\"resetTime\":1700000000}"),
+            Some(1_700_000_000_000)
+        );
         // 毫秒级
         assert_eq!(
             parse_reset_at_ms("{\"reset_time\":1700000000000}"),
@@ -1853,7 +1860,10 @@ mod tests {
         let event = UpstreamEvent::SessionDead;
         assert!(!pool.apply_upstream_error("u1", "", &event, NOW));
         assert!(!pool.apply_upstream_error("u1", "", &event, NOW));
-        assert!(pool.apply_upstream_error("u1", "", &event, NOW), "第三次应禁用");
+        assert!(
+            pool.apply_upstream_error("u1", "", &event, NOW),
+            "第三次应禁用"
+        );
         assert!(pool.get("u1").unwrap().disabled);
     }
 
@@ -1877,7 +1887,10 @@ mod tests {
 
         let breaker = pool.get("u1").unwrap().breaker_until_ms;
         let retry = pool.get("u1").unwrap().retry_count;
-        assert!(breaker > NOW, "前置：应有未过期的熔断，否则下面的断言是空转");
+        assert!(
+            breaker > NOW,
+            "前置：应有未过期的熔断，否则下面的断言是空转"
+        );
         assert!(retry > 0, "前置：退避指数应有记录");
 
         assert!(pool.revive("u1"), "应报告确实解除了禁用");
@@ -1891,7 +1904,10 @@ mod tests {
         );
         assert_eq!(entry.retry_count, retry, "退避指数（教训）必须保留，别洗白");
 
-        assert!(!pool.revive("u1"), "本来就可用 ⇒ 返回 false（幂等，不报错）");
+        assert!(
+            !pool.revive("u1"),
+            "本来就可用 ⇒ 返回 false（幂等，不报错）"
+        );
         assert!(!pool.revive("no-such-uid"), "不在池里 ⇒ 返回 false");
     }
 
@@ -1950,7 +1966,11 @@ mod tests {
         for _ in 0..2 {
             pool.apply_upstream_error("u1", "", &UpstreamEvent::Server, NOW);
         }
-        assert_eq!(pool.get("u1").unwrap().breaker_until_ms, 0, "未达阈值不熔断");
+        assert_eq!(
+            pool.get("u1").unwrap().breaker_until_ms,
+            0,
+            "未达阈值不熔断"
+        );
         pool.apply_upstream_error("u1", "", &UpstreamEvent::Server, NOW);
         assert_eq!(
             pool.get("u1").unwrap().breaker_until_ms - NOW,
@@ -2105,7 +2125,10 @@ mod tests {
         // 与 Trae 侧同形 ⇒ 前端共用一张卡：键名必须是 camelCase 那套。
         assert!(object.contains_key("cooldownUntil"));
         assert!(object.contains_key("cooldownReason"));
-        assert!(!object.contains_key("cooldown_until"), "不得出现 snake_case");
+        assert!(
+            !object.contains_key("cooldown_until"),
+            "不得出现 snake_case"
+        );
         assert!(!object.contains_key("nickname"), "展示名统一叫 name");
         // 无冷却 / 无原因 ⇒ `null`，前端据此不显示。
         assert_eq!(object["cooldownUntil"], Value::Null);
@@ -2135,7 +2158,10 @@ mod tests {
         // 11102 模型封禁 ⇒ **该模型**进冷却（账号级 `until` 不动）。
         pool.apply_upstream_error("u1", "glm-5.2", &UpstreamEvent::ModelBlocked, NOW);
         let until = pool.get("u1").unwrap().model_cooldowns["glm-5.2"].until_ms;
-        assert!(until > NOW, "前提：封禁必须落在未来（否则下面的阳性对照无效）");
+        assert!(
+            until > NOW,
+            "前提：封禁必须落在未来（否则下面的阳性对照无效）"
+        );
 
         let row = pool.status_list(NOW)[0].clone();
         assert_eq!(
@@ -2175,7 +2201,10 @@ mod tests {
 
         let object = pool.status_list(NOW)[0].as_object().expect("对象").clone();
         assert_eq!(object["status"], json!("cooling"));
-        assert!(object["cooldownUntil"].as_i64().unwrap_or(0) > NOW, "有解冻时刻");
+        assert!(
+            object["cooldownUntil"].as_i64().unwrap_or(0) > NOW,
+            "有解冻时刻"
+        );
         assert!(
             object["cooldownReason"].as_str().unwrap_or("").len() > 0,
             "有冷却原因"
@@ -2215,8 +2244,7 @@ mod tests {
         );
 
         // 墙钟走过 1ms ⇒ 冷却自然到期；`reason` 字段仍留在条目里，但**不得外发**。
-        let expired = pool
-            .status_list(NOW + 2)[0]
+        let expired = pool.status_list(NOW + 2)[0]
             .as_object()
             .expect("对象")
             .clone();
@@ -2285,7 +2313,10 @@ mod tests {
 
         let cooling = pool.snapshot(NOW)["accounts"][0].clone();
         assert_eq!(cooling["cooling"], json!(true));
-        assert!(cooling["reason"].is_string(), "冷却中必须给原因（阳性对照）");
+        assert!(
+            cooling["reason"].is_string(),
+            "冷却中必须给原因（阳性对照）"
+        );
         assert!(cooling["until_ms"].as_i64().unwrap_or(0) > NOW);
         assert_eq!(cooling["cool_kind"], json!("soft"));
 
@@ -2362,10 +2393,16 @@ mod tests {
 
         let lines = pool.diagnose(NOW);
         assert_eq!(lines.len(), 2, "每个账号一行，一个都不能漏");
-        let ok = lines.iter().find(|line| line.contains("正常")).expect("存在");
+        let ok = lines
+            .iter()
+            .find(|line| line.contains("正常"))
+            .expect("存在");
         assert!(ok.contains("可用"), "{ok}");
         assert!(ok.contains("积分=9"), "{ok}");
-        let dead = lines.iter().find(|line| line.contains("会话失效")).expect("存在");
+        let dead = lines
+            .iter()
+            .find(|line| line.contains("会话失效"))
+            .expect("存在");
         assert!(
             dead.contains("12153 session dead"),
             "复述后端写入的具体原因（状态名不够排查）: {dead}"
@@ -2520,7 +2557,10 @@ mod tests {
         };
         restore_entry(&mut entry, persisted, NOW);
         assert_eq!(entry.credits_expiring, 10, "快过期必须钳到总量");
-        assert!((entry.success_ema - 0.4).abs() < 1e-9, "已有 EMA 不得被计数覆盖");
+        assert!(
+            (entry.success_ema - 0.4).abs() < 1e-9,
+            "已有 EMA 不得被计数覆盖"
+        );
     }
 
     #[test]
@@ -2576,7 +2616,14 @@ mod tests {
 
         // ① 偏好可用 ⇒ 必须选它，即使积分远少于别人（这是「指定账号」的全部意义）。
         let picked = pool
-            .pick_account(NOW, Some(RealmTag::Cn), "", &HashSet::new(), 1, Some("poor"))
+            .pick_account(
+                NOW,
+                Some(RealmTag::Cn),
+                "",
+                &HashSet::new(),
+                1,
+                Some("poor"),
+            )
             .expect("有候选");
         assert_eq!(picked, "poor", "偏好账号可用时必须优先选中");
 
@@ -2589,7 +2636,14 @@ mod tests {
 
         // ③ 偏好不在池里 ⇒ 回落自动择优（绝不返回 None）。
         let picked = pool
-            .pick_account(NOW, Some(RealmTag::Cn), "", &HashSet::new(), 3, Some("no-such"))
+            .pick_account(
+                NOW,
+                Some(RealmTag::Cn),
+                "",
+                &HashSet::new(),
+                3,
+                Some("no-such"),
+            )
             .expect("偏好不存在也必须回落到自动择优");
         assert!(
             ["rich", "poor"].contains(&picked.as_str()),
@@ -2606,7 +2660,10 @@ mod tests {
 
     #[test]
     fn credits_refresh_interval_normalizes_non_positive_to_default() {
-        assert_eq!(PoolConfig::default().credits_refresh_interval_ms, 30 * 60 * 1000);
+        assert_eq!(
+            PoolConfig::default().credits_refresh_interval_ms,
+            30 * 60 * 1000
+        );
         for invalid in [0, -1, -9999] {
             let config = PoolConfig {
                 credits_refresh_interval_ms: invalid,
@@ -2652,13 +2709,19 @@ mod tests {
         let mut pool = Pool::new(PoolConfig::default());
         pool.upsert("soft", Some(RealmTag::Cn), "");
         pool.apply_upstream_error("soft", "", &UpstreamEvent::NotFound, NOW);
-        assert!(!pool.thaw_hard_credit_if_recovered("soft", 500), "软冷却不得解冻");
+        assert!(
+            !pool.thaw_hard_credit_if_recovered("soft", 500),
+            "软冷却不得解冻"
+        );
         assert!(!pool.thaw_hard_credit_if_recovered("soft", 0));
 
         // 硬冷却但余额为 0：不得解冻。
         pool.upsert("hard", Some(RealmTag::Cn), "");
         pool.apply_upstream_error("hard", "", &UpstreamEvent::HardCredit, NOW);
-        assert!(!pool.thaw_hard_credit_if_recovered("hard", 0), "0 余额不得解冻");
+        assert!(
+            !pool.thaw_hard_credit_if_recovered("hard", 0),
+            "0 余额不得解冻"
+        );
         assert_eq!(pool.get("hard").unwrap().cool_kind, Some(CoolKind::Hard));
 
         // 未知 uid 不 panic。
@@ -2705,7 +2768,10 @@ mod tests {
         let entry = pool.get("u1").unwrap();
         assert_eq!(entry.cool_kind, Some(CoolKind::Soft), "冷却类别不得被改动");
         assert_eq!(entry.until_ms, 9_999_999_999_999, "冷却截止不得被清除");
-        assert!(entry.reason.contains(HARD_CREDIT_COOLDOWN_REASON), "reason 不得被改动");
+        assert!(
+            entry.reason.contains(HARD_CREDIT_COOLDOWN_REASON),
+            "reason 不得被改动"
+        );
     }
 
     /// ★★ 采纳探测结果**绝不能推进退避计数** —— 本仓最容易踩的一脚。
@@ -2736,16 +2802,34 @@ mod tests {
         );
 
         let after = pool.get("u1").unwrap();
-        assert!(after.model_cooldowns.contains_key("glm-5.3"), "该模型应进冷却");
-        assert_eq!(after.until_ms, before.until_ms, "★ 账号级冷却不得被探测改动");
-        assert_eq!(after.soft_streak, before.soft_streak, "★ soft_streak 不得推进");
+        assert!(
+            after.model_cooldowns.contains_key("glm-5.3"),
+            "该模型应进冷却"
+        );
+        assert_eq!(
+            after.until_ms, before.until_ms,
+            "★ 账号级冷却不得被探测改动"
+        );
+        assert_eq!(
+            after.soft_streak, before.soft_streak,
+            "★ soft_streak 不得推进"
+        );
         assert_eq!(after.fails, before.fails, "★ 连续失败计数不得被探测推进");
-        assert_eq!(after.retry_count, before.retry_count, "★ 退避指数不得被探测推进");
-        assert_eq!(after.breaker_until_ms, before.breaker_until_ms, "★ 不得因探测触发熔断");
+        assert_eq!(
+            after.retry_count, before.retry_count,
+            "★ 退避指数不得被探测推进"
+        );
+        assert_eq!(
+            after.breaker_until_ms, before.breaker_until_ms,
+            "★ 不得因探测触发熔断"
+        );
         assert_eq!(after.success_ema, before.success_ema);
         assert_eq!(after.error_ema, before.error_ema);
         assert_eq!(after.session_dead_fails, before.session_dead_fails);
-        assert_eq!(after.err_total, before.err_total, "★ 探测不是流量，不记错次");
+        assert_eq!(
+            after.err_total, before.err_total,
+            "★ 探测不是流量，不记错次"
+        );
         assert_eq!(after.last_err_ms, before.last_err_ms);
     }
 
@@ -2780,7 +2864,9 @@ mod tests {
             "u1",
             Some(RealmTag::Cn),
             "m2",
-            &ProbeOutcome::ModelRateLimited { reset_at_ms: Some(NOW - 86_400_000) },
+            &ProbeOutcome::ModelRateLimited {
+                reset_at_ms: Some(NOW - 86_400_000)
+            },
             NOW,
         ));
         let cooldown = pool.get("u1").unwrap().model_cooldowns["m2"].clone();
@@ -2794,7 +2880,9 @@ mod tests {
             "u1",
             Some(RealmTag::Cn),
             "m3",
-            &ProbeOutcome::ModelRateLimited { reset_at_ms: Some(NOW + 120_000) },
+            &ProbeOutcome::ModelRateLimited {
+                reset_at_ms: Some(NOW + 120_000)
+            },
             NOW,
         ));
         assert_eq!(
@@ -2828,12 +2916,22 @@ mod tests {
 
         // ② 同一模型再探一次：**不得**推到 12h（探测不是新的处罚）。
         assert!(
-            !pool.adopt_probe_result("u1", Some(RealmTag::Cn), "m", &ProbeOutcome::ModelBlocked, now),
+            !pool.adopt_probe_result(
+                "u1",
+                Some(RealmTag::Cn),
+                "m",
+                &ProbeOutcome::ModelBlocked,
+                now
+            ),
             "同一时刻重复采纳 ⇒ 不算变化"
         );
         let cooldown = pool.get("u1").unwrap().model_cooldowns["m"].clone();
         assert_eq!(cooldown.hits, 1, "★ 探测不得推进 hits");
-        assert_eq!(cooldown.until_ms - now, 6 * 60 * 60 * 1000, "★ 不得被探测推到更长档");
+        assert_eq!(
+            cooldown.until_ms - now,
+            6 * 60 * 60 * 1000,
+            "★ 不得被探测推到更长档"
+        );
 
         // ③ 真实流量已经罚过两次（hits=2 ⇒ 12h）⇒ 探测**保留**既有 hits，不动它的档位。
         let mut pool = Pool::new(PoolConfig::default());
@@ -2843,10 +2941,23 @@ mod tests {
         let real = pool.get("u1").unwrap().model_cooldowns["m"].clone();
         assert_eq!(real.hits, 2, "前置：真实流量罚了两次");
 
-        pool.adopt_probe_result("u1", Some(RealmTag::Cn), "m", &ProbeOutcome::ModelBlocked, now);
+        pool.adopt_probe_result(
+            "u1",
+            Some(RealmTag::Cn),
+            "m",
+            &ProbeOutcome::ModelBlocked,
+            now,
+        );
         let after = pool.get("u1").unwrap().model_cooldowns["m"].clone();
-        assert_eq!(after.hits, real.hits, "★ 探测保留既有 hits，既不 +1 也不清零");
-        assert_eq!(after.until_ms, now + 12 * 60 * 60 * 1000, "仍是第 2 档（12h）");
+        assert_eq!(
+            after.hits, real.hits,
+            "★ 探测保留既有 hits，既不 +1 也不清零"
+        );
+        assert_eq!(
+            after.until_ms,
+            now + 12 * 60 * 60 * 1000,
+            "仍是第 2 档（12h）"
+        );
 
         // ④ 模型级限流**不参与**封禁计数（两条退避语义不同，混用会让封禁档位被污染）。
         pool.adopt_probe_result(
@@ -2953,7 +3064,10 @@ mod tests {
             "探到可用 ⇒ 应清掉该模型冷却并返回 true"
         );
         let entry = pool.get("u1").unwrap();
-        assert!(!entry.model_cooldowns.contains_key("glm-5.3"), "该模型的冷却应被清掉");
+        assert!(
+            !entry.model_cooldowns.contains_key("glm-5.3"),
+            "该模型的冷却应被清掉"
+        );
         assert!(
             entry.model_cooldowns.contains_key("kimi-k3"),
             "★ 只清**这一个模型** —— 不能顺手把同账号其它模型也放了"
@@ -2977,7 +3091,10 @@ mod tests {
         );
         let after = pool.get("u1").unwrap();
         assert_eq!(after.until_ms, before.until_ms, "Other 档不得动账号冷却");
-        assert_eq!(after.model_cooldowns, before.model_cooldowns, "Other 档不得动模型冷却");
+        assert_eq!(
+            after.model_cooldowns, before.model_cooldowns,
+            "Other 档不得动模型冷却"
+        );
 
         // 账号级限流 ⇒ 账号级软冷却。★ 它**会清空模型级表** —— 这是既有语义
         // （`cooldown_soft_until` 内部 `model_cooldowns.clear()`）：账号级冷却压过模型级。
@@ -3095,7 +3212,13 @@ mod tests {
             probe_state_of(&classify_event(404, r#"{"error":"model not found"}"#)),
             ProbeState::ModelUnavailable
         );
-        assert_eq!(probe_state_of(&classify_event(500, "boom")), ProbeState::UpstreamError);
-        assert_eq!(probe_state_of(&classify_event(400, "bad request")), ProbeState::UpstreamError);
+        assert_eq!(
+            probe_state_of(&classify_event(500, "boom")),
+            ProbeState::UpstreamError
+        );
+        assert_eq!(
+            probe_state_of(&classify_event(400, "bad request")),
+            ProbeState::UpstreamError
+        );
     }
 }

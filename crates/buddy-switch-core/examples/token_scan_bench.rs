@@ -80,8 +80,14 @@ fn summarize(value: &serde_json::Value) -> (u64, u64, u64) {
     let mut errors = 0u64;
     if let Some(sources) = value.get("sources").and_then(|v| v.as_array()) {
         for source in sources {
-            files += source.get("filesScanned").and_then(|v| v.as_u64()).unwrap_or(0);
-            errors += source.get("parseErrors").and_then(|v| v.as_u64()).unwrap_or(0);
+            files += source
+                .get("filesScanned")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            errors += source
+                .get("parseErrors")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
             records += source
                 .get("summary")
                 .and_then(|s| s.get("records"))
@@ -97,10 +103,11 @@ fn main() {
 
     // `read [目录]` —— 只读盘不解析，量 I/O 上限。
     if args.first().map(String::as_str) == Some("read") {
-        let root = args
-            .get(1)
-            .map(PathBuf::from)
-            .unwrap_or_else(|| dirs::home_dir().unwrap_or_default().join(".workbuddy-ai/projects"));
+        let root = args.get(1).map(PathBuf::from).unwrap_or_else(|| {
+            dirs::home_dir()
+                .unwrap_or_default()
+                .join(".workbuddy-ai/projects")
+        });
         for pass in ["cold", "warm"] {
             let started = Instant::now();
             let (files, bytes) = read_only(&root);
@@ -153,8 +160,11 @@ fn main() {
                 }
                 let path = std::path::Path::new(dir)
                     .join(format!("{}-{label}-{pass}.json", filter.as_str()));
-                std::fs::write(&path, serde_json::to_string_pretty(&value).expect("serialize"))
-                    .expect("write dump");
+                std::fs::write(
+                    &path,
+                    serde_json::to_string_pretty(&value).expect("serialize"),
+                )
+                .expect("write dump");
                 println!("dumped {}", path.display());
             }
             println!(

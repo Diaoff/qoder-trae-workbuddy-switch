@@ -126,7 +126,11 @@ pub fn prepare_outbound_body(
 /// 字段探测顺序 `reasoning_effort` → `reasoningEffort`；两者都无、值非字符串、
 /// 或值不是已知档位 → 不改写。模型名精确匹配（非前缀）。
 fn normalize_effort_in_place(region: Region, model: &str, obj: &mut Map<String, Value>) {
-    let key = if obj.get("reasoning_effort").and_then(Value::as_str).is_some() {
+    let key = if obj
+        .get("reasoning_effort")
+        .and_then(Value::as_str)
+        .is_some()
+    {
         "reasoning_effort"
     } else if obj.get("reasoningEffort").and_then(Value::as_str).is_some() {
         "reasoningEffort"
@@ -290,14 +294,22 @@ fn inject_prompt_cache_key(
 /// 派生缓存键：`wb2a-<uid8>-<hash16>`。空 uid 的 uid8 段为 `-`。
 pub fn prompt_cache_key(uid: &str, conversation_id: &str) -> String {
     let uid8: String = uid.chars().take(8).collect();
-    let uid8 = if uid8.is_empty() { "-".to_string() } else { uid8 };
+    let uid8 = if uid8.is_empty() {
+        "-".to_string()
+    } else {
+        uid8
+    };
 
     let mut hasher = Sha256::new();
     hasher.update(uid.as_bytes());
     hasher.update(b"|");
     hasher.update(conversation_id.as_bytes());
     let digest = hasher.finalize();
-    let hex: String = digest.iter().take(8).map(|byte| format!("{byte:02x}")).collect();
+    let hex: String = digest
+        .iter()
+        .take(8)
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
 
     format!("wb2a-{uid8}-{hex}")
 }
@@ -360,9 +372,8 @@ mod tests {
 
     #[test]
     fn existing_stream_options_are_not_overwritten() {
-        let value = cn(
-            r#"{"model":"glm-5.2","stream_options":{"include_usage":false},"messages":[]}"#,
-        );
+        let value =
+            cn(r#"{"model":"glm-5.2","stream_options":{"include_usage":false},"messages":[]}"#);
         assert_eq!(
             value["stream_options"]["include_usage"],
             json!(false),
@@ -372,12 +383,10 @@ mod tests {
 
     #[test]
     fn deepseek_gets_thinking_effort_and_reasoning_backfill() {
-        let value = cn(
-            r#"{"model":"deepseek-v4.1-flash","messages":[
+        let value = cn(r#"{"model":"deepseek-v4.1-flash","messages":[
                 {"role":"assistant","reasoning":"think","content":"a"},
                 {"role":"user","content":"b"}
-            ]}"#,
-        );
+            ]}"#);
         assert_eq!(value["thinking"], json!({"type": "enabled"}));
         assert_eq!(value["reasoning_effort"], json!("high"));
         assert_eq!(value["messages"][0]["reasoning_content"], json!("think"));
@@ -386,16 +395,17 @@ mod tests {
     #[test]
     fn non_deepseek_model_never_gets_thinking_fields() {
         let value = cn(r#"{"model":"glm-5.2","messages":[{"role":"user","content":"hi"}]}"#);
-        assert!(value.get("thinking").is_none(), "非 DeepSeek 不得注入 thinking");
+        assert!(
+            value.get("thinking").is_none(),
+            "非 DeepSeek 不得注入 thinking"
+        );
         assert!(value.get("reasoning_effort").is_none());
     }
 
     #[test]
     fn effort_is_downgraded_for_deepseek_pro() {
         // deepseek-v4-pro: low/high/xhigh；请求 max → xhigh
-        let value = cn(
-            r#"{"model":"deepseek-v4-pro","reasoning_effort":"max","messages":[]}"#,
-        );
+        let value = cn(r#"{"model":"deepseek-v4-pro","reasoning_effort":"max","messages":[]}"#);
         assert_eq!(value["reasoning_effort"], json!("xhigh"));
     }
 
@@ -470,14 +480,12 @@ mod tests {
 
     #[test]
     fn orphan_tool_calls_are_cleaned() {
-        let value = cn(
-            r#"{"model":"glm-5.2","messages":[
+        let value = cn(r#"{"model":"glm-5.2","messages":[
                 {"role":"assistant","content":null,"tool_calls":[{"id":"ok","type":"function","function":{"name":"a","arguments":"{}"}}]},
                 {"role":"tool","tool_call_id":"ok","content":"result"},
                 {"role":"assistant","content":null,"tool_calls":[{"id":"orphan","type":"function","function":{"name":"b","arguments":"{}"}}]},
                 {"role":"tool","tool_call_id":"ghost","content":"dangling"}
-            ]}"#,
-        );
+            ]}"#);
         let messages = value["messages"].as_array().expect("数组");
         assert_eq!(
             messages.len(),
@@ -488,7 +496,11 @@ mod tests {
             messages[0].get("tool_calls").is_some(),
             "配对完整的 tool_calls 必须保留"
         );
-        assert_eq!(messages[1]["role"], json!("tool"), "配对成功的 tool 消息保留");
+        assert_eq!(
+            messages[1]["role"],
+            json!("tool"),
+            "配对成功的 tool 消息保留"
+        );
         assert_eq!(messages[2]["role"], json!("assistant"));
         assert!(
             messages[2].get("tool_calls").is_none(),
@@ -514,16 +526,14 @@ mod tests {
     /// 上游判 `tool_call_sequence_broken`（400）。
     #[test]
     fn partially_orphan_batch_does_not_leave_dangling_tool_result() {
-        let value = cn(
-            r#"{"model":"glm-5.2","messages":[
+        let value = cn(r#"{"model":"glm-5.2","messages":[
                 {"role":"user","content":"go"},
                 {"role":"assistant","content":null,"tool_calls":[
                     {"id":"a","type":"function","function":{"name":"x","arguments":"{}"}},
                     {"id":"b","type":"function","function":{"name":"y","arguments":"{}"}}
                 ]},
                 {"role":"tool","tool_call_id":"a","content":"result"}
-            ]}"#,
-        );
+            ]}"#);
         let messages = value["messages"].as_array().expect("数组");
         assert_eq!(
             messages.len(),
@@ -544,9 +554,8 @@ mod tests {
 
     #[test]
     fn prompt_cache_key_prefers_body_metadata() {
-        let value = cn(
-            r#"{"model":"glm-5.2","metadata":{"conversation_id":"body-conv"},"messages":[]}"#,
-        );
+        let value =
+            cn(r#"{"model":"glm-5.2","metadata":{"conversation_id":"body-conv"},"messages":[]}"#);
         let key = value["prompt_cache_key"].as_str().expect("字符串");
         assert!(key.starts_with("wb2a-u-123456-"), "uid 只取前 8 位: {key}");
         assert_eq!(key, prompt_cache_key("u-1234567890", "body-conv"));
@@ -597,8 +606,7 @@ mod tests {
 
     #[test]
     fn passthrough_keeps_client_system_unless_degraded() {
-        let source =
-            r#"{"model":"glm-5.2","messages":[{"role":"system","content":"client system"},{"role":"user","content":"hi"}]}"#;
+        let source = r#"{"model":"glm-5.2","messages":[{"role":"system","content":"client system"},{"role":"user","content":"hi"}]}"#;
         let kept = cn_with(source, options(false, PromptSettings::default()), false);
         assert_eq!(
             kept["messages"][0]["content"],
@@ -656,6 +664,9 @@ mod tests {
         let key = prompt_cache_key("", "c");
         assert!(key.starts_with("wb2a--"), "空 uid 的 uid8 段应为 -: {key}");
         let key = prompt_cache_key("abcdefghij", "c");
-        assert!(key.starts_with("wb2a-abcdefgh-"), "超长 uid 截断到 8: {key}");
+        assert!(
+            key.starts_with("wb2a-abcdefgh-"),
+            "超长 uid 截断到 8: {key}"
+        );
     }
 }

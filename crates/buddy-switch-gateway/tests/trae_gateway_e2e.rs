@@ -42,7 +42,9 @@ static ENV_LOCK: Mutex<()> = Mutex::new(());
 /// 容忍锁中毒：某个用例断言失败并持锁 panic 后，其余用例仍应各自报告真实结果，
 /// 而不是在取锁处集体失败（"一处失败、满屏失败"会掩盖真正的缺陷）。
 fn guard() -> std::sync::MutexGuard<'static, ()> {
-    ENV_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    ENV_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 /// 把 `BUDDY_SWITCH_HOME` 指向一个已存在的临时目录，并写入一份账号库。
@@ -206,7 +208,9 @@ fn chat_request(key: Option<&str>, body: &str) -> Request<Body> {
     if let Some(key) = key {
         builder = builder.header("authorization", format!("Bearer {key}"));
     }
-    builder.body(Body::from(body.to_string())).expect("构造请求")
+    builder
+        .body(Body::from(body.to_string()))
+        .expect("构造请求")
 }
 
 /// 组装「已指向 mock 上游」的网关状态，并创建一把默认归属（TraeWork）的 Key。
@@ -277,7 +281,10 @@ async fn wrong_api_key_is_rejected() {
     let (state, _key) = gateway_for(Behavior::Normal).await;
 
     let response = router(state)
-        .oneshot(chat_request(Some("sk-trae-not-the-key"), r#"{"model":"m","messages":[]}"#))
+        .oneshot(chat_request(
+            Some("sk-trae-not-the-key"),
+            r#"{"model":"m","messages":[]}"#,
+        ))
         .await
         .expect("路由调用");
 
@@ -344,11 +351,17 @@ async fn streaming_request_is_converted_to_openai_sse() {
     let text = body_text(response).await;
     // SOLO 事件名绝不能泄漏给客户端。
     for leaked in ["event:output", "event:token_usage", "event:done", "id:1"] {
-        assert!(!text.contains(leaked), "上游私有事件名泄漏到响应里：{leaked}\n{text}");
+        assert!(
+            !text.contains(leaked),
+            "上游私有事件名泄漏到响应里：{leaked}\n{text}"
+        );
     }
     // 必须转换成 OpenAI 的 `data: {...}` 分片，并且正文可读。
     assert!(text.contains("data: {"), "缺少 OpenAI data 行\n{text}");
-    assert!(text.contains("chat.completion.chunk"), "缺少 chunk 对象\n{text}");
+    assert!(
+        text.contains("chat.completion.chunk"),
+        "缺少 chunk 对象\n{text}"
+    );
     assert!(text.contains("jwt-a"), "正文应回显所用账号的 jwt\n{text}");
     // **绝不悬挂连接**：无论上游怎么结束，都必须补发 [DONE]。
     assert!(
@@ -411,8 +424,14 @@ async fn upstream_401_marks_the_account_session_dead() {
     // 关键断言：错误必须写回**共享的**冷却文件，签到页才会显示同一个状态。
     let file = cooldowns(&home);
     let entry = &file["cooldowns"]["uid-a"];
-    assert_eq!(entry["type"], "SessionDead", "冷却类型必须是 SessionDead\n{file}");
-    assert_eq!(entry["until"], 9_999_999_999_i64, "会话失效必须是永久冷却\n{file}");
+    assert_eq!(
+        entry["type"], "SessionDead",
+        "冷却类型必须是 SessionDead\n{file}"
+    );
+    assert_eq!(
+        entry["until"], 9_999_999_999_i64,
+        "会话失效必须是永久冷却\n{file}"
+    );
     let _ = std::fs::remove_dir_all(&home);
 }
 
@@ -437,7 +456,10 @@ async fn upstream_429_cools_the_account_without_disabling_it() {
     let until = entry["until"].as_i64().unwrap_or(0);
     let now = chrono::Local::now().timestamp();
     // 限流是**临时**冷却，不得像 SessionDead 那样写成永久。
-    assert!(until > now && until < 9_999_999_999, "限流冷却时长不合理: {until}\n{file}");
+    assert!(
+        until > now && until < 9_999_999_999,
+        "限流冷却时长不合理: {until}\n{file}"
+    );
     let _ = std::fs::remove_dir_all(&home);
 }
 
@@ -635,7 +657,9 @@ async fn legacy_settings_key_routes_to_work_pool_unchanged() {
     let home = isolated_home("legacy-work", &[("uid-a", "jwt-a")]);
     let legacy = "sk-trae-11111111111111111111111111111111";
     std::fs::write(
-        home.join(".buddy-switch").join("trae").join("settings.json"),
+        home.join(".buddy-switch")
+            .join("trae")
+            .join("settings.json"),
         serde_json::json!({ "apiKey": legacy }).to_string(),
     )
     .expect("写入 legacy settings");
@@ -734,11 +758,17 @@ async fn status_view_selects_the_variant_pool_without_new_keys() {
         );
         // 键集合不变：不得新增 `variant` 键（前端形状靠键集合钉住）。
         assert!(cn.get("api_key_prefix").is_some());
-        assert!(cn.get("variant").is_none(), "status_view 不得新增 variant 键");
+        assert!(
+            cn.get("variant").is_none(),
+            "status_view 不得新增 variant 键"
+        );
     }
     // 国际版是另一套账号体系 → 空池。
     let global = status_view(&state, false, None, "test", TraeVariant::Global).await;
-    assert_eq!(global["pool"]["total"], 0, "国际版池应为空（两套独立账号体系）");
+    assert_eq!(
+        global["pool"]["total"], 0,
+        "国际版池应为空（两套独立账号体系）"
+    );
 
     let _ = std::fs::remove_dir_all(&home);
 }
@@ -756,7 +786,9 @@ fn messages_request(key: Option<&str>, body: &str) -> Request<Body> {
     if let Some(key) = key {
         builder = builder.header("authorization", format!("Bearer {key}"));
     }
-    builder.body(Body::from(body.to_string())).expect("构造请求")
+    builder
+        .body(Body::from(body.to_string()))
+        .expect("构造请求")
 }
 
 /// ★ `/v1/messages` **必须**走鉴权。

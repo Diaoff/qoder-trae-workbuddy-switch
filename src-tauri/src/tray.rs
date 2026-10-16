@@ -3,6 +3,7 @@
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 
+use buddy_switch_core::modules::{app_prefs, checkin, update};
 use serde_json::Value;
 use tauri::menu::{CheckMenuItem, Menu, MenuBuilder, MenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
@@ -12,7 +13,6 @@ use tauri::{
 };
 use tauri_plugin_notification::NotificationExt;
 use tauri_plugin_opener::OpenerExt;
-use buddy_switch_core::modules::{app_prefs, checkin, update};
 
 const TRAY_ID: &str = "main-menu-bar";
 const MAIN_WINDOW_LABEL: &str = "main";
@@ -633,7 +633,11 @@ mod tests {
     fn silent_startup_matches_exact_hidden_arg() {
         assert!(is_silent_startup(["--hidden"]));
         assert!(is_silent_startup(["buddy-switch-rust", "--hidden"]));
-        assert!(is_silent_startup(["buddy-switch-rust", "--hidden", "--debug"]));
+        assert!(is_silent_startup([
+            "buddy-switch-rust",
+            "--hidden",
+            "--debug"
+        ]));
     }
 
     #[test]
@@ -717,10 +721,10 @@ mod tests {
     fn app_bundle_path_none_outside_app_bundle() {
         use std::path::Path;
         assert!(super::app_bundle_path_from_exe(Path::new("/tmp/exec")).is_none());
-        assert!(
-            super::app_bundle_path_from_exe(Path::new("/Users/x/target/debug/buddy-switch-rust"))
-                .is_none()
-        );
+        assert!(super::app_bundle_path_from_exe(Path::new(
+            "/Users/x/target/debug/buddy-switch-rust"
+        ))
+        .is_none());
         assert!(super::app_bundle_path_from_exe(Path::new(
             "/Applications/BuddySwitch.app/Contents/Resources/icon.icns"
         ))

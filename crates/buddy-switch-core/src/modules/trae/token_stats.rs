@@ -280,7 +280,11 @@ fn cutoff_ms(days: Option<i64>) -> Option<i64> {
 /// 毫秒时间戳 → 本地日期 `YYYY-MM-DD`。
 fn local_date(ts_ms: i64) -> String {
     chrono::DateTime::from_timestamp_millis(ts_ms)
-        .map(|utc| utc.with_timezone(&chrono::Local).format("%Y-%m-%d").to_string())
+        .map(|utc| {
+            utc.with_timezone(&chrono::Local)
+                .format("%Y-%m-%d")
+                .to_string()
+        })
         .unwrap_or_else(|| "未知".to_string())
 }
 
@@ -404,9 +408,7 @@ pub fn get_statistics(days: Option<i64>, scope: TraeTokenScope) -> Value {
         })
         .collect();
 
-    let models = descending(by_model, |key, bucket| {
-        bucket.group_value(key, json!(null))
-    });
+    let models = descending(by_model, |key, bucket| bucket.group_value(key, json!(null)));
     let accounts = descending(by_account, |key, bucket| {
         let name = names.get(key).cloned().unwrap_or_else(|| key.to_string());
         let tail = key.get(key.len().saturating_sub(8)..).unwrap_or(key);
@@ -535,9 +537,7 @@ fn ascending<F>(map: BTreeMap<String, Bucket>, build: F) -> Vec<Value>
 where
     F: Fn(&str, &Bucket) -> Value,
 {
-    map.iter()
-        .map(|(key, bucket)| build(key, bucket))
-        .collect()
+    map.iter().map(|(key, bucket)| build(key, bucket)).collect()
 }
 
 #[cfg(test)]
@@ -595,7 +595,10 @@ mod tests {
             );
         }
         assert_eq!(TraeTokenScope::parse("global"), TraeTokenScope::Global);
-        assert_eq!(TraeTokenScope::parse("unlabeled"), TraeTokenScope::Unlabeled);
+        assert_eq!(
+            TraeTokenScope::parse("unlabeled"),
+            TraeTokenScope::Unlabeled
+        );
         assert_eq!(TraeTokenScope::parse("all"), TraeTokenScope::All);
         // 缺失 / 未知 → All（宽容失败方向）。
         assert_eq!(TraeTokenScope::parse(""), TraeTokenScope::All);
@@ -614,14 +617,16 @@ mod tests {
         counts.bump(None);
         assert_eq!(counts.cn, 2, "两条国内程序位同属国内版");
         assert_eq!(counts.global, 1);
-        assert_eq!(counts.unlabeled, 1, "旧日志（无 variant）必须计入「未标注」");
+        assert_eq!(
+            counts.unlabeled, 1,
+            "旧日志（无 variant）必须计入「未标注」"
+        );
         assert_eq!(counts.all, 4, "All = 三档之和");
     }
 
     #[test]
     fn entry_parse_reads_variant_or_none() {
-        let work =
-            LogEntry::parse(&json!({"ts": 1, "variant": "trae_work"})).expect("解析 work");
+        let work = LogEntry::parse(&json!({"ts": 1, "variant": "trae_work"})).expect("解析 work");
         assert_eq!(work.variant, Some(TraeVariant::TraeWork));
         let cn = LogEntry::parse(&json!({"ts": 1, "variant": "trae_cn"})).expect("解析 cn");
         assert_eq!(cn.variant, Some(TraeVariant::Trae));
@@ -659,8 +664,14 @@ mod tests {
         assert_eq!(all["variantCounts"]["unlabeled"], 1);
         assert_eq!(all["variantCounts"]["all"], 4);
         assert_eq!(all["summary"]["records"], 4, "All 应计入全部三档");
-        assert!(all["modelDaily"].as_array().map(|v| !v.is_empty()).unwrap_or(false));
-        assert!(all["unsupported"].as_array().map(|v| !v.is_empty()).unwrap_or(false));
+        assert!(all["modelDaily"]
+            .as_array()
+            .map(|v| !v.is_empty())
+            .unwrap_or(false));
+        assert!(all["unsupported"]
+            .as_array()
+            .map(|v| !v.is_empty())
+            .unwrap_or(false));
 
         let cn = get_statistics(None, TraeTokenScope::Cn);
         assert_eq!(
@@ -752,9 +763,15 @@ mod tests {
         //   前端 `heatmapMatrix` 按 `-` 拆键，任一档越界都会**静默丢格子**，故钉死。
         let slot = local_slot(ts);
         let (weekday, hour) = slot.split_once('-').expect("槽位必须是 `{weekday}-{HH}`");
-        assert!((0..=6).contains(&weekday.parse::<i64>().expect("星期是数字")), "{slot}");
+        assert!(
+            (0..=6).contains(&weekday.parse::<i64>().expect("星期是数字")),
+            "{slot}"
+        );
         assert_eq!(hour.len(), 2, "{slot}");
-        assert!((0..=23).contains(&hour.parse::<i64>().expect("小时是数字")), "{slot}");
+        assert!(
+            (0..=23).contains(&hour.parse::<i64>().expect("小时是数字")),
+            "{slot}"
+        );
         // 极端时间戳不 panic，退化为占位符。
         assert_eq!(local_date(i64::MIN), "未知");
         assert_eq!(local_hour(i64::MIN), "--");
@@ -765,7 +782,12 @@ mod tests {
     fn slot_keys_sort_by_weekday_then_hour() {
         // 键的**字符串升序**必须等于「周 → 小时」的自然顺序：下游沿用 `ascending()` 排序，
         // 顺序错了热力图的行列就会错位（且不会有任何报错）。
-        let mut keys = vec!["1-00".to_string(), "0-23".to_string(), "0-00".to_string(), "6-09".to_string()];
+        let mut keys = vec![
+            "1-00".to_string(),
+            "0-23".to_string(),
+            "0-00".to_string(),
+            "6-09".to_string(),
+        ];
         keys.sort();
         assert_eq!(keys, vec!["0-00", "0-23", "1-00", "6-09"]);
     }

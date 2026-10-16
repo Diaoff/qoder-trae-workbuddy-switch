@@ -72,9 +72,9 @@
 use serde_json::{json, Value};
 
 use super::paths;
+use super::profile;
 use super::region::{TraeProgram, TraeRegion};
 use super::store;
-use super::profile;
 
 /// 槽位根下**不是账号快照**的保留名 —— 搬运时必须跳过。
 ///
@@ -306,7 +306,11 @@ mod tests {
         let report = carry_merged_snapshots();
 
         assert!(report.errors.is_empty(), "不应有失败：{:?}", report.errors);
-        assert_eq!(report.carries.len(), 4, "四个历史池的快照都该被搬：{report:?}");
+        assert_eq!(
+            report.carries.len(),
+            4,
+            "四个历史池的快照都该被搬：{report:?}"
+        );
         for slot in ["u-cn-work", "u-cn-code"] {
             assert!(
                 merged_slot_exists(TraeRegion::Cn, slot),
@@ -346,7 +350,10 @@ mod tests {
 
         let report = carry_merged_snapshots();
 
-        assert!(report.changed(), "不该再依赖 migration-job.json：{report:?}");
+        assert!(
+            report.changed(),
+            "不该再依赖 migration-job.json：{report:?}"
+        );
         assert!(merged_slot_exists(TraeRegion::Cn, "u1"));
     }
 
@@ -406,7 +413,8 @@ mod tests {
         let existing = paths::profiles_dir_for_program(TraeRegion::Cn, TraeProgram::Trae)
             .join("u1")
             .join("Local State");
-        std::fs::create_dir_all(existing.parent().expect("父目录应存在")).expect("合并槽位应能创建");
+        std::fs::create_dir_all(existing.parent().expect("父目录应存在"))
+            .expect("合并槽位应能创建");
         std::fs::write(&existing, b"x").expect("文件应能写入");
 
         let first = carry_merged_snapshots();
@@ -462,11 +470,17 @@ mod tests {
         assert!(value.get("slots_copied").is_none(), "不得泄漏 snake_case");
         assert_eq!(value.get("changed").and_then(Value::as_bool), Some(true));
         assert_eq!(value.get("slotsCopied").and_then(Value::as_u64), Some(1));
-        let carried = value.get("carried").and_then(Value::as_array).expect("carried 应是数组");
+        let carried = value
+            .get("carried")
+            .and_then(Value::as_array)
+            .expect("carried 应是数组");
         for key in ["region", "from", "slot", "files"] {
             assert!(carried[0].get(key).is_some(), "搬运条目缺少字段 {key}");
         }
-        assert_eq!(carried[0].get("from").and_then(Value::as_str), Some("profiles"));
+        assert_eq!(
+            carried[0].get("from").and_then(Value::as_str),
+            Some("profiles")
+        );
     }
 
     /// 历史池目录名表必须覆盖收敛前的**全部**目录形态（含那两条分叉）。
@@ -483,7 +497,10 @@ mod tests {
             "profiles_global_trae_work",
             "profiles_global_trae_code",
         ] {
-            assert!(names.contains(&expected), "历史池表漏了 `{expected}`：{names:?}");
+            assert!(
+                names.contains(&expected),
+                "历史池表漏了 `{expected}`：{names:?}"
+            );
         }
         for region in TraeRegion::all() {
             assert!(

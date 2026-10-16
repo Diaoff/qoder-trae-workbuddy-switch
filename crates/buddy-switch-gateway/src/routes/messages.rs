@@ -10,8 +10,8 @@ use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::Response;
 
-use buddy_switch_core::modules::region::Region;
 use buddy_switch_core::modules::product::scope_of_wb_region;
+use buddy_switch_core::modules::region::Region;
 
 use crate::logging::RequestMeta;
 use crate::outbound::PromptMode;

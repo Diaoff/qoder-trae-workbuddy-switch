@@ -49,7 +49,9 @@ struct IsolatedHome {
 
 impl IsolatedHome {
     fn new(label: &str) -> Self {
-        let lock = ENV_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let lock = ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let previous = std::env::var(BUDDY_SWITCH_HOME_ENV).ok();
         let dir = unique_temp_dir(label);
         fs::create_dir_all(&dir).expect("create isolated home");
@@ -196,8 +198,7 @@ fn connector_merge_backs_up_original_target_file() {
         &source_dir.join("mcp.json"),
         r#"{"mcpServers":{"shared":{"command":"src"},"onlyInSource":{"command":"new"}}}"#,
     );
-    let target_original =
-        r#"{"mcpServers":{"shared":{"command":"target"}}}"#;
+    let target_original = r#"{"mcpServers":{"shared":{"command":"target"}}}"#;
     write_at(&target_mcp, target_original);
 
     let result = connector::merge_connectors_for(Region::Cn, "uid-conn-source", "uid-conn-target")
@@ -280,7 +281,10 @@ fn migrate_report_exposes_backup_paths_and_is_idempotent() {
     let conn_backup = report["connectors"]["backup"]
         .as_str()
         .expect("connector 备份路径应出现在报告中");
-    assert!(Path::new(conn_backup).is_dir(), "connector 备份目录应真实存在");
+    assert!(
+        Path::new(conn_backup).is_dir(),
+        "connector 备份目录应真实存在"
+    );
 
     // 二次迁移：全部命中指纹 → 无新增、无改写、无新备份。
     let second = migrate::migrate_account_data_for(

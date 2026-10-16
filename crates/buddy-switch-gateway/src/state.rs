@@ -513,7 +513,11 @@ mod tests {
         .into_iter()
         .collect();
         // 精确匹配：多一个少一个都会失败，防止契约再次漂移。
-        assert_eq!(keys_of(&value), expected, "gateway_status key set must be pinned");
+        assert_eq!(
+            keys_of(&value),
+            expected,
+            "gateway_status key set must be pinned"
+        );
 
         // 「某域一个账号都没有」是正常状态，`pools` 的两个键必须**恒定存在**，
         // 否则前端会把「空池」显示成「未知」。
@@ -578,7 +582,11 @@ mod tests {
         assert_eq!(view.pools["cn"].total, 1);
         assert_eq!(view.pools["global"].total, 1);
         assert_eq!(view.pools["cn"].total_credits, 7.0);
-        assert_eq!(view.accounts.len(), 2, "两个域的账号都给出，由前端按 realm 过滤");
+        assert_eq!(
+            view.accounts.len(),
+            2,
+            "两个域的账号都给出，由前端按 realm 过滤"
+        );
         assert_eq!(view.diagnose.len(), 2);
 
         let realms: BTreeSet<&str> = view
@@ -661,8 +669,8 @@ mod tests {
             r#"{"port":60000,"dualPort":true}"#,
             r#"{"port":60000,"dual_port":true}"#,
         ] {
-            let config: GatewayConfig =
-                serde_json::from_str(body).unwrap_or_else(|e| panic!("老配置必须能加载 {body}: {e}"));
+            let config: GatewayConfig = serde_json::from_str(body)
+                .unwrap_or_else(|e| panic!("老配置必须能加载 {body}: {e}"));
             assert_eq!(config.port, 60000, "其余字段不受影响");
         }
         // 序列化出口也不得再出现该键（契约测试另行钉死键集合）

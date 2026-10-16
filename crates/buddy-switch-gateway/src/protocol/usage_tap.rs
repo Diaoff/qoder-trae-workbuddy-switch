@@ -310,7 +310,11 @@ mod tests {
             "data: {\"usage\":{\"credit\":9.0,\"prompt_tokens\":10,\"completion_tokens\":10}}\n\n",
         ]);
         let _ = UsageTap::new(stream, only(&sink)).collect::<Vec<_>>().await;
-        assert_eq!(sink.calls(), vec![report(9.0, 10, 10)], "后到的用量应覆盖先到的");
+        assert_eq!(
+            sink.calls(),
+            vec![report(9.0, 10, 10)],
+            "后到的用量应覆盖先到的"
+        );
     }
 
     /// ★ 没有可用用量时**仍要回报一次 `None`** —— 日志类 sink 靠它记下「这次请求发生过」。
@@ -418,14 +422,24 @@ mod tests {
         );
         // 负数 token 被钳到 0；另一项非 0 ⇒ 仍是合法样本
         assert_eq!(
-            extract_usage(&json!({"usage": {"credit": 1.0, "prompt_tokens": -5, "completion_tokens": 2}})),
-            Some(UsageReport { credit: 1.0, prompt_tokens: 0, completion_tokens: 2 }),
+            extract_usage(
+                &json!({"usage": {"credit": 1.0, "prompt_tokens": -5, "completion_tokens": 2}})
+            ),
+            Some(UsageReport {
+                credit: 1.0,
+                prompt_tokens: 0,
+                completion_tokens: 2
+            }),
             "负数项应被钳制为 0，而不是让求和变成负数"
         );
         // 只有 prompt_tokens 也应可用
         assert_eq!(
             extract_usage(&json!({"usage": {"credit": 0.0, "prompt_tokens": 3}})),
-            Some(UsageReport { credit: 0.0, prompt_tokens: 3, completion_tokens: 0 }),
+            Some(UsageReport {
+                credit: 0.0,
+                prompt_tokens: 3,
+                completion_tokens: 0
+            }),
             "显式 credit=0 是合法样本（免费模型），不同于「缺 credit」"
         );
     }

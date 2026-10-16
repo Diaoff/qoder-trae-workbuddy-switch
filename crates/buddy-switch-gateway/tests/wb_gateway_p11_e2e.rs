@@ -23,15 +23,17 @@ use axum::http::{Request, StatusCode};
 use tower::ServiceExt;
 
 use buddy_switch_core::modules::catalog::{FALLBACK_CN_MODELS, FALLBACK_GLOBAL_MODELS};
-use buddy_switch_core::modules::region::Region;
 use buddy_switch_core::modules::product::scope_of_wb_region;
+use buddy_switch_core::modules::region::Region;
 use buddy_switch_gateway::{router, GatewayConfig, GatewayState};
 
 /// 串行化所有触碰 `BUDDY_SWITCH_HOME` 的用例。
 static ENV_LOCK: Mutex<()> = Mutex::new(());
 
 fn guard() -> std::sync::MutexGuard<'static, ()> {
-    ENV_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    ENV_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 fn isolated_home(tag: &str) -> std::path::PathBuf {
@@ -140,7 +142,10 @@ async fn wb_disabled_model_is_hidden_from_models_and_rejected_on_call() {
         "被禁模型的调用应 403（而不是放行 / 笼统 4xx）"
     );
     let text = body_text(response).await;
-    assert!(text.contains("model_disabled"), "错误类别应为 `model_disabled`：{text}");
+    assert!(
+        text.contains("model_disabled"),
+        "错误类别应为 `model_disabled`：{text}"
+    );
     assert!(text.contains("被禁用"), "文案必须说明「被禁用」：{text}");
 
     // ★ 大小写变体也必须被拒（T04 #2 的绕过链在 WB 路由级也堵上）。

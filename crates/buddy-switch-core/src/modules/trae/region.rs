@@ -396,14 +396,21 @@ mod tests {
             assert_eq!(TraeRegion::parse(s), Some(TraeRegion::Cn), "解析失败: {s}");
         }
         for s in ["global", "intl", "international", "SG"] {
-            assert_eq!(TraeRegion::parse(s), Some(TraeRegion::Global), "解析失败: {s}");
+            assert_eq!(
+                TraeRegion::parse(s),
+                Some(TraeRegion::Global),
+                "解析失败: {s}"
+            );
         }
         assert_eq!(TraeRegion::parse("doubao"), None);
     }
 
     #[test]
     fn 程序线解析接受客户端命名() {
-        assert_eq!(TraeProgram::parse("TRAE SOLO CN.exe"), Some(TraeProgram::TraeWork));
+        assert_eq!(
+            TraeProgram::parse("TRAE SOLO CN.exe"),
+            Some(TraeProgram::TraeWork)
+        );
         assert_eq!(TraeProgram::parse("solo"), Some(TraeProgram::TraeWork));
         assert_eq!(TraeProgram::parse("trae_work"), Some(TraeProgram::TraeWork));
         // ⚠️ `Trae CN.exe` 自 issue #20 起落**合并版** `Trae` —— 客户端现在就叫这个名字，
@@ -423,9 +430,19 @@ mod tests {
     #[test]
     fn 裸名trae解析为合并版而trae_code仍是遗留() {
         for s in ["trae", "Trae", "TRAE", "trae cn", "Trae CN", "Trae CN.exe"] {
-            assert_eq!(TraeProgram::parse(s), Some(TraeProgram::Trae), "解析失败: {s}");
+            assert_eq!(
+                TraeProgram::parse(s),
+                Some(TraeProgram::Trae),
+                "解析失败: {s}"
+            );
         }
-        for s in ["trae_code", "trae_code_global", "global_trae_code", "trae_cn", "traecode"] {
+        for s in [
+            "trae_code",
+            "trae_code_global",
+            "global_trae_code",
+            "trae_cn",
+            "traecode",
+        ] {
             assert_eq!(
                 TraeProgram::parse(s),
                 Some(TraeProgram::TraeCode),
@@ -472,10 +489,9 @@ mod tests {
     fn 合并版候选名与用户确认的写法逐字一致() {
         use TraeProgram::Trae;
         use TraeRegion::{Cn, Global};
-        for (region, dir_name, exe_name) in [
-            (Cn, "Trae CN", "Trae CN.exe"),
-            (Global, "Trae", "Trae.exe"),
-        ] {
+        for (region, dir_name, exe_name) in
+            [(Cn, "Trae CN", "Trae CN.exe"), (Global, "Trae", "Trae.exe")]
+        {
             let spec = program_spec(region, Trae);
             assert_eq!(
                 spec.data_dir_names.to_vec(),
@@ -507,7 +523,11 @@ mod tests {
     #[test]
     fn 每区域恰好一个程序位且是合并版() {
         let specs = all_program_specs();
-        assert_eq!(specs.len(), 2, "前置：应恰有 2 条可选程序位（2 区域 × 1），否则本用例会恒真");
+        assert_eq!(
+            specs.len(),
+            2,
+            "前置：应恰有 2 条可选程序位（2 区域 × 1），否则本用例会恒真"
+        );
         // 逐区域：恰好一条，且 `program` 是合并版、`region` 归属正确。
         for region in TraeRegion::all() {
             let of_region = programs_of(region);
@@ -523,7 +543,9 @@ mod tests {
             );
             assert_eq!(of_region[0].region, region, "{region:?} 的程序位归属漂了");
             assert!(
-                specs.iter().any(|s| s.region == region && s.program == TraeProgram::Trae),
+                specs
+                    .iter()
+                    .any(|s| s.region == region && s.program == TraeProgram::Trae),
                 "{region:?} 的合并版程序位不在全量表里"
             );
         }
@@ -561,7 +583,11 @@ mod tests {
             );
         }
         // `as_str` 往返对**全部**取值成立（含退役值）。
-        for program in [TraeProgram::Trae, TraeProgram::TraeWork, TraeProgram::TraeCode] {
+        for program in [
+            TraeProgram::Trae,
+            TraeProgram::TraeWork,
+            TraeProgram::TraeCode,
+        ] {
             assert_eq!(TraeProgram::parse(program.as_str()), Some(program));
         }
     }

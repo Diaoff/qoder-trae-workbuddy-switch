@@ -65,12 +65,7 @@ pub fn region_app_stems(region: Region) -> &'static [&'static str] {
 pub(crate) fn region_image_stems(region: Region) -> &'static [&'static str] {
     match region {
         Region::Cn => &["WorkBuddy", "CodeBuddy"],
-        Region::Global => &[
-            "WorkBuddyAI",
-            "CodeBuddyAI",
-            "WorkBuddy AI",
-            "CodeBuddy AI",
-        ],
+        Region::Global => &["WorkBuddyAI", "CodeBuddyAI", "WorkBuddy AI", "CodeBuddy AI"],
     }
 }
 
@@ -296,15 +291,7 @@ fn windows_fallback_exe_candidates_for(
         let root = format!("{letter}:");
         if let Some(user) = user {
             for &dir in install_dirs {
-                push_win_dir(&[
-                    &root,
-                    "Users",
-                    user,
-                    "AppData",
-                    "Local",
-                    "Programs",
-                    dir,
-                ]);
+                push_win_dir(&[&root, "Users", user, "AppData", "Local", "Programs", dir]);
             }
         }
         for &dir in install_dirs {
@@ -566,7 +553,11 @@ fn windows_running_pids() -> Option<std::collections::HashSet<u32>> {
 #[cfg(target_os = "windows")]
 fn alive_pids_from(pids: &[u32], running: Option<&std::collections::HashSet<u32>>) -> Vec<u32> {
     match running {
-        Some(set) => pids.iter().copied().filter(|pid| set.contains(pid)).collect(),
+        Some(set) => pids
+            .iter()
+            .copied()
+            .filter(|pid| set.contains(pid))
+            .collect(),
         None => pids.to_vec(),
     }
 }
@@ -774,7 +765,10 @@ fn macos_quit_bundle_id(region: Region) -> &'static str {
 #[cfg(target_os = "macos")]
 fn macos_main_literal_suffixes(region: Region) -> &'static [&'static str] {
     match region {
-        Region::Cn => &["WorkBuddy.app/Contents/MacOS", "CodeBuddy.app/Contents/MacOS"],
+        Region::Cn => &[
+            "WorkBuddy.app/Contents/MacOS",
+            "CodeBuddy.app/Contents/MacOS",
+        ],
         Region::Global => &[
             "WorkBuddy AI.app/Contents/MacOS",
             "CodeBuddy AI.app/Contents/MacOS",
@@ -831,7 +825,11 @@ fn ps_row_matches_any(args: &str, patterns: &[String]) -> bool {
 /// 结果按 pid 去重。残留误杀面仅剩「用户进程的 args 主动引用目标 .app 路径」
 /// 这一刻意场景（对齐 Windows 契约记录的残余风险）。
 #[cfg(target_os = "macos")]
-pub(crate) fn filter_ps_rows(stdout: &str, patterns: &[String], self_pid: u32) -> Vec<(u32, String)> {
+pub(crate) fn filter_ps_rows(
+    stdout: &str,
+    patterns: &[String],
+    self_pid: u32,
+) -> Vec<(u32, String)> {
     let mut seen = std::collections::HashSet::new();
     let mut out = Vec::new();
     for line in stdout.lines() {
@@ -1126,7 +1124,11 @@ fn close_workbuddy_macos_for(region: Region, timeout_secs: i64) -> Result<(), St
     let resolved = macos_workbuddy_app_path_resolved_for(region);
     let main_patterns = macos_main_patterns_for(region, resolved.as_deref());
     let bundle_patterns = macos_bundle_patterns_for(region, resolved.as_deref());
-    let remaining = || timeout.saturating_sub(started.elapsed()).max(Duration::from_millis(100));
+    let remaining = || {
+        timeout
+            .saturating_sub(started.elapsed())
+            .max(Duration::from_millis(100))
+    };
 
     // 1) 优雅退出
     let quit_script = format!("quit app id \"{}\"", macos_quit_bundle_id(region));
@@ -1215,10 +1217,7 @@ fn validate_macos_startup_for(
                             .unwrap_or(true);
                     if due {
                         last_beat = Some(now);
-                        say(&format!(
-                            "已稳定运行 {}s / 10s…",
-                            since_seen.as_secs()
-                        ));
+                        say(&format!("已稳定运行 {}s / 10s…", since_seen.as_secs()));
                     }
                 }
             }
@@ -1241,7 +1240,10 @@ fn validate_macos_startup_for(
 ///
 /// progress 可选：清杀/启动/存活确认阶段推送心跳（见 `validate_macos_startup_for`）。
 #[cfg(target_os = "macos")]
-fn launch_workbuddy_macos_for(region: Region, progress: Option<&dyn Fn(&str)>) -> Result<(), String> {
+fn launch_workbuddy_macos_for(
+    region: Region,
+    progress: Option<&dyn Fn(&str)>,
+) -> Result<(), String> {
     let say = |msg: &str| {
         if let Some(p) = progress {
             p(msg);
@@ -1277,7 +1279,10 @@ fn launch_workbuddy_macos_for(region: Region, progress: Option<&dyn Fn(&str)>) -
             } else {
                 reason
             };
-            return Err(format!("启动 WorkBuddy 失败: {reason}（路径: {}）", app.display()));
+            return Err(format!(
+                "启动 WorkBuddy 失败: {reason}（路径: {}）",
+                app.display()
+            ));
         }
         None => {
             return Err(format!(
@@ -1637,13 +1642,25 @@ mod tests {
 
     #[test]
     fn global_image_names_match_only_ai_variants() {
-        assert!(is_workbuddy_image_name_for(Region::Global, "WorkBuddy AI.exe"));
+        assert!(is_workbuddy_image_name_for(
+            Region::Global,
+            "WorkBuddy AI.exe"
+        ));
         assert!(is_workbuddy_image_name_for(Region::Global, "CodeBuddy AI"));
-        assert!(is_workbuddy_image_name_for(Region::Global, "WORKBUDDY AI.EXE"));
+        assert!(is_workbuddy_image_name_for(
+            Region::Global,
+            "WORKBUDDY AI.EXE"
+        ));
         // 国内版映像不得被国际版匹配（反之亦然），避免跨版本误杀。
-        assert!(!is_workbuddy_image_name_for(Region::Global, "WorkBuddy.exe"));
+        assert!(!is_workbuddy_image_name_for(
+            Region::Global,
+            "WorkBuddy.exe"
+        ));
         assert!(!is_workbuddy_image_name_for(Region::Cn, "WorkBuddy AI.exe"));
-        assert!(!is_workbuddy_image_name_for(Region::Global, "workbuddy-switch.exe"));
+        assert!(!is_workbuddy_image_name_for(
+            Region::Global,
+            "workbuddy-switch.exe"
+        ));
     }
 
     #[test]
@@ -1747,7 +1764,9 @@ mod tests {
         );
         // 国内版映像不得出现在国际版候选里。
         assert!(
-            !cands.iter().any(|p| p.to_string_lossy().ends_with(r"WorkBuddy\WorkBuddy.exe")),
+            !cands
+                .iter()
+                .any(|p| p.to_string_lossy().ends_with(r"WorkBuddy\WorkBuddy.exe")),
             "CN exe leaked into global candidates: {cands:?}"
         );
     }
@@ -1776,10 +1795,8 @@ mod tests {
 2004|crashpad_handler|C:\\x\\crashpad_handler.exe
 2005|CodeBuddy AI|
 ";
-        let kept = filter_windows_workbuddy_rows_for(
-            Region::Global,
-            &parse_windows_process_rows(stdout),
-        );
+        let kept =
+            filter_windows_workbuddy_rows_for(Region::Global, &parse_windows_process_rows(stdout));
         let pids: Vec<u32> = kept.iter().map(|r| r.pid).collect();
         assert_eq!(pids, vec![2002, 2005]);
     }
@@ -1823,7 +1840,10 @@ INFO: No tasks are running which match the specified criteria.
 INFO: No tasks are running which match the specified criteria.
 ";
         let rows = parse_tasklist_csv(csv);
-        assert!(windows_rows_match_image(&rows, "claude.exe"), "映像名大小写不敏感");
+        assert!(
+            windows_rows_match_image(&rows, "claude.exe"),
+            "映像名大小写不敏感"
+        );
         assert!(windows_rows_match_image(&rows, "CLAUDE.EXE"));
         assert!(
             !windows_rows_match_image(&rows, "claude"),
@@ -1834,7 +1854,10 @@ INFO: No tasks are running which match the specified criteria.
             "不得把别的映像名当成目标（`contains` 实现会在这里变红）"
         );
         assert!(!windows_rows_match_image(&rows, "codex.exe"));
-        assert!(!windows_rows_match_image(&[], "claude.exe"), "空表 = 没在跑");
+        assert!(
+            !windows_rows_match_image(&[], "claude.exe"),
+            "空表 = 没在跑"
+        );
     }
 
     /// ★ 空映像名 ⇒ 判不出来 ⇒ 保守视为「在运行」（守卫据此**拒绝写入**）。
@@ -1887,8 +1910,14 @@ INFO: No tasks are running which match the specified criteria.
 ";
         let rows = parse_tasklist_csv(full);
         assert_eq!(
-            rows.iter().map(|r| (r.pid, r.name.as_str())).collect::<Vec<_>>(),
-            vec![(0, "System Idle Process"), (1234, "WorkBuddy.exe"), (5678, "explorer.exe")],
+            rows.iter()
+                .map(|r| (r.pid, r.name.as_str()))
+                .collect::<Vec<_>>(),
+            vec![
+                (0, "System Idle Process"),
+                (1234, "WorkBuddy.exe"),
+                (5678, "explorer.exe")
+            ],
             "全量输出必须按 `\"name\",\"pid\"` 两列解析"
         );
     }
@@ -1926,9 +1955,7 @@ C:\Users\Zhou\AppData\Local\Programs\workbuddy-switch\workbuddy-switch.exe
             .collect();
         assert_eq!(
             s,
-            vec![
-                r"D:\Users\Zhou\AppData\Local\Programs\WorkBuddy AI\WorkBuddy AI.exe".to_string(),
-            ]
+            vec![r"D:\Users\Zhou\AppData\Local\Programs\WorkBuddy AI\WorkBuddy AI.exe".to_string(),]
         );
     }
 
@@ -1941,9 +1968,18 @@ C:\Users\Zhou\AppData\Local\Programs\workbuddy-switch\workbuddy-switch.exe
         // 本机真值：国际版进程映像 / 可执行文件为无空格 `WorkBuddyAI`
         // （产品名才是有空格的 `WorkBuddy AI`）。
         assert!(is_workbuddy_image_name_for(Region::Global, "WorkBuddyAI"));
-        assert!(is_workbuddy_image_name_for(Region::Global, "WorkBuddyAI.exe"));
-        assert!(is_workbuddy_image_name_for(Region::Global, "WORKBUDDYAI.EXE"));
-        assert!(is_workbuddy_image_name_for(Region::Global, "CodeBuddyAI.exe"));
+        assert!(is_workbuddy_image_name_for(
+            Region::Global,
+            "WorkBuddyAI.exe"
+        ));
+        assert!(is_workbuddy_image_name_for(
+            Region::Global,
+            "WORKBUDDYAI.EXE"
+        ));
+        assert!(is_workbuddy_image_name_for(
+            Region::Global,
+            "CodeBuddyAI.exe"
+        ));
         assert!(is_workbuddy_image_name_for(
             Region::Global,
             r"D:\Program Files\WorkBuddyAI\WorkBuddyAI.exe"
@@ -1959,7 +1995,10 @@ C:\Users\Zhou\AppData\Local\Programs\workbuddy-switch\workbuddy-switch.exe
     fn global_image_name_excludes_cn_image() {
         // 防回归关键：国际版绝不把国内版映像 `WorkBuddy` 判为己方（避免两版串味）。
         assert!(!is_workbuddy_image_name_for(Region::Global, "WorkBuddy"));
-        assert!(!is_workbuddy_image_name_for(Region::Global, "WorkBuddy.exe"));
+        assert!(!is_workbuddy_image_name_for(
+            Region::Global,
+            "WorkBuddy.exe"
+        ));
         assert!(!is_workbuddy_image_name_for(Region::Global, "CodeBuddy"));
     }
 
@@ -2172,7 +2211,9 @@ C:\\Users\\X\\Programs\\workbuddy-switch\\workbuddy-switch.exe
     #[test]
     fn macos_extract_app_bundle_from_args() {
         assert_eq!(
-            extract_app_bundle_from_args("/Applications/WorkBuddy.app/Contents/MacOS/WorkBuddy --foo"),
+            extract_app_bundle_from_args(
+                "/Applications/WorkBuddy.app/Contents/MacOS/WorkBuddy --foo"
+            ),
             Some(PathBuf::from("/Applications/WorkBuddy.app"))
         );
         assert_eq!(
@@ -2187,7 +2228,10 @@ C:\\Users\\X\\Programs\\workbuddy-switch\\workbuddy-switch.exe
     #[test]
     fn macos_app_bundle_candidates_order() {
         let cands = app_bundle_candidates(Path::new("/Users/tester"));
-        let s: Vec<String> = cands.iter().map(|p| p.to_string_lossy().into_owned()).collect();
+        let s: Vec<String> = cands
+            .iter()
+            .map(|p| p.to_string_lossy().into_owned())
+            .collect();
         assert_eq!(
             s,
             vec![
@@ -2203,7 +2247,10 @@ C:\\Users\\X\\Programs\\workbuddy-switch\\workbuddy-switch.exe
     #[test]
     fn macos_global_app_bundle_candidates_order() {
         let cands = app_bundle_candidates_for(Region::Global, Path::new("/Users/tester"));
-        let s: Vec<String> = cands.iter().map(|p| p.to_string_lossy().into_owned()).collect();
+        let s: Vec<String> = cands
+            .iter()
+            .map(|p| p.to_string_lossy().into_owned())
+            .collect();
         assert_eq!(
             s,
             vec![

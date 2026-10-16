@@ -603,13 +603,12 @@ pub fn stream_sinks(
     uid: &str,
     model: &str,
 ) -> Vec<std::sync::Arc<dyn crate::protocol::usage_tap::UsageSink>> {
-    let mut sinks: Vec<std::sync::Arc<dyn crate::protocol::usage_tap::UsageSink>> = vec![
-        std::sync::Arc::new(crate::logging::StreamingLogSink::new(
+    let mut sinks: Vec<std::sync::Arc<dyn crate::protocol::usage_tap::UsageSink>> =
+        vec![std::sync::Arc::new(crate::logging::StreamingLogSink::new(
             state.log.clone(),
             meta,
             started,
-        )),
-    ];
+        ))];
     if let Some(ledger) = pool_usage_sink(state, uid, model) {
         sinks.push(ledger);
     }

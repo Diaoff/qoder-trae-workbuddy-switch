@@ -522,7 +522,11 @@ mod tests {
         // 宽容解析接受完整标识与短标识。
         assert_eq!(Product::parse("qoder"), Some(Product::Qoder));
         assert_eq!(Product::parse("QODER"), Some(Product::Qoder));
-        assert_eq!(Product::parse("qd"), None, "短标识只有 wb，qoder 与 trae 都用全名");
+        assert_eq!(
+            Product::parse("qd"),
+            None,
+            "短标识只有 wb，qoder 与 trae 都用全名"
+        );
     }
 
     /// ★ 每个**声明过**的作用域都必须能被解析回自身。
@@ -532,7 +536,12 @@ mod tests {
     #[test]
     fn scope_parse_accepts_every_declared_scope() {
         for scope in Scope::all() {
-            assert_eq!(Scope::parse(scope.as_str()), Ok(scope), "{}", scope.as_str());
+            assert_eq!(
+                Scope::parse(scope.as_str()),
+                Ok(scope),
+                "{}",
+                scope.as_str()
+            );
         }
         assert_eq!(Scope::parse("wb-cn"), Ok(Scope::WbCn));
         assert_eq!(Scope::parse("wb-global"), Ok(Scope::WbGlobal));
@@ -540,7 +549,11 @@ mod tests {
         assert_eq!(Scope::parse("trae-global"), Ok(Scope::TraeGlobal));
         assert_eq!(Scope::parse("qoder-cn"), Ok(Scope::QoderCn));
         assert_eq!(Scope::parse("qoder-global"), Ok(Scope::QoderGlobal));
-        assert_eq!(Scope::all().len(), 6, "作用域数量变更需显式确认（3 平台 × 2 区域）");
+        assert_eq!(
+            Scope::all().len(),
+            6,
+            "作用域数量变更需显式确认（3 平台 × 2 区域）"
+        );
     }
 
     /// ★★ **本用例就是门禁第 9 条要找的「未知 scope ⇒ `Err`」证明**（函数名与
@@ -566,12 +579,12 @@ mod tests {
             "qoder_global",
             "",
             "   ",
-            "wb-cn ",    // 尾随空白：不 trim ⇒ Err（与前端 parseScope 一致）
-            " wb-cn",    // 前导空白
-            "WB-CN",     // 大写：不折叠 ⇒ Err
-            "Trae-Cn",   // 混合大小写
+            "wb-cn ",  // 尾随空白：不 trim ⇒ Err（与前端 parseScope 一致）
+            " wb-cn",  // 前导空白
+            "WB-CN",   // 大写：不折叠 ⇒ Err
+            "Trae-Cn", // 混合大小写
             "Qoder-CN",
-            "wb-cn\n",   // 换行
+            "wb-cn\n", // 换行
             // ★★ 「比基准长一截」的形状 —— **必须有**。
             // 只测「拼错」的话，一个 `starts_with` 式的前缀实现与精确实现在现有输入集上
             // **完全等价**（`wb-cnx` 不会被任何一条拼错样例覆盖）⇒ 断言恒绿。
@@ -617,7 +630,10 @@ mod tests {
         assert!(resolve_scope_opt(None).is_err());
         assert!(resolve_scope_opt(Some("")).is_err());
         assert_eq!(resolve_scope_opt(Some("trae-cn")), Ok(Scope::TraeCn));
-        assert_eq!(resolve_scope_opt(Some("qoder-global")), Ok(Scope::QoderGlobal));
+        assert_eq!(
+            resolve_scope_opt(Some("qoder-global")),
+            Ok(Scope::QoderGlobal)
+        );
     }
 
     /// `resolve_scope_param`（命令/HTTP 通道统一入口）—— fail-closed，错误文案可读。
@@ -625,12 +641,17 @@ mod tests {
     /// 可证伪：若把它改成 `unwrap_or(Scope::WbCn)` 式回落，第一条断言立即变红。
     #[test]
     fn resolve_scope_param_is_fail_closed_and_carries_readable_message() {
-        assert_eq!(resolve_scope_param(Some("trae-global")), Ok(Scope::TraeGlobal));
+        assert_eq!(
+            resolve_scope_param(Some("trae-global")),
+            Ok(Scope::TraeGlobal)
+        );
         // 缺 / 空 / 拼错一律 Err（与 `resolve_scope_opt` 同一判据）。
         for bad in [None, Some(""), Some("trae-glboal"), Some("WB-CN")] {
             let error = resolve_scope_param(bad).unwrap_err();
             assert!(
-                error.contains("wb-cn") && error.contains("trae-global") && error.contains("qoder-cn"),
+                error.contains("wb-cn")
+                    && error.contains("trae-global")
+                    && error.contains("qoder-cn"),
                 "错误文案必须列出合法取值，实际：{error}"
             );
         }
@@ -647,7 +668,10 @@ mod tests {
         assert_eq!(require_wb_region(Scope::WbCn), Ok(Region::Cn));
         assert_eq!(require_wb_region(Scope::WbGlobal), Ok(Region::Global));
         assert_eq!(require_trae_region(Scope::TraeCn), Ok(TraeRegion::Cn));
-        assert_eq!(require_trae_region(Scope::TraeGlobal), Ok(TraeRegion::Global));
+        assert_eq!(
+            require_trae_region(Scope::TraeGlobal),
+            Ok(TraeRegion::Global)
+        );
         assert_eq!(require_qoder_region(Scope::QoderCn), Ok(QoderRegion::Cn));
         assert_eq!(
             require_qoder_region(Scope::QoderGlobal),
@@ -655,20 +679,38 @@ mod tests {
         );
 
         // 反例：跨平台作用域必须 Err（绝不静默落到某平台的默认区域）。
-        for scope in [Scope::TraeCn, Scope::TraeGlobal, Scope::QoderCn, Scope::QoderGlobal] {
+        for scope in [
+            Scope::TraeCn,
+            Scope::TraeGlobal,
+            Scope::QoderCn,
+            Scope::QoderGlobal,
+        ] {
             assert!(require_wb_region(scope).is_err(), "{:?}", scope);
         }
-        for scope in [Scope::WbCn, Scope::WbGlobal, Scope::QoderCn, Scope::QoderGlobal] {
+        for scope in [
+            Scope::WbCn,
+            Scope::WbGlobal,
+            Scope::QoderCn,
+            Scope::QoderGlobal,
+        ] {
             assert!(require_trae_region(scope).is_err(), "{:?}", scope);
         }
-        for scope in [Scope::WbCn, Scope::WbGlobal, Scope::TraeCn, Scope::TraeGlobal] {
+        for scope in [
+            Scope::WbCn,
+            Scope::WbGlobal,
+            Scope::TraeCn,
+            Scope::TraeGlobal,
+        ] {
             assert!(require_qoder_region(scope).is_err(), "{:?}", scope);
         }
         // 错误文案可读、且带上原始作用域。
         let error = require_wb_region(Scope::TraeCn).unwrap_err();
         assert!(error.contains("trae-cn"), "{error}");
         let error = require_qoder_region(Scope::TraeCn).unwrap_err();
-        assert!(error.contains("trae-cn") && error.contains("qoder-cn"), "{error}");
+        assert!(
+            error.contains("trae-cn") && error.contains("qoder-cn"),
+            "{error}"
+        );
     }
 
     /// `scope_of_*_region` 与 [`Scope`] 的三条正交轴**往返一致**（回收站 `origin_scope` 用）。
@@ -719,17 +761,32 @@ mod tests {
         assert_eq!(Scope::QoderGlobal.product(), Product::Qoder);
 
         // WB 轴：其余作用域取 WB 区域返回 None（正交）。
-        for scope in [Scope::TraeCn, Scope::TraeGlobal, Scope::QoderCn, Scope::QoderGlobal] {
+        for scope in [
+            Scope::TraeCn,
+            Scope::TraeGlobal,
+            Scope::QoderCn,
+            Scope::QoderGlobal,
+        ] {
             assert_eq!(scope.wb_region(), None, "{scope:?}");
         }
         // Trae 轴。
-        for scope in [Scope::WbCn, Scope::WbGlobal, Scope::QoderCn, Scope::QoderGlobal] {
+        for scope in [
+            Scope::WbCn,
+            Scope::WbGlobal,
+            Scope::QoderCn,
+            Scope::QoderGlobal,
+        ] {
             assert_eq!(scope.trae_region(), None, "{scope:?}");
         }
         // Qoder 轴。
         assert_eq!(Scope::QoderCn.qoder_region(), Some(QoderRegion::Cn));
         assert_eq!(Scope::QoderGlobal.qoder_region(), Some(QoderRegion::Global));
-        for scope in [Scope::WbCn, Scope::WbGlobal, Scope::TraeCn, Scope::TraeGlobal] {
+        for scope in [
+            Scope::WbCn,
+            Scope::WbGlobal,
+            Scope::TraeCn,
+            Scope::TraeGlobal,
+        ] {
             assert_eq!(scope.qoder_region(), None, "{scope:?}");
         }
     }

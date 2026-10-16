@@ -233,8 +233,11 @@ pub fn rewrite_hooks(existing: &Value, command: Option<&str>, profile: HookProfi
                     }
                 }
                 Value::Object(ref map) => {
-                    if !is_our_hook(map.get("command").and_then(Value::as_str).unwrap_or_default())
-                    {
+                    if !is_our_hook(
+                        map.get("command")
+                            .and_then(Value::as_str)
+                            .unwrap_or_default(),
+                    ) {
                         kept.push(group.clone());
                     }
                 }
@@ -281,7 +284,9 @@ pub fn strip_our_hooks(existing: &Value) -> Value {
 
 /// handler 里的命令串（两种形态通吃）。
 fn command_of(item: &Value) -> &str {
-    item.get("command").and_then(Value::as_str).unwrap_or_default()
+    item.get("command")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
 }
 
 /// 某个事件的 handler 里，有没有**我们**的条目。
@@ -386,7 +391,8 @@ pub fn uninstall(slot_key: &str) -> Result<Value, String> {
 mod tests {
     use super::*;
 
-    const CMD: &str = "\"C:\\Program Files\\Buddy Switch\\BuddySwitch.exe\" hook --source workbuddy";
+    const CMD: &str =
+        "\"C:\\Program Files\\Buddy Switch\\BuddySwitch.exe\" hook --source workbuddy";
 
     fn others_hook() -> Value {
         json!({
@@ -441,7 +447,11 @@ mod tests {
         assert_eq!(installed["theme"], json!("dark"));
 
         // ④ 卸载后**逐字**回到原状（含键顺序无关的等值）。
-        assert_eq!(strip_our_hooks(&installed), original, "装/卸一轮必须回到原状");
+        assert_eq!(
+            strip_our_hooks(&installed),
+            original,
+            "装/卸一轮必须回到原状"
+        );
     }
 
     /// ★ **真实形态回归**：本机 `~/.codebuddy/settings.json` 的 `hooks` 里挂着一条
@@ -485,8 +495,16 @@ mod tests {
     /// ★ 空配置 ⇒ 9 个事件各一条，且**只碰 `hooks` 键**。
     #[test]
     fn install_into_empty_config_touches_only_hooks() {
-        let merged = merge_hooks(&json!({ "sandbox": { "enabled": true } }), CMD, HOOK_PROFILE_CLAUDE);
-        assert_eq!(merged["sandbox"]["enabled"], json!(true), "别的键必须原样保留");
+        let merged = merge_hooks(
+            &json!({ "sandbox": { "enabled": true } }),
+            CMD,
+            HOOK_PROFILE_CLAUDE,
+        );
+        assert_eq!(
+            merged["sandbox"]["enabled"],
+            json!(true),
+            "别的键必须原样保留"
+        );
         let hooks = merged["hooks"].as_object().expect("hooks 必须是对象");
         assert_eq!(hooks.len(), HOOK_EVENTS.len());
         for event in HOOK_EVENTS {
@@ -501,7 +519,9 @@ mod tests {
     #[test]
     fn only_session_end_is_synchronous() {
         let merged = merge_hooks(&json!({}), CMD, HOOK_PROFILE_CLAUDE);
-        assert!(merged["hooks"]["SessionEnd"][0]["hooks"][0].get("async").is_none());
+        assert!(merged["hooks"]["SessionEnd"][0]["hooks"][0]
+            .get("async")
+            .is_none());
         for event in ["PreToolUse", "Stop", "Notification"] {
             assert_eq!(merged["hooks"][event][0]["hooks"][0]["async"], json!(true));
         }
@@ -526,7 +546,10 @@ mod tests {
         let merged = merge_hooks(&existing, CMD, HOOK_PROFILE_CLAUDE);
         let groups = merged["hooks"]["Stop"].as_array().unwrap();
         assert_eq!(groups.len(), 2, "别人的 + 我们的 = 2 条");
-        assert_eq!(groups[0]["hooks"][0]["command"], json!("/usr/bin/python3 /home/u/other.py"));
+        assert_eq!(
+            groups[0]["hooks"][0]["command"],
+            json!("/usr/bin/python3 /home/u/other.py")
+        );
     }
 
     /// ★ **同一分组内混装**时只剔掉我们那条，分组本身要留下。
@@ -545,7 +568,10 @@ mod tests {
         let groups = merged["hooks"]["Stop"].as_array().unwrap();
         let handlers = groups[0]["hooks"].as_array().unwrap();
         assert_eq!(handlers.len(), 1, "我们那条应被剔除，别人的留下");
-        assert_eq!(handlers[0]["command"], json!("/usr/bin/python3 /home/u/other.py"));
+        assert_eq!(
+            handlers[0]["command"],
+            json!("/usr/bin/python3 /home/u/other.py")
+        );
     }
 
     /// 裸 handler 形态（无 `hooks` 数组的扁平写法）也要能识别与剔除。
@@ -558,7 +584,10 @@ mod tests {
         let merged = merge_hooks(&existing, CMD, HOOK_PROFILE_CLAUDE);
         let groups = merged["hooks"]["Stop"].as_array().unwrap();
         assert_eq!(groups.len(), 2, "别人的留下 + 我们新加的一条");
-        assert_eq!(groups[0]["command"], json!("/usr/bin/python3 /home/u/other.py"));
+        assert_eq!(
+            groups[0]["command"],
+            json!("/usr/bin/python3 /home/u/other.py")
+        );
         assert_eq!(groups[1]["hooks"][0]["command"], json!(CMD));
     }
 
@@ -601,7 +630,10 @@ mod tests {
     #[test]
     fn dirty_hooks_value_degrades_to_empty() {
         let merged = merge_hooks(&json!({ "hooks": "oops" }), CMD, HOOK_PROFILE_CLAUDE);
-        assert_eq!(merged["hooks"].as_object().unwrap().len(), HOOK_EVENTS.len());
+        assert_eq!(
+            merged["hooks"].as_object().unwrap().len(),
+            HOOK_EVENTS.len()
+        );
         let stripped = strip_our_hooks(&json!({ "hooks": "oops" }));
         assert!(stripped.get("hooks").is_none());
     }
@@ -621,8 +653,14 @@ mod tests {
     /// `hook_command` 对含空格的路径加引号（Windows 安装目录的常态）。
     #[test]
     fn hook_command_quotes_the_executable_path() {
-        let command = hook_command(Path::new("C:\\Program Files\\Buddy Switch\\BuddySwitch.exe"), "workbuddy");
-        assert!(command.starts_with('"'), "含空格的路径必须加引号：{command}");
+        let command = hook_command(
+            Path::new("C:\\Program Files\\Buddy Switch\\BuddySwitch.exe"),
+            "workbuddy",
+        );
+        assert!(
+            command.starts_with('"'),
+            "含空格的路径必须加引号：{command}"
+        );
         assert!(command.ends_with("hook --source workbuddy"));
         assert!(is_our_hook(&command), "自己构造的命令必须被自己认出来");
     }
@@ -632,12 +670,18 @@ mod tests {
     fn installed_events_detects_our_entries() {
         let installed = merge_hooks(&json!({}), CMD, HOOK_PROFILE_CLAUDE);
         assert_eq!(
-            HOOK_EVENTS.iter().filter(|e| event_has_ours(&installed, e)).count(),
+            HOOK_EVENTS
+                .iter()
+                .filter(|e| event_has_ours(&installed, e))
+                .count(),
             HOOK_EVENTS.len()
         );
         let stripped = strip_our_hooks(&installed);
         assert_eq!(
-            HOOK_EVENTS.iter().filter(|e| event_has_ours(&stripped, e)).count(),
+            HOOK_EVENTS
+                .iter()
+                .filter(|e| event_has_ours(&stripped, e))
+                .count(),
             0
         );
     }
@@ -687,7 +731,10 @@ mod tests {
         assert!(merged["hooks"].get("PermissionRequest").is_none());
         // 对照组：Claude 档**必须**带 async（否则这条用例会因为两边一样而失去意义）。
         let claude = merge_hooks(&json!({}), CMD, HOOK_PROFILE_CLAUDE);
-        assert_eq!(claude["hooks"]["PreToolUse"][0]["hooks"][0]["async"], json!(true));
+        assert_eq!(
+            claude["hooks"]["PreToolUse"][0]["hooks"][0]["async"],
+            json!(true)
+        );
     }
 
     /// ★ Trae 的 hooks 文件顶层是 `{version, hooks}` —— **`version` 必须逐字保留**。

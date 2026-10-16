@@ -125,7 +125,10 @@ pub fn skills_dir_for(region: Region) -> PathBuf {
 
 /// 解析 region 字符串参数（缺省 `cn`，与两宿主 `parse_region` 同约定）。
 fn region_arg(region: Option<String>) -> Region {
-    region.as_deref().and_then(Region::parse).unwrap_or(Region::Cn)
+    region
+        .as_deref()
+        .and_then(Region::parse)
+        .unwrap_or(Region::Cn)
 }
 
 // ---------------------------------------------------------------------------
@@ -300,10 +303,10 @@ fn parse_bool(value: &str) -> Option<bool> {
 /// | 停用 | `user-invocable: false` **且** `disable-model-invocation: true` |
 /// | 不一致 | 只写了其中一个 ⇒ 按「非全停用即启用」推导 |
 fn derive_enabled(scalars: &BTreeMap<String, String>) -> (bool, bool) {
-    let ui = scalars.get(FIELD_USER_INVOCABLE).and_then(|v| parse_bool(v));
-    let dmi = scalars
-        .get(FIELD_DISABLE_MODEL)
+    let ui = scalars
+        .get(FIELD_USER_INVOCABLE)
         .and_then(|v| parse_bool(v));
+    let dmi = scalars.get(FIELD_DISABLE_MODEL).and_then(|v| parse_bool(v));
     let disabled = ui == Some(false) && dmi == Some(true);
     let inconsistent = ui.is_some() != dmi.is_some();
     (!disabled, inconsistent)
@@ -332,9 +335,15 @@ pub fn rewrite_skill_toggle(text: &str, enabled: bool) -> Result<(String, bool),
     };
 
     let targets: [(&str, &str); 2] = if enabled {
-        [(FIELD_USER_INVOCABLE, "true"), (FIELD_DISABLE_MODEL, "false")]
+        [
+            (FIELD_USER_INVOCABLE, "true"),
+            (FIELD_DISABLE_MODEL, "false"),
+        ]
     } else {
-        [(FIELD_USER_INVOCABLE, "false"), (FIELD_DISABLE_MODEL, "true")]
+        [
+            (FIELD_USER_INVOCABLE, "false"),
+            (FIELD_DISABLE_MODEL, "true"),
+        ]
     };
 
     // 定位已有行（只看 frontmatter 范围内的顶层行）。
@@ -758,7 +767,10 @@ pub fn import_skill_into(region: Region, source: &Path) -> Result<SkillImportRes
         }
         extracted
     } else {
-        return Err(format!("源路径不是目录也不是 zip 文件：{}", source.display()));
+        return Err(format!(
+            "源路径不是目录也不是 zip 文件：{}",
+            source.display()
+        ));
     };
     let (skill_dir, is_root) = resolved?;
 
@@ -873,8 +885,8 @@ fn extract_zip_entry(data: &[u8], entry: &ZipEntry) -> Result<Vec<u8>, String> {
 
 /// 把 zip 解压到 `dest`（目录条目跳过；**拒绝**任何绝对路径 / `..` 条目）。
 fn extract_zip_to(zip_path: &Path, dest: &Path) -> Result<(), String> {
-    let data =
-        std::fs::read(zip_path).map_err(|e| format!("读取 zip 失败（{}）：{e}", zip_path.display()))?;
+    let data = std::fs::read(zip_path)
+        .map_err(|e| format!("读取 zip 失败（{}）：{e}", zip_path.display()))?;
     let entries = read_zip_entries(&data)?;
     std::fs::create_dir_all(dest).map_err(|e| format!("创建解压目录失败：{e}"))?;
     for entry in entries {
@@ -1332,9 +1344,15 @@ mod tests {
         let new_body = out.split("\r\n---\r\n").nth(1).expect("正文");
         assert_eq!(old_body, new_body, "闭分隔符之后的正文必须逐字节不变");
         assert!(out.contains("# 注释行\r\n"), "注释行必须保留");
-        assert!(out.contains("metadata:\r\n  agent: explore\r\n"), "嵌套块必须保留");
+        assert!(
+            out.contains("metadata:\r\n  agent: explore\r\n"),
+            "嵌套块必须保留"
+        );
         assert!(out.contains("name: demo\r\n"), "既有 name 行必须保留");
-        assert!(out.starts_with("\u{feff}---\r\n"), "BOM 与首行分隔符必须保留");
+        assert!(
+            out.starts_with("\u{feff}---\r\n"),
+            "BOM 与首行分隔符必须保留"
+        );
         assert_eq!(
             out.matches("\r\n").count(),
             out.matches('\n').count(),
@@ -1379,7 +1397,11 @@ mod tests {
     fn inconsistent_detected_when_only_one_field_written() {
         let only_user = "---\nuser-invocable: false\n---\n";
         let fm = parse_skill_frontmatter(only_user).unwrap();
-        assert_eq!(derive_enabled(&fm.scalars), (true, true), "只写一半 ⇒ 不一致");
+        assert_eq!(
+            derive_enabled(&fm.scalars),
+            (true, true),
+            "只写一半 ⇒ 不一致"
+        );
 
         let only_disable = "---\ndisable-model-invocation: true\n---\n";
         let fm = parse_skill_frontmatter(only_disable).unwrap();
@@ -1387,11 +1409,19 @@ mod tests {
 
         let stopped = "---\nuser-invocable: false\ndisable-model-invocation: true\n---\n";
         let fm = parse_skill_frontmatter(stopped).unwrap();
-        assert_eq!(derive_enabled(&fm.scalars), (false, false), "两字段齐备 ⇒ 停用");
+        assert_eq!(
+            derive_enabled(&fm.scalars),
+            (false, false),
+            "两字段齐备 ⇒ 停用"
+        );
 
         let none = "---\nname: demo\n---\n";
         let fm = parse_skill_frontmatter(none).unwrap();
-        assert_eq!(derive_enabled(&fm.scalars), (true, false), "都不写 ⇒ 默认启用");
+        assert_eq!(
+            derive_enabled(&fm.scalars),
+            (true, false),
+            "都不写 ⇒ 默认启用"
+        );
     }
 
     // ---- 清单 ----
@@ -1478,8 +1508,14 @@ mod tests {
         let _guard = config::HomeOverrideGuard::set(&home);
         write_skill(Region::Cn, "raw", "没有 frontmatter 的 SKILL.md\n");
         let err = set_skill_enabled_for(Region::Cn, "raw", false).unwrap_err();
-        assert!(err.contains("frontmatter"), "错误文案应指出缺 frontmatter：{err}");
-        assert_eq!(read_skill(Region::Cn, "raw"), "没有 frontmatter 的 SKILL.md\n");
+        assert!(
+            err.contains("frontmatter"),
+            "错误文案应指出缺 frontmatter：{err}"
+        );
+        assert_eq!(
+            read_skill(Region::Cn, "raw"),
+            "没有 frontmatter 的 SKILL.md\n"
+        );
         drop(_guard);
         let _ = std::fs::remove_dir_all(&home);
     }
@@ -1770,8 +1806,14 @@ mod tests {
         assert!(result.imported);
         assert_eq!(result.dir_name, "zipped-skill");
         let dir = skills_dir_for(Region::Cn).join("zipped-skill");
-        assert!(dir.join(SKILL_FILE).is_file(), "解压后的 SKILL.md 必须落到目标目录");
-        assert!(dir.join("extra.txt").is_file(), "zip 内的附属文件必须一并导入");
+        assert!(
+            dir.join(SKILL_FILE).is_file(),
+            "解压后的 SKILL.md 必须落到目标目录"
+        );
+        assert!(
+            dir.join("extra.txt").is_file(),
+            "zip 内的附属文件必须一并导入"
+        );
 
         drop(_guard);
         let _ = std::fs::remove_dir_all(&home);
@@ -1791,7 +1833,10 @@ mod tests {
             "buddy-switch-skill-dest-{}",
             uuid::Uuid::new_v4().simple()
         ));
-        assert!(extract_zip_to(&zip_path, &dest).is_err(), "必须拒绝 `..` 条目");
+        assert!(
+            extract_zip_to(&zip_path, &dest).is_err(),
+            "必须拒绝 `..` 条目"
+        );
         drop(_guard);
         let _ = std::fs::remove_dir_all(&home);
         let _ = std::fs::remove_file(&zip_path);

@@ -266,8 +266,14 @@ fn is_confirmation_notification(payload: &Value) -> bool {
     }
     let text = format!(
         "{} {}",
-        payload.get("message").and_then(Value::as_str).unwrap_or_default(),
-        payload.get("title").and_then(Value::as_str).unwrap_or_default(),
+        payload
+            .get("message")
+            .and_then(Value::as_str)
+            .unwrap_or_default(),
+        payload
+            .get("title")
+            .and_then(Value::as_str)
+            .unwrap_or_default(),
     );
     let lower = text.to_ascii_lowercase();
     text.contains('?')
@@ -599,7 +605,10 @@ fn local_event(task_id: &str, title: &str, state: CompanionState, now: i64) -> A
 /// 从 `"source:session_id"` 里取回 `source`（`session_id` 自身可能含 `:`，
 /// 所以**只切第一个**）。
 fn session_key_source(key: &str) -> String {
-    key.split_once(':').map(|(source, _)| source).unwrap_or(key).to_string()
+    key.split_once(':')
+        .map(|(source, _)| source)
+        .unwrap_or(key)
+        .to_string()
 }
 
 /// 待确认项的展示文本：优先工具名，其次通用兜底。
@@ -675,16 +684,25 @@ pub fn parse_event(default_source: &str, payload: &Value, now: i64) -> Option<Ag
     let source = first_str(payload, &["agent_source", "agentSource", "source"])
         .unwrap_or(default_source)
         .to_string();
-    let session_id = first_str(payload, &["session_id", "sessionId", "conversation_id", "conversationId"])?
-        .to_string();
-    let event_name = first_str(payload, &["hook_event_name", "hookEventName", "event"]).unwrap_or_default();
+    let session_id = first_str(
+        payload,
+        &[
+            "session_id",
+            "sessionId",
+            "conversation_id",
+            "conversationId",
+        ],
+    )?
+    .to_string();
+    let event_name =
+        first_str(payload, &["hook_event_name", "hookEventName", "event"]).unwrap_or_default();
     let tool = first_str(payload, &["tool_name", "toolName", "tool"]).unwrap_or_default();
     let kind = HookKind::from_hook(event_name, tool, payload);
     let ts = payload_ts(payload).unwrap_or(now);
-    let title = first_str(payload, &["session_title", "sessionTitle", "prompt"])
-        .map(str::to_string);
-    let call_id = first_str(payload, &["tool_use_id", "toolUseId", "call_id", "callId"])
-        .map(str::to_string);
+    let title =
+        first_str(payload, &["session_title", "sessionTitle", "prompt"]).map(str::to_string);
+    let call_id =
+        first_str(payload, &["tool_use_id", "toolUseId", "call_id", "callId"]).map(str::to_string);
     Some(AgentEvent {
         source,
         session_id,
@@ -692,7 +710,11 @@ pub fn parse_event(default_source: &str, payload: &Value, now: i64) -> Option<Ag
         ts,
         title,
         call_id,
-        tool: if tool.is_empty() { None } else { Some(tool.to_string()) },
+        tool: if tool.is_empty() {
+            None
+        } else {
+            Some(tool.to_string())
+        },
     })
 }
 
@@ -715,7 +737,9 @@ fn payload_ts(payload: &Value) -> Option<i64> {
         .or_else(|| payload.get("ts"))
         .or_else(|| payload.get("created_at"))?;
     let value = match raw {
-        Value::Number(number) => number.as_i64().or_else(|| number.as_f64().map(|f| f as i64))?,
+        Value::Number(number) => number
+            .as_i64()
+            .or_else(|| number.as_f64().map(|f| f as i64))?,
         _ => return None,
     };
     if value <= 0 {
@@ -776,9 +800,16 @@ mod tests {
         aborted.session_id = "s-2".to_string();
         assert!(watch.ingest(aborted));
         let ops = watch.operations(1_500);
-        let aborted_row = ops.iter().find(|op| op.id.ends_with("s-2")).expect("中止的会话必须在表里");
+        let aborted_row = ops
+            .iter()
+            .find(|op| op.id.ends_with("s-2"))
+            .expect("中止的会话必须在表里");
         assert_eq!(aborted_row.state, CompanionState::Failed);
-        assert!(aborted_row.hint.contains("已中止"), "hint 必须区分「中止」与「失败」：{}", aborted_row.hint);
+        assert!(
+            aborted_row.hint.contains("已中止"),
+            "hint 必须区分「中止」与「失败」：{}",
+            aborted_row.hint
+        );
     }
 
     /// ★ 待确认 → 回答后**回到运行中**（不是停在「待确认」）。
@@ -856,10 +887,16 @@ mod tests {
     fn terminal_session_restarts_only_on_start() {
         let mut watch = AgentWatch::new();
         watch.ingest(event(HookKind::End, 1_000));
-        assert!(!watch.ingest(event(HookKind::Step, 2_000)), "已结束的一轮不接受后续步骤");
+        assert!(
+            !watch.ingest(event(HookKind::Step, 2_000)),
+            "已结束的一轮不接受后续步骤"
+        );
         assert_eq!(watch.operations(2_000)[0].state, CompanionState::Done);
 
-        assert!(watch.ingest(event(HookKind::Start, 3_000)), "Start 必须能开新一轮");
+        assert!(
+            watch.ingest(event(HookKind::Start, 3_000)),
+            "Start 必须能开新一轮"
+        );
         assert_eq!(watch.operations(3_000)[0].state, CompanionState::Running);
     }
 
@@ -871,7 +908,11 @@ mod tests {
         let mut watch = AgentWatch::new();
         watch.ingest(event(HookKind::End, 1_000));
 
-        assert_eq!(watch.operations(1_000 + COMPLETED_TTL_MS).len(), 1, "刚好到期仍应显示");
+        assert_eq!(
+            watch.operations(1_000 + COMPLETED_TTL_MS).len(),
+            1,
+            "刚好到期仍应显示"
+        );
         assert!(
             watch.operations(1_000 + COMPLETED_TTL_MS + 1).is_empty(),
             "超过保留期必须消失"
@@ -920,7 +961,10 @@ mod tests {
         // 最早的那几条必须已经不在表里
         // ⚠️ 断言**具体的 id**，不是 `!= "workbuddy:s-000"` ——
         // 后者在来源常量改名后会**恒真**（永远绿），而这正是「断言失效」的典型形态。
-        assert!(watch.operations(9_999).iter().all(|op| op.id != "workbuddy-cn:s-000"));
+        assert!(watch
+            .operations(9_999)
+            .iter()
+            .all(|op| op.id != "workbuddy-cn:s-000"));
     }
 
     /// 来源逐字透传，且 `drop_source` 只清该来源。
@@ -948,7 +992,11 @@ mod tests {
             start.session_id = session.to_string();
             watch.ingest(start);
         }
-        let ids: Vec<String> = watch.operations(3_000).into_iter().map(|op| op.id).collect();
+        let ids: Vec<String> = watch
+            .operations(3_000)
+            .into_iter()
+            .map(|op| op.id)
+            .collect();
         assert_eq!(
             ids,
             vec!["workbuddy-cn:new", "workbuddy-cn:mid", "workbuddy-cn:old"],
@@ -994,9 +1042,18 @@ mod tests {
     #[test]
     fn client_event_names_map_to_our_vocabulary() {
         let payload = json!({});
-        assert_eq!(HookKind::from_hook("SessionStart", "", &payload), HookKind::Start);
-        assert_eq!(HookKind::from_hook("UserPromptSubmit", "", &payload), HookKind::Start);
-        assert_eq!(HookKind::from_hook("PreToolUse", "Read", &payload), HookKind::Step);
+        assert_eq!(
+            HookKind::from_hook("SessionStart", "", &payload),
+            HookKind::Start
+        );
+        assert_eq!(
+            HookKind::from_hook("UserPromptSubmit", "", &payload),
+            HookKind::Start
+        );
+        assert_eq!(
+            HookKind::from_hook("PreToolUse", "Read", &payload),
+            HookKind::Step
+        );
         assert_eq!(
             HookKind::from_hook("PreToolUse", "mcp__wb__AskUserQuestion", &payload),
             HookKind::Wait,
@@ -1006,29 +1063,58 @@ mod tests {
             HookKind::from_hook("PreToolUse", "mcp__x__request_user_input_async", &payload),
             HookKind::Wait
         );
-        assert_eq!(HookKind::from_hook("PostToolUse", "", &payload), HookKind::Resolve);
-        assert_eq!(HookKind::from_hook("PostToolUseFailure", "", &payload), HookKind::Resolve);
-        assert_eq!(HookKind::from_hook("PermissionRequest", "", &payload), HookKind::Wait);
+        assert_eq!(
+            HookKind::from_hook("PostToolUse", "", &payload),
+            HookKind::Resolve
+        );
+        assert_eq!(
+            HookKind::from_hook("PostToolUseFailure", "", &payload),
+            HookKind::Resolve
+        );
+        assert_eq!(
+            HookKind::from_hook("PermissionRequest", "", &payload),
+            HookKind::Wait
+        );
         assert_eq!(HookKind::from_hook("Stop", "", &payload), HookKind::End);
-        assert_eq!(HookKind::from_hook("SessionEnd", "", &payload), HookKind::End);
-        assert_eq!(HookKind::from_hook("Interrupt", "", &payload), HookKind::Abort);
-        assert_eq!(HookKind::from_hook("PreCompact", "", &payload), HookKind::Unknown);
-        assert_eq!(HookKind::from_hook("SomethingElse", "", &payload), HookKind::Unknown);
+        assert_eq!(
+            HookKind::from_hook("SessionEnd", "", &payload),
+            HookKind::End
+        );
+        assert_eq!(
+            HookKind::from_hook("Interrupt", "", &payload),
+            HookKind::Abort
+        );
+        assert_eq!(
+            HookKind::from_hook("PreCompact", "", &payload),
+            HookKind::Unknown
+        );
+        assert_eq!(
+            HookKind::from_hook("SomethingElse", "", &payload),
+            HookKind::Unknown
+        );
     }
 
     /// `Notification` 的三条短路规则（含 `auth_success` 的**先排除**）。
     #[test]
     fn confirmation_notification_is_classified() {
         // 确认类
-        assert!(is_confirmation_notification(&json!({"notification_type": "permission_request"})));
-        assert!(is_confirmation_notification(&json!({"message": "是否允许访问凭证？"})));
-        assert!(is_confirmation_notification(&json!({"message": "Allow file write"})));
+        assert!(is_confirmation_notification(
+            &json!({"notification_type": "permission_request"})
+        ));
+        assert!(is_confirmation_notification(
+            &json!({"message": "是否允许访问凭证？"})
+        ));
+        assert!(is_confirmation_notification(
+            &json!({"message": "Allow file write"})
+        ));
         // 非确认类
         assert!(
             !is_confirmation_notification(&json!({"notification_type": "auth_success"})),
             "auth_success 是纯提示，当成待确认会让窗口一直亮着"
         );
-        assert!(!is_confirmation_notification(&json!({"message": "任务已开始"})));
+        assert!(!is_confirmation_notification(
+            &json!({"message": "任务已开始"})
+        ));
     }
 
     /// `parse_event`：真实形态的 payload 逐字段解析。
@@ -1054,22 +1140,37 @@ mod tests {
     /// ★ **秒级**时间戳被换算成毫秒（客户端两代实现都用数字，但单位不一致）。
     #[test]
     fn parse_event_normalizes_second_precision_timestamps() {
-        let payload = json!({"hook_event_name": "Stop", "session_id": "s", "timestamp": 1_700_000_000i64});
-        assert_eq!(parse_event(SOURCE_CODEX, &payload, 0).unwrap().ts, 1_700_000_000_000);
+        let payload =
+            json!({"hook_event_name": "Stop", "session_id": "s", "timestamp": 1_700_000_000i64});
+        assert_eq!(
+            parse_event(SOURCE_CODEX, &payload, 0).unwrap().ts,
+            1_700_000_000_000
+        );
     }
 
     /// 缺 `session_id` ⇒ `None`（宿主应回 2xx 但什么都不做）。
     #[test]
     fn parse_event_returns_none_without_session_id() {
         assert!(parse_event(SOURCE_WORKBUDDY_CN, &json!({"hook_event_name": "Stop"}), 0).is_none());
-        assert!(parse_event(SOURCE_WORKBUDDY_CN, &json!({"hook_event_name": "Stop", "session_id": "  "}), 0).is_none());
+        assert!(parse_event(
+            SOURCE_WORKBUDDY_CN,
+            &json!({"hook_event_name": "Stop", "session_id": "  "}),
+            0
+        )
+        .is_none());
     }
 
     /// payload 里的 `agent_source` **优先于**默认来源（一个接收端服务多个客户端）。
     #[test]
     fn parse_event_prefers_payload_source() {
-        let payload = json!({"agent_source": "codex", "session_id": "s", "hook_event_name": "Stop"});
-        assert_eq!(parse_event(SOURCE_WORKBUDDY_CN, &payload, 0).unwrap().source, "codex");
+        let payload =
+            json!({"agent_source": "codex", "session_id": "s", "hook_event_name": "Stop"});
+        assert_eq!(
+            parse_event(SOURCE_WORKBUDDY_CN, &payload, 0)
+                .unwrap()
+                .source,
+            "codex"
+        );
     }
 
     /// 中文标题按**字符**截断，不切出半个字。
@@ -1114,7 +1215,12 @@ mod tests {
     fn local_tasks_share_the_same_table() {
         let mut watch = AgentWatch::new();
 
-        assert!(watch.ingest(local_event("checkin", "Trae 签到（共 3 个账号）", CompanionState::Running, 1_000)));
+        assert!(watch.ingest(local_event(
+            "checkin",
+            "Trae 签到（共 3 个账号）",
+            CompanionState::Running,
+            1_000
+        )));
         let ops = watch.operations(1_000);
         assert_eq!(ops.len(), 1);
         assert_eq!(ops[0].id, format!("{SOURCE_THIS_TOOL}:checkin"));
@@ -1123,19 +1229,39 @@ mod tests {
         assert_eq!(ops[0].title, "Trae 签到（共 3 个账号）");
 
         // 进度更新：同一个 task_id 再写「运行中」⇒ 仍是一行，标题被更新
-        assert!(watch.ingest(local_event("checkin", "Trae 签到：第 2 个", CompanionState::Running, 1_100)));
+        assert!(watch.ingest(local_event(
+            "checkin",
+            "Trae 签到：第 2 个",
+            CompanionState::Running,
+            1_100
+        )));
         let ops = watch.operations(1_100);
         assert_eq!(ops.len(), 1, "同一个 task_id 不得叠出第二行");
         assert_eq!(ops[0].title, "Trae 签到：第 2 个");
 
         // 结束
-        assert!(watch.ingest(local_event("checkin", "Trae 签到：成功 3", CompanionState::Done, 1_200)));
+        assert!(watch.ingest(local_event(
+            "checkin",
+            "Trae 签到：成功 3",
+            CompanionState::Done,
+            1_200
+        )));
         assert_eq!(watch.operations(1_200)[0].state, CompanionState::Done);
         assert_eq!(watch.operations(1_200)[0].title, "Trae 签到：成功 3");
 
         // 终态之后：非 Start 被拒（幂等），Start 开新一轮
-        assert!(!watch.ingest(local_event("checkin", "重复完成", CompanionState::Done, 1_300)));
-        assert!(watch.ingest(local_event("checkin", "第二轮", CompanionState::Running, 1_400)));
+        assert!(!watch.ingest(local_event(
+            "checkin",
+            "重复完成",
+            CompanionState::Done,
+            1_300
+        )));
+        assert!(watch.ingest(local_event(
+            "checkin",
+            "第二轮",
+            CompanionState::Running,
+            1_400
+        )));
         assert_eq!(watch.operations(1_400)[0].state, CompanionState::Running);
     }
 
@@ -1165,14 +1291,21 @@ mod tests {
         let mut sorted = HOOK_SOURCES.to_vec();
         sorted.sort_unstable();
         sorted.dedup();
-        assert_eq!(sorted.len(), HOOK_SOURCES.len(), "来源表里有重复项：{HOOK_SOURCES:?}");
+        assert_eq!(
+            sorted.len(),
+            HOOK_SOURCES.len(),
+            "来源表里有重复项：{HOOK_SOURCES:?}"
+        );
     }
 
     /// ★ 来源 id **不带空格**（它会被嵌进客户端配置的命令串，带空格会被按空格拆开）。
     #[test]
     fn hook_source_ids_are_shell_safe() {
         for id in HOOK_SOURCES {
-            assert!(!id.contains(char::is_whitespace), "来源 id 不得含空白：{id:?}");
+            assert!(
+                !id.contains(char::is_whitespace),
+                "来源 id 不得含空白：{id:?}"
+            );
             assert_eq!(id.trim(), *id, "来源 id 不得有首尾空白：{id:?}");
         }
     }
@@ -1200,7 +1333,11 @@ mod tests {
             "",
             "   ",
         ] {
-            assert_eq!(canonical_source(unknown), None, "{unknown:?} 不该被认成任何来源");
+            assert_eq!(
+                canonical_source(unknown),
+                None,
+                "{unknown:?} 不该被认成任何来源"
+            );
         }
     }
 

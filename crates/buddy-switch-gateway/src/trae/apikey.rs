@@ -385,7 +385,7 @@ pub fn create_response(store: &TraeApiKeyStore, name: String, variant: TraeVaria
 mod tests {
     use super::*;
     /* `mask_api_key` 现在**只**被测试引用（生产路径改用 `legacy_prefix` / `legacy_suffix`
-       两段式，见那里的说明）⇒ import 放在测试模块里，避免 lib 构建出现 unused 警告。 */
+    两段式，见那里的说明）⇒ import 放在测试模块里，避免 lib 构建出现 unused 警告。 */
     use super::super::mask_api_key;
     use std::sync::{Mutex, MutexGuard};
 
@@ -404,7 +404,9 @@ mod tests {
 
     impl EnvGuard {
         fn set(home: PathBuf) -> Self {
-            let lock = ENV_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            let lock = ENV_LOCK
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
             let previous_new = std::env::var_os("BUDDY_SWITCH_HOME");
             std::env::set_var("BUDDY_SWITCH_HOME", &home);
             Self {
@@ -548,11 +550,17 @@ mod tests {
             store.verify(legacy_key).is_some(),
             "新建 Key 后旧 Key 不得失效"
         );
-        assert!(store.verify(&new_plaintext).is_some(), "新 Key 必须立即可用");
+        assert!(
+            store.verify(&new_plaintext).is_some(),
+            "新 Key 必须立即可用"
+        );
 
         // 磁盘上应同时存在 legacy 记录与新记录。
         let on_disk = std::fs::read_to_string(store.path()).unwrap();
-        assert!(on_disk.contains("legacy"), "legacy 记录必须被物化: {on_disk}");
+        assert!(
+            on_disk.contains("legacy"),
+            "legacy 记录必须被物化: {on_disk}"
+        );
         assert!(
             !on_disk.contains(&legacy_key),
             "磁盘不得出现明文：{on_disk}"
@@ -634,8 +642,14 @@ mod tests {
         std::fs::write(store.path(), raw.to_string()).unwrap();
         // 隔离目录里没有 settings.json，确保走的是文件而非 legacy 回落。
         let _ = guard.home;
-        let record = store.verify("sk-trae-cccccccccccccccccccccccccccccccc").unwrap();
-        assert_eq!(record.variant, TraeVariant::default(), "缺 variant 字段须回落默认变体");
+        let record = store
+            .verify("sk-trae-cccccccccccccccccccccccccccccccc")
+            .unwrap();
+        assert_eq!(
+            record.variant,
+            TraeVariant::default(),
+            "缺 variant 字段须回落默认变体"
+        );
     }
 
     #[test]
@@ -662,7 +676,9 @@ mod tests {
         let mut different = plaintext.clone().into_bytes();
         let last = different.len() - 1;
         different[last] = if different[last] == b'0' { b'1' } else { b'0' };
-        assert!(store.verify(&String::from_utf8(different).unwrap()).is_none());
+        assert!(store
+            .verify(&String::from_utf8(different).unwrap())
+            .is_none());
         assert!(store.verify("x").is_none());
         assert!(store.verify("").is_none());
     }
@@ -701,7 +717,10 @@ mod tests {
 
         store.restore(&record.id).unwrap();
         // ★ 判据锚在**行为**上：恢复 = Key 重新可用（只看 `revoked_at` 会永远绿）。
-        assert!(store.verify(&plaintext).is_some(), "恢复后 Key 必须重新可用");
+        assert!(
+            store.verify(&plaintext).is_some(),
+            "恢复后 Key 必须重新可用"
+        );
         let after = store
             .list()
             .into_iter()
@@ -722,8 +741,14 @@ mod tests {
         store.revoke(&second.id).unwrap();
 
         store.restore(&first.id).unwrap();
-        assert!(store.verify(&first_plaintext).is_some(), "被恢复的 Key 应可用");
-        assert!(store.verify(&second_plaintext).is_none(), "另一把必须仍是吊销态");
+        assert!(
+            store.verify(&first_plaintext).is_some(),
+            "被恢复的 Key 应可用"
+        );
+        assert!(
+            store.verify(&second_plaintext).is_none(),
+            "另一把必须仍是吊销态"
+        );
     }
 
     /// ★ legacy **仅在内存里合成**：一次失败的 `restore` 不得把 legacy 顺手物化落盘。
@@ -752,8 +777,7 @@ mod tests {
         let (record, plaintext) = store.create("masked".to_string(), TraeVariant::Trae);
         let masked = record.masked();
         let object = masked.as_object().unwrap();
-        let fields: std::collections::BTreeSet<&str> =
-            object.keys().map(String::as_str).collect();
+        let fields: std::collections::BTreeSet<&str> = object.keys().map(String::as_str).collect();
         let expected: std::collections::BTreeSet<&str> = [
             "id",
             "name",
@@ -783,11 +807,9 @@ mod tests {
 
         let created = create_response(&store, "新".to_string(), TraeVariant::TraeWork);
         let object = created.as_object().unwrap();
-        let fields: std::collections::BTreeSet<&str> =
-            object.keys().map(String::as_str).collect();
-        let expected: std::collections::BTreeSet<&str> = ["ok", "key", "record"]
-            .into_iter()
-            .collect();
+        let fields: std::collections::BTreeSet<&str> = object.keys().map(String::as_str).collect();
+        let expected: std::collections::BTreeSet<&str> =
+            ["ok", "key", "record"].into_iter().collect();
         assert_eq!(fields, expected);
 
         // list_response 必须反映刚创建的 Key。

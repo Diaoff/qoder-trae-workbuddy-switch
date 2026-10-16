@@ -377,7 +377,9 @@ impl QoderPool {
         match kind {
             QoderErrKind::RateLimited => {
                 // 只冷**这个模型**（上游限流就是按模型报的），账号仍服务其它模型。
-                entry.model_cooldowns.insert(model.to_string(), now + 60_000);
+                entry
+                    .model_cooldowns
+                    .insert(model.to_string(), now + 60_000);
             }
             QoderErrKind::AuthDead => {
                 entry.auth_dead = true;
@@ -562,7 +564,10 @@ impl QoderPool {
         self.entries
             .values()
             .map(|entry| {
-                let tail = entry.uid.get(entry.uid.len().saturating_sub(8)..).unwrap_or("");
+                let tail = entry
+                    .uid
+                    .get(entry.uid.len().saturating_sub(8)..)
+                    .unwrap_or("");
                 let cooling_models: Vec<&str> = entry
                     .model_cooldowns
                     .iter()
@@ -780,11 +785,18 @@ mod tests {
         };
         assert_eq!(by_uid("ok")["status"], "available");
         assert_eq!(by_uid("ok")["disabled"], false);
-        assert!(by_uid("ok")["credits"].is_null(), "池不建模积分 ⇒ null，不能写 0");
+        assert!(
+            by_uid("ok")["credits"].is_null(),
+            "池不建模积分 ⇒ null，不能写 0"
+        );
         assert_eq!(by_uid("pat")["status"], "disabled");
         assert_eq!(by_uid("dead")["status"], "disabled");
         assert_eq!(by_uid("cold")["status"], "cooling");
-        assert_eq!(by_uid("mc")["status"], "available", "只冷模型 ⇒ 账号本身可用");
+        assert_eq!(
+            by_uid("mc")["status"],
+            "available",
+            "只冷模型 ⇒ 账号本身可用"
+        );
         // 可用行**不带**冷却原因（过期原因挂在「可用」旁边会被读成当前限流）。
         assert!(by_uid("ok")["cooldownReason"].is_null());
         assert!(by_uid("cold")["cooldownReason"].is_string());

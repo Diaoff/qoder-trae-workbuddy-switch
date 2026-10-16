@@ -485,7 +485,10 @@ mod tests {
         // 而唯一的调用点是手动菜单项 ⇒ 账号只会静默过期。删掉这条登记，排程循环
         // 在两个宿主里都不会被启动，「自动续期」当场退回「只能手动刷新」。
         assert!(
-            has_task(Product::Trae, TaskKind::Scheduled(ScheduleTask::TraeJwtRefresh)),
+            has_task(
+                Product::Trae,
+                TaskKind::Scheduled(ScheduleTask::TraeJwtRefresh)
+            ),
             "缺 Trae JWT 自动续期 ⇒ 卡片上「自动刷新 JWT」标记与添加账号对话框\
              「网页登录的账号可以自动续期」都变成空头承诺（凭据静默过期）"
         );
@@ -525,12 +528,25 @@ mod tests {
         let mut sorted = labels.clone();
         sorted.sort();
         sorted.dedup();
-        assert_eq!(sorted.len(), labels.len(), "任务标识必须互不相同：{labels:?}");
+        assert_eq!(
+            sorted.len(),
+            labels.len(),
+            "任务标识必须互不相同：{labels:?}"
+        );
         // 二维坐标：同一 kind 的两个产品必须产生**不同**的任务级标签。
-        assert!(labels.iter().any(|l| l == "wb:credits_refresh"), "{labels:?}");
-        assert!(labels.iter().any(|l| l == "trae:credits_refresh"), "{labels:?}");
+        assert!(
+            labels.iter().any(|l| l == "wb:credits_refresh"),
+            "{labels:?}"
+        );
+        assert!(
+            labels.iter().any(|l| l == "trae:credits_refresh"),
+            "{labels:?}"
+        );
         // 定时任务的标识带上类别后缀，便于日志区分。
-        assert!(labels.iter().any(|l| l == "wb:scheduled:checkin"), "{labels:?}");
+        assert!(
+            labels.iter().any(|l| l == "wb:scheduled:checkin"),
+            "{labels:?}"
+        );
         assert!(
             labels.iter().any(|l| l == "trae:scheduled:trae_checkin"),
             "{labels:?}"

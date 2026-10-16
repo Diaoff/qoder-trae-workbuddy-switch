@@ -580,8 +580,8 @@ mod tests {
     #[test]
     fn ensure_region_matches_rejects_cross_region_credential() {
         let global_root = json!({"auth": {"domain": "www.workbuddy.ai"}});
-        let err = ensure_region_matches(Region::Cn, &global_root)
-            .expect_err("国际版凭据不得用于 CN");
+        let err =
+            ensure_region_matches(Region::Cn, &global_root).expect_err("国际版凭据不得用于 CN");
         assert_eq!(err.actual_domain, "www.workbuddy.ai");
         assert_eq!(err.actual_region, Region::Global);
         assert_eq!(err.expected_region, Region::Cn);
@@ -783,9 +783,15 @@ mod tests {
         let token = saved["access_token"]
             .as_str()
             .expect("导入后 access_token 应是明文字符串，而不是信封对象");
-        assert!(token.starts_with("eyJ"), "应是 JWT：{}", &token[..token.len().min(16)]);
         assert!(
-            saved["refresh_token"].as_str().is_some_and(|v| v.starts_with("eyJ")),
+            token.starts_with("eyJ"),
+            "应是 JWT：{}",
+            &token[..token.len().min(16)]
+        );
+        assert!(
+            saved["refresh_token"]
+                .as_str()
+                .is_some_and(|v| v.starts_with("eyJ")),
             "refresh_token 也应解锁：{}",
             saved["refresh_token"]
         );

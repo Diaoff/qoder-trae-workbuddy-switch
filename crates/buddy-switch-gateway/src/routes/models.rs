@@ -6,9 +6,9 @@ use axum::response::Response;
 use serde_json::json;
 
 use crate::disabled_models::is_disabled;
-use buddy_switch_core::modules::product::scope_of_wb_region;
 use crate::routes::{authenticate, json_response, openai_error};
 use crate::state::GatewayState;
+use buddy_switch_core::modules::product::scope_of_wb_region;
 
 /// 模型列表处理器。
 pub async fn handler(State(state): State<GatewayState>, headers: HeaderMap) -> Response {

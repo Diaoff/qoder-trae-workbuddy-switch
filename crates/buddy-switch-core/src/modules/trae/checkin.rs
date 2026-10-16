@@ -272,10 +272,12 @@ pub fn plan(
     remaining: &credits::RemainingCreditsFile,
     options: &CheckinOptions,
 ) -> Vec<(String, account::RawAccount)> {
-    let wanted = account::resolve_user_ids_for(options.variant, &options.scope, options.user_ids.clone());
+    let wanted =
+        account::resolve_user_ids_for(options.variant, &options.scope, options.user_ids.clone());
     // uid -> 今日是否已签到 / JWT 状态
     let mut checked_today: std::collections::HashSet<String> = std::collections::HashSet::new();
-    let mut jwt_status: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    let mut jwt_status: std::collections::HashMap<String, String> =
+        std::collections::HashMap::new();
     for view in views {
         let Some(uid) = view.get("userId").and_then(|v| v.as_str()) else {
             continue;
@@ -519,9 +521,16 @@ where
             }
             report.total_ok += 1;
         } else {
-            let (error_type, cooldown_seconds) = credits::classify_error(result.http_status, result.code);
+            let (error_type, cooldown_seconds) =
+                credits::classify_error(result.http_status, result.code);
             if error_type != "Unknown" {
-                credits::save_cooldown_for(variant, uid, error_type, cooldown_seconds, &result.message);
+                credits::save_cooldown_for(
+                    variant,
+                    uid,
+                    error_type,
+                    cooldown_seconds,
+                    &result.message,
+                );
                 let entry: Option<CooldownEntry> = credits::load_cooldowns_for(variant)
                     .cooldowns
                     .get(uid)
@@ -651,7 +660,10 @@ mod tests {
     }
 
     fn empty_context() -> (credits::CooldownsFile, credits::RemainingCreditsFile) {
-        (credits::CooldownsFile::default(), credits::RemainingCreditsFile::default())
+        (
+            credits::CooldownsFile::default(),
+            credits::RemainingCreditsFile::default(),
+        )
     }
 
     #[test]
@@ -685,7 +697,10 @@ mod tests {
             ("a".to_string(), raw("a", &valid_jwt("a"))),
             ("b".to_string(), raw("b", &valid_jwt("b"))),
         ];
-        let views = vec![view_for("a", &valid_jwt("a"), false), view_for("b", &valid_jwt("b"), false)];
+        let views = vec![
+            view_for("a", &valid_jwt("a"), false),
+            view_for("b", &valid_jwt("b"), false),
+        ];
         let (cooldowns, remaining) = empty_context();
         let options = CheckinOptions {
             scope: Scope::Selected(vec!["b".to_string()]),
@@ -718,7 +733,10 @@ mod tests {
             skip_checked_in: false,
             ..Default::default()
         };
-        assert_eq!(plan(accounts, &views, &cooldowns, &remaining, &options).len(), 1);
+        assert_eq!(
+            plan(accounts, &views, &cooldowns, &remaining, &options).len(),
+            1
+        );
     }
 
     #[test]
@@ -743,7 +761,10 @@ mod tests {
             skip_expired: false,
             ..Default::default()
         };
-        assert_eq!(plan(accounts, &views, &cooldowns, &remaining, &options).len(), 1);
+        assert_eq!(
+            plan(accounts, &views, &cooldowns, &remaining, &options).len(),
+            1
+        );
     }
 
     #[test]
@@ -809,7 +830,9 @@ mod tests {
         let mut remaining = credits::RemainingCreditsFile::default();
         remaining.expire_times.insert("late".into(), 2_000);
         remaining.expire_times.insert("early".into(), 1_000);
-        remaining.expire_times.insert("same-time-richer".into(), 1_000);
+        remaining
+            .expire_times
+            .insert("same-time-richer".into(), 1_000);
         remaining.credits.insert("same-time-richer".into(), 900.0);
         remaining.credits.insert("early".into(), 1.0);
 
@@ -874,7 +897,9 @@ mod tests {
             cooldown_until: None,
         });
         let value = report_json(&report);
-        for key in ["total", "totalOk", "already", "failed", "warnings", "results"] {
+        for key in [
+            "total", "totalOk", "already", "failed", "warnings", "results",
+        ] {
             assert!(value.get(key).is_some(), "缺少线上字段 {key}");
         }
         // snake_case 绝不能出现在线上形态
@@ -899,7 +924,10 @@ mod tests {
             error_type: None,
             cooldown_until: None,
         };
-        assert_eq!(outcome_json(&outcome).get("delta").unwrap().as_i64(), Some(0));
+        assert_eq!(
+            outcome_json(&outcome).get("delta").unwrap().as_i64(),
+            Some(0)
+        );
     }
 
     #[test]
@@ -951,11 +979,15 @@ mod tests {
         credits::save_cooldown_for(work, "u-work", "SessionDead", 3600, "测试");
 
         assert!(
-            credits::load_cooldowns_for(work).cooldowns.contains_key("u-work"),
+            credits::load_cooldowns_for(work)
+                .cooldowns
+                .contains_key("u-work"),
             "Trae Work 应能看到自己写的冷却"
         );
         assert!(
-            !credits::load_cooldowns_for(cn).cooldowns.contains_key("u-work"),
+            !credits::load_cooldowns_for(cn)
+                .cooldowns
+                .contains_key("u-work"),
             "Trae CN 绝不能看到 Trae Work 的冷却 —— 这就是串味"
         );
 

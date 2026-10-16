@@ -130,8 +130,8 @@ pub async fn status_for(region: QoderRegion) -> Value {
 
 /// 单账号签到（状态驱动；见模块头的三步语义）。
 pub async fn claim_for(region: QoderRegion, uid: &str) -> Result<Value, String> {
-    let account = account::find_account_for(region, uid)
-        .ok_or_else(|| format!("账号不存在: {uid}"))?;
+    let account =
+        account::find_account_for(region, uid).ok_or_else(|| format!("账号不存在: {uid}"))?;
     let access = access_token_of(&account)
         .ok_or_else(|| "这条账号没有可调用的 access token（PAT 不能用于签到端点）".to_string())?;
 
@@ -151,7 +151,9 @@ pub async fn claim_for(region: QoderRegion, uid: &str) -> Result<Value, String> 
                 // 复查一次：上游可能已记账（先扣后报错等形态）。
                 if let Ok(recheck) = api::checkin_status(region, uid, access).await {
                     if recheck.today_checked_in {
-                        return Ok(json!({ "ok": true, "already": true, "uid": uid, "rechecked": true }));
+                        return Ok(
+                            json!({ "ok": true, "already": true, "uid": uid, "rechecked": true }),
+                        );
                     }
                 }
                 let detail = result
@@ -163,7 +165,10 @@ pub async fn claim_for(region: QoderRegion, uid: &str) -> Result<Value, String> 
             }
             // ⚠️ 走 `api::as_num`（同时接受浮点）：上游把额度写成 `100.0` 时 `as_i64` 返回
             //    None ⇒ 签到成功却报「+0」，用户会以为没领到。
-            let reward = result.get("rewardCredits").and_then(api::as_num).unwrap_or(0);
+            let reward = result
+                .get("rewardCredits")
+                .and_then(api::as_num)
+                .unwrap_or(0);
             Ok(json!({ "ok": true, "uid": uid, "rewardCredits": reward }))
         }
     }
@@ -192,13 +197,22 @@ mod tests {
     /// （跨日时 CLAIMED 但今天没签的账号会被误判成已签而漏签）。
     #[test]
     fn claim_decision_covers_three_states() {
-        assert_eq!(claim_decision(&status("CLAIMED", true)), ClaimDecision::Already);
+        assert_eq!(
+            claim_decision(&status("CLAIMED", true)),
+            ClaimDecision::Already
+        );
         assert_eq!(
             claim_decision(&status("DISABLED", false)),
             ClaimDecision::Disabled("DISABLED".into())
         );
-        assert_eq!(claim_decision(&status("CLAIMABLE", false)), ClaimDecision::ClaimNow);
+        assert_eq!(
+            claim_decision(&status("CLAIMABLE", false)),
+            ClaimDecision::ClaimNow
+        );
         // CLAIMED 但今天没签（跨日）⇒ 仍要尝试领取（不能只看状态词）。
-        assert_eq!(claim_decision(&status("CLAIMED", false)), ClaimDecision::ClaimNow);
+        assert_eq!(
+            claim_decision(&status("CLAIMED", false)),
+            ClaimDecision::ClaimNow
+        );
     }
 }

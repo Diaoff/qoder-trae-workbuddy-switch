@@ -276,7 +276,6 @@ pub fn api_endpoint_for(region: crate::modules::region::Region) -> &'static str 
     crate::modules::region::region_spec(region).billing_base
 }
 
-
 pub fn backup_dir() -> PathBuf {
     store_dir().join("backups")
 }
@@ -1254,9 +1253,8 @@ pub async fn http_request_raw(
 
 /// 把响应体文本解析为 JSON；非 JSON（HTML / 空体）时包成 `{"raw": <前 500 字符>}`。
 fn parse_json_body(text: &str) -> Value {
-    serde_json::from_str(text).unwrap_or_else(|_| {
-        json!({ "raw": text.chars().take(500).collect::<String>() })
-    })
+    serde_json::from_str(text)
+        .unwrap_or_else(|_| json!({ "raw": text.chars().take(500).collect::<String>() }))
 }
 
 /// 带 token 刷新重试的**已授权**请求，返回 `(HTTP 状态码, 解析后的 JSON)`。
@@ -1391,7 +1389,10 @@ mod tests {
             http_request_with_proxy(&format!("http://{addr}/blocked"), "GET", None, None, None)
                 .await;
 
-        assert_eq!(value["code"], 401, "非 2xx 的 code 必须是真实状态码：{value}");
+        assert_eq!(
+            value["code"], 401,
+            "非 2xx 的 code 必须是真实状态码：{value}"
+        );
         let message = value["message"].as_str().expect("message 应为字符串");
         assert_eq!(
             message,
@@ -1430,7 +1431,10 @@ mod tests {
         );
         // 老配置文件里残留的这两个键也不得被透传回存盘结果（否则死字段复活）。
         let merged = merge_checkin_config(&json!({ "start_hour": 3, "end_hour": 4 }));
-        assert!(merged.get("start_hour").is_none(), "start_hour 不得再被透传");
+        assert!(
+            merged.get("start_hour").is_none(),
+            "start_hour 不得再被透传"
+        );
         assert!(merged.get("end_hour").is_none(), "end_hour 不得再被透传");
         assert_eq!(merged.get("enabled").and_then(Value::as_bool), Some(true));
     }
@@ -1636,10 +1640,9 @@ mod tests {
 
     #[test]
     fn parse_codebuddy_cn_app_cache_json_reads_exe() {
-        let path = parse_codebuddy_cn_app_cache_json(
-            r#"{ "exe": "/Applications/CodeBuddy CN.app" }"#,
-        )
-        .expect("valid cache");
+        let path =
+            parse_codebuddy_cn_app_cache_json(r#"{ "exe": "/Applications/CodeBuddy CN.app" }"#)
+                .expect("valid cache");
         assert_eq!(path.to_string_lossy(), "/Applications/CodeBuddy CN.app");
     }
 
@@ -1652,10 +1655,7 @@ mod tests {
 
     #[test]
     fn codebuddy_cn_app_cache_file_is_not_workbuddy_exe_cache() {
-        assert_ne!(
-            codebuddy_cn_app_cache_file(),
-            workbuddy_exe_cache_file()
-        );
+        assert_ne!(codebuddy_cn_app_cache_file(), workbuddy_exe_cache_file());
         assert!(codebuddy_cn_app_cache_file()
             .file_name()
             .is_some_and(|n| n == "codebuddy_cn_app.json"));
@@ -1746,7 +1746,10 @@ mod tests {
             validate_home_override("relative-buddy-switch-home"),
             Err(OverrideReject::NotAbsolute)
         );
-        assert_eq!(validate_home_override("."), Err(OverrideReject::NotAbsolute));
+        assert_eq!(
+            validate_home_override("."),
+            Err(OverrideReject::NotAbsolute)
+        );
 
         // 绝对但**不存在** → 拒绝，且不得顺手创建它。
         let missing = unique_missing_path("validate-missing");
@@ -1755,7 +1758,10 @@ mod tests {
             validate_home_override(missing.to_str().expect("utf8 missing path")),
             Err(OverrideReject::NotDir)
         );
-        assert!(!missing.exists(), "the guard must never create the rejected path");
+        assert!(
+            !missing.exists(),
+            "the guard must never create the rejected path"
+        );
 
         // 绝对但是**普通文件** → 拒绝。
         let file = unique_missing_path("validate-file");
@@ -1783,10 +1789,13 @@ mod tests {
 
         // 不合法 ⇒ 拒绝，理由必须点名变量、原因、后果与修法。
         for bad in [".", "relative-home", "/no/such/dir/buddy-switch-home"] {
-            let message = home_override_refusal(Some(bad))
-                .unwrap_or_else(|| panic!("{bad} 必须被拒绝"));
+            let message =
+                home_override_refusal(Some(bad)).unwrap_or_else(|| panic!("{bad} 必须被拒绝"));
             assert!(message.contains(BUDDY_SWITCH_HOME_ENV), "{message}");
-            assert!(message.contains("已存在的绝对目录"), "要说清修法：{message}");
+            assert!(
+                message.contains("已存在的绝对目录"),
+                "要说清修法：{message}"
+            );
             assert!(message.contains("真实"), "要说清后果：{message}");
         }
     }

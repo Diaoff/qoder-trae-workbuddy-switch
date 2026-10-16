@@ -21,8 +21,8 @@ use crate::modules::trae::device::DeviceEntry;
 use crate::modules::trae::jwt;
 use crate::modules::trae::paths;
 use crate::modules::trae::store;
-use crate::modules::trae::{TRAE_APP_VERSION, TRAE_ENTITLEMENT_PATH};
 use crate::modules::trae::variant::TraeVariant;
+use crate::modules::trae::{TRAE_APP_VERSION, TRAE_ENTITLEMENT_PATH};
 
 // ---------------------------------------------------------------------------
 // HTTP
@@ -117,10 +117,7 @@ pub fn build_headers(jwt_value: &str, device: &DeviceEntry) -> HashMap<String, S
     let mut headers = HashMap::new();
     headers.insert("accept".into(), "*/*".into());
     headers.insert("accept-language".into(), "zh-CN".into());
-    headers.insert(
-        "authorization".into(),
-        jwt::authorization_header(jwt_value),
-    );
+    headers.insert("authorization".into(), jwt::authorization_header(jwt_value));
     headers.insert("content-type".into(), "application/json".into());
     headers.insert("user-agent".into(), user_agent());
     headers.insert("x-market-client-id".into(), market_client_id());
@@ -375,7 +372,9 @@ pub fn parse_credit_packages(packs: &[Value], now_ts: i64) -> Vec<CreditPackage>
             .unwrap_or(0.0);
         let remaining = (limit - used).max(0.0);
         let expire_at = pack.get("expire_time").and_then(Value::as_i64);
-        let expired = expire_at.map(|expire| expire > 0 && expire < now_ts).unwrap_or(false);
+        let expired = expire_at
+            .map(|expire| expire > 0 && expire < now_ts)
+            .unwrap_or(false);
         let expiring_soon = !expired
             && expire_at
                 .map(|expire| expire - now_ts <= EXPIRING_SOON_SECS)
@@ -622,10 +621,8 @@ pub fn mark_checked_in_for(variant: TraeVariant, user_id: &str) -> Result<(), St
 /// 因此「今天有记录」等价于「今天签过」。失败路径只写冷却，不写明细。
 pub fn checked_in_today_for(variant: TraeVariant) -> std::collections::HashSet<String> {
     let today = store::today();
-    let mut checked: std::collections::HashSet<String> = load_ledger_for(variant)
-        .checked_in
-        .into_iter()
-        .collect();
+    let mut checked: std::collections::HashSet<String> =
+        load_ledger_for(variant).checked_in.into_iter().collect();
     for record in load_history_for(variant).records {
         if record.date == today {
             checked.insert(record.user_id);
@@ -654,9 +651,8 @@ pub fn append_history_for(
         credits,
         delta,
     });
-    let cutoff = (chrono::Local::now() - chrono::Duration::days(
-        crate::modules::trae::TRAE_HISTORY_KEEP_DAYS,
-    ))
+    let cutoff = (chrono::Local::now()
+        - chrono::Duration::days(crate::modules::trae::TRAE_HISTORY_KEEP_DAYS))
     .format("%Y-%m-%d")
     .to_string();
     file.records.retain(|record| record.date >= cutoff);
@@ -720,9 +716,8 @@ pub fn record_daily_snapshot_for(variant: TraeVariant, non_checkin_earned: f64) 
         }),
     }
 
-    let cutoff = (chrono::Local::now() - chrono::Duration::days(
-        crate::modules::trae::TRAE_HISTORY_KEEP_DAYS,
-    ))
+    let cutoff = (chrono::Local::now()
+        - chrono::Duration::days(crate::modules::trae::TRAE_HISTORY_KEEP_DAYS))
     .format("%Y-%m-%d")
     .to_string();
     file.snapshots.retain(|snapshot| snapshot.date >= cutoff);
@@ -892,13 +887,14 @@ pub async fn refresh_remaining_for_variant(
     variant: TraeVariant,
     user_id: &str,
 ) -> Result<f64, String> {
-    let account =
-        crate::modules::trae::account::find_for(variant, user_id).ok_or("账号不存在")?;
+    let account = crate::modules::trae::account::find_for(variant, user_id).ok_or("账号不存在")?;
     let (credits, expire_at, _purchased, packages) = calc_remaining_credits(&account.jwt).await?;
     let mut remaining = load_remaining_for(variant);
     remaining.credits.insert(user_id.to_string(), credits);
     if let Some(expire_at) = expire_at {
-        remaining.expire_times.insert(user_id.to_string(), expire_at);
+        remaining
+            .expire_times
+            .insert(user_id.to_string(), expire_at);
     }
     remaining.packages.insert(user_id.to_string(), packages);
     remaining.updated_at = Some(store::now_iso());
@@ -1012,7 +1008,13 @@ pub fn classify_error(http_status: u16, code: Option<i64>) -> (&'static str, i64
 
 /// 写入/更新账号冷却状态（默认变体，兼容壳）。
 pub fn save_cooldown(user_id: &str, error_type: &str, cooldown_seconds: i64, reason: &str) {
-    save_cooldown_for(TraeVariant::default(), user_id, error_type, cooldown_seconds, reason)
+    save_cooldown_for(
+        TraeVariant::default(),
+        user_id,
+        error_type,
+        cooldown_seconds,
+        reason,
+    )
 }
 
 /// 写入/更新账号冷却状态（按变体分家）。
@@ -1330,8 +1332,14 @@ mod tests {
         };
         let headers = build_headers("t", &device);
         // 缺失可选字段时下发空串而不是 panic
-        assert_eq!(headers.get("x-market-user-id").map(String::as_str), Some(""));
-        assert_eq!(headers.get("vscode-sessionid").map(String::as_str), Some(""));
+        assert_eq!(
+            headers.get("x-market-user-id").map(String::as_str),
+            Some("")
+        );
+        assert_eq!(
+            headers.get("vscode-sessionid").map(String::as_str),
+            Some("")
+        );
     }
 
     #[test]

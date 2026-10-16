@@ -298,9 +298,8 @@ impl TraeVariant {
     /// 探测结果（`TraeEnvStatus.dataDir` 的末段）把产品名传回来。
     pub fn parse(s: &str) -> Option<TraeVariant> {
         match s.trim().to_ascii_lowercase().as_str() {
-            "trae_work" | "traework" | "trae work" | "work" | "solo" | "trae solo" | "trae solo cn" => {
-                Some(TraeVariant::TraeWork)
-            }
+            "trae_work" | "traework" | "trae work" | "work" | "solo" | "trae solo"
+            | "trae solo cn" => Some(TraeVariant::TraeWork),
             // `cn` 是**区域标识**（国内版）⇒ 必须落到该区域的**主程序**（TraeWork）。
             // 它曾作为 Trae 的宽容别名；但区域标识指向主程序才安全 ——
             // 否则「保存登录态」这类**程序级**操作会去读 TraeCode 客户端的 userData。
@@ -923,10 +922,7 @@ mod tests {
         assert_ne!(TraeVariant::TraeMerged, TraeVariant::Trae);
         assert_ne!(TraeVariant::TraeMerged, TraeVariant::TraeWork);
         // `parse` 接受自己的落盘标识（`as_str` 往返）。
-        for variant in [
-            TraeVariant::TraeMerged,
-            TraeVariant::GlobalTraeMerged,
-        ] {
+        for variant in [TraeVariant::TraeMerged, TraeVariant::GlobalTraeMerged] {
             assert_eq!(
                 TraeVariant::parse(variant.as_str()),
                 Some(variant),
@@ -985,7 +981,11 @@ mod tests {
         }
         // `global` 仍是**区域标识**，落该区域的主程序（TraeWork）。
         for s in ["global", "intl", "international", "trae_global"] {
-            assert_eq!(TraeVariant::parse(s), Some(TraeVariant::Global), "解析失败: {s}");
+            assert_eq!(
+                TraeVariant::parse(s),
+                Some(TraeVariant::Global),
+                "解析失败: {s}"
+            );
         }
         // `trae_code`（无区域前缀）是**国内** TraeCode —— 不能顺手改成国际版。
         assert_eq!(TraeVariant::parse("trae_code"), Some(TraeVariant::Trae));
@@ -1003,14 +1003,20 @@ mod tests {
     #[test]
     fn 裸名反查落到合并版国际客户端且不落国内() {
         assert_eq!(variant_of_name("Trae"), Some(TraeVariant::GlobalTraeMerged));
-        assert_eq!(variant_of_name("Trae.exe"), Some(TraeVariant::GlobalTraeMerged));
+        assert_eq!(
+            variant_of_name("Trae.exe"),
+            Some(TraeVariant::GlobalTraeMerged)
+        );
         assert_eq!(variant_of_name("trae"), Some(TraeVariant::GlobalTraeMerged));
         // ★ issue #3 的那条不变式仍要成立：裸名**绝不能**被读成国内客户端。
         assert_ne!(variant_of_name("Trae"), Some(TraeVariant::TraeWork));
         assert_ne!(variant_of_name("Trae"), Some(TraeVariant::Trae));
         // 带 CN 后缀的落**合并版国内**客户端（不是国际版）。
         assert_eq!(variant_of_name("Trae CN"), Some(TraeVariant::TraeMerged));
-        assert_eq!(variant_of_name("Trae CN.exe"), Some(TraeVariant::TraeMerged));
+        assert_eq!(
+            variant_of_name("Trae CN.exe"),
+            Some(TraeVariant::TraeMerged)
+        );
         // 两个程序位的目录名互不包含（`Trae` 是 `Trae CN` 的子串）—— 靠**精确匹配**分开。
         assert_ne!(
             variant_of_name("Trae CN"),
@@ -1022,10 +1028,18 @@ mod tests {
     #[test]
     fn 解析接受目录名与常见别名() {
         for s in ["trae_work", "TraeWork", "Trae Work", "solo", "TRAE SOLO CN"] {
-            assert_eq!(TraeVariant::parse(s), Some(TraeVariant::TraeWork), "解析失败: {s}");
+            assert_eq!(
+                TraeVariant::parse(s),
+                Some(TraeVariant::TraeWork),
+                "解析失败: {s}"
+            );
         }
         for s in ["trae_cn", "Trae", "Trae CN", "ide", "trae"] {
-            assert_eq!(TraeVariant::parse(s), Some(TraeVariant::Trae), "解析失败: {s}");
+            assert_eq!(
+                TraeVariant::parse(s),
+                Some(TraeVariant::Trae),
+                "解析失败: {s}"
+            );
         }
         assert_eq!(TraeVariant::parse("doubao"), None);
         assert_eq!(TraeVariant::parse(""), None);
@@ -1037,10 +1051,16 @@ mod tests {
     fn 反查时solo优先于trae() {
         assert_eq!(variant_of_name("TRAE SOLO CN"), Some(TraeVariant::TraeWork));
         assert_eq!(variant_of_name("TRAE SOLO"), Some(TraeVariant::TraeWork));
-        assert_eq!(variant_of_name("TRAE SOLO CN.exe"), Some(TraeVariant::TraeWork));
+        assert_eq!(
+            variant_of_name("TRAE SOLO CN.exe"),
+            Some(TraeVariant::TraeWork)
+        );
         // ⚠️ issue #20：`Trae CN` 现在落**合并版**（`all_specs()` 里合并版在前）。
         assert_eq!(variant_of_name("Trae CN"), Some(TraeVariant::TraeMerged));
-        assert_eq!(variant_of_name("Trae CN.exe"), Some(TraeVariant::TraeMerged));
+        assert_eq!(
+            variant_of_name("Trae CN.exe"),
+            Some(TraeVariant::TraeMerged)
+        );
         // 目录名不区分大小写。
         assert_eq!(variant_of_name("trae solo cn"), Some(TraeVariant::TraeWork));
         // 不认识的平台（豆包）不能被硬判成某个 Trae 变体。
@@ -1147,7 +1167,10 @@ mod tests {
         //    合并后的机器上就会有一枚按钮永远探测不到。反向：变体必须**不同**
         //    （否则快照目录又会挤在一起，正是 issue #20 要修的）。
         for (legacy, merged) in [
-            (variant_spec(TraeVariant::Trae), variant_spec(TraeVariant::TraeMerged)),
+            (
+                variant_spec(TraeVariant::Trae),
+                variant_spec(TraeVariant::TraeMerged),
+            ),
             (
                 variant_spec(TraeVariant::GlobalTraeCode),
                 variant_spec(TraeVariant::GlobalTraeMerged),
@@ -1208,7 +1231,9 @@ mod tests {
             "合并版 CN（TRAE_CN）必须落 TRAE 线"
         );
         assert_eq!(
-            variant_spec(TraeVariant::GlobalTraeMerged).variant.oauth_line(),
+            variant_spec(TraeVariant::GlobalTraeMerged)
+                .variant
+                .oauth_line(),
             OAuthLine::Trae,
             "合并版国际（TRAE_I18N）必须落 TRAE 线"
         );
@@ -1223,8 +1248,14 @@ mod tests {
             );
         }
         // 企业版取值按客户端原样识别（本项目暂无该变体，但规则必须完整）。
-        assert_eq!(OAuthLine::from_package_type("SOLO_CN_ENTERPRISE"), OAuthLine::Solo);
-        assert_eq!(OAuthLine::from_package_type("TRAE_CN_ENTERPRISE"), OAuthLine::Trae);
+        assert_eq!(
+            OAuthLine::from_package_type("SOLO_CN_ENTERPRISE"),
+            OAuthLine::Solo
+        );
+        assert_eq!(
+            OAuthLine::from_package_type("TRAE_CN_ENTERPRISE"),
+            OAuthLine::Trae
+        );
 
         // 两条线的三件取值必须**两两不同**（否则「按线分家」等于没分）。
         assert_ne!(OAuthLine::Solo.auth_from(), OAuthLine::Trae.auth_from());
@@ -1232,8 +1263,14 @@ mod tests {
             OAuthLine::Solo.default_client_id(),
             OAuthLine::Trae.default_client_id()
         );
-        assert_ne!(OAuthLine::Solo.hide_saas_login(), OAuthLine::Trae.hide_saas_login());
-        assert_ne!(OAuthLine::Solo.platform_code(), OAuthLine::Trae.platform_code());
+        assert_ne!(
+            OAuthLine::Solo.hide_saas_login(),
+            OAuthLine::Trae.hide_saas_login()
+        );
+        assert_ne!(
+            OAuthLine::Solo.platform_code(),
+            OAuthLine::Trae.platform_code()
+        );
         // 逐字值（与客户端 `authConfig` / `auth_from` / `k()` 分派对拍）。
         assert_eq!(OAuthLine::Solo.auth_from(), "solo");
         assert_eq!(OAuthLine::Trae.auth_from(), "trae");
@@ -1305,7 +1342,9 @@ mod tests {
         // ★ 走 `all_known_specs()`（含退役）：端点表对退役变体**仍然有效**，
         //   收敛的是「可选程序位」，不是「把老变体的端点删掉」。
         let (declared, global_only): (Vec<&'static VariantSpec>, Vec<&'static VariantSpec>) =
-            all_known_specs().into_iter().partition(|s| s.global_endpoints.is_some());
+            all_known_specs()
+                .into_iter()
+                .partition(|s| s.global_endpoints.is_some());
         // 前置：两拨都不能为空，否则本用例会**恒真**（没有对象可校验）。
         // 3/3 = 三条 CN 区域变体（TraeWork / TraeCode / 合并版）各声明了一套国际端点，
         // 三条国际区域变体各只有自己那一套（issue #20 后由 2/2 变 3/3）。
@@ -1352,9 +1391,18 @@ mod tests {
                 continue;
             };
             checked += 1;
-            assert_ne!(global.account_base, spec.cn_endpoints.account_base, "account 撞了");
-            assert_ne!(global.icube_base, spec.cn_endpoints.icube_base, "iCube 撞了");
-            assert_ne!(global.agent_host, spec.cn_endpoints.agent_host, "agent 撞了");
+            assert_ne!(
+                global.account_base, spec.cn_endpoints.account_base,
+                "account 撞了"
+            );
+            assert_ne!(
+                global.icube_base, spec.cn_endpoints.icube_base,
+                "iCube 撞了"
+            );
+            assert_ne!(
+                global.agent_host, spec.cn_endpoints.agent_host,
+                "agent 撞了"
+            );
             assert_ne!(global.ws_base, spec.cn_endpoints.ws_base, "ws 撞了");
             // 授权页域同样必须分家：共用 CN 域 = 国际版用户在错的账号体系上登录。
             assert_ne!(
@@ -1374,9 +1422,16 @@ mod tests {
 
     /// CN 端点必须等于改造前的硬编码常量原值 —— 保证既有行为零变化。
     #[test]
-    fn cn端点等于改造前的常量原值() {        let spec = variant_spec(TraeVariant::TraeWork);
-        assert_eq!(spec.cn_endpoints.account_base, super::super::TRAE_API_BASE_CN);
-        assert_eq!(spec.cn_endpoints.icube_base, super::super::TRAE_OAUTH_BASE_CN);
+    fn cn端点等于改造前的常量原值() {
+        let spec = variant_spec(TraeVariant::TraeWork);
+        assert_eq!(
+            spec.cn_endpoints.account_base,
+            super::super::TRAE_API_BASE_CN
+        );
+        assert_eq!(
+            spec.cn_endpoints.icube_base,
+            super::super::TRAE_OAUTH_BASE_CN
+        );
     }
 
     /// `international = true` 而国际版端点缺失时必须返回 `None`，

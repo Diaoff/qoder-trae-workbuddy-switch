@@ -66,14 +66,12 @@ fn record_jwt(item: &Value) -> Option<String> {
 /// 小写分支是**对外部导出文件的容错**：用户可能从别的工具导出成 camelCase，
 /// 不该因此整条丢弃。
 fn record_user_id(item: &Value) -> Option<String> {
-    ["UserID", "user_id"]
-        .iter()
-        .find_map(|key| {
-            item.get(*key)
-                .and_then(|value| value.as_str())
-                .map(|value| value.trim().to_string())
-                .filter(|value| !value.is_empty())
-        })
+    ["UserID", "user_id"].iter().find_map(|key| {
+        item.get(*key)
+            .and_then(|value| value.as_str())
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+    })
 }
 
 /// 生成导入文件的脱敏预览（含文件内索引，不含 JWT 明文）。
@@ -426,7 +424,10 @@ mod tests {
             Some("2026-09-30T10:00:00Z"),
             "导入记录缺 updated_at 时不得抹掉本地值"
         );
-        assert_eq!(accounts[0].added_at.as_deref(), Some("2026-09-01T00:00:00Z"));
+        assert_eq!(
+            accounts[0].added_at.as_deref(),
+            Some("2026-09-01T00:00:00Z")
+        );
 
         // ② 带 `updated_at` ⇒ 以导入值为准（换机器搬账号时时间线要跟着走）。
         let text =
@@ -441,7 +442,8 @@ mod tests {
     #[test]
     fn merge_tolerates_unknown_fields_and_lowercase_uid() {
         let mut accounts: Vec<RawAccount> = Vec::new();
-        let text = r#"[{ "user_id": "u9", "jwt": "jwt-9", "future_field": 1, "schema_version": 99 }]"#;
+        let text =
+            r#"[{ "user_id": "u9", "jwt": "jwt-9", "future_field": 1, "schema_version": 99 }]"#;
         let result = merge_import_records(&mut accounts, text, &[0]).unwrap();
         // 未知字段被忽略（不 panic）；小写 `user_id` 不是持久化键，
         // 会被当作未知字段丢弃 —— 这是**有意的**：持久化契约只认大写 `UserID`，
@@ -462,7 +464,9 @@ mod tests {
     #[test]
     fn merge_counts_out_of_range_index_as_skipped() {
         let mut accounts: Vec<RawAccount> = Vec::new();
-        let result = merge_import_records(&mut accounts, r#"[{ "UserID": "u1", "jwt": "j" }]"#, &[5]).unwrap();
+        let result =
+            merge_import_records(&mut accounts, r#"[{ "UserID": "u1", "jwt": "j" }]"#, &[5])
+                .unwrap();
         assert_eq!(result.skipped, 1);
         assert_eq!(result.imported, 0);
         assert!(accounts.is_empty());
@@ -484,8 +488,14 @@ mod tests {
         let record = raw("7512345678901234567", "主号", "Cloud-IDE-JWT abc.def.ghi");
         let value = serde_json::to_value(&record).unwrap();
         let text = serde_json::to_string(&vec![value]).unwrap();
-        assert!(text.contains("\"UserID\""), "导出必须保留大写 UserID：{text}");
-        assert!(!text.contains("\"user_id\""), "不得写出 snake_case 键：{text}");
+        assert!(
+            text.contains("\"UserID\""),
+            "导出必须保留大写 UserID：{text}"
+        );
+        assert!(
+            !text.contains("\"user_id\""),
+            "不得写出 snake_case 键：{text}"
+        );
     }
 
     #[test]
@@ -505,7 +515,10 @@ mod tests {
         let text = r#"[{ "UserID": "u1", "name": "主号", "jwt": "secret-token" }]"#;
         let preview = preview_accounts(text).unwrap();
         let serialized = serde_json::to_string(&preview).unwrap();
-        assert!(!serialized.contains("secret-token"), "预览不得泄露 JWT：{serialized}");
+        assert!(
+            !serialized.contains("secret-token"),
+            "预览不得泄露 JWT：{serialized}"
+        );
         assert_eq!(preview["accounts"][0]["hasJwt"], json!(true));
         assert_eq!(preview["accounts"][0]["userId"], json!("u1"));
     }
@@ -521,10 +534,8 @@ mod tests {
     /// 合并逻辑**结构上**碰不到容器键，而这条用例钉住**回存**那一步没把容器丢掉。
     #[test]
     fn import_accounts_keeps_device_bindings() {
-        let temp = std::env::temp_dir().join(format!(
-            "buddy-switch-trae-bindings-{}",
-            std::process::id()
-        ));
+        let temp =
+            std::env::temp_dir().join(format!("buddy-switch-trae-bindings-{}", std::process::id()));
         let _ = std::fs::create_dir_all(&temp);
         let _guard = crate::modules::config::HomeOverrideGuard::set(&temp);
         let variant = TraeVariant::TraeWork;
@@ -532,8 +543,10 @@ mod tests {
         // 先造两条绑定。
         let mut file = account::load_accounts_for(variant);
         file.accounts.push(raw("u1", "一号", "jwt-1"));
-        file.device_bindings.insert("u1".to_string(), "dev-1".to_string());
-        file.device_bindings.insert("u2".to_string(), "dev-2".to_string());
+        file.device_bindings
+            .insert("u1".to_string(), "dev-1".to_string());
+        file.device_bindings
+            .insert("u2".to_string(), "dev-2".to_string());
         account::save_accounts_for(variant, &file).expect("造绑定");
 
         // 导入一份**不含任何绑定字段**的 JSON。

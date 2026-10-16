@@ -60,7 +60,11 @@ use std::io::{Read, Seek, SeekFrom};
 pub(crate) const TAIL_CHUNK_BYTES: u64 = 32 * 1024;
 
 /// 从 `start` 起读 `len` 字节。
-pub(crate) fn read_range(file: &mut std::fs::File, start: u64, len: u64) -> std::io::Result<Vec<u8>> {
+pub(crate) fn read_range(
+    file: &mut std::fs::File,
+    start: u64,
+    len: u64,
+) -> std::io::Result<Vec<u8>> {
     file.seek(SeekFrom::Start(start))?;
     let mut buffer = vec![0u8; len as usize];
     file.read_exact(&mut buffer)?;
@@ -224,8 +228,8 @@ mod tests {
     #[test]
     fn window_covers_every_in_window_record_and_stays_shorter_than_the_file() {
         let since = 1_790_000_000_000i64; // 真实毫秒量级
-        // 2000 条窗口外的旧记录（约 2MB）+ 300 条窗口内的记录（约 300KB，超过一个 chunk）——
-        // 老记录必须**远多于**一个 chunk，否则窗口一路扩到文件开头，就证明不了「只读尾部」。
+                                          // 2000 条窗口外的旧记录（约 2MB）+ 300 条窗口内的记录（约 300KB，超过一个 chunk）——
+                                          // 老记录必须**远多于**一个 chunk，否则窗口一路扩到文件开头，就证明不了「只读尾部」。
         let mut text = String::new();
         for index in 0..2000 {
             text.push_str(&line(since - 10_000_000 + index, 1024));
@@ -322,10 +326,7 @@ mod tests {
         );
         // 完整行里嵌着秒级时间戳（顶层毫秒在前）⇒ 用顶层的毫秒值判，不停。
         let buffer = b"{\"timestamp\":1790000000002,\"content\":[{\"timestamp\":1791816285}]}\n";
-        assert!(!probe(
-            std::str::from_utf8(buffer).expect("utf8"),
-            since
-        ));
+        assert!(!probe(std::str::from_utf8(buffer).expect("utf8"), since));
         // ★ 半行里嵌着**毫秒**级的嵌套时间戳（工具输出里也可能出现）：同样不得决定边界
         // —— 这条单独把「首行不参与判据」钉死（毫秒值不会被下限过滤掉）。
         let buffer = b"\"timestamp\":1700000000000}],\"stderrBytesTruncated\":0}\n\
@@ -344,7 +345,10 @@ mod tests {
             "半行即使是「看起来像顶层」的旧记录，也不得参与判据"
         );
         // 顶层毫秒值确实早于窗口 ⇒ 停（阳性对照：不是「恒不停」）。
-        assert!(probe("{\"timestamp\":1789999999999,\"content\":[]}\n", since));
+        assert!(probe(
+            "{\"timestamp\":1789999999999,\"content\":[]}\n",
+            since
+        ));
     }
 
     /// 顶层时间戳的识别：**只认深度 1**，嵌套的一律不认（哪怕它是毫秒值）。

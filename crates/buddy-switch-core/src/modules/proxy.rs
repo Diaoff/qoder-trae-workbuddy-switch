@@ -136,7 +136,10 @@ mod tests {
     #[test]
     fn defaults_to_disabled_and_fails_closed() {
         let path = temp_state_path("default");
-        assert!(!read_enabled_at(&path), "读不到状态时必须视为**关闭**（fail-closed）");
+        assert!(
+            !read_enabled_at(&path),
+            "读不到状态时必须视为**关闭**（fail-closed）"
+        );
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 
@@ -154,7 +157,11 @@ mod tests {
     #[test]
     fn status_view_is_honest_about_not_verifying() {
         let v = status_view();
-        assert_eq!(v["verified"], json!(false), "应用**不校验**，不许声称已验证");
+        assert_eq!(
+            v["verified"],
+            json!(false),
+            "应用**不校验**，不许声称已验证"
+        );
         assert_eq!(v["mode"], json!("c-redirect"), "拦截方式是 base URL 重定向");
         assert!(!v["domains"].as_array().unwrap().is_empty());
         assert_eq!(v["setting"]["key"], json!(PROXY_SETTING_KEY));

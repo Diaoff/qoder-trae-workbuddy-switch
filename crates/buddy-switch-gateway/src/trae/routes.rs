@@ -32,9 +32,9 @@ use axum::Json;
 use serde_json::{json, Value};
 use tokio::sync::mpsc;
 
+use buddy_switch_core::modules::product::scope_of_trae_region;
 use buddy_switch_core::modules::trae::account;
 use buddy_switch_core::modules::trae::region::TraeRegion;
-use buddy_switch_core::modules::product::scope_of_trae_region;
 use buddy_switch_core::modules::trae::variant::TraeVariant;
 
 use crate::protocol::anthropic;
@@ -45,8 +45,8 @@ use super::payload;
 use super::pool::{classify_http, classify_solo, PickedTraeAccount, TraeErrKind, TraePool};
 use super::sse::{self, TokenUsage};
 use super::{
-    now_secs, TraeGatewayState, TRAE_APP_ID, TRAE_IDE_VERSION,
-    TRAE_IDE_VERSION_CODE, TRAE_LLM_CHAT_PATH,
+    now_secs, TraeGatewayState, TRAE_APP_ID, TRAE_IDE_VERSION, TRAE_IDE_VERSION_CODE,
+    TRAE_LLM_CHAT_PATH,
 };
 
 /// 请求扩展：承载 Bearer Key 的**归属标识**，供 handler 选择对应的账号池与 `function`。
@@ -104,7 +104,9 @@ pub async fn health(State(state): State<TraeGatewayState>) -> Response {
     let variant = TraeVariant::default();
     let summary = {
         let mut pools = state.pools.lock().await;
-        let pool = pools.entry(variant).or_insert_with(|| TraePool::for_variant(variant));
+        let pool = pools
+            .entry(variant)
+            .or_insert_with(|| TraePool::for_variant(variant));
         pool.sync_for(variant);
         pool.summary(now_secs())
     };
@@ -146,11 +148,7 @@ pub async fn bearer_auth(
         if anthropic {
             anthropic_error(StatusCode::UNAUTHORIZED, "authentication_error", message)
         } else {
-            openai_error(
-                StatusCode::UNAUTHORIZED,
-                "invalid_request_error",
-                message,
-            )
+            openai_error(StatusCode::UNAUTHORIZED, "invalid_request_error", message)
         }
     };
 
@@ -187,16 +185,12 @@ pub async fn bearer_auth(
 ///
 /// 可选 query `variant`（`trae_work` / `trae_cn`）决定看哪个账号池；
 /// 缺失或无法识别一律回落 [`TraeVariant::default`]（TraeWork），与旧行为一致。
-pub async fn status(
-    State(state): State<TraeGatewayState>,
-    RawQuery(query): RawQuery,
-) -> Response {
+pub async fn status(State(state): State<TraeGatewayState>, RawQuery(query): RawQuery) -> Response {
     let variant = parse_variant_query(query.as_deref());
     // 复用管理面那份组装逻辑：`/status` 与「API 服务」页显示的必须是同一份状态。
     let config = state.config_snapshot().await;
     let addr = Some(format!("{}:{}", config.bind_addr, config.port));
-    let body =
-        super::status_view(&state, true, addr, env!("CARGO_PKG_VERSION"), variant).await;
+    let body = super::status_view(&state, true, addr, env!("CARGO_PKG_VERSION"), variant).await;
     json_response(StatusCode::OK, body)
 }
 
@@ -243,9 +237,10 @@ pub async fn models(
     let fallback = disabled.clone();
     // `models_response_for` 自己**不失败**（读不到就回落静态清单），所以这里的
     // `JoinError` 只可能是运行时正在关闭 —— 用（过滤后的）静态清单兜底，别让「列模型」挂掉。
-    let body = tokio::task::spawn_blocking(move || payload::models_response_for(variant, &disabled))
-        .await
-        .unwrap_or_else(|_| payload::models_response_filtered(&fallback));
+    let body =
+        tokio::task::spawn_blocking(move || payload::models_response_for(variant, &disabled))
+            .await
+            .unwrap_or_else(|_| payload::models_response_filtered(&fallback));
     json_response(StatusCode::OK, body)
 }
 
@@ -520,7 +515,8 @@ async fn stream_chat(
                 let task_model = model.to_string();
                 let task_chat_id = chat_id.to_string();
                 tokio::spawn(async move {
-                    let outcome = sse::stream_convert(response, tx, &task_chat_id, &task_model).await;
+                    let outcome =
+                        sse::stream_convert(response, tx, &task_chat_id, &task_model).await;
                     settle(
                         &task_state,
                         &account,
@@ -588,26 +584,27 @@ async fn aggregate_payload(
         )
         .await
         {
-                None => break,
-                Some(AttemptResult::Failed { failure, .. }) => {
-                    last = Some(failure);
-                    continue;
-                }
-                Some(AttemptResult::Ok { account, response }) => (account, response),
-            };
+            None => break,
+            Some(AttemptResult::Failed { failure, .. }) => {
+                last = Some(failure);
+                continue;
+            }
+            Some(AttemptResult::Ok { account, response }) => (account, response),
+        };
 
         let (payload, error, usage) = sse::aggregate(response, chat_id, model).await;
 
         match (payload, error) {
             (Some(payload), None) => {
-                settle(state, &account, model, false, started, None, usage, endpoint, variant).await;
+                settle(
+                    state, &account, model, false, started, None, usage, endpoint, variant,
+                )
+                .await;
                 return Ok(payload);
             }
             (_, Some((code, message))) => {
                 // 流内错误：冷却该账号 → 换下一个账号整轮重来（响应头还没发）。
-                last = Some(
-                    record_stream_error(state, &account, code, &message, variant).await,
-                );
+                last = Some(record_stream_error(state, &account, code, &message, variant).await);
             }
             _ => {
                 // 既没有 payload 也没有错误：上游给了个空流。按 5xx 处理并换号。
@@ -746,7 +743,9 @@ async fn attempt_once(
 
     let picked = {
         let mut pools = state.pools.lock().await;
-        let pool = pools.entry(variant).or_insert_with(|| TraePool::for_variant(variant));
+        let pool = pools
+            .entry(variant)
+            .or_insert_with(|| TraePool::for_variant(variant));
         // 每次选号前重新同步：另一个入口（签到页 / 桌面端）可能刚写了冷却或刷新了积分。
         pool.sync_for(variant);
         // 偏好优先级：**显式指定 > 会话粘性 > 自动择优**（见 [`resolve_preference`]）。
@@ -778,7 +777,11 @@ async fn attempt_once(
                 message: format!(
                     "账号「{}」上游失败（HTTP {}）：{}",
                     picked.name,
-                    if status == 0 { "—".into() } else { status.to_string() },
+                    if status == 0 {
+                        "—".into()
+                    } else {
+                        status.to_string()
+                    },
                     detail
                 ),
             };
@@ -1222,7 +1225,11 @@ mod tests {
         // `None` 键（客户端没给会话 id）⇒ 不绑、不查、不报错。
         assert_eq!(state.sticky_uid(None).await, None);
         state.bind_sticky(None, "uid-a").await;
-        assert_eq!(state.sticky_uid(None).await, None, "None 键不得产生任何绑定");
+        assert_eq!(
+            state.sticky_uid(None).await,
+            None,
+            "None 键不得产生任何绑定"
+        );
     }
 
     /// ★ 会话粘性键必须带**产品线**与**模型**。
@@ -1307,7 +1314,11 @@ mod tests {
     #[test]
     fn explicit_preference_wins_over_sticky() {
         assert_eq!(resolve_preference("", Some("sticky")), Some("sticky"));
-        assert_eq!(resolve_preference("", None), None, "两个来源都空 ⇒ 走自动择优");
+        assert_eq!(
+            resolve_preference("", None),
+            None,
+            "两个来源都空 ⇒ 走自动择优"
+        );
         assert_eq!(
             resolve_preference("explicit", Some("sticky")),
             Some("explicit"),
@@ -1350,7 +1361,11 @@ mod tests {
 
     #[test]
     fn error_body_is_openai_shaped() {
-        let response = openai_error(StatusCode::UNAUTHORIZED, "invalid_request_error", "缺少凭据");
+        let response = openai_error(
+            StatusCode::UNAUTHORIZED,
+            "invalid_request_error",
+            "缺少凭据",
+        );
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
         let body = sse::error_body("no_healthy_account", "没有可用账号");
         assert_eq!(body["error"]["code"], "no_healthy_account");
@@ -1374,7 +1389,10 @@ mod tests {
         // `TraeWork` 与 `Trae` 是**程序位**、同属国内区域 ⇒ 两段文案必须**逐字相同**。
         // 若哪天又按程序位取名（用户会在账号管理页找不到那个入口），这条 `assert_eq!` 会红。
         let trae = no_account_message(TraeVariant::Trae, &[], None);
-        assert_eq!(cn, trae, "国内两个程序位共用一本账号库，文案不得按程序位分叉");
+        assert_eq!(
+            cn, trae,
+            "国内两个程序位共用一本账号库，文案不得按程序位分叉"
+        );
 
         // 国际版必须是另一个名字（否则用户分不清该去哪一版加账号）。
         let global = no_account_message(TraeVariant::Global, &[], None);
@@ -1413,12 +1431,21 @@ mod tests {
 
     #[test]
     fn status_query_variant_parsing_falls_back_to_default() {
-        assert_eq!(parse_variant_query(Some("variant=trae_cn")), TraeVariant::Trae);
-        assert_eq!(parse_variant_query(Some("variant=trae_work")), TraeVariant::TraeWork);
+        assert_eq!(
+            parse_variant_query(Some("variant=trae_cn")),
+            TraeVariant::Trae
+        );
+        assert_eq!(
+            parse_variant_query(Some("variant=trae_work")),
+            TraeVariant::TraeWork
+        );
         // 缺失 / 未知 → 默认（TraeWork），老客户端行为不变。
         assert_eq!(parse_variant_query(None), TraeVariant::default());
         assert_eq!(parse_variant_query(Some("")), TraeVariant::default());
-        assert_eq!(parse_variant_query(Some("variant=unknown")), TraeVariant::default());
+        assert_eq!(
+            parse_variant_query(Some("variant=unknown")),
+            TraeVariant::default()
+        );
         assert_eq!(parse_variant_query(Some("days=7")), TraeVariant::default());
     }
 
@@ -1464,27 +1491,82 @@ mod tests {
 
         // (标签, function, config_name, model_name)
         let cases: [(&str, &str, &str, &str); 13] = [
-            ("C1 对照·已知可用", "solo_work_lite", "glm-5.3", "glm-5.3__dev"),
+            (
+                "C1 对照·已知可用",
+                "solo_work_lite",
+                "glm-5.3",
+                "glm-5.3__dev",
+            ),
             ("C2 function 对照", "chat_v3", "glm-5.3", "glm-5.3__dev"),
-            ("V1 错配 function", "solo_work_lite", "glm-5.3-flash", "glm-5.3-flash__dev"),
-            ("V2 正配·猜 __dev", "chat_v3", "glm-5.3-flash", "glm-5.3-flash__dev"),
-            ("V3 无 __dev 后缀", "chat_v3", "glm-5.3-flash", "glm-5.3-flash"),
-            ("V4 换 solo_agent", "solo_agent", "glm-5.3-flash", "glm-5.3-flash__dev"),
+            (
+                "V1 错配 function",
+                "solo_work_lite",
+                "glm-5.3-flash",
+                "glm-5.3-flash__dev",
+            ),
+            (
+                "V2 正配·猜 __dev",
+                "chat_v3",
+                "glm-5.3-flash",
+                "glm-5.3-flash__dev",
+            ),
+            (
+                "V3 无 __dev 后缀",
+                "chat_v3",
+                "glm-5.3-flash",
+                "glm-5.3-flash",
+            ),
+            (
+                "V4 换 solo_agent",
+                "solo_agent",
+                "glm-5.3-flash",
+                "glm-5.3-flash__dev",
+            ),
             // ★ 决定「`/v1/models` 是否过度宣传」：`Doubao-Seed-Code` 只出现在 TraeWork 的
             //   `solo_coder` 分组里，**不在** `solo_work_lite`。若它也 4001 ⇒ 当前对外清单
             //   里那些「不属于本 function 的模型」同样调不动（与 glm-5.3-flash 同一类缺陷）。
-            ("V5 分组外的模型", "solo_work_lite", "Doubao-Seed-Code", "Doubao-Seed-Code__dev"),
+            (
+                "V5 分组外的模型",
+                "solo_work_lite",
+                "Doubao-Seed-Code",
+                "Doubao-Seed-Code__dev",
+            ),
             // ★ 确认 `config_name = name` / `model_name = name + "__dev"` 这条规则能推广。
-            ("V6 规则推广", "chat_v3", "qwen3.8-flash", "qwen3.8-flash__dev"),
+            (
+                "V6 规则推广",
+                "chat_v3",
+                "qwen3.8-flash",
+                "qwen3.8-flash__dev",
+            ),
             // ★★ 第三轮：旧对外清单里那三个「既不在客户端 `solo_work_lite` 分组里、
             //   也没被实测过」的名字 —— 决定它们是**保留**还是**从清单里删掉**。
-            ("X1 旧名 deepseek-v4-pro", "solo_work_lite", "DeepSeek-V4-Pro", "deepseek_v4_pro__dev"),
-            ("X2 旧名 glm-5-turbo", "solo_work_lite", "glm-5-turbo", "glm-5-turbo__dev"),
+            (
+                "X1 旧名 deepseek-v4-pro",
+                "solo_work_lite",
+                "DeepSeek-V4-Pro",
+                "deepseek_v4_pro__dev",
+            ),
+            (
+                "X2 旧名 glm-5-turbo",
+                "solo_work_lite",
+                "glm-5-turbo",
+                "glm-5-turbo__dev",
+            ),
             ("X3 旧名 glm-5", "solo_work_lite", "glm-5", "glm-5__dev"),
             // ★★ 第四轮：候选**新默认模型**（旧默认 `deepseek-v4-flash` 是客户端已不再
             //   提供的旧名，虽仍可用；换默认前必须先量新名字能不能过）。
-            ("Y1 新默认候选", "solo_work_lite", "deepseek-v4.1-flash", "deepseek-v4.1-flash__dev"),
-            ("Y2 正式版候选", "solo_work_lite", "DeepSeek-V4-Flash-Official", "DeepSeek-V4-Flash-Official__dev"),
+            (
+                "Y1 新默认候选",
+                "solo_work_lite",
+                "deepseek-v4.1-flash",
+                "deepseek-v4.1-flash__dev",
+            ),
+            (
+                "Y2 正式版候选",
+                "solo_work_lite",
+                "DeepSeek-V4-Flash-Official",
+                "DeepSeek-V4-Flash-Official__dev",
+            ),
         ];
 
         for (label, function, config_name, model_name) in cases {
@@ -1597,7 +1679,8 @@ mod tests {
 
         for name in names {
             let (config_name, model_name) = payload::model_config(&name);
-            let src = format!(r#"{{"model":"{name}","messages":[{{"role":"user","content":"ping"}}]}}"#);
+            let src =
+                format!(r#"{{"model":"{name}","messages":[{{"role":"user","content":"ping"}}]}}"#);
             let converted = payload::prepare_llm_chat_body(
                 src.as_bytes(),
                 TraeVariant::TraeWork,
@@ -1618,7 +1701,8 @@ mod tests {
                     let mut verdict = "超时".to_string();
                     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(25);
                     while std::time::Instant::now() < deadline {
-                        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+                        let remaining =
+                            deadline.saturating_duration_since(std::time::Instant::now());
                         match tokio::time::timeout(remaining, response.chunk()).await {
                             Ok(Ok(Some(bytes))) => {
                                 buffer.push_str(&String::from_utf8_lossy(&bytes));
@@ -1639,7 +1723,10 @@ mod tests {
                             Err(_) => break,
                         }
                     }
-                    println!("[{:4}] {name:34} config_name={config_name:34} {verdict}", if verdict == "OK" { "OK" } else { "FAIL" });
+                    println!(
+                        "[{:4}] {name:34} config_name={config_name:34} {verdict}",
+                        if verdict == "OK" { "OK" } else { "FAIL" }
+                    );
                 }
                 Err((status, detail)) => println!("[FAIL] {name:34} HTTP {status} | {detail}"),
             }

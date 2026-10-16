@@ -553,7 +553,11 @@ pub(crate) fn decrypt_electron_safe_storage(
 ) -> Result<Vec<u8>, String> {
     #[cfg(target_os = "windows")]
     {
-        let _ = (display_name, macos_keychain_service, linux_secret_tool_app_names);
+        let _ = (
+            display_name,
+            macos_keychain_service,
+            linux_secret_tool_app_names,
+        );
         let key = get_windows_encryption_key(data_root)?;
         return decrypt_windows_gcm_v10(&key, encrypted);
     }

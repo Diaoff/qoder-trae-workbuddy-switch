@@ -182,7 +182,10 @@ pub fn read_client_model_list(variant: TraeVariant) -> ClientModelList {
     // 单个目录读失败（库损坏 / 权限 / 锁）**不该立刻放弃** —— 别的候选目录可能有能用的库。
     let mut last_error: Option<(PathBuf, String)> = None;
     for dir in &dirs {
-        if !state_db_candidates(dir).into_iter().any(|path| path.is_file()) {
+        if !state_db_candidates(dir)
+            .into_iter()
+            .any(|path| path.is_file())
+        {
             continue;
         }
         last_dir = Some(dir.clone());
@@ -227,7 +230,10 @@ fn read_dir_model_list(
     variant: TraeVariant,
     prefer_uid: Option<&str>,
 ) -> Result<Option<ClientModelList>, String> {
-    let Some(db) = state_db_candidates(dir).into_iter().find(|path| path.is_file()) else {
+    let Some(db) = state_db_candidates(dir)
+        .into_iter()
+        .find(|path| path.is_file())
+    else {
         return Ok(None);
     };
     let Some(hit) = read_key_from_db(&db, prefer_uid)? else {
@@ -462,8 +468,11 @@ mod tests {
         let db = root.join("User").join("globalStorage").join("state.vscdb");
         std::fs::create_dir_all(db.parent().unwrap()).expect("建 globalStorage");
         let conn = rusqlite::Connection::open(&db).expect("建库");
-        conn.execute("CREATE TABLE ItemTable (key TEXT PRIMARY KEY, value TEXT)", [])
-            .expect("建表");
+        conn.execute(
+            "CREATE TABLE ItemTable (key TEXT PRIMARY KEY, value TEXT)",
+            [],
+        )
+        .expect("建表");
         for (key, value) in entries {
             conn.execute(
                 "INSERT INTO ItemTable (key, value) VALUES (?1, ?2)",
@@ -505,7 +514,10 @@ mod tests {
         let key = "1234:AI.agent.model.model_list_map";
         assert!(key_belongs_to_uid(key, "1234"));
         assert!(!key_belongs_to_uid(key, "123"), "前缀相同但不是同一个 uid");
-        assert!(!key_belongs_to_uid(key, "1234:AI"), "uid 之后必须紧跟分隔符");
+        assert!(
+            !key_belongs_to_uid(key, "1234:AI"),
+            "uid 之后必须紧跟分隔符"
+        );
     }
 
     /// 端到端：两种键名形状都能从真库读出来。
@@ -583,7 +595,10 @@ mod tests {
             .expect("应当读到清单");
         assert_eq!(list.groups[0].models[0].name, "model-b");
         assert_eq!(list.uid.as_deref(), Some("7000000000000002"));
-        assert!(list.note.is_some(), "多份缓存必须给出提示，不能装作只有一份");
+        assert!(
+            list.note.is_some(),
+            "多份缓存必须给出提示，不能装作只有一份"
+        );
 
         cleanup(&root);
     }
@@ -644,7 +659,10 @@ mod tests {
         let groups = parse_groups(raw);
         let models = &groups[0].models;
         assert!(models[0].is_bypass, "provider 非空 ⇒ bypass");
-        assert!(models[1].is_bypass, "custom_model_id 非空（含空白）⇒ bypass");
+        assert!(
+            models[1].is_bypass,
+            "custom_model_id 非空（含空白）⇒ bypass"
+        );
         assert!(!models[2].is_bypass, "provider 全空白 ⇒ 不是 bypass");
         assert!(!models[3].is_bypass, "两者都空 ⇒ 正常条目");
     }
@@ -667,7 +685,10 @@ mod tests {
 
         let model = &groups[0].models[0];
         assert_eq!(model.name, "good");
-        assert_eq!(model.display_name, "good", "非字符串 display_name 必须回落 name");
+        assert_eq!(
+            model.display_name, "good",
+            "非字符串 display_name 必须回落 name"
+        );
         assert!(!model.is_default, "非布尔 is_default 必须回落 false");
         assert!(!model.is_beta);
         assert_eq!(model.model_type, "", "缺失的字符串字段回落空串");
@@ -677,5 +698,4 @@ mod tests {
         assert!(parse_groups("not json").is_empty());
         assert!(parse_groups("[1,2,3]").is_empty(), "顶层不是对象 ⇒ 空结果");
     }
-
 }

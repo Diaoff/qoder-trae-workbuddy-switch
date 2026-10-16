@@ -223,14 +223,49 @@ pub fn schedule_from_value(input: &Value) -> Result<ScheduleConfig, String> {
     let defaults = default_schedule();
     let mut cfg = defaults.clone();
     if let Some(map) = input.as_object() {
-        cfg.checkin_hours = hours_from(map, "checkin_hours", "checkin_enabled", &defaults.checkin_hours)?;
-        cfg.travel_hours = hours_from(map, "travel_hours", "travel_enabled", &defaults.travel_hours)?;
-        cfg.activity_hours = hours_from(map, "activity_hours", "activity_enabled", &defaults.activity_hours)?;
-        cfg.keepalive_hours = hours_from(map, "keepalive_hours", "keepalive_enabled", &defaults.keepalive_hours)?;
-        cfg.school_hours = hours_from(map, "school_hours", "school_enabled", &defaults.school_hours)?;
+        cfg.checkin_hours = hours_from(
+            map,
+            "checkin_hours",
+            "checkin_enabled",
+            &defaults.checkin_hours,
+        )?;
+        cfg.travel_hours = hours_from(
+            map,
+            "travel_hours",
+            "travel_enabled",
+            &defaults.travel_hours,
+        )?;
+        cfg.activity_hours = hours_from(
+            map,
+            "activity_hours",
+            "activity_enabled",
+            &defaults.activity_hours,
+        )?;
+        cfg.keepalive_hours = hours_from(
+            map,
+            "keepalive_hours",
+            "keepalive_enabled",
+            &defaults.keepalive_hours,
+        )?;
+        cfg.school_hours = hours_from(
+            map,
+            "school_hours",
+            "school_enabled",
+            &defaults.school_hours,
+        )?;
         cfg.cat_hours = hours_from(map, "cat_hours", "cat_enabled", &defaults.cat_hours)?;
-        cfg.trae_checkin_hours = hours_from(map, "trae_checkin_hours", "trae_checkin_enabled", &defaults.trae_checkin_hours)?;
-        cfg.trae_jwt_refresh_hours = hours_from(map, "trae_jwt_refresh_hours", "trae_jwt_refresh_enabled", &defaults.trae_jwt_refresh_hours)?;
+        cfg.trae_checkin_hours = hours_from(
+            map,
+            "trae_checkin_hours",
+            "trae_checkin_enabled",
+            &defaults.trae_checkin_hours,
+        )?;
+        cfg.trae_jwt_refresh_hours = hours_from(
+            map,
+            "trae_jwt_refresh_hours",
+            "trae_jwt_refresh_enabled",
+            &defaults.trae_jwt_refresh_hours,
+        )?;
 
         for (key, slot) in [
             ("checkin_enabled", &mut cfg.checkin_enabled),
@@ -240,7 +275,10 @@ pub fn schedule_from_value(input: &Value) -> Result<ScheduleConfig, String> {
             ("school_enabled", &mut cfg.school_enabled),
             ("cat_enabled", &mut cfg.cat_enabled),
             ("trae_checkin_enabled", &mut cfg.trae_checkin_enabled),
-            ("trae_jwt_refresh_enabled", &mut cfg.trae_jwt_refresh_enabled),
+            (
+                "trae_jwt_refresh_enabled",
+                &mut cfg.trae_jwt_refresh_enabled,
+            ),
         ] {
             if let Some(value) = map.get(key).and_then(Value::as_bool) {
                 *slot = value;
@@ -254,14 +292,34 @@ pub fn schedule_from_value(input: &Value) -> Result<ScheduleConfig, String> {
     }
 
     // 末道防线：`hours_from` 已逐项校验，这里再对组装后的配置整体断言（防止默认值被误配）。
-    validate_hours("schedule.checkin_hours", "checkin_enabled", &cfg.checkin_hours)?;
+    validate_hours(
+        "schedule.checkin_hours",
+        "checkin_enabled",
+        &cfg.checkin_hours,
+    )?;
     validate_hours("schedule.travel_hours", "travel_enabled", &cfg.travel_hours)?;
-    validate_hours("schedule.activity_hours", "activity_enabled", &cfg.activity_hours)?;
-    validate_hours("schedule.keepalive_hours", "keepalive_enabled", &cfg.keepalive_hours)?;
+    validate_hours(
+        "schedule.activity_hours",
+        "activity_enabled",
+        &cfg.activity_hours,
+    )?;
+    validate_hours(
+        "schedule.keepalive_hours",
+        "keepalive_enabled",
+        &cfg.keepalive_hours,
+    )?;
     validate_hours("schedule.school_hours", "school_enabled", &cfg.school_hours)?;
     validate_hours("schedule.cat_hours", "cat_enabled", &cfg.cat_hours)?;
-    validate_hours("schedule.trae_checkin_hours", "trae_checkin_enabled", &cfg.trae_checkin_hours)?;
-    validate_hours("schedule.trae_jwt_refresh_hours", "trae_jwt_refresh_enabled", &cfg.trae_jwt_refresh_hours)?;
+    validate_hours(
+        "schedule.trae_checkin_hours",
+        "trae_checkin_enabled",
+        &cfg.trae_checkin_hours,
+    )?;
+    validate_hours(
+        "schedule.trae_jwt_refresh_hours",
+        "trae_jwt_refresh_enabled",
+        &cfg.trae_jwt_refresh_hours,
+    )?;
     Ok(cfg)
 }
 
@@ -459,7 +517,11 @@ mod tests {
         }))
         .unwrap();
         for task in ScheduleTask::all() {
-            assert!(!task.enabled(&cfg), "显式 false 必须生效: {}", task.as_str());
+            assert!(
+                !task.enabled(&cfg),
+                "显式 false 必须生效: {}",
+                task.as_str()
+            );
             assert!(task.hours(&cfg).is_empty());
         }
 
@@ -478,14 +540,17 @@ mod tests {
         }))
         .unwrap();
         for task in ScheduleTask::all() {
-            assert!(task.enabled(&all_on), "显式 true 必须生效: {}", task.as_str());
+            assert!(
+                task.enabled(&all_on),
+                "显式 true 必须生效: {}",
+                task.as_str()
+            );
         }
     }
 
     #[test]
     fn out_of_range_hour_errors_and_points_to_enabled_switch() {
-        let err = schedule_from_value(&json!({"checkin_hours": [9, 24]}))
-            .expect_err("24 必须报错");
+        let err = schedule_from_value(&json!({"checkin_hours": [9, 24]})).expect_err("24 必须报错");
         assert!(err.contains("checkin_hours"), "{err}");
         assert!(
             err.contains("checkin_enabled"),
@@ -518,7 +583,9 @@ mod tests {
         );
         // 缺省保留默认 5。
         assert_eq!(
-            schedule_from_value(&json!({})).unwrap().activity_report_count,
+            schedule_from_value(&json!({}))
+                .unwrap()
+                .activity_report_count,
             5
         );
     }
@@ -628,8 +695,8 @@ mod tests {
     #[test]
     fn all_invalid_hours_error_instead_of_silent_empty() {
         // 负数：全部非法 → 必须报错，而不是静默丢弃得到空表（任务会被静默关闭、永不触发）。
-        let err = schedule_from_value(&json!({"checkin_hours": [-1, -2]}))
-            .expect_err("负数小时必须报错");
+        let err =
+            schedule_from_value(&json!({"checkin_hours": [-1, -2]})).expect_err("负数小时必须报错");
         assert!(err.contains("checkin_hours"), "{err}");
         assert!(
             err.contains("checkin_enabled"),
@@ -637,8 +704,8 @@ mod tests {
         );
 
         // 浮点（非整数）：同样报错并指向开关。
-        let err = schedule_from_value(&json!({"cat_hours": [1.5, 2.5]}))
-            .expect_err("浮点小时必须报错");
+        let err =
+            schedule_from_value(&json!({"cat_hours": [1.5, 2.5]})).expect_err("浮点小时必须报错");
         assert!(err.contains("cat_hours"), "{err}");
         assert!(err.contains("cat_enabled"), "{err}");
 
@@ -691,10 +758,22 @@ mod tests {
 
         // (1) label + hours：逐类断言等于「它自己那一列」。
         let expected: [(ScheduleTask, &str, &[u32]); 8] = [
-            (ScheduleTask::Checkin, "checkin", off.checkin_hours.as_slice()),
+            (
+                ScheduleTask::Checkin,
+                "checkin",
+                off.checkin_hours.as_slice(),
+            ),
             (ScheduleTask::Travel, "travel", off.travel_hours.as_slice()),
-            (ScheduleTask::Activity, "activity", off.activity_hours.as_slice()),
-            (ScheduleTask::Keepalive, "keepalive", off.keepalive_hours.as_slice()),
+            (
+                ScheduleTask::Activity,
+                "activity",
+                off.activity_hours.as_slice(),
+            ),
+            (
+                ScheduleTask::Keepalive,
+                "keepalive",
+                off.keepalive_hours.as_slice(),
+            ),
             (ScheduleTask::School, "school", off.school_hours.as_slice()),
             (ScheduleTask::Cat, "cat", off.cat_hours.as_slice()),
             (

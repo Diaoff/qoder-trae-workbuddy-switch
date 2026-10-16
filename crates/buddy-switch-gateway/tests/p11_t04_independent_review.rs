@@ -27,7 +27,9 @@ fn wb(region: Region) -> Scope {
 static ENV_LOCK: Mutex<()> = Mutex::new(());
 
 fn guard() -> std::sync::MutexGuard<'static, ()> {
-    ENV_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    ENV_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 /// 把 `BUDDY_SWITCH_HOME` 指向一个已存在的空临时目录（`load()` 才能读到「无文件」）。
@@ -79,19 +81,35 @@ fn unknown_top_level_field_rejects_the_whole_file() {
 #[test]
 fn unknown_region_key_is_preserved_but_inert() {
     let text = r#"{"regions":{"cn":["glm-5.3"],"mars":["x"]}}"#;
-    let mut store: DisabledModels = serde_json::from_str(text).expect("未知 region 键不得让整份失败");
-    assert!(store.migrate_legacy_keys(), "旧 cn 键必须迁移（扇出到 wb-cn / trae-cn）");
+    let mut store: DisabledModels =
+        serde_json::from_str(text).expect("未知 region 键不得让整份失败");
+    assert!(
+        store.migrate_legacy_keys(),
+        "旧 cn 键必须迁移（扇出到 wb-cn / trae-cn）"
+    );
 
     // 迁移后的已知作用域照常命中。
-    assert!(is_disabled(&store, wb(Region::Cn), "glm-5.3"), "已知键不受未知键影响");
+    assert!(
+        is_disabled(&store, wb(Region::Cn), "glm-5.3"),
+        "已知键不受未知键影响"
+    );
 
     // 未知键的条目**不被**任何作用域命中。
-    assert!(!is_disabled(&store, wb(Region::Cn), "x"), "未知键的条目不得串进 wb-cn");
-    assert!(!is_disabled(&store, wb(Region::Global), "x"), "未知键的条目不得串进 wb-global");
+    assert!(
+        !is_disabled(&store, wb(Region::Cn), "x"),
+        "未知键的条目不得串进 wb-cn"
+    );
+    assert!(
+        !is_disabled(&store, wb(Region::Global), "x"),
+        "未知键的条目不得串进 wb-global"
+    );
 
     // 未知键**被保留**（序列化写回后仍在）—— 不是被丢弃，故无「静默丢数据」。
     let round = serde_json::to_string(&store).expect("序列化");
-    assert!(round.contains("\"mars\""), "未知键应原样保留（写回仍在）：{round}");
+    assert!(
+        round.contains("\"mars\""),
+        "未知键应原样保留（写回仍在）：{round}"
+    );
     assert!(round.contains("\"wb-cn\""), "{round}");
 }
 
@@ -137,8 +155,14 @@ fn same_model_disabled_in_both_regions_stays_isolated_across_round_trip() {
     let text = serde_json::to_string(&store).expect("序列化");
     let back: DisabledModels = serde_json::from_str(&text).expect("反序列化");
 
-    assert!(is_disabled(&back, wb(Region::Cn), "glm-5.3"), "cn 的禁用必须往返保留");
-    assert!(!is_disabled(&back, wb(Region::Global), "glm-5.3"), "global 不得被 cn 的禁用串味");
+    assert!(
+        is_disabled(&back, wb(Region::Cn), "glm-5.3"),
+        "cn 的禁用必须往返保留"
+    );
+    assert!(
+        !is_disabled(&back, wb(Region::Global), "glm-5.3"),
+        "global 不得被 cn 的禁用串味"
+    );
 
     // 再在 global 禁**同一**模型 ⇒ 两者各自独立命中，互不覆盖。
     let mut both = back;
@@ -151,7 +175,10 @@ fn same_model_disabled_in_both_regions_stays_isolated_across_round_trip() {
     let mut only_global = back2;
     only_global.set(wb(Region::Cn), "glm-5.3", false);
     assert!(!is_disabled(&only_global, wb(Region::Cn), "glm-5.3"));
-    assert!(is_disabled(&only_global, wb(Region::Global), "glm-5.3"), "清 cn 不得影响 global");
+    assert!(
+        is_disabled(&only_global, wb(Region::Global), "glm-5.3"),
+        "清 cn 不得影响 global"
+    );
 }
 
 /// 复核：`is_disabled_in`（大小写不敏感的核心）对**混合大小写存储**也成立。
@@ -171,7 +198,9 @@ fn is_disabled_in_is_case_insensitive_regardless_of_stored_case() {
     );
     // 存储保持原样（前端 `disabledSet.has(model.id)` 依赖精确匹配）。
     assert!(
-        store.get(wb(Region::Cn)).contains("DeepSeek-V4-Flash-Official"),
+        store
+            .get(wb(Region::Cn))
+            .contains("DeepSeek-V4-Flash-Official"),
         "存储不得被归一（否则前端精确匹配会对不上）"
     );
 }

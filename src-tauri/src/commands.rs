@@ -7,13 +7,13 @@ use serde::Serialize;
 use serde_json::{json, Value};
 use std::sync::Mutex;
 
-use tauri::{Emitter, Manager};
 use buddy_switch_core::modules::{
     account, app_prefs, auth_file, backup, capability, checkin, client_limits, client_settings,
-    config, credit_usage, credits, diagnostics, export_import, migrate, oauth, process, programs, qoder,
-    refresh, region::Region, region::RegionFilter, rotate, session, skill, switch, token_daily,
-    token_stats, trae, travel, update, vscode_session,
+    config, credit_usage, credits, diagnostics, export_import, migrate, oauth, process, programs,
+    qoder, refresh, region::Region, region::RegionFilter, rotate, session, skill, switch,
+    token_daily, token_stats, trae, travel, update, vscode_session,
 };
+use tauri::{Emitter, Manager};
 // P5 §2.5 第 (2) 条：capability **默认拒绝**。表数据只在 core（`product_spec`），本文件只查表。
 // ⚠️ 本文件在 `crates/buddy-switch-server/src/api.rs` 有**同款**接线（刻意不去重，见共享知识）。
 use buddy_switch_core::modules::product::{
@@ -239,9 +239,11 @@ pub async fn accounts_list(scope: String) -> Result<Value, String> {
         Product::Workbuddy => Ok(wb_accounts_value(require_wb_region(scope)?)),
         Product::Trae => {
             let variant = trae_variant_of_region(require_trae_region(scope)?);
-            tauri::async_runtime::spawn_blocking(move || trae::handlers::accounts_overview_for(variant))
-                .await
-                .map_err(|error| format!("读取 Trae 账号总览失败: {error}"))
+            tauri::async_runtime::spawn_blocking(move || {
+                trae::handlers::accounts_overview_for(variant)
+            })
+            .await
+            .map_err(|error| format!("读取 Trae 账号总览失败: {error}"))
         }
         Product::Qoder => return qoder_scope_not_applicable(),
     }
@@ -262,9 +264,11 @@ pub fn account_remark(
         return Err("缺少 accountId".to_string());
     }
     match scope.product() {
-        Product::Workbuddy => {
-            account::set_account_remark_for(require_wb_region(scope)?, &account_id, remark.as_deref())
-        }
+        Product::Workbuddy => account::set_account_remark_for(
+            require_wb_region(scope)?,
+            &account_id,
+            remark.as_deref(),
+        ),
         Product::Trae => {
             let variant = trae_variant_of_region(require_trae_region(scope)?);
             // Trae 侧「缺 remark ⇒ 清空」：与 `trae_set_account_remark` 的契约一致（空串即清空）。
@@ -327,9 +331,9 @@ pub fn account_trash_list(scope: String) -> Result<Value, String> {
     let scope = resolve_scope_param(Some(&scope))?;
     match scope.product() {
         Product::Workbuddy => Ok(account::trash_list_value(require_wb_region(scope)?)),
-        Product::Trae => Ok(trae::account::trash_list_value_for_region(require_trae_region(
-            scope,
-        )?)),
+        Product::Trae => Ok(trae::account::trash_list_value_for_region(
+            require_trae_region(scope)?,
+        )),
         Product::Qoder => Ok(qoder::trash::trash_list_value(require_qoder_region(scope)?)),
     }
 }
@@ -415,15 +419,18 @@ pub fn account_trash_clear(scope: String) -> Result<Value, String> {
 pub fn accounts_export(scope: String, account_ids: Vec<String>) -> Result<Value, String> {
     let scope = resolve_scope_param(Some(&scope))?;
     match scope.product() {
-        Product::Workbuddy => export_import::export_accounts_for(require_wb_region(scope)?, &account_ids)
-            .map(|records| json!({ "ok": true, "accounts": records })),
+        Product::Workbuddy => {
+            export_import::export_accounts_for(require_wb_region(scope)?, &account_ids)
+                .map(|records| json!({ "ok": true, "accounts": records }))
+        }
         Product::Trae => {
             let variant = trae_variant_of_region(require_trae_region(scope)?);
             trae::handlers::export_accounts_for(variant, &account_ids)
         }
-        Product::Qoder => {
-            qoder::export_import::export_accounts_for(require_qoder_region(scope)?, Some(&account_ids))
-        }
+        Product::Qoder => qoder::export_import::export_accounts_for(
+            require_qoder_region(scope)?,
+            Some(&account_ids),
+        ),
     }
 }
 
@@ -439,10 +446,12 @@ pub fn accounts_export_to_path(
 ) -> Result<Value, String> {
     let scope = resolve_scope_param(Some(&scope))?;
     match scope.product() {
-        Product::Workbuddy => {
-            export_import::export_accounts_to_path_for(require_wb_region(scope)?, &account_ids, &path)
-                .map(|path| json!({ "ok": true, "path": path }))
-        }
+        Product::Workbuddy => export_import::export_accounts_to_path_for(
+            require_wb_region(scope)?,
+            &account_ids,
+            &path,
+        )
+        .map(|path| json!({ "ok": true, "path": path })),
         Product::Trae => {
             let variant = trae_variant_of_region(require_trae_region(scope)?);
             trae::handlers::export_accounts_to_path_for(variant, &account_ids, &path)
@@ -468,7 +477,11 @@ pub fn accounts_import(
     let scope = resolve_scope_param(Some(&scope))?;
     match scope.product() {
         Product::Workbuddy => {
-            let result = export_import::import_accounts_for(require_wb_region(scope)?, &file_text, &indexes)?;
+            let result = export_import::import_accounts_for(
+                require_wb_region(scope)?,
+                &file_text,
+                &indexes,
+            )?;
             Ok(json!({
                 "ok": true,
                 "imported": result.imported,
@@ -806,7 +819,6 @@ pub async fn detect_jetbrains_codebuddy_plugin_account() -> Result<Value, String
         .map_err(|e| e.to_string())?
 }
 
-
 /// POST /api/delete —— 删除账号（按 region）。
 ///
 /// ⚠️ **别名**：P5 T03 起前端改调参数化命令 [`account_delete`]（带 `scope`）。本命令保留
@@ -932,7 +944,10 @@ pub fn preview_import_accounts(file_text: String, scope: Option<String>) -> Resu
     if let Some(raw) = scope.as_deref().filter(|value| !value.trim().is_empty()) {
         let parsed = resolve_scope_param(Some(raw))?;
         if parsed.product() == Product::Qoder {
-            return qoder::export_import::preview_accounts(require_qoder_region(parsed)?, &file_text);
+            return qoder::export_import::preview_accounts(
+                require_qoder_region(parsed)?,
+                &file_text,
+            );
         }
     }
     export_import::preview_accounts(&file_text)
@@ -968,8 +983,8 @@ pub fn import_accounts(
 /// （刻意不去重，见 P7 共享知识）。
 #[tauri::command(rename_all = "camelCase")]
 pub fn export_backup(selection: Value) -> Result<Value, String> {
-    let selection: backup::BackupSelection = serde_json::from_value(selection)
-        .map_err(|error| format!("导出参数不合法：{error}"))?;
+    let selection: backup::BackupSelection =
+        serde_json::from_value(selection).map_err(|error| format!("导出参数不合法：{error}"))?;
     backup::export_backup(&selection)
 }
 
@@ -1002,8 +1017,8 @@ pub fn import_backup(
     only_scopes: Option<Vec<String>>,
 ) -> Result<Value, String> {
     let policy = export_import::ConflictPolicy::parse(&policy)?;
-    let selection: backup::BackupSelection = serde_json::from_value(selection)
-        .map_err(|error| format!("导入参数不合法：{error}"))?;
+    let selection: backup::BackupSelection =
+        serde_json::from_value(selection).map_err(|error| format!("导入参数不合法：{error}"))?;
     let only_scopes = only_scopes.unwrap_or_default();
     backup::import_backup(&file_text, policy, &selection, &only_scopes)
 }
@@ -1176,9 +1191,11 @@ pub async fn set_skill_enabled(
     enabled: bool,
 ) -> Result<Value, String> {
     require_capability(Product::Workbuddy, capability::Capability::SessionCopy)?;
-    tauri::async_runtime::spawn_blocking(move || skill::set_skill_enabled(region, &dir_name, enabled))
-        .await
-        .map_err(|error| format!("启停 skill 失败: {error}"))?
+    tauri::async_runtime::spawn_blocking(move || {
+        skill::set_skill_enabled(region, &dir_name, enabled)
+    })
+    .await
+    .map_err(|error| format!("启停 skill 失败: {error}"))?
 }
 
 /// POST /api/skills/copy-cross —— 跨 region「合并补齐」搬迁（冲突保留目标侧）。
@@ -1268,11 +1285,9 @@ pub async fn restore_client_settings_backup(
     slot: String,
     backup_id: String,
 ) -> Result<Value, String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        client_settings::restore_backup(&slot, &backup_id)
-    })
-    .await
-    .map_err(|error| format!("恢复客户端设置失败: {error}"))?
+    tauri::async_runtime::spawn_blocking(move || client_settings::restore_backup(&slot, &backup_id))
+        .await
+        .map_err(|error| format!("恢复客户端设置失败: {error}"))?
 }
 
 /// POST /api/client-settings/diff —— 任选两个槽位比对（仅 A 有 / 仅 B 有 / 值不同）。
@@ -1419,11 +1434,9 @@ pub async fn sync_session_replicas(
 ) -> Result<Value, String> {
     require_capability(Product::Workbuddy, capability::Capability::SessionCopy)?;
     let region = parse_region(region.as_deref());
-    tauri::async_runtime::spawn_blocking(move || {
-        session::sync_session_replicas_for(region, &items)
-    })
-    .await
-    .map_err(|error| format!("同步会话副本失败: {error}"))
+    tauri::async_runtime::spawn_blocking(move || session::sync_session_replicas_for(region, &items))
+        .await
+        .map_err(|error| format!("同步会话副本失败: {error}"))
 }
 
 /// POST /api/sessions/unify —— P8 **分歧处理（覆盖式统一）**：把用户选定保留的那一份覆盖到其余副本。
@@ -1586,9 +1599,11 @@ pub async fn client_limits(
 ) -> Result<Value, String> {
     require_capability(Product::Workbuddy, capability::Capability::SessionCopy)?;
     let region = parse_region(region.as_deref());
-    tauri::async_runtime::spawn_blocking(move || client_limits::client_limits_for(region, since_days))
-        .await
-        .map_err(|error| format!("读取客户端限流台账失败: {error}"))
+    tauri::async_runtime::spawn_blocking(move || {
+        client_limits::client_limits_for(region, since_days)
+    })
+    .await
+    .map_err(|error| format!("读取客户端限流台账失败: {error}"))
 }
 
 /// POST /api/sessions/copy —— 把勾选会话复制到指定账号（路径 B，按 region）。
@@ -1614,8 +1629,14 @@ pub async fn copy_sessions(
         let target =
             account::find_account_for(region, &target_account_id).ok_or("目标账号不存在")?;
         // 独立复制入口没有切换进度事件通道，传 None（三段管线的耗时优化照常生效）。
-        Ok(session::copy_sessions_for_switch_cross(source_region, region, None, &target, &session_ids)
-            .unwrap_or_else(|| json!({})))
+        Ok(session::copy_sessions_for_switch_cross(
+            source_region,
+            region,
+            None,
+            &target,
+            &session_ids,
+        )
+        .unwrap_or_else(|| json!({})))
     })
     .await
     .map_err(|e| e.to_string())?
@@ -1656,8 +1677,8 @@ pub async fn migrate_account_data(
             return Err("未指定任何迁移范围".to_string());
         }
 
-        let target = account::find_account_for(region, &target_account_id)
-            .ok_or("目标账号不存在")?;
+        let target =
+            account::find_account_for(region, &target_account_id).ok_or("目标账号不存在")?;
         let target_uid = target
             .get("uid")
             .and_then(Value::as_str)
@@ -1683,13 +1704,7 @@ pub async fn migrate_account_data(
             return Err("无法确定源账号 uid（未登录或账号缺少 uid）".to_string());
         }
 
-        migrate::migrate_account_data_cross(
-            source_region,
-            &source_uid,
-            region,
-            &target_uid,
-            scope,
-        )
+        migrate::migrate_account_data_cross(source_region, &source_uid, region, &target_uid, scope)
     })
     .await
     .map_err(|e| e.to_string())?
@@ -1710,7 +1725,10 @@ pub async fn migrate_account_data(
 /// 通道差异**刻意保留**（批量在 webui 是性能优化，B7），参数化命令 [`checkin_status`]
 /// 只对齐桌面端语义。
 #[tauri::command(rename_all = "camelCase")]
-pub async fn get_checkin_status(account_id: String, region: Option<String>) -> Result<Value, String> {
+pub async fn get_checkin_status(
+    account_id: String,
+    region: Option<String>,
+) -> Result<Value, String> {
     let region = parse_region(region.as_deref());
     let acc = account::find_account_for(region, &account_id).ok_or("账号不存在")?;
     Ok(checkin::get_checkin_status_for(region, &acc).await)
@@ -1722,7 +1740,10 @@ pub async fn get_checkin_status(account_id: String, region: Option<String>) -> R
 /// （webui 路由 / `generate_handler!` / 前端 `ALIASES` 表），是 [`credits`] 的
 /// WorkBuddy 分支同源实现。
 #[tauri::command(rename_all = "camelCase")]
-pub async fn get_credit_expiry(account_id: String, region: Option<String>) -> Result<Value, String> {
+pub async fn get_credit_expiry(
+    account_id: String,
+    region: Option<String>,
+) -> Result<Value, String> {
     require_capability(Product::Workbuddy, capability::Capability::Credits)?;
     let region = parse_region(region.as_deref());
     let acc = account::find_account_for(region, &account_id).ok_or("账号不存在")?;
@@ -1738,11 +1759,16 @@ pub async fn get_credit_statistics(refresh: Option<bool>, region: Option<String>
 }
 
 #[tauri::command]
-pub async fn get_token_statistics(days: Option<i64>, region: Option<String>) -> Result<Value, String> {
+pub async fn get_token_statistics(
+    days: Option<i64>,
+    region: Option<String>,
+) -> Result<Value, String> {
     let filter = parse_region_filter(region.as_deref());
-    tauri::async_runtime::spawn_blocking(move || token_stats::get_statistics_for_filter(filter, days))
-        .await
-        .map_err(|error| format!("扫描 Token 统计失败: {error}"))
+    tauri::async_runtime::spawn_blocking(move || {
+        token_stats::get_statistics_for_filter(filter, days)
+    })
+    .await
+    .map_err(|error| format!("扫描 Token 统计失败: {error}"))
 }
 
 /// 网关逐日用量趋势（读 `token_daily` 的 90 天落库历史；**只读**，不扫盘、不触发记录）。
@@ -2075,20 +2101,14 @@ mod parse_trae_variant_tests {
 
     #[test]
     fn parses_known_canonical_values() {
-        assert_eq!(
-            parse_trae_variant(Some("trae_work")),
-            TraeVariant::TraeWork
-        );
+        assert_eq!(parse_trae_variant(Some("trae_work")), TraeVariant::TraeWork);
         assert_eq!(parse_trae_variant(Some("trae_cn")), TraeVariant::Trae);
     }
 
     #[test]
     fn parses_case_and_whitespace_insensitively() {
         // `TraeVariant::parse` 内部会 `trim + to_ascii_lowercase`。
-        assert_eq!(
-            parse_trae_variant(Some("TRAE_WORK")),
-            TraeVariant::TraeWork
-        );
+        assert_eq!(parse_trae_variant(Some("TRAE_WORK")), TraeVariant::TraeWork);
         assert_eq!(parse_trae_variant(Some(" Trae CN ")), TraeVariant::Trae);
     }
 
@@ -2355,7 +2375,12 @@ pub fn open_workbuddy_data_dir(region: Option<String>) -> Result<Value, String> 
 #[tauri::command]
 pub fn list_api_keys() -> Value {
     let state = gateway::shared_state();
-    let keys: Vec<Value> = state.keys.list().iter().map(|record| record.masked()).collect();
+    let keys: Vec<Value> = state
+        .keys
+        .list()
+        .iter()
+        .map(|record| record.masked())
+        .collect();
     json!({ "keys": keys })
 }
 
@@ -2494,7 +2519,10 @@ pub async fn get_account_strategy() -> Value {
 
 /// POST /api/gateway/strategy —— 保存某 region 账号策略。
 #[tauri::command]
-pub async fn save_account_strategy(region: Option<String>, strategy: Value) -> Result<Value, String> {
+pub async fn save_account_strategy(
+    region: Option<String>,
+    strategy: Value,
+) -> Result<Value, String> {
     let region = parse_region(region.as_deref());
     let parsed: AccountStrategy =
         serde_json::from_value(strategy).map_err(|error| format!("策略格式错误: {error}"))?;
@@ -2600,8 +2628,7 @@ pub async fn probe_start(
     adopt: bool,
 ) -> Result<Value, String> {
     let target = buddy_switch_gateway::model_probe::target_for_scope(&scope)?;
-    let total =
-        buddy_switch_gateway::model_probe::start(&target, uids, models, adopt).await?;
+    let total = buddy_switch_gateway::model_probe::start(&target, uids, models, adopt).await?;
     tauri::async_runtime::spawn(buddy_switch_gateway::model_probe::run(target));
     Ok(json!({ "started": true, "total": total }))
 }
@@ -2890,7 +2917,10 @@ pub fn trae_oauth_cancel(login_id: String) -> Value {
 /// ⚠️ **别名**：P5 T03 起前端改调参数化命令 [`accounts_export`]（带 `scope`）。本命令保留，
 /// 是 [`accounts_export`] 的 Trae 分支同源实现（`variant` 决定读哪个区域库）。
 #[tauri::command(rename_all = "camelCase")]
-pub fn trae_export_accounts(user_ids: Vec<String>, variant: Option<String>) -> Result<Value, String> {
+pub fn trae_export_accounts(
+    user_ids: Vec<String>,
+    variant: Option<String>,
+) -> Result<Value, String> {
     trae::handlers::export_accounts_for(parse_trae_variant(variant.as_deref()), &user_ids)
 }
 
@@ -2904,7 +2934,11 @@ pub fn trae_export_accounts_to_path(
     path: String,
     variant: Option<String>,
 ) -> Result<Value, String> {
-    trae::handlers::export_accounts_to_path_for(parse_trae_variant(variant.as_deref()), &user_ids, &path)
+    trae::handlers::export_accounts_to_path_for(
+        parse_trae_variant(variant.as_deref()),
+        &user_ids,
+        &path,
+    )
 }
 
 /// POST /api/trae/accounts/import/preview —— 解析导入文件并回传脱敏预览。
@@ -2923,12 +2957,20 @@ pub fn trae_import_accounts(
     indexes: Vec<usize>,
     variant: Option<String>,
 ) -> Result<Value, String> {
-    trae::handlers::import_accounts_for(parse_trae_variant(variant.as_deref()), &file_text, &indexes)
+    trae::handlers::import_accounts_for(
+        parse_trae_variant(variant.as_deref()),
+        &file_text,
+        &indexes,
+    )
 }
 
 /// POST /api/trae/groups —— 分组操作分发（create / update / delete / move）。
 #[tauri::command]
-pub fn trae_group_op(action: String, params: Value, variant: Option<String>) -> Result<Value, String> {
+pub fn trae_group_op(
+    action: String,
+    params: Value,
+    variant: Option<String>,
+) -> Result<Value, String> {
     trae::handlers::group_op_for(parse_trae_variant(variant.as_deref()), &action, &params)
 }
 
@@ -2973,7 +3015,10 @@ pub async fn trae_refresh_jwt(user_id: String, variant: Option<String>) -> Resul
 
 /// POST /api/trae/cooldown/clear —— 清除冷却（单个或全部）。
 #[tauri::command(rename_all = "camelCase")]
-pub fn trae_clear_cooldown(user_id: Option<String>, variant: Option<String>) -> Result<Value, String> {
+pub fn trae_clear_cooldown(
+    user_id: Option<String>,
+    variant: Option<String>,
+) -> Result<Value, String> {
     let variant = parse_trae_variant(variant.as_deref());
     trae::handlers::clear_cooldown_for(variant, user_id.as_deref())
 }
@@ -3000,10 +3045,7 @@ pub async fn trae_switch_account(app: tauri::AppHandle, options: Value) -> Resul
 
 /// POST /api/trae/login/save —— 保存当前登录态到指定账号槽位。
 #[tauri::command(rename_all = "camelCase")]
-pub async fn trae_save_login(
-    user_id: String,
-    variant: Option<String>,
-) -> Result<Value, String> {
+pub async fn trae_save_login(user_id: String, variant: Option<String>) -> Result<Value, String> {
     let variant = parse_trae_variant(variant.as_deref());
     tauri::async_runtime::spawn_blocking(move || trae::handlers::save_login_for(variant, &user_id))
         .await
@@ -3017,9 +3059,11 @@ pub async fn trae_backup_profile(
     variant: Option<String>,
 ) -> Result<Value, String> {
     let variant = parse_trae_variant(variant.as_deref());
-    tauri::async_runtime::spawn_blocking(move || trae::handlers::backup_profile_for(variant, &user_id))
-        .await
-        .map_err(|error| format!("备份失败: {error}"))?
+    tauri::async_runtime::spawn_blocking(move || {
+        trae::handlers::backup_profile_for(variant, &user_id)
+    })
+    .await
+    .map_err(|error| format!("备份失败: {error}"))?
 }
 
 /// POST /api/trae/profiles/restore —— 用槽位快照覆盖客户端登录态（高级操作）。
@@ -3029,9 +3073,11 @@ pub async fn trae_restore_profile(
     variant: Option<String>,
 ) -> Result<Value, String> {
     let variant = parse_trae_variant(variant.as_deref());
-    tauri::async_runtime::spawn_blocking(move || trae::handlers::restore_profile_for(variant, &user_id))
-        .await
-        .map_err(|error| format!("恢复失败: {error}"))?
+    tauri::async_runtime::spawn_blocking(move || {
+        trae::handlers::restore_profile_for(variant, &user_id)
+    })
+    .await
+    .map_err(|error| format!("恢复失败: {error}"))?
 }
 
 /// POST /api/trae/profiles/delete —— 删除登录态快照。
@@ -3439,7 +3485,8 @@ fn agent_hook_status() -> Value {
     let slots: Vec<Value> = AGENT_HOOK_TARGETS
         .iter()
         .map(|(slot_key, source)| {
-            let read = client_settings::read_settings(slot_key).unwrap_or_else(|error| json!({ "error": error }));
+            let read = client_settings::read_settings(slot_key)
+                .unwrap_or_else(|error| json!({ "error": error }));
             let values = read.get("values").cloned().unwrap_or(Value::Null);
             let events = if values.is_null() {
                 Vec::new()
@@ -3484,7 +3531,8 @@ fn apply_agent_hook_enabled(enabled: bool) -> Result<Value, String> {
     let mut changed: Vec<Value> = Vec::new();
 
     if enabled {
-        let exe = std::env::current_exe().map_err(|error| format!("取当前程序路径失败：{error}"))?;
+        let exe =
+            std::env::current_exe().map_err(|error| format!("取当前程序路径失败：{error}"))?;
         for (slot_key, source) in AGENT_HOOK_TARGETS {
             let command = agent_hook_install::hook_command(&exe, source);
             match agent_hook_install::install(slot_key, &command) {
@@ -3545,7 +3593,11 @@ pub async fn set_agent_hook_enabled(enabled: bool) -> Result<Value, String> {
 /// Trae 侧有**逐账号**进度（`start` / `account` / `done`），标题随进度更新。
 fn observe_trae_checkin(event: &Value) {
     let now = config::now_ms();
-    match event.get("type").and_then(Value::as_str).unwrap_or_default() {
+    match event
+        .get("type")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+    {
         "start" => {
             let total = event.get("total").and_then(Value::as_u64).unwrap_or(0);
             agent_watch::record_local(
@@ -3557,7 +3609,11 @@ fn observe_trae_checkin(event: &Value) {
         }
         "account" => {
             let name = event.get("name").and_then(Value::as_str).unwrap_or("账号");
-            let status = match event.get("status").and_then(Value::as_str).unwrap_or_default() {
+            let status = match event
+                .get("status")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+            {
                 "success" => "成功",
                 "already" => "今日已签",
                 _ => "失败",
@@ -3701,12 +3757,12 @@ mod command_threading_tests {
     /// 2026-09-28 之前它们全是同步的（审计 `docs/perf-audit-2026-09-24.md` 的 P1-3）。
     /// 把它们改回同步会让本用例变红。
     const MUST_BE_ASYNC: &[&str] = &[
-        "import_local",          // 读客户端认证文件
-        "check_auth_permission", // 写 / 删探针文件
-        "list_sessions",         // 读 workbuddy.db（不可读时降级扫 projects 目录）
-        "get_trae_variants",     // 进程探测（Windows 起 tasklist 子进程）
-        "get_trae_accounts",     // 读账号库 + 快照目录
-        "get_trae_logs",         // 全量读日志文件
+        "import_local",           // 读客户端认证文件
+        "check_auth_permission",  // 写 / 删探针文件
+        "list_sessions",          // 读 workbuddy.db（不可读时降级扫 projects 目录）
+        "get_trae_variants",      // 进程探测（Windows 起 tasklist 子进程）
+        "get_trae_accounts",      // 读账号库 + 快照目录
+        "get_trae_logs",          // 全量读日志文件
         "set_agent_hook_enabled", // 读写上游客户端 settings.json（P15 · hook 安装面）
     ];
 
@@ -4016,11 +4072,10 @@ pub async fn qoder_set_account_remark(
 pub async fn qoder_delete_account(scope: String, uid: String) -> Result<Value, String> {
     let scope = resolve_scope_param(Some(&scope))?;
     let region = require_qoder_region(scope)?;
-    let removed = tauri::async_runtime::spawn_blocking(move || {
-        qoder::trash::trash_account_for(region, &uid)
-    })
-    .await
-    .map_err(|error| format!("删除 Qoder 账号失败: {error}"))??;
+    let removed =
+        tauri::async_runtime::spawn_blocking(move || qoder::trash::trash_account_for(region, &uid))
+            .await
+            .map_err(|error| format!("删除 Qoder 账号失败: {error}"))??;
     Ok(json!({ "ok": removed }))
 }
 
@@ -4115,12 +4170,10 @@ pub async fn qoder_set_account_group(
 ) -> Result<Value, String> {
     let scope = resolve_scope_param(Some(&scope))?;
     let region = require_qoder_region(scope)?;
-    tauri::async_runtime::spawn_blocking(move || {
-        qoder::account::set_group_for(region, &uid, group)
-    })
-    .await
-    .map_err(|error| format!("保存 Qoder 分组失败: {error}"))?
-    .map(|changed| json!({ "ok": changed }))
+    tauri::async_runtime::spawn_blocking(move || qoder::account::set_group_for(region, &uid, group))
+        .await
+        .map_err(|error| format!("保存 Qoder 分组失败: {error}"))?
+        .map(|changed| json!({ "ok": changed }))
 }
 
 /// GET /api/qoder/usage —— 逐日用量（**单位是 credits，不是 token**）。
@@ -4136,7 +4189,6 @@ pub async fn qoder_usage(scope: String, days: Option<u32>) -> Result<Value, Stri
         .await
         .map_err(|error| format!("读取 Qoder 用量失败: {error}"))
 }
-
 
 // ---------------------------------------------------------------------------
 // Qoder API 网关（管理面）

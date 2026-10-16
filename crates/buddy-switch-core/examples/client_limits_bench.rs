@@ -15,7 +15,12 @@ use buddy_switch_core::modules::region::Region;
 
 fn summarize(value: &serde_json::Value) -> String {
     let counts = value.get("counts").cloned().unwrap_or_default();
-    let get = |key: &str| counts.get(key).and_then(serde_json::Value::as_u64).unwrap_or(0);
+    let get = |key: &str| {
+        counts
+            .get(key)
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(0)
+    };
     let mut states = std::collections::BTreeMap::new();
     if let Some(limits) = value.get("limits").and_then(|v| v.as_array()) {
         for entry in limits {
@@ -54,7 +59,9 @@ fn main() {
     };
 
     for window in days {
-        let label = window.map(|d| d.to_string()).unwrap_or_else(|| "all".into());
+        let label = window
+            .map(|d| d.to_string())
+            .unwrap_or_else(|| "all".into());
         for pass in ["cold", "warm"] {
             let started = Instant::now();
             let value = client_limits::client_limits_for(region, window);

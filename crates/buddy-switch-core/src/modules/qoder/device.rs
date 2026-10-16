@@ -130,7 +130,12 @@ mod tests {
         assert_ne!(a.machine_type, b.machine_type);
         assert_ne!(a.session_id, b.session_id);
         // 同一个账号的四个值也两两不同（salt 分家）。
-        let values = [&a.machine_id, &a.machine_token, &a.machine_type, &a.session_id];
+        let values = [
+            &a.machine_id,
+            &a.machine_token,
+            &a.machine_type,
+            &a.session_id,
+        ];
         for i in 0..values.len() {
             for j in (i + 1)..values.len() {
                 assert_ne!(values[i], values[j], "第 {i} 与第 {j} 个派生值相同");
@@ -162,7 +167,10 @@ mod tests {
     fn describe_masks_the_machine_id() {
         let id = machine_identity("uid-abc");
         let text = id.describe();
-        assert!(!text.contains(&id.machine_id), "诊断文案泄露了完整机器码：{text}");
+        assert!(
+            !text.contains(&id.machine_id),
+            "诊断文案泄露了完整机器码：{text}"
+        );
         assert!(text.contains("identity=derived"), "{text}");
     }
 }

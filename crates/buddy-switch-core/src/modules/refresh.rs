@@ -184,9 +184,7 @@ pub async fn refresh_account_token_for(region: Region, mut account: Value) -> Va
     }
     let new_rt_exp = match new_rt_exp {
         Some(v) => Some(v),
-        None => {
-            sane_relative_seconds(data.get("refreshExpiresIn")).map(|e| now_ms() + e * 1000)
-        }
+        None => sane_relative_seconds(data.get("refreshExpiresIn")).map(|e| now_ms() + e * 1000),
     };
     if let Some(v) = new_rt_exp {
         account["refreshExpiresAt"] = json!(v);
@@ -321,7 +319,9 @@ mod tests {
 
     fn keepalive_lock() -> std::sync::MutexGuard<'static, ()> {
         // 吞掉中毒：单个用例 panic 不该连带其它用例全红。
-        KEEPALIVE_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+        KEEPALIVE_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
     }
 
     /// `expiresIn` 只接受「正数且不超过 10 年」；缺失、0、负数、荒谬大数一律拒绝。
@@ -333,11 +333,22 @@ mod tests {
     fn relative_expiry_seconds_rejects_missing_and_out_of_range() {
         // 合法：正常时长
         assert_eq!(sane_relative_seconds(Some(&json!(3600))), Some(3600));
-        assert_eq!(sane_relative_seconds(Some(&json!(60 * 86400))), Some(60 * 86400));
+        assert_eq!(
+            sane_relative_seconds(Some(&json!(60 * 86400))),
+            Some(60 * 86400)
+        );
         // 缺失 / 非数值形态
         assert_eq!(sane_relative_seconds(None), None);
-        assert_eq!(sane_relative_seconds(Some(&json!("3600"))), None, "字符串不是合法秒数");
-        assert_eq!(sane_relative_seconds(Some(&json!(true))), None, "布尔不得当 1 用");
+        assert_eq!(
+            sane_relative_seconds(Some(&json!("3600"))),
+            None,
+            "字符串不是合法秒数"
+        );
+        assert_eq!(
+            sane_relative_seconds(Some(&json!(true))),
+            None,
+            "布尔不得当 1 用"
+        );
         assert_eq!(sane_relative_seconds(Some(&json!(null))), None);
         // 越界：0 与负数会把 expiresAt 写到「此刻或过去」
         assert_eq!(sane_relative_seconds(Some(&json!(0))), None);
@@ -521,7 +532,9 @@ mod tests {
 
         // 落盘的原因也必须是信封文案（界面读的是账号库，不是本次返回值）。
         let saved = load_accounts_for(Region::Cn);
-        let saved_reason = saved[0]["needs_relogin_reason"].as_str().unwrap_or_default();
+        let saved_reason = saved[0]["needs_relogin_reason"]
+            .as_str()
+            .unwrap_or_default();
         assert!(saved_reason.contains("加密信封"), "{saved_reason}");
 
         drop(guard);

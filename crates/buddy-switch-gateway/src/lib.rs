@@ -26,14 +26,16 @@ pub mod credits_refresh;
 pub mod disabled_models;
 pub mod error;
 pub mod logging;
-pub mod model_route;
 /// 账号池 × 模型限流探测（一次性作业；见模块文档）。
 pub mod model_probe;
+pub mod model_route;
 pub mod outbound;
 pub mod pool;
 pub mod protocol;
 // E1 · 代理 KPI 的真实计数（今日代理请求 / 今日换号；落盘，跨重启不丢）。
 pub mod proxy_kpi;
+/// Qoder 的 OpenAI / Anthropic 兼容网关（**平行第三套实现**，独立端口 7865）。
+pub mod qoder;
 pub mod rng;
 pub mod routes;
 pub mod session_headers;
@@ -45,8 +47,6 @@ pub mod timeutil;
 /// 独立模块而非 `GatewayState` 的一个分支：两者归属域、凭据形态、上游协议、
 /// 响应格式、路由挂载方式全不相同，详见 [`trae`] 模块文档。
 pub mod trae;
-/// Qoder 的 OpenAI / Anthropic 兼容网关（**平行第三套实现**，独立端口 7865）。
-pub mod qoder;
 // 统一网关（第三个产品线）：把两个产品线的模型合成一个入口。
 // ⚠️ 它是**独立端口**上的**第三个** `GatewayProduct` —— 永不与另两个 router merge
 // （axum 同路径 merge 会运行期 panic）。详见模块头与 `docs/redesign/UNIFIED-GATEWAY-ARCH.md`。
@@ -189,7 +189,9 @@ pub async fn spawn_listener_with_state(state: GatewayState) -> anyhow::Result<Ga
 
     let addr = SocketAddr::new(ip, port);
     let listener = TcpListener::bind(addr).await.map_err(|error| {
-        anyhow::anyhow!("无法监听 {addr}：端口可能被占用或不可用（{error}）。请在设置中改用其他端口。")
+        anyhow::anyhow!(
+            "无法监听 {addr}：端口可能被占用或不可用（{error}）。请在设置中改用其他端口。"
+        )
     })?;
     let local = listener.local_addr().unwrap_or(addr);
 
@@ -534,12 +536,13 @@ mod tests {
     #[tokio::test]
     async fn router_builds_and_biz_route_matches() {
         // 隔离 home：避免构建状态时读写真实`~/.buddy-switch/`。
-        let home = std::env::temp_dir().join(format!(
-            "buddy-switch-router-syntax-{}",
-            std::process::id()
-        ));
+        let home =
+            std::env::temp_dir().join(format!("buddy-switch-router-syntax-{}", std::process::id()));
         std::fs::create_dir_all(&home).unwrap();
-        std::env::set_var(buddy_switch_core::modules::config::BUDDY_SWITCH_HOME_ENV, &home);
+        std::env::set_var(
+            buddy_switch_core::modules::config::BUDDY_SWITCH_HOME_ENV,
+            &home,
+        );
 
         // ① 构建 router：语法非法会在这里 panic（这正是原 bug 的触发点）。
         let state = GatewayState::new(GatewayConfig::default());

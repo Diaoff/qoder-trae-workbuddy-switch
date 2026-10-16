@@ -333,9 +333,8 @@ pub fn account_view(
     let needs_refresh = needs_jwt_refresh(account);
 
     let now = chrono::Local::now().timestamp();
-    let active_cooldown = cooldown.filter(|entry| {
-        entry.until > now && !entry.error_type.is_empty()
-    });
+    let active_cooldown =
+        cooldown.filter(|entry| entry.until > now && !entry.error_type.is_empty());
 
     json!({
         "userId": user_id,
@@ -407,8 +406,9 @@ pub fn list_account_views_for(variant: TraeVariant) -> Vec<Value> {
                 .iter()
                 .filter(|record| record.user_id == uid)
                 // 同日期取较大值、跨日期取较新日期：避免展示历史峰值而非当前余额。
-                .fold(None::<&crate::modules::trae::credits::CreditRecord>, |best, record| {
-                    match best {
+                .fold(
+                    None::<&crate::modules::trae::credits::CreditRecord>,
+                    |best, record| match best {
                         None => Some(record),
                         Some(current) => {
                             if record.date > current.date
@@ -419,8 +419,8 @@ pub fn list_account_views_for(variant: TraeVariant) -> Vec<Value> {
                                 Some(current)
                             }
                         }
-                    }
-                })
+                    },
+                )
                 .map(|record| record.credits);
             Some(account_view(
                 account,
@@ -716,7 +716,9 @@ pub fn restore_for_region(region: TraeRegion, user_id: &str) -> Result<(), Strin
     let entry = trash.remove(index);
     // 还原设备绑定（I-2 的逆操作）。
     if let Some(device_id) = entry.device_id.clone() {
-        accounts.device_bindings.insert(user_id.to_string(), device_id);
+        accounts
+            .device_bindings
+            .insert(user_id.to_string(), device_id);
     }
     accounts.accounts.push(entry.account);
     save_accounts_for_region(region, &accounts)?;
@@ -827,11 +829,7 @@ pub fn delete(user_id: &str, delete_profile: bool) -> Result<(), String> {
 ///
 /// **删快照也必须限定变体**：两条产品线的快照根目录不同
 /// （见 [`paths::profiles_dir_for`]），否则会删到另一条产品线的快照。
-pub fn delete_for(
-    variant: TraeVariant,
-    user_id: &str,
-    delete_profile: bool,
-) -> Result<(), String> {
+pub fn delete_for(variant: TraeVariant, user_id: &str, delete_profile: bool) -> Result<(), String> {
     trash_for_region(variant.region(), user_id)?;
     if delete_profile {
         if let Some(dir) = paths::profile_dir_for(variant, user_id) {
@@ -937,11 +935,7 @@ pub fn group_create(name: &str, color: &str) -> Result<String, String> {
 }
 
 /// 创建分组，返回新分组 ID（按变体分家）。
-pub fn group_create_for(
-    variant: TraeVariant,
-    name: &str,
-    color: &str,
-) -> Result<String, String> {
+pub fn group_create_for(variant: TraeVariant, name: &str, color: &str) -> Result<String, String> {
     let name = name.trim();
     if name.is_empty() {
         return Err("分组名不能为空".into());
@@ -1089,7 +1083,10 @@ pub fn resolve_user_ids_for(
 ) -> Vec<String> {
     let groups = load_groups_for(variant);
     match scope {
-        Scope::All => entries_for(variant).into_iter().map(|(uid, _)| uid).collect(),
+        Scope::All => entries_for(variant)
+            .into_iter()
+            .map(|(uid, _)| uid)
+            .collect(),
         Scope::Group(group_id) => entries_for(variant)
             .into_iter()
             .filter(|(uid, _)| groups.membership.get(uid) == Some(group_id))
@@ -1361,8 +1358,8 @@ pub(crate) async fn exchange_token_for(
     // ★ `ClientID` 按**产品线**取（SOLO 与 TRAE 各有独立的一把钥匙，见
     // `OAuthLine::default_client_id`）。它与授权 URL / AuthCode 交换用的是同一个
     // 取值函数 —— 三处必须同源，否则等于拿 A 线的钥匙兑 B 线的 token。
-    let client_id = crate::modules::trae::oauth_client::oauth_client()
-        .client_id_for(variant.oauth_line());
+    let client_id =
+        crate::modules::trae::oauth_client::oauth_client().client_id_for(variant.oauth_line());
     let variants = build_refresh_variants(variant, client_id, refresh_token, credential.as_ref());
 
     let mut errors: Vec<String> = Vec::new();
@@ -1446,24 +1443,19 @@ async fn try_refresh_variant(
         // 完全不带该头报 20403。
         request = request.header("x-cloudide-token", "");
     }
-    let response = request
-        .json(&plan.payload)
-        .send()
-        .await
-        .map_err(|e| {
-            // 与签到路径同一出口：展开 source 链，否则只剩「请求失败: error sending
-            // request for url (…)」，用户无从判断是重试还是修网络。
-            RefreshExchangeError::transport(format!(
-                "请求失败: {}",
-                crate::modules::net::describe_transport_error(&e)
-            ))
-        })?;
+    let response = request.json(&plan.payload).send().await.map_err(|e| {
+        // 与签到路径同一出口：展开 source 链，否则只剩「请求失败: error sending
+        // request for url (…)」，用户无从判断是重试还是修网络。
+        RefreshExchangeError::transport(format!(
+            "请求失败: {}",
+            crate::modules::net::describe_transport_error(&e)
+        ))
+    })?;
 
     let status = response.status().as_u16();
-    let body: Value = response
-        .json()
-        .await
-        .map_err(|e| RefreshExchangeError::transport(format!("解析响应失败 (HTTP {status}): {e}")))?;
+    let body: Value = response.json().await.map_err(|e| {
+        RefreshExchangeError::transport(format!("解析响应失败 (HTTP {status}): {e}"))
+    })?;
 
     // 火山信封错误：协议级失败（可能是 DeviceProof/设备问题），继续探测下一变体。
     if let Some(code) = dig_string(&body, &["ResponseMetadata", "Error", "Code"]) {
@@ -2097,7 +2089,10 @@ mod tests {
         assert!(view.get("user_id").is_none());
         assert_eq!(view.get("checkedToday").unwrap().as_bool(), Some(true));
         assert_eq!(view.get("remainingCredits").unwrap().as_f64(), Some(12.5));
-        assert_eq!(view.get("deviceIdMasked").unwrap().as_str(), Some("1234…2345"));
+        assert_eq!(
+            view.get("deviceIdMasked").unwrap().as_str(),
+            Some("1234…2345")
+        );
         // 备注按原样透出（前端 `TraeAccount.remark` 直接渲染它）。
         assert_eq!(
             view.get("remark").unwrap().as_str(),
@@ -2272,7 +2267,17 @@ mod tests {
             reason: "旧错误".into(),
             error_count: 1,
         };
-        let view = account_view(&account, "u", None, None, None, None, Some(&expired), false, None);
+        let view = account_view(
+            &account,
+            "u",
+            None,
+            None,
+            None,
+            None,
+            Some(&expired),
+            false,
+            None,
+        );
         // 已过期的冷却不能继续显示为「冷却中」，否则 UI 会永久禁用账号操作。
         assert!(view.get("cooldownType").unwrap().is_null());
         assert!(view.get("cooldownUntil").unwrap().is_null());
@@ -2283,8 +2288,21 @@ mod tests {
             reason: String::new(),
             error_count: 0,
         };
-        let view = account_view(&account, "u", None, None, None, None, Some(&active), false, None);
-        assert_eq!(view.get("cooldownType").unwrap().as_str(), Some("SessionDead"));
+        let view = account_view(
+            &account,
+            "u",
+            None,
+            None,
+            None,
+            None,
+            Some(&active),
+            false,
+            None,
+        );
+        assert_eq!(
+            view.get("cooldownType").unwrap().as_str(),
+            Some("SessionDead")
+        );
         // 原因为空时不下发空串，前端用 null 判定「无原因」
         assert!(view.get("cooldownReason").unwrap().is_null());
     }
@@ -2346,7 +2364,11 @@ mod tests {
     #[test]
     fn needs_jwt_refresh_is_the_single_predicate_for_window_and_token() {
         let cases: [(RawAccount, bool, &str); 5] = [
-            (account_with(&jwt_expiring_in_hours("u", 1), Some("rt")), true, "1h 内到期"),
+            (
+                account_with(&jwt_expiring_in_hours("u", 1), Some("rt")),
+                true,
+                "1h 内到期",
+            ),
             (
                 account_with(&jwt_expiring_in_hours("u", 23), Some("rt")),
                 true,
@@ -2362,7 +2384,11 @@ mod tests {
                 false,
                 "没有 refresh_token（换不了，只能重新登录）",
             ),
-            (account_with("x", Some("rt")), true, "解析不出 exp（不能当成还有效）"),
+            (
+                account_with("x", Some("rt")),
+                true,
+                "解析不出 exp（不能当成还有效）",
+            ),
         ];
 
         for (account, expected, why) in &cases {
@@ -2414,10 +2440,8 @@ mod tests {
     /// 「Trae CN 的账号出现在 Trae Work 的列表里」（或反之）。
     #[test]
     fn 两条产品线的账号库互不污染() {
-        let temp = std::env::temp_dir().join(format!(
-            "buddy-switch-trae-variant-{}",
-            std::process::id()
-        ));
+        let temp =
+            std::env::temp_dir().join(format!("buddy-switch-trae-variant-{}", std::process::id()));
         let _ = std::fs::create_dir_all(&temp);
         let _guard = crate::modules::config::HomeOverrideGuard::set(&temp);
 
@@ -2456,8 +2480,14 @@ mod tests {
         assert_eq!(cn_uids, vec!["2222222222222222".to_string()]);
 
         // 跨变体查找必须**查不到**：同一 uid 在另一条产品线里是另一个账号。
-        assert!(find_for(work, "2222222222222222").is_none(), "跨变体查到了账号");
-        assert!(find_for(cn, "1111111111111111").is_none(), "跨变体查到了账号");
+        assert!(
+            find_for(work, "2222222222222222").is_none(),
+            "跨变体查到了账号"
+        );
+        assert!(
+            find_for(cn, "1111111111111111").is_none(),
+            "跨变体查到了账号"
+        );
         // 本变体内查得到。
         assert!(find_for(work, "1111111111111111").is_some());
         assert!(find_for(cn, "2222222222222222").is_some());
@@ -2478,10 +2508,8 @@ mod tests {
     /// 若 `All` 跨了变体，一次「全部签到」会把另一条产品线的账号也签一遍。
     #[test]
     fn 全部范围只覆盖本变体的账号() {
-        let temp = std::env::temp_dir().join(format!(
-            "buddy-switch-trae-scope-{}",
-            std::process::id()
-        ));
+        let temp =
+            std::env::temp_dir().join(format!("buddy-switch-trae-scope-{}", std::process::id()));
         let _ = std::fs::create_dir_all(&temp);
         let _guard = crate::modules::config::HomeOverrideGuard::set(&temp);
 
@@ -2715,7 +2743,10 @@ hLkrYGiVNhsErnjKIgS7/EIHdsihRANCAARznG0WLhenNiMW5jA3SwFpTNyet2zw\n\
         assert!(!variants[0].with_cloudide_token);
         assert!(variants[0].payload.get("DeviceProof").is_none());
         assert_eq!(
-            variants[0].payload.get("ClientSecret").and_then(|v| v.as_str()),
+            variants[0]
+                .payload
+                .get("ClientSecret")
+                .and_then(|v| v.as_str()),
             Some("-")
         );
 
@@ -2818,15 +2849,14 @@ hLkrYGiVNhsErnjKIgS7/EIHdsihRANCAARznG0WLhenNiMW5jA3SwFpTNyet2zw\n\
             let jwt = make_jwt(uid);
 
             // 首次落库：新账号。
-            let (record, returned) =
-                login_with_exchanged_tokens_for(
-                    variant,
-                    jwt.clone(),
-                    Some("rt-1".into()),
-                    Some("小明".into()),
-                    None,
-                )
-                .expect("首次落库不应失败");
+            let (record, returned) = login_with_exchanged_tokens_for(
+                variant,
+                jwt.clone(),
+                Some("rt-1".into()),
+                Some("小明".into()),
+                None,
+            )
+            .expect("首次落库不应失败");
             assert_eq!(returned, jwt);
             assert_eq!(record.name, "小明");
             assert_eq!(record.refresh_token.as_deref(), Some("rt-1"));
@@ -2835,9 +2865,14 @@ hLkrYGiVNhsErnjKIgS7/EIHdsihRANCAARznG0WLhenNiMW5jA3SwFpTNyet2zw\n\
 
             // 再次落库：`name` 不传 ⇒ 保留用户自己的名字；jwt/refresh_token 覆盖。
             let jwt2 = make_jwt(uid);
-            let (updated, _) =
-                login_with_exchanged_tokens_for(variant, jwt2.clone(), Some("rt-2".into()), None, None)
-                    .expect("重复落库不应失败");
+            let (updated, _) = login_with_exchanged_tokens_for(
+                variant,
+                jwt2.clone(),
+                Some("rt-2".into()),
+                None,
+                None,
+            )
+            .expect("重复落库不应失败");
             assert_eq!(updated.name, "小明", "name 不该被上游空值冲掉");
             assert_eq!(updated.refresh_token.as_deref(), Some("rt-2"));
             assert_eq!(updated.jwt, jwt2);
@@ -2862,15 +2897,14 @@ hLkrYGiVNhsErnjKIgS7/EIHdsihRANCAARznG0WLhenNiMW5jA3SwFpTNyet2zw\n\
     #[test]
     fn login_with_exchanged_tokens_for_rejects_unparsable_jwt() {
         with_temp_home(|| {
-            let error =
-                login_with_exchanged_tokens_for(
-                    TraeVariant::TraeWork,
-                    "not-a-jwt".into(),
-                    None,
-                    None,
-                    None,
-                )
-                .expect_err("解析不出 uid 必须拒绝");
+            let error = login_with_exchanged_tokens_for(
+                TraeVariant::TraeWork,
+                "not-a-jwt".into(),
+                None,
+                None,
+                None,
+            )
+            .expect_err("解析不出 uid 必须拒绝");
             assert!(error.contains("UserID"), "{error}");
             assert!(entries_for(TraeVariant::TraeWork).is_empty());
         });
@@ -2885,8 +2919,14 @@ hLkrYGiVNhsErnjKIgS7/EIHdsihRANCAARznG0WLhenNiMW5jA3SwFpTNyet2zw\n\
         with_temp_home(|| {
             let variant = TraeVariant::TraeWork;
             let uid = "3333333333333333";
-            login_with_exchanged_tokens_for(variant, make_jwt(uid), Some("rt-old".into()), None, None)
-                .expect("造账号不应失败");
+            login_with_exchanged_tokens_for(
+                variant,
+                make_jwt(uid),
+                Some("rt-old".into()),
+                None,
+                None,
+            )
+            .expect("造账号不应失败");
 
             // 上游轮换了 refresh token ⇒ 必须覆盖。
             apply_refreshed_tokens_for(variant, uid, &make_jwt(uid), Some("rt-new".into()))
@@ -3259,7 +3299,10 @@ hLkrYGiVNhsErnjKIgS7/EIHdsihRANCAARznG0WLhenNiMW5jA3SwFpTNyet2zw\n\
 
         let record = import_local_for(TraeVariant::TraeWork).expect("导入必须成功");
         let uid = resolve_user_id(&record);
-        assert_eq!(uid, grid.cells[1].user_id, "必须导入次位（装着登录态）那个账号");
+        assert_eq!(
+            uid, grid.cells[1].user_id,
+            "必须导入次位（装着登录态）那个账号"
+        );
 
         let stored = load_accounts_for(TraeVariant::TraeWork);
         assert_eq!(
@@ -3276,11 +3319,7 @@ hLkrYGiVNhsErnjKIgS7/EIHdsihRANCAARznG0WLhenNiMW5jA3SwFpTNyet2zw\n\
     fn import_local_for_keeps_the_existing_binding_when_device_identity_is_missing() {
         let env = crate::modules::trae::test_support::TempEnv::empty();
         // 有登录态，但**一条 `icube-dc` 都没有**（客户端从未注册设备身份）。
-        let grid = work_grid_with_devices(
-            &env,
-            &[(true, true, true), (false, false, false)],
-            &[],
-        );
+        let grid = work_grid_with_devices(&env, &[(true, true, true), (false, false, false)], &[]);
         let uid = grid.cells[0].user_id.clone();
 
         let mut file = load_accounts_for(TraeVariant::TraeWork);
@@ -3332,8 +3371,11 @@ hLkrYGiVNhsErnjKIgS7/EIHdsihRANCAARznG0WLhenNiMW5jA3SwFpTNyet2zw\n\
         let env = crate::modules::trae::test_support::TempEnv::empty();
         let variant = TraeVariant::TraeWork;
         // 两个候选都注册了设备身份，各给不同 deviceId；首位活跃。
-        let cells =
-            fixtures::write_device_entries_grid(&env.appdata(), variant, &[(true, true), (true, false)]);
+        let cells = fixtures::write_device_entries_grid(
+            &env.appdata(),
+            variant,
+            &[(true, true), (true, false)],
+        );
         let (bound_id, bound_name, bound_dir) = &cells[1];
         let (other_id, other_name, other_dir) = &cells[0];
         assert_ne!(bound_id, other_id, "前置：两台设备必须是不同的 id");
@@ -3348,7 +3390,8 @@ hLkrYGiVNhsErnjKIgS7/EIHdsihRANCAARznG0WLhenNiMW5jA3SwFpTNyet2zw\n\
         );
 
         // 翻转活跃度：把**绑定那台**（次位）钉旧、把首位钉新。
-        let storage = |dir: &std::path::Path| dir.join("User").join("globalStorage").join("storage.json");
+        let storage =
+            |dir: &std::path::Path| dir.join("User").join("globalStorage").join("storage.json");
         fixtures::pin_activity(&storage(other_dir), 0);
         fixtures::pin_activity(&storage(bound_dir), 24);
 
@@ -3380,8 +3423,11 @@ hLkrYGiVNhsErnjKIgS7/EIHdsihRANCAARznG0WLhenNiMW5jA3SwFpTNyet2zw\n\
         use crate::modules::trae::icube::test_support as fixtures;
         let env = crate::modules::trae::test_support::TempEnv::empty();
         let variant = TraeVariant::TraeWork;
-        let cells =
-            fixtures::write_device_entries_grid(&env.appdata(), variant, &[(true, true), (true, false)]);
+        let cells = fixtures::write_device_entries_grid(
+            &env.appdata(),
+            variant,
+            &[(true, true), (true, false)],
+        );
         let (_, active_name, _) = &cells[0];
 
         let credential = resolve_refresh_credential(variant, None).expect("有设备身份，应能取到");
@@ -3431,7 +3477,8 @@ hLkrYGiVNhsErnjKIgS7/EIHdsihRANCAARznG0WLhenNiMW5jA3SwFpTNyet2zw\n\
             let variant = TraeVariant::TraeWork;
             let mut file = load_accounts_for(variant);
             file.accounts.push(raw("old-uid", "旧号"));
-            file.device_bindings.insert("old-uid".into(), "dev-old".into());
+            file.device_bindings
+                .insert("old-uid".into(), "dev-old".into());
             save_accounts_for(variant, &file).expect("造绑定");
 
             // ① uid 未变（只改名）⇒ 绑定必须保留。
@@ -3454,7 +3501,10 @@ hLkrYGiVNhsErnjKIgS7/EIHdsihRANCAARznG0WLhenNiMW5jA3SwFpTNyet2zw\n\
                 None,
                 "旧设备的私钥对新账号本就不适用，不得搬过去"
             );
-            assert!(find_for(variant, "new-uid").is_some(), "账号应已改挂到新 uid");
+            assert!(
+                find_for(variant, "new-uid").is_some(),
+                "账号应已改挂到新 uid"
+            );
         });
     }
 
@@ -3463,11 +3513,13 @@ hLkrYGiVNhsErnjKIgS7/EIHdsihRANCAARznG0WLhenNiMW5jA3SwFpTNyet2zw\n\
     fn same_uid_binds_independently_per_variant() {
         with_temp_home(|| {
             let mut work = load_accounts_for(TraeVariant::TraeWork);
-            work.device_bindings.insert("same-uid".into(), "dev-work".into());
+            work.device_bindings
+                .insert("same-uid".into(), "dev-work".into());
             save_accounts_for(TraeVariant::TraeWork, &work).expect("写 TraeWork 绑定");
 
             let mut cn = load_accounts_for(TraeVariant::Global);
-            cn.device_bindings.insert("same-uid".into(), "dev-cn".into());
+            cn.device_bindings
+                .insert("same-uid".into(), "dev-cn".into());
             save_accounts_for(TraeVariant::Global, &cn).expect("写 Trae 绑定");
 
             assert_eq!(
@@ -3519,7 +3571,10 @@ hLkrYGiVNhsErnjKIgS7/EIHdsihRANCAARznG0WLhenNiMW5jA3SwFpTNyet2zw\n\
             assert!(find_for(variant, "u1").is_none(), "live 账号库必须不再有它");
             assert_eq!(bound_device_id(variant, "u1"), None, "绑定必须离开 live");
             let groups: GroupsFile = store::read_json(&groups_path);
-            assert!(!groups.membership.contains_key("u1"), "分组关系必须离开 live");
+            assert!(
+                !groups.membership.contains_key("u1"),
+                "分组关系必须离开 live"
+            );
 
             // 回收站侧三项齐全，且带 30 天到期时间。
             let trash = load_trash_for_region(region);
@@ -3529,7 +3584,11 @@ hLkrYGiVNhsErnjKIgS7/EIHdsihRANCAARznG0WLhenNiMW5jA3SwFpTNyet2zw\n\
                 Some("dev-1"),
                 "设备绑定必须移入回收站（否则恢复后拿不到旧设备私钥）"
             );
-            assert_eq!(trash[0].group_id.as_deref(), Some("g-1"), "分组关系必须移入回收站");
+            assert_eq!(
+                trash[0].group_id.as_deref(),
+                Some("g-1"),
+                "分组关系必须移入回收站"
+            );
             assert_eq!(trash[0].origin_scope, scope_of_trae_region(region));
             assert!(
                 trash[0].expires_at > trash[0].deleted_at,
@@ -3551,7 +3610,10 @@ hLkrYGiVNhsErnjKIgS7/EIHdsihRANCAARznG0WLhenNiMW5jA3SwFpTNyet2zw\n\
                 Some("g-1"),
                 "分组关系必须还原"
             );
-            assert!(load_trash_for_region(region).is_empty(), "恢复后回收站必须清空该条");
+            assert!(
+                load_trash_for_region(region).is_empty(),
+                "恢复后回收站必须清空该条"
+            );
         });
     }
 
@@ -3575,7 +3637,10 @@ hLkrYGiVNhsErnjKIgS7/EIHdsihRANCAARznG0WLhenNiMW5jA3SwFpTNyet2zw\n\
 
             purge_for_region(region, "u1").expect("永久删除应成功");
 
-            assert!(load_trash_for_region(region).is_empty(), "回收站条目必须被销毁");
+            assert!(
+                load_trash_for_region(region).is_empty(),
+                "回收站条目必须被销毁"
+            );
             assert!(!work_snap.exists(), "TraeWork 快照必须被销毁");
             assert!(!code_snap.exists(), "Trae 快照必须被销毁");
         });
@@ -3599,7 +3664,11 @@ hLkrYGiVNhsErnjKIgS7/EIHdsihRANCAARznG0WLhenNiMW5jA3SwFpTNyet2zw\n\
             entry(now - TRASH_RETENTION_MS - 1), // 已过期
             entry(now - 1_000),                  // 未过期
         ];
-        assert_eq!(sweep_trash_entries(&mut entries, now), 1, "应只清掉过期那条");
+        assert_eq!(
+            sweep_trash_entries(&mut entries, now),
+            1,
+            "应只清掉过期那条"
+        );
         assert_eq!(entries.len(), 1);
         assert!(entries[0].expires_at > now, "保留的必须是未过期条目");
 
@@ -3609,7 +3678,8 @@ hLkrYGiVNhsErnjKIgS7/EIHdsihRANCAARznG0WLhenNiMW5jA3SwFpTNyet2zw\n\
         assert_eq!(sweep_trash_entries(&mut many, now), 5, "应裁掉超出的 5 条");
         assert_eq!(many.len(), TRASH_MAX_ENTRIES, "必须裁到上限");
         assert!(
-            many.iter().all(|e| e.deleted_at >= now - TRASH_MAX_ENTRIES as i64),
+            many.iter()
+                .all(|e| e.deleted_at >= now - TRASH_MAX_ENTRIES as i64),
             "保留的必须是较新的（先到先出）"
         );
     }

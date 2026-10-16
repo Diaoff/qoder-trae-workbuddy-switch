@@ -318,9 +318,7 @@ where
         )
     })?;
     let mut json: Value = serde_json::from_slice(&plaintext).map_err(|error| {
-        format!(
-            "现有登录态解密成功但不是 JSON（{error}）—— 客户端存储格式可能已变更。"
-        )
+        format!("现有登录态解密成功但不是 JSON（{error}）—— 客户端存储格式可能已变更。")
     })?;
 
     // 原地改字段（只动已知键，其余一律保留）。
@@ -366,7 +364,10 @@ fn apply_desktop_overrides(json: &mut Value, account: &RawAccount) -> Result<(),
         object.insert("token".to_string(), Value::String(token.to_string()));
     }
     if let Some(refresh) = account.refresh_token.as_deref().filter(|t| !t.is_empty()) {
-        object.insert("refreshToken".to_string(), Value::String(refresh.to_string()));
+        object.insert(
+            "refreshToken".to_string(),
+            Value::String(refresh.to_string()),
+        );
     }
     if let Some(millis) = account.expires_at {
         if let Some(when) = chrono::DateTime::from_timestamp_millis(millis) {
@@ -875,7 +876,10 @@ mod tests {
     /// —— 那正是「前端传错程序位却被静默写成桌面版」的形态。
     #[test]
     fn program_parse_is_fail_closed() {
-        assert_eq!(QoderProgram::parse("desktop-app"), Some(QoderProgram::Desktop));
+        assert_eq!(
+            QoderProgram::parse("desktop-app"),
+            Some(QoderProgram::Desktop)
+        );
         assert_eq!(QoderProgram::parse("cli"), Some(QoderProgram::Cli));
         // ★ 不接受「看起来像」的旧写法 —— 两套 id 并存正是本条护栏要防的。
         assert_eq!(QoderProgram::parse("desktop"), None);
@@ -899,7 +903,10 @@ mod tests {
         assert_eq!(QoderProgram::Cli.label(), "Qoder CLI");
         // ★★ 与来源 id **逐字相同**：程序位按这个 id 去查来源表，不同就永远落空
         //    （真机踩过：桌面版明明登着，界面显示「未检测到」）。
-        assert_eq!(QoderProgram::Desktop.as_str(), super::super::profile::KIND_DESKTOP);
+        assert_eq!(
+            QoderProgram::Desktop.as_str(),
+            super::super::profile::KIND_DESKTOP
+        );
         assert_eq!(QoderProgram::Cli.as_str(), super::super::profile::KIND_CLI);
         assert_eq!(QoderProgram::Desktop.as_str(), "desktop-app");
     }
@@ -962,16 +969,10 @@ mod tests {
         let path = seed_desktop(QoderRegion::Cn, DESKTOP_PLAINTEXT);
         let raw = account("u1", "dt-new", "drt-new");
 
-        switch_desktop(
-            QoderRegion::Cn,
-            &raw,
-            identity_encode,
-            identity_decode,
-        )
-        .expect("写回应成功");
+        switch_desktop(QoderRegion::Cn, &raw, identity_encode, identity_decode)
+            .expect("写回应成功");
 
-        let after: Value =
-            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        let after: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
 
         // 已知字段被覆盖。
         assert_eq!(after["token"], json!("dt-new"));
@@ -984,7 +985,10 @@ mod tests {
         assert_eq!(after["anotherUnknown"], json!("keep-me"));
         assert_eq!(after["schemaVersion"], json!(1));
         assert_eq!(after["expiresAt"], json!("2026-01-01T00:00:00+00:00"));
-        assert_eq!(after["refreshTokenExpiresAt"], json!("2026-02-01T00:00:00+00:00"));
+        assert_eq!(
+            after["refreshTokenExpiresAt"],
+            json!("2026-02-01T00:00:00+00:00")
+        );
         assert_eq!(after["user"]["email"], json!("a@b.c"));
         assert_eq!(after["user"]["phone"], json!("13800000000"));
         assert_eq!(after["user"]["avatarUrl"], json!("https://x/y.png"));
@@ -1003,8 +1007,7 @@ mod tests {
 
         switch_desktop(QoderRegion::Cn, &raw, identity_encode, identity_decode).unwrap();
 
-        let after: Value =
-            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        let after: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
         let expires = after["expiresAt"].as_str().expect("expiresAt 必须是字符串");
         assert!(expires.starts_with("2027-01-15"), "{expires}");
         assert!(expires.contains('T') && expires.contains(':'), "{expires}");
@@ -1069,8 +1072,8 @@ mod tests {
     fn verify_error_also_rolls_back() {
         let _env = TestEnv::new();
         let path = seed_desktop(QoderRegion::Cn, DESKTOP_PLAINTEXT);
-        let backup = backup_auth_file_for_switch(QoderRegion::Cn, QoderProgram::Desktop, &path)
-            .unwrap();
+        let backup =
+            backup_auth_file_for_switch(QoderRegion::Cn, QoderProgram::Desktop, &path).unwrap();
         std::fs::write(&path, b"BROKEN-CONTENT").unwrap();
 
         let error = verify_or_rollback(
@@ -1098,7 +1101,10 @@ mod tests {
         store_account(QoderRegion::Cn, foreign); // 硬塞进国内版库
         seed_desktop(QoderRegion::Cn, DESKTOP_PLAINTEXT);
 
-        let error = switch_account_for_with(QoderRegion::Cn, QoderProgram::Desktop, "u-global", |_| false)
+        let error =
+            switch_account_for_with(QoderRegion::Cn, QoderProgram::Desktop, "u-global", |_| {
+                false
+            })
             .unwrap_err();
         assert!(error.contains("qoder.com"), "{error}");
         assert!(error.contains("qoder.com.cn"), "{error}");
@@ -1128,13 +1134,22 @@ mod tests {
         let result =
             switch_account_for_with(QoderRegion::Cn, QoderProgram::Cli, "u1", |_| false).unwrap();
         let text = serde_json::to_string(&result).unwrap();
-        assert!(!text.contains("dt-abcdefghijklmnop"), "泄露了访问令牌：{text}");
-        assert!(!text.contains("drt-abcdefghijklmnop"), "泄露了刷新令牌：{text}");
+        assert!(
+            !text.contains("dt-abcdefghijklmnop"),
+            "泄露了访问令牌：{text}"
+        );
+        assert!(
+            !text.contains("drt-abcdefghijklmnop"),
+            "泄露了刷新令牌：{text}"
+        );
         assert_eq!(result["ok"], json!(true));
         assert_eq!(result["program"], json!("cli"));
         assert_eq!(result["region"], json!("cn"));
         assert_eq!(result["uid"], json!("u1"));
-        assert!(result["written"]["tokenMasked"].as_str().unwrap().contains('…'));
+        assert!(result["written"]["tokenMasked"]
+            .as_str()
+            .unwrap()
+            .contains('…'));
     }
 
     // ── CLI：明文分支与加密分支 ──
@@ -1153,7 +1168,10 @@ mod tests {
     fn cli_plaintext_branch_round_trips() {
         let _env = TestEnv::new();
         seed_machine_id(QoderRegion::Cn, "0123456789abcdef");
-        store_account(QoderRegion::Cn, account("u1", "dt-new-token", "drt-new-token"));
+        store_account(
+            QoderRegion::Cn,
+            account("u1", "dt-new-token", "drt-new-token"),
+        );
 
         let auth = paths::cli_auth_file(QoderRegion::Cn);
         std::fs::create_dir_all(auth.parent().unwrap()).unwrap();
@@ -1184,7 +1202,10 @@ mod tests {
     fn cli_encrypted_branch_round_trips() {
         let _env = TestEnv::new();
         let mid_path = seed_machine_id(QoderRegion::Cn, "fedcba9876543210");
-        store_account(QoderRegion::Cn, account("u1", "dt-new-token", "drt-new-token"));
+        store_account(
+            QoderRegion::Cn,
+            account("u1", "dt-new-token", "drt-new-token"),
+        );
 
         // 用 cosy 的加密器造一份合法密文（与 CLI 写路径同源）。
         let mut key = [0u8; 16];
@@ -1208,21 +1229,27 @@ mod tests {
         // 用 profile 的读路径验证（它会用同一个 machine_id 解密）。
         assert_eq!(profile::probe_cli(QoderRegion::Cn).state, LocalState::Ready);
         // machine_id 文件本身不该被改写。
-        assert_eq!(std::fs::read_to_string(&mid_path).unwrap().trim(), "fedcba9876543210");
+        assert_eq!(
+            std::fs::read_to_string(&mid_path).unwrap().trim(),
+            "fedcba9876543210"
+        );
     }
 
     /// CLI 凭据是密文但取不到 `machine_id` ⇒ 拒绝，且**不动原文件**。
     #[test]
     fn cli_encrypted_without_machine_id_is_refused() {
         let _env = TestEnv::new();
-        store_account(QoderRegion::Cn, account("u1", "dt-new-token", "drt-new-token"));
+        store_account(
+            QoderRegion::Cn,
+            account("u1", "dt-new-token", "drt-new-token"),
+        );
 
         let auth = paths::cli_auth_file(QoderRegion::Cn);
         std::fs::create_dir_all(auth.parent().unwrap()).unwrap();
         std::fs::write(&auth, b"QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVo=").unwrap();
 
-        let error =
-            switch_account_for_with(QoderRegion::Cn, QoderProgram::Cli, "u1", |_| false).unwrap_err();
+        let error = switch_account_for_with(QoderRegion::Cn, QoderProgram::Cli, "u1", |_| false)
+            .unwrap_err();
         assert!(error.contains("设备标识"), "{error}");
         assert_eq!(
             std::fs::read(&auth).unwrap(),
@@ -1254,8 +1281,9 @@ mod tests {
         let _env = TestEnv::new();
         store_account(QoderRegion::Cn, account("u1", "dt-new", "drt-new"));
 
-        let error = switch_account_for_with(QoderRegion::Cn, QoderProgram::Desktop, "u1", |_| false)
-            .unwrap_err();
+        let error =
+            switch_account_for_with(QoderRegion::Cn, QoderProgram::Desktop, "u1", |_| false)
+                .unwrap_err();
         assert!(error.contains("登录一次"), "{error}");
     }
 
@@ -1266,7 +1294,10 @@ mod tests {
     fn writeback_reports_the_backup_path() {
         let _env = TestEnv::new();
         seed_machine_id(QoderRegion::Cn, "0123456789abcdef");
-        store_account(QoderRegion::Cn, account("u1", "dt-new-token", "drt-new-token"));
+        store_account(
+            QoderRegion::Cn,
+            account("u1", "dt-new-token", "drt-new-token"),
+        );
         let auth = paths::cli_auth_file(QoderRegion::Cn);
         std::fs::create_dir_all(auth.parent().unwrap()).unwrap();
         let original = br#"{"token":"dt-old-token","user":{"id":"u1"}}"#;
@@ -1276,7 +1307,10 @@ mod tests {
             switch_account_for_with(QoderRegion::Cn, QoderProgram::Cli, "u1", |_| false).unwrap();
         let backup_path = result["backupPath"].as_str().expect("应有备份路径");
         let backup = PathBuf::from(backup_path);
-        assert!(backup.starts_with(crate::modules::config::backup_dir()), "{backup_path}");
+        assert!(
+            backup.starts_with(crate::modules::config::backup_dir()),
+            "{backup_path}"
+        );
         assert!(backup.exists(), "备份文件应真的存在");
         assert_eq!(
             std::fs::read(&backup).unwrap(),

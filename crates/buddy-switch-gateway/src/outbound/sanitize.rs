@@ -237,7 +237,9 @@ mod tests {
     fn bare_header_key_is_abbreviated_case_insensitively() {
         let cleaned = sanitize_text("see `X-Anthropic-Billing-Header` in docs");
         assert!(
-            !cleaned.to_lowercase().contains("x-anthropic-billing-header"),
+            !cleaned
+                .to_lowercase()
+                .contains("x-anthropic-billing-header"),
             "裸键名必须被改写: {cleaned}"
         );
         assert!(cleaned.contains(BARE_HEADER_REPLACEMENT));
@@ -247,16 +249,20 @@ mod tests {
     fn cc_key_values_are_removed_in_a_loop() {
         let text = "a cc_version=1.2.3; cc_entrypoint=cli; b";
         let cleaned = sanitize_text(text);
-        assert!(!cleaned.contains("cc_version"), "首个键值必须清除: {cleaned}");
-        assert!(!cleaned.contains("cc_entrypoint"), "相邻键值也必须清除: {cleaned}");
+        assert!(
+            !cleaned.contains("cc_version"),
+            "首个键值必须清除: {cleaned}"
+        );
+        assert!(
+            !cleaned.contains("cc_entrypoint"),
+            "相邻键值也必须清除: {cleaned}"
+        );
         assert!(cleaned.contains('a') && cleaned.contains('b'));
     }
 
     #[test]
     fn identity_sentence_is_rewritten_with_one_word() {
-        let cleaned = sanitize_text(
-            "You are Claude Code, Anthropic's official CLI for Claude.",
-        );
+        let cleaned = sanitize_text("You are Claude Code, Anthropic's official CLI for Claude.");
         assert!(cleaned.contains("official CLI tool for Claude"));
         assert!(!cleaned.contains("official CLI for Claude"));
         assert!(cleaned.ends_with('.'), "原有标点必须保留: {cleaned}");

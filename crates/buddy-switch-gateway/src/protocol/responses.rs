@@ -217,7 +217,8 @@ fn parts_to_content(content: Option<&Value>) -> Value {
                     Some("input_image") => {
                         has_image = true;
                         if let Some(url) = part.get("image_url").and_then(Value::as_str) {
-                            multimodal.push(json!({"type": "image_url", "image_url": {"url": url}}));
+                            multimodal
+                                .push(json!({"type": "image_url", "image_url": {"url": url}}));
                         }
                     }
                     _ => {}
@@ -941,10 +942,7 @@ mod tests {
         // 内置工具被跳过，只剩 function
         assert_eq!(upstream["tools"].as_array().unwrap().len(), 1);
         assert_eq!(upstream["tools"][0]["function"]["name"], "get_weather");
-        assert_eq!(
-            upstream["tool_choice"]["function"]["name"],
-            "get_weather"
-        );
+        assert_eq!(upstream["tool_choice"]["function"]["name"], "get_weather");
     }
 
     #[test]
@@ -1117,8 +1115,7 @@ mod tests {
         let events = collect_events(stream).await;
         let completed = events.last().unwrap();
         assert_eq!(
-            completed["response"]["output"][0]["content"][0]["text"],
-            "ab",
+            completed["response"]["output"][0]["content"][0]["text"], "ab",
             "跨 chunk 切分的 JSON 必须正确拼回"
         );
     }

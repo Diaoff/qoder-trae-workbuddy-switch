@@ -8,9 +8,7 @@ use chrono::{Local, NaiveDate, NaiveDateTime};
 use serde_json::{json, Value};
 use std::collections::HashSet;
 
-use crate::modules::account::{
-    account_display_name, build_auth_headers, envelope_token_error,
-};
+use crate::modules::account::{account_display_name, build_auth_headers, envelope_token_error};
 use crate::modules::config::{http_request, load_checkin_config, now_ms, WORKBUDDY_API_ENDPOINT};
 use crate::modules::credit_usage;
 use crate::modules::refresh::{ensure_fresh_token_for, refresh_account_token_for};
@@ -55,8 +53,7 @@ fn parse_number(value: Option<&Value>) -> Option<f64> {
 }
 
 fn first_number(value: &Value, keys: &[&str]) -> Option<f64> {
-    keys.iter()
-        .find_map(|key| parse_number(value.get(*key)))
+    keys.iter().find_map(|key| parse_number(value.get(*key)))
 }
 
 /// 腾讯 billing 接口返回的**墙钟**时区：固定 UTC+8，**与运行机器的时区无关**。
@@ -163,9 +160,11 @@ fn has_resource_accounts(response: &Value) -> bool {
         &["data", "accounts"],
         &["data", "data", "accounts"],
     ];
-    paths
-        .iter()
-        .any(|path| value_at_path(response, path).and_then(Value::as_array).is_some())
+    paths.iter().any(|path| {
+        value_at_path(response, path)
+            .and_then(Value::as_array)
+            .is_some()
+    })
 }
 
 fn has_resource_packages(response: &Value) -> bool {
@@ -177,9 +176,11 @@ fn has_resource_packages(response: &Value) -> bool {
         &["data", "packages"],
         &["data", "data", "packages"],
     ];
-    paths
-        .iter()
-        .any(|path| value_at_path(response, path).and_then(Value::as_array).is_some())
+    paths.iter().any(|path| {
+        value_at_path(response, path)
+            .and_then(Value::as_array)
+            .is_some()
+    })
 }
 
 fn resource_summary(raw: &Value, now: i64) -> Value {
@@ -220,7 +221,11 @@ fn resource_summary(raw: &Value, now: i64) -> Value {
     let raw_used = first_number(raw, &used_keys)
         .or_else(|| slice.and_then(|value| first_number(value, &used_keys)));
     let total = raw_total
-        .or_else(|| raw_remaining.zip(raw_used).map(|(remaining, used)| remaining + used))
+        .or_else(|| {
+            raw_remaining
+                .zip(raw_used)
+                .map(|(remaining, used)| remaining + used)
+        })
         .or(raw_remaining)
         .or(raw_used)
         .unwrap_or(0.0)
@@ -435,7 +440,10 @@ fn paid_packages_body() -> Value {
 
 fn free_packages_body() -> Value {
     let now = Local::now();
-    let start = now.date_naive().and_hms_opt(0, 0, 0).unwrap_or(now.naive_local());
+    let start = now
+        .date_naive()
+        .and_hms_opt(0, 0, 0)
+        .unwrap_or(now.naive_local());
     let end = now
         .date_naive()
         .and_hms_opt(23, 59, 59)
@@ -765,12 +773,9 @@ pub async fn get_credit_expiry_for(region: Region, account: &Value) -> Value {
     let account_id = account.get("id").cloned().unwrap_or(Value::Null);
     let now = now_ms();
     let responses = fetch_new_resource_responses(region, account).await;
-    if let Some(resources) = normalized_new_resources(
-        &responses.summary,
-        &responses.paid,
-        &responses.free,
-        now,
-    ) {
+    if let Some(resources) =
+        normalized_new_resources(&responses.summary, &responses.paid, &responses.free, now)
+    {
         return credit_result(account, resources, now);
     }
 
@@ -822,9 +827,13 @@ mod tests {
             "access_token": {"$wbEncrypted": 1, "envelope": "…"},
             "refresh_token": {"$wbEncrypted": 1, "envelope": "…"},
         });
-        let resp =
-            authenticated_post_for(Region::Cn, &account, "https://example.invalid/api", json!({}))
-                .await;
+        let resp = authenticated_post_for(
+            Region::Cn,
+            &account,
+            "https://example.invalid/api",
+            json!({}),
+        )
+        .await;
         assert_eq!(resp["code"], -2, "应在发请求之前短路：{resp}");
         let message = resp["message"].as_str().expect("message 应为字符串");
         assert!(message.contains("加密信封"), "文案应可读：{message}");
@@ -872,7 +881,8 @@ mod tests {
         // 为什么必须钉住：判据一旦退化成「解析 `error` 文案里含某几个字」，
         // 文案一改按钮就**静默消失**（不会变红）—— 本仓已有同类事故的纪律记录。
         assert_eq!(
-            result["reason"], json!(ENCRYPTED_CREDENTIAL_REASON),
+            result["reason"],
+            json!(ENCRYPTED_CREDENTIAL_REASON),
             "信封凭据必须带回契约常量 reason，前端不能靠解析中文文案判断：{result}"
         );
         assert_eq!(result["accountId"], json!("envelope-only"));
@@ -1196,7 +1206,10 @@ mod tests {
         );
 
         let headers = resource_auth_headers(&codebuddy, new_resource_endpoint(&codebuddy));
-        assert_eq!(headers.get("X-Client-Platform").map(String::as_str), Some("web"));
+        assert_eq!(
+            headers.get("X-Client-Platform").map(String::as_str),
+            Some("web")
+        );
         assert_eq!(
             headers.get("Accept").map(String::as_str),
             Some("application/json, text/plain, */*")
@@ -1275,7 +1288,9 @@ mod tests {
             "code": 10085,
             "msg": "请求不合法，如有疑问请联系客服"
         })));
-        assert!(!is_transport_error(&json!({"code": 401, "message": "unauthorized"})));
+        assert!(!is_transport_error(
+            &json!({"code": 401, "message": "unauthorized"})
+        ));
         assert!(!is_transport_error(&json!({"code": 0, "data": {}})));
         assert!(!is_unauthorized(&json!({
             "code": 10085,

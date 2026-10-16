@@ -384,12 +384,7 @@ mod tests {
 
     #[test]
     fn normalize_is_idempotent() {
-        for raw in [
-            "  ##  - 用户偏好  ",
-            "- 1. 嵌套项",
-            "普通文本",
-            "### 标题",
-        ] {
+        for raw in ["  ##  - 用户偏好  ", "- 1. 嵌套项", "普通文本", "### 标题"] {
             let once = normalize_memory_line(raw);
             if let Some(once) = once {
                 assert_eq!(

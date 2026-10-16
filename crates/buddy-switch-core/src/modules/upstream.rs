@@ -188,7 +188,11 @@ fn normalize_tool_choice(obj: &mut Map<String, Value>) {
                         }
                     }
                     let name = name.trim().to_string();
-                    let value = if name.is_empty() { "auto".to_string() } else { name };
+                    let value = if name.is_empty() {
+                        "auto".to_string()
+                    } else {
+                        name
+                    };
                     obj.insert("tool_choice".to_string(), json!(value));
                 }
                 _ => {
@@ -354,8 +358,15 @@ impl UpstreamClient {
         user_agent: &str,
     ) -> UpstreamChatResult {
         // 行为与抽取前**逐字一致**（一律 POST）—— LLM 两条路径都走这里，不给它们引入任何可变性。
-        self.forward_with_method(url, headers, body, signal, user_agent, reqwest::Method::POST)
-            .await
+        self.forward_with_method(
+            url,
+            headers,
+            body,
+            signal,
+            user_agent,
+            reqwest::Method::POST,
+        )
+        .await
     }
 
     /// 同 [`Self::forward_with`]，但**出站方法可指定**。
@@ -454,8 +465,15 @@ impl UpstreamClient {
         };
         let url = format!("{}{path}", region_spec(region).billing_base);
         let headers = account::build_auth_headers(acc);
-        self.forward_with_method(&url, headers, body_json.to_string(), signal, &user_agent, method)
-            .await
+        self.forward_with_method(
+            &url,
+            headers,
+            body_json.to_string(),
+            signal,
+            &user_agent,
+            method,
+        )
+        .await
     }
 
     /// 同 [`Self::chat_stream`]，但允许调用方注入额外出站头（会话头族 / 派生标识）。
@@ -492,8 +510,14 @@ impl UpstreamClient {
             }
         }
         // ★ 出站交给通用实现 —— 行为与抽取前**逐字一致**（仅把「URL/头/body 的构造」留在本函数）。
-        self.forward_with(&url, headers, chat_body_for(region, body_json), signal, &user_agent)
-            .await
+        self.forward_with(
+            &url,
+            headers,
+            chat_body_for(region, body_json),
+            signal,
+            &user_agent,
+        )
+        .await
     }
 
     /// POST 刷新端点；`X-Refresh-Token` 仅在此出现。
@@ -806,7 +830,11 @@ impl UpstreamClient {
                     .unwrap_or("(unnamed)")
                     .to_string(),
                 remain,
-                size: if size > 0.0 { size } else { number("CapacitySize") },
+                size: if size > 0.0 {
+                    size
+                } else {
+                    number("CapacitySize")
+                },
             });
         }
         Ok(Credits { total, accounts })
@@ -814,10 +842,14 @@ impl UpstreamClient {
 
     fn resolve_chat_ua(&self, region: Region) -> Result<String, String> {
         let identity = identity::resolve_chat_identity(region);
-        identity::chat_user_agent(region, &identity.client_version, identity.cli_version.as_deref())
-            .or_else(|_| {
-                identity::chat_user_agent(region, region_spec(region).fallback_app_version, None)
-            })
+        identity::chat_user_agent(
+            region,
+            &identity.client_version,
+            identity.cli_version.as_deref(),
+        )
+        .or_else(|_| {
+            identity::chat_user_agent(region, region_spec(region).fallback_app_version, None)
+        })
     }
 }
 
@@ -977,10 +1009,7 @@ pub fn parse_model_catalog(
             .filter(|value| !value.is_empty())
             .map(str::to_string);
         let badges = parse_badges(wrapped.get("tags"));
-        let free = credits
-            .as_deref()
-            .map(is_zero_credits)
-            .unwrap_or(false);
+        let free = credits.as_deref().map(is_zero_credits).unwrap_or(false);
         by_id.insert(
             id.clone(),
             CatalogModel {
@@ -1075,7 +1104,10 @@ mod tests {
             classify_upstream_error(200, "error code 12153"),
             UpstreamErrorKind::SessionDead
         );
-        assert_eq!(classify_upstream_error(429, ""), UpstreamErrorKind::SoftRate);
+        assert_eq!(
+            classify_upstream_error(429, ""),
+            UpstreamErrorKind::SoftRate
+        );
         assert_eq!(
             classify_upstream_error(404, "model not found"),
             UpstreamErrorKind::NotFound
@@ -1132,10 +1164,9 @@ mod tests {
         let auto: Value =
             serde_json::from_str(&prepare_chat_body(r#"{"tool_choice":{"type":"auto"}}"#)).unwrap();
         assert_eq!(auto["tool_choice"], json!("auto"));
-        let required: Value = serde_json::from_str(&prepare_chat_body(
-            r#"{"tool_choice":{"type":"required"}}"#,
-        ))
-        .unwrap();
+        let required: Value =
+            serde_json::from_str(&prepare_chat_body(r#"{"tool_choice":{"type":"required"}}"#))
+                .unwrap();
         assert_eq!(required["tool_choice"], json!("required"));
     }
 

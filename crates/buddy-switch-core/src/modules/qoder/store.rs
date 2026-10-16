@@ -22,7 +22,10 @@ use serde::Serialize;
 ///
 /// ⚠️ 代价是「损坏」与「空」在返回值上不可区分。需要区分时用 [`read_json_checked`]。
 pub fn read_json<T: DeserializeOwned + Default>(path: &Path) -> T {
-    read_json_checked::<T>(path).ok().flatten().unwrap_or_default()
+    read_json_checked::<T>(path)
+        .ok()
+        .flatten()
+        .unwrap_or_default()
 }
 
 /// 读 JSON 并把「读不到 / 解析失败」如实报出来（`Ok(None)` = 文件不存在）。
@@ -45,8 +48,8 @@ pub fn read_json_checked<T: DeserializeOwned>(path: &Path) -> Result<Option<T>, 
 
 /// 原子写 JSON（先建父目录）。
 pub fn write_json<T: Serialize>(path: &Path, value: &T) -> Result<(), String> {
-    let text = serde_json::to_string_pretty(value)
-        .map_err(|error| format!("序列化失败：{error}"))?;
+    let text =
+        serde_json::to_string_pretty(value).map_err(|error| format!("序列化失败：{error}"))?;
     write_text(path, &text)
 }
 

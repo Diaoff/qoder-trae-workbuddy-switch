@@ -314,7 +314,8 @@ static VSCODE_CN_INJECT: VscodeCnInjectAdapter = VscodeCnInjectAdapter;
 /// VS Code CodeBuddy 扩展程序位（读写）。
 static VSCODE_CODEBUDDY_PLUGIN: VscodeCodebuddyPluginAdapter = VscodeCodebuddyPluginAdapter;
 /// JetBrains CodeBuddy 插件程序位（读写）。
-static JETBRAINS_CODEBUDDY_PLUGIN: JetbrainsCodebuddyPluginAdapter = JetbrainsCodebuddyPluginAdapter;
+static JETBRAINS_CODEBUDDY_PLUGIN: JetbrainsCodebuddyPluginAdapter =
+    JetbrainsCodebuddyPluginAdapter;
 
 /// WorkBuddy 的**全部程序位**（顺序即 UI 展示顺序）。
 ///
@@ -375,11 +376,7 @@ pub fn program_spec(id: &str) -> Option<&'static ProgramSpec> {
 fn find<'a>(table: &'a [ProgramSpec], id: &str) -> Result<&'a ProgramSpec, String> {
     table.iter().find(|spec| spec.id == id).ok_or_else(|| {
         let known: Vec<&str> = table.iter().map(|spec| spec.id).collect();
-        format!(
-            "未知的程序位「{}」：合法取值为 {}。",
-            id,
-            known.join(" / ")
-        )
+        format!("未知的程序位「{}」：合法取值为 {}。", id, known.join(" / "))
     })
 }
 
@@ -476,7 +473,8 @@ mod tests {
         assert_eq!(switched["restart"], json!(true));
 
         // 探测：合成 adapter 未实现 ⇒ trait 默认的结构化 `Unsupported`（不 panic、不假装成功）。
-        let detected = detect_in(SYNTHETIC, "mock").expect("默认 detect 应返回 Unsupported 而非 Err");
+        let detected =
+            detect_in(SYNTHETIC, "mock").expect("默认 detect 应返回 Unsupported 而非 Err");
         assert_eq!(detected["capability"], json!("detect"));
         assert!(detected.get("ok").is_none(), "做不到就不能带 ok:true");
 
@@ -542,7 +540,8 @@ mod tests {
         assert!(cli_detect.get("ok").is_none());
 
         // IDE 没有「安装辅助」。
-        let ide_install = install_helper("codebuddy_cn_ide").expect("IDE install_helper 应返回 Ok(Unsupported)");
+        let ide_install =
+            install_helper("codebuddy_cn_ide").expect("IDE install_helper 应返回 Ok(Unsupported)");
         assert_eq!(ide_install["capability"], json!("install_helper"));
         assert!(ide_install.get("ok").is_none());
     }
@@ -562,7 +561,10 @@ mod tests {
         for (op, value) in [
             ("switch", switch("vscode_cn_inject", "u-1", None).unwrap()),
             ("detect", detect("vscode_cn_inject").unwrap()),
-            ("install_helper", install_helper("vscode_cn_inject").unwrap()),
+            (
+                "install_helper",
+                install_helper("vscode_cn_inject").unwrap(),
+            ),
         ] {
             assert_eq!(value["capability"], json!(op), "{op} 应声明为 Unsupported");
             assert!(value.get("ok").is_none(), "{op} 做不到就不能带 ok:true");

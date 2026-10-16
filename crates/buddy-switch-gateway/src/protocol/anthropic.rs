@@ -18,7 +18,10 @@ fn content_to_text(content: &Value) -> String {
             .iter()
             .filter_map(|block| {
                 if block.get("type").and_then(Value::as_str) == Some("text") {
-                    block.get("text").and_then(Value::as_str).map(str::to_string)
+                    block
+                        .get("text")
+                        .and_then(Value::as_str)
+                        .map(str::to_string)
                 } else {
                     None
                 }
@@ -70,7 +73,10 @@ pub fn to_upstream_request(body: &Value) -> Value {
             .iter()
             .map(|tool| {
                 let name = tool.get("name").cloned().unwrap_or_else(|| json!(""));
-                let description = tool.get("description").cloned().unwrap_or_else(|| json!(""));
+                let description = tool
+                    .get("description")
+                    .cloned()
+                    .unwrap_or_else(|| json!(""));
                 let parameters = tool
                     .get("input_schema")
                     .cloned()
@@ -140,9 +146,10 @@ pub fn to_upstream_request(body: &Value) -> Value {
                             Some("tool_use") => {
                                 let id = block.get("id").cloned().unwrap_or_else(|| json!(""));
                                 let name = block.get("name").cloned().unwrap_or_else(|| json!(""));
-                                let input = block.get("input").cloned().unwrap_or_else(|| json!({}));
-                                let arguments =
-                                    serde_json::to_string(&input).unwrap_or_else(|_| "{}".to_string());
+                                let input =
+                                    block.get("input").cloned().unwrap_or_else(|| json!({}));
+                                let arguments = serde_json::to_string(&input)
+                                    .unwrap_or_else(|_| "{}".to_string());
                                 tool_calls.push(json!({
                                     "id": id,
                                     "type": "function",
@@ -150,8 +157,10 @@ pub fn to_upstream_request(body: &Value) -> Value {
                                 }));
                             }
                             Some("tool_result") => {
-                                let tool_call_id =
-                                    block.get("tool_use_id").cloned().unwrap_or_else(|| json!(""));
+                                let tool_call_id = block
+                                    .get("tool_use_id")
+                                    .cloned()
+                                    .unwrap_or_else(|| json!(""));
                                 let content = tool_result_to_text(block.get("content"));
                                 tool_results.push(json!({
                                     "role": "tool",
@@ -223,7 +232,10 @@ pub fn aggregate_message(sse_text: &str, fallback_model: &str) -> Value {
 /// 因此 Anthropic 的字段映射（`stop_reason` 归一、`usage` 改名、tool_use 拆分）
 /// **只有一处实现** —— 否则两条路径迟早会在这类细节上分家。
 pub fn message_from_response(response: &Value, fallback_model: &str) -> Value {
-    message_from_accumulator(&CompletionAccumulator::from_response(response), fallback_model)
+    message_from_accumulator(
+        &CompletionAccumulator::from_response(response),
+        fallback_model,
+    )
 }
 
 /// Anthropic `message` 对象的**唯一构造点**（见上面两个入口）。
@@ -436,10 +448,7 @@ impl<S> AnthropicSseStream<S> {
     }
 
     fn push_tool_call(&mut self, tool_call: &Value) {
-        let upstream_index = tool_call
-            .get("index")
-            .and_then(Value::as_i64)
-            .unwrap_or(0);
+        let upstream_index = tool_call.get("index").and_then(Value::as_i64).unwrap_or(0);
         let index = if let Some(&index) = self.tool_index.get(&upstream_index) {
             index
         } else {
@@ -701,7 +710,10 @@ mod tests {
         assert_eq!(messages[1]["content"], "let me check");
         assert_eq!(messages[1]["tool_calls"][0]["id"], "toolu_1");
         assert_eq!(messages[1]["tool_calls"][0]["type"], "function");
-        assert_eq!(messages[1]["tool_calls"][0]["function"]["name"], "get_weather");
+        assert_eq!(
+            messages[1]["tool_calls"][0]["function"]["name"],
+            "get_weather"
+        );
         assert_eq!(
             messages[1]["tool_calls"][0]["function"]["arguments"],
             "{\"city\":\"SF\"}"
@@ -743,7 +755,8 @@ mod tests {
 
     #[test]
     fn tool_choice_tool_maps_to_function_name_and_none_drops_tools() {
-        let tool = json!({"model": "m", "tool_choice": {"type": "tool", "name": "foo"}, "messages": []});
+        let tool =
+            json!({"model": "m", "tool_choice": {"type": "tool", "name": "foo"}, "messages": []});
         assert_eq!(to_upstream_request(&tool)["tool_choice"], "foo");
 
         let none = json!({"model": "m", "tool_choice": {"type": "none"}, "tools": [{"name": "x", "input_schema": {}}], "messages": []});

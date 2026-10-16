@@ -157,7 +157,9 @@ pub fn data_root_candidates() -> Vec<PathBuf> {
 /// 调用方据此区分「**没装**该客户端」（`None`）与「装了但该账号没有会话」（`Some` + 空列表）——
 /// 这两种情况的界面文案完全不同，压成一个值就是在撒谎。
 pub fn data_root() -> Option<PathBuf> {
-    data_root_candidates().into_iter().find(|path| path.is_dir())
+    data_root_candidates()
+        .into_iter()
+        .find(|path| path.is_dir())
 }
 
 /// 账号数据目录：`<root>/<uid>/<客户端段>/<uid>`。
@@ -223,10 +225,10 @@ pub fn copy_conversations(
     let mut report = copy_conversations_in(&root, client, source_uid, target_uid, items);
 
     /* ★ 关联登记放在**生产入口**，不放进 `copy_conversations_in`。
-       `copy_conversations_in` 只碰**客户端数据目录**（测试可以完全隔离）；
-       而账本写在**工具自己的存储根**下 —— 塞进去会让「复制客户端数据」这个动作
-       **隐式写工具存储**，单测就会污染用户的真实目录
-       （本仓「单测不该依赖 `BUDDY_SWITCH_HOME`」这条纪律正是防这个）。 */
+    `copy_conversations_in` 只碰**客户端数据目录**（测试可以完全隔离）；
+    而账本写在**工具自己的存储根**下 —— 塞进去会让「复制客户端数据」这个动作
+    **隐式写工具存储**，单测就会污染用户的真实目录
+    （本仓「单测不该依赖 `BUDDY_SWITCH_HOME`」这条纪律正是防这个）。 */
     let entries: Vec<(String, String)> = report["copied"]
         .as_array()
         .map(|rows| {
@@ -317,7 +319,12 @@ pub fn list_sessions_in(root: &Path, client: ExtClient, uid: &str) -> Value {
 
     // 最近更新的排前面（时间缺失的排末尾，且**稳定**：同值保持原顺序）。
     sessions.sort_by_key(|session| {
-        std::cmp::Reverse(session.get("updatedAt").and_then(Value::as_i64).unwrap_or(0))
+        std::cmp::Reverse(
+            session
+                .get("updatedAt")
+                .and_then(Value::as_i64)
+                .unwrap_or(0),
+        )
     });
 
     listing(uid, &sessions, skipped, Some(&data_root))
@@ -572,10 +579,15 @@ fn remap_session_index(source_index: &Value, plan: &RemapPlan) -> Value {
     let mut out = source_index.clone();
     if let Some(messages) = out.get_mut("messages").and_then(Value::as_array_mut) {
         for message in messages.iter_mut() {
-            let Some(id) = message.get("id").and_then(Value::as_str).map(str::to_string) else {
+            let Some(id) = message
+                .get("id")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+            else {
                 continue;
             };
-            if let (Some(new_id), Some(object)) = (plan.message_ids.get(&id), message.as_object_mut())
+            if let (Some(new_id), Some(object)) =
+                (plan.message_ids.get(&id), message.as_object_mut())
             {
                 object.insert("id".to_string(), json!(new_id));
             }
@@ -833,7 +845,8 @@ fn write_workspace_index(
     if index_path.is_file() {
         std::fs::create_dir_all(backup_root).map_err(|e| format!("建不了备份目录：{e}"))?;
         let target = backup_root.join(format!("{workspace_hash}-index.json"));
-        std::fs::copy(&index_path, &target).map_err(|e| format!("备份目标索引失败（**未改写**）：{e}"))?;
+        std::fs::copy(&index_path, &target)
+            .map_err(|e| format!("备份目标索引失败（**未改写**）：{e}"))?;
         let backed_up = std::fs::metadata(&target).map(|m| m.len()).unwrap_or(0);
         let original = std::fs::metadata(&index_path).map(|m| m.len()).unwrap_or(0);
         if backed_up != original {
@@ -936,7 +949,8 @@ pub fn copy_conversations_in(
         let target_ws_dir = target_history.join(&workspace_hash);
 
         // 目标索引：不存在 ⇒ 空索引（**不臆造** conversations 字段，由 merge 补）。
-        let mut target_index = read_json(&target_ws_dir.join("index.json")).unwrap_or_else(|| json!({}));
+        let mut target_index =
+            read_json(&target_ws_dir.join("index.json")).unwrap_or_else(|| json!({}));
         let mut used = used_ids_in(&target_ws_dir, &target_index);
         let mut created: Vec<(PathBuf, Value, String, String)> = Vec::new();
 
@@ -988,7 +1002,10 @@ pub fn copy_conversations_in(
                 fail(&mut errors, item, format!("提交会话目录失败：{error}"));
                 continue;
             }
-            let entry = conversation_entry(find_conversation(&source_index, conversation_id).as_ref(), &new_id);
+            let entry = conversation_entry(
+                find_conversation(&source_index, conversation_id).as_ref(),
+                &new_id,
+            );
             created.push((final_dir, entry, new_id, conversation_id.to_string()));
         }
 
@@ -1126,7 +1143,11 @@ fn record_digest(path: &Path) -> Option<u64> {
 /// 这是「追加不会打乱顺序」的**最强、也最保守**的判据：目标现有的记录必须
 /// **原样**是源的开头一段。少一条、多一条、换一条都算不满足。
 fn is_prefix(candidate: &[String], full: &[String]) -> bool {
-    candidate.len() <= full.len() && candidate.iter().zip(full).all(|(left, right)| left == right)
+    candidate.len() <= full.len()
+        && candidate
+            .iter()
+            .zip(full)
+            .all(|(left, right)| left == right)
 }
 
 /// 增量同步的可行性（**只读**，不写任何文件）。
@@ -1249,7 +1270,11 @@ pub fn diff_conversation_in(
         .filter(|id| !source_set.contains(id))
         .cloned()
         .collect();
-    let common = target.messages.iter().filter(|id| source_set.contains(id)).count();
+    let common = target
+        .messages
+        .iter()
+        .filter(|id| source_set.contains(id))
+        .count();
 
     if !ordered {
         return json!({
@@ -1408,10 +1433,7 @@ fn record_links(entries: &[(String, String)]) -> bool {
     let mut ledger = load_links();
     let at = crate::modules::config::now_ms();
     for (key, target_cid) in entries {
-        ledger.insert(
-            key.clone(),
-            json!({ "targetCid": target_cid, "at": at }),
-        );
+        ledger.insert(key.clone(), json!({ "targetCid": target_cid, "at": at }));
     }
     let path = link_ledger_path();
     if let Some(parent) = path.parent() {
@@ -1419,8 +1441,7 @@ fn record_links(entries: &[(String, String)]) -> bool {
             return false;
         }
     }
-    let content =
-        serde_json::to_string_pretty(&Value::Object(ledger.clone())).unwrap_or_default();
+    let content = serde_json::to_string_pretty(&Value::Object(ledger.clone())).unwrap_or_default();
     crate::modules::config::atomic_write(&path, &content).is_ok()
 }
 
@@ -1461,7 +1482,10 @@ pub fn links_for(client: ExtClient, workspace_hash: &str, conversation_id: &str)
         })
         .collect();
     links.sort_by(|left, right| {
-        right["at"].as_i64().unwrap_or(0).cmp(&left["at"].as_i64().unwrap_or(0))
+        right["at"]
+            .as_i64()
+            .unwrap_or(0)
+            .cmp(&left["at"].as_i64().unwrap_or(0))
     });
     json!({ "links": links })
 }
@@ -1688,7 +1712,11 @@ mod tests {
         let root = Path::new("/data");
         assert_eq!(
             history_root_in(root, ExtClient::Vscode, "u1"),
-            Path::new("/data").join("u1").join("VSCode").join("u1").join("history")
+            Path::new("/data")
+                .join("u1")
+                .join("VSCode")
+                .join("u1")
+                .join("history")
         );
         assert_eq!(
             history_root_in(root, ExtClient::CodebuddyIde, "u1"),
@@ -1729,7 +1757,9 @@ mod tests {
         for good in ["uid-a", "a1b2c3", "UPPER", "with space"] {
             assert!(is_safe_uid(good), "{good} 应当被接受");
         }
-        for bad in ["", "  ", ".", "..", "a/b", "a\\b", "default", "DEFAULT", "Public", "public"] {
+        for bad in [
+            "", "  ", ".", "..", "a/b", "a\\b", "default", "DEFAULT", "Public", "public",
+        ] {
             assert!(!is_safe_uid(bad), "{bad:?} 必须被拒绝");
         }
     }
@@ -1783,15 +1813,15 @@ mod tests {
         assert_eq!(sessions[1]["id"], json!("aaaa1111aaaa1111aaaa1111aaaa1111"));
         assert_eq!(vscode["skipped"], json!(0));
         assert_eq!(vscode["sourceUid"], json!("uid-a"));
-        assert_eq!(
-            vscode["dataRoot"].as_str().unwrap(),
-            root.to_string_lossy()
-        );
+        assert_eq!(vscode["dataRoot"].as_str().unwrap(), root.to_string_lossy());
 
         let ide = list_sessions_in(&root, ExtClient::CodebuddyIde, "uid-a");
         let ide_sessions = ide["sessions"].as_array().unwrap();
         assert_eq!(ide_sessions.len(), 1);
-        assert_eq!(ide_sessions[0]["id"], json!("cccc3333cccc3333cccc3333cccc3333"));
+        assert_eq!(
+            ide_sessions[0]["id"],
+            json!("cccc3333cccc3333cccc3333cccc3333")
+        );
         assert_eq!(ide_sessions[0]["workspaceHash"], json!("ws-bbb"));
 
         std::fs::remove_dir_all(home).unwrap();
@@ -1821,7 +1851,11 @@ mod tests {
         std::fs::write(odd.join("index.json"), b"{\"conversations\": 1}").unwrap();
 
         let out = list_sessions_in(&root, ExtClient::Vscode, "uid-a");
-        assert_eq!(out["sessions"].as_array().unwrap().len(), 1, "好的那条必须还在");
+        assert_eq!(
+            out["sessions"].as_array().unwrap().len(),
+            1,
+            "好的那条必须还在"
+        );
         assert_eq!(out["skipped"], json!(2), "两个坏索引都要如实报数");
 
         std::fs::remove_dir_all(home).unwrap();
@@ -1869,13 +1903,19 @@ mod tests {
                 .unwrap()
                 .clone()
         };
-        assert_eq!(by_id("eeee5555eeee5555eeee5555eeee5555")["hasHistory"], json!(true));
+        assert_eq!(
+            by_id("eeee5555eeee5555eeee5555eeee5555")["hasHistory"],
+            json!(true)
+        );
         assert_eq!(
             by_id("ffff6666ffff6666ffff6666ffff6666")["hasHistory"],
             json!(true),
             "只有磁盘 messages/ 文件时也算有正文"
         );
-        assert_eq!(by_id("9999aaaa9999aaaa9999aaaa9999aaaa")["hasHistory"], json!(false));
+        assert_eq!(
+            by_id("9999aaaa9999aaaa9999aaaa9999aaaa")["hasHistory"],
+            json!(false)
+        );
 
         std::fs::remove_dir_all(home).unwrap();
     }
@@ -1912,9 +1952,15 @@ mod tests {
         assert!(is_hex32("aaaa1111aaaa1111aaaa1111aaaa1111"));
         assert!(is_hex32("0123456789abcdef0123456789abcdef"));
         assert!(!is_hex32("AAAA1111AAAA1111AAAA1111AAAA1111"), "大写不认");
-        assert!(!is_hex32("aaaa1111-aaaa-1111-aaaa-111111111111"), "带连字符的 UUID 不认");
+        assert!(
+            !is_hex32("aaaa1111-aaaa-1111-aaaa-111111111111"),
+            "带连字符的 UUID 不认"
+        );
         assert!(!is_hex32("aaaa1111aaaa1111aaaa1111aaaa111"), "31 位不认");
-        assert!(!is_hex32("gggg1111gggg1111gggg1111gggg1111"), "非 hex 字符不认");
+        assert!(
+            !is_hex32("gggg1111gggg1111gggg1111gggg1111"),
+            "非 hex 字符不认"
+        );
     }
 
     // ---------------------------------------------------------------- 写半：复制
@@ -1957,7 +2003,13 @@ mod tests {
     ///
     /// ⚠️ `MSG_1` 的消息正文里**故意**塞了它自己作为**子串**（`see <MSG_1>ff`）——
     /// 精确匹配规则若被写成子串替换，那条断言会立刻红。
-    fn seed_conversation(root: &Path, client: ExtClient, uid: &str, ws: &str, conv: &str) -> PathBuf {
+    fn seed_conversation(
+        root: &Path,
+        client: ExtClient,
+        uid: &str,
+        ws: &str,
+        conv: &str,
+    ) -> PathBuf {
         let ws_dir = seed_workspace(
             root,
             client,
@@ -2067,8 +2119,12 @@ mod tests {
         );
 
         // 消息文件已按新 id 改名，且文件内的 id / extra 引用同步。
-        let msg_file = read_json(&target_conv.join("messages").join(format!("{new_msg_1}.json")))
-            .expect("副本消息文件");
+        let msg_file = read_json(
+            &target_conv
+                .join("messages")
+                .join(format!("{new_msg_1}.json")),
+        )
+        .expect("副本消息文件");
         assert_eq!(msg_file["id"].as_str().unwrap(), new_msg_1);
         let extra: Value =
             serde_json::from_str(msg_file["extra"].as_str().expect("extra 仍是字符串化 JSON"))
@@ -2083,7 +2139,9 @@ mod tests {
 
         // 工作区索引：新条目在，且 `current` 指向它（缺 `current` 会被扩展判为损坏）。
         let ws_index = read_json(
-            &history_root_in(&root, ExtClient::Vscode, DST_UID).join(WS).join("index.json"),
+            &history_root_in(&root, ExtClient::Vscode, DST_UID)
+                .join(WS)
+                .join("index.json"),
         )
         .expect("目标工作区索引");
         assert_eq!(ws_index["current"].as_str().unwrap(), new_id);
@@ -2118,8 +2176,13 @@ mod tests {
         let (home, root) = fixture("copy-substring");
         seed_conversation(&root, ExtClient::Vscode, SRC_UID, WS, CONV);
 
-        let report =
-            copy_conversations_in(&root, ExtClient::Vscode, SRC_UID, DST_UID, &[item(WS, CONV)]);
+        let report = copy_conversations_in(
+            &root,
+            ExtClient::Vscode,
+            SRC_UID,
+            DST_UID,
+            &[item(WS, CONV)],
+        );
         let new_id = report["copied"][0]["newId"].as_str().unwrap().to_string();
         let target_conv = history_root_in(&root, ExtClient::Vscode, DST_UID)
             .join(WS)
@@ -2128,8 +2191,12 @@ mod tests {
         let new_msg_1 = index["messages"][0]["id"].as_str().unwrap().to_string();
         let new_req_1 = index["requests"][0]["id"].as_str().unwrap().to_string();
 
-        let msg_file = read_json(&target_conv.join("messages").join(format!("{new_msg_1}.json")))
-            .expect("副本消息文件");
+        let msg_file = read_json(
+            &target_conv
+                .join("messages")
+                .join(format!("{new_msg_1}.json")),
+        )
+        .expect("副本消息文件");
         // ① 正文完全不被重映射（连子串也不该动）。
         assert_eq!(
             msg_file["message"].as_str().unwrap(),
@@ -2137,8 +2204,8 @@ mod tests {
             "正文里的 id 子串必须原样保留"
         );
 
-        let extra: Value = serde_json::from_str(msg_file["extra"].as_str().expect("extra"))
-            .expect("extra 可解析");
+        let extra: Value =
+            serde_json::from_str(msg_file["extra"].as_str().expect("extra")).expect("extra 可解析");
         // ② `extra` 里**整串等于**老 id 的字段被换掉……
         assert_eq!(extra["requestId"].as_str().unwrap(), new_req_1);
         // ③ ……而**只是包含**老 id 的字段**一个字都不许动**（← 真正的护栏）。
@@ -2174,8 +2241,13 @@ mod tests {
         .unwrap();
         let target_before = tree_snapshot(&target_ws.join(CONV));
 
-        let report =
-            copy_conversations_in(&root, ExtClient::Vscode, SRC_UID, DST_UID, &[item(WS, CONV)]);
+        let report = copy_conversations_in(
+            &root,
+            ExtClient::Vscode,
+            SRC_UID,
+            DST_UID,
+            &[item(WS, CONV)],
+        );
         assert_eq!(report["copiedCount"], json!(1), "报告：{report}");
         let new_id = report["copied"][0]["newId"].as_str().unwrap();
         assert_ne!(new_id, CONV, "撞上目标已有 id 时必须换新 id");
@@ -2203,8 +2275,13 @@ mod tests {
         let raw = b"{  \"debug\" :  1  ,\n  \"note\":\"keep me\" }";
         std::fs::write(source_conv.join("messages").join("debug.json"), raw).unwrap();
 
-        let report =
-            copy_conversations_in(&root, ExtClient::Vscode, SRC_UID, DST_UID, &[item(WS, CONV)]);
+        let report = copy_conversations_in(
+            &root,
+            ExtClient::Vscode,
+            SRC_UID,
+            DST_UID,
+            &[item(WS, CONV)],
+        );
         let new_id = report["copied"][0]["newId"].as_str().unwrap();
         let copied = history_root_in(&root, ExtClient::Vscode, DST_UID)
             .join(WS)
@@ -2232,8 +2309,13 @@ mod tests {
         let target_ws = history_root_in(&root, ExtClient::Vscode, DST_UID).join(WS);
         std::fs::create_dir_all(target_ws.join("index.json")).unwrap();
 
-        let report =
-            copy_conversations_in(&root, ExtClient::Vscode, SRC_UID, DST_UID, &[item(WS, CONV)]);
+        let report = copy_conversations_in(
+            &root,
+            ExtClient::Vscode,
+            SRC_UID,
+            DST_UID,
+            &[item(WS, CONV)],
+        );
         assert_eq!(report["copiedCount"], json!(0), "报告：{report}");
         assert_eq!(report["failCount"], json!(1));
         assert!(
@@ -2264,7 +2346,8 @@ mod tests {
         let (home, root) = fixture("copy-guards");
 
         // 脏 uid（`..`）⇒ 全部失败。
-        let report = copy_conversations_in(&root, ExtClient::Vscode, "..", DST_UID, &[item(WS, CONV)]);
+        let report =
+            copy_conversations_in(&root, ExtClient::Vscode, "..", DST_UID, &[item(WS, CONV)]);
         assert_eq!(report["copiedCount"], json!(0));
         assert!(report["errors"][0]["error"]
             .as_str()
@@ -2272,8 +2355,13 @@ mod tests {
             .contains("uid 不合法"));
 
         // 源 = 目标 ⇒ 全部失败。
-        let report =
-            copy_conversations_in(&root, ExtClient::Vscode, SRC_UID, SRC_UID, &[item(WS, CONV)]);
+        let report = copy_conversations_in(
+            &root,
+            ExtClient::Vscode,
+            SRC_UID,
+            SRC_UID,
+            &[item(WS, CONV)],
+        );
         assert!(report["errors"][0]["error"]
             .as_str()
             .unwrap()
@@ -2408,13 +2496,19 @@ mod tests {
     fn workspace_index_backup_is_written_for_the_extension_but_not_for_the_ide() {
         let (home, root) = fixture("index-backup");
         /* ⚠️ **两棵树都要播种**：复制只在**同一个客户端的树**里找源
-           （`history_root_in(root, client, uid)` 带客户端段）—— 只种 vscode 那棵，
-           用 IDE 客户端去复制会「找不到源会话」而静默复制 0 条。 */
+        （`history_root_in(root, client, uid)` 带客户端段）—— 只种 vscode 那棵，
+        用 IDE 客户端去复制会「找不到源会话」而静默复制 0 条。 */
         seed_conversation(&root, ExtClient::Vscode, SRC_UID, WS, CONV);
         seed_conversation(&root, ExtClient::CodebuddyIde, SRC_UID, WS, CONV);
 
         // ① 插件侧：必须写。
-        copy_conversations_in(&root, ExtClient::Vscode, SRC_UID, DST_UID, &[item(WS, CONV)]);
+        copy_conversations_in(
+            &root,
+            ExtClient::Vscode,
+            SRC_UID,
+            DST_UID,
+            &[item(WS, CONV)],
+        );
         let ext_ws = history_root_in(&root, ExtClient::Vscode, DST_UID).join(WS);
         assert!(
             ext_ws.join(".index_bak.json").is_file(),
@@ -2474,7 +2568,10 @@ mod tests {
         .unwrap();
         for (id, content) in messages {
             std::fs::write(
-                ws_dir.join(conv).join("messages").join(format!("{id}.json")),
+                ws_dir
+                    .join(conv)
+                    .join("messages")
+                    .join(format!("{id}.json")),
                 content,
             )
             .unwrap();
@@ -2496,10 +2593,26 @@ mod tests {
     #[test]
     fn diff_is_appendable_only_when_the_target_is_a_prefix_of_the_source() {
         let (home, root) = fixture("diff-appendable");
-        seed_ordered(&root, ExtClient::Vscode, SRC_UID, WS, CONV,
-            &[(MSG_1, "{\"id\":\"m1\"}"), (MSG_2, "{\"id\":\"m2\"}"), (REQ_1, "{\"id\":\"m3\"}")]);
-        seed_ordered(&root, ExtClient::Vscode, DST_UID, WS, CONV,
-            &[(MSG_1, "{\"id\":\"m1\"}"), (MSG_2, "{\"id\":\"m2\"}")]);
+        seed_ordered(
+            &root,
+            ExtClient::Vscode,
+            SRC_UID,
+            WS,
+            CONV,
+            &[
+                (MSG_1, "{\"id\":\"m1\"}"),
+                (MSG_2, "{\"id\":\"m2\"}"),
+                (REQ_1, "{\"id\":\"m3\"}"),
+            ],
+        );
+        seed_ordered(
+            &root,
+            ExtClient::Vscode,
+            DST_UID,
+            WS,
+            CONV,
+            &[(MSG_1, "{\"id\":\"m1\"}"), (MSG_2, "{\"id\":\"m2\"}")],
+        );
 
         let out = diff_of(&root, ExtClient::Vscode);
         assert_eq!(out["status"], json!("appendable"), "报告：{out}");
@@ -2516,11 +2629,27 @@ mod tests {
     #[test]
     fn diff_refuses_when_the_missing_record_is_in_the_middle() {
         let (home, root) = fixture("diff-unordered");
-        seed_ordered(&root, ExtClient::Vscode, SRC_UID, WS, CONV,
-            &[(MSG_1, "{\"id\":\"m1\"}"), (MSG_2, "{\"id\":\"m2\"}"), (REQ_1, "{\"id\":\"m3\"}")]);
+        seed_ordered(
+            &root,
+            ExtClient::Vscode,
+            SRC_UID,
+            WS,
+            CONV,
+            &[
+                (MSG_1, "{\"id\":\"m1\"}"),
+                (MSG_2, "{\"id\":\"m2\"}"),
+                (REQ_1, "{\"id\":\"m3\"}"),
+            ],
+        );
         // 目标缺**中间**那条（`m2`），却有后面那条 ⇒ 不是前缀。
-        seed_ordered(&root, ExtClient::Vscode, DST_UID, WS, CONV,
-            &[(MSG_1, "{\"id\":\"m1\"}"), (REQ_1, "{\"id\":\"m3\"}")]);
+        seed_ordered(
+            &root,
+            ExtClient::Vscode,
+            DST_UID,
+            WS,
+            CONV,
+            &[(MSG_1, "{\"id\":\"m1\"}"), (REQ_1, "{\"id\":\"m3\"}")],
+        );
 
         let out = diff_of(&root, ExtClient::Vscode);
         assert_eq!(out["status"], json!("unordered"), "报告：{out}");
@@ -2542,17 +2671,33 @@ mod tests {
     #[test]
     fn diff_refuses_when_the_same_id_has_different_bytes() {
         let (home, root) = fixture("diff-divergent");
-        seed_ordered(&root, ExtClient::Vscode, SRC_UID, WS, CONV,
-            &[(MSG_1, "{\"id\":\"m1\",\"message\":\"A\"}")]);
+        seed_ordered(
+            &root,
+            ExtClient::Vscode,
+            SRC_UID,
+            WS,
+            CONV,
+            &[(MSG_1, "{\"id\":\"m1\",\"message\":\"A\"}")],
+        );
         // 同一个 id，只差一个字节。
-        seed_ordered(&root, ExtClient::Vscode, DST_UID, WS, CONV,
-            &[(MSG_1, "{\"id\":\"m1\",\"message\":\"B\"}")]);
+        seed_ordered(
+            &root,
+            ExtClient::Vscode,
+            DST_UID,
+            WS,
+            CONV,
+            &[(MSG_1, "{\"id\":\"m1\",\"message\":\"B\"}")],
+        );
 
         let out = diff_of(&root, ExtClient::Vscode);
         assert_eq!(out["status"], json!("divergent"), "报告：{out}");
         assert_eq!(out["divergentMessages"], json!([MSG_1]));
         assert_eq!(out["appendable"], json!(false));
-        assert!(out["reason"].as_str().unwrap().contains("静默改写"), "理由：{}", out["reason"]);
+        assert!(
+            out["reason"].as_str().unwrap().contains("静默改写"),
+            "理由：{}",
+            out["reason"]
+        );
 
         std::fs::remove_dir_all(home).unwrap();
     }
@@ -2562,7 +2707,14 @@ mod tests {
     #[test]
     fn diff_reports_absent_when_the_target_has_no_such_conversation() {
         let (home, root) = fixture("diff-absent");
-        seed_ordered(&root, ExtClient::Vscode, SRC_UID, WS, CONV, &[(MSG_1, "{}")]);
+        seed_ordered(
+            &root,
+            ExtClient::Vscode,
+            SRC_UID,
+            WS,
+            CONV,
+            &[(MSG_1, "{}")],
+        );
 
         let out = diff_of(&root, ExtClient::Vscode);
         assert_eq!(out["status"], json!("absent"), "报告：{out}");
@@ -2581,7 +2733,11 @@ mod tests {
 
         let out = diff_of(&root, ExtClient::Vscode);
         assert_eq!(out["status"], json!("identical"), "报告：{out}");
-        assert_eq!(out["appendable"], json!(false), "一致 ⇒ 没有可追加的，别报成可同步");
+        assert_eq!(
+            out["appendable"],
+            json!(false),
+            "一致 ⇒ 没有可追加的，别报成可同步"
+        );
 
         std::fs::remove_dir_all(home).unwrap();
     }
@@ -2595,7 +2751,14 @@ mod tests {
         assert_eq!(out["status"], json!("error"), "报告：{out}");
 
         // 脏工作区标识（`../` 会退到别的目录）。
-        let out = diff_conversation_in(&root, ExtClient::Vscode, SRC_UID, DST_UID, "../escape", CONV);
+        let out = diff_conversation_in(
+            &root,
+            ExtClient::Vscode,
+            SRC_UID,
+            DST_UID,
+            "../escape",
+            CONV,
+        );
         assert_eq!(out["status"], json!("error"));
         assert!(out["reason"].as_str().unwrap().contains("不合法"));
 
@@ -2611,14 +2774,32 @@ mod tests {
     #[test]
     fn sync_appends_the_missing_tail_and_leaves_the_target_untouched() {
         let (home, root) = fixture("sync-append");
-        seed_ordered(&root, ExtClient::Vscode, SRC_UID, WS, CONV,
-            &[(MSG_1, "{\"id\":\"m1\"}"), (MSG_2, "{\"id\":\"m2\"}"), (REQ_1, "{\"id\":\"m3\"}")]);
-        seed_ordered(&root, ExtClient::Vscode, DST_UID, WS, CONV,
-            &[(MSG_1, "{\"id\":\"m1\"}"), (MSG_2, "{\"id\":\"m2\"}")]);
-        let target_dir = history_root_in(&root, ExtClient::Vscode, DST_UID).join(WS).join(CONV);
+        seed_ordered(
+            &root,
+            ExtClient::Vscode,
+            SRC_UID,
+            WS,
+            CONV,
+            &[
+                (MSG_1, "{\"id\":\"m1\"}"),
+                (MSG_2, "{\"id\":\"m2\"}"),
+                (REQ_1, "{\"id\":\"m3\"}"),
+            ],
+        );
+        seed_ordered(
+            &root,
+            ExtClient::Vscode,
+            DST_UID,
+            WS,
+            CONV,
+            &[(MSG_1, "{\"id\":\"m1\"}"), (MSG_2, "{\"id\":\"m2\"}")],
+        );
+        let target_dir = history_root_in(&root, ExtClient::Vscode, DST_UID)
+            .join(WS)
+            .join(CONV);
         /* ★ 给**目标**的会话索引加一个**源没有的**字段。
-           ⚠️ 两侧夹具的 `note` 若**值相同**，「整份换成源的索引」与「只替换两条序列」
-           就**区分不出来** —— 那条断言会变成永远绿（本用例初版正是如此，变异 S3 没打红）。 */
+        ⚠️ 两侧夹具的 `note` 若**值相同**，「整份换成源的索引」与「只替换两条序列」
+        就**区分不出来** —— 那条断言会变成永远绿（本用例初版正是如此，变异 S3 没打红）。 */
         let mut target_index = read_json(&target_dir.join("index.json")).unwrap();
         target_index["targetOnly"] = json!("survive-me");
         std::fs::write(target_dir.join("index.json"), target_index.to_string()).unwrap();
@@ -2664,17 +2845,35 @@ mod tests {
         let (home, root) = fixture("sync-refuse");
 
         // ① 缺中间那条（unordered）。
-        seed_ordered(&root, ExtClient::Vscode, SRC_UID, WS, CONV,
-            &[(MSG_1, "{}"), (MSG_2, "{}"), (REQ_1, "{}")]);
-        seed_ordered(&root, ExtClient::Vscode, DST_UID, WS, CONV,
-            &[(MSG_1, "{}"), (REQ_1, "{}")]);
-        let target_dir = history_root_in(&root, ExtClient::Vscode, DST_UID).join(WS).join(CONV);
+        seed_ordered(
+            &root,
+            ExtClient::Vscode,
+            SRC_UID,
+            WS,
+            CONV,
+            &[(MSG_1, "{}"), (MSG_2, "{}"), (REQ_1, "{}")],
+        );
+        seed_ordered(
+            &root,
+            ExtClient::Vscode,
+            DST_UID,
+            WS,
+            CONV,
+            &[(MSG_1, "{}"), (REQ_1, "{}")],
+        );
+        let target_dir = history_root_in(&root, ExtClient::Vscode, DST_UID)
+            .join(WS)
+            .join(CONV);
         let before = tree_snapshot(&target_dir);
 
         let out = sync_conversation_in(&root, ExtClient::Vscode, SRC_UID, DST_UID, WS, CONV);
         assert_eq!(out["ok"], json!(false), "报告：{out}");
         assert_eq!(out["status"], json!("unordered"));
-        assert_eq!(tree_snapshot(&target_dir), before, "拒绝时**一个字都不许写**");
+        assert_eq!(
+            tree_snapshot(&target_dir),
+            before,
+            "拒绝时**一个字都不许写**"
+        );
 
         std::fs::remove_dir_all(home).unwrap();
     }
@@ -2683,15 +2882,35 @@ mod tests {
     #[test]
     fn sync_refuses_when_the_same_id_differs() {
         let (home, root) = fixture("sync-divergent");
-        seed_ordered(&root, ExtClient::Vscode, SRC_UID, WS, CONV, &[(MSG_1, "{\"v\":\"A\"}")]);
-        seed_ordered(&root, ExtClient::Vscode, DST_UID, WS, CONV, &[(MSG_1, "{\"v\":\"B\"}")]);
-        let target_dir = history_root_in(&root, ExtClient::Vscode, DST_UID).join(WS).join(CONV);
+        seed_ordered(
+            &root,
+            ExtClient::Vscode,
+            SRC_UID,
+            WS,
+            CONV,
+            &[(MSG_1, "{\"v\":\"A\"}")],
+        );
+        seed_ordered(
+            &root,
+            ExtClient::Vscode,
+            DST_UID,
+            WS,
+            CONV,
+            &[(MSG_1, "{\"v\":\"B\"}")],
+        );
+        let target_dir = history_root_in(&root, ExtClient::Vscode, DST_UID)
+            .join(WS)
+            .join(CONV);
         let before = tree_snapshot(&target_dir);
 
         let out = sync_conversation_in(&root, ExtClient::Vscode, SRC_UID, DST_UID, WS, CONV);
         assert_eq!(out["status"], json!("divergent"), "报告：{out}");
         assert_eq!(out["ok"], json!(false));
-        assert_eq!(tree_snapshot(&target_dir), before, "拒绝时**一个字都不许写**");
+        assert_eq!(
+            tree_snapshot(&target_dir),
+            before,
+            "拒绝时**一个字都不许写**"
+        );
 
         std::fs::remove_dir_all(home).unwrap();
     }
@@ -2706,11 +2925,26 @@ mod tests {
     #[test]
     fn sync_rolls_back_copied_messages_when_a_later_copy_fails() {
         let (home, root) = fixture("sync-rollback");
-        seed_ordered(&root, ExtClient::Vscode, SRC_UID, WS, CONV,
-            &[(MSG_1, "{}"), (MSG_2, "{}"), (REQ_1, "{}")]);
-        seed_ordered(&root, ExtClient::Vscode, DST_UID, WS, CONV, &[(MSG_1, "{}")]);
+        seed_ordered(
+            &root,
+            ExtClient::Vscode,
+            SRC_UID,
+            WS,
+            CONV,
+            &[(MSG_1, "{}"), (MSG_2, "{}"), (REQ_1, "{}")],
+        );
+        seed_ordered(
+            &root,
+            ExtClient::Vscode,
+            DST_UID,
+            WS,
+            CONV,
+            &[(MSG_1, "{}")],
+        );
 
-        let target_dir = history_root_in(&root, ExtClient::Vscode, DST_UID).join(WS).join(CONV);
+        let target_dir = history_root_in(&root, ExtClient::Vscode, DST_UID)
+            .join(WS)
+            .join(CONV);
         let index_before = std::fs::read(target_dir.join("index.json")).unwrap();
         std::fs::create_dir_all(target_dir.join("messages").join(format!("{REQ_1}.json"))).unwrap();
 
@@ -2719,7 +2953,10 @@ mod tests {
         assert_eq!(out["status"], json!("io-error"));
         assert_eq!(out["addedMessages"], json!([]), "失败时不许报出「已追加」");
         assert!(
-            !target_dir.join("messages").join(format!("{MSG_2}.json")).exists(),
+            !target_dir
+                .join("messages")
+                .join(format!("{MSG_2}.json"))
+                .exists(),
             "★ 回退必须删掉本次已拷进去的消息文件（不留孤儿）"
         );
         assert_eq!(
@@ -2755,7 +2992,10 @@ mod tests {
 
         let sync = sync_conversation(ExtClient::Vscode, SRC_UID, DST_UID, WS, CONV);
         let error = sync.expect_err("数据根缺失时写路径必须 Err（不是「同步了 0 条」）");
-        assert!(error.contains("未检测到客户端数据目录"), "错误文案：{error}");
+        assert!(
+            error.contains("未检测到客户端数据目录"),
+            "错误文案：{error}"
+        );
 
         drop(guard);
         std::fs::remove_dir_all(home).unwrap();
@@ -2790,9 +3030,19 @@ mod tests {
 
         // ① 以**源** id 查 ⇒ 找得到目标那份。
         let from_source = links_for(ExtClient::Vscode, WS, CONV);
-        assert_eq!(from_source["links"].as_array().unwrap().len(), 1, "报告：{from_source}");
-        assert_eq!(from_source["links"][0]["targetCid"].as_str().unwrap(), new_id);
-        assert_eq!(from_source["links"][0]["sourceUid"].as_str().unwrap(), SRC_UID);
+        assert_eq!(
+            from_source["links"].as_array().unwrap().len(),
+            1,
+            "报告：{from_source}"
+        );
+        assert_eq!(
+            from_source["links"][0]["targetCid"].as_str().unwrap(),
+            new_id
+        );
+        assert_eq!(
+            from_source["links"][0]["sourceUid"].as_str().unwrap(),
+            SRC_UID
+        );
 
         // ② 以**目标** id 查 ⇒ **同样**找得到（双向）。
         let from_target = links_for(ExtClient::Vscode, WS, &new_id);
@@ -2804,7 +3054,10 @@ mod tests {
 
         // ③ 阴性对照：**另一棵树**（IDE）里同名会话不该被串起来。
         assert_eq!(
-            links_for(ExtClient::CodebuddyIde, WS, CONV)["links"].as_array().unwrap().len(),
+            links_for(ExtClient::CodebuddyIde, WS, CONV)["links"]
+                .as_array()
+                .unwrap()
+                .len(),
             0,
             "客户端段必须进关联键 —— 两棵树里的同名会话是两份不同的会话"
         );

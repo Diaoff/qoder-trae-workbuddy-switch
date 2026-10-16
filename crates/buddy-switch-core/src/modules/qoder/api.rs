@@ -169,10 +169,7 @@ pub fn flatten_content_text(content: Option<&Value>) -> (String, Vec<String>) {
                 match piece {
                     Value::String(text) => texts.push(text.clone()),
                     Value::Object(object) => {
-                        let piece_type = object
-                            .get("type")
-                            .and_then(Value::as_str)
-                            .unwrap_or("");
+                        let piece_type = object.get("type").and_then(Value::as_str).unwrap_or("");
                         if matches!(
                             piece_type,
                             "text" | "input_text" | "output_text" | "summary_text"
@@ -323,9 +320,7 @@ pub fn flatten_messages(
                         if let Some(reasoning) = object.get("reasoning_content") {
                             item.insert(
                                 "reasoning_content".into(),
-                                Value::String(
-                                    reasoning.as_str().unwrap_or("").to_string(),
-                                ),
+                                Value::String(reasoning.as_str().unwrap_or("").to_string()),
                             );
                         }
                     }
@@ -417,7 +412,10 @@ pub fn normalize_tools(tools: &[Value]) -> Vec<Value> {
                     .unwrap_or_else(|| serde_json::json!({"type": "object", "properties": {}})),
             );
         } else {
-            let tool_type = object.get("type").and_then(Value::as_str).unwrap_or("function");
+            let tool_type = object
+                .get("type")
+                .and_then(Value::as_str)
+                .unwrap_or("function");
             let name = object.get("name").and_then(Value::as_str).unwrap_or("");
             if tool_type != "function" || name.is_empty() {
                 continue;
@@ -667,7 +665,10 @@ pub fn build_chat_body(
         }
         if let Some(effort) = extract_requested_effort(payload) {
             if let Some(canonical) = canonical_effort(&effort) {
-                parameters.insert("reasoning_effort".into(), Value::String(canonical.to_string()));
+                parameters.insert(
+                    "reasoning_effort".into(),
+                    Value::String(canonical.to_string()),
+                );
             }
         }
     }
@@ -1001,7 +1002,11 @@ pub struct TokenRefresh {
 }
 
 /// 解析刷新响应（`kind` 决定 token 字段名）。
-pub fn parse_refresh_response(kind: RefreshKind, data: &Value, previous_refresh: &str) -> TokenRefresh {
+pub fn parse_refresh_response(
+    kind: RefreshKind,
+    data: &Value,
+    previous_refresh: &str,
+) -> TokenRefresh {
     let access_token = match kind {
         RefreshKind::Device => data
             .get("token")
@@ -1047,7 +1052,12 @@ pub(crate) fn as_num(value: &Value) -> Option<i64> {
     value
         .as_i64()
         .or_else(|| value.as_f64().map(|number| number.round() as i64))
-        .or_else(|| value.as_str().and_then(|text| text.trim().parse::<f64>().ok()).map(|n| n.round() as i64))
+        .or_else(|| {
+            value
+                .as_str()
+                .and_then(|text| text.trim().parse::<f64>().ok())
+                .map(|n| n.round() as i64)
+        })
 }
 
 /// `expires_in`（毫秒）/ `expires_at`（RFC3339）→ unix 秒；都没有按 30 天。
@@ -1100,7 +1110,9 @@ pub fn parse_checkin_status(payload: &Value, today: &str) -> CheckinStatus {
         .unwrap_or(0);
     let last_day = if last_claimed_at > 0 {
         chrono::DateTime::from_timestamp(last_claimed_at, 0)
-            .map(|datetime| datetime.with_timezone(&chrono::FixedOffset::east_opt(8 * 3600).unwrap()))
+            .map(|datetime| {
+                datetime.with_timezone(&chrono::FixedOffset::east_opt(8 * 3600).unwrap())
+            })
             .map(|datetime| datetime.format("%Y-%m-%d").to_string())
             .unwrap_or_default()
     } else {
@@ -1173,7 +1185,11 @@ pub fn parse_quota(payload: &Value) -> Result<QuotaView, String> {
 }
 
 /// openapi 通道的请求头集（逐字对齐官方客户端）。
-pub fn openapi_headers(region: QoderRegion, uid: &str, access_token: &str) -> Vec<(String, String)> {
+pub fn openapi_headers(
+    region: QoderRegion,
+    uid: &str,
+    access_token: &str,
+) -> Vec<(String, String)> {
     let spec = region::realm_spec(region);
     let request_id = format!(
         "{}-{:06}",
@@ -1182,15 +1198,18 @@ pub fn openapi_headers(region: QoderRegion, uid: &str, access_token: &str) -> Ve
     );
     vec![
         ("Content-Type".into(), "application/json".into()),
-        (
-            "Accept".into(),
-            "application/json, text/plain, */*".into(),
-        ),
+        ("Accept".into(), "application/json, text/plain, */*".into()),
         ("User-Agent".into(), spec.user_agent.to_string()),
         ("Authorization".into(), format!("Bearer {access_token}")),
         ("X-Request-ID".into(), request_id),
-        ("X-Machine-ID".into(), super::device::derive_id(uid, "machine")),
-        ("X-Session-ID".into(), super::device::derive_id(uid, "session")),
+        (
+            "X-Machine-ID".into(),
+            super::device::derive_id(uid, "machine"),
+        ),
+        (
+            "X-Session-ID".into(),
+            super::device::derive_id(uid, "session"),
+        ),
         ("Origin".into(), spec.website.to_string()),
         ("Referer".into(), format!("{}/", spec.website)),
     ]
@@ -1259,18 +1278,25 @@ pub async fn refresh_token(
         let detail = body.chars().take(160).collect::<String>();
         return Err(format!("刷新令牌失败: HTTP {} {detail}", status.as_u16()));
     }
-    let data: Value = serde_json::from_str(&body)
-        .map_err(|error| format!("刷新响应不是 JSON: {error}"))?;
+    let data: Value =
+        serde_json::from_str(&body).map_err(|error| format!("刷新响应不是 JSON: {error}"))?;
     Ok(parse_refresh_response(kind, &data, refresh_token))
 }
 
 /// PAT → jobToken 交换（`pt-` 的刷新路径：PAT 换 jobToken）。
-pub async fn exchange_pat(region: QoderRegion, personal_token: &str) -> Result<TokenRefresh, String> {
+pub async fn exchange_pat(
+    region: QoderRegion,
+    personal_token: &str,
+) -> Result<TokenRefresh, String> {
     let spec = region::realm_spec(region);
     let client = shared_client()?;
     let response = apply_headers(
         client
-            .post(format!("{}{}", spec.openapi_base, super::PATH_JOB_TOKEN_EXCHANGE))
+            .post(format!(
+                "{}{}",
+                spec.openapi_base,
+                super::PATH_JOB_TOKEN_EXCHANGE
+            ))
             .json(&serde_json::json!({ "personal_token": personal_token })),
         &[
             ("Content-Type".into(), "application/json".into()),
@@ -1291,8 +1317,8 @@ pub async fn exchange_pat(region: QoderRegion, personal_token: &str) -> Result<T
         let detail = body.chars().take(160).collect::<String>();
         return Err(format!("PAT 交换失败: HTTP {} {detail}", status.as_u16()));
     }
-    let data: Value = serde_json::from_str(&body)
-        .map_err(|error| format!("交换响应不是 JSON: {error}"))?;
+    let data: Value =
+        serde_json::from_str(&body).map_err(|error| format!("交换响应不是 JSON: {error}"))?;
     Ok(parse_refresh_response(RefreshKind::Job, &data, ""))
 }
 
@@ -1309,7 +1335,11 @@ pub async fn checkin_status(
     let client = shared_client()?;
     let response = apply_headers(
         client
-            .get(format!("{}{}", spec.openapi_base, super::PATH_CHECKIN_STATUS))
+            .get(format!(
+                "{}{}",
+                spec.openapi_base,
+                super::PATH_CHECKIN_STATUS
+            ))
             .timeout(std::time::Duration::from_secs(15)),
         &openapi_headers(region, uid, access_token),
     )
@@ -1319,7 +1349,10 @@ pub async fn checkin_status(
     let status_code = response.status();
     let body = response.text().await.unwrap_or_default();
     if matches!(status_code.as_u16(), 404 | 405 | 410) {
-        return Err(format!("{CHECKIN_REASON_NOT_FOUND} (HTTP {})", status_code.as_u16()));
+        return Err(format!(
+            "{CHECKIN_REASON_NOT_FOUND} (HTTP {})",
+            status_code.as_u16()
+        ));
     }
     if !status_code.is_success() {
         return Err(format!(
@@ -1328,8 +1361,8 @@ pub async fn checkin_status(
             body.chars().take(160).collect::<String>()
         ));
     }
-    let data: Value = serde_json::from_str(&body)
-        .map_err(|error| format!("签到状态响应不是 JSON: {error}"))?;
+    let data: Value =
+        serde_json::from_str(&body).map_err(|error| format!("签到状态响应不是 JSON: {error}"))?;
     let today = chrono::Utc::now()
         .with_timezone(&chrono::FixedOffset::east_opt(8 * 3600).unwrap())
         .format("%Y-%m-%d")
@@ -1347,7 +1380,11 @@ pub async fn checkin_claim(
     let client = shared_client()?;
     let response = apply_headers(
         client
-            .post(format!("{}{}", spec.openapi_base, super::PATH_CHECKIN_CLAIM))
+            .post(format!(
+                "{}{}",
+                spec.openapi_base,
+                super::PATH_CHECKIN_CLAIM
+            ))
             .json(&serde_json::json!({}))
             .timeout(std::time::Duration::from_secs(15)),
         &openapi_headers(region, uid, access_token),
@@ -1393,8 +1430,8 @@ pub async fn quota_usage(
             body.chars().take(160).collect::<String>()
         ));
     }
-    let data: Value = serde_json::from_str(&body)
-        .map_err(|error| format!("额度响应不是 JSON: {error}"))?;
+    let data: Value =
+        serde_json::from_str(&body).map_err(|error| format!("额度响应不是 JSON: {error}"))?;
     parse_quota(&data)
 }
 
@@ -1479,7 +1516,9 @@ pub async fn fetch_model_list_at(
             }
         }
     }
-    Err(format!("模型清单拉取失败（已试全部候选主机）: {last_error}"))
+    Err(format!(
+        "模型清单拉取失败（已试全部候选主机）: {last_error}"
+    ))
 }
 
 #[cfg(test)]
@@ -1505,7 +1544,10 @@ mod tests {
         let messages = template["messages"].as_array().unwrap();
         assert_eq!(messages.len(), 1);
         assert_eq!(messages[0]["role"], "system");
-        assert!(messages[0]["content"].as_str().unwrap().len() > 1000, "官方系统提示词应在");
+        assert!(
+            messages[0]["content"].as_str().unwrap().len() > 1000,
+            "官方系统提示词应在"
+        );
         // 关键字段在位。
         assert_eq!(template["agent_id"], "agent_common");
         assert_eq!(template["chat_task"], "FREE_INPUT");
@@ -1631,7 +1673,13 @@ mod tests {
             "max_tokens": 4096,
             "reasoning_effort": "max",
         });
-        let body = build_chat_body(&payload, &meta(), QoderRegion::Cn, "personal_professional_trial").unwrap();
+        let body = build_chat_body(
+            &payload,
+            &meta(),
+            QoderRegion::Cn,
+            "personal_professional_trial",
+        )
+        .unwrap();
         assert_eq!(body["stream"], true);
         assert_eq!(body["aliyun_user_type"], "personal_professional_trial");
         // 客户端 system 替换模板 system。
@@ -1650,7 +1698,10 @@ mod tests {
         assert_eq!(body["model_config"]["max_input_tokens"], 200_000);
         // chat_context 高亮 = 最新用户提示词；business.name 取前 30 字。
         assert_eq!(body["chat_context"]["text"]["text"], "你好");
-        assert_eq!(body["chat_context"]["extra"]["originalContent"]["text"], "你好");
+        assert_eq!(
+            body["chat_context"]["extra"]["originalContent"]["text"],
+            "你好"
+        );
         assert_eq!(body["business"]["name"], "你好");
         // parameters：客户端给的 max_tokens + 归一化档位。
         assert_eq!(body["parameters"]["max_tokens"], 4096);
@@ -1701,7 +1752,10 @@ mod tests {
             other => panic!("应是错误帧: {other:?}"),
         }
         // 计时元数据 / 注释 / 空行 ⇒ Skip。
-        assert_eq!(unwrap_envelope_line("event:finish{\"x\":1}"), ChatFrame::Skip);
+        assert_eq!(
+            unwrap_envelope_line("event:finish{\"x\":1}"),
+            ChatFrame::Skip
+        );
         assert_eq!(unwrap_envelope_line(": keep-alive"), ChatFrame::Skip);
         assert_eq!(unwrap_envelope_line(""), ChatFrame::Skip);
     }
@@ -1878,7 +1932,10 @@ mod tests {
             "userQuota": {"remaining": "12", "used": "3.0", "total": "15"},
         }))
         .unwrap();
-        assert_eq!((as_text.remaining, as_text.used, as_text.total), (12, 3, 15));
+        assert_eq!(
+            (as_text.remaining, as_text.used, as_text.total),
+            (12, 3, 15)
+        );
     }
 
     #[test]
@@ -1895,7 +1952,9 @@ mod tests {
             lookup("X-Machine-ID").as_deref(),
             Some("abec85ce8c7ed7ebd0041ee4ca63e701")
         );
-        assert!(lookup("X-Request-ID").unwrap().starts_with(&super::super::device::derive_id("q1", "req")));
+        assert!(lookup("X-Request-ID")
+            .unwrap()
+            .starts_with(&super::super::device::derive_id("q1", "req")));
         assert!(lookup("Origin").unwrap().contains("qoder"));
     }
 
@@ -1907,15 +1966,35 @@ mod tests {
         ];
         let bad_ids = vec![serde_json::json!({"role": "tool", "content": "x"})];
         // 默认 auto：非 CN ⇒ false；缺 id ⇒ false。
-        assert!(!structured_tool_history_enabled("qwen-max", QoderRegion::Global, &good));
-        assert!(!structured_tool_history_enabled("qwen-max", QoderRegion::Cn, &bad_ids));
+        assert!(!structured_tool_history_enabled(
+            "qwen-max",
+            QoderRegion::Global,
+            &good
+        ));
+        assert!(!structured_tool_history_enabled(
+            "qwen-max",
+            QoderRegion::Cn,
+            &bad_ids
+        ));
         std::env::set_var("QD_STRUCTURED_TOOL_HISTORY", "on");
-        assert!(structured_tool_history_enabled("whatever", QoderRegion::Global, &good));
+        assert!(structured_tool_history_enabled(
+            "whatever",
+            QoderRegion::Global,
+            &good
+        ));
         std::env::set_var("QD_STRUCTURED_TOOL_HISTORY", "off");
-        assert!(!structured_tool_history_enabled("qwen-max", QoderRegion::Cn, &good));
+        assert!(!structured_tool_history_enabled(
+            "qwen-max",
+            QoderRegion::Cn,
+            &good
+        ));
         std::env::remove_var("QD_STRUCTURED_TOOL_HISTORY");
         // 默认 auto：CN + 白名单前缀 ⇒ true。
-        assert!(structured_tool_history_enabled("qwen3.8-max", QoderRegion::Cn, &good));
+        assert!(structured_tool_history_enabled(
+            "qwen3.8-max",
+            QoderRegion::Cn,
+            &good
+        ));
     }
 
     // ── 真机探针（无账号无法验证，刻意保留位） ──

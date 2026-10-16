@@ -852,10 +852,7 @@ fn parse_records(text: &str, since_ms: i64, fallback_session: &str) -> FileScan 
         let Ok(value) = serde_json::from_str::<Value>(line) else {
             continue;
         };
-        let timestamp = value
-            .get("timestamp")
-            .and_then(Value::as_i64)
-            .unwrap_or(0);
+        let timestamp = value.get("timestamp").and_then(Value::as_i64).unwrap_or(0);
         if !session_seen {
             if let Some(session) = value.get("sessionId").and_then(Value::as_str) {
                 if !session.is_empty() {
@@ -1276,8 +1273,7 @@ fn record_success<K: std::hash::Hash + Eq>(map: &mut HashMap<K, i64>, key: K, va
 
 /// `error` 是否比当前桶内已保留的那条更新（字典序 `(timestamp, session_id)`）。
 fn is_newer_than(error: &RawClientError, entry: &ClientLimitEntry) -> bool {
-    (error.timestamp, error.session_id.as_str())
-        > (entry.occurred_at, entry.session_id.as_str())
+    (error.timestamp, error.session_id.as_str()) > (entry.occurred_at, entry.session_id.as_str())
 }
 
 // ---------------------------------------------------------------------------
@@ -1327,7 +1323,8 @@ fn parse_cst_datetime(text: &str) -> Option<i64> {
     let hour = num(11..13)? as u32;
     let minute = num(14..16)? as u32;
     let second = num(17..19)? as u32;
-    let naive = chrono::NaiveDate::from_ymd_opt(year, month, day)?.and_hms_opt(hour, minute, second)?;
+    let naive =
+        chrono::NaiveDate::from_ymd_opt(year, month, day)?.and_hms_opt(hour, minute, second)?;
     use chrono::TimeZone;
     cst::cst_offset()
         .from_local_datetime(&naive)
@@ -1407,7 +1404,10 @@ mod tests {
         assert_eq!(parse_reset_at_ms("429 queue.waiting.title"), None);
         assert_eq!(parse_reset_at_ms("reset at 2026-09-16 16:34:24"), None);
         assert_eq!(parse_reset_at_ms("将在稍后重置"), None);
-        assert_eq!(parse_reset_at_ms("reset at 2026-13-40 99:99:99 UTC+8"), None);
+        assert_eq!(
+            parse_reset_at_ms("reset at 2026-13-40 99:99:99 UTC+8"),
+            None
+        );
     }
 
     #[test]
@@ -1449,7 +1449,10 @@ mod tests {
     #[test]
     fn resolve_since_ms_default_all_and_days() {
         let now = 1_000_000_000_000;
-        assert_eq!(resolve_since_ms(None, now), now - DEFAULT_SINCE_DAYS * DAY_MS);
+        assert_eq!(
+            resolve_since_ms(None, now),
+            now - DEFAULT_SINCE_DAYS * DAY_MS
+        );
         assert_eq!(resolve_since_ms(Some(0), now), 0);
         assert_eq!(resolve_since_ms(Some(30), now), now - 30 * DAY_MS);
         assert_eq!(
@@ -1476,8 +1479,12 @@ mod tests {
         assert!(!is_success_record(
             &json!({ "type": "message", "role": "assistant", "status": "incomplete" })
         ));
-        assert!(!is_success_record(&json!({ "type": "message", "role": "user" })));
-        assert!(!is_success_record(&json!({ "type": "file-history-snapshot" })));
+        assert!(!is_success_record(
+            &json!({ "type": "message", "role": "user" })
+        ));
+        assert!(!is_success_record(
+            &json!({ "type": "file-history-snapshot" })
+        ));
         assert!(!is_success_record(&json!({ "type": "session-meta" })));
     }
 
@@ -1530,12 +1537,16 @@ mod tests {
 
     #[test]
     fn is_attempt_record_ignores_client_housekeeping() {
-        assert!(is_attempt_record(&json!({ "type": "message", "role": "user" })));
+        assert!(is_attempt_record(
+            &json!({ "type": "message", "role": "user" })
+        ));
         assert!(is_attempt_record(
             &json!({ "providerData": { "error": { "code": 6004 } } })
         ));
         // 客户端内务记录在会话闲置时也会周期性落盘 ⇒ 不能当「又试过」。
-        assert!(!is_attempt_record(&json!({ "type": "file-history-snapshot" })));
+        assert!(!is_attempt_record(
+            &json!({ "type": "file-history-snapshot" })
+        ));
         assert!(!is_attempt_record(&json!({ "type": "session-meta" })));
         assert!(!is_attempt_record(
             &json!({ "type": "message", "role": "assistant", "status": "completed" })
@@ -1644,13 +1655,7 @@ mod tests {
         let mut succeeded = raw("ghost-ok", occurred, 6004, "429 x", Some(reset));
         succeeded.file_success_ms = occurred + 60_000;
         let still_stuck = raw("ghost-stuck", occurred, 6004, "429 y", Some(reset));
-        let limits = build_limits(
-            Region::Cn,
-            vec![succeeded, still_stuck],
-            &meta,
-            &names,
-            now,
-        );
+        let limits = build_limits(Region::Cn, vec![succeeded, still_stuck], &meta, &names, now);
         assert_eq!(limits.len(), 1, "join 失败时两者同桶（uid/model 均 None）");
         // 桶内任一条有实证 ⇒ 该桶不再报「仍受限」（保守地少报一次「受限」）。
         assert_eq!(limits[0].state, LimitState::Recovered);
@@ -1803,11 +1808,17 @@ mod tests {
         let mut meta = HashMap::new();
         meta.insert(
             "s1".to_string(),
-            (Some("deepseek-v4.1-flash".to_string()), Some("uid-a".to_string())),
+            (
+                Some("deepseek-v4.1-flash".to_string()),
+                Some("uid-a".to_string()),
+            ),
         );
         meta.insert(
             "s2".to_string(),
-            (Some("deepseek-v4.1-flash".to_string()), Some("uid-a".to_string())),
+            (
+                Some("deepseek-v4.1-flash".to_string()),
+                Some("uid-a".to_string()),
+            ),
         );
         let names = HashMap::new();
         let errors = vec![
@@ -1832,9 +1843,27 @@ mod tests {
         let names: HashMap<String, String> = HashMap::new();
         let errors = vec![
             raw("ghost-1", now - 5_000, 6004, "429 ...", None),
-            raw("ghost-2", now - 4_000, 6020, "429 queue.waiting.title", None),
-            raw("ghost-3", now - 3_000, 6020, "429 queue.waiting.title", None),
-            raw("ghost-4", now - 2_000, 6022, "429 queue.userLimit.title", None),
+            raw(
+                "ghost-2",
+                now - 4_000,
+                6020,
+                "429 queue.waiting.title",
+                None,
+            ),
+            raw(
+                "ghost-3",
+                now - 3_000,
+                6020,
+                "429 queue.waiting.title",
+                None,
+            ),
+            raw(
+                "ghost-4",
+                now - 2_000,
+                6022,
+                "429 queue.userLimit.title",
+                None,
+            ),
         ];
         let limits = build_limits(Region::Cn, errors, &meta, &names, now);
         assert_eq!(limits.len(), 3, "join 失败也要按错误码分开，不得塌缩成一条");
@@ -1851,17 +1880,29 @@ mod tests {
         let mut meta = HashMap::new();
         meta.insert(
             "s1".to_string(),
-            (Some("deepseek-v4.1-flash".to_string()), Some("uid-a".to_string())),
+            (
+                Some("deepseek-v4.1-flash".to_string()),
+                Some("uid-a".to_string()),
+            ),
         );
         meta.insert(
             "s2".to_string(),
-            (Some("deepseek-v4.1-flash".to_string()), Some("uid-a".to_string())),
+            (
+                Some("deepseek-v4.1-flash".to_string()),
+                Some("uid-a".to_string()),
+            ),
         );
         let mut names = HashMap::new();
         names.insert("uid-a".to_string(), "Jackey".to_string());
 
         // 三条都要带「之后又试过」，否则会落到 `unknown`（见 `limit_state` 的判据表）。
-        let mut first = raw("s1", cst_millis(2026, 9, 16, 9, 0), 6004, "第一条", Some(reset));
+        let mut first = raw(
+            "s1",
+            cst_millis(2026, 9, 16, 9, 0),
+            6004,
+            "第一条",
+            Some(reset),
+        );
         let mut second = raw(
             "s2",
             cst_millis(2026, 9, 16, 9, 30),
@@ -1869,20 +1910,34 @@ mod tests {
             "第二条(最新)",
             Some(reset),
         );
-        let mut third = raw("s1", cst_millis(2026, 9, 16, 9, 15), 6004, "中间", Some(reset));
+        let mut third = raw(
+            "s1",
+            cst_millis(2026, 9, 16, 9, 15),
+            6004,
+            "中间",
+            Some(reset),
+        );
         for entry in [&mut first, &mut second, &mut third] {
             entry.file_attempt_ms = cst_millis(2026, 9, 16, 9, 45);
         }
         let errors = vec![first, second, third];
         let limits = build_limits(Region::Cn, errors, &meta, &names, now);
-        assert_eq!(limits.len(), 1, "同 (uid, model, code, reset_at) 必须聚合为一条");
+        assert_eq!(
+            limits.len(),
+            1,
+            "同 (uid, model, code, reset_at) 必须聚合为一条"
+        );
         let entry = &limits[0];
         assert_eq!(entry.account.as_deref(), Some("Jackey"));
         assert_eq!(entry.model.as_deref(), Some("deepseek-v4.1-flash"));
         assert_eq!(entry.occurred_at, cst_millis(2026, 9, 16, 9, 30));
         assert_eq!(entry.message, "第二条(最新)");
         assert_eq!(entry.occurrences, 3);
-        assert_eq!(entry.state, LimitState::Active, "无实证 + reset 在未来 ⇒ 仍受限");
+        assert_eq!(
+            entry.state,
+            LimitState::Active,
+            "无实证 + reset 在未来 ⇒ 仍受限"
+        );
     }
 
     #[test]
@@ -1937,7 +1992,10 @@ mod tests {
         for session in ["s1", "s2", "s3"] {
             meta.insert(
                 session.to_string(),
-                (Some("deepseek-v4.1-flash".to_string()), Some("uid-a".to_string())),
+                (
+                    Some("deepseek-v4.1-flash".to_string()),
+                    Some("uid-a".to_string()),
+                ),
             );
         }
         let names: HashMap<String, String> = HashMap::new();
@@ -2077,11 +2135,7 @@ mod tests {
         let mut cache2: HashMap<PathBuf, ScanCacheEntry> = HashMap::new();
         cache2.insert(
             probe.clone(),
-            cache
-                .values()
-                .next()
-                .expect("有条目")
-                .clone(),
+            cache.values().next().expect("有条目").clone(),
         );
         write_persisted_cache(&path, &cache2);
         let loaded = read_persisted_cache(&path).expect("读得回来");
@@ -2100,9 +2154,10 @@ mod tests {
         // 版本不符 ⇒ 整体丢弃（宁可重扫，不可读出错值）。
         // ⚠️ 锚点必须由 `SCAN_CACHE_VERSION` 拼出来：写死数字的话，版本号一升这条用例
         // 就会「替换不到 ⇒ 文件仍是合法版本 ⇒ 断言失败」，看起来像功能坏了。
-        let broken = std::fs::read_to_string(&path)
-            .expect("读得到")
-            .replace(&format!("\"version\":{SCAN_CACHE_VERSION}"), "\"version\":999");
+        let broken = std::fs::read_to_string(&path).expect("读得到").replace(
+            &format!("\"version\":{SCAN_CACHE_VERSION}"),
+            "\"version\":999",
+        );
         std::fs::write(&path, broken).expect("写坏版本");
         assert!(read_persisted_cache(&path).is_none());
 
@@ -2150,7 +2205,11 @@ mod tests {
         ));
         std::fs::write(&path, body).expect("追加");
         let refreshed = scan_client_errors_in(&dir, now - DAY_MS);
-        assert_eq!(refreshed[0].errors.len(), 2, "文件变了必须重扫，不得吃旧缓存");
+        assert_eq!(
+            refreshed[0].errors.len(),
+            2,
+            "文件变了必须重扫，不得吃旧缓存"
+        );
 
         clear_scan_cache_entry(&path);
         let _ = std::fs::remove_dir_all(&dir);
@@ -2194,7 +2253,11 @@ mod tests {
             collect_rate_limit_errors(scan_client_errors_in(&dir, now - 7 * DAY_MS));
         assert_eq!(narrow_first.len(), 1);
         let (wide_again, _) = collect_rate_limit_errors(scan_client_errors_in(&dir, 0));
-        assert_eq!(wide_again.len(), 2, "更宽的窗口必须重扫，不得吃窄窗口的缓存");
+        assert_eq!(
+            wide_again.len(),
+            2,
+            "更宽的窗口必须重扫，不得吃窄窗口的缓存"
+        );
 
         clear_scan_cache_entry(&path);
         let _ = std::fs::remove_dir_all(&dir);

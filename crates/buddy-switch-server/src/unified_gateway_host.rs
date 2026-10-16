@@ -46,4 +46,3 @@ pub async fn status() -> (bool, Option<String>) {
     let host = host().lock().await;
     (host.is_running(), host.addr())
 }
-

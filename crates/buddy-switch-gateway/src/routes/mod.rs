@@ -21,7 +21,10 @@ use crate::state::GatewayState;
 
 /// 从请求头提取 API Key：优先 `x-api-key`，其次 `Authorization: Bearer <key>`。
 pub(crate) fn extract_bearer(headers: &HeaderMap) -> Option<String> {
-    if let Some(value) = headers.get("x-api-key").and_then(|value| value.to_str().ok()) {
+    if let Some(value) = headers
+        .get("x-api-key")
+        .and_then(|value| value.to_str().ok())
+    {
         let value = value.trim();
         if !value.is_empty() {
             return Some(value.to_string());
@@ -46,7 +49,9 @@ pub(crate) fn authenticate(
     headers: &HeaderMap,
 ) -> Result<ApiKeyRecord, GatewayError> {
     let presented = extract_bearer(headers).ok_or_else(|| {
-        GatewayError::Unauthorized("缺少凭据：请在 Authorization 头携带 `Bearer <API Key>`".to_string())
+        GatewayError::Unauthorized(
+            "缺少凭据：请在 Authorization 头携带 `Bearer <API Key>`".to_string(),
+        )
     })?;
     let record = state
         .keys

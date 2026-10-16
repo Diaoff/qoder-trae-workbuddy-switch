@@ -662,10 +662,7 @@ pub fn build_chat_headers(region: Region, account: &Value) -> HashMap<String, St
     );
     headers.insert("Accept-Language".to_string(), accept_language.to_string());
     headers.insert("X-CodeBuddy-Request".to_string(), "1".to_string());
-    headers.insert(
-        "X-Agent-Purpose".to_string(),
-        "conversation".to_string(),
-    );
+    headers.insert("X-Agent-Purpose".to_string(), "conversation".to_string());
     headers.insert("X-Requested-With".to_string(), "XMLHttpRequest".to_string());
     headers.insert("Origin".to_string(), origin.to_string());
     headers.insert("Referer".to_string(), format!("{origin}/"));
@@ -781,7 +778,11 @@ mod tests {
         });
 
         // 1) 信封 + 快照命中 ⇒ 显示明文名字（本次修复的目标行为）。
-        write_client_snapshot(Region::Cn, "15bf784e-877b-43dd-904c-853dde62b84c", json!("Andev"));
+        write_client_snapshot(
+            Region::Cn,
+            "15bf784e-877b-43dd-904c-853dde62b84c",
+            json!("Andev"),
+        );
         assert_eq!(
             account_display_name(&cn_account),
             "Andev",
@@ -805,7 +806,11 @@ mod tests {
             "nickname": envelope,
             "domain": "www.workbuddy.ai",
         });
-        write_client_snapshot(Region::Global, "2fa83368-ebd6-4efe-8cd7-4f43b1c31571", json!("nextagentx"));
+        write_client_snapshot(
+            Region::Global,
+            "2fa83368-ebd6-4efe-8cd7-4f43b1c31571",
+            json!("nextagentx"),
+        );
         assert_eq!(
             account_display_name(&global_account),
             "nextagentx",
@@ -819,12 +824,20 @@ mod tests {
 
         // 4) `domain` 缺失 ⇒ `region_of(\"\")` 判为 CN；此时读不到名字，如实回落 uid，
         //    **不会**把 CN 快照里别人的名字挂上去。
-        write_client_snapshot(Region::Cn, "15bf784e-877b-43dd-904c-853dde62b84c", json!("Andev"));
+        write_client_snapshot(
+            Region::Cn,
+            "15bf784e-877b-43dd-904c-853dde62b84c",
+            json!("Andev"),
+        );
         let no_domain = json!({
             "uid": "15bf784e-877b-43dd-904c-853dde62b84c",
             "nickname": envelope,
         });
-        assert_eq!(account_display_name(&no_domain), "Andev", "缺 domain 时按 CN 处理");
+        assert_eq!(
+            account_display_name(&no_domain),
+            "Andev",
+            "缺 domain 时按 CN 处理"
+        );
 
         // 5) 阳性对照（**这条防的是「无条件覆盖」**）：记录里有明文昵称时，
         //    快照与账号库都不得覆盖它 —— 否则老客户端用户会看到过期的旧名字。
@@ -910,11 +923,23 @@ mod tests {
         });
         let headers = build_chat_headers(Region::Cn, &acc);
         assert_eq!(headers.get("X-User-Id").map(String::as_str), Some("u1"));
-        assert_eq!(headers.get("X-Domain").map(String::as_str), Some("www.codebuddy.cn"));
-        assert_eq!(headers.get("X-No-Enterprise-Id").map(String::as_str), Some("1"));
+        assert_eq!(
+            headers.get("X-Domain").map(String::as_str),
+            Some("www.codebuddy.cn")
+        );
+        assert_eq!(
+            headers.get("X-No-Enterprise-Id").map(String::as_str),
+            Some("1")
+        );
         assert_eq!(headers.get("X-Product").map(String::as_str), Some("SaaS"));
-        assert_eq!(headers.get("Origin").map(String::as_str), Some("https://www.codebuddy.cn"));
-        assert_eq!(headers.get("Authorization").map(String::as_str), Some("Bearer AT"));
+        assert_eq!(
+            headers.get("Origin").map(String::as_str),
+            Some("https://www.codebuddy.cn")
+        );
+        assert_eq!(
+            headers.get("Authorization").map(String::as_str),
+            Some("Bearer AT")
+        );
         // 安全红线：chat 头绝不携带 refresh token。
         assert!(!headers.contains_key("X-Refresh-Token"));
         assert!(!headers.values().any(|v| v == "SECRET_REFRESH"));
@@ -925,9 +950,18 @@ mod tests {
         let acc = json!({"access_token": "AT"});
         let headers = build_chat_headers(Region::Global, &acc);
         assert_eq!(headers.get("X-No-User-Id").map(String::as_str), Some("1"));
-        assert_eq!(headers.get("X-No-Enterprise-Id").map(String::as_str), Some("1"));
-        assert_eq!(headers.get("X-No-Department-Info").map(String::as_str), Some("1"));
-        assert_eq!(headers.get("Origin").map(String::as_str), Some("https://www.workbuddy.ai"));
+        assert_eq!(
+            headers.get("X-No-Enterprise-Id").map(String::as_str),
+            Some("1")
+        );
+        assert_eq!(
+            headers.get("X-No-Department-Info").map(String::as_str),
+            Some("1")
+        );
+        assert_eq!(
+            headers.get("Origin").map(String::as_str),
+            Some("https://www.workbuddy.ai")
+        );
     }
 
     fn account(id: &str, uid: Option<&str>, nickname: &str, email: Option<&str>) -> Value {
@@ -1284,7 +1318,8 @@ mod tests {
 
         // ★ 只有 refresh_token 是信封时**不**拦：刷新链路会自己报「需重新登录」，
         //   在这里一并封死会把「还能靠 refresh 救回来」的账号误伤。
-        let refresh_only = json!({"id": "a4", "access_token": "SECRET", "refresh_token": envelope("r")});
+        let refresh_only =
+            json!({"id": "a4", "access_token": "SECRET", "refresh_token": envelope("r")});
         assert!(
             envelope_token_error(&refresh_only).is_none(),
             "只有 refresh_token 是信封时不得短路"
@@ -1318,7 +1353,8 @@ mod tests {
 
         // 2) 只有 refresh_token 是信封（access_token 是明文）⇒ 同样报信封。
         //    这条是**边界**：`envelope_token_error` 刻意不管它，刷新链路必须管。
-        let refresh_only = json!({"id": "a2", "access_token": "SECRET", "refresh_token": envelope("r")});
+        let refresh_only =
+            json!({"id": "a2", "access_token": "SECRET", "refresh_token": envelope("r")});
         assert!(envelope_refresh_error(&refresh_only).is_some());
 
         // 3) 阳性对照：明文 refresh_token 不得误报（否则会把可刷新的账号拦死）。
@@ -1332,7 +1368,9 @@ mod tests {
         //    两类原因必须能区分开，否则修法完全不同。
         assert!(envelope_refresh_error(&json!({"id": "a4"})).is_none());
         assert!(envelope_refresh_error(&json!({"id": "a5", "refresh_token": ""})).is_none());
-        assert!(envelope_refresh_error(&json!({"id": "a6", "refresh_token": {"zh": "脏值"}})).is_none());
+        assert!(
+            envelope_refresh_error(&json!({"id": "a6", "refresh_token": {"zh": "脏值"}})).is_none()
+        );
     }
 
     /// ★ 信封不得覆盖**未过期**的明文 token。
@@ -1384,7 +1422,10 @@ mod tests {
         );
 
         assert_eq!(accounts.len(), 1);
-        assert!(is_envelope(&saved, "access_token"), "过期的明文应让信封接管");
+        assert!(
+            is_envelope(&saved, "access_token"),
+            "过期的明文应让信封接管"
+        );
         assert_eq!(saved["id"], "a-1");
     }
 
@@ -1449,7 +1490,10 @@ mod tests {
             }),
         );
 
-        assert!(is_envelope(&saved, "access_token"), "过期的明文应让信封接管");
+        assert!(
+            is_envelope(&saved, "access_token"),
+            "过期的明文应让信封接管"
+        );
         assert_eq!(saved["nickname"], "明文昵称");
         assert_eq!(saved["email"], "keep@example.com");
         assert_eq!(saved["enterpriseName"], "某公司");
@@ -1578,8 +1622,14 @@ mod tests {
 
         let after = load_accounts_for(Region::Cn);
         assert_eq!(after.len(), 1, "按 uid 软删除后 live 应恰好剩 1 条");
-        assert!(find_account_in(&after, "id-a").is_none(), "被删的那条必须真的移出 live");
-        assert!(find_account_in(&after, "uid-b").is_some(), "另一条不得被误删");
+        assert!(
+            find_account_in(&after, "id-a").is_none(),
+            "被删的那条必须真的移出 live"
+        );
+        assert!(
+            find_account_in(&after, "uid-b").is_some(),
+            "另一条不得被误删"
+        );
         // ★ 关键：移入回收站的**条数 == 1**（不是「移 0 条却报成功」）。
         let trash = load_trash_for(Region::Cn);
         assert_eq!(trash.len(), 1, "按 uid 软删除必须真的移入 1 条");
@@ -1682,7 +1732,11 @@ mod tests {
                 origin_scope: Scope::WbCn,
             },
         ];
-        assert_eq!(sweep_trash_entries(&mut entries, now), 1, "过期条目应被清理");
+        assert_eq!(
+            sweep_trash_entries(&mut entries, now),
+            1,
+            "过期条目应被清理"
+        );
         assert_eq!(entries.len(), 1);
         assert!(resolve_account_key(&entries[0].account, "u-fresh"));
 
@@ -1703,7 +1757,10 @@ mod tests {
 
         // 清空回收站返回删除条数（此刻回收站里只剩 a2）。
         assert_eq!(clear_trash_for(Region::Cn), 1, "清空应返回被删条数");
-        assert!(load_trash_for(Region::Cn).is_empty(), "清空后回收站必须为空");
+        assert!(
+            load_trash_for(Region::Cn).is_empty(),
+            "清空后回收站必须为空"
+        );
 
         save_accounts_for(Region::Cn, &[account("z", Some("uz"), "z", None)]).expect("seed z");
         delete_account_for(Region::Cn, "uz").expect("软删除 z");
@@ -1749,7 +1806,10 @@ mod tests {
 
         // 同一 store 目录，仅文件名不同。
         assert_eq!(cn.parent(), global.parent());
-        assert_eq!(cn, crate::modules::config::store_dir().join("accounts.json"));
+        assert_eq!(
+            cn,
+            crate::modules::config::store_dir().join("accounts.json")
+        );
         assert_eq!(
             global,
             crate::modules::config::store_dir().join("accounts.global.json")
@@ -1772,7 +1832,10 @@ mod tests {
             "access_token": "OLD",
             "remark": "DS4.1 · 10/03 解禁",
         })];
-        upsert_collected_account(&mut accounts, account("generated", Some("uid-1"), "新名称", None));
+        upsert_collected_account(
+            &mut accounts,
+            account("generated", Some("uid-1"), "新名称", None),
+        );
 
         assert_eq!(accounts.len(), 1);
         assert_eq!(
@@ -1803,7 +1866,8 @@ mod tests {
         )
         .expect("seed accounts");
 
-        let meta = set_remark_in_path(Region::Cn, &path, "a1", Some("  10/03 解禁  ")).expect("set remark");
+        let meta = set_remark_in_path(Region::Cn, &path, "a1", Some("  10/03 解禁  "))
+            .expect("set remark");
         assert_eq!(meta["remark"], "10/03 解禁", "备注应去首尾空白");
         assert!(meta.get("access_token").is_none(), "meta 不得泄露 token");
 

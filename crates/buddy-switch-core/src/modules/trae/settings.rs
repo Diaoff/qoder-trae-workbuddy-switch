@@ -198,7 +198,12 @@ impl TraeSettings {
 
     /// 判断某主机是否属于需要 MITM 解密的域名。
     pub fn should_intercept(&self, host: &str) -> bool {
-        let host = host.split(':').next().unwrap_or(host).trim().to_ascii_lowercase();
+        let host = host
+            .split(':')
+            .next()
+            .unwrap_or(host)
+            .trim()
+            .to_ascii_lowercase();
         if host.is_empty() {
             return false;
         }
@@ -460,12 +465,18 @@ mod tests {
         // 再设国际版：国内版的值必须**原样保留**（这正是旧实现的缺陷所在）。
         settings.set_path_for(TraeRegion::Global, Some(r"D:\B\Trae.exe"));
         assert_eq!(settings.path_for(TraeRegion::Cn), Some(r"D:\A\Trae CN.exe"));
-        assert_eq!(settings.path_for(TraeRegion::Global), Some(r"D:\B\Trae.exe"));
+        assert_eq!(
+            settings.path_for(TraeRegion::Global),
+            Some(r"D:\B\Trae.exe")
+        );
 
         // 清除一个区域不影响另一个。
         settings.set_path_for(TraeRegion::Cn, None);
         assert_eq!(settings.path_for(TraeRegion::Cn), None);
-        assert_eq!(settings.path_for(TraeRegion::Global), Some(r"D:\B\Trae.exe"));
+        assert_eq!(
+            settings.path_for(TraeRegion::Global),
+            Some(r"D:\B\Trae.exe")
+        );
     }
 
     /// 空白路径视为「未配置」；`set_path_for` 不得留下空串键。
@@ -495,7 +506,10 @@ mod tests {
 
         assert_eq!(
             settings.all_paths(),
-            vec![r"D:\A\Trae CN.exe".to_string(), r"D:\B\Trae.exe".to_string()],
+            vec![
+                r"D:\A\Trae CN.exe".to_string(),
+                r"D:\B\Trae.exe".to_string()
+            ],
             "顺序必须稳定为 cn → global（BTreeMap 落盘键序也据此）"
         );
 

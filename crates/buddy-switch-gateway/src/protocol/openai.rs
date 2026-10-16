@@ -12,7 +12,9 @@ fn contains(haystack: &[u8], needle: &[u8]) -> bool {
     if needle.is_empty() || haystack.len() < needle.len() {
         return false;
     }
-    haystack.windows(needle.len()).any(|window| window == needle)
+    haystack
+        .windows(needle.len())
+        .any(|window| window == needle)
 }
 
 /// 从 SSE 文本中提取所有 `data:` 负载（按行）。
@@ -182,7 +184,8 @@ impl CompletionAccumulator {
                 }
             }
             if let Some(reasoning) = delta.get("reasoning_content").and_then(Value::as_str) {
-                let delta_text = crate::protocol::reasoning::reasoning_delta(&self.reasoning, reasoning);
+                let delta_text =
+                    crate::protocol::reasoning::reasoning_delta(&self.reasoning, reasoning);
                 self.reasoning.push_str(delta_text);
             }
             if let Some(content) = delta.get("content").and_then(Value::as_str) {
@@ -413,7 +416,10 @@ mod tests {
             .map(|chunk| String::from_utf8_lossy(chunk).to_string())
             .collect();
         assert!(text.contains("data: {\"a\":1}"));
-        assert!(text.ends_with("data: [DONE]\n\n"), "流中断必须补发 [DONE]: {text}");
+        assert!(
+            text.ends_with("data: [DONE]\n\n"),
+            "流中断必须补发 [DONE]: {text}"
+        );
     }
 
     #[tokio::test]
@@ -468,7 +474,10 @@ mod tests {
             "data: [DONE]\n\n",
         );
         let accum = CompletionAccumulator::from_sse(sse);
-        assert_eq!(accum.reasoning, "ABC", "快照序列聚合后只保留全文，不重复拼接");
+        assert_eq!(
+            accum.reasoning, "ABC",
+            "快照序列聚合后只保留全文，不重复拼接"
+        );
 
         let completion = accum.to_openai_completion("m");
         assert_eq!(
@@ -496,6 +505,8 @@ mod tests {
             ..Default::default()
         };
         let completion = accum.to_openai_completion("m");
-        assert!(completion["choices"][0]["message"].get("reasoning_content").is_none());
+        assert!(completion["choices"][0]["message"]
+            .get("reasoning_content")
+            .is_none());
     }
 }

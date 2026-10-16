@@ -31,12 +31,12 @@ mod unified_gateway_host;
 
 use serde_json::json;
 
+use buddy_switch_core::modules::background::{TaskKind, TaskSpec, TASKS};
+use buddy_switch_core::modules::product::Product;
 use buddy_switch_core::modules::{
     account, auth_file, backup, config, process, region::Region, rotate, schedule, scheduler,
     token_daily, trae, update,
 };
-use buddy_switch_core::modules::background::{TaskKind, TaskSpec, TASKS};
-use buddy_switch_core::modules::product::Product;
 
 fn default_port() -> u16 {
     57890
@@ -77,7 +77,10 @@ fn resolve_host(args: &[String], env: Option<&str>) -> String {
 /// （启动不该因为一个错字而失败），且启动日志里会打印最终生效的地址，便于发现。
 fn resolve_port(args: &[String], env: Option<&str>) -> u16 {
     if let Some(index) = args.iter().position(|arg| arg == "--port") {
-        if let Some(port) = args.get(index + 1).and_then(|value| value.parse::<u16>().ok()) {
+        if let Some(port) = args
+            .get(index + 1)
+            .and_then(|value| value.parse::<u16>().ok())
+        {
             return port;
         }
     }
@@ -208,8 +211,7 @@ fn spawn_background_task(spec: TaskSpec) {
                     let state = gateway_host::shared_state();
                     loop {
                         // 启动即刷一次（循环首轮）：补齐上次进程遗留的「从未取过余额」账号。
-                        let _ =
-                            buddy_switch_gateway::credits_refresh::refresh_once(&state).await;
+                        let _ = buddy_switch_gateway::credits_refresh::refresh_once(&state).await;
                         // ★ 等待时长由 gateway 侧统一给（两侧宿主共用同一判据）：
                         //   池为空 ⇒ 短探测，否则「刚导入账号」要等满一整个周期才看得到积分。
                         let wait_ms = {
@@ -235,9 +237,9 @@ fn spawn_background_task(spec: TaskSpec) {
                 });
             }
             /* Qoder：**尚未有余额刷新循环**（额度要调上游，属网关层，未落地）。
-               ⚠️ 这里**不是**「静默吞掉」：core 的 `TASKS` 表里没有任何 Qoder 任务
-               ⇒ 本分支当前不可达。一旦有人往 `TASKS` 里加了 Qoder 的 `CreditsRefresh`，
-               这行警告会立刻出现在日志里，而不是让它悄悄空转。 */
+            ⚠️ 这里**不是**「静默吞掉」：core 的 `TASKS` 表里没有任何 Qoder 任务
+            ⇒ 本分支当前不可达。一旦有人往 `TASKS` 里加了 Qoder 的 `CreditsRefresh`，
+            这行警告会立刻出现在日志里，而不是让它悄悄空转。 */
             Product::Qoder => {
                 eprintln!(
                     "[background] Qoder 的 CreditsRefresh 已登记但**尚无实现** —— \
@@ -261,10 +263,8 @@ fn spawn_background_task(spec: TaskSpec) {
             tokio::spawn(async move {
                 let state = gateway_host::shared_state();
                 loop {
-                    tokio::time::sleep(std::time::Duration::from_millis(
-                        POOL_PERSIST_INTERVAL_MS,
-                    ))
-                    .await;
+                    tokio::time::sleep(std::time::Duration::from_millis(POOL_PERSIST_INTERVAL_MS))
+                        .await;
                     state.persist_pool().await;
                 }
             });
@@ -628,10 +628,19 @@ mod tests {
     fn invalid_overrides_fall_back_instead_of_panicking() {
         // 空白 host / 非法 port 一律回落。
         assert_eq!(resolve_host(&args(&["serve"]), Some("   ")), "127.0.0.1");
-        assert_eq!(resolve_host(&args(&["serve", "--host", "  "]), Some("0.0.0.0")), "0.0.0.0");
-        assert_eq!(resolve_port(&args(&["serve"]), Some("not-a-number")), default_port());
+        assert_eq!(
+            resolve_host(&args(&["serve", "--host", "  "]), Some("0.0.0.0")),
+            "0.0.0.0"
+        );
+        assert_eq!(
+            resolve_port(&args(&["serve"]), Some("not-a-number")),
+            default_port()
+        );
         // 超出 u16 的端口同样回落（不能截断成 0 或 panic）。
-        assert_eq!(resolve_port(&args(&["serve"]), Some("70000")), default_port());
+        assert_eq!(
+            resolve_port(&args(&["serve"]), Some("70000")),
+            default_port()
+        );
         assert_eq!(
             resolve_port(&args(&["serve", "--port", "abc"]), Some("8080")),
             8080,
@@ -773,7 +782,9 @@ mod tests {
         );
         for task in schedule::ScheduleTask::all() {
             assert!(
-                TASKS.iter().any(|spec| spec.kind == TaskKind::Scheduled(task)),
+                TASKS
+                    .iter()
+                    .any(|spec| spec.kind == TaskKind::Scheduled(task)),
                 "表缺少定时任务：{}",
                 task.as_str()
             );

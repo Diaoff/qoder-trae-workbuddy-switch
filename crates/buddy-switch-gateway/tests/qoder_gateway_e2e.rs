@@ -152,9 +152,13 @@ async fn mock_chat(State(behavior): State<Behavior>, headers: HeaderMap) -> Resp
     }
     let frames = format!(
         "{}{}{}{}",
-        envelope(&json!({"id": "c1", "created": 1, "choices": [{"delta": {"content": format!("来自 {user}")}}]})),
+        envelope(
+            &json!({"id": "c1", "created": 1, "choices": [{"delta": {"content": format!("来自 {user}")}}]})
+        ),
         envelope(&json!({"choices": [{"delta": {"content": " 的回答"}}]})),
-        envelope(&json!({"choices": [{"delta": {}, "finish_reason": "stop"}], "usage": {"prompt_tokens": 7, "completion_tokens": 9, "total_tokens": 16}})),
+        envelope(
+            &json!({"choices": [{"delta": {}, "finish_reason": "stop"}], "usage": {"prompt_tokens": 7, "completion_tokens": 9, "total_tokens": 16}})
+        ),
         "data:{\"body\":\"[DONE]\"}\n",
     );
     Response::builder()
@@ -214,7 +218,9 @@ fn chat_request(key: Option<&str>, body: &str) -> Request<Body> {
     if let Some(key) = key {
         builder = builder.header("authorization", format!("Bearer {key}"));
     }
-    builder.body(Body::from(body.to_string())).expect("构造请求")
+    builder
+        .body(Body::from(body.to_string()))
+        .expect("构造请求")
 }
 
 async fn body_text(response: Response) -> String {
@@ -225,7 +231,11 @@ async fn body_text(response: Response) -> String {
 }
 
 /// 在隔离 home 里建状态（指向 mock 上游）并创建一把 Key。
-async fn gateway_for(tag: &str, accounts: &[(&str, &str)], behavior: Behavior) -> (QoderGatewayState, String) {
+async fn gateway_for(
+    tag: &str,
+    accounts: &[(&str, &str)],
+    behavior: Behavior,
+) -> (QoderGatewayState, String) {
     let base = spawn_mock(behavior).await;
     let home = isolated_home(tag, accounts);
     let key = create_key(&home);

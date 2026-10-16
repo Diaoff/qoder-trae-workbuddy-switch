@@ -82,7 +82,10 @@ fn main() {
         _ => Region::Global,
     };
     let days: Vec<i64> = if args.len() > 1 {
-        args[1..].iter().filter_map(|raw| raw.parse::<i64>().ok()).collect()
+        args[1..]
+            .iter()
+            .filter_map(|raw| raw.parse::<i64>().ok())
+            .collect()
     } else {
         vec![7]
     };
@@ -90,9 +93,18 @@ fn main() {
     println!("region={} root={}", region.as_str(), root.display());
 
     for (label, walk) in [
-        ("is_dir   ", walk_with_is_dir as fn(&Path, &mut Vec<PathBuf>)),
-        ("file_type", walk_with_file_type as fn(&Path, &mut Vec<PathBuf>)),
-        ("+metadata", walk_with_metadata as fn(&Path, &mut Vec<PathBuf>)),
+        (
+            "is_dir   ",
+            walk_with_is_dir as fn(&Path, &mut Vec<PathBuf>),
+        ),
+        (
+            "file_type",
+            walk_with_file_type as fn(&Path, &mut Vec<PathBuf>),
+        ),
+        (
+            "+metadata",
+            walk_with_metadata as fn(&Path, &mut Vec<PathBuf>),
+        ),
     ] {
         let mut out = Vec::new();
         let started = Instant::now();
@@ -115,9 +127,13 @@ fn main() {
             .unwrap_or(0);
         // 等价性核对：`SCAN_BENCH_DUMP=<目录>` 时把完整响应落盘（`date` 之外无时间字段）。
         if let Some(dir) = std::env::var("SCAN_BENCH_DUMP").ok() {
-            let path = std::path::Path::new(&dir).join(format!("daily-{}-{pass}.json", region.as_str()));
-            std::fs::write(&path, serde_json::to_string_pretty(&value).expect("serialize"))
-                .expect("write dump");
+            let path =
+                std::path::Path::new(&dir).join(format!("daily-{}-{pass}.json", region.as_str()));
+            std::fs::write(
+                &path,
+                serde_json::to_string_pretty(&value).expect("serialize"),
+            )
+            .expect("write dump");
             println!("dumped {}", path.display());
         }
         println!(

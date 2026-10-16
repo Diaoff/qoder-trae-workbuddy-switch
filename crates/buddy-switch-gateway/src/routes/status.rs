@@ -35,10 +35,7 @@ pub async fn handler(State(state): State<GatewayState>, headers: HeaderMap) -> R
         Value::Object(map) => map,
         _ => serde_json::Map::new(),
     };
-    body.insert(
-        "service".to_string(),
-        json!(SERVICE_NAME),
-    );
+    body.insert("service".to_string(), json!(SERVICE_NAME));
     body.insert(
         "uptime_sec".to_string(),
         json!((now_ms.saturating_sub(state.started_at)) / 1000),

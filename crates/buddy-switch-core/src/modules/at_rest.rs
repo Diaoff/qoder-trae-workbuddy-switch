@@ -500,10 +500,7 @@ pub fn is_unlockable(account: &Value) -> bool {
 /// 得到的记录形态一致 ⇒ 切换写回不会毁掉客户端登录态。
 ///
 /// 返回 `Ok(None)` 表示「没有需要解锁的字段」（不启子进程）；`Ok(Some(acc))` 是解锁后的账号。
-pub fn unlock_account_for(
-    region: Region,
-    account: &Value,
-) -> Result<Option<Value>, AtRestError> {
+pub fn unlock_account_for(region: Region, account: &Value) -> Result<Option<Value>, AtRestError> {
     // ① 先把要解的信封**全部收集并解析**（纯计算、无副作用），再考虑起子进程。
     //    这样「信封本身是坏的」会在**起子进程之前**就响亮失败，而不是白花一次
     //    0.5 秒 + 一次外部进程调用。
@@ -557,10 +554,18 @@ mod tests {
         assert_eq!(aad[7], 0x01, "版本字节");
         assert_eq!(&aad[8..12], &5u32.to_be_bytes(), "WBEV1 的 u32BE 长度前缀");
         assert_eq!(&aad[12..17], b"WBEV1", "STANDARD_FORMAT_ID.field");
-        assert_eq!(&aad[17..21], &6u32.to_be_bytes(), "sym-v1 的 u32BE 长度前缀");
+        assert_eq!(
+            &aad[17..21],
+            &6u32.to_be_bytes(),
+            "sym-v1 的 u32BE 长度前缀"
+        );
         assert_eq!(&aad[21..27], b"sym-v1", "scheme");
         assert_eq!(&aad[27..31], &1u32.to_be_bytes(), "suite（u32BE）");
-        assert_eq!(&aad[31..35], &16u32.to_be_bytes(), "keyId 的 u32BE 长度前缀");
+        assert_eq!(
+            &aad[31..35],
+            &16u32.to_be_bytes(),
+            "keyId 的 u32BE 长度前缀"
+        );
         assert_eq!(&aad[35..51], key_id.as_bytes(), "keyId");
         assert_eq!(aad[51], FRAMING_CODE_FIELD, "FRAMING_CODE.field = 2");
         assert_eq!(aad[52], 0x00, "encodeOptionalUint64(undefined) = 单字节 0");
@@ -573,10 +578,15 @@ mod tests {
         let key = derive_protector_key("test-secret-key");
         assert_eq!(
             key.as_slice(),
-            hex_to_bytes("2ceac6f36363c6246a64cca805cd43ca7a01b14eb2fcc532ceec3f60f2f7df1c").as_slice(),
+            hex_to_bytes("2ceac6f36363c6246a64cca805cd43ca7a01b14eb2fcc532ceec3f60f2f7df1c")
+                .as_slice(),
             "protectorKey = sha256(utf8(atRestSecretKey))"
         );
-        assert_eq!(key_id_for(&key), "ff09780817b2c04a", "keyId = sha256(key).hex[..16]");
+        assert_eq!(
+            key_id_for(&key),
+            "ff09780817b2c04a",
+            "keyId = sha256(key).hex[..16]"
+        );
     }
 
     /// 自造信封跑一遍 seal → decrypt：钉住「AAD 用法 + AES-GCM 装配」是对的。
@@ -747,7 +757,11 @@ mod tests {
         let first = cached_build_key_for(Region::Cn).expect("冷缓存应能取到钥匙");
         let second = cached_build_key_for(Region::Cn).expect("命中缓存应能取到钥匙");
         assert_eq!(first, second, "缓存前后必须一致");
-        assert_eq!(first, fetch_build_key(&exe).expect("直取"), "缓存值与直取必须一致");
+        assert_eq!(
+            first,
+            fetch_build_key(&exe).expect("直取"),
+            "缓存值与直取必须一致"
+        );
 
         // ④ ★ 本函数**不落盘**：隔离 home 的账号库必须仍是空的。
         //    这条是「网关每请求导入」那条路径的护栏 —— 一旦有人在 `unlock_account_for`

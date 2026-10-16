@@ -394,7 +394,10 @@ fn parse_callback(params: &HashMap<String, String>) -> Result<CallbackInfo, Stri
     };
 
     // ---- authCodeInfo（主路径）----
-    if let Some(raw) = params.get("authCodeInfo").filter(|raw| !raw.trim().is_empty()) {
+    if let Some(raw) = params
+        .get("authCodeInfo")
+        .filter(|raw| !raw.trim().is_empty())
+    {
         let parsed: Value = serde_json::from_str(raw.trim())
             .map_err(|e| format!("authCodeInfo 解析失败（{e}）：授权页回调格式异常"))?;
         info.auth_code = parsed
@@ -505,9 +508,7 @@ fn classify_upstream(raw: &str) -> String {
             "设备校验未通过（20403）：缺少 x-cloudide-token 或设备凭证与账号不匹配。原始信息：{raw}"
         )
     } else if raw.contains("20405") {
-        format!(
-            "设备签名未通过（20405）：DeviceProof 签名格式或设备身份不匹配。原始信息：{raw}"
-        )
+        format!("设备签名未通过（20405）：DeviceProof 签名格式或设备身份不匹配。原始信息：{raw}")
     } else {
         format!("上游令牌交换失败：{raw}")
     }
@@ -883,11 +884,7 @@ async fn exchange_auth_code(
     let variants: Vec<(String, String, Value, bool)> = vec![
         (
             "ExchangeToken/DeviceInfo".to_string(),
-            format!(
-                "{}{}",
-                host.trim_end_matches('/'),
-                TRAE_EXCHANGE_TOKEN_PATH
-            ),
+            format!("{}{}", host.trim_end_matches('/'), TRAE_EXCHANGE_TOKEN_PATH),
             build_exchange_payload(&client_id, auth_code, code_verifier, facts),
             true,
         ),
@@ -970,22 +967,18 @@ async fn try_exchange_variant(
         // ★ 必须**存在且为空串**：缺失报 20403，带旧 token 报 20405。
         request = request.header("x-cloudide-token", "");
     }
-    let response = request
-        .json(payload)
-        .send()
-        .await
-        .map_err(|e| {
-            // 与签到/续期同一出口：展开 source 链（见 modules/net.rs）。
-            // 授权流程的失败提示往往是用户唯一的线索，不能只剩一行顶层文案。
-            //
-            // 用 `transport_error`（带码版）而不是 `describe_transport_error`：同一条文案，
-            // 额外携带 `net.transport.*` 码，前端才能按当前语言重渲染。文本逐字节相同
-            // —— 见 `net::describe_transport_error` 的委托实现。
-            format!(
-                "请求失败: {}",
-                crate::modules::net::transport_error(&e).to_wire()
-            )
-        })?;
+    let response = request.json(payload).send().await.map_err(|e| {
+        // 与签到/续期同一出口：展开 source 链（见 modules/net.rs）。
+        // 授权流程的失败提示往往是用户唯一的线索，不能只剩一行顶层文案。
+        //
+        // 用 `transport_error`（带码版）而不是 `describe_transport_error`：同一条文案，
+        // 额外携带 `net.transport.*` 码，前端才能按当前语言重渲染。文本逐字节相同
+        // —— 见 `net::describe_transport_error` 的委托实现。
+        format!(
+            "请求失败: {}",
+            crate::modules::net::transport_error(&e).to_wire()
+        )
+    })?;
 
     let status = response.status().as_u16();
     let body: Value = response
@@ -1310,11 +1303,7 @@ pub async fn login_start_for(variant: TraeVariant) -> Result<Value, String> {
                     &["你在授权页拒绝了本次登录，可以关闭本页。".to_string()],
                 );
                 let _ = respond_html(&mut stream, &page, &method).await;
-                finish_session(
-                    &session_id,
-                    None,
-                    Some(format!("授权被拒绝: {err}")),
-                );
+                finish_session(&session_id, None, Some(format!("授权被拒绝: {err}")));
                 return;
             }
 
@@ -1616,7 +1605,10 @@ async fn perform_login(
                 .or_else(|| Some(refresh_token.to_string())),
         )
     } else {
-        return Err(classify_error("callback", "回调既无 AuthCode 也无 refreshToken"));
+        return Err(classify_error(
+            "callback",
+            "回调既无 AuthCode 也无 refreshToken",
+        ));
     };
 
     let (raw, _jwt) = account::login_with_exchanged_tokens_for(
@@ -1753,10 +1745,8 @@ mod tests {
     /// 只有前者带「设备凭证」三个字。不钉住这一支，用例就会随**真机装没装 TraeWork**
     /// 而时绿时红 —— 这条用例此前就栽在这上面。
     fn fake_client_exe() -> std::path::PathBuf {
-        let path = std::env::temp_dir().join(format!(
-            "fake-trae-{}.exe",
-            uuid::Uuid::new_v4().simple()
-        ));
+        let path =
+            std::env::temp_dir().join(format!("fake-trae-{}.exe", uuid::Uuid::new_v4().simple()));
         std::fs::write(&path, b"fake").expect("假 exe 应能写入");
         path
     }
@@ -1819,7 +1809,10 @@ mod tests {
     #[test]
     fn parse_query_handles_flat_params() {
         let params = parse_query("refreshToken=abc123&userInfo={\"nickname\":\"x\"}");
-        assert_eq!(params.get("refreshToken").map(String::as_str), Some("abc123"));
+        assert_eq!(
+            params.get("refreshToken").map(String::as_str),
+            Some("abc123")
+        );
     }
 
     #[test]
@@ -1828,7 +1821,10 @@ mod tests {
         // 参数名不受影响；切分发生在**解码之前**，所以值里的 `&` 不会被误切成新参数。
         let encoded = "refreshToken%3Dtok%2526x%3D1&userInfo=%7B%22nickname%22%3A%22y%22%7D";
         let params = parse_query(encoded);
-        assert_eq!(params.get("refreshToken").map(String::as_str), Some("tok&x=1"));
+        assert_eq!(
+            params.get("refreshToken").map(String::as_str),
+            Some("tok&x=1")
+        );
         assert_eq!(
             params.get("userInfo").map(String::as_str),
             Some(r#"{"nickname":"y"}"#)
@@ -1875,7 +1871,9 @@ mod tests {
         let mut params = HashMap::new();
         params.insert("userInfo".into(), r#"{"nickname":"小明"}"#.into());
         assert_eq!(
-            extract_user_info(&params).get("nickname").and_then(|v| v.as_str()),
+            extract_user_info(&params)
+                .get("nickname")
+                .and_then(|v| v.as_str()),
             Some("小明")
         );
     }
@@ -2020,14 +2018,13 @@ mod tests {
     /// AuthCode —— 上游只会拒绝，且错误信息不会指向这个根因。
     #[test]
     fn exchange_client_id_matches_authorize_url_key() {
-        for variant in [TraeVariant::TraeWork, TraeVariant::Trae, TraeVariant::Global] {
-            let url = build_authorize_url(
-                variant,
-                &synthetic_facts(synthetic_identity()),
-                1,
-                "t",
-                "c",
-            );
+        for variant in [
+            TraeVariant::TraeWork,
+            TraeVariant::Trae,
+            TraeVariant::Global,
+        ] {
+            let url =
+                build_authorize_url(variant, &synthetic_facts(synthetic_identity()), 1, "t", "c");
             let params = parse_query(url.split_once('?').unwrap().1);
             let url_key = params.get("client_id").expect("授权 URL 必须带 client_id");
             assert_eq!(
@@ -2222,7 +2219,11 @@ mod tests {
     /// **任一对改回「两处各取一份」都会立刻变红**，失败信息直接给出两侧的值。
     #[test]
     fn authorize_url_and_exchange_body_share_the_same_device_facts() {
-        for variant in [TraeVariant::TraeWork, TraeVariant::Trae, TraeVariant::Global] {
+        for variant in [
+            TraeVariant::TraeWork,
+            TraeVariant::Trae,
+            TraeVariant::Global,
+        ] {
             let facts = synthetic_facts(identity_with_device_id("dev-same-source"));
             let url = build_authorize_url(variant, &facts, 17388, "trace-1", "chal-1");
             let params = parse_query(url.split_once('?').expect("授权 URL 必须带查询串").1);
@@ -2251,17 +2252,45 @@ mod tests {
             };
 
             // ① 机器标识：`machine_id` / `x_machine_id` ↔ `DeviceInfo.MachineID`
-            assert_eq!(param("machine_id"), field("MachineID"), "{variant:?} 的 machine_id 与 MachineID 不同源");
-            assert_eq!(param("x_machine_id"), field("MachineID"), "{variant:?} 的 x_machine_id 与 MachineID 不同源");
+            assert_eq!(
+                param("machine_id"),
+                field("MachineID"),
+                "{variant:?} 的 machine_id 与 MachineID 不同源"
+            );
+            assert_eq!(
+                param("x_machine_id"),
+                field("MachineID"),
+                "{variant:?} 的 x_machine_id 与 MachineID 不同源"
+            );
             // ② 应用版本：`x_app_version` ↔ `ClientVersion` ↔ `IDEVersion`
-            assert_eq!(param("x_app_version"), field("ClientVersion"), "{variant:?} 的 x_app_version 与 ClientVersion 不同源");
-            assert_eq!(param("x_app_version"), top("IDEVersion"), "{variant:?} 的 x_app_version 与 IDEVersion 不同源");
+            assert_eq!(
+                param("x_app_version"),
+                field("ClientVersion"),
+                "{variant:?} 的 x_app_version 与 ClientVersion 不同源"
+            );
+            assert_eq!(
+                param("x_app_version"),
+                top("IDEVersion"),
+                "{variant:?} 的 x_app_version 与 IDEVersion 不同源"
+            );
             // ③ 设备型号：`x_device_brand` ↔ `DeviceInfo.DeviceModel`
-            assert_eq!(param("x_device_brand"), field("DeviceModel"), "{variant:?} 的 x_device_brand 与 DeviceModel 不同源");
+            assert_eq!(
+                param("x_device_brand"),
+                field("DeviceModel"),
+                "{variant:?} 的 x_device_brand 与 DeviceModel 不同源"
+            );
             // ④ 系统版本：`x_os_version` ↔ `DeviceInfo.OSVersion`
-            assert_eq!(param("x_os_version"), field("OSVersion"), "{variant:?} 的 x_os_version 与 OSVersion 不同源");
+            assert_eq!(
+                param("x_os_version"),
+                field("OSVersion"),
+                "{variant:?} 的 x_os_version 与 OSVersion 不同源"
+            );
             // ⑤ 操作系统名：`x_device_type` ↔ `DeviceInfo.OSInfo`
-            assert_eq!(param("x_device_type"), field("OSInfo"), "{variant:?} 的 x_device_type 与 OSInfo 不同源");
+            assert_eq!(
+                param("x_device_type"),
+                field("OSInfo"),
+                "{variant:?} 的 x_device_type 与 OSInfo 不同源"
+            );
         }
     }
 
@@ -2448,7 +2477,10 @@ mod tests {
             payload.get("IDEVersion").and_then(|v| v.as_str()),
             Some("0.1.69")
         );
-        assert_eq!(payload.get("AuthCode").and_then(|v| v.as_str()), Some("ac-1"));
+        assert_eq!(
+            payload.get("AuthCode").and_then(|v| v.as_str()),
+            Some("ac-1")
+        );
         assert_eq!(
             payload.get("CodeVerifier").and_then(|v| v.as_str()),
             Some("verifier-1")
@@ -2486,7 +2518,9 @@ mod tests {
             );
             assert!(payload.get("DeviceProof").is_none());
             assert!(payload.get("DeviceInfo").is_none());
-            assert!(!serde_json::to_string(&payload).unwrap().contains("PUBLIC KEY"));
+            assert!(!serde_json::to_string(&payload)
+                .unwrap()
+                .contains("PUBLIC KEY"));
         }
     }
 
@@ -2507,10 +2541,12 @@ mod tests {
     #[test]
     fn resolve_exchange_host_falls_back_to_variant_account_base() {
         // 正常：原样使用（只去尾斜杠）。
-        let (host, used) = resolve_exchange_host(Some("https://api.trae.cn"), TraeVariant::TraeWork);
+        let (host, used) =
+            resolve_exchange_host(Some("https://api.trae.cn"), TraeVariant::TraeWork);
         assert_eq!(host, "https://api.trae.cn");
         assert!(!used);
-        let (host, used) = resolve_exchange_host(Some("  https://api.trae.cn/  "), TraeVariant::TraeWork);
+        let (host, used) =
+            resolve_exchange_host(Some("  https://api.trae.cn/  "), TraeVariant::TraeWork);
         assert_eq!(host, "https://api.trae.cn");
         assert!(!used);
         // 缺失 / 空串：回落该变体的 **account_base**（真机客户端兑换打的就是它，
@@ -2727,11 +2763,10 @@ mod tests {
         let _env = temp_env();
 
         // ★ issue #28：国际区的**唯一**程序位是合并版（`global_trae_merged`）。
-        let started = crate::modules::trae::handlers::oauth_login_start_for(
-            TraeVariant::GlobalTraeMerged,
-        )
-        .await
-        .expect("发起登录不应失败");
+        let started =
+            crate::modules::trae::handlers::oauth_login_start_for(TraeVariant::GlobalTraeMerged)
+                .await
+                .expect("发起登录不应失败");
         assert_eq!(started["variant"].as_str(), Some("global_trae_merged"));
         assert_eq!(started["variantLabel"].as_str(), Some("Trae"));
         // 授权 URL 的 `device_id` 必须与**该变体**的 icube 设备身份同源
@@ -2811,10 +2846,7 @@ mod tests {
         // 第一次轮询：终态 + 明确文案
         let first = login_poll(id);
         assert_eq!(first.get("done").and_then(|v| v.as_bool()), Some(true));
-        assert_eq!(
-            first.get("error").and_then(|v| v.as_str()),
-            Some("已取消")
-        );
+        assert_eq!(first.get("error").and_then(|v| v.as_str()), Some("已取消"));
         // 终态分支也要带出 variant。
         assert_eq!(
             first.get("variant").and_then(|v| v.as_str()),
@@ -2944,7 +2976,10 @@ mod tests {
         // 刚发起时还没结果。
         let polled = login_poll(&login_id);
         assert_eq!(polled.get("done").and_then(|v| v.as_bool()), Some(false));
-        assert_eq!(polled.get("port").and_then(|v| v.as_u64()), Some(port as u64));
+        assert_eq!(
+            polled.get("port").and_then(|v| v.as_u64()),
+            Some(port as u64)
+        );
         assert_eq!(
             polled.get("variant").and_then(|v| v.as_str()),
             Some("trae_merged")
@@ -2976,9 +3011,7 @@ mod tests {
             started.get("variantLabel").and_then(|v| v.as_str()),
             Some("Trae")
         );
-        let credential = started
-            .get("deviceCredential")
-            .expect("必须带设备凭证诊断");
+        let credential = started.get("deviceCredential").expect("必须带设备凭证诊断");
         for key in [
             "available",
             "sourceApp",
@@ -2997,7 +3030,10 @@ mod tests {
         assert!(!text.contains("BEGIN"), "发起响应里出现了 PEM");
         assert!(!text.contains("PRIVATE KEY"), "发起响应里出现了私钥");
         // 授权 URL 里的 machine_id / device_id 与身份 A 同源。
-        let uri = started.get("verificationUri").and_then(|v| v.as_str()).unwrap();
+        let uri = started
+            .get("verificationUri")
+            .and_then(|v| v.as_str())
+            .unwrap();
         let params = parse_query(uri.split_once('?').unwrap().1);
         assert_eq!(
             params.get("device_id"),
@@ -3040,13 +3076,13 @@ mod tests {
             .await
             .expect("写出探测请求不应失败");
         let mut response = String::new();
-        let _ = tokio::time::timeout(
-            Duration::from_secs(3),
-            stream.read_to_string(&mut response),
-        )
-        .await;
+        let _ = tokio::time::timeout(Duration::from_secs(3), stream.read_to_string(&mut response))
+            .await;
 
-        assert!(response.starts_with("HTTP/1.1 200"), "探测必须收到 200: {response}");
+        assert!(
+            response.starts_with("HTTP/1.1 200"),
+            "探测必须收到 200: {response}"
+        );
         // 跨源探测没有 CORS 头会被浏览器拦掉响应，授权页照样判「不在线」。
         assert!(
             response
@@ -3095,11 +3131,8 @@ mod tests {
             .await
             .expect("写出预检请求不应失败");
         let mut response = String::new();
-        let _ = tokio::time::timeout(
-            Duration::from_secs(3),
-            stream.read_to_string(&mut response),
-        )
-        .await;
+        let _ = tokio::time::timeout(Duration::from_secs(3), stream.read_to_string(&mut response))
+            .await;
 
         assert!(
             response.starts_with("HTTP/1.1 204"),
@@ -3169,7 +3202,9 @@ mod tests {
                         }
                     }
                 }
-                sink.lock().unwrap().push(String::from_utf8_lossy(&buf).into_owned());
+                sink.lock()
+                    .unwrap()
+                    .push(String::from_utf8_lossy(&buf).into_owned());
                 let response = format!(
                     "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\n\
                      content-length: {}\r\nconnection: close\r\n\r\n{}",
@@ -3228,7 +3263,10 @@ mod tests {
         // 请求体是 AuthCode 主变体（有 DeviceInfo、无 DeviceProof）。
         assert!(request.contains("\"DeviceInfo\""), "{request}");
         assert!(!request.contains("\"DeviceProof\""), "{request}");
-        assert!(request.contains("\"CodeVerifier\":\"verifier-1\""), "{request}");
+        assert!(
+            request.contains("\"CodeVerifier\":\"verifier-1\""),
+            "{request}"
+        );
 
         // ★ 三方同源（T4 验收 1b）：`DeviceInfo.DeviceID` 与请求头 `x-device-id`
         // 都必须等于授权 URL 用的那个 `identity.device_id`。
@@ -3285,11 +3323,8 @@ mod tests {
             .expect("应能连上回调端口");
         stream.write_all(request.as_bytes()).await.unwrap();
         let mut response = String::new();
-        let _ = tokio::time::timeout(
-            Duration::from_secs(5),
-            stream.read_to_string(&mut response),
-        )
-        .await;
+        let _ = tokio::time::timeout(Duration::from_secs(5), stream.read_to_string(&mut response))
+            .await;
         assert!(response.starts_with("HTTP/1.1 200"), "{response}");
 
         // ★ 浏览器那一页必须是**渲染得出来的结果卡片**，而不是纯文本。
@@ -3311,10 +3346,7 @@ mod tests {
             "结果页必须点明账号落在哪个区域库: {response}"
         );
         // ★ 结果页**不得**出现凭据（本链路不变式：回调响应体不含凭据）。
-        assert!(
-            !response.contains(&jwt),
-            "回调响应体泄漏了 JWT: {response}"
-        );
+        assert!(!response.contains(&jwt), "回调响应体泄漏了 JWT: {response}");
         assert!(
             !response.contains("authCodeInfo") && !response.contains("refreshToken"),
             "回调响应体出现了凭据标记: {response}"
@@ -3414,7 +3446,10 @@ mod tests {
                 assert!(polled.get("error").is_some(), "{polled}");
                 break;
             }
-            assert!(tokio::time::Instant::now() < deadline, "兑换失败没有收尾: {polled}");
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "兑换失败没有收尾: {polled}"
+            );
             tokio::time::sleep(Duration::from_millis(25)).await;
         }
     }
@@ -3504,12 +3539,21 @@ mod tests {
     /// `OPTIONS` 预检：204、空正文、长度 0，且 CORS 头照旧。
     #[test]
     fn options_preflight_response_has_no_body() {
-        let response = build_response("text/html; charset=utf-8", "<html>不该出现</html>", "OPTIONS");
-        assert!(response.starts_with("HTTP/1.1 204 No Content"), "{response}");
+        let response = build_response(
+            "text/html; charset=utf-8",
+            "<html>不该出现</html>",
+            "OPTIONS",
+        );
+        assert!(
+            response.starts_with("HTTP/1.1 204 No Content"),
+            "{response}"
+        );
         assert!(response.contains("Content-Length: 0"), "{response}");
         assert!(!response.contains("不该出现"), "204 不该带正文: {response}");
         assert!(
-            response.to_ascii_lowercase().contains("access-control-allow-origin"),
+            response
+                .to_ascii_lowercase()
+                .contains("access-control-allow-origin"),
             "预检同样需要 CORS 头: {response}"
         );
     }
@@ -3523,11 +3567,15 @@ mod tests {
             "{response}"
         );
         assert!(
-            response.to_ascii_lowercase().contains("cache-control: no-store"),
+            response
+                .to_ascii_lowercase()
+                .contains("cache-control: no-store"),
             "结果页含账号昵称且 URL 一次性，不该被缓存: {response}"
         );
         assert!(
-            response.to_ascii_lowercase().contains("access-control-allow-origin"),
+            response
+                .to_ascii_lowercase()
+                .contains("access-control-allow-origin"),
             "{response}"
         );
     }
@@ -3553,11 +3601,8 @@ mod tests {
             .await
             .unwrap();
         let mut response = String::new();
-        let _ = tokio::time::timeout(
-            Duration::from_secs(3),
-            stream.read_to_string(&mut response),
-        )
-        .await;
+        let _ = tokio::time::timeout(Duration::from_secs(3), stream.read_to_string(&mut response))
+            .await;
         assert!(response.starts_with("HTTP/1.1 200"), "{response}");
 
         let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
@@ -3574,7 +3619,10 @@ mod tests {
                 );
                 return;
             }
-            assert!(tokio::time::Instant::now() < deadline, "拒绝回调没有立刻收尾: {polled}");
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "拒绝回调没有立刻收尾: {polled}"
+            );
             tokio::time::sleep(Duration::from_millis(25)).await;
         }
     }
@@ -3598,11 +3646,8 @@ mod tests {
             .await
             .unwrap();
         let mut response = String::new();
-        let _ = tokio::time::timeout(
-            Duration::from_secs(3),
-            stream.read_to_string(&mut response),
-        )
-        .await;
+        let _ = tokio::time::timeout(Duration::from_secs(3), stream.read_to_string(&mut response))
+            .await;
 
         let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
         loop {
@@ -3616,10 +3661,16 @@ mod tests {
                         .contains("loginTraceID"),
                     "{polled}"
                 );
-                assert!(polled.get("account").is_none(), "被拒绝的回调不得落库: {polled}");
+                assert!(
+                    polled.get("account").is_none(),
+                    "被拒绝的回调不得落库: {polled}"
+                );
                 return;
             }
-            assert!(tokio::time::Instant::now() < deadline, "CSRF 未拒绝: {polled}");
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "CSRF 未拒绝: {polled}"
+            );
             tokio::time::sleep(Duration::from_millis(25)).await;
         }
     }
@@ -3692,16 +3743,10 @@ mod tests {
         let mut stream = tokio::net::TcpStream::connect(("127.0.0.1", port))
             .await
             .expect("应能连上回调端口");
-        stream
-            .write_all(request)
-            .await
-            .expect("写出请求不应失败");
+        stream.write_all(request).await.expect("写出请求不应失败");
         let mut response = String::new();
-        let _ = tokio::time::timeout(
-            Duration::from_secs(3),
-            stream.read_to_string(&mut response),
-        )
-        .await;
+        let _ = tokio::time::timeout(Duration::from_secs(3), stream.read_to_string(&mut response))
+            .await;
         response
     }
 
@@ -3717,8 +3762,7 @@ mod tests {
             .expect("测试前置失败：本机 17388 已被占用，无法验证端口冲突路径");
 
         let result = login_start().await;
-        let error = result
-            .expect_err("端口被占时 login_start 必须返回 Err，绝不能回退到随机端口");
+        let error = result.expect_err("端口被占时 login_start 必须返回 Err，绝不能回退到随机端口");
 
         assert!(
             error.contains(&CALLBACK_PORT.to_string()),
@@ -3755,10 +3799,18 @@ mod tests {
             .expect("缺少 port") as u16;
 
         // 1) 根路径、无 query —— 工程师未覆盖的探测形态。
-        let root = send_raw(port, b"GET / HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n").await;
-        assert!(root.starts_with("HTTP/1.1 200"), "根路径探测应回 200: {root}");
+        let root = send_raw(
+            port,
+            b"GET / HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n",
+        )
+        .await;
         assert!(
-            root.to_ascii_lowercase().contains("access-control-allow-origin"),
+            root.starts_with("HTTP/1.1 200"),
+            "根路径探测应回 200: {root}"
+        );
+        assert!(
+            root.to_ascii_lowercase()
+                .contains("access-control-allow-origin"),
             "根路径探测缺少 CORS 头，浏览器会拦掉响应: {root}"
         );
 
@@ -3773,7 +3825,9 @@ mod tests {
             "授权路径探测应回 200: {authorize}"
         );
         assert!(
-            authorize.to_ascii_lowercase().contains("access-control-allow-origin"),
+            authorize
+                .to_ascii_lowercase()
+                .contains("access-control-allow-origin"),
             "授权路径探测缺少 CORS 头: {authorize}"
         );
 
@@ -3789,7 +3843,9 @@ mod tests {
             "预检应回 204: {preflight}"
         );
         assert!(
-            preflight.to_ascii_lowercase().contains("access-control-allow-origin"),
+            preflight
+                .to_ascii_lowercase()
+                .contains("access-control-allow-origin"),
             "预检响应缺少 CORS 头: {preflight}"
         );
 

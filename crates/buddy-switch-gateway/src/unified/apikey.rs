@@ -167,7 +167,9 @@ impl UnifiedApiKeyStore {
                 )
             })?;
             if !namespaces.iter().any(|id| id == biz) {
-                return Err(format!("业务转发命名空间「{biz}」必须也在本 Key 的授权集内"));
+                return Err(format!(
+                    "业务转发命名空间「{biz}」必须也在本 Key 的授权集内"
+                ));
             }
             if gateway_namespace::wb_region_of(spec).is_none() {
                 return Err(format!(
@@ -277,9 +279,7 @@ impl UnifiedApiKeyStore {
         let mut records = self.load();
         match records.iter().find(|record| record.id == id) {
             None => return Err("密钥不存在".to_string()),
-            Some(record) if record.is_active() => {
-                return Err("该密钥未吊销，无需恢复".to_string())
-            }
+            Some(record) if record.is_active() => return Err("该密钥未吊销，无需恢复".to_string()),
             Some(_) => {}
         }
         for record in records.iter_mut() {
@@ -297,9 +297,7 @@ impl UnifiedApiKeyStore {
         let before = records.len();
         match records.iter().find(|record| record.id == id) {
             None => return Err("密钥不存在".to_string()),
-            Some(record) if record.is_active() => {
-                return Err("请先吊销该密钥再删除".to_string())
-            }
+            Some(record) if record.is_active() => return Err("请先吊销该密钥再删除".to_string()),
             Some(_) => {}
         }
         records.retain(|record| record.id != id);
@@ -363,7 +361,9 @@ mod tests {
     #[test]
     fn plaintext_is_never_persisted_and_masked_hides_the_hash() {
         let (store, dir) = temp_store();
-        let (record, plaintext) = store.create("k".into(), vec!["wb-cn".into()], None).unwrap();
+        let (record, plaintext) = store
+            .create("k".into(), vec!["wb-cn".into()], None)
+            .unwrap();
         let raw = std::fs::read_to_string(&store.path().to_path_buf()).unwrap();
         assert!(!raw.contains(&plaintext), "台账里不得出现明文");
         assert!(raw.contains(&record.hash), "台账里应当只有 hash");
@@ -396,11 +396,19 @@ mod tests {
     #[test]
     fn revoke_is_reversible_and_delete_requires_revocation() {
         let (store, dir) = temp_store();
-        let (record, plaintext) = store.create("k".into(), vec!["wb-cn".into()], None).unwrap();
+        let (record, plaintext) = store
+            .create("k".into(), vec!["wb-cn".into()], None)
+            .unwrap();
 
         // 启用中：不能直接删
-        assert!(store.delete(&record.id).is_err(), "启用中的密钥不该能直接删");
-        assert!(store.restore(&record.id).is_err(), "未吊销的密钥「恢复」应报错而不是空操作");
+        assert!(
+            store.delete(&record.id).is_err(),
+            "启用中的密钥不该能直接删"
+        );
+        assert!(
+            store.restore(&record.id).is_err(),
+            "未吊销的密钥「恢复」应报错而不是空操作"
+        );
 
         // 吊销 ⇒ verify 立刻不过
         store.revoke(&record.id).unwrap();
@@ -408,7 +416,10 @@ mod tests {
 
         // 恢复 ⇒ 同一把明文重新可用（客户端无需改配置）
         store.restore(&record.id).unwrap();
-        assert!(store.verify(&plaintext).is_some(), "恢复的判据是 verify 重新通过");
+        assert!(
+            store.verify(&plaintext).is_some(),
+            "恢复的判据是 verify 重新通过"
+        );
 
         // 再吊销后删除
         store.revoke(&record.id).unwrap();
@@ -428,14 +439,13 @@ mod tests {
         // ① 空授权集
         assert!(UnifiedApiKeyStore::validate_authorization(&[], None).is_err());
         // ② 不在册
-        let error = UnifiedApiKeyStore::validate_authorization(&["wb-cnx".into()], None).unwrap_err();
+        let error =
+            UnifiedApiKeyStore::validate_authorization(&["wb-cnx".into()], None).unwrap_err();
         assert!(error.contains("wb-cnx"), "应回显出错的那个 id：{error}");
         // ③ 业务转发不在授权集内
-        let error = UnifiedApiKeyStore::validate_authorization(
-            &["wb-cn".into()],
-            Some("wb-global"),
-        )
-        .unwrap_err();
+        let error =
+            UnifiedApiKeyStore::validate_authorization(&["wb-cn".into()], Some("wb-global"))
+                .unwrap_err();
         assert!(error.contains("必须也在本 Key 的授权集内"), "{error}");
         // ④ 业务转发是 Trae 命名空间（Trae 业务域不可配）
         let error = UnifiedApiKeyStore::validate_authorization(
@@ -458,7 +468,9 @@ mod tests {
     fn create_validates_before_writing_anything() {
         let (store, dir) = temp_store();
         assert!(store.create("bad".into(), vec![], None).is_err());
-        assert!(store.create("bad".into(), vec!["nope".into()], None).is_err());
+        assert!(store
+            .create("bad".into(), vec!["nope".into()], None)
+            .is_err());
         assert!(store.list().is_empty(), "校验失败不该落盘任何记录");
         std::fs::remove_dir_all(dir).unwrap();
     }
@@ -468,7 +480,9 @@ mod tests {
     fn a_second_instance_sees_new_keys_immediately() {
         let (store, dir) = temp_store();
         let other = UnifiedApiKeyStore::new(dir.join("keys.json"));
-        let (_record, plaintext) = store.create("k".into(), vec!["wb-cn".into()], None).unwrap();
+        let (_record, plaintext) = store
+            .create("k".into(), vec!["wb-cn".into()], None)
+            .unwrap();
         assert!(
             other.verify(&plaintext).is_some(),
             "无缓存 ⇒ 另一份实例必须立刻看到新 Key（宿主的管理面与独立监听是两份实例）"
@@ -491,7 +505,10 @@ mod tests {
         let records = store.list();
         assert_eq!(records.len(), 1, "未知字段不该让整份台账解析失败");
         assert_eq!(records[0].suffix, "", "缺失字段回落空串（显示时省略尾部）");
-        assert!(records[0].namespaces.is_empty(), "缺失授权集 = 无授权（fail-closed）");
+        assert!(
+            records[0].namespaces.is_empty(),
+            "缺失授权集 = 无授权（fail-closed）"
+        );
         assert!(!records[0].authorizes("wb-cn"));
         std::fs::remove_dir_all(dir).unwrap();
     }
@@ -505,7 +522,11 @@ mod tests {
             .unwrap();
         assert!(record.last_used_at.is_none());
         store.touch(&record.id);
-        let after = store.list().into_iter().find(|r| r.id == record.id).unwrap();
+        let after = store
+            .list()
+            .into_iter()
+            .find(|r| r.id == record.id)
+            .unwrap();
         assert!(after.last_used_at.is_some(), "touch 应写入 last_used_at");
         assert_eq!(after.namespaces, vec!["wb-cn", "trae-cn"], "授权集不该被动");
         assert!(after.is_active());

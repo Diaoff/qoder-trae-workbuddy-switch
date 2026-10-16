@@ -151,7 +151,9 @@ fn select_records(accounts: &[RawAccount], uids: Option<&[String]>) -> Vec<RawAc
 fn records_to_values(records: &[RawAccount]) -> Result<Vec<Value>, String> {
     records
         .iter()
-        .map(|record| serde_json::to_value(record).map_err(|error| format!("序列化账号失败：{error}")))
+        .map(|record| {
+            serde_json::to_value(record).map_err(|error| format!("序列化账号失败：{error}"))
+        })
         .collect()
 }
 
@@ -347,7 +349,12 @@ mod tests {
     ///
     /// ⚠️ `HomeOverrideGuard::set` 内部持有一把**非可重入**的全局锁 ⇒
     /// 同一个测试里**只能有一个** guard，且需用 `--test-threads=1` 串行跑。
-    fn isolated_home(tag: &str) -> (std::path::PathBuf, crate::modules::config::HomeOverrideGuard) {
+    fn isolated_home(
+        tag: &str,
+    ) -> (
+        std::path::PathBuf,
+        crate::modules::config::HomeOverrideGuard,
+    ) {
         let home = std::env::temp_dir().join(format!(
             "buddy-switch-qoder-export-{tag}-{}",
             uuid::Uuid::new_v4().simple()
@@ -387,7 +394,11 @@ mod tests {
         );
 
         let all = export_accounts_for(QoderRegion::Cn, None).unwrap();
-        assert_eq!(all["accounts"].as_array().unwrap().len(), 2, "None 必须导出全部");
+        assert_eq!(
+            all["accounts"].as_array().unwrap().len(),
+            2,
+            "None 必须导出全部"
+        );
         assert_eq!(all["count"], json!(2));
         assert_eq!(all["domain"], json!("qoder.com.cn"));
 
@@ -514,14 +525,16 @@ mod tests {
     /// 可证伪：把 `domain_mismatch` 恒置 `false`，第一条断言变红。
     #[test]
     fn preview_marks_cross_region_entries() {
-        let cross = r#"[{ "uid": "g1", "domain": "qoder.com", "accessToken": "dt-abcdefghijklmnop" }]"#;
+        let cross =
+            r#"[{ "uid": "g1", "domain": "qoder.com", "accessToken": "dt-abcdefghijklmnop" }]"#;
         assert_eq!(
             preview_accounts(QoderRegion::Cn, cross).unwrap()["accounts"][0]["domainMismatch"],
             json!(true),
             "国际版条目对国内版必须标为不符"
         );
 
-        let same = r#"[{ "uid": "c1", "domain": "qoder.com.cn", "accessToken": "dt-abcdefghijklmnop" }]"#;
+        let same =
+            r#"[{ "uid": "c1", "domain": "qoder.com.cn", "accessToken": "dt-abcdefghijklmnop" }]"#;
         assert_eq!(
             preview_accounts(QoderRegion::Cn, same).unwrap()["accounts"][0]["domainMismatch"],
             json!(false)
@@ -547,7 +560,10 @@ mod tests {
         assert_eq!(out["imported"], json!(2));
         assert_eq!(out["rejected"], json!(0));
         assert_eq!(
-            load_accounts_checked_for(QoderRegion::Cn).unwrap().accounts.len(),
+            load_accounts_checked_for(QoderRegion::Cn)
+                .unwrap()
+                .accounts
+                .len(),
             2
         );
     }
@@ -566,7 +582,10 @@ mod tests {
         let none_selected: &[usize] = &[];
         let out = import_accounts_for(QoderRegion::Cn, text, Some(none_selected), true).unwrap();
         assert_eq!(out["imported"], json!(0));
-        assert!(load_accounts_checked_for(QoderRegion::Cn).unwrap().accounts.is_empty());
+        assert!(load_accounts_checked_for(QoderRegion::Cn)
+            .unwrap()
+            .accounts
+            .is_empty());
     }
 
     /// ★ 跨区 / 空域条目**被拒并如实上报**，不混进 `skipped`。
@@ -636,7 +655,10 @@ mod tests {
         let out = import_accounts_for(QoderRegion::Cn, text, None, true).unwrap();
         assert_eq!(out["imported"], json!(0));
         assert_eq!(out["skipped"], json!(1));
-        assert!(load_accounts_checked_for(QoderRegion::Cn).unwrap().accounts.is_empty());
+        assert!(load_accounts_checked_for(QoderRegion::Cn)
+            .unwrap()
+            .accounts
+            .is_empty());
     }
 
     /// ★「信封 ≠ 缺失」：只有 PAT 的账号**必须**能导入。
@@ -649,7 +671,10 @@ mod tests {
         let out = import_accounts_for(QoderRegion::Cn, text, None, true).unwrap();
         assert_eq!(out["imported"], json!(1));
         assert_eq!(
-            load_accounts_checked_for(QoderRegion::Cn).unwrap().accounts.len(),
+            load_accounts_checked_for(QoderRegion::Cn)
+                .unwrap()
+                .accounts
+                .len(),
             1
         );
     }

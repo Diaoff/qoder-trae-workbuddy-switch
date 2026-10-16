@@ -87,12 +87,17 @@ fn should_drop_frame(value: &Value) -> bool {
                         let has_function_call = match map.get("function_call") {
                             Some(Value::Object(fc)) => {
                                 let name = fc.get("name").and_then(Value::as_str).unwrap_or("");
-                                let args = fc.get("arguments").and_then(Value::as_str).unwrap_or("");
+                                let args =
+                                    fc.get("arguments").and_then(Value::as_str).unwrap_or("");
                                 !name.is_empty() || !args.is_empty()
                             }
                             _ => false,
                         };
-                        !has_role && !has_content && !has_reasoning && !has_tool_calls && !has_function_call
+                        !has_role
+                            && !has_content
+                            && !has_reasoning
+                            && !has_tool_calls
+                            && !has_function_call
                     }
                     Some(Value::Null) | None => true,
                     _ => false,
@@ -237,7 +242,8 @@ impl<S> ReasoningDelta<S> {
                     if let Some(delta) = choice.get_mut("delta").and_then(Value::as_object_mut) {
                         // 1. 消除空 tool_calls / null tool_calls，杜绝客户端（如 ZCode/@ai-sdk）
                         // 因 `delta.tool_calls != null` 误判「工具调用开始」而强行提前结束思考块
-                        if let Some(tool_calls) = delta.get("tool_calls").and_then(Value::as_array) {
+                        if let Some(tool_calls) = delta.get("tool_calls").and_then(Value::as_array)
+                        {
                             if tool_calls.is_empty() {
                                 delta.remove("tool_calls");
                             }
@@ -293,7 +299,8 @@ impl<S> ReasoningDelta<S> {
             if !self.sent_role && !has_role_in_frame {
                 if let Some(choices) = value.get_mut("choices").and_then(Value::as_array_mut) {
                     if let Some(choice) = choices.first_mut() {
-                        if let Some(delta) = choice.get_mut("delta").and_then(Value::as_object_mut) {
+                        if let Some(delta) = choice.get_mut("delta").and_then(Value::as_object_mut)
+                        {
                             delta.insert("role".to_string(), json!("assistant"));
                             self.sent_role = true;
                         }
@@ -301,7 +308,11 @@ impl<S> ReasoningDelta<S> {
                 }
             }
 
-            let line_ending = if line.ends_with(b"\r\n") { "\r\n" } else { "\n" };
+            let line_ending = if line.ends_with(b"\r\n") {
+                "\r\n"
+            } else {
+                "\n"
+            };
             let rewritten = match serde_json::to_string(&value) {
                 Ok(json_str) => format!("data: {json_str}{line_ending}"),
                 Err(_) => {
@@ -396,7 +407,11 @@ mod tests {
 
         // 重复与更短快照
         assert_eq!(reasoning_delta("我想", "我想"), "");
-        assert_eq!(reasoning_delta("我想想看", "我想"), "", "更短的旧快照返回空");
+        assert_eq!(
+            reasoning_delta("我想想看", "我想"),
+            "",
+            "更短的旧快照返回空"
+        );
     }
 
     async fn collect_stream_lines<S>(stream: S) -> Vec<String>
@@ -423,8 +438,12 @@ mod tests {
     #[tokio::test]
     async fn test_snapshot_stream_diffs_to_incremental() {
         let input = vec![
-            chunk("data: {\"choices\":[{\"index\":0,\"delta\":{\"reasoning_content\":\"AB\"}}]}\n\n"),
-            chunk("data: {\"choices\":[{\"index\":0,\"delta\":{\"reasoning_content\":\"ABC\"}}]}\n\n"),
+            chunk(
+                "data: {\"choices\":[{\"index\":0,\"delta\":{\"reasoning_content\":\"AB\"}}]}\n\n",
+            ),
+            chunk(
+                "data: {\"choices\":[{\"index\":0,\"delta\":{\"reasoning_content\":\"ABC\"}}]}\n\n",
+            ),
             chunk("data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hello\"}}]}\n\n"),
             chunk("data: [DONE]\n\n"),
         ];
@@ -441,8 +460,12 @@ mod tests {
     #[tokio::test]
     async fn test_true_incremental_stream_passes_through() {
         let input = vec![
-            chunk("data: {\"choices\":[{\"index\":0,\"delta\":{\"reasoning_content\":\"A\"}}]}\n\n"),
-            chunk("data: {\"choices\":[{\"index\":0,\"delta\":{\"reasoning_content\":\"B\"}}]}\n\n"),
+            chunk(
+                "data: {\"choices\":[{\"index\":0,\"delta\":{\"reasoning_content\":\"A\"}}]}\n\n",
+            ),
+            chunk(
+                "data: {\"choices\":[{\"index\":0,\"delta\":{\"reasoning_content\":\"B\"}}]}\n\n",
+            ),
             chunk("data: [DONE]\n\n"),
         ];
         let stream = ReasoningDelta::new(futures_util::stream::iter(input));
@@ -477,13 +500,12 @@ mod tests {
     #[tokio::test]
     async fn test_cross_chunk_and_utf8_split() {
         // "你好" 的 "好" 字节为 [0xE5, 0xA5, 0xBD]，拆在第一个 chunk 结尾与第二个 chunk 开头
-        let raw1 = b"data: {\"choices\":[{\"index\":0,\"delta\":{\"reasoning_content\":\"\xE4\xBD\xA0\xE5";
+        let raw1 =
+            b"data: {\"choices\":[{\"index\":0,\"delta\":{\"reasoning_content\":\"\xE4\xBD\xA0\xE5";
         let raw2 = b"\xA5\xBD\"}}]}\n\n";
 
-        let input: Vec<Result<Bytes, io::Error>> = vec![
-            Ok(Bytes::from_static(raw1)),
-            Ok(Bytes::from_static(raw2)),
-        ];
+        let input: Vec<Result<Bytes, io::Error>> =
+            vec![Ok(Bytes::from_static(raw1)), Ok(Bytes::from_static(raw2))];
         let stream = ReasoningDelta::new(futures_util::stream::iter(input));
         let events = collect_stream_lines(stream).await;
 
@@ -505,9 +527,9 @@ mod tests {
         assert_eq!(events[1], "data: [DONE]\n\n");
 
         // 未带 [DONE] 的流与 SsePassthrough 组合，末尾自动补恰好一个 [DONE]
-        let input2 = vec![
-            chunk("data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hi\"}}]}\n\n"),
-        ];
+        let input2 = vec![chunk(
+            "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hi\"}}]}\n\n",
+        )];
         let stream2 = SsePassthrough::new(ReasoningDelta::new(futures_util::stream::iter(input2)));
         let events2 = collect_stream_lines(stream2).await;
         assert_eq!(events2.len(), 2);
@@ -585,9 +607,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_trailing_line_and_error_handling() {
-        let input = vec![
-            chunk("data: incomplete without double newline"),
-        ];
+        let input = vec![chunk("data: incomplete without double newline")];
         let stream = ReasoningDelta::new(futures_util::stream::iter(input));
         let mut stream = Box::pin(stream);
         let item = stream.next().await.unwrap().unwrap();
@@ -610,11 +630,15 @@ mod tests {
         assert_eq!(events.len(), 3);
         let val2: Value = serde_json::from_str(events[1].strip_prefix("data: ").unwrap()).unwrap();
         assert_eq!(val2["choices"][0]["finish_reason"], "stop");
-        assert!(val2["choices"][0]["delta"].get("reasoning_content").is_none());
+        assert!(val2["choices"][0]["delta"]
+            .get("reasoning_content")
+            .is_none());
 
         let val3: Value = serde_json::from_str(events[2].strip_prefix("data: ").unwrap()).unwrap();
         assert_eq!(val3["usage"]["total_tokens"], 100);
-        assert!(val3["choices"][0]["delta"].get("reasoning_content").is_none());
+        assert!(val3["choices"][0]["delta"]
+            .get("reasoning_content")
+            .is_none());
     }
 
     #[tokio::test]
@@ -644,12 +668,22 @@ mod tests {
 
         // 验证：
         // 1. 重复快照与空过渡帧被剔除：保留首帧、2个思考帧、2个正文帧、1个DONE帧 = 6帧
-        assert_eq!(events.len(), 6, "帧数应精准为 6（重复与空过渡被丢弃）: {events:?}");
+        assert_eq!(
+            events.len(),
+            6,
+            "帧数应精准为 6（重复与空过渡被丢弃）: {events:?}"
+        );
 
         // 2. 检查每一帧，绝不包含 `"tool_calls":[]`
         for (i, ev) in events.iter().enumerate() {
-            assert!(!ev.contains("\"tool_calls\":[]"), "第 {i} 帧不应包含空 tool_calls: {ev}");
-            assert!(!ev.contains("\"tool_calls\": []"), "第 {i} 帧不应包含空 tool_calls: {ev}");
+            assert!(
+                !ev.contains("\"tool_calls\":[]"),
+                "第 {i} 帧不应包含空 tool_calls: {ev}"
+            );
+            assert!(
+                !ev.contains("\"tool_calls\": []"),
+                "第 {i} 帧不应包含空 tool_calls: {ev}"
+            );
         }
 
         // 3. 检查首帧包含 role:"assistant"

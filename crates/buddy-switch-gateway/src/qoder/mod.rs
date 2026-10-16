@@ -44,9 +44,9 @@ use serde_json::{json, Value};
 use tokio::net::TcpListener;
 use tokio::sync::{oneshot, Mutex, RwLock};
 
+use buddy_switch_core::modules::config as core_config;
 use buddy_switch_core::modules::qoder::region::{self as qoder_region, QoderRegion};
 use buddy_switch_core::modules::qoder::{account, api, cosy, paths};
-use buddy_switch_core::modules::config as core_config;
 
 use crate::logging::RequestLog;
 use crate::{body_limit_bytes, GatewayProduct};
@@ -326,14 +326,13 @@ impl QoderGatewayState {
                     .unwrap_or(false)
             });
         let Some(account_row) = account_row else {
-            let note = "没有可用账号：模型清单需要账号凭据向官方拉取（去「账号」页导入）".to_string();
+            let note =
+                "没有可用账号：模型清单需要账号凭据向官方拉取（去「账号」页导入）".to_string();
             // 无账号 ⇒ 仍然给缓存（若有）：缓存里的是**上次有账号时**拉到的清单，
             // 比清空更有用；来源标成 `cached` 并不带时间上的新鲜承诺。
             let cache = self.catalogs.read().await;
             return match cache.get(&region).cloned() {
-                Some(cached) if !cached.models.is_empty() => {
-                    cached.into_view("cached", Some(note))
-                }
+                Some(cached) if !cached.models.is_empty() => cached.into_view("cached", Some(note)),
                 _ => CatalogView {
                     models: Vec::new(),
                     source: "unavailable",
@@ -613,7 +612,9 @@ pub async fn spawn_listener(state: QoderGatewayState) -> anyhow::Result<crate::G
     }
     let addr = SocketAddr::new(ip, port);
     let listener = TcpListener::bind(addr).await.map_err(|error| {
-        anyhow::anyhow!("无法监听 {addr}：端口可能被占用或不可用（{error}）。请在设置中改用其他端口。")
+        anyhow::anyhow!(
+            "无法监听 {addr}：端口可能被占用或不可用（{error}）。请在设置中改用其他端口。"
+        )
     })?;
     let local = listener.local_addr().unwrap_or(addr);
     let app = router(state);
@@ -682,11 +683,17 @@ mod tests {
         assert_eq!(config.port, QODER_DEFAULT_API_PORT);
         assert_ne!(config.port, 57891, "不得与 WB 网关撞端口");
         assert_ne!(config.port, 7864, "不得与 Trae 网关撞端口");
-        assert_eq!(config.base_url(), format!("http://127.0.0.1:{QODER_DEFAULT_API_PORT}"));
+        assert_eq!(
+            config.base_url(),
+            format!("http://127.0.0.1:{QODER_DEFAULT_API_PORT}")
+        );
         // 默认模型为**空** —— 由清单第一条兜底，不硬编码一个可能不存在的名字。
         assert!(config.default_model.is_empty());
         // ★ 默认**关**（与 WB / Trae 同一产品口径；变异：改成 true ⇒ 本条红）。
-        assert!(!config.enabled, "网关默认必须关闭 —— 不声不响地默认监听是危险默认值");
+        assert!(
+            !config.enabled,
+            "网关默认必须关闭 —— 不声不响地默认监听是危险默认值"
+        );
         assert!(!config.allow_non_loopback);
         assert_eq!(config.log_keep, 200, "与另两条产品线同值");
     }

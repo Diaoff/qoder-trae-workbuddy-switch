@@ -392,9 +392,11 @@ fn region_status(region: super::region::TraeRegion) -> Value {
             .iter()
             .any(|item| item.get(key).and_then(Value::as_bool).unwrap_or(false))
     };
-    let primary = programs
-        .iter()
-        .find(|item| item.get("installed").and_then(Value::as_bool).unwrap_or(false));
+    let primary = programs.iter().find(|item| {
+        item.get("installed")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+    });
     let field = |key: &str| {
         primary
             .and_then(|item| item.get(key).cloned())
@@ -500,10 +502,18 @@ fn flattened_candidates_match_variant_table() {
         from_table_exe.len(),
         "收敛后可选程序位之间不应有重复的 exe 候选"
     );
-    assert_eq!(data_dir_names(), from_table_dir.as_slice(), "userData 目录名候选与程序位表漂移");
+    assert_eq!(
+        data_dir_names(),
+        from_table_dir.as_slice(),
+        "userData 目录名候选与程序位表漂移"
+    );
     // exe 名只在 Windows 上与表逐字相同（非 Windows 去过 `.exe`）。
     if cfg!(target_os = "windows") {
-        assert_eq!(exe_names(), from_table_exe.as_slice(), "exe 名候选与程序位表漂移");
+        assert_eq!(
+            exe_names(),
+            from_table_exe.as_slice(),
+            "exe 名候选与程序位表漂移"
+        );
     }
 }
 
@@ -558,7 +568,9 @@ fn version_from_install_dir(dir: &Path) -> Option<String> {
         &["resources", "app", "product.json"],
     ];
     for relative in relative_candidates {
-        let path = relative.iter().fold(dir.to_path_buf(), |acc, part| acc.join(part));
+        let path = relative
+            .iter()
+            .fold(dir.to_path_buf(), |acc, part| acc.join(part));
         if let Ok(text) = std::fs::read_to_string(&path) {
             if let Ok(value) = serde_json::from_str::<Value>(&text) {
                 if let Some(version) = value.get("version").and_then(|v| v.as_str()) {
@@ -1653,7 +1665,10 @@ pub fn reset_device_identity_for(variant: super::variant::TraeVariant) -> Result
     }
 
     // 2 + 3. storage.json（点号扁平键，不是嵌套对象）
-    let storage_file = data_dir.join("User").join("globalStorage").join("storage.json");
+    let storage_file = data_dir
+        .join("User")
+        .join("globalStorage")
+        .join("storage.json");
     if storage_file.is_file() {
         match rewrite_storage_json(&storage_file, &machine_id, &guid) {
             Ok(changed) => {
@@ -1779,11 +1794,7 @@ pub fn reset_device_identity_for(variant: super::variant::TraeVariant) -> Result
 /// 而不是嵌套对象。这是 Trae/VS Code 系的存储约定，按嵌套结构去改会静默失败。
 ///
 /// 返回是否真的发生了替换。
-fn rewrite_storage_json(
-    path: &Path,
-    machine_id: &str,
-    guid: &str,
-) -> Result<bool, String> {
+fn rewrite_storage_json(path: &Path, machine_id: &str, guid: &str) -> Result<bool, String> {
     let text = std::fs::read_to_string(path).map_err(|e| format!("读取失败: {e}"))?;
     let Ok(mut value) = serde_json::from_str::<Value>(&text) else {
         return Err("不是合法的 JSON，已跳过".into());
@@ -2129,7 +2140,9 @@ mod tests {
         }))
         .expect("设置 traePaths 应成功");
         let value = env_status();
-        let exist = value.get("configuredPathsExist").expect("应有 configuredPathsExist");
+        let exist = value
+            .get("configuredPathsExist")
+            .expect("应有 configuredPathsExist");
         assert_eq!(
             exist.get("cn").and_then(|v| v.as_bool()),
             Some(true),
@@ -2346,17 +2359,17 @@ mod tests {
                 let program_id = program.get("program").and_then(|v| v.as_str()).unwrap();
                 let expected_program = TraeProgram::parse(program_id)
                     .unwrap_or_else(|| panic!("程序位标识无法反解: {program_id}"));
-                let raw = program.get("variant").unwrap_or_else(|| {
-                    panic!("程序位 {region:?}/{program_id} 缺少 variant 键")
-                });
+                let raw = program
+                    .get("variant")
+                    .unwrap_or_else(|| panic!("程序位 {region:?}/{program_id} 缺少 variant 键"));
                 let raw = raw.as_str().unwrap_or_else(|| {
                     panic!(
                         "程序位 {region:?}/{program_id} 的 variant 为 null —— \
                          即 issue #3 的「未建模」形态，必须已修"
                     )
                 });
-                let target = TraeVariant::parse(raw)
-                    .unwrap_or_else(|| panic!("variant 值无法反解: {raw}"));
+                let target =
+                    TraeVariant::parse(raw).unwrap_or_else(|| panic!("variant 值无法反解: {raw}"));
                 assert_eq!(
                     target.region(),
                     region,
@@ -2471,11 +2484,19 @@ mod tests {
         let changed = rewrite_storage_json(&path, "NEWMACHINE", "NEW-GUID").unwrap();
         assert!(changed);
 
-        let after: Value =
-            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
-        assert_eq!(after.get("telemetry.machineId").unwrap().as_str(), Some("NEWMACHINE"));
-        assert_eq!(after.get("telemetry.sqmId").unwrap().as_str(), Some("NEW-GUID"));
-        assert_eq!(after.get("aha.device.device_id").unwrap().as_str(), Some("NEWMACHINE"));
+        let after: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(
+            after.get("telemetry.machineId").unwrap().as_str(),
+            Some("NEWMACHINE")
+        );
+        assert_eq!(
+            after.get("telemetry.sqmId").unwrap().as_str(),
+            Some("NEW-GUID")
+        );
+        assert_eq!(
+            after.get("aha.device.device_id").unwrap().as_str(),
+            Some("NEWMACHINE")
+        );
         // 标记位必须被删除，否则客户端会跳过设备 ID 重新上报
         assert!(after.get("has_device_id_updated_to_aha").is_none());
         // 无关键必须原样保留
@@ -2546,10 +2567,17 @@ mod tests {
     #[test]
     fn exe_names_cover_both_merged_clients() {
         let names = exe_names();
-        let suffix = if cfg!(target_os = "windows") { ".exe" } else { "" };
+        let suffix = if cfg!(target_os = "windows") {
+            ".exe"
+        } else {
+            ""
+        };
         for expected in ["Trae CN", "Trae"] {
             let full = format!("{expected}{suffix}");
-            assert!(names.contains(&full.as_str()), "候选名缺少 {full}：{names:?}");
+            assert!(
+                names.contains(&full.as_str()),
+                "候选名缺少 {full}：{names:?}"
+            );
         }
         // ★ 退役客户端的名字**不得**再出现在跨变体候选里。
         for retired in ["TRAE SOLO CN", "TRAE SOLO"] {
@@ -2602,7 +2630,10 @@ mod tests {
             &cells,
             exp,
         );
-        assert!(grid.selectors_diverge, "前置：两个选择器必须分叉，否则本用例证明不了什么");
+        assert!(
+            grid.selectors_diverge,
+            "前置：两个选择器必须分叉，否则本用例证明不了什么"
+        );
 
         // ① 两个选择器在同一个变体上确实分叉（活跃度 ≠ 首个存在）。
         let active = select_data_dir_for(variant).expect("候选都在，应能选出活跃目录");
@@ -2678,7 +2709,10 @@ mod tests {
         // 隔开一点再写 fresh，确保两者 mtime 明确不同（NTFS 精度远高于 20ms）
         std::thread::sleep(std::time::Duration::from_millis(20));
         std::fs::write(
-            fresh.join("User").join("globalStorage").join("storage.json"),
+            fresh
+                .join("User")
+                .join("globalStorage")
+                .join("storage.json"),
             br#"{"touched":1}"#,
         )
         .unwrap();
@@ -2943,10 +2977,7 @@ mod tests {
         let running = running_processes();
         eprintln!("[trae] running_processes -> {running:?}");
         for name in &running {
-            assert!(
-                exe_names().contains(name),
-                "返回了未登记的进程名：{name}"
-            );
+            assert!(exe_names().contains(name), "返回了未登记的进程名：{name}");
         }
     }
 

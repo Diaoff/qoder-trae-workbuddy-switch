@@ -76,7 +76,10 @@ fn clearing_the_cooldown_revives_the_account_in_the_trae_pool() {
     let mut pool = TraePool::for_variant(variant);
     assert_eq!(pool.sync_for(variant), 1, "账号库应有 1 条（jwt 非空）");
     assert!(!sole_entry(&pool).disabled, "前置：无冷却时不该是禁用");
-    assert!(sole_entry(&pool).healthy(now_secs()), "前置：无冷却时应可用");
+    assert!(
+        sole_entry(&pool).healthy(now_secs()),
+        "前置：无冷却时应可用"
+    );
 
     // ② 会话失效（`-1` = 永久）⇒ 池必须把它**派生为禁用**，且不可用。
     credits::save_cooldown_for(variant, uid, "SessionDead", -1, "12153 session dead");

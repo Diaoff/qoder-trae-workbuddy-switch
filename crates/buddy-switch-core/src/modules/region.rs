@@ -127,7 +127,9 @@ impl Default for RegionFilter {
 /// `"ai"`/`"GLOBAL"` 绑定 `Global`，`""`/`"xx"` 绑定 `Cn`，并额外支持
 /// `"all" | "*" | "合并" | "全部"`。该函数放在 core，供 server 与 tauri 复用。
 pub fn parse_region_filter(value: Option<&str>) -> RegionFilter {
-    value.and_then(RegionFilter::parse).unwrap_or(RegionFilter::Cn)
+    value
+        .and_then(RegionFilter::parse)
+        .unwrap_or(RegionFilter::Cn)
 }
 
 /// 目录请求 UA 形态：CN 用 CLI 形态，Global 用 App 形态（`WorkBuddyAI/<v>`）。
@@ -421,7 +423,10 @@ mod tests {
         assert_eq!(RegionFilter::parse("global"), Some(RegionFilter::Global));
         assert_eq!(RegionFilter::parse("ai"), Some(RegionFilter::Global));
         assert_eq!(RegionFilter::parse("GLOBAL"), Some(RegionFilter::Global));
-        assert_eq!(RegionFilter::parse(" workbuddy-ai "), Some(RegionFilter::Global));
+        assert_eq!(
+            RegionFilter::parse(" workbuddy-ai "),
+            Some(RegionFilter::Global)
+        );
         assert_eq!(RegionFilter::parse("all"), Some(RegionFilter::All));
         assert_eq!(RegionFilter::parse("ALL"), Some(RegionFilter::All));
         assert_eq!(RegionFilter::parse("*"), Some(RegionFilter::All));
@@ -451,7 +456,10 @@ mod tests {
 
         assert_eq!(RegionFilter::Cn.regions(), vec![Region::Cn]);
         assert_eq!(RegionFilter::Global.regions(), vec![Region::Global]);
-        assert_eq!(RegionFilter::All.regions(), vec![Region::Cn, Region::Global]);
+        assert_eq!(
+            RegionFilter::All.regions(),
+            vec![Region::Cn, Region::Global]
+        );
 
         assert_eq!(RegionFilter::from(Region::Cn), RegionFilter::Cn);
         assert_eq!(RegionFilter::from(Region::Global), RegionFilter::Global);
@@ -491,11 +499,8 @@ mod tests {
 
     #[test]
     fn region_mismatch_message_names_file_and_env() {
-        let mismatch = RegionMismatch::new(
-            "www.workbuddy.ai".to_string(),
-            Region::Global,
-            Region::Cn,
-        );
+        let mismatch =
+            RegionMismatch::new("www.workbuddy.ai".to_string(), Region::Global, Region::Cn);
         let message = mismatch.message();
         assert!(message.contains("www.workbuddy.ai"), "{message}");
         assert!(message.contains("WORKBUDDY_AUTH_FILE"), "{message}");

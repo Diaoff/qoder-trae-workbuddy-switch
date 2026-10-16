@@ -165,8 +165,7 @@ pub const TRAE_EXCHANGE_TOKEN_PATH: &str = "/trae/api/v3/oauth/ExchangeToken";
 /// 参考实现把它标注为「保留至固化协议验证期结束」；本项目按架构裁决保留为
 /// 兜底链的最后一环（见 `account::exchange_token_for` 的四步变体链），
 /// 但**不再作为主路径**。完整 URL = `${icube_base}${本常量}`。
-pub const TRAE_EXCHANGE_TOKEN_LEGACY_PATH: &str =
-    "/cloudide/api/v3/trae/oauth/ExchangeToken";
+pub const TRAE_EXCHANGE_TOKEN_LEGACY_PATH: &str = "/cloudide/api/v3/trae/oauth/ExchangeToken";
 
 /// **TRAE / IDE 产品线**的公开 ClientID（抓包固化 2026-09-16，非机密）。
 ///

@@ -616,7 +616,10 @@ fn official_status_rank(status: &str) -> u8 {
 
 /// 取两份 `officialUsage` 中**最差**的 `status`（`unavailable > partial > complete`）。
 fn worst_official_status(cn: &Value, global: &Value) -> &'static str {
-    let cn_status = cn.get("status").and_then(Value::as_str).unwrap_or("unavailable");
+    let cn_status = cn
+        .get("status")
+        .and_then(Value::as_str)
+        .unwrap_or("unavailable");
     let global_status = global
         .get("status")
         .and_then(Value::as_str)
@@ -920,7 +923,8 @@ pub async fn get_statistics_for_filter(filter: RegionFilter, refresh: bool) -> V
     accounts.extend(load_accounts_for(Region::Global));
     let filtered_snapshots = filter_snapshots_by_accounts(&snapshots, &accounts);
     let filtered_checkins = filter_checkins_by_accounts(&checkins, &accounts, true);
-    let mut statistics = build_statistics(&filtered_snapshots, &filtered_checkins, &accounts, at_ms);
+    let mut statistics =
+        build_statistics(&filtered_snapshots, &filtered_checkins, &accounts, at_ms);
     // 并集账号按账号库归属打标（cn 优先）。
     tag_accounts_region_with_union(&mut statistics);
     statistics["region"] = json!(filter.as_str());
@@ -1109,7 +1113,10 @@ mod tests {
             .iter()
             .find(|event| event["accountId"] == "account-2")
             .expect("不带金额的签到事件");
-        assert!(without_amount["amount"].is_null(), "旧日志没有金额 ⇒ null，不猜");
+        assert!(
+            without_amount["amount"].is_null(),
+            "旧日志没有金额 ⇒ null，不猜"
+        );
     }
 
     #[test]

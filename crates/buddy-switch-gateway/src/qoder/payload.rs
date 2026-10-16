@@ -152,7 +152,10 @@ pub fn admin_models_response(
 /// 找不到 ⇒ 合成一份**中性元数据**（`key = 用户传的名字`）：不虚构
 /// `is_reasoning` / 上下文长度，上游收到不认识的 key 会自己报错 ——
 /// 比本地猜一个「像真的」的值诚实。
-pub fn meta_for(catalog: &[Value], model: &str) -> buddy_switch_core::modules::qoder::api::ModelMeta {
+pub fn meta_for(
+    catalog: &[Value],
+    model: &str,
+) -> buddy_switch_core::modules::qoder::api::ModelMeta {
     for entry in catalog {
         let key = entry
             .get("key")
@@ -220,7 +223,9 @@ mod tests {
 
     #[test]
     fn meta_lookup_is_case_insensitive_with_neutral_fallback() {
-        let catalog = vec![json!({"key": "qwen3.8-max", "display_name": "Qwen3.8-Max", "is_reasoning": true})];
+        let catalog = vec![
+            json!({"key": "qwen3.8-max", "display_name": "Qwen3.8-Max", "is_reasoning": true}),
+        ];
         let meta = meta_for(&catalog, "QWEN3.8-MAX");
         assert_eq!(meta.key, "qwen3.8-max");
         assert!(meta.is_reasoning);
@@ -267,7 +272,10 @@ mod tests {
         let rows = body["data"].as_array().unwrap();
         assert_eq!(rows.len(), 2, "禁用的行**必须留着**（全量清单）");
         assert_eq!(rows[0]["id"], "Ultimate");
-        assert_eq!(rows[0]["disabled"], true, "大小写不敏感（`ultimate` ↔ `Ultimate`）");
+        assert_eq!(
+            rows[0]["disabled"], true,
+            "大小写不敏感（`ultimate` ↔ `Ultimate`）"
+        );
         assert_eq!(rows[0]["is_reasoning"], true);
         assert_eq!(rows[1]["id"], "glm-5.1", "无 `id` 时回落 `key`");
         assert_eq!(rows[1]["disabled"], false);

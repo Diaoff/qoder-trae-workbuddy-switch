@@ -141,7 +141,10 @@ impl ScopeSelection {
 ///
 /// 与导出剥离**共用**同一常量；`None` = 不含任何凭据键（可证伪断言成立）。
 pub fn contains_credential_key(text: &str) -> Option<&'static str> {
-    CREDENTIAL_KEYS.iter().copied().find(|key| text.contains(key))
+    CREDENTIAL_KEYS
+        .iter()
+        .copied()
+        .find(|key| text.contains(key))
 }
 
 /// 解析 envelope（fail-closed）：`kind` / `formatVersion` 逐个校验。
@@ -177,9 +180,7 @@ pub fn parse_envelope(text: &str) -> Result<Value, String> {
                 "不是本应用的备份文件（kind = {other}），已拒绝导入。"
             ))
         }
-        None => {
-            return Err("备份文件缺少 kind 字段，无法确认来源，已拒绝导入。".to_string())
-        }
+        None => return Err("备份文件缺少 kind 字段，无法确认来源，已拒绝导入。".to_string()),
     }
 
     let version = object
@@ -261,7 +262,10 @@ pub fn export_backup(selection: &BackupSelection) -> Result<Value, String> {
 /// - **分区表驱动**：分区勾选来自 [`backup_sections`]，加类型 = 加一行；
 /// - ⚠️ **不在此剥离凭据**：剥离由调用方决定（导出剥离、本地快照不剥离）—— 若把剥离写进
 ///   组装，本地快照就无法「全量保真」，撤销导入会丢账号 token。
-fn build_envelope(selection: &BackupSelection, includes_credentials: bool) -> Result<Value, String> {
+fn build_envelope(
+    selection: &BackupSelection,
+    includes_credentials: bool,
+) -> Result<Value, String> {
     let mut scopes = serde_json::Map::new();
     for scope in Scope::all() {
         let scope_selection = selection.scopes.get(scope.as_str());
@@ -645,11 +649,7 @@ fn restore_update_proxy(envelope: &Value) {
 /// 按策略列出「将被覆盖」的配置项（来件与本地都有的顶层键）。
 ///
 /// 只在**覆盖类**策略下非空：`KeepLocal`（默认）下不覆盖任何配置项，列出来反而误导。
-fn overwritten_config_keys(
-    local: &Value,
-    incoming: &Value,
-    policy: ConflictPolicy,
-) -> Vec<String> {
+fn overwritten_config_keys(local: &Value, incoming: &Value, policy: ConflictPolicy) -> Vec<String> {
     if !matches!(policy, ConflictPolicy::Overwrite | ConflictPolicy::KeepBoth) {
         return Vec::new();
     }
@@ -667,7 +667,12 @@ fn overwritten_config_keys(
 fn count_needs_relogin(incoming: &Value) -> usize {
     incoming
         .as_array()
-        .map(|items| items.iter().filter(|item| record_needs_relogin(item)).count())
+        .map(|items| {
+            items
+                .iter()
+                .filter(|item| record_needs_relogin(item))
+                .count()
+        })
         .unwrap_or(0)
 }
 
@@ -885,7 +890,10 @@ mod tests {
         assert_eq!(value["trae"][0]["uid"], json!("t1"));
         // 信封整体剥离 ⇒ nickname 为 null，密文不再出现。
         assert_eq!(value["accounts"][0]["nickname"], Value::Null);
-        assert!(!text.contains("SECRET-ENVELOPE"), "信封密文不得残留：{text}");
+        assert!(
+            !text.contains("SECRET-ENVELOPE"),
+            "信封密文不得残留：{text}"
+        );
         assert!(!text.contains("PLAIN-ACCESS"), "明文 access_token 不得残留");
         assert!(!text.contains("PLAIN-JWT"), "Trae jwt 不得残留：{text}");
     }
@@ -899,7 +907,10 @@ mod tests {
         }))
         .unwrap();
         // 旧判据（只搜 camelCase）⇒ 抓不到（假阴性）。
-        assert!(!leaked.contains("accessToken"), "旧判据抓不到 snake_case 泄露");
+        assert!(
+            !leaked.contains("accessToken"),
+            "旧判据抓不到 snake_case 泄露"
+        );
         // 新判据（CREDENTIAL_KEYS 含真实键）⇒ 抓到。
         assert_eq!(contains_credential_key(&leaked), Some("access_token"));
     }
@@ -911,8 +922,15 @@ mod tests {
         strip_credentials(&mut value, true);
         let text = serde_json::to_string(&value).unwrap();
         assert_eq!(value["accounts"][0]["access_token"], json!("PLAIN-ACCESS"));
-        assert_eq!(value["accounts"][0]["refresh_token"], json!("PLAIN-REFRESH"));
-        assert_eq!(value["accounts"][0]["nickname"], Value::Null, "信封必须剥离");
+        assert_eq!(
+            value["accounts"][0]["refresh_token"],
+            json!("PLAIN-REFRESH")
+        );
+        assert_eq!(
+            value["accounts"][0]["nickname"],
+            Value::Null,
+            "信封必须剥离"
+        );
         assert!(!text.contains("$wbEncrypted"), "信封标记不得残留：{text}");
         assert!(!text.contains("SECRET-ENVELOPE"), "信封密文不得残留");
     }
@@ -929,7 +947,10 @@ mod tests {
         );
         // 无凭据 / 非 URL ⇒ 原样。
         assert_eq!(redact_url_userinfo("http://host:8080"), "http://host:8080");
-        assert_eq!(redact_url_userinfo("socks5://127.0.0.1:1080"), "socks5://127.0.0.1:1080");
+        assert_eq!(
+            redact_url_userinfo("socks5://127.0.0.1:1080"),
+            "socks5://127.0.0.1:1080"
+        );
         assert_eq!(redact_url_userinfo("not a url"), "not a url");
     }
 
@@ -958,7 +979,10 @@ mod tests {
     /// `formatVersion` 是唯一兼容依据：`> 上限` 拒绝 + 提示升级；缺 ⇒ 拒绝。
     #[test]
     fn parse_envelope_version_is_fail_closed() {
-        assert!(parse_envelope(r#"{"kind":"buddy-switch-backup"}"#).is_err(), "缺版本");
+        assert!(
+            parse_envelope(r#"{"kind":"buddy-switch-backup"}"#).is_err(),
+            "缺版本"
+        );
         let too_new = r#"{"kind":"buddy-switch-backup","formatVersion":2}"#;
         let error = parse_envelope(too_new).unwrap_err();
         assert!(error.contains("升级"), "应提示升级：{error}");
@@ -974,7 +998,16 @@ mod tests {
     #[test]
     fn parse_envelope_reports_readable_error_for_corrupted_file() {
         // 各类损坏形态：空 / 空白 / 截断 / 非法 JSON / 非对象标量。
-        for broken in ["", "   ", "{", "{\"kind\":", "[1,2", "123", "null", "not json"] {
+        for broken in [
+            "",
+            "   ",
+            "{",
+            "{\"kind\":",
+            "[1,2",
+            "123",
+            "null",
+            "not json",
+        ] {
             let error = parse_envelope(broken)
                 .expect_err(&format!("损坏文件必须报错而不是崩溃：{broken:?}"));
             assert!(!error.is_empty(), "损坏文件必须给可读错误：{broken:?}");
@@ -998,7 +1031,10 @@ mod tests {
     fn migrate_envelope_only_handles_current_version() {
         let value = json!({"kind": BACKUP_KIND, "formatVersion": 1});
         assert_eq!(migrate_envelope(value.clone(), 1).unwrap(), value);
-        assert!(migrate_envelope(value, 0).is_err(), "无历史版本可迁 ⇒ Err（不空转）");
+        assert!(
+            migrate_envelope(value, 0).is_err(),
+            "无历史版本可迁 ⇒ Err（不空转）"
+        );
     }
 
     #[test]
@@ -1006,7 +1042,10 @@ mod tests {
         let envelope = json!({ "scopes": { "wb-cn": {}, "foo-cn": {}, "trae-glboal": {} } });
         let mut unknown = unknown_scope_keys(&envelope);
         unknown.sort();
-        assert_eq!(unknown, vec!["foo-cn".to_string(), "trae-glboal".to_string()]);
+        assert_eq!(
+            unknown,
+            vec!["foo-cn".to_string(), "trae-glboal".to_string()]
+        );
         assert!(resolve_scope_key("wb-cn").is_ok());
         assert!(resolve_scope_key("foo-cn").is_err());
     }
@@ -1028,7 +1067,11 @@ mod tests {
             "必须 6/6 覆盖（3 平台 × 2 区域）：{envelope}"
         );
         for scope in Scope::all() {
-            assert!(scopes.contains_key(scope.as_str()), "缺作用域 {}", scope.as_str());
+            assert!(
+                scopes.contains_key(scope.as_str()),
+                "缺作用域 {}",
+                scope.as_str()
+            );
         }
         assert_eq!(envelope["kind"], json!(BACKUP_KIND));
         assert_eq!(envelope["formatVersion"], json!(SUPPORTED_FORMAT_VERSION));
@@ -1068,7 +1111,10 @@ mod tests {
             text.contains("\"u1\""),
             "账号 uid 应出现在导出里，否则本条断言恒真（假阴性）：{text}"
         );
-        assert!(!text.contains("SECRET-ENVELOPE"), "信封密文不得残留：{text}");
+        assert!(
+            !text.contains("SECRET-ENVELOPE"),
+            "信封密文不得残留：{text}"
+        );
 
         // ★★ 红线：搜真实键集 ⇒ 0 命中。
         assert_eq!(
@@ -1093,7 +1139,10 @@ mod tests {
         let envelope = export_backup(&selection).expect("导出应成功");
         assert_eq!(envelope["scopes"]["trae-global"], json!({}));
         // 其余作用域默认全选。
-        assert!(envelope["scopes"]["wb-cn"].as_object().unwrap().contains_key("accounts"));
+        assert!(envelope["scopes"]["wb-cn"]
+            .as_object()
+            .unwrap()
+            .contains_key("accounts"));
 
         drop(_guard);
         let _ = std::fs::remove_dir_all(&home);
@@ -1127,12 +1176,12 @@ mod tests {
         let text = backup_text_with_account("u1", "甲", Some("tok"));
         let selection = BackupSelection::default();
 
-        let first =
-            import_backup(&text, ConflictPolicy::KeepLocal, &selection, &[]).expect("首次导入应成功");
+        let first = import_backup(&text, ConflictPolicy::KeepLocal, &selection, &[])
+            .expect("首次导入应成功");
         assert_eq!(first["failed"], json!(0), "{first}");
 
-        let second =
-            import_backup(&text, ConflictPolicy::KeepLocal, &selection, &[]).expect("二次导入应成功");
+        let second = import_backup(&text, ConflictPolicy::KeepLocal, &selection, &[])
+            .expect("二次导入应成功");
         let rows = second["perScope"].as_array().unwrap();
         let wb_cn = rows.iter().find(|row| row["scope"] == "wb-cn").unwrap();
         assert_eq!(wb_cn["added"], json!(0), "第二次不得新增（幂等）：{second}");
@@ -1168,9 +1217,18 @@ mod tests {
         })
         .to_string();
 
-        let summary =
-            import_backup(&text, ConflictPolicy::KeepLocal, &BackupSelection::default(), &[]).unwrap();
-        assert_eq!(summary["failed"], json!(2), "两个未知 scope 必须计入失败：{summary}");
+        let summary = import_backup(
+            &text,
+            ConflictPolicy::KeepLocal,
+            &BackupSelection::default(),
+            &[],
+        )
+        .unwrap();
+        assert_eq!(
+            summary["failed"],
+            json!(2),
+            "两个未知 scope 必须计入失败：{summary}"
+        );
         let rows = summary["perScope"].as_array().unwrap();
         for bad_scope in ["foo-cn", "trae-glboal"] {
             let bad = rows.iter().find(|row| row["scope"] == bad_scope).unwrap();
@@ -1185,7 +1243,8 @@ mod tests {
         // ★ 未知 scope **不可重试**：键名非法是来件的结构性缺陷，重试必然再失败。
         //   （此前它与合并失败一样被计入 `retryable`，前端会把它塞进重试名单 ⇒ 假出口。）
         assert_eq!(
-            summary["retryable"], json!(0),
+            summary["retryable"],
+            json!(0),
             "未知 scope 不该计入可重试（重试同一个坏键名必然再失败）：{summary}"
         );
         assert!(
@@ -1195,7 +1254,8 @@ mod tests {
         for bad_scope in ["foo-cn", "trae-glboal"] {
             let bad = rows.iter().find(|row| row["scope"] == bad_scope).unwrap();
             assert_eq!(
-                bad["retryable"], json!(false),
+                bad["retryable"],
+                json!(false),
                 "未知 scope {bad_scope} 必须标为不可重试：{summary}"
             );
         }
@@ -1237,19 +1297,33 @@ mod tests {
         })
         .to_string();
 
-        let summary =
-            import_backup(&text, ConflictPolicy::KeepLocal, &BackupSelection::default(), &["trae-cn".to_string()])
-                .unwrap();
+        let summary = import_backup(
+            &text,
+            ConflictPolicy::KeepLocal,
+            &BackupSelection::default(),
+            &["trae-cn".to_string()],
+        )
+        .unwrap();
 
         let rows = summary["perScope"].as_array().unwrap();
         assert_eq!(
             rows.len(),
             1,
             "重试只应处理名单内的 scope，实际处理了 {:?}",
-            rows.iter().map(|r| r["scope"].as_str().unwrap()).collect::<Vec<_>>()
+            rows.iter()
+                .map(|r| r["scope"].as_str().unwrap())
+                .collect::<Vec<_>>()
         );
-        assert_eq!(rows[0]["scope"], json!("trae-cn"), "只应重跑 trae-cn：{summary}");
-        assert_eq!(summary["failed"], json!(0), "名单外的坏分区不该让重试失败：{summary}");
+        assert_eq!(
+            rows[0]["scope"],
+            json!("trae-cn"),
+            "只应重跑 trae-cn：{summary}"
+        );
+        assert_eq!(
+            summary["failed"],
+            json!(0),
+            "名单外的坏分区不该让重试失败：{summary}"
+        );
         // wb-cn 未被本次重试触碰（名单外 ⇒ 整段跳过）。
         assert!(
             !rows.iter().any(|row| row["scope"] == "wb-cn"),
@@ -1277,13 +1351,21 @@ mod tests {
         let text = backup_text_with_account("u1", "甲", Some("tok"));
         let preview = preview_import_backup(&text, ConflictPolicy::KeepLocal).unwrap();
         assert_eq!(preview["formatVersion"], json!(SUPPORTED_FORMAT_VERSION));
-        assert_eq!(preview["needRelogin"], json!(0), "带凭据 ⇒ 无需重新登录：{preview}");
+        assert_eq!(
+            preview["needRelogin"],
+            json!(0),
+            "带凭据 ⇒ 无需重新登录：{preview}"
+        );
 
         assert!(
-            crate::modules::account::load_accounts_for(crate::modules::region::Region::Cn).is_empty(),
+            crate::modules::account::load_accounts_for(crate::modules::region::Region::Cn)
+                .is_empty(),
             "预览不得写盘"
         );
-        assert!(config::managed_backup_files().is_empty(), "预览不得产生备份文件");
+        assert!(
+            config::managed_backup_files().is_empty(),
+            "预览不得产生备份文件"
+        );
 
         drop(_guard);
         let _ = std::fs::remove_dir_all(&home);
@@ -1309,7 +1391,11 @@ mod tests {
 
         let preview = preview_import_backup(&text, ConflictPolicy::KeepLocal).unwrap();
         assert_eq!(preview["includesCredentials"], json!(false));
-        assert_eq!(preview["needRelogin"], json!(2), "两个无凭据账号需重新登录：{preview}");
+        assert_eq!(
+            preview["needRelogin"],
+            json!(2),
+            "两个无凭据账号需重新登录：{preview}"
+        );
 
         drop(_guard);
         let _ = std::fs::remove_dir_all(&home);
@@ -1324,8 +1410,13 @@ mod tests {
         let _guard = crate::modules::config::HomeOverrideGuard::set(&home);
 
         let text = backup_text_with_account("u1", "甲", Some("tok"));
-        let summary =
-            import_backup(&text, ConflictPolicy::KeepLocal, &BackupSelection::default(), &[]).unwrap();
+        let summary = import_backup(
+            &text,
+            ConflictPolicy::KeepLocal,
+            &BackupSelection::default(),
+            &[],
+        )
+        .unwrap();
         let snapshot = summary["snapshotPath"].as_str().expect("必须返回快照路径");
         let path = std::path::Path::new(snapshot);
         assert!(path.is_file(), "导入前必须产生快照：{snapshot}");
@@ -1350,11 +1441,20 @@ mod tests {
         let _guard = crate::modules::config::HomeOverrideGuard::set(&home);
 
         let text = backup_text_with_account("u1", "甲", None);
-        let summary =
-            import_backup(&text, ConflictPolicy::KeepLocal, &BackupSelection::default(), &[]).unwrap();
+        let summary = import_backup(
+            &text,
+            ConflictPolicy::KeepLocal,
+            &BackupSelection::default(),
+            &[],
+        )
+        .unwrap();
         let rows = summary["perScope"].as_array().unwrap();
         let wb_cn = rows.iter().find(|row| row["scope"] == "wb-cn").unwrap();
-        assert_eq!(wb_cn["added"], json!(1), "无凭据账号必须能导入（Allow）：{summary}");
+        assert_eq!(
+            wb_cn["added"],
+            json!(1),
+            "无凭据账号必须能导入（Allow）：{summary}"
+        );
         assert_eq!(
             crate::modules::account::load_accounts_for(crate::modules::region::Region::Cn).len(),
             1
@@ -1370,18 +1470,28 @@ mod tests {
         let home = isolated_home("overwrite");
         let _guard = crate::modules::config::HomeOverrideGuard::set(&home);
 
-        let local = json!([{ "id": "local", "uid": "u1", "nickname": "本地", "access_token": "t" }]);
-        crate::modules::account::save_accounts_for(crate::modules::region::Region::Cn, &[local[0].clone()])
-            .expect("seed");
+        let local =
+            json!([{ "id": "local", "uid": "u1", "nickname": "本地", "access_token": "t" }]);
+        crate::modules::account::save_accounts_for(
+            crate::modules::region::Region::Cn,
+            &[local[0].clone()],
+        )
+        .expect("seed");
 
         let text = backup_text_with_account("u1", "导入", Some("tok-new"));
-        let summary =
-            import_backup(&text, ConflictPolicy::Overwrite, &BackupSelection::default(), &[]).unwrap();
+        let summary = import_backup(
+            &text,
+            ConflictPolicy::Overwrite,
+            &BackupSelection::default(),
+            &[],
+        )
+        .unwrap();
         let rows = summary["perScope"].as_array().unwrap();
         let wb_cn = rows.iter().find(|row| row["scope"] == "wb-cn").unwrap();
         assert_eq!(wb_cn["overwritten"], json!(1), "覆盖策略应覆盖：{summary}");
 
-        let accounts = crate::modules::account::load_accounts_for(crate::modules::region::Region::Cn);
+        let accounts =
+            crate::modules::account::load_accounts_for(crate::modules::region::Region::Cn);
         assert_eq!(accounts.len(), 1, "覆盖不得增行");
         assert_eq!(accounts[0]["nickname"], json!("导入"));
 
@@ -1414,7 +1524,11 @@ mod tests {
         let dir = config::backup_dir();
         std::fs::create_dir_all(&dir).expect("create backup dir");
         for index in 0..10 {
-            let name = format!("{}2026-01-{:02}.json", config::AUTO_BACKUP_PREFIX, index + 1);
+            let name = format!(
+                "{}2026-01-{:02}.json",
+                config::AUTO_BACKUP_PREFIX,
+                index + 1
+            );
             std::fs::write(dir.join(name), "{}").expect("seed managed backup");
         }
         // 手动导出（非受管前缀）—— 不得被清理。
@@ -1423,7 +1537,10 @@ mod tests {
         let removed = config::prune_managed_backups(config::AUTO_BACKUP_KEEP);
         assert_eq!(removed, 3, "10 份保留 7 份应删 3");
         assert_eq!(config::managed_backup_files().len(), 7, "保留集应剩 7 份");
-        assert!(dir.join("manual-export.json").exists(), "手动导出不进保留集");
+        assert!(
+            dir.join("manual-export.json").exists(),
+            "手动导出不进保留集"
+        );
 
         drop(_guard);
         let _ = std::fs::remove_dir_all(&home);
@@ -1476,7 +1593,10 @@ mod tests {
 
         // 关掉 ⇒ 标志变 false（宿主据此不再产生新备份）。
         config::save_auto_backup_config(&json!({ "enabled": false })).expect("保存配置");
-        assert!(!config::is_auto_backup_enabled(), "关闭后必须为 false（用户能关）");
+        assert!(
+            !config::is_auto_backup_enabled(),
+            "关闭后必须为 false（用户能关）"
+        );
 
         // 已产生的备份在关闭后**保留**（不追溯删除）。
         let produced = auto_backup().expect("自动备份应成功");
@@ -1510,15 +1630,24 @@ mod tests {
             "损坏文件的预览必须报错"
         );
         assert!(
-            import_backup(broken, ConflictPolicy::KeepLocal, &BackupSelection::default(), &[])
-                .is_err(),
+            import_backup(
+                broken,
+                ConflictPolicy::KeepLocal,
+                &BackupSelection::default(),
+                &[]
+            )
+            .is_err(),
             "损坏文件的导入必须报错"
         );
         assert!(
-            crate::modules::account::load_accounts_for(crate::modules::region::Region::Cn).is_empty(),
+            crate::modules::account::load_accounts_for(crate::modules::region::Region::Cn)
+                .is_empty(),
             "损坏文件不得改动账号库"
         );
-        assert!(config::managed_backup_files().is_empty(), "损坏文件不得产生快照");
+        assert!(
+            config::managed_backup_files().is_empty(),
+            "损坏文件不得产生快照"
+        );
 
         drop(_guard);
         let _ = std::fs::remove_dir_all(&home);

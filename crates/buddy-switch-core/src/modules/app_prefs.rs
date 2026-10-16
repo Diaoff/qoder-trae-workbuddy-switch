@@ -114,13 +114,21 @@ mod tests {
     #[test]
     fn 默认值只含已知键() {
         let d = default_app_prefs();
-        assert_eq!(d["close_to_tray"], json!(true), "老行为，必须与升级前逐字一致");
+        assert_eq!(
+            d["close_to_tray"],
+            json!(true),
+            "老行为，必须与升级前逐字一致"
+        );
         assert_eq!(
             d["watch_agent_sessions"],
             json!(false),
             "要写别的客户端配置的动作，必须默认关"
         );
-        assert_eq!(d.as_object().unwrap().len(), 2, "每加一个键都要同步这条断言");
+        assert_eq!(
+            d.as_object().unwrap().len(),
+            2,
+            "每加一个键都要同步这条断言"
+        );
     }
 
     #[test]

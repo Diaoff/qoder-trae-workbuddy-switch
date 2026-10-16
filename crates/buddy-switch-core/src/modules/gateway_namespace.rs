@@ -341,10 +341,7 @@ mod tests {
             "默认启用集应恰好是派生层那 6 条（新增平台后自动多出 2 条）"
         );
         assert_eq!(
-            all_specs()
-                .iter()
-                .map(|spec| spec.id)
-                .collect::<Vec<_>>(),
+            all_specs().iter().map(|spec| spec.id).collect::<Vec<_>>(),
             vec![
                 "wb-cn",
                 "wb-global",
@@ -357,7 +354,12 @@ mod tests {
         );
         // ★ 退役的四条 id 必须**不在册** —— 留着会让老配置里的勾选「静默复活」
         //   一个指向已卸载客户端的入口。
-        for retired in ["traework-cn", "traework-global", "traecode-cn", "traecode-global"] {
+        for retired in [
+            "traework-cn",
+            "traework-global",
+            "traecode-cn",
+            "traecode-global",
+        ] {
             assert!(parse(retired).is_none(), "退役命名空间 {retired} 仍在册");
         }
     }
@@ -375,7 +377,11 @@ mod tests {
             ("qoder-global", QoderRegion::Global),
         ] {
             let spec = parse(id).unwrap_or_else(|| panic!("{id} 应在册"));
-            assert_eq!(relay_target_of(spec), RelayTarget::Qoder(region), "{id} 中继目标不对");
+            assert_eq!(
+                relay_target_of(spec),
+                RelayTarget::Qoder(region),
+                "{id} 中继目标不对"
+            );
             assert_eq!(spec.product, Product::Qoder);
             assert!(spec.default_on, "派生层必须默认启用");
             // Qoder 没有 Trae 的程序位轴 / 变体 / WB 区域。
@@ -393,7 +399,10 @@ mod tests {
     fn scope_all_has_a_namespace() {
         for scope in Scope::all() {
             let spec = parse(scope.as_str()).unwrap_or_else(|| {
-                panic!("作用域 {} 没有对应命名空间 —— 派生层应由 Scope::all() 生成", scope.as_str())
+                panic!(
+                    "作用域 {} 没有对应命名空间 —— 派生层应由 Scope::all() 生成",
+                    scope.as_str()
+                )
             });
             assert_eq!(spec.target, NamespaceTarget::Scope(scope));
             assert_eq!(spec.product, scope.product());
@@ -408,11 +417,24 @@ mod tests {
     /// 而合并版客户端的清单里没有那个分组 ⇒ 「列得出来、调不动」（issue #4 形态）。
     #[test]
     fn trae_namespaces_target_the_merged_program() {
-        assert_eq!(MAIN_TRAE_PROGRAM, TraeProgram::Trae, "Trae 主程序位变了要复核 function 与清单来源");
-        assert_eq!(program_of(parse("trae-cn").unwrap()), Some(TraeProgram::Trae));
-        assert_eq!(program_of(parse("trae-global").unwrap()), Some(TraeProgram::Trae));
+        assert_eq!(
+            MAIN_TRAE_PROGRAM,
+            TraeProgram::Trae,
+            "Trae 主程序位变了要复核 function 与清单来源"
+        );
+        assert_eq!(
+            program_of(parse("trae-cn").unwrap()),
+            Some(TraeProgram::Trae)
+        );
+        assert_eq!(
+            program_of(parse("trae-global").unwrap()),
+            Some(TraeProgram::Trae)
+        );
         // 派生层的变体必须经 variant_for_program 得到合并版那两个
-        assert_eq!(trae_variant_of(parse("trae-cn").unwrap()), Some(TraeVariant::TraeMerged));
+        assert_eq!(
+            trae_variant_of(parse("trae-cn").unwrap()),
+            Some(TraeVariant::TraeMerged)
+        );
         assert_eq!(
             trae_variant_of(parse("trae-global").unwrap()),
             Some(TraeVariant::GlobalTraeMerged)
@@ -444,7 +466,11 @@ mod tests {
         for (id, region) in [("wb-cn", Region::Cn), ("wb-global", Region::Global)] {
             let spec = parse(id).unwrap();
             assert_eq!(wb_region_of(spec), Some(region));
-            assert_eq!(program_of(spec), None, "WorkBuddy 只有一个程序位，不该出这一维");
+            assert_eq!(
+                program_of(spec),
+                None,
+                "WorkBuddy 只有一个程序位，不该出这一维"
+            );
             assert_eq!(trae_variant_of(spec), None);
         }
     }
@@ -480,7 +506,10 @@ mod tests {
             "trae_merged",
             "global_trae_merged",
         ] {
-            assert!(parse(variant).is_none(), "变体标识 {variant} 不应被当命名空间");
+            assert!(
+                parse(variant).is_none(),
+                "变体标识 {variant} 不应被当命名空间"
+            );
         }
 
         // ② 程序位解析器：**会**接受，且**丢掉区域**（它是「不带区域的程序位」）—— 危害留证
@@ -524,7 +553,11 @@ mod tests {
                 variant.as_str()
             );
         }
-        for program in [TraeProgram::TraeWork, TraeProgram::TraeCode, TraeProgram::Trae] {
+        for program in [
+            TraeProgram::TraeWork,
+            TraeProgram::TraeCode,
+            TraeProgram::Trae,
+        ] {
             assert!(
                 !namespaces.contains(program.as_str()),
                 "命名空间与程序位标识同名字面量：{}",
@@ -602,19 +635,43 @@ mod tests {
     fn split_takes_only_the_first_colon_and_keeps_unknown_heads() {
         assert_eq!(
             split("wb-cn:deepseek-v4.1-flash"),
-            Split { spec: parse("wb-cn"), bare: "deepseek-v4.1-flash" }
+            Split {
+                spec: parse("wb-cn"),
+                bare: "deepseek-v4.1-flash"
+            }
         );
         // 后段里还有冒号：原样保留在模型名里
         assert_eq!(
             split("trae-cn:vendor:model"),
-            Split { spec: parse("trae-cn"), bare: "vendor:model" }
+            Split {
+                spec: parse("trae-cn"),
+                bare: "vendor:model"
+            }
         );
         // 前段不像命名空间 ⇒ 整串保留（含后面的冒号）
-        for model in ["vendor:model", "gpt-5.6-sol", "deepseek-v4.1-flash", "vendor:cn:model"] {
-            assert_eq!(split(model), Split { spec: None, bare: model }, "{model} 应原样保留");
+        for model in [
+            "vendor:model",
+            "gpt-5.6-sol",
+            "deepseek-v4.1-flash",
+            "vendor:cn:model",
+        ] {
+            assert_eq!(
+                split(model),
+                Split {
+                    spec: None,
+                    bare: model
+                },
+                "{model} 应原样保留"
+            );
         }
         // 空模型名交给调用方拒绝（本层只如实切分）
-        assert_eq!(split("wb-cn:"), Split { spec: parse("wb-cn"), bare: "" });
+        assert_eq!(
+            split("wb-cn:"),
+            Split {
+                spec: parse("wb-cn"),
+                bare: ""
+            }
+        );
     }
 
     /// ★ 扩展层 id 不会被派生层「吃掉」：`traework-cn` 必须整段命中扩展项，而不是被切掉前缀。
@@ -624,13 +681,19 @@ mod tests {
         let hit = split("trae-cn:glm-5.3");
         assert_eq!(hit.spec.map(|spec| spec.id), Some("trae-cn"));
         assert_eq!(hit.bare, "glm-5.3");
-        assert!(split("trae-cn-x:glm-5.3").spec.is_none(), "前缀匹配仍必须拒绝");
+        assert!(
+            split("trae-cn-x:glm-5.3").spec.is_none(),
+            "前缀匹配仍必须拒绝"
+        );
     }
 
     /// `relay_target_of`：WB → 区域，Trae → 变体。
     #[test]
     fn relay_target_covers_both_products() {
-        assert_eq!(relay_target_of(parse("wb-cn").unwrap()), RelayTarget::Wb(Region::Cn));
+        assert_eq!(
+            relay_target_of(parse("wb-cn").unwrap()),
+            RelayTarget::Wb(Region::Cn)
+        );
         assert_eq!(
             relay_target_of(parse("wb-global").unwrap()),
             RelayTarget::Wb(Region::Global)

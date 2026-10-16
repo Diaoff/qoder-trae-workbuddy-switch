@@ -214,21 +214,21 @@ pub fn decode_wire(raw: &str) -> DecodedWire {
         return plain(raw);
     }
 
-    let params = match serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(params_json)
-    {
-        Ok(map) => map
-            .into_iter()
-            .map(|(k, v)| {
-                let value = match v {
-                    serde_json::Value::String(s) => s,
-                    other => other.to_string(),
-                };
-                (k, value)
-            })
-            .collect(),
-        // 参数坏了不影响文本与码：错误信息比参数重要。
-        Err(_) => Vec::new(),
-    };
+    let params =
+        match serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(params_json) {
+            Ok(map) => map
+                .into_iter()
+                .map(|(k, v)| {
+                    let value = match v {
+                        serde_json::Value::String(s) => s,
+                        other => other.to_string(),
+                    };
+                    (k, value)
+                })
+                .collect(),
+            // 参数坏了不影响文本与码：错误信息比参数重要。
+            Err(_) => Vec::new(),
+        };
 
     match ErrorCode::parse(code_text) {
         Some(code) => DecodedWire {

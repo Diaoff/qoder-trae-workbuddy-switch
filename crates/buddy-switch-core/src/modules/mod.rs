@@ -38,13 +38,13 @@ pub mod connector;
 // Q1 · 诊断包导出（只读、复用备份的凭据剥离键集；不含会话正文与路径）。
 pub mod diagnostics;
 // E1 · 代理 KPI 台账的只读视图（core 只读 gateway 写的台账，不引入反向依赖）。
-pub mod proxy_kpi_view;
 pub mod credit_usage;
 pub mod credits;
 pub mod cst;
 pub mod error_code;
 pub mod export_import;
 pub mod identity;
+pub mod proxy_kpi_view;
 // JetBrains IDE（IDEA / PyCharm）内 CodeBuddy 插件账号切换（secret-storage.xml）。
 pub mod jetbrains;
 pub mod memory;
@@ -84,7 +84,7 @@ pub mod travel;
 pub mod update;
 pub mod upstream;
 // VS Code 内 CodeBuddy 扩展（tencent-cloud.coding-copilot）账号切换。
-pub mod vscode_ext;
 pub mod vscode_cn_inject;
+pub mod vscode_ext;
 /// VS Code 插件 / CodeBuddy IDE 的**会话仓**（P14 S4a · 只读半）。
 pub mod vscode_session;

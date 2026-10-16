@@ -85,7 +85,10 @@ fn data_sources() -> Value {
     );
     sources.insert(
         "workbuddyGlobalProjects".to_string(),
-        probe("WorkBuddy 国际版会话目录", home.join(".workbuddy-ai/projects")),
+        probe(
+            "WorkBuddy 国际版会话目录",
+            home.join(".workbuddy-ai/projects"),
+        ),
     );
     sources.insert(
         "workbuddyCnAuth".to_string(),

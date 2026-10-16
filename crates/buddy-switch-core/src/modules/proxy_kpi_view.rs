@@ -85,7 +85,8 @@ mod tests {
         let view = kpi_view();
         assert_eq!(view["known"], json!(false), "无台账必须说「不知道」");
         assert_eq!(
-            view["todayRequests"], json!(null),
+            view["todayRequests"],
+            json!(null),
             "未知时必须是 null（前端显示「—」），不得回落 0"
         );
         assert_eq!(view["switches"], json!(null));
@@ -102,15 +103,12 @@ mod tests {
     fn stale_day_is_unknown_not_zero() {
         let path = stats_file();
         let backup = std::fs::read_to_string(&path).ok();
-        std::fs::write(
-            &path,
-            r#"{"2000-01-01":{"requests":999,"switches":9}}"#,
-        )
-        .unwrap();
+        std::fs::write(&path, r#"{"2000-01-01":{"requests":999,"switches":9}}"#).unwrap();
 
         let view = kpi_view();
         assert_eq!(
-            view["known"], json!(false),
+            view["known"],
+            json!(false),
             "只有旧日期的台账 ⇒ 今天「不知道」，不得把昨天的数当今天"
         );
 

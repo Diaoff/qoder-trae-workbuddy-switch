@@ -186,7 +186,8 @@ mod tests {
 
     #[test]
     fn unsupported_serializes_with_camel_case_keys() {
-        let value = Unsupported::new("open_workbuddy_data_dir", "打开目录", "Windows", "原因").to_json();
+        let value =
+            Unsupported::new("open_workbuddy_data_dir", "打开目录", "Windows", "原因").to_json();
         assert_eq!(value["capability"], json!("open_workbuddy_data_dir"));
         assert_eq!(value["supportedOn"], json!("Windows"));
         assert_eq!(value["reason"], json!("原因"));
@@ -220,7 +221,10 @@ mod tests {
             "sessionCopy",
         ];
         let got: Vec<&str> = Capability::all().iter().map(|c| c.as_str()).collect();
-        assert_eq!(got, expected, "Capability 取值必须与前端 Capability 联合类型逐字对齐");
+        assert_eq!(
+            got, expected,
+            "Capability 取值必须与前端 Capability 联合类型逐字对齐"
+        );
 
         // 互不重复（重复会让「按名解析」产生歧义）。
         let mut sorted = got.clone();

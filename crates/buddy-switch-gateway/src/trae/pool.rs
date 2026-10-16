@@ -281,7 +281,9 @@ impl TraePool {
                         .map(|entry| entry.error_type == "SessionDead")
                         .unwrap_or(false),
                     cooldown_until: cooldown.map(|entry| entry.until).unwrap_or(0),
-                    cooldown_reason: cooldown.map(|entry| entry.reason.clone()).unwrap_or_default(),
+                    cooldown_reason: cooldown
+                        .map(|entry| entry.reason.clone())
+                        .unwrap_or_default(),
                     cool_kind: cooldown.and_then(|entry| match entry.error_type.as_str() {
                         // 会话失效已由 `disabled` 表达为终态，再标冷却会重复计数。
                         "SessionDead" => None,
@@ -513,7 +515,10 @@ impl TraePool {
                     .credits
                     .map(|value| format!("{value:.0}"))
                     .unwrap_or_else(|| "未知".to_string());
-                let tail = entry.uid.get(entry.uid.len().saturating_sub(8)..).unwrap_or("");
+                let tail = entry
+                    .uid
+                    .get(entry.uid.len().saturating_sub(8)..)
+                    .unwrap_or("");
                 format!("{}({tail}:{reason},积分={credits})", entry.name)
             })
             .collect()
@@ -797,7 +802,10 @@ mod tests {
         assert_eq!(classify_solo(599, ""), TraeErrKind::Server);
         assert_eq!(classify_solo(600, ""), TraeErrKind::Business);
         // 业务码即使落在 4xx/5xx 之外的高位，也不能被吞成 Server。
-        assert_eq!(classify_solo(1005, "plan limit exceeded"), TraeErrKind::PlanLimit);
+        assert_eq!(
+            classify_solo(1005, "plan limit exceeded"),
+            TraeErrKind::PlanLimit
+        );
     }
 
     #[test]
@@ -855,7 +863,9 @@ mod tests {
         // `cooling` 是唯一「有冷却时间且未被试过」的账号；`zero` 零积分且无冷却时间
         // （`cool_expiry_ms() == 0`），不参与兜底。
         tried.insert("later".to_string());
-        let fallback = pool.pick(now, &tried, None).expect("全冷却兜底应挑出最早解冻者");
+        let fallback = pool
+            .pick(now, &tried, None)
+            .expect("全冷却兜底应挑出最早解冻者");
         assert_eq!(fallback.uid, "cooling");
     }
 
@@ -884,10 +894,7 @@ mod tests {
         let mut pool = pool_with(vec![far, soon]);
 
         let picked = pool.pick(now, &HashSet::new(), None).expect("应选出账号");
-        assert_eq!(
-            picked.uid, "soon",
-            "「先用掉快过期的额度」必须压过积分多寡"
-        );
+        assert_eq!(picked.uid, "soon", "「先用掉快过期的额度」必须压过积分多寡");
     }
 
     /// 指定账号可用时必须被优先选中 —— 即使它的积分远少于别人。
@@ -920,22 +927,30 @@ mod tests {
 
         // 冷却中的偏好 → 回落
         assert_eq!(
-            pool.pick(now, &HashSet::new(), Some("cooling")).unwrap().uid,
+            pool.pick(now, &HashSet::new(), Some("cooling"))
+                .unwrap()
+                .uid,
             "healthy"
         );
         // 禁用的偏好 → 回落
         assert_eq!(
-            pool.pick(now, &HashSet::new(), Some("disabled")).unwrap().uid,
+            pool.pick(now, &HashSet::new(), Some("disabled"))
+                .unwrap()
+                .uid,
             "healthy"
         );
         // 本轮已试过的偏好 → 回落（换号重试不得钉死在同一个账号上）
         let mut tried = HashSet::new();
         tried.insert("healthy".to_string());
-        let picked = pool.pick(now, &tried, Some("healthy")).expect("应回落到其它账号");
+        let picked = pool
+            .pick(now, &tried, Some("healthy"))
+            .expect("应回落到其它账号");
         assert_ne!(picked.uid, "healthy", "已试过的偏好必须被跳过");
         // 不存在的 uid → 回落
         assert_eq!(
-            pool.pick(now, &HashSet::new(), Some("no-such-uid")).unwrap().uid,
+            pool.pick(now, &HashSet::new(), Some("no-such-uid"))
+                .unwrap()
+                .uid,
             "healthy"
         );
     }
@@ -975,7 +990,10 @@ mod tests {
         assert!(one_hour > one_day, "{one_hour} 应大于 {one_day}");
         assert!(one_day > one_year, "{one_day} 应大于 {one_year}");
         for value in [one_minute, one_hour, one_day, one_year] {
-            assert!((0.0..=1.0).contains(&value), "紧迫度必须落在 [0,1]：{value}");
+            assert!(
+                (0.0..=1.0).contains(&value),
+                "紧迫度必须落在 [0,1]：{value}"
+            );
         }
         // 无到期时间 / 已过期 → 0
         assert_eq!(entry("u", Some(10.0), None).expiry_urgency(now_ms), 0.0);
@@ -1047,10 +1065,7 @@ mod tests {
         expired.cooldown_reason = "429 rate limit".to_string();
         let list = pool_with(vec![expired]).status_list(now);
         assert_eq!(list[0]["status"], "available");
-        assert!(
-            list[0]["cooldownUntil"].is_null(),
-            "到期后不得再给解冻时刻"
-        );
+        assert!(list[0]["cooldownUntil"].is_null(), "到期后不得再给解冻时刻");
         assert!(
             list[0]["cooldownReason"].is_null(),
             "到期后不得复述陈旧原因"
@@ -1063,8 +1078,7 @@ mod tests {
         let list = pool_with(vec![dead]).status_list(now);
         assert_eq!(list[0]["status"], "disabled");
         assert_eq!(
-            list[0]["cooldownReason"],
-            "会话失效（需重新登录）",
+            list[0]["cooldownReason"], "会话失效（需重新登录）",
             "禁用原因不得被门控藏掉"
         );
         assert!(

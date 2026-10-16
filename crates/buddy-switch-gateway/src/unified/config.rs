@@ -107,7 +107,10 @@ impl UnifiedGatewayConfig {
                 return config;
             }
             // 损坏时**明确说一句**：否则用户改了文件却不生效，只能猜。
-            eprintln!("[unified-gateway] 配置解析失败，已回落默认值：{}", file.display());
+            eprintln!(
+                "[unified-gateway] 配置解析失败，已回落默认值：{}",
+                file.display()
+            );
         }
         Self::default()
     }
@@ -206,7 +209,12 @@ mod tests {
     #[test]
     fn unified_config_serializes_with_snake_case_keys() {
         let value = serde_json::to_value(UnifiedGatewayConfig::default()).unwrap();
-        let mut keys: Vec<&str> = value.as_object().unwrap().keys().map(|k| k.as_str()).collect();
+        let mut keys: Vec<&str> = value
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(|k| k.as_str())
+            .collect();
         keys.sort_unstable();
         let mut expected = vec![
             "allow_non_loopback",
@@ -248,8 +256,7 @@ mod tests {
     /// 缺失字段回落默认值（老配置文件 / 手工精简过的文件都要能读）。
     #[test]
     fn missing_fields_fall_back_to_defaults() {
-        let config: UnifiedGatewayConfig =
-            serde_json::from_str("{}").expect("空对象必须能解析");
+        let config: UnifiedGatewayConfig = serde_json::from_str("{}").expect("空对象必须能解析");
         let default = UnifiedGatewayConfig::default();
         assert_eq!(config.enabled, default.enabled);
         assert_eq!(config.port, DEFAULT_UNIFIED_PORT);
@@ -269,7 +276,11 @@ mod tests {
         let ids: Vec<&str> = config.namespaces.iter().map(|s| s.as_str()).collect();
         let expected: Vec<&str> = gateway_namespace::default_specs().map(|s| s.id).collect();
         assert_eq!(ids, expected);
-        assert_eq!(ids.len(), 6, "派生层 = 3 平台 × 2 区域（Qoder 于 2026-10-15 加入）");
+        assert_eq!(
+            ids.len(),
+            6,
+            "派生层 = 3 平台 × 2 区域（Qoder 于 2026-10-15 加入）"
+        );
         assert!(
             ids.contains(&"qoder-cn") && ids.contains(&"qoder-global"),
             "Qoder 两条必须在默认启用集里"
@@ -310,7 +321,10 @@ mod tests {
         // 默认命名空间同理
         let mut config = UnifiedGatewayConfig::default();
         config.default_namespace = Some("trae".into()); // 变体标识，不是命名空间
-        assert!(config.validate().is_err(), "变体标识不该被接受为默认命名空间");
+        assert!(
+            config.validate().is_err(),
+            "变体标识不该被接受为默认命名空间"
+        );
     }
 
     /// `is_enabled` 只看配置本身（不做空列表回落 —— 那由 `enabled_namespaces` 负责）。

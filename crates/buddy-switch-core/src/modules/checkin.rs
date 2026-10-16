@@ -202,8 +202,12 @@ pub async fn perform_checkin_for(region: Region, account: &Value) -> Value {
     if region == Region::Global {
         return json!({"ok": false, "error": UNSUPPORTED_MESSAGE});
     }
-    let resp =
-        checkin_request_for(region, &format!("{CHECKIN_API_PREFIX}/daily-checkin"), account).await;
+    let resp = checkin_request_for(
+        region,
+        &format!("{CHECKIN_API_PREFIX}/daily-checkin"),
+        account,
+    )
+    .await;
     let code = resp.get("code").and_then(|v| v.as_i64()).unwrap_or(-1);
     if code == 0 || code == 200 {
         return json!({"ok": true, "raw": resp.get("data").cloned().unwrap_or_else(|| json!({}))});
@@ -379,7 +383,11 @@ pub fn all_accounts_checked_in_today() -> bool {
 ///
 /// Empty account list is false so the tray keeps offering 一键签到.
 pub fn all_accounts_checked_in_today_for(region: Region) -> bool {
-    accounts_checked_in_today(&load_accounts_for(region), &load_checkin_logs(), &date_str(None))
+    accounts_checked_in_today(
+        &load_accounts_for(region),
+        &load_checkin_logs(),
+        &date_str(None),
+    )
 }
 
 pub fn accounts_checked_in_today(accounts: &[Value], logs: &[Value], today: &str) -> bool {
@@ -616,7 +624,8 @@ mod tests {
             json!("unsupported")
         );
         assert_eq!(
-            run_checkin_cycle_for(Region::Global, CheckinCycleMode::PeriodicRecovery).await["status"],
+            run_checkin_cycle_for(Region::Global, CheckinCycleMode::PeriodicRecovery).await
+                ["status"],
             json!("unsupported")
         );
         assert_eq!(

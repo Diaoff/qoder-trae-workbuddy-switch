@@ -55,8 +55,8 @@ use buddy_switch_core::modules::trae::{paths, TRAE_DEFAULT_API_PORT};
 use crate::logging::RequestLog;
 use crate::GatewayHandle;
 
-use pool::{TraePool};
 use crate::pool::PoolSummary;
+use pool::TraePool;
 
 // ---------------------------------------------------------------------------
 // 上游常量
@@ -383,9 +383,7 @@ impl TraeGatewayState {
             disabled: crate::disabled_models::shared(),
             sticky: Arc::new(Mutex::new(StickyTable::new(config.sticky_ttl_ms))),
             log,
-            key_store: Arc::new(apikey::TraeApiKeyStore::new(
-                paths::api_gateway_keys_file(),
-            )),
+            key_store: Arc::new(apikey::TraeApiKeyStore::new(paths::api_gateway_keys_file())),
             started_at: core_config::now_ms(),
             total_requests: Arc::new(AtomicU64::new(0)),
             last_error: Arc::new(RwLock::new(None)),
@@ -418,7 +416,10 @@ impl TraeGatewayState {
     /// 让「粘性会话数」看起来非 0 却毫无作用，见 [`crate::sticky::sticky_key`]）。
     pub async fn bind_sticky(&self, key: Option<&str>, uid: &str) {
         if let Some(key) = key {
-            self.sticky.lock().await.bind(key, uid, core_config::now_ms());
+            self.sticky
+                .lock()
+                .await
+                .bind(key, uid, core_config::now_ms());
         }
     }
 
@@ -629,13 +630,11 @@ pub async fn status_view(
 
     let (summary, accounts, diagnose) = {
         let mut pools = state.pools.lock().await;
-        let pool = pools.entry(variant).or_insert_with(|| TraePool::for_variant(variant));
+        let pool = pools
+            .entry(variant)
+            .or_insert_with(|| TraePool::for_variant(variant));
         pool.sync_for(variant);
-        (
-            pool.summary(now),
-            pool.status_list(now),
-            pool.diagnose(now),
-        )
+        (pool.summary(now), pool.status_list(now), pool.diagnose(now))
     };
     view.pool = summary;
 
@@ -685,9 +684,9 @@ pub async fn spawn_listener(state: TraeGatewayState) -> anyhow::Result<GatewayHa
     let bind_addr = config.bind_addr.clone();
     let port = config.port;
 
-    let ip: IpAddr = bind_addr
-        .parse()
-        .map_err(|_| anyhow::anyhow!("Trae 网关监听地址无效：{bind_addr}（应为 IPv4/IPv6 字面量）"))?;
+    let ip: IpAddr = bind_addr.parse().map_err(|_| {
+        anyhow::anyhow!("Trae 网关监听地址无效：{bind_addr}（应为 IPv4/IPv6 字面量）")
+    })?;
 
     if !ip.is_loopback() && !config.allow_non_loopback {
         return Err(anyhow::anyhow!(
@@ -698,7 +697,9 @@ pub async fn spawn_listener(state: TraeGatewayState) -> anyhow::Result<GatewayHa
 
     let addr = SocketAddr::new(ip, port);
     let listener = TcpListener::bind(addr).await.map_err(|error| {
-        anyhow::anyhow!("无法监听 {addr}：端口可能被占用或不可用（{error}）。请在设置中改用其他端口。")
+        anyhow::anyhow!(
+            "无法监听 {addr}：端口可能被占用或不可用（{error}）。请在设置中改用其他端口。"
+        )
     })?;
     let local = listener.local_addr().unwrap_or(addr);
 
@@ -796,7 +797,10 @@ mod tests {
             ..Default::default()
         };
         legacy.migrate_legacy_default_model();
-        assert_eq!(legacy.default_model, TRAE_DEFAULT_MODEL, "恰好等于旧值 ⇒ 迁移");
+        assert_eq!(
+            legacy.default_model, TRAE_DEFAULT_MODEL,
+            "恰好等于旧值 ⇒ 迁移"
+        );
 
         // 其余值（用户手改过的、或只差一个字符的）**一律不动**。
         for keep in ["glm-5.3", "deepseek-v4-flash-x", "DeepSeek-V4-Flash", ""] {
@@ -805,7 +809,10 @@ mod tests {
                 ..Default::default()
             };
             config.migrate_legacy_default_model();
-            assert_eq!(config.default_model, keep, "只有恰好等于旧值才迁移：{keep:?}");
+            assert_eq!(
+                config.default_model, keep,
+                "只有恰好等于旧值才迁移：{keep:?}"
+            );
         }
     }
     use super::*;
@@ -850,7 +857,10 @@ mod tests {
         assert_eq!(config.port, TRAE_DEFAULT_API_PORT);
         // 端口必须与 WorkBuddy 网关（57891）错开，否则同时启用会互相抢端口。
         assert_ne!(config.port, 57891);
-        assert_eq!(config.base_url(), format!("http://127.0.0.1:{TRAE_DEFAULT_API_PORT}"));
+        assert_eq!(
+            config.base_url(),
+            format!("http://127.0.0.1:{TRAE_DEFAULT_API_PORT}")
+        );
         // 会话粘性默认 30 分钟，与 WorkBuddy 网关保持一致（同一管理面不该有两种默认）。
         assert_eq!(config.sticky_ttl_ms, 30 * 60 * 1000);
         assert!(config.preferred_uid.is_empty(), "默认不指定账号");
@@ -902,7 +912,9 @@ mod tests {
         let key = generate_api_key();
         assert!(key.starts_with("sk-trae-"));
         assert_eq!(key.len(), "sk-trae-".len() + 32);
-        assert!(key["sk-trae-".len()..].chars().all(|c| c.is_ascii_hexdigit()));
+        assert!(key["sk-trae-".len()..]
+            .chars()
+            .all(|c| c.is_ascii_hexdigit()));
         assert_ne!(key, generate_api_key(), "每次生成必须不同");
     }
 

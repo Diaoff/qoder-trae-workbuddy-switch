@@ -196,7 +196,13 @@ mod tests {
                 bare_model: String::new(),
             }
         );
-        assert_eq!(split_model_prefix(""), ModelRoute { prefix_region: None, bare_model: String::new() });
+        assert_eq!(
+            split_model_prefix(""),
+            ModelRoute {
+                prefix_region: None,
+                bare_model: String::new()
+            }
+        );
         assert_eq!(
             split_model_prefix(":x"),
             ModelRoute {
@@ -242,7 +248,10 @@ mod tests {
     fn no_prefix_keeps_key_region() {
         let route = split_model_prefix("glm-5.2");
         assert_eq!(decide(Region::Cn, false, &route), PrefixDecision::NoPrefix);
-        assert_eq!(decide(Region::Global, true, &route), PrefixDecision::NoPrefix);
+        assert_eq!(
+            decide(Region::Global, true, &route),
+            PrefixDecision::NoPrefix
+        );
     }
 
     #[test]
@@ -268,7 +277,10 @@ mod tests {
     fn rejection_message_names_both_regions_and_the_flag() {
         let message = rejection_message(Region::Global, Region::Cn);
         assert!(message.contains("global:"), "应回显被请求的前缀: {message}");
-        assert!(message.contains("allow_model_region_prefix"), "应指出开关名: {message}");
+        assert!(
+            message.contains("allow_model_region_prefix"),
+            "应指出开关名: {message}"
+        );
     }
 
     #[test]

@@ -247,7 +247,10 @@ mod tests {
 
         let value = meta.to_value();
         assert_eq!(value["accountUid"], "uid-b", "必须写入选中账号的精确 uid");
-        assert_eq!(value["account"], "重名展示名", "account 仍是展示名，语义不变");
+        assert_eq!(
+            value["account"], "重名展示名",
+            "account 仍是展示名，语义不变"
+        );
         assert_eq!(value["latencyMs"], 12, "latencyMs = 首字节延迟（TTFB）");
         assert_eq!(value["totalMs"], 3456, "totalMs = 总耗时");
     }
@@ -327,8 +330,11 @@ mod tests {
         use futures_util::StreamExt;
 
         let (log, dir) = temp_log("tokens");
-        let sink: Arc<dyn UsageSink> =
-            Arc::new(StreamingLogSink::new(log.clone(), streaming_template(), Instant::now()));
+        let sink: Arc<dyn UsageSink> = Arc::new(StreamingLogSink::new(
+            log.clone(),
+            streaming_template(),
+            Instant::now(),
+        ));
         let frames = concat!(
             "data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n",
             "data: {\"choices\":[],\"usage\":{\"credit\":1.5,\"prompt_tokens\":10,\"completion_tokens\":5}}\n\n",
@@ -371,8 +377,11 @@ mod tests {
         let (log, dir) = temp_log("ttfb");
         // `started` 刻意早于「现在」一点点，好让 totalMs 有真实的非零值。
         let started = Instant::now();
-        let sink: Arc<dyn UsageSink> =
-            Arc::new(StreamingLogSink::new(log.clone(), streaming_template(), started));
+        let sink: Arc<dyn UsageSink> = Arc::new(StreamingLogSink::new(
+            log.clone(),
+            streaming_template(),
+            started,
+        ));
         let stream = futures_util::stream::iter(vec![Ok::<_, std::io::Error>(
             axum::body::Bytes::from_static(
                 "data: {\"choices\":[],\"usage\":{\"credit\":1.0,\"prompt_tokens\":3,\"completion_tokens\":4}}\n\n"
@@ -389,7 +398,9 @@ mod tests {
              事故的根因（日志页的耗时列会从数百 ms 跳到数百 s）"
         );
         assert!(
-            entries[0]["totalMs"].as_i64().is_some_and(|value| value >= 0),
+            entries[0]["totalMs"]
+                .as_i64()
+                .is_some_and(|value| value >= 0),
             "totalMs 必须由 sink 在流结束时补齐，实际：{}",
             entries[0]["totalMs"]
         );
@@ -408,8 +419,11 @@ mod tests {
         use crate::protocol::usage_tap::UsageTap;
 
         let (log, dir) = temp_log("dropped");
-        let sink: Arc<dyn UsageSink> =
-            Arc::new(StreamingLogSink::new(log.clone(), streaming_template(), Instant::now()));
+        let sink: Arc<dyn UsageSink> = Arc::new(StreamingLogSink::new(
+            log.clone(),
+            streaming_template(),
+            Instant::now(),
+        ));
         {
             // 空流且从未被 poll ⇒ 只能靠 Drop 兜底。
             let _tap = UsageTap::new(
@@ -420,7 +434,10 @@ mod tests {
 
         let entries = log.list();
         assert_eq!(entries.len(), 1, "被丢弃的流也必须留下一条日志");
-        assert_eq!(entries[0]["promptTokens"], 0, "用量未知 ⇒ 记 0（而不是丢日志）");
+        assert_eq!(
+            entries[0]["promptTokens"], 0,
+            "用量未知 ⇒ 记 0（而不是丢日志）"
+        );
         assert_eq!(entries[0]["accountUid"], "uid-1");
 
         let _ = std::fs::remove_dir_all(&dir);

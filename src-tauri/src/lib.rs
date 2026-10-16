@@ -5,17 +5,17 @@ mod gateway;
 mod qoder_gateway;
 mod trae_gateway;
 // 统一网关（第三个产品线，默认 57892）：跨产品线的单一入口 —— 独立端口，不与另两个 merge。
-mod unified_gateway;
 #[cfg(desktop)]
 mod companion;
 #[cfg(desktop)]
 mod tray;
+mod unified_gateway;
 
-use std::time::Duration;
-use tauri::Manager;
 use buddy_switch_core::modules;
 use buddy_switch_core::modules::background::{TaskKind, TaskSpec, TASKS};
 use buddy_switch_core::modules::product::Product;
+use std::time::Duration;
+use tauri::Manager;
 
 const SCREENSHOT_DEMO_ENV: &str = "BUDDY_SWITCH_SCREENSHOT_DEMO";
 
@@ -122,8 +122,7 @@ fn spawn_background_task(spec: TaskSpec) {
                     let state = gateway::shared_state();
                     loop {
                         // 启动即刷一次（循环首轮）：补齐上次进程遗留的「从未取过余额」账号。
-                        let _ =
-                            buddy_switch_gateway::credits_refresh::refresh_once(&state).await;
+                        let _ = buddy_switch_gateway::credits_refresh::refresh_once(&state).await;
                         // ★ 与 server 侧**同一判据**（`next_refresh_wait_ms`）：
                         //   池为空 ⇒ 短探测，否则「刚导入账号」要等满一整个周期才看得到积分。
                         let wait_ms = {
@@ -147,8 +146,8 @@ fn spawn_background_task(spec: TaskSpec) {
                 });
             }
             /* Qoder：**尚未有余额刷新循环**（额度要调上游，属网关层，未落地）。
-               ⚠️ 与 server 侧同款：core 的 `TASKS` 表里没有任何 Qoder 任务 ⇒ 本分支当前
-               不可达；一旦登记了，这行警告会出现在日志里，而不是悄悄空转。 */
+            ⚠️ 与 server 侧同款：core 的 `TASKS` 表里没有任何 Qoder 任务 ⇒ 本分支当前
+            不可达；一旦登记了，这行警告会出现在日志里，而不是悄悄空转。 */
             Product::Qoder => {
                 eprintln!(
                     "[background] Qoder 的 CreditsRefresh 已登记但**尚无实现** —— \
@@ -229,7 +228,8 @@ fn spawn_background_task(spec: TaskSpec) {
                     for region in modules::region::Region::all() {
                         let _ = modules::token_daily::record_client_today(region, false);
                     }
-                    tokio::time::sleep(Duration::from_millis(CLIENT_USAGE_RECORD_INTERVAL_MS)).await;
+                    tokio::time::sleep(Duration::from_millis(CLIENT_USAGE_RECORD_INTERVAL_MS))
+                        .await;
                 }
             });
         }
@@ -623,7 +623,9 @@ mod tests {
     fn background_tasks_cover_all_scheduled_tasks() {
         for task in modules::schedule::ScheduleTask::all() {
             assert!(
-                TASKS.iter().any(|spec| spec.kind == TaskKind::Scheduled(task)),
+                TASKS
+                    .iter()
+                    .any(|spec| spec.kind == TaskKind::Scheduled(task)),
                 "后台任务表缺少定时任务「{}」——它在此进程里永远不会执行",
                 task.as_str()
             );

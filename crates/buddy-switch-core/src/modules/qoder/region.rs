@@ -236,20 +236,30 @@ mod tests {
             ("domain", cn.domain, global.domain),
             ("user_agent", cn.user_agent, global.user_agent),
             ("cli_home_dir", cn.cli_home_dir, global.cli_home_dir),
-            ("desktop_app_dir", cn.desktop_app_dir, global.desktop_app_dir),
+            (
+                "desktop_app_dir",
+                cn.desktop_app_dir,
+                global.desktop_app_dir,
+            ),
         ] {
             assert_ne!(a, b, "{name} 在两区相同 —— 该差异必须真实存在");
         }
         // ★ OAuth 授权 URL 的构造差异（两区确实不同，不是猜测）。
         assert!(cn.send_redirect_uri, "国内版授权 URL 带 redirect_uri");
-        assert!(!global.send_redirect_uri, "国际版授权 URL 不带 redirect_uri");
+        assert!(
+            !global.send_redirect_uri,
+            "国际版授权 URL 不带 redirect_uri"
+        );
         assert!(cn.nonce_dashed, "国内版 nonce 带横线");
         assert!(!global.nonce_dashed, "国际版 nonce 为 32 位无横线 hex");
     }
 
     #[test]
     fn gateway_candidates_start_with_the_primary_and_only_global_has_fallbacks() {
-        assert_eq!(gateway_candidates(QoderRegion::Cn), vec!["https://gateway.qoder.com.cn"]);
+        assert_eq!(
+            gateway_candidates(QoderRegion::Cn),
+            vec!["https://gateway.qoder.com.cn"]
+        );
         let global = gateway_candidates(QoderRegion::Global);
         assert_eq!(global[0], "https://api1.qoder.sh", "主基址必须在第一位");
         assert_eq!(global.len(), 3, "国际版有 3 个候选");
@@ -265,7 +275,10 @@ mod tests {
         assert_eq!(region_of_domain("qoder.com.cn"), Some(QoderRegion::Cn));
         assert_eq!(region_of_domain("qoder.com"), Some(QoderRegion::Global));
         // 允许整条 URL（用户从地址栏复制），剥壳后仍按域名判定。
-        assert_eq!(region_of_domain("https://qoder.com"), Some(QoderRegion::Global));
+        assert_eq!(
+            region_of_domain("https://qoder.com"),
+            Some(QoderRegion::Global)
+        );
         assert_eq!(
             region_of_domain("https://api.qoder.com.cn/oauth?x=1#frag"),
             Some(QoderRegion::Cn)
@@ -274,7 +287,10 @@ mod tests {
         assert_eq!(region_of_domain("api.qoder.com.cn"), Some(QoderRegion::Cn));
         assert_eq!(region_of_domain("api.qoder.com"), Some(QoderRegion::Global));
         // 大小写与端口不影响判定。
-        assert_eq!(region_of_domain("API.QODER.COM:443"), Some(QoderRegion::Global));
+        assert_eq!(
+            region_of_domain("API.QODER.COM:443"),
+            Some(QoderRegion::Global)
+        );
         for bad in [
             "",
             "   ",

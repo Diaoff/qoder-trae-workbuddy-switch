@@ -54,7 +54,11 @@ pub fn cst_naive(now_ms: i64) -> NaiveDateTime {
 /// 连登断档只可能发生在「上一个自然日」（今日尚未结算），故补签判据固定盯昨日。
 pub fn cst_yesterday_str(now_ms: i64) -> String {
     let today = cst_date(now_ms);
-    today.pred_opt().unwrap_or(today).format("%Y-%m-%d").to_string()
+    today
+        .pred_opt()
+        .unwrap_or(today)
+        .format("%Y-%m-%d")
+        .to_string()
 }
 
 /// 夜猫窗口判定：CST `hour >= 23 || hour < 8`（即 23:00–08:00）。
@@ -88,9 +92,7 @@ pub fn next_day_4am(now_ms: i64) -> i64 {
     } else {
         today.succ_opt().unwrap_or(today)
     };
-    let naive = target
-        .and_hms_opt(4, 0, 0)
-        .expect("04:00:00 是合法时刻");
+    let naive = target.and_hms_opt(4, 0, 0).expect("04:00:00 是合法时刻");
     cst_offset()
         .from_local_datetime(&naive)
         .single()

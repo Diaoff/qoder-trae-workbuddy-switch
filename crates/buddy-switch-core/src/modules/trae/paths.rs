@@ -725,7 +725,11 @@ mod tests {
         let shared: [(&str, PathBuf, PathBuf); 9] = [
             ("账号库", accounts_file_for(work), accounts_file_for(code)),
             ("分组", groups_file_for(work), groups_file_for(code)),
-            ("设备映射", device_map_file_for(work), device_map_file_for(code)),
+            (
+                "设备映射",
+                device_map_file_for(work),
+                device_map_file_for(code),
+            ),
             (
                 "签到明细",
                 credits_history_file_for(work),
@@ -741,7 +745,11 @@ mod tests {
                 remaining_credits_file_for(work),
                 remaining_credits_file_for(code),
             ),
-            ("冷却状态", cooldowns_file_for(work), cooldowns_file_for(code)),
+            (
+                "冷却状态",
+                cooldowns_file_for(work),
+                cooldowns_file_for(code),
+            ),
             (
                 "签到摘要",
                 checkin_summary_file_for(work),
@@ -945,7 +953,9 @@ mod tests {
         );
         // 落在 trae/conf/ 下（不是 trae/ 根，避免与数据文件混在一起）。
         assert_eq!(
-            path.parent().and_then(|p| p.file_name()).and_then(|s| s.to_str()),
+            path.parent()
+                .and_then(|p| p.file_name())
+                .and_then(|s| s.to_str()),
             Some("conf")
         );
     }
@@ -976,14 +986,20 @@ mod tests {
         // 与正式槽位同目录（单代轮转靠 rename，必须同目录同卷）。
         assert_eq!(bak.parent(), slot.parent(), ".bak 必须与槽位同目录");
         assert_eq!(
-            bak.parent().and_then(|p| p.file_name()).and_then(|s| s.to_str()),
+            bak.parent()
+                .and_then(|p| p.file_name())
+                .and_then(|s| s.to_str()),
             Some("profiles_trae_merged"),
             "默认变体（合并版）的槽位目录名必须与 `profiles_<as_str>` 规则一致"
         );
         // 另一区域落在自己的 profiles_<variant>/ 下，互不干扰。
-        let cn_bak = profile_bak_dir_for(TraeVariant::GlobalTraeMerged, "1234567890123456").unwrap();
+        let cn_bak =
+            profile_bak_dir_for(TraeVariant::GlobalTraeMerged, "1234567890123456").unwrap();
         assert_eq!(
-            cn_bak.parent().and_then(|p| p.file_name()).and_then(|s| s.to_str()),
+            cn_bak
+                .parent()
+                .and_then(|p| p.file_name())
+                .and_then(|s| s.to_str()),
             Some("profiles_global_trae_merged")
         );
         assert_ne!(cn_bak.parent(), bak.parent());
@@ -1040,15 +1056,51 @@ mod tests {
         let cn = TraeRegion::Cn;
         let global = TraeRegion::Global;
         let pairs: [(&str, PathBuf, PathBuf); 9] = [
-            ("账号库", accounts_file_for_region(cn), accounts_file_for_region(global)),
-            ("分组", groups_file_for_region(cn), groups_file_for_region(global)),
-            ("设备映射", device_map_file_for_region(cn), device_map_file_for_region(global)),
-            ("OAuth 设备身份", oauth_device_file_for_region(cn), oauth_device_file_for_region(global)),
-            ("签到明细", credits_history_file_for_region(cn), credits_history_file_for_region(global)),
-            ("每日积分", credits_daily_file_for_region(cn), credits_daily_file_for_region(global)),
-            ("剩余积分", remaining_credits_file_for_region(cn), remaining_credits_file_for_region(global)),
-            ("冷却状态", cooldowns_file_for_region(cn), cooldowns_file_for_region(global)),
-            ("签到摘要", checkin_summary_file_for_region(cn), checkin_summary_file_for_region(global)),
+            (
+                "账号库",
+                accounts_file_for_region(cn),
+                accounts_file_for_region(global),
+            ),
+            (
+                "分组",
+                groups_file_for_region(cn),
+                groups_file_for_region(global),
+            ),
+            (
+                "设备映射",
+                device_map_file_for_region(cn),
+                device_map_file_for_region(global),
+            ),
+            (
+                "OAuth 设备身份",
+                oauth_device_file_for_region(cn),
+                oauth_device_file_for_region(global),
+            ),
+            (
+                "签到明细",
+                credits_history_file_for_region(cn),
+                credits_history_file_for_region(global),
+            ),
+            (
+                "每日积分",
+                credits_daily_file_for_region(cn),
+                credits_daily_file_for_region(global),
+            ),
+            (
+                "剩余积分",
+                remaining_credits_file_for_region(cn),
+                remaining_credits_file_for_region(global),
+            ),
+            (
+                "冷却状态",
+                cooldowns_file_for_region(cn),
+                cooldowns_file_for_region(global),
+            ),
+            (
+                "签到摘要",
+                checkin_summary_file_for_region(cn),
+                checkin_summary_file_for_region(global),
+            ),
         ];
         for (label, cn_path, global_path) in pairs {
             assert_ne!(cn_path, global_path, "{label} 被两个区域共用: {cn_path:?}");
@@ -1118,10 +1170,7 @@ mod tests {
         ];
         for (i, a) in all_slots.iter().enumerate() {
             for b in all_slots.iter().skip(i + 1) {
-                assert_ne!(
-                    a, b,
-                    "两条程序位的快照目录相同: {a:?} —— 登录态会互相覆盖"
-                );
+                assert_ne!(a, b, "两条程序位的快照目录相同: {a:?} —— 登录态会互相覆盖");
             }
         }
 
@@ -1149,8 +1198,13 @@ mod tests {
         );
 
         // 不安全槽位名一律拒绝，绝不拼出越界路径。
-        assert!(profile_dir_for_program(TraeRegion::Global, TraeProgram::TraeWork, "1234").is_some());
-        assert!(profile_dir_for_program(TraeRegion::Global, TraeProgram::TraeWork, "../escape").is_none());
+        assert!(
+            profile_dir_for_program(TraeRegion::Global, TraeProgram::TraeWork, "1234").is_some()
+        );
+        assert!(
+            profile_dir_for_program(TraeRegion::Global, TraeProgram::TraeWork, "../escape")
+                .is_none()
+        );
         assert!(profile_dir_for_program(TraeRegion::Cn, TraeProgram::TraeCode, "a/b").is_none());
 
         drop(guard);
@@ -1189,7 +1243,9 @@ mod tests {
         let guard = crate::modules::config::HomeOverrideGuard::set(&dir);
 
         let name_of = |path: std::path::PathBuf| {
-            path.file_name().and_then(|s| s.to_str()).map(str::to_string)
+            path.file_name()
+                .and_then(|s| s.to_str())
+                .map(str::to_string)
         };
 
         // ★ issue #28 收敛后**零分歧**：每区域只有一个程序位，两套命名入口必然一致。
@@ -1202,7 +1258,8 @@ mod tests {
             for program in TraeProgram::all() {
                 checked += 1;
                 let variant = crate::modules::client_settings::variant_for_program(region, program);
-                if name_of(profiles_dir_for(variant)) != name_of(profiles_dir_for_program(region, program))
+                if name_of(profiles_dir_for(variant))
+                    != name_of(profiles_dir_for_program(region, program))
                 {
                     diverged.push((region, program));
                 }

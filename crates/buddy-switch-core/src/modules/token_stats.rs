@@ -75,8 +75,8 @@ impl Totals {
     }
 
     fn value(&self) -> Value {
-        let cache_hit_rate = (self.usage.input > 0)
-            .then(|| self.usage.read as f64 / self.usage.input as f64);
+        let cache_hit_rate =
+            (self.usage.input > 0).then(|| self.usage.read as f64 / self.usage.input as f64);
         // `input` already includes cache reads; expose the same headline total
         // used by the dashboard without double-counting the cached portion.
         let total = self
@@ -102,21 +102,23 @@ fn number(value: &Value) -> Option<u64> {
     value
         .as_u64()
         .or_else(|| value.as_i64().and_then(|n| u64::try_from(n).ok()))
-        .or_else(|| value.as_f64().filter(|n| n.is_finite() && *n >= 0.0).map(|n| n as u64))
+        .or_else(|| {
+            value
+                .as_f64()
+                .filter(|n| n.is_finite() && *n >= 0.0)
+                .map(|n| n as u64)
+        })
         .or_else(|| value.as_str()?.trim().parse::<u64>().ok())
 }
 
 fn field(object: &Map<String, Value>, keys: &[&str]) -> Option<u64> {
-    keys.iter().find_map(|key| object.get(*key).and_then(number))
+    keys.iter()
+        .find_map(|key| object.get(*key).and_then(number))
 }
 
 fn positive_field(object: &Map<String, Value>, keys: &[&str]) -> Option<u64> {
-    keys.iter().find_map(|key| {
-        object
-            .get(*key)
-            .and_then(number)
-            .filter(|value| *value > 0)
-    })
+    keys.iter()
+        .find_map(|key| object.get(*key).and_then(number).filter(|value| *value > 0))
 }
 
 fn cached_input_field(object: &Map<String, Value>) -> u64 {
@@ -189,7 +191,9 @@ fn usage_object(value: Option<&Value>) -> Option<&Map<String, Value>> {
 fn usage(value: &Value) -> Option<Usage> {
     let provider = value.get("providerData");
     let candidates = [
-        value.get("message").and_then(|message| message.get("usage")),
+        value
+            .get("message")
+            .and_then(|message| message.get("usage")),
         provider.and_then(|data| data.get("usage")),
         value.get("usage"),
     ];
@@ -239,7 +243,11 @@ fn hour(value: &Value) -> Option<String> {
     let timestamp = timestamp(value)?;
     chrono::DateTime::from_timestamp_millis(timestamp).map(|date| {
         let local = date.with_timezone(&Local);
-        format!("{}-{}", local.weekday().num_days_from_monday(), local.hour())
+        format!(
+            "{}-{}",
+            local.weekday().num_days_from_monday(),
+            local.hour()
+        )
     })
 }
 
@@ -283,9 +291,7 @@ fn project_name(root: &Path, file: &Path) -> String {
     match name {
         // Product directories commonly encode the complete absolute path.
         // Returning that would leak a user name and parent directories.
-        Some(name) if !name.starts_with("Users-") && !name.starts_with("home-") => {
-            name.to_string()
-        }
+        Some(name) if !name.starts_with("Users-") && !name.starts_with("home-") => name.to_string(),
         _ => "未知项目".to_string(),
     }
 }
@@ -320,9 +326,7 @@ fn groups(groups: HashMap<String, Totals>) -> Vec<Value> {
             value
         })
         .collect();
-    values.sort_by(|left, right| {
-        total_value(right).cmp(&total_value(left))
-    });
+    values.sort_by(|left, right| total_value(right).cmp(&total_value(left)));
     values
 }
 
@@ -341,9 +345,7 @@ fn session_groups(sessions: Vec<SessionTotals>) -> Vec<Value> {
             value
         })
         .collect();
-    values.sort_by(|left, right| {
-        total_value(right).cmp(&total_value(left))
-    });
+    values.sort_by(|left, right| total_value(right).cmp(&total_value(left)));
     values
 }
 
@@ -611,7 +613,12 @@ fn max_option(left: Option<i64>, right: Option<i64>) -> Option<i64> {
 /// 就说明内容变了。反过来，内容变了而这对值不变在本文件系统的粒度下不可能
 /// （NTFS mtime 精度 100ns，且 size 单独把关「同刻度内追加」）。
 fn file_stamp(meta: &std::fs::Metadata) -> Option<(i64, u64)> {
-    let millis = meta.modified().ok()?.duration_since(UNIX_EPOCH).ok()?.as_millis();
+    let millis = meta
+        .modified()
+        .ok()?
+        .duration_since(UNIX_EPOCH)
+        .ok()?
+        .as_millis();
     Some((i64::try_from(millis).ok()?, meta.len()))
 }
 
@@ -918,7 +925,10 @@ fn write_persisted_cache(path: &Path, cache: &HashMap<PathBuf, ScanCacheEntry>) 
         .filter(|(file, _)| file.exists())
         .map(|(file, entry)| (file.to_string_lossy().into_owned(), entry.to_persisted()))
         .collect();
-    let payload = PersistedScanCache { version: SCAN_CACHE_VERSION, files };
+    let payload = PersistedScanCache {
+        version: SCAN_CACHE_VERSION,
+        files,
+    };
     let Ok(text) = serde_json::to_string(&payload) else {
         return;
     };
@@ -957,7 +967,8 @@ fn parse_count_for(path: &Path) -> usize {
 }
 
 /// 并行度：够用即可。上限 32 是刻意的 —— 再多只会在同一条磁盘队列上排队。
-fn worker_count(pending: usize) -> usize {    let cores = std::thread::available_parallelism()
+fn worker_count(pending: usize) -> usize {
+    let cores = std::thread::available_parallelism()
         .map(|value| value.get())
         .unwrap_or(4);
     cores.clamp(1, 32).min(pending.max(1))
@@ -976,7 +987,9 @@ fn scan_paths(root: &Path, paths: &[PathBuf], cutoff: Option<i64>) -> Vec<Arc<So
     {
         let cache = scan_cache().lock().unwrap();
         for (index, path) in paths.iter().enumerate() {
-            let stamp = std::fs::metadata(path).ok().and_then(|meta| file_stamp(&meta));
+            let stamp = std::fs::metadata(path)
+                .ok()
+                .and_then(|meta| file_stamp(&meta));
             let hit = stamp.and_then(|(mtime_ms, size)| {
                 cache
                     .get(path)
@@ -1015,12 +1028,18 @@ fn scan_paths(root: &Path, paths: &[PathBuf], cutoff: Option<i64>) -> Vec<Arc<So
         let mut cache = scan_cache().lock().unwrap();
         for (index, scan) in parsed.into_inner().unwrap() {
             let scan = Arc::new(scan);
-            if let Some((mtime_ms, size)) =
-                std::fs::metadata(&paths[index]).ok().and_then(|meta| file_stamp(&meta))
+            if let Some((mtime_ms, size)) = std::fs::metadata(&paths[index])
+                .ok()
+                .and_then(|meta| file_stamp(&meta))
             {
                 cache.insert(
                     paths[index].clone(),
-                    ScanCacheEntry { mtime_ms, size, cutoff, scan: scan.clone() },
+                    ScanCacheEntry {
+                        mtime_ms,
+                        size,
+                        cutoff,
+                        scan: scan.clone(),
+                    },
                 );
             }
             slots[index] = Some(scan);
@@ -1074,7 +1093,10 @@ fn ide_index_files(root: &Path, output: &mut Vec<PathBuf>) {
             let name = path.file_name().and_then(|name| name.to_str());
             // Message bodies contain chat content and must not be scanned.
             // Checkpoints and the shared Public bucket are unrelated to usage.
-            if !matches!(name, Some("messages" | "check-point" | "backups" | "Public")) {
+            if !matches!(
+                name,
+                Some("messages" | "check-point" | "backups" | "Public")
+            ) {
                 ide_index_files(&path, output);
             }
         } else if is_ide_conversation_index(&path) {
@@ -1235,7 +1257,6 @@ impl WorkspaceMetaCache {
             .unwrap_or_else(|| (None, "未知模型".to_string()))
     }
 }
-
 
 fn ide_request_usage(request: &Value) -> Option<Usage> {
     let object = request.get("usage")?.as_object()?;
@@ -1399,9 +1420,10 @@ fn merge_group_item(base: &mut Value, other: &Value) {
             // ★ 会话的逐日拆分（数组）**不是数值字段**，不能走下面的「保留首个」——
             //   两版各自的每日量必须按日**求和合并**，否则合并作用域下会丢一整版的逐日。
             let merged = match base_obj.get("daily").and_then(Value::as_array) {
-                Some(base_daily) => {
-                    merge_grouped_list_from_arrays("key", &[Value::Array(base_daily.clone()), other_value.clone()])
-                }
+                Some(base_daily) => merge_grouped_list_from_arrays(
+                    "key",
+                    &[Value::Array(base_daily.clone()), other_value.clone()],
+                ),
                 None => other_value.as_array().cloned().unwrap_or_default(),
             };
             base_obj.insert("daily".into(), Value::Array(merged));
@@ -1627,7 +1649,12 @@ pub fn get_statistics_for(region: Region, days: Option<i64>) -> Value {
 }
 
 /// 采集某个具体 region 的原始 `sources[]`（不含顶层包装）。纯采集，供合并路径复用。
-fn collect_sources_for(region: Region, cutoff: Option<i64>, home: &Path, ide_projects: &HashMap<String, String>) -> Vec<Value> {
+fn collect_sources_for(
+    region: Region,
+    cutoff: Option<i64>,
+    home: &Path,
+    ide_projects: &HashMap<String, String>,
+) -> Vec<Value> {
     match region {
         Region::Cn => vec![
             source(home.join(".workbuddy/projects"), "workbuddy", cutoff),
@@ -1735,7 +1762,15 @@ mod tests {
                 "cache_read_input_tokens": 4
             }}
         });
-        assert_eq!(usage(&value), Some(Usage { input: 10, output: 3, read: 4, write: 2 }));
+        assert_eq!(
+            usage(&value),
+            Some(Usage {
+                input: 10,
+                output: 3,
+                read: 4,
+                write: 2
+            })
+        );
     }
 
     #[test]
@@ -1827,7 +1862,6 @@ mod tests {
                 write: 0,
             })
         );
-
     }
 
     #[test]
@@ -1852,9 +1886,13 @@ mod tests {
                 "cache_read_input_tokens": 4
             }}
         });
-        fs::write(project.join("session.jsonl"), format!("{}\nnot-json\n", record))
-            .expect("write fixture");
-        fs::write(ignored.join("agent.jsonl"), format!("{}\n", record)).expect("write ignored fixture");
+        fs::write(
+            project.join("session.jsonl"),
+            format!("{}\nnot-json\n", record),
+        )
+        .expect("write fixture");
+        fs::write(ignored.join("agent.jsonl"), format!("{}\n", record))
+            .expect("write ignored fixture");
 
         let result = source(root.clone(), "fixture", None);
         assert_eq!(result["filesScanned"], 1);
@@ -2330,10 +2368,7 @@ mod tests {
     #[test]
     fn get_statistics_for_filter_all_returns_four_union_sources() {
         // 合并视图返回 cn 三源 + global 单源的并集，顶层 region = "all"。
-        let value = get_statistics_for_filter(
-            crate::modules::region::RegionFilter::All,
-            None,
-        );
+        let value = get_statistics_for_filter(crate::modules::region::RegionFilter::All, None);
         let sources = value["sources"].as_array().expect("sources");
         let names: Vec<_> = sources
             .iter()
@@ -2341,7 +2376,12 @@ mod tests {
             .collect();
         assert_eq!(
             names,
-            ["workbuddy", "codebuddy-cli", "codebuddy-ide", "workbuddy-ai"]
+            [
+                "workbuddy",
+                "codebuddy-cli",
+                "codebuddy-ide",
+                "workbuddy-ai"
+            ]
         );
         assert_eq!(value["region"], "all");
     }
@@ -2573,7 +2613,8 @@ mod tests {
                     .collect::<Vec<Value>>(),
             })
         };
-        let cn = json!({ "source": "workbuddy", "sessions": [session(40, vec![("2024-01-01", 40)])] });
+        let cn =
+            json!({ "source": "workbuddy", "sessions": [session(40, vec![("2024-01-01", 40)])] });
         let global = json!({
             "source": "workbuddy",
             "sessions": [session(30, vec![("2024-01-01", 10), ("2024-01-02", 20)])]
@@ -2594,7 +2635,11 @@ mod tests {
             .collect();
         assert_eq!(daily.len(), 2, "两版并集逐日：{daily:?}");
         assert_eq!(by_key.get("2024-01-01"), Some(&50), "同一天 = 40 + 10");
-        assert_eq!(by_key.get("2024-01-02"), Some(&20), "只有第二版有的天不得丢");
+        assert_eq!(
+            by_key.get("2024-01-02"),
+            Some(&20),
+            "只有第二版有的天不得丢"
+        );
     }
 
     /* ───────────────────── 扫描缓存 / 并行的等价性护栏 ─────────────────────
@@ -2846,10 +2891,7 @@ mod tests {
 
         // 会话按 total 降序，标题只跟着**它自己那个文件**走。
         let sessions = result["sessions"].as_array().expect("sessions");
-        let session_keys: Vec<&str> = sessions
-            .iter()
-            .filter_map(|s| s["key"].as_str())
-            .collect();
+        let session_keys: Vec<&str> = sessions.iter().filter_map(|s| s["key"].as_str()).collect();
         assert_eq!(session_keys, ["beta · s2", "alpha · s1"]);
         assert_eq!(sessions[0]["total"], 117);
         assert_eq!(sessions[0]["title"], Value::Null);
@@ -2962,9 +3004,8 @@ mod tests {
         })
         .expect("serialize");
         let restored = serde_json::from_str::<PersistedScanCache>(&text).expect("deserialize");
-        let restored = ScanCacheEntry::from_persisted(
-            restored.files.into_values().next().expect("one entry"),
-        );
+        let restored =
+            ScanCacheEntry::from_persisted(restored.files.into_values().next().expect("one entry"));
 
         assert_eq!(restored.mtime_ms, 123);
         assert_eq!(restored.size, 456);
@@ -2993,7 +3034,15 @@ mod tests {
             .cloned()
             .zip(cold.iter().cloned())
             .map(|(path, scan)| {
-                (path, ScanCacheEntry { mtime_ms: 7, size: 8, cutoff: None, scan })
+                (
+                    path,
+                    ScanCacheEntry {
+                        mtime_ms: 7,
+                        size: 8,
+                        cutoff: None,
+                        scan,
+                    },
+                )
             })
             .collect();
         write_persisted_cache(&cache_file, &cache);
@@ -3027,7 +3076,10 @@ mod tests {
 
         // 坏 JSON 同样必须静默回落，而不是让统计失败。
         std::fs::write(&cache_file, "{ not json").expect("write corrupt cache");
-        assert!(read_persisted_cache(&cache_file).is_none(), "坏 JSON 必须静默回落");
+        assert!(
+            read_persisted_cache(&cache_file).is_none(),
+            "坏 JSON 必须静默回落"
+        );
 
         fs::remove_dir_all(root).expect("remove fixture");
     }

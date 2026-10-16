@@ -26,8 +26,14 @@ fn blank_and_empty_ids_are_never_disabled() {
     assert!(!store.set(wb(Region::Cn), "", true), "空 id 不得写入");
     assert!(!store.set(wb(Region::Cn), "   ", true), "空白 id 不得写入");
     assert!(!is_disabled(&store, wb(Region::Cn), ""), "空 id 永远不命中");
-    assert!(!is_disabled(&store, wb(Region::Cn), "   "), "空白 id 永远不命中");
-    assert!(store.get(wb(Region::Cn)).is_empty(), "空 / 空白 id 不得污染存储");
+    assert!(
+        !is_disabled(&store, wb(Region::Cn), "   "),
+        "空白 id 永远不命中"
+    );
+    assert!(
+        store.get(wb(Region::Cn)).is_empty(),
+        "空 / 空白 id 不得污染存储"
+    );
 }
 
 /// ★ 边界②（**回归护栏 · T04 #2**）：判断点**大小写不敏感**。
@@ -40,8 +46,14 @@ fn matching_is_case_insensitive() {
     let mut store = DisabledModels::default();
     store.set(wb(Region::Cn), "glm-5.3", true);
     assert!(is_disabled(&store, wb(Region::Cn), "glm-5.3"), "精确名命中");
-    assert!(is_disabled(&store, wb(Region::Cn), "GLM-5.3"), "大写变体也必须命中（否则禁用被绕过）");
-    assert!(is_disabled(&store, wb(Region::Cn), "Glm-5.3"), "混合大小写也必须命中");
+    assert!(
+        is_disabled(&store, wb(Region::Cn), "GLM-5.3"),
+        "大写变体也必须命中（否则禁用被绕过）"
+    );
+    assert!(
+        is_disabled(&store, wb(Region::Cn), "Glm-5.3"),
+        "混合大小写也必须命中"
+    );
     // 存储保持**原始**大小写：前端 `disabledSet.has(model.id)` 依赖精确匹配。
     assert!(
         store.get(wb(Region::Cn)).contains("glm-5.3"),
@@ -67,8 +79,14 @@ fn disabling_one_case_blocks_the_other_case() {
 fn surrounding_whitespace_is_trimmed_on_both_sides() {
     let mut store = DisabledModels::default();
     store.set(wb(Region::Cn), "  glm-5.3  ", true);
-    assert!(is_disabled(&store, wb(Region::Cn), "glm-5.3"), "写入 trim 后应命中无空白查询");
-    assert!(is_disabled(&store, wb(Region::Cn), " glm-5.3 "), "查询侧也 trim");
+    assert!(
+        is_disabled(&store, wb(Region::Cn), "glm-5.3"),
+        "写入 trim 后应命中无空白查询"
+    );
+    assert!(
+        is_disabled(&store, wb(Region::Cn), " glm-5.3 "),
+        "查询侧也 trim"
+    );
 }
 
 /// 边界④（**回归护栏 · T04 #4 / 2026-10-15 键升级**）：未知键**不影响已知键**，
@@ -80,14 +98,27 @@ fn surrounding_whitespace_is_trimmed_on_both_sides() {
 #[test]
 fn fixed_unknown_region_key_does_not_wipe_known_regions() {
     let text = r#"{"regions":{"cn":["glm-5.3"],"mars":["x"]}}"#;
-    let mut store: DisabledModels = serde_json::from_str(text).expect("未知键不得让整份反序列化失败");
+    let mut store: DisabledModels =
+        serde_json::from_str(text).expect("未知键不得让整份反序列化失败");
     assert!(store.migrate_legacy_keys(), "有旧键 ⇒ 必须发生迁移");
     // 旧 `cn` 扇出到 wb-cn 与 trae-cn（迁移前这两家共用一份）。
-    assert!(is_disabled(&store, wb(Region::Cn), "glm-5.3"), "旧 cn 键迁移后应命中 wb-cn");
-    assert!(is_disabled(&store, Scope::TraeCn, "glm-5.3"), "旧 cn 键迁移后应命中 trae-cn");
+    assert!(
+        is_disabled(&store, wb(Region::Cn), "glm-5.3"),
+        "旧 cn 键迁移后应命中 wb-cn"
+    );
+    assert!(
+        is_disabled(&store, Scope::TraeCn, "glm-5.3"),
+        "旧 cn 键迁移后应命中 trae-cn"
+    );
     // 未知键原样保留、且不误伤任何已知作用域。
-    assert!(!is_disabled(&store, wb(Region::Cn), "x"), "未知键的条目不得串进已知作用域");
-    assert!(store.get(wb(Region::Global)).is_empty(), "未出现的作用域仍是空集");
+    assert!(
+        !is_disabled(&store, wb(Region::Cn), "x"),
+        "未知键的条目不得串进已知作用域"
+    );
+    assert!(
+        store.get(wb(Region::Global)).is_empty(),
+        "未出现的作用域仍是空集"
+    );
 }
 
 /// 边界③（**回归护栏 · T04 #3**）：**裸 map 形状**（`{"cn":[…]}`）被**拒绝**（响亮报错）。
@@ -110,7 +141,10 @@ fn known_region_keys_round_trip() {
     let store: DisabledModels = serde_json::from_str(text).expect("正确形状应能反序列化");
     assert!(is_disabled(&store, wb(Region::Cn), "glm-5.3"));
     assert!(is_disabled(&store, wb(Region::Global), "kimi-k2.6"));
-    assert!(!is_disabled(&store, wb(Region::Global), "glm-5.3"), "作用域之间不得串味");
+    assert!(
+        !is_disabled(&store, wb(Region::Global), "glm-5.3"),
+        "作用域之间不得串味"
+    );
     // 兼容读：旧顶层键名 `regions`（内容已是作用域键）仍可解析。
     let compat: DisabledModels =
         serde_json::from_str(r#"{"regions":{"wb-cn":["a"]}}"#).expect("alias 兼容");
@@ -131,6 +165,12 @@ fn regions_are_independent() {
 fn is_disabled_in_matches_the_store_api() {
     let mut store = DisabledModels::default();
     store.set(wb(Region::Cn), "GLM-5.3", true);
-    assert!(is_disabled_in(store.get(wb(Region::Cn)), "glm-5.3"), "核心函数同样大小写不敏感");
-    assert!(!is_disabled_in(store.get(wb(Region::Global)), "glm-5.3"), "另一 region 的空集不命中");
+    assert!(
+        is_disabled_in(store.get(wb(Region::Cn)), "glm-5.3"),
+        "核心函数同样大小写不敏感"
+    );
+    assert!(
+        !is_disabled_in(store.get(wb(Region::Global)), "glm-5.3"),
+        "另一 region 的空集不命中"
+    );
 }

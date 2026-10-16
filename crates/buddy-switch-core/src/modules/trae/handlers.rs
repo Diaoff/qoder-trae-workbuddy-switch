@@ -350,11 +350,7 @@ pub fn group_op(action: &str, params: &Value) -> Result<Value, String> {
 ///
 /// **分组按变体分家**：`group_create` 的「同名分组已存在」判定只在变体内生效，
 /// 两条产品线可以有同名分组而互不冲突。
-pub fn group_op_for(
-    variant: TraeVariant,
-    action: &str,
-    params: &Value,
-) -> Result<Value, String> {
+pub fn group_op_for(variant: TraeVariant, action: &str, params: &Value) -> Result<Value, String> {
     let str_param = |key: &str| params.get(key).and_then(Value::as_str);
     match action {
         "create" => {
@@ -370,7 +366,10 @@ pub fn group_op_for(
                 id,
                 str_param("name").map(str::to_string),
                 str_param("color").map(str::to_string),
-                params.get("order").and_then(Value::as_i64).map(|v| v as i32),
+                params
+                    .get("order")
+                    .and_then(Value::as_i64)
+                    .map(|v| v as i32),
             )?;
             Ok(json!({ "groups": account::list_group_views_for(variant) }))
         }
@@ -437,18 +436,18 @@ const MAX_CHECKIN_RETRY: u32 = 5;
 ///
 /// 回落读取设置文件（一次小 JSON 读），因此带 HOME 覆盖的测试需自行隔离目录。
 pub fn parse_checkin_options(params: &Value) -> Result<CheckinOptions, String> {
-    let scope_raw = params
-        .get("scope")
-        .and_then(Value::as_str)
-        .unwrap_or("all");
+    let scope_raw = params.get("scope").and_then(Value::as_str).unwrap_or("all");
     let scope = Scope::parse(scope_raw)?;
-    let user_ids = params.get("userIds").and_then(Value::as_array).map(|items| {
-        items
-            .iter()
-            .filter_map(Value::as_str)
-            .map(str::to_string)
-            .collect::<Vec<_>>()
-    });
+    let user_ids = params
+        .get("userIds")
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(Value::as_str)
+                .map(str::to_string)
+                .collect::<Vec<_>>()
+        });
 
     // 只在真的需要回落时才读设置：三个参数都显式给了就完全不碰磁盘。
     let needs_settings = ["skipCheckedIn", "skipExpired", "retry"]
@@ -609,10 +608,7 @@ pub fn clear_cooldown(user_id: Option<&str>) -> Result<Value, String> {
 }
 
 /// 清除冷却（按变体分家）：给了 `userId` 就清单个，否则清**该变体**全部。
-pub fn clear_cooldown_for(
-    variant: TraeVariant,
-    user_id: Option<&str>,
-) -> Result<Value, String> {
+pub fn clear_cooldown_for(variant: TraeVariant, user_id: Option<&str>) -> Result<Value, String> {
     match user_id.filter(|id| !id.is_empty()) {
         Some(user_id) => {
             credits::clear_cooldown_for(variant, user_id)?;
@@ -690,7 +686,10 @@ pub fn parse_switch_options(params: &Value) -> Result<SwitchOptions, String> {
     }
     Ok(SwitchOptions {
         user_id,
-        launch: params.get("launch").and_then(Value::as_bool).unwrap_or(true),
+        launch: params
+            .get("launch")
+            .and_then(Value::as_bool)
+            .unwrap_or(true),
         proxy_port: params
             .get("proxyPort")
             .and_then(Value::as_u64)
@@ -1056,7 +1055,10 @@ mod tests {
         let options = parse_checkin_options(&json!({})).unwrap();
         assert_eq!(options.scope, Scope::All);
         // 隔离目录里没有设置文件 → 落 `TraeSettings` 的默认值，与模块默认一致。
-        assert_eq!(options.skip_checked_in, settings::TraeSettings::default().checkin_skip_checked);
+        assert_eq!(
+            options.skip_checked_in,
+            settings::TraeSettings::default().checkin_skip_checked
+        );
         assert!(options.skip_expired);
         // 默认 retry 与 CheckinOptions::default 必须一致，否则两条通道行为不同
         assert_eq!(options.retry, CheckinOptions::default().retry);
@@ -1162,7 +1164,11 @@ mod tests {
         assert_eq!(options.scope, Scope::Selected(Vec::new()));
         assert_eq!(options.user_ids, Some(vec!["a".into(), "b".into()]));
         // 非字符串项必须被丢弃，而不是变成 "3"
-        assert!(!options.user_ids.as_ref().unwrap().contains(&"3".to_string()));
+        assert!(!options
+            .user_ids
+            .as_ref()
+            .unwrap()
+            .contains(&"3".to_string()));
         assert!(!options.skip_checked_in);
         // retry 必须被夹到上限，避免前端传入 1e9 造成无限重试
         assert_eq!(options.retry, 5);
@@ -1219,8 +1225,8 @@ mod tests {
             "data": { "id": uid },
             "exp": chrono::Utc::now().timestamp() + hours * 3600,
         });
-        let encoded =
-            base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(serde_json::to_vec(&payload).unwrap());
+        let encoded = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .encode(serde_json::to_vec(&payload).unwrap());
         format!("Cloud-IDE-JWT header.{encoded}.signature")
     }
 
@@ -1384,10 +1390,11 @@ mod tests {
     fn unsupported_note_has_the_pinned_four_field_shape() {
         let value = unsupported_note("cache_metrics", "缓存命中率", "上游不回传 cache 字段");
         let object = value.as_object().expect("必须是对象");
-        let keys: std::collections::BTreeSet<&str> =
-            object.keys().map(String::as_str).collect();
+        let keys: std::collections::BTreeSet<&str> = object.keys().map(String::as_str).collect();
         let expected: std::collections::BTreeSet<&str> =
-            ["capability", "label", "supportedOn", "reason"].into_iter().collect();
+            ["capability", "label", "supportedOn", "reason"]
+                .into_iter()
+                .collect();
         assert_eq!(keys, expected, "字段名 / 数量漂移");
         assert_eq!(value["capability"], "cache_metrics");
         assert_eq!(value["label"], "缓存命中率");
@@ -1412,7 +1419,11 @@ mod tests {
             assert!(value.get(key).is_some(), "缺少字段 {key}");
         }
         assert!(value.get("variantCounts").unwrap().is_object());
-        assert!(value.get("variantCounts").unwrap().get("unlabeled").is_some());
+        assert!(value
+            .get("variantCounts")
+            .unwrap()
+            .get("unlabeled")
+            .is_some());
         assert!(value.get("modelDaily").unwrap().is_array());
         assert!(value.get("unsupported").unwrap().is_array());
     }

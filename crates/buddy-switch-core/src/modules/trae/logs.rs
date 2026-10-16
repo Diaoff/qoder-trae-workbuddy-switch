@@ -459,7 +459,11 @@ mod tests {
             keyword: "PLANLIMIT".to_string(),
             ..LogQuery::default()
         };
-        assert!(query.matches(&entry("app", "2026-09-17 10:00:00", "错误 PlanLimit 已冷却")));
+        assert!(query.matches(&entry(
+            "app",
+            "2026-09-17 10:00:00",
+            "错误 PlanLimit 已冷却"
+        )));
         assert!(!query.matches(&entry("app", "2026-09-17 10:00:00", "签到成功")));
     }
 
@@ -474,7 +478,10 @@ mod tests {
         // 超上限必须被夹住，0 / 负数回落默认值。
         let huge = LogQuery::from_value(&json!({ "limit": 999_999 }));
         assert_eq!(huge.limit, MAX_LIMIT);
-        assert_eq!(LogQuery::from_value(&json!({ "limit": 0 })).limit, DEFAULT_LIMIT);
+        assert_eq!(
+            LogQuery::from_value(&json!({ "limit": 0 })).limit,
+            DEFAULT_LIMIT
+        );
     }
 
     #[test]
@@ -489,14 +496,7 @@ mod tests {
 
         let value = query_logs(&json!({}));
         for key in [
-            "entries",
-            "total",
-            "limit",
-            "dates",
-            "counts",
-            "sources",
-            "logDir",
-            "note",
+            "entries", "total", "limit", "dates", "counts", "sources", "logDir", "note",
         ] {
             assert!(value.get(key).is_some(), "缺少字段 {key}");
         }

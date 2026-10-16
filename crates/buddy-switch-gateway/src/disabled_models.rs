@@ -185,7 +185,8 @@ pub fn is_disabled_in(set: &BTreeSet<String>, model_id: &str) -> bool {
     if id.is_empty() {
         return false;
     }
-    set.iter().any(|candidate| candidate.eq_ignore_ascii_case(id))
+    set.iter()
+        .any(|candidate| candidate.eq_ignore_ascii_case(id))
 }
 
 /// 禁用模型的统一可读文案 —— 三个出口**共用同一句**，避免「同一个禁用三种说法」。
@@ -322,14 +323,23 @@ mod tests {
             assert!(is_disabled(&store, scope, "model-a"), "{scope:?}");
             assert!(is_disabled(&store, scope, "shared"), "{scope:?}");
         }
-        assert!(is_disabled(&store, Scope::WbCn, "hand-edited"), "手改条目不得被覆盖");
+        assert!(
+            is_disabled(&store, Scope::WbCn, "hand-edited"),
+            "手改条目不得被覆盖"
+        );
         assert!(is_disabled(&store, Scope::WbGlobal, "model-b"));
         assert!(is_disabled(&store, Scope::TraeGlobal, "model-b"));
 
         // Qoder **不继承**任何旧条目。
         for scope in [Scope::QoderCn, Scope::QoderGlobal] {
-            assert!(!is_disabled(&store, scope, "model-a"), "Qoder 不得继承旧键：{scope:?}");
-            assert!(!is_disabled(&store, scope, "model-b"), "Qoder 不得继承旧键：{scope:?}");
+            assert!(
+                !is_disabled(&store, scope, "model-a"),
+                "Qoder 不得继承旧键：{scope:?}"
+            );
+            assert!(
+                !is_disabled(&store, scope, "model-b"),
+                "Qoder 不得继承旧键：{scope:?}"
+            );
         }
 
         // 幂等：再迁一次 = 无变化。
@@ -369,10 +379,19 @@ mod tests {
     fn disabled_message_names_the_model_and_says_disabled() {
         let message = disabled_message(Scope::WbCn, "glm-5.3");
         assert!(message.contains("glm-5.3"), "必须点名模型：{message}");
-        assert!(message.contains("被禁用"), "必须说明是「被禁用」：{message}");
-        assert!(message.contains("/v1/models"), "必须说明两个出口：{message}");
+        assert!(
+            message.contains("被禁用"),
+            "必须说明是「被禁用」：{message}"
+        );
+        assert!(
+            message.contains("/v1/models"),
+            "必须说明两个出口：{message}"
+        );
         // ★ 点名**作用域**（不是裸的「国内版」）—— 三个平台都有国内版，只写区域会指错平台。
-        assert!(message.contains("WorkBuddy 国内版"), "必须点名作用域：{message}");
+        assert!(
+            message.contains("WorkBuddy 国内版"),
+            "必须点名作用域：{message}"
+        );
         let qoder = disabled_message(Scope::QoderCn, "m");
         assert!(qoder.contains("Qoder 国内版"), "{qoder}");
     }

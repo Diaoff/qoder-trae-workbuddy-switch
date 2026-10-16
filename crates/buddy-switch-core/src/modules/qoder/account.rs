@@ -421,7 +421,10 @@ mod tests {
         assert!(ensure_region_matches(QoderRegion::Cn, "example.com").is_err());
         // 错误文案要能说清「谁的域名」与「期望什么」。
         let error = ensure_region_matches(QoderRegion::Cn, "qoder.com").unwrap_err();
-        assert!(error.contains("qoder.com") && error.contains("qoder.com.cn"), "{error}");
+        assert!(
+            error.contains("qoder.com") && error.contains("qoder.com.cn"),
+            "{error}"
+        );
     }
 
     /// ★ 下发形态**绝不包含令牌明文**。
@@ -470,7 +473,10 @@ mod tests {
             domain: "qoder.com.cn".into(),
             ..Default::default()
         };
-        assert_eq!(account_view(&empty, QoderRegion::Cn)["hasCredential"], json!(false));
+        assert_eq!(
+            account_view(&empty, QoderRegion::Cn)["hasCredential"],
+            json!(false)
+        );
     }
 
     /// 展示字段**归一成字符串或 null**（脏值会让前端白屏）。

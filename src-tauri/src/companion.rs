@@ -96,7 +96,10 @@ impl MonitorRect {
 
     /// 本显示器**右下角**、留出边距后，窗口左上角应有的坐标。
     fn bottom_right_anchor(&self, width: i32, height: i32, margin: i32) -> (i32, i32) {
-        (self.right() - width - margin, self.bottom() - height - margin)
+        (
+            self.right() - width - margin,
+            self.bottom() - height - margin,
+        )
     }
 }
 
@@ -305,7 +308,14 @@ mod tests {
     #[test]
     fn keeps_stored_position_when_still_on_a_monitor() {
         assert_eq!(
-            resolve_position(Some((300, 200)), &[PRIMARY], PRIMARY, WIDTH, HEIGHT, EDGE_MARGIN),
+            resolve_position(
+                Some((300, 200)),
+                &[PRIMARY],
+                PRIMARY,
+                WIDTH,
+                HEIGHT,
+                EDGE_MARGIN
+            ),
             (300, 200)
         );
     }

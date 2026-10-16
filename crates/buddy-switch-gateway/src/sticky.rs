@@ -92,7 +92,11 @@ impl StickyTable {
         if self.bindings.len() >= self.gc_at {
             self.gc(now_ms);
             // 清理后仍超阈值 ⇒ 大多是未过期条目 ⇒ 上抬，避免下次 bind 再扫一遍。
-            self.gc_at = self.bindings.len().saturating_mul(2).max(INITIAL_GC_THRESHOLD);
+            self.gc_at = self
+                .bindings
+                .len()
+                .saturating_mul(2)
+                .max(INITIAL_GC_THRESHOLD);
         }
         self.bindings.insert(
             key.to_string(),
@@ -241,7 +245,11 @@ mod tests {
         for index in 0..INITIAL_GC_THRESHOLD {
             table.bind(&format!("k{index}"), "u", NOW);
         }
-        assert_eq!(table.len(), INITIAL_GC_THRESHOLD, "全部未过期 ⇒ 一条都不该被清");
+        assert_eq!(
+            table.len(),
+            INITIAL_GC_THRESHOLD,
+            "全部未过期 ⇒ 一条都不该被清"
+        );
 
         // 让上面这批过期，再写一条 ⇒ 触发 GC，旧条目被清掉。
         let later = NOW + 5000;

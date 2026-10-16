@@ -41,9 +41,7 @@ use axum::Router;
 use serde_json::Value;
 use tokio::net::TcpListener;
 
-use super::agent_watch::{
-    self, canonical_source, parse_event, AgentEvent, SOURCE_WORKBUDDY_CN,
-};
+use super::agent_watch::{self, canonical_source, parse_event, AgentEvent, SOURCE_WORKBUDDY_CN};
 
 /// 接收端监听的端口。
 ///
@@ -378,17 +376,27 @@ mod tests {
     fn origin_must_match_host_when_present() {
         assert!(origin_allowed(None, "127.0.0.1:57893"));
         assert!(origin_allowed(Some(""), "127.0.0.1:57893"));
-        assert!(origin_allowed(Some("http://127.0.0.1:57893"), "127.0.0.1:57893"));
-        assert!(!origin_allowed(Some("http://evil.example.com"), "127.0.0.1:57893"));
+        assert!(origin_allowed(
+            Some("http://127.0.0.1:57893"),
+            "127.0.0.1:57893"
+        ));
+        assert!(!origin_allowed(
+            Some("http://evil.example.com"),
+            "127.0.0.1:57893"
+        ));
     }
 
     /// `Content-Type` 只看 MIME 主体（客户端会带 `charset`）。
     #[test]
     fn content_type_must_be_json() {
         assert!(content_type_is_json(Some("application/json")));
-        assert!(content_type_is_json(Some("application/json; charset=utf-8")));
+        assert!(content_type_is_json(Some(
+            "application/json; charset=utf-8"
+        )));
         assert!(!content_type_is_json(Some("text/plain")));
-        assert!(!content_type_is_json(Some("application/x-www-form-urlencoded")));
+        assert!(!content_type_is_json(Some(
+            "application/x-www-form-urlencoded"
+        )));
         assert!(!content_type_is_json(None));
     }
 
@@ -398,13 +406,21 @@ mod tests {
         let ok = ("127.0.0.1:57893", None, "application/json", 128);
         assert_eq!(validate(Some(ok.0), ok.1, Some(ok.2), ok.3), Ok(()));
 
-        assert_eq!(validate(None, None, Some("application/json"), 1), Err(Reject::BadHost));
+        assert_eq!(
+            validate(None, None, Some("application/json"), 1),
+            Err(Reject::BadHost)
+        );
         assert_eq!(
             validate(Some("evil.com"), None, Some("application/json"), 1),
             Err(Reject::BadHost)
         );
         assert_eq!(
-            validate(Some("127.0.0.1:1"), Some("http://evil.com"), Some("application/json"), 1),
+            validate(
+                Some("127.0.0.1:1"),
+                Some("http://evil.com"),
+                Some("application/json"),
+                1
+            ),
             Err(Reject::BadOrigin)
         );
         assert_eq!(
@@ -412,12 +428,22 @@ mod tests {
             Err(Reject::BadContentType)
         );
         assert_eq!(
-            validate(Some("127.0.0.1:1"), None, Some("application/json"), MAX_BODY_BYTES + 1),
+            validate(
+                Some("127.0.0.1:1"),
+                None,
+                Some("application/json"),
+                MAX_BODY_BYTES + 1
+            ),
             Err(Reject::TooLarge)
         );
         // 边界：正好等于上限**放行**（`>` 而不是 `>=`）
         assert_eq!(
-            validate(Some("127.0.0.1:1"), None, Some("application/json"), MAX_BODY_BYTES),
+            validate(
+                Some("127.0.0.1:1"),
+                None,
+                Some("application/json"),
+                MAX_BODY_BYTES
+            ),
             Ok(())
         );
     }
@@ -427,7 +453,10 @@ mod tests {
     fn reject_maps_to_status_codes() {
         assert_eq!(Reject::BadHost.status(), StatusCode::FORBIDDEN);
         assert_eq!(Reject::BadOrigin.status(), StatusCode::FORBIDDEN);
-        assert_eq!(Reject::BadContentType.status(), StatusCode::UNSUPPORTED_MEDIA_TYPE);
+        assert_eq!(
+            Reject::BadContentType.status(),
+            StatusCode::UNSUPPORTED_MEDIA_TYPE
+        );
         assert_eq!(Reject::TooLarge.status(), StatusCode::PAYLOAD_TOO_LARGE);
     }
 
@@ -439,8 +468,14 @@ mod tests {
     fn non_hook_argv_is_not_claimed() {
         assert_eq!(try_run_hook_cli(&[]), None);
         assert_eq!(try_run_hook_cli(&["app.exe".to_string()]), None);
-        assert_eq!(try_run_hook_cli(&["app.exe".to_string(), "serve".to_string()]), None);
-        assert_eq!(try_run_hook_cli(&["app.exe".to_string(), "--version".to_string()]), None);
+        assert_eq!(
+            try_run_hook_cli(&["app.exe".to_string(), "serve".to_string()]),
+            None
+        );
+        assert_eq!(
+            try_run_hook_cli(&["app.exe".to_string(), "--version".to_string()]),
+            None
+        );
     }
 
     /// 接收端只绑回环地址（基线 1）。
@@ -449,7 +484,10 @@ mod tests {
     #[test]
     fn receiver_binds_loopback_only() {
         let addr = addr();
-        assert!(addr.ip().is_loopback(), "接收端绝不能绑到非回环地址：{addr}");
+        assert!(
+            addr.ip().is_loopback(),
+            "接收端绝不能绑到非回环地址：{addr}"
+        );
         assert_eq!(addr.port(), HOOK_PORT);
     }
 
@@ -519,7 +557,11 @@ mod tests {
     /// `--source` 是**最后一个**参数（缺值）⇒ 不得 panic，回落国内版。
     #[test]
     fn dangling_source_flag_is_harmless() {
-        let args = vec!["app.exe".to_string(), "hook".to_string(), "--source".to_string()];
+        let args = vec![
+            "app.exe".to_string(),
+            "hook".to_string(),
+            "--source".to_string(),
+        ];
         assert_eq!(source_from_args(&args), SOURCE_WORKBUDDY_CN);
     }
 }

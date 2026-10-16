@@ -14,12 +14,6 @@
 use serde_json::{json, Value};
 use std::time::Duration;
 
-use super::{
-    activity, cat, checkin, config, refresh,
-    region::Region,
-    schedule::{self, ScheduleConfig, ScheduleTask},
-    school, travel,
-};
 /// Trae 分区（第二条产品线）的定时签到。**与上面的 `checkin` 是两套**：
 /// 前者签 WorkBuddy 的账号库，它签 Trae 的区域账号库，两者数据、端点、凭据全不相通。
 ///
@@ -27,6 +21,12 @@ use super::{
 /// 「请求参数 > 用户设置 > 内置默认」在 handlers 里单点承担，绕过去就会让设置页的
 /// 「重试次数 / 跳过已签 / 跳过过期」对自动签到失效（本仓库已踩过三次的假控件）。
 use super::trae::handlers as trae_handlers;
+use super::{
+    activity, cat, checkin, config, refresh,
+    region::Region,
+    schedule::{self, ScheduleConfig, ScheduleTask},
+    school, travel,
+};
 
 /// 任务被禁用（`hours` 为空）时重查配置的间隔：1 分钟。
 ///

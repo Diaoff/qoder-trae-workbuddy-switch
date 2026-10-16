@@ -497,9 +497,7 @@ fn gateway_round(
 ///
 /// 回落口径：直接命中 uid → 唯一命中某账号的展示名 / email / 昵称 → 否则**原样保留**
 /// （歧义 / 未知**绝不**错贴到别的账号；前端 join 落空即渲染「—」，与本模块的诚实取向一致）。
-fn load_gateway_identity(
-    region: Region,
-) -> (HashSet<String>, HashMap<String, Option<String>>) {
+fn load_gateway_identity(region: Region) -> (HashSet<String>, HashMap<String, Option<String>>) {
     let mut uids: HashSet<String> = HashSet::new();
     let mut names: HashMap<String, Option<String>> = HashMap::new();
     for account_value in account::load_accounts_for(region) {
@@ -600,12 +598,18 @@ fn number_u64(value: &Value) -> Option<u64> {
     value
         .as_u64()
         .or_else(|| value.as_i64().and_then(|n| u64::try_from(n).ok()))
-        .or_else(|| value.as_f64().filter(|n| n.is_finite() && *n >= 0.0).map(|n| n as u64))
+        .or_else(|| {
+            value
+                .as_f64()
+                .filter(|n| n.is_finite() && *n >= 0.0)
+                .map(|n| n as u64)
+        })
         .or_else(|| value.as_str()?.trim().parse::<u64>().ok())
 }
 
 fn field_u64(object: &Map<String, Value>, keys: &[&str]) -> Option<u64> {
-    keys.iter().find_map(|key| object.get(*key).and_then(number_u64))
+    keys.iter()
+        .find_map(|key| object.get(*key).and_then(number_u64))
 }
 
 /// usage 对象的锚点：必须含输入字段（输入可以为 0，故不以 `> 0` 判定）。
@@ -620,15 +624,19 @@ fn usage_object(value: &Value) -> Option<&Map<String, Value>> {
 fn extract_usage(value: &Value) -> Option<(u64, u64)> {
     let provider = value.get("providerData");
     let candidates = [
-        value.get("message").and_then(|message| message.get("usage")),
+        value
+            .get("message")
+            .and_then(|message| message.get("usage")),
         provider.and_then(|data| data.get("usage")),
         value.get("usage"),
     ];
     let selected = candidates.into_iter().flatten().find_map(usage_object)?;
-    let input =
-        field_u64(selected, &["input_tokens", "inputTokens", "prompt_tokens"]).unwrap_or(0);
-    let output =
-        field_u64(selected, &["output_tokens", "outputTokens", "completion_tokens"]).unwrap_or(0);
+    let input = field_u64(selected, &["input_tokens", "inputTokens", "prompt_tokens"]).unwrap_or(0);
+    let output = field_u64(
+        selected,
+        &["output_tokens", "outputTokens", "completion_tokens"],
+    )
+    .unwrap_or(0);
     Some((input, output))
 }
 
@@ -785,10 +793,7 @@ fn scan_client_rows(root: &Path, day: &str) -> Vec<ClientUsageRow> {
 
     let mut collected = per_file.into_inner().unwrap();
     collected.sort_by_key(|(index, _)| *index);
-    collected
-        .into_iter()
-        .flat_map(|(_, rows)| rows)
-        .collect()
+    collected.into_iter().flat_map(|(_, rows)| rows).collect()
 }
 
 fn table_columns(conn: &Connection, table: &str) -> Vec<String> {
@@ -901,8 +906,12 @@ pub fn record_gateway_today(region: Region) -> Value {
         .filter_map(|value| value.get("ts").and_then(Value::as_i64))
         .min()
         .and_then(local_date_string);
-    let truncated =
-        gateway_log_truncated_today(entries.len(), gateway_log_keep(), oldest_day.as_deref(), &day);
+    let truncated = gateway_log_truncated_today(
+        entries.len(),
+        gateway_log_keep(),
+        oldest_day.as_deref(),
+        &day,
+    );
     let (uids, names) = load_gateway_identity(region);
     let rows = parse_gateway_rows(&entries);
 
@@ -996,8 +1005,7 @@ pub fn record_client_today(region: Region, force: bool) -> Value {
         for (uid, bucket) in per_account {
             record.accounts.entry(uid).or_default().client = bucket;
         }
-        record.unknown_client =
-            (unknown.input > 0 || unknown.output > 0).then_some(unknown);
+        record.unknown_client = (unknown.input > 0 || unknown.output > 0).then_some(unknown);
     }
     store.client_scanned_at_ms = Some(at);
     prune_store(&mut store, at);
@@ -1279,7 +1287,10 @@ mod tests {
 
         assert_eq!(per_account.len(), 1);
         assert_eq!(per_account.get("uid-a").unwrap().input, 10);
-        assert_eq!(unknown.input, 7, "无法归属的用量必须进 unknown，绝不并入 uid-a");
+        assert_eq!(
+            unknown.input, 7,
+            "无法归属的用量必须进 unknown，绝不并入 uid-a"
+        );
         assert_eq!(unknown.output, 3);
     }
 
@@ -1305,7 +1316,11 @@ mod tests {
         );
 
         assert_eq!(per_account.len(), 1);
-        assert_eq!(per_account.get("uid-a").unwrap().input, 10, "只取 cn + 今日");
+        assert_eq!(
+            per_account.get("uid-a").unwrap().input,
+            10,
+            "只取 cn + 今日"
+        );
         assert_eq!(per_account.get("uid-a").unwrap().output, 2);
     }
 
@@ -1341,8 +1356,7 @@ mod tests {
             json!({"ts": today, "region": "cn", "account": "a@example.com",
                    "promptTokens": 5, "completionTokens": 1}),
         ];
-        let uids: HashSet<String> =
-            HashSet::from(["uid-a".to_string(), "uid-b".to_string()]);
+        let uids: HashSet<String> = HashSet::from(["uid-a".to_string(), "uid-b".to_string()]);
         let mut names: HashMap<String, Option<String>> = HashMap::new();
         names.insert("a@example.com".to_string(), Some("uid-a".to_string()));
         names.insert("重名".to_string(), None);
@@ -1443,7 +1457,10 @@ mod tests {
         assert_eq!(wm, Some(t2), "水位线推进到本轮最大 ts");
 
         // 把校正值落进「桶」（等价 record_gateway_today 的取大应用）。
-        let mut bucket = Bucket { input: 30, output: 3 };
+        let mut bucket = Bucket {
+            input: 30,
+            output: 3,
+        };
 
         // 第 2 轮：t1 被裁、t3 新增 ⇒ 走增量。
         let (second, wm2) = gw_round_cn(wm, &[gw_row(t2, 20, 2), gw_row(t3, 7, 1)]);
@@ -1453,7 +1470,9 @@ mod tests {
             7,
             "只应累加水位线之后的新增（旧实现整窗覆盖 ⇒ 20+7=27，比上一轮还小）"
         );
-        bucket.input = bucket.input.saturating_add(second.get("uid-a").unwrap().input);
+        bucket.input = bucket
+            .input
+            .saturating_add(second.get("uid-a").unwrap().input);
         assert_eq!(bucket.input, 37, "累计值必须只增不减");
         assert_eq!(wm2, Some(t3));
 
@@ -1478,7 +1497,11 @@ mod tests {
         // 旧版本的遗留桶没有水位线 ⇒ 走校正轮：输出 = 整窗读数，水位线播种。
         let (write, wm) = gw_round_cn(None, &[gw_row(t1, 10, 1), gw_row(t2, 20, 2)]);
         let corrected = correct_map(write);
-        assert_eq!(corrected.get("uid-a").unwrap().input, 30, "校正轮输出 = 当前窗口合计");
+        assert_eq!(
+            corrected.get("uid-a").unwrap().input,
+            30,
+            "校正轮输出 = 当前窗口合计"
+        );
         assert_eq!(wm, Some(t2), "校正轮同时播种水位线");
 
         // 应用端取大（两个方向）：
@@ -1516,9 +1539,17 @@ mod tests {
         ];
 
         let (write, wm) = gw_round_cn(None, &entries);
-        assert_eq!(wm, Some(t1), "水位线 = 本 region 本日的最大 ts（99/77 那两行都不算）");
+        assert_eq!(
+            wm,
+            Some(t1),
+            "水位线 = 本 region 本日的最大 ts（99/77 那两行都不算）"
+        );
         let corrected = correct_map(write);
-        assert_eq!(corrected.get("uid-a").unwrap().input, 10, "只计 cn + 今日的行");
+        assert_eq!(
+            corrected.get("uid-a").unwrap().input,
+            10,
+            "只计 cn + 今日的行"
+        );
         assert!(!corrected.contains_key("uid-g"), "global 行不得进 cn 桶");
     }
 
@@ -1592,7 +1623,11 @@ mod tests {
                 })
                 .unwrap_or(0)
         };
-        assert_eq!(value_of(&first, "uid-a"), 33, "旧值 5 比窗口 33 小 ⇒ 校正轮抬升");
+        assert_eq!(
+            value_of(&first, "uid-a"),
+            33,
+            "旧值 5 比窗口 33 小 ⇒ 校正轮抬升"
+        );
         assert_eq!(
             value_of(&first, "uid-b"),
             1008,
@@ -1635,32 +1670,12 @@ mod tests {
             .to_string();
 
         // 没到上限：无论最旧条目是哪天，都没丢过东西。
-        assert!(!gateway_log_truncated_today(
-            5,
-            200,
-            Some(&today),
-            &today
-        ));
-        assert!(!gateway_log_truncated_today(
-            199,
-            200,
-            Some(&today),
-            &today
-        ));
+        assert!(!gateway_log_truncated_today(5, 200, Some(&today), &today));
+        assert!(!gateway_log_truncated_today(199, 200, Some(&today), &today));
 
         // 到上限 + 最旧存活条目是今天 ⇒ 今天的条目可能被丢过 ⇒ 真。
-        assert!(gateway_log_truncated_today(
-            200,
-            200,
-            Some(&today),
-            &today
-        ));
-        assert!(gateway_log_truncated_today(
-            201,
-            200,
-            Some(&today),
-            &today
-        ));
+        assert!(gateway_log_truncated_today(200, 200, Some(&today), &today));
+        assert!(gateway_log_truncated_today(201, 200, Some(&today), &today));
 
         // ★ 误报杀手：到上限但最旧存活条目**早于今天** ⇒ 今天的条目一条没丢 ⇒ 假。
         assert!(!gateway_log_truncated_today(
@@ -1687,14 +1702,20 @@ mod tests {
         day_a.accounts.insert(
             "u1".to_string(),
             AccountRecord {
-                gateway: Bucket { input: 10, output: 2 },
+                gateway: Bucket {
+                    input: 10,
+                    output: 2,
+                },
                 ..Default::default()
             },
         );
         day_a.accounts.insert(
             "u2".to_string(),
             AccountRecord {
-                gateway: Bucket { input: 5, output: 1 },
+                gateway: Bucket {
+                    input: 5,
+                    output: 1,
+                },
                 ..Default::default()
             },
         );
@@ -1706,7 +1727,10 @@ mod tests {
         day_b.accounts.insert(
             "u1".to_string(),
             AccountRecord {
-                client: Bucket { input: 999, output: 0 },
+                client: Bucket {
+                    input: 999,
+                    output: 0,
+                },
                 ..Default::default()
             },
         );
@@ -1740,14 +1764,23 @@ mod tests {
         day.accounts.insert(
             "u1".to_string(),
             AccountRecord {
-                client: Bucket { input: 7, output: 7 },
-                gateway: Bucket { input: 1, output: 1 },
+                client: Bucket {
+                    input: 7,
+                    output: 7,
+                },
+                gateway: Bucket {
+                    input: 1,
+                    output: 1,
+                },
                 ..Default::default()
             },
         );
         store.days.insert("2026-10-10".to_string(), day);
         let points = gateway_trend_points(&store);
-        assert_eq!(points[0]["total"], 2, "只应汇总 gateway 桶（7+7=14 是 client 的量）");
+        assert_eq!(
+            points[0]["total"], 2,
+            "只应汇总 gateway 桶（7+7=14 是 client 的量）"
+        );
     }
 
     /// (e) 保留裁剪丢掉超过保留窗的日期；条数上限丢最旧。
@@ -1755,16 +1788,20 @@ mod tests {
     fn prune_drops_days_older_than_the_cap() {
         let now = at_local_date(0, 12);
         let mut store = empty_store();
-        let old_key = (Local::now().date_naive() - ChronoDuration::days(TOKEN_DAILY_RETENTION_DAYS))
-            .format("%Y-%m-%d")
-            .to_string();
+        let old_key = (Local::now().date_naive()
+            - ChronoDuration::days(TOKEN_DAILY_RETENTION_DAYS))
+        .format("%Y-%m-%d")
+        .to_string();
         let today_key = local_date_string(now).unwrap();
         store.days.insert(old_key.clone(), DayRecord::default());
         store.days.insert(today_key.clone(), DayRecord::default());
 
         prune_store(&mut store, now);
 
-        assert!(!store.days.contains_key(&old_key), "超过保留天数的日期必须被丢弃");
+        assert!(
+            !store.days.contains_key(&old_key),
+            "超过保留天数的日期必须被丢弃"
+        );
         assert!(store.days.contains_key(&today_key), "今日必须保留");
 
         // 条数上限守卫：塞入保留窗内的日期，超出上限时丢最旧。
@@ -1844,7 +1881,12 @@ mod tests {
         );
 
         // `force` ⇒ 总是重扫；从未扫过 ⇒ 重扫。
-        assert!(!client_scan_is_fresh(true, Some(after_midnight), after_midnight + 1_000, &day));
+        assert!(!client_scan_is_fresh(
+            true,
+            Some(after_midnight),
+            after_midnight + 1_000,
+            &day
+        ));
         assert!(!client_scan_is_fresh(false, None, today, &day));
     }
 
@@ -1865,13 +1907,23 @@ mod tests {
 
     /// mtime 预筛判据：信息缺失时**放行**（宁可慢，不可漏）。
     #[test]
-    fn mtime_prefilter_falls_open_when_information_is_missing() {        assert!(mtime_may_hold_day(None, Some(1_000_000)), "读不到 mtime 必须放行");
+    fn mtime_prefilter_falls_open_when_information_is_missing() {
+        assert!(
+            mtime_may_hold_day(None, Some(1_000_000)),
+            "读不到 mtime 必须放行"
+        );
         assert!(mtime_may_hold_day(Some(1), None), "算不出日界必须放行");
         assert!(mtime_may_hold_day(None, None));
         // 日界前 1 小时之内（余量内）仍放行；再早就不放行。
         let start = 10 * 86_400_000;
-        assert!(mtime_may_hold_day(Some(start - CLIENT_SCAN_MTIME_SKEW_MS), Some(start)));
-        assert!(!mtime_may_hold_day(Some(start - CLIENT_SCAN_MTIME_SKEW_MS - 1), Some(start)));
+        assert!(mtime_may_hold_day(
+            Some(start - CLIENT_SCAN_MTIME_SKEW_MS),
+            Some(start)
+        ));
+        assert!(!mtime_may_hold_day(
+            Some(start - CLIENT_SCAN_MTIME_SKEW_MS - 1),
+            Some(start)
+        ));
     }
 
     /// ★ mtime 预筛的**行为**（真文件、真 mtime）：新鲜的当日记录必须读到，陈旧的被跳过。
@@ -1898,7 +1950,8 @@ mod tests {
                 .write(true)
                 .open(path)
                 .expect("open for mtime");
-            let when = SystemTime::UNIX_EPOCH + Duration::from_millis(u64::try_from(at_ms).unwrap());
+            let when =
+                SystemTime::UNIX_EPOCH + Duration::from_millis(u64::try_from(at_ms).unwrap());
             file.set_modified(when).expect("set mtime");
         };
         let line = |session_id: &str, ts: i64, input: u64| {

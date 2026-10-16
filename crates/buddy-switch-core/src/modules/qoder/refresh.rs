@@ -20,9 +20,9 @@ use serde_json::{json, Value};
 
 use super::account::{self, RawAccount};
 use super::api::{self, RefreshKind};
+use super::region::QoderRegion;
 use super::store;
 use super::token::{self, TokenKind};
-use super::region::QoderRegion;
 
 /// 刷新路由（由凭据形态选出，见模块头）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -69,8 +69,8 @@ pub fn plan_refresh(account: &RawAccount) -> Result<RefreshPlan, String> {
 
 /// 刷新一条账号的令牌并回写账号库。返回面向命令面的视图（**不含令牌明文**）。
 pub async fn refresh_for(region: QoderRegion, uid: &str) -> Result<Value, String> {
-    let account = account::find_account_for(region, uid)
-        .ok_or_else(|| format!("账号不存在: {uid}"))?;
+    let account =
+        account::find_account_for(region, uid).ok_or_else(|| format!("账号不存在: {uid}"))?;
     let plan = plan_refresh(&account)?;
 
     let refreshed = match plan {

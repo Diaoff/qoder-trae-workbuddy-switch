@@ -156,8 +156,7 @@ mod tests {
             "登录成功",
             &[
                 "账号 [Jackey] 登录成功".to_string(),
-                "账号已添加到 Buddy Switch 的 Trae CN 账号库，可关闭此页面返回应用。"
-                    .to_string(),
+                "账号已添加到 Buddy Switch 的 Trae CN 账号库，可关闭此页面返回应用。".to_string(),
             ],
         );
 
@@ -165,7 +164,10 @@ mod tests {
         assert!(html.contains("</html>"), "{html}");
         assert!(html.contains("登录成功"), "{html}");
         assert!(html.contains("账号 [Jackey] 登录成功"), "{html}");
-        assert!(html.contains("Trae CN"), "结果页必须点明账号落在哪个区域库: {html}");
+        assert!(
+            html.contains("Trae CN"),
+            "结果页必须点明账号落在哪个区域库: {html}"
+        );
         // 成功页用绿底 ✓，与参考实现同色。
         assert!(html.contains("#16a34a"), "{html}");
         assert!(html.contains("✓"), "{html}");
@@ -189,7 +191,10 @@ mod tests {
         );
         assert!(html.contains("&lt;script&gt;"), "{html}");
         assert!(html.contains("&amp;"), "& 必须先于其他实体被替换: {html}");
-        assert!(!html.contains("&amp;lt;"), "& 替换顺序错了，实体被二次转义: {html}");
+        assert!(
+            !html.contains("&amp;lt;"),
+            "& 替换顺序错了，实体被二次转义: {html}"
+        );
         // 引号也要转义（属性上下文）
         assert!(!html.contains("alert('x')"), "{html}");
     }

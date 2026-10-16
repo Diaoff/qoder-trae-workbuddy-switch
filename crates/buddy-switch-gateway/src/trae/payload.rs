@@ -21,7 +21,9 @@ use std::collections::BTreeSet;
 use buddy_switch_core::modules::trae::model_list::ClientModelList;
 use buddy_switch_core::modules::trae::variant::TraeVariant;
 
-use super::{function_for, TRAE_APP_ID, TRAE_DEFAULT_MODEL, TRAE_IDE_VERSION, TRAE_IDE_VERSION_CODE};
+use super::{
+    function_for, TRAE_APP_ID, TRAE_DEFAULT_MODEL, TRAE_IDE_VERSION, TRAE_IDE_VERSION_CODE,
+};
 
 /// 模型名映射：`模型名 → (config_name, model_name)`。
 ///
@@ -50,13 +52,18 @@ pub fn model_config(model: &str) -> (String, String) {
     let name = model.trim();
     // 空名（配置里 `defaultModel` 被清空这类退化输入）用兜底默认模型派生，
     // 同样**不**回落成某个碰巧写死的模型。
-    let name = if name.is_empty() { TRAE_DEFAULT_MODEL } else { name };
+    let name = if name.is_empty() {
+        TRAE_DEFAULT_MODEL
+    } else {
+        name
+    };
 
     let known = match name.to_lowercase().as_str() {
         "deepseek-v4-flash" => Some(("DeepSeek-V4-Flash", "deepseek_v4_flash__dev")),
-        "deepseek-v4-flash-official" => {
-            Some(("DeepSeek-V4-Flash-Official", "DeepSeek-V4-Flash-Official__dev"))
-        }
+        "deepseek-v4-flash-official" => Some((
+            "DeepSeek-V4-Flash-Official",
+            "DeepSeek-V4-Flash-Official__dev",
+        )),
         "deepseek-v4-pro" => Some(("DeepSeek-V4-Pro", "deepseek_v4_pro__dev")),
         "glm-5.2" => Some(("glm-5.2", "glm-5.2__dev")),
         "glm-5.3" => Some(("glm-5.3", "glm-5.3__dev")),
@@ -494,12 +501,21 @@ mod tests {
         // 表里登记的：大小写归一 + 历史别名，行为与改造前**逐字一致**。
         assert_eq!(
             model_config("DeepSeek-V4-Flash"),
-            ("DeepSeek-V4-Flash".to_string(), "deepseek_v4_flash__dev".to_string())
+            (
+                "DeepSeek-V4-Flash".to_string(),
+                "deepseek_v4_flash__dev".to_string()
+            )
         );
-        assert_eq!(model_config("  GLM-5.3 "), ("glm-5.3".to_string(), "glm-5.3__dev".to_string()));
+        assert_eq!(
+            model_config("  GLM-5.3 "),
+            ("glm-5.3".to_string(), "glm-5.3__dev".to_string())
+        );
         assert_eq!(
             model_config("seed-code-pro-0430"),
-            ("Doubao-Seed-2.1-Pro".to_string(), "Doubao-Seed-2.1-Pro__dev".to_string())
+            (
+                "Doubao-Seed-2.1-Pro".to_string(),
+                "Doubao-Seed-2.1-Pro__dev".to_string()
+            )
         );
     }
 
@@ -515,16 +531,25 @@ mod tests {
     fn unknown_model_is_derived_not_silently_swapped() {
         assert_eq!(
             model_config("glm-5.3-flash"),
-            ("glm-5.3-flash".to_string(), "glm-5.3-flash__dev".to_string())
+            (
+                "glm-5.3-flash".to_string(),
+                "glm-5.3-flash__dev".to_string()
+            )
         );
         assert_eq!(
             model_config("  qwen3.8-flash  "),
-            ("qwen3.8-flash".to_string(), "qwen3.8-flash__dev".to_string()),
+            (
+                "qwen3.8-flash".to_string(),
+                "qwen3.8-flash__dev".to_string()
+            ),
             "派生必须用 trim 之后的名字"
         );
         assert_eq!(
             model_config("step-5-preview"),
-            ("step-5-preview".to_string(), "step-5-preview__dev".to_string())
+            (
+                "step-5-preview".to_string(),
+                "step-5-preview__dev".to_string()
+            )
         );
         // 退化输入（配置里 `defaultModel` 被清空）：退回**内置默认模型**再正常解析，
         // 与「未指定模型」的既有语义一致（`prepare_llm_chat_body` 也走这条）。
@@ -716,8 +741,14 @@ mod tests {
         // 每个名字都必须能解析出非空的 config_name / model_name（派生规则生效）。
         for name in MODEL_NAMES {
             let (config_name, model_name) = model_config(name);
-            assert!(!config_name.is_empty() && !model_name.is_empty(), "{name} 解析为空");
-            assert!(model_name.ends_with("__dev"), "{name} 的 model_name 应为 __dev 形态");
+            assert!(
+                !config_name.is_empty() && !model_name.is_empty(),
+                "{name} 解析为空"
+            );
+            assert!(
+                model_name.ends_with("__dev"),
+                "{name} 的 model_name 应为 __dev 形态"
+            );
         }
     }
 
@@ -792,7 +823,10 @@ mod tests {
         assert_eq!(function_for(TraeVariant::Global), TRAE_FUNCTION_SOLO_WORK);
         // TraeCode 家族用 `chat_v3`（实测能调 glm-5.3-flash）。
         assert_eq!(function_for(TraeVariant::Trae), TRAE_FUNCTION_CHAT_V3);
-        assert_eq!(function_for(TraeVariant::GlobalTraeCode), TRAE_FUNCTION_CHAT_V3);
+        assert_eq!(
+            function_for(TraeVariant::GlobalTraeCode),
+            TRAE_FUNCTION_CHAT_V3
+        );
         // ★ 两个家族必须**不同** —— 否则「分家」等于没分。
         assert_ne!(
             function_for(TraeVariant::TraeWork),

@@ -387,7 +387,10 @@ mod tests {
         // 3) 无配置文件时回落到本项目自己的坐标。
         std::fs::remove_file(&file).expect("remove config");
         let cfg = load_github_config();
-        assert_eq!(cfg.get("owner").and_then(|v| v.as_str()), Some(GITHUB_OWNER));
+        assert_eq!(
+            cfg.get("owner").and_then(|v| v.as_str()),
+            Some(GITHUB_OWNER)
+        );
         assert_eq!(cfg.get("repo").and_then(|v| v.as_str()), Some(GITHUB_REPO));
 
         std::fs::remove_dir_all(&home).expect("cleanup isolated home");

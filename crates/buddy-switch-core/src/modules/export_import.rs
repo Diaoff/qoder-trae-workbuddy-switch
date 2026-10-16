@@ -641,7 +641,12 @@ mod tests {
     fn merge_allow_policy_imports_records_without_token() {
         let mut accounts: Vec<Value> = vec![];
         let item = json!({ "id": "a1", "uid": "u1", "nickname": "无凭据" });
-        let outcome = merge_import_record(&mut accounts, &item, ConflictPolicy::KeepLocal, TokenPolicy::Allow);
+        let outcome = merge_import_record(
+            &mut accounts,
+            &item,
+            ConflictPolicy::KeepLocal,
+            TokenPolicy::Allow,
+        );
         assert_eq!(outcome, MergeOutcome::Appended);
         assert_eq!(accounts.len(), 1, "无 token 记录在 Allow 下必须合入");
     }
@@ -650,8 +655,14 @@ mod tests {
     #[test]
     fn merge_keep_local_preserves_local_record() {
         let mut accounts = vec![record("local", Some("u1"), "本地", None, true)];
-        let item = json!({ "id": "imported", "uid": "u1", "nickname": "导入", "access_token": "t" });
-        let outcome = merge_import_record(&mut accounts, &item, ConflictPolicy::KeepLocal, TokenPolicy::Allow);
+        let item =
+            json!({ "id": "imported", "uid": "u1", "nickname": "导入", "access_token": "t" });
+        let outcome = merge_import_record(
+            &mut accounts,
+            &item,
+            ConflictPolicy::KeepLocal,
+            TokenPolicy::Allow,
+        );
         assert_eq!(outcome, MergeOutcome::KeptLocal);
         assert_eq!(accounts.len(), 1, "保留本地不得增行（幂等的核心）");
         assert_eq!(accounts[0]["id"], "local");
@@ -662,8 +673,14 @@ mod tests {
     #[test]
     fn merge_keep_both_appends_with_fresh_id() {
         let mut accounts = vec![record("local", Some("u1"), "本地", None, true)];
-        let item = json!({ "id": "imported", "uid": "u1", "nickname": "导入", "access_token": "t" });
-        let outcome = merge_import_record(&mut accounts, &item, ConflictPolicy::KeepBoth, TokenPolicy::Allow);
+        let item =
+            json!({ "id": "imported", "uid": "u1", "nickname": "导入", "access_token": "t" });
+        let outcome = merge_import_record(
+            &mut accounts,
+            &item,
+            ConflictPolicy::KeepBoth,
+            TokenPolicy::Allow,
+        );
         assert_eq!(outcome, MergeOutcome::KeptBoth);
         assert_eq!(accounts.len(), 2, "KeepBoth 必须增行");
         // 追加记录的 id 不得与本地 id 撞车。
@@ -675,8 +692,14 @@ mod tests {
     #[test]
     fn merge_ask_falls_back_to_keep_local() {
         let mut accounts = vec![record("local", Some("u1"), "本地", None, true)];
-        let item = json!({ "id": "imported", "uid": "u1", "nickname": "导入", "access_token": "t" });
-        let outcome = merge_import_record(&mut accounts, &item, ConflictPolicy::Ask, TokenPolicy::Allow);
+        let item =
+            json!({ "id": "imported", "uid": "u1", "nickname": "导入", "access_token": "t" });
+        let outcome = merge_import_record(
+            &mut accounts,
+            &item,
+            ConflictPolicy::Ask,
+            TokenPolicy::Allow,
+        );
         assert_eq!(outcome, MergeOutcome::KeptLocal);
         assert_eq!(accounts.len(), 1);
         assert_eq!(accounts[0]["nickname"], "本地");
@@ -690,7 +713,10 @@ mod tests {
     fn conflict_policy_parse_is_fail_closed() {
         assert_eq!(ConflictPolicy::parse(""), Ok(ConflictPolicy::KeepLocal));
         assert_eq!(ConflictPolicy::parse("  "), Ok(ConflictPolicy::KeepLocal));
-        assert!(ConflictPolicy::parse("keapLocal").is_err(), "拼错必须拒绝，不得回落");
+        assert!(
+            ConflictPolicy::parse("keapLocal").is_err(),
+            "拼错必须拒绝，不得回落"
+        );
         assert!(ConflictPolicy::parse("覆盖").is_err(), "非契约取值必须拒绝");
         for policy in [
             ConflictPolicy::KeepLocal,
@@ -698,7 +724,11 @@ mod tests {
             ConflictPolicy::KeepBoth,
             ConflictPolicy::Ask,
         ] {
-            assert_eq!(ConflictPolicy::parse(policy.as_str()), Ok(policy), "往返不一致");
+            assert_eq!(
+                ConflictPolicy::parse(policy.as_str()),
+                Ok(policy),
+                "往返不一致"
+            );
         }
     }
 }

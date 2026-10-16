@@ -32,7 +32,8 @@ use std::collections::BTreeSet;
 
 use axum::http::StatusCode;
 use buddy_switch_gateway::unified::{
-    router, spawn_listener_with_state, UnifiedApiKeyStore, UnifiedGatewayConfig, UnifiedGatewayState,
+    router, spawn_listener_with_state, UnifiedApiKeyStore, UnifiedGatewayConfig,
+    UnifiedGatewayState,
 };
 use serde_json::Value;
 
@@ -78,7 +79,12 @@ async fn start_gateway(
     key_namespaces: &[&str],
     biz_namespace: Option<&str>,
     tune: impl FnOnce(&mut UnifiedGatewayConfig),
-) -> (String, String, std::path::PathBuf, buddy_switch_gateway::GatewayHandle) {
+) -> (
+    String,
+    String,
+    std::path::PathBuf,
+    buddy_switch_gateway::GatewayHandle,
+) {
     let (base, key, dir, handle, _state) =
         start_gateway_with_state(key_namespaces, biz_namespace, tune).await;
     (base, key, dir, handle)
@@ -156,7 +162,10 @@ async fn send(
             .header("content-type", "application/json")
             .body(body.to_string());
     }
-    let response = request.send().await.expect("请求应送达（连不上说明监听没起来）");
+    let response = request
+        .send()
+        .await
+        .expect("请求应送达（连不上说明监听没起来）");
     let status = StatusCode::from_u16(response.status().as_u16()).unwrap();
     let json: Value = response.json().await.unwrap_or(Value::Null);
     (status, json)
@@ -167,7 +176,13 @@ async fn get(base: &str, path: &str, key: Option<&str>) -> (StatusCode, Value) {
 }
 
 async fn post(base: &str, path: &str, key: Option<&str>, body: &str) -> (StatusCode, Value) {
-    send(reqwest::Method::POST, format!("{base}{path}"), key, Some(body)).await
+    send(
+        reqwest::Method::POST,
+        format!("{base}{path}"),
+        key,
+        Some(body),
+    )
+    .await
 }
 
 /// 所有对外路径在**无凭据**下都必须是 401（不是 404、更不是 200）。
@@ -284,7 +299,10 @@ async fn models_aggregates_every_enabled_namespace_with_a_reason_per_segment() {
         // ★ 恒非空契约：非实时（或读不到）必须有原因
         if source != "live" {
             assert!(
-                meta["note"].as_str().map(|note| !note.trim().is_empty()).unwrap_or(false),
+                meta["note"]
+                    .as_str()
+                    .map(|note| !note.trim().is_empty())
+                    .unwrap_or(false),
                 "{namespace} 来源为 {source} 却没有原因（非实时必有原因）"
             );
         }
@@ -323,13 +341,22 @@ async fn namespace_guards_reject_in_the_documented_order() {
     assert_eq!(status, StatusCode::BAD_REQUEST);
     assert_eq!(body["error"]["code"], "namespace_prefix_required");
     assert!(
-        body["error"]["message"].as_str().unwrap().contains("wb-cn:"),
+        body["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("wb-cn:"),
         "应列出可用前缀：{}",
         body["error"]["message"]
     );
 
     // 2) 前缀后为空 ⇒ 400
-    let (status, body) = post(&base, "/v1/chat/completions", Some(&key), r#"{"model":"wb-cn:"}"#).await;
+    let (status, body) = post(
+        &base,
+        "/v1/chat/completions",
+        Some(&key),
+        r#"{"model":"wb-cn:"}"#,
+    )
+    .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
     assert_eq!(body["error"]["code"], "empty_model_name");
 
@@ -422,7 +449,10 @@ async fn responses_rejects_trae_namespaces_with_501() {
     )
     .await;
     assert_eq!(status, StatusCode::NOT_IMPLEMENTED);
-    assert_eq!(body["error"]["code"], "endpoint_not_supported_for_namespace");
+    assert_eq!(
+        body["error"]["code"],
+        "endpoint_not_supported_for_namespace"
+    );
     assert!(
         body["error"]["message"].as_str().unwrap().contains("wb-cn"),
         "要给出出路（改用 wb-cn: 或换端点）：{}",
@@ -442,7 +472,10 @@ async fn biz_requires_the_key_to_declare_a_namespace() {
     assert_eq!(status, StatusCode::BAD_REQUEST);
     assert_eq!(body["error"]["code"], "biz_namespace_missing");
     assert!(
-        body["error"]["message"].as_str().unwrap().contains("WorkBuddy"),
+        body["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("WorkBuddy"),
         "应说明只有 WB 合法：{}",
         body["error"]["message"]
     );
@@ -515,7 +548,11 @@ async fn biz_accepts_get_for_read_only_whitelisted_paths() {
     )
     .await;
     assert_ne!(status, StatusCode::METHOD_NOT_ALLOWED, "POST 路由没接上");
-    assert_ne!(status, StatusCode::NOT_FOUND, "白名单内的 POST 路径应被放行到中继");
+    assert_ne!(
+        status,
+        StatusCode::NOT_FOUND,
+        "白名单内的 POST 路径应被放行到中继"
+    );
 
     handle.shutdown().await;
     std::fs::remove_dir_all(dir).unwrap();
@@ -538,8 +575,7 @@ async fn biz_accepts_get_for_read_only_whitelisted_paths() {
 /// router 里，都能让 ①② 变绿。第 ③ 步证明读的是**每次请求时的配置**。
 #[tokio::test]
 async fn config_changes_apply_to_the_running_listener() {
-    let (base, key, dir, handle, state) =
-        start_gateway_with_state(&["wb-cn"], None, |_| {}).await;
+    let (base, key, dir, handle, state) = start_gateway_with_state(&["wb-cn"], None, |_| {}).await;
 
     // ① 启用中：命名空间把关**放行**，请求停在本地（隔离 home 里没有账号 ⇒ 401）。
     //
@@ -611,10 +647,8 @@ async fn occupied_port_yields_a_readable_error() {
     let mut config = UnifiedGatewayConfig::default();
     config.enabled = true;
     config.port = occupied; // 故意撞端口
-    let state = UnifiedGatewayState::with_keys(
-        config,
-        UnifiedApiKeyStore::new(dir2.join("keys.json")),
-    );
+    let state =
+        UnifiedGatewayState::with_keys(config, UnifiedApiKeyStore::new(dir2.join("keys.json")));
     let error = match spawn_listener_with_state(state).await {
         Ok(_handle) => panic!("端口已占用时应报错"),
         Err(error) => error.to_string(),
@@ -679,7 +713,12 @@ async fn router_can_be_used_without_a_listener() {
         UnifiedApiKeyStore::new(dir.join("keys.json")),
     );
     let response = router(state)
-        .oneshot(Request::builder().uri("/healthz").body(Body::empty()).unwrap())
+        .oneshot(
+            Request::builder()
+                .uri("/healthz")
+                .body(Body::empty())
+                .unwrap(),
+        )
         .await
         .unwrap();
     assert_eq!(

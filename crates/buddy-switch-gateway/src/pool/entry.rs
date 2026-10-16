@@ -332,8 +332,18 @@ impl PoolEntry {
 
     /// 软冷却（有上游重置墙钟）：`min(reset_at, now + soft_rate_max)`；
     /// 墙钟已过则退化为 1ms 的瞬时冷却（让下一次选号立刻可重试）。
-    pub fn cooldown_soft_until(&mut self, now_ms: i64, reset_at_ms: i64, max_ms: i64, reason: &str) {
-        let cap = now_ms.saturating_add(if max_ms > 0 { max_ms } else { DEFAULT_SOFT_RATE_MAX_MS });
+    pub fn cooldown_soft_until(
+        &mut self,
+        now_ms: i64,
+        reset_at_ms: i64,
+        max_ms: i64,
+        reason: &str,
+    ) {
+        let cap = now_ms.saturating_add(if max_ms > 0 {
+            max_ms
+        } else {
+            DEFAULT_SOFT_RATE_MAX_MS
+        });
         let until = if reset_at_ms > cap {
             cap
         } else if reset_at_ms > now_ms {
@@ -351,7 +361,13 @@ impl PoolEntry {
     ///
     /// 已在有效软冷却中时**兜底探测不翻倍、不延长**——否则持续探测会把冷却推向封顶，
     /// 反而让账号长期不可用。返回是否实际更新了冷却。
-    pub fn cooldown_soft_backoff(&mut self, now_ms: i64, base_ms: i64, max_ms: i64, reason: &str) -> bool {
+    pub fn cooldown_soft_backoff(
+        &mut self,
+        now_ms: i64,
+        base_ms: i64,
+        max_ms: i64,
+        reason: &str,
+    ) -> bool {
         if self.cool_kind == Some(CoolKind::Soft) && now_ms < self.until_ms {
             return false;
         }
@@ -382,11 +398,22 @@ impl PoolEntry {
     }
 
     /// 模型级独立冷却：**不写账号级 `until`**，因此切其它模型立即可用。
-    pub fn cooldown_model(&mut self, now_ms: i64, model: &str, reset_at_ms: i64, max_ms: i64, reason: &str) {
+    pub fn cooldown_model(
+        &mut self,
+        now_ms: i64,
+        model: &str,
+        reset_at_ms: i64,
+        max_ms: i64,
+        reason: &str,
+    ) {
         if model.is_empty() {
             return;
         }
-        let cap = now_ms.saturating_add(if max_ms > 0 { max_ms } else { DEFAULT_SOFT_RATE_MAX_MS });
+        let cap = now_ms.saturating_add(if max_ms > 0 {
+            max_ms
+        } else {
+            DEFAULT_SOFT_RATE_MAX_MS
+        });
         let until = if reset_at_ms > cap {
             cap
         } else if reset_at_ms > now_ms {
@@ -446,12 +473,23 @@ impl PoolEntry {
     /// 供**限流探测**用（见 `Pool::adopt_probe_result`）：`hits` 是「真实流量被罚了几次」的
     /// 历史，探测只是观测 —— 让它 +1 会把退避越推越长，而用户其实什么都没做错。
     /// 首次探测按「第 1 档」（6h）取参数，但**不落**这个计数。
-    pub fn block_model_backoff_without_hits(&mut self, now_ms: i64, model: &str, reason: &str) -> i64 {
+    pub fn block_model_backoff_without_hits(
+        &mut self,
+        now_ms: i64,
+        model: &str,
+        reason: &str,
+    ) -> i64 {
         self.block_model_backoff_inner(now_ms, model, reason, false)
     }
 
     /// [`Self::block_model_backoff`] / [`Self::block_model_backoff_without_hits`] 的唯一实现。
-    fn block_model_backoff_inner(&mut self, now_ms: i64, model: &str, reason: &str, bump: bool) -> i64 {
+    fn block_model_backoff_inner(
+        &mut self,
+        now_ms: i64,
+        model: &str,
+        reason: &str,
+        bump: bool,
+    ) -> i64 {
         if model.is_empty() {
             return 0;
         }
@@ -460,7 +498,11 @@ impl PoolEntry {
             .get(model)
             .map(|cooldown| cooldown.hits)
             .unwrap_or(0);
-        let hits = if bump { current.saturating_add(1) } else { current.max(1) };
+        let hits = if bump {
+            current.saturating_add(1)
+        } else {
+            current.max(1)
+        };
         let ttl = Self::model_block_ttl_ms(hits);
         self.model_cooldowns.insert(
             model.to_string(),
@@ -595,7 +637,8 @@ impl PoolEntry {
         let per_1k = if credit < 0.0 { 0.0 } else { credit } / tokens as f64 * 1000.0;
         match self.model_cost.get_mut(model) {
             Some(entry) => {
-                entry.cost_per_1k = entry.cost_per_1k * (1.0 - COST_EMA_ALPHA) + per_1k * COST_EMA_ALPHA;
+                entry.cost_per_1k =
+                    entry.cost_per_1k * (1.0 - COST_EMA_ALPHA) + per_1k * COST_EMA_ALPHA;
                 entry.last_seen_ms = now_ms;
                 entry.samples += 1;
             }
@@ -639,7 +682,11 @@ fn ema_step(previous: f64, sample: f64) -> f64 {
 
 /// 软冷却退避时长：`streak <= 1` 原样；否则左移 `min(streak-1, 16)` 位，超封顶取封顶。
 pub fn soft_backoff_duration(base_ms: i64, streak: i32, max_ms: i64) -> i64 {
-    let cap = if max_ms > 0 { max_ms } else { DEFAULT_SOFT_RATE_MAX_MS };
+    let cap = if max_ms > 0 {
+        max_ms
+    } else {
+        DEFAULT_SOFT_RATE_MAX_MS
+    };
     if base_ms <= 0 {
         return cap;
     }
@@ -757,7 +804,11 @@ mod tests {
 
         // 余额未知（从未刷新）⇒ 仍是可路由，不能算零积分。
         item.credits = 0;
-        assert_eq!(item.status_of(1000), "available", "credits_refreshed_ms=0 ⇒ 未知");
+        assert_eq!(
+            item.status_of(1000),
+            "available",
+            "credits_refreshed_ms=0 ⇒ 未知"
+        );
 
         item.credits_refreshed_ms = 1000;
         assert_eq!(item.status_of(1000), "no_credits");
@@ -820,11 +871,20 @@ mod tests {
     #[test]
     fn model_cooldown_is_orthogonal_to_account_cooldown() {
         let mut item = entry();
-        item.cooldown_model(1000, "glm-5.2", 0, DEFAULT_SOFT_RATE_MAX_MS, "6004 model rate limit");
+        item.cooldown_model(
+            1000,
+            "glm-5.2",
+            0,
+            DEFAULT_SOFT_RATE_MAX_MS,
+            "6004 model rate limit",
+        );
 
         assert_eq!(item.until_ms, 0, "模型级冷却不得写账号级 until");
         assert!(!item.healthy_for_model(1000, "glm-5.2"));
-        assert!(item.healthy_for_model(1000, "deepseek-v4-flash"), "切模型立即可用");
+        assert!(
+            item.healthy_for_model(1000, "deepseek-v4-flash"),
+            "切模型立即可用"
+        );
         assert!(item.healthy(1000), "账号维度仍健康");
         // 不带模型名时只看账号维度
         assert!(item.healthy_for_request(1000, ""));
@@ -839,8 +899,14 @@ mod tests {
         // 要让条目真正存活一段时间，必须给出**未来**的 reset_at 时刻。
         item.cooldown_model(1000, "a", 0, 500, "x");
         item.cooldown_model(1000, "b", 3000, 10_000, "y");
-        assert_eq!(item.model_cooldowns["a"].until_ms, 1001, "未声明墙钟 → 瞬时冷却");
-        assert_eq!(item.model_cooldowns["b"].until_ms, 3000, "未来墙钟 → 直接采用");
+        assert_eq!(
+            item.model_cooldowns["a"].until_ms, 1001,
+            "未声明墙钟 → 瞬时冷却"
+        );
+        assert_eq!(
+            item.model_cooldowns["b"].until_ms, 3000,
+            "未来墙钟 → 直接采用"
+        );
 
         assert!(item.prune_model_cooldowns(2000));
         assert!(!item.model_cooldowns.contains_key("a"), "已过期应被清理");
@@ -929,7 +995,10 @@ mod tests {
         let mut item = entry();
         item.block_model_backoff(1000, "glm-5.2", "11102 model blocked");
         let until = 1000 + 6 * 60 * 60 * 1000;
-        assert!(!item.healthy_for_model(until - 1, "glm-5.2"), "封禁期内不可用");
+        assert!(
+            !item.healthy_for_model(until - 1, "glm-5.2"),
+            "封禁期内不可用"
+        );
         assert!(item.healthy_for_model(until, "glm-5.2"), "到期即解禁");
         assert!(
             item.healthy_for_model(1000, "deepseek-v4-flash"),
@@ -948,7 +1017,13 @@ mod tests {
     fn rate_limit_and_block_share_the_map_but_use_different_ttl_rules() {
         let mut item = entry();
         // 先限流（hits 恒 0、按墙钟/封顶 soft_rate_max）
-        item.cooldown_model(1000, "m", 0, DEFAULT_SOFT_RATE_MAX_MS, "6004 model rate limit");
+        item.cooldown_model(
+            1000,
+            "m",
+            0,
+            DEFAULT_SOFT_RATE_MAX_MS,
+            "6004 model rate limit",
+        );
         assert_eq!(item.model_cooldowns["m"].hits, 0, "限流不参与封禁计数");
         assert_eq!(
             item.model_cooldowns["m"].until_ms, 1001,
@@ -1164,7 +1239,11 @@ mod tests {
     fn cost_tier_layering_and_ttl_expiry() {
         let mut item = entry();
         assert_eq!(item.cost_tier(1000, "m", 1000), CostTier::Unknown, "无观测");
-        assert_eq!(item.cost_tier(1000, "", 1000), CostTier::Unknown, "空模型名");
+        assert_eq!(
+            item.cost_tier(1000, "", 1000),
+            CostTier::Unknown,
+            "空模型名"
+        );
 
         item.record_cost(1000, "free", 0.0, 100);
         assert_eq!(item.cost_tier(1000, "free", 6000), CostTier::Free);

@@ -69,7 +69,8 @@ use crate::modules::qoder::PATH_DEVICE_TOKEN_POLL;
 const PATH_USERINFO: &str = "/api/v1/userinfo";
 
 /// PKCE verifier 的字符集（RFC 7636 unreserved：`ALPHA / DIGIT / "-" / "." / "_" / "~"`）。
-const VERIFIER_ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~";
+const VERIFIER_ALPHABET: &[u8] =
+    b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~";
 /// PKCE verifier 的长度（官方客户端为 64）。
 const VERIFIER_LEN: usize = 64;
 
@@ -420,13 +421,11 @@ pub fn cancel_login(login_id: &str) -> bool {
 
 /// 取字段：先看顶层，再看 `data` 子对象（上游两种信封形态都兼容）。
 fn response_field<'a>(body: &'a Value, key: &str) -> Option<&'a str> {
-    body.get(key)
-        .and_then(Value::as_str)
-        .or_else(|| {
-            body.get("data")
-                .and_then(|data| data.get(key))
-                .and_then(Value::as_str)
-        })
+    body.get(key).and_then(Value::as_str).or_else(|| {
+        body.get("data")
+            .and_then(|data| data.get(key))
+            .and_then(Value::as_str)
+    })
 }
 
 /// 拉取账号身份（`Authorization: Bearer <token>`）。
@@ -449,7 +448,10 @@ async fn fetch_userinfo(
     let body = response.text().await.unwrap_or_default();
     if !status.is_success() {
         let detail: String = body.chars().take(160).collect();
-        return Err(format!("拉取账号身份失败: HTTP {} {detail}", status.as_u16()));
+        return Err(format!(
+            "拉取账号身份失败: HTTP {} {detail}",
+            status.as_u16()
+        ));
     }
     serde_json::from_str(&body).map_err(|error| format!("账号身份响应不是 JSON: {error}"))
 }
@@ -467,17 +469,24 @@ mod tests {
         let (verifier, challenge) = pkce_pair();
         assert_eq!(verifier.len(), VERIFIER_LEN, "verifier 必须是 64 字符");
         assert!(
-            verifier
-                .bytes()
-                .all(|b| VERIFIER_ALPHABET.contains(&b)),
+            verifier.bytes().all(|b| VERIFIER_ALPHABET.contains(&b)),
             "verifier 含字母表外字符：{verifier}"
         );
 
-        let expected =
-            base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(Sha256::digest(verifier.as_bytes()));
-        assert_eq!(challenge, expected, "challenge 必须是 base64url(sha256(verifier))");
-        assert!(!challenge.contains('='), "challenge 必须去 padding：{challenge}");
-        assert!(!challenge.contains('+') && !challenge.contains('/'), "必须是 base64url 字母表");
+        let expected = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .encode(Sha256::digest(verifier.as_bytes()));
+        assert_eq!(
+            challenge, expected,
+            "challenge 必须是 base64url(sha256(verifier))"
+        );
+        assert!(
+            !challenge.contains('='),
+            "challenge 必须去 padding：{challenge}"
+        );
+        assert!(
+            !challenge.contains('+') && !challenge.contains('/'),
+            "必须是 base64url 字母表"
+        );
 
         // 每次登录的 verifier 必须不同（否则 PKCE 失去意义）。
         let (verifier2, _) = pkce_pair();
@@ -498,7 +507,10 @@ mod tests {
              &client_id=1c5e33e1-364d-4ce6-b02c-acaa81274a5c\
              &machine_id=mach-1&redirect_uri=qoder-work-cn://"
         );
-        assert!(cn.contains("redirect_uri=qoder-work-cn://"), "国内版必须带 redirect_uri");
+        assert!(
+            cn.contains("redirect_uri=qoder-work-cn://"),
+            "国内版必须带 redirect_uri"
+        );
 
         let global = build_authorize_url(QoderRegion::Global, "mach-1", "nonce-g", "chal-1");
         assert_eq!(
@@ -618,6 +630,9 @@ mod tests {
     fn machine_id_prefers_the_official_cli_file() {
         let id = machine_id_for(QoderRegion::Cn).expect("应能取到 machine_id");
         assert!(!id.trim().is_empty());
-        assert!(uuid::Uuid::parse_str(id.trim()).is_ok(), "本机 CLI 的 machine_id 是一行 uuid：{id}");
+        assert!(
+            uuid::Uuid::parse_str(id.trim()).is_ok(),
+            "本机 CLI 的 machine_id 是一行 uuid：{id}"
+        );
     }
 }

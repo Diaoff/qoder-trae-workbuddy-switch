@@ -444,9 +444,18 @@ mod tests {
     /// 本用例的 `credits` 会变成 0（token 恒为 0），断言失败。
     #[test]
     fn parse_line_reads_credits_and_ignores_zero_tokens() {
-        let line = assistant_line("2026-10-15T09:03:29.465Z", Some(1.070790688), "dfmodel", "sess-1");
+        let line = assistant_line(
+            "2026-10-15T09:03:29.465Z",
+            Some(1.070790688),
+            "dfmodel",
+            "sess-1",
+        );
         let event = parse_line(&line).expect("应解析成功");
-        assert!(approx(event.credits, 1.070790688), "credits={}", event.credits);
+        assert!(
+            approx(event.credits, 1.070790688),
+            "credits={}",
+            event.credits
+        );
         assert_eq!(event.model, "dfmodel");
         assert_eq!(event.session_id, "sess-1");
         // 本地日期是 10 位 `YYYY-MM-DD`（不钉死具体日，避免依赖测试机时区）。
@@ -591,10 +600,7 @@ mod tests {
     #[test]
     fn aggregate_none_keeps_all_history() {
         let today = NaiveDate::from_ymd_opt(2026, 10, 15).unwrap();
-        let events = vec![
-            event("2020-01-01", 1.0, "a"),
-            event("2026-10-15", 1.0, "a"),
-        ];
+        let events = vec![event("2020-01-01", 1.0, "a"), event("2026-10-15", 1.0, "a")];
         assert_eq!(aggregate(&events, today, None).len(), 2);
     }
 
@@ -725,7 +731,14 @@ mod tests {
         for key in ["credits", "requests", "sessions", "models"] {
             assert!(view["totals"].get(key).is_some(), "缺少 totals.{key}");
         }
-        for key in ["kind", "paths", "sessions", "exists", "tokenCountsAvailable", "note"] {
+        for key in [
+            "kind",
+            "paths",
+            "sessions",
+            "exists",
+            "tokenCountsAvailable",
+            "note",
+        ] {
             assert!(view["source"].get(key).is_some(), "缺少 source.{key}");
         }
 
@@ -739,13 +752,20 @@ mod tests {
         let days = view["days"].as_array().unwrap();
         let sum_credits: f64 = days.iter().map(|d| d["credits"].as_f64().unwrap()).sum();
         let sum_requests: u64 = days.iter().map(|d| d["requests"].as_u64().unwrap()).sum();
-        assert!(approx(view["totals"]["credits"].as_f64().unwrap(), sum_credits));
+        assert!(approx(
+            view["totals"]["credits"].as_f64().unwrap(),
+            sum_credits
+        ));
         assert_eq!(view["totals"]["requests"].as_u64().unwrap(), sum_requests);
 
         // 两天都有数据，且 byModel 跨天汇总为 2 个模型。
         assert_eq!(days.len(), 2);
         assert_eq!(view["byModel"].as_array().unwrap().len(), 2);
-        assert_eq!(view["totals"]["sessions"].as_u64().unwrap(), 1, "同一会话只算一次");
+        assert_eq!(
+            view["totals"]["sessions"].as_u64().unwrap(),
+            1,
+            "同一会话只算一次"
+        );
         assert_eq!(view["totals"]["models"].as_u64().unwrap(), 2);
         assert!(days.iter().any(|d| d["date"] == json!(today)));
         assert!(days.iter().any(|d| d["date"] == json!(yesterday)));

@@ -940,13 +940,12 @@ mod tests {
         assert_eq!(today_usage, 1.5);
         assert_eq!(week_usage, 3.5);
         // 月初时“昨天”可能属于上月（甚至跨年），此时本月仅包含今天这条。
-        let expected_month_usage = if yesterday.year() == today.year()
-            && yesterday.month() == today.month()
-        {
-            3.5
-        } else {
-            1.5
-        };
+        let expected_month_usage =
+            if yesterday.year() == today.year() && yesterday.month() == today.month() {
+                3.5
+            } else {
+                1.5
+            };
         assert_eq!(month_usage, expected_month_usage);
         assert_eq!(daily[&today], 1.5);
         assert_eq!(daily[&yesterday], 2.0);
@@ -1102,7 +1101,10 @@ mod tests {
             official_usage_url(Region::Global),
             "https://www.workbuddy.ai/billing/meter/get-user-request-usage"
         );
-        assert_ne!(official_usage_url(Region::Cn), official_usage_url(Region::Global));
+        assert_ne!(
+            official_usage_url(Region::Cn),
+            official_usage_url(Region::Global)
+        );
         // 两版只有主机不同，路径必须一致（否则是两份不同的契约，需另行取证）。
         let path_of = |url: &str| {
             url.split_once("://")

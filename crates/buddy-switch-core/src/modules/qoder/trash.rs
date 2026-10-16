@@ -109,8 +109,10 @@ pub fn load_trash_for(region: QoderRegion) -> Vec<TrashEntry> {
 /// `Ok(None)`（文件不存在）与 `Ok(Some(vec![]))`（空文件）都归一成空表；只有**解析失败**
 /// 才 `Err` —— 那正是「在损坏库上覆盖」必须被调用方看见的情形。
 fn load_trash_checked_for(region: QoderRegion) -> Result<Vec<TrashEntry>, String> {
-    Ok(store::read_json_checked::<Vec<TrashEntry>>(&paths::accounts_trash_file_for(region))?
-        .unwrap_or_default())
+    Ok(
+        store::read_json_checked::<Vec<TrashEntry>>(&paths::accounts_trash_file_for(region))?
+            .unwrap_or_default(),
+    )
 }
 
 /// 原子写回收站（先建父目录）。
@@ -129,7 +131,10 @@ fn format_iso(moment: DateTime<Local>) -> String {
 
 /// 由「删除时刻」派生 `(deleted_at, expires_at)`。
 fn iso_window_from(now: DateTime<Local>) -> (String, String) {
-    (format_iso(now), format_iso(now + Duration::days(TRASH_RETENTION_DAYS)))
+    (
+        format_iso(now),
+        format_iso(now + Duration::days(TRASH_RETENTION_DAYS)),
+    )
 }
 
 /// 解析 ISO-8601 时刻（容忍前后空白）。**认不出 ⇒ `None`**，不回落成「现在」——
@@ -225,7 +230,11 @@ pub fn restore_account_for(region: QoderRegion, key: &str) -> Result<bool, Strin
     };
     // 先查重、后搬移：命中即拒绝，且此时**尚未**改动任何内存态，更没落盘。
     let live = account::load_accounts_checked_for(region)?;
-    if live.accounts.iter().any(|account| account.uid == trash[index].uid) {
+    if live
+        .accounts
+        .iter()
+        .any(|account| account.uid == trash[index].uid)
+    {
         return Err("账号库中已存在该账号，无法恢复".to_string());
     }
 
@@ -351,7 +360,10 @@ fn trash_entry_view(entry: &TrashEntry, region: QoderRegion) -> Value {
 pub fn trash_list_value(region: QoderRegion) -> Value {
     let mut entries = load_trash_for(region);
     entries.sort_by_key(|entry| std::cmp::Reverse(deleted_sort_key(entry)));
-    let views: Vec<Value> = entries.iter().map(|entry| trash_entry_view(entry, region)).collect();
+    let views: Vec<Value> = entries
+        .iter()
+        .map(|entry| trash_entry_view(entry, region))
+        .collect();
     json!({ "scope": scope_of_qoder_region(region).as_str(), "entries": views })
 }
 
@@ -439,7 +451,11 @@ mod tests {
 
             // 不存在的 uid ⇒ Ok(false)，且不动 trash。
             assert!(!trash_account_for(region, "nope").expect("missing is a no-op"));
-            assert_eq!(load_trash_for(region).len(), 1, "no-op 不得往回收站里塞东西");
+            assert_eq!(
+                load_trash_for(region).len(),
+                1,
+                "no-op 不得往回收站里塞东西"
+            );
         });
     }
 
@@ -502,7 +518,10 @@ mod tests {
             let live = account::load_accounts_for(region);
             assert_eq!(live.accounts.len(), 1);
             assert_eq!(live.accounts[0].uid, "u1");
-            assert!(load_trash_for(region).is_empty(), "恢复后回收站应清空该条目");
+            assert!(
+                load_trash_for(region).is_empty(),
+                "恢复后回收站应清空该条目"
+            );
 
             // 认不出的 key ⇒ 拒绝（fail-closed）。
             assert!(restore_account_for(region, "ghost").is_err());
@@ -543,7 +562,10 @@ mod tests {
             store::write_json(&paths::accounts_trash_file_for(region), &vec![foreign])
                 .expect("seed trash");
 
-            assert!(restore_account_for(region, "g1").is_err(), "错区条目必须被拒");
+            assert!(
+                restore_account_for(region, "g1").is_err(),
+                "错区条目必须被拒"
+            );
             // 拒绝后条目仍在回收站（不丢数据），live 仍为空。
             assert_eq!(load_trash_for(region).len(), 1);
             assert!(account::load_accounts_for(region).accounts.is_empty());
@@ -630,7 +652,11 @@ mod tests {
             trash_account_for(region, "u1").expect("soft delete");
 
             let value = trash_list_value(region);
-            assert_eq!(value["scope"], json!("qoder-cn"), "键名必须是 scope（共用壳契约）");
+            assert_eq!(
+                value["scope"],
+                json!("qoder-cn"),
+                "键名必须是 scope（共用壳契约）"
+            );
 
             let entries = value["entries"].as_array().expect("entries 必须是数组");
             assert_eq!(entries.len(), 1);

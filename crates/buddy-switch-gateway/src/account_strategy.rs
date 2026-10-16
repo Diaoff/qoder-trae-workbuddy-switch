@@ -145,8 +145,9 @@ pub async fn describe_strategy(region: Region, strategy: &AccountStrategy) -> Va
     });
     match strategy {
         AccountStrategy::MaxCredits => {
-            described["note"] =
-                serde_json::json!("max_credits 在每次请求时按实时积分择优，此处不预取（避免 N 次网络请求）");
+            described["note"] = serde_json::json!(
+                "max_credits 在每次请求时按实时积分择优，此处不预取（避免 N 次网络请求）"
+            );
         }
         _ => match AccountSelector.select(region, strategy).await {
             Ok(account) => {
@@ -246,7 +247,8 @@ mod tests {
             json!({"kind": "max_credits"})
         );
 
-        let parsed: AccountStrategy = serde_json::from_value(json!({"kind": "pinned", "account_id": "x"})).unwrap();
+        let parsed: AccountStrategy =
+            serde_json::from_value(json!({"kind": "pinned", "account_id": "x"})).unwrap();
         assert!(matches!(parsed, AccountStrategy::Pinned { account_id } if account_id == "x"));
     }
 
@@ -281,6 +283,9 @@ mod tests {
             message.contains(region::region_display(Region::Cn)),
             "含期望 region 展示名: {message}"
         );
-        assert!(message.contains("WORKBUDDY_AUTH_FILE"), "含环境变量名: {message}");
+        assert!(
+            message.contains("WORKBUDDY_AUTH_FILE"),
+            "含环境变量名: {message}"
+        );
     }
 }

@@ -136,7 +136,9 @@ pub async fn bearer_auth(
     };
     match state.key_store.verify(key) {
         Some(record) => {
-            request.extensions_mut().insert(QoderKeyRegion(record.region));
+            request
+                .extensions_mut()
+                .insert(QoderKeyRegion(record.region));
             next.run(request).await
         }
         None => protocol_error(
@@ -176,7 +178,10 @@ pub async fn status(State(state): State<QoderGatewayState>) -> Response {
 }
 
 /// `GET /v1/models`：该 Key 归属区域的清单 + 禁用过滤（**唯一判断点**）。
-pub async fn models(State(state): State<QoderGatewayState>, Extension(key): Extension<QoderKeyRegion>) -> Response {
+pub async fn models(
+    State(state): State<QoderGatewayState>,
+    Extension(key): Extension<QoderKeyRegion>,
+) -> Response {
     let catalog = state.catalog_for(key.0).await;
     let scope = scope_of_qoder_region(key.0);
     let disabled = state.disabled.read().await;
@@ -450,7 +455,11 @@ pub async fn chat_for_region(
             region.display_name()
         )
     } else {
-        format!("全部账号都失败（{} 个）：{}", failures.len(), failures.join("；"))
+        format!(
+            "全部账号都失败（{} 个）：{}",
+            failures.len(),
+            failures.join("；")
+        )
     };
     state
         .record_request(
@@ -466,7 +475,12 @@ pub async fn chat_for_region(
             Some(message.clone()),
         )
         .await;
-    protocol_error(protocol, StatusCode::SERVICE_UNAVAILABLE, "no_available_account", &message)
+    protocol_error(
+        protocol,
+        StatusCode::SERVICE_UNAVAILABLE,
+        "no_available_account",
+        &message,
+    )
 }
 
 /// 对**单个账号**发**一次**上游 chat 请求（含候选主机 failover），**不换号、不重试**。
@@ -551,10 +565,8 @@ async fn stream_relay(
     // 转换链：信封解包 → `UsageTapStream`（旁路取 usage）→（Anthropic 入口再包一层）。
     // ⚠️ UsageTap **必须在 Anthropic 转换之前** —— 转换后帧是 Anthropic 事件，
     //    取不到 OpenAI 的 `usage` 字段。
-    let tapped = sse::UsageTapStream::new(
-        sse::QoderOpenAiStream::new(upstream),
-        usage_slot.clone(),
-    );
+    let tapped =
+        sse::UsageTapStream::new(sse::QoderOpenAiStream::new(upstream), usage_slot.clone());
     let (tx, rx) = mpsc::channel::<Result<Bytes, std::io::Error>>(32);
     let converter: std::pin::Pin<
         Box<dyn futures_util::Stream<Item = Result<Bytes, std::io::Error>> + Send>,
@@ -652,7 +664,10 @@ async fn aggregate_relay(
         );
     }
     if !aggregated.tool_calls.is_empty() {
-        message.insert("tool_calls".into(), Value::Array(aggregated.tool_calls.clone()));
+        message.insert(
+            "tool_calls".into(),
+            Value::Array(aggregated.tool_calls.clone()),
+        );
     }
 
     let completion = json!({

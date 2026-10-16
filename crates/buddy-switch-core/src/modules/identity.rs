@@ -54,9 +54,9 @@ pub fn valid_app_version(value: &str) -> bool {
     if parts.len() < 2 || parts.len() > 4 {
         return false;
     }
-    parts.iter().all(|part| {
-        !part.is_empty() && part.len() <= 6 && part.bytes().all(|b| b.is_ascii_digit())
-    })
+    parts
+        .iter()
+        .all(|part| !part.is_empty() && part.len() <= 6 && part.bytes().all(|b| b.is_ascii_digit()))
 }
 
 /// 校验 CLI 版本是否可安全拼进 header（允许 `-rc.1` 之类预发布后缀）。
@@ -350,6 +350,11 @@ mod tests {
     fn resolve_chat_identity_never_panics_and_is_valid() {
         let identity = resolve_chat_identity(Region::Cn);
         assert!(valid_app_version(&identity.client_version));
-        assert!(chat_user_agent(Region::Cn, &identity.client_version, identity.cli_version.as_deref()).is_ok());
+        assert!(chat_user_agent(
+            Region::Cn,
+            &identity.client_version,
+            identity.cli_version.as_deref()
+        )
+        .is_ok());
     }
 }

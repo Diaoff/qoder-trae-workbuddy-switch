@@ -256,7 +256,10 @@ mod tests {
 
         assert!(plaintext.starts_with("sk-wb-"));
         assert_eq!(plaintext.len(), "sk-wb-".len() + 32);
-        assert_eq!(record.prefix, format!("sk-wb-{}", &plaintext["sk-wb-".len().."sk-wb-".len() + 4]));
+        assert_eq!(
+            record.prefix,
+            format!("sk-wb-{}", &plaintext["sk-wb-".len().."sk-wb-".len() + 4])
+        );
         assert_eq!(record.hash, sha256_hex(&plaintext));
         assert_ne!(record.hash, plaintext, "不得明文落库");
 
@@ -275,7 +278,14 @@ mod tests {
             // ★ E3 新增 `suffix`（尾部 4 位）。它是**显式白名单**的一员 ——
             //   本测试的意义正是「掩码视图只能有这些键」，多一个键就要**在这里被批准**，
             //   而不是悄悄混进去。下面两条断言保证它不泄露 hash / 明文。
-            "id", "name", "region", "prefix", "suffix", "createdAt", "revokedAt", "revoked",
+            "id",
+            "name",
+            "region",
+            "prefix",
+            "suffix",
+            "createdAt",
+            "revokedAt",
+            "revoked",
             "lastUsedAt",
         ]
         .into_iter()
@@ -309,7 +319,9 @@ mod tests {
         let mut different = plaintext.clone().into_bytes();
         let last = different.len() - 1;
         different[last] = if different[last] == b'0' { b'1' } else { b'0' };
-        assert!(store.verify(&String::from_utf8(different).unwrap()).is_none());
+        assert!(store
+            .verify(&String::from_utf8(different).unwrap())
+            .is_none());
         assert!(store.verify("x").is_none());
     }
 
@@ -319,11 +331,19 @@ mod tests {
         let (record, plaintext) = store.create("k".to_string(), Region::Global);
 
         assert!(store.verify(&plaintext).is_some(), "有效 Key 应通过");
-        assert!(store.verify("sk-wb-deadbeefdeadbeefdeadbeefdeadbeef").is_none(), "无效 Key 应拒绝");
+        assert!(
+            store
+                .verify("sk-wb-deadbeefdeadbeefdeadbeefdeadbeef")
+                .is_none(),
+            "无效 Key 应拒绝"
+        );
 
         store.revoke(&record.id).unwrap();
         assert!(store.verify(&plaintext).is_none(), "已吊销 Key 应拒绝");
-        assert!(store.list().iter().any(|r| r.id == record.id && r.revoked_at.is_some()));
+        assert!(store
+            .list()
+            .iter()
+            .any(|r| r.id == record.id && r.revoked_at.is_some()));
 
         // 已吊销可物理删除；未吊销不可删除。
         store.delete(&record.id).unwrap();
@@ -355,7 +375,10 @@ mod tests {
         store.restore(&record.id).unwrap();
         // ★ 判据锚在**行为**上：恢复的语义是「Key 重新可用」。只断言 `revoked_at.is_none()`
         //   会被「清了字段但鉴权仍拦」的实现骗过（永远绿）。
-        assert!(store.verify(&plaintext).is_some(), "恢复后 Key 必须重新可用");
+        assert!(
+            store.verify(&plaintext).is_some(),
+            "恢复后 Key 必须重新可用"
+        );
         let after = store
             .list()
             .into_iter()
@@ -383,9 +406,19 @@ mod tests {
         store.restore(&first.id).unwrap();
 
         // 恢复一把不得连带恢复另一把（错的实现常写成「无条件全清 revoked_at」）。
-        assert!(store.verify(&first_plaintext).is_some(), "被恢复的 Key 应可用");
-        assert!(store.verify(&second_plaintext).is_none(), "另一把必须仍是吊销态");
-        let second_after = store.list().into_iter().find(|item| item.id == second.id).unwrap();
+        assert!(
+            store.verify(&first_plaintext).is_some(),
+            "被恢复的 Key 应可用"
+        );
+        assert!(
+            store.verify(&second_plaintext).is_none(),
+            "另一把必须仍是吊销态"
+        );
+        let second_after = store
+            .list()
+            .into_iter()
+            .find(|item| item.id == second.id)
+            .unwrap();
         assert!(second_after.revoked_at.is_some());
     }
 
@@ -401,10 +434,20 @@ mod tests {
         let store = temp_store();
         let (record, _) = store.create("touch".to_string(), Region::Cn);
         store.touch(&record.id);
-        let first = store.list().into_iter().find(|item| item.id == record.id).unwrap().last_used_at;
+        let first = store
+            .list()
+            .into_iter()
+            .find(|item| item.id == record.id)
+            .unwrap()
+            .last_used_at;
         assert!(first.is_some());
         store.touch(&record.id);
-        let second = store.list().into_iter().find(|item| item.id == record.id).unwrap().last_used_at;
+        let second = store
+            .list()
+            .into_iter()
+            .find(|item| item.id == record.id)
+            .unwrap()
+            .last_used_at;
         assert_eq!(second, first);
     }
 
@@ -425,7 +468,9 @@ mod tests {
         let digest = sha256_hex("anything");
         assert_eq!(digest.len(), 64);
         assert_eq!(digest, sha256_hex("anything"));
-        assert!(digest.chars().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()));
+        assert!(digest
+            .chars()
+            .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()));
         // 已知向量：sha256("") = e3b0c442...
         assert_eq!(
             sha256_hex(""),

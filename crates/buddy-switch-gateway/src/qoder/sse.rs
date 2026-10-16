@@ -83,7 +83,8 @@ impl<S> QoderOpenAiStream<S> {
 
     fn push_done(&mut self) {
         if !self.done_sent {
-            self.pending.push_back(Bytes::from_static(b"data: [DONE]\n\n"));
+            self.pending
+                .push_back(Bytes::from_static(b"data: [DONE]\n\n"));
             self.done_sent = true;
         }
     }
@@ -167,7 +168,10 @@ pub struct AggregatedChat {
 /// - **泄漏回声回读**：上游没给结构化 `tool_calls` 但正文恰好是
 ///   `[assistant 请求调用工具]` + JSON 数组形态 ⇒ 还原为结构化并清空正文
 ///   （严格整段识别，见 `core::modules::qoder::api::parse_leaked_tool_calls`）。
-pub async fn aggregate<S, E>(upstream: S, allowed_tool_names: Option<&std::collections::HashSet<String>>) -> AggregatedChat
+pub async fn aggregate<S, E>(
+    upstream: S,
+    allowed_tool_names: Option<&std::collections::HashSet<String>>,
+) -> AggregatedChat
 where
     S: Stream<Item = Result<Bytes, E>>,
     E: std::fmt::Debug,
@@ -230,9 +234,7 @@ where
                             match part {
                                 Value::String(text) => out.content.push_str(text),
                                 Value::Object(object) => {
-                                    if let Some(text) =
-                                        object.get("text").and_then(Value::as_str)
-                                    {
+                                    if let Some(text) = object.get("text").and_then(Value::as_str) {
                                         out.content.push_str(text);
                                     }
                                 }
@@ -255,14 +257,9 @@ where
                             let mut map = Map::new();
                             map.insert(
                                 "id".into(),
-                                call.get("id")
-                                    .cloned()
-                                    .unwrap_or_else(|| {
-                                        Value::String(format!(
-                                            "call_{}",
-                                            uuid::Uuid::new_v4().simple()
-                                        ))
-                                    }),
+                                call.get("id").cloned().unwrap_or_else(|| {
+                                    Value::String(format!("call_{}", uuid::Uuid::new_v4().simple()))
+                                }),
                             );
                             map.insert(
                                 "type".into(),
@@ -442,9 +439,7 @@ pub fn response_from_receiver(
         .header("content-type", "text/event-stream")
         .header("cache-control", "no-cache")
         .body(axum::body::Body::from_stream(stream_from_receiver(rx)))
-        .unwrap_or_else(|_| {
-            axum::response::Response::new(axum::body::Body::empty())
-        })
+        .unwrap_or_else(|_| axum::response::Response::new(axum::body::Body::empty()))
 }
 
 #[cfg(test)]
@@ -467,7 +462,9 @@ mod tests {
         )
     }
 
-    async fn collect(stream: &mut (impl Stream<Item = Result<Bytes, io::Error>> + Unpin)) -> String {
+    async fn collect(
+        stream: &mut (impl Stream<Item = Result<Bytes, io::Error>> + Unpin),
+    ) -> String {
         let mut out = String::new();
         while let Some(item) = stream.next().await {
             out.push_str(&String::from_utf8_lossy(&item.unwrap()));
@@ -513,10 +510,18 @@ mod tests {
     async fn aggregate_folds_chunks() {
         let frames = vec![
             frame(&json!({"id": "c1", "created": 123, "choices": [{"delta": {"content": "你"}}]})),
-            frame(&json!({"id": "c1", "choices": [{"delta": {"content": "好", "reasoning_content": "想"}}]})),
-            frame(&json!({"choices": [{"delta": {"tool_calls": [{"index": 0, "id": "call_1", "function": {"name": "sea", "arguments": "{\"q\":\""}}]}}]})),
-            frame(&json!({"choices": [{"delta": {"tool_calls": [{"index": 0, "function": {"arguments": "bj\""}}]}, "finish_reason": "tool_calls"}]})),
-            frame(&json!({"usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15}})),
+            frame(
+                &json!({"id": "c1", "choices": [{"delta": {"content": "好", "reasoning_content": "想"}}]}),
+            ),
+            frame(
+                &json!({"choices": [{"delta": {"tool_calls": [{"index": 0, "id": "call_1", "function": {"name": "sea", "arguments": "{\"q\":\""}}]}}]}),
+            ),
+            frame(
+                &json!({"choices": [{"delta": {"tool_calls": [{"index": 0, "function": {"arguments": "bj\""}}]}, "finish_reason": "tool_calls"}]}),
+            ),
+            frame(
+                &json!({"usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15}}),
+            ),
         ];
         let out = aggregate(upstream_from(&frames), None).await;
         assert_eq!(out.content, "你好");
@@ -536,7 +541,9 @@ mod tests {
     #[tokio::test]
     async fn aggregate_recovers_leaked_tool_calls() {
         let content = "[assistant 请求调用工具]\n[{\"name\":\"search\",\"arguments\":\"{}\"}]";
-        let frames = vec![frame(&json!({"choices": [{"delta": {"content": content}}]}))];
+        let frames = vec![frame(
+            &json!({"choices": [{"delta": {"content": content}}]}),
+        )];
         let out = aggregate(upstream_from(&frames), None).await;
         assert_eq!(out.content, "", "回声必须从正文清掉");
         assert_eq!(out.tool_calls.len(), 1);
@@ -547,7 +554,8 @@ mod tests {
     /// 上游错误帧：聚合结果里带可读错误。
     #[tokio::test]
     async fn aggregate_surfaces_upstream_error() {
-        let frames = vec!["data:{\"body\":\"quota exceeded\",\"statusCodeValue\":429}\n".to_string()];
+        let frames =
+            vec!["data:{\"body\":\"quota exceeded\",\"statusCodeValue\":429}\n".to_string()];
         let out = aggregate(upstream_from(&frames), None).await;
         let error = out.upstream_error.expect("必须带上游错误");
         assert!(error.contains("429"), "{error}");

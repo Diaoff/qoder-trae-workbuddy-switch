@@ -179,13 +179,21 @@ mod tests {
     #[test]
     fn the_two_regions_never_share_a_store_path() {
         for (name, a, b) in [
-            ("账号库", accounts_file_for(QoderRegion::Cn), accounts_file_for(QoderRegion::Global)),
+            (
+                "账号库",
+                accounts_file_for(QoderRegion::Cn),
+                accounts_file_for(QoderRegion::Global),
+            ),
             (
                 "回收站",
                 accounts_trash_file_for(QoderRegion::Cn),
                 accounts_trash_file_for(QoderRegion::Global),
             ),
-            ("冷却账本", cooldowns_file_for(QoderRegion::Cn), cooldowns_file_for(QoderRegion::Global)),
+            (
+                "冷却账本",
+                cooldowns_file_for(QoderRegion::Cn),
+                cooldowns_file_for(QoderRegion::Global),
+            ),
             (
                 "签到台账",
                 checkin_ledger_file_for(QoderRegion::Cn),

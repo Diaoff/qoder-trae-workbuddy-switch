@@ -227,7 +227,11 @@ fn account_from_record(region: QoderRegion, raw: &Value, source: &str) -> Option
                 .get("id")
                 .or_else(|| value.get("user_id"))
                 .or_else(|| value.get("uid"))
-                .and_then(|v| v.as_str().map(str::to_string).or_else(|| v.as_i64().map(|n| n.to_string())))
+                .and_then(|v| {
+                    v.as_str()
+                        .map(str::to_string)
+                        .or_else(|| v.as_i64().map(|n| n.to_string()))
+                })
         })
         .or_else(|| get_str(&["uid", "user_id", "userId"]))?;
     if uid.trim().is_empty() {
@@ -441,7 +445,11 @@ pub fn import_from_local_for(region: QoderRegion) -> Result<Value, String> {
 /// `uid` 由调用方给出：PAT 本身**不含**用户 id，上游要用它换一次才知道。
 /// 若调用方也拿不到，用 `pt-<前 12 位>` 生成一个**稳定**的兜底 id（同一条 PAT 恒得同一 id，
 /// 避免重复导入时产生多条记录）。
-pub fn account_from_pat(region: QoderRegion, pat: &str, nickname: Option<String>) -> Result<RawAccount, String> {
+pub fn account_from_pat(
+    region: QoderRegion,
+    pat: &str,
+    nickname: Option<String>,
+) -> Result<RawAccount, String> {
     let pat = pat.trim();
     if pat.is_empty() {
         return Err("PAT 为空。".to_string());
@@ -512,7 +520,8 @@ mod tests {
             "有合法刷新令牌时，访问令牌认不出不影响可用性"
         );
         // 两种令牌都认不出 ⇒ 不采用。
-        let junk = json!({ "token": "mystery", "refreshToken": "also-mystery", "user": { "id": "u1" } });
+        let junk =
+            json!({ "token": "mystery", "refreshToken": "also-mystery", "user": { "id": "u1" } });
         assert!(account_from_record(QoderRegion::Cn, &junk, SOURCE_CLI).is_none());
         // 完全没有令牌 ⇒ 不采用。
         let no_token = json!({ "user": { "id": "u1" } });
@@ -545,7 +554,10 @@ mod tests {
     #[test]
     fn pat_import_validates_prefix_and_is_stable() {
         let account = account_from_pat(QoderRegion::Cn, "pt-abcdefghijklmnop", None).unwrap();
-        assert_eq!(account.personal_token.as_deref(), Some("pt-abcdefghijklmnop"));
+        assert_eq!(
+            account.personal_token.as_deref(),
+            Some("pt-abcdefghijklmnop")
+        );
         assert!(account.access_token.is_none(), "PAT 导入不应伪造访问令牌");
         assert_eq!(account.source.as_deref(), Some(SOURCE_PAT));
         // 同一条 PAT 恒得同一兜底 uid（重复导入不会产生多条记录）。
@@ -586,7 +598,8 @@ mod tests {
                 assert!(!source[key].is_null(), "缺字段 {key}：{source}");
             }
             assert!(
-                ["missing", "unreadable", "empty", "ready"].contains(&source["state"].as_str().unwrap()),
+                ["missing", "unreadable", "empty", "ready"]
+                    .contains(&source["state"].as_str().unwrap()),
                 "state 取值非法：{source}"
             );
         }

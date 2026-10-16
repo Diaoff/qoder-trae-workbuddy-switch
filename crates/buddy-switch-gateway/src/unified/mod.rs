@@ -41,8 +41,8 @@ use tokio::sync::oneshot;
 
 pub use apikey::{UnifiedApiKeyRecord, UnifiedApiKeyStore, UNIFIED_KEY_PREFIX};
 pub use config::{
-    known_ids, unified_config_file, unified_keys_file, UnifiedGatewayConfig,
-    DEFAULT_MAX_BODY_MB, DEFAULT_STICKY_TTL_MS, DEFAULT_UNIFIED_PORT,
+    known_ids, unified_config_file, unified_keys_file, UnifiedGatewayConfig, DEFAULT_MAX_BODY_MB,
+    DEFAULT_STICKY_TTL_MS, DEFAULT_UNIFIED_PORT,
 };
 pub use state::UnifiedGatewayState;
 
@@ -355,9 +355,9 @@ pub async fn spawn_listener_with_state(
     let bind_addr = config.bind_addr.clone();
     let port = config.port;
 
-    let ip: IpAddr = bind_addr
-        .parse()
-        .map_err(|_| anyhow::anyhow!("统一网关监听地址无效：{bind_addr}（应为 IPv4/IPv6 字面量）"))?;
+    let ip: IpAddr = bind_addr.parse().map_err(|_| {
+        anyhow::anyhow!("统一网关监听地址无效：{bind_addr}（应为 IPv4/IPv6 字面量）")
+    })?;
 
     if !ip.is_loopback() && !config.allow_non_loopback {
         return Err(anyhow::anyhow!(
@@ -442,8 +442,14 @@ mod tests {
         assert!(config["keys"]["active"].is_number());
         // ⚠️ 这两个字段**刻意不在共享载荷里**（各宿主自己补），
         //    这里断言它缺席 ⇒ 谁把它塞进共享层，本用例会提醒他核对两处宿主。
-        assert!(config.get("running").is_none(), "running 应由各宿主补，不在共享载荷里");
-        assert!(config.get("addr").is_none(), "addr 应由各宿主补，不在共享载荷里");
+        assert!(
+            config.get("running").is_none(),
+            "running 应由各宿主补，不在共享载荷里"
+        );
+        assert!(
+            config.get("addr").is_none(),
+            "addr 应由各宿主补，不在共享载荷里"
+        );
         std::fs::remove_dir_all(dir).unwrap();
     }
 
@@ -463,7 +469,14 @@ mod tests {
         let groups = super::admin::group_pools(&defaults);
         assert_eq!(
             groups.iter().map(|group| group.target).collect::<Vec<_>>(),
-            vec!["wb-cn", "wb-global", "trae-cn", "trae-global", "qoder-cn", "qoder-global"],
+            vec![
+                "wb-cn",
+                "wb-global",
+                "trae-cn",
+                "trae-global",
+                "qoder-cn",
+                "qoder-global"
+            ],
             "池标识必须是作用域字面量（由 relay_target_of 折算，不另建映射表）"
         );
         assert!(
@@ -488,12 +501,23 @@ mod tests {
             "收敛后每个作用域各成一个池：{:?}",
             groups.iter().map(|group| group.target).collect::<Vec<_>>()
         );
-        let trae_cn = groups.iter().find(|group| group.target == "trae-cn").unwrap();
+        let trae_cn = groups
+            .iter()
+            .find(|group| group.target == "trae-cn")
+            .unwrap();
         assert_eq!(trae_cn.namespaces, vec!["trae-cn"]);
-        let trae_global = groups.iter().find(|group| group.target == "trae-global").unwrap();
+        let trae_global = groups
+            .iter()
+            .find(|group| group.target == "trae-global")
+            .unwrap();
         assert_eq!(trae_global.namespaces, vec!["trae-global"]);
         // 退役的四条**不得**再出现（它们指向已卸载的客户端）。
-        for retired in ["traework-cn", "traework-global", "traecode-cn", "traecode-global"] {
+        for retired in [
+            "traework-cn",
+            "traework-global",
+            "traecode-cn",
+            "traecode-global",
+        ] {
             assert!(
                 gateway_namespace::parse(retired).is_none(),
                 "退役命名空间 {retired} 仍在册"
@@ -528,13 +552,22 @@ mod tests {
                 "credits": serde_json::Value::Null,
             })],
         );
-        assert!(object.is_object(), "池对象必须是对象（裸数组曾让桌面端整页白屏）：{object}");
+        assert!(
+            object.is_object(),
+            "池对象必须是对象（裸数组曾让桌面端整页白屏）：{object}"
+        );
         assert_eq!(object["target"], "qoder-cn");
         assert_eq!(object["namespaces"][0], "qoder-cn");
-        assert_eq!(object["total"], 2, "计数必须摊平到池对象顶层（前端按 `pool.total` 取）");
+        assert_eq!(
+            object["total"], 2,
+            "计数必须摊平到池对象顶层（前端按 `pool.total` 取）"
+        );
         assert_eq!(object["available"], 1);
         assert_eq!(object["disabled"], 1);
-        assert_eq!(object["model_cooling"], 1, "Qoder 的按模型冷却计数应一并透出");
+        assert_eq!(
+            object["model_cooling"], 1,
+            "Qoder 的按模型冷却计数应一并透出"
+        );
         assert_eq!(object["accounts"][0]["uid"], "u1");
         assert_eq!(
             object["accounts"][0]["credits"],
@@ -560,7 +593,12 @@ mod tests {
         let app = router(state);
 
         let response = app
-            .oneshot(Request::builder().uri("/healthz").body(Body::empty()).unwrap())
+            .oneshot(
+                Request::builder()
+                    .uri("/healthz")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
             .await
             .expect("router 必须能构建并响应（构建期 panic 会让网关完全起不来）");
         assert_eq!(response.status(), axum::http::StatusCode::OK);
@@ -755,7 +793,10 @@ mod tests {
             Err(error) => error,
         };
         let message = error.to_string();
-        assert!(message.contains("允许局域网访问"), "错误文案要给出出路：{message}");
+        assert!(
+            message.contains("允许局域网访问"),
+            "错误文案要给出出路：{message}"
+        );
         std::fs::remove_dir_all(dir).unwrap();
     }
 

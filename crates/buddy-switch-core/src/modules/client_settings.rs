@@ -180,7 +180,12 @@ const TRAE_CODE_GLOBAL: ClientSlot = ClientSlot {
 /// ★ issue #28：Trae 原先 4 个槽位（Work / Code × 两区域），收敛后**只剩 2 个**
 /// （每区域一个合并版客户端）。退役槽位**不得**留在本表里 —— 它们指向已卸载的客户端，
 /// 留着会让「客户端环境」页报出四个程序位，其中两个永远未安装。
-pub const CLIENT_SLOTS: &[ClientSlot] = &[WORKBUDDY_CN, WORKBUDDY_GLOBAL, TRAE_CODE_CN, TRAE_CODE_GLOBAL];
+pub const CLIENT_SLOTS: &[ClientSlot] = &[
+    WORKBUDDY_CN,
+    WORKBUDDY_GLOBAL,
+    TRAE_CODE_CN,
+    TRAE_CODE_GLOBAL,
+];
 
 // ---------------------------------------------------------------------------
 // hook 安装目标槽位（CLI 系客户端）
@@ -309,7 +314,9 @@ impl ClientSlot {
             //    绕过它会让测试**写到真实用户的 `~/.claude/settings.json`**。
             SlotKind::HomeFile(spec) => Some(home_dir().join(spec.dir).join(spec.file)),
             // Trae 的 hooks 文件在产品数据目录（`~/.trae-cn` / `~/.trae`）下，见 [`trae_hooks_dir`]。
-            SlotKind::TraeHooks(region) => Some(home_dir().join(trae_hooks_dir(region)).join("hooks.json")),
+            SlotKind::TraeHooks(region) => {
+                Some(home_dir().join(trae_hooks_dir(region)).join("hooks.json"))
+            }
         }
     }
 
@@ -402,7 +409,11 @@ pub const PROXY_FIELDS: &[(&str, &str, &str)] = &[
     ("proxy", "workbuddy-global", "http.proxy"),
     ("proxy", "workbuddy-global", "http.proxySupport"),
     ("proxy", "trae-code-cn", "trae.network.proxy.effectiveMode"),
-    ("proxy", "trae-code-global", "trae.network.proxy.effectiveMode"),
+    (
+        "proxy",
+        "trae-code-global",
+        "trae.network.proxy.effectiveMode",
+    ),
 ];
 
 /// 某槽位在 [`PROXY_FIELDS`] 里声明的**全部**代理字段路径。
@@ -453,7 +464,8 @@ pub fn read_settings(slot_key: &str) -> Result<Value, String> {
         let text = std::fs::read_to_string(&path)
             .map_err(|e| format!("读取客户端设置失败（{}）：{e}", path.display()))?;
         let tree = parse_json(&text).map_err(|e| parse_failed(&path, &e))?;
-        let value: Value = serde_json::from_str(&text).map_err(|e| parse_failed(&path, &e.to_string()))?;
+        let value: Value =
+            serde_json::from_str(&text).map_err(|e| parse_failed(&path, &e.to_string()))?;
         let order = top_level_order(&tree);
         // 先取指纹再移动 `text`（`fingerprint_of_text` 借 `&str`，移动后不能再借）。
         let fingerprint = fingerprint_of_text(&text);
@@ -631,7 +643,10 @@ fn patch_at(
 
     // 自读一遍校验 JSON 合法：校验不过**不替换**。
     if let Err(e) = serde_json::from_str::<Value>(&next) {
-        return Err(write_failed(path, &format!("改写后不是合法 JSON，已放弃写入：{e}")));
+        return Err(write_failed(
+            path,
+            &format!("改写后不是合法 JSON，已放弃写入：{e}"),
+        ));
     }
 
     let backup = backup_settings(slot.key, &original, backup_root);
@@ -1012,8 +1027,7 @@ fn write_value(value: &Value, indent: &str, nl: &str, depth: usize, out: &mut St
 
 /// JSON 对象的键字面量（含转义与引号）。
 fn json_key(key: &str) -> String {
-    serde_json::to_string(&Value::String(key.to_string()))
-        .unwrap_or_else(|_| format!("\"{key}\""))
+    serde_json::to_string(&Value::String(key.to_string())).unwrap_or_else(|_| format!("\"{key}\""))
 }
 
 /// 把 `segments` 渲染成嵌套对象文本（`["b","c"]` + 值 `v` ⇒ `{"b":{"c":v}}` 的文本）。
@@ -1129,7 +1143,14 @@ fn locate_edit(
                 seq: 0,
             }))
         }
-        Some(member) => locate_edit(&member.value, original, &segments[1..], value, fp, depth + 1),
+        Some(member) => locate_edit(
+            &member.value,
+            original,
+            &segments[1..],
+            value,
+            fp,
+            depth + 1,
+        ),
         None => {
             // 中间键缺失 ⇒ 把**剩余路径**（不含当前段）渲染成嵌套对象，插到当前对象末尾。
             // 单段时值直接就是 `value`（不可走 `build_nested_value`，否则会多包一层同名键）。
@@ -1366,7 +1387,13 @@ impl<'a> Scanner<'a> {
                         b'r' => out.push('\r'),
                         b't' => out.push('\t'),
                         b'u' => out.push(self.parse_unicode_escape()?),
-                        _ => return Err(format!("第 {} 字节处非法转义 \\{}", self.pos - 1, esc as char)),
+                        _ => {
+                            return Err(format!(
+                                "第 {} 字节处非法转义 \\{}",
+                                self.pos - 1,
+                                esc as char
+                            ))
+                        }
                     }
                 }
                 _ => {
@@ -1419,7 +1446,12 @@ impl<'a> Scanner<'a> {
     fn parse_primitive(&mut self) -> Result<(), String> {
         let start = self.pos;
         while let Some(b) = self.peek() {
-            if b == b',' || b == b'}' || b == b']' || b == b' ' || b == b'\t' || b == b'\n'
+            if b == b','
+                || b == b'}'
+                || b == b']'
+                || b == b' '
+                || b == b'\t'
+                || b == b'\n'
                 || b == b'\r'
             {
                 break;
@@ -1500,7 +1532,10 @@ fn process_running(slot: &ClientSlot) -> String {
 fn parse_failed(path: &Path, reason: &str) -> String {
     AppError::new(
         ErrorCode::ClientSettingsParseFailed,
-        format!("客户端 settings.json 解析失败（{}）：{reason}", path.display()),
+        format!(
+            "客户端 settings.json 解析失败（{}）：{reason}",
+            path.display()
+        ),
     )
     .with("path", path.to_string_lossy().to_string())
     .to_wire()
@@ -1509,7 +1544,10 @@ fn parse_failed(path: &Path, reason: &str) -> String {
 fn write_failed(path: &Path, reason: &str) -> String {
     AppError::new(
         ErrorCode::ClientSettingsWriteFailed,
-        format!("客户端 settings.json 写入失败（{}）：{reason}", path.display()),
+        format!(
+            "客户端 settings.json 写入失败（{}）：{reason}",
+            path.display()
+        ),
     )
     .with("path", path.to_string_lossy().to_string())
     .to_wire()
@@ -1617,7 +1655,10 @@ mod tests {
     /// （`slot_by_key` 会先命中代理表，hook 会被装到**错的客户端**上）。
     #[test]
     fn hook_file_slots_are_disjoint_from_proxy_slots_and_lookupable() {
-        assert!(!HOOK_FILE_SLOTS.is_empty(), "hook 目标表不得为空（否则安装面是空转）");
+        assert!(
+            !HOOK_FILE_SLOTS.is_empty(),
+            "hook 目标表不得为空（否则安装面是空转）"
+        );
 
         let mut keys: Vec<&str> = HOOK_FILE_SLOTS.iter().map(|s| s.key).collect();
         keys.sort_unstable();
@@ -1663,7 +1704,9 @@ mod tests {
                     );
                     // 该区域必须至少有一个变体可供判进程（否则守卫恒为 false ⇒ 空转）。
                     assert!(
-                        all_specs().iter().any(|spec| spec.variant.region() == region),
+                        all_specs()
+                            .iter()
+                            .any(|spec| spec.variant.region() == region),
                         "{} 所属区域没有任何变体 —— 进程守卫会恒为「没在跑」",
                         slot.key
                     );
@@ -1686,12 +1729,14 @@ mod tests {
         let home = home_dir();
         for slot in HOOK_FILE_SLOTS {
             let path = slot.settings_path().expect("家目录可解析 ⇒ 路径必须可解析");
-            assert!(path.starts_with(&home), "hook 目标必须在家目录下：{}", path.display());
+            assert!(
+                path.starts_with(&home),
+                "hook 目标必须在家目录下：{}",
+                path.display()
+            );
             let expected = match slot.kind {
                 SlotKind::HomeFile(spec) => home.join(spec.dir).join(spec.file),
-                SlotKind::TraeHooks(region) => {
-                    home.join(trae_hooks_dir(region)).join("hooks.json")
-                }
+                SlotKind::TraeHooks(region) => home.join(trae_hooks_dir(region)).join("hooks.json"),
                 other => panic!("不受支持的 kind：{other:?}"),
             };
             assert_eq!(path, expected, "{} 的路径不对", slot.key);
@@ -1769,7 +1814,10 @@ mod tests {
         ] {
             let (region, program) = program_of_variant(variant);
             // 退役变体往返后落到**本区域的合并版**（收敛后它们不再可切换）。
-            assert_eq!(variant_for_program(region, program).region(), variant.region());
+            assert_eq!(
+                variant_for_program(region, program).region(),
+                variant.region()
+            );
             // 区域必须与 `variant.region()` 同源。
             assert_eq!(region, variant.region(), "{variant:?} 的区域漂了");
         }
@@ -2108,7 +2156,10 @@ mod tests {
     /// 扫描器：转义 / 嵌套 / 数组 / 尾部垃圾。
     #[test]
     fn 扫描器覆盖转义与嵌套() {
-        let tree = parse_json("{\n  \"a\\\"b\": \"x\\\\y\",\n  \"arr\": [1, {\"k\": null}],\n  \"u\": \"\\u4e2d\"\n}").unwrap();
+        let tree = parse_json(
+            "{\n  \"a\\\"b\": \"x\\\\y\",\n  \"arr\": [1, {\"k\": null}],\n  \"u\": \"\\u4e2d\"\n}",
+        )
+        .unwrap();
         let NodeKind::Object(members) = &tree.kind else {
             panic!("顶层应为对象");
         };
@@ -2200,7 +2251,9 @@ mod tests {
         });
         let out = diff_values(&a, "workbuddy-cn", "workbuddy", &b, "trae-code-cn", "trae");
 
-        let groups = out["proxyGroups"].as_array().expect("proxyGroups 必须是数组");
+        let groups = out["proxyGroups"]
+            .as_array()
+            .expect("proxyGroups 必须是数组");
         assert_eq!(groups.len(), 1, "跨产品必须归并出一组代理");
         assert_eq!(groups[0]["semantic"], json!("proxy"));
         assert_eq!(groups[0]["a"].as_array().unwrap().len(), 2, "A 侧两条字段");
@@ -2245,10 +2298,20 @@ mod tests {
         assert_eq!(groups2.len(), 1);
         assert_eq!(groups2[0]["a"][0]["present"], json!(false));
         assert_eq!(groups2[0]["a"][0]["value"], Value::Null);
-        assert!(out2["onlyB"].as_array().unwrap().is_empty(), "代理字段不得落进 onlyB");
+        assert!(
+            out2["onlyB"].as_array().unwrap().is_empty(),
+            "代理字段不得落进 onlyB"
+        );
 
         // 同产品：不做归并（代理字段走普通三类口径）。
-        let same = diff_values(&a, "workbuddy-cn", "workbuddy", &a, "workbuddy-global", "workbuddy");
+        let same = diff_values(
+            &a,
+            "workbuddy-cn",
+            "workbuddy",
+            &a,
+            "workbuddy-global",
+            "workbuddy",
+        );
         assert!(same["proxyGroups"].as_array().unwrap().is_empty());
         assert_eq!(same["counts"]["same"], json!(3));
         assert_eq!(same["counts"]["onlyA"], json!(0));

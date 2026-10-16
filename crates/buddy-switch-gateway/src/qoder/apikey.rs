@@ -145,7 +145,11 @@ impl QoderApiKeyStore {
     }
 
     /// 创建一把新 Key：返回 `(记录, 明文)` —— **明文只在这一刻出现一次**。
-    pub fn create(&self, name: String, region: QoderRegion) -> Result<(QoderApiKeyRecord, String), String> {
+    pub fn create(
+        &self,
+        name: String,
+        region: QoderRegion,
+    ) -> Result<(QoderApiKeyRecord, String), String> {
         let secret = format!("{KEY_PREFIX}{}", &random_id()[..28]);
         let record = QoderApiKeyRecord {
             id: random_id(),
@@ -155,7 +159,10 @@ impl QoderApiKeyStore {
                 name.trim().to_string()
             },
             region,
-            prefix: format!("{KEY_PREFIX}{}", &secret[KEY_PREFIX.len()..KEY_PREFIX.len() + 4]),
+            prefix: format!(
+                "{KEY_PREFIX}{}",
+                &secret[KEY_PREFIX.len()..KEY_PREFIX.len() + 4]
+            ),
             suffix: secret.chars().skip(secret.chars().count() - 4).collect(),
             hash: sha256_hex(&secret),
             created_at: now_ms(),

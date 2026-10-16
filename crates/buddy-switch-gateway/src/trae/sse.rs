@@ -234,7 +234,13 @@ fn convert_tool_calls(value: &Value) -> Vec<Value> {
 }
 
 /// 构造一个 OpenAI `chat.completion.chunk` 的 `data:` 行。
-fn chunk_line(chat_id: &str, model: &str, delta: Value, finish_reason: &str, usage: Option<TokenUsage>) -> String {
+fn chunk_line(
+    chat_id: &str,
+    model: &str,
+    delta: Value,
+    finish_reason: &str,
+    usage: Option<TokenUsage>,
+) -> String {
     let mut choice = Map::new();
     choice.insert("index".into(), json!(0));
     choice.insert("delta".into(), delta);
@@ -302,9 +308,16 @@ pub async fn stream_convert(
             }
         };
         for event in parser.feed(&chunk) {
-            if emit(&event, sender.clone(), chat_id, model, &mut pending_usage, &mut outcome)
-                .await
-                .is_err()
+            if emit(
+                &event,
+                sender.clone(),
+                chat_id,
+                model,
+                &mut pending_usage,
+                &mut outcome,
+            )
+            .await
+            .is_err()
             {
                 // 客户端已断开：停止转换，不再补发任何内容。
                 return outcome;
@@ -313,18 +326,23 @@ pub async fn stream_convert(
     }
 
     for event in parser.finish() {
-        if emit(&event, sender.clone(), chat_id, model, &mut pending_usage, &mut outcome)
-            .await
-            .is_err()
+        if emit(
+            &event,
+            sender.clone(),
+            chat_id,
+            model,
+            &mut pending_usage,
+            &mut outcome,
+        )
+        .await
+        .is_err()
         {
             return outcome;
         }
     }
 
     if !outcome.saw_done {
-        let _ = sender
-            .send(Ok(Bytes::from(done_line().to_string())))
-            .await;
+        let _ = sender.send(Ok(Bytes::from(done_line().to_string()))).await;
         outcome.saw_done = true;
     }
     outcome
@@ -427,12 +445,12 @@ pub async fn aggregate(
     let mut stream = response.bytes_stream();
 
     let consume = |event: SoloEvent,
-                       content: &mut String,
-                       reasoning: &mut String,
-                       finish_reason: &mut String,
-                       usage: &mut TokenUsage,
-                       error: &mut Option<(i64, String)>,
-                       tool_calls: &mut Vec<Value>| {
+                   content: &mut String,
+                   reasoning: &mut String,
+                   finish_reason: &mut String,
+                   usage: &mut TokenUsage,
+                   error: &mut Option<(i64, String)>,
+                   tool_calls: &mut Vec<Value>| {
         match event.event.as_str() {
             "output" | "thought" => {
                 content.push_str(&event.response);
@@ -597,15 +615,26 @@ mod tests {
 
     #[test]
     fn parse_event_reads_every_documented_solo_event() {
-        let output = parse_event("output", r#"{"response":"a","reasoning_content":"r","tool_calls":[{"function_call":{"name":"f"}}]}"#);
+        let output = parse_event(
+            "output",
+            r#"{"response":"a","reasoning_content":"r","tool_calls":[{"function_call":{"name":"f"}}]}"#,
+        );
         assert_eq!(output.response, "a");
         assert_eq!(output.reasoning, "r");
         assert!(output.tool_calls.is_some());
 
-        let usage = parse_event("token_usage", r#"{"prompt_tokens":10,"completion_tokens":2,"total_tokens":12,"reasoning_tokens":1}"#);
+        let usage = parse_event(
+            "token_usage",
+            r#"{"prompt_tokens":10,"completion_tokens":2,"total_tokens":12,"reasoning_tokens":1}"#,
+        );
         assert_eq!(
             usage.usage,
-            Some(TokenUsage { prompt: 10, completion: 2, total: 12, reasoning: 1 })
+            Some(TokenUsage {
+                prompt: 10,
+                completion: 2,
+                total: 12,
+                reasoning: 1
+            })
         );
 
         let done = parse_event("done", r#"{"finish_reason":"length"}"#);
@@ -635,7 +664,13 @@ mod tests {
         assert!(partial.is_meaningful());
         assert!(!TokenUsage::default().is_meaningful());
 
-        let openai = TokenUsage { prompt: 1, completion: 2, total: 3, reasoning: 0 }.to_openai();
+        let openai = TokenUsage {
+            prompt: 1,
+            completion: 2,
+            total: 3,
+            reasoning: 0,
+        }
+        .to_openai();
         assert_eq!(openai["prompt_tokens"], 1);
         assert_eq!(openai["total_tokens"], 3);
         // reasoning_tokens 不是 OpenAI 标准字段，不外发。
@@ -659,7 +694,8 @@ mod tests {
         let plain = chunk_line("id", "m", json!({"content": "x"}), "", None);
         assert!(plain.starts_with("data: {"));
         assert!(plain.ends_with("\n\n"));
-        let parsed: Value = serde_json::from_str(plain.trim_start_matches("data: ").trim()).unwrap();
+        let parsed: Value =
+            serde_json::from_str(plain.trim_start_matches("data: ").trim()).unwrap();
         assert_eq!(parsed["object"], "chat.completion.chunk");
         assert_eq!(parsed["model"], "m");
         assert!(parsed["choices"][0].get("finish_reason").is_none());
@@ -667,7 +703,8 @@ mod tests {
 
         // 全 0 的 usage 不应外发（否则客户端会显示 0 token）。
         let with_zero = chunk_line("id", "m", json!({}), "stop", Some(TokenUsage::default()));
-        let parsed: Value = serde_json::from_str(with_zero.trim_start_matches("data: ").trim()).unwrap();
+        let parsed: Value =
+            serde_json::from_str(with_zero.trim_start_matches("data: ").trim()).unwrap();
         assert!(parsed.get("usage").is_none());
         assert_eq!(parsed["choices"][0]["finish_reason"], "stop");
 
@@ -676,9 +713,15 @@ mod tests {
             "m",
             json!({}),
             "stop",
-            Some(TokenUsage { prompt: 1, completion: 2, total: 3, reasoning: 0 }),
+            Some(TokenUsage {
+                prompt: 1,
+                completion: 2,
+                total: 3,
+                reasoning: 0,
+            }),
         );
-        let parsed: Value = serde_json::from_str(with_usage.trim_start_matches("data: ").trim()).unwrap();
+        let parsed: Value =
+            serde_json::from_str(with_usage.trim_start_matches("data: ").trim()).unwrap();
         assert_eq!(parsed["usage"]["total_tokens"], 3);
     }
 
@@ -705,9 +748,16 @@ mod tests {
             "id:4\nevent:done\ndata:{\"finish_reason\":\"stop\"}\n\n",
         );
         for event in parser.feed(raw.as_bytes()) {
-            emit(&event, tx.clone(), "chatcmpl-1", "glm-5.3", &mut pending, &mut outcome)
-                .await
-                .unwrap();
+            emit(
+                &event,
+                tx.clone(),
+                "chatcmpl-1",
+                "glm-5.3",
+                &mut pending,
+                &mut outcome,
+            )
+            .await
+            .unwrap();
         }
         drop(tx);
 
@@ -738,9 +788,16 @@ mod tests {
 
         let raw = "id:1\nevent:error\ndata:{\"code\":1005,\"message\":\"plan limit\"}\n\n";
         for event in parser.feed(raw.as_bytes()) {
-            emit(&event, tx.clone(), "chatcmpl-2", "m", &mut pending, &mut outcome)
-                .await
-                .unwrap();
+            emit(
+                &event,
+                tx.clone(),
+                "chatcmpl-2",
+                "m",
+                &mut pending,
+                &mut outcome,
+            )
+            .await
+            .unwrap();
         }
         drop(tx);
 

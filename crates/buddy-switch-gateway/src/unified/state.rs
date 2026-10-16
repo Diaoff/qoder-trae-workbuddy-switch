@@ -84,10 +84,8 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let mut config = UnifiedGatewayConfig::default();
         config.max_body_mb = 0; // 触发「0 视为未设置」的回落分支
-        let state = UnifiedGatewayState::with_keys(
-            config,
-            UnifiedApiKeyStore::new(dir.join("keys.json")),
-        );
+        let state =
+            UnifiedGatewayState::with_keys(config, UnifiedApiKeyStore::new(dir.join("keys.json")));
         (state, dir)
     }
 
@@ -107,7 +105,10 @@ mod tests {
     #[tokio::test]
     async fn set_config_is_visible_to_the_next_snapshot() {
         let (state, dir) = temp_state();
-        assert_eq!(state.config_snapshot().await.port, super::super::config::DEFAULT_UNIFIED_PORT);
+        assert_eq!(
+            state.config_snapshot().await.port,
+            super::super::config::DEFAULT_UNIFIED_PORT
+        );
         let mut next = state.config_snapshot().await;
         next.port = 57999;
         next.enabled = true;

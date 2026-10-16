@@ -162,7 +162,9 @@ pub fn status_stats_json(counters: &ProxyCounters) -> serde_json::Value {
             "known": true,
         }),
         // 从未记录 ⇒ 明确说「不知道」，而不是谎报 0。
-        None => json!({ "todayRequests": null, "switches": null, "persistedBodies": 0, "known": false }),
+        None => {
+            json!({ "todayRequests": null, "switches": null, "persistedBodies": 0, "known": false })
+        }
     }
 }
 
@@ -243,7 +245,11 @@ mod tests {
         let after = ProxyCounters::new();
         let day = today_at(&path).expect("台账应存在");
         after.restore(day.requests, day.switches);
-        assert_eq!(after.snapshot(), (1, 1), "重启后计数应从台账恢复，不从零起算");
+        assert_eq!(
+            after.snapshot(),
+            (1, 1),
+            "重启后计数应从台账恢复，不从零起算"
+        );
 
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }

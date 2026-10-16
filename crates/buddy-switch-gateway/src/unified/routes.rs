@@ -208,13 +208,34 @@ async fn relay_llm(
             let wb = <crate::WbGateway as crate::GatewayProduct>::shared_state();
             match endpoint {
                 LlmEndpoint::Chat => {
-                    crate::routes::chat::chat_for_region(wb, region, headers, rewritten, AlreadyResolved).await
+                    crate::routes::chat::chat_for_region(
+                        wb,
+                        region,
+                        headers,
+                        rewritten,
+                        AlreadyResolved,
+                    )
+                    .await
                 }
                 LlmEndpoint::Messages => {
-                    crate::routes::messages::messages_for_region(wb, region, headers, rewritten, AlreadyResolved).await
+                    crate::routes::messages::messages_for_region(
+                        wb,
+                        region,
+                        headers,
+                        rewritten,
+                        AlreadyResolved,
+                    )
+                    .await
                 }
                 LlmEndpoint::Responses => {
-                    crate::routes::responses::responses_for_region(wb, region, headers, rewritten, AlreadyResolved).await
+                    crate::routes::responses::responses_for_region(
+                        wb,
+                        region,
+                        headers,
+                        rewritten,
+                        AlreadyResolved,
+                    )
+                    .await
                 }
             }
         }
@@ -235,8 +256,8 @@ async fn relay_llm(
             }
         }
         /* ★ Qoder 产品线（2026-10-15 接入）：与 WB / Trae 同一条中继纪律 ——
-           复用 `qoder::routes::chat_for_region`（**认证之后的逻辑只有一份**），
-           绝不在这里另写一套选号 / 换号 / 流式转发。 */
+        复用 `qoder::routes::chat_for_region`（**认证之后的逻辑只有一份**），
+        绝不在这里另写一套选号 / 换号 / 流式转发。 */
         RelayTarget::Qoder(region) => {
             let qoder = <crate::qoder::QoderGateway as crate::GatewayProduct>::shared_state();
             match endpoint {
@@ -616,7 +637,7 @@ async fn collect_namespace_models(
     let trae_disabled = trae.disabled.read().await.clone();
 
     /* ⚠️ `Qoder` 分支需要 async 取数（清单要经账号凭据向官方拉取，带缓存）⇒
-       这里用 for 循环逐项 await（`.map` 的闭包不是 async）。顺序保持不变。 */
+    这里用 for 循环逐项 await（`.map` 的闭包不是 async）。顺序保持不变。 */
     let mut collected: Vec<NamespaceModels> = Vec::with_capacity(specs.len());
     for spec in specs.iter() {
         collected.push(match gateway_namespace::relay_target_of(spec) {
@@ -668,13 +689,14 @@ async fn collect_namespace_models(
                 let from_client = !list.groups.is_empty();
                 let models = crate::trae::payload::models_response_for(
                     variant,
-                    trae_disabled
-                        .get(buddy_switch_core::modules::product::scope_of_trae_region(variant.region())),
+                    trae_disabled.get(buddy_switch_core::modules::product::scope_of_trae_region(
+                        variant.region(),
+                    )),
                 )
-                    .get("data")
-                    .and_then(|data| data.as_array())
-                    .cloned()
-                    .unwrap_or_default();
+                .get("data")
+                .and_then(|data| data.as_array())
+                .cloned()
+                .unwrap_or_default();
                 NamespaceModels {
                     namespace: spec.id,
                     source: if from_client { "live" } else { "builtin" },
@@ -691,7 +713,7 @@ async fn collect_namespace_models(
                 }
             }
             /* Qoder 产品线（2026-10-15 接入）：清单来自官方接口（需账号凭据），
-               带缓存；拉不到时**空清单 + 可读 note**（契约：非 `live` ⇒ note 非空）。 */
+            带缓存；拉不到时**空清单 + 可读 note**（契约：非 `live` ⇒ note 非空）。 */
             RelayTarget::Qoder(region) => {
                 let qoder = <crate::qoder::QoderGateway as crate::GatewayProduct>::shared_state();
                 // `refresh` ⇒ 忽略 TTL 强制重拉（失败仍退回上次成功的结果 + note）。
@@ -703,15 +725,20 @@ async fn collect_namespace_models(
                 let scope = buddy_switch_core::modules::product::scope_of_qoder_region(region);
                 let disabled_store = crate::disabled_models::shared();
                 let disabled = disabled_store.read().await;
-                let models = crate::qoder::payload::models_response(&catalog.models, disabled.get(scope))
-                    .get("data")
-                    .and_then(|data| data.as_array())
-                    .cloned()
-                    .unwrap_or_default();
+                let models =
+                    crate::qoder::payload::models_response(&catalog.models, disabled.get(scope))
+                        .get("data")
+                        .and_then(|data| data.as_array())
+                        .cloned()
+                        .unwrap_or_default();
                 drop(disabled);
                 NamespaceModels {
                     namespace: spec.id,
-                    source: if catalog.models.is_empty() { "unavailable" } else { "live" },
+                    source: if catalog.models.is_empty() {
+                        "unavailable"
+                    } else {
+                        "live"
+                    },
                     fetched_at: Some(buddy_switch_core::modules::config::now_ms()),
                     note: catalog.note,
                     models,
@@ -723,7 +750,7 @@ async fn collect_namespace_models(
 }
 
 /* `qoder_not_wired` 已于 2026-10-15 删除：Qoder 产品线正式接入统一网关，
-   501/`namespace_product_line_not_wired` 不再是任何路径的出口（不保留死代码）。 */
+501/`namespace_product_line_not_wired` 不再是任何路径的出口（不保留死代码）。 */
 
 /// 目录来源 → 稳定字符串（供 `/v1/models` 的 `namespaces[].source`）。
 ///
@@ -741,7 +768,10 @@ fn catalog_source_str(source: CatalogSource) -> &'static str {
 /// 与 WB 网关同一规则（Trae 侧只认 Bearer）。统一入口**接受两者** —— 它是一个新入口，
 /// 不继承任何一侧的历史包袱；但**绝不按认证头反推产品线**（归属只由命名空间决定）。
 fn presented_key(headers: &HeaderMap) -> Option<&str> {
-    if let Some(value) = headers.get("x-api-key").and_then(|value| value.to_str().ok()) {
+    if let Some(value) = headers
+        .get("x-api-key")
+        .and_then(|value| value.to_str().ok())
+    {
         let value = value.trim();
         if !value.is_empty() {
             return Some(value);
@@ -816,7 +846,10 @@ mod tests {
             source,
             fetched_at: Some(1_760_400_000_000),
             note: None,
-            models: models.iter().map(|id| json!({ "id": id, "object": "model" })).collect(),
+            models: models
+                .iter()
+                .map(|id| json!({ "id": id, "object": "model" }))
+                .collect(),
         }
     }
 
@@ -827,7 +860,10 @@ mod tests {
         assert_eq!(response["object"], "list");
         assert_eq!(response["data"][0]["id"], "wb-cn:deepseek-v4.1-flash");
         assert_eq!(response["data"][0]["namespace"], "wb-cn");
-        assert_eq!(response["data"][0]["object"], "model", "其余字段必须原样保留");
+        assert_eq!(
+            response["data"][0]["object"], "model",
+            "其余字段必须原样保留"
+        );
     }
 
     /// ★★ 同名模型来自两个命名空间 ⇒ **两条并列**，正是本需求要的结果（不再互相覆盖）。
@@ -843,7 +879,10 @@ mod tests {
             .iter()
             .map(|model| model["id"].as_str().unwrap())
             .collect();
-        assert_eq!(ids, vec!["wb-cn:deepseek-v4.1-flash", "wb-global:deepseek-v4.1-flash"]);
+        assert_eq!(
+            ids,
+            vec!["wb-cn:deepseek-v4.1-flash", "wb-global:deepseek-v4.1-flash"]
+        );
         assert_ne!(ids[0], ids[1], "两条 id 必须不同，否则客户端仍会按 id 去重");
     }
 
@@ -905,7 +944,10 @@ mod tests {
             models: vec![json!({ "object": "model" })],
         };
         let response = build_models_response(&[dirty]);
-        assert_eq!(response["data"][0]["id"], "wb-cn:", "裸名缺失时只留前缀，不 panic");
+        assert_eq!(
+            response["data"][0]["id"], "wb-cn:",
+            "裸名缺失时只留前缀，不 panic"
+        );
     }
 
     /// 取 Key 的规则：`x-api-key` 优先；`Bearer`（大小写 b 都认）；都没有 ⇒ `None`。
@@ -918,13 +960,21 @@ mod tests {
         assert_eq!(presented_key(&headers), Some("sk-uni-aaaa"));
 
         headers.insert(header::AUTHORIZATION, "Bearer sk-uni-bbbb".parse().unwrap());
-        assert_eq!(presented_key(&headers), Some("sk-uni-aaaa"), "x-api-key 优先");
+        assert_eq!(
+            presented_key(&headers),
+            Some("sk-uni-aaaa"),
+            "x-api-key 优先"
+        );
 
         headers.remove("x-api-key");
         assert_eq!(presented_key(&headers), Some("sk-uni-bbbb"));
 
         headers.insert(header::AUTHORIZATION, "bearer sk-uni-cccc".parse().unwrap());
-        assert_eq!(presented_key(&headers), Some("sk-uni-cccc"), "小写 bearer 也要认");
+        assert_eq!(
+            presented_key(&headers),
+            Some("sk-uni-cccc"),
+            "小写 bearer 也要认"
+        );
 
         headers.insert(header::AUTHORIZATION, "  sk-uni-dddd  ".parse().unwrap());
         assert_eq!(presented_key(&headers), None, "无 Bearer 前缀的裸值不认");
@@ -939,9 +989,7 @@ mod tests {
     ///
     /// ★ 这些用例**只走「分派之前」的拒绝路径**，因此**不会碰真实账号池 / 日志 / 账本** ——
     /// 不会在用户的 `~/.buddy-switch/` 下留任何痕迹（转发成功的那条路必须有账号才能跑，不放在单测里）。
-    async fn app_with_key(
-        namespaces: &[&str],
-    ) -> (axum::Router, std::path::PathBuf, String) {
+    async fn app_with_key(namespaces: &[&str]) -> (axum::Router, std::path::PathBuf, String) {
         let dir = std::env::temp_dir().join(format!(
             "buddy-switch-unified-chat-{}",
             uuid::Uuid::new_v4().simple()
@@ -1009,8 +1057,14 @@ mod tests {
         assert_eq!(body["error"]["code"], "namespace_prefix_required");
         let message = body["error"]["message"].as_str().unwrap();
         assert!(message.contains("wb-cn:"), "应列出可用前缀：{message}");
-        assert!(message.contains("trae-global:"), "应列出全部启用项：{message}");
-        assert!(message.contains("deepseek-v4.1-flash"), "应回显用户填的名字：{message}");
+        assert!(
+            message.contains("trae-global:"),
+            "应列出全部启用项：{message}"
+        );
+        assert!(
+            message.contains("deepseek-v4.1-flash"),
+            "应回显用户填的名字：{message}"
+        );
         std::fs::remove_dir_all(dir).unwrap();
     }
 
@@ -1018,12 +1072,20 @@ mod tests {
     #[tokio::test]
     async fn unauthorized_namespace_is_forbidden() {
         let (app, dir, key) = app_with_key(&["wb-cn"]).await;
-        let (status, body) = post(&app, Some(&key), r#"{"model":"trae-cn:deepseek-v4.1-flash"}"#).await;
+        let (status, body) = post(
+            &app,
+            Some(&key),
+            r#"{"model":"trae-cn:deepseek-v4.1-flash"}"#,
+        )
+        .await;
         assert_eq!(status, StatusCode::FORBIDDEN);
         assert_eq!(body["error"]["code"], "namespace_forbidden");
         let message = body["error"]["message"].as_str().unwrap();
         assert!(message.contains("trae-cn"), "{message}");
-        assert!(message.contains("wb-cn"), "应说明这把 Key 只授权了什么：{message}");
+        assert!(
+            message.contains("wb-cn"),
+            "应说明这把 Key 只授权了什么：{message}"
+        );
         std::fs::remove_dir_all(dir).unwrap();
     }
 
@@ -1048,8 +1110,12 @@ mod tests {
             "traecode-cn",
             "traecode-global",
         ] {
-            let (status, body) =
-                post(&app, Some(&key), &format!(r#"{{"model":"{retired}:glm-5.3"}}"#)).await;
+            let (status, body) = post(
+                &app,
+                Some(&key),
+                &format!(r#"{{"model":"{retired}:glm-5.3"}}"#),
+            )
+            .await;
             assert_eq!(
                 status,
                 StatusCode::BAD_REQUEST,
@@ -1077,7 +1143,10 @@ mod tests {
         assert_eq!(status, StatusCode::UNAUTHORIZED);
         assert_eq!(body["error"]["code"], "invalid_api_key");
         let message = body["error"]["message"].as_str().unwrap();
-        assert!(message.contains("sk-uni-"), "要点明统一入口的 Key 前缀：{message}");
+        assert!(
+            message.contains("sk-uni-"),
+            "要点明统一入口的 Key 前缀：{message}"
+        );
         std::fs::remove_dir_all(dir).unwrap();
     }
 
@@ -1110,7 +1179,11 @@ mod tests {
     async fn trae_namespace_is_guarded_before_dispatch() {
         let (app, dir, key) = app_with_key(&["wb-cn"]).await;
         let (status, body) = post(&app, Some(&key), r#"{"model":"trae-global:glm-5.3"}"#).await;
-        assert_eq!(status, StatusCode::FORBIDDEN, "未授权的 Trae 命名空间必须被拦住");
+        assert_eq!(
+            status,
+            StatusCode::FORBIDDEN,
+            "未授权的 Trae 命名空间必须被拦住"
+        );
         assert_eq!(body["error"]["code"], "namespace_forbidden");
         std::fs::remove_dir_all(dir).unwrap();
     }
@@ -1148,7 +1221,10 @@ mod tests {
         )
         .await;
         assert_eq!(status, StatusCode::NOT_IMPLEMENTED);
-        assert_eq!(body["error"]["code"], "endpoint_not_supported_for_namespace");
+        assert_eq!(
+            body["error"]["code"],
+            "endpoint_not_supported_for_namespace"
+        );
         let message = body["error"]["message"].as_str().unwrap();
         assert!(message.contains("wb-cn"), "要给出出路：{message}");
         std::fs::remove_dir_all(dir).unwrap();

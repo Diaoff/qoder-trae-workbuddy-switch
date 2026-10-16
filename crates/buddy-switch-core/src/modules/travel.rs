@@ -578,14 +578,18 @@ fn merge_claim_state(prior: &Value, new: &Value) -> Value {
         if result_in_flight(prior)
             && nonzero_credit(merged.get("rewardCredit").unwrap_or(&Value::Null)).is_none()
         {
-            if let Some(credit) = nonzero_credit(prior.get("rewardCredit").unwrap_or(&Value::Null)) {
+            if let Some(credit) = nonzero_credit(prior.get("rewardCredit").unwrap_or(&Value::Null))
+            {
                 merged["rewardCredit"] = credit;
             }
         }
         if result_in_flight(prior)
             && merged.get("arriveAt").and_then(Value::as_i64).unwrap_or(0) <= 0
         {
-            if let Some(arrive_at) = prior.get("arriveAt").and_then(Value::as_i64).filter(|v| *v > 0)
+            if let Some(arrive_at) = prior
+                .get("arriveAt")
+                .and_then(Value::as_i64)
+                .filter(|v| *v > 0)
             {
                 merged["arriveAt"] = json!(arrive_at);
             }
@@ -595,7 +599,8 @@ fn merge_claim_state(prior: &Value, new: &Value) -> Value {
     if !result_claimed(prior) {
         return merged;
     }
-    let new_has_credit = nonzero_credit(merged.get("rewardCredit").unwrap_or(&Value::Null)).is_some();
+    let new_has_credit =
+        nonzero_credit(merged.get("rewardCredit").unwrap_or(&Value::Null)).is_some();
     merged["claimed"] = json!(true);
     if !new_has_credit {
         merged["rewardCredit"] = prior.get("rewardCredit").cloned().unwrap_or(Value::Null);
@@ -1142,10 +1147,7 @@ mod tests {
 
     #[test]
     fn official_status_decides_whether_to_depart() {
-        assert_eq!(
-            decide_travel_action("idle", false),
-            TravelAction::Depart
-        );
+        assert_eq!(decide_travel_action("idle", false), TravelAction::Depart);
         assert_eq!(
             decide_travel_action("idle", true),
             TravelAction::SkipDailyLimit
@@ -1154,10 +1156,7 @@ mod tests {
             decide_travel_action("traveling", true),
             TravelAction::WaitTraveling
         );
-        assert_eq!(
-            decide_travel_action("arrived", true),
-            TravelAction::Claim
-        );
+        assert_eq!(decide_travel_action("arrived", true), TravelAction::Claim);
     }
 
     #[test]
@@ -1206,10 +1205,7 @@ mod tests {
         assert!(in_flight_due(&traveling, 100));
         assert!(in_flight_due(&traveling, 101));
         assert!(!in_flight_due(&traveling, 99));
-        assert!(in_flight_due(
-            &json!({ "ok": true, "claimed": false }),
-            1
-        ));
+        assert!(in_flight_due(&json!({ "ok": true, "claimed": false }), 1));
         assert!(!in_flight_due(
             &json!({ "ok": true, "claimed": true, "arriveAt": 1 }),
             100

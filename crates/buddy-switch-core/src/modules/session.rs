@@ -103,7 +103,9 @@ const EDGE_SYNC_DB_LEGACY: &str = "edge-sync-mapping-v2.db";
 fn edge_sync_db_path_for(region: Region) -> PathBuf {
     let dir = session_data_dir(region);
     match latest_edge_sync_db_version(&dir) {
-        Some(version) => dir.join(format!("{EDGE_SYNC_DB_PREFIX}{version}{EDGE_SYNC_DB_SUFFIX}")),
+        Some(version) => dir.join(format!(
+            "{EDGE_SYNC_DB_PREFIX}{version}{EDGE_SYNC_DB_SUFFIX}"
+        )),
         None => dir.join(EDGE_SYNC_DB_LEGACY),
     }
 }
@@ -617,10 +619,7 @@ fn mtime_ms_of(meta: &std::fs::Metadata) -> i64 {
 /// 内容 —— 行数偏少、前缀 hash 也可能对不上，据此判出来的「谁落后几条」是错的
 /// （比不显示更坏）。判据是**读前后一致**：不一致就重试一次，仍不稳定 ⇒ `None`
 /// （本次落 `unknown`，**不臆造**），且**不写缓存**（免得把撕裂的读数钉死）。
-fn read_stable_fingerprint(
-    path: &Path,
-    cid: &str,
-) -> Option<(SessionFingerprint, u64, i64)> {
+fn read_stable_fingerprint(path: &Path, cid: &str) -> Option<(SessionFingerprint, u64, i64)> {
     for _ in 0..2 {
         let before = std::fs::metadata(path).ok()?;
         let fingerprint = fingerprint_of_file(path, cid)?;
@@ -678,8 +677,7 @@ impl FingerprintStore {
             let Some(key_len) = read_u16(body, &mut cursor) else {
                 return store;
             };
-            let Some(key) =
-                read_bytes(body, &mut cursor, key_len as usize).map(String::from_utf8)
+            let Some(key) = read_bytes(body, &mut cursor, key_len as usize).map(String::from_utf8)
             else {
                 return store;
             };
@@ -884,7 +882,12 @@ fn fingerprints_for_members(
         let Some((fingerprint, size, mtime_ms)) = read else {
             continue;
         };
-        store.put(fingerprint_key(region, &cid), size, mtime_ms, fingerprint.clone());
+        store.put(
+            fingerprint_key(region, &cid),
+            size,
+            mtime_ms,
+            fingerprint.clone(),
+        );
         out[index] = Some(fingerprint);
     }
     out
@@ -1390,7 +1393,9 @@ pub fn unify_replica_between_files(
         .map_err(|e| format!("备份目标会话失败（**未做任何覆盖**）：{e}"))?;
     // ★ 复核备份**真的落盘且字节数一致** —— 只信 `copy` 的返回值不够
     //   （本仓有过「吞掉错误、无条件返回备份路径」的事故）。
-    let backed_up = std::fs::metadata(&backup_path).map(|m| m.len()).unwrap_or(0);
+    let backed_up = std::fs::metadata(&backup_path)
+        .map(|m| m.len())
+        .unwrap_or(0);
     let original = std::fs::metadata(dst).map(|m| m.len()).unwrap_or(0);
     if backed_up != original {
         return Err(format!(
@@ -1471,8 +1476,8 @@ pub fn unify_session_replicas_for(region: Region, items: &[Value]) -> Value {
             continue;
         }
 
-        let outcome = resolve_jsonl_pair(region, &source_cid, region, &target_cid).and_then(
-            |(src, dst)| {
+        let outcome =
+            resolve_jsonl_pair(region, &source_cid, region, &target_cid).and_then(|(src, dst)| {
                 let report = unify_replica_between_files(
                     &src,
                     &dst,
@@ -1482,8 +1487,7 @@ pub fn unify_session_replicas_for(region: Region, items: &[Value]) -> Value {
                 )?;
                 // 把 `dst` 一起带出来 —— 记基线要读**覆盖后**的目标副本。
                 Ok((report, dst))
-            },
-        );
+            });
 
         match outcome {
             Ok((report, dst)) => {
@@ -1558,7 +1562,9 @@ const JSONL_META_MAX_LINES: usize = 128;
 fn read_jsonl_meta(path: &Path) -> Option<JsonlMeta> {
     let file = std::fs::File::open(path).ok()?;
     let mut head = Vec::new();
-    file.take(JSONL_META_HEAD_BYTES).read_to_end(&mut head).ok()?;
+    file.take(JSONL_META_HEAD_BYTES)
+        .read_to_end(&mut head)
+        .ok()?;
     // 头部可能正好切在一行中间（甚至多字节字符中间）⇒ 有损解码，末行解析失败会被跳过。
     let text = String::from_utf8_lossy(&head);
 
@@ -1774,11 +1780,7 @@ fn backup_db_to(db: PathBuf, backup_root: &Path) -> Result<Option<PathBuf>, Stri
             let backup = rusqlite::backup::Backup::new(&source, &mut dest)
                 .map_err(|e| format!("备份失败：{e}"))?;
             backup
-                .run_to_completion(
-                    DB_BACKUP_PAGES_PER_STEP,
-                    Duration::from_millis(50),
-                    None,
-                )
+                .run_to_completion(DB_BACKUP_PAGES_PER_STEP, Duration::from_millis(50), None)
                 .map_err(|e| format!("备份失败：{e}"))?;
             // ⚠️ rusqlite **不暴露** `finish()` —— 收尾在 `Backup` 的 `Drop` 里
             //    （`sqlite3_backup_finish`）⇒ 必须让它**出作用域**，不能 `mem::forget`。
@@ -1793,7 +1795,9 @@ fn backup_db_to(db: PathBuf, backup_root: &Path) -> Result<Option<PathBuf>, Stri
             .query_row("PRAGMA journal_mode=DELETE", [], |row| row.get(0))
             .map_err(|e| format!("备份失败：快照落盘（{e}）"))?;
         if !mode.eq_ignore_ascii_case("delete") {
-            return Err(format!("备份失败：快照未能落成单文件（journal_mode={mode}）"));
+            return Err(format!(
+                "备份失败：快照未能落成单文件（journal_mode={mode}）"
+            ));
         }
         Ok(())
     })();
@@ -1979,7 +1983,12 @@ struct CopyPlan {
 }
 
 impl CopyBatch {
-    fn new(source_region: Region, target_region: Region, source_uid: &str, target_uid: &str) -> Self {
+    fn new(
+        source_region: Region,
+        target_region: Region,
+        source_uid: &str,
+        target_uid: &str,
+    ) -> Self {
         // 账本整批一次读入（旧实现每个会话都读一遍、写完再读一遍）。
         let ledger_path = copy_ledger_path_for(target_region);
         let ledger = load_copy_ledger_at(&ledger_path);
@@ -2135,8 +2144,10 @@ impl CopyBatch {
         let Some(fingerprint) = baseline_fingerprint_of(dst, new_cid) else {
             return;
         };
-        self.baselines
-            .insert(baseline_key(source_cid, new_cid), baseline_value(&fingerprint));
+        self.baselines.insert(
+            baseline_key(source_cid, new_cid),
+            baseline_value(&fingerprint),
+        );
         self.baselines_dirty = true;
     }
 
@@ -2316,20 +2327,18 @@ fn run_copy_batch(
                 let done = &done;
                 let flags = &flags;
                 let plan_refs = &plan_refs;
-                scope.spawn(move || {
-                    loop {
-                        let index = next.fetch_add(1, Ordering::Relaxed);
-                        if index >= total {
-                            break;
-                        }
-                        flags[index].store(copy_jsonl_for_plan(plan_refs[index]), Ordering::Relaxed);
-                        let finished = done.fetch_add(1, Ordering::Relaxed) + 1;
-                        if let Some(p) = progress {
-                            p(&format!(
-                                "正在复制会话（{finished}/{total}）：{}",
-                                plan_refs[index].title
-                            ));
-                        }
+                scope.spawn(move || loop {
+                    let index = next.fetch_add(1, Ordering::Relaxed);
+                    if index >= total {
+                        break;
+                    }
+                    flags[index].store(copy_jsonl_for_plan(plan_refs[index]), Ordering::Relaxed);
+                    let finished = done.fetch_add(1, Ordering::Relaxed) + 1;
+                    if let Some(p) = progress {
+                        p(&format!(
+                            "正在复制会话（{finished}/{total}）：{}",
+                            plan_refs[index].title
+                        ));
                     }
                 });
             }
@@ -2532,7 +2541,11 @@ fn insert_session_row(
         return false;
     }
 
-    let placeholders = insert_cols.iter().map(|_| "?").collect::<Vec<_>>().join(", ");
+    let placeholders = insert_cols
+        .iter()
+        .map(|_| "?")
+        .collect::<Vec<_>>()
+        .join(", ");
     let colnames = insert_cols.join(", ");
     let sql = format!("INSERT OR REPLACE INTO sessions ({colnames}) VALUES ({placeholders})");
     let params: Vec<&rusqlite::types::Value> = insert_vals.iter().collect();
@@ -2700,7 +2713,8 @@ fn save_session_baselines_at(path: &Path, baselines: &serde_json::Map<String, Va
             return false;
         }
     }
-    let content = serde_json::to_string_pretty(&Value::Object(baselines.clone())).unwrap_or_default();
+    let content =
+        serde_json::to_string_pretty(&Value::Object(baselines.clone())).unwrap_or_default();
     crate::modules::config::atomic_write(path, &content).is_ok()
 }
 
@@ -2836,7 +2850,13 @@ fn record_copy_ledger_at(
     let path = resolve_ledger_path(target_region, override_path);
     let mut ledger = load_copy_ledger_at(&path);
     ledger.insert(
-        copy_ledger_key_for(source_region, target_region, source_uid, target_uid, source_cid),
+        copy_ledger_key_for(
+            source_region,
+            target_region,
+            source_uid,
+            target_uid,
+            source_cid,
+        ),
         Value::String(new_cid.to_string()),
     );
     save_copy_ledger_at(&path, &ledger)
@@ -3023,7 +3043,11 @@ fn replica_group_entries(
     };
     let baselines = load_session_baselines_at(&baselines_path);
     let entries = replica_groups_from_ledger(region, &ledger, &parse_group_baselines(&baselines));
-    let source = if entries.is_empty() { "empty" } else { "ledger" };
+    let source = if entries.is_empty() {
+        "empty"
+    } else {
+        "ledger"
+    };
     (entries, source)
 }
 
@@ -3141,10 +3165,7 @@ fn parse_group_baselines(baselines: &serde_json::Map<String, Value>) -> Vec<Grou
                 a,
                 b,
                 created_at: value.get("createdAt").and_then(Value::as_i64).unwrap_or(0),
-                line_count: value
-                    .get("lineCount")
-                    .and_then(Value::as_u64)
-                    .unwrap_or(0) as usize,
+                line_count: value.get("lineCount").and_then(Value::as_u64).unwrap_or(0) as usize,
                 prefix_hashes: value
                     .get("prefixHashes")
                     .and_then(Value::as_array)
@@ -3303,7 +3324,11 @@ fn derive_content_status(
     }
 
     // ★ 一遍扫过全体成员：公共前缀 = 所有成员都一致的最大前缀长度（见函数头证明）。
-    let shortest_prefix = list.iter().map(|f| f.prefix_hashes.len()).min().unwrap_or(0);
+    let shortest_prefix = list
+        .iter()
+        .map(|f| f.prefix_hashes.len())
+        .min()
+        .unwrap_or(0);
     let mut common = shortest_prefix;
     for index in 0..shortest_prefix {
         let first = list[0].prefix_hashes[index];
@@ -3466,7 +3491,10 @@ mod tests {
         std::fs::write(&blocker, b"not a dir").unwrap();
         let error = backup_db_to(source.clone(), &blocker.join("dest"))
             .expect_err("备份目录建不出来时必须报错");
-        assert!(error.contains("创建备份目录失败"), "文案应指明原因：{error}");
+        assert!(
+            error.contains("创建备份目录失败"),
+            "文案应指明原因：{error}"
+        );
 
         // 3) 目标位置已被一个**目录**占住 ⇒ 必须 Err（不能让 SQLite 给一个含糊的 open 失败）。
         let occupied = root.join("occupied");
@@ -3529,7 +3557,10 @@ mod tests {
         let mode: String = conn
             .query_row("PRAGMA journal_mode=WAL", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(mode, "wal", "夹具必须真的把库切到 WAL，否则本测试没有鉴别力");
+        assert_eq!(
+            mode, "wal",
+            "夹具必须真的把库切到 WAL，否则本测试没有鉴别力"
+        );
         conn.execute_batch("CREATE TABLE sessions (id TEXT PRIMARY KEY, user_id TEXT);")
             .unwrap();
         for index in 0..500 {
@@ -3600,8 +3631,9 @@ mod tests {
         // 用 Path 组件比较，避免 Windows `\` / Unix `/` 分隔符差异。
         // ⚠️ 边车映射库**不在这里断言文件名**：它按档位动态发现（见下一条用例），
         // 而本用例读的是**真实 home**，真机上只有 v4 ⇒ 写死 v2 的断言会假失败。
-        assert!(workbuddy_db_path()
-            .ends_with(std::path::Path::new(".workbuddy").join("workbuddy.db")));
+        assert!(
+            workbuddy_db_path().ends_with(std::path::Path::new(".workbuddy").join("workbuddy.db"))
+        );
     }
 
     /// 边车映射库的档位发现：**取最大档位**、只认 `.db` 本体、都没有才回落 v2。
@@ -3693,7 +3725,10 @@ mod tests {
         );
 
         // 数据库路径由会话目录派生，同样必须按 region 隔离。
-        assert_eq!(workbuddy_db_path_for(Region::Cn), cn_dir.join("workbuddy.db"));
+        assert_eq!(
+            workbuddy_db_path_for(Region::Cn),
+            cn_dir.join("workbuddy.db")
+        );
         assert_eq!(
             workbuddy_db_path_for(Region::Global),
             global_dir.join("workbuddy.db")
@@ -4101,14 +4136,12 @@ mod tests {
 
         // 账本整批一次落盘：8 条登记，键形如 source␟target␟cid。
         let ledger_text = std::fs::read_to_string(
-            home.join(".workbuddy").join("buddy-switch-copy-ledger.json"),
+            home.join(".workbuddy")
+                .join("buddy-switch-copy-ledger.json"),
         )
         .expect("账本应落盘");
         for cid in &cids {
-            assert!(
-                ledger_text.contains(cid),
-                "账本应登记 {cid}：{ledger_text}"
-            );
+            assert!(ledger_text.contains(cid), "账本应登记 {cid}：{ledger_text}");
         }
         cleanup_temp_home(&home);
     }
@@ -4181,9 +4214,21 @@ mod tests {
     #[test]
     fn copy_ledger_key_separates_all_three_dimensions() {
         let base = copy_ledger_key("uid-a", "uid-b", "cid-1");
-        assert_ne!(base, copy_ledger_key("uid-a2", "uid-b", "cid-1"), "源账号区分");
-        assert_ne!(base, copy_ledger_key("uid-a", "uid-b2", "cid-1"), "目标账号区分");
-        assert_ne!(base, copy_ledger_key("uid-a", "uid-b", "cid-2"), "源会话区分");
+        assert_ne!(
+            base,
+            copy_ledger_key("uid-a2", "uid-b", "cid-1"),
+            "源账号区分"
+        );
+        assert_ne!(
+            base,
+            copy_ledger_key("uid-a", "uid-b2", "cid-1"),
+            "目标账号区分"
+        );
+        assert_ne!(
+            base,
+            copy_ledger_key("uid-a", "uid-b", "cid-2"),
+            "源会话区分"
+        );
         assert_eq!(base, copy_ledger_key("uid-a", "uid-b", "cid-1"));
         // 分隔符不得与字段内容混淆：把分隔符塞进字段值也必须产生不同键。
         assert_ne!(
@@ -4203,11 +4248,18 @@ mod tests {
         let cross = copy_ledger_key_for(Region::Cn, Region::Global, "uid-a", "uid-b", "cid-1");
         let reverse = copy_ledger_key_for(Region::Global, Region::Cn, "uid-a", "uid-b", "cid-1");
 
-        assert_eq!(same, copy_ledger_key("uid-a", "uid-b", "cid-1"), "同版本键不得变");
+        assert_eq!(
+            same,
+            copy_ledger_key("uid-a", "uid-b", "cid-1"),
+            "同版本键不得变"
+        );
         assert_ne!(same, cross, "跨版本必须与同版本区分");
         assert_ne!(cross, reverse, "方向不同必须是不同条目");
         assert!(cross.starts_with("cn\u{1f}"), "前缀应为源 region: {cross}");
-        assert!(reverse.starts_with("global\u{1f}"), "前缀应为源 region: {reverse}");
+        assert!(
+            reverse.starts_with("global\u{1f}"),
+            "前缀应为源 region: {reverse}"
+        );
     }
 
     /// 会话正文副本必须落在**目标**版本的 projects 下。
@@ -4434,7 +4486,11 @@ mod tests {
         .unwrap();
         let ws = home.join(".workbuddy").join("projects").join("ws");
         std::fs::create_dir_all(&ws).unwrap();
-        std::fs::write(ws.join("cid-B.jsonl"), "{\"cwd\":\"/proj/beta\",\"title\":\"Beta\"}\n").unwrap();
+        std::fs::write(
+            ws.join("cid-B.jsonl"),
+            "{\"cwd\":\"/proj/beta\",\"title\":\"Beta\"}\n",
+        )
+        .unwrap();
 
         let resp = list_sessions_with_fallback_for(Region::Cn, "uid-x");
         assert_eq!(
@@ -4443,7 +4499,10 @@ mod tests {
             "损坏 db 必须降级到 scan，而不是静默空数组"
         );
         assert_eq!(
-            resp.get("sessions").and_then(Value::as_array).unwrap().len(),
+            resp.get("sessions")
+                .and_then(Value::as_array)
+                .unwrap()
+                .len(),
             1
         );
         cleanup_temp_home(&home);
@@ -4464,13 +4523,20 @@ mod tests {
         // 同时放一个其它 cid 的 jsonl：db 优先，绝不应被重复列。
         let ws = home.join(".workbuddy").join("projects").join("ws");
         std::fs::create_dir_all(&ws).unwrap();
-        std::fs::write(ws.join("cid-OTHER.jsonl"), "{\"cwd\":\"/x\",\"title\":\"X\"}\n").unwrap();
+        std::fs::write(
+            ws.join("cid-OTHER.jsonl"),
+            "{\"cwd\":\"/x\",\"title\":\"X\"}\n",
+        )
+        .unwrap();
 
         let resp = list_sessions_with_fallback_for(Region::Cn, "uid-x");
         assert_eq!(resp.get("source").and_then(Value::as_str), Some("db"));
         let sessions = resp.get("sessions").and_then(Value::as_array).unwrap();
         assert_eq!(sessions.len(), 1, "只应列 db 中的 1 条，jsonl 不重复");
-        assert_eq!(sessions[0].get("id").and_then(Value::as_str), Some("cid-DB"));
+        assert_eq!(
+            sessions[0].get("id").and_then(Value::as_str),
+            Some("cid-DB")
+        );
         assert_eq!(
             sessions[0].get("degraded").and_then(Value::as_bool),
             None,
@@ -4578,7 +4644,10 @@ mod tests {
         let resp = list_sessions_with_fallback_for(Region::Cn, "uid-x");
         assert_eq!(resp.get("source").and_then(Value::as_str), Some("no-dir"));
         assert_eq!(
-            resp.get("sessions").and_then(Value::as_array).unwrap().len(),
+            resp.get("sessions")
+                .and_then(Value::as_array)
+                .unwrap()
+                .len(),
             0
         );
         cleanup_temp_home(&home);
@@ -4595,7 +4664,10 @@ mod tests {
         let resp = list_sessions_with_fallback_for(Region::Cn, "uid-x");
         assert_eq!(resp.get("source").and_then(Value::as_str), Some("empty"));
         assert_eq!(
-            resp.get("sessions").and_then(Value::as_array).unwrap().len(),
+            resp.get("sessions")
+                .and_then(Value::as_array)
+                .unwrap()
+                .len(),
             0
         );
         cleanup_temp_home(&home);
@@ -4679,11 +4751,21 @@ mod tests {
 
         let mut sessions = scan_sessions_from_jsonl_for(Region::Cn);
         // 按 id 查表更稳（mtime 在新文件上等同，顺序不可靠）。
-        sessions.sort_by_key(|s| s.get("id").and_then(Value::as_str).unwrap_or("").to_string());
+        sessions.sort_by_key(|s| {
+            s.get("id")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string()
+        });
         assert_eq!(sessions.len(), 2);
         let by_id: std::collections::HashMap<String, Value> = sessions
             .iter()
-            .map(|s| (s.get("id").and_then(Value::as_str).unwrap().to_string(), s.clone()))
+            .map(|s| {
+                (
+                    s.get("id").and_then(Value::as_str).unwrap().to_string(),
+                    s.clone(),
+                )
+            })
             .collect();
         let meta = by_id.get("cid-meta").unwrap();
         assert_eq!(meta.get("cwd").and_then(Value::as_str), Some("/proj/m"));
@@ -4749,7 +4831,9 @@ mod tests {
                 "{{\"type\":\"message\",\"cwd\":\"/proj/c\",\"role\":\"assistant\",\"content\":\"line {i}\"}}\n"
             ));
         }
-        body.push_str("{\"type\":\"custom-title\",\"cwd\":\"/proj/c\",\"customTitle\":\"我改的名字\"}\n");
+        body.push_str(
+            "{\"type\":\"custom-title\",\"cwd\":\"/proj/c\",\"customTitle\":\"我改的名字\"}\n",
+        );
         std::fs::write(ws.join("cid-custom.jsonl"), body).unwrap();
 
         let sessions = scan_sessions_from_jsonl_for(Region::Cn);
@@ -4773,7 +4857,9 @@ mod tests {
         std::fs::create_dir_all(&ws).unwrap();
         let mut body = String::new();
         for i in 0..200 {
-            body.push_str(&format!("{{\"type\":\"message\",\"role\":\"user\",\"n\":{i}}}\n"));
+            body.push_str(&format!(
+                "{{\"type\":\"message\",\"role\":\"user\",\"n\":{i}}}\n"
+            ));
         }
         body.push_str("{\"cwd\":\"/proj/late\",\"aiTitle\":\"来晚了\"}\n");
         std::fs::write(ws.join("cid-late.jsonl"), body).unwrap();
@@ -4809,7 +4895,10 @@ mod tests {
 
         let sessions = scan_sessions_from_jsonl_for(Region::Cn);
         assert_eq!(sessions.len(), 1);
-        assert_eq!(sessions[0].get("title").and_then(Value::as_str), Some("(无标题)"));
+        assert_eq!(
+            sessions[0].get("title").and_then(Value::as_str),
+            Some("(无标题)")
+        );
         assert_eq!(sessions[0].get("cwd").and_then(Value::as_str), Some(""));
         cleanup_temp_home(&home);
     }
@@ -4830,7 +4919,10 @@ mod tests {
 
         let sessions = scan_sessions_from_jsonl_for(Region::Cn);
         assert_eq!(sessions.len(), 1);
-        assert_eq!(sessions[0].get("cwd").and_then(Value::as_str), Some("/proj/g"));
+        assert_eq!(
+            sessions[0].get("cwd").and_then(Value::as_str),
+            Some("/proj/g")
+        );
         assert_eq!(
             sessions[0].get("title").and_then(Value::as_str),
             Some("幸存标题")
@@ -4847,8 +4939,16 @@ mod tests {
         let g_ws = home.join(".workbuddy-ai").join("projects").join("ws");
         std::fs::create_dir_all(&cn_ws).unwrap();
         std::fs::create_dir_all(&g_ws).unwrap();
-        std::fs::write(cn_ws.join("cid-cn.jsonl"), "{\"cwd\":\"/cn\",\"title\":\"C\"}\n").unwrap();
-        std::fs::write(g_ws.join("cid-g.jsonl"), "{\"cwd\":\"/g\",\"title\":\"G\"}\n").unwrap();
+        std::fs::write(
+            cn_ws.join("cid-cn.jsonl"),
+            "{\"cwd\":\"/cn\",\"title\":\"C\"}\n",
+        )
+        .unwrap();
+        std::fs::write(
+            g_ws.join("cid-g.jsonl"),
+            "{\"cwd\":\"/g\",\"title\":\"G\"}\n",
+        )
+        .unwrap();
 
         let cn = scan_sessions_from_jsonl_for(Region::Cn);
         assert_eq!(cn.len(), 1);
@@ -4876,14 +4976,9 @@ mod tests {
         )
         .unwrap();
 
-        let result = copy_session_to_user_cross(
-            Region::Cn,
-            Region::Cn,
-            "cid-S",
-            "uid-src",
-            "uid-dst",
-        )
-        .expect("降级复制不应报错");
+        let result =
+            copy_session_to_user_cross(Region::Cn, Region::Cn, "cid-S", "uid-src", "uid-dst")
+                .expect("降级复制不应报错");
         assert_eq!(
             result.get("jsonlCopied").and_then(Value::as_bool),
             Some(true),
@@ -4937,14 +5032,9 @@ mod tests {
         )
         .unwrap();
 
-        let err = copy_session_to_user_cross(
-            Region::Cn,
-            Region::Cn,
-            "cid-claw",
-            "uid-src",
-            "uid-dst",
-        )
-        .expect_err("Claw 工作区必须被拒绝");
+        let err =
+            copy_session_to_user_cross(Region::Cn, Region::Cn, "cid-claw", "uid-src", "uid-dst")
+                .expect_err("Claw 工作区必须被拒绝");
         assert!(err.contains("Claw"), "拒绝原因应为 Claw: {err}");
         cleanup_temp_home(&home);
     }
@@ -5126,7 +5216,11 @@ mod fingerprint_tests {
     #[test]
     fn hash_line_is_stable_and_change_sensitive() {
         assert_eq!(hash_line("abc"), hash_line("abc"), "同一行必须同 hash");
-        assert_ne!(hash_line("abc"), hash_line("abd"), "一个字节变化必须换 hash");
+        assert_ne!(
+            hash_line("abc"),
+            hash_line("abd"),
+            "一个字节变化必须换 hash"
+        );
         assert_ne!(hash_line("abc"), hash_line("abc "), "尾部空格也算变化");
     }
 
@@ -5135,7 +5229,11 @@ mod fingerprint_tests {
         // a 与 b 前 2 行一致 ⇒ 「共同旧版」= 2 条；a 多 3 条、b 多 1 条（**内容级 delta**）。
         let a = fp(5, vec![1, 2, 3, 4, 5]);
         let b = fp(3, vec![1, 2, 9]);
-        assert_eq!(common_prefix_len(&a, &b), 2, "前 2 行一致 ⇒ 共同旧版 = 2 条");
+        assert_eq!(
+            common_prefix_len(&a, &b),
+            2,
+            "前 2 行一致 ⇒ 共同旧版 = 2 条"
+        );
     }
 
     #[test]
@@ -5188,7 +5286,10 @@ mod fingerprint_tests {
             after.starts_with(&before),
             "目标原有字节必须逐字不变（加法语义）"
         );
-        assert_eq!(String::from_utf8(after).unwrap(), "{\"a\":1}\n{\"a\":2}\n{\"a\":3}\n{\"a\":4}\n");
+        assert_eq!(
+            String::from_utf8(after).unwrap(),
+            "{\"a\":1}\n{\"a\":2}\n{\"a\":3}\n{\"a\":4}\n"
+        );
 
         std::fs::remove_dir_all(dir).unwrap();
     }
@@ -5428,7 +5529,10 @@ mod fingerprint_tests {
             String::from_utf8(std::fs::read(projects.join("dst-cid.jsonl")).unwrap()).unwrap(),
             "{\"n\":1}\n{\"n\":2}\n{\"n\":3}\n"
         );
-        assert_eq!(std::fs::read(projects.join("div-cid.jsonl")).unwrap(), div_before);
+        assert_eq!(
+            std::fs::read(projects.join("div-cid.jsonl")).unwrap(),
+            div_before
+        );
 
         drop(guard);
         std::fs::remove_dir_all(home).unwrap();
@@ -5473,11 +5577,7 @@ mod fingerprint_tests {
         tag: &str,
         src_body: &str,
         dst_body: &str,
-    ) -> (
-        PathBuf,
-        crate::modules::config::HomeOverrideGuard,
-        PathBuf,
-    ) {
+    ) -> (PathBuf, crate::modules::config::HomeOverrideGuard, PathBuf) {
         let (home, guard, _ws) = sync_fixture(tag, src_body, dst_body);
         let ledger_path = home.join(".workbuddy").join(COPY_LEDGER_FILE);
         let ledger = json!({
@@ -5538,11 +5638,17 @@ mod fingerprint_tests {
     fn group_fingerprint_values_are_frozen_for_demo_fixtures() {
         let group1 = vec![
             ("demo-user-001".to_string(), "demo-session-1".to_string()),
-            ("demo-user-002".to_string(), "demo-session-1-copy".to_string()),
+            (
+                "demo-user-002".to_string(),
+                "demo-session-1-copy".to_string(),
+            ),
         ];
         let group2 = vec![
             ("demo-user-001".to_string(), "demo-session-2".to_string()),
-            ("demo-user-003".to_string(), "demo-session-2-copy".to_string()),
+            (
+                "demo-user-003".to_string(),
+                "demo-session-2-copy".to_string(),
+            ),
         ];
         assert_eq!(group_fingerprint(&group1), "71186784553e0e0b");
         assert_eq!(group_fingerprint(&group2), "7f64fb4bd44b030c");
@@ -5697,7 +5803,11 @@ mod fingerprint_tests {
             "被拒的分歧统一**一个字节都不许写**"
         );
         assert!(
-            !home.join(".buddy-switch").join("backups").join("sessions-unify").exists(),
+            !home
+                .join(".buddy-switch")
+                .join("backups")
+                .join("sessions-unify")
+                .exists(),
             "被拒的条目不该留下任何备份目录（复核必须在备份之前）"
         );
 
@@ -5754,7 +5864,10 @@ mod fingerprint_tests {
             "失败原因要说明组没了：{}",
             report["results"][0]["error"]
         );
-        assert_eq!(std::fs::read(projects.join("dst-cid.jsonl")).unwrap(), before);
+        assert_eq!(
+            std::fs::read(projects.join("dst-cid.jsonl")).unwrap(),
+            before
+        );
 
         drop(guard);
         std::fs::remove_dir_all(home).unwrap();
@@ -5767,7 +5880,10 @@ mod fingerprint_tests {
     /// 可证伪：把 `baseline_key` 里的 `if a <= b` 去掉 ⇒ 第一条红。
     #[test]
     fn baseline_key_is_direction_agnostic() {
-        assert_eq!(baseline_key("cid-a", "cid-b"), baseline_key("cid-b", "cid-a"));
+        assert_eq!(
+            baseline_key("cid-a", "cid-b"),
+            baseline_key("cid-b", "cid-a")
+        );
         let key = baseline_key("cid-b", "cid-a");
         assert_eq!(
             parse_baseline_key(&key),
@@ -6101,7 +6217,12 @@ mod content_status_tests {
         std::fs::write(projects.join("ws-a").join("cid-meta.meta.json"), "{}").unwrap();
 
         let index = build_projects_index_in(&projects);
-        for cid in ["cid-in-subdir", "cid-direct", "cid-missing", "cid-meta.meta"] {
+        for cid in [
+            "cid-in-subdir",
+            "cid-direct",
+            "cid-missing",
+            "cid-meta.meta",
+        ] {
             assert_eq!(
                 index.get(cid).cloned(),
                 find_project_jsonl_in(&projects, cid),
@@ -6109,7 +6230,9 @@ mod content_status_tests {
             );
         }
         assert_eq!(
-            index.get("cid-direct").map(|p| p.parent().unwrap().to_path_buf()),
+            index
+                .get("cid-direct")
+                .map(|p| p.parent().unwrap().to_path_buf()),
             Some(projects.clone()),
             "直立文件必须赢过子目录里的同名文件"
         );
@@ -6126,9 +6249,18 @@ mod content_status_tests {
     #[test]
     fn all_agree_prefix_equals_min_pairwise_prefix() {
         // 构造：a 与 b 在前 4 行一致；c 在第 2 行就分叉（首个不一致 = 索引 2）。
-        let a = SessionFingerprint { line_count: 9, prefix_hashes: vec![1, 2, 3, 4, 5] };
-        let b = SessionFingerprint { line_count: 7, prefix_hashes: vec![1, 2, 3, 4, 6] };
-        let c = SessionFingerprint { line_count: 6, prefix_hashes: vec![1, 2, 9, 9, 9] };
+        let a = SessionFingerprint {
+            line_count: 9,
+            prefix_hashes: vec![1, 2, 3, 4, 5],
+        };
+        let b = SessionFingerprint {
+            line_count: 7,
+            prefix_hashes: vec![1, 2, 3, 4, 6],
+        };
+        let c = SessionFingerprint {
+            line_count: 6,
+            prefix_hashes: vec![1, 2, 9, 9, 9],
+        };
         let fps = vec![Some(a.clone()), Some(b.clone()), Some(c.clone())];
 
         let reference = [
@@ -6146,7 +6278,11 @@ mod content_status_tests {
             .map(|cid| ("uid".to_string(), cid.to_string()))
             .collect();
         let status = derive_content_status(&members, &fps, None);
-        assert_eq!(status["commonPrefix"], json!(2), "一遍扫过全体 = 两两最小值");
+        assert_eq!(
+            status["commonPrefix"],
+            json!(2),
+            "一遍扫过全体 = 两两最小值"
+        );
         assert_eq!(status["deltas"]["a"], json!(7), "9 - 2");
         assert_eq!(status["deltas"]["b"], json!(5), "7 - 2");
         assert_eq!(status["deltas"]["c"], json!(4), "6 - 2");
@@ -6166,13 +6302,20 @@ mod content_status_tests {
         assert_eq!(equal["status"], json!(STATUS_LATEST));
         assert_eq!(equal["commonPrefix"], json!(5));
         assert_eq!(equal["latestLineCount"], json!(5));
-        let prefix_only = vec![Some(a.clone()), Some(SessionFingerprint {
-            line_count: 3,
-            prefix_hashes: vec![1, 2, 3],
-        })];
+        let prefix_only = vec![
+            Some(a.clone()),
+            Some(SessionFingerprint {
+                line_count: 3,
+                prefix_hashes: vec![1, 2, 3],
+            }),
+        ];
         let behind = derive_content_status(&members[..2], &prefix_only, None);
         assert_eq!(behind["status"], json!(STATUS_BEHIND));
-        assert_eq!(behind["commonPrefix"], json!(3), "公共前缀 = 3（覆盖到最短副本）");
+        assert_eq!(
+            behind["commonPrefix"],
+            json!(3),
+            "公共前缀 = 3（覆盖到最短副本）"
+        );
 
         // 缺一个指纹 ⇒ 整体 unknown（**不臆造**）。
         let missing = vec![Some(a), None];
@@ -6290,15 +6433,24 @@ mod content_status_tests {
             },
         );
         assert!(store.save_if_worthwhile(&cache), "有改动就必须落盘");
-        assert!(!store.save_if_worthwhile(&cache), "落盘后不再是 dirty（全命中的开页一个字节都不写）");
+        assert!(
+            !store.save_if_worthwhile(&cache),
+            "落盘后不再是 dirty（全命中的开页一个字节都不写）"
+        );
 
         let reloaded = FingerprintStore::load_from(&cache);
-        let entry = reloaded.entries.get(&fingerprint_key(Region::Cn, "cid-1")).unwrap();
+        let entry = reloaded
+            .entries
+            .get(&fingerprint_key(Region::Cn, "cid-1"))
+            .unwrap();
         assert_eq!(entry.size, 1234);
         assert_eq!(entry.mtime_ms, 1_700_000_000_123);
         assert_eq!(entry.fingerprint.line_count, 7);
         assert_eq!(entry.fingerprint.prefix_hashes, vec![10, 20, 30]);
-        assert!(!reloaded.dirty, "载入不算改动（否则每次开页都会白写一份 106 MB）");
+        assert!(
+            !reloaded.dirty,
+            "载入不算改动（否则每次开页都会白写一份 106 MB）"
+        );
 
         std::fs::remove_dir_all(home).unwrap();
     }
@@ -6331,8 +6483,7 @@ mod content_status_tests {
         let mut store = FingerprintStore::load_from(&cache);
 
         // 等长改写 + mtime 改回去 ⇒ 按 (size, mtime) 判据**仍是命中**。
-        let rewritten = "{\"type\":\"message\",\"sessionId\":\"cid-1\",\"n\":9}\n"
-            .repeat(3);
+        let rewritten = "{\"type\":\"message\",\"sessionId\":\"cid-1\",\"n\":9}\n".repeat(3);
         assert_eq!(
             std::fs::metadata(&path).unwrap().len(),
             rewritten.len() as u64,
@@ -6355,7 +6506,11 @@ mod content_status_tests {
         let appended = format!("{rewritten}{{\"type\":\"message\"}}\n");
         std::fs::write(&path, &appended).unwrap();
         let refreshed = fingerprints_for_members(&mut store, Region::Cn, &index, &members);
-        assert_eq!(refreshed[0].as_ref().unwrap().line_count, 4, "尺寸变了必须重读");
+        assert_eq!(
+            refreshed[0].as_ref().unwrap().line_count,
+            4,
+            "尺寸变了必须重读"
+        );
         assert_ne!(
             refreshed[0].as_ref().unwrap().prefix_hashes,
             first[0].as_ref().unwrap().prefix_hashes,
@@ -6379,7 +6534,10 @@ mod content_status_tests {
             fingerprint_key(Region::Cn, "cid-1"),
             10,
             20,
-            SessionFingerprint { line_count: 2, prefix_hashes: vec![1, 2] },
+            SessionFingerprint {
+                line_count: 2,
+                prefix_hashes: vec![1, 2],
+            },
         );
         assert!(store.save_if_worthwhile(&cache));
         let good = std::fs::read(&cache).unwrap();
@@ -6388,7 +6546,11 @@ mod content_status_tests {
         let mut wrong_magic = good.clone();
         wrong_magic[..8].copy_from_slice(b"BSFPC999");
         std::fs::write(&cache, &wrong_magic).unwrap();
-        assert_eq!(FingerprintStore::load_from(&cache).entries.len(), 0, "版本 / 魔数不符必须整体丢弃");
+        assert_eq!(
+            FingerprintStore::load_from(&cache).entries.len(),
+            0,
+            "版本 / 魔数不符必须整体丢弃"
+        );
 
         // 中途截断 ⇒ 保留已解析部分，**不 panic**。
         std::fs::write(&cache, &good[..good.len() - 5]).unwrap();
@@ -6402,7 +6564,9 @@ mod content_status_tests {
         }
         // 文件根本不存在 ⇒ 空表（首次运行）。
         assert_eq!(
-            FingerprintStore::load_from(&home.join("nope.bin")).entries.len(),
+            FingerprintStore::load_from(&home.join("nope.bin"))
+                .entries
+                .len(),
             0
         );
 
@@ -6426,19 +6590,20 @@ mod content_status_tests {
             fingerprint_key(Region::Cn, "cid-1"),
             1,
             1,
-            SessionFingerprint { line_count: 3, prefix_hashes: vec![1] },
+            SessionFingerprint {
+                line_count: 3,
+                prefix_hashes: vec![1],
+            },
         );
-        assert!(store.save_if_worthwhile(&cache), "首次构建（条目数变了）必须写");
+        assert!(
+            store.save_if_worthwhile(&cache),
+            "首次构建（条目数变了）必须写"
+        );
         let after_first = std::fs::read(&cache).unwrap();
 
         // 内容变了（模拟用户聊了几句）⇒ 只有 1 条新读数、条目数不变 ⇒ **不该重写 106 MB**。
         let fingerprint = fingerprint_of_file(&path, "cid-1").unwrap();
-        store.put(
-            fingerprint_key(Region::Cn, "cid-1"),
-            99,
-            99,
-            fingerprint,
-        );
+        store.put(fingerprint_key(Region::Cn, "cid-1"), 99, 99, fingerprint);
         assert!(
             !store.save_if_worthwhile(&cache),
             "只有 1 条新读数、条目数没变 ⇒ 不值得重写整份缓存"
@@ -6455,7 +6620,10 @@ mod content_status_tests {
                 fingerprint_key(Region::Cn, &format!("filler-{index}")),
                 1,
                 1,
-                SessionFingerprint { line_count: 1, prefix_hashes: vec![index as u64] },
+                SessionFingerprint {
+                    line_count: 1,
+                    prefix_hashes: vec![index as u64],
+                },
             );
         }
         // ⚠️ 注意：上面这轮 **条目数变了** ⇒ `structural` 也为真；这里要单独验的是
@@ -6469,7 +6637,10 @@ mod content_status_tests {
                 fingerprint_key(Region::Cn, "cid-1"),
                 2,
                 2,
-                SessionFingerprint { line_count: 3, prefix_hashes: vec![2] },
+                SessionFingerprint {
+                    line_count: 3,
+                    prefix_hashes: vec![2],
+                },
             );
         }
         assert!(
@@ -6497,7 +6668,10 @@ mod content_status_tests {
                 fingerprint_key(region, cid),
                 1,
                 1,
-                SessionFingerprint { line_count: 1, prefix_hashes: vec![7] },
+                SessionFingerprint {
+                    line_count: 1,
+                    prefix_hashes: vec![7],
+                },
             );
         }
         let mut keep = std::collections::HashSet::new();
@@ -6505,10 +6679,16 @@ mod content_status_tests {
         let removed = store.prune_region(Region::Cn, &keep);
 
         assert_eq!(removed, 1, "只该剪掉 CN 里没被请求的那一条");
-        assert!(store.entries.contains_key(&fingerprint_key(Region::Cn, "keep")));
-        assert!(!store.entries.contains_key(&fingerprint_key(Region::Cn, "stale")));
+        assert!(store
+            .entries
+            .contains_key(&fingerprint_key(Region::Cn, "keep")));
+        assert!(!store
+            .entries
+            .contains_key(&fingerprint_key(Region::Cn, "stale")));
         assert!(
-            store.entries.contains_key(&fingerprint_key(Region::Global, "other-region")),
+            store
+                .entries
+                .contains_key(&fingerprint_key(Region::Global, "other-region")),
             "别的 region 的条目与本次剪枝无关"
         );
     }
@@ -6531,9 +6711,18 @@ mod content_status_tests {
 
         // 前缀仍是真前缀 ⇒ 给出诚实增量（5 - 3 = 2）。
         let good = vec![
-            Some(SessionFingerprint { line_count: 5, prefix_hashes: vec![1, 2, 3, 4, 5] }),
-            Some(SessionFingerprint { line_count: 3, prefix_hashes: vec![1, 2, 3] }),
-            Some(SessionFingerprint { line_count: 3, prefix_hashes: vec![1, 2, 3] }),
+            Some(SessionFingerprint {
+                line_count: 5,
+                prefix_hashes: vec![1, 2, 3, 4, 5],
+            }),
+            Some(SessionFingerprint {
+                line_count: 3,
+                prefix_hashes: vec![1, 2, 3],
+            }),
+            Some(SessionFingerprint {
+                line_count: 3,
+                prefix_hashes: vec![1, 2, 3],
+            }),
         ];
         let status = derive_content_status(&members, &good, Some(&baseline));
         assert_eq!(status["sinceBaseline"]["cid-a"], json!(2));
@@ -6543,9 +6732,18 @@ mod content_status_tests {
 
         // 改写了更早的内容（第 3 行变了）⇒ 验证不过 ⇒ `null`（「新增几条」不成立）。
         let rewritten = vec![
-            Some(SessionFingerprint { line_count: 5, prefix_hashes: vec![1, 2, 9, 4, 5] }),
-            Some(SessionFingerprint { line_count: 3, prefix_hashes: vec![1, 2, 3] }),
-            Some(SessionFingerprint { line_count: 3, prefix_hashes: vec![1, 2, 3] }),
+            Some(SessionFingerprint {
+                line_count: 5,
+                prefix_hashes: vec![1, 2, 9, 4, 5],
+            }),
+            Some(SessionFingerprint {
+                line_count: 3,
+                prefix_hashes: vec![1, 2, 3],
+            }),
+            Some(SessionFingerprint {
+                line_count: 3,
+                prefix_hashes: vec![1, 2, 3],
+            }),
         ];
         let status = derive_content_status(&members, &rewritten, Some(&baseline));
         assert!(status["sinceBaseline"]["cid-a"].is_null());

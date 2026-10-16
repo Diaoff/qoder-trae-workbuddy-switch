@@ -77,7 +77,6 @@ impl IsolatedHome {
             dir,
         }
     }
-
 }
 
 impl Drop for IsolatedHome {
@@ -140,7 +139,10 @@ fn soft_delete_then_restore_is_lossless_for_every_field() {
 
     // 删除 ⇒ live 消失、trash 出现。
     trash_account_for(Region::Cn, "acc-1").expect("soft delete");
-    assert!(read_accounts(Region::Cn).is_empty(), "软删除后 live 必须清空");
+    assert!(
+        read_accounts(Region::Cn).is_empty(),
+        "软删除后 live 必须清空"
+    );
     let trash = load_trash_for(Region::Cn);
     assert_eq!(trash.len(), 1, "软删除后回收站必须恰好 1 条");
     assert_eq!(
@@ -148,7 +150,10 @@ fn soft_delete_then_restore_is_lossless_for_every_field() {
         "回收站里的记录必须与 live 原记录逐字节一致"
     );
     // 元数据：到期时间 = 删除时间 + 30 天。
-    assert_eq!(trash[0].expires_at, trash[0].deleted_at + TRASH_RETENTION_MS);
+    assert_eq!(
+        trash[0].expires_at,
+        trash[0].deleted_at + TRASH_RETENTION_MS
+    );
     assert_eq!(trash[0].origin_scope, Scope::WbCn);
 
     // 恢复 ⇒ 回到 live 且**逐字段**无损。
@@ -159,10 +164,16 @@ fn soft_delete_then_restore_is_lossless_for_every_field() {
         live[0], original,
         "恢复后的记录必须与删除前**逐字段**一致（凭据 / 备注 / 扩展字段都不能丢）"
     );
-    assert!(load_trash_for(Region::Cn).is_empty(), "恢复后回收站必须清空");
+    assert!(
+        load_trash_for(Region::Cn).is_empty(),
+        "恢复后回收站必须清空"
+    );
 
     // 守恒：live 数量 + trash 数量 在往返后回到起点（不丢、不重）。
-    assert_eq!(read_accounts(Region::Cn).len() + load_trash_for(Region::Cn).len(), 1);
+    assert_eq!(
+        read_accounts(Region::Cn).len() + load_trash_for(Region::Cn).len(),
+        1
+    );
 
     drop(home);
 }
@@ -175,14 +186,19 @@ fn restore_refuses_when_live_already_has_the_key() {
 
     trash_account_for(Region::Cn, "acc-1").expect("soft delete");
     // 用另一份同 key（但内容不同）的记录占住 live。
-    let occupant = json!({ "id": "acc-1", "uid": "u-1", "nickname": "占位", "access_token": "NEW" });
+    let occupant =
+        json!({ "id": "acc-1", "uid": "u-1", "nickname": "占位", "access_token": "NEW" });
     account::save_accounts_for(Region::Cn, &[occupant.clone()]).expect("occupy");
 
     let err = restore_account_for(Region::Cn, "acc-1").expect_err("必须拒绝覆盖式恢复");
     assert!(err.contains("已存在"), "错误文案应说明冲突，got: {err}");
     // 拒绝后 live 与 trash 都不得被改动。
     assert_eq!(read_accounts(Region::Cn), vec![occupant]);
-    assert_eq!(load_trash_for(Region::Cn).len(), 1, "拒绝恢复不得消费回收站条目");
+    assert_eq!(
+        load_trash_for(Region::Cn).len(),
+        1,
+        "拒绝恢复不得消费回收站条目"
+    );
 
     drop(home);
 }
@@ -210,7 +226,11 @@ fn purge_is_the_only_irreversible_step_and_sweep_only_removes_expired() {
     //   （若 sweep 被写成「无条件删最旧」或误用 0 作为 now，这里会变红。）
     let swept = account::sweep_trash_for(Region::Cn, now_ms());
     assert_eq!(swept, 0, "sweep 不得清掉未过期的条目");
-    assert_eq!(load_trash_for(Region::Cn).len(), 2, "未过期条目必须原样留存");
+    assert_eq!(
+        load_trash_for(Region::Cn).len(),
+        2,
+        "未过期条目必须原样留存"
+    );
 
     // purge 之后 trash 里也没了 —— 这才是唯一不可逆步。
     purge_account_for(Region::Cn, "a1").expect("purge");
@@ -248,9 +268,16 @@ fn sweep_removes_expired_and_keeps_fresh() {
             origin_scope: Scope::WbCn,
         },
     ];
-    assert_eq!(sweep_trash_entries(&mut entries, now), 1, "只应清掉 1 条过期");
+    assert_eq!(
+        sweep_trash_entries(&mut entries, now),
+        1,
+        "只应清掉 1 条过期"
+    );
     assert_eq!(entries.len(), 1);
-    assert_eq!(entries[0].account["id"], "fresh", "留下的必须是未过期的那条");
+    assert_eq!(
+        entries[0].account["id"], "fresh",
+        "留下的必须是未过期的那条"
+    );
 
     // 边界：恰好等于 now 的 expires_at 视为**已过期**（`> now` 才保留）。
     let mut boundary = vec![TrashEntry {
@@ -259,7 +286,11 @@ fn sweep_removes_expired_and_keeps_fresh() {
         expires_at: now,
         origin_scope: Scope::WbCn,
     }];
-    assert_eq!(sweep_trash_entries(&mut boundary, now), 1, "expires_at == now 应过期");
+    assert_eq!(
+        sweep_trash_entries(&mut boundary, now),
+        1,
+        "expires_at == now 应过期"
+    );
 }
 
 /// 构造 201 条 ⇒ 应只留 200（裁掉最旧的 1 条，先到先出）。
@@ -282,11 +313,7 @@ fn sweep_enforces_200_entry_cap_oldest_first() {
     assert_eq!(many.len(), TRASH_MAX_ENTRIES, "上限必须是 200");
     // 最旧的 k0（deleted_at=0）被裁；新的最旧项是 k1。
     assert_eq!(many[0].account["id"], "k1", "先到先出：应裁掉最旧的");
-    assert_eq!(
-        many[many.len() - 1].account["id"],
-        "k200",
-        "最新的必须保留"
-    );
+    assert_eq!(many[many.len() - 1].account["id"], "k200", "最新的必须保留");
 }
 
 /// 通过**真实文件**验证 `sweep_trash_for` 落盘：过期条目被清、新鲜条目留存。
@@ -335,21 +362,35 @@ fn delete_restore_purge_by_uid_all_hit_when_id_differs() {
 
     // ① 软删除：按 uid。
     trash_account_for(Region::Cn, "uid-BBB").expect("按 uid 软删除必须成功");
-    assert!(read_accounts(Region::Cn).is_empty(), "按 uid 软删除必须真的移出 live");
+    assert!(
+        read_accounts(Region::Cn).is_empty(),
+        "按 uid 软删除必须真的移出 live"
+    );
     let trash = load_trash_for(Region::Cn);
-    assert_eq!(trash.len(), 1, "按 uid 软删除必须真的移入 1 条（不是 0 条）");
+    assert_eq!(
+        trash.len(),
+        1,
+        "按 uid 软删除必须真的移入 1 条（不是 0 条）"
+    );
     assert_eq!(trash[0].account["uid"], "uid-BBB");
 
     // ② 恢复：按 uid。
     restore_account_for(Region::Cn, "uid-BBB").expect("按 uid 恢复必须成功");
-    assert_eq!(read_accounts(Region::Cn), vec![original], "按 uid 恢复必须原样回到 live");
+    assert_eq!(
+        read_accounts(Region::Cn),
+        vec![original],
+        "按 uid 恢复必须原样回到 live"
+    );
     assert!(load_trash_for(Region::Cn).is_empty());
 
     // ③ purge：先按 uid 再删一次，然后按 uid purge。
     trash_account_for(Region::Cn, "uid-BBB").expect("按 uid 再删");
     assert_eq!(load_trash_for(Region::Cn).len(), 1);
     purge_account_for(Region::Cn, "uid-BBB").expect("按 uid purge 必须成功");
-    assert!(load_trash_for(Region::Cn).is_empty(), "按 uid purge 必须真的清掉");
+    assert!(
+        load_trash_for(Region::Cn).is_empty(),
+        "按 uid purge 必须真的清掉"
+    );
 
     // 对照：删一个**不存在**的 key ⇒ 必须报错（不是静默成功）。
     assert!(trash_account_for(Region::Cn, "uid-NOPE").is_err());
@@ -379,11 +420,18 @@ fn corrupted_trash_file_is_tolerated_without_touching_live() {
         "损坏的 trash 文件应被当作空表（可理解行为），而不是崩溃"
     );
     // ★ 关键：live 账号库必须**原封不动**（损坏 trash ≠ 清空 live）。
-    assert_eq!(read_accounts(Region::Cn), live, "损坏 trash 不得波及 live 账号库");
+    assert_eq!(
+        read_accounts(Region::Cn),
+        live,
+        "损坏 trash 不得波及 live 账号库"
+    );
 
     // 损坏后再做一次软删除：应产生一份**合法**的 trash（自愈），且 live 正确减少。
     trash_account_for(Region::Cn, "acc-1").expect("软删除仍应可用");
-    assert!(read_accounts(Region::Cn).is_empty(), "软删除应正常移出 live");
+    assert!(
+        read_accounts(Region::Cn).is_empty(),
+        "软删除应正常移出 live"
+    );
     let trash = load_trash_for(Region::Cn);
     assert_eq!(trash.len(), 1, "软删除应写出一份合法的 trash");
     assert_eq!(trash[0].account["id"], "acc-1");
@@ -410,7 +458,10 @@ fn unknown_scope_is_rejected_fail_closed() {
     assert_eq!(resolve_scope("trae-global").unwrap(), Scope::TraeGlobal);
 
     // 拼错（派单点名的 `trae-glboal`）⇒ Err。
-    assert!(resolve_scope("trae-glboal").is_err(), "拼错的 scope 必须 Err");
+    assert!(
+        resolve_scope("trae-glboal").is_err(),
+        "拼错的 scope 必须 Err"
+    );
     // 空 / 未知。
     assert!(resolve_scope("").is_err(), "空 scope 必须 Err");
     assert!(resolve_scope("wb").is_err(), "不完整 scope 必须 Err");
@@ -422,7 +473,10 @@ fn unknown_scope_is_rejected_fail_closed() {
     assert!(err.contains("wb-cn"), "错误文案应列出合法取值，got: {err}");
     assert!(resolve_scope_param(Some("")).is_err());
     assert!(resolve_scope_param(Some("trae-glboal")).is_err());
-    assert_eq!(resolve_scope_param(Some("wb-global")).unwrap(), Scope::WbGlobal);
+    assert_eq!(
+        resolve_scope_param(Some("wb-global")).unwrap(),
+        Scope::WbGlobal
+    );
 
     // 平台分支守卫：用 Trae 作用域走 WB 分支 ⇒ Err（反之亦然）。
     assert!(require_wb_region(Scope::TraeCn).is_err());
@@ -443,7 +497,11 @@ fn trash_is_isolated_per_region() {
     let cn_trash = accounts_trash_file_for(Region::Cn);
     let global_trash = accounts_trash_file_for(Region::Global);
     assert_ne!(cn_trash, global_trash, "CN / Global 回收站必须是不同文件");
-    assert_ne!(cn_trash, accounts_file_for(Region::Cn), "trash 不得与 live 同名");
+    assert_ne!(
+        cn_trash,
+        accounts_file_for(Region::Cn),
+        "trash 不得与 live 同名"
+    );
     assert_ne!(global_trash, accounts_file_for(Region::Global));
 
     // 数据隔离：往 CN 删账号，Global 的回收站不得出现它。

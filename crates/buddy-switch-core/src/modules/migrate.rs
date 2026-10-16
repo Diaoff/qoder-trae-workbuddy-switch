@@ -109,12 +109,8 @@ pub fn migrate_account_data_cross(
     let mut changed = false;
 
     if scope.memory {
-        match memory::merge_memory_files_cross(
-            source_region,
-            source_uid,
-            target_region,
-            target_uid,
-        ) {
+        match memory::merge_memory_files_cross(source_region, source_uid, target_region, target_uid)
+        {
             Ok(r) => {
                 changed |= r.changed();
                 report["memory"] = json!({
@@ -198,35 +194,28 @@ mod tests {
 
     #[test]
     fn same_uid_is_rejected_before_any_file_work() {
-        let err = migrate_account_data_for(
-            Region::Cn,
-            "uid-same",
-            "uid-same",
-            MigrateScope::default(),
-        )
-        .unwrap_err();
+        let err =
+            migrate_account_data_for(Region::Cn, "uid-same", "uid-same", MigrateScope::default())
+                .unwrap_err();
         assert!(err.contains("相同"), "unexpected error: {err}");
     }
 
     #[test]
     fn blank_uids_are_rejected() {
-        let err =
-            migrate_account_data_for(Region::Cn, "   ", "uid-b", MigrateScope::default())
-                .unwrap_err();
+        let err = migrate_account_data_for(Region::Cn, "   ", "uid-b", MigrateScope::default())
+            .unwrap_err();
         assert!(err.contains("源账号"), "unexpected error: {err}");
 
-        let err =
-            migrate_account_data_for(Region::Cn, "uid-a", "  ", MigrateScope::default())
-                .unwrap_err();
+        let err = migrate_account_data_for(Region::Cn, "uid-a", "  ", MigrateScope::default())
+            .unwrap_err();
         assert!(err.contains("目标账号"), "unexpected error: {err}");
     }
 
     /// uids are trimmed before the equality check, so `" uid-a "` and `"uid-a"` collide.
     #[test]
     fn uids_are_trimmed_before_comparison() {
-        let err =
-            migrate_account_data_for(Region::Cn, " uid-a ", "uid-a", MigrateScope::default())
-                .unwrap_err();
+        let err = migrate_account_data_for(Region::Cn, " uid-a ", "uid-a", MigrateScope::default())
+            .unwrap_err();
         assert!(err.contains("相同"), "unexpected error: {err}");
     }
 

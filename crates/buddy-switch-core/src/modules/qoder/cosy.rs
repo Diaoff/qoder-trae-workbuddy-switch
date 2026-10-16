@@ -49,8 +49,7 @@ use super::device;
 /// 官方自定义 base64 字母表（64 字符，逐字对齐）。
 const CUSTOM_ALPHABET: &str = "_doRTgHZBKcGVjlvpC,@aFSx#DPuNJme&i*MzLOEn)sUrthbf%Y^w.(kIQyXqWA!";
 /// 标准 base64 字母表（映射的源）。
-const STD_ALPHABET: &str =
-    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+const STD_ALPHABET: &str = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 /// 填充符：自定义变体用 `$` 代替 `=`。
 const PAD_CHAR: u8 = b'$';
 
@@ -263,7 +262,10 @@ impl CosySession {
 
         let identity_json = {
             let mut map = Map::new();
-            map.insert("name".to_string(), Value::String(input.nickname.to_string()));
+            map.insert(
+                "name".to_string(),
+                Value::String(input.nickname.to_string()),
+            );
             map.insert("aid".to_string(), Value::String(input.uid.to_string()));
             map.insert("uid".to_string(), Value::String(input.uid.to_string()));
             map.insert("yx_uid".to_string(), Value::String(String::new()));
@@ -425,10 +427,7 @@ impl CosySessionCache {
             .entries
             .lock()
             .map_err(|_| "cosy: 会话缓存锁被毒化".to_string())?;
-        guard.insert(
-            key,
-            (input.access_token.to_string(), session.clone()),
-        );
+        guard.insert(key, (input.access_token.to_string(), session.clone()));
         Ok(session)
     }
 
@@ -489,7 +488,13 @@ mod tests {
     #[test]
     fn qoder_decode_is_the_exact_inverse() {
         for plain in [
-            "", "a", "ab", "abc", "abcd", r#"{"k":"v"}"#, "你好世界",
+            "",
+            "a",
+            "ab",
+            "abc",
+            "abcd",
+            r#"{"k":"v"}"#,
+            "你好世界",
             "x".repeat(64).as_str(),
         ] {
             let decoded = qoder_decode(&qoder_encode(plain.as_bytes())).expect("往返必须成功");
@@ -554,7 +559,10 @@ mod tests {
             strip_algo_prefix("/algo/api/v2/model/list"),
             "/api/v2/model/list"
         );
-        assert_eq!(strip_algo_prefix("/api/v2/model/list"), "/api/v2/model/list");
+        assert_eq!(
+            strip_algo_prefix("/api/v2/model/list"),
+            "/api/v2/model/list"
+        );
         // 官方客户端是「以 /algo 开头就剥 5 字符」——`/algox` 同样被剥（兼容性行为，非笔误）。
         assert_eq!(strip_algo_prefix("/algox"), "x");
         assert_eq!(strip_algo_prefix(""), "");
@@ -565,10 +573,7 @@ mod tests {
     #[test]
     fn device_identity_matches_official_vectors() {
         let identity = device::machine_identity("q1");
-        assert_eq!(
-            identity.machine_id,
-            "abec85ce8c7ed7ebd0041ee4ca63e701"
-        );
+        assert_eq!(identity.machine_id, "abec85ce8c7ed7ebd0041ee4ca63e701");
         assert_eq!(identity.machine_type, "964afd94abdbefa690");
         assert_eq!(
             identity.machine_token,
@@ -639,7 +644,8 @@ mod tests {
         assert!(segs[1].chars().all(|c| c.is_ascii_hexdigit()));
         // payload 解码后是带 cosyVersion / version / requestId 的排序 JSON。
         let payload_json: Value =
-            serde_json::from_slice(&b64_std().decode(segs[0]).expect("payload 是 base64")).expect("payload 是 JSON");
+            serde_json::from_slice(&b64_std().decode(segs[0]).expect("payload 是 base64"))
+                .expect("payload 是 JSON");
         assert_eq!(payload_json["cosyVersion"], COSY_VERSION);
         assert_eq!(payload_json["version"], "v1");
         assert_eq!(payload_json["ideVersion"], "");
@@ -654,10 +660,25 @@ mod tests {
                 .map(|(_, value)| value.clone())
         };
         for key in [
-            "cosy-data-policy", "content-type", "cosy-machinetype", "cosy-clienttype",
-            "cosy-date", "cosy-user", "cosy-key", "accept", "cosy-clientip", "authorization",
-            "accept-encoding", "cosy-version", "cosy-machineid", "cosy-machinetoken",
-            "login-version", "user-agent", "cache-control", "x-model-key", "x-model-source",
+            "cosy-data-policy",
+            "content-type",
+            "cosy-machinetype",
+            "cosy-clienttype",
+            "cosy-date",
+            "cosy-user",
+            "cosy-key",
+            "accept",
+            "cosy-clientip",
+            "authorization",
+            "accept-encoding",
+            "cosy-version",
+            "cosy-machineid",
+            "cosy-machinetoken",
+            "login-version",
+            "user-agent",
+            "cache-control",
+            "x-model-key",
+            "x-model-source",
         ] {
             assert!(lookup(key).is_some(), "缺头 {key}");
         }
@@ -670,7 +691,9 @@ mod tests {
 
     #[test]
     fn session_rejects_empty_access_token() {
-        let err = CosySession::new(&input("", "drt")).err().expect("空 token 必须失败");
+        let err = CosySession::new(&input("", "drt"))
+            .err()
+            .expect("空 token 必须失败");
         assert!(err.contains("access token"), "{err}");
         let cache = CosySessionCache::new();
         assert!(cache.get(&input("", "drt")).is_err());
