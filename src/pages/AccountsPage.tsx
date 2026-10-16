@@ -604,7 +604,13 @@ function RegionPanel({ region }: { region: Region }) {
     }
   }
 
-  /** 批量刷新积分 + 旅行状态（只针对已勾选账号）。 */
+  /**
+   * 批量刷新（只针对已勾选账号）。
+   *
+   * ★ 2026-10-16 修复：原先只刷积分 + 旅行，漏了「今日 Token」——
+   * 而卡片指标行里「今日 N」正是最容易变的那一列，漏它等于让批量刷新看起来「只动了一半」。
+   * 对齐 `onRefreshCredits`（全量刷新）的三件套：积分 / 旅行 / 今日 Token。
+   */
   async function batchRefresh() {
     if (batchBusy) return;
     const ids = accounts.filter((a) => selectedKeys.has(selectionKey(a.id))).map((a) => a.id);
@@ -613,6 +619,8 @@ function RegionPanel({ region }: { region: Region }) {
     try {
       await refreshCredits(ids, { region });
       await loadTravelMap(ids);
+      /* 显式刷新 ⇒ 强制重算「今日 Token」（绕过后端 TTL 闸门）。 */
+      await loadTokenToday(true);
       toast.success(t("wbAccounts.toast.creditsRefreshed"));
     } finally {
       setBatchBusy(false);
@@ -1065,6 +1073,20 @@ function RegionPanel({ region }: { region: Region }) {
     }
   }
 
+  /**
+   * 卡片菜单 /详情抽屉的「刷新 Token」（**单账号**）。
+   *
+   * ★ 2026-10-16 修复：原先只刷 token + `reconcileAccounts`，卡片上的**其余数据源一个都没动**
+   * —— 积分（`creditMap`）、今日 Token（`tokenTodayMap`）、旅行（`travelMap`）、
+   * 今日签到（`checkinMap`）全都停在旧值。用户点完只看到一句「Token 已刷新」，
+   * 而卡片上真正会变的数字一个都没变 ⇒ 「点了刷新没反应」（本条报障）。
+   *
+   * `reconcileAccounts` 只换`accounts` 数组（账号元信息：昵称/到期/需重登），
+   * **上面四张 map 是页面本地的 state，与它无关** —— 这是「刷新了却看不到变化」的结构性原因。
+   *
+   * 现在按「用户在点这个账号的刷新 ⇒ 想看这个账号此刻的真实数据」的口径，
+   * 成功后把这四路一并重拉（失败各自吞掉，不影响已成功的 token 刷新提示）。
+   */
   async function onRefresh(a: AccountMeta) {
     try {
       const res = await api.refreshAccountToken(a.id, region);
@@ -1083,6 +1105,19 @@ function RegionPanel({ region }: { region: Region }) {
         toast.success(t("wbAccounts.toast.tokenRefreshed"), { description: label });
       }
       void reconcileAccounts(region);
+      /* ★ 刷新成功后补齐卡片上的其余读数（token 已换新 ⇒ 重新打一次上游才拿得到新值）。 */
+      void refreshCredits([a.id], { region });
+      void loadTravelMap([a.id]);
+      try {
+        const next = await fetchTodayCheckinMap([a.id], region);
+        if (Object.keys(next).length > 0) {
+          setCheckinMap((prev) => ({ ...prev, ...next }));
+        }
+      } catch {
+        /* ignore */
+      }
+      /* 显式刷新 ⇒ 强制重算「今日 Token」（绕过后端 TTL 闸门）。 */
+      void loadTokenToday(true);
     } catch (e) {
       toast.error(t("wbAccounts.toast.tokenRefreshFail"), { description: api.asError(e) });
     }
