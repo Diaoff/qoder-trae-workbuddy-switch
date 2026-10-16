@@ -34,6 +34,7 @@ import type {
   TokenStatistics,
   CopyResult,
   MigrateResult,
+  ModelProbeJob,
   GatewayConfig,
   GatewayLogEntry,
   GatewayStatus,
@@ -174,6 +175,9 @@ const DEMO_READ_COMMANDS = new Set([
   // API 网关只读命令（演示站需返回虚构数据，否则 build:demo 报错）
   "get_gateway_config", "gateway_status", "list_api_keys", "get_gateway_models",
   "get_account_strategy", "get_disabled_models", "get_gateway_logs",
+  // 限流探测的只读状态命令（probe_status）：演示站需返回未跑过（phase=idle）的快照。
+  // ⚠️ probe_start / probe_cancel 是**写**操作（会真发上游请求 / 置取消位），一律不进这里。
+  "probe_status",
   // 「今日 Token」（**只读**观测）：演示站需返回虚构数据，否则 build:demo 报错。
   "get_account_token_today",
   // 网关**逐日**趋势（只读 `token_daily` 历史）：趋势页的网关小图用，演示站同样要虚构数据。
@@ -418,6 +422,10 @@ const ROUTES: Record<string, Route> = {
   set_model_disabled: { method: "POST", path: "/api/gateway/disabled-models" },
   get_gateway_logs: { method: "GET", path: "/api/gateway/logs" },
   clear_gateway_logs: { method: "POST", path: "/api/gateway/logs/clear" },
+  // 限流探测（账号 × 模型矩阵 · 一次性作业 + 轮询）：与 api.rs 路由、lib.rs 命令名三方一致。
+  probe_start: { method: "POST", path: "/api/gateway/probe/start" },
+  probe_status: { method: "GET", path: "/api/gateway/probe/status" },
+  probe_cancel: { method: "POST", path: "/api/gateway/probe/cancel" },
 
   // ---- Trae 模块 ----
   // 键名必须与 src-tauri/src/lib.rs 的 invoke_handler 登记名、
@@ -2067,6 +2075,48 @@ export function getGatewayLogs(): Promise<{ logs: GatewayLogEntry[] }> {
 
 export function clearGatewayLogs(): Promise<{ ok: boolean }> {
   return call("clear_gateway_logs");
+}
+
+/**
+ * 启动一轮「账号 × 模型」限流探测（**写**操作 · 异步作业）。
+ *
+ * 只**建作业**并立刻返回 `{ started, total }`；逐格进度由 `probeStatus(scope)` 轮询。
+ * 若已有探测在进行中，后端报错（作业位原子抢占）。
+ *
+ * ★ **作用域参数化**：入参从 `region` 升级为 `scope`（`wb-cn` / `qoder-cn` …）——
+ * 后端据此挑出探测目标（WB / Qoder 的账号库与目录）。未知 / 拼错的 scope 由后端 fail-closed 拒绝。
+ */
+export function probeStart(params: {
+  scope: Scope;
+  uids?: string[];
+  models?: string[];
+  adopt: boolean;
+}): Promise<{ started: boolean; total: number }> {
+  // ⚠️ 展开成**对象字面量**（而不是直接传 `params`）：`check-api-contract.cjs` 第 8 条要求
+  // 参数化命令的 `call(...)` 顶层键可静态读到 `scope`（传变量会让护栏无法校验）。
+  return call("probe_start", {
+    scope: params.scope,
+    uids: params.uids,
+    models: params.models,
+    adopt: params.adopt,
+  });
+}
+
+/**
+ * 读取探测作业快照（**只读**命令）。
+ *
+ * ⚠️ 从未跑过时返回 `{ phase: "idle" }`（**没有** `scope` 等其余字段）；
+ * 其余字段仅在 `running` / `done` / `cancelled` 时存在 —— 故返回联合类型。
+ *
+ * `scope` 为命令面统一必填（作业槽是进程级全局，但未知 / 拼错的作用域一律拒绝）。
+ */
+export function probeStatus(scope: Scope): Promise<{ phase: "idle" } | ModelProbeJob> {
+  return call("probe_status", { scope });
+}
+
+/** 请求取消当前探测作业（**写**操作；逐格检查，已探到的格保留）。 */
+export function probeCancel(scope: Scope): Promise<{ ok: boolean }> {
+  return call("probe_cancel", { scope });
 }
 
 /** 在系统文件管理器中打开该版本的账号库所在目录（设置页）。 */

@@ -756,16 +756,7 @@ async fn attempt_once(
     }?;
     tried.insert(picked.uid.clone());
 
-    let converted = payload::prepare_llm_chat_body(
-        body,
-        variant,
-        default_model,
-        &picked.uid,
-        &picked.device_id,
-        &picked.machine_id,
-    );
-
-    match send_llm_chat(state, &picked, &converted).await {
+    match chat_once_for_account(state, &picked, variant, default_model, body).await {
         Ok(response) => {
             // 会话粘性：**只在成功之后**绑定，让下一轮优先复用这个账号。
             state.bind_sticky(sticky_key, &picked.uid).await;
@@ -808,6 +799,38 @@ async fn attempt_once(
             })
         }
     }
+}
+
+/// 对**单个账号**发**一次** `llm_utils_chat`（含请求体改写），**不换号、不重试、不写池**。
+///
+/// ## 为什么单独立一个入口（限流探测的硬约束）
+///
+/// [`chat_for_variant`]（经 [`stream_chat`] / [`aggregate_payload`] → [`attempt_once`]）
+/// 自带 `max_rotate` **换号轮换**，且失败时会 `apply_error` **写回池冷却** —— 用它探测
+/// 会把结果**归因到别的账号**上，还会「自己把号打成冷却」。故把「拿到选定账号后、
+/// 真正发一次请求」的那一层（**改写请求体 + 出站**）抽出来：调用方（中继 / 探测）
+/// 自己决定要不要换号、要不要写池；本函数只发一次、**只读**。
+///
+/// ## 行为与抽取前**逐字不变**（纯重构）
+///
+/// 原 [`attempt_once`] 里的两步（[`payload::prepare_llm_chat_body`] + [`send_llm_chat`]）
+/// 原样搬进来，无任何逻辑改动；`attempt_once` 改为调本函数 ⇒ 真实流量行为逐字不变。
+pub(crate) async fn chat_once_for_account(
+    state: &TraeGatewayState,
+    account: &PickedTraeAccount,
+    variant: TraeVariant,
+    default_model: &str,
+    body: &[u8],
+) -> Result<reqwest::Response, (u16, String)> {
+    let converted = payload::prepare_llm_chat_body(
+        body,
+        variant,
+        default_model,
+        &account.uid,
+        &account.device_id,
+        &account.machine_id,
+    );
+    send_llm_chat(state, account, &converted).await
 }
 
 /// 发一次 `llm_utils_chat`：拿到响应头即返回，不读 body。

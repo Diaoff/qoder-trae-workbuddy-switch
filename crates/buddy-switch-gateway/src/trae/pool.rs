@@ -362,6 +362,20 @@ impl TraePool {
             preferred_uid,
         )?;
 
+        self.account_for(&uid)
+    }
+
+    /// 按 **uid 直取**单个账号的出站凭据（**不选号、不写池**）。
+    ///
+    /// ## 与 [`Self::pick`] 的区别（限流探测的硬约束）
+    ///
+    /// `pick` 会做可用性择优与偏好回落 —— 偏好账号**不可用时它会换一个号**
+    /// （见 `pick_with_preference`）。而限流探测的「一格」必须只打**指定**的那个 uid，
+    /// 否则结果会**归因到别的账号**上。故探测走本函数：命中不到就返回 `None`
+    /// （调用方据此记 `skipped`），绝不换号。
+    ///
+    /// **只读**：不写冷却文件、不推进 `pick_seq`、不改任何条目。
+    pub fn account_for(&self, uid: &str) -> Option<PickedTraeAccount> {
         self.entries
             .iter()
             .find(|entry| entry.uid == uid)

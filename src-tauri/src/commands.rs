@@ -2577,6 +2577,52 @@ pub fn clear_gateway_logs() -> Value {
     json!({ "ok": true })
 }
 
+/// POST /api/gateway/probe/start —— 启动一轮「账号 × 模型」限流探测（异步作业）。
+///
+/// 与 `crates/buddy-switch-server/src/api.rs::api_probe_start` **一一对应**（刻意不去重）。
+/// `start` 只**建作业**（原子抢占作业位），逐格执行由
+/// [`buddy_switch_gateway::model_probe::run`] 在后台任务里完成。
+///
+/// ★ **拿到 `Ok` 后必须 spawn `run`**：作业位是 `compare_exchange` 原子抢占的，
+/// 不 spawn 会让它一直占着 —— 之后所有 `start` 都报「已有探测在进行中」。
+/// 桌面端无 tokio 上下文，故用 `tauri::async_runtime::spawn`（服务端用 `tokio::spawn`）。
+///
+/// ★ **作用域参数化**：入参从 `region` 升级为 `scope`（`wb-cn` / `qoder-cn` …）。
+/// `target_for_scope` 是 **fail-closed** 解析（未知 / 拼错 ⇒ 可读错误），并据作用域挑出
+/// 对应平台的目标（WB / Qoder；Trae 本轮不做）。
+///
+/// `uids` / `models` **缺省 = 用池里的全部账号 / 该作用域目录**（与 `start` 的 `Option` 语义一致）。
+#[tauri::command]
+pub async fn probe_start(
+    scope: String,
+    uids: Option<Vec<String>>,
+    models: Option<Vec<String>>,
+    adopt: bool,
+) -> Result<Value, String> {
+    let target = buddy_switch_gateway::model_probe::target_for_scope(&scope)?;
+    let total =
+        buddy_switch_gateway::model_probe::start(&target, uids, models, adopt).await?;
+    tauri::async_runtime::spawn(buddy_switch_gateway::model_probe::run(target));
+    Ok(json!({ "started": true, "total": total }))
+}
+
+/// GET /api/gateway/probe/status —— 探测作业快照（从未跑过时 `{ "phase": "idle" }`）。
+///
+/// `scope` 为**必填**（fail-closed）：作业槽是进程级全局，快照本身与作用域无关，但命令面
+/// 统一带 `scope`，未知 / 拼错的作用域一律拒绝（不静默接受）。
+#[tauri::command]
+pub fn probe_status(scope: String) -> Result<Value, String> {
+    resolve_scope_param(Some(&scope))?;
+    Ok(buddy_switch_gateway::model_probe::status())
+}
+
+/// POST /api/gateway/probe/cancel —— 请求取消（逐格检查；已探到的格保留）。
+#[tauri::command]
+pub fn probe_cancel(scope: String) -> Result<Value, String> {
+    resolve_scope_param(Some(&scope))?;
+    Ok(buddy_switch_gateway::model_probe::cancel())
+}
+
 // ===========================================================================
 // Trae 模块命令
 // ===========================================================================

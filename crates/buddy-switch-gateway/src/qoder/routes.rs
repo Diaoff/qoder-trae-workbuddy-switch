@@ -358,43 +358,18 @@ pub async fn chat_for_region(
 
         // 官方候选主机（国际版 api1→api2→api3）：签名只覆盖 path，换主机不影响签名。
         let headers = session.headers(&encoded, PATH_CHAT_SSE, Some(&meta.key), true);
-        let mut upstream: Option<reqwest::Response> = None;
-        let mut transport_error = String::new();
-        // 官方候选主机（国际版 api1→api2→api3）；签名只覆盖 path，换主机不影响签名。
-        // `upstream_override` 是**测试挂载点**（打到本地 mock 上游），生产恒 `None`。
-        let hosts: Vec<String> = match &state.upstream_override {
-            Some(host) => vec![host.clone()],
-            None => qoder_region::gateway_candidates(region)
-                .iter()
-                .map(|host| host.to_string())
-                .collect(),
-        };
-        for host in hosts {
-            let url = format!("{host}{PATH_CHAT_SSE}");
-            let mut request = state
-                .http
-                .post(&url)
-                .timeout(std::time::Duration::from_secs(600))
-                .body(encoded.clone());
-            for (name, value) in &headers {
-                request = request.header(name, value);
-            }
-            match request.send().await {
-                Ok(response) => {
-                    upstream = Some(response);
-                    break;
+        // ★ 单账号、单次发送（含候选主机 failover）——**不含换号轮换**（那在 `for _ in 0..max_rotate`
+        //   外层）。抽成 [`chat_once_for_account`] 是为了让**限流探测**复用同一段发送逻辑而不误换号。
+        let response = match chat_once_for_account(&state, region, &encoded, &headers).await {
+            Ok(response) => response,
+            Err(transport_error) => {
+                failures.push(format!("{}：{transport_error}", entry.name));
+                let mut pools = state.pools.lock().await;
+                if let Some(pool) = pools.get_mut(&region) {
+                    pool.apply_error(&uid, QoderErrKind::Transient, &transport_error, &model);
                 }
-                Err(error) => transport_error = error.to_string(),
+                continue;
             }
-        }
-
-        let Some(response) = upstream else {
-            failures.push(format!("{}：{transport_error}", entry.name));
-            let mut pools = state.pools.lock().await;
-            if let Some(pool) = pools.get_mut(&region) {
-                pool.apply_error(&uid, QoderErrKind::Transient, &transport_error, &model);
-            }
-            continue;
         };
 
         let status = response.status();
@@ -492,6 +467,54 @@ pub async fn chat_for_region(
         )
         .await;
     protocol_error(protocol, StatusCode::SERVICE_UNAVAILABLE, "no_available_account", &message)
+}
+
+/// 对**单个账号**发**一次**上游 chat 请求（含候选主机 failover），**不换号、不重试**。
+///
+/// ## 为什么单独立一个入口（限流探测的硬约束）
+///
+/// [`chat_for_region`] 自带 `max_rotate` **换号轮换** —— 用它探测会把结果**归因到别的账号**
+/// （探测的「一格」必须只打一个 uid）。故把「一轮尝试里真正发一次请求」的那一层抽出来：
+/// 调用方（中继 / 探测）自己决定要不要换号；本函数只发一次。
+///
+/// ## 行为与抽取前**逐字不变**（纯重构，不改逻辑）
+///
+/// 主机候选顺序（`upstream_override` 测试挂载点 → 官方 `gateway_candidates`）、`600s` 超时、
+/// 逐个 header 注入、以及「逐个主机尝试、全部失败返回**最后一次**传输错误」都与原循环体一致。
+/// 唯一差别：原循环体把 `hosts` 放在 `max_rotate` 循环里**每次重算** —— 而 `hosts` 与账号无关、
+/// 重算无副作用，故移到本函数内等价。
+pub(crate) async fn chat_once_for_account(
+    state: &QoderGatewayState,
+    region: QoderRegion,
+    encoded: &str,
+    headers: &[(String, String)],
+) -> Result<reqwest::Response, String> {
+    // 官方候选主机（国际版 api1→api2→api3）；签名只覆盖 path，换主机不影响签名。
+    // `upstream_override` 是**测试挂载点**（打到本地 mock 上游），生产恒 `None`。
+    let hosts: Vec<String> = match &state.upstream_override {
+        Some(host) => vec![host.clone()],
+        None => qoder_region::gateway_candidates(region)
+            .iter()
+            .map(|host| host.to_string())
+            .collect(),
+    };
+    let mut transport_error = String::new();
+    for host in hosts {
+        let url = format!("{host}{PATH_CHAT_SSE}");
+        let mut request = state
+            .http
+            .post(&url)
+            .timeout(std::time::Duration::from_secs(600))
+            .body(encoded.to_string());
+        for (name, value) in headers {
+            request = request.header(name, value);
+        }
+        match request.send().await {
+            Ok(response) => return Ok(response),
+            Err(error) => transport_error = error.to_string(),
+        }
+    }
+    Err(transport_error)
 }
 
 fn usage_counts(usage: &Value) -> (u64, u64) {

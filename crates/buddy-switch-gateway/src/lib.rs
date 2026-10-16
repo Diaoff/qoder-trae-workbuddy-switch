@@ -27,6 +27,8 @@ pub mod disabled_models;
 pub mod error;
 pub mod logging;
 pub mod model_route;
+/// 账号池 × 模型限流探测（一次性作业；见模块文档）。
+pub mod model_probe;
 pub mod outbound;
 pub mod pool;
 pub mod protocol;

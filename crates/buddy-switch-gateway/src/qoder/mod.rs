@@ -288,6 +288,30 @@ impl QoderGatewayState {
         self.fetch_catalog(region).await
     }
 
+    /// **只读**内存里的清单缓存（**不触发任何上游往返**）—— 限流探测的模型轴用它。
+    ///
+    /// ## 为什么不用 [`Self::catalog_for`] / `qoder::api::fetch_model_list`
+    ///
+    /// - [`Self::catalog_for`] 缓存未命中时会**真的去上游拉一次**（一次网络往返）；
+    /// - `qoder::api::fetch_model_list` 更是**每次**都往返。
+    ///
+    /// 探测每开一轮都拉一次清单是**纯浪费**（探测本身已经要逐格发请求）。本入口**只读缓存**：
+    /// 模型页（`get_qoder_gateway_models`）与创建 Key 时已经把它填好；缓存为空 ⇒ 探测在
+    /// `model_probe` 层给可读错误（「请先『重新识别』」），而**不是**静默联网。
+    ///
+    /// ## 为什么不用 CLI 缓存目录 `paths::cli_models_cache_dir`
+    ///
+    /// 那只是**路径助手**（全仓零读取点，见 grep），用它会要求本仓**自造**一个 CLI 清单文件的
+    /// 解析格式 —— 我们不知道官方 CLI 落盘的字段，硬猜等于编数据。故不用。
+    pub async fn cached_catalog_models(&self, region: QoderRegion) -> Vec<Value> {
+        self.catalogs
+            .read()
+            .await
+            .get(&region)
+            .map(|cached| cached.models.clone())
+            .unwrap_or_default()
+    }
+
     /// 真的去上游拉一次（成功写缓存；失败退回缓存 + note）。
     async fn fetch_catalog(&self, region: QoderRegion) -> CatalogView {
         // 找一个有 access 的账号（拉清单要过 COSY 签名，同样需要可调用凭据）。

@@ -2799,6 +2799,9 @@ export function screenshotDemoResponse(command: string, args?: Record<string, un
       return { scope, ids: scope === "qoder-cn" ? ["Kimi-K3"] : [] };
     }
     case "get_gateway_logs": return { logs: demoGatewayLogs() };
+    /* 限流探测**只读**状态：演示站从未跑过探测 ⇒ 如实返回 idle（与真机 `model_probe::status` 同形）。
+       `probe_start` / `probe_cancel` 是写操作，不进 DEMO_READ_COMMANDS，由 DemoAction 统一拦截。 */
+    case "probe_status": return { phase: "idle" };
     // ---- Trae 分区（只读；写操作不进这里，由 DemoAction 统一拦截）----
     case "get_trae_env": return demoTraeEnv();
     case "get_trae_variants": return demoTraeVariants();

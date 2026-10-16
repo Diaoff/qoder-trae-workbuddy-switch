@@ -20,7 +20,23 @@ use buddy_switch_core::modules::qoder::{account, region::QoderRegion};
 use crate::pool::entry::CostTier;
 use crate::pool::entry_like::PoolEntryLike;
 use crate::pool::pick::{pick_with_preference, PickPolicy};
-use crate::pool::RealmTag;
+use crate::pool::{ProbeOutcome, RealmTag};
+
+/// 探测回填的**冷却下限**（毫秒）—— 与 WorkBuddy 侧 `crate::pool::MIN_PROBE_COOLDOWN_MS` **同值**。
+///
+/// ## 为什么需要它
+///
+/// Qoder 上游对「模型级限流」**不声明解冻墙钟**（`classify_http` 只看状态码），
+/// 探测拿到 429 时 `reset_at_ms` 恒为 `None`。若直接落 `now + 1ms` 就等于**没冷却**
+/// （下一毫秒又去撞同一堵墙），而调用方却以为「已置冷却」。
+///
+/// ## 为什么是 60s（而不是复用 WB 的常量）
+///
+/// 本模块**已经**用 60s 作为 429 的模型级冷却时长（见 [`QoderPool::apply_error`] 的
+/// `RateLimited` 分支：`now + 60_000`）—— 探测回填的下限取**同一个值**，两者才不漂移。
+/// 两个常量**分模块各自声明**（WB 的 `MIN_PROBE_COOLDOWN_MS` 与 Qoder 这条）：它们约束
+/// 的是**两个平台各自的**回填语义，共用一个反而会把「改一个平台」误伤另一个平台。
+pub const MIN_PROBE_COOLDOWN_MS: i64 = 60_000;
 
 fn now_ms() -> i64 {
     std::time::SystemTime::now()
@@ -376,6 +392,61 @@ impl QoderPool {
         }
     }
 
+    /// ★ **采纳一次探测结果** —— 语义与 WorkBuddy 的 [`crate::pool::Pool::adopt_probe_result`]
+    /// **逐条对齐**（见那里的文档）。
+    ///
+    /// ## 只置/清 `model_cooldowns`，**绝不推 EMA / 错误计数**
+    ///
+    /// 探测是**我们主动打的**，被 429 本来就是常态。若走 [`QoderPool::apply_error`]，它会
+    /// 推进 `success_ema` / `error_ema` / `last_error` —— 探测次数会混进退避与健康度，
+    /// 冷却「越探越长」（自我实现的限流）。故本入口**只动** `model_cooldowns`：
+    /// `success_ema` / `error_ema` / `last_error` / `cooldown_until` / `auth_dead` 逐字段不变。
+    ///
+    /// ## 三档语义
+    ///
+    /// - `Available` ⇒ **清掉**该模型的冷却（探到可用就该恢复）；
+    /// - `ModelRateLimited` ⇒ **置**该模型冷却（Qoder 上游 429 是按模型报的，故没有账号级细分；
+    ///   无墙钟时用 [`MIN_PROBE_COOLDOWN_MS`] 补齐下限）；
+    /// - 其余档（`ModelBlocked` / `AccountRateLimited` / `Other`）⇒ **不动**。
+    ///
+    /// 返回**是否真的改变了冷却**（幂等：同一结论重复采纳不重复计数；既有冷却更晚时不会被缩短）。
+    pub fn adopt_probe_result(
+        &mut self,
+        uid: &str,
+        model: &str,
+        outcome: &ProbeOutcome,
+        now: i64,
+    ) -> bool {
+        let Some(entry) = self.entries.get_mut(uid) else {
+            return false;
+        };
+        match outcome {
+            ProbeOutcome::Available => {
+                if model.is_empty() {
+                    false
+                } else {
+                    entry.model_cooldowns.remove(model).is_some()
+                }
+            }
+            ProbeOutcome::ModelRateLimited { reset_at_ms } => {
+                if model.is_empty() {
+                    return false;
+                }
+                let before = entry.model_cooldowns.get(model).copied().unwrap_or(0);
+                // ★ 下限：未知 / 已过期的墙钟一律补齐（否则只冷 1ms = 等于没冷却）。
+                let reset_at = reset_at_ms
+                    .filter(|value| *value > now)
+                    .unwrap_or(now.saturating_add(MIN_PROBE_COOLDOWN_MS));
+                entry.model_cooldowns.insert(model.to_string(), reset_at);
+                entry.model_cooldowns.get(model).copied().unwrap_or(0) > before
+            }
+            // 其余档（模型封禁 / 账号级限流 / 其它）在 Qoder 侧无对应冷却轴 ⇒ 不动。
+            ProbeOutcome::ModelBlocked
+            | ProbeOutcome::AccountRateLimited { .. }
+            | ProbeOutcome::Other => false,
+        }
+    }
+
     /// 池视图（`/status` 与网关页「账号池」卡）。
     pub fn status_list(&self, now: i64) -> Vec<Value> {
         self.entries
@@ -592,6 +663,73 @@ mod tests {
         pool.note_success("a");
         assert!(!pool.entries["a"].auth_dead);
         assert_eq!(pool.entries["a"].cooldown_until, 0);
+    }
+
+    /// ★ 探测回填：只置/清 `model_cooldowns`，**绝不推 EMA / 错误计数**（与 WB 逐条对齐）。
+    ///
+    /// 变异①（落点 = `adopt_probe_result`）：把它改成调 `apply_error` ⇒ 「EMA 不变」断言红
+    /// —— 那正是「探测次数混进退避指数、冷却越探越长」的缺陷形态。
+    /// 变异②：把下限去掉（直接落 `now` 或 `now + 1`）⇒ 「下限 = 60s」断言红。
+    #[test]
+    fn adopt_probe_result_only_touches_model_cooldowns() {
+        let mut pool = QoderPool::new();
+        pool.entries.insert("a".into(), entry("a", "t-a"));
+        // 先经真实错误压上 EMA，作为「不被探测改动」的基线。
+        pool.apply_error("a", QoderErrKind::RateLimited, "boom", "m-other");
+        let success_ema = pool.entries["a"].success_ema;
+        let error_ema = pool.entries["a"].error_ema;
+        let last_error = pool.entries["a"].last_error.clone();
+        assert!(error_ema > 0.0, "前置：应有非零错误 EMA");
+
+        let now = now_ms();
+        // ① 置冷却：无墙钟 ⇒ 用下限 60s（而不是 now + 1ms）。
+        let changed = pool.adopt_probe_result(
+            "a",
+            "m-a",
+            &ProbeOutcome::ModelRateLimited { reset_at_ms: None },
+            now,
+        );
+        assert!(changed);
+        assert_eq!(
+            pool.entries["a"].model_cooldowns["m-a"],
+            now + MIN_PROBE_COOLDOWN_MS,
+            "无墙钟必须用冷却下限补齐（否则只冷 1ms = 等于没冷却）"
+        );
+
+        // ★ 不推 EMA / 错误计数 / last_error（变异：改成调 `apply_error` 即红）。
+        assert_eq!(pool.entries["a"].success_ema, success_ema);
+        assert_eq!(pool.entries["a"].error_ema, error_ema);
+        assert_eq!(pool.entries["a"].last_error, last_error);
+
+        // ③ 幂等：同结论重复采纳不重复计数（既有冷却更晚 ⇒ 不缩短）。
+        assert!(!pool.adopt_probe_result(
+            "a",
+            "m-a",
+            &ProbeOutcome::ModelRateLimited { reset_at_ms: None },
+            now,
+        ));
+
+        // ④ 其余档不动冷却。
+        assert!(!pool.adopt_probe_result("a", "m-a", &ProbeOutcome::Other, now));
+        assert!(!pool.adopt_probe_result(
+            "a",
+            "m-a",
+            &ProbeOutcome::AccountRateLimited { reset_at_ms: None },
+            now,
+        ));
+        assert!(!pool.adopt_probe_result("a", "m-a", &ProbeOutcome::ModelBlocked, now));
+
+        // ⑤ Available ⇒ 清掉该模型；已清 ⇒ false。
+        assert!(pool.adopt_probe_result("a", "m-a", &ProbeOutcome::Available, now));
+        assert!(!pool.entries["a"].model_cooldowns.contains_key("m-a"));
+        assert!(
+            !pool.adopt_probe_result("a", "m-a", &ProbeOutcome::Available, now),
+            "已清 ⇒ false（幂等）"
+        );
+
+        // ⑥ 不在池里 / 空模型名 ⇒ false。
+        assert!(!pool.adopt_probe_result("ghost", "m-a", &ProbeOutcome::Available, now));
+        assert!(!pool.adopt_probe_result("a", "", &ProbeOutcome::Available, now));
     }
 
     /// 管理面视图的**两条不变量**：

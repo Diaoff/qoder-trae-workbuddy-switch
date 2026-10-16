@@ -312,6 +312,11 @@ fn api_routes() -> Router {
         )
         .route("/api/gateway/logs", get(api_gateway_logs))
         .route("/api/gateway/logs/clear", post(api_gateway_clear_logs))
+        // 限流探测（账号 × 模型矩阵 · 一次性作业 + 轮询）：start 异步作业 / status 快照 / cancel。
+        // 与 `src-tauri/src/commands.rs` 的 `probe_*` 命令、`src/lib/api.ts` 的 ROUTES 三方一致。
+        .route("/api/gateway/probe/start", post(api_probe_start))
+        .route("/api/gateway/probe/status", get(api_probe_status))
+        .route("/api/gateway/probe/cancel", post(api_probe_cancel))
         // ---- 统一网关（第三个产品线 · 跨作用域）----
         // ⚠️ 前缀 `/api/unified-gateway/…` 与两条既有线路（`/api/gateway/…`、`/api/trae/…`）平行；
         //   命令与其在 `src-tauri/commands.rs` 的实现一一对应（门禁 `check:api` 两侧夹）。
@@ -2893,6 +2898,73 @@ async fn api_gateway_clear_logs() -> Response {
     let state = crate::gateway_host::shared_state();
     state.log.clear();
     json_ok(json!({ "ok": true }))
+}
+
+/// POST /api/gateway/probe/start —— 启动一轮「账号 × 模型」限流探测（异步作业）。
+///
+/// 形状照抄 `src-tauri/src/commands.rs::probe_start`：`start` 只**建作业**（原子抢占作业位），
+/// 逐格执行由 [`buddy_switch_gateway::model_probe::run`] 在后台任务里完成。
+///
+/// ★ **拿到 `Ok` 后必须 spawn `run`**：作业位是 `compare_exchange` 原子抢占的，
+/// 不 spawn 会让它一直占着 —— 之后所有 `start` 都报「已有探测在进行中」。
+/// 服务端已在 tokio 上下文，故用 `tokio::spawn`（桌面端改用 `tauri::async_runtime::spawn`）。
+///
+/// `uids` / `models` **缺省 = 用池里的全部账号 / 该作用域目录**（与 `start` 的 `Option` 语义一致）；
+/// 显式传空数组则走到 `start` 的「没有选中任何账号 / 没有可探测的模型」校验。
+///
+/// ★ **作用域参数化**：入参从 `region` 升级为 `scope`（`wb-cn` / `qoder-cn` …）。
+/// `target_for_scope` 是 **fail-closed** 解析（未知 / 拼错 ⇒ 可读错误），并据作用域挑出对应平台的目标。
+async fn api_probe_start(Json(body): Json<Value>) -> Response {
+    let scope = body
+        .get("scope")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
+    let target = match buddy_switch_gateway::model_probe::target_for_scope(&scope) {
+        Ok(target) => target,
+        Err(error) => return json_err(error, StatusCode::BAD_REQUEST),
+    };
+    let uids: Option<Vec<String>> = body.get("uids").and_then(Value::as_array).map(|items| {
+        items
+            .iter()
+            .filter_map(|item| item.as_str().map(String::from))
+            .collect()
+    });
+    let models: Option<Vec<String>> = body.get("models").and_then(Value::as_array).map(|items| {
+        items
+            .iter()
+            .filter_map(|item| item.as_str().map(String::from))
+            .collect()
+    });
+    let adopt = body.get("adopt").and_then(Value::as_bool).unwrap_or(false);
+    match buddy_switch_gateway::model_probe::start(&target, uids, models, adopt).await {
+        Ok(total) => {
+            tokio::spawn(buddy_switch_gateway::model_probe::run(target));
+            json_ok(json!({ "started": true, "total": total }))
+        }
+        Err(error) => json_err(error, StatusCode::BAD_REQUEST),
+    }
+}
+
+/// GET /api/gateway/probe/status —— 探测作业快照（从未跑过时 `{ "phase": "idle" }`）。
+///
+/// `scope` 为**必填**（fail-closed）：作业槽是进程级全局，快照本身与作用域无关，但命令面
+/// 统一带 `scope`，未知 / 拼错的作用域一律拒绝（不静默接受）。
+async fn api_probe_status(RawQuery(query): RawQuery) -> Response {
+    let scope = query_value(query.as_deref(), "scope").unwrap_or_default();
+    if let Err(error) = resolve_scope_param(Some(&scope)) {
+        return json_err(error, StatusCode::BAD_REQUEST);
+    }
+    json_ok(buddy_switch_gateway::model_probe::status())
+}
+
+/// POST /api/gateway/probe/cancel —— 请求取消（逐格检查；已探到的格保留）。
+async fn api_probe_cancel(RawQuery(query): RawQuery) -> Response {
+    let scope = query_value(query.as_deref(), "scope").unwrap_or_default();
+    if let Err(error) = resolve_scope_param(Some(&scope)) {
+        return json_err(error, StatusCode::BAD_REQUEST);
+    }
+    json_ok(buddy_switch_gateway::model_probe::cancel())
 }
 
 // ---------------------------------------------------------------------------

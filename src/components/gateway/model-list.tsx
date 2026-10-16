@@ -3,17 +3,20 @@ import { Server } from "lucide-react";
 import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
 import { EmptyState } from "@/components/ui/empty-state";
 import { CatalogSourceBar } from "@/components/gateway/catalog-source-bar";
 import { ModelTable } from "@/components/gateway/model-table";
+import { focusProbeModel, PROBE_LIMIT_STATES } from "@/components/gateway/model-probe-card";
 import * as api from "@/lib/api";
 import { describeCatalogSource, formatAbsoluteTime } from "@/lib/catalog-source";
+import { poolOf } from "@/lib/gateway";
 import { useT } from "@/lib/i18n";
 import { scopeOf } from "@/lib/scope";
 import { servedCount } from "@/lib/types";
-import type { GatewayModelRow, Region } from "@/lib/types";
+import type { GatewayModelRow, ModelProbeCell, Region } from "@/lib/types";
 import { cn } from "@/lib/utils";
-import { EMPTY_DISABLED_SET, useGatewayStore } from "@/stores/gateway";
+import { EMPTY_DISABLED_SET, useGatewayStore, useProbePassive } from "@/stores/gateway";
 
 /**
  * 模型列表：来源条（实时 / 已保存 / 内置 + 上次识别 + 原因）+ 重新识别 + **模型表格**（P0-4 / P0-12 / P1-7 / P10 / P11）。
@@ -66,6 +69,9 @@ export function ModelList({ region, className }: { region: Region; className?: s
   const disabledSet = useGatewayStore((s) => s.disabled[scope]) ?? EMPTY_DISABLED_SET;
   const loadDisabled = useGatewayStore((s) => s.loadDisabled);
   const setModelDisabled = useGatewayStore((s) => s.setModelDisabled);
+  /* 限流探测：与探测卡读**同一份**派生数据（`probe.cells` 实测 + `useProbePassive()` 被动底色）。 */
+  const status = useGatewayStore((s) => s.status);
+  const probe = useGatewayStore((s) => s.probe);
 
   /* 进入 / 切作用域时读一次该作用域的禁用偏好（页面级 `loadAll` 也会拉，幂等）。 */
   useEffect(() => {
@@ -89,6 +95,108 @@ export function ModelList({ region, className }: { region: Region; className?: s
     [snapshot, disabledSet, scope],
   );
   const { served, total } = servedCount(rows);
+
+  /* 探测的账号轴（= 该 region 的池条目）与实测格索引（uid × 模型 id）。 */
+  const accounts = useMemo(() => poolOf(status, region).accounts, [status, region]);
+  const probedMap = useMemo(() => {
+    const map: Record<string, Record<string, ModelProbeCell>> = {};
+    for (const cell of probe?.cells ?? []) (map[cell.uid] ??= {})[cell.model] = cell;
+    return map;
+  }, [probe]);
+  /* 被动底色（与探测卡**同一份派生值**）：客户端台账 ∪ 池模型级冷却。 */
+  const passiveMap = useProbePassive(region);
+
+  /**
+   * 某模型的探测汇总：`probed` = 本次实测覆盖的账号数；`limited` = 其中被限流/封禁的
+   * （**只有三档算限流**）；`passive` = 只在被动底色里见过的账号数，另按**来源**拆出
+   * `passiveFlow`（池冷却 = 真实流量）/ `passiveLedger`（客户端台账 = 客户端日志）——
+   * 两来源都有时 `source === "flow"` 且 `both` ⇒ 两边都计（§5.3 角标要能区分来源）。
+   */
+  function modelProbeStatus(modelId: string): {
+    probed: number;
+    limited: number;
+    passive: number;
+    passiveFlow: number;
+    passiveLedger: number;
+  } {
+    let probed = 0;
+    let limited = 0;
+    let passive = 0;
+    let passiveFlow = 0;
+    let passiveLedger = 0;
+    for (const account of accounts) {
+      const cell = probedMap[account.uid]?.[modelId];
+      if (cell) {
+        probed += 1;
+        if (PROBE_LIMIT_STATES.includes(cell.state)) limited += 1;
+        continue;
+      }
+      const info = passiveMap[account.uid]?.[modelId];
+      if (info) {
+        passive += 1;
+        if (info.source === "flow") {
+          passiveFlow += 1;
+          if (info.both) passiveLedger += 1;
+        } else {
+          passiveLedger += 1;
+        }
+      }
+    }
+    return { probed, limited, passive, passiveFlow, passiveLedger };
+  }
+
+  /**
+   * 「限流（探测）」单元格（原型 `probeModelCellHtml`）：
+   * 本次实测过 ⇒ `全部可用` / `N/M 限流`；只被动见过 ⇒ `被动 N`；没探过 ⇒ `—`。
+   * **点徽章 = 下钻**（收窄探测范围到这一个模型，并展开卡片）。
+   */
+  function renderProbeCell(modelId: string) {
+    const { probed, limited, passive, passiveFlow, passiveLedger } = modelProbeStatus(modelId);
+    if (probed > 0) {
+      const allOk = limited === 0;
+      const variant = allOk ? "success" : limited === probed ? "destructive" : "warning";
+      const title = allOk
+        ? t("shared.gateway.probe.colTooltipAllOk", { total: probed })
+        : t("shared.gateway.probe.colTooltipLimited", { total: probed, limited });
+      return (
+        <button
+          type="button"
+          data-act="gw-model-probe"
+          className="inline-flex"
+          title={title}
+          onClick={() => focusProbeModel(modelId)}
+        >
+          <Badge variant={variant}>
+            {allOk
+              ? t("shared.gateway.probe.colAllOk")
+              : t("shared.gateway.probe.colLimited", { limited, total: probed })}
+          </Badge>
+        </button>
+      );
+    }
+    if (passive > 0) {
+      return (
+        <button
+          type="button"
+          data-act="gw-model-probe"
+          className="inline-flex"
+          title={t("shared.gateway.probe.colTooltipPassive", {
+            n: passive,
+            flow: passiveFlow,
+            ledger: passiveLedger,
+          })}
+          onClick={() => focusProbeModel(modelId)}
+        >
+          <Badge variant="secondary">{t("shared.gateway.probe.colPassive", { n: passive })}</Badge>
+        </button>
+      );
+    }
+    return (
+      <span className="text-xs text-muted-foreground" title={t("shared.gateway.probe.colTooltipNone")}>
+        {t("shared.gateway.probe.colNone")}
+      </span>
+    );
+  }
 
   const labels = {
     colModel: t("shared.gateway.models.colModel"),
@@ -174,6 +282,12 @@ export function ModelList({ region, className }: { region: Region; className?: s
             onToggleDisabled={(row, disabled) => void onToggleDisabled(row, disabled)}
             showUpstream={false}
             labels={labels}
+            /* 「限流（探测）」列（P1 §5.4）：**仅 WB 传**；Trae / Qoder 不传 ⇒ 壳里不多出该列与
+               任何 click handler（保持「每行 2 处可点区」的门禁断言）。 */
+            extraColumn={{
+              header: t("shared.gateway.models.colProbe"),
+              render: (row) => renderProbeCell(row.id),
+            }}
           />
           {/* 计数 = available && !disabled，与出口 ① 同源。
               ★ Q5/D39：守卫是 `total > 0`（**有清单就显示**），不是 `served > 0` ——

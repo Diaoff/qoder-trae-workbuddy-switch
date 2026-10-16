@@ -1,3 +1,4 @@
+import { useMemo } from "react";
 import { create } from "zustand";
 
 import * as api from "@/lib/api";
@@ -5,6 +6,7 @@ import {
   DEFAULT_GATEWAY_CONFIG,
   normalizeGatewayConfig,
   normalizeGatewayStatus,
+  poolOf,
 } from "@/lib/gateway";
 import type {
   AccountStrategy,
@@ -15,6 +17,8 @@ import type {
   GatewayConfig,
   GatewayLogEntry,
   GatewayStatus,
+  ModelProbeJob,
+  ModelProbeState,
   Region,
 } from "@/lib/types";
 import { SCOPES, type Scope } from "@/lib/scope";
@@ -38,6 +42,30 @@ function defaultStrategyView(region?: Region): AccountStrategyView {
 
 function defaultStrategies(): Record<Region, AccountStrategyView> {
   return { cn: defaultStrategyView("cn"), global: defaultStrategyView("global") };
+}
+
+/**
+ * 限流探测的轮询间隔（约 1s，与 `switch_progress` 的进度轮询同款）。
+ *
+ * 依据（方案 §3.4）：本仓**没有** EventSource / SSE 前端消费，长任务一律走
+ * 「前端定时 `probeStatus()`」——既有先例 `switch-account-dialog.tsx:191`。
+ */
+const PROBE_POLL_MS = 1000;
+
+/**
+ * 探测轮询定时器（模块级，**唯一实例**）。
+ *
+ * ⚠️ 必须是模块级而不是组件级：`model-probe-card` 可能因切换分区 / 页面导航卸载，
+ * 组件里的 timer 会随卸载被遗忘 —— 于是「切走再切回」会留下多个并发轮询。
+ * 这里由 store 单点持有，卡片卸载时显式调 `stopProbePolling()` 清掉。
+ */
+let probeTimer: ReturnType<typeof setInterval> | null = null;
+
+function stopProbeTimer(): void {
+  if (probeTimer !== null) {
+    clearInterval(probeTimer);
+    probeTimer = null;
+  }
 }
 
 /** 兼容后端可能缺字段：始终补齐两个 region。 */
@@ -68,6 +96,22 @@ interface GatewayState {
   disabled: Partial<Record<Scope, Set<string>>>;
   strategies: Record<Region, AccountStrategyView>;
   logs: GatewayLogEntry[];
+  /**
+   * 最近一次（或进行中）的**限流探测作业**（方案 §3.1）。
+   *
+   * `null` = 从未跑过 / 已被换作用域清掉（后端以 `{ phase: "idle" }` 表示）。
+   * 与后端 `ProbeJob` 的 wire 形状**逐字段一致**（snake_case，见 `model_probe.rs`）。
+   */
+  probe: ModelProbeJob | null;
+  /**
+   * **被动底色（来源之一）**：客户端限流台账（`client_limits`）里「仍受限」的 `uid × 模型`。
+   *
+   * ⚠️ 这只是被动底色的**一半**；另一半是**池的模型级冷却**（`GatewayPoolAccount.modelCoolings`，
+   * 随 `status` 到达）。两者在读取处由 {@link useProbePassive} **派生**成一份并集 ——
+   * 消费方（探测卡 / 模型表列）**只读那份派生值**，别再各自拼一份。
+   * 键是**账号 uid**（与池条目同键），内层键是**模型名**。
+   */
+  probePassive: Record<string, Record<string, ModelProbeState>>;
   loading: boolean;
   saving: boolean;
   error: string | null;
@@ -92,6 +136,21 @@ interface GatewayState {
   saveStrategy: (region: Region, strategy: AccountStrategy) => Promise<void>;
   loadLogs: () => Promise<void>;
   clearLogs: () => Promise<void>;
+  /** 启动一次限流探测（后端「作业 + 轮询」；第二次调用返回「已有探测进行中」）。 */
+  startProbe: (args: {
+    scope: Scope;
+    uids?: string[];
+    models?: string[];
+    adopt: boolean;
+  }) => Promise<{ started: boolean; total: number }>;
+  /** 拉一次作业快照；`running` 时自动续轮询，`done` / `cancelled` 时清定时器。 */
+  refreshProbeStatus: (scope: Scope) => Promise<void>;
+  /** 取消剩余格（保留已探到的部分结果）。 */
+  cancelProbe: (scope: Scope) => Promise<void>;
+  /** 读取该 region 的**被动底色**（客户端台账；失败静默为空表）。 */
+  loadProbePassive: (region: Region) => Promise<void>;
+  /** 停掉轮询定时器（卡片卸载时调用，防泄漏）。 */
+  stopProbePolling: () => void;
   /** 首次进入页面：并发拉取配置 / 状态 / Keys / 策略 / 日志 / 两版模型。 */
   loadAll: () => Promise<void>;
 }
@@ -105,6 +164,9 @@ export const useGatewayStore = create<GatewayState>((set, get) => ({
   disabled: {},
   strategies: defaultStrategies(),
   logs: [],
+  // 探测未跑过（后端 `{ phase: "idle" }` 归一为 `null`）；被动底色懒加载，默认空表。
+  probe: null,
+  probePassive: {},
   loading: false,
   saving: false,
   error: null,
@@ -240,6 +302,70 @@ export const useGatewayStore = create<GatewayState>((set, get) => ({
     set({ logs: [] });
   },
 
+  async startProbe(args) {
+    const result = await api.probeStart(args);
+    // 启动后立刻拉一次快照（`running` 会在 `refreshProbeStatus` 里起轮询）。
+    await get().refreshProbeStatus(args.scope);
+    return result;
+  },
+
+  async refreshProbeStatus(scope) {
+    try {
+      const job = await api.probeStatus(scope);
+      // 后端用 `{ phase: "idle" }` 表示「从未跑过」⇒ 归一成 `null`（其余档字段齐全）。
+      const next =
+        job && (job as ModelProbeJob).phase && (job as ModelProbeJob).phase !== "idle"
+          ? (job as ModelProbeJob)
+          : null;
+      set({ probe: next });
+      if (next && next.phase === "running") {
+        // `running` ⇒ 续轮询（`setInterval` 单实例；已在跑时先清再起，杜绝并发）。
+        stopProbeTimer();
+        probeTimer = setInterval(() => {
+          void get().refreshProbeStatus(scope);
+        }, PROBE_POLL_MS);
+      } else {
+        // `done` / `cancelled`（或 idle）⇒ 必须清掉定时器，否则会一直空转。
+        stopProbeTimer();
+      }
+    } catch (e) {
+      stopProbeTimer();
+      set({ error: api.asError(e) });
+    }
+  },
+
+  async cancelProbe(scope) {
+    try {
+      await api.probeCancel(scope);
+    } finally {
+      // 取消后立即对齐一次：后端会把 phase 置 `cancelled` 并保留部分结果。
+      await get().refreshProbeStatus(scope);
+    }
+  },
+
+  async loadProbePassive(region) {
+    try {
+      const res = await api.clientLimits(region);
+      const map: Record<string, Record<string, ModelProbeState>> = {};
+      for (const entry of res.limits ?? []) {
+        // 只认**仍受限**（`active`）的条目：`unknown` 推不出「仍受限」，`recovered` 已恢复。
+        if (entry.state !== "active") continue;
+        const uid = entry.accountUid;
+        const model = entry.model;
+        if (!uid || !model) continue;
+        (map[uid] ??= {})[model] = "rate_limited_model";
+      }
+      set({ probePassive: map });
+    } catch {
+      // 被动底色是**加分项**：拉不到就当空表，绝不让它污染主流程的错误条。
+      set({ probePassive: {} });
+    }
+  },
+
+  stopProbePolling() {
+    stopProbeTimer();
+  },
+
   async loadAll() {
     set({ loading: true, error: null });
     try {
@@ -261,3 +387,86 @@ export const useGatewayStore = create<GatewayState>((set, get) => ({
     }
   },
 }));
+
+/**
+ * 被动底色的**来源**（§5.3 角标「真实流量」/「客户端日志」—— 两者必须能区分）。
+ *
+ * - `flow` = 池的**模型级冷却**（`accounts[].modelCoolings`）—— 经网关**真实流量**打出来的；
+ * - `ledger` = **客户端限流台账**（`client_limits`）—— 只是「客户端日志里出现过」。
+ */
+export type ProbePassiveSource = "flow" | "ledger";
+
+/**
+ * 被动底色的**一格**：状态 + **来源**。
+ *
+ * ⚠️ 两个来源语义不同（一个是网关实测、一个只是客户端日志推断），此前被并成一档只发一个
+ * 状态串 ⇒ 用户分不出。这里把来源一并带出，消费方（探测卡矩阵 / 模型表列）**读同一份**。
+ */
+export interface ProbePassiveInfo {
+  /** 被动状态（池里只有模型级冷却一档；台账也记这一档）。 */
+  state: ModelProbeState;
+  /** 来源 —— **两来源都有时以 `flow`（真实流量）优先**。 */
+  source: ProbePassiveSource;
+  /** 两来源**同时**有记录（`source` 仍以 flow 优先，文案据此说明二者皆有）。 */
+  both: boolean;
+}
+
+/**
+ * 被动底色的**唯一合并口径**（纯函数，可测）：客户端限流台账 ∪ 池的模型级冷却。
+ *
+ * - 客户端台账（`ledger` = `probePassive`，来自 `client_limits`）：键 `uid → 模型名 → 状态`，
+ *   来源记 `ledger`（客户端日志）；
+ * - 池冷却（`accounts[].modelCoolings`，camelCase `{模型名: 解冻ms}`）：后端只发未过期的，
+ *   这里**再判一次** `until_ms > now`（防御 + 便于单测），一律记 `rate_limited_model`
+ *  （池里只有模型级冷却这一档），来源记 `flow`（真实流量）。
+ *
+ * ⚠️ **两来源同一格时 `flow` 优先**（`source: "flow"` + `both: true`）—— 真实流量是更强的证据；
+ * `both` 让文案能说明「客户端日志里也有」。
+ *
+ * ⚠️ 这是**派生**，不落 state —— 存成独立 state 会与两个来源脱节（换来源不跟进）。
+ * 读取处走 {@link useProbePassive}（两来源任一变化即重算）。
+ */
+export function unionProbePassive(
+  accounts: readonly { uid: string; modelCoolings?: Record<string, number> }[],
+  ledger: Record<string, Record<string, ModelProbeState>>,
+): Record<string, Record<string, ProbePassiveInfo>> {
+  const out: Record<string, Record<string, ProbePassiveInfo>> = {};
+  for (const uid of Object.keys(ledger)) {
+    const models: Record<string, ProbePassiveInfo> = {};
+    for (const [model, state] of Object.entries(ledger[uid])) {
+      models[model] = { state, source: "ledger", both: false };
+    }
+    out[uid] = models;
+  }
+  const now = Date.now();
+  for (const account of accounts) {
+    for (const [model, untilMs] of Object.entries(account.modelCoolings ?? {})) {
+      if (typeof untilMs !== "number" || untilMs <= now) continue;
+      const bucket = (out[account.uid] ??= {});
+      bucket[model] = {
+        state: "rate_limited_model",
+        source: "flow",
+        // 台账里也有同一格 ⇒ 两来源都有（状态仍以真实流量为准）。
+        both: bucket[model] !== undefined,
+      };
+    }
+  }
+  return out;
+}
+
+/**
+ * **派生**的被动底色（卡片矩阵与模型表「限流（探测）」列**共用同一份**）。
+ *
+ * 订阅两个来源（`probePassive` 台账 + `status` 池冷却），任一变化即 `useMemo` 重算 ⇒
+ * 二者**必然同时**跟着变，不会两处各拼一份、也不会与来源脱节。
+ *
+ * @param region 只取该区域池条目的冷却（Trae / Qoder 无 `modelCoolings` ⇒ 缺省空）。
+ */
+export function useProbePassive(region: Region): Record<string, Record<string, ProbePassiveInfo>> {
+  const ledger = useGatewayStore((s) => s.probePassive);
+  const status = useGatewayStore((s) => s.status);
+  return useMemo(
+    () => unionProbePassive(poolOf(status, region).accounts, ledger),
+    [ledger, status, region],
+  );
+}

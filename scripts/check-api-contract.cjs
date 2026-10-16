@@ -173,6 +173,14 @@ const SCOPE_PARAMETERIZED = new Set([
   "qoder_gateway_status",
   "get_qoder_gateway_models",
   "create_qoder_api_key",
+  /* ✅ 2026-10-16：限流探测三条 —— **作用域参数化**。原签名收 `region`（`cn` / `global`），
+     分不出 `wb-cn` 与 `qoder-cn` ⇒ 升级为 `scope`（`Scope::parse` fail-closed）。
+     `probe_start` 的 scope 决定探测目标（WB / Qoder 的账号库与目录）；`probe_status` /
+     `probe_cancel` 的 scope 为**命令面统一必填**（作业槽是进程级全局，但未知 / 拼错的
+     作用域一律拒绝，不静默接受）。登记即激活第 8 条：任一侧漏改都会红。 */
+  "probe_start",
+  "probe_status",
+  "probe_cancel",
 ]);
 
 /**

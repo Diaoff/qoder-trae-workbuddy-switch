@@ -1486,6 +1486,14 @@ export interface GatewayPoolAccount {
   creditsExpireAt?: number | null;
   /** 仅 Trae：设备标识掩码。 */
   deviceIdMasked?: string | null;
+  /**
+   * **模型级冷却**（`model → 解冻时刻 ms`）——「经网关真实流量打出来的」模型级限流。
+   *
+   * 前端「限流探测」矩阵的**被动底色**用它：池冷却 + 客户端台账（`client_limits`）。
+   * 后端（WB 侧 `Pool::status_list`）**只发 `until_ms > now` 的**（过期的不外发）；
+   * Trae / Qoder 侧暂无该字段 ⇒ 归一化缺省 `{}`（老后端 / 演示站不炸）。
+   */
+  modelCoolings?: Record<string, number>;
 }
 
 /** API Key 记录（列表脱敏返回，绝不含明文）。字段名与后端 masked() 输出一致。 */
@@ -1584,6 +1592,88 @@ export function servedCount(rows: GatewayModelRow[]): { served: number; total: n
     if (row.available && !row.disabled) served += 1;
   }
   return { served, total: rows.length };
+}
+
+/**
+ * 限流探测：**单格**输出状态（与后端 `buddy_switch_gateway::model_probe::ProbeState`
+ * 的 serde 序列化名逐字一致）。
+ *
+ * ★★ **只有前三档算「限流」**。`no_credits`（402 / 余额不足）与 `auth_dead`（登录失效）
+ * 必须**分列** —— 把「没积分」报成「限流」会让用户去傻等解锁（`client_limits` 已踩过这个坑）。
+ */
+export type ModelProbeState =
+  | "ok"
+  | "rate_limited_model"
+  | "rate_limited_account"
+  | "model_blocked"
+  | "no_credits"
+  | "auth_dead"
+  | "model_unavailable"
+  | "upstream_error"
+  | "transport_error"
+  | "skipped";
+
+/** 探测作业阶段。`idle` = 从未跑过（此时整个快照**只有** `phase` 字段）。 */
+export type ModelProbePhase = "idle" | "running" | "done" | "cancelled";
+
+/** 探测矩阵的一格：某「账号 × 模型」的实判结果。 */
+export interface ModelProbeCell {
+  uid: string;
+  nickname: string;
+  model: string;
+  state: ModelProbeState;
+  http_status: number;
+  reset_at_ms: number | null;
+  /** 上游返回原文（**不可信输入**：控制字符 / ANSI / 标记都可能出现，UI 必须纯文本渲染）。 */
+  reason: string;
+  latency_ms: number;
+}
+
+/**
+ * 一次探测作业的快照（`probe_status` 返回）。
+ *
+ * ⚠️ `scope` 及其余字段**仅在** `running` / `done` / `cancelled` 时存在；`idle` 时后端
+ * 只返回 `{ phase: "idle" }` ⇒ 调用方应把它当作 `{ phase: "idle" } | ModelProbeJob`
+ * 联合类型处理（`probeStatus(scope)` 已如此声明），**不要**在 `idle` 分支强读 `scope`。
+ */
+export interface ModelProbeJob {
+  /** 作用域字面量（`"wb-cn"` … `"qoder-global"`）。 */
+  scope: string;
+  phase: ModelProbePhase;
+  started_at_ms: number;
+  finished_at_ms: number | null;
+  /** 总格数（可能因上限被截断）。 */
+  total: number;
+  /** 已探格数。 */
+  done: number;
+  /** 正在探的「账号 · 模型」。 */
+  current: string;
+  /** 是否因上游上限被截断（**如实上报**，不静默丢）。 */
+  truncated: boolean;
+  adopt: boolean;
+  /** 回填：置了几条冷却。 */
+  adopted_added: number;
+  /** 回填：清了几条（`ok` 的格）。 */
+  adopted_cleared: number;
+  /**
+   * 回填的**逐条明细**（方案 §5.3「回填反馈」要求可展开看明细）。
+   *
+   * ⚠️ 它由**后端记录**，不要拿 `cells` 反推 —— 反推结果与 `adopted_added` /
+   * `adopted_cleared` 计数可能不一致（例如该模型早已冷却到更晚的时刻）。
+   */
+  adopted: ModelProbeAdoptRecord[];
+  cells: ModelProbeCell[];
+}
+
+/** 回填的一条明细：某个账号的某个模型被置 / 被清。 */
+export interface ModelProbeAdoptRecord {
+  uid: string;
+  nickname: string;
+  model: string;
+  /** `"added"` = 置了冷却；`"cleared"` = 清掉了冷却。 */
+  action: "added" | "cleared";
+  /** 回填**之后**该模型的冷却截止（`"cleared"` 恒为 `0`）。 */
+  until_ms: number;
 }
 
 /** 账号选择策略（按 region 各自独立配置）。 */

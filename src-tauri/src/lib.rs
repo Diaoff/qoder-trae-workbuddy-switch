@@ -499,6 +499,9 @@ pub fn run() {
             commands::set_model_disabled,
             commands::get_gateway_logs,
             commands::clear_gateway_logs,
+            commands::probe_start,
+            commands::probe_status,
+            commands::probe_cancel,
             // ---- Trae 模块（与 server 的 /api/trae/* 路由一一对应）----
             commands::get_trae_env,
             commands::get_trae_variants,

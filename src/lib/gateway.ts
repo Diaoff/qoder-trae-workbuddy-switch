@@ -38,6 +38,23 @@ function asBoolean(value: unknown): boolean | undefined {
   return typeof value === "boolean" ? value : undefined;
 }
 
+/**
+ * 归一化「模型 → 解冻时刻(ms)」映射（模型级冷却）。
+ *
+ * 后端 WB 侧键名为 camelCase `modelCoolings`；此处再兜一次 snake_case `model_coolings`
+ * （防御性，正常不触发）。脏条目（键为空 / 值非有限数）丢弃，整体缺省为**空对象**
+ * ——前端矩阵可无脑遍历，不必判 `undefined`。
+ */
+function normalizeModelCoolings(raw: unknown): Record<string, number> {
+  if (!raw || typeof raw !== "object") return {};
+  const out: Record<string, number> = {};
+  for (const [model, until] of Object.entries(raw as Record<string, unknown>)) {
+    const ms = asNumber(until);
+    if (model.length > 0 && ms !== undefined) out[model] = ms;
+  }
+  return out;
+}
+
 /** 账号池五态的缺省值（后端缺字段时兜底，界面显示全 0 而不是空白）。 */
 export const EMPTY_POOL_SUMMARY: GatewayPoolSummary = {
   total: 0,
@@ -140,6 +157,8 @@ export function normalizeGatewayPoolAccounts(raw: unknown): GatewayPoolAccount[]
         creditsExpireAt: asNumber(record.creditsExpireAt) ?? null,
         deviceIdMasked:
           typeof record.deviceIdMasked === "string" ? record.deviceIdMasked : null,
+        // 模型级冷却（池冷却）—— 探测矩阵的被动底色用；缺省 `{}`。
+        modelCoolings: normalizeModelCoolings(record.modelCoolings ?? record.model_coolings),
       },
     ];
   });

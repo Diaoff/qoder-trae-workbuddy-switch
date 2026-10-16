@@ -437,15 +437,30 @@ impl PoolEntry {
     /// `hits` 随 [`ModelCooldown`] 一起**持久化**，因此重启不会让退避从头开始。
     /// 仍**不写账号级 `until`**：切到其它模型立即可用。
     pub fn block_model_backoff(&mut self, now_ms: i64, model: &str, reason: &str) -> i64 {
+        self.block_model_backoff_inner(now_ms, model, reason, true)
+    }
+
+    /// 同 [`Self::block_model_backoff`]，但**不推进** `hits`（唯一实现见
+    /// [`Self::block_model_backoff_inner`]）。
+    ///
+    /// 供**限流探测**用（见 `Pool::adopt_probe_result`）：`hits` 是「真实流量被罚了几次」的
+    /// 历史，探测只是观测 —— 让它 +1 会把退避越推越长，而用户其实什么都没做错。
+    /// 首次探测按「第 1 档」（6h）取参数，但**不落**这个计数。
+    pub fn block_model_backoff_without_hits(&mut self, now_ms: i64, model: &str, reason: &str) -> i64 {
+        self.block_model_backoff_inner(now_ms, model, reason, false)
+    }
+
+    /// [`Self::block_model_backoff`] / [`Self::block_model_backoff_without_hits`] 的唯一实现。
+    fn block_model_backoff_inner(&mut self, now_ms: i64, model: &str, reason: &str, bump: bool) -> i64 {
         if model.is_empty() {
             return 0;
         }
-        let hits = self
+        let current = self
             .model_cooldowns
             .get(model)
             .map(|cooldown| cooldown.hits)
-            .unwrap_or(0)
-            .saturating_add(1);
+            .unwrap_or(0);
+        let hits = if bump { current.saturating_add(1) } else { current.max(1) };
         let ttl = Self::model_block_ttl_ms(hits);
         self.model_cooldowns.insert(
             model.to_string(),

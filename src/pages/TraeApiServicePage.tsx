@@ -17,6 +17,7 @@ import {
   type GatewayType,
 } from "@/components/gateway/gateway-subnav";
 import { TraeApiKeyTable } from "@/components/gateway/trae-api-key-table";
+import { ModelProbeCard } from "@/components/gateway/model-probe-card";
 import { TraeIntegrationGuide } from "@/components/gateway/trae-integration-guide";
 import { TraeModelList } from "@/components/gateway/trae-model-list";
 import { TraeRequestLog } from "@/components/gateway/trae-request-log";
@@ -218,6 +219,42 @@ export default function TraeApiServicePage() {
   const status = snapshot?.status ?? null;
   const modelSources = snapshot?.modelSources ?? [];
   const logs = snapshot?.logs ?? [];
+
+  /**
+   * 限流探测卡（与 WB / Qoder 页**同一个组件**）要的**账号轴 / 模型轴**。
+   *
+   * ⚠️ Trae 的池 / 清单**不在** WB 网关 store 里，故这里**显式注入**自己的轴 ——
+   * 「列集合 / 账号轴由作用域决定」由本页保证，组件本身**不按平台分叉**
+   * （与 `QoderApiServicePage` 同一写法）。
+   */
+  const probeAccounts = useMemo(
+    () => (status?.accounts ?? []).map((account) => ({ uid: account.uid, name: account.name })),
+    [status],
+  );
+  /**
+   * 模型轴：与后端 `model_probe::catalog_models` 的 Trae 分支**同源** —— 取该区域当前
+   * 程序位的**网关对外清单**（`gatewayNames`，即 `/v1/models` 真正会列的模型；后端
+   * `models_response_for` 也是这一份）。显示名回落客户端清单里的 `displayName`。
+   *
+   * 收敛后每个区域只有一个程序位（合并版），故直接取 `modelSources[0]`。
+   */
+  const probeModels = useMemo(() => {
+    const source = modelSources[0] ?? null;
+    const display = new Map<string, string>();
+    for (const group of source?.data?.groups ?? []) {
+      for (const model of group.models) {
+        if (!display.has(model.name)) display.set(model.name, model.displayName || model.name);
+      }
+    }
+    const seen = new Set<string>();
+    const out: { id: string; name: string }[] = [];
+    for (const id of source?.gatewayNames ?? []) {
+      if (!id || seen.has(id)) continue;
+      seen.add(id);
+      out.push({ id, name: display.get(id) ?? id });
+    }
+    return out;
+  }, [modelSources]);
 
   /**
    * 「重新读取」模型清单。
@@ -646,13 +683,27 @@ export default function TraeApiServicePage() {
 
           {/* ---- 模型清单（按程序位读客户端缓存，可重新读取：见 TraeModelList 的模块头） ---- */}
           {section === "models" && (
-            <TraeModelList
-              sources={modelSources}
-              region={traeRegionOf(variant)}
-              defaultModel={config.defaultModel}
-              refreshing={refreshingModels}
-              onRefresh={() => onRefreshModels()}
-            />
+            <>
+              {/* 限流探测卡**在表之上**（与 WB / Qoder 页同一组件、同一位置；方案 §5.1）。
+                  ⚠️ 账号轴 / 模型轴由本页按区域注入（Trae 的数据不在 WB 网关 store 里），
+                  组件不按平台分叉。
+                  ★ `adoptSupported={false}`：Trae 池**没有「模型级冷却」**，回填只能写账号级、
+                  会误伤同账号其它模型（方案 §4.5.4 的 T1）⇒ 开关禁用并说明原因。 */}
+              <ModelProbeCard
+                region={traeRegionOf(variant)}
+                accounts={probeAccounts}
+                models={probeModels}
+                adoptSupported={false}
+                className="mb-6"
+              />
+              <TraeModelList
+                sources={modelSources}
+                region={traeRegionOf(variant)}
+                defaultModel={config.defaultModel}
+                refreshing={refreshingModels}
+                onRefresh={() => onRefreshModels()}
+              />
+            </>
           )}
 
           {/* ---- 账号池（与 WorkBuddy 侧共用同一张卡） ---- */}

@@ -8,6 +8,7 @@ import { ApiKeyTable } from "@/components/gateway/api-key-table";
 import { AccountPoolCard, AUTO_OPTION, WB_POOL_TILES } from "@/components/gateway/account-pool-card";
 import { IntegrationGuide } from "@/components/gateway/integration-guide";
 import { ModelList } from "@/components/gateway/model-list";
+import { ModelProbeCard } from "@/components/gateway/model-probe-card";
 // P12 · 请求代理面板（**C 路：base URL 重定向**）—— 默认关，应用只记"用户已按引导设置"。
 // ⚠️ 只接 WB 侧：C 路本期不做 Trae（`proxy.rs` 的 `PROXY_GATEWAY_BASE` 只覆盖 WB 网关端口）。
 import { ProxyPanel } from "@/components/gateway/proxy-panel";
@@ -502,7 +503,13 @@ export default function ApiServicePage() {
           {section === "keys" && <ApiKeyTable />}
 
           {/* ---- 模型 ---- */}
-          {section === "models" && <ModelList region={region} />}
+          {/* 限流探测卡**在表之上**（方案 §5.1：卡片在模型分区里，不是弹层）。 */}
+          {section === "models" && (
+            <>
+              <ModelProbeCard region={region} className="mb-6" />
+              <ModelList region={region} />
+            </>
+          )}
 
           {/* ---- 账号池 ---- */}
           {/* 只渲染当前版本的池（版本在页头切换）。 */}

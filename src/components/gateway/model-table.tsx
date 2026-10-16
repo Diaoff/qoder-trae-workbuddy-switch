@@ -57,7 +57,7 @@
  * `Button` 并包在 `DemoAction` 里（与其余网关控件同口径）。
  */
 
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 import { Ban, Check, Copy, Loader2, RotateCcw } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
@@ -95,6 +95,14 @@ export interface ModelTableProps {
   /** 是否渲染「上游状态」列 —— WB `false`（恒可用，§3.4 规则 1 / 决策 #3），Trae `true`。 */
   showUpstream: boolean;
   labels: ModelTableLabels;
+  /**
+   * 可选**附加列**（2026-10-16：限流探测结果折回模型表）。
+   *
+   * 只有 WB（`model-list.tsx`）传它渲染「限流（探测）」；Trae / Qoder **不传** ⇒ 该列
+   * 完全不渲染。内容由调用方以 `render` 注入（那里才有 `onClick`），**本壳内不放任何
+   * click handler** ⇒ 保持「每行 2 处可点区」的门禁断言（`check-scope-registry.cjs`）。
+   */
+  extraColumn?: { header: string; render: (row: GatewayModelRow) => ReactNode };
 }
 
 export function ModelTable({
@@ -103,6 +111,7 @@ export function ModelTable({
   onToggleDisabled,
   showUpstream,
   labels,
+  extraColumn,
 }: ModelTableProps) {
   /** 刚复制成功的行 id（驱动图标 `Copy` → `Check`；1.6s 后复位）。 */
   const [copiedId, setCopiedId] = useState<string | null>(null);
@@ -134,6 +143,11 @@ export function ModelTable({
             <th scope="col" className="px-2 py-2 font-medium">
               {labels.colExposed}
             </th>
+            {extraColumn && (
+              <th scope="col" className="px-2 py-2 font-medium">
+                {extraColumn.header}
+              </th>
+            )}
           </tr>
         </thead>
         <tbody>
@@ -220,6 +234,8 @@ export function ModelTable({
                     </DemoAction>
                   </div>
                 </td>
+                {/* 附加列（WB 的「限流（探测）」）：内容由调用方注入，壳内**无 onClick**。 */}
+                {extraColumn && <td className="px-2 py-2">{extraColumn.render(row)}</td>}
               </tr>
             );
           })}
