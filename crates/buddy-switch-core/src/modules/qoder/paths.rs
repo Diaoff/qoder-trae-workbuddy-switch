@@ -178,6 +178,10 @@ mod tests {
     /// 那正是「国际版账号写进国内版库」的缺陷形态。
     #[test]
     fn the_two_regions_never_share_a_store_path() {
+        // 本用例跨多次调用比对 `store_dir()` 派生的路径，读必须是**原子**的：
+        // 并行用例改 `BUDDY_SWITCH_HOME` 时，中途换根会让 `accounts_file_for(..)`
+        // 与 `qoder_dir()` 落到不同 home，随机红（全量里实测约一半概率）。
+        let _lock = crate::modules::config::env_lock();
         for (name, a, b) in [
             (
                 "账号库",

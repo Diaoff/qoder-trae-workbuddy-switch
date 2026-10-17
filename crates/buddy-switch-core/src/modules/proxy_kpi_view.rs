@@ -75,12 +75,29 @@ fn now_ms() -> i64 {
 mod tests {
     use super::*;
 
+    /// 每个用例一份隔离 home，并**持锁**到用例结束。
+    ///
+    /// 两条理由，都是实测踩出来的：
+    /// 1. 本模块的用例都直接**写台账文件** —— 不隔离就会写进真机 `~/.buddy-switch`
+    ///    （`stale_day_is_unknown_not_zero` 之前就写的是真文件，靠"备份再还原"兜着）；
+    /// 2. 不持锁时，并行用例会把 `BUDDY_SWITCH_HOME` 改来改去 ⇒ 写的时候是 A 目录、
+    ///    读的时候是 B 目录，随机红。全量 17s 跑里大约一半概率复现
+    ///    （`stale_day_is_unknown_not_zero` / `qoder::paths::*` 一起红）。
+    fn isolated_home(tag: &str) -> (PathBuf, crate::modules::config::HomeOverrideGuard) {
+        let home = std::env::temp_dir().join(format!(
+            "proxy-kpi-{tag}-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        std::fs::create_dir_all(&home).unwrap();
+        let guard = crate::modules::config::HomeOverrideGuard::set(&home);
+        (home, guard)
+    }
+
     /// 读不到台账 ⇒ `known: false` + 计数为 `null`（**不许**回落 0）。
     #[test]
     fn missing_ledger_reads_as_unknown_not_zero() {
-        let path = stats_file();
-        let backup = std::fs::read_to_string(&path).ok();
-        let _ = std::fs::remove_file(&path);
+        let (home, _guard) = isolated_home("missing");
 
         let view = kpi_view();
         assert_eq!(view["known"], json!(false), "无台账必须说「不知道」");
@@ -93,16 +110,16 @@ mod tests {
         // 「落盘正文」是**承诺**，无论有没有数据都是 0。
         assert_eq!(view["persistedBodies"], json!(0));
 
-        if let Some(text) = backup {
-            let _ = std::fs::write(&path, text);
-        }
+        let _ = std::fs::remove_dir_all(&home);
     }
 
     /// 台账里**没有今天**（例如只剩昨天）⇒ 同样是「不知道」，不是 0。
     #[test]
     fn stale_day_is_unknown_not_zero() {
+        let (home, _guard) = isolated_home("stale");
+
         let path = stats_file();
-        let backup = std::fs::read_to_string(&path).ok();
+        std::fs::create_dir_all(path.parent().expect("台账必有父目录")).unwrap();
         std::fs::write(&path, r#"{"2000-01-01":{"requests":999,"switches":9}}"#).unwrap();
 
         let view = kpi_view();
@@ -112,10 +129,6 @@ mod tests {
             "只有旧日期的台账 ⇒ 今天「不知道」，不得把昨天的数当今天"
         );
 
-        if let Some(text) = backup {
-            let _ = std::fs::write(&path, text);
-        } else {
-            let _ = std::fs::remove_file(&path);
-        }
+        let _ = std::fs::remove_dir_all(&home);
     }
 }

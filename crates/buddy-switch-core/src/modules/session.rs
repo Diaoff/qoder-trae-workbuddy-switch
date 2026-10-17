@@ -3699,6 +3699,9 @@ mod tests {
     /// 会话库会互相覆盖。
     #[test]
     fn session_paths_are_region_scoped() {
+        // 读要**原子**：本用例把早先算出的目录与稍后重算的 `home_dir()` 相比，
+        // 并行用例改 `BUDDY_SWITCH_HOME` 时中途换根就会随机红。
+        let _lock = crate::modules::config::env_lock();
         let cn_dir = session_data_dir(Region::Cn);
         let global_dir = session_data_dir(Region::Global);
 

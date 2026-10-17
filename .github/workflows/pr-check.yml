@@ -126,6 +126,17 @@ jobs:
       # 单元 + 集成测试（crates/*/tests 下的 e2e / 迁移 / 网关契约用例都在这里跑）。
       # `--workspace` 会带上 src-tauri —— 它没有测试 target 也不影响。
       #
+      # ## 为什么 `--test-threads=1`（★ 2026-10-17）
+      #
+      # 测试进程里有两个**进程级**环境变量当隔离开关：`BUDDY_SWITCH_HOME` 与 `APPDATA`
+      # （见 `trae::test_support::TempEnv`）。并行跑时，A 用例把 home 指向自己的临时目录、
+      # B 用例同时读 —— 「写的时候是 A 目录、读的时候是 B 目录」，随机红。
+      # 实测并行 1422 项里约每轮挂 1~2 条（`qoder::paths` / `proxy_kpi_view` /
+      # `session::paths` / `vscode_session` 都中过），串行 33s 稳定全绿。
+      #
+      # 不逐个用例加锁的原因：`env_lock()` 只保护**加锁的那一侧**，而读取侧散落在
+      # 1400+ 个用例里（凡是算路径的都要锁），漏一个就继续抖。串行是唯一确定性的解。
+      #
       # `--no-fail-fast`：一次跑完所有 target，不要撞到第一条失败就停 ——
       # 否则修一条、推一次、再发现下一条，一轮一轮地耗。
       # 输出同时落盘给下一个 step 抛注解（见 `Test failure summary`）。
@@ -133,7 +144,7 @@ jobs:
         shell: bash
         run: |
           set -o pipefail
-          cargo test --workspace --no-fail-fast 2>&1 | tee "$RUNNER_TEMP/test-output.log"
+          cargo test --workspace --no-fail-fast -- --test-threads=1 2>&1 | tee "$RUNNER_TEMP/test-output.log"
 
       # ★ 失败摘要抛成**注解**，而不是留在日志里。
       #
