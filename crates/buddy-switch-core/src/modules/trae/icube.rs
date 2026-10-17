@@ -930,7 +930,20 @@ pub fn credential_status_for(variant: TraeVariant) -> Value {
 ///
 /// 因此这里用**测试专用密钥对**造一份合成信封。生产代码里没有「加密」这条路
 /// （写信封是客户端的事），故本模块整体 `#[cfg(test)]`。
+///
+/// ## 为什么非 Windows 上要 `allow(dead_code)`
+///
+/// 本模块的 fixture 只被 `#[cfg(windows)]` 用例消费（真机 `storage.json` 的布局、
+/// mtime 活跃度翻转都是 Windows 特有语义）。在 Linux / macOS 上那些用例被 cfg 掉，
+/// 于是这里的辅助函数与 `SelectionGrid` / `SelectionCell` 结构体**一个都不被引用**，
+/// `dead_code` 判真 —— 而 CI 的 `cargo test` 带 `-D warnings`，会把这种「平台裁剪
+/// 造成的假未使用」直接判成编译错误，让整个 test target 起不来。
+///
+/// 这是**测试脚手架**，不是产品代码：此处放行 `dead_code` 不会掩盖生产路径上的死代码
+/// （生产构建仍按 `-D warnings` 把关）。Windows 上不放行，因为那里它们确实被用到，
+/// 放行反而会掩盖真实的未使用项。
 #[cfg(test)]
+#[cfg_attr(not(windows), allow(dead_code))]
 pub(crate) mod test_support {
     use super::*;
 
