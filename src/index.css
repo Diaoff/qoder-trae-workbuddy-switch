@@ -347,16 +347,22 @@
  */
 @media (max-width: 1100px) {
   /* `.g4` → 2 列（原型 `:227`）。
-     ⚠️ 只保留**真实存在**的档位：`data-grid-cols="4"` 挂在概览四联统计块
-     （`usage/stat-tiles.tsx`）。原型还有 `.g3`，但本仓没有三列网格挂这个属性——
-     **不写没有宿主的规则**（那正是旧 `[aria-label="Token 总览"]` 的毛病）。 */
-  [data-grid-cols="4"] {
+     ⚠️ 只保留**真实存在**的档位：`data-grid-cols="4"` 挂在各视图统计 tile 行
+     （`usage/stat-tiles.tsx`，四块）；`"5"` 挂在 **WB 用量趋势视图**的五块——
+     PR #40 起「网关 Token」单列 tile（口径独立、不与客户端量求和 ⇒ 5 块），
+     其列数行为照抄 g4：宽 5 列 → 中 2 列 → 窄 1 列（原型只到 `.g4`，五联是
+     新增口径，档位值不变）。
+     原型还有 `.g3`，但本仓没有三列网格挂这个属性——**不写没有宿主的规则**
+     （那正是旧 `[aria-label="Token 总览"]` 的毛病）。 */
+  [data-grid-cols="4"],
+  [data-grid-cols="5"] {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
 @media (max-width: 760px) {
-  /* `.g4` → 1 列（原型 `:228`） */
-  [data-grid-cols="4"] {
+  /* `.g4` / 五联 → 1 列（原型 `:228`） */
+  [data-grid-cols="4"],
+  [data-grid-cols="5"] {
     grid-template-columns: minmax(0, 1fr);
   }
 }

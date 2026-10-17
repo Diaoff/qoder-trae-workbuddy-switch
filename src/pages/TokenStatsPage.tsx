@@ -554,12 +554,16 @@ export default function TokenStatsPage({
     );
   }, [gatewayTrend, viewWindow]);
   /**
-   * 有来源但**当前窗口内**一点用量都没有（区分于「被视图参数筛没」，后者在视图内处理）。
+   * 有来源但**两个数据源都翻不出用量** ⇒ 整页空态（区分于「被视图参数筛没」，后者在视图内处理）。
    *
-   * 两个数据源都要按窗口判：客户端为 0 而网关有量时（非 WorkBuddy 客户端如 Pi 只写
-   * 网关日志），整页空态会把 `TrendView` 里唯一有值的网关小图一并吞掉。 */
-  const clientInWindow = (source?.summary.records ?? 0) > 0;
-  const trulyEmpty = Boolean(source) && !clientInWindow && gatewayInWindow === 0;
+   * ⚠️ 两侧口径**故意不对称**，勿强行统一：
+   * - 网关侧按窗口判：`gatewayTrend` 含 90 天落库历史，不筛窗会把窗外历史算成
+   *   「有数据」，而当前窗口其实为空。
+   * - 客户端侧按全量判：`getTokenStatistics` 未按窗口传参（`days` 缺省 ⇒ 后端
+   *   不加 cutoff），窗口内被筛没的由各视图自行展示 ⇒ 这里只需「有没有任何来源
+   *   记录」来决定是否渲染页面，避免空态把可能有值的视图整片吞掉。 */
+  const clientHasRecords = (source?.summary.records ?? 0) > 0;
+  const trulyEmpty = Boolean(source) && !clientHasRecords && gatewayInWindow === 0;
 
   return (
     /* ⚠️ 页头 / 子 Tab / **视图参数条**都由**上层** `UsagePage` 统一渲染

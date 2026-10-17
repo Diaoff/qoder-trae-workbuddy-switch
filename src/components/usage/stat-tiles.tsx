@@ -3,7 +3,9 @@
  *
  * ## 为什么收敛到一处
  *
- * 四个视图各有 4 个 tile，形态完全一致（图标 + 标签 + 大号数字 + 可选副标题）。
+ * 各视图的 tile 行形态完全一致（图标 + 标签 + 大号数字 + 可选副标题），固定 4 块；
+ * 唯一例外是 WB 用量趋势视图的「网关 Token」tile（口径独立、不与客户端量求和 ⇒ 5 块），
+ * 组件按 `tiles.length` 选列数档。
  * 改造前每个页面各写一份（`TokenStatsPage` / `CreditStatsPage` / `Trae*` 里的 `StatMetric`），
  * 四处漂移。这里收成一处，四视图共用。
  *
@@ -57,15 +59,21 @@ export function StatTiles({
 }) {
   if (tiles.length === 0) return null;
 
-  /* 概览「一排四块」：每块一张卡（原型 `.stat`：padding 15px 16px / k 11.5px / v 20px·640 / d 11px）。 */
+  /* 概览「一排 N 块」（N = 4，趋势视图 5）：每块一张卡（原型 `.stat`：padding 15px 16px / k 11.5px / v 20px·640 / d 11px）。 */
   if (separated) {
     return (
       <div
-        /* `data-grid-cols="4"` 让 `index.css` 的原型断点（1100px→2 列 / 760px→1 列，
+        /* `data-grid-cols` 让 `index.css` 的原型断点（1100px→2 列 / 760px→1 列，
            `demo.css:227-228`）能作用到这块。⚠️ 这里的 `sm:`/`lg:` 是 Tailwind 自带的
-           640/1024 断点，与原型不同 ⇒ 保留它们做兜底，但**原型值以 data 属性为准**。 */
-        data-grid-cols="4"
-        className="grid min-w-0 grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4"
+           640/1024 断点，与原型不同 ⇒ 保留它们做兜底，但**原型值以 data 属性为准**。
+
+           「5」档宿主：趋势视图的网关 Token tile（PR #40 起，与客户端量**不求和**、
+           口径独立才单列）。其余视图仍是 4 块 ⇒ 保持 `"4"`，列数宽档随之 4→5。 */
+        data-grid-cols={tiles.length >= 5 ? "5" : "4"}
+        className={cn(
+          "grid min-w-0 grid-cols-1 gap-3 sm:grid-cols-2",
+          tiles.length >= 5 ? "lg:grid-cols-5" : "lg:grid-cols-4",
+        )}
         aria-label={ariaLabel}
       >
         {tiles.map((tile) => (
@@ -105,7 +113,13 @@ export function StatTiles({
       <div
         className={cn(
           "grid min-w-0 grid-cols-1 divide-y divide-border/60 sm:divide-y-0 sm:py-5",
-          tiles.length >= 4 ? "sm:grid-cols-4" : tiles.length === 3 ? "sm:grid-cols-3" : "sm:grid-cols-2",
+          tiles.length >= 5
+            ? "sm:grid-cols-5"
+            : tiles.length >= 4
+              ? "sm:grid-cols-4"
+              : tiles.length === 3
+                ? "sm:grid-cols-3"
+                : "sm:grid-cols-2",
         )}
       >
         {tiles.map((tile, index) => (
