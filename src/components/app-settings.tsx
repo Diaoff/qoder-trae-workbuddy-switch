@@ -13,6 +13,7 @@ import { Switch } from "@/components/ui/switch";
 import { UpdateInstallDialog } from "@/components/update-install-dialog";
 import * as api from "@/lib/api";
 import { isLocale, setLocale, useLocale, useT } from "@/lib/i18n";
+import { normalizeReleaseNotes } from "@/lib/release-notes";
 import { SCOPES } from "@/lib/scope";
 import { planScopeShortcuts, SCOPE_SHORTCUT_LIMIT } from "@/lib/scope-shortcuts";
 import { useShortcutsEnabled } from "@/lib/shortcut-preference";
@@ -107,7 +108,8 @@ function UpdateCard({ variant }: { variant: AppSettingsVariant }) {
     setMsg(null);
     try {
       const r = await api.checkUpdate(proxyUrl, true);
-      setInfo(r);
+      /* 版本说明跨了「外部资产 → 渲染」的边界，进 state 前先按白名单归一（同 AppFooter）。 */
+      setInfo({ ...r, notes: normalizeReleaseNotes(r.notes) });
       if (!r.ok) {
         setMsg({ type: "err", text: r.message || r.error || t("appSettings.update.checkFailed") });
       }
@@ -249,9 +251,11 @@ function UpdateCard({ variant }: { variant: AppSettingsVariant }) {
                 {info.releaseName && <span className="text-muted-foreground"> · {info.releaseName}</span>}
               </div>
               {info.hasUpdate && (
+                /* 入口文案从「立即升级」改成「查看更新内容」：点开的先是**说明**弹窗，
+                   下载要用户在里面再点一次（见 UPDATE-NOTES-ARCH.md）。 */
                 <DemoAction><Button size="sm" onClick={() => setInstallOpen(true)}>
                   <ArrowUpCircle />
-                  {t("appSettings.update.installNow")}
+                  {t("appSettings.update.viewNotes")}
                 </Button></DemoAction>
               )}
               {info.releaseUrl && (

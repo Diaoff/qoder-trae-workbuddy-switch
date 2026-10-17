@@ -8156,6 +8156,104 @@ check("★ §2「检查更新」不是死按钮", () => {
   return "设置项有出口 + App 层接线";
 });
 
+/* ── 升级前说明弹窗（2026-10-17）：说明必须发生在下载之前 ──────────────────────
+ *
+ * 改造前 `UpdateInstallDialog` 在 `useEffect(open)` 里直接 `downloadAndInstall()` ——
+ * 用户点升级的一瞬间就开始整包替换，**根本没机会读「这一版改了什么」**（用户原话）。
+ * 这类缺陷在界面上不容易看出来：弹窗照常出现、进度条照常走，只是说明永远排不上用场。
+ * 因此这里钉**源码形状**，不看界面：
+ *   ① 没有任何 `useEffect` 块包含 `downloadAndInstall`（下载只能由用户动作触发）；
+ *   ② 存在 `available` 说明态，且该态渲染 `ReleaseNotesView`（有说明可读，不是空弹窗）；
+ *   ③ 下载中禁止关闭（Esc / 关闭按钮都会让安装半途而废）。
+ *
+ * 变异锚：把 `startInstall` 里那段 `candidate.downloadAndInstall(...)` 挪回打开时的
+ * `useEffect` ⇒ ① 变红；把 `available` 分支里的 `<ReleaseNotesView` 删掉 ⇒ ② 变红。
+ */
+check("★ 升级前说明：**没有任何 effect 会自动开始下载**（说明先于动作）", () => {
+  const dialog = readCode("src/components/update-install-dialog.tsx");
+
+  /* 逐个 `useEffect(` 取其后 900 字符（足够覆盖 body），断言里面不出现下载调用。 */
+  const effects = [];
+  let cursor = dialog.indexOf("useEffect(");
+  while (cursor >= 0) {
+    effects.push(dialog.slice(cursor, cursor + 900));
+    cursor = dialog.indexOf("useEffect(", cursor + 1);
+  }
+  if (!effects.length) throw new Error("弹窗里一个 useEffect 都没有？用例前提不成立");
+  const offender = effects.find((block) => block.includes("downloadAndInstall"));
+  if (offender) {
+    throw new Error("有 useEffect 会自己开始下载 —— 用户还没读到说明就被整包替换了");
+  }
+  if ((dialog.match(/downloadAndInstall/g) || []).length !== 1) {
+    throw new Error("`downloadAndInstall` 出现在多处 —— 下载入口必须只有 `startInstall` 一个");
+  }
+  if (!/function startInstall\(/.test(dialog)) throw new Error("找不到唯一的下载入口 `startInstall`");
+  return "effect 只重置状态 · 下载仅由 startInstall 触发";
+});
+
+check("★ 升级前说明：`available` 态真的把版本说明渲染出来（不是空弹窗）", () => {
+  const dialog = readCode("src/components/update-install-dialog.tsx");
+  if (!/stage === "available"/.test(dialog)) throw new Error("没有「说明」阶段");
+  if (!/<ReleaseNotesView\b/.test(dialog)) throw new Error("说明阶段没有渲染 `ReleaseNotesView`");
+  if (!/<DialogTitle/.test(dialog)) throw new Error("说明态缺少标题（用户不知道自己在看哪一版）");
+  /* 下载中与重启中都不许关：`showCloseButton={!busy && !restarting}` 是唯一判据。 */
+  if (!/showCloseButton=\{!busy/.test(dialog)) throw new Error("下载中仍可关闭 —— 安装会半途而废");
+  if (!/if \(busy\) return;/.test(dialog)) throw new Error("`onOpenChange` 没拦住下载中的关闭");
+  return "说明态有内容 · 下载中不可关";
+});
+
+check("★ 版本说明只吃结构化纯文本（不解析 markdown、不 innerHTML 外部内容）", () => {
+  const view = readCode("src/components/release-notes-view.tsx");
+  if (/dangerouslySetInnerHTML/.test(view)) throw new Error("说明视图用了 `dangerouslySetInnerHTML`");
+  const lib = readCode("src/lib/release-notes.ts");
+  if (!/MAX_TEXT/.test(lib)) throw new Error("归一化没有长度上限（一条脏数据能把弹窗撑爆）");
+  for (const key of ["breaking", "sections", "history"]) {
+    if (!lib.includes(key)) throw new Error(`归一化漏了 \`${key}\``);
+  }
+  if (/marked|markdown-it|remark|showdown/.test(view + lib)) {
+    throw new Error("说明渲染引入了 Markdown 解析器 —— 外部输入不该进解析器");
+  }
+  return "纯文本渲染 · 有长度上限 · 无 Markdown 解析器";
+});
+
+check("★ 后端：版本说明走 `release-notes.json` 资产并**按白名单重建**", () => {
+  const rust = stripComments(
+    fs.readFileSync(path.join(ROOT, "crates/buddy-switch-core/src/modules/update.rs"), "utf8"),
+  );
+  if (!/fn sanitize_release_notes/.test(rust)) throw new Error("后端没有说明的白名单重建");
+  if (!/fn fetch_release_notes/.test(rust)) throw new Error("后端没有抓取说明");
+  if (!/sanitize_release_notes\(&resp/.test(rust)) {
+    throw new Error("抓回来的说明没有过白名单 —— 外部资产被直接透传给前端");
+  }
+  /* 版本号对不上就不能用：这是「别的版本的说明冒充这一版」的唯一防线。 */
+  if (!/expect_version/.test(rust) || !/trim_start_matches\('v'\)/.test(rust)) {
+    throw new Error("缺少「版本号必须等于 latest」的对齐校验");
+  }
+  const calls = (rust.match(/fetch_release_notes\(&owner/g) || []).length;
+  if (calls !== 2) throw new Error(`说明抓取应接在主/兜底两条路径上（实际 ${calls} 处）`);
+  if (!/"notes": notes/.test(rust)) throw new Error("检查结果里没有带出 `notes`");
+  return "资产抓取 · 白名单重建 · 版本对齐 · 主/兜底双路";
+});
+
+check("★ 打包内置的版本说明必须与当前版本一致（否则离线时在说谎）", () => {
+  const cargo = fs.readFileSync(path.join(ROOT, "src-tauri/Cargo.toml"), "utf8");
+  const version = (cargo.match(/^version\s*=\s*"([^"]+)"/m) || [])[1];
+  if (!version) throw new Error("取不到 Cargo.toml 的版本");
+  const bundledPath = path.join(ROOT, "src/data/release-notes.json");
+  if (!fs.existsSync(bundledPath)) {
+    throw new Error("缺少 `src/data/release-notes.json`（跑 `npm run notes:json` 生成）");
+  }
+  const bundled = JSON.parse(fs.readFileSync(bundledPath, "utf8"));
+  if (bundled.version !== version) {
+    throw new Error(
+      `内置说明是 v${bundled.version}，而应用版本是 v${version} —— 跑 \`npm run notes:json\` 重新生成`,
+    );
+  }
+  const hasContent = (bundled.sections ?? []).length > 0 || (bundled.breaking ?? []).length > 0;
+  if (!hasContent) throw new Error("内置说明没有任何分组 —— 离线时弹窗只会显示一句「没有附带说明」");
+  return `内置说明 = v${version} · ${(bundled.sections ?? []).length} 组`;
+});
+
 check("★ §2 P1-6 待处理块上移到统计块之前", () => {
   const page = stripComments(
     fs.readFileSync(path.join(ROOT, "src/pages/OverviewPage.tsx"), "utf8"),
@@ -8195,7 +8293,9 @@ check("★ §2 环形扇区数 = 有用量的模型数（与堆叠同源）", ()
  *     ⇒ 只断言「开关存在」是**永远绿**（开关在、轮询照跑，界面上看不出来）。
  *
  * 变异锚：① `tray.rs` 把 `app_prefs::close_to_tray()` 换回常量 `true` ⇒ 第一条红；
- *         ② `App.tsx` 的 `AppFooter` 去掉 `if (!autoCheck) return` ⇒ 第二条红。
+ *         ② `App.tsx` 的 `AppFooter` 去掉 `if (!autoCheck) return` ⇒ 第二条红；
+ *         ③ `AppFooter` 删掉 `visibilitychange` / `focus` 补查 ⇒ 第二条红
+ *            （隐藏窗口里 setInterval 被节流，回到应用时结论是陈的）。
  */
 check("★ 关闭窗口的去向由 app_prefs::close_to_tray() 决定（不是常量隐藏）", () => {
   const tray = readCode("src-tauri/src/tray.rs");
@@ -8234,11 +8334,32 @@ check("★ 自动检查更新：开关必须接到轮询（摆了开关不等于
   if (!/if \(!autoCheck\)/.test(app)) {
     throw new Error("App.tsx 没有在偏好为 false 时短路 —— 关掉后仍在自动查");
   }
+  /* ★ 隐藏窗口里 `setInterval` 会被 WebView 节流（最小化 / 收托盘 / 被盖住），
+     用户回到应用时看到的可能还是几十分钟前的结论。所以「重新可见」必须补一次。
+     变异：删掉这两个监听 ⇒ 本条红；把它们挪到 `if (!autoCheck) return` 之前
+     ⇒ 「关掉后仍在自动查」那条红。 */
+  if (!/document\.addEventListener\("visibilitychange"/.test(app)) {
+    throw new Error("没有监听 visibilitychange —— 最小化 / 托盘恢复后要干等下一个 30 分钟");
+  }
+  if (!/window\.addEventListener\("focus"/.test(app)) {
+    throw new Error("没有监听 focus —— 窗口一直可见但用户刚切回来时不会补查");
+  }
+  if (!/removeEventListener\("visibilitychange"/.test(app)) {
+    throw new Error("visibilitychange 监听没有在 cleanup 里移除（effect 重跑会累积监听）");
+  }
+  if (!/document\.visibilityState === "visible"/.test(app)) {
+    throw new Error("visibilitychange 没有判 visibilityState —— 切走（hidden）时也会发请求");
+  }
+  /* 补查**不得**传 force：焦点切换是高频事件，强制刷新会变成 GitHub 请求风暴。
+     节流交给后端缓存（`update.rs::CACHE_TTL_SECS`，5 分钟）。 */
+  if (/checkUpdate\([^)]*true/.test(app)) {
+    throw new Error("App.tsx 的自动检查传了 force —— 每次 alt-tab 都会真发请求");
+  }
   const pref = readCode("src/lib/update-preference.ts");
   if (!/AUTO_CHECK_UPDATE_INTERVAL_MS\s*=\s*30 \* 60 \* 1000/.test(pref)) {
     throw new Error("间隔常量不是 30 分钟 —— 与开关说明「每 30 分钟检查一次」不符");
   }
-  return "开关 ↔ 轮询同源 · 关掉即短路 · 间隔 30 分钟";
+  return "开关 ↔ 轮询同源 · 关掉即短路 · 间隔 30 分钟 · 可见/聚焦补查（不传 force）";
 });
 
 console.log(`\n${passed} passed / ${failures.length} failed\n`);

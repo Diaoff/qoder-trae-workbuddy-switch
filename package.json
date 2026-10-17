@@ -24,7 +24,8 @@
     "version:print": "sh scripts/stamp-version.sh --print",
     "bundle:nsis": "sh scripts/stamp-version.sh && npm run tauri build -- --bundles nsis --ci",
     "build:app": "TAURI_SIGNING_PRIVATE_KEY=\"$(cat \"$HOME/.buddy-switch/buddy-switch-updater.key\")\" TAURI_SIGNING_PRIVATE_KEY_PASSWORD=buddy-switch-dev npm run tauri build -- --debug --bundles app; sh scripts/fix-app.sh",
-    "build:app:release": "sh scripts/stamp-version.sh && TAURI_SIGNING_PRIVATE_KEY=\"$(cat \"$HOME/.buddy-switch/buddy-switch-updater.key\")\" TAURI_SIGNING_PRIVATE_KEY_PASSWORD=buddy-switch-dev npm run tauri build -- --bundles app; sh scripts/fix-app.sh"
+    "build:app:release": "sh scripts/stamp-version.sh && TAURI_SIGNING_PRIVATE_KEY=\"$(cat \"$HOME/.buddy-switch/buddy-switch-updater.key\")\" TAURI_SIGNING_PRIVATE_KEY_PASSWORD=buddy-switch-dev npm run tauri build -- --bundles app; sh scripts/fix-app.sh",
+    "notes:json": "node scripts/gen-release-notes.mjs --json src/data/release-notes.json"
   },
   "dependencies": {
     "@radix-ui/react-alert-dialog": "^1.1.23",

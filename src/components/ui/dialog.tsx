@@ -38,12 +38,32 @@ function DialogOverlay({
   );
 }
 
+/**
+ * 弹窗宽度档位。
+ *
+ * - `default` = 420px（原型 `.confirm`，二选一确认框用）；
+ * - `wide` = 620px（**内容型**弹窗：升级前版本说明这类分组长文本，420 会把每行挤成三四个字）。
+ *
+ * 为什么做成档位而不是让调用方写 `!max-w-[620px]`：基础样式里已经有 `sm:max-w-[420px]`，
+ * 同 variant 同属性叠加时**谁生效取决于 Tailwind 生成顺序**（不是 class 书写顺序），
+ * 靠 `!important` 兜底等于把可预测性换成运气。
+ */
+type DialogWidth = "default" | "wide";
+
 function DialogContent({
   className,
   children,
   showCloseButton = true,
+  width = "default",
+  /* `flush` = 内距与行距交给调用方（页头 / 可滚正文 / 固定动作条三段式）。
+     这类弹窗需要「正文滚动、动作条钉底」，统一 `p-5 + gap-4` 会把三段挤成一段。 */
+  flush = false,
   ...props
-}: React.ComponentProps<typeof DialogPrimitive.Content> & { showCloseButton?: boolean }) {
+}: React.ComponentProps<typeof DialogPrimitive.Content> & {
+  showCloseButton?: boolean;
+  width?: DialogWidth;
+  flush?: boolean;
+}) {
   return (
     <DialogPortal data-slot="dialog-portal">
       <DialogOverlay />
@@ -52,9 +72,11 @@ function DialogContent({
         className={cn(
           /* ★ 逐值对齐原型 `.confirm`（`demo.css:591-599`）：
              底 `--popover`（**不是** `--background` —— 深色下 background=0.208 比 popover=0.279
-             明显发暗，浮层会「沉下去」）、宽 420px、内距 20px、圆角 16px、
+             明显发暗，浮层会「沉下去」）、内距 20px、圆角 16px、
              **靠上 6vh**（不是垂直居中）、阴影用本仓三级 elevation 的最高档。 */
-          "bg-popover data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 fixed left-[50%] top-[6vh] z-50 grid w-full max-w-[calc(100%-2rem)] -translate-x-1/2 gap-4 rounded-[16px] border p-5 shadow-overlay duration-200 sm:max-w-[420px]",
+          "bg-popover data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 fixed left-[50%] top-[6vh] z-50 grid w-full max-w-[calc(100%-2rem)] -translate-x-1/2 rounded-[16px] border shadow-overlay duration-200",
+          width === "wide" ? "sm:max-w-[620px]" : "sm:max-w-[420px]",
+          flush ? "gap-0 overflow-hidden p-0" : "gap-4 p-5",
           className,
         )}
         {...props}

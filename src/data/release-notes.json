@@ -1,0 +1,40 @@
+{
+  "version": "2026.10.161110",
+  "publishedAt": "2026-10-16T11:10:00+08:00",
+  "sections": [
+    {
+      "title": "其他维护",
+      "items": [
+        "release：版本号 2026.10.161019 → 2026.10.161110",
+        "release：版本号 2026.10.141355 → 2026.10.161019"
+      ]
+    },
+    {
+      "title": "构建与 CI",
+      "items": [
+        "更正「CI 无 -D warnings」的过期注释 —— @v1 默认 rustflags 就是 -D warnings"
+      ]
+    },
+    {
+      "title": "问题修复",
+      "items": [
+        "core：修非 Windows 构建 —— vscode_cn_inject 两个 cfg 分支漏吞未用参数",
+        "trae：issue #28 收敛后的陈旧标识与文档引用清理",
+        "trae：客户端合并收敛为「每区域一个程序位」 (issue #28)",
+        "usage：补回被并发提交覆盖的两个文件（client 周期任务分支 + 会话窗口门禁）",
+        "usage：网关当日桶改增量累计 + 会话统计接入时间窗口 + 客户端桶接上后台刷新",
+        "gateway：账号池不再复述陈旧冷却原因，调用方错误不再扣账号健康度",
+        "gateway：latencyMs 与 totalMs 语义分家，TTFB 不再冒充总耗时"
+      ]
+    },
+    {
+      "title": "新功能",
+      "items": [
+        "qoder：账号模块对齐 WorkBuddy（OAuth / 回收站 / 导入导出 / 切换 / 用量 / 分组）",
+        "gateway：统一网关升为网关页第二个类型，四个分区逐块对齐原型",
+        "qoder：第三平台接入 —— 账号链路、网关产品线与网关页（独立监听 7865）"
+      ]
+    }
+  ],
+  "history": []
+}

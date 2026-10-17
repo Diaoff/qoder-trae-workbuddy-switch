@@ -254,6 +254,28 @@ export const zh = {
   "wbSettings.update.restarting": "正在重启…",
   "wbSettings.update.restartNow": "立即重启",
 
+  // ---- 升级前说明（版本内容）：先说明，再由用户决定是否现在装 ----
+  "wbSettings.update.titleAvailable": "发现新版本 v{version}",
+  "wbSettings.update.descAvailable": "先看清这一版改了什么，再决定要不要现在升级。",
+  "wbSettings.update.metaCurrent": "当前 v{version}",
+  "wbSettings.update.metaPublished": "发布于 {date}",
+  "wbSettings.update.startNow": "立即升级",
+  "wbSettings.update.later": "稍后升级",
+  "wbSettings.update.breakingTitle": "升级前必读",
+  "wbSettings.update.breakingCount": "{count} 项会改变既有行为",
+  "wbSettings.update.sectionsTitle": "本版更新",
+  "wbSettings.update.sectionsMeta": "{groups} 组 · {items} 条",
+  "wbSettings.update.olderShow": "更早的 {count} 个版本",
+  "wbSettings.update.olderHide": "收起更早版本",
+  "wbSettings.update.notesEmpty": "这次发布没有附带说明。",
+  "wbSettings.update.notesEmptyHint": "可以打开完整发布说明查看提交记录（离线或发布方未提供时会是这个状态）。",
+  "wbSettings.update.downloadingHint": "下载完成后会提示你重启",
+  "wbSettings.update.downloadingBusy": "下载中",
+  "wbSettings.update.restartLater": "稍后重启",
+  "wbSettings.update.openDownloadPage": "打开下载页",
+  "wbSettings.update.errorProxyHint": "若本机需要代理，可在「应用设置 → 更新代理」里填写后重试；也可以直接打开下载页手动安装。",
+  "wbSettings.update.viewFullNotes": "查看完整发布说明",
+
   // ---- 打赏弹框 ----
   "wbSettings.donate.trigger": "请作者喝杯饮料",
   "wbSettings.donate.title": "支持 Buddy Switch",

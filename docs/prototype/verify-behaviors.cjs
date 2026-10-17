@@ -45,6 +45,19 @@ const MUTATIONS = {
     from: 'if (state.dest === "accounts") renderAccountList();',
     to: "/* MUTATED: 不再同步全选按钮 */",
   },
+  /* ── 升级前说明弹窗（版本内容）── */
+  updauto: {
+    desc: "打开弹窗就开始下载（退回「没读清楚就装」）",
+    file: "demo-app.js",
+    from: '  openUpdateDialog("available");\n}',
+    to: '  openUpdateDialog("available");\n  startUpdateDownload(); /* MUTATED: 打开即下载 */\n}',
+  },
+  updorder: {
+    desc: "把「升级前必读」挪到更新列表之后（等于没置顶）",
+    file: "demo-app.js",
+    from: "${updStageHtml()}${updBreakingHtml()}${updNotesHtml()}",
+    to: "${updStageHtml()}${updNotesHtml()}${updBreakingHtml()} /* MUTATED: 必读沉底 */",
+  },
   permretry: {
     desc: "退回 perm-retry 死按钮（处理器读错参数位：a1 → a2）",
     file: "demo-app.js",
@@ -371,20 +384,149 @@ async function boot(query) {
     return true;
   });
 
-  /* ── P0-3 死按钮 ── */
+  /* ── P0-3 死按钮 → ★ 升级前说明弹窗（版本内容）──
+     用户原话：「每次升级都不知道这个版本的变化内容是什么」。
+     这里守的**不是**「点了有反应」，而是四件事：
+       ① 先说明、后动作（打开弹窗 ≠ 开始下载）；
+       ② 破坏性变更**置顶**，不被长列表淹掉；
+       ③ 说清「当前 → 目标」，拿不到说明时如实说；
+       ④ 下载中不可关闭（关掉 = 安装半途而废）。 */
   const dom2 = await boot("hint=0");
   const d2 = dom2.window.document;
-  check("P0-3「检查更新」不再是死按钮（打开更新抽屉）", () => {
+  const w2 = dom2.window;
+  const ev2 = (expr) => w2.eval(expr);
+  const box = () => d2.querySelector("#update-overlay");
+  const updStage = () => {
+    const el = box().querySelector(".upd");
+    return el ? el.dataset.updStage : null;
+  };
+  const clickUpd = (act) => {
+    const b = box().querySelector(`[data-act="${act}"]`);
+    if (!b) throw new Error(`弹窗里没有 data-act=${act}`);
+    b.click();
+  };
+
+  check("P0-3「检查更新」不再是死按钮（打开升级前说明弹窗）", () => {
     const b = d2.querySelector('[data-act="check-update"]');
     if (!b) throw new Error("没有 data-act=check-update");
     b.click();
-    const drawer = d2.querySelector("#drawer");
-    const toast = d2.querySelector("#toasts").textContent.trim();
-    if (!drawer.classList.contains("open") && !toast) throw new Error("点了没有任何反馈");
-    if (!drawer.classList.contains("open")) throw new Error("没有打开更新抽屉");
-    const body = d2.querySelector("#drawer-body").textContent;
-    if (!/v\d{4}\.\d+\.\d+/.test(body)) throw new Error("抽屉里没有版本号");
-    return d2.querySelector("#drawer-title").textContent;
+    if (!box().classList.contains("open")) throw new Error("点了没有打开更新弹窗");
+    const text = box().textContent;
+    if (!/v\d{4}\.\d+\.\d+/.test(text)) throw new Error("弹窗里没有版本号");
+    if (!/当前 v/.test(text)) throw new Error("没说清「当前版本」是哪个 —— 用户不知道自己从哪一版升上来");
+    if (!/发布于/.test(text)) throw new Error("缺发布日期");
+    if (!/MB/.test(text)) throw new Error("缺包大小 —— 判断不了这次要不要现在装");
+    return true;
+  });
+
+  check("★★ 打开弹窗只说明、不下载（不可逆动作必须发生在读懂之后）", () => {
+    if (updStage() !== "available") throw new Error(`打开后 stage=${updStage()}，应为 available`);
+    if (box().querySelector("[data-upd-progress]")) throw new Error("还没点「立即升级」就开始下载了");
+    if (!box().querySelector('[data-act="upd-start"]')) throw new Error("没有「立即升级」主操作（有说明无出口）");
+    return true;
+  });
+
+  check("★ 升级前必读**置顶**（破坏性变更不能被长列表淹掉）", () => {
+    const brk = box().querySelector("[data-upd-breaking]");
+    const notes = box().querySelector("[data-upd-notes]");
+    if (!brk) throw new Error("有 breaking 数据却没渲染必读区块");
+    if (!notes) throw new Error("没有渲染本版更新分组");
+    /* 比**文档顺序**，不是比 innerHTML 里的字符位置 —— 后者对重排不敏感。 */
+    if (!(brk.compareDocumentPosition(notes) & w2.Node.DOCUMENT_POSITION_FOLLOWING))
+      throw new Error("必读区块排在更新列表之后 —— 等于没置顶");
+    if (!/端口/.test(brk.textContent)) throw new Error("必读区块没带具体条目内容");
+    return true;
+  });
+
+  check("★ 更新条目数 = 数据里的真实条数（不是写死的三行）", () => {
+    const expect = ev2("APP_UPDATE.sections.reduce((n, s) => n + s.items.length, 0)");
+    const got = box().querySelectorAll("[data-upd-notes] .upd-list li").length;
+    if (!expect) throw new Error("数据里没有可渲染的条目（用例前提不成立）");
+    if (expect !== got) throw new Error(`数据 ${expect} 条，渲染 ${got} 条`);
+    const groups = ev2("APP_UPDATE.sections.length");
+    if (box().querySelectorAll("[data-upd-notes] .upd-grp").length !== groups)
+      throw new Error("分组数与数据不一致");
+    return true;
+  });
+
+  check("★ 版本说明按**纯文本**渲染（外部内容不许直接 innerHTML）", () => {
+    /* 变异式验证：往数据里塞一个标签，渲染后必须看不到 <img>，但它得原样显示成文字。 */
+    ev2(`APP_UPDATE.sections[0].items.push("<img src=x onerror=alert(1)>")`);
+    ev2("renderUpdateDialog()");
+    if (box().querySelector(".upd-list img")) throw new Error("条目里的标签被当 HTML 执行了 —— 存在注入面");
+    if (!/onerror/.test(box().textContent)) throw new Error("条目被吞掉了（应原样当文本显示）");
+    ev2("APP_UPDATE.sections[0].items.pop(); renderUpdateDialog()");
+    return true;
+  });
+
+  check("★「更早的 N 个版本」默认折叠，展开/收起都点得动", () => {
+    if (!ev2("APP_UPDATE.older.length")) throw new Error("演示数据里没有更早版本（用例前提不成立）");
+    if (box().querySelector("[data-upd-older]")) throw new Error("默认就展开了更早版本（噪声）");
+    clickUpd("upd-older");
+    const older = box().querySelector("[data-upd-older]");
+    if (!older) throw new Error("点了没有展开");
+    if (!older.textContent.includes(ev2("APP_UPDATE.older[0].version"))) throw new Error("展开后没有更早版本的版本号");
+    clickUpd("upd-older");
+    if (box().querySelector("[data-upd-older]")) throw new Error("再点没有收起（开关是单向的）");
+    return true;
+  });
+
+  check("★★ 下载中不可关闭（关闭按钮禁用 + Esc 无效），且有真实进度", () => {
+    clickUpd("upd-start");
+    if (updStage() !== "downloading") throw new Error(`点了「立即升级」stage=${updStage()}`);
+    const close = box().querySelector('[data-act="upd-close"]');
+    if (!close || !close.disabled) throw new Error("下载中关闭按钮仍可点 —— 会让安装半途而废");
+    d2.dispatchEvent(new w2.KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    if (!box().classList.contains("open")) throw new Error("Esc 在下载中把弹窗关掉了");
+    if (!box().querySelector("[data-upd-progress]")) throw new Error("下载中没有进度条");
+    const pct = box().querySelector("[data-upd-pct]");
+    if (!pct || !/%$/.test(pct.textContent.trim())) throw new Error("进度没有百分比数字");
+    return true;
+  });
+
+  /* 进度到 100 → ready（原型 9%/200ms ⇒ ≤2.4s，留足余量）。 */
+  await sleep(2800);
+  check("★ 下载完成转「已就绪」并给重启入口（不是「安装完就没了」）", () => {
+    if (updStage() !== "ready") throw new Error(`下载结束 stage=${updStage()}，应为 ready`);
+    const ready = box().querySelector("[data-upd-ready]");
+    if (!ready) throw new Error("没有「已下载，重启后生效」的交代");
+    if (!box().querySelector('[data-act="upd-restart"]')) throw new Error("没有「立即重启」出口");
+    if (!box().querySelector('[data-act="upd-later"]')) throw new Error("只剩强制重启 —— 用户可能正在跑任务");
+    return true;
+  });
+
+  check("★ 关掉弹窗后记住「这版看过了」（自动检查不重复打扰）", () => {
+    clickUpd("upd-later");
+    if (box().classList.contains("open")) throw new Error("点「稍后重启」没关掉弹窗");
+    if (ev2("state.update.seenVersion") !== ev2("APP_UPDATE.latest"))
+      throw new Error("没有记住已读版本 —— 下一轮自动检查会再弹一次");
+    return true;
+  });
+
+  check("★ 拿不到版本说明时**如实说**（不假装「本版没有更新」）", () => {
+    ev2("APP_UPDATE.sections = []");
+    ev2("openUpdateDialog('available')");
+    const empty = box().querySelector("[data-upd-notes-empty]");
+    if (!empty) throw new Error("sections 为空时没有给出说明缺失的空态");
+    if (!/没有附带说明/.test(empty.textContent)) throw new Error("空态文案没说清「说明缺失」");
+    ev2("APP_UPDATE.breaking = []; renderUpdateDialog()");
+    if (box().querySelector("[data-upd-breaking]")) throw new Error("breaking 为空时仍渲染了必读区块（恒显噪声）");
+    ev2("closeUpdateDialog()");
+    return true;
+  });
+
+  /* 失败分支走深链（与 gateway / usage 的错误态同一套约定）。 */
+  const dom2b = await boot("hint=0&open=update&upd=error");
+  const d2b = dom2b.window.document;
+  check("★ 检查更新失败要**说清原因 + 给重试**，不是一句「更新失败」", () => {
+    const el = d2b.querySelector("#update-overlay .upd");
+    if (!el || el.dataset.updStage !== "error") throw new Error("?upd=error 没有落到失败态");
+    const err = d2b.querySelector("[data-upd-error]");
+    if (!err) throw new Error("没有失败说明区块");
+    if (!/代理/.test(err.textContent)) throw new Error("没给可操作的原因（代理 / 手动下载）");
+    if (!d2b.querySelector('[data-act="upd-retry"]')) throw new Error("没有重试入口");
+    if (!d2b.querySelector('[data-act="upd-release"]')) throw new Error("没有「打开下载页」的退路");
+    return true;
   });
 
   /* ── P0-4 假承诺 ── */
@@ -1586,6 +1728,31 @@ async function boot(query) {
     evExt("EXT_SESSIONS.ok.skipped = 0; renderExtDrawer();");
     if (dExt.querySelector("[data-ext-skipped]")) throw new Error("skipped=0 时仍在标注（恒显噪声）");
     evExt("EXT_SESSIONS.ok.skipped = 1;");
+    return true;
+  });
+
+  /* ── 两份原型不许漂移：单文件原型（视觉基准）守同一条关键行为 ──
+     只守「先说明、后动作」与「必读置顶」两条 —— 单文件是同一套代码的镜像，
+     逐条复刻断言会让两份用例各自漂移，判据仍是上面那套。 */
+  const single = await JSDOM.fromFile(path.join(DIR, "buddy-switch-prototype.html"), {
+    runScripts: "dangerously", resources: "usable", pretendToBeVisual: true,
+    url: "file://" + path.join(DIR, "buddy-switch-prototype.html").replace(/\\/g, "/") + "?hint=0",
+  });
+  await new Promise((r) => single.window.addEventListener("load", r));
+  await sleep(120);
+  const ds = single.window.document;
+  check("单文件原型同形：打开弹窗只说明、必读置顶", () => {
+    ds.querySelector('[data-act="check-update"]').click();
+    const overlay = ds.querySelector("#update-overlay");
+    if (!overlay.classList.contains("open")) throw new Error("单文件原型没有打开升级说明弹窗（两份漂移了）");
+    const dialog = overlay.querySelector(".upd");
+    if (!dialog || dialog.dataset.updStage !== "available") throw new Error("单文件原型打开后不是说明态");
+    if (overlay.querySelector("[data-upd-progress]")) throw new Error("单文件原型打开即开始下载");
+    const brk = overlay.querySelector("[data-upd-breaking]");
+    const notes = overlay.querySelector("[data-upd-notes]");
+    if (!brk || !notes) throw new Error("单文件原型缺必读区块或更新分组");
+    if (!(brk.compareDocumentPosition(notes) & single.window.Node.DOCUMENT_POSITION_FOLLOWING))
+      throw new Error("单文件原型的必读区块没有置顶");
     return true;
   });
 

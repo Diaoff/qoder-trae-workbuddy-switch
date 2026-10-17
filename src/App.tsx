@@ -1,4 +1,4 @@
-import { Suspense, lazy, useEffect, useMemo, useState, type ComponentType, type ElementType } from "react";
+import { Suspense, lazy, useEffect, useMemo, useRef, useState, type ComponentType, type ElementType } from "react";
 import { BrowserRouter, HashRouter, Navigate, NavLink, Outlet, Route, Routes, useLocation, useNavigate, useParams } from "react-router-dom";
 import { ArrowUp, Coffee, GitBranch, LayoutDashboard, MessagesSquare, Monitor, Server, Settings, User } from "lucide-react";
 import { toast } from "sonner";
@@ -23,7 +23,8 @@ import { scopeLabel } from "@/lib/command-palette";
 import type { TranslationKey } from "@/locales/zh";
 import { planScopeShortcuts, scopeShortcutTarget } from "@/lib/scope-shortcuts";
 import { useShortcutsEnabled } from "@/lib/shortcut-preference";
-import { AUTO_CHECK_UPDATE_INTERVAL_MS, useAutoCheckUpdate } from "@/lib/update-preference";
+import { AUTO_CHECK_UPDATE_INTERVAL_MS, currentSeenUpdateVersion, shouldAutoShowNotes, useAutoCheckUpdate } from "@/lib/update-preference";
+import { normalizeReleaseNotes } from "@/lib/release-notes";
 import { useScopeStatus } from "@/lib/use-scope-status";
 import { useCompanionVisibility } from "@/lib/use-companion-visibility";
 import { TRAE_VARIANTS_KEY, loadTraeVariantStatuses } from "@/lib/trae-variant-status";
@@ -429,6 +430,9 @@ function AppFooter({
   /* 「自动检查更新」开关（顶栏 ⚙ 抽屉里那一行）。关掉后**挂载时的首次检查也不做** ——
      「自动」包含首查；想手动查的人走设置里的「检查更新」按钮。 */
   const [autoCheck] = useAutoCheckUpdate();
+  /* 已经主动弹过的版本（本次运行内）。同一版只弹一次：用户「稍后升级」是正常决策，
+     30 分钟后再把同一份说明糊回脸上就是骚扰。 */
+  const autoShownRef = useRef<string | null>(null);
 
   useEffect(() => {
     if (!autoCheck) {
@@ -442,7 +446,30 @@ function AppFooter({
     async function checkForUpdate() {
       try {
         const result = await api.checkUpdate();
-        if (!disposed) setInfo(result.ok ? result : null);
+        if (disposed) return;
+        if (!result.ok) {
+          setInfo(null);
+          return;
+        }
+        /* 版本说明跨了「外部资产 → 渲染」的边界，进 state 前先按白名单归一
+           （`lib/release-notes.ts`）：宁可少显示一条，也不把未知结构送进渲染树。 */
+        const normalized: UpdateInfo = { ...result, notes: normalizeReleaseNotes(result.notes) };
+        setInfo(normalized);
+        /* ★ 新版本第一次被发现时**主动弹一次说明**。
+           只挂角标已被证明无效 —— 想知道的人不会去点，于是永远不知道改了什么（用户原话）。
+           判据全在 `shouldAutoShowNotes`：桌面端 / 确有更新 / 这一版没看过。 */
+        if (
+          autoShownRef.current !== normalized.latest &&
+          shouldAutoShowNotes({
+            desktop: api.isDesktop(),
+            hasUpdate: Boolean(normalized.hasUpdate),
+            latest: normalized.latest,
+            seenVersion: currentSeenUpdateVersion(),
+          })
+        ) {
+          autoShownRef.current = normalized.latest ?? null;
+          setDialogOpen(true);
+        }
       } catch {
         // 左下角只展示可操作的升级状态，网络错误不打扰正常使用。
       }
@@ -450,9 +477,37 @@ function AppFooter({
 
     void checkForUpdate();
     const timer = window.setInterval(() => void checkForUpdate(), AUTO_CHECK_UPDATE_INTERVAL_MS);
+
+    /* ★ 窗口重新可见 / 重新获得焦点时**补一次**检查。
+     *
+     * 为什么需要它：`setInterval` 在隐藏窗口里会被 WebView 节流（最小化、收进托盘、
+     * 被别的窗口盖住），轮询不再准时 —— 用户回到应用时看到的可能仍是几十分钟前的结论。
+     * 而「回来时正好有新版」恰恰是最需要提示的时刻。
+     *
+     * 为什么**不**传 `force`：焦点切换是高频事件（alt-tab 一次一个），强制刷新会把
+     * 它变成 GitHub 请求风暴。后端的成功结果缓存（`update.rs::CACHE_TTL_SECS`，5 分钟）
+     * 就是这里的节流器：5 分钟内重复触发直接命中缓存，不发网络请求；超过 5 分钟才真正
+     * 重新检查 —— 这也正好是我们要的语义。
+     *
+     * 两个事件都要，且**判据不同**：
+     * - `visibilitychange` 覆盖最小化 / 托盘恢复 —— 只在 `visible` 时查（切走时不该发请求）；
+     * - `focus` 覆盖「窗口一直可见但用户刚切回来」——**不判** `visibilityState`：能获得焦点
+     *   就一定是可见的，而 WebView2 在托盘隐藏时的 `visibilityState` 未必可靠，多一道门
+     *   只可能让「恢复后一次都不查」。 */
+    function onVisibilityChange() {
+      if (document.visibilityState === "visible") void checkForUpdate();
+    }
+    function onWindowFocus() {
+      void checkForUpdate();
+    }
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    window.addEventListener("focus", onWindowFocus);
+
     return () => {
       disposed = true;
       window.clearInterval(timer);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+      window.removeEventListener("focus", onWindowFocus);
     };
   }, [autoCheck]);
 

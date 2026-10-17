@@ -33,6 +33,7 @@ const ICON = {
   grid: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg>`,
   arrowRight: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M13 6l6 6-6 6"/></svg>`,
   download: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12M7 11l5 5 5-5M4 21h16"/></svg>`,
+  external: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 4h6v6M20 4l-9 9"/><path d="M18 14v5a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V9a2 2 0 0 1 2-2h5"/></svg>`,
   upload: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 21V9M7 13l5-5 5 5M4 3h16"/></svg>`,
   login: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4"/><path d="M10 17l5-5-5-5M15 12H3"/></svg>`,
   shield: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10Z"/></svg>`,
@@ -993,20 +994,72 @@ const BACKUP_FILE_SAMPLE = {
   },
 };
 
-/* ─────────── 应用更新信息 ───────────
-   侧栏底部「检查更新」由它驱动，避免把版本判断写死在逻辑里：
-     hasUpdate = false → 提示「已是最新版本 v<current>」
-     hasUpdate = true  → 打开更新说明弹层，展示 notes
-   把 hasUpdate 改成 false 即可演示「已是最新」分支。 */
+/* ─────────── 应用更新信息（升级前说明弹窗的唯一数据源）───────────
+   侧栏版本行的「检查更新」与设置里的「检查更新」都读它：
+     hasUpdate = false → toast「已是最新版本 v<current>」
+     hasUpdate = true  → 打开**升级前说明弹窗**：先说清这一版改了什么，再由用户点「立即升级」
+
+   ★ 形状即契约（`docs/specs/UPDATE-NOTES-ARCH.md`）：
+     `breaking` / `sections` / `older` 三段都是**结构化纯文本**，前端不做 markdown 解析、
+     不把 release body 直接 innerHTML —— 版本说明来自发布资产，属于外部输入。
+   ★ 内容取自真实发布说明（`docs/releases/v2026.10.171833.md`），评审时看到的是真数据。
+     把 `hasUpdate` 改成 false 可演示「已是最新」分支；`?err=update` 可演示失败分支。 */
 const APP_UPDATE = {
-  current: "2026.10.1",
+  current: "2026.10.161110",
   hasUpdate: true,
-  latest: "2026.10.2",
-  size: "24.6 MB",
-  notes: [
-    "账号工作台新增「按状态分组」，可直接筛出未签到 / 凭据过期的账号",
-    "修复 SPA 深链在刷新后返回 404 的问题",
-    "网关账号池选号更均匀，减少单一账号被耗尽",
+  latest: "2026.10.171833",
+  size: "27.4 MB",
+  publishedAt: "2026-10-17T10:33:00Z",
+  releaseUrl: "https://github.com/NextAgentX/trae-workbuddy-switch/releases/tag/v2026.10.171833",
+  /* 升级前必读：会**改变既有行为**的项单独置顶（端口 / 数据格式 / 需要手动跟进的步骤）。
+     空数组 = 不渲染该区块（不写「本版无必读项」这种恒显噪声）。 */
+  breaking: [
+    {
+      title: "网关端口统一到 5789x",
+      desc: "界面 57890 · WorkBuddy 网关 57891 · 统一入口 57892 · hook 57893 · Trae 网关 57894 · Qoder 网关 57895（Trae / Qoder 原为 7864 / 7865）。只改默认值：在 trae/api_gateway.json / qoder/gateway_config.json 里显式写过 port 的不受影响，客户端也不用动。",
+    },
+  ],
+  /* 本版更新：按主题分组，组内每条是「一句话说清结果」，不是提交记录。 */
+  sections: [
+    {
+      title: "网关",
+      items: [
+        "在途额度泄漏根治：请求被取消（客户端断开 / 超时）时额度一定归还，不再把整个池卡成「0 个可用」",
+        "并发占满改回 503 pool_busy（带 Retry-After: 2），不再用误导性的 401",
+        "排不上号时逐项摆出原因：已禁用 / 冷却中 / 余额为 0 / 被排除 / 在途已满，失败响应带 error.attempts",
+        "首帧即错误信封时改为换号重试，不再白烧一次请求；上游 CRLF 换行的 SSE 也能正确切帧",
+      ],
+    },
+    {
+      title: "账号池",
+      items: [
+        "支持排除账号（自动选号 / 兜底 / 粘性 / 指定全部跳过），被排除的账号可一键恢复",
+        "模型级限流冷却：同一账号「对 A 模型冷却、对 B 模型仍可服务」",
+        "「可路由」格里标出「其中 N 个在途已满」—— 可用 ≠ 此刻跑得动",
+      ],
+    },
+    {
+      title: "定时任务与其它",
+      items: [
+        "定时任务时点支持分钟粒度，并可开启随机抖动（避免整点扎堆触发）",
+        "Trae：对话复用稳定会话 ID（跨轮不再每次新开）＋ 转发抓取诊断旁路（默认关闭）",
+        "macOS：修复 at-rest 加密信封账号解锁失败（可执行体名改读 Info.plist）",
+        "README 改为图优先，并新增 6 种语言",
+      ],
+    },
+  ],
+  /* 更早版本：只在「你落后不止一版」时有意义，弹窗里默认折叠。
+     真实实现由后端按 `current → latest` 区间回填，前端不自己拼。 */
+  older: [
+    {
+      version: "2026.10.161110",
+      publishedAt: "2026-10-16T03:10:00Z",
+      items: [
+        "统一网关总览标出「在途已满」，与账号池卡片同一口径",
+        "账号池选号按模型限流状态过滤，冷却中的账号不再被派单",
+        "演示夹具（desktop demo fixtures）与真实接口返回对齐",
+      ],
+    },
   ],
 };
 

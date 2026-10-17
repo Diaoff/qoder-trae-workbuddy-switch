@@ -93,3 +93,8 @@ cat > "$JSON_FILE" << EOF
 }
 EOF
 echo "gen-update-json: 已生成 $JSON_FILE"
+# ⚠️ `notes` 故意留空：updater manifest 的 notes 只能是**一整段纯文本**，做不出
+# 「升级前必读 / 按主题分组 / 更早版本」。版本内容走同目录发布的
+# `release-notes.json`（结构化，由 `scripts/gen-release-notes.mjs --json` 产出），
+# 由 `update::update_check` 抓取并洗净后交给弹窗。别把 Markdown 塞进来。
+echo "gen-update-json: 版本内容见同名 release-notes.json（结构见 docs/specs/UPDATE-NOTES-ARCH.md）"

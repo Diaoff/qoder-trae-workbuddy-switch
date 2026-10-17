@@ -215,6 +215,10 @@ jobs:
           VER=$(node -p "require('./package.json').version")
           echo "VER=$VER" >> "$GITHUB_ENV"
           echo "stamped version: $VER"
+          # 打包内置的「本版说明」（离线兜底，`src/data/release-notes.json`）必须跟着版本走：
+          # 它由 `docs/releases/<版本>.md` 或提交分组推导，**不重生成就是上一版的内容**
+          # （门禁 `check:scope` 会比对版本号，不重生成直接红）。
+          node scripts/gen-release-notes.mjs --json src/data/release-notes.json
 
       # `tauri.conf.json` 的 `createUpdaterArtifacts: true` 使签名私钥成为**打包硬依赖**：
       # 少了它，`tauri build` 会先跑完 ~5 分钟的 Rust 编译，最后才抛一句难定位的错。
@@ -507,7 +511,13 @@ jobs:
       - name: Generate release notes
         env:
           TAG: ${{ github.ref_name }}
-        run: node scripts/gen-release-notes.mjs --tag "$TAG" --out release-notes.md
+        run: |
+          node scripts/gen-release-notes.mjs --tag "$TAG" --out release-notes.md
+          # 同一份内容的**结构化**版本：作为 release 资产发布，应用内「升级前弹窗」读它
+          # （`update::update_check` 抓 `releases/latest/download/release-notes.json`）。
+          # 放进 artifacts/ 才能随 `files: artifacts/*` 一起上传 —— 落在仓库根目录的
+          # `release-notes.md` 是**正文**，不是资产。
+          node scripts/gen-release-notes.mjs --tag "$TAG" --json artifacts/release-notes.json
 
       # 用 `body_path` 而不是 `body`：正文是多行 Markdown，且含 `-` 开头的行，
       # 走文件传递可完全避开 YAML / 表达式对换行与特殊字符的处理。

@@ -247,6 +247,28 @@ export const en = {
   "wbSettings.update.restarting": "Restarting…",
   "wbSettings.update.restartNow": "Restart now",
 
+  // ---- Pre-upgrade notes: show what changed before anything is installed ----
+  "wbSettings.update.titleAvailable": "New version v{version} available",
+  "wbSettings.update.descAvailable": "See what changed in this release before deciding to upgrade now.",
+  "wbSettings.update.metaCurrent": "Current v{version}",
+  "wbSettings.update.metaPublished": "Published {date}",
+  "wbSettings.update.startNow": "Upgrade now",
+  "wbSettings.update.later": "Later",
+  "wbSettings.update.breakingTitle": "Read before upgrading",
+  "wbSettings.update.breakingCount": "{count} change(s) affect existing behaviour",
+  "wbSettings.update.sectionsTitle": "What's new",
+  "wbSettings.update.sectionsMeta": "{groups} group(s) · {items} item(s)",
+  "wbSettings.update.olderShow": "{count} older version(s)",
+  "wbSettings.update.olderHide": "Collapse older versions",
+  "wbSettings.update.notesEmpty": "This release came without notes.",
+  "wbSettings.update.notesEmptyHint": "Open the full release notes for the commit list (offline or when the publisher provided none, this is what you get).",
+  "wbSettings.update.downloadingHint": "You will be asked to restart when the download finishes",
+  "wbSettings.update.downloadingBusy": "Downloading",
+  "wbSettings.update.restartLater": "Restart later",
+  "wbSettings.update.openDownloadPage": "Open download page",
+  "wbSettings.update.errorProxyHint": "If this machine needs a proxy, set it in App settings → Update proxy and retry; you can also open the download page and install manually.",
+  "wbSettings.update.viewFullNotes": "View full release notes",
+
   // ---- Donate dialog ----
   "wbSettings.donate.trigger": "Buy the author a drink",
   "wbSettings.donate.title": "Support Buddy Switch",

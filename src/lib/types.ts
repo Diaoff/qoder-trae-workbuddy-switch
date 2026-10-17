@@ -1294,6 +1294,57 @@ export interface AppPrefs {
   close_to_tray: boolean;
 }
 
+/**
+ * 一条「升级前必读」：会改变既有行为的变更（端口 / 数据格式 / 需要手动跟进的步骤）。
+ *
+ * 为什么单独一档、而不是混进 `sections`：端口这类一旦漏看就是「升级完直接用不了」，
+ * 混在十几条更新里必被划走。空数组 = 不渲染该区块（不写「本版无必读项」这种恒显噪声）。
+ */
+export interface ReleaseNoteBreaking {
+  title: string;
+  desc?: string;
+}
+
+/** 一组更新条目：`title` 是主题，`items` 是「一句话说清结果」（不是提交标题）。 */
+export interface ReleaseNoteSection {
+  title: string;
+  items: string[];
+}
+
+/** 更早版本的一组内容（结构与本版 `sections` 同形，历史版本不做「必读」置顶）。 */
+export interface ReleaseNoteOlder {
+  version: string;
+  publishedAt?: string;
+  sections: ReleaseNoteSection[];
+}
+
+/**
+ * 版本说明（发布资产 `release-notes.json` 的形状）。
+ *
+ * 生产者：`scripts/gen-release-notes.mjs --json`（发布时写进 release 资产，同时打进应用做离线兜底）。
+ * 消费者：`UpdateInstallDialog` 的说明阶段 —— **只吃结构化纯文本**，不解析 markdown、
+ * 不把 release body 原串塞进 innerHTML（版本说明来自外部发布资产）。
+ * 见 `docs/specs/UPDATE-NOTES-ARCH.md` §4。
+ */
+export interface ReleaseNotes {
+  version: string;
+  /** ISO 时间；渲染时按当前语言与时区格式化。 */
+  publishedAt?: string;
+  /** 安装包字节数；缺失时不显示体积，不猜。 */
+  size?: number;
+  releaseUrl?: string;
+  breaking?: ReleaseNoteBreaking[];
+  sections?: ReleaseNoteSection[];
+  /**
+   * 其它版本的说明（发布侧从 `docs/releases/*.md` 全量解析，新→旧）。
+   *
+   * 只做**数据**：哪些版本该显示由前端按「当前版本 < v ≤ 最新版本」切片
+   * （`lib/release-notes.ts` 的 `olderNotes`）。切片放在渲染层而不是发布侧，
+   * 是因为「用户从哪一版升上来」只有客户端知道。
+   */
+  history?: ReleaseNoteOlder[];
+}
+
 export interface UpdateInfo {
   ok: boolean;
   current?: string;
@@ -1303,6 +1354,8 @@ export interface UpdateInfo {
   releaseName?: string;
   releaseUrl?: string;
   publishedAt?: string;
+  /** 这一版的说明。`null` = 查不到（发布侧没产出 / 网络失败），前端要**如实说**，不许假装「本版没有更新」。 */
+  notes?: ReleaseNotes | null;
   error?: string;
   message?: string;
 }

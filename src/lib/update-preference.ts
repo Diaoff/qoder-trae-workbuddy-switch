@@ -105,3 +105,80 @@ export function useAutoCheckUpdate(): [boolean, (value: boolean) => void] {
   const set = useCallback((value: boolean) => setAutoCheckUpdate(value), []);
   return [enabled, set];
 }
+
+/* ══════════════════════ 「这版说明看过了」══════════════════════
+ *
+ * ## 为什么需要它
+ *
+ * 用户的原话是「每次升级都不知道这个版本的变化内容是什么」。只挂一个角标**已经被证明
+ * 无效** —— 想要知道的人不会去点，于是永远不知道。所以新版本第一次被发现时**主动弹一次**
+ * 说明；弹过就记住，同一版本不再拦人（否则每 30 分钟的自动检查都会糊回脸上）。
+ *
+ * ## 为什么也存 `localStorage`
+ *
+ * 与「自动检查更新」同一条判据：只有渲染层读它，宿主一辈子不看。而且这是**本机的阅读
+ * 状态**，不是账号数据 —— 换机器后重新提示一次是合理行为。
+ *
+ * ## 为什么关掉弹窗就记
+ *
+ * 记「打开过」而不是「点了升级」：用户看过说明后选择「稍后升级」是**正常决策**，
+ * 不是没看完。若按「点了升级」记，第二天还会弹一次同样的内容 —— 那是骚扰。
+ */
+
+/** `localStorage` 键。`v1` 前缀同 `AUTO_CHECK_UPDATE_KEY`（语义若变可换键）。 */
+export const SEEN_UPDATE_KEY = "buddy-switch:v1:seen-update-version";
+
+/** 读取「已看过的版本号」；没有 / 不可读 ⇒ `null`。 */
+export function readSeenUpdateVersion(storage: Pick<Storage, "getItem"> | undefined): string | null {
+  try {
+    const raw = storage?.getItem(SEEN_UPDATE_KEY);
+    const trimmed = raw?.trim();
+    return trimmed ? trimmed : null;
+  } catch {
+    return null;
+  }
+}
+
+/** 记住「这一版的说明看过了」。写失败不抛（最坏情况是下次再提示一次）。 */
+export function writeSeenUpdateVersion(
+  storage: Pick<Storage, "setItem"> | undefined,
+  version: string,
+): void {
+  try {
+    const trimmed = version.trim();
+    if (trimmed) storage?.setItem(SEEN_UPDATE_KEY, trimmed);
+  } catch {
+    /* 忽略：存储不可用时只是记不住 */
+  }
+}
+
+/** 记住「这一版说明看过了」（组件里用这个，内部取 `localStorage`）。 */
+export function markUpdateSeen(version: string | undefined): void {
+  if (version) writeSeenUpdateVersion(safeStorage(), version);
+}
+
+/** 读取「已看过的版本号」（内部取 `localStorage`；渲染层用这个，不要自己拼 `window.localStorage`）。 */
+export function currentSeenUpdateVersion(): string | null {
+  return readSeenUpdateVersion(safeStorage());
+}
+
+/**
+ * 是否该**主动**弹出说明。纯函数，因此门禁能直接断言（前端无单测框架）。
+ *
+ * 三个条件缺一不可：
+ *   ① 桌面端 —— webui 装不了桌面包，弹出来只有一个「不能安装」的失败提示；
+ *   ② 确实有更新（`hasUpdate` 且拿到 `latest`）；
+ *   ③ 这一版还没看过。
+ */
+export function shouldAutoShowNotes(input: {
+  desktop: boolean;
+  hasUpdate: boolean;
+  latest: string | undefined;
+  seenVersion: string | null;
+}): boolean {
+  if (!input.desktop) return false;
+  if (!input.hasUpdate) return false;
+  if (!input.latest) return false;
+  return input.seenVersion !== input.latest;
+}
+

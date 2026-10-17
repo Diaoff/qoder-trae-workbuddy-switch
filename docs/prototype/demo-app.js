@@ -58,6 +58,9 @@ const state = {
     preview: false,
     result: null,
   },
+  /* 升级前说明弹窗（版本内容）：stage = available / downloading / ready / error。
+     `seenVersion` 记住关掉时看过的版本，供「自动检查不重复打扰」判断。 */
+  update: { open: false, stage: "available", progress: 0, olderOpen: false, seenVersion: null },
 };
 
 /* ─────────── 工具 ─────────── */
@@ -2260,23 +2263,245 @@ function closeConfirm() {
   pendingConfirm = null;
 }
 
-/* ── 应用更新（数据驱动，见 demo-data.js 的 APP_UPDATE）── */
-function checkUpdate() {
-  if (!APP_UPDATE.hasUpdate) { toast("ok", `已是最新版本 v${APP_UPDATE.current}`, "上次检查：刚刚"); return; }
-  openDrawer(`
-    <div class="dsec">
-      <div class="row" style="gap:10px">
-        <span class="badge info">v${esc(APP_UPDATE.latest)}</span>
-        <span class="tiny muted">当前 v${esc(APP_UPDATE.current)} · ${esc(APP_UPDATE.size)}</span>
+/* ══════════════════════ 应用更新：升级前先讲清「这一版改了什么」══════════════════════
+ *
+ * 用户原话：「每次升级都不知道这个版本的变化内容是什么」。
+ * 旧实现（侧栏 ↑ → 抽屉里三行 bullet → 点了立刻下载）有两处硬伤：
+ *   ① 说明与动作塞在同一个抽屉里，说明沦为背景 —— 用户根本来不及读；
+ *   ② 一进「升级」就开始下载：**不可逆动作发生在读懂之前**。
+ *
+ * 现在拆成「先说明，后决定」，四个阶段全部在同一枚弹窗里：
+ *   available（这一版改了什么 + 立即升级）→ downloading（进度，期间不可关闭）
+ *   → ready（已下载，等重启）；失败走 error（说清失败原因 + 重试 / 打开下载页）。
+ *
+ * 两个刻意的取舍：
+ *   - **破坏性变更置顶**（`.upd-alert`）：混在长列表里必然被划走，端口 / 数据格式这类
+ *     一旦漏看就是「升级完直接用不了」。
+ *   - **进度只刷节点、不重画弹窗**：整块 innerHTML 重写会把正文滚动位置打回顶部，
+ *     正在读说明的人被弹回第一行（本仓已出过同类事故：抽屉重画导致旧节点脱离文档）。
+ */
+let updTimer = null;
+
+function updBusy() { return state.update.stage === "downloading"; }
+
+/* 「10 月 17 日 18:33」：同一年省略年份，减少噪声；解析失败就不显示，不留一个假日期。 */
+function fmtUpdDate(iso) {
+  const d = new Date(iso);
+  if (!iso || Number.isNaN(d.getTime())) return "";
+  const pad = (n) => String(n).padStart(2, "0");
+  const md = `${d.getMonth() + 1} 月 ${d.getDate()} 日 ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  return d.getFullYear() === new Date().getFullYear() ? md : `${d.getFullYear()} 年 ${md}`;
+}
+
+function updHeadHtml() {
+  /* 查不到更新信息时**不摆**发布日期 / 包大小：那是上一次检查的旧值，
+     摆在失败态里等于告诉用户「这次也查到了」。 */
+  const meta = [`当前 v${esc(APP_UPDATE.current)}`];
+  if (state.update.stage === "error") {
+    meta.push("无法获取更新信息");
+  } else {
+    const when = fmtUpdDate(APP_UPDATE.publishedAt);
+    if (when) meta.push(`发布于 ${esc(when)}`);
+    if (APP_UPDATE.size) meta.push(esc(APP_UPDATE.size));
+  }
+  const titles = {
+    available: `发现新版本 <b>v${esc(APP_UPDATE.latest)}</b>`,
+    downloading: `正在升级到 <b>v${esc(APP_UPDATE.latest)}</b>`,
+    ready: `v${esc(APP_UPDATE.latest)} 已就绪`,
+    error: "无法完成更新检查",
+  };
+  const mark = state.update.stage === "error" ? ICON.warn : ICON.download;
+  return `
+    <header class="upd-head">
+      <span class="upd-mark${state.update.stage === "error" ? " bad" : ""}">${mark}</span>
+      <div class="upd-head-t">
+        <h3 id="upd-title">${titles[state.update.stage] || titles.available}</h3>
+        <p>${meta.join(" · ")}</p>
       </div>
-      <h4>更新内容</h4>
-      <ul class="notes">${APP_UPDATE.notes.map((n) => `<li>${esc(n)}</li>`).join("")}</ul>
-    </div>
-    <div class="dsec">
-      <button class="btn primary" data-act="do-update">${ICON.download}立即更新</button>
-      <button class="btn ghost sm" data-act="close-drawer">稍后再说</button>
-    </div>
-  `, "软件更新");
+      <button class="icon-btn" data-act="upd-close" title="${updBusy() ? "下载中不能关闭" : "关闭"}"
+        aria-label="关闭"${updBusy() ? " disabled" : ""}>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M18 6 6 18M6 6l12 12"/></svg>
+      </button>
+    </header>`;
+}
+
+/* 分组渲染：组标题 + 条目。**不解析 markdown** —— 版本说明来自外部发布资产，
+   这里只吃 { title, items[] } 纯文本，`esc()` 之后才进 innerHTML。 */
+function updBreakingHtml() {
+  /* 装完之后再喊「升级前必读」是自相矛盾的（已经升了）⇒ 只在说明 / 下载两态出现。
+     失败态不渲染更新内容（见 renderUpdateDialog）：没有可信数据就不摆数据。 */
+  if (state.update.stage === "ready") return "";
+  const items = APP_UPDATE.breaking || [];
+  if (!items.length) return "";
+  return `<div class="upd-alert" role="alert" data-upd-breaking>
+    <div class="upd-alert-h">${ICON.warn}<b>升级前必读</b><span class="upd-count">${items.length} 项会改变既有行为</span></div>
+    <ul class="upd-alert-list">
+      ${items.map((x) => `<li><b>${esc(x.title)}</b><span>${esc(x.desc)}</span></li>`).join("")}
+    </ul>
+  </div>`;
+}
+
+function updNotesHtml() {
+  const secs = APP_UPDATE.sections || [];
+  if (!secs.length) {
+    /* 拿不到说明就**如实说**，不要留一块空标题假装「本版没有更新」。 */
+    return `<div class="upd-sec" data-upd-notes-empty>
+      <h4>本版更新</h4>
+      <p class="upd-empty">这次发布没有附带说明。可以打开完整发布说明查看提交记录。</p>
+    </div>`;
+  }
+  const total = secs.reduce((n, s) => n + s.items.length, 0);
+  return `<div class="upd-sec" data-upd-notes>
+    <h4>本版更新 <span class="upd-count">${secs.length} 组 · ${total} 条</span></h4>
+    ${secs.map((s) => `<div class="upd-grp">
+      <b>${esc(s.title)}</b>
+      <ul class="upd-list">${s.items.map((i) => `<li>${esc(i)}</li>`).join("")}</ul>
+    </div>`).join("")}
+  </div>`;
+}
+
+function updOlderHtml() {
+  const older = APP_UPDATE.older || [];
+  if (!older.length) return "";
+  if (!state.update.olderOpen) {
+    return `<button class="upd-more" data-act="upd-older" aria-expanded="false">
+      ${ICON.clock}<span>更早的 ${older.length} 个版本</span><span class="upd-caret">▾</span></button>`;
+  }
+  return `<div class="upd-sec" data-upd-older>
+    <button class="upd-more" data-act="upd-older" aria-expanded="true">
+      ${ICON.clock}<span>收起更早版本</span><span class="upd-caret">▴</span></button>
+    ${older.map((v) => `<div class="upd-grp is-older">
+      <div class="upd-grp-h"><b>v${esc(v.version)}</b><span class="upd-count">${esc(fmtUpdDate(v.publishedAt))}</span></div>
+      <ul class="upd-list">${v.items.map((i) => `<li>${esc(i)}</li>`).join("")}</ul>
+    </div>`).join("")}
+  </div>`;
+}
+
+/* 阶段块：进度 / 就绪 / 失败。三种都在正文顶部 —— 眼睛刚落在标题下方就能看到结果。 */
+function updStageHtml() {
+  if (state.update.stage === "downloading") {
+    const p = Math.max(0, Math.min(100, Math.round(state.update.progress)));
+    return `<div class="upd-progress" data-upd-progress>
+      <div class="upd-pbar"><i style="width:${p}%"></i></div>
+      <div class="upd-pmeta"><span>正在下载并安装 · 期间不要退出应用</span><span data-upd-pct>${p}%</span></div>
+    </div>`;
+  }
+  if (state.update.stage === "ready") {
+    return `<div class="upd-alert ok" role="status" data-upd-ready>
+      <div class="upd-alert-h">${ICON.check}<b>下载完成，重启后生效</b></div>
+      <p class="upd-alert-p">重启只需几秒；账号库、网关设置与请求日志都会保留。</p>
+    </div>`;
+  }
+  if (state.update.stage === "error") {
+    return `<div class="upd-alert bad" role="alert" data-upd-error>
+      <div class="upd-alert-h">${ICON.warn}<b>检查更新失败</b></div>
+      <p class="upd-alert-p">无法连接更新源（GitHub Releases 不可达）。若本机需要代理，可在「应用设置 → 更新代理」里填写后重试；也可以直接打开下载页手动安装。</p>
+    </div>`;
+  }
+  return "";
+}
+
+function updFootHtml() {
+  const st = state.update.stage;
+  if (st === "downloading") {
+    return `<span class="upd-foot-hint">${ICON.clock}下载完成后会提示你重启</span><span class="upd-spacer"></span>
+      <button class="btn" disabled><i class="spinner"></i>下载中</button>`;
+  }
+  if (st === "ready") {
+    return `<span class="upd-foot-hint">${ICON.check}v${esc(APP_UPDATE.latest)} 已下载</span><span class="upd-spacer"></span>
+      <button class="btn" data-act="upd-later">稍后重启</button>
+      <button class="btn primary" data-act="upd-restart">${ICON.refresh}立即重启</button>`;
+  }
+  if (st === "error") {
+    return `<button class="btn ghost sm" data-act="upd-release">${ICON.external}打开下载页</button><span class="upd-spacer"></span>
+      <button class="btn" data-act="upd-later">关闭</button>
+      <button class="btn primary" data-act="upd-retry">${ICON.refresh}重试</button>`;
+  }
+  return `<button class="btn ghost sm" data-act="upd-release">${ICON.external}查看完整发布说明</button><span class="upd-spacer"></span>
+    <button class="btn" data-act="upd-later">稍后升级</button>
+    <button class="btn primary" data-act="upd-start">${ICON.download}立即升级</button>`;
+}
+
+function renderUpdateDialog() {
+  const box = $("#update-overlay");
+  if (!box) return;
+  /* 失败态只有「为什么失败 + 怎么办」：查不到就没有可信的版本内容，
+     把旧说明摆在旁边会让人以为「这些也查到了」。 */
+  const body = state.update.stage === "error"
+    ? updStageHtml()
+    : `${updStageHtml()}${updBreakingHtml()}${updNotesHtml()}${updOlderHtml()}`;
+  box.innerHTML = `<div class="upd" role="dialog" aria-modal="true" aria-labelledby="upd-title" data-upd-stage="${state.update.stage}">
+    ${updHeadHtml()}
+    <div class="upd-body">${body}</div>
+    <footer class="upd-foot">${updFootHtml()}</footer>
+  </div>`;
+}
+
+function openUpdateDialog(stage) {
+  state.update.stage = stage || "available";
+  if (state.update.stage === "available") state.update.progress = 0;
+  state.update.open = true;
+  $("#update-overlay").classList.add("open");
+  $("#update-overlay").setAttribute("aria-hidden", "false");
+  renderUpdateDialog();
+  /* 打开即把焦点落到主操作上：键盘用户不用先 Tab 一圈才知道「升级」在哪。
+     失败态落到「重试」，与「主操作 = 最可能想做的事」同一条判据。 */
+  const main = $("#update-overlay").querySelector('[data-act="upd-start"], [data-act="upd-retry"], [data-act="upd-restart"]');
+  if (main) main.focus();
+}
+
+function closeUpdateDialog() {
+  stopUpdateTimer();
+  state.update.open = false;
+  /* 记住「这版看过了」：自动检查每 30 分钟一轮，不能每次都把说明弹回用户脸上。 */
+  state.update.seenVersion = APP_UPDATE.latest;
+  $("#update-overlay").classList.remove("open");
+  $("#update-overlay").setAttribute("aria-hidden", "true");
+  $("#update-overlay").innerHTML = "";
+}
+
+function stopUpdateTimer() {
+  if (updTimer) { clearInterval(updTimer); updTimer = null; }
+}
+
+/* 进度只改两个节点（宽度 + 百分比）：整块重画会把正文滚动位置打回顶部。 */
+function paintUpdateProgress() {
+  const p = Math.max(0, Math.min(100, Math.round(state.update.progress)));
+  const bar = $("#update-overlay .upd-pbar > i");
+  const pct = $("#update-overlay [data-upd-pct]");
+  if (bar) bar.style.width = p + "%";
+  if (pct) pct.textContent = p + "%";
+}
+
+function startUpdateDownload() {
+  if (updBusy()) return;
+  state.update.stage = "downloading";
+  state.update.progress = 0;
+  renderUpdateDialog();
+  stopUpdateTimer();
+  /* 原型用定时器模拟 tauri updater 的 chunk 事件；真实实现按 received/total 计算。 */
+  updTimer = setInterval(() => {
+    state.update.progress = Math.min(100, state.update.progress + 9);
+    paintUpdateProgress();
+    if (state.update.progress < 100) return;
+    stopUpdateTimer();
+    state.update.stage = "ready";
+    renderUpdateDialog();
+    toast("ok", `v${APP_UPDATE.latest} 已下载`, "重启应用后生效");
+    const btn = $("#update-overlay").querySelector('[data-act="upd-restart"]');
+    if (btn) btn.focus();
+  }, 200);
+}
+
+/* ── 应用更新入口（数据驱动，见 demo-data.js 的 APP_UPDATE）── */
+function checkUpdate() {
+  /* `?err=update` 深链：与 gateway / usage 的错误态同一套约定，便于直接复现失败分支。 */
+  if (state.errors.update) { openUpdateDialog("error"); return; }
+  if (!APP_UPDATE.hasUpdate) {
+    toast("ok", `已是最新版本 v${APP_UPDATE.current}`, "上次检查：刚刚");
+    return;
+  }
+  openUpdateDialog("available");
 }
 
 /* ══════════════════════ 命令面板 ══════════════════════ */
@@ -2607,7 +2832,9 @@ document.addEventListener("click", (e) => {
       renderContent();
       break;
     }
-    case "check-update": stop(); checkUpdate(); break;
+    /* 两个入口（侧栏版本行 / 应用设置抽屉）都收敛到 checkUpdate()。先收抽屉：
+       否则弹窗关掉后底下还压着一层抽屉，用户会以为「关错了东西」。 */
+    case "check-update": stop(); closeDrawer(); checkUpdate(); break;
     /* 桌面悬浮窗（§3.16 / D21）：**只读** —— 点击只做"回到原会话"，没有任何写操作。 */
     case "cp-toggle": stop(); state.companionOpen = !state.companionOpen; renderCompanion(); break;
     case "cp-close": stop(); state.companionOpen = false; renderCompanion(); break;
@@ -2957,10 +3184,25 @@ document.addEventListener("click", (e) => {
     }
     case "confirm-cancel": stop(); closeConfirm(); break;
     case "confirm-ok": { stop(); const fn = pendingConfirm; closeConfirm(); if (fn) fn(); break; }
-    case "do-update": stop();
-      closeDrawer();
-      toast("ok", "正在后台下载更新…", `v${APP_UPDATE.latest} · ${APP_UPDATE.size}`);
-      setTimeout(() => toast("ok", "更新已就绪", "重启应用后生效"), 1200);
+
+    /* ── 升级前说明弹窗（版本内容）──
+       「立即升级」之前**只有阅读**：下载动作一律发生在这个 case 里，
+       所以用户总是先看到「这一版改了什么」再决定。 */
+    case "upd-start": case "upd-retry": stop(); startUpdateDownload(); break;
+    case "upd-later": case "upd-close": stop();
+      if (updBusy()) break;          /* 下载中关闭会让安装半途而废 ⇒ 按钮本身也已禁用 */
+      closeUpdateDialog();
+      break;
+    case "upd-older": stop();
+      state.update.olderOpen = !state.update.olderOpen;
+      renderUpdateDialog();
+      break;
+    case "upd-release": stop();
+      toast("ok", "已在浏览器打开发布页", APP_UPDATE.releaseUrl);
+      break;
+    case "upd-restart": stop();
+      closeUpdateDialog();
+      toast("ok", `已重启到 v${APP_UPDATE.latest}`, "更新已生效，正在重新连接网关");
       break;
   }
 });
@@ -3002,6 +3244,12 @@ document.addEventListener("keydown", (e) => {
     else if (e.key === "Enter") { e.preventDefault(); const it = items[state.palette.cursor]; if (it) { closePalette(); it.run(); } }
     return;
   }
+  /* 升级说明弹窗在上层：Esc 先关它，且**下载中不响应**（关掉 = 安装半途而废）。 */
+  if (state.update.open && e.key === "Escape") {
+    e.preventDefault();
+    if (!updBusy()) closeUpdateDialog();
+    return;
+  }
   if (e.key === "Escape") { if ($("#drawer").classList.contains("open")) closeDrawer(); }
   if (e.key === "/" && !/INPUT|SELECT|TEXTAREA/.test(document.activeElement.tagName)) {
     e.preventDefault();
@@ -3021,11 +3269,23 @@ $("#app-settings-btn").addEventListener("click", () => {
     <div class="srow"><div class="lab"><b>开机自启</b><span>系统启动时在后台运行</span></div><button class="switch on"></button></div>
     <div class="srow"><div class="lab"><b>自动检查更新</b><span>每 30 分钟检查一次</span></div><button class="switch on"></button></div>
     <div class="srow"><div class="lab"><b>最小化到托盘</b><span>关闭窗口时保持后台运行</span></div><button class="switch on"></button></div>
+  </div>
+  <div class="dsec">
+    <h4>关于与更新</h4>
+    <!-- 第二个入口（与侧栏版本行同源）：设置里也得能查一次，不能只留一个角落里的图标。 -->
+    <div class="srow">
+      <div class="lab"><b>当前版本</b><span>v${esc(APP_UPDATE.current)} · ${APP_UPDATE.hasUpdate ? `有新版本 v${esc(APP_UPDATE.latest)}` : "已是最新"}</span></div>
+      <button class="btn sm${APP_UPDATE.hasUpdate ? " primary" : ""}" data-act="check-update">${APP_UPDATE.hasUpdate ? "查看更新内容" : "检查更新"}</button>
+    </div>
   </div>`, "应用设置");
 });
 $("#drawer-close").addEventListener("click", closeDrawer);
 $("#drawer-overlay").addEventListener("click", closeDrawer);
 $("#palette-overlay").addEventListener("click", (e) => { if (e.target.id === "palette-overlay") closePalette(); });
+/* 点遮罩关闭升级说明：与其它弹层同一套模式；下载中不关（同上，避免安装半途而废）。 */
+$("#update-overlay").addEventListener("click", (e) => {
+  if (e.target.id === "update-overlay" && !updBusy()) closeUpdateDialog();
+});
 $("#hint-close").addEventListener("click", () => $("#hint").classList.add("hidden"));
 
 /* 「执行时刻」改了要立刻反映到抖动预览 —— 否则评审把 08:00 改成别的时刻后，
@@ -3072,6 +3332,9 @@ function bootFromUrl() {
   if (p.get("err")) p.get("err").split(",").forEach((k) => { if (k) state.errors[k] = true; });
   if (p.get("theme") === "light") { state.theme = "light"; document.documentElement.classList.remove("dark"); }
   if (p.get("hint") === "0") $("#hint").classList.add("hidden");
+  /* 侧栏版本号与弹窗里的「当前版本」必须同一个值：两处各写一遍必然漂移。 */
+  const footVer = $("#foot-ver");
+  if (footVer) footVer.textContent = `v${APP_UPDATE.current}`;
   renderAll();
   const open = p.get("open");
   if (open === "palette") openPalette();
@@ -3079,6 +3342,16 @@ function bootFromUrl() {
   else if (open && open.startsWith("account:")) drawerAccount(open.slice(8));
   else if (open && open.startsWith("wizard:")) drawerWizard(open.slice(7), 1);
   else if (open && open.startsWith("perm:")) drawerPermGuide(open.slice(5));
+  /* 升级前说明弹窗：?open=update 直接看「有更新」；&upd=downloading|ready|error 审各阶段。 */
+  else if (open === "update") {
+    const stages = ["available", "downloading", "ready", "error"];
+    const stage = stages.includes(p.get("upd")) ? p.get("upd") : "available";
+    /* 下载态要**从说明态起跑**：startUpdateDownload 的守卫是「已在下载中就返回」，
+       所以这里先落到 available，再让它自己切到 downloading。 */
+    openUpdateDialog(stage === "downloading" ? "available" : stage);
+    if (stage === "downloading") startUpdateDownload();
+  }
+  if (p.get("updolder") === "1") { state.update.olderOpen = true; renderUpdateDialog(); }
 }
 
 bootFromUrl();

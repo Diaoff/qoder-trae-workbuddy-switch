@@ -179,6 +179,8 @@ export const en = {
   "appSettings.update.foundDetail": "Version v{latest} is available (current v{current})",
   "appSettings.update.upToDate": "You are on the latest version v{current}",
   "appSettings.update.installNow": "Update now",
+  /* The settings entry opens the notes dialog first instead of downloading (see UPDATE-NOTES-ARCH.md). */
+  "appSettings.update.viewNotes": "View release notes",
 
   // ---- Settings sub-nav (P7 §3.9: 9 items, the 9th is "Backup & restore") ----
   "settings.subnav.aria": "Settings sections",

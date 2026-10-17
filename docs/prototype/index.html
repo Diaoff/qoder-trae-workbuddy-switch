@@ -63,7 +63,8 @@
       <div class="sidebar-foot">
         <div class="ver-row">
           <i class="dot" id="foot-dot"></i>
-          <span>v2026.10.1</span>
+          <!-- 版本号由 demo-app.js 从 APP_UPDATE.current 回填：与升级弹窗里的「当前版本」同源 -->
+          <span id="foot-ver">v—</span>
           <button class="mini-btn" title="会话悬浮窗" data-act="cp-toggle" aria-label="显示或隐藏会话悬浮窗">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="13" rx="2"/><path d="M8 21h8M12 17v4"/></svg>
           </button>
@@ -105,6 +106,11 @@
   </header>
   <div class="drawer-body" id="drawer-body"></div>
 </aside>
+
+<!-- 升级前说明弹窗（版本内容）：侧栏 ↑ 或应用设置里的「检查更新」进入。
+     内容由 demo-app.js 的 renderUpdateDialog() 写入 —— 阶段（说明 / 下载 / 就绪 / 失败）
+     全在同一枚弹窗里切换，不另开抽屉。 -->
+<div class="overlay upd-overlay" id="update-overlay" aria-hidden="true"></div>
 
 <!-- 不可逆操作确认 Dialog -->
 <div class="overlay" id="confirm-overlay" aria-hidden="true">

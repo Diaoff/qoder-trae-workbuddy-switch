@@ -165,6 +165,8 @@ export const zh = {
   "appSettings.update.foundDetail": "发现新版本 v{latest}（当前 v{current}）",
   "appSettings.update.upToDate": "已是最新版本 v{current}",
   "appSettings.update.installNow": "立即升级",
+  /* 设置页的入口改成「先看说明」：点开的是说明弹窗，不是直接下载（见 UPDATE-NOTES-ARCH.md）。 */
+  "appSettings.update.viewNotes": "查看更新内容",
 
   // ---- 设置页子导航（P7 §3.9：9 项，第 9 项「备份与恢复」）----
   // 应用级导航，与 appSettings 同域（§5：应用级放 shell，备份功能放 backup）。

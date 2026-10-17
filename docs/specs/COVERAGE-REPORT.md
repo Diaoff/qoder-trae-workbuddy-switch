@@ -1,7 +1,8 @@
 # 覆盖度报告：原型 112 条行为 vs 真实应用
 
 > 产出人：软件工程师（coverage-audit） · 日期：2026-10-06
-> 输入：`docs/prototype/verify-behaviors.cjs`（112 条断言，JSDOM 驱动**原型** HTML，当前 112 passed / 0 failed）
+> 输入：`docs/prototype/verify-behaviors.cjs`（**135** 条断言，JSDOM 驱动**原型** HTML，2026-10-17 实测 **135 passed / 0 failed**）。
+> ⚠️ 标题里的 **112** 是 2026-10-06 的基线条目数；此后各轮陆续新增断言（本轮 +11 条「升级前说明弹窗」，见 [`UPDATE-NOTES-ARCH.md`](UPDATE-NOTES-ARCH.md)），**条目表仍是 10-06 口径**。
 > 对照起点：`docs/history/GAP-ANALYSIS.md`（2026-10-04，当时 **21 ✅ / 32 ⚠️ / 51 ❌ / 8 ⬜**）
 > 参考门禁：`scripts/check-scope-registry.cjs`（**221 条** @2026-10-07，验 `src/` 真实代码 —— 佐证用，非判据）
 > **硬约束**：本文件是纯分析，**不改任何代码 / 其他文档**。判定保守 —— **宁可说「未实现」**。
@@ -472,7 +473,7 @@ GAP 判定的多个「整期缺失」现已实现（新增文件）：`src/compo
 
 | 行为 | 原型编号 | 期次 | 状态 | 证据 | 缺什么 |
 |:---|:---|:--:|:--:|:---|:---|
-| 「检查更新」不再是死按钮 | P0-3 | 既有 | ✅ | `src/App.tsx:507-517,567`；`src/components/app-settings.tsx:88-91,235`（`checkUpdate` + `UpdateInstallDialog`） | 形态为对话框，非原型抽屉 |
+| 「检查更新」不再是死按钮 | P0-3 | 既有 | ✅ | `src/App.tsx`（`AppFooter` + `shouldAutoShowNotes`）；`src/components/update-install-dialog.tsx`（四阶段说明弹窗）；`src/components/release-notes-view.tsx` | **2026-10-17**：升级前说明弹窗已落地（说明先于下载），原型同步为对话框 —— 见 `UPDATE-NOTES-ARCH.md` |
 | 未检测程序位：给出可点「去设置」入口 | P0-4a | P4 | ⚠️ | `src/components/account-card.tsx:350-359,375-385`（`onGuideToSetting` → 跳设置） | **自动跳转**，非「toast 内可点入口」；未定位「权限与诊断」子项 |
 | 备注是真的内联编辑（非 toast 桩） | P0-4b | P4 | ✅ | `src/components/account-detail-drawer.tsx:114-160,268-328`（`Input` + 提交/取消） | — |
 | 设计说明有独立 `.proto-note` 样式 | P0-5 | 既有 | ⬜ | 原型 `demo.css` 专属 class | 原型特有，真实代码无对应 |
