@@ -1837,7 +1837,7 @@ function demoQoderGatewayConfig(): QoderGatewayConfigRaw {
   return {
     enabled: true,
     bind_addr: "127.0.0.1",
-    port: 7865,
+    port: 57895,
     allow_non_loopback: false,
     log_keep: 200,
     log_bodies: false,
@@ -1912,15 +1912,15 @@ function demoQoderGatewayStatus(scope: string): unknown {
   return {
     enabled: true,
     running: true,
-    addr: "127.0.0.1:7865",
-    base_url: "http://127.0.0.1:7865",
+    addr: "127.0.0.1:57895",
+    base_url: "http://127.0.0.1:57895",
     bind_addr: "127.0.0.1",
-    port: 7865,
+    port: 57895,
     allow_non_loopback: false,
     version: "2026.9.17",
     total_requests: global ? 43 : 268,
     last_error: null,
-    api_key_prefix: global ? "qd-3f61" : "qd-5b2e",
+    api_key_prefix: global ? "sk-qoder-3f61" : "sk-qoder-5b2e",
     pool: {
       total: accounts.length,
       available,
@@ -2005,7 +2005,7 @@ function demoQoderApiKeys(): { keys: unknown[] } {
         id: "demo-qoder-key-1",
         name: t("shared.demo.qoder.key.defaultCn"),
         region: "cn",
-        prefix: "qd-5b2e",
+        prefix: "sk-qoder-5b2e",
         suffix: "c14f",
         createdAt: atLocalTime(23, 10, 12),
         revokedAt: null,
@@ -2016,7 +2016,7 @@ function demoQoderApiKeys(): { keys: unknown[] } {
         id: "demo-qoder-key-2",
         name: t("shared.demo.qoder.key.cliCn"),
         region: "cn",
-        prefix: "qd-9a07",
+        prefix: "sk-qoder-9a07",
         suffix: "4e83",
         createdAt: atLocalTime(13, 15, 40),
         revokedAt: atLocalTime(1, 9, 20),
@@ -2027,7 +2027,7 @@ function demoQoderApiKeys(): { keys: unknown[] } {
         id: "demo-qoder-key-3",
         name: t("shared.demo.qoder.key.global"),
         region: "global",
-        prefix: "qd-3f61",
+        prefix: "sk-qoder-3f61",
         suffix: "b7d2",
         createdAt: atLocalTime(15, 8, 0),
         revokedAt: null,
@@ -2174,7 +2174,7 @@ function demoTraeSettings(): TraeSettings {
     proxyPort: 8899, theme: "dark", launchMinimized: false, autoStartProxy: true, tray: true,
     language: "zh-CN", checkinSkipChecked: true, checkinSkipExpired: true, retry: 2,
     notify: "system", traePaths: {}, traePath: null, browserPath: null, logRetentionDays: 7,
-    proxyDomains: "", apiPort: 7864, apiKey: "sk-trae-9f2c1a4b6d8e0f3a5b7c9d1e2f4a6b8c",
+    proxyDomains: "", apiPort: 57894, apiKey: "sk-trae-9f2c1a4b6d8e0f3a5b7c9d1e2f4a6b8c",
     apiDefaultModel: "deepseek-v4-flash",
   };
 }
@@ -2188,7 +2188,7 @@ function demoTraeSettings(): TraeSettings {
  */
 function demoTraeGatewayConfig(): TraeGatewayConfigRaw {
   return {
-    enabled: true, bind_addr: "127.0.0.1", port: 7864, allow_non_loopback: false,
+    enabled: true, bind_addr: "127.0.0.1", port: 57894, allow_non_loopback: false,
     log_keep: 200, log_bodies: false, max_body_mb: 8,
     default_model: "deepseek-v4-flash", max_rotate: 3,
     // 演示「已指定账号」的状态：指向下方账号池里那个可用的主账号
@@ -2204,8 +2204,8 @@ function demoTraeGatewayConfig(): TraeGatewayConfigRaw {
 /** Trae 网关状态（**snake_case**，含账号池与诊断）。 */
 function demoTraeGatewayStatus(): unknown {
   return {
-    enabled: true, running: true, addr: "127.0.0.1:7864",
-    base_url: "http://127.0.0.1:7864", bind_addr: "127.0.0.1", port: 7864,
+    enabled: true, running: true, addr: "127.0.0.1:57894",
+    base_url: "http://127.0.0.1:57894", bind_addr: "127.0.0.1", port: 57894,
     allow_non_loopback: false, version: "2026.9.17", total_requests: 137,
     last_error: null, api_key_prefix: "sk-trae-9f2c",
     pool: { total: 3, available: 1, cooling: 1, disabled: 1, expired: 0, zero_credits: 0, total_credits: 192.5 },

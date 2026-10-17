@@ -12,7 +12,7 @@
 //! [`TraeGateway`](buddy_switch_gateway::trae::TraeGateway)）—— 这正是「改 Trae 网关
 //! 不会碰到 WorkBuddy 网关」与「生命周期不重复写两遍」的同时达成。
 //!
-//! ⚠️ 两个平台各持一个 router、各自端口（Trae 7864 / WorkBuddy 57891），**绝不 merge**
+//! ⚠️ 两个平台各持一个 router、各自端口（Trae 57894 / WorkBuddy 57891），**绝不 merge**
 //! （axum 同路径 merge 会 panic）。这正是 `buddy_switch_gateway::trae` 的整体设计取向。
 
 use std::sync::Mutex;

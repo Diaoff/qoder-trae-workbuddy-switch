@@ -299,7 +299,7 @@ export const en = {
   "unifiedGateway.bindLan": "Allow LAN",
   "unifiedGateway.bindLoopback": "Loopback only",
   "unifiedGateway.port": "Port",
-  "unifiedGateway.portHint": "Restart required. Avoid the ports already taken: UI 57890 · WorkBuddy 57891 · Trae 7864 · Qoder 7865 · hook 57893",
+  "unifiedGateway.portHint": "Restart required. Avoid the ports already taken: UI 57890 · WorkBuddy 57891 · unified 57892 · hook 57893 · Trae 57894 · Qoder 57895",
   "unifiedGateway.portInvalid": "Invalid port: enter an integer between 1 and 65535",
   "unifiedGateway.nsTitle": "Enabled namespaces",
   "unifiedGateway.nsHint": "Disabled ones are not parsed or listed, and calls return 400. Keep at least one enabled.",

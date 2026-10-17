@@ -16,8 +16,8 @@ export const en = {
   "qoder.gateway.statusLabel": "Status",
   "qoder.gateway.running": "Running",
   "qoder.gateway.stopped": "Stopped",
-  "qoder.gateway.noteLead": "All three gateways serve",
-  "qoder.gateway.noteTail": "— the ports must differ (this page is Qoder, default 7865).",
+  "qoder.gateway.noteLead": "Every gateway serves",
+  "qoder.gateway.noteTail": "— the ports must differ (this page is Qoder, default 57895).",
   "qoder.gateway.lanWarning": "LAN access is enabled — make sure this network is trusted.",
   "qoder.gateway.lastError": "Last error",
   "qoder.gateway.refresh": "Refresh",
@@ -52,7 +52,7 @@ export const en = {
   "qoder.gateway.lanDialog.confirm": "Enable",
 
   // ---- Integration guide (the two Qoder-specific strings; the rest reuses trae.gateway.guide.*) ----
-  "qoder.gateway.guide.noKey": "qd-… (create a key above first)",
+  "qoder.gateway.guide.noKey": "sk-qoder-… (create a key above first)",
   "qoder.gateway.guide.streamNote":
     "The Qoder upstream is streaming-only; when you send `stream: false` this gateway aggregates it locally and returns one response, so the first byte takes longer.",
 

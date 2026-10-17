@@ -126,7 +126,7 @@ pub async fn health(State(state): State<TraeGatewayState>) -> Response {
 /// Bearer 鉴权中间件：`/health` 免鉴权，其余端点校验 `Authorization: Bearer <key>`。
 ///
 /// 与参考实现的一处**有意差异**：没有任何可用 Key 时**拒绝**而不是放行。参考实现
-/// 「留空即不鉴权」意味着任何人只要猜到 7864 端口就能白嫖额度；本网关要求 Key 由
+/// 「留空即不鉴权」意味着任何人只要猜到 57894 端口就能白嫖额度；本网关要求 Key 由
 /// 用户显式创建（或经旧 `settings.apiKey` 兼容读得来），不存在「用户忘了配」的放行场景，
 /// 所以宁严勿宽。
 ///

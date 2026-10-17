@@ -1,4 +1,4 @@
-//! webui / CLI 形态的 **Trae** 网关宿主（P5 §2.4 泛化；默认 `127.0.0.1:7864`）。
+//! webui / CLI 形态的 **Trae** 网关宿主（P5 §2.4 泛化；默认 `127.0.0.1:57894`）。
 //!
 //! 与 [`crate::gateway_host`] 平行、**各持一个泛型 [`GatewayHost`]**（原因见
 //! `buddy_switch_gateway::trae` 模块文档与 [`buddy_switch_gateway::GatewayProduct`]）。

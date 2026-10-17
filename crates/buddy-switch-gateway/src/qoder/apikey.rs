@@ -1,9 +1,19 @@
-//! Qoder 网关的多 API Key 存储（`qd-` 前缀 + **归属区域** + 三态动作）。
+//! Qoder 网关的多 API Key 存储（`sk-qoder-` 前缀 + **归属区域** + 三态动作）。
 //!
 //! 与 Trae 侧（`trae/apikey.rs`）**同款结构**：明文不落库、只存 `sha256`；
 //! `prefix` / `suffix` 供脱敏展示（`prefix••••••••suffix`，**不含省略号**）；三态动作
 //! **吊销 → 恢复 → 删除**，且**已吊销的行必须同时给「恢复 + 删除」两个出口**
 //! （两平台同形的产品纪律 —— 只给删除会让「误吊销」只能靠删号重来）。
+//!
+//! ## 前缀为什么是 `sk-qoder-`（2026-10-17 改）
+//!
+//! 四条产品线的 Key 前缀是**同一族**，看一眼就知道该配哪个地址：
+//! `sk-wb-`（WorkBuddy）· `sk-trae-`（Trae）· **`sk-qoder-`（Qoder）** · `sk-uni-`（统一网关）。
+//! 原先 Qoder 用短前缀 `qd-`，与另外三条不成族——用户手里一把 `qd-…` 的 Key
+//! 无从判断它属于哪个网关，AI 工具的「按前缀认提供商」规则也匹配不上。
+//!
+//! ⚠️ **兼容**：校验只比对 `sha256(完整明文)`，**不看前缀** ⇒ 老 `qd-…` Key
+//! 升级后照常可用（改名前创建的记录原样留在磁盘上）；只有**新创建**的 Key 用新前缀。
 //!
 //! ## 与 Trae 侧的**两处刻意差异**
 //!
@@ -20,8 +30,13 @@ use sha2::{Digest, Sha256};
 
 use buddy_switch_core::modules::qoder::region::QoderRegion;
 
-/// 新 Key 的前缀字面量（创建时 `qd-<secret 前 4 位>`）。
-pub const KEY_PREFIX: &str = "qd-";
+/// 新 Key 的前缀字面量（创建时 `sk-qoder-<secret 前 4 位>`）。
+///
+/// 与 `sk-wb-` / `sk-trae-` / `sk-uni-` 同族；改这里只影响**新建**的 Key。
+pub const KEY_PREFIX: &str = "sk-qoder-";
+
+/// 明文 Key 的密钥段长度（32 位十六进制，与另三条产品线一致）。
+const SECRET_HEX_LEN: usize = 32;
 
 /// 区域 ↔ 字符串（磁盘 / 线上形状 `"cn"` / `"global"`；与 `QoderRegion::as_str` 一致）。
 fn region_as_str<S: serde::Serializer>(
@@ -54,7 +69,7 @@ pub struct QoderApiKeyRecord {
         deserialize_with = "region_from_str"
     )]
     pub region: QoderRegion,
-    /// 前缀（脱敏展示用），如 `qd-a1b2`。⚠️ **不含省略号**。
+    /// 前缀（脱敏展示用），如 `sk-qoder-a1b2`。⚠️ **不含省略号**。
     pub prefix: String,
     /// 尾部 4 位（如 `9f3c`）。列表显示 `prefix••••••••suffix`。
     #[serde(default)]
@@ -150,7 +165,8 @@ impl QoderApiKeyStore {
         name: String,
         region: QoderRegion,
     ) -> Result<(QoderApiKeyRecord, String), String> {
-        let secret = format!("{KEY_PREFIX}{}", &random_id()[..28]);
+        // 明文形态与另三条产品线逐字同族：`sk-qoder-` + 32 位 hex。
+        let secret = format!("{KEY_PREFIX}{}", &random_id()[..SECRET_HEX_LEN]);
         let record = QoderApiKeyRecord {
             id: random_id(),
             name: if name.trim().is_empty() {
@@ -305,6 +321,62 @@ mod tests {
         assert!(!text.contains("hash"), "脱敏列表不得带 hash 字段");
         assert_eq!(list[0]["region"], "global");
         assert!(list[0]["prefix"].as_str().unwrap().starts_with(KEY_PREFIX));
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// 明文形态与另三条产品线**同族**：`sk-qoder-` + 32 位 hex。
+    ///
+    /// 变异：把 `KEY_PREFIX` 改回 `qd-`，或把 hex 段长度改回 28 ⇒ 本条红。
+    #[test]
+    fn plaintext_shape_matches_the_other_product_lines() {
+        let (store, path) = temp_store();
+        let (record, secret) = store.create("shape".into(), QoderRegion::Cn).unwrap();
+        assert!(
+            secret.starts_with("sk-qoder-"),
+            "前缀应为 sk-qoder-：{secret}"
+        );
+        assert_eq!(
+            secret.len(),
+            "sk-qoder-".len() + SECRET_HEX_LEN,
+            "明文长度应为前缀 + 32 位 hex：{secret}"
+        );
+        let hex = &secret["sk-qoder-".len()..];
+        assert!(
+            hex.chars().all(|c| c.is_ascii_hexdigit()),
+            "密钥段必须是十六进制：{hex}"
+        );
+        assert_eq!(
+            record.prefix,
+            format!("sk-qoder-{}", &hex[..4]),
+            "展示前缀 = 前缀 + 密钥段前 4 位"
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// 改前缀**不废老 Key**：校验只比 `sha256(完整明文)`、不看前缀
+    /// ⇒ 磁盘上既有的 `qd-…` 记录升级后照常通过。
+    #[test]
+    fn legacy_qd_keys_still_verify_after_the_prefix_change() {
+        let (store, path) = temp_store();
+        let legacy = "qd-0123456789abcdef0123456789abcd";
+        let record = QoderApiKeyRecord {
+            id: "legacy-1".to_string(),
+            name: "老 Key".to_string(),
+            region: QoderRegion::Cn,
+            prefix: "qd-0123".to_string(),
+            suffix: "abcd".to_string(),
+            hash: sha256_hex(legacy),
+            created_at: 0,
+            revoked_at: None,
+            last_used_at: None,
+        };
+        let text = serde_json::to_string_pretty(&vec![record]).unwrap();
+        std::fs::write(&path, text).unwrap();
+
+        assert!(store.verify(legacy).is_some(), "老的 qd- Key 必须继续可用");
+        assert!(store
+            .verify("qd-ffffffffffffffffffffffffffffffff")
+            .is_none());
         let _ = std::fs::remove_file(&path);
     }
 }

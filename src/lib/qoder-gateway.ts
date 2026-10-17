@@ -27,7 +27,7 @@ import { normalizeTraeGatewayLogs } from "@/lib/trae-gateway";
 export const DEFAULT_QODER_GATEWAY_CONFIG: QoderGatewayConfig = {
   enabled: false,
   bindAddr: "127.0.0.1",
-  port: 7865,
+  port: 57895,
   allowNonLoopback: false,
   logKeep: 200,
   logBodies: false,

@@ -1,4 +1,4 @@
-//! webui / CLI 形态的 **Qoder** 网关宿主（与 Trae 宿主平行；默认 `127.0.0.1:7865`）。
+//! webui / CLI 形态的 **Qoder** 网关宿主（与 Trae 宿主平行；默认 `127.0.0.1:57895`）。
 //!
 //! 与 [`crate::gateway_host`] / [`crate::trae_gateway_host`] 平行、**各持一个泛型
 //! [`GatewayHost`]**（原因见 `buddy_switch_gateway::qoder` 模块文档与
@@ -8,7 +8,7 @@
 //!
 //! `buddy_switch_gateway::qoder::router()` 也挂 `/v1/models` 与 `/v1/chat/completions`，
 //! 与 WorkBuddy / Trae 网关的路径**逐字相同**。axum 的 `merge` 遇到同路径会直接 panic，
-//! 所以 Qoder 网关只能走**自己的端口**（7865）；webui 侧只暴露 `/api/qoder/gateway/*` 管理面。
+//! 所以 Qoder 网关只能走**自己的端口**（57895）；webui 侧只暴露 `/api/qoder/gateway/*` 管理面。
 //!
 //! ## 一个监听、两个区域
 //!

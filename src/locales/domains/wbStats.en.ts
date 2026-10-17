@@ -78,7 +78,7 @@ export const en = {
   "wbStats.gateway.refresh": "Refresh",
   "wbStats.gateway.retry": "Retry",
   "wbStats.gateway.lastError": "Most recent error",
-  "wbStats.gateway.noteLead": "The default port is 57891, deliberately clear of the Trae gateway (7864) — both serve ",
+  "wbStats.gateway.noteLead": "The default port is 57891, deliberately clear of the Trae gateway (57894) — both serve ",
   "wbStats.gateway.noteTail": ".",
   "wbStats.gateway.lanWarning": "In LAN mode, any device on the same network that gets hold of a key can spend your WorkBuddy credits.",
   "wbStats.gateway.openDataDir": "Open data folder",

@@ -45,9 +45,10 @@ use super::agent_watch::{self, canonical_source, parse_event, AgentEvent, SOURCE
 
 /// 接收端监听的端口。
 ///
-/// ⚠️ **登记在册**：本仓已占 `57890`（webui）/ `57891`（WB 网关）/ `7864`（Trae 网关）/
-/// `8899`（Trae MITM）/ `57892`（统一网关）—— 见 `docs/GATEWAY-CLIENT-INTEGRATION.md` 附录 A。
-/// 取 `57893` 是接着既有序列往下排，改动此值必须**同步附录 A 与 [`HOOK_URL_NAME`]**。
+/// ⚠️ **登记在册**：本仓已占 `57890`（webui）/ `57891`（WB 网关）/ `57892`（统一网关）/
+/// `57894`（Trae 网关）/ `57895`（Qoder 网关）/ `8899`（Trae MITM）—— 见
+/// `docs/GATEWAY-CLIENT-INTEGRATION.md` 附录 A。
+/// 取 `57893` 是把 `5789x` 一段补齐后的唯一空位，改动此值必须**同步附录 A 与 [`HOOK_URL_NAME`]**。
 pub const HOOK_PORT: u16 = 57893;
 
 /// 接收路径。

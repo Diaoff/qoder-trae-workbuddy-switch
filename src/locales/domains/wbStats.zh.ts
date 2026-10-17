@@ -93,7 +93,7 @@ export const zh = {
   /* ★ 与 Trae 侧 `trae.stats.api.gateway.noteLead` / `noteTail` / `lanWarning` **对称同文案**
      （只换两个端口号）：两个网关都占用 `/v1/chat/completions`，必须分端口监听 ——
      这条说明此前只在 Trae 侧有，WB 用户看不到「为什么默认是 57891」。 */
-  "wbStats.gateway.noteLead": "默认端口 57891，与 Trae 网关（7864）错开——两者都占用 ",
+  "wbStats.gateway.noteLead": "默认端口 57891，与 Trae 网关（57894）错开——两者都占用 ",
   "wbStats.gateway.noteTail": "。",
   "wbStats.gateway.lanWarning": "局域网模式下，同网段任何设备拿到 Key 都能消耗你的 WorkBuddy 积分。",
   "wbStats.gateway.openDataDir": "打开数据目录",

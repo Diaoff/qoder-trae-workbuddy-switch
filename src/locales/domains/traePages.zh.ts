@@ -239,7 +239,7 @@ export const zh = {
   "trae.page.settings.proxyPortLabel": "本地代理端口",
   "trae.page.settings.proxyPortDesc": "本地 MITM 代理的监听端口；登录态捕获依赖它。",
   "trae.page.settings.apiPortLabel": "API 网关端口",
-  "trae.page.settings.apiPortDesc": "默认 7864，与 WorkBuddy 网关（57891）错开——两者都占用 /v1/chat/completions。",
+  "trae.page.settings.apiPortDesc": "默认 57894，与 WorkBuddy 网关（57891）错开——两者都占用 /v1/chat/completions。",
   "trae.page.settings.proxyDomainsLabel": "代理解密域名",
   "trae.page.settings.proxyDomainsDesc": "逗号分隔。只有这些域名会被本地代理解密以捕获登录态；其余流量走加密隧道直连。",
 

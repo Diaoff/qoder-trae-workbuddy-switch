@@ -195,7 +195,7 @@ pub struct TraeGatewayConfig {
     /// 监听地址，默认 `127.0.0.1`。
     #[serde(alias = "bindAddr")]
     pub bind_addr: String,
-    /// 监听端口，默认 [`TRAE_DEFAULT_API_PORT`]（7864，与 WorkBuddy 的 57891 错开）。
+    /// 监听端口，默认 [`TRAE_DEFAULT_API_PORT`]（57894，与 WorkBuddy 的 57891 错开）。
     pub port: u16,
     /// 是否允许非回环监听（默认 false）。
     #[serde(alias = "allowNonLoopback")]
@@ -739,7 +739,7 @@ pub async fn spawn_listener(state: TraeGatewayState) -> anyhow::Result<GatewayHa
 /// `POST /v1/chat/completions`、`POST /v1/messages`（见 [`router`]）。
 ///
 /// ⚠️ 与 [`crate::WbGateway`] 的 `/v1/models` / `/v1/chat/completions` **逐字重叠** ⇒
-/// 两者**各持一个 router、各自独立端口**（Trae 7864 / WorkBuddy 57891），**绝不 merge**
+/// 两者**各持一个 router、各自独立端口**（Trae 57894 / WorkBuddy 57891），**绝不 merge**
 /// （axum 同路径 merge 会 panic）。见 [`crate::GatewayProduct`]。
 pub struct TraeGateway;
 
@@ -869,8 +869,19 @@ mod tests {
         assert_eq!(config.bind_addr, "127.0.0.1");
         assert!(!config.allow_non_loopback);
         assert_eq!(config.port, TRAE_DEFAULT_API_PORT);
-        // 端口必须与 WorkBuddy 网关（57891）错开，否则同时启用会互相抢端口。
-        assert_ne!(config.port, 57891);
+        // ★ 2026-10-17：四条网关统一落在 5789x 一段，本端口必须与**同段**既有端口全部错开，
+        //   否则同时启用会互相抢端口。
+        assert_eq!(config.port, 57894, "Trae 网关默认端口应为 57894");
+        for taken in [
+            57890u16, // 界面本体
+            57891,    // WorkBuddy 网关
+            57892,    // 统一网关
+            57893,    // 客户端会话监听 hook
+            crate::qoder::QODER_DEFAULT_API_PORT,
+            8899, // Trae 登录代理
+        ] {
+            assert_ne!(config.port, taken, "不得与既有端口 {taken} 撞车");
+        }
         assert_eq!(
             config.base_url(),
             format!("http://127.0.0.1:{TRAE_DEFAULT_API_PORT}")

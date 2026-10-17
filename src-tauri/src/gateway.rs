@@ -10,7 +10,7 @@
 //! Tauri 侧的托管与锁策略（见 [`GatewayRuntime`]）。
 //!
 //! ⚠️ 与 [`crate::trae_gateway`] **各持一个 `GatewayHost`**、各自端口
-//! （WorkBuddy 57891 / Trae 7864）—— **绝不**把两个平台的路由合并（axum 同路径 merge
+//! （WorkBuddy 57891 / Trae 57894）—— **绝不**把两个平台的路由合并（axum 同路径 merge
 //! 会 panic，见 [`buddy_switch_gateway::GatewayProduct`]）。
 
 use std::sync::Mutex;

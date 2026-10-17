@@ -23,9 +23,9 @@ export const zh = {
   "qoder.gateway.statusLabel": "状态",
   "qoder.gateway.running": "运行中",
   "qoder.gateway.stopped": "已停用",
-  // 三个网关都占 `/v1/chat/completions` ⇒ 端口必须错开；这句是把「为什么是 7865」讲明白。
-  "qoder.gateway.noteLead": "三个网关都占用",
-  "qoder.gateway.noteTail": "—— 端口必须错开（本页是 Qoder，默认 7865）。",
+  // 四条网关都占 `/v1/chat/completions` ⇒ 端口必须错开；这句是把「为什么是 57895」讲明白。
+  "qoder.gateway.noteLead": "各条网关都占用",
+  "qoder.gateway.noteTail": "—— 端口必须错开（本页是 Qoder，默认 57895）。",
   "qoder.gateway.lanWarning": "当前已允许局域网访问 —— 请确认所处网络可信。",
   "qoder.gateway.lastError": "最近一次失败",
   "qoder.gateway.refresh": "刷新",
@@ -60,7 +60,7 @@ export const zh = {
   "qoder.gateway.lanDialog.confirm": "确认开启",
 
   // ---- 接入指引（qoder 侧两处平台化文案；其余词条复用 `trae.gateway.guide.*`）----
-  "qoder.gateway.guide.noKey": "qd-…（请先在上方创建 Key）",
+  "qoder.gateway.guide.noKey": "sk-qoder-…（请先在上方创建 Key）",
   "qoder.gateway.guide.streamNote":
     "Qoder 上游只支持流式；请求 `stream: false` 时由本网关在本地聚合后一次性返回，首字节延迟较长。",
 

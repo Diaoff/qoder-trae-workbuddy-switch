@@ -151,12 +151,15 @@ npm/                 # npm 包：package.json + bin + scripts/install.js
 | --- | --- | --- |
 | `57890` | webui 界面本体 | `buddy-switch serve --port` 可改 |
 | `57891` | WorkBuddy 网关 | 默认关；`~/.buddy-switch/gateway_config.json` |
-| `7864` | Trae 网关 | 默认关 |
-| `57892` | **统一入口**（第三个产品线） | 默认关；`~/.buddy-switch/gateway_unified.json` + `gateway_unified_keys.json` |
-| `8899` | Trae 本地 MITM 代理 | 登录态捕获依赖它 |
+| `57892` | **统一入口**（跨产品线） | 默认关；`~/.buddy-switch/gateway_unified.json` + `gateway_unified_keys.json` |
 | `57893` | 客户端会话监听的 hook 接收端 | 需在「设置 → 客户端」显式开启 |
+| `57894` | Trae 网关 | 默认关（原 `7864`） |
+| `57895` | Qoder 网关 | 默认关（原 `7865`） |
+| `8899` | Trae 本地 MITM 代理 | 登录态捕获依赖它（**不是网关**） |
 
-三个网关的 `/v1/models` 与 `/v1/chat/completions` **逐字重叠** ⇒ 不能 merge 进同一个 Router（axum 同路径 merge 是**运行期 panic**，有护栏测试 `two_products_own_overlapping_paths` 钉住）。所以永远是三个端口、三套 Key 库、三份配置。
+> ★ 2026-10-17 起四条网关统一落在 `5789x` 一段（57891 / 57892 / 57894 / 57895），不再出现「WB 是 5789x、Trae/Qoder 是 78xx」的混编。**只改默认值**：配置文件里写着旧端口的保持原端口。
+
+四个网关的 `/v1/models` 与 `/v1/chat/completions` **逐字重叠** ⇒ 不能 merge 进同一个 Router（axum 同路径 merge 是**运行期 panic**，有护栏测试 `two_products_own_overlapping_paths` 钉住）。所以永远是四个端口、四套 Key 库、四份配置。
 
 ## 门禁（改完必跑）
 

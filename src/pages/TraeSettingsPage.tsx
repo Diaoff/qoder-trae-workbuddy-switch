@@ -1428,7 +1428,7 @@ export default function TraeSettingsPage() {
               onChange={(event) =>
                 patchSettings((prev) => ({ ...prev, apiPort: Number(event.target.value) || 0 }))
               }
-              onBlur={() => void patch({ apiPort: settings?.apiPort ?? 7864 })}
+              onBlur={() => void patch({ apiPort: settings?.apiPort ?? 57894 })}
             />
           </SettingsFieldRow>
           <SettingsFieldRow

@@ -34,7 +34,7 @@ pub mod pool;
 pub mod protocol;
 // E1 · 代理 KPI 的真实计数（今日代理请求 / 今日换号；落盘，跨重启不丢）。
 pub mod proxy_kpi;
-/// Qoder 的 OpenAI / Anthropic 兼容网关（**平行第三套实现**，独立端口 7865）。
+/// Qoder 的 OpenAI / Anthropic 兼容网关（**平行第三套实现**，独立端口 57895）。
 pub mod qoder;
 pub mod rng;
 pub mod routes;
@@ -228,7 +228,7 @@ pub async fn spawn_listener_with_state(state: GatewayState) -> anyhow::Result<Ga
 /// 故本 trait 的 [`GatewayProduct::router`] 由**各平台 impl 各自声明自己拥有的路径**
 /// （[`GatewayProduct::OWNED_PATHS`]）；泛型层（[`GatewayHost`]）**只管理生命周期**，
 /// **绝不**持有 / merge 任何 router。两个平台各自**独立端口**
-/// （WorkBuddy 57891 / Trae 7864）—— 泛化**不改变端口分离**。
+/// （WorkBuddy 57891 / Trae 57894）—— 泛化**不改变端口分离**。
 ///
 /// 该约束的可证伪性由 `tests::two_products_own_overlapping_paths` 守住：
 /// 两平台的 [`GatewayProduct::OWNED_PATHS`] **必须**存在交集（否则本约束的前提已变，

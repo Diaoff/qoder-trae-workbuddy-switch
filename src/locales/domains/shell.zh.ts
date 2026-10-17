@@ -303,9 +303,10 @@ export const zh = {
   "unifiedGateway.bindLan": "改为局域网",
   "unifiedGateway.bindLoopback": "改回仅本机",
   "unifiedGateway.port": "端口",
-  /* ★ 2026-10-15 订正：原文只写了两个网关，**漏了 Qoder 7865 与界面 57890 / hook 57893**
-     （Qoder 是后接的）。端口提示是**事实性**内容，漏一个就会让用户撞上去。 */
-  "unifiedGateway.portHint": "改端口需重启。别撞上既有端口：界面 57890 · WorkBuddy 57891 · Trae 7864 · Qoder 7865 · hook 57893",
+  /* ★ 2026-10-17 订正：端口按 5789x 一段排开（界面 57890 · WB 57891 · 统一 57892 ·
+     hook 57893 · Trae 57894 · Qoder 57895）。原文混着旧值 7864 / 7865，看不出规律。
+     端口提示是**事实性**内容，漏一个就会让用户撞上去。 */
+  "unifiedGateway.portHint": "改端口需重启。别撞上既有端口：界面 57890 · WorkBuddy 57891 · 统一 57892 · hook 57893 · Trae 57894 · Qoder 57895",
   "unifiedGateway.portInvalid": "端口不合法：请输入 1–65535 之间的整数",
   "unifiedGateway.nsTitle": "启用的命名空间",
   "unifiedGateway.nsHint": "未启用的：不解析、不列清单、调用返回 400。至少保留一个。",

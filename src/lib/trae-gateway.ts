@@ -23,7 +23,7 @@ import type {
 export const DEFAULT_TRAE_GATEWAY_CONFIG: TraeGatewayConfig = {
   enabled: false,
   bindAddr: "127.0.0.1",
-  port: 7864,
+  port: 57894,
   allowNonLoopback: false,
   logKeep: 200,
   logBodies: false,

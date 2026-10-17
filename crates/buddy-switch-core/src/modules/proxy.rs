@@ -21,7 +21,7 @@ const PROXY_STATE_FILE: &str = "proxy-state.json";
 
 /// 网关本机基址（C 路让客户端的 `endpoint` 指向它）。
 ///
-/// ⚠️ 与「端口分离」约定一致（WB **57891** / Trae **7864**）；C 路本期只做 WB 侧。
+/// ⚠️ 与「端口分离」约定一致（WB **57891** / Trae **57894**）；C 路本期只做 WB 侧。
 pub const PROXY_GATEWAY_BASE: &str = "http://127.0.0.1:57891";
 
 /// C 路覆盖的域（**白名单**；兜底行是「其它全部域名 → 直连」）。

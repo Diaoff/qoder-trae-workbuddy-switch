@@ -23,7 +23,7 @@
 
 mod api;
 mod gateway_host;
-// Qoder 网关（第三个平台，默认 7865）：独立端口，不与另三个 merge（axum 同路径 merge 会 panic）。
+// Qoder 网关（第三个平台，默认 57895）：独立端口，不与另三个 merge（axum 同路径 merge 会 panic）。
 mod qoder_gateway_host;
 mod trae_gateway_host;
 // 统一网关（第三个产品线，默认 57892）：跨产品线的单一入口 —— 独立端口，不与另两个 merge。
@@ -507,14 +507,14 @@ async fn serve(args: &[String]) {
         Err(error) => eprintln!("[gateway] 启动失败: {error}"),
     }
 
-    // 按配置启动 Trae 网关独立监听（默认关闭；默认 127.0.0.1:7864）。
+    // 按配置启动 Trae 网关独立监听（默认关闭；默认 127.0.0.1:57894）。
     match trae_gateway_host::apply().await {
         Ok(Some(addr)) => println!("Trae API 网关: http://{addr}"),
         Ok(None) => {}
         Err(error) => eprintln!("[trae-gateway] 启动失败: {error}"),
     }
 
-    // 按配置启动 Qoder 网关独立监听（默认关闭；默认 127.0.0.1:7865）。
+    // 按配置启动 Qoder 网关独立监听（默认关闭；默认 127.0.0.1:57895）。
     // ⚠️ 一个监听、两个区域（区域由请求所用 API Key 的归属决定）。
     match qoder_gateway_host::apply().await {
         Ok(Some(addr)) => println!("Qoder API 网关: http://{addr}"),

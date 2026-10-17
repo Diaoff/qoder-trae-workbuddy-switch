@@ -23,16 +23,19 @@
 
 ## 1. 网关能力矩阵（事实）
 
-两个产品分区**彼此完全独立**：独立端口、独立 Key 库、独立账号池、独立配置文件。**Key 不能跨区使用**。
+三个产品分区（WorkBuddy / Trae / Qoder）**彼此完全独立**：独立端口、独立 Key 库、独立账号池、独立配置文件。**Key 不能跨区使用**。
 
-自 2026-10-14 起还有**第三个入口「统一网关」**（跨作用域、默认关），见 §1.3 —— 它的定位不是替代前两个，而是「一个 provider 用遍全部平台」。下表第三列是它。
+自 2026-10-14 起还有**第四个入口「统一网关」**（跨作用域、默认关），见 §1.3 —— 它的定位不是替代前三个，而是「一个 provider 用遍全部平台」。下表第三列是它；Qoder 分区见 §1.4（只列差异，其余逐条同构）。
+
+> ★ 2026-10-17 **端口统一到 `5789x` 一段**：界面 57890 · WB 网关 57891 · 统一入口 57892 · hook 57893 · **Trae 网关 57894** · **Qoder 网关 57895**（另 8899 是 Trae 登录代理，与网关无关）。Trae / Qoder 原来是 `7864` / `7865`，与 WB 的 `57891` 混在两段里，看不出规律。
+> 只改**默认值**：配置里写着旧端口的保持不变（`trae/api_gateway.json` / `qoder/gateway_config.json` 的 `port` 优先）。
 
 | 项 | WorkBuddy 分区 | Trae 分区 | 统一入口（第三个入口） |
 |:---|:---|:---|:---|
 | 额度来源（上游） | WorkBuddy 账号库（CN / Global 两套） | Trae 账号库（4 个程序位） | **两者都借**：按模型名的命名空间前缀分派 |
-| 默认监听端口 | `57891` | `7864` | `57892` |
-| 根地址（不含 `/v1`） | `http://127.0.0.1:57891` | `http://127.0.0.1:7864` | `http://127.0.0.1:57892` |
-| OpenAI 基址（含 `/v1`） | `http://127.0.0.1:57891/v1` | `http://127.0.0.1:7864/v1` | `http://127.0.0.1:57892/v1` |
+| 默认监听端口 | `57891` | `57894` | `57892` |
+| 根地址（不含 `/v1`） | `http://127.0.0.1:57891` | `http://127.0.0.1:57894` | `http://127.0.0.1:57892` |
+| OpenAI 基址（含 `/v1`） | `http://127.0.0.1:57891/v1` | `http://127.0.0.1:57894/v1` | `http://127.0.0.1:57892/v1` |
 | `GET /v1/models` | ✅ | ✅ | ✅（聚合四段命名空间，id 带前缀） |
 | `POST /v1/chat/completions` | ✅ | ✅ | ✅ |
 | `POST /v1/messages`（Anthropic） | ✅ | ✅ | ✅ |
@@ -41,7 +44,7 @@
 | `GET /status`（需鉴权） | ✅ | ✅ | ✅ |
 | 业务转发 `POST /biz/*path` | ✅（WB 独有） | ❌ | ✅（命名空间来自 Key 的 `biz_namespace`） |
 | **认证头** | `x-api-key` **优先**，其次 `Authorization: Bearer` | **只认 `Authorization: Bearer`** | **两者都收**（同 WB 规则） |
-| API Key 前缀 | `sk-wb-` | `sk-trae-` | `sk-uni-` |
+| API Key 前缀 | `sk-wb-` | `sk-trae-` | `sk-uni-` （Qoder 分区：`sk-qoder-`，见 §1.4） |
 | Key 落盘 | `~/.buddy-switch/gateway_keys.json` | `~/.buddy-switch/trae/api_gateway_keys.json` | `~/.buddy-switch/gateway_unified_keys.json` |
 | 网关配置落盘 | `~/.buddy-switch/gateway_config.json` | `~/.buddy-switch/trae/api_gateway.json` | `~/.buddy-switch/gateway_unified.json` |
 | 请求体上限 | 默认 8 MB（`max_body_mb`） | 同（`maxBodyMb`） | 同（`max_body_mb`） |
@@ -50,11 +53,11 @@
 
 1. **只有 WorkBuddy 侧有 `/v1/responses`。**
    Trae 侧没有 ⇒ **Codex 接 Trae 网关时必须 `wire_api = "chat"`**，否则 404。统一入口上 `trae-*` 命名空间的 `/v1/responses` 返回 **501**（明确说「不支持」，不静默降级到 chat）。
-2. **三边的认证头规则不一样。**
-   WB 侧与统一入口 `x-api-key` 和 `Authorization: Bearer` 都收；Trae 侧**只收 `Authorization: Bearer`**。
-   ⇒ Claude Code 接 Trae 网关时**必须用 `ANTHROPIC_AUTH_TOKEN`**（走 Bearer）；用 `ANTHROPIC_API_KEY`（走 `x-api-key`）会拿到 401。
+2. **两边的认证头规则不一样。**
+   WB 侧与统一入口 `x-api-key` 和 `Authorization: Bearer` 都收；Trae 侧**只收 `Authorization: Bearer`**（Qoder 侧同样只认 Bearer）。
+   ⇒ Claude Code 接 Trae / Qoder 网关时**必须用 `ANTHROPIC_AUTH_TOKEN`**（走 Bearer）；用 `ANTHROPIC_API_KEY`（走 `x-api-key`）会拿到 401。
 3. **端口不能合并。**
-   三套网关挂的路由**逐字重叠**（`/v1/models`、`/v1/chat/completions`），axum 同路径 merge 会**运行期 panic**。所以永远是三个端口、三个 Key 库、三份配置。
+   四套网关挂的路由**逐字重叠**（`/v1/models`、`/v1/chat/completions`），axum 同路径 merge 会**运行期 panic**。所以永远是四个端口、四个 Key 库、四份配置。
 
 ### 1.2 额度来源与区域
 
@@ -78,16 +81,30 @@
 |:---|:---|:---|
 | `wb-cn` / `wb-global` | ✅ 开 | WorkBuddy 国内版 / 国际版 |
 | `trae-cn` / `trae-global` | ✅ 开 | Trae **合并版**客户端（`Trae CN` / `Trae`） |
-| `traework-cn` / `traework-global` | ⬜ 关 | Trae 老程序线；**默认关是因为本机合并版客户端清单里没有它的分组**，开了只能读到兜底静态清单（假可用） |
-| `traecode-cn` / `traecode-global` | ⬜ 关 | TraeCode 遗留 IDE |
+| `qoder-cn` / `qoder-global` | ✅ 开 | Qoder 国内版 / 国际版 |
+
+> 命名空间**派生自作用域注册表**（`Scope::all()`）：共 6 条，全部默认启用。Trae 的两条老程序线（`traework-*` / `traecode-*`）已随「客户端合并」清空扩展层，不再出现在表里。
 
 **三条硬边界**：
 
 1. **解析只做整段精确匹配，禁止前缀匹配** —— `trae` / `traework` / `traecode` 互为前缀，任何 `starts_with` 式推断都会把请求发给另一套账号池。
-2. **跨作用域**：统一入口把两个产品线合成一个入口，因此**页面上的作用域选择器对它不生效**（卡 1 顶部有明确说明）。
-3. **它只是「借用」两个产品线的账号池**：统一入口不自己持有账号池；关掉统一入口不影响 57891 / 7864 的任何行为。
+2. **跨作用域**：统一入口把三条产品线合成一个入口，因此**页面上的作用域选择器对它不生效**（卡 1 顶部有明确说明）。
+3. **它只是「借用」三条产品线的账号池**：统一入口不自己持有账号池；关掉统一入口不影响 57891 / 57894 / 57895 的任何行为。
 
 > 架构与逐条决策见 [`redesign/UNIFIED-GATEWAY-ARCH.md`](redesign/UNIFIED-GATEWAY-ARCH.md)，交互规格见 [`redesign/UNIFIED-GATEWAY-UI.md`](redesign/UNIFIED-GATEWAY-UI.md)。
+
+### 1.4 Qoder 分区（2026-10-16 新增）
+
+| 项 | 值 |
+|:---|:---|
+| 默认监听端口 | `57895`（原 `7865`；只改默认值） |
+| OpenAI 基址 | `http://127.0.0.1:57895/v1` |
+| Anthropic 基址 | `http://127.0.0.1:57895`（`/v1/messages`） |
+| API Key 前缀 | `sk-qoder-` + 32 位 hex（与 `sk-wb-` / `sk-trae-` / `sk-uni-` 同族；原 `qd-` 前缀的老 Key **照常可用**，校验只比 sha256） |
+| 认证头 | **只认 `Authorization: Bearer`**（同 Trae） |
+| 区域归属 | **由 Key 的归属区域决定**（`cn` / `global`），一个监听同时服务两区 |
+| Key / 配置落盘 | `~/.buddy-switch/qoder/gateway_keys.json` / `gateway_config.json` |
+| 协议 | OpenAI（`/v1/models`、`/v1/chat/completions`、`/v1/responses`）+ Anthropic（`/v1/messages`） |
 
 ---
 
@@ -158,7 +175,7 @@ curl -s http://127.0.0.1:57891/v1/messages \
   -d '{"model":"<从清单里复制>","max_tokens":64,"messages":[{"role":"user","content":"hi"}]}'
 ```
 
-Trae 分区：把端口换成 `7864`，且**认证头统一用 `Authorization: Bearer`**（`x-api-key` 会被 401）。
+Trae 分区：把端口换成 `57894`，且**认证头统一用 `Authorization: Bearer`**（`x-api-key` 会被 401）。
 
 ### 2.7 错误对照表
 
@@ -207,7 +224,7 @@ model_provider = "buddy_switch_trae"
 
 [model_providers.buddy_switch_trae]
 name = "Buddy Switch (Trae)"
-base_url = "http://127.0.0.1:7864/v1"
+base_url = "http://127.0.0.1:57894/v1"
 env_key = "BUDDY_SWITCH_KEY"
 wire_api = "chat"
 ```
@@ -265,7 +282,7 @@ setx ANTHROPIC_MODEL "<模型 id>"
 }
 ```
 
-**接 Trae 网关**时：`ANTHROPIC_BASE_URL="http://127.0.0.1:7864"`，并且**必须**用 `ANTHROPIC_AUTH_TOKEN` —— Trae 侧只认 `Authorization: Bearer`，`ANTHROPIC_API_KEY` 会走 `x-api-key` 而被 401。
+**接 Trae 网关**时：`ANTHROPIC_BASE_URL="http://127.0.0.1:57894"`，并且**必须**用 `ANTHROPIC_AUTH_TOKEN` —— Trae 侧只认 `Authorization: Bearer`，`ANTHROPIC_API_KEY` 会走 `x-api-key` 而被 401。
 
 **验证**：`claude -p "只回复 ok"`。
 
@@ -340,7 +357,7 @@ llm-pi-ai:
 
 ```yaml
       api: anthropic-messages
-      baseURL: http://127.0.0.1:7864
+      baseURL: http://127.0.0.1:57894
 ```
 
 **兼容项（只在报错时才加）**
@@ -456,12 +473,12 @@ Trae IDE 与 SOLO 桌面端**支持自定义模型**（国内版 v3.3.51 起灰�
 | 字段 | WorkBuddy 网关 | Trae 网关 |
 |:---|:---|:---|
 | 服务商 / API 格式 | `OpenAI` | `OpenAI` |
-| 自定义请求地址 | `http://127.0.0.1:57891/v1/chat/completions` | `http://127.0.0.1:7864/v1/chat/completions` |
+| 自定义请求地址 | `http://127.0.0.1:57891/v1/chat/completions` | `http://127.0.0.1:57894/v1/chat/completions` |
 | 模型 ID | 从 `/v1/models` 复制 | 同左 |
 | API Key | `sk-wb-...` | `sk-trae-...` |
 | 多模态开关 | 按模型实际能力勾 | 同左 |
 
-> 想走 Anthropic 协议也可以：API 格式选 `Anthropic`，地址填 `http://127.0.0.1:57891/v1/messages`（Trae 网关则 `http://127.0.0.1:7864/v1/messages`）。但**只有 Trae 网关需要 Bearer**，Trae IDE 的 Anthropic 模式发什么头本仓未核实，**优先用 OpenAI 协议**。
+> 想走 Anthropic 协议也可以：API 格式选 `Anthropic`，地址填 `http://127.0.0.1:57891/v1/messages`（Trae 网关则 `http://127.0.0.1:57894/v1/messages`）。但**只有 Trae 网关需要 Bearer**，Trae IDE 的 Anthropic 模式发什么头本仓未核实，**优先用 OpenAI 协议**。
 
 **坑（都是社区踩出来的）**
 
@@ -534,17 +551,21 @@ Trae IDE 与 SOLO 桌面端**支持自定义模型**（国内版 v3.3.51 起灰�
 
 | 项 | 值 |
 |:---|:---|
+| `5789x` 一段的分工 | 57890 界面 · 57891 WB 网关 · 57892 统一入口 · 57893 hook · **57894 Trae 网关** · **57895 Qoder 网关** |
 | WorkBuddy 网关 | `127.0.0.1:57891` |
-| Trae 网关 | `127.0.0.1:7864` |
-| **统一入口（第三个入口，默认关）** | `127.0.0.1:57892` |
+| Trae 网关 | `127.0.0.1:57894`（原 `7864`） |
+| Qoder 网关 | `127.0.0.1:57895`（原 `7865`） |
+| **统一入口（第四个入口，默认关）** | `127.0.0.1:57892` |
 | Trae 本地 MITM 代理（登录态捕获用，**与网关无关**） | `8899` |
 | 外部 Agent hook 接收端（P15，**只绑回环**，客户端 hook 往这里 POST） | `127.0.0.1:57893` |
 | webui（界面本体） | `127.0.0.1:57890` |
 | 本工具数据根 | `~/.buddy-switch/`（可用 `BUDDY_SWITCH_HOME` 覆盖，值必须是**已存在的绝对目录**） |
 | WB 账号库 | `~/.buddy-switch/accounts.json` / `accounts.global.json` |
 | Trae 账号库 | `~/.buddy-switch/trae/checkin_accounts.json` / `.global.json` |
+| Qoder 账号库 | `~/.buddy-switch/qoder/accounts.cn.json` / `accounts.global.json` |
 | WB 网关 Key / 配置 | `~/.buddy-switch/gateway_keys.json` / `gateway_config.json` |
 | Trae 网关 Key / 配置 | `~/.buddy-switch/trae/api_gateway_keys.json` / `api_gateway.json` |
+| Qoder 网关 Key / 配置 | `~/.buddy-switch/qoder/gateway_keys.json` / `gateway_config.json` |
 | 统一入口 Key / 配置 | `~/.buddy-switch/gateway_unified_keys.json` / `gateway_unified.json` |
 
 ## 附录 B：已知偏差（界面接入指引的 Base URL）
@@ -568,7 +589,7 @@ Trae IDE 与 SOLO 桌面端**支持自定义模型**（国内版 v3.3.51 起灰�
 - 网关默认**只监听 `127.0.0.1`**。改成 `0.0.0.0` 需要二次风险确认 —— 局域网内任何设备都能消耗你的额度。
 - API Key **明文只在创建时返回一次**；库里只有 `sha256` + 前缀 4 位 + 尾 4 位，**不可逆推**。列表里的 `••••` 不是 Key。
 - Key 与 region / variant **强绑定**，客户端无法自行越域（跨域前缀默认返回 400，而非静默改名）。
-- Trae 网关**没有任何可用 Key 时拒绝一切请求**（不像某些实现「留空即不鉴权」）—— 任何人猜到 7864 端口也白嫖不到。
+- Trae 网关**没有任何可用 Key 时拒绝一切请求**（不像某些实现「留空即不鉴权」）—— 任何人猜到 57894 端口也白嫖不到。
 - 本工具的数据全部在 `~/.buddy-switch/` 下，不上传第三方。
 
 ---

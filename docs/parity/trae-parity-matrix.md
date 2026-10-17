@@ -184,7 +184,7 @@ TraeWork 的登录态灌进 TraeCode 槽位，那正是 `profiles_dir_for_progra
 
 | 编号 | WorkBuddy 侧 | Trae 侧现状 | 分类 | 优先级 |
 |:--|:--|:--|:--:|:--:|
-| G-P01 | 网关开关 + 监听地址/端口 `ApiServicePage.tsx`（WB 端口 57891） | 同构，端口 7864（`TraeApiServicePage.tsx:126-142`） | A | P0 |
+| G-P01 | 网关开关 + 监听地址/端口 `ApiServicePage.tsx`（WB 端口 57891） | 同构，端口 57894（`TraeApiServicePage.tsx:126-142`） | A | P0 |
 | G-P02 | 接入地址「按版本」`REGIONS.map` `ApiServicePage.tsx:188-205` | 单条 Base URL `TraeApiServicePage.tsx:397-418` | A | P0 |
 | G-P03 | 多 Key 表（list/create/revoke/delete）`ApiServicePage.tsx:208-212` + `gateway/api-key-table` | 单 Key 卡 `TraeApiServicePage.tsx:420-452`（只存一把 `TraeSettings::apiKey`） | C | P1 |
 | G-P04 | `AccountStrategyCard`（get/save_account_strategy） | 账号池卡 `TraeApiServicePage.tsx:454-551` | B | P2 |
@@ -288,7 +288,7 @@ WorkBuddy 命令表见 `src-tauri/src/lib.rs:155-217`；Trae 命令表见 `src-t
 | R-P0-3 | 作为 Trae 用户，我希望「全部签到」一步把签到+积分刷新都做完 | 点一次按钮后，卡片积分数字发生变化或出现「积分刷新失败」warning（`TraeAccountsPage.tsx:214-233`）；不得只签到不刷新 |
 | R-P0-4 | 作为 Trae 用户，我希望 Token 统计页有与 WorkBuddy 同形的总览与趋势 | 页面含总览指标区 + 每日趋势图；数据源提示 Alert 明确「只统计经过本机 Trae 网关的调用」（`TraeTokenStatsPage.tsx:204-217`） |
 | R-P0-5 | 作为 Trae 用户，我希望积分统计页有与 WorkBuddy 同形的指标卡与明细 | 页面含 ≥4 指标卡与账号积分明细表；总额=各账号剩余之和（`TraeAccountsPage.tsx:280-283` 口径一致） |
-| R-P0-6 | 作为 Trae 用户，我希望 API 服务页有与 WorkBuddy 同形的网关开关与接入地址 | 页面含网关开关 + 监听地址/端口 + 单条 Base URL；端口为 Trae 专用 7864，与 WB 57891 不冲突（`TraeApiServicePage.tsx:126-142`） |
+| R-P0-6 | 作为 Trae 用户，我希望 API 服务页有与 WorkBuddy 同形的网关开关与接入地址 | 页面含网关开关 + 监听地址/端口 + 单条 Base URL；端口为 Trae 专用 57894，与 WB 57891 不冲突（`TraeApiServicePage.tsx:126-142`） |
 | R-P0-7 | 作为 Trae 用户，我希望添加/导入/导出账号的对话框与 WorkBuddy 同形 | 三对话框与 WB 版同构；导入用 `hasJwt`、导出文件名 `trae-accounts-*.json`（`trae-import-accounts-dialog.tsx:176`、`trae-export-accounts-dialog.tsx:40-44`） |
 
 > P0 共 **7 条**（覆盖矩阵中的 18 条 P0 差距行）。

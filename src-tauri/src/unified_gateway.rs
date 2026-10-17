@@ -1,6 +1,6 @@
 //! 桌面宿主（Tauri）的**统一网关**接入（第三个产品线，默认 `127.0.0.1:57892`）。
 //!
-//! 与 [`crate::gateway`]（WorkBuddy 57891）/ [`crate::trae_gateway`]（Trae 7864）平行，
+//! 与 [`crate::gateway`]（WorkBuddy 57891）/ [`crate::trae_gateway`]（Trae 57894）平行，
 //! **各持一个泛型 [`GatewayHost`]** —— 三个入口、三个端口、三套 Key 库。
 //!
 //! ## 为什么必须是独立端口

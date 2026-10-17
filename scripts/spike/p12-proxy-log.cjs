@@ -53,7 +53,7 @@ const net = require("node:net");
 const fs = require("node:fs");
 const path = require("node:path");
 
-/** 默认监听端口。挑一个不常见的高位端口，避免和 7864（网关）等既有端口冲突。 */
+/** 默认监听端口。挑一个不常见的高位端口，避免和 57894（Trae 网关）等既有端口冲突。 */
 const DEFAULT_PORT = 18787;
 /** 默认只绑回环 —— 绝不对外监听。 */
 const DEFAULT_HOST = "127.0.0.1";

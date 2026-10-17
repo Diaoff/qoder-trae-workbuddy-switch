@@ -224,7 +224,7 @@ export const en = {
   "trae.page.settings.proxyPortLabel": "Local proxy port",
   "trae.page.settings.proxyPortDesc": "The listening port of the local MITM proxy; capturing the sign-in state depends on it.",
   "trae.page.settings.apiPortLabel": "API gateway port",
-  "trae.page.settings.apiPortDesc": "Defaults to 7864, deliberately clear of the WorkBuddy gateway (57891) — both serve /v1/chat/completions.",
+  "trae.page.settings.apiPortDesc": "Defaults to 57894, deliberately clear of the WorkBuddy gateway (57891) — both serve /v1/chat/completions.",
   "trae.page.settings.proxyDomainsLabel": "Proxy decryption domains",
   "trae.page.settings.proxyDomainsDesc": "Comma-separated. Only these domains are decrypted by the local proxy to capture the sign-in state; all other traffic stays on the encrypted tunnel.",
 

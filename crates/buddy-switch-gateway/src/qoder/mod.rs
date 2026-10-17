@@ -18,7 +18,7 @@
 //!
 //! 本产品线的 `/v1/models` / `/v1/chat/completions` / `/v1/messages` 与 WB / Trae
 //! **逐字重叠** —— axum 同路径 merge 会在**运行期 panic**。三个产品线各持 router、
-//! 各自端口（WB 57891 / Trae 7864 / **Qoder 7865** / 统一 57892），由
+//! 各自端口（WB 57891 / Trae 57894 / **Qoder 57895** / 统一 57892），由
 //! [`crate::GatewayProduct::OWNED_PATHS`] 显式声明所有权。
 //!
 //! ## 真机状态
@@ -51,8 +51,12 @@ use buddy_switch_core::modules::qoder::{account, api, cosy, paths};
 use crate::logging::RequestLog;
 use crate::{body_limit_bytes, GatewayProduct};
 
-/// Qoder 网关默认端口（与 WB 57891 / Trae 7864 / 统一 57892 / 界面 57890 错开）。
-pub const QODER_DEFAULT_API_PORT: u16 = 7865;
+/// Qoder 网关默认端口。
+///
+/// ★ 2026-10-17 由 `7865` 改为 `57895`：四条网关统一落在 `5789x` 一段
+/// （界面 57890 · WB 57891 · 统一 57892 · hook 57893 · Trae 57894 · **Qoder 57895**）。
+/// 只改默认值：已落盘的 `qoder/gateway_config.json` 里写着 `port` 的保持原端口。
+pub const QODER_DEFAULT_API_PORT: u16 = 57895;
 
 /// 模型清单缓存有效期（毫秒；10 分钟）。
 const CATALOG_TTL_MS: i64 = 10 * 60 * 1000;
@@ -483,7 +487,7 @@ pub struct StatusParts {
 ///
 /// ## 一个 Qoder 特有的取舍：**一个监听、两个区域**
 ///
-/// Qoder 网关只有一个独立监听（默认 7865），区域**由 API Key 的归属决定**
+/// Qoder 网关只有一个独立监听（默认 57895），区域**由 API Key 的归属决定**
 /// （`QoderKeyRegion`），因此 `enabled` / `port` / `running` 是**两个区域共用**的
 /// 同一份事实 —— 这正是响应体里不出现区域字段的另一个理由：这些键对两个区域
 /// 本来就是同一个值，按区域回显反而会造成「两个区域各有一个网关」的错觉。
@@ -681,8 +685,18 @@ mod tests {
     fn default_config_uses_dedicated_port() {
         let config = QoderGatewayConfig::default();
         assert_eq!(config.port, QODER_DEFAULT_API_PORT);
-        assert_ne!(config.port, 57891, "不得与 WB 网关撞端口");
-        assert_ne!(config.port, 7864, "不得与 Trae 网关撞端口");
+        // ★ 2026-10-17：四条网关统一落在 5789x 一段，本端口必须与**同段**的既有端口全部错开。
+        assert_eq!(config.port, 57895, "Qoder 网关默认端口应为 57895");
+        for taken in [
+            57890u16,                                                // 界面本体
+            57891,                                                   // WorkBuddy 网关
+            57892,                                                   // 统一网关
+            57893,                                                   // 客户端会话监听 hook
+            buddy_switch_core::modules::trae::TRAE_DEFAULT_API_PORT, // Trae 网关
+            8899,                                                    // Trae 登录代理
+        ] {
+            assert_ne!(config.port, taken, "不得与既有端口 {taken} 撞车");
+        }
         assert_eq!(
             config.base_url(),
             format!("http://127.0.0.1:{QODER_DEFAULT_API_PORT}")

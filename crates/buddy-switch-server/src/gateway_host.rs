@@ -12,7 +12,7 @@
 //!
 //! `buddy_switch_gateway::trae::router()` 也挂 `/v1/models` 与 `/v1/chat/completions`，
 //! 与 WorkBuddy 网关路径**逐字相同**。axum 的 `merge` 遇到同路径会直接 **panic**
-//! （**运行期崩**），故 Trae 网关只能走**自己的端口**（7864）——
+//! （**运行期崩**），故 Trae 网关只能走**自己的端口**（57894）——
 //! 见 [`crate::trae_gateway_host`]。泛化**不改变**端口分离。
 
 use std::sync::OnceLock;

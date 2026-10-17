@@ -212,8 +212,15 @@ pub const TRAE_HISTORY_KEEP_DAYS: i64 = 90;
 /// JWT 剩余有效期低于该值时告警（小时）。
 pub const TRAE_JWT_WARN_HOURS: f64 = 24.0;
 
-/// 账号池 / 网关默认端口（与 WorkBuddy 网关默认端口错开，避免同时监听冲突）。
-pub const TRAE_DEFAULT_API_PORT: u16 = 7864;
+/// 账号池 / 网关默认端口。
+///
+/// ★ 2026-10-17 由 `7864` 改为 `57894`：四条网关统一落在 `5789x` 一段
+/// （界面 57890 · WB 网关 57891 · 统一网关 57892 · hook 57893 · **Trae 57894** · Qoder 57895），
+/// 不再出现「WB 是 5789x、Trae/Qoder 是 78xx」这种看不出规律的混编。
+///
+/// ⚠️ 只改**默认值**：已落盘的 `trae/api_gateway.json` 里写着 `port` 的用户保持原端口不变；
+/// 想跟着迁移的，在「Trae 设置 → 网关」把端口改成新值即可（旧值不失效，只是不再是默认）。
+pub const TRAE_DEFAULT_API_PORT: u16 = 57894;
 
 /// 本地代理默认端口（与 WorkBuddy 侧无冲突；参考实现用 8899）。
 pub const TRAE_DEFAULT_PROXY_PORT: u16 = 8899;

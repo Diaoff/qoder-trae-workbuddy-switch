@@ -35,8 +35,8 @@ const MUTATE = Boolean(MUT);
 const MUTATIONS = {
   poolcount: {
     desc: "账号池数字写死（不再从 GATEWAY 的池里数出来）",
-    from: '  return { target, total: pool.length, available: count("可用"), low: count("余额偏低"), excluded: count("已排除") };',
-    to: '  return { target, total: pool.length, available: 9, low: count("余额偏低"), excluded: count("已排除") }; /* MUTATED */',
+    from: '  return { target, total: pool.length, available: count("可用"), low: pool.filter((x) => x.low && !x.excluded).length, excluded };',
+    to: '  return { target, total: pool.length, available: 9, low: pool.filter((x) => x.low && !x.excluded).length, excluded }; /* MUTATED */',
   },
   noaccount: {
     desc: "删掉「池里一个账号都没有」这一档（空池被当成有账号）",
@@ -257,12 +257,12 @@ function rowOf(doc, ns) {
     return "select.inp + 确认 + 取消还原（" + before + "）";
   });
 
-  check("概览分区：端口提示列全既有端口（界面/WB/Trae/Qoder/hook）", () => {
+  check("概览分区：端口提示列全既有端口（界面/WB/统一/Trae/Qoder/hook）", () => {
     const t = flat(dB.querySelector("#content").textContent);
-    for (const p of ["57890", "57891", "7864", "7865", "57893"]) {
+    for (const p of ["57890", "57891", "57892", "57893", "57894", "57895"]) {
       if (!t.includes(p)) throw new Error("端口提示漏了 " + p);
     }
-    return "57890 / 57891 / 7864 / 7865 / 57893";
+    return "57890 / 57891 / 57892 / 57893 / 57894 / 57895";
   });
 
   /* ── 命名空间分区 ── */
@@ -285,13 +285,24 @@ function rowOf(doc, ns) {
     return "账号池 / 可用性 均在";
   });
 
-  check("wb-cn 行的池数字 = 从 GATEWAY 池里数出来的值（2 可用 / 共 4）", () => {
+  check("wb-cn 行的池数字 = 从 GATEWAY 池里数出来的值（不写死数字）", () => {
+    /* ★ 期望值**从页面里的原始池数据现算**，不再写死「2 可用 / 共 4」：
+       写死数字的断言与它自己要守的性质（「不许把数字写死」）正好相反 ——
+       演示数据一改，它就会报一个与被测行为无关的红（2026-10-17 实测踩到）。
+       仍然有效：这里按「排除项不算可用」重算一遍，与 `uniPoolOf` 的结果比对，
+       两边任一侧漂移都会红。 */
+    const raw = JSON.parse(winB.eval('JSON.stringify(GATEWAY["wb-cn"].pool)'));
+    const expectAvailable = raw.filter((x) => !x.excluded && x.state === "可用").length;
     const e = JSON.parse(winB.eval("JSON.stringify(uniPoolOf('wb-cn'))"));
-    if (e.available !== 2 || e.total !== 4) throw new Error("池数字与 GATEWAY 不符：" + JSON.stringify(e));
+    if (e.available !== expectAvailable || e.total !== raw.length) {
+      throw new Error(`池数字与原始池数据不符：${JSON.stringify(e)} vs 期望 ${expectAvailable}/${raw.length}`);
+    }
     const tr = rowOf(dB, "wb-cn");
     if (!tr) throw new Error("表里找不到 wb-cn 行");
     const cell = flat(tr.children[4].textContent);
-    if (!cell.includes("2 可用") || !cell.includes("共 4 个")) throw new Error("账号池格不对：" + cell);
+    if (!cell.includes(`${expectAvailable} 可用`) || !cell.includes(`共 ${raw.length} 个`)) {
+      throw new Error("账号池格不对：" + cell);
+    }
     return cell;
   });
 

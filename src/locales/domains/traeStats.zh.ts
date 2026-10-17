@@ -117,7 +117,7 @@ export const zh = {
   "trae.stats.api.gateway.running": "运行中",
   "trae.stats.api.gateway.stopped": "已停止",
   "trae.stats.api.gateway.openDataDir": "打开数据目录",
-  "trae.stats.api.gateway.noteLead": "默认端口 7864，与 WorkBuddy 网关（57891）错开——两者都占用 ",
+  "trae.stats.api.gateway.noteLead": "默认端口 57894，与 WorkBuddy 网关（57891）错开——两者都占用 ",
   "trae.stats.api.gateway.noteTail": "。",
   "trae.stats.api.gateway.lanWarning": "局域网模式下，同网段任何设备拿到 Key 都能消耗你的 Trae 积分。",
   "trae.stats.api.gateway.lastError": "最近一次错误",

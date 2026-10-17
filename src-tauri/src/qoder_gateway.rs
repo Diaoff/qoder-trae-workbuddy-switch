@@ -13,7 +13,7 @@
 //! 2. 凭据形态是 **COSY 签名**（非 JWT / 非信封），上游是 Qoder 官方 openapi
 //!    （国内 `qoder.com.cn` / 国际 `qoder.com` 各一组候选主机）。
 //!
-//! ⚠️ 三个平台各持一个 router、各自端口（Qoder 7865 / Trae 7864 / WorkBuddy 57891），
+//! ⚠️ 三个平台各持一个 router、各自端口（Qoder 57895 / Trae 57894 / WorkBuddy 57891），
 //! **绝不 merge**（axum 同路径 merge 会 panic）。
 
 use std::sync::Mutex;

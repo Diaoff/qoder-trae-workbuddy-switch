@@ -370,7 +370,7 @@ pub async fn spawn_listener_with_state(
     let listener = TcpListener::bind(addr).await.map_err(|error| {
         anyhow::anyhow!(
             "无法监听 {addr}：端口可能被占用或不可用（{error}）。\
-             注意 57890 / 57891 / 7864 / 8899 已被界面本体与两个既有网关占用。"
+             注意 5789x 一段已排满：57890 界面 · 57891 WB 网关 · 57893 hook · 57894 Trae 网关 · 57895 Qoder 网关，另有 8899 Trae 登录代理。"
         )
     })?;
     let local = listener.local_addr().unwrap_or(addr);

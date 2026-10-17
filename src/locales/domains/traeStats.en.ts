@@ -108,7 +108,7 @@ export const en = {
   "trae.stats.api.gateway.running": "Running",
   "trae.stats.api.gateway.stopped": "Stopped",
   "trae.stats.api.gateway.openDataDir": "Open data directory",
-  "trae.stats.api.gateway.noteLead": "The default port is 7864, deliberately clear of the WorkBuddy gateway (57891) — both serve ",
+  "trae.stats.api.gateway.noteLead": "The default port is 57894, deliberately clear of the WorkBuddy gateway (57891) — both serve ",
   "trae.stats.api.gateway.noteTail": ".",
   "trae.stats.api.gateway.lanWarning": "In LAN mode, any device on the same network that gets hold of a key can spend your Trae credits.",
   "trae.stats.api.gateway.lastError": "Most recent error",
