@@ -213,11 +213,42 @@ pub async fn messages_for_region(
                     &model,
                 );
                 sse_response(AnthropicSseStream::new(
-                    crate::protocol::usage_tap::UsageTap::new(response.bytes_stream(), sinks),
+                    crate::protocol::usage_tap::UsageTap::new(response.bytes_stream(), sinks)
+                        // ★ 流内信封错误：与 chat 路由同一判据，只是错误体形状不同。
+                        .with_error_sink(relay::envelope_error_sink(&state, &uid, &model)),
                     model,
                 ))
             } else {
                 let text = response.text().await.unwrap_or_default();
+                // ★ 200 信封错误（P0-3）：与 chat 路由同一判据、同一治理副作用，
+                //   只是对外错误体走 Anthropic 形状。
+                if let Some(envelope) = crate::protocol::error_sniffer::sniff_http_body(&text) {
+                    relay::note_envelope_failure(&state, &uid, &model, &envelope.event).await;
+                    let elapsed_ms = started.elapsed().as_millis() as i64;
+                    state.log.record(
+                        RequestMeta {
+                            endpoint: "/v1/messages",
+                            method: "POST",
+                            region,
+                            account,
+                            account_uid: uid,
+                            model,
+                            status: envelope.status,
+                            latency_ms: header_at_ms,
+                            total_ms: elapsed_ms,
+                            prompt_tokens: 0,
+                            completion_tokens: 0,
+                            stream: false,
+                        }
+                        .to_value(),
+                    );
+                    return anthropic_error(crate::error::GatewayError::Upstream {
+                        kind: relay::upstream_kind_of(&envelope.event),
+                        status: envelope.status,
+                        message: envelope.message,
+                        attempts: Vec::new(),
+                    });
+                }
                 let message = aggregate_message(&text, &model);
                 let prompt_tokens = message
                     .get("usage")

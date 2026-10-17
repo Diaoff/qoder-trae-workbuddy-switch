@@ -112,6 +112,30 @@ impl StickyTable {
         self.bindings.remove(key);
     }
 
+    /// **按 uid 批量解绑**：清掉所有指向该账号的绑定，返回清掉的数量。
+    ///
+    /// ## 为什么必须有它（2026-10-17）
+    ///
+    /// 排除 / 禁用 / 删除账号之后，指向它的粘性绑定仍然存在。后果有两层：
+    ///
+    /// 1. **白跑一跳**：每个请求都要先 `is_usable` 判一次「它还能不能用」再解绑；
+    /// 2. **状态自相矛盾**：界面上「粘性」徽标挂在一个「已排除」的行上。
+    ///
+    /// 按 key 一个个解绑做不到这件事 —— 调用方根本不知道有哪些会话绑在它身上。
+    ///
+    /// 遍历全表是 O(绑定数)，但**这个函数的调用频率是「用户点一次排除」**，
+    /// 不是每请求一次；而绑定表在 TTL 内只有几十条。不值得为它加反向索引
+    /// （那要多维护一份 `uid → keys` 的一致性，出错方式更隐蔽）。
+    pub fn purge_uid(&mut self, uid: &str) -> usize {
+        if uid.is_empty() {
+            return 0;
+        }
+        let before = self.bindings.len();
+        self.bindings
+            .retain(|_, binding| binding.uid.as_str() != uid);
+        before - self.bindings.len()
+    }
+
     /// 清理过期条目，返回清理数量。
     pub fn gc(&mut self, now_ms: i64) -> usize {
         let ttl = self.ttl_ms;

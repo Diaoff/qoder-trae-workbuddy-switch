@@ -73,11 +73,53 @@ const WEIGHT_EPSILON: f64 = 1e-9;
 /// 加权抽签的定点缩放。
 const DRAW_SCALE: f64 = 1_000_000.0;
 
+/// 选号策略 —— **只影响「在合格候选里挑谁」**，不影响任何硬过滤。
+///
+/// 与 `AccountStrategy` 一一对应（`Current` → [`Self::Weighted`]、`MaxCredits` →
+/// [`Self::MaxCredits`]、`Random` → [`Self::Random`]；`Pinned` 走「偏好」而不是这里）。
+///
+/// ★ 为什么是一个枚举而不是若干 bool：这几种策略**互斥**。做成 bool 会出现
+/// 「既按积分择优又随机」这种语义上不可能成立的组合，而 UI 上很容易点出来。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum PickMode {
+    /// 六因子权重 → 成本分层 → Top-N 短名单 → 加权抽签（默认）。
+    #[default]
+    Weighted,
+    /// 候选内**积分最高者**（`AccountStrategy::MaxCredits`）。
+    MaxCredits,
+    /// 候选内**均匀抽签**（`AccountStrategy::Random`）：不看权重，用于把额度平均分摊。
+    ///
+    /// 与 `Weighted` 的区别是「有偏 / 无偏」：加权抽签仍然偏爱积分多、闲置久的号，
+    /// 长期看会把某几个号抽干。用户明确要「平均分摊」时只有均匀抽签能满足。
+    Random,
+}
+
+/// 一次选号的**输入**（把 6 个同类型的参数收成一个结构体）。
+///
+/// 收成结构体不是为了少打字，而是因为 `realm` / `model` / `tried` / `excluded` 全是
+/// `&HashSet<String>` / `Option<RealmTag>` 这类**同形状**参数 —— 位置传参一旦顺序写反，
+/// 编译器不会报错（都是引用），只会静默换错语义。
+pub struct PickInput<'a> {
+    /// 归属域过滤（`None` = 不限）。
+    pub realm: Option<RealmTag>,
+    /// 本次请求的模型（决定模型级冷却是否命中）。
+    pub model: &'a str,
+    /// 本轮已试过的 uid（换号重试时由调用方累加）。
+    pub tried: &'a HashSet<String>,
+    /// 用户显式排除的 uid（**硬约束**：自动选号、兜底、偏好一律跳过）。
+    pub excluded: &'a HashSet<String>,
+    /// 选号策略。
+    pub mode: PickMode,
+    /// 抽签种子（生产用时间戳+序号，测试用固定值以保证可复现）。
+    pub seed: u64,
+}
+
 /// 候选快照（不持有对池的借用）。
 #[derive(Debug, Clone)]
 struct Candidate {
     uid: String,
     weight: f64,
+    credits: i64,
     cost_per_1k: f64,
     used_seq: u64,
     last_used_ms: i64,
@@ -108,6 +150,56 @@ pub fn weight_of<E: PoolEntryLike>(
     now_ms: i64,
     policy: &PickPolicy,
 ) -> f64 {
+    // 账号级版本：成功/错误率都取**账号维度** EMA（与改造前逐字相同）。
+    weight_with_ema(
+        entry,
+        max_credits,
+        now_ms,
+        policy,
+        entry.success_ema().max(0.0),
+        entry.error_ema().max(0.0),
+    )
+}
+
+/// **分模型**版本的权重（O6）：该模型有足够样本就用它的 EMA，否则回落到账号级。
+///
+/// ## 为什么需要它
+///
+/// 账号级 EMA 会把「在这个模型上老失败」摊到**所有**模型头上：一个号在 A 模型上
+/// 连吃 429，它在 B 模型上的权重也被一起拖下去 —— 可它其实完全能服务 B。
+/// 那是**错杀**：用户看到的是「明明换个模型就好，网关却一直不用这个号」。
+///
+/// 回落到账号级（而不是「没样本就当中性」）是有意的：新号 / 新模型上，
+/// 账号的整体表现仍然是唯一可用的证据。
+pub fn weight_of_model<E: PoolEntryLike>(
+    entry: &E,
+    max_credits: i64,
+    now_ms: i64,
+    policy: &PickPolicy,
+    model: &str,
+) -> f64 {
+    let (success, error) = entry
+        .model_ema(model)
+        .unwrap_or((entry.success_ema().max(0.0), entry.error_ema().max(0.0)));
+    weight_with_ema(
+        entry,
+        max_credits,
+        now_ms,
+        policy,
+        success.max(0.0),
+        error.max(0.0),
+    )
+}
+
+/// 权重计算的**唯一实现**（两个公开入口只差「取哪一份 EMA」）。
+fn weight_with_ema<E: PoolEntryLike>(
+    entry: &E,
+    max_credits: i64,
+    now_ms: i64,
+    policy: &PickPolicy,
+    success: f64,
+    error: f64,
+) -> f64 {
     let mut weight = 1.0;
 
     let credits = entry.credits();
@@ -128,8 +220,8 @@ pub fn weight_of<E: PoolEntryLike>(
 
     weight += idle_weight(entry.last_used_ms(), now_ms, policy);
 
-    let success = entry.success_ema().max(0.0);
-    let error = entry.error_ema().max(0.0);
+    let success = success.max(0.0);
+    let error = error.max(0.0);
     let total = success + error;
     weight += if total > 0.0 {
         (success / total) * 3.0
@@ -151,6 +243,67 @@ fn idle_weight(last_used_ms: i64, now_ms: i64, policy: &PickPolicy) -> f64 {
     (hours * policy.idle_weight_per_hour).clamp(0.0, policy.idle_weight_max.max(0.0))
 }
 
+/// 「指定账号」下拉里的**策略哨兵值**（占位 uid）。
+///
+/// ## 为什么把策略编码进「偏好值」，而不是给两条产品线各加一个配置字段
+///
+/// Trae / Qoder 的配置里已经有 `preferredUid`（一个字符串，配合前端同一张池卡的
+/// 下拉框）。再加一个 `pickMode` 字段意味着：两份配置结构、两个端点参数、两个前端状态
+/// —— 而它们表达的其实是**同一个控件的一个取值**。
+///
+/// 前端早就有这套约定（`AUTO_OPTION = "__auto__"` / `MAX_CREDITS_OPTION = "__max_credits__"`），
+/// 这里只是把它变成**后端也认**的语义（否则用户选「按积分择优」在 Trae 侧会被当成一个
+/// 不存在的 uid，静默回落到加权 —— 又一个「假开关」）。
+///
+/// 三个值与前端常量**逐字相同**，改任何一处都必须同步（`parse_preferred` 的用例钉住）。
+pub const PREFERRED_AUTO: &str = "__auto__";
+/// 「按积分择优」（候选内积分最高者）。
+pub const PREFERRED_MAX_CREDITS: &str = "__max_credits__";
+/// 「随机」（候选内均匀抽签）。
+pub const PREFERRED_RANDOM: &str = "__random__";
+
+/// 把「偏好值」解析成 `(选号策略, 真正的偏好 uid)`。
+///
+/// - 哨兵值 ⇒ 对应策略 + **无偏好**（策略本身就是「不指定某个号」）；
+/// - 普通非空串 ⇒ 加权 + 该 uid 作偏好（仍是偏好而非约束，见 `pick_with_preference`）；
+/// - 空 / `None` ⇒ 加权 + 无偏好（默认行为，与改造前逐字相同）。
+pub fn parse_preferred(value: Option<&str>) -> (PickMode, Option<&str>) {
+    match value.map(str::trim) {
+        Some(PREFERRED_MAX_CREDITS) => (PickMode::MaxCredits, None),
+        Some(PREFERRED_RANDOM) => (PickMode::Random, None),
+        Some(PREFERRED_AUTO) | None => (PickMode::Weighted, None),
+        Some(uid) if uid.is_empty() => (PickMode::Weighted, None),
+        Some(uid) => (PickMode::Weighted, Some(uid)),
+    }
+}
+
+/// 空的排除集（「不排除任何账号」的默认值）。
+/// 用一个静态单例而不是到处 `&HashSet::new()`：后者要在每个调用点持有临时变量，
+/// 容易写成 `&HashSet::new()` 的悬垂借用；且「没有排除」是最常见的默认值。
+pub fn no_exclusions() -> &'static HashSet<String> {
+    static EMPTY: std::sync::OnceLock<HashSet<String>> = std::sync::OnceLock::new();
+    EMPTY.get_or_init(HashSet::new)
+}
+
+impl<'a> PickInput<'a> {
+    /// 测试与「无排除 / 默认策略」调用点的便捷构造。
+    pub fn new(
+        realm: Option<RealmTag>,
+        model: &'a str,
+        tried: &'a HashSet<String>,
+        seed: u64,
+    ) -> Self {
+        Self {
+            realm,
+            model,
+            tried,
+            excluded: no_exclusions(),
+            mode: PickMode::Weighted,
+            seed,
+        }
+    }
+}
+
 /// 该账号是否已占满在途额度。
 /// 单条目的可用性判据 —— **唯一来源**。
 ///
@@ -166,10 +319,25 @@ fn entry_usable<E: PoolEntryLike>(
     now_ms: i64,
     model: &str,
 ) -> bool {
-    entry.healthy_for_request(now_ms, model) && !in_flight_full(entry, policy)
+    entry.healthy_for_request(now_ms, model) && !in_flight_full(entry, policy, now_ms)
 }
 
-/// 指定 uid 此刻是否可用于该请求（**与 [`pick`] 同一套判据**，见 [`entry_usable`]）。
+/// 「此刻能不能被选中」= 健康 ∧ 未占满在途 ∧ **不在排除名单里**。
+///
+/// 排除与「健康」正交：前者是**用户意图**（不想让网关用它），后者是账号状态。
+/// 但两者对选号的后果相同 —— 都不能选。因此必须收敛到**同一个谓词**上，
+/// 否则「自动选号跳过了、偏好/兜底没跳过」这类缺陷一定会出现（且不报错）。
+fn selectable<E: PoolEntryLike>(
+    entry: &E,
+    policy: &PickPolicy,
+    now_ms: i64,
+    model: &str,
+    excluded: &HashSet<String>,
+) -> bool {
+    !excluded.contains(entry.uid()) && entry_usable(entry, policy, now_ms, model)
+}
+
+/// 指定 uid 此刻是否可用于该请求（**与 [`pick`] 同一套判据**，见 [`selectable`]）。
 ///
 /// 供**会话粘性**与**指定账号偏好**使用：两者都要先问「那个账号还能不能用」，
 /// 能用就复用、不能用就换号。
@@ -179,38 +347,39 @@ pub fn is_usable<E: PoolEntryLike>(
     uid: &str,
     now_ms: i64,
     model: &str,
+    excluded: &HashSet<String>,
 ) -> bool {
     entries
         .get(uid)
-        .map(|entry| entry_usable(entry, policy, now_ms, model))
+        .map(|entry| selectable(entry, policy, now_ms, model, excluded))
         .unwrap_or(false)
 }
 
-fn in_flight_full<E: PoolEntryLike>(entry: &E, policy: &PickPolicy) -> bool {
+fn in_flight_full<E: PoolEntryLike>(entry: &E, policy: &PickPolicy, now_ms: i64) -> bool {
     let limit = match entry.realm() {
         Some(RealmTag::Global) if policy.max_in_flight_global > 0 => policy.max_in_flight_global,
         _ => policy.max_in_flight,
     };
     // 0 = 不限（计数仍累加，但永不拒绝）。
-    limit > 0 && entry.in_flight() >= limit
+    //
+    // ★ 用 `in_flight_now`（**自愈版**）而不是裸计数：acquire/release 是手写配对，
+    //   请求被 drop 时会泄漏；裸计数会让账号被永久判成「在途已满」而再也选不中，
+    //   界面上却仍显示「可用」—— 正是「账号看着正常、请求一直失败」的一种。
+    limit > 0 && entry.in_flight_now(now_ms) >= limit
 }
 
 /// 从池中选出一个账号；返回被选中账号的 uid。
 ///
-/// `tried` 是本轮已尝试过的 uid（换号重试时由调用方累加）。
-/// `seed` 决定抽签与洗牌结果——生产用时间戳+序号，测试用固定值以保证可复现。
+/// 输入全部收在 [`PickInput`] 里（域 / 模型 / 已试 / 排除 / 策略 / 种子）。
 ///
-/// ★ 泛型化：算法只通过 [`PoolEntryLike`] 读取条目，因此 WorkBuddy 与 Trae
+/// ★ 泛型化：算法只通过 [`PoolEntryLike`] 读取条目，因此 WorkBuddy / Trae / Qoder
 /// 共用同一套选号语义。需要「优先某个账号」请用 [`pick_with_preference`]。
 pub fn pick<E: PoolEntryLike>(
     entries: &mut BTreeMap<String, E>,
     pick_seq: &mut u64,
     policy: &PickPolicy,
     now_ms: i64,
-    realm: Option<RealmTag>,
-    model: &str,
-    tried: &HashSet<String>,
-    seed: u64,
+    input: &PickInput<'_>,
 ) -> Option<String> {
     // 惰性清理过期的模型级冷却（与选号共用同一次写锁窗口）。
     for entry in entries.values_mut() {
@@ -220,9 +389,10 @@ pub fn pick<E: PoolEntryLike>(
     let candidate_uids: Vec<String> = entries
         .values()
         .filter(|entry| {
-            !tried.contains(entry.uid())
-                && entry_usable(*entry, policy, now_ms, model)
-                && realm
+            !input.tried.contains(entry.uid())
+                && selectable(*entry, policy, now_ms, input.model, input.excluded)
+                && input
+                    .realm
                     .map(|wanted| entry.realm() == Some(wanted))
                     .unwrap_or(true)
         })
@@ -230,7 +400,7 @@ pub fn pick<E: PoolEntryLike>(
         .collect();
 
     if candidate_uids.is_empty() {
-        return pick_earliest_expiry(entries, policy, now_ms, realm, tried);
+        return pick_earliest_expiry(entries, policy, now_ms, input);
     }
 
     // 归一化基准：分层过滤**之前**的候选集最大值。
@@ -246,12 +416,13 @@ pub fn pick<E: PoolEntryLike>(
         .filter_map(|uid| entries.get(uid))
         .map(|entry| Candidate {
             uid: entry.uid().to_string(),
-            weight: weight_of(entry, max_credits, now_ms, policy),
-            cost_per_1k: entry.cost_per_1k(now_ms, model, policy.model_cost_ttl_ms),
+            weight: weight_of_model(entry, max_credits, now_ms, policy, input.model),
+            credits: entry.credits(),
+            cost_per_1k: entry.cost_per_1k(now_ms, input.model, policy.model_cost_ttl_ms),
             used_seq: entry.used_seq(),
             last_used_ms: entry.last_used_ms(),
             tier: entry
-                .cost_tier(now_ms, model, policy.model_cost_ttl_ms)
+                .cost_tier(now_ms, input.model, policy.model_cost_ttl_ms)
                 .rank(),
         })
         .collect();
@@ -266,9 +437,41 @@ pub fn pick<E: PoolEntryLike>(
         .unwrap_or(CostTier::Unknown.rank());
     candidates.retain(|candidate| candidate.tier == best_tier);
 
+    // ★★ 策略分流**必须发生在成本分层之后**：
+    //    否则「随机」会随机到收费号上 —— 那不是「平均分摊」，是「随机花积分」。
+    match input.mode {
+        PickMode::Random => {
+            // 均匀抽签：先按 uid 排序（`BTreeMap` 的遍历序天然有序，但 `retain` 之后
+            // 仍要显式排序才不依赖实现细节），再取一个下标 ⇒ 同 seed 同结果。
+            candidates.sort_by(|left, right| left.uid.cmp(&right.uid));
+            let mut rng = Pcg32::new(input.seed, candidates.len() as u64 + 1);
+            let index = rng.below(candidates.len() as u64) as usize;
+            let uid = candidates[index].uid.clone();
+            return Some(mark_selected(entries, uid, now_ms, pick_seq));
+        }
+        PickMode::MaxCredits => {
+            // 积分降序；并列时用权重、再并列用 uid，保证可复现。
+            candidates.sort_by(|left, right| {
+                right
+                    .credits
+                    .cmp(&left.credits)
+                    .then(
+                        right
+                            .weight
+                            .partial_cmp(&left.weight)
+                            .unwrap_or(std::cmp::Ordering::Equal),
+                    )
+                    .then(left.uid.cmp(&right.uid))
+            });
+            let uid = candidates.first()?.uid.clone();
+            return Some(mark_selected(entries, uid, now_ms, pick_seq));
+        }
+        PickMode::Weighted => {}
+    }
+
     // 等权重洗牌：仅当候选超过短名单长度且存在权重并列时执行。
     // 作用：让并列组的 Top-5 不总是同一批 uid（否则短名单会退化成 uid 序前 5 名）。
-    let mut rng = Pcg32::new(seed, candidates.len() as u64 + 1);
+    let mut rng = Pcg32::new(input.seed, candidates.len() as u64 + 1);
     if candidates.len() > SHORTLIST_SIZE {
         let reference = candidates[0].weight;
         let has_tie = candidates
@@ -320,13 +523,24 @@ pub fn pick<E: PoolEntryLike>(
         draw_weighted(&eligible, &mut rng).map(|candidate| candidate.uid.clone())
     };
 
-    chosen_uid.map(|uid| {
-        *pick_seq += 1;
-        if let Some(entry) = entries.get_mut(&uid) {
-            entry.mark_picked(now_ms, *pick_seq);
-        }
-        uid
-    })
+    chosen_uid.map(|uid| mark_selected(entries, uid, now_ms, pick_seq))
+}
+
+/// 记一次「被选中」：推进 `pick_seq` 并写回 `last_used` / `used_seq`。
+///
+/// 三条出口（加权 / 积分择优 / 随机）共用它 —— 否则「随机模式下 LRU 语义不生效」
+/// 这类缺陷会藏在一个分支里，而三个分支的测试都得各写一遍。
+fn mark_selected<E: PoolEntryLike>(
+    entries: &mut BTreeMap<String, E>,
+    uid: String,
+    now_ms: i64,
+    pick_seq: &mut u64,
+) -> String {
+    *pick_seq += 1;
+    if let Some(entry) = entries.get_mut(&uid) {
+        entry.mark_picked(now_ms, *pick_seq);
+    }
+    uid
 }
 
 /// 带「指定账号」偏好的选号：**偏好可用则优先，不可用则回落通用选号**。
@@ -347,32 +561,29 @@ pub fn pick<E: PoolEntryLike>(
 ///    症状是「明明有别的号可用却一直失败」且**不报错**。
 ///
 /// 命中偏好时同样推进 `pick_seq` 与 `used_seq`（它确实被使用了，应参与 LRU 语义）。
+///
+/// ★ `excluded` 也在这里生效：**指定一个被排除的账号同样不可用**（硬排除语义），
+/// 会直接回落到通用选号 —— 而不是「排除只对自动选号生效」这种两套规则。
 pub fn pick_with_preference<E: PoolEntryLike>(
     entries: &mut BTreeMap<String, E>,
     pick_seq: &mut u64,
     policy: &PickPolicy,
     now_ms: i64,
-    realm: Option<RealmTag>,
-    model: &str,
-    tried: &HashSet<String>,
-    seed: u64,
+    input: &PickInput<'_>,
     preferred_uid: Option<&str>,
 ) -> Option<String> {
     if let Some(uid) = preferred_uid {
-        let preferred_usable = !tried.contains(uid)
-            && is_usable(entries, policy, uid, now_ms, model)
-            && realm
+        let preferred_usable = !input.tried.contains(uid)
+            && is_usable(entries, policy, uid, now_ms, input.model, input.excluded)
+            && input
+                .realm
                 .map(|wanted| entries.get(uid).and_then(|entry| entry.realm()) == Some(wanted))
                 .unwrap_or(true);
         if preferred_usable {
-            *pick_seq += 1;
-            if let Some(entry) = entries.get_mut(uid) {
-                entry.mark_picked(now_ms, *pick_seq);
-            }
-            return Some(uid.to_string());
+            return Some(mark_selected(entries, uid.to_string(), now_ms, pick_seq));
         }
     }
-    pick(entries, pick_seq, policy, now_ms, realm, model, tried, seed)
+    pick(entries, pick_seq, policy, now_ms, input)
 }
 
 /// 加权抽签：`wi = round(w * 1e6)`，下界 1；前缀累积首个命中者胜出。
@@ -408,28 +619,30 @@ fn draw_weighted<'a>(items: &[&'a Candidate], rng: &mut Pcg32) -> Option<&'a Can
 
 /// 全冷却兜底：池内无健康候选时，挑「最早解冻」的账号强试一次。
 ///
-/// 约束：非 `tried`、realm 匹配、非禁用、**排除仍在有效硬冷却中的账号**
+/// 约束：非 `tried`、realm 匹配、非禁用、**未被排除**、**排除仍在有效硬冷却中的账号**
 /// （硬冷却意味着余额不足，强试必然再失败且浪费一次上游调用）。
 /// 不推进 `used_seq`（它只是「试一下」，不应影响 LRU 语义）。
 fn pick_earliest_expiry<E: PoolEntryLike>(
     entries: &mut BTreeMap<String, E>,
     policy: &PickPolicy,
     now_ms: i64,
-    realm: Option<RealmTag>,
-    tried: &HashSet<String>,
+    input: &PickInput<'_>,
 ) -> Option<String> {
     let candidate = entries
         .values()
         .filter(|entry| {
-            if tried.contains(entry.uid()) || entry.is_disabled() {
+            if input.tried.contains(entry.uid())
+                || entry.is_disabled()
+                || input.excluded.contains(entry.uid())
+            {
                 return false;
             }
-            if let Some(wanted) = realm {
+            if let Some(wanted) = input.realm {
                 if entry.realm() != Some(wanted) {
                     return false;
                 }
             }
-            if in_flight_full(*entry, policy) {
+            if in_flight_full(*entry, policy, now_ms) {
                 return false;
             }
             // 硬冷却期间余额不足，强试无意义。
@@ -481,6 +694,121 @@ mod tests {
     }
 
     const NOW: i64 = 1_000_000_000_000;
+
+    /// 测试用简写：默认策略（加权）+ 不排除任何账号。
+    ///
+    /// `PickInput` 是生产签名的唯一入口；这里保留旧的位置参数形式，是为了让
+    /// 二十多个既有选号用例**逐字不动** —— 它们测的是算法，不是参数打包。
+    fn pick(
+        entries: &mut BTreeMap<String, PoolEntry>,
+        pick_seq: &mut u64,
+        policy: &PickPolicy,
+        now_ms: i64,
+        realm: Option<RealmTag>,
+        model: &str,
+        tried: &HashSet<String>,
+        seed: u64,
+    ) -> Option<String> {
+        super::pick(
+            entries,
+            pick_seq,
+            policy,
+            now_ms,
+            &PickInput::new(realm, model, tried, seed),
+        )
+    }
+
+    /// 同上，用于 `is_usable`（不排除任何账号）。
+    fn is_usable(
+        entries: &BTreeMap<String, PoolEntry>,
+        policy: &PickPolicy,
+        uid: &str,
+        now_ms: i64,
+        model: &str,
+    ) -> bool {
+        super::is_usable(entries, policy, uid, now_ms, model, no_exclusions())
+    }
+
+    /// ★ O6：**分模型** EMA —— 账号级 EMA 相同，但「在 A 模型上老失败」不能拖累
+    /// 它在 B 模型上的权重（那是错杀：换个模型明明就能用）。
+    ///
+    /// 变异：把 `weight_of_model` 改回恒用账号级 EMA ⇒ 第二条断言红。
+    #[test]
+    fn model_scoped_ema_does_not_punish_other_models() {
+        let mut flaky = base_entry("flaky");
+        let mut clean = base_entry("clean");
+        // 两者账号级 EMA 完全相同（中性 0.5 / 0.5）—— 只有**分模型**证据不同。
+        for entry in [&mut flaky, &mut clean] {
+            entry.success_ema = 0.5;
+            entry.error_ema = 0.5;
+        }
+        for _ in 0..3 {
+            flaky.note_model_result("mA", false);
+        }
+        for _ in 0..3 {
+            flaky.note_model_result("mB", true);
+        }
+
+        let bad_model = weight_of_model(&flaky, 0, NOW, &policy(), "mA");
+        let good_model = weight_of_model(&flaky, 0, NOW, &policy(), "mB");
+        let neutral = weight_of_model(&clean, 0, NOW, &policy(), "mB");
+
+        assert!(
+            good_model > bad_model,
+            "同一账号在「它能用的模型」上权重必须更高：mB={good_model} mA={bad_model}"
+        );
+        assert!(
+            good_model > neutral,
+            "有该模型成功证据的号必须高于只有账号级中性证据的号：{good_model} vs {neutral}"
+        );
+
+        // 样本不足 ⇒ 回落到账号级（1 次偶发失败不该改变评价）。
+        let mut fresh = base_entry("fresh");
+        fresh.success_ema = 0.5;
+        fresh.error_ema = 0.5;
+        fresh.note_model_result("mC", false);
+        assert!(
+            (weight_of_model(&fresh, 0, NOW, &policy(), "mC")
+                - weight_of(&fresh, 0, NOW, &policy()))
+            .abs()
+                < 1e-9,
+            "样本 < MODEL_EMA_MIN_SAMPLES 时必须回落到账号级 EMA"
+        );
+    }
+
+    /// ★ 偏好值 → 策略的解析（Trae / Qoder 的策略下拉就靠它）。
+    ///
+    /// 三个哨兵值必须与前端常量**逐字相同**（`AUTO_OPTION` / `MAX_CREDITS_OPTION`）——
+    /// 否则用户选了「按积分择优」，后端会把它当成一个不存在的 uid 静默回落加权，
+    /// 那就是**假开关**（本仓对这类缺陷零容忍）。
+    #[test]
+    fn parse_preferred_maps_sentinels_to_modes() {
+        assert_eq!(parse_preferred(None), (PickMode::Weighted, None));
+        assert_eq!(parse_preferred(Some("")), (PickMode::Weighted, None));
+        assert_eq!(parse_preferred(Some("  ")), (PickMode::Weighted, None));
+        assert_eq!(
+            parse_preferred(Some(PREFERRED_AUTO)),
+            (PickMode::Weighted, None)
+        );
+        assert_eq!(
+            parse_preferred(Some(PREFERRED_MAX_CREDITS)),
+            (PickMode::MaxCredits, None)
+        );
+        assert_eq!(
+            parse_preferred(Some(PREFERRED_RANDOM)),
+            (PickMode::Random, None)
+        );
+        // 普通 uid ⇒ 仍是「偏好」（不是策略）
+        assert_eq!(
+            parse_preferred(Some("uid-1")),
+            (PickMode::Weighted, Some("uid-1"))
+        );
+        // 前后空白要吃掉（前端偶尔会带）
+        assert_eq!(
+            parse_preferred(Some(" __random__ ")),
+            (PickMode::Random, None)
+        );
+    }
 
     #[test]
     fn weight_increases_with_credit_ratio_and_is_bounded() {
@@ -981,6 +1309,7 @@ mod tests {
         let heavy = Candidate {
             uid: "heavy".to_string(),
             weight: 1000.0,
+            credits: 0,
             cost_per_1k: 0.0,
             used_seq: 1,
             last_used_ms: 0,
@@ -989,6 +1318,7 @@ mod tests {
         let light = Candidate {
             uid: "light".to_string(),
             weight: 1.0,
+            credits: 0,
             cost_per_1k: 0.0,
             used_seq: 2,
             last_used_ms: 0,
@@ -1016,6 +1346,7 @@ mod tests {
         let zero = Candidate {
             uid: "z".to_string(),
             weight: 0.0,
+            credits: 0,
             cost_per_1k: 0.0,
             used_seq: 1,
             last_used_ms: 0,

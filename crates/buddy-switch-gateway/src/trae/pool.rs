@@ -333,6 +333,16 @@ impl TraePool {
     ///
     /// ## 指定账号
     ///
+    /// 本池的排除表作用域键（`trae:<variant>`）。
+    fn exclusion_scope(&self) -> String {
+        format!("trae:{}", self.variant.as_str())
+    }
+
+    /// 用户显式排除的 uid 集合（管理面视图与选号共用同一份读口）。
+    fn excluded_map(&self) -> std::collections::BTreeMap<String, String> {
+        crate::pool::exclusions::load_for(&self.exclusion_scope())
+    }
+
     /// `preferred_uid` 可用则优先选中；**不可用则回落到通用选号** ——
     /// 偏好是优化而非约束，绝不因为偏好账号不可用就拒绝服务。
     pub fn pick(
@@ -352,15 +362,29 @@ impl TraePool {
 
         // `now` 是 Unix 秒（沿用本模块既有口径），共用内核要求毫秒 ⇒ 在此换算。
         let seed = (now.max(0) as u64) ^ self.pick_seq;
+        // 用户显式排除的账号：**硬约束**，选号 / 兜底 / 偏好一律跳过。
+        // scope 键按变体分家（`trae:trae_work` / `trae:trae_cn` / `trae:global` …）——
+        // 两条产品线的账号库本就分家，排除表也必须分家。
+        let excluded = crate::pool::exclusions::uid_set(&format!("trae:{}", self.variant.as_str()));
+        // 偏好值里可能装着**策略哨兵**（`__max_credits__` / `__random__`）——
+        // 那是前端同一张池卡的下拉选项，必须在这里解释成策略，否则：
+        // - 当成 uid ⇒ 一个不存在的号，静默回落到加权（「按积分择优」变成假开关）；
+        // - 只认 `__auto__` ⇒ 用户在 Trae 页选了随机也没人理。
+        let (mode, preferred_uid) = crate::pool::parse_preferred(preferred_uid);
+        let input = crate::pool::PickInput {
+            realm: None,
+            model: "",
+            tried,
+            excluded: &excluded,
+            mode,
+            seed,
+        };
         let uid = pick_with_preference(
             &mut candidates,
             &mut self.pick_seq,
             &trae_pick_policy(),
             now.saturating_mul(1000),
-            None,
-            "",
-            tried,
-            seed,
+            &input,
             preferred_uid,
         )?;
 
@@ -440,8 +464,13 @@ impl TraePool {
             total: self.entries.len(),
             ..PoolSummary::default()
         };
+        let excluded = self.excluded_map();
         for entry in &self.entries {
-            if entry.disabled {
+            // ★ 排除优先于一切：它决定「能不能被选中」，因此必须从 `available` 里扣掉
+            //   （否则卡片说「N 可用」而实际少一个 —— 数字与事实不符）。
+            if excluded.contains_key(&entry.uid) {
+                summary.excluded += 1;
+            } else if entry.disabled {
                 summary.disabled += 1;
             } else if entry.cooldown_until > now {
                 summary.cooling += 1;
@@ -460,10 +489,14 @@ impl TraePool {
 
     /// 账号明细（camelCase，与 Trae 模块其余线上形态一致）。
     pub fn status_list(&self, now: i64) -> Vec<Value> {
+        let excluded_map = self.excluded_map();
         self.entries
             .iter()
             .map(|entry| {
-                let status = if entry.disabled {
+                let excluded = excluded_map.get(&entry.uid);
+                let status = if excluded.is_some() {
+                    "excluded"
+                } else if entry.disabled {
                     "disabled"
                 } else if entry.cooldown_until > now {
                     "cooling"
@@ -499,6 +532,11 @@ impl TraePool {
                         None
                     },
                     "disabled": entry.disabled,
+                    // 用户显式排除（硬约束）。前端据此标「已排除」并禁掉「指定」。
+                    "excluded": excluded.is_some(),
+                    "excludedNote": excluded
+                        .map(|note| note.clone())
+                        .filter(|note| !note.is_empty()),
                     "deviceIdMasked": mask_device(&entry.device_id),
                 })
             })
@@ -895,6 +933,23 @@ mod tests {
 
         let picked = pool.pick(now, &HashSet::new(), None).expect("应选出账号");
         assert_eq!(picked.uid, "soon", "「先用掉快过期的额度」必须压过积分多寡");
+    }
+
+    /// ★ 策略哨兵：`__max_credits__` 必须真的按积分择优（而不是被当成不存在的 uid 回落加权）。
+    ///
+    /// 变异：把 `parse_preferred` 的调用去掉（偏好值原样当 uid）⇒ 本用例红
+    /// —— 那正是「假开关」：UI 上选了「按积分择优」，实际仍在加权抽签。
+    #[test]
+    fn max_credits_sentinel_actually_picks_the_richest() {
+        let now = 1_000_000;
+        let rich = entry("rich", Some(9999.0), Some(now + 3600));
+        let poor = entry("poor", Some(1.0), Some(now + 3600));
+        let mut pool = pool_with(vec![rich, poor]);
+
+        let picked = pool
+            .pick(now, &HashSet::new(), Some("__max_credits__"))
+            .expect("应选出账号");
+        assert_eq!(picked.uid, "rich", "哨兵值必须按积分择优");
     }
 
     /// 指定账号可用时必须被优先选中 —— 即使它的积分远少于别人。

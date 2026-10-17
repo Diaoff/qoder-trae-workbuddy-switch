@@ -29,6 +29,8 @@ use axum::body::Bytes;
 use futures_util::Stream;
 use serde_json::Value;
 
+use crate::protocol::error_sniffer::sniff_sse_chunk;
+
 /// 单帧缓冲区上限：畸形流（永不出现 `\n\n`）不得让内存无界增长。
 const MAX_FRAME_BUFFER_BYTES: usize = 256 * 1024;
 
@@ -102,11 +104,30 @@ pub fn extract_usage(frame: &Value) -> Option<UsageReport> {
     })
 }
 
+/// **流内错误**回调（P0-3 的流式半边）。
+///
+/// `UsageTap` 本来就在**逐帧**旁听每一块字节（为了找 `usage`），顺手判一下
+/// 「这一帧是不是错误信封」是零额外成本的 —— 不需要再套一层 Stream 适配器，
+/// 也就不需要改动三条路由的流式组合链（字节一个都不变，只旁听）。
+///
+/// ## 为什么回调是同步的
+///
+/// `poll_next` 里不能 `.await`。真实实现（`relay::EnvelopeErrorSink`）把治理副作用
+/// `tokio::spawn` 到后台任务里，回调本身只做一次投递。
+pub trait StreamErrorSink: Send + Sync {
+    /// 发现一帧信封错误（**同一路流只会回调一次**）。
+    fn on_error(&self, error: crate::protocol::error_sniffer::SniffedError);
+}
+
 /// `usage` 探针流包装。**不改变字节流**，只在流结束（或出错、或被丢弃）时回报一次用量。
 pub struct UsageTap<S> {
     inner: Pin<Box<S>>,
     /// 回报接收方（日志 / 账本各一个；空则只做缓冲，等价于不加探针）。
     sinks: Vec<Arc<dyn UsageSink>>,
+    /// 流内错误接收方（可选）：某一帧是错误信封时回调一次。
+    error_sink: Option<Arc<dyn StreamErrorSink>>,
+    /// 已经回调过错误（同一条流只报一次；错误帧之后通常就是断流）。
+    error_reported: bool,
     buffer: Vec<u8>,
     /// 最近一次见到的用量（后到的帧覆盖先到的）。
     latest: Option<UsageReport>,
@@ -120,11 +141,22 @@ impl<S> UsageTap<S> {
         Self {
             inner: Box::pin(inner),
             sinks,
+            error_sink: None,
+            error_reported: false,
             buffer: Vec::new(),
             latest: None,
             reported: false,
             finished: false,
         }
+    }
+
+    /// 挂一个**流内错误**回调（`None` = 不嗅探，行为与改造前逐字相同）。
+    ///
+    /// 用独立构造器而不是改 `new` 的签名：三条路由与既有单测都不用动，
+    /// 「要不要治理流内错误」成为一个显式选择。
+    pub fn with_error_sink(mut self, sink: Option<Arc<dyn StreamErrorSink>>) -> Self {
+        self.error_sink = sink;
+        self
     }
 
     /// 累积字节并解析所有**完整**帧（以空行分隔）；残帧留在缓冲区等下一块。
@@ -139,9 +171,35 @@ impl<S> UsageTap<S> {
         }
     }
 
+    /// 流结束时把**缓冲区残帧**也判一遍（`/` 结尾空行缺失时的错误帧）。
+    ///
+    /// 只有「以 `\n\n` 结尾」的帧才会进 `observe_frame`；上游把错误帧写完后直接关连接时
+    /// 残帧会留在缓冲区里被丢掉 —— 那正是最需要识别的最后一帧。
+    fn sniff_tail(&mut self) {
+        if self.error_reported || self.buffer.is_empty() {
+            return;
+        }
+        let Some(sink) = self.error_sink.as_ref() else {
+            return;
+        };
+        let text = String::from_utf8_lossy(&self.buffer).to_string();
+        if let Some(found) = sniff_sse_chunk(&text) {
+            self.error_reported = true;
+            sink.on_error(found);
+        }
+    }
+
     /// 解析单帧里的 `data:` 负载，命中 `usage` 就记住。
     fn observe_frame(&mut self, frame: &[u8]) {
         let text = String::from_utf8_lossy(frame);
+        // ★ 流内错误（P0-3）：同一帧缓存窗口里顺手判一次，**不改字节**。
+        //   放在取 usage 之前：错误帧通常没有 usage，早点返回能让「流内失败」更快落账。
+        if !self.error_reported {
+            if let (Some(sink), Some(found)) = (self.error_sink.as_ref(), sniff_sse_chunk(&text)) {
+                self.error_reported = true;
+                sink.on_error(found);
+            }
+        }
         for line in text.lines() {
             let Some(payload) = line.strip_prefix("data:") else {
                 continue;
@@ -205,6 +263,10 @@ where
             }
             Poll::Ready(None) => {
                 this.finished = true;
+                // ★ 流结束前把**残帧**也判一遍：上游常把最后一条错误帧写完后直接关连接，
+                //   不给结尾空行 —— 只按「完整帧」扫会漏掉它。这条与 `report()` 的
+                //   残帧解析同一纪律：结束时的缓冲区不是垃圾，是**最后一条**。
+                this.sniff_tail();
                 this.report();
                 Poll::Ready(None)
             }
@@ -251,6 +313,85 @@ mod tests {
     /// 单个 sink → `UsageTap::new` 需要的 `Vec`。
     fn only(sink: &Arc<RecordingSink>) -> Vec<Arc<dyn UsageSink>> {
         vec![sink.clone()]
+    }
+
+    /// 记录型**错误**接收方：钉住「命中几帧、报了几次」。
+    #[derive(Default)]
+    struct RecordingErrorSink {
+        calls: Mutex<Vec<crate::protocol::error_sniffer::SniffedError>>,
+    }
+
+    impl StreamErrorSink for RecordingErrorSink {
+        fn on_error(&self, error: crate::protocol::error_sniffer::SniffedError) {
+            self.calls.lock().expect("lock").push(error);
+        }
+    }
+
+    /// ★ 流内错误：命中即回调，**只回调一次**，且**字节一块不少**地透传。
+    ///
+    /// 三条断言分别防三种退化：
+    /// 1. 回调不触发（等于没做）；
+    /// 2. 逐帧重复回调（一条流里错误帧可能重复出现，重复写冷却会放大退避）；
+    /// 3. 顺手改字节（哪怕只是丢帧，客户端就会看到断流）。
+    #[tokio::test]
+    async fn error_frame_is_reported_once_and_bytes_pass_through() {
+        let sink = Arc::new(RecordingErrorSink::default());
+        let mut tap = UsageTap::new(
+            stream_of(vec![
+                "data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n",
+                "data: {\"code\":6004,\"msg\":\"rate limited\"}\n\n",
+                "data: {\"code\":6004,\"msg\":\"again\"}\n\n",
+            ]),
+            Vec::new(),
+        )
+        .with_error_sink(Some(sink.clone() as Arc<dyn StreamErrorSink>));
+
+        let mut forwarded = 0;
+        while let Some(item) = tap.next().await {
+            item.expect("上游本身没出错");
+            forwarded += 1;
+        }
+        assert_eq!(forwarded, 3, "字节块必须原样透传");
+        let calls = sink.calls.lock().expect("lock");
+        assert_eq!(calls.len(), 1, "错误只回调一次");
+        assert!(calls[0].message.contains("rate limited"));
+    }
+
+    /// 没有错误帧 ⇒ 一次都不回调（避免把正常流误判成失败、白白冷却好账号）。
+    #[tokio::test]
+    async fn clean_stream_never_triggers_the_error_sink() {
+        let sink = Arc::new(RecordingErrorSink::default());
+        let mut tap = UsageTap::new(
+            stream_of(vec![
+                "data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n",
+                "data: [DONE]\n\n",
+            ]),
+            Vec::new(),
+        )
+        .with_error_sink(Some(sink.clone() as Arc<dyn StreamErrorSink>));
+        while tap.next().await.is_some() {}
+        assert!(sink.calls.lock().expect("lock").is_empty());
+    }
+
+    /// ★ 末端**残帧**（没有结尾空行）也必须识别：上游写完错误帧常常直接关连接。
+    ///
+    /// 变异：去掉 `poll_next` 里的 `sniff_tail()` ⇒ 本用例红。
+    #[tokio::test]
+    async fn trailing_frame_without_blank_line_is_still_detected() {
+        let sink = Arc::new(RecordingErrorSink::default());
+        let mut tap = UsageTap::new(
+            stream_of(vec![
+                "data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n",
+                // 没有结尾的 `\n\n` —— 残帧
+                "data: {\"code\":6004,\"msg\":\"cut off mid-stream\"}",
+            ]),
+            Vec::new(),
+        )
+        .with_error_sink(Some(sink.clone() as Arc<dyn StreamErrorSink>));
+        while tap.next().await.is_some() {}
+        let calls = sink.calls.lock().expect("lock");
+        assert_eq!(calls.len(), 1, "残帧里的错误必须被识别");
+        assert!(calls[0].message.contains("cut off mid-stream"));
     }
 
     fn report(credit: f64, prompt: i64, completion: i64) -> Option<UsageReport> {

@@ -22,9 +22,9 @@ use buddy_switch_core::modules::region::Region;
 use buddy_switch_core::modules::upstream::UpstreamChatResult;
 
 use crate::account_strategy::{AccountSelector, AccountStrategy};
-use crate::error::{GatewayError, NoCredentialCause};
+use crate::error::{GatewayError, NoCredentialCause, UpstreamAttempt};
 use crate::outbound::{self, DegradeGate, OutboundMeta};
-use crate::pool::{classify_event, PoolSummary, RealmTag, UpstreamEvent};
+use crate::pool::{classify_event, exclusions, PickMode, PoolSummary, RealmTag, UpstreamEvent};
 use crate::session_headers::{self, ConversationContext};
 
 /// 会话 id 提取已提到共用层（[`crate::session_headers`]）—— Trae 网关复用同一份实现。
@@ -125,16 +125,22 @@ pub async fn relay(
     state: &GatewayState,
     request: RelayRequest,
 ) -> Result<RelayOutcome, RelayFailure> {
-    let now_ms = timeutil::now_ms();
+    let mut now_ms = timeutil::now_ms();
     let realm = realm_of(request.region);
     let config = state.config_snapshot().await;
     let tries = config.max_rotate.max(1);
 
     // 与账号库对齐（增量 upsert，不删除既有账号以保留治理历史）。
+    //
+    // ★ 排除表也在这里同步进池：它是**硬约束**，选号 / 兜底 / 偏好都要看它。
+    //   放在「取账号」同一处，是为了让「池内容」与「排除集」永远同源同版本 ——
+    //   两处各同步一次，迟早出现「新加的排除项要等下一次请求才生效」。
     {
+        let scope = scope_key(request.region);
         let accounts = account::load_accounts_for(request.region);
         let mut pool = state.pool.write().await;
         pool.sync_accounts(&accounts, Some(realm));
+        pool.sync_exclusions(scope, &exclusions::load_for(scope));
     }
 
     // 会话粘性键；客户端没给会话 id 时为 `None`（整段跳过粘性，保持原行为）。
@@ -153,8 +159,39 @@ pub async fn relay(
 
     let mut tried: HashSet<String> = HashSet::new();
     let mut last: Option<RelayFailure> = None;
+    // 本轮尝试轨迹（换号链路）。**每个失败出口都要带上它**，否则用户无法自查
+    // 「到底换号了没有、换到了谁、为什么都不行」。
+    let mut attempts: Vec<UpstreamAttempt> = Vec::new();
+    // 同一模型在本轮**已经失败过几个账号**。达到 2 个即判定为模型级问题、停止换号
+    // （方案 §9.4：继续把第 3 次重试撞在同一堵墙上只会烧配额）。
+    let mut model_failures = 0usize;
 
     for attempt in 0..tries {
+        // ★ 每轮重取时间：冷却靠**墙钟**到期，而重试之间真的会过去几十毫秒~几秒。
+        //   用入口那个快照会让「刚到期」的号在这一轮里仍被判为冷却中。
+        now_ms = timeutil::now_ms();
+        // ★ 模型闸门（跨请求）：同一模型已在多个账号上失败 ⇒ 这一轮**一个请求都不发**。
+        //
+        // 与下面的「本轮第 2 个账号失败即停」是两个层次：那条只能挽回**当前**这一轮，
+        // 这条让**后续请求**也直接快速失败 —— 否则每个新请求都要重新撞一遍同样的墙。
+        if let Some(block) = state.pool.write().await.admit_model(&request.model, now_ms) {
+            attempts.push(UpstreamAttempt {
+                account: String::new(),
+                uid: String::new(),
+                status: 0,
+                reason: if block.remain_ms > 0 {
+                    format!(
+                        "{} 整体暂停（剩 {}s，已在 {} 个账号上被限流）",
+                        block.model,
+                        block.remain_ms / 1000,
+                        block.accounts
+                    )
+                } else {
+                    format!("{} 半开试探名额已被其它请求占用", block.model)
+                },
+            });
+            break;
+        }
         // 粘性只是**偏好**：查不到就按原逻辑选号（读锁，不占选号要用的写锁）。
         let preferred_uid = match sticky_key.as_deref() {
             Some(key) => state
@@ -179,6 +216,17 @@ pub async fn relay(
 
         let Some(account_value) = selected else {
             // 池与策略都给不出账号：若已有失败记录，返回它（更有诊断价值）。
+            //
+            // ★ 只有当**本轮一次都没打到上游**时才补这条 —— 否则它会污染换号轨迹
+            //   （第 2 轮选不出号时，用户更需要看的是「第 1 轮为什么失败」）。
+            if attempts.is_empty() {
+                attempts.push(UpstreamAttempt {
+                    account: String::new(),
+                    uid: String::new(),
+                    status: 0,
+                    reason: "没有满足条件的账号（已排除 / 冷却 / 在途满 / 全被限流）".to_string(),
+                });
+            }
             break;
         };
 
@@ -191,10 +239,19 @@ pub async fn relay(
             state.proxy_kpi.record_switch();
         }
 
-        // 在途租约：占满则标记为已试并换号。
+        // 在途租约：占满则**先排队等一会儿**（`acquire_timeout_ms`），超时才换号。
+        //
+        // ★ 为什么不是「满了立刻换号」：并发稍高（客户端并行 tool calls）时，
+        //   账号只是**此刻**忙，立即换号会把「忙」误报成「这个号不可用」——
+        //   用户看到的是「网关拒绝服务」。排队 2s 能吃掉绝大部分瞬时拥塞。
         if !uid.is_empty() {
-            let acquired = state.pool.write().await.acquire(&uid);
-            if !acquired {
+            if !acquire_with_wait(state, &uid, config.pool.acquire_timeout_ms).await {
+                attempts.push(UpstreamAttempt {
+                    account: account_name.clone(),
+                    uid: uid.clone(),
+                    status: 0,
+                    reason: "在途已满（排队超时）".to_string(),
+                });
                 tried.insert(uid);
                 continue;
             }
@@ -245,11 +302,14 @@ pub async fn relay(
                 if !uid.is_empty() {
                     // 成功：清熔断域与退避指数。此处 usage 尚未到达，故不写账本——
                     // 账本由调用方在拿到 usage 后经 [`record_ledger`] 回填。
-                    state
-                        .pool
-                        .write()
-                        .await
-                        .note_success(&uid, &request.model, 0.0, 0, now_ms);
+                    //
+                    // ★ 同一次锁里顺手**关掉模型闸门**：这一次真的通了，就是「该模型可用」
+                    //   最强的证据，不该再让它被一个陈旧的暂停挡着。
+                    {
+                        let mut pool = state.pool.write().await;
+                        pool.note_success(&uid, &request.model, 0.0, 0, now_ms);
+                        pool.note_model_success(&request.model);
+                    }
                     // 会话粘性：**只在成功之后**绑定，让下一轮优先复用这个账号。
                     if let Some(key) = sticky_key.as_deref() {
                         state.sticky.write().await.bind(key, &uid, now_ms);
@@ -267,12 +327,19 @@ pub async fn relay(
                 message,
             } => {
                 let event = classify_event(status, &message);
-                let disabled = if uid.is_empty() {
-                    false
+                let (disabled, gate_opened) = if uid.is_empty() {
+                    (false, false)
                 } else {
                     let mut pool = state.pool.write().await;
                     let disabled = pool.apply_upstream_error(&uid, &request.model, &event, now_ms);
-                    disabled
+                    // 只有**模型级**失败才计入闸门：账号级 429 / 402 / 5xx 是「那个号的事」，
+                    // 计进来会让「一个号额度耗尽」把整个模型停掉（误触发比不触发更糟）。
+                    let gate_opened = if is_model_level(&event) {
+                        pool.note_model_failure(&request.model, now_ms)
+                    } else {
+                        false
+                    };
+                    (disabled, gate_opened)
                 };
                 if !uid.is_empty() {
                     tried.insert(uid.clone());
@@ -283,11 +350,19 @@ pub async fn relay(
                     }
                 }
 
+                attempts.push(UpstreamAttempt {
+                    account: account_name.clone(),
+                    uid: uid.clone(),
+                    status,
+                    reason: describe_event(&event),
+                });
+
                 last = Some(RelayFailure {
                     error: GatewayError::Upstream {
                         kind,
                         status,
                         message: message.clone(),
+                        attempts: attempts.clone(),
                     },
                     account: account_name,
                     uid,
@@ -304,6 +379,22 @@ pub async fn relay(
                     !matches!(event, UpstreamEvent::SessionDead) || disabled,
                     "会话失效未达阈值时不禁用，应继续换号重试"
                 );
+
+                // ① 按**失败类型**决定值不值得换号（方案 §9.2）。
+                //    参数错（400/422）换号只是把同一份坏参数喂给下一个号 —— 白烧配额。
+                if !should_rotate(&event, attempt) {
+                    break;
+                }
+
+                // ② 模型级失败累计到 2 个账号 ⇒ 判定为**模型**的问题，停止换号。
+                //    这是「更合理」的关键：3 次重试全打在同一个模型上没有任何收益。
+                if is_model_level(&event) {
+                    model_failures += 1;
+                    // 闸门刚被打开（跨请求阈值命中）⇒ 立即停：这一轮再换号也没有意义。
+                    if gate_opened || model_failures >= MODEL_FAILURE_LIMIT {
+                        break;
+                    }
+                }
             }
         }
     }
@@ -344,6 +435,183 @@ pub async fn relay(
     Err(failure)
 }
 
+/// 同一模型在本轮失败多少个账号后**停止换号**。
+///
+/// 2 就够了：第 1 个号 429 可能是这个号的事，第 2 个号也 429 就基本可以判定
+/// 「是这个模型此刻整体不可用」。继续换第 3 个号只会再烧一次配额，
+/// 而用户拿到的错误反而更晚 —— 方案 §9.4 的第 1 条。
+const MODEL_FAILURE_LIMIT: usize = 2;
+
+/// WB 侧排除表的作用域键（与 `exclusions` 文件里的键一一对应）。
+pub fn scope_key(region: Region) -> &'static str {
+    match region {
+        Region::Cn => "wb:cn",
+        Region::Global => "wb:global",
+    }
+}
+
+/// 这类失败值不值得**换号重试**（方案 §9.2 的决策矩阵，唯一实现）。
+///
+/// 两条反例最贵：
+/// - **400 / 422 参数错**：同一份坏参数喂给下一个号 = 白烧 N 个账号的配额；
+/// - **404**：可能是「该账号的模型清单里没有它」，换 **1 次**足够，第 3 次纯浪费。
+fn should_rotate(event: &UpstreamEvent, attempt: usize) -> bool {
+    match event {
+        // 换号能救的：额度不足、限流、模型被封、上游抖动、会话失效。
+        UpstreamEvent::HardCredit
+        | UpstreamEvent::SoftRate { .. }
+        | UpstreamEvent::ModelBlocked
+        | UpstreamEvent::Server
+        | UpstreamEvent::SessionDead => true,
+        // 只换一次（`attempt == 0` 时还允许再试一个号）。
+        UpstreamEvent::NotFound => attempt == 0,
+        // 调用方自己的问题，换谁都一样。
+        UpstreamEvent::Client => false,
+    }
+}
+
+/// 流内信封错误的接收方：把治理副作用丢到**后台任务**（`poll_next` 里不能 `.await`）。
+///
+/// 为什么敢 spawn：治理是幂等的（写冷却 / 计数闸门），晚几十毫秒无影响；
+/// 而阻塞流会让客户端感知到「卡住」——那是更坏的结果。
+pub struct EnvelopeErrorSink {
+    state: GatewayState,
+    uid: String,
+    model: String,
+}
+
+impl crate::protocol::usage_tap::StreamErrorSink for EnvelopeErrorSink {
+    fn on_error(&self, error: crate::protocol::error_sniffer::SniffedError) {
+        let state = self.state.clone();
+        let uid = self.uid.clone();
+        let model = self.model.clone();
+        tokio::spawn(async move {
+            note_envelope_failure(&state, &uid, &model, &error.event).await;
+        });
+    }
+}
+
+/// 构造流内错误接收方；`uid` 为空（没选到账号）时返回 `None` —— 没有账号就没有可冷却的对象。
+pub fn envelope_error_sink(
+    state: &GatewayState,
+    uid: &str,
+    model: &str,
+) -> Option<std::sync::Arc<dyn crate::protocol::usage_tap::StreamErrorSink>> {
+    if uid.is_empty() {
+        return None;
+    }
+    Some(std::sync::Arc::new(EnvelopeErrorSink {
+        state: state.clone(),
+        uid: uid.to_string(),
+        model: model.to_string(),
+    }))
+}
+
+/// **200 信封错误**的治理副作用（冷却 / 熔断 / 模型闸门）。三条路由共用。
+///
+/// ## 为什么要有这个函数
+///
+/// `chat` / `messages` / `responses` 三条路由各自有一份「上游 200 但响应体是错误」的
+/// 处理分支。若各写一遍「写冷却 + 计闸门」，迟早出现「某条路由忘了计模型闸门」
+/// 这种只在统计上可见的漂移。这里收成一处，路由只负责**错误体形状**。
+///
+/// `uid` 为空（未选到账号）时什么也不做 —— 与 HTTP 非 2xx 的治理路径一致。
+pub async fn note_envelope_failure(
+    state: &GatewayState,
+    uid: &str,
+    model: &str,
+    event: &UpstreamEvent,
+) {
+    if uid.is_empty() {
+        return;
+    }
+    let now_ms = timeutil::now_ms();
+    let mut pool = state.pool.write().await;
+    pool.apply_upstream_error(uid, model, event, now_ms);
+    if is_model_level(event) {
+        pool.note_model_failure(model, now_ms);
+    }
+}
+
+/// 上游事件 → 对外错误类别（`OpenAI` / `Anthropic` 两个错误体共用）。
+///
+/// `ModelBlocked` 对外按 `Client`（4xx）返回：模型被封禁属于「调用方看得见的拒绝」，
+/// 但**冷却仍按封禁语义写**（6h 起逐次加倍），两者不冲突。
+pub fn upstream_kind_of(
+    event: &UpstreamEvent,
+) -> buddy_switch_core::modules::upstream::UpstreamErrorKind {
+    use buddy_switch_core::modules::upstream::UpstreamErrorKind;
+    match event {
+        UpstreamEvent::HardCredit => UpstreamErrorKind::HardCredit,
+        UpstreamEvent::SoftRate { .. } => UpstreamErrorKind::SoftRate,
+        UpstreamEvent::SessionDead => UpstreamErrorKind::SessionDead,
+        UpstreamEvent::NotFound => UpstreamErrorKind::NotFound,
+        UpstreamEvent::Server => UpstreamErrorKind::Server,
+        UpstreamEvent::ModelBlocked | UpstreamEvent::Client => UpstreamErrorKind::Client,
+    }
+}
+
+/// 该事件是否**归因到模型**（而不是某个账号）。
+///
+/// 只有这两类：模型级 429（`6004`）与模型封禁（`11102`）。
+/// 账号级 429 / 402 / 5xx 是「这个号的事」，换个号大概率就好 —— 不该计入模型失败数。
+///
+/// `pub(crate)`：`chat.rs` 的「200 信封错误」处置也要用同一判据
+/// （否则同一类失败在两条路径上对闸门的贡献不同 —— 那正是最难查的漂移）。
+pub(crate) fn is_model_level(event: &UpstreamEvent) -> bool {
+    matches!(
+        event,
+        UpstreamEvent::SoftRate {
+            model_scoped: true,
+            ..
+        } | UpstreamEvent::ModelBlocked
+    )
+}
+
+/// 事件 → 一句可读原因（写进 `attempts[]`，给用户自查用）。
+fn describe_event(event: &UpstreamEvent) -> String {
+    match event {
+        UpstreamEvent::HardCredit => "402 / 余额不足 → 硬冷却至次日 04:00".to_string(),
+        UpstreamEvent::SoftRate {
+            model_scoped: true, ..
+        } => "429 模型级限流（6004）→ 只冷该模型".to_string(),
+        UpstreamEvent::SoftRate {
+            model_scoped: false,
+            ..
+        } => "429 账号级限流 → 软冷却".to_string(),
+        UpstreamEvent::ModelBlocked => "11102 模型被封禁 → 退避".to_string(),
+        UpstreamEvent::NotFound => "404 上游未找到 → 浅冷却 60s".to_string(),
+        UpstreamEvent::Server => "5xx 上游异常 → 计入熔断".to_string(),
+        UpstreamEvent::SessionDead => "12153 会话失效 → 三振禁用".to_string(),
+        UpstreamEvent::Client => "4xx 调用方错误（不换号）".to_string(),
+    }
+}
+
+/// 申请在途额度；占满时**轮询等待**至多 `timeout_ms`，超时才返回 `false`。
+///
+/// ## 为什么是轮询而不是 `Notify`
+///
+/// `Pool::acquire` 是 `&mut self` 同步方法，而 `Pool` 被 `RwLock` 包着。
+/// 加 `Notify` 要在池里引入等待者队列与唤醒时机（谁 release 谁 notify），
+/// 出错的方式比轮询更隐蔽。这里 50ms 一跳、最长 2s（6 次/40 次），
+/// 对「本机单用户工具」的量级完全够用；真需要时再换成信号量。
+async fn acquire_with_wait(state: &GatewayState, uid: &str, timeout_ms: i64) -> bool {
+    if state.pool.write().await.acquire(uid) {
+        return true;
+    }
+    if timeout_ms <= 0 {
+        return false;
+    }
+    let deadline = timeutil::now_ms().saturating_add(timeout_ms);
+    while timeutil::now_ms() < deadline {
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        if state.pool.write().await.acquire(uid) {
+            return true;
+        }
+    }
+    false
+}
+
 /// 选号：优先账号池（有治理状态），池给不出时回落既有策略。
 /// 由请求推导**会话粘性键**；客户端未给会话 id ⇒ `None`（整段跳过粘性）。
 ///
@@ -371,33 +639,37 @@ async fn select_account(
     attempt: usize,
     sticky_uid: Option<&str>,
 ) -> Option<Value> {
-    // 偏好优先级：**显式固定（Pinned）> 会话粘性**。
-    //
-    // ★ `Pinned` 必须在这里参与池选号，而不是只作「池给不出时的回落」：池只要有候选
-    // 就会出结果，若把 `Pinned` 放在池之后，它在**池非空时永远不会被用到** ——
-    // 界面明明写着「固定账号」，实际请求却走池选号，UI 与行为不符且**不报错**。
-    //
-    // 粘性同理：它此前靠 `sticky_choice` 单独判一次可用性再直接返回，现在统一交给
-    // `pick_with_preference`（判据与自动选号同源），两条偏好实现因此收敛成一条。
+    // 偏好与策略**都来自同一个枚举** `AccountStrategy`，因此这里一次算清：
+    // - `Pinned`    ⇒ 加权选号 + 偏好 uid（指定是偏好，不是约束）；
+    // - `MaxCredits`⇒ 候选内按积分择优（**粘性不参与**：否则「按积分择优」会被粘性绑架成
+    //                 「总落在同一个号上」，用户看到的又是假开关）；
+    // - `Random`    ⇒ 候选内均匀抽签（同上，粘性不参与）；
+    // - `Current`   ⇒ 加权选号 + 粘性（粘性是自动择优的子优化）。
     let strategy = state.strategy_for(region).await;
-    let preferred = match &strategy {
+    let (mode, preferred) = match &strategy {
         AccountStrategy::Pinned { account_id } if !account_id.is_empty() => {
-            Some(account_id.as_str())
+            (PickMode::Weighted, Some(account_id.as_str()))
         }
-        _ => sticky_uid,
+        AccountStrategy::MaxCredits => (PickMode::MaxCredits, None),
+        AccountStrategy::Random => (PickMode::Random, None),
+        _ => (PickMode::Weighted, sticky_uid),
     };
 
-    let picked_uid = {
+    let (picked_uid, pool_empty) = {
         let mut pool = state.pool.write().await;
         if pool.is_empty() {
-            None
+            (None, true)
         } else {
             let seed = (now_ms as u64)
                 .wrapping_mul(31)
                 .wrapping_add(attempt as u64)
                 .wrapping_add(0x9E37_79B9_7F4A_7C15);
-            // 偏好不可用时由 `pick_with_preference` 自行回落到自动择优。
-            pool.pick_account(now_ms, Some(realm), model, tried, seed, preferred)
+            // 偏好不可用时由 `pick_with_preference` 自行回落到自动择优；
+            // 排除项由池自己持有（`sync_exclusions`），无需在这里传。
+            (
+                pool.pick_account(now_ms, Some(realm), model, tried, mode, seed, preferred),
+                false,
+            )
         }
     };
 
@@ -408,14 +680,31 @@ async fn select_account(
         }
     }
 
-    // 回落：策略模块（current / pinned / max_credits）。
+    // ★★ 池里**有账号**但选不出来 ⇒ **不再回落策略**（2026-10-17，本 bug 的第三根因）。
     //
-    // `strategy` 已在函数开头读过（`Pinned` 也已在池选号里作为偏好生效）。这里保留
-    // 完整回落，是为了覆盖「**池为空**」这条路径 —— 那时 `Pinned` 仍需生效。
+    // 旧行为：回落到 `AccountSelector`（默认 `Current` = 读桌面端认证文件 = 客户端当前登录的号），
+    // 而该回落**只判 `tried`**，不看模型级冷却 / 熔断 / 在途 —— 于是把池刚刚判定为
+    // 「不可用」的账号又交回来，下一轮再撞同一堵墙，用户看到的是
+    // 「明明有别的号可用，请求却一直失败，而且看起来根本没换号」。
+    //
+    // 现在：池非空就**只信池**，给不出就返回 `None`，由调用方给出带明细的
+    // `no_credential`（几个号、几个被排除 / 冷却 / 限流）。
+    if !pool_empty {
+        return None;
+    }
+
+    // 回落：策略模块（**仅当池为空**时才走到这里）。
+    //
+    // 池为空意味着「账号库里一个带 uid 的账号都没有」（`sync_accounts` 会跳过没有 uid 的记录），
+    // 此时才真的可能是「没登录 / 没导入」，也正是回落策略能派上用场的场景。
     let selector = AccountSelector;
     match selector.select(region, &strategy).await {
         Ok(account_value) => {
             let uid = account::get_str(&account_value, "uid").unwrap_or_default();
+            // 已排除的账号**绝不能**从这里漏回来（否则「排除」只是个好看的开关）。
+            if !uid.is_empty() && state.pool.read().await.is_excluded(&uid) {
+                return None;
+            }
             // 池已试过的账号不再重复选择（否则会立刻二次失败）。
             if !uid.is_empty() && tried.contains(&uid) {
                 None
@@ -444,6 +733,7 @@ fn no_credential_cause_of(summary: &PoolSummary) -> NoCredentialCause {
             disabled: summary.disabled,
             cooling: summary.cooling,
             zero_credits: summary.zero_credits,
+            excluded: summary.excluded,
         }
     }
 }
@@ -672,6 +962,7 @@ mod tests {
                 total: 5,
                 disabled: 3,
                 cooling: 2,
+                excluded: 0,
                 zero_credits: 0,
             },
             "有号但全不可用 ⇒ 必须带上分类计数，不能退化成「未登录」"

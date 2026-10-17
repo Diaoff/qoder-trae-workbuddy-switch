@@ -138,10 +138,57 @@ pub struct PoolEntry {
     pub used_seq: u64,
     /// 当前在途请求数。
     pub in_flight: i64,
+    /// **在途租约的到期时刻**（毫秒）：`in_flight` 里所有租约的最晚到期时刻。
+    ///
+    /// ## 为什么需要它（2026-10-17）
+    ///
+    /// `in_flight` 是**手写**的 acquire / release 配对。客户端断开、请求被 drop
+    /// （上游挂住后用户取消）时 `release` 不会执行 ⇒ 计数永久 +1，
+    /// 达到上限后这个号**再也选不中**，而界面上它仍显示「可用」——
+    /// 症状正是「池里账号看着都正常，请求却一直失败」。
+    ///
+    /// 现在每次 acquire 都把「最晚到期时刻」推到 `now + IN_FLIGHT_LEASE_MS`；
+    /// 读侧发现 `now >= 到期时刻` 就视为**全部租约已过期**、按 0 处理（惰性自愈）。
+    ///
+    /// 为什么不做 `Drop` guard：`acquire` / `release` 跨 await 点，Drop 里只能
+    /// `try_write` 池锁（拿不到就跳过 ⇒ 还是泄漏）；「到期即失效」无锁、自愈、可测。
+    pub in_flight_until_ms: i64,
 
     /// 实测成本账本（**不持久化**，重启重学）。
     pub model_cost: HashMap<String, ModelCost>,
+    /// **分模型**健康度（O6，不持久化）。
+    ///
+    /// ## 为什么账号级 EMA 不够
+    ///
+    /// `success_ema` / `error_ema` 是**账号维度**的。但真实失败常常只发生在**某个模型**上
+    /// （该模型在部分账号上不可用 / 限流）。账号级 EMA 会把「在这个模型上老失败」
+    /// 摊到**所有**模型头上 —— 于是这个号在**其它**模型上的权重也被一起拖下去，
+    /// 那是错杀：它其实完全能服务别的模型。
+    ///
+    /// 现在按模型各记一份，权重用「该模型的 EMA」；样本不足时回落到账号级
+    /// （见 [`MODEL_EMA_MIN_SAMPLES`]）—— 1 次偶发失败不该改变一个模型的评价。
+    pub model_health: HashMap<String, ModelHealth>,
 }
+
+/// 单模型维度的健康度（O6）。**不持久化**（重启重学，与 `model_cost` 同纪律）。
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct ModelHealth {
+    /// 该模型上的成功率 EMA（1 次成功 / 1 次失败逐步收敛）。
+    pub success_ema: f64,
+    /// 该模型上的错误率 EMA。
+    pub error_ema: f64,
+    /// 累计样本数：低于 [`MODEL_EMA_MIN_SAMPLES`] 时不参与权重。
+    pub samples: u32,
+}
+
+/// 分模型 EMA 参与权重所需的最少样本数。
+///
+/// 取 3：第 1 次失败可能只是上游抖了一下，第 2 次还能是偶发；
+/// 到第 3 次仍失败，基本可以认定「这个模型在这个号上确实不行」。
+pub const MODEL_EMA_MIN_SAMPLES: u32 = 3;
+
+/// `model_health` 的条目上限（防止无限增长）。
+const MODEL_HEALTH_CAP: usize = 16;
 
 impl PoolEntry {
     /// 新建条目。
@@ -172,13 +219,69 @@ impl PoolEntry {
             last_used_ms: 0,
             used_seq: 0,
             in_flight: 0,
+            in_flight_until_ms: 0,
             model_cost: HashMap::new(),
+            model_health: HashMap::new(),
         }
     }
 
+    /// 记一次**该模型**上的成败（O6）。
+    ///
+    /// `ok = true` 只来自成功收尾；`false` 来自**模型级**失败（`6004` / `11102`）——
+    /// 账号级失败（余额不足 / 整体限流 / 5xx）与模型无关，不该写进这里。
+    pub fn note_model_result(&mut self, model: &str, ok: bool) {
+        if model.is_empty() {
+            return;
+        }
+        let health = self.model_health.entry(model.to_string()).or_default();
+        health.success_ema = ema_step(health.success_ema, if ok { 1.0 } else { 0.0 });
+        health.error_ema = ema_step(health.error_ema, if ok { 0.0 } else { 1.0 });
+        health.samples = health.samples.saturating_add(1);
+
+        // 有界：模型清单最多几十个，但这里是**每请求**可写的热点，必须封顶。
+        // 丢样本最少的（保住最近在用的那些模型），避免「早期偶发过的模型永远占位」。
+        if self.model_health.len() > MODEL_HEALTH_CAP {
+            if let Some(key) = self
+                .model_health
+                .iter()
+                .min_by_key(|(_, health)| health.samples)
+                .map(|(model, _)| model.clone())
+            {
+                self.model_health.remove(&key);
+            }
+        }
+    }
+
+    /// 该模型维度的 `(success_ema, error_ema)`；**样本不足时返回 `None`**。
+    ///
+    /// `None` 的语义是「这个模型上没有足够证据」⇒ 调用方回落到账号级 EMA。
+    /// 阈值 [`MODEL_EMA_MIN_SAMPLES`] 的意义：1 次偶发失败（比如上游抖了一下）
+    /// 不应该让一个模型在这个号上的评价立刻变差。
+    pub fn model_ema(&self, model: &str) -> Option<(f64, f64)> {
+        let health = self.model_health.get(model)?;
+        if health.samples < MODEL_EMA_MIN_SAMPLES {
+            return None;
+        }
+        Some((health.success_ema, health.error_ema))
+    }
+
+    /// 单模型维度的健康度（O6）。**不持久化**（重启重学，与 `model_cost` 同纪律）。
     /// 账号级是否可用（不看模型）。
     pub fn healthy(&self, now_ms: i64) -> bool {
         !self.disabled && now_ms >= self.until_ms && now_ms >= self.breaker_until_ms
+    }
+
+    /// **自愈版**在途读数：租约全部过期 ⇒ 视为 0。
+    /// 字段 `in_flight` 是**原始计数**（可能因泄漏而偏大），本函数是「此刻真实占用」。
+    /// 选号 / 状态展示都必须用这个版本，否则一次泄漏会把账号永久踢出轮转。
+    pub fn in_flight_now(&self, now_ms: i64) -> i64 {
+        if self.in_flight <= 0 {
+            return 0;
+        }
+        if self.in_flight_until_ms > 0 && now_ms >= self.in_flight_until_ms {
+            return 0;
+        }
+        self.in_flight
     }
 
     /// 账号级 + 指定模型是否可用。
@@ -255,7 +358,7 @@ impl PoolEntry {
     /// 成功回调：清空熔断域与软冷却退避，并清掉**已自然到期**的冷却残留。
     ///
     /// **不清模型级冷却**——该模型刚失败过，让它自然过期更安全。
-    pub fn note_success(&mut self, now_ms: i64) {
+    pub fn note_success(&mut self, now_ms: i64, model: &str) {
         self.success_count += 1;
         self.last_success_ms = now_ms;
         self.success_ema = ema_step(self.success_ema, 1.0);
@@ -269,6 +372,19 @@ impl PoolEntry {
         // （否则它会在状态出口里被当成「当前冷却原因」复述出去）。
         // ★ 只清**已过期**的：仍在冷却中的条目本就选不中，也不在成功路径上偷改冷却语义。
         self.prune_expired_cooling(now_ms);
+        // ★★ 该模型这一次**真的通了** ⇒ 立刻清掉它的模型级冷却。
+        //
+        // 为什么必须清（2026-10-17）：上游 `6004` 的冷却时长只能靠猜（文案里的
+        // `reset at` 实测是**配额窗口**、6/6 判错，见 `client_limits`），所以宁可给短冷却
+        // 让成功来纠正它。若成功不清，一个已经恢复的模型会被这条猜测继续挡在门外，
+        // 而用户看到的是「号明明能用，网关却一直跳过它」。
+        //
+        // 只清**当前模型**：其它模型是否恢复与本请求无关，不能顺手洗白。
+        if !model.is_empty() {
+            self.model_cooldowns.remove(model);
+            // 同时记一次**该模型**的成功（O6）：权重下次就会偏向「在这个模型上真能用」的号。
+            self.note_model_result(model, true);
+        }
     }
 
     /// 失败回调：累计成功率 EMA，并推进熔断计数。
@@ -742,6 +858,16 @@ impl crate::pool::entry_like::PoolEntryLike for PoolEntry {
         self.in_flight
     }
 
+    /// 覆写成**自愈版**：租约到期即视为已释放（见 `in_flight_until_ms` 的文档）。
+    fn in_flight_now(&self, now_ms: i64) -> i64 {
+        self.in_flight_now(now_ms)
+    }
+
+    /// 覆写成**分模型**版本（O6）：证据不足时返回 `None`，权重回落到账号级 EMA。
+    fn model_ema(&self, model: &str) -> Option<(f64, f64)> {
+        PoolEntry::model_ema(self, model)
+    }
+
     fn realm(&self) -> Option<crate::pool::RealmTag> {
         self.realm
     }
@@ -1096,7 +1222,7 @@ mod tests {
         item.cooldown_soft_backoff(1000, 1000, 10_000, "429");
         item.cooldown_model(1000, "m", 50_000, 100_000, "6004");
 
-        item.note_success(2000);
+        item.note_success(2000, "");
         assert_eq!(item.fails, 0);
         assert_eq!(item.retry_count, 0, "成功必须重置退避指数");
         assert_eq!(item.breaker_until_ms, 0);
@@ -1152,7 +1278,7 @@ mod tests {
         let mut item = entry();
         item.cooldown_soft_backoff(1_000, 1_000, 10_000, "429 rate limit");
         // until = 2000；在 2500 成功 ⇒ 冷却早已自然到期，残留必须被清掉。
-        item.note_success(2_500);
+        item.note_success(2_500, "");
         assert_eq!(item.until_ms, 0);
         assert_eq!(item.cool_kind, None);
         assert!(item.reason.is_empty());
@@ -1160,7 +1286,7 @@ mod tests {
         // 反例：在冷却**仍在生效**时成功（强试探测）⇒ 不偷改冷却语义。
         let mut item = entry();
         item.cooldown_soft_backoff(1_000, 1_000, 10_000, "429 rate limit");
-        item.note_success(1_500);
+        item.note_success(1_500, "");
         assert_eq!(item.until_ms, 2_000, "未到期的冷却不得被成功路径清掉");
         assert_eq!(item.reason, "429 rate limit");
     }
@@ -1172,7 +1298,7 @@ mod tests {
     #[test]
     fn caller_error_moves_only_the_diagnostic_counter() {
         let mut item = entry();
-        item.note_success(1_000);
+        item.note_success(1_000, "");
         let errs = item.err_total;
 
         // 阳性对照：账号侧错误必须推进 EMA 与熔断计数。

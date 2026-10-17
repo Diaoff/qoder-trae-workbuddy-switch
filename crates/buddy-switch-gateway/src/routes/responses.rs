@@ -215,11 +215,41 @@ pub async fn responses_for_region(
                     &model,
                 );
                 sse_response(ResponsesSseStream::new(
-                    crate::protocol::usage_tap::UsageTap::new(response.bytes_stream(), sinks),
+                    crate::protocol::usage_tap::UsageTap::new(response.bytes_stream(), sinks)
+                        // ★ 流内信封错误：与 chat / messages 同一判据。
+                        .with_error_sink(relay::envelope_error_sink(&state, &uid, &model)),
                     model,
                 ))
             } else {
                 let text = response.text().await.unwrap_or_default();
+                // ★ 200 信封错误（P0-3）：与 chat / messages 同一判据、同一治理副作用。
+                if let Some(envelope) = crate::protocol::error_sniffer::sniff_http_body(&text) {
+                    relay::note_envelope_failure(&state, &uid, &model, &envelope.event).await;
+                    let elapsed_ms = started.elapsed().as_millis() as i64;
+                    state.log.record(
+                        RequestMeta {
+                            endpoint: "/v1/responses",
+                            method: "POST",
+                            region,
+                            account,
+                            account_uid: uid,
+                            model,
+                            status: envelope.status,
+                            latency_ms: header_at_ms,
+                            total_ms: elapsed_ms,
+                            prompt_tokens: 0,
+                            completion_tokens: 0,
+                            stream: false,
+                        }
+                        .to_value(),
+                    );
+                    return openai_error(crate::error::GatewayError::Upstream {
+                        kind: relay::upstream_kind_of(&envelope.event),
+                        status: envelope.status,
+                        message: envelope.message,
+                        attempts: Vec::new(),
+                    });
+                }
                 let accumulator = CompletionAccumulator::from_sse(&text);
                 // 只在拿到真实 credit 时写账本——否则会把账号误标为「免费」。
                 if let Some(credit) = accumulator.credit {

@@ -296,6 +296,10 @@ fn api_routes() -> Router {
         .route("/api/gateway/status", get(api_gateway_status))
         // 账号池：人工解除某账号的禁用（禁用是终态且落盘，此前**没有任何出口**）。
         .route("/api/gateway/pool/revive", post(api_gateway_revive_account))
+        .route(
+            "/api/gateway/pool/exclusions",
+            get(api_gateway_pool_exclusions).post(api_gateway_set_pool_exclusion),
+        )
         // 打开 WorkBuddy 客户端数据目录（非 Windows 返回结构化 Unsupported）。
         .route(
             "/api/gateway/open-data-dir",
@@ -441,7 +445,7 @@ fn api_routes() -> Router {
             post(api_qoder_set_account_group),
         )
         .route("/api/qoder/usage", get(api_qoder_usage))
-        // ---- Qoder API 网关（管理面；网关本体走独立端口 7865，**不** merge 进本 Router）----
+        // ---- Qoder API 网关（管理面；网关本体走独立端口 57895，**不** merge 进本 Router）----
         // ⚠️ 一个监听、两个区域：区域由请求所用 API Key 的归属决定（`QoderKeyRegion`），
         //   状态 / 模型两条按 `scope` 看对应的那本账号库（fail-closed）。
         .route(
@@ -449,6 +453,10 @@ fn api_routes() -> Router {
             get(api_qoder_gateway_config).post(api_save_qoder_gateway_config),
         )
         .route("/api/qoder/gateway/status", get(api_qoder_gateway_status))
+        .route(
+            "/api/qoder/gateway/pool/exclusions",
+            post(api_set_qoder_pool_exclusion),
+        )
         .route("/api/qoder/gateway/models", get(api_qoder_gateway_models))
         // 多 Key 管理（含归属区域）：GET 列表 / POST 创建，同一路径两种方法。
         .route(
@@ -477,12 +485,16 @@ fn api_routes() -> Router {
             "/api/trae/settings",
             get(api_trae_settings).post(api_trae_save_settings),
         )
-        // ---- Trae API 网关（管理面；网关本体走独立端口 7864，**不** merge 进本 Router）----
+        // ---- Trae API 网关（管理面；网关本体走独立端口 57894，**不** merge 进本 Router）----
         .route(
             "/api/trae/gateway/config",
             get(api_trae_gateway_config).post(api_save_trae_gateway_config),
         )
         .route("/api/trae/gateway/status", get(api_trae_gateway_status))
+        .route(
+            "/api/trae/gateway/pool/exclusions",
+            post(api_set_trae_pool_exclusion),
+        )
         .route("/api/trae/gateway/models", get(api_trae_gateway_models))
         // 客户端（上游下发）的模型清单：与上面那条静态清单不同，它读客户端
         // `state.vscdb` 的缓存，因此随客户端刷新而变（issue #4）。
@@ -2769,6 +2781,39 @@ async fn api_gateway_status() -> Response {
     match serde_json::to_value(view) {
         Ok(value) => json_ok(value),
         Err(error) => json_err(error.to_string(), StatusCode::INTERNAL_SERVER_ERROR),
+    }
+}
+
+/// GET /api/gateway/pool/exclusions —— 该 region 的**排除账号**列表（`?region=cn|global`）。
+///
+/// 与 Tauri 命令 `gateway_pool_exclusions` **同一份实现**
+/// （`buddy_switch_gateway::routes::pool_admin::view`）—— 两个入口各写一遍必然漂移。
+async fn api_gateway_pool_exclusions(
+    axum::extract::Query(query): axum::extract::Query<std::collections::HashMap<String, String>>,
+) -> Response {
+    let region = parse_region(query.get("region").map(String::as_str));
+    json_ok(buddy_switch_gateway::routes::pool_admin::view(region))
+}
+
+/// POST /api/gateway/pool/exclusions —— 设置 / 取消排除（`{region?, uid, excluded, note?}`）。
+///
+/// 落盘 + 刷新池内快照 + 按 uid 解绑粘性，三件事收在 `pool_admin::set`（唯一实现）。
+async fn api_gateway_set_pool_exclusion(Json(body): Json<Value>) -> Response {
+    let uid = body.get("uid").and_then(Value::as_str).unwrap_or("").trim();
+    if uid.is_empty() {
+        return json_err("缺少 uid".to_string(), StatusCode::BAD_REQUEST);
+    }
+    let excluded = body
+        .get("excluded")
+        .and_then(Value::as_bool)
+        .unwrap_or(true);
+    let note = body.get("note").and_then(Value::as_str).unwrap_or("");
+    let region = parse_region(body.get("region").and_then(Value::as_str));
+
+    let state = crate::gateway_host::shared_state();
+    match buddy_switch_gateway::routes::pool_admin::set(&state, region, uid, excluded, note).await {
+        Ok(value) => json_ok(value),
+        Err(error) => json_err(error, StatusCode::INTERNAL_SERVER_ERROR),
     }
 }
 
@@ -6724,6 +6769,67 @@ async fn api_save_qoder_gateway_config(Json(body): Json<Value>) -> Response {
         "running": addr.is_some(),
         "addr": addr,
     }))
+}
+
+/// POST /api/trae/gateway/pool/exclusions —— 设置 / 取消排除（`{variant?, uid, excluded, note?}`）。
+async fn api_set_trae_pool_exclusion(Json(body): Json<Value>) -> Response {
+    let uid = body.get("uid").and_then(Value::as_str).unwrap_or("").trim();
+    if uid.is_empty() {
+        return json_err("缺少 uid".to_string(), StatusCode::BAD_REQUEST);
+    }
+    let excluded = body
+        .get("excluded")
+        .and_then(Value::as_bool)
+        .unwrap_or(true);
+    let note = body.get("note").and_then(Value::as_str).unwrap_or("");
+    let variant = parse_trae_variant(body.get("variant").and_then(Value::as_str));
+    let scope = format!("trae:{}", variant.as_str());
+
+    match buddy_switch_gateway::routes::pool_admin::persist(&scope, uid, excluded, note) {
+        Ok(value) => {
+            if excluded {
+                crate::trae_gateway_host::shared_state()
+                    .sticky
+                    .lock()
+                    .await
+                    .purge_uid(uid);
+            }
+            json_ok(value)
+        }
+        Err(error) => json_err(error, StatusCode::INTERNAL_SERVER_ERROR),
+    }
+}
+
+/// POST /api/qoder/gateway/pool/exclusions —— 设置 / 取消排除。
+async fn api_set_qoder_pool_exclusion(Json(body): Json<Value>) -> Response {
+    let uid = body.get("uid").and_then(Value::as_str).unwrap_or("").trim();
+    if uid.is_empty() {
+        return json_err("缺少 uid".to_string(), StatusCode::BAD_REQUEST);
+    }
+    let excluded = body
+        .get("excluded")
+        .and_then(Value::as_bool)
+        .unwrap_or(true);
+    let note = body.get("note").and_then(Value::as_str).unwrap_or("");
+    let region = match qoder_region_from_body(&body) {
+        Ok(region) => region,
+        Err(error) => return json_err(error, StatusCode::BAD_REQUEST),
+    };
+    let scope = format!("qoder:{}", region.as_str());
+
+    match buddy_switch_gateway::routes::pool_admin::persist(&scope, uid, excluded, note) {
+        Ok(value) => {
+            if excluded {
+                crate::qoder_gateway_host::shared_state()
+                    .sticky
+                    .lock()
+                    .await
+                    .purge_uid(uid);
+            }
+            json_ok(value)
+        }
+        Err(error) => json_err(error, StatusCode::INTERNAL_SERVER_ERROR),
+    }
 }
 
 /// GET /api/qoder/gateway/status —— 运行状态 + **该区域**账号池 + 账号明细 + 诊断。

@@ -93,6 +93,23 @@ pub trait PoolEntryLike {
     /// 当前在途请求数。无统计返回 `0`。
     fn in_flight(&self) -> i64;
 
+    /// **该模型维度**的 `(success_ema, error_ema)`；`None` = 证据不足（回落到账号级）。
+    ///
+    /// 默认 `None` ⇒ 该产品线不做分模型评价（行为与改造前逐字相同）。
+    /// WorkBuddy 侧覆写成「读 `model_health`」，避免「在这个模型上老失败」把账号
+    /// 在**其它**模型上的权重也拖下去（错杀）。
+    fn model_ema(&self, _model: &str) -> Option<(f64, f64)> {
+        None
+    }
+
+    /// **自愈版**在途读数（默认 = [`Self::in_flight`]，即「不做租约自愈」）。
+    ///
+    /// 为什么给默认实现：Qoder / Trae 池不做并发租约（恒 0），不必为它们写空实现；
+    /// WorkBuddy 池有真实租约，覆写成「到期即失效」。
+    fn in_flight_now(&self, _now_ms: i64) -> i64 {
+        self.in_flight()
+    }
+
     /// 归属域标记；`None` 表示未知，不参与 realm 过滤。
     fn realm(&self) -> Option<RealmTag>;
 

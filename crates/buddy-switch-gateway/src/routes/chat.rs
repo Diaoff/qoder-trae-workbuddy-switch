@@ -242,11 +242,34 @@ pub async fn chat_for_region(
                 // (快照差分) -> SsePassthrough (补发 [DONE])
                 sse_response(SsePassthrough::new(
                     crate::protocol::reasoning::ReasoningDelta::new(
-                        crate::protocol::usage_tap::UsageTap::new(response.bytes_stream(), sinks),
+                        crate::protocol::usage_tap::UsageTap::new(response.bytes_stream(), sinks)
+                            // ★ 流内信封错误（P0-3 流式半边）：逐帧旁听，命中就记冷却 +
+                            //   计模型闸门。**不改字节**，客户端看到的内容与改造前完全一致。
+                            .with_error_sink(relay::envelope_error_sink(&state, &uid, &model)),
                     ),
                 ))
             } else {
                 let text = response.text().await.unwrap_or_default();
+                // ★★ **200 信封错误**（P0-3）：上游常把限流/封禁/会话失效装在 2xx 响应体里
+                //    （`{"code":6004,...}`）。旧实现当成功处理 ⇒ 不写冷却、不解绑粘性、
+                //    返回空补全给客户端；那个号在冷却表里永远干净，于是每个请求都优先选它、
+                //    每次都吃同一个 200 错误 —— 「看起来正常、其实一直失败」。
+                //
+                //   这里只**记冷却 + 返回真实错误**，不换号：响应已完整读完，
+                //    按方案 §5 决策 4 的口径，这一类不做轮换（协议上也退不回去）。
+                if let Some(envelope) = crate::protocol::error_sniffer::sniff_http_body(&text) {
+                    return envelope_error_response(
+                        &state,
+                        region,
+                        started,
+                        header_at_ms,
+                        &account,
+                        &uid,
+                        &model,
+                        envelope,
+                    )
+                    .await;
+                }
                 let accumulator = CompletionAccumulator::from_sse(&text);
                 // 只在拿到真实 credit 时写账本——否则会把账号误标为「免费」。
                 if let Some(credit) = accumulator.credit {
@@ -276,6 +299,63 @@ pub async fn chat_for_region(
             }
         }
     }
+}
+
+/// **200 信封错误**的统一处置：记冷却（+ 模型级失败计数）+ 写日志 + 返回真实错误。
+///
+/// ## 为什么单独抽出来
+///
+/// 三条 `if` 判断（记不记冷却、要不要计模型闸门、日志状态码写什么）散在各路由里
+/// 一定会漂移。`messages` / `responses` 两条路由接入时**只调用本函数**即可。
+///
+/// ## 为什么不换号
+///
+/// 调用点都在「响应已完整读完」之后（非流式）。按方案 §5 决策 4 的口径，
+/// 这类错误只能记冷却、让**下一次**请求换号 —— 已经发出去的字节退不回来。
+#[allow(clippy::too_many_arguments)]
+async fn envelope_error_response(
+    state: &GatewayState,
+    region: Region,
+    started: Instant,
+    header_at_ms: i64,
+    account: &str,
+    uid: &str,
+    model: &str,
+    envelope: crate::protocol::error_sniffer::SniffedError,
+) -> Response {
+    use crate::error::GatewayError;
+
+    // 治理副作用与 HTTP 非 2xx 走**同一条**路径（冷却口径、熔断、模型闸门都一致），
+    // 收在 `relay::note_envelope_failure` 里供三条路由共用。
+    relay::note_envelope_failure(&state, uid, model, &envelope.event).await;
+
+    let elapsed_ms = started.elapsed().as_millis() as i64;
+    state.log.record(
+        RequestMeta {
+            endpoint: "/v1/chat/completions",
+            method: "POST",
+            region,
+            account: account.to_string(),
+            account_uid: uid.to_string(),
+            model: model.to_string(),
+            // 对客户端如实报「上游失败」，而不是 200（否则客户端以为成功了）。
+            status: envelope.status,
+            latency_ms: header_at_ms,
+            total_ms: elapsed_ms,
+            prompt_tokens: 0,
+            completion_tokens: 0,
+            stream: false,
+        }
+        .to_value(),
+    );
+
+    let kind = relay::upstream_kind_of(&envelope.event);
+    openai_error(GatewayError::Upstream {
+        kind,
+        status: envelope.status,
+        message: envelope.message,
+        attempts: Vec::new(),
+    })
 }
 
 /// 改写 + 中继一趟（供首次尝试与降级重试共用）。

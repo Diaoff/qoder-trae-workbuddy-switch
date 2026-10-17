@@ -287,6 +287,11 @@ pub struct QoderPool {
     pick_seq: u64,
     /// 「刷新成功」等外部事件用于强制重建的脏标记。
     dirty: bool,
+    /// 本池所属区域（由 `sync_for` 固化）。
+    ///
+    /// 用途只有一个：拼**排除表的作用域键**（`qoder:cn` / `qoder:global`）。
+    /// 池本身按区域分家，但选号内核不感知区域，故需要在这里留一份。
+    region: Option<QoderRegion>,
 }
 
 impl QoderPool {
@@ -299,6 +304,7 @@ impl QoderPool {
     /// 返回池内条目数。`dirty` 时强制重建一次；否则也总是重建 ——
     /// 账号库是唯一事实来源，池只是它的运行态视图（import 之后立刻生效）。
     pub fn sync_for(&mut self, region: QoderRegion) -> usize {
+        self.region = Some(region);
         let file = account::load_accounts_for(region);
         let mut next: BTreeMap<String, QoderPoolEntry> = BTreeMap::new();
         for account in &file.accounts {
@@ -322,6 +328,16 @@ impl QoderPool {
         self.entries.len()
     }
 
+    /// 排除表的作用域键（`cn` / `global`；尚未同步过时回落 `cn`）。
+    fn region_key(&self) -> &'static str {
+        self.region.unwrap_or(QoderRegion::Cn).as_str()
+    }
+
+    /// 用户显式排除的 uid → 备注（选号与视图共用同一份读口）。
+    fn excluded_map(&self) -> std::collections::BTreeMap<String, String> {
+        crate::pool::exclusions::load_for(&format!("qoder:{}", self.region_key()))
+    }
+
     pub fn entries(&self) -> impl Iterator<Item = &QoderPoolEntry> {
         self.entries.values()
     }
@@ -340,15 +356,24 @@ impl QoderPool {
         let now = now_ms();
         let policy = qoder_pick_policy();
         let seed = now as u64 ^ (self.pick_seq.wrapping_mul(0x9E37_79B9_7F4A_7C15));
+        // 用户显式排除的账号：**硬约束**（自动选号 / 兜底 / 偏好都跳过）。
+        let excluded = crate::pool::exclusions::uid_set(&format!("qoder:{}", self.region_key()));
+        // 偏好值可能是**策略哨兵**（`__max_credits__` / `__random__`），见 `parse_preferred`。
+        let (mode, preferred_uid) = crate::pool::parse_preferred(preferred_uid);
+        let input = crate::pool::PickInput {
+            realm: None,
+            model,
+            tried,
+            excluded: &excluded,
+            mode,
+            seed,
+        };
         pick_with_preference(
             &mut self.entries,
             &mut self.pick_seq,
             &policy,
             now,
-            None,
-            model,
-            tried,
-            seed,
+            &input,
             preferred_uid,
         )
     }
@@ -451,13 +476,20 @@ impl QoderPool {
 
     /// 池视图（`/status` 与网关页「账号池」卡）。
     pub fn status_list(&self, now: i64) -> Vec<Value> {
+        let excluded = self.excluded_map();
         self.entries
             .values()
             .map(|entry| {
+                let exclusion = excluded.get(&entry.uid);
                 json!({
                     "uid": entry.uid,
                     "name": entry.name,
                     "available": entry.healthy_for_request(now, ""),
+                    // 用户显式排除（硬约束：选号 / 兜底 / 偏好全跳过）。
+                    "excluded": exclusion.is_some(),
+                    "excludedNote": exclusion
+                        .map(|note| note.clone())
+                        .filter(|note| !note.is_empty()),
                     "authDead": entry.auth_dead,
                     "cooling": entry.cooldown_until > now,
                     "cooldownUntil": entry.cooldown_until,
@@ -485,12 +517,17 @@ impl QoderPool {
     /// `disabled` 的口径 = [`QoderPoolEntry::needs_intervention`]（无凭据 / 凭据死二者之一）
     /// —— `available` 与它们互斥且穷尽，三格相加恒等于 `total`。
     pub fn summary(&self, now: i64) -> Value {
+        let excluded = self.excluded_map();
         let mut available = 0usize;
         let mut cooling = 0usize;
         let mut disabled = 0usize;
         let mut model_cooling = 0usize;
+        let mut excluded_count = 0usize;
         for entry in self.entries.values() {
-            if entry.needs_intervention() {
+            // ★ 排除是互斥第六态：必须从 `available` 里扣掉，否则数字与事实不符。
+            if excluded.contains_key(&entry.uid) {
+                excluded_count += 1;
+            } else if entry.needs_intervention() {
                 disabled += 1;
             } else if entry.cooldown_until > now {
                 cooling += 1;
@@ -510,6 +547,7 @@ impl QoderPool {
             "zero_credits": 0,
             "total_credits": 0,
             "model_cooling": model_cooling,
+            "excluded": excluded_count,
         })
     }
 
@@ -519,12 +557,16 @@ impl QoderPool {
     /// 那边带池内诊断字段（EMA / `lastUsedMs` / 逐模型冷却表），这边只给卡片要的
     /// `status` 五态 + 冷却三件套。
     pub fn accounts_view(&self, now: i64) -> Vec<Value> {
+        let excluded = self.excluded_map();
         self.entries
             .values()
             .map(|entry| {
                 let needs_intervention = entry.needs_intervention();
                 let cooling = entry.cooldown_until > now;
-                let status = if needs_intervention {
+                let is_excluded = excluded.contains_key(&entry.uid);
+                let status = if is_excluded {
+                    "excluded"
+                } else if needs_intervention {
                     "disabled"
                 } else if cooling {
                     "cooling"
@@ -552,6 +594,11 @@ impl QoderPool {
                         None
                     },
                     "disabled": needs_intervention,
+                    "excluded": is_excluded,
+                    "excludedNote": excluded
+                        .get(&entry.uid)
+                        .filter(|note| !note.is_empty())
+                        .cloned(),
                     "authDead": entry.auth_dead,
                     "modelCooldowns": entry.model_cooldowns,
                 })

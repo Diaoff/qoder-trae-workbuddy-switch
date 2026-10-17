@@ -24,6 +24,19 @@ pub enum AccountStrategy {
     Pinned { account_id: String },
     /// 积分最多：在账号库中选剩余积分最高者。
     MaxCredits,
+    /// 随机：在**合格候选**内均匀抽签（不看权重）。
+    ///
+    /// ## 与「自动择优」的区别（为什么这不是重复功能）
+    ///
+    /// 自动择优 = 六因子权重 + 加权抽签 —— 它是**有偏**的：积分多、闲置久的号更容易被选中，
+    /// 长期跑下来会把某几个号抽干，而其它号几乎不动。
+    /// 用户要「把额度平均分摊到几个号」时，只有**均匀**抽签满足得了。
+    ///
+    /// ## 硬约束一条不少
+    ///
+    /// 排除 / 禁用 / 冷却 / 模型冷却 / 在途满 / 成本分层**照样生效** ——
+    /// 「随机」只影响「在合格候选里挑谁」，不改变「谁合格」。
+    Random,
 }
 
 impl Default for AccountStrategy {
@@ -111,6 +124,27 @@ impl AccountSelector {
                 }
                 let account = select_max_credit_candidate(candidates.into_iter())
                     .expect("accounts is non-empty");
+                ensure_region(&account, region)?;
+                Ok(account)
+            }
+            AccountStrategy::Random => {
+                // 兜底路径（池为空时才会走到）：从账号库里**均匀**抽一个。
+                //
+                // 为什么这里用系统时间做种子而不是可复现的种子：兜底路径没有任何
+                // 「本轮已试过」的上下文，抽重了也只影响一次请求；而可复现的种子
+                // 会让「随机」在每次重启后都抽到同一个号 —— 与功能意图相反。
+                let accounts = account::load_accounts_for(region);
+                if accounts.is_empty() {
+                    return Err(GatewayError::NoCredential {
+                        region,
+                        cause: NoCredentialCause::StoreEmpty,
+                    });
+                }
+                let seed = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.subsec_nanos() as usize)
+                    .unwrap_or(0);
+                let account = accounts[seed % accounts.len()].clone();
                 ensure_region(&account, region)?;
                 Ok(account)
             }

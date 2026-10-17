@@ -30,6 +30,16 @@ pub enum GatewayError {
         kind: UpstreamErrorKind,
         status: u16,
         message: String,
+        /// 本轮**尝试过的账号明细**（换号重试的轨迹）。
+        ///
+        /// ## 为什么必须给出来（2026-10-17）
+        ///
+        /// 此前失败只回**最后一条**上游错误，用户无法回答「网关到底换号了没有、换到了谁、
+        /// 为什么都不行」—— 排查只能靠猜。有了它，一次失败就能看出：
+        /// 「A 429（模型限流）→ B 在途满 → C 已排除」。
+        ///
+        /// 空表 = 没有任何一次真正打到上游（例如选号前就被模型闸门挡住）。
+        attempts: Vec<UpstreamAttempt>,
     },
     /// 请求参数不合法 → 400
     BadRequest(String),
@@ -40,6 +50,34 @@ pub enum GatewayError {
     ModelDisabled { scope: Scope, model: String },
     /// 网关自身错误（端口占用/目录失败/内部）→ 502（不返回裸堆栈）
     Internal(String),
+}
+
+/// 一次上游尝试的摘要（失败响应的 `attempts` 字段）。
+///
+/// 只带**排查必需**的四项：哪个账号、什么账号 uid、上游状态码、一句原因。
+/// 刻意不带宽高/权重等内部数据 —— 对外契约越小越稳。
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct UpstreamAttempt {
+    /// 账号展示名。
+    pub account: String,
+    /// 账号 uid（`""` = 没选到账号，例如闸门短路）。
+    pub uid: String,
+    /// 上游 HTTP 状态（`0` = 传输层错误 / 未发出请求）。
+    pub status: u16,
+    /// 一句可读原因（分类结果或池的拒绝原因）。
+    pub reason: String,
+}
+
+impl UpstreamAttempt {
+    /// 转成对外 JSON（键名 camelCase，与其它响应一致）。
+    pub fn to_value(&self) -> Value {
+        json!({
+            "account": self.account,
+            "uid": self.uid,
+            "status": self.status,
+            "reason": self.reason,
+        })
+    }
 }
 
 /// 「该 region 没有可用凭据」的**具体原因**。
@@ -86,6 +124,11 @@ pub enum NoCredentialCause {
         cooling: usize,
         /// 其中余额为 0 的数量。
         zero_credits: usize,
+        /// 其中被**用户显式排除**的数量。
+        ///
+        /// 必须单独给出来：否则「5 个号、0 禁用、0 冷却、0 零积分」这句话会自相矛盾
+        /// —— 用户看到池里有号、状态都正常，却被告知「0 个可用」。
+        excluded: usize,
     },
 }
 
@@ -160,12 +203,37 @@ impl GatewayError {
     /// OpenAI 端点错误体：`{"error":{"message","type","code"}}`。
     pub fn openai_body(&self) -> Value {
         let kind = self.type_name();
-        json!({ "error": { "message": self.message(), "type": kind, "code": kind } })
+        let mut body =
+            json!({ "error": { "message": self.message(), "type": kind, "code": kind } });
+        if let Some(attempts) = self.attempts_json() {
+            body["error"]["attempts"] = attempts;
+        }
+        body
     }
 
     /// Anthropic 端点错误体：`{"type":"error","error":{"type","message"}}`。
     pub fn anthropic_body(&self) -> Value {
-        json!({ "type": "error", "error": { "type": self.type_name(), "message": self.message() } })
+        let mut body = json!({ "type": "error", "error": { "type": self.type_name(), "message": self.message() } });
+        if let Some(attempts) = self.attempts_json() {
+            body["error"]["attempts"] = attempts;
+        }
+        body
+    }
+
+    /// 本轮换号轨迹（**唯一出口**）。空表 ⇒ `None`（不往错误体里塞空数组）。
+    ///
+    /// 这是用户唯一能自查「网关到底换号了没有 / 换到了谁 / 为什么都不行」的数据源；
+    /// 只写日志等于不给。
+    fn attempts_json(&self) -> Option<Value> {
+        match self {
+            GatewayError::Upstream { attempts, .. } if !attempts.is_empty() => {
+                Some(json!(attempts
+                    .iter()
+                    .map(UpstreamAttempt::to_value)
+                    .collect::<Vec<_>>()))
+            }
+            _ => None,
+        }
     }
 }
 
@@ -199,12 +267,27 @@ fn no_credential_message(region: Region, cause: NoCredentialCause) -> String {
             disabled,
             cooling,
             zero_credits,
-        } => format!(
-            "本机{name}账号库有 {total} 个账号，但此刻 0 个可用：\
-             {disabled} 个已禁用、{cooling} 个冷却中、{zero_credits} 个余额为 0。\
-             重新登录 / 切换账号不会解除禁用与冷却 —— \
-             请在「网关 → 账号池」查看逐账号原因（禁用是终态，需余额刷新成功或人工复活）"
-        ),
+            excluded,
+        } => {
+            // ★ 排除必须出现在事实句里（QA 复核指出）：否则「N 个号 / 0 禁用 / 0 冷却 /
+            //   0 零积分」会与「0 个可用」自相矛盾，用户根本不知道该去取消排除。
+            let excluded_clause = if excluded > 0 {
+                format!("、{excluded} 个被你排除")
+            } else {
+                String::new()
+            };
+            let excluded_hint = if excluded > 0 {
+                "；排除只需在账号池点「取消排除」，账号本身是好的"
+            } else {
+                ""
+            };
+            format!(
+                "本机{name}账号库有 {total} 个账号，但此刻 0 个可用：\
+                 {disabled} 个已禁用、{cooling} 个冷却中、{zero_credits} 个余额为 0{excluded_clause}。\
+                 重新登录 / 切换账号不会解除禁用、冷却与排除 —— \
+                 请在「网关 → 账号池」查看逐账号原因（禁用是终态，需余额刷新成功或人工复活{excluded_hint}）"
+            )
+        }
     }
 }
 
@@ -222,6 +305,7 @@ mod tests {
             kind,
             status: 0,
             message: "boom".to_string(),
+            attempts: Vec::new(),
         }
     }
 
@@ -292,6 +376,7 @@ mod tests {
                 total: 12,
                 disabled: 9,
                 cooling: 3,
+                excluded: 0,
                 zero_credits: 0,
             },
         ];
@@ -338,6 +423,7 @@ mod tests {
                 total: 12,
                 disabled: 9,
                 cooling: 3,
+                excluded: 0,
                 zero_credits: 0,
             },
         }
@@ -405,6 +491,7 @@ mod tests {
                 total: 1,
                 disabled: 1,
                 cooling: 0,
+                excluded: 0,
                 zero_credits: 0,
             },
         ] {
@@ -432,6 +519,7 @@ mod tests {
             kind: UpstreamErrorKind::Server,
             status: 500,
             message: "x".repeat(1000),
+            attempts: Vec::new(),
         };
         assert_eq!(upstream.message().chars().count(), 400);
     }

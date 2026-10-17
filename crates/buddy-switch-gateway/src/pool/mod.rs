@@ -13,6 +13,8 @@
 
 pub mod entry;
 pub mod entry_like;
+pub mod exclusions;
+pub mod gate;
 pub mod pick;
 
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -26,7 +28,12 @@ use serde_json::{json, Value};
 
 pub use entry::{CoolKind, CostTier, ModelCooldown, ModelCost, PoolEntry};
 pub use entry_like::PoolEntryLike;
-pub use pick::{pick, pick_with_preference, weight_of, PickPolicy, SHORTLIST_SIZE};
+pub use gate::{GateBlock, GatePhase, ModelGate, ModelGates};
+pub use pick::{
+    no_exclusions, parse_preferred, pick, pick_with_preference, weight_of, weight_of_model,
+    PickInput, PickMode, PickPolicy, PREFERRED_AUTO, PREFERRED_MAX_CREDITS, PREFERRED_RANDOM,
+    SHORTLIST_SIZE,
+};
 
 /// 池内账号的归属域标记（与 core 的 `Region` 解耦，避免循环依赖）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -66,7 +73,30 @@ pub struct PoolSummary {
     pub disabled: usize,
     pub expired: usize,
     pub zero_credits: usize,
+    /// **用户显式排除**的账号数（2026-10-17 新增，互斥第六态）。
+    ///
+    /// ## 为什么它是「态」而不是「正交标记」
+    ///
+    /// 正交标记（如 `model_cooling` / `in_flight_full`）不改变「可用与否」；
+    /// 而排除**直接决定能不能被选中**（硬约束）。若把它做成正交计数、仍留在 `available` 里，
+    /// 卡片就会说「4 可用」，而实际只有 3 个能被选中 —— **数字与事实不符**。
+    /// 因此它必须从 `available` 里扣掉，既然扣掉了就已经是互斥态。
+    ///
+    /// 不变量：`available + cooling + disabled + expired + zero_credits + excluded == total`。
+    pub excluded: usize,
     pub total_credits: f64,
+}
+
+/// 一条**用户排除**记录：`uid → (归属 scope, 备注)`。
+///
+/// scope 只用于「按作用域重建」（`wb:cn` / `trae:work` / `qoder:cn` …）与写盘，
+/// 选号只按 uid 判。uid 在账号库里本身就是唯一的，跨作用域重名不存在。
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct PoolExclusion {
+    /// 归属作用域键（`wb:cn` / `trae:work` / …）。
+    pub scope: String,
+    /// 备注（为什么排除）。空串 = 未填。
+    pub note: String,
 }
 
 /// 池治理配置。
@@ -115,6 +145,38 @@ pub struct PoolConfig {
     /// 由后台余额刷新循环使用：池条目 `credits_refreshed_ms == 0`（从未取过）一定刷新，
     /// 否则 `now - credits_refreshed_ms >= 本值` 才刷新。见 [`crate::credits_refresh`]。
     pub credits_refresh_interval_ms: i64,
+    /// 模型级冷却的**下限**（毫秒，默认 60s）。
+    ///
+    /// ## 为什么必须有下限（2026-10-17 · 本 bug 的第一根因）
+    ///
+    /// 上游 `6004` 的响应体通常**不带**结构化墙钟，而文案里的 `reset at <T>` 实测是
+    /// **配额窗口的重置时刻**、不是解锁时刻（`client_limits` 实测 6/6 判错）。
+    /// 旧实现两条路都错：没墙钟 ⇒ `now + 1ms`（等于不冷却，同一个号每次请求都被优先选中）；
+    /// 采信文案 ⇒ 冷 2 小时（早就恢复了却一直不用它）。
+    ///
+    /// 现在的口径：**只信结构化字段**，没有就给这个下限；由「该模型下一次成功」提前清掉
+    /// （见 [`PoolEntry::note_success`]）。成功是最强的反证。
+    pub min_model_cooldown_ms: i64,
+    /// 账号级 429 的**上限**（毫秒，默认 15 分钟）。
+    ///
+    /// 与模型级同一理由：配额窗口 ≠ 解锁时刻。给 2 小时会让一个十几分钟就恢复的号
+    /// 长时间不可用（实测过）；给太短又会把真限流当没发生。
+    pub rate_window_reset_max_ms: i64,
+    /// 在途满时的**排队等待**上限（毫秒，默认 2000；`0` = 不排队、立刻换号）。
+    ///
+    /// 为什么要有它：`acquire` 失败就换号会把「此刻并发占满」误报成「这个号不可用」——
+    /// 客户端并行发 tool calls 时，用户看到的是「网关拒绝服务」，而账号其实只是忙。
+    pub acquire_timeout_ms: i64,
+    /// 模型闸门：同一模型在多少个账号上失败即判定为**模型级问题**（默认 2）。
+    ///
+    /// 低于 2 没有意义（单个账号失败只是那个号的问题）；高于 3 会让前几次请求白撞。
+    pub gate_threshold: i32,
+    /// 模型闸门的观察窗口（毫秒，默认 10 分钟）。窗口外的失败不累计。
+    pub gate_window_ms: i64,
+    /// 模型闸门的基准暂停时长（毫秒，默认 60s）；触发次数每多一轮翻倍。
+    pub gate_base_ms: i64,
+    /// 模型闸门的暂停上限（毫秒，默认 15 分钟）。
+    pub gate_max_ms: i64,
 }
 
 impl Default for PoolConfig {
@@ -136,6 +198,13 @@ impl Default for PoolConfig {
             model_cost_ttl_ms: 6 * 60 * 60 * 1000,
             session_dead_threshold: 3,
             credits_refresh_interval_ms: 30 * 60 * 1000,
+            min_model_cooldown_ms: MIN_MODEL_COOLDOWN_MS,
+            rate_window_reset_max_ms: 15 * 60 * 1000,
+            acquire_timeout_ms: 2000,
+            gate_threshold: 2,
+            gate_window_ms: 10 * 60 * 1000,
+            gate_base_ms: 60 * 1000,
+            gate_max_ms: 15 * 60 * 1000,
         }
     }
 }
@@ -189,6 +258,29 @@ impl PoolConfig {
         if self.credits_refresh_interval_ms <= 0 {
             self.credits_refresh_interval_ms = 30 * 60 * 1000;
         }
+        // ★ 下限不能被配成 0：那等于回到「冷 1ms = 没冷却」的旧缺陷。
+        if self.min_model_cooldown_ms <= 0 {
+            self.min_model_cooldown_ms = MIN_MODEL_COOLDOWN_MS;
+        }
+        if self.rate_window_reset_max_ms <= 0 {
+            self.rate_window_reset_max_ms = 15 * 60 * 1000;
+        }
+        // `acquire_timeout_ms` 允许 0（= 不排队），负值归 0。
+        if self.acquire_timeout_ms < 0 {
+            self.acquire_timeout_ms = 0;
+        }
+        if self.gate_threshold < 2 {
+            self.gate_threshold = 2;
+        }
+        if self.gate_window_ms <= 0 {
+            self.gate_window_ms = 10 * 60 * 1000;
+        }
+        if self.gate_base_ms <= 0 {
+            self.gate_base_ms = 60 * 1000;
+        }
+        if self.gate_max_ms < self.gate_base_ms {
+            self.gate_max_ms = 15 * 60 * 1000;
+        }
         self
     }
 }
@@ -221,9 +313,7 @@ pub enum UpstreamEvent {
     Client,
 }
 
-/// 探测回填的**冷却下限**（毫秒）：上游没给墙钟、或给的墙钟已过期时用它。
-///
-/// ## ★ 为什么必须有下限（2026-10-16 评审抓出的真缺陷）
+/// 探测回填的**冷却下限**（毫秒）：上游没给墙钟、或给的墙钟已过期时用它。/// ## ★ 为什么必须有下限（2026-10-16 评审抓出的真缺陷）
 ///
 /// `cooldown_model(.., reset_at_ms = 0, ..)` 会落到 `now + 1ms` —— 那等于**没有冷却**
 /// （下一毫秒就又去撞同一堵墙），而调用方却会以为「已置冷却」。方案 §4.5.2 要求
@@ -233,10 +323,30 @@ pub enum UpstreamEvent {
 ///
 /// 放在调用方 ⇒ 换个调用方又漏。这里是回填的唯一入口，放这儿才有约束力。
 ///
-/// ⚠️ **既有问题（不在本次改动范围）**：真实流量那条 `apply_upstream_error` 对
-/// 「上游没给墙钟」的模型级 429 同样落 `now + 1ms`（等价于不冷却）。那是既有行为，
-/// 改它会动真实流量治理，须单独立项 —— 本常量只约束**探测回填**。
 pub const MIN_PROBE_COOLDOWN_MS: i64 = 60_000;
+
+/// **真实流量**的模型级冷却下限（毫秒）。与 [`MIN_PROBE_COOLDOWN_MS`] 同值、**分常量**声明。
+///
+/// ## 为什么需要它（2026-10-17 · issue「限流后一直失败」的第一根因）
+///
+/// [`Pool::apply_upstream_error`] 的模型级分支此前是 `reset_at.unwrap_or(0)` 直传
+/// [`PoolEntry::cooldown_model`]，而后者对「墙钟 <= now」一律落 `now + 1ms` ——
+/// 等于**没有冷却**。上游 `6004` 恰恰通常不给结构化墙钟，于是：
+///
+/// - 那个号在「这个模型」上从来没被真正排除；
+/// - 每个请求的第一跳都重新选中它、拿一次 429；
+/// - `max_rotate` 的重试预算全烧在同一堵墙上，用户看到「池里别的号明明可用却一直失败」。
+///
+/// 两条常量**刻意分开**：探测回填与真实流量是两条独立语义，共用一个会让
+/// 「调探测」误伤真实流量（本仓在 `qoder::pool` 的同名常量旁边已写明这一纪律）。
+pub const MIN_MODEL_COOLDOWN_MS: i64 = 60_000;
+
+/// 在途租约的有效期（毫秒，默认 10 分钟）。
+///
+/// acquire 时把条目的「最晚到期时刻」推到这个点；读侧超过它就视为**全部租约已过期**。
+/// 选 10 分钟的依据：lease 在「拿到响应头」时就释放（流式场景的既有偏差），
+/// 正常请求的占用量级是秒；10 分钟足够覆盖慢上游，又能让泄漏在十分钟内自愈。
+pub const IN_FLIGHT_LEASE_MS: i64 = 10 * 60 * 1000;
 
 /// 探测结果的**采纳**语义 —— [`Pool::adopt_probe_result`] 的输入。
 ///
@@ -321,12 +431,21 @@ const SESSION_DEAD_MARKERS: &[&str] = &["Offline user session not found", "12153
 ///    一个 JSON 数值键都没有 ⇒ 只走分支 1 会恒 `None`（2026-09-28 修复）。
 ///
 /// 解析失败一律 `None`：**不得**把「未知」伪装成「已恢复」（调用方据 `None` 决定是否退避）。
+///
+/// ## ★★ 这个组合出口**只用于诊断/展示**，不用于冷却（2026-10-17）
+///
+/// 文案里的时刻实测是**配额窗口重置**、不是解锁时刻（`client_limits` 实测 6/6 判错）。
+/// 冷却必须走 [`parse_reset_at_ms_from_json`]；否则一次 429 会把号冷掉 2 小时，
+/// 而它十几分钟就恢复了 —— 症状是「号明明能用、网关却一直不用它」。
 pub fn parse_reset_at_ms(body: &str) -> Option<i64> {
     parse_reset_at_ms_from_json(body).or_else(|| parse_reset_at_ms_from_text(body))
 }
 
 /// 结构化形态：JSON 里的数值键。
-fn parse_reset_at_ms_from_json(body: &str) -> Option<i64> {
+///
+/// ★ **唯一可信的墙钟来源**（`pub` 是为了让 `apply_upstream_error` / 探测回填只认它）。
+/// 文案兜底（[`parse_reset_at_ms_from_text`]）**不进冷却**：实测那是配额窗口、不是解锁时刻。
+pub fn parse_reset_at_ms_from_json(body: &str) -> Option<i64> {
     const CANDIDATE_KEYS: &[&str] = &[
         "\"resetTime\"",
         "\"reset_time\"",
@@ -430,7 +549,10 @@ pub fn classify_event(status: u16, body: &str) -> UpstreamEvent {
             .iter()
             .any(|marker| body.contains(marker));
         return UpstreamEvent::SoftRate {
-            reset_at_ms: parse_reset_at_ms(body),
+            // ★ 只信**结构化**墙钟。文案里的 `reset at` 是配额窗口（实测 6/6 判错），
+            //   拿它当冷却时长会把号冷掉几小时；冷却时长的兜底见
+            //   `PoolConfig::min_model_cooldown_ms` / `rate_window_reset_max_ms`。
+            reset_at_ms: parse_reset_at_ms_from_json(body),
             model_scoped,
         };
     }
@@ -516,6 +638,13 @@ impl Default for PersistedState {
 /// 账号池。
 pub struct Pool {
     entries: BTreeMap<String, PoolEntry>,
+    /// 用户显式排除的账号（uid → 归属 scope + 备注）。**硬约束**：选号、兜底、偏好全跳过。
+    excluded: BTreeMap<String, PoolExclusion>,
+    /// **模型级闸门**（跨请求）：同一模型在多个账号上失败即整体暂停，到期半开。
+    ///
+    /// 与 `PoolEntry::model_cooldowns` 的分工：那是「某个号不能再用这个模型」，
+    /// 这是「这个模型此刻整体不可用」。前者解决换号，后者解决**不要换号**（换也没用）。
+    gates: ModelGates,
     config: PoolConfig,
     pick_seq: u64,
     dirty: bool,
@@ -526,6 +655,8 @@ impl Pool {
     pub fn new(config: PoolConfig) -> Self {
         Self {
             entries: BTreeMap::new(),
+            excluded: BTreeMap::new(),
+            gates: ModelGates::default(),
             config: config.normalized(),
             pick_seq: 0,
             dirty: false,
@@ -617,6 +748,46 @@ impl Pool {
         }
     }
 
+    /// 用某作用域的最新排除表对齐池内那一部分（**只替换该 scope 的条目**）。
+    ///
+    /// ## 为什么按 scope 替换而不是整体覆盖
+    ///
+    /// WB 池一份同时装 CN 与 Global（`realm` 只是条目属性），而排除表是按作用域存盘的
+    /// （`wb:cn` / `wb:global`）。若整体覆盖，同步 CN 时会把 Global 的排除项一起清掉 ——
+    /// 症状是「刚排除的国际版账号，刷新一下又回来了」（且不报错）。
+    pub fn sync_exclusions(&mut self, scope: &str, items: &BTreeMap<String, String>) {
+        self.excluded.retain(|_, entry| entry.scope != scope);
+        for (uid, note) in items {
+            self.excluded.insert(
+                uid.clone(),
+                PoolExclusion {
+                    scope: scope.to_string(),
+                    note: note.clone(),
+                },
+            );
+        }
+    }
+
+    /// 当前被排除的 uid 集合（选号用；条目很少，克隆成本可忽略）。
+    pub fn excluded_keys(&self) -> HashSet<String> {
+        self.excluded.keys().cloned().collect()
+    }
+
+    /// 该 uid 是否被用户排除。
+    pub fn is_excluded(&self, uid: &str) -> bool {
+        self.excluded.contains_key(uid)
+    }
+
+    /// 该 uid 的排除备注（`None` = 未排除）。
+    pub fn exclusion_of(&self, uid: &str) -> Option<&PoolExclusion> {
+        self.excluded.get(uid)
+    }
+
+    /// 全部排除项（供管理面/端点回显）。
+    pub fn exclusions(&self) -> &BTreeMap<String, PoolExclusion> {
+        &self.excluded
+    }
+
     /// 写入积分明细（`credits` 与「快过期」子集）。
     pub fn set_credits(&mut self, uid: &str, credits: i64, expiring: i64) {
         let Some(entry) = self.entries.get_mut(uid) else {
@@ -675,30 +846,91 @@ impl Pool {
         true
     }
 
+    /// **模型闸门裁决**：`None` = 放行；`Some(block)` = 本次请求不该发出去。
+    ///
+    /// 三个分支（对应 `GatePhase`）：
+    /// - 无闸门 ⇒ 放行；
+    /// - 暂停中 ⇒ 拒绝（带剩余时长）；
+    /// - 半开 ⇒ **只放一个探针**，其余请求按「仍在暂停」拒绝（`remain_ms = 0`
+    ///   表示「票已被别的请求领走」，与「还在暂停」区分开）。
+    ///
+    /// 放在 `Pool` 上而不是 `relay` 里：闸门状态与池的写锁同一把，
+    /// 两处各拿一次锁会给「探针票」留下竞态窗口（两个请求同时领到票）。
+    pub fn admit_model(&mut self, model: &str, now_ms: i64) -> Option<GateBlock> {
+        let config = self.config.clone();
+        if let Some(block) = self.gates.blocked(model, now_ms, &config) {
+            return Some(block);
+        }
+        if !self.gates.is_gated(model) {
+            return None;
+        }
+        // 走到这里 = 刚到期转入半开（或已在半开）。
+        if self.gates.try_probe(model, now_ms) {
+            None
+        } else {
+            Some(GateBlock {
+                model: model.to_string(),
+                remain_ms: 0,
+                accounts: 0,
+            })
+        }
+    }
+
+    /// 记一次**模型级**失败（`6004` / `11102`）。返回是否因此新开了闸门。
+    ///
+    /// 只该由中继在 `apply_upstream_error` 之后调用，且**仅当**事件归因到模型 ——
+    /// 账号级失败计进来会让闸门频繁误触发（一个号额度耗尽就把整个模型停掉）。
+    pub fn note_model_failure(&mut self, model: &str, now_ms: i64) -> bool {
+        let config = self.config.clone();
+        self.gates.record_failure(model, now_ms, &config)
+    }
+
+    /// 该模型成功一次 ⇒ 立刻关闸（成功是最强的反证）。
+    pub fn note_model_success(&mut self, model: &str) {
+        self.gates.record_success(model);
+    }
+
+    /// 当前所有闸门（管理面/诊断用）。
+    pub fn model_gates(&self) -> Vec<&ModelGate> {
+        self.gates.snapshot()
+    }
+
     /// 选号；`preferred` 为**偏好 uid**（可用则优先，不可用则回落，绝不拒绝服务）。
     ///
     /// 偏好有两个来源，优先级见 `relay::select_account`：显式固定
     /// （[`crate::AccountStrategy::Pinned`]）**高于**会话粘性。
     /// 算法见 [`pick::pick_with_preference`]。
+    ///
+    /// `excluded` 是**用户显式排除**的 uid（硬约束：自动选号、兜底、偏好都跳过）；
+    /// `mode` 只决定「在合格候选里挑谁」（加权 / 积分择优 / 随机）。
     pub fn pick_account(
         &mut self,
         now_ms: i64,
         realm: Option<RealmTag>,
         model: &str,
         tried: &HashSet<String>,
+        mode: PickMode,
         seed: u64,
         preferred: Option<&str>,
     ) -> Option<String> {
         let policy = self.policy();
+        // 与模型冷却同一处惰性清理：窗口外的失败记录与已关闸的条目不该无限增长。
+        self.gates.prune(now_ms, self.config.gate_window_ms);
+        let excluded = self.excluded_keys();
+        let input = PickInput {
+            realm,
+            model,
+            tried,
+            excluded: &excluded,
+            mode,
+            seed,
+        };
         pick_with_preference(
             &mut self.entries,
             &mut self.pick_seq,
             &policy,
             now_ms,
-            realm,
-            model,
-            tried,
-            seed,
+            &input,
             preferred,
         )
     }
@@ -765,16 +997,21 @@ impl Pool {
     /// 供**会话粘性**使用：粘性先问「上次那个账号还能不能用」，能用就复用、不能用就解绑换号。
     /// 粘性是**优化而非约束**，所以这里必须能明确判出「不可用」，绝不能因为粘性而拒绝服务。
     ///
-    /// ★ 判据与 [`Self::pick_account`] **同源**（共用 `pick::entry_usable`）——
+    /// ★ 判据与 [`Self::pick_account`] **同源**（共用 `pick::selectable`）——
     /// 若这里另写一套且更宽松，粘性就会把请求钉到 `pick` 认为不可用的账号上
     /// （症状：明明有别的号可用却一直失败）。
     pub fn is_usable_for(&self, uid: &str, now_ms: i64, model: &str) -> bool {
         let policy = self.policy();
-        pick::is_usable(&self.entries, &policy, uid, now_ms, model)
+        let excluded = self.excluded_keys();
+        pick::is_usable(&self.entries, &policy, uid, now_ms, model, &excluded)
     }
 
     /// 申请在途额度；返回是否成功（失败表示该号已占满）。
+    ///
+    /// 每次成功都把 `in_flight_until_ms` 推到 `now + IN_FLIGHT_LEASE_MS`；
+    /// 若发现上一批租约已整体过期，先把裸计数清零（**泄漏自愈**）。
     pub fn acquire(&mut self, uid: &str) -> bool {
+        let now = crate::timeutil::now_ms();
         let policy = self.policy();
         let Some(entry) = self.entries.get_mut(uid) else {
             return false;
@@ -785,10 +1022,16 @@ impl Pool {
             }
             _ => policy.max_in_flight,
         };
-        if limit > 0 && entry.in_flight >= limit {
+        let live = entry.in_flight_now(now);
+        if limit > 0 && live >= limit {
             return false;
         }
+        // 过期租约一律回收：此时 `in_flight_now` 已经是 0，裸计数还停在旧值上。
+        if entry.in_flight != live {
+            entry.in_flight = live;
+        }
         entry.in_flight += 1;
+        entry.in_flight_until_ms = now.saturating_add(IN_FLIGHT_LEASE_MS);
         true
     }
 
@@ -806,7 +1049,7 @@ impl Pool {
         let Some(entry) = self.entries.get_mut(uid) else {
             return;
         };
-        entry.note_success(now_ms);
+        entry.note_success(now_ms, model);
         if entry.record_cost(now_ms, model, credit, tokens) {
             entry.deduct_credits(credit);
         }
@@ -867,26 +1110,45 @@ impl Pool {
             } => {
                 if *model_scoped && !model.is_empty() {
                     // 模型级限流：只冷却该模型，切模型立即可用。
+                    //
+                    // ★★ 冷却时长口径（2026-10-17，本 bug 的第一根因）：
+                    //   只信**结构化**墙钟；没有（或已过期）⇒ 用 `min_model_cooldown_ms`（60s）。
+                    //   旧实现这里落了 `now + 1ms`（= 不冷却），于是同一个号**每个请求**都被
+                    //   重新选中、每次都 429，重试预算全烧在同一堵墙上 —— 用户看到的就是
+                    //   「池里别的号明明可用，请求却一直失败」。
+                    let reset_at = reset_at_ms
+                        .filter(|value| {
+                            *value > now_ms.saturating_add(config.min_model_cooldown_ms)
+                        })
+                        .unwrap_or_else(|| now_ms.saturating_add(config.min_model_cooldown_ms));
                     entry.cooldown_model(
                         now_ms,
                         model,
-                        reset_at_ms.unwrap_or(0),
-                        config.soft_rate_max_ms,
+                        reset_at,
+                        // ★ 封顶与账号级**同一个值**（15 分钟）：两处不同会让「同一个错误
+                        //   在模型维度被放大 4 倍」（QA 复核指出的不对称）。真限流会由后续
+                        //   429 继续延长，不需要一次押 2 小时。
+                        config.rate_window_reset_max_ms,
                         "6004 model rate limit",
                     );
+                    // O6：这是**模型维度**的失败 ⇒ 记进该模型的健康度，
+                    // 账号级 EMA 不动（否则这个号在别的模型上也被一起降权）。
+                    entry.note_model_result(model, false);
                 } else {
                     match reset_at_ms {
                         Some(reset_at) => entry.cooldown_soft_until(
                             now_ms,
                             *reset_at,
-                            config.soft_rate_max_ms,
+                            // ★ 账号级同样不采信「配额窗口」长墙钟：封顶 15 分钟。
+                            //   真限流会由后续的 429 继续延长，不需要一次押 2 小时。
+                            config.rate_window_reset_max_ms,
                             "429 rate limit",
                         ),
                         None => {
                             entry.cooldown_soft_backoff(
                                 now_ms,
                                 config.soft_rate_ms,
-                                config.soft_rate_max_ms,
+                                config.rate_window_reset_max_ms,
                                 "429 rate limit",
                             );
                         }
@@ -901,6 +1163,8 @@ impl Pool {
                     entry.cooldown_fixed(now_ms, 60_000, "11102 model blocked (no model)");
                 } else {
                     entry.block_model_backoff(now_ms, model, "11102 model blocked");
+                    // O6：模型被封禁是**模型维度**的失败，同样只记该模型。
+                    entry.note_model_result(model, false);
                 }
                 false
             }
@@ -1068,12 +1332,18 @@ impl Pool {
                 continue;
             }
             summary.total += 1;
-            match entry.status_of(now_ms) {
-                "disabled" => summary.disabled += 1,
-                "cooling" => summary.cooling += 1,
-                // `expired` 本侧无判据（见 `PoolEntry::status_of`），恒为 0。
-                "no_credits" => summary.zero_credits += 1,
-                _ => summary.available += 1,
+            // ★ 排除优先于一切状态：它决定「能不能被选中」，因此必须先从 `available`
+            //   里扣掉，否则「4 可用」与实际可选中数不符（见 `PoolSummary::excluded`）。
+            if self.excluded.contains_key(&entry.uid) {
+                summary.excluded += 1;
+            } else {
+                match entry.status_of(now_ms) {
+                    "disabled" => summary.disabled += 1,
+                    "cooling" => summary.cooling += 1,
+                    // `expired` 本侧无判据（见 `PoolEntry::status_of`），恒为 0。
+                    "no_credits" => summary.zero_credits += 1,
+                    _ => summary.available += 1,
+                }
             }
             // 余额未知（从未刷新）不计入总额：把未知当 0 会让「总积分」看起来凭空变少。
             if entry.credits_refreshed_ms > 0 {
@@ -1109,6 +1379,14 @@ impl Pool {
             .values()
             .map(|entry| {
                 let status = entry.status_of(now_ms);
+                // ★ 排除是**互斥第六态**：一个被排除的号可能同时「可用」，但它不能被选中，
+                //   所以状态必须是 `excluded` 而不是 `available` + 一个正交标记。
+                let exclusion = self.excluded.get(&entry.uid);
+                let status = if exclusion.is_some() {
+                    "excluded"
+                } else {
+                    status
+                };
                 let cooling = status == "cooling";
                 let reason_visible = cooling || entry.disabled;
                 let cooldown_until = entry.expiry_ms();
@@ -1142,6 +1420,11 @@ impl Pool {
                         .then(|| entry.reason.clone())
                         .filter(|reason| !reason.is_empty()),
                     "disabled": entry.disabled,
+                    // 用户显式排除（硬约束：选号 / 兜底 / 偏好都跳过）。`excludedNote` 给 UI 展示原因。
+                    "excluded": exclusion.is_some(),
+                    "excludedNote": exclusion
+                        .map(|item| item.note.clone())
+                        .filter(|note| !note.is_empty()),
                     // 模型 → 解冻时刻（ms）。空表 = 该账号此刻没有模型级冷却。
                     "modelCoolings": model_coolings,
                 })
@@ -1166,7 +1449,14 @@ impl Pool {
                 format!(
                     "{}({tail}:{},积分={credits})",
                     entry.nickname,
-                    entry.rejection(now_ms)
+                    // ★ 顺序：排除 > 禁用 > 冷却 > 零积分。
+                    //   排除是**用户的显式意图**，最该先说明 —— 否则用户会以为「是这个号坏了」，
+                    //   去客户端反复重登（而真正要做的只是取消排除）。
+                    match self.excluded.get(&entry.uid) {
+                        Some(item) if item.note.is_empty() => "已排除（用户设置）".to_string(),
+                        Some(item) => format!("已排除（{}）", item.note),
+                        None => entry.rejection(now_ms),
+                    }
                 )
             })
             .collect()
@@ -1190,7 +1480,8 @@ impl Pool {
                     "credits": entry.credits,
                     "cooling": cooling,
                     "disabled": entry.disabled,
-                    "in_flight": entry.in_flight,
+                    // 自愈读数：泄漏的租约到期后不再算「占用」（与选号同一判据）。
+                    "in_flight": entry.in_flight_now(now_ms),
                     "breaker_fails": entry.fails,
                 });
                 if cooling {
@@ -1258,8 +1549,8 @@ impl Pool {
         for entry in self.entries.values() {
             let is_healthy = entry.healthy(now_ms);
             let is_cooling = now_ms < entry.until_ms || now_ms < entry.breaker_until_ms;
-            let full =
-                self.policy().max_in_flight > 0 && entry.in_flight >= self.policy().max_in_flight;
+            let full = self.policy().max_in_flight > 0
+                && entry.in_flight_now(now_ms) >= self.policy().max_in_flight;
             if is_healthy {
                 healthy += 1;
             }
@@ -1439,6 +1730,7 @@ fn restore_entry(entry: &mut PoolEntry, persisted: PersistedEntry, now_ms: i64) 
     // 进程内状态：重启即清零，避免「重启前占着在途」永久阻塞。
     entry.fails = 0;
     entry.in_flight = 0;
+    entry.in_flight_until_ms = 0;
 }
 
 #[cfg(unix)]
@@ -1581,10 +1873,21 @@ mod tests {
                 reset_at_ms,
             } => {
                 assert!(model_scoped, "真实 body 里的 6004 必须识别为模型级");
+                // ★★ 契约变更（2026-10-17）：`classify_event` 不再从**文案**解冷却时刻。
+                //
+                // 实测：`will reset at <T> UTC+8` 是**配额窗口的重置时刻**，不是解锁时刻
+                // （`client_limits` 记过一次 6/6 全错的案例）。拿它当冷却时长会把号冷掉几小时，
+                // 而它十几分钟就恢复了 —— 症状是「号明明能用、网关却一直不用它」。
+                //
+                // 冷却改为「只信结构化字段 + 60s 下限」（`min_model_cooldown_ms`），
+                // 并由「该模型下一次成功」提前清掉。文案解析仍保留，供诊断/展示用。
                 assert_eq!(
-                    reset_at_ms,
-                    Some(1_789_547_664_000),
-                    "解冻时刻必须从 msg 文本解出（UTC+8）"
+                    reset_at_ms, None,
+                    "文案里的 reset at 不得进冷却（它是配额窗口，不是解锁时刻）"
+                );
+                assert!(
+                    parse_reset_at_ms(REAL_GLOBAL_BODY).is_some(),
+                    "文本解析能力必须保留（诊断/展示仍要用它）"
                 );
             }
             other => panic!("应为 SoftRate，实际 {other:?}"),
@@ -1740,6 +2043,59 @@ mod tests {
         assert!(!pool.acquire("g1"), "国际版上限为 2");
     }
 
+    /// ★ 在途租约**自愈**：泄漏的计数在租约到期后必须被回收。
+    ///
+    /// 变异：把 `in_flight_now` 改回裸 `in_flight` ⇒ 第二条断言红（账号永久选不中，
+    /// 而界面仍显示「可用」—— 这正是「账号看着正常、请求一直失败」的一种）。
+    #[test]
+    fn leaked_in_flight_lease_self_heals_after_expiry() {
+        let mut pool = Pool::new(PoolConfig::default());
+        pool.upsert("u1", None, "");
+        let now = crate::timeutil::now_ms();
+        {
+            let entry = pool.entries.get_mut("u1").unwrap();
+            entry.in_flight = 3; // 正好等于 max_in_flight：泄漏场景
+            entry.in_flight_until_ms = now - 1; // 租约已过期
+        }
+        assert_eq!(
+            pool.get("u1").unwrap().in_flight_now(now),
+            0,
+            "过期租约必须读成 0"
+        );
+        assert!(
+            pool.acquire("u1"),
+            "过期租约必须自愈，否则账号会被永久判成「在途已满」"
+        );
+        // 自愈后是 1（刚 acquire 的那一个），不是 4。
+        assert_eq!(pool.get("u1").unwrap().in_flight, 1);
+    }
+
+    /// ★ 模型闸门：同模型 2 个账号失败即暂停，成功即关闸。
+    #[test]
+    fn model_gate_pauses_after_two_accounts_and_success_closes_it() {
+        let mut pool = Pool::new(PoolConfig::default());
+        pool.upsert("u1", None, "");
+        pool.upsert("u2", None, "");
+
+        assert!(pool.admit_model("m", NOW).is_none(), "无闸门 ⇒ 放行");
+        assert!(
+            !pool.note_model_failure("m", NOW),
+            "第 1 个账号失败不该开闸"
+        );
+        assert!(pool.admit_model("m", NOW).is_none());
+        assert!(pool.note_model_failure("m", NOW), "第 2 个账号失败必须开闸");
+
+        let block = pool.admit_model("m", NOW).expect("暂停中必须被拒");
+        assert!(block.remain_ms > 0, "拒绝信息必须带剩余时长");
+        assert_eq!(block.accounts, 2);
+
+        // 另一个模型不受影响（闸门按模型分家）
+        assert!(pool.admit_model("other", NOW).is_none());
+
+        pool.note_model_success("m");
+        assert!(pool.admit_model("m", NOW).is_none(), "成功必须立刻关闸");
+    }
+
     #[test]
     fn acquire_on_unknown_uid_fails() {
         let mut pool = Pool::new(PoolConfig::default());
@@ -1787,10 +2143,18 @@ mod tests {
         let first = pool.get("u1").unwrap().until_ms - NOW;
         assert_eq!(first, 600_000, "首次退避应为基准 600s");
 
-        // 冷却结束后再次触发 → 翻倍
+        // 冷却结束后再次触发 → 翻倍，但封顶 `rate_window_reset_max_ms`（15 分钟）。
+        //
+        // ★ 封顶从 2 小时收到 15 分钟（2026-10-17）：2 小时的依据是上游文案里的
+        //   `reset at`，而它实测是配额窗口而非解锁时刻。真限流会被后续 429 继续延长，
+        //   不需要一次押 2 小时 —— 押错的代价是「号恢复了却一直不用它」。
         let later = NOW + first + 1;
         pool.apply_upstream_error("u1", "", &event, later);
-        assert_eq!(pool.get("u1").unwrap().until_ms - later, 1_200_000);
+        assert_eq!(
+            pool.get("u1").unwrap().until_ms - later,
+            900_000,
+            "第二次退避翻倍后必须被 15 分钟上限截断"
+        );
     }
 
     #[test]
@@ -1953,7 +2317,15 @@ mod tests {
             "复活后必须**真的可用**（与选号同一套判据，无回落）：禁用 / 冷却 / 熔断都不得再挡"
         );
         assert_eq!(
-            pool.pick_account(NOW, Some(RealmTag::Cn), "", &HashSet::new(), 1, None),
+            pool.pick_account(
+                NOW,
+                Some(RealmTag::Cn),
+                "",
+                &HashSet::new(),
+                PickMode::Weighted,
+                1,
+                None
+            ),
             Some("u1".to_string()),
             "也应当能被选到 —— 这才是「恢复」按钮的意义"
         );
@@ -2587,14 +2959,30 @@ mod tests {
 
         let mut tried = HashSet::new();
         let first = pool
-            .pick_account(NOW, Some(RealmTag::Cn), "", &tried, 1, None)
+            .pick_account(
+                NOW,
+                Some(RealmTag::Cn),
+                "",
+                &tried,
+                PickMode::Weighted,
+                1,
+                None,
+            )
             .expect("有候选");
         tried.insert(first.clone());
 
         // 失败的号进入冷却后，换号重试应拿到另一个
         pool.apply_upstream_error(&first, "", &UpstreamEvent::NotFound, NOW);
         let second = pool
-            .pick_account(NOW, Some(RealmTag::Cn), "", &tried, 2, None)
+            .pick_account(
+                NOW,
+                Some(RealmTag::Cn),
+                "",
+                &tried,
+                PickMode::Weighted,
+                2,
+                None,
+            )
             .expect("仍有候选");
         assert_ne!(first, second);
     }
@@ -2621,6 +3009,7 @@ mod tests {
                 Some(RealmTag::Cn),
                 "",
                 &HashSet::new(),
+                PickMode::Weighted,
                 1,
                 Some("poor"),
             )
@@ -2630,7 +3019,15 @@ mod tests {
         // ② 偏好已被本请求试过 ⇒ 跳过它、回落自动择优（否则会在同一请求里重复撞）。
         let tried: HashSet<String> = ["poor".to_string()].into_iter().collect();
         let picked = pool
-            .pick_account(NOW, Some(RealmTag::Cn), "", &tried, 2, Some("poor"))
+            .pick_account(
+                NOW,
+                Some(RealmTag::Cn),
+                "",
+                &tried,
+                PickMode::Weighted,
+                2,
+                Some("poor"),
+            )
             .expect("仍有候选");
         assert_ne!(picked, "poor", "已试过的偏好必须被跳过");
 
@@ -2641,6 +3038,7 @@ mod tests {
                 Some(RealmTag::Cn),
                 "",
                 &HashSet::new(),
+                PickMode::Weighted,
                 3,
                 Some("no-such"),
             )
@@ -2652,8 +3050,16 @@ mod tests {
 
         // ④ 无偏好 ⇒ 不引入任何行为变化（仍能选出账号）。
         assert!(
-            pool.pick_account(NOW, Some(RealmTag::Cn), "", &HashSet::new(), 4, None)
-                .is_some(),
+            pool.pick_account(
+                NOW,
+                Some(RealmTag::Cn),
+                "",
+                &HashSet::new(),
+                PickMode::Weighted,
+                4,
+                None
+            )
+            .is_some(),
             "无偏好时行为不变"
         );
     }
