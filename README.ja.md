@@ -199,7 +199,7 @@ flowchart TB
 | --- | --- | --- |
 | **デスクトップアプリ** | [GitHub Releases](https://github.com/NextAgentX/trae-workbuddy-switch/releases/latest) からインストーラーを取得 | Tauri 製。日常利用に推奨 |
 | **webui** | ソースからビルド（下記） | デスクトップ版と同じフロントエンド成果物をローカル HTTP で配信 |
-| **オンラインデモ** | [GitHub Pages](https://nextagentx.github.io/trae-workbuddy-switch/) | 読み取り専用。アカウントや利用量はすべて架空のデータ |
+| **オンラインデモ** | [GitHub Pages](https://nextagentx.github.io/qoder-trae-workbuddy-switch/) | 読み取り専用。アカウントや利用量はすべて架空のデータ |
 
 > npm パッケージは未公開のため `npm i -g` ではインストールできません。webui は下記のソースビルドをご利用ください。
 

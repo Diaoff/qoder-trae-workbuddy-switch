@@ -210,7 +210,7 @@ Qoder 的 cn/global 会与 WB/Trae **共用同一把键**。方案：把键从 `
 
 **真实 UI 截图**：`logs/qoder-integration/*.png`（6 作用域菜单 + Qoder 圆环图标 + `⌘1..⌘6`、**账号页**（工具栏一行 + 卡四块）、
 **详情抽屉**（账号信息 + 备注行）、**抽屉内备注编辑态**、**添加账号抽屉**（方式子集两张卡）、**批量条**、**硬删除确认**、**表格视图**、
-概览页、设置页、诚实未接入页、WorkBuddy 分区无回归）—— demo 构建（`VITE_PAGES_DEMO=1` ⇒ HashRouter、base `/trae-workbuddy-switch/`）+ 无头 Chrome 拍摄。
+概览页、设置页、诚实未接入页、WorkBuddy 分区无回归）—— demo 构建（`VITE_PAGES_DEMO=1` ⇒ HashRouter、base `/<仓库名>/`）+ 无头 Chrome 拍摄。
 
 **交互验证（可复跑：`node _verify-qoder-workbench.mjs`，12/12 通过）**：页头原型公式（`{scope} · N 个账号`）/
 工具栏一行（搜索·排序·分组·视图×2·全选·添加账号）/ 卡片 2 张（状态槽「凭据可用」+ 来源徽章 + 凭据摘要 + 掩码）/

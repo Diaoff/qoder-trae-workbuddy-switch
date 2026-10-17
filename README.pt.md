@@ -199,7 +199,7 @@ flowchart TB
 | --- | --- | --- |
 | **Aplicativo desktop** | Baixar o instalador em [GitHub Releases](https://github.com/NextAgentX/trae-workbuddy-switch/releases/latest) | Empacotado com Tauri; recomendado no dia a dia |
 | **webui** | Compilar do código-fonte (abaixo) | O mesmo bundle de frontend do app, servido por HTTP local |
-| **Demo online** | [GitHub Pages](https://nextagentx.github.io/trae-workbuddy-switch/) | Demo somente leitura; contas e uso são fictícios |
+| **Demo online** | [GitHub Pages](https://nextagentx.github.io/qoder-trae-workbuddy-switch/) | Demo somente leitura; contas e uso são fictícios |
 
 > O pacote npm ainda não foi publicado, então `npm i -g` não o instala; para a forma webui use a compilação do código-fonte abaixo.
 

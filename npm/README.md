@@ -3,7 +3,7 @@
 **WorkBuddy / TraeWork 多账号管理工具**（webui 形态）：启动本地服务后用浏览器操作，能力与桌面 App 一致。
 
 > 桌面 App（Tauri）请从 [GitHub Releases](https://github.com/NextAgentX/trae-workbuddy-switch/releases/latest) 下载安装包。
-> 在线只读演示：<https://nextagentx.github.io/trae-workbuddy-switch/>
+> 在线只读演示：<https://nextagentx.github.io/qoder-trae-workbuddy-switch/>
 
 > **本包（`@nextagentx/buddy-switch`）暂未发布到 npm**（npmjs 账号侧受限，通道已就绪但未开启）。
 > 在开启之前，请用下面的「从 GitHub Releases 直接下载」方式获取 webui 形态；通道开启后以 npm 命令为准。

@@ -196,7 +196,7 @@ flowchart TB
 | --- | --- | --- |
 | **桌面 App** | [GitHub Releases](https://github.com/NextAgentX/trae-workbuddy-switch/releases/latest) 下载安装包 | Tauri 打包，推荐日常使用 |
 | **webui** | 从源码构建（见下） | 与桌面 App 同一份前端产物，走本地 HTTP 通道 |
-| **在线演示** | [GitHub Pages](https://nextagentx.github.io/trae-workbuddy-switch/) | 只读演示，账号与用量均为虚构数据 |
+| **在线演示** | [GitHub Pages](https://nextagentx.github.io/qoder-trae-workbuddy-switch/) | 只读演示，账号与用量均为虚构数据 |
 
 > npm 包尚未发布，`npm i -g` 暂时装不到；webui 请按下面的源码构建。
 
