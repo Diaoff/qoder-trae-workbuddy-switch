@@ -121,7 +121,25 @@ jobs:
       - name: Clippy
         env:
           RUSTFLAGS: ""
-        run: cargo clippy --workspace --all-targets
+        run: |
+          set -o pipefail
+          # `--message-format=short` 把每条诊断压成一行，便于下面抬成注解。
+          cargo clippy --workspace --all-targets --message-format=short 2>&1 | tee clippy.log
+          status=${PIPESTATUS[0]}
+          if [ "$status" -ne 0 ]; then
+            # ★ 失败时把诊断抬成 `::error::` 注解。
+            #
+            # 判据：job 日志的下载接口要**仓库管理员权限**（匿名 API 返回 403），
+            # 而 check-run 注解是**公开可读**的。没有这一步，「clippy 挂了」在
+            # 仓库外只能看到一句 exit code 1 —— 2026-10-17 就是这样盲猜了一轮
+            # （Windows 上 clippy 全绿，Linux 才有那条诊断）。
+            #
+            # 只抬前 20 条：注解是给人看的摘要，完整清单仍在 clippy.log 里。
+            grep -E "^(error|warning)(\[|:)" clippy.log | head -20 | while IFS= read -r line; do
+              printf '::error::%s\n' "$line"
+            done
+            exit "$status"
+          fi
 
       # 单元 + 集成测试（crates/*/tests 下的 e2e / 迁移 / 网关契约用例都在这里跑）。
       # `--workspace` 会带上 src-tauri —— 它没有测试 target 也不影响。
