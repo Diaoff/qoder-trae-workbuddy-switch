@@ -1214,3 +1214,111 @@ mod tests {
     // `pick_with_preference` 系列用例与 `pool::tests::pick_account_honours_preferred_uid_and_falls_back`
     // 守住；Trae 侧另有 `trae::pool::preferred_uid_falls_back_when_unusable` 做行为级印证。
 }
+
+/// **首帧窥探**的集成测试：起一个只应答一次的**真 HTTP 服务**，让 `peek_first_frame`
+/// 面对真实的 `reqwest::Response`（这个类型没有公开构造入口，只能这么测）。
+///
+/// 服务端用 `std::net` + 阻塞线程实现：`tokio` 这边只开了 `net` 特性（没开 `io-util`），
+/// 为了一个测试去加特性会把依赖面扩大；而「写死一段 HTTP 响应」正是阻塞 IO 最擅长的。
+#[cfg(test)]
+mod first_frame_tests {
+    use super::*;
+    use futures_util::StreamExt;
+
+    /// 起一个只应答一次的 HTTP 服务，返回它的 URL。
+    fn spawn_upstream(body: &'static str, content_type: &'static str) -> String {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind 127.0.0.1:0");
+        let addr = listener.local_addr().expect("local_addr");
+        std::thread::spawn(move || {
+            use std::io::{Read, Write};
+            let Ok((mut socket, _)) = listener.accept() else {
+                return;
+            };
+            // 读掉请求头就够（我们只关心响应方向的字节）。
+            let mut buf = [0u8; 4096];
+            let _ = socket.read(&mut buf);
+            let response = format!(
+                "HTTP/1.1 200 OK\r\n\
+                 Content-Type: {content_type}\r\n\
+                 Content-Length: {}\r\n\
+                 Connection: close\r\n\r\n{body}",
+                body.len()
+            );
+            let _ = socket.write_all(response.as_bytes());
+            let _ = socket.flush();
+        });
+        format!("http://{addr}/")
+    }
+
+    async fn get(url: String) -> reqwest::Response {
+        reqwest::Client::new().get(url).send().await.expect("send")
+    }
+
+    /// ★ 首帧即错误信封 ⇒ 必须判成失败，且**不**交出 prefix（调用方会丢弃该响应换号）。
+    #[tokio::test]
+    async fn first_frame_envelope_is_reported_as_error() {
+        let url = spawn_upstream(
+            "data: {\"code\":6004,\"msg\":\"rate limited\"}\n\n",
+            "text/event-stream",
+        );
+        let response = get(url).await;
+        let (_response, prefix, error) = peek_first_frame(response).await;
+
+        let error = error.expect("首帧即错误必须被识别");
+        assert_eq!(error.status, 429, "6004 ⇒ 429（模型级限流）");
+        assert!(prefix.is_none(), "判定为错误时不得交出 prefix");
+    }
+
+    /// ★ 正常首帧 ⇒ 识别为「不是错误」，且 `prefix + 剩余流` 必须**逐字节还原**正文。
+    ///
+    /// 变异：让 `peek_first_frame` 丢掉 `prefix`（`(response, None, None)`）⇒ 本用例红
+    /// —— 那正是「窥探一眼」最容易引入的破坏：客户端少收到一段字节。
+    #[tokio::test]
+    async fn normal_first_frame_is_preserved_verbatim() {
+        const BODY: &str = "data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n\
+                            data: [DONE]\n\n";
+        let url = spawn_upstream(BODY, "text/event-stream");
+        let response = get(url).await;
+        let (response, prefix, error) = peek_first_frame(response).await;
+        assert!(error.is_none(), "正常帧不得被判成错误");
+
+        let mut collected: Vec<u8> = Vec::new();
+        if let Some(prefix) = prefix {
+            collected.extend_from_slice(&prefix);
+        }
+        let mut stream = Box::pin(prefix_stream(None, response));
+        while let Some(chunk) = stream.next().await {
+            collected.extend_from_slice(&chunk.expect("chunk"));
+        }
+        assert_eq!(
+            String::from_utf8_lossy(&collected),
+            BODY,
+            "peek 之后必须逐字节还原（多一个或少一个都是客户端可见的破坏）"
+        );
+    }
+
+    /// 非流式 JSON 补全（有 `choices`）不得被判成错误 —— 误判会把好账号冷却掉。
+    #[tokio::test]
+    async fn json_completion_is_not_an_error() {
+        const BODY: &str = r#"{"id":"x","choices":[{"index":0,"message":{"content":"ok"}}]}"#;
+        let url = spawn_upstream(BODY, "application/json");
+        let response = get(url).await;
+        let (_response, _prefix, error) = peek_first_frame(response).await;
+        assert!(error.is_none(), "有 choices 的 200 必定是成功");
+    }
+
+    /// 非流式路径的正文拼接：`body_text_with_prefix` 必须还原完整 JSON，
+    /// 否则聚合器会把一条好好的补全解析成空。
+    #[tokio::test]
+    async fn body_text_with_prefix_reconstructs_the_payload() {
+        const BODY: &str = r#"{"id":"y","choices":[{"index":0,"message":{"content":"hello"}}]}"#;
+        let url = spawn_upstream(BODY, "application/json");
+        let response = get(url).await;
+        let (response, prefix, error) = peek_first_frame(response).await;
+        assert!(error.is_none());
+
+        let text = body_text_with_prefix(prefix, response).await;
+        assert_eq!(text, BODY, "拼回来的正文必须与上游一字不差");
+        assert!(text.contains("\"hello\""));
+    }
+}
