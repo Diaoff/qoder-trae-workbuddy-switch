@@ -1,7 +1,7 @@
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
 mod commands;
 mod gateway;
-// Qoder 网关（第三个平台，默认 7865）：独立端口，不与另三个 merge（axum 同路径 merge 会 panic）。
+// Qoder 网关（第三个平台，默认 57895）：独立端口，不与另三个 merge（axum 同路径 merge 会 panic）。
 mod qoder_gateway;
 mod trae_gateway;
 // 统一网关（第三个产品线，默认 57892）：跨产品线的单一入口 —— 独立端口，不与另两个 merge。
@@ -324,7 +324,7 @@ pub fn run() {
                         Err(error) => eprintln!("[gateway] 启动失败: {error}"),
                     }
                 });
-                // 按配置启动 Trae 网关独立监听（默认关闭；默认 127.0.0.1:7864）。
+                // 按配置启动 Trae 网关独立监听（默认关闭；默认 127.0.0.1:57894）。
                 let handle = app.handle().clone();
                 tauri::async_runtime::spawn(async move {
                     let runtime = handle.state::<trae_gateway::TraeGatewayRuntime>();
@@ -334,7 +334,7 @@ pub fn run() {
                         Err(error) => eprintln!("[trae-gateway] 启动失败: {error}"),
                     }
                 });
-                // 按配置启动 Qoder 网关独立监听（默认关闭；默认 127.0.0.1:7865）。
+                // 按配置启动 Qoder 网关独立监听（默认关闭；默认 127.0.0.1:57895）。
                 // ⚠️ 一个监听、两个区域（区域由请求所用 API Key 的归属决定）。
                 let handle = app.handle().clone();
                 tauri::async_runtime::spawn(async move {
@@ -493,6 +493,10 @@ pub fn run() {
             commands::delete_unified_api_key,
             commands::get_gateway_models,
             commands::refresh_gateway_models,
+            commands::gateway_pool_exclusions,
+            commands::set_trae_gateway_pool_exclusion,
+            commands::set_qoder_gateway_pool_exclusion,
+            commands::set_gateway_pool_exclusion,
             commands::get_account_strategy,
             commands::save_account_strategy,
             commands::get_disabled_models,

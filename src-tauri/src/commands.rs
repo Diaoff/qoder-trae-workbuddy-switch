@@ -2448,6 +2448,94 @@ pub fn delete_api_key(id: String) -> Result<Value, String> {
     Ok(json!({ "ok": true }))
 }
 
+/// GET /api/gateway/pool/exclusions —— 该 region 的**排除账号**列表。
+///
+/// 「排除」= 用户不想让网关用这个号（硬约束：自动选号 / 兜底 / 粘性 / 指定全跳过）。
+/// 与「禁用」的区别：禁用是这个号坏了（需人工恢复），排除是用户的主动选择。
+///
+/// `inStore=false` 表示该 uid 已不在账号库里（排除项**故意保留** ——
+/// 用户意图针对「这个号」，重新导入同一 uid 仍应继续排除）。
+#[tauri::command]
+pub fn gateway_pool_exclusions(region: Option<String>) -> Value {
+    buddy_switch_gateway::routes::pool_admin::view(parse_region(region.as_deref()))
+}
+
+/// POST /api/gateway/pool/exclusions —— 设置 / 取消排除（幂等）。
+///
+/// 落盘 + 刷新池内快照 + **按 uid 解绑粘性** 三件事收在
+/// `pool_admin::set` 里（唯一实现，server 侧共用同一份）。
+#[tauri::command]
+pub async fn set_gateway_pool_exclusion(
+    region: Option<String>,
+    uid: String,
+    excluded: bool,
+    note: Option<String>,
+) -> Result<Value, String> {
+    let state = gateway::shared_state();
+    buddy_switch_gateway::routes::pool_admin::set(
+        &state,
+        parse_region(region.as_deref()),
+        uid.trim(),
+        excluded,
+        note.as_deref().unwrap_or(""),
+    )
+    .await
+}
+
+/// POST /api/trae/gateway/pool/exclusions —— 设置 / 取消 Trae 账号的排除。
+#[tauri::command]
+pub async fn set_trae_gateway_pool_exclusion(
+    variant: Option<String>,
+    uid: String,
+    excluded: bool,
+    note: Option<String>,
+) -> Result<Value, String> {
+    let scope = format!("trae:{}", parse_trae_variant(variant.as_deref()).as_str());
+    let uid = uid.trim().to_string();
+    let value = buddy_switch_gateway::routes::pool_admin::persist(
+        &scope,
+        &uid,
+        excluded,
+        note.as_deref().unwrap_or(""),
+    )?;
+    // 排除 ⇒ 立刻解绑指向它的会话粘性（否则每请求白跑一跳、徽标也自相矛盾）。
+    if excluded {
+        trae_gateway::shared_state()
+            .sticky
+            .lock()
+            .await
+            .purge_uid(&uid);
+    }
+    Ok(value)
+}
+
+/// POST /api/qoder/gateway/pool/exclusions —— 设置 / 取消 Qoder 账号的排除。
+#[tauri::command]
+pub async fn set_qoder_gateway_pool_exclusion(
+    scope: String,
+    uid: String,
+    excluded: bool,
+    note: Option<String>,
+) -> Result<Value, String> {
+    let region = require_qoder_region(resolve_scope_param(Some(&scope))?)?;
+    let scope_key = format!("qoder:{}", region.as_str());
+    let uid = uid.trim().to_string();
+    let value = buddy_switch_gateway::routes::pool_admin::persist(
+        &scope_key,
+        &uid,
+        excluded,
+        note.as_deref().unwrap_or(""),
+    )?;
+    if excluded {
+        qoder_gateway::shared_state()
+            .sticky
+            .lock()
+            .await
+            .purge_uid(&uid);
+    }
+    Ok(value)
+}
+
 /// POST /api/gateway/pool/revive —— **人工解除**账号池里某账号的禁用。
 ///
 /// 与「API Key 的恢复」同构：`disabled` 是**终态且落盘持久化**，而改造前它
