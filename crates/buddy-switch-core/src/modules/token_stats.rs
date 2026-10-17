@@ -1218,7 +1218,7 @@ fn workspace_meta_index(ws_index: &Path) -> HashMap<String, (Option<String>, Str
 
 /// 按 workspace `index.json` 路径缓存查表，**同一份索引只读解析一次**。
 ///
-/// ## 为什么需要（`docs/perf-audit-2026-09-24.md` 的 P0-4「无争议的那一半」）
+/// ## 为什么需要（`docs/history/perf-audit-2026-09-24.md` 的 P0-4「无争议的那一半」）
 ///
 /// 改造前 `ide_workspace_meta` 被调在**每个会话文件**的循环体内
 /// （见 [`ide_source`]），而同一 workspace 下的 N 个会话指向**同一份** `index.json`

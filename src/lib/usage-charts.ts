@@ -556,7 +556,7 @@ export function modelSlices(source: TokenStatsSource, window: UsageWindow): Mode
  *
  * ## 原型契约 8 说了什么，为什么必须改
  *
- * 契约 8（`docs/redesign/P3-ARCH.md`）要求「气泡数 = 会话数，排行条数 = 会话数」——
+ * 契约 8（`docs/specs/P3-ARCH.md`）要求「气泡数 = 会话数，排行条数 = 会话数」——
  * 它假设会话数是**几十**量级。但 `sessions` 是**一个 jsonl 文件一条**：
  * 实测 `~/.workbuddy-ai/projects` 有 **14463** 个文件 ⇒ 会话 ~1.5 万条。
  *

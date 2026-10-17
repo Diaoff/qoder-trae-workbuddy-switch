@@ -42,7 +42,7 @@
   <a href="CONTRIBUTING.md"><img alt="参与贡献" src="https://img.shields.io/badge/%F0%9F%9B%A0%20%E5%8F%82%E4%B8%8E%E8%B4%A1%E7%8C%AE-PR%20%E6%AC%A2%E8%BF%8E-4c8bf5?style=for-the-badge" /></a>
 </p>
 
-> ⚠️ **非官方第三方工具**（source-available，PolyForm Noncommercial 许可）。与上述产品及其权利人不存在隶属、授权或背书关系。它会读写本机客户端的认证数据、按你的配置自动发起请求，并可通过本地端口转发额度。使用前请读完 **[免责声明](docs/DISCLAIMER.md)**。
+> ⚠️ **非官方第三方工具**（source-available，PolyForm Noncommercial 许可）。与上述产品及其权利人不存在隶属、授权或背书关系。它会读写本机客户端的认证数据、按你的配置自动发起请求，并可通过本地端口转发额度。使用前请读完 **[免责声明](docs/policies/DISCLAIMER.md)**。
 
 ## 界面预览
 
@@ -320,7 +320,7 @@ flowchart LR
 | `trae-*` 的 `/v1/responses` | 返回 **501**，不静默降级到 chat |
 | 默认状态 | **默认关**，需在网关页「统一网关」分区手动启用 |
 
-> 架构与决策：[UNIFIED-GATEWAY-ARCH.md](docs/redesign/UNIFIED-GATEWAY-ARCH.md) · 接入片段：[GATEWAY-CLIENT-INTEGRATION.md](docs/GATEWAY-CLIENT-INTEGRATION.md)
+> 架构与决策：[UNIFIED-GATEWAY-ARCH.md](docs/specs/UNIFIED-GATEWAY-ARCH.md) · 接入片段：[guides/GATEWAY-CLIENT-INTEGRATION.md](docs/guides/GATEWAY-CLIENT-INTEGRATION.md)
 
 ## 自动化
 
@@ -397,7 +397,8 @@ src/                     # 前端：components / pages / lib / locales
 npm/                     # npm 包（尚未发布）
 ```
 
-环境要求、发布流程、目录约定见 [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md)。
+环境要求、发布流程、目录约定见 [docs/guides/DEVELOPMENT.md](docs/guides/DEVELOPMENT.md)。
+**全部文档的索引在 [docs/README.md](docs/README.md)** —— 按生命周期分区：指南 / 现行规格 / 只读历史 / 原型。
 
 ## 参与贡献
 
@@ -409,7 +410,7 @@ npm/                     # npm 包（尚未发布）
 | 🧩 **接新平台**（Galaxy / 其它 IDE） | 平台差异只在 `src/lib/platforms/registry.ts` 与 core 的 `product.rs` 各声明一次，页面组件不用改 |
 | 🌍 **修翻译 / 补语言** | 界面文案在 `src/locales/domains/*.zh.ts` ↔ `*.en.ts` 一一对应；README 八语种也欢迎校订 |
 | 📸 **更新截图** | `scripts/gen-readme-shots.mjs` 一条命令重拍全部浅/深色图（见文件头注释） |
-| 🧪 **补测试** | 仓里大量护栏测试都是贡献者补的；先读 `docs/DEVELOPMENT.md` 的门禁清单 |
+| 🧪 **补测试** | 仓里大量护栏测试都是贡献者补的；先读 `docs/guides/DEVELOPMENT.md` 的门禁清单 |
 
 完整指引（能做什么、PR 自检清单、代码约定）见 **[CONTRIBUTING.md](CONTRIBUTING.md)**（[English](CONTRIBUTING.en.md)）。
 
@@ -440,14 +441,14 @@ npm/                     # npm 包（尚未发布）
 
 ## 免责声明
 
-完整条款见 **[docs/DISCLAIMER.md](docs/DISCLAIMER.md)**（[English](docs/DISCLAIMER.en.md)），共 6 条：非官方第三方工具、服务条款与合规自理、数据写入与备份、自动化行为风险、API 网关暴露风险、按「原样」提供。使用即表示已阅读并同意；如不同意，请立即停止使用并卸载。
+完整条款见 **[docs/policies/DISCLAIMER.md](docs/policies/DISCLAIMER.md)**（[English](docs/policies/DISCLAIMER.en.md)），共 6 条：非官方第三方工具、服务条款与合规自理、数据写入与备份、自动化行为风险、API 网关暴露风险、按「原样」提供。使用即表示已阅读并同意；如不同意，请立即停止使用并卸载。
 
 ## 许可
 
 **[PolyForm Noncommercial License 1.0.0](./LICENSE)**：个人非商业使用允许，**商业使用不被授权**。
 
 - 条款全文：[LICENSE](./LICENSE)
-- 白话说明与常见问题：[docs/LICENSING.md](docs/LICENSING.md)（[English](docs/LICENSING.en.md)）
+- 白话说明与常见问题：[docs/policies/LICENSING.md](docs/policies/LICENSING.md)（[English](docs/policies/LICENSING.en.md)）
 - 商业授权请通过本仓库 Issues 联系作者。
 
 ## Star 趋势

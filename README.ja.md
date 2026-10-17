@@ -45,7 +45,7 @@
 </p>
 
 
-> ⚠️ **非公式のサードパーティ製ツール**（source-available、PolyForm Noncommercial）。上記製品および権利者との提携・承認・後援関係はありません。ローカルクライアントの認証データを読み書きし、設定したスケジュールで自動リクエストを送信し、ローカルポート経由で利用枠を転送できます。使用前に **[免責事項](docs/DISCLAIMER.en.md)** を必ずお読みください。
+> ⚠️ **非公式のサードパーティ製ツール**（source-available、PolyForm Noncommercial）。上記製品および権利者との提携・承認・後援関係はありません。ローカルクライアントの認証データを読み書きし、設定したスケジュールで自動リクエストを送信し、ローカルポート経由で利用枠を転送できます。使用前に **[免責事項](docs/policies/DISCLAIMER.en.md)** を必ずお読みください。
 
 ## 画面
 
@@ -323,7 +323,7 @@ flowchart LR
 | `trae-*` の `/v1/responses` | **501** を返し、chat へ黙って降格しない |
 | 既定状態 | **オフ**。ゲートウェイ画面の「統合ゲートウェイ」区分で有効化 |
 
-> 設計：[UNIFIED-GATEWAY-ARCH.md](docs/redesign/UNIFIED-GATEWAY-ARCH.md) · 接続例：[GATEWAY-CLIENT-INTEGRATION.md](docs/GATEWAY-CLIENT-INTEGRATION.md)
+> 設計：[UNIFIED-GATEWAY-ARCH.md](docs/specs/UNIFIED-GATEWAY-ARCH.md) · 接続例：[guides/GATEWAY-CLIENT-INTEGRATION.md](docs/guides/GATEWAY-CLIENT-INTEGRATION.md)
 
 ## 自動化
 
@@ -400,7 +400,8 @@ src/                     # フロントエンド：components / pages / lib / lo
 npm/                     # npm パッケージ（未公開）
 ```
 
-環境要件・リリース手順・構成の規約は [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) を参照してください。
+環境要件・リリース手順・構成の規約は [docs/guides/DEVELOPMENT.md](docs/guides/DEVELOPMENT.md) を参照してください。
+**ドキュメント全体の索引は [docs/README.md](docs/README.md)** にあります（ガイド / 現行仕様 / 読み取り専用の履歴 / プロトタイプ）。
 
 ## コントリビューション
 
@@ -412,7 +413,7 @@ npm/                     # npm パッケージ（未公開）
 | 🧩 **プラットフォームを追加** | 差異は `src/lib/platforms/registry.ts` と `product.rs` に一度だけ宣言すればよく、ページ側は変更不要です。 |
 | 🌍 **翻訳の修正** | UI 文言は `src/locales/domains/*.zh.ts` ↔ `*.en.ts` が対になっています。8 言語の README 校訂も歓迎です。 |
 | 📸 **スクリーンショット更新** | 1 コマンドでライト/ダークの全画像を撮り直せます（`scripts/gen-readme-shots.mjs` の冒頭コメント参照）。 |
-| 🧪 **テストを追加** | このリポジトリのガードテストの多くは貢献者が追加したものです。まず `docs/DEVELOPMENT.md` のゲート一覧から。 |
+| 🧪 **テストを追加** | このリポジトリのガードテストの多くは貢献者が追加したものです。まず `docs/guides/DEVELOPMENT.md` のゲート一覧から。 |
 
 詳しい案内（取り組めること、PR チェックリスト、コード規約）：**[CONTRIBUTING.en.md](CONTRIBUTING.en.md)**（[简体中文](CONTRIBUTING.md)）。
 
@@ -443,14 +444,14 @@ npm/                     # npm パッケージ（未公開）
 
 ## 免責事項
 
-全文は **[docs/DISCLAIMER.en.md](docs/DISCLAIMER.en.md)**（[简体中文](docs/DISCLAIMER.md)）。全 6 条：非公式サードパーティ製ツール、利用規約とコンプライアンスの自己責任、データ書き込みとバックアップ、自動化行為のリスク、API ゲートウェイ公開のリスク、現状のまま提供。使用した時点で同意したものとみなします。同意できない場合は直ちに使用を中止しアンインストールしてください。
+全文は **[docs/policies/DISCLAIMER.en.md](docs/policies/DISCLAIMER.en.md)**（[简体中文](docs/policies/DISCLAIMER.md)）。全 6 条：非公式サードパーティ製ツール、利用規約とコンプライアンスの自己責任、データ書き込みとバックアップ、自動化行為のリスク、API ゲートウェイ公開のリスク、現状のまま提供。使用した時点で同意したものとみなします。同意できない場合は直ちに使用を中止しアンインストールしてください。
 
 ## ライセンス
 
 **[PolyForm Noncommercial License 1.0.0](./LICENSE)**：個人の非商業利用は許可、**商業利用は許諾されません**。
 
 - 全文：[LICENSE](./LICENSE)
-- 平易な解説と FAQ：[docs/LICENSING.en.md](docs/LICENSING.en.md)（[简体中文](docs/LICENSING.md)）
+- 平易な解説と FAQ：[docs/policies/LICENSING.en.md](docs/policies/LICENSING.en.md)（[简体中文](docs/policies/LICENSING.md)）
 - 商業ライセンスについては本リポジトリの Issues でご連絡ください。
 
 ## Star 推移

@@ -45,7 +45,7 @@ Un poste de travail multi-comptes **100 % local** : il rassemble les comptes de 
 </p>
 
 
-> ⚠️ **Outil tiers non officiel** (source-available, licence PolyForm Noncommercial). Aucun lien d'affiliation, d'autorisation ou de parrainage avec ces produits ni leurs ayants droit. Il lit et écrit les données d'authentification des clients locaux, envoie des requêtes automatiques selon votre planification et peut relayer votre quota via un port local. Lisez l'**[avertissement](docs/DISCLAIMER.en.md)** avant utilisation.
+> ⚠️ **Outil tiers non officiel** (source-available, licence PolyForm Noncommercial). Aucun lien d'affiliation, d'autorisation ou de parrainage avec ces produits ni leurs ayants droit. Il lit et écrit les données d'authentification des clients locaux, envoie des requêtes automatiques selon votre planification et peut relayer votre quota via un port local. Lisez l'**[avertissement](docs/policies/DISCLAIMER.en.md)** avant utilisation.
 
 ## Captures d'écran
 
@@ -323,7 +323,7 @@ La **passerelle unifiée** résout le problème des modèles homonymes qui s'éc
 | `/v1/responses` sur `trae-*` | **501**, jamais de repli silencieux vers chat |
 | État par défaut | **Désactivée** ; à activer dans la section « Passerelle unifiée » de la page Passerelle |
 
-> Architecture : [UNIFIED-GATEWAY-ARCH.md](docs/redesign/UNIFIED-GATEWAY-ARCH.md) · Extraits de configuration : [GATEWAY-CLIENT-INTEGRATION.md](docs/GATEWAY-CLIENT-INTEGRATION.md)
+> Architecture : [UNIFIED-GATEWAY-ARCH.md](docs/specs/UNIFIED-GATEWAY-ARCH.md) · Extraits de configuration : [guides/GATEWAY-CLIENT-INTEGRATION.md](docs/guides/GATEWAY-CLIENT-INTEGRATION.md)
 
 ## Automatisation
 
@@ -400,7 +400,8 @@ src/                     # frontend : components / pages / lib / locales
 npm/                     # paquets npm (non publiés)
 ```
 
-Prérequis, processus de publication et conventions de répertoires : [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md).
+Prérequis, processus de publication et conventions de répertoires : [docs/guides/DEVELOPMENT.md](docs/guides/DEVELOPMENT.md).
+**Carte complète de la documentation : [docs/README.md](docs/README.md)** — guides / spécifications courantes / historique en lecture seule / prototype.
 
 ## Contribuer
 
@@ -412,7 +413,7 @@ Prérequis, processus de publication et conventions de répertoires : [docs/DEVE
 | 🧩 **Ajouter une plateforme** | Les différences se déclarent une seule fois dans `src/lib/platforms/registry.ts` et `product.rs` ; les pages ne changent pas. |
 | 🌍 **Corriger une traduction** | Les textes vivent par paires `src/locales/domains/*.zh.ts` ↔ `*.en.ts` ; les relectures des huit README sont bienvenues. |
 | 📸 **Rafraîchir les captures** | Une commande refait toutes les images clair/sombre — voir l'en-tête de `scripts/gen-readme-shots.mjs`. |
-| 🧪 **Ajouter un test** | La plupart des tests de garde ont été ajoutés par des contributeurs ; commencez par la liste des contrôles dans `docs/DEVELOPMENT.md`. |
+| 🧪 **Ajouter un test** | La plupart des tests de garde ont été ajoutés par des contributeurs ; commencez par la liste des contrôles dans `docs/guides/DEVELOPMENT.md`. |
 
 Guide complet (quoi prendre, checklist de PR, conventions de code) : **[CONTRIBUTING.en.md](CONTRIBUTING.en.md)** ([简体中文](CONTRIBUTING.md)).
 
@@ -443,14 +444,14 @@ Chaque projet suit sa propre licence. Ce projet est une implémentation indépen
 
 ## Avertissement
 
-Texte complet : **[docs/DISCLAIMER.en.md](docs/DISCLAIMER.en.md)** ([简体中文](docs/DISCLAIMER.md)), six sections : outil tiers non officiel ; conditions d'utilisation et conformité ; écritures de données et sauvegardes ; risques de l'automatisation ; risques d'exposition de la passerelle API ; fourni « en l'état ». Utiliser le projet vaut acceptation ; sinon, cessez l'usage et désinstallez.
+Texte complet : **[docs/policies/DISCLAIMER.en.md](docs/policies/DISCLAIMER.en.md)** ([简体中文](docs/policies/DISCLAIMER.md)), six sections : outil tiers non officiel ; conditions d'utilisation et conformité ; écritures de données et sauvegardes ; risques de l'automatisation ; risques d'exposition de la passerelle API ; fourni « en l'état ». Utiliser le projet vaut acceptation ; sinon, cessez l'usage et désinstallez.
 
 ## Licence
 
 **[PolyForm Noncommercial License 1.0.0](./LICENSE)** : l'usage personnel non commercial est autorisé, **l'usage commercial n'est pas licencié**.
 
 - Texte intégral : [LICENSE](./LICENSE)
-- Explication en langage clair et FAQ : [docs/LICENSING.en.md](docs/LICENSING.en.md) ([简体中文](docs/LICENSING.md))
+- Explication en langage clair et FAQ : [docs/policies/LICENSING.en.md](docs/policies/LICENSING.en.md) ([简体中文](docs/policies/LICENSING.md))
 - Pour une licence commerciale, contactez l'auteur via les Issues du dépôt.
 
 ## Historique des stars

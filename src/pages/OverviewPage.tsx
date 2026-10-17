@@ -69,7 +69,7 @@ interface PendingItem {
  * 改造前没有这个页面：用户想知道「有没有账号要重新登录 / 有没有 Token 要过期」，
  * 得**逐个账号卡片看**。信息是有的，只是**没有被汇总**。
  *
- * ## 对齐原型（`docs/redesign/demo-app.js` 的 `viewOverview`）
+ * ## 对齐原型（`docs/prototype/demo-app.js` 的 `viewOverview`）
  *
  * - **页头**：`h1` + 「作用域 · 当前登录」副标题 + 刷新（作用域是全局上下文，页内只读展示）。
  * - **待处理在前**（原型 P1-6：要你动手的事先于只读数字）：卡头带「N 项」计数，

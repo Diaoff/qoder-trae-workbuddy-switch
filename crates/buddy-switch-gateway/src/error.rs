@@ -582,7 +582,7 @@ mod tests {
 
     /// `type_name` 是**对外分流契约**，四类原因必须共用 `no_credential`。
     ///
-    /// 客户端（以及 `docs/redesign/P11-ARCH.md` §1.5）按类别名分流；
+    /// 客户端（以及 `docs/specs/P11-ARCH.md` §1.5）按类别名分流；
     /// 顺手把它拆成四个新类别名会让既有客户端全部走进未知分支。
     #[test]
     fn no_credential_type_name_stays_stable_across_causes() {

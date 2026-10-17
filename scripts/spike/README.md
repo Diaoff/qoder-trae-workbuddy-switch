@@ -3,7 +3,7 @@
 > **这不是实现**，是 **spike（做不做得成）**。本目录只有**验证工具**，没有、也**不该有**
 > 转发层 / 面板等半成品代码（设计 `P12-ARCH.md` §1.5：作废 = 不实现）。
 >
-> 结论写在 [`docs/redesign/P12-SPIKE-RESULTS.md`](../../docs/redesign/P12-SPIKE-RESULTS.md)。
+> 结论写在 [`docs/specs/P12-SPIKE-RESULTS.md`](../../docs/specs/P12-SPIKE-RESULTS.md)。
 >
 > ⚠️ **`scripts/spike/*` 不得进打包产物**（设计决策 #4）。打包只消费 `dist/`（前端）与
 > 编译出的二进制，`scripts/` 天然不在其中；`scripts/package-windows.ps1` 里加了护栏显式核对。

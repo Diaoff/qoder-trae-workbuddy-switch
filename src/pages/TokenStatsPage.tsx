@@ -29,7 +29,7 @@
  * 本页只服务 WorkBuddy（`useScope("workbuddy")`）。Trae 侧的 Token 统计数据源形状不同
  * （`TraeTokenStatistics`），由 `TraeTokenStatsPage` 承担 —— 见 UsagePage 的平台映射。
  *
- * ## 契约（详见 `docs/redesign/P3-ARCH.md`）
+ * ## 契约（详见 `docs/specs/P3-ARCH.md`）
  *
  * - ★ **视图参数是受控的**（`range` / `combineAll` / `onRangeChange` 由 `UsagePage` 传入）：
  *   本页**不持有**范围与合并态 —— 原型 `viewUsage` 的 `state.range` / `state.merge`

@@ -4,7 +4,7 @@
  * ## 为什么从 `switch-account-dialog.tsx` 抽出来
  *
  * 迁移向导的第 2 步要展示**三层会话树**（类型 → 目录 → 会话）并给出「已选 N / M」计数
- * （`docs/redesign/P4-MIGRATION-ARCH.md` §1.4）。改造前这套逻辑（`buildSessionTree` /
+ * （`docs/specs/P4-MIGRATION-ARCH.md` §1.4）。改造前这套逻辑（`buildSessionTree` /
  * `sessionFolderLabel` / `groupSessionsByFolder` / `selectionState`）内联在 870 行的
  * 弹窗组件里，**选择集与渲染耦合**，既不好测，也无法在「确认页」复用同一份口径。
  *

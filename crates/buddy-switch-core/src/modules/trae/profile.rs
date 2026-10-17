@@ -1660,7 +1660,7 @@ where
     //    `account` 富对象与 `iCubeServerData` 缓存（账号库里没有、也造不出来）。
     //    客户端读到缺 `iCubeServerData` 的 `cloudide` 后**把整份登录态判为无效并清掉**
     //    ⇒ 用户的两个客户端双双变成未登录。实测取证与结论见
-    //    `docs/trae-login-materialize-probe-2026-09-29.md`。
+    //    `docs/history/trae-login-materialize-probe-2026-09-29.md`。
     let target_slot = match paths::profile_dir_for(variant, &target) {
         Some(dir) if dir.is_dir() => dir,
         _ => {

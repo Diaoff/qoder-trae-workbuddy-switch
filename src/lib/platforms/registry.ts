@@ -389,5 +389,5 @@ export function pathBelongsTo(pathname: string, product: Product): boolean {
  *       ⇒ 判据：`hasCapability` 回答「这个平台**有没有**某功能」；上面几处回答
  *       「这个平台的**数据 / 控件从哪来**」—— 后者要靠 `PlatformDescriptor` 扩字段
  *       （形如 PLAN §2.3 的 `loadScopeStatus`），**不是**能力开关。
- *       ⚠️ 扩字段前先查 `docs/redesign/VOCABULARY.md`（第 7 节规则 4：表里没有的词不许出现在代码里）。
+ *       ⚠️ 扩字段前先查 `docs/specs/VOCABULARY.md`（第 7 节规则 4：表里没有的词不许出现在代码里）。
  * ──────────────────────────────────────────────────────────────── */

@@ -599,7 +599,7 @@ fn jitter_offset_minutes(salt: &str, date: chrono::NaiveDate, jitter: u32) -> i3
     if jitter == 0 {
         return 0;
     }
-    // FNV-1a（与原型 `docs/redesign/demo-app.js` 的 `jitterOffset` 同一形状，
+    // FNV-1a（与原型 `docs/prototype/demo-app.js` 的 `jitterOffset` 同一形状，
     // 便于拿原型里的数字核对实现）。
     let key = format!("{salt}|{}|{jitter}", date.format("%Y-%m-%d"));
     let hash = key.bytes().fold(2_166_136_261u32, |h, b| {

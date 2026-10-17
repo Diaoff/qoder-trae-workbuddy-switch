@@ -3,7 +3,7 @@
  *
  * ## 严格按原型实现（用户 2026-10-12 要求）
  *
- * 原型 `viewUsage`（`docs/redesign/demo-app.js:794-997`）是**平台无关**的
+ * 原型 `viewUsage`（`docs/prototype/demo-app.js:794-997`）是**平台无关**的
  * （同一段代码 + 不同数据），两个 Token 视图的块序逐条对齐：
  *
  * - **趋势**：4 统计卡 → `每日 Token · 按模型拆分`（堆叠柱 + 图例）

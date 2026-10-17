@@ -18,7 +18,7 @@
 //! | 3 | `127.0.0.1` | `57890` |
 //!
 //! ⚠️ 监听地址**不是回环**时会打印一条警告：webui 能读写账号库与网关 Key，
-//! 对外暴露前请读 `docs/DOCKER.md` 的安全段。数据落点由 `BUDDY_SWITCH_HOME` 决定，
+//! 对外暴露前请读 `docs/guides/DOCKER.md` 的安全段。数据落点由 `BUDDY_SWITCH_HOME` 决定，
 //! 与本组变量无关。
 
 mod api;
@@ -472,7 +472,7 @@ async fn serve(args: &[String]) {
 
     println!("Buddy Switch v{}", update::APP_VERSION);
     println!("webui: http://{addr}");
-    // ★ 对外监听时**必须明说**：webui 能读写账号库与网关 Key（见 docs/DOCKER.md 的安全段），
+    // ★ 对外监听时**必须明说**：webui 能读写账号库与网关 Key（见 docs/guides/DOCKER.md 的安全段），
     // 默认只绑回环正是为了「不声不响地把管理面暴露出去」这件事不发生。
     // 判据用最终生效的地址（不是用户填的原始值），否则 `--host localhost` 这类写法会漏报。
     if !is_loopback_host(&host) {
