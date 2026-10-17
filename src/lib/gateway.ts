@@ -102,6 +102,14 @@ export const POOL_STATUS_LABELS: Record<
     },
     tone: "muted",
   },
+  // ★ 排除是**用户意图**，不是账号故障 ⇒ 用 danger 提醒「它不会被选中」，
+  //   但文案必须与「会话失效/禁用」区分开（那个要修，这个只需取消排除）。
+  excluded: {
+    get label() {
+      return t("shared.poolStatus.excluded");
+    },
+    tone: "danger",
+  },
 };
 
 /**
@@ -119,6 +127,7 @@ export function normalizeGatewayPoolSummary(raw: unknown): GatewayPoolSummary {
     disabled: asNumber(record.disabled) ?? 0,
     expired: asNumber(record.expired) ?? 0,
     zeroCredits: asNumber(record.zeroCredits) ?? asNumber(record.zero_credits) ?? 0,
+    excluded: asNumber(record.excluded) ?? 0,
     totalCredits: asNumber(record.totalCredits) ?? asNumber(record.total_credits) ?? 0,
   };
 }
@@ -132,6 +141,7 @@ export function normalizeGatewayPoolAccounts(raw: unknown): GatewayPoolAccount[]
     "disabled",
     "expired",
     "no_credits",
+    "excluded",
   ];
   return raw.flatMap((item) => {
     if (!item || typeof item !== "object") return [];

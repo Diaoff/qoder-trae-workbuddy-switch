@@ -7342,13 +7342,19 @@ check("★ Q2「指定」不得按账号状态禁用（偏好而非约束，D36�
       );
     }
   }
-  // 反向：原型 F6 的「已排除」在本仓**不是数据模型**，不得凭空造出来。
+  /* 反向（2026-10-17 更新）：`excluded` 已**成为真实数据模型**（账号池排除功能），
+     因此这里改为钉住「它是唯一允许禁用指定按钮的状态」：
+     排除是硬约束（后端选号 / 兜底 / 粘性 / 指定全跳过），放行 = 假按钮；
+     而冷却 / 禁用 / 零积分是**临时状态**，用户有权预先指定（D36）。 */
   const types = fs.readFileSync(path.join(ROOT, "src/lib/types.ts"), "utf8");
   const poolBlock = /export interface GatewayPoolAccount \{[\s\S]*?\n\}/.exec(types);
-  if (poolBlock && /excluded/.test(poolBlock[0])) {
-    throw new Error("GatewayPoolAccount 出现 `excluded` —— 原型 F6 的状态在本仓不存在，勿凭空造");
+  if (!poolBlock || !/excluded\?:/.test(poolBlock[0])) {
+    throw new Error("GatewayPoolAccount 缺 `excluded` —— 排除功能已落地，字段必须存在");
   }
-  return "指定按钮只受 saving 控制 + 无 excluded 字段";
+  if (!disabled[1].includes("excluded")) {
+    throw new Error("「指定」按钮必须在 `account.excluded` 时禁用（排除是硬约束，放行即假按钮）");
+  }
+  return "指定按钮只受 saving / excluded 控制（冷却等临时状态不禁用）";
 });
 
 check("★ Q6「登录态快照」不得升为 Capability（D40）", () => {

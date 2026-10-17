@@ -7,6 +7,9 @@ import { toast } from "sonner";
 import { DemoAction } from "@/components/demo-action";
 import { ScopeChip, scopeLabel } from "@/components/scope-chip";
 import {
+  AUTO_OPTION,
+  MAX_CREDITS_OPTION,
+  RANDOM_OPTION,
   AccountPoolCard,
   QODER_POOL_TILES,
 } from "@/components/gateway/account-pool-card";
@@ -107,6 +110,7 @@ export default function QoderApiServicePage() {
   const [region] = useScope("qoder");
   /** 本页所在**作用域**：状态 / 清单 / 禁用偏好都按它分家。 */
   const scope = scopeOf("qoder", region);
+  const [excludingUid, setExcludingUid] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [clearing, setClearing] = useState(false);
   const [riskOpen, setRiskOpen] = useState(false);
@@ -307,6 +311,30 @@ export default function QoderApiServicePage() {
    * （`qoder_refresh_account`；PAT 导入的账号没有刷新路由，会在 toast 里显示原因）。
    * 刷新成功后池的下一次 `sync_for` 会带上新令牌 ⇒ `auth_dead` 自动清除。
    */
+  /**
+   * 排除 / 取消排除（Qoder 侧）。
+   *
+   * 与「恢复」的区别：恢复是修**故障**（清冷却记录），排除是记**用户意图**。
+   * 后端落盘后会立刻被下一次选号读到（Qoder 池每次 `sync_for` 重建），
+   * 因此只需重新拉一次状态。
+   */
+  async function onExclude(uid: string, excluded: boolean) {
+    setExcludingUid(uid);
+    try {
+      await api.setQoderGatewayPoolExclusion(scope, uid, excluded);
+      toast.success(
+        excluded
+          ? t("shared.gateway.pool.excludeDone")
+          : t("shared.gateway.pool.unexcludeDone")
+      );
+      await loadAll();
+    } catch (e) {
+      toast.error(t("shared.gateway.pool.excludeFail"), { description: api.asError(e) });
+    } finally {
+      setExcludingUid(null);
+    }
+  }
+
   async function onRevive(uid: string) {
     setRevivingUid(uid);
     try {
@@ -588,8 +616,20 @@ export default function QoderApiServicePage() {
               // 出口是刷新令牌（见 `onRevive`）。
               onRevive={onRevive}
               revivingUid={revivingUid}
+              // 排除：与 WorkBuddy 同一语义（硬约束），只是 scope 换成 `qoder:<region>`。
+              onExclude={(uid, excluded) => void onExclude(uid, excluded)}
+              excludingUid={excludingUid}
               totalRequests={status?.totalRequests ?? null}
               tiles={QODER_POOL_TILES}
+              /* 选号策略（哨兵值由后端 `pool::parse_preferred` 解释成 `PickMode`）。 */
+              autoOptions={[
+                { value: AUTO_OPTION, label: t("shared.gateway.pool.preferredAuto") },
+                {
+                  value: MAX_CREDITS_OPTION,
+                  label: t("shared.gateway.pool.strategyMaxCredits"),
+                },
+                { value: RANDOM_OPTION, label: t("shared.gateway.pool.strategyRandom") },
+              ]}
             />
           )}
 

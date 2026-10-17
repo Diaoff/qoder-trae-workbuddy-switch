@@ -44,6 +44,7 @@ export const zh = {
   "shared.poolStatus.disabled": "会话失效",
   "shared.poolStatus.expired": "积分过期",
   "shared.poolStatus.noCredits": "零积分",
+  "shared.poolStatus.excluded": "已排除",
 
   // ---- 网关账号池卡（components/gateway/account-pool-card.tsx，两侧共用）----
   "shared.gateway.pool.title": "账号池",
@@ -255,6 +256,7 @@ export const zh = {
   "shared.gateway.pool.tile.disabled": "会话失效",
   "shared.gateway.pool.tile.expired": "积分过期",
   "shared.gateway.pool.tile.zeroCredits": "零积分",
+  "shared.gateway.pool.tile.excluded": "已排除",
   // Qoder 独有的一格：上游 429 按**模型**报 ⇒ 账号本身可用、但有模型级冷却。
   "shared.gateway.pool.tile.modelCooling": "模型冷却",
   "shared.gateway.pool.empty": "账号池为空。请先在「账号管理」中添加账号。",
@@ -265,6 +267,7 @@ export const zh = {
   "shared.gateway.pool.preferredAuto": "不指定（自动择优）",
   // 仅 WorkBuddy：三档策略里「非指定账号」的第二档（写回 `AccountStrategy::MaxCredits`）。
   "shared.gateway.pool.strategyMaxCredits": "按实时积分择优（每次请求查询）",
+  "shared.gateway.pool.strategyRandom": "随机（在合格账号里均匀抽签）",
   "shared.gateway.pool.preferredMissing": "已指定的账号（当前不在池中）",
   // 偏好语义：指定账号不可用时**回落**自动择优，而不是拒绝服务。
   "shared.gateway.pool.preferredHint": "偏好而非强制：指定账号冷却 / 失效 / 零积分时自动改用其他账号，不会拒绝服务。",
@@ -286,6 +289,12 @@ export const zh = {
   "shared.gateway.pool.exclusiveHint": "选号优先级：显式指定 > 粘性会话 > 自动择优。指定是排他的——同一时刻只有一个账号被指定。",
   // 「恢复」出口说明：禁用是终态，没有出口该账号就永久不可用。
   // ⚠️ 文案**不得**提「熔断」：Trae 侧没有熔断这一维，两边共用同一句。
+  "shared.gateway.pool.exclude": "排除",
+  "shared.gateway.pool.unexclude": "取消排除",
+  "shared.gateway.pool.excludeDone": "已排除该账号",
+  "shared.gateway.pool.unexcludeDone": "已取消排除",
+  "shared.gateway.pool.excludeFail": "排除失败",
+  "shared.gateway.pool.excludeHint": "「排除」= 网关不再用这个账号（自动选号、兜底、粘性、指定全都跳过），但它**不是禁用** —— 账号本身仍可在客户端正常使用。适合「把额度留给客户端自己用」这类场景。",
   "shared.gateway.pool.reviveHint": "已禁用的账号不会自动解除——点「恢复」会立即解除禁用与冷却，让它重新参与选号；若它仍然不可用，会再次被禁用。",
 
   // ---- 剪贴板（clipboard.ts） ----

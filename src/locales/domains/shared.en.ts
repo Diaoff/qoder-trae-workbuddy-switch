@@ -28,6 +28,7 @@ export const en = {
   "shared.poolStatus.disabled": "Session expired",
   "shared.poolStatus.expired": "Credits expired",
   "shared.poolStatus.noCredits": "No credits",
+  "shared.poolStatus.excluded": "Excluded",
 
   // ---- Gateway account pool card (components/gateway/account-pool-card.tsx) ----
   "shared.gateway.pool.title": "Account pool",
@@ -227,6 +228,7 @@ export const en = {
   "shared.gateway.pool.tile.disabled": "Session dead",
   "shared.gateway.pool.tile.expired": "Credits expired",
   "shared.gateway.pool.tile.zeroCredits": "No credits",
+  "shared.gateway.pool.tile.excluded": "Excluded",
   // Qoder-only tile: upstream 429 is reported per model, so an account can be usable
   // while individual models cool down.
   "shared.gateway.pool.tile.modelCooling": "Model cooling",
@@ -238,6 +240,7 @@ export const en = {
   "shared.gateway.pool.preferredAuto": "Auto (best available)",
   // WorkBuddy only: the second non-account option (writes `AccountStrategy::MaxCredits`).
   "shared.gateway.pool.strategyMaxCredits": "Pick by live credits (queried per request)",
+  "shared.gateway.pool.strategyRandom": "Random (uniform draw among eligible accounts)",
   "shared.gateway.pool.preferredMissing": "Preferred account (not in this pool)",
   // Preference, not a hard pin: falls back when the preferred account can't serve.
   "shared.gateway.pool.preferredHint": "A preference, not a hard pin: if it is cooling, dead, or out of credits, another account is used instead — requests are never rejected.",
@@ -259,6 +262,12 @@ export const en = {
   "shared.gateway.pool.exclusiveHint": "Priority: explicit pin > sticky session > auto-best. Pinning is exclusive — only one account is pinned at a time.",
   // The "Restore" exit: disabled is terminal, so without an exit the account stays dead forever.
   // ⚠️ Must NOT mention a "breaker": Trae has no such dimension and the string is shared.
+  "shared.gateway.pool.exclude": "Exclude",
+  "shared.gateway.pool.unexclude": "Un-exclude",
+  "shared.gateway.pool.excludeDone": "Account excluded",
+  "shared.gateway.pool.unexcludeDone": "Exclusion removed",
+  "shared.gateway.pool.excludeFail": "Failed to exclude",
+  "shared.gateway.pool.excludeHint": "Exclude = the gateway will never use this account (auto-pick, fallback, stickiness and pinning all skip it). It is NOT a disable - the account keeps working in the desktop client. Useful for reserving quota for your own use.",
   "shared.gateway.pool.reviveHint": "A disabled account never recovers on its own — Restore clears the disable and the cooldown at once so it rejoins rotation. If it is still unusable it will be disabled again.",
 
   // ---- Clipboard (clipboard.ts) ----

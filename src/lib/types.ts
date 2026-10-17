@@ -1488,13 +1488,20 @@ export interface GatewayPoolSummary {
    * 其余平台没有这一维 ⇒ 缺失时按 0 处理（不渲染该格）。
    */
   modelCooling?: number;
+  /**
+   * **用户显式排除**的账号数（互斥第六态）。
+   *
+   * 必须从 `available` 里扣掉：否则卡片说「4 可用」而实际只能选中 3 个 ——
+   * 数字与事实不符（本仓对「同一个量显示成两个互相矛盾的值」零容忍）。
+   */
+  excluded?: number;
 }
 
 /** 池内单个账号的可路由状态（两侧同形）。 */
 export interface GatewayPoolAccount {
   uid: string;
   name: string;
-  status: "available" | "cooling" | "disabled" | "expired" | "no_credits";
+  status: "available" | "cooling" | "disabled" | "expired" | "no_credits" | "excluded";
   /** 剩余积分；`null` = 尚未刷新过（未知），显示为「—」。 */
   credits: number | null;
   cooldownReason?: string | null;
@@ -1507,6 +1514,17 @@ export interface GatewayPoolAccount {
   creditsExpireAt?: number | null;
   /** 仅 Trae：设备标识掩码。 */
   deviceIdMasked?: string | null;
+  /**
+   * **用户显式排除**（硬约束：自动选号 / 兜底 / 粘性 / 指定全跳过）。
+   *
+   * 与 `disabled` 的区别：禁用 = 这个号坏了（需人工恢复）；排除 = 用户不想让网关用它。
+   * 它是**互斥第六态**（`status` 会是 `excluded`），卡片的五格计数因此要加一格。
+   */
+  excluded?: boolean;
+  /** 排除备注（为什么排除）。 */
+  excludedNote?: string | null;
+  /** 在途请求数（`null`/缺失 = 未上报）。 */
+  inFlight?: number;
   /**
    * **模型级冷却**（`model → 解冻时刻 ms`）——「经网关真实流量打出来的」模型级限流。
    *

@@ -400,6 +400,17 @@ const ROUTES: Record<string, Route> = {
   // 账号池：人工解除某账号的禁用。禁用是**终态且落盘**，此前没有任何出口
   // （余额刷新被 `disabled` 挡住、`revive` 在生产代码里零调用点）。
   revive_gateway_account: { method: "POST", path: "/api/gateway/pool/revive" },
+  // 账号池：**排除 / 取消排除**某账号（硬约束：选号 / 兜底 / 粘性 / 指定全跳过）。
+  // 与 revive 的区别见 `pool_admin` 的模块文档：禁用要修，排除只是不用的选择。
+  gateway_pool_exclusions: { method: "GET", path: "/api/gateway/pool/exclusions" },
+  set_gateway_pool_exclusion: { method: "POST", path: "/api/gateway/pool/exclusions" },
+  // 同一份排除表按 scope 分家：Trae 按变体（`trae:trae_work` / `trae:trae_cn` / …），
+  // Qoder 按区域（`qoder:cn` / `qoder:global`）。选号侧已读同一份文件，这里只是入口。
+  //
+  // ★ 只开 **POST**（设置/取消）：列表不需要单独 GET —— 每个账号的 `excluded` 已经
+  //   随 `status` 一起下发，再开一个 GET 就是一条没人调用的死路由（契约检查会打红）。
+  set_trae_gateway_pool_exclusion: { method: "POST", path: "/api/trae/gateway/pool/exclusions" },
+  set_qoder_gateway_pool_exclusion: { method: "POST", path: "/api/qoder/gateway/pool/exclusions" },
   // 统一网关（第三个产品线）：与上面两条网关线路**平行**，但它是**跨作用域**的 ——
   // 因此这些命令**不进** SCOPE_PARAMETERIZED（拿不到也不该拿 scope）。
   get_unified_gateway_config: { method: "GET", path: "/api/unified-gateway/config" },
@@ -513,7 +524,7 @@ const ROUTES: Record<string, Route> = {
   qoder_switch_account: { method: "POST", path: "/api/qoder/accounts/switch" },
   qoder_set_account_group: { method: "POST", path: "/api/qoder/accounts/group" },
   qoder_usage: { method: "GET", path: "/api/qoder/usage" },
-  // Qoder API 网关管理面（网关本体走独立端口 7865，见 src/pages/QoderApiServicePage）。
+  // Qoder API 网关管理面（网关本体走独立端口 57895，见 src/pages/QoderApiServicePage）。
   // ⚠️ **一个监听、两个区域**：状态 / 清单两条按 `scope` 看对应的那本账号库（fail-closed）；
   //   配置与监听是否起来是两区域共用的事实（故 config 不带 scope）。
   get_qoder_gateway_config: { method: "GET", path: "/api/qoder/gateway/config" },
@@ -2023,6 +2034,51 @@ export function reviveGatewayAccount(uid: string): Promise<{ ok: boolean; revive
   return call("revive_gateway_account", { uid });
 }
 
+/** 排除项（`inStore=false` = 该账号已不在账号库里，排除项按设计保留）。 */
+export interface GatewayPoolExclusionItem {
+  uid: string;
+  name: string;
+  note: string;
+  at: number;
+  inStore: boolean;
+}
+
+export function getGatewayPoolExclusions(
+  region: Region
+): Promise<{ scope: string; items: GatewayPoolExclusionItem[] }> {
+  return call("gateway_pool_exclusions", { region });
+}
+
+/** Trae 侧：设置 / 取消排除（`variant` 缺省 = 默认变体）。 */
+export function setTraeGatewayPoolExclusion(
+  variant: string | undefined,
+  uid: string,
+  excluded: boolean,
+  note = ""
+): Promise<{ scope: string; items: GatewayPoolExclusionItem[] }> {
+  return call("set_trae_gateway_pool_exclusion", { variant, uid, excluded, note });
+}
+
+/** Qoder 侧：设置 / 取消排除（`scope` 形如 `qoder-cn`）。 */
+export function setQoderGatewayPoolExclusion(
+  scope: string,
+  uid: string,
+  excluded: boolean,
+  note = ""
+): Promise<{ scope: string; items: GatewayPoolExclusionItem[] }> {
+  return call("set_qoder_gateway_pool_exclusion", { scope, uid, excluded, note });
+}
+
+/** 设置 / 取消排除（幂等）。返回该 region 的最新列表。 */
+export function setGatewayPoolExclusion(
+  region: Region,
+  uid: string,
+  excluded: boolean,
+  note = ""
+): Promise<{ scope: string; items: GatewayPoolExclusionItem[] }> {
+  return call("set_gateway_pool_exclusion", { region, uid, excluded, note });
+}
+
 export function getGatewayModels(region: Region): Promise<CatalogSnapshot> {
   return call("get_gateway_models", { region });
 }
@@ -2772,7 +2828,7 @@ export function traeResetDevice(variant?: TraeVariantId | null): Promise<TraeDev
 // Trae API 网关（管理面）
 // ---------------------------------------------------------------------------
 //
-// 网关**本体**监听独立端口（默认 7864），不经过这里的 call()：
+// 网关**本体**监听独立端口（默认 57894），不经过这里的 call()：
 // 它是给外部 OpenAI 客户端用的，本模块只负责「配置 / 状态 / 日志 / Key」这四件事。
 
 /** 读取网关配置。 */
@@ -3200,7 +3256,7 @@ export function listQoderApiKeys(): Promise<unknown> {
 /** 新建 Key —— **明文仅此一次返回**。 */
 export interface QoderCreateApiKeyResult {
   ok: boolean;
-  /** 一次性明文（`qd-` 前缀）。 */
+  /** 一次性明文（`sk-qoder-` 前缀）。 */
   key?: string;
   record?: { id: string; name: string; region: string; prefix: string };
 }

@@ -6,8 +6,12 @@ import { toast } from "sonner";
 
 import { DemoAction } from "@/components/demo-action";
 import { ScopeChip, scopeLabel } from "@/components/scope-chip";
-import { AccountPoolCard } from "@/components/gateway/account-pool-card";
-import { GatewayShell } from "@/components/gateway/gateway-shell";
+import {
+  AUTO_OPTION,
+  MAX_CREDITS_OPTION,
+  RANDOM_OPTION,
+  AccountPoolCard,
+} from "@/components/gateway/account-pool-card";import { GatewayShell } from "@/components/gateway/gateway-shell";
 import {
   GW_INDEPENDENT_SECTIONS_NO_PROXY,
   GW_SECTIONS,
@@ -98,7 +102,7 @@ interface ApiServiceSnapshot {
  *
  * 与 WorkBuddy 的「API 服务」页是**两套东西**：Trae 网关的上游是
  * `trae-api-cn.mchost.guru`，凭据是 `Cloud-IDE-JWT`，响应是私有 SOLO SSE，
- * 因此它的独立监听端口（默认 7864）与 WorkBuddy 网关（57891）必须分开——
+ * 因此它的独立监听端口（默认 57894）与 WorkBuddy 网关（57891）必须分开——
  * 两个网关都占 `/v1/chat/completions`，合并到同一端口会直接冲突。
  *
  * ## 本轮结构：容器 + 五个 Trae 专用组件
@@ -397,6 +401,30 @@ export default function TraeApiServicePage() {
    * `disabled` 是池内状态（需同时清冷却与熔断截止），Trae 的是磁盘冷却记录的投影
    * （清记录即可，Trae 没有熔断这一维）。差异走**数据与插槽**，前端共用同一张池卡。
    */
+  /**
+   * 排除 / 取消排除（Trae 侧）。
+   *
+   * 与「恢复」的区别：恢复是修**故障**（清冷却记录），排除是记**用户意图**。
+   * 后端落盘后会立刻被下一次选号读到（Trae 池每次都从磁盘重建），
+   * 因此只需重新拉一次状态。
+   */
+  async function onExclude(uid: string, excluded: boolean) {
+    setExcludingUid(uid);
+    try {
+      await api.setTraeGatewayPoolExclusion(variant, uid, excluded);
+      toast.success(
+        excluded
+          ? t("shared.gateway.pool.excludeDone")
+          : t("shared.gateway.pool.unexcludeDone")
+      );
+      await loadAll();
+    } catch (e) {
+      toast.error(t("shared.gateway.pool.excludeFail"), { description: api.asError(e) });
+    } finally {
+      setExcludingUid(null);
+    }
+  }
+
   async function onRevive(uid: string) {
     setRevivingUid(uid);
     try {
@@ -427,6 +455,7 @@ export default function TraeApiServicePage() {
   const poolCount = status?.pool?.total ?? status?.accounts?.length ?? 0;
   /* 页头作用域：平台固定 trae，区域来自 `useTraeVariant`（URL 作用域优先）。 */
   const scope = scopeOf("trae", variant);
+  const [excludingUid, setExcludingUid] = useState<string | null>(null);
 
   /* 页头抽成变量：加载态与正常态**共用同一份** —— 骨架屏出现时页头不闪掉。
      （原型 `viewGateway`：作用域副标题 + 只读 scope-chip。区域切换已上移到顶栏的
@@ -719,7 +748,21 @@ export default function TraeApiServicePage() {
               // （复用既有命令，见 `onRevive` 的说明）。
               onRevive={onRevive}
               revivingUid={revivingUid}
+              // 排除：scope 按**变体**分家（`trae:trae_work` / `trae:trae_cn` / …）。
+              onExclude={(uid, excluded) => void onExclude(uid, excluded)}
+              excludingUid={excludingUid}
               totalRequests={status?.totalRequests ?? null}
+              /* 选号策略（与 WorkBuddy 同一张卡、同一套哨兵值）。
+                 值经后端 `pool::parse_preferred` 解释成 `PickMode` —— 见该函数的文档：
+                 哨兵值必须与后端常量逐字相同，否则会静默回落成加权（假开关）。 */
+              autoOptions={[
+                { value: AUTO_OPTION, label: t("shared.gateway.pool.preferredAuto") },
+                {
+                  value: MAX_CREDITS_OPTION,
+                  label: t("shared.gateway.pool.strategyMaxCredits"),
+                },
+                { value: RANDOM_OPTION, label: t("shared.gateway.pool.strategyRandom") },
+              ]}
             />
           )}
 

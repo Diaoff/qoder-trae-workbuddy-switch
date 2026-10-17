@@ -19,9 +19,20 @@ import { cn } from "@/lib/utils";
  * 在边界处转换。
  */
 export const AUTO_OPTION = "__auto__";
+/** 「按积分择优」哨兵 —— 与后端 `pool::PREFERRED_MAX_CREDITS` **逐字相同**。 */
+export const MAX_CREDITS_OPTION = "__max_credits__";
+/** 「随机」哨兵 —— 与后端 `pool::PREFERRED_RANDOM` **逐字相同**。 */
+export const RANDOM_OPTION = "__random__";
 
 /** 五态计数格。 */
-export type PoolTileKey = "available" | "cooling" | "disabled" | "expired" | "zeroCredits" | "modelCooling";
+export type PoolTileKey =
+  | "available"
+  | "cooling"
+  | "disabled"
+  | "expired"
+  | "zeroCredits"
+  | "modelCooling"
+  | "excluded";
 
 /** 默认五格（Trae 侧：积分过期有判据）。 */
 export const DEFAULT_POOL_TILES: PoolTileKey[] = [
@@ -37,8 +48,18 @@ export const DEFAULT_POOL_TILES: PoolTileKey[] = [
  *
  * 后端池条目只存「快过期的积分**数量**」，不存有效期，没有判据 ⇒ 该 state 恒为 0。
  * 与其摆一个永远为 0 的假格子，不如不给（诚实 > 看起来对齐）。
+ *
+ * ★ 新增「已排除」（2026-10-17）：它是**互斥第六态**（被排除的号不能再算「可路由」），
+ * 因此必须有自己的一格 —— 否则「可路由 4」与实际可选中 3 个互相矛盾。
+ * Trae / Qoder 侧暂不加：它们的排除端点还没接（摆一个恒 0 的格子就是假控件）。
  */
-export const WB_POOL_TILES: PoolTileKey[] = ["available", "cooling", "disabled", "zeroCredits"];
+export const WB_POOL_TILES: PoolTileKey[] = [
+  "available",
+  "cooling",
+  "disabled",
+  "zeroCredits",
+  "excluded",
+];
 
 /**
  * Qoder 侧的四格 —— **没有积分两格**（池不建模积分），多一格**模型冷却**。
@@ -56,7 +77,30 @@ const TILE_META: Record<PoolTileKey, { labelKey: TranslationKey; tone: "ok" | "w
   expired: { labelKey: "shared.gateway.pool.tile.expired", tone: "warn" },
   zeroCredits: { labelKey: "shared.gateway.pool.tile.zeroCredits", tone: "muted" },
   modelCooling: { labelKey: "shared.gateway.pool.tile.modelCooling", tone: "warn" },
+  excluded: { labelKey: "shared.gateway.pool.tile.excluded", tone: "danger" },
 };
+
+/**
+ * 模型级冷却徽标（`modelCoolings`：`模型 → 解冻时刻`）。
+ *
+ * 与账号级 `cooling` **分开显示**的依据：模型冷却时账号仍可用于**其它**模型，
+ * 混进「冷却中」会让人把「换个模型就好」误判成「这个号废了」。
+ * Trae 侧没有这一维 ⇒ 字段缺失时返回 `null`（不渲染假徽标）。
+ */
+function modelCoolingBadge(account: GatewayPoolAccount): ReactNode {
+  const entries = Object.entries(account.modelCoolings ?? {});
+  if (!entries.length) return null;
+  const models = entries.map(([model]) => model).join("、");
+  return (
+    <Badge
+      variant="secondary"
+      className="shrink-0 text-warning"
+      title={`${models} 处于模型级冷却（只影响这些模型，其它模型仍可用）`}
+    >
+      {`${entries.length} 个模型限流`}
+    </Badge>
+  );
+}
 
 function formatCredits(value: number | null | undefined): string {
   if (value === null || value === undefined || !Number.isFinite(value)) return "—";
@@ -110,6 +154,8 @@ export function AccountPoolCard({
   onRevive,
   /** 正在恢复的 uid：该行按钮显示「操作进行中」（不是加载态）。 */
   revivingUid = null,
+  onExclude,
+  excludingUid = null,
   className,
 }: {
   pool: GatewayPoolSummary | null;
@@ -134,6 +180,16 @@ export function AccountPoolCard({
   onRevive?: (uid: string) => void;
   /** 正在恢复的 uid。 */
   revivingUid?: string | null;
+  /**
+   * 「排除 / 取消排除」出口。未传则不渲染（差异走**插槽**，不写 `platform === …`）。
+   *
+   * 语义（与后端一致）：排除是**硬约束** —— 自动选号、全冷却兜底、粘性、指定都不会用它；
+   * 但它**不等于禁用**，账号本身仍可在客户端正常使用。文案必须把这点讲清，
+   * 否则用户会以为「排除 = 把号弄坏了」。
+   */
+  onExclude?: (uid: string, excluded: boolean) => void;
+  /** 正在切换排除状态的 uid。 */
+  excludingUid?: string | null;
   className?: string;
 }) {
   const t = useT();
@@ -196,7 +252,7 @@ export function AccountPoolCard({
       <div
         className={cn(
           "grid gap-0 border-b border-border/60",
-          tiles.length === 5 ? "grid-cols-2 sm:grid-cols-5" : "grid-cols-2 sm:grid-cols-4",
+          tiles.length >= 5 ? "grid-cols-2 sm:grid-cols-5" : "grid-cols-2 sm:grid-cols-4",
         )}
       >
         {tiles.map((key, index) => {
@@ -292,6 +348,10 @@ export function AccountPoolCard({
                             都只在 `cooling || disabled` 时给），这里再兜一层 —— 否则一条早已过期的
                             `429 rate limit` 会挂在「可用」徽标旁边，读起来像「这个号被限流了」。
                             ★ 判据必须含 `disabled`：它与禁用原因**共用**后端同一个 `reason` 字段。 */}
+                        {/* 模型级冷却：账号本身可用，只是**这个模型**在冷却。
+                            必须与账号级 `cooling` 分开显示 —— 混在一起会让人把「换个模型就好」
+                            误判成「这个号废了」。 */}
+                        {modelCoolingBadge(account)}
                         {(account.status === "cooling" || account.status === "disabled") &&
                           account.cooldownReason && (
                             <span className="truncate text-xs text-muted-foreground">
@@ -324,13 +384,43 @@ export function AccountPoolCard({
                             </Button>
                           </DemoAction>
                         )}
+                        {onExclude && (
+                          <DemoAction>
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              className="h-7 px-2"
+                              data-act="pool-exclude"
+                              disabled={excludingUid !== null}
+                              title={
+                                account.excluded
+                                  ? "取消排除：让它重新参与选号"
+                                  : "排除：网关不会再用它（含兜底与指定），账号本身仍可在客户端使用"
+                              }
+                              onClick={() => onExclude(account.uid, !account.excluded)}
+                            >
+                              {excludingUid === account.uid ? (
+                                <Loader2 className="size-3.5 animate-spin" />
+                              ) : account.excluded ? (
+                                t("shared.gateway.pool.unexclude")
+                              ) : (
+                                t("shared.gateway.pool.exclude")
+                              )}
+                            </Button>
+                          </DemoAction>
+                        )}
                         <DemoAction>
                           <Button
                             variant="outline"
                             size="sm"
                             className="h-7 px-2"
                             data-act="pool-pin"
-                            disabled={saving}
+                            /* ★ 唯一按状态禁用的例外：**已被排除**的号无法被指定。
+                               排除是硬约束（后端选号 / 兜底 / 粘性 / 指定全跳过），
+                               放行只会得到「按钮亮着、策略也写了、但请求永远不落它」的假状态。
+                               冷却 / 禁用 / 零积分**不**禁用本按钮 —— 那是临时状态，
+                               用户有权预先指定一个「等会儿恢复」的号（D36）。 */
+                            disabled={saving || Boolean(account.excluded)}
                             /* 空串 = 不指定（回落「跟随登录态 / 自动择优」）；排他由后端单值策略保证
                                —— 同一 region 只有一个 pinned，故「同一时刻只有一个账号被指定」。 */
                             onClick={() => onPreferredUidChange(pinned ? "" : account.uid)}
@@ -358,6 +448,11 @@ export function AccountPoolCard({
         {onRevive && (
           <p className="mt-1 text-xs leading-5 text-muted-foreground">
             {t("shared.gateway.pool.reviveHint")}
+          </p>
+        )}
+        {onExclude && (
+          <p className="mt-1 text-xs leading-5 text-muted-foreground">
+            {t("shared.gateway.pool.excludeHint")}
           </p>
         )}
       </div>

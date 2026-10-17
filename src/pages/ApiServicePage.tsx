@@ -578,6 +578,7 @@ function RegionPoolCard({ region }: { region: Region }) {
   const refreshStatus = useGatewayStore((s) => s.refreshStatus);
   const [saving, setSaving] = useState(false);
   const [revivingUid, setRevivingUid] = useState<string | null>(null);
+  const [excludingUid, setExcludingUid] = useState<string | null>(null);
 
   const { pool, accounts, diagnose } = poolOf(status, region);
   const strategy = view.strategy;
@@ -622,6 +623,30 @@ function RegionPoolCard({ region }: { region: Region }) {
    * 「后台保活刷新 token」（`id` / `createdAt` 被刻意保留、只有 token 会变），
    * 硬做等于每次保活都把三振账号洗白（详见 `Pool::revive` 的文档）。
    */
+  /**
+   * 排除 / 取消排除。
+   *
+   * 与「恢复」的区别（文案必须讲清）：禁用是**故障**（要修），排除是**用户选择**（只要取消）。
+   * 后端会同时做三件事：落盘、刷新池内快照、按 uid 解绑粘性 —— 前端只负责回读状态。
+   */
+  async function onExclude(uid: string, excluded: boolean) {
+    setExcludingUid(uid);
+    try {
+      await api.setGatewayPoolExclusion(region, uid, excluded);
+      toast.success(
+        excluded
+          ? t("shared.gateway.pool.excludeDone")
+          : t("shared.gateway.pool.unexcludeDone")
+      );
+      // 计数格与行状态都来自 `status` ⇒ 重新拉一次，否则界面还显示旧状态。
+      await refreshStatus();
+    } catch (e) {
+      toast.error(t("shared.gateway.pool.excludeFail"), { description: api.asError(e) });
+    } finally {
+      setExcludingUid(null);
+    }
+  }
+
   async function onRevive(uid: string) {
     setRevivingUid(uid);
     try {
@@ -651,6 +676,8 @@ function RegionPoolCard({ region }: { region: Region }) {
       saving={saving}
       onRevive={onRevive}
       revivingUid={revivingUid}
+      onExclude={onExclude}
+      excludingUid={excludingUid}
       // WorkBuddy 池不存积分有效期 ⇒ 没有「积分过期」格（见卡片注释）。
       tiles={WB_POOL_TILES}
       autoOptions={[
