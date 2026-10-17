@@ -125,8 +125,40 @@ jobs:
 
       # 单元 + 集成测试（crates/*/tests 下的 e2e / 迁移 / 网关契约用例都在这里跑）。
       # `--workspace` 会带上 src-tauri —— 它没有测试 target 也不影响。
+      #
+      # `--no-fail-fast`：一次跑完所有 target，不要撞到第一条失败就停 ——
+      # 否则修一条、推一次、再发现下一条，一轮一轮地耗。
+      # 输出同时落盘给下一个 step 抛注解（见 `Test failure summary`）。
       - name: Test
-        run: cargo test --workspace
+        shell: bash
+        run: |
+          set -o pipefail
+          cargo test --workspace --no-fail-fast 2>&1 | tee "$RUNNER_TEMP/test-output.log"
+
+      # ★ 失败摘要抛成**注解**，而不是留在日志里。
+      #
+      # 原因很实际：Actions 的原始日志要登录才能看，而**注解在运行页面上是公开可见的**。
+      # 门禁红的时候，评审者（和外部贡献者）第一眼就该看到「哪条用例挂了 / 哪处编译错误」，
+      # 而不是去翻三兆日志、或者干脆因为看不到而放弃提 PR。
+      # 本仓为此浪费过整轮排查：只知道 exit 101，不知道挂在哪。
+      - name: Test failure summary
+        if: failure()
+        shell: bash
+        run: |
+          LOG="$RUNNER_TEMP/test-output.log"
+          if [ ! -f "$LOG" ]; then
+            echo "::error::没有测试日志（Test step 未产出，可能是更早的 step 失败）"
+            exit 0
+          fi
+          # 1) 失败用例名：`test <path> ... FAILED`
+          grep -E '^test .* \.\.\. FAILED$' "$LOG" | head -20 | while IFS= read -r line; do
+            echo "::error title=失败用例::${line#test }"
+          done
+          # 2) panic 现场 / 编译错误 / 汇总行
+          grep -nE 'panicked at|^error(\[E[0-9]+\])?:|^test result: FAILED' "$LOG" \
+            | head -20 | while IFS= read -r line; do
+            echo "::error title=失败现场::${line}"
+          done
 
   pr-summary:
     name: PR summary
