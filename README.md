@@ -2,9 +2,18 @@
   <img src="public/icon-transparent.png" alt="Buddy Switch 图标" width="120" />
 </p>
 
+<h1 align="center">Buddy Switch</h1>
+
 <p align="center">
-  <strong>Buddy Switch</strong><br />
-  WorkBuddy · CodeBuddy · TraeWork · Qoder 多账号工作台
+  <b>WorkBuddy · CodeBuddy · TraeWork · Qoder 多账号工作台</b><br />
+  把「现在登的是哪个号」变成一次点击
+</p>
+
+<p align="center">
+  <img alt="平台" src="https://img.shields.io/badge/平台-macOS%20%7C%20Windows%20%7C%20Linux-2ea043" />
+  <a href="https://github.com/NextAgentX/trae-workbuddy-switch/releases/latest"><img alt="最新版本" src="https://img.shields.io/github/v/release/NextAgentX/trae-workbuddy-switch?label=最新版本" /></a>
+  <a href="./LICENSE"><img alt="许可" src="https://img.shields.io/badge/许可-PolyForm%20Noncommercial-4c8bf5" /></a>
+  <a href="https://github.com/NextAgentX/trae-workbuddy-switch/stargazers"><img alt="Stars" src="https://img.shields.io/github/stars/NextAgentX/trae-workbuddy-switch?style=social" /></a>
 </p>
 
 <p align="center">
@@ -18,15 +27,25 @@
   <a href="README.pt.md">Português</a>
 </p>
 
-# Buddy Switch
+一个**本地运行**的多账号工作台：把 **WorkBuddy / CodeBuddy / TraeWork / Qoder** 四条产品线、**6 个作用域**的账号收在一处——扫码登录、一键切号、签到与积分、用量统计、会话副本同步，并把模型额度以 OpenAI / Anthropic 兼容接口开放给本机其它 AI 工具。所有数据只放在你自己的机器上。
 
-一个**本地运行**的多账号工作台：把 **WorkBuddy / CodeBuddy / TraeWork / Qoder** 四条产品线、**6 个作用域**的账号收在一处——扫码登录、一键切号、签到与积分、用量统计、会话副本同步，并把模型额度以 OpenAI / Anthropic 兼容接口开放给本机其它 AI 工具。
+|  |  |
+| --- | --- |
+| 🪪 **6 个作用域一屏管完** | 三条产品线 × 国内 / 国际，各有独立账号库；切号带实时进度，写失败自动回滚 |
+| ✅ **该做的事自己冒出来** | 概览把「要重新登录 / 今日未签到 / 积分将过期 / 客户端没开」列成待办，点一下处理完 |
+| 📊 **用量与限流看得见** | Token、积分、账号 × 模型限流、会话副本谁落后谁分叉，全在一屏 |
+| 🔌 **额度还能喂给别的工具** | 一键暴露成 OpenAI / Anthropic 兼容接口，直接配进 Cursor、Claude Code、OpenWebUI |
+
+<p align="center">
+  <a href="https://github.com/NextAgentX/trae-workbuddy-switch/releases/latest"><img alt="下载安装包" src="https://img.shields.io/badge/⬇%20下载安装包-Releases-2ea043?style=for-the-badge" /></a>
+  <a href="https://github.com/NextAgentX/trae-workbuddy-switch/stargazers"><img alt="点个 Star" src="https://img.shields.io/badge/⭐%20点个%20Star-让作者知道有人用-f5c542?style=for-the-badge" /></a>
+  <a href="CONTRIBUTING.md"><img alt="参与贡献" src="https://img.shields.io/badge/🛠%20参与贡献-PR%20%E6%AC%A2%E8%BF%8E-4c8bf5?style=for-the-badge" /></a>
+</p>
 
 > ⚠️ **非官方第三方工具**（source-available，PolyForm Noncommercial 许可）。与上述产品及其权利人不存在隶属、授权或背书关系。它会读写本机客户端的认证数据、按你的配置自动发起请求，并可通过本地端口转发额度。使用前请读完 **[免责声明](docs/DISCLAIMER.md)**。
 
 ## 界面预览
 
-> 截图为演示运行（`VITE_DEMO_MODE=1`，请求层打桩），账号、积分与请求记录均为虚构数据。
 
 <table>
   <thead>
@@ -76,7 +95,72 @@
   </tbody>
 </table>
 
-更多页面（会话 / 设置 / TraeWork 账号与用量）：[docs/images](docs/images)。
+<table>
+  <thead>
+    <tr><th>Qoder 网关（浅色）</th><th>Qoder 网关（深色）</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><img src="docs/images/qoder-gateway-light.png" alt="Qoder 网关（浅色）" /></td>
+      <td><img src="docs/images/qoder-gateway-dark.png" alt="Qoder 网关（深色）" /></td>
+    </tr>
+  </tbody>
+</table>
+
+<details>
+<summary><b>更多截图（会话同步 / 设置 / TraeWork / Qoder 概览与账号 / 积分视图）</b></summary>
+
+<table>
+  <thead>
+    <tr><th>会话副本（浅色）</th><th>会话副本（深色）</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><img src="docs/images/sessions-light.png" alt="会话页（浅色）" /></td>
+      <td><img src="docs/images/sessions-dark.png" alt="会话页（深色）" /></td>
+    </tr>
+  </tbody>
+</table>
+
+<table>
+  <thead>
+    <tr><th>设置（浅色）</th><th>设置（深色）</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><img src="docs/images/settings-light.png" alt="设置页（浅色）" /></td>
+      <td><img src="docs/images/settings-dark.png" alt="设置页（深色）" /></td>
+    </tr>
+  </tbody>
+</table>
+
+<table>
+  <thead>
+    <tr><th>TraeWork 账号（浅色）</th><th>TraeWork 账号（深色）</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><img src="docs/images/trae-accounts-light.png" alt="TraeWork 账号页（浅色）" /></td>
+      <td><img src="docs/images/trae-accounts-dark.png" alt="TraeWork 账号页（深色）" /></td>
+    </tr>
+  </tbody>
+</table>
+
+<table>
+  <thead>
+    <tr><th>Qoder 账号（浅色）</th><th>Qoder 账号（深色）</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><img src="docs/images/qoder-accounts-light.png" alt="Qoder 账号页（浅色）" /></td>
+      <td><img src="docs/images/qoder-accounts-dark.png" alt="Qoder 账号页（深色）" /></td>
+    </tr>
+  </tbody>
+</table>
+
+</details>
+
+> 图由 `scripts/gen-readme-shots.mjs` 从演示构建（`VITE_DEMO_MODE=1`）自动生成，账号、积分与请求记录均为虚构数据；界面改版后重跑一次即可同步。
 
 ## 全景
 
@@ -317,9 +401,23 @@ npm/                     # npm 包（尚未发布）
 
 ## 参与贡献
 
-欢迎 Issue、文档、Bug 修复与功能 PR——完整指引（能做什么、PR 自检清单、代码约定）见 **[CONTRIBUTING.md](CONTRIBUTING.md)**（[English](CONTRIBUTING.en.md)）。
+**这个项目的形态就是被贡献推着长出来的**：Qoder 平台、统一网关、随机抖动、多语言 README，都来自 Issue 与 PR。不需要"很懂"才能参与：
+
+| 你可以做的事 | 起点 |
+| --- | --- |
+| 🐞 **报 Bug**（附版本 + 日志截图） | [新建 Issue](https://github.com/NextAgentX/trae-workbuddy-switch/issues/new) |
+| 🧩 **接新平台**（Galaxy / 其它 IDE） | 平台差异只在 `src/lib/platforms/registry.ts` 与 core 的 `product.rs` 各声明一次，页面组件不用改 |
+| 🌍 **修翻译 / 补语言** | 界面文案在 `src/locales/domains/*.zh.ts` ↔ `*.en.ts` 一一对应；README 八语种也欢迎校订 |
+| 📸 **更新截图** | `scripts/gen-readme-shots.mjs` 一条命令重拍全部浅/深色图（见文件头注释） |
+| 🧪 **补测试** | 仓里大量护栏测试都是贡献者补的；先读 `docs/DEVELOPMENT.md` 的门禁清单 |
+
+完整指引（能做什么、PR 自检清单、代码约定）见 **[CONTRIBUTING.md](CONTRIBUTING.md)**（[English](CONTRIBUTING.en.md)）。
 
 ## 支持这个项目
+
+- ⭐ **点个 Star** —— 这是最直接的帮助：它让更多人搜到这个工具，也让作者知道值得继续维护。
+- 🐛 **把问题说清楚** —— 一个能复现的 Issue 比十句"不好用"有用得多，通常下一版就修了。
+- ☕ **请作者喝杯饮料**（完全自愿，不影响任何功能）
 
 <table>
   <thead>

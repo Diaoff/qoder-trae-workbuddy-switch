@@ -1,10 +1,19 @@
 <p align="center">
-  <img src="public/icon-transparent.png" alt="Buddy Switch アイコン" width="120" />
+  <img src="public/icon-transparent.png" alt="Buddy Switch" width="120" />
+</p>
+
+<h1 align="center">Buddy Switch</h1>
+
+<p align="center">
+  <b>WorkBuddy · CodeBuddy · TraeWork · Qoder マルチアカウント管理ツール</b><br />
+  「いまどのアカウントでログインしているか」をワンクリックに
 </p>
 
 <p align="center">
-  <strong>Buddy Switch</strong><br />
-  WorkBuddy · CodeBuddy · TraeWork · Qoder マルチアカウント管理ツール
+  <img alt="対応OS" src="https://img.shields.io/badge/%E5%AF%BE%E5%BF%9COS-macOS_%7C_Windows_%7C_Linux-2ea043" />
+  <a href="https://github.com/NextAgentX/trae-workbuddy-switch/releases/latest"><img alt="最新版" src="https://img.shields.io/github/v/release/NextAgentX/trae-workbuddy-switch?label=%E6%9C%80%E6%96%B0%E7%89%88" /></a>
+  <a href="./LICENSE"><img alt="ライセンス" src="https://img.shields.io/badge/%E3%83%A9%E3%82%A4%E3%82%BB%E3%83%B3%E3%82%B9-PolyForm_Noncommercial-4c8bf5" /></a>
+  <a href="https://github.com/NextAgentX/trae-workbuddy-switch/stargazers"><img alt="Stars" src="https://img.shields.io/github/stars/NextAgentX/trae-workbuddy-switch?style=social" /></a>
 </p>
 
 <p align="center">
@@ -22,11 +31,24 @@
 
 **ローカル完結**のマルチアカウント管理ツールです。**WorkBuddy / CodeBuddy / TraeWork / Qoder** の 4 製品ライン、**6 つのスコープ**のアカウントを 1 か所に集約し、QR・デバイスコードでのログイン、ワンクリックのアカウント切り替え、チェックインとクレジット、利用状況の集計、セッション複製の同期、そしてモデル枠を OpenAI / Anthropic 互換 API としてローカルの他ツールに開放します。
 
+|  |  |
+| --- | --- |
+| 🪪 **6 スコープを 1 画面で** | 3 製品ライン × 中国版 / 国際版。それぞれ独立したアカウント庫を持ち、切り替えは進捗を表示し、書き込み失敗時は自動で巻き戻します。 |
+| ✅ **やるべきことが勝手に出てくる** | 概要が「再ログイン / 本日未チェックイン / 期限切れ間近のクレジット / クライアント未起動」を一覧化し、行内のボタンで片付きます。 |
+| 📊 **利用量と制限が見える** | トークン、クレジット、アカウント × モデルの制限、どのセッション複製が遅れ・分岐したかまで一画面に。 |
+| 🔌 **枠を他のツールにも** | OpenAI / Anthropic 互換エンドポイントとして公開し、Cursor・Claude Code・OpenWebUI にそのまま設定できます。 |
+
+<p align="center">
+  <a href="https://github.com/NextAgentX/trae-workbuddy-switch/releases/latest"><img alt="ダウンロード" src="https://img.shields.io/badge/%E3%83%80%E3%82%A6%E3%83%B3%E3%83%AD%E3%83%BC%E3%83%89-Releases-2ea043?style=for-the-badge" /></a>
+  <a href="https://github.com/NextAgentX/trae-workbuddy-switch/stargazers"><img alt="Star で応援" src="https://img.shields.io/badge/Star_%E3%81%A7%E5%BF%9C%E6%8F%B4-Star-f5c542?style=for-the-badge" /></a>
+  <a href="CONTRIBUTING.en.md"><img alt="コントリビュート" src="https://img.shields.io/badge/%E3%82%B3%E3%83%B3%E3%83%88%E3%83%AA%E3%83%93%E3%83%A5%E3%83%BC%E3%83%88-Pull_Request-4c8bf5?style=for-the-badge" /></a>
+</p>
+
+
 > ⚠️ **非公式のサードパーティ製ツール**（source-available、PolyForm Noncommercial）。上記製品および権利者との提携・承認・後援関係はありません。ローカルクライアントの認証データを読み書きし、設定したスケジュールで自動リクエストを送信し、ローカルポート経由で利用枠を転送できます。使用前に **[免責事項](docs/DISCLAIMER.en.md)** を必ずお読みください。
 
 ## 画面
 
-> デモ実行（`VITE_DEMO_MODE=1`、リクエスト層はスタブ）による撮影です。アカウント・クレジット・リクエスト記録はすべて架空のデータです。
 
 <table>
   <thead>
@@ -76,7 +98,72 @@
   </tbody>
 </table>
 
-その他の画面（セッション / 設定 / TraeWork のアカウントと利用状況）：[docs/images](docs/images)。
+<table>
+  <thead>
+    <tr><th>Qoder ゲートウェイ (ライト)</th><th>Qoder ゲートウェイ (ダーク)</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><img src="docs/images/qoder-gateway-light.png" alt="Qoder ゲートウェイ (ライト)" /></td>
+      <td><img src="docs/images/qoder-gateway-dark.png" alt="Qoder ゲートウェイ (ダーク)" /></td>
+    </tr>
+  </tbody>
+</table>
+
+<details>
+<summary><b>その他の画面（セッション / 設定 / TraeWork / Qoder）</b></summary>
+
+<table>
+  <thead>
+    <tr><th>セッション (ライト)</th><th>セッション (ダーク)</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><img src="docs/images/sessions-light.png" alt="セッション (ライト)" /></td>
+      <td><img src="docs/images/sessions-dark.png" alt="セッション (ダーク)" /></td>
+    </tr>
+  </tbody>
+</table>
+
+<table>
+  <thead>
+    <tr><th>設定 (ライト)</th><th>設定 (ダーク)</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><img src="docs/images/settings-light.png" alt="設定 (ライト)" /></td>
+      <td><img src="docs/images/settings-dark.png" alt="設定 (ダーク)" /></td>
+    </tr>
+  </tbody>
+</table>
+
+<table>
+  <thead>
+    <tr><th>TraeWork アカウント (ライト)</th><th>TraeWork アカウント (ダーク)</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><img src="docs/images/trae-accounts-light.png" alt="TraeWork アカウント (ライト)" /></td>
+      <td><img src="docs/images/trae-accounts-dark.png" alt="TraeWork アカウント (ダーク)" /></td>
+    </tr>
+  </tbody>
+</table>
+
+<table>
+  <thead>
+    <tr><th>Qoder アカウント (ライト)</th><th>Qoder アカウント (ダーク)</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><img src="docs/images/qoder-accounts-light.png" alt="Qoder アカウント (ライト)" /></td>
+      <td><img src="docs/images/qoder-accounts-dark.png" alt="Qoder アカウント (ダーク)" /></td>
+    </tr>
+  </tbody>
+</table>
+
+</details>
+
+> 画像は `scripts/gen-readme-shots.mjs` がデモビルド（`VITE_DEMO_MODE=1`）から自動生成しています。アカウント・クレジット・リクエスト記録はすべて架空です。UI を変えたら一度実行し直すだけです。
 
 ## 全体像
 
@@ -317,9 +404,23 @@ npm/                     # npm パッケージ（未公開）
 
 ## コントリビューション
 
-Issue、ドキュメント、バグ修正、機能 PR を歓迎します。詳細（取り組めること、PR チェックリスト、コード規約）は **[CONTRIBUTING.en.md](CONTRIBUTING.en.md)**（[简体中文](CONTRIBUTING.md)）をご覧ください。
+**このプロジェクトは貢献で育ってきました**：Qoder 対応、統合ゲートウェイ、スケジュールのゆらぎ、多言語 README はすべて Issue と PR から生まれています。専門家である必要はありません。
+
+| | |
+| --- | --- |
+| 🐞 **不具合を報告** | バージョンとログのスクリーンショットを添えて [Issue を作成](https://github.com/NextAgentX/trae-workbuddy-switch/issues/new) |
+| 🧩 **プラットフォームを追加** | 差異は `src/lib/platforms/registry.ts` と `product.rs` に一度だけ宣言すればよく、ページ側は変更不要です。 |
+| 🌍 **翻訳の修正** | UI 文言は `src/locales/domains/*.zh.ts` ↔ `*.en.ts` が対になっています。8 言語の README 校訂も歓迎です。 |
+| 📸 **スクリーンショット更新** | 1 コマンドでライト/ダークの全画像を撮り直せます（`scripts/gen-readme-shots.mjs` の冒頭コメント参照）。 |
+| 🧪 **テストを追加** | このリポジトリのガードテストの多くは貢献者が追加したものです。まず `docs/DEVELOPMENT.md` のゲート一覧から。 |
+
+詳しい案内（取り組めること、PR チェックリスト、コード規約）：**[CONTRIBUTING.en.md](CONTRIBUTING.en.md)**（[简体中文](CONTRIBUTING.md)）。
 
 ## プロジェクトを支援する
+
+- ⭐ **Star を付ける** — いちばん直接的な支援です。見つけてもらいやすくなり、継続開発の判断材料になります。
+- 🐞 **問題を具体的に** — 再現できる Issue は「動かない」の 10 倍有用で、たいてい次の版で直ります。
+- ☕ **作者に一杯おごる**（任意。機能制限は一切ありません）
 
 <table>
   <thead>
@@ -327,8 +428,8 @@ Issue、ドキュメント、バグ修正、機能 PR を歓迎します。詳�
   </thead>
   <tbody>
     <tr>
-      <td><img src="docs/images/donate-wechat.png" alt="WeChat Pay 決済コード" width="240" /></td>
-      <td><img src="docs/images/donate-alipay.jpg" alt="Alipay 決済コード" width="240" /></td>
+      <td><img src="docs/images/donate-wechat.png" alt="WeChat Pay QR" width="240" /></td>
+      <td><img src="docs/images/donate-alipay.jpg" alt="Alipay QR" width="240" /></td>
     </tr>
   </tbody>
 </table>

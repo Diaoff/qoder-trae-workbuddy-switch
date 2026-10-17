@@ -1,10 +1,19 @@
 <p align="center">
-  <img src="public/icon-transparent.png" alt="Buddy Switch 아이콘" width="120" />
+  <img src="public/icon-transparent.png" alt="Buddy Switch" width="120" />
+</p>
+
+<h1 align="center">Buddy Switch</h1>
+
+<p align="center">
+  <b>WorkBuddy · CodeBuddy · TraeWork · Qoder 멀티 계정 워크벤치</b><br />
+  “지금 어느 계정으로 로그인했는지”를 클릭 한 번으로
 </p>
 
 <p align="center">
-  <strong>Buddy Switch</strong><br />
-  WorkBuddy · CodeBuddy · TraeWork · Qoder 멀티 계정 워크벤치
+  <img alt="지원 OS" src="https://img.shields.io/badge/%EC%A7%80%EC%9B%90_OS-macOS_%7C_Windows_%7C_Linux-2ea043" />
+  <a href="https://github.com/NextAgentX/trae-workbuddy-switch/releases/latest"><img alt="최신 버전" src="https://img.shields.io/github/v/release/NextAgentX/trae-workbuddy-switch?label=%EC%B5%9C%EC%8B%A0_%EB%B2%84%EC%A0%84" /></a>
+  <a href="./LICENSE"><img alt="라이선스" src="https://img.shields.io/badge/%EB%9D%BC%EC%9D%B4%EC%84%A0%EC%8A%A4-PolyForm_Noncommercial-4c8bf5" /></a>
+  <a href="https://github.com/NextAgentX/trae-workbuddy-switch/stargazers"><img alt="Stars" src="https://img.shields.io/github/stars/NextAgentX/trae-workbuddy-switch?style=social" /></a>
 </p>
 
 <p align="center">
@@ -22,11 +31,24 @@
 
 **로컬에서 동작하는** 멀티 계정 워크벤치입니다. **WorkBuddy / CodeBuddy / TraeWork / Qoder** 네 제품 라인, **6개 스코프**의 계정을 한곳에 모아 QR·기기 코드 로그인, 원클릭 계정 전환, 출석 체크와 크레딧, 사용량 통계, 세션 사본 동기화를 제공하고, 모델 할당량을 OpenAI / Anthropic 호환 API로 로컬의 다른 AI 도구에 개방합니다.
 
+|  |  |
+| --- | --- |
+| 🪪 **6개 스코프를 한 화면에** | 세 제품 라인 × 중국판 / 글로벌판. 각자 독립된 계정 저장소를 가지며, 전환 시 진행 상황을 보여주고 쓰기 실패 시 자동으로 되돌립니다. |
+| ✅ **할 일이 알아서 드러납니다** | 개요가 「재로그인 / 오늘 미출석 / 만료 예정 크레딧 / 클라이언트 미실행」을 목록으로 보여주고, 행 안의 버튼으로 바로 처리합니다. |
+| 📊 **사용량과 제한이 보입니다** | 토큰, 크레딧, 계정 × 모델 제한, 어떤 세션 사본이 뒤처지고 갈라졌는지까지 한 화면에. |
+| 🔌 **할당량을 다른 도구에 연결** | OpenAI / Anthropic 호환 엔드포인트로 노출해 Cursor, Claude Code, OpenWebUI에 그대로 설정할 수 있습니다. |
+
+<p align="center">
+  <a href="https://github.com/NextAgentX/trae-workbuddy-switch/releases/latest"><img alt="다운로드" src="https://img.shields.io/badge/%EB%8B%A4%EC%9A%B4%EB%A1%9C%EB%93%9C-Releases-2ea043?style=for-the-badge" /></a>
+  <a href="https://github.com/NextAgentX/trae-workbuddy-switch/stargazers"><img alt="Star로 응원" src="https://img.shields.io/badge/Star%EB%A1%9C_%EC%9D%91%EC%9B%90-Star-f5c542?style=for-the-badge" /></a>
+  <a href="CONTRIBUTING.en.md"><img alt="기여하기" src="https://img.shields.io/badge/%EA%B8%B0%EC%97%AC%ED%95%98%EA%B8%B0-Pull_Request-4c8bf5?style=for-the-badge" /></a>
+</p>
+
+
 > ⚠️ **비공식 서드파티 도구**(source-available, PolyForm Noncommercial)입니다. 위 제품 및 권리자와 제휴·승인·후원 관계가 없습니다. 로컬 클라이언트의 인증 데이터를 읽고 쓰며, 설정한 스케줄대로 자동 요청을 보내고, 로컬 포트를 통해 할당량을 전달할 수 있습니다. 사용 전에 **[면책 고지](docs/DISCLAIMER.en.md)** 를 반드시 읽어 주세요.
 
 ## 화면
 
-> 데모 실행(`VITE_DEMO_MODE=1`, 요청 계층 스텁)으로 촬영했습니다. 계정·크레딧·요청 기록은 모두 가상 데이터입니다.
 
 <table>
   <thead>
@@ -76,7 +98,72 @@
   </tbody>
 </table>
 
-그 밖의 화면(세션 / 설정 / TraeWork 계정과 사용량): [docs/images](docs/images).
+<table>
+  <thead>
+    <tr><th>Qoder 게이트웨이 (라이트)</th><th>Qoder 게이트웨이 (다크)</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><img src="docs/images/qoder-gateway-light.png" alt="Qoder 게이트웨이 (라이트)" /></td>
+      <td><img src="docs/images/qoder-gateway-dark.png" alt="Qoder 게이트웨이 (다크)" /></td>
+    </tr>
+  </tbody>
+</table>
+
+<details>
+<summary><b>더 많은 화면(세션 / 설정 / TraeWork / Qoder)</b></summary>
+
+<table>
+  <thead>
+    <tr><th>세션 (라이트)</th><th>세션 (다크)</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><img src="docs/images/sessions-light.png" alt="세션 (라이트)" /></td>
+      <td><img src="docs/images/sessions-dark.png" alt="세션 (다크)" /></td>
+    </tr>
+  </tbody>
+</table>
+
+<table>
+  <thead>
+    <tr><th>설정 (라이트)</th><th>설정 (다크)</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><img src="docs/images/settings-light.png" alt="설정 (라이트)" /></td>
+      <td><img src="docs/images/settings-dark.png" alt="설정 (다크)" /></td>
+    </tr>
+  </tbody>
+</table>
+
+<table>
+  <thead>
+    <tr><th>TraeWork 계정 (라이트)</th><th>TraeWork 계정 (다크)</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><img src="docs/images/trae-accounts-light.png" alt="TraeWork 계정 (라이트)" /></td>
+      <td><img src="docs/images/trae-accounts-dark.png" alt="TraeWork 계정 (다크)" /></td>
+    </tr>
+  </tbody>
+</table>
+
+<table>
+  <thead>
+    <tr><th>Qoder 계정 (라이트)</th><th>Qoder 계정 (다크)</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><img src="docs/images/qoder-accounts-light.png" alt="Qoder 계정 (라이트)" /></td>
+      <td><img src="docs/images/qoder-accounts-dark.png" alt="Qoder 계정 (다크)" /></td>
+    </tr>
+  </tbody>
+</table>
+
+</details>
+
+> 이미지는 `scripts/gen-readme-shots.mjs`가 데모 빌드(`VITE_DEMO_MODE=1`)에서 자동 생성합니다. 계정·크레딧·요청 기록은 모두 가상 데이터이며, UI가 바뀌면 한 번 다시 실행하면 됩니다.
 
 ## 전체 구조
 
@@ -317,9 +404,23 @@ npm/                     # npm 패키지(미배포)
 
 ## 기여
 
-이슈, 문서, 버그 수정, 기능 PR 모두 환영합니다. 자세한 안내(무엇을 할 수 있는지, PR 체크리스트, 코드 규칙)는 **[CONTRIBUTING.en.md](CONTRIBUTING.en.md)**([简体中文](CONTRIBUTING.md))를 참고하세요.
+**이 프로젝트는 기여로 자랐습니다**: Qoder 플랫폼, 통합 게이트웨이, 스케줄 지터, 다국어 README 모두 이슈와 PR에서 나왔습니다. 전문가가 아니어도 됩니다.
+
+| | |
+| --- | --- |
+| 🐞 **버그 제보** | 버전과 로그 스크린샷을 함께 담아 [이슈 작성](https://github.com/NextAgentX/trae-workbuddy-switch/issues/new) |
+| 🧩 **플랫폼 추가** | 차이는 `src/lib/platforms/registry.ts`와 `product.rs`에 한 번만 선언하면 되고, 페이지 컴포넌트는 그대로 둡니다. |
+| 🌍 **번역 수정** | UI 문구는 `src/locales/domains/*.zh.ts` ↔ `*.en.ts`가 짝을 이룹니다. 8개 언어 README 교정도 환영합니다. |
+| 📸 **스크린샷 갱신** | 명령 하나로 라이트/다크 이미지를 모두 다시 찍습니다(`scripts/gen-readme-shots.mjs` 머리말 참고). |
+| 🧪 **테스트 추가** | 이 저장소의 가드 테스트 상당수는 기여자가 추가했습니다. `docs/DEVELOPMENT.md`의 게이트 목록부터 보세요. |
+
+자세한 안내(무엇을 할 수 있는지, PR 체크리스트, 코드 규칙): **[CONTRIBUTING.en.md](CONTRIBUTING.en.md)**([简体中文](CONTRIBUTING.md)).
 
 ## 프로젝트 후원
+
+- ⭐ **Star 눌러주기** — 가장 직접적인 도움입니다. 더 많은 사람이 검색할 수 있고, 유지보수를 계속할 근거가 됩니다.
+- 🐞 **문제를 구체적으로** — 재현 가능한 이슈 하나가 “안 돼요” 열 마디보다 낫고, 보통 다음 버전에서 고쳐집니다.
+- ☕ **작성자에게 커피 한 잔** (완전 자발적, 어떤 기능도 잠기지 않습니다)
 
 <table>
   <thead>

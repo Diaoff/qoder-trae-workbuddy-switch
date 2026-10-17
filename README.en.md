@@ -1,10 +1,19 @@
 <p align="center">
-  <img src="public/icon-transparent.png" alt="Buddy Switch icon" width="120" />
+  <img src="public/icon-transparent.png" alt="Buddy Switch" width="120" />
+</p>
+
+<h1 align="center">Buddy Switch</h1>
+
+<p align="center">
+  <b>WorkBuddy · CodeBuddy · TraeWork · Qoder multi-account workbench</b><br />
+  Turn “which account am I signed in with?” into one click
 </p>
 
 <p align="center">
-  <strong>Buddy Switch</strong><br />
-  A multi-account workbench for WorkBuddy · CodeBuddy · TraeWork · Qoder
+  <img alt="Platforms" src="https://img.shields.io/badge/Platforms-macOS_%7C_Windows_%7C_Linux-2ea043" />
+  <a href="https://github.com/NextAgentX/trae-workbuddy-switch/releases/latest"><img alt="Latest" src="https://img.shields.io/github/v/release/NextAgentX/trae-workbuddy-switch?label=Latest" /></a>
+  <a href="./LICENSE"><img alt="License" src="https://img.shields.io/badge/License-PolyForm_Noncommercial-4c8bf5" /></a>
+  <a href="https://github.com/NextAgentX/trae-workbuddy-switch/stargazers"><img alt="Stars" src="https://img.shields.io/github/stars/NextAgentX/trae-workbuddy-switch?style=social" /></a>
 </p>
 
 <p align="center">
@@ -22,11 +31,24 @@
 
 A **local-first** multi-account workbench: it gathers accounts from four product lines — **WorkBuddy / CodeBuddy / TraeWork / Qoder** — and **6 scopes** into one place. QR / device-code sign-in, one-click login-state switching, check-in and credits, usage analytics, session-replica syncing — plus exposing your model quota to other local AI tools through OpenAI / Anthropic compatible endpoints.
 
+|  |  |
+| --- | --- |
+| 🪪 **6 scopes, one place** | Three product lines × CN / Global, each with its own account store. Switching shows live progress and rolls back automatically on a failed write. |
+| ✅ **The to-do list writes itself** | Overview lists what needs attention — re-login, today's check-in, expiring credits, client not running — each with an inline action. |
+| 📊 **Usage and rate limits, visible** | Tokens, credits, per-account model limits, and which session replica lags or diverged — all on one screen. |
+| 🔌 **Feed the quota to your other tools** | Expose it as an OpenAI / Anthropic compatible endpoint and drop it into Cursor, Claude Code or OpenWebUI. |
+
+<p align="center">
+  <a href="https://github.com/NextAgentX/trae-workbuddy-switch/releases/latest"><img alt="Download" src="https://img.shields.io/badge/Download-Releases-2ea043?style=for-the-badge" /></a>
+  <a href="https://github.com/NextAgentX/trae-workbuddy-switch/stargazers"><img alt="Star the repo" src="https://img.shields.io/badge/Star_the_repo-Star-f5c542?style=for-the-badge" /></a>
+  <a href="CONTRIBUTING.en.md"><img alt="Contribute" src="https://img.shields.io/badge/Contribute-Pull_Request-4c8bf5?style=for-the-badge" /></a>
+</p>
+
+
 > ⚠️ **Unofficial third-party tool** (source-available, PolyForm Noncommercial). Not affiliated with, authorized or endorsed by those products or their rights holders. It reads and writes authentication data of local clients, sends automated requests on the schedule you configure, and can forward your quota through a local port. Read the **[Disclaimer](docs/DISCLAIMER.en.md)** before use.
 
 ## Screenshots
 
-> Taken from a demo run (`VITE_DEMO_MODE=1`, stubbed request layer). Accounts, credits and request records are fictional.
 
 <table>
   <thead>
@@ -76,7 +98,72 @@ A **local-first** multi-account workbench: it gathers accounts from four product
   </tbody>
 </table>
 
-More pages (sessions / settings / TraeWork accounts and usage): [docs/images](docs/images).
+<table>
+  <thead>
+    <tr><th>Qoder gateway (light)</th><th>Qoder gateway (dark)</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><img src="docs/images/qoder-gateway-light.png" alt="Qoder gateway (light)" /></td>
+      <td><img src="docs/images/qoder-gateway-dark.png" alt="Qoder gateway (dark)" /></td>
+    </tr>
+  </tbody>
+</table>
+
+<details>
+<summary><b>More screenshots (sessions / settings / TraeWork / Qoder)</b></summary>
+
+<table>
+  <thead>
+    <tr><th>Sessions (light)</th><th>Sessions (dark)</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><img src="docs/images/sessions-light.png" alt="Sessions (light)" /></td>
+      <td><img src="docs/images/sessions-dark.png" alt="Sessions (dark)" /></td>
+    </tr>
+  </tbody>
+</table>
+
+<table>
+  <thead>
+    <tr><th>Settings (light)</th><th>Settings (dark)</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><img src="docs/images/settings-light.png" alt="Settings (light)" /></td>
+      <td><img src="docs/images/settings-dark.png" alt="Settings (dark)" /></td>
+    </tr>
+  </tbody>
+</table>
+
+<table>
+  <thead>
+    <tr><th>TraeWork accounts (light)</th><th>TraeWork accounts (dark)</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><img src="docs/images/trae-accounts-light.png" alt="TraeWork accounts (light)" /></td>
+      <td><img src="docs/images/trae-accounts-dark.png" alt="TraeWork accounts (dark)" /></td>
+    </tr>
+  </tbody>
+</table>
+
+<table>
+  <thead>
+    <tr><th>Qoder accounts (light)</th><th>Qoder accounts (dark)</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><img src="docs/images/qoder-accounts-light.png" alt="Qoder accounts (light)" /></td>
+      <td><img src="docs/images/qoder-accounts-dark.png" alt="Qoder accounts (dark)" /></td>
+    </tr>
+  </tbody>
+</table>
+
+</details>
+
+> Generated by `scripts/gen-readme-shots.mjs` from the demo build (`VITE_DEMO_MODE=1`); accounts, credits and request records are fictional. Re-run it once after a UI change.
 
 ## The big picture
 
@@ -317,9 +404,23 @@ Environment requirements, release process and layout conventions: [docs/DEVELOPM
 
 ## Contributing
 
-Issues, documentation, bug fixes and feature PRs are all welcome — see **[CONTRIBUTING.en.md](CONTRIBUTING.en.md)** ([简体中文](CONTRIBUTING.md)) for the checklist and conventions.
+**This project has grown through contributions**: the Qoder platform, the unified gateway, schedule jitter and the multilingual READMEs all came from issues and pull requests. You do not need to be an expert to help.
+
+| | |
+| --- | --- |
+| 🐞 **Report a bug** | Include the version and a screenshot of the log: [open an issue](https://github.com/NextAgentX/trae-workbuddy-switch/issues/new) |
+| 🧩 **Add a platform** | Platform differences are declared once in `src/lib/platforms/registry.ts` and `product.rs`; page components stay untouched. |
+| 🌍 **Fix translations** | UI copy lives in `src/locales/domains/*.zh.ts` ↔ `*.en.ts`; corrections to the eight READMEs are welcome too. |
+| 📸 **Refresh screenshots** | One command re-shoots every light/dark image — see the header of `scripts/gen-readme-shots.mjs`. |
+| 🧪 **Add a test** | Most guard tests in this repo were added by contributors; start from the gate list in `docs/DEVELOPMENT.md`. |
+
+Full guide (what to work on, PR checklist, code conventions): **[CONTRIBUTING.en.md](CONTRIBUTING.en.md)** ([简体中文](CONTRIBUTING.md)).
 
 ## Support the project
+
+- ⭐ **Star the repo** — the most direct help: it makes the tool easier to find and tells the author it is worth maintaining.
+- 🐞 **Describe problems precisely** — one reproducible issue beats ten “it doesn't work”, and it usually ships in the next version.
+- ☕ **Buy the author a drink** (entirely optional, no feature is gated behind it)
 
 <table>
   <thead>
@@ -327,8 +428,8 @@ Issues, documentation, bug fixes and feature PRs are all welcome — see **[CONT
   </thead>
   <tbody>
     <tr>
-      <td><img src="docs/images/donate-wechat.png" alt="WeChat Pay QR code" width="240" /></td>
-      <td><img src="docs/images/donate-alipay.jpg" alt="Alipay QR code" width="240" /></td>
+      <td><img src="docs/images/donate-wechat.png" alt="WeChat Pay QR" width="240" /></td>
+      <td><img src="docs/images/donate-alipay.jpg" alt="Alipay QR" width="240" /></td>
     </tr>
   </tbody>
 </table>

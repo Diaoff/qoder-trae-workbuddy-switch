@@ -1,10 +1,19 @@
 <p align="center">
-  <img src="public/icon-transparent.png" alt="Ícone do Buddy Switch" width="120" />
+  <img src="public/icon-transparent.png" alt="Buddy Switch" width="120" />
+</p>
+
+<h1 align="center">Buddy Switch</h1>
+
+<p align="center">
+  <b>Estação de trabalho multiconta WorkBuddy · CodeBuddy · TraeWork · Qoder</b><br />
+  “Em qual conta eu estou?” vira um clique
 </p>
 
 <p align="center">
-  <strong>Buddy Switch</strong><br />
-  Estação de trabalho multicuenta para WorkBuddy · CodeBuddy · TraeWork · Qoder
+  <img alt="Plataformas" src="https://img.shields.io/badge/Plataformas-macOS_%7C_Windows_%7C_Linux-2ea043" />
+  <a href="https://github.com/NextAgentX/trae-workbuddy-switch/releases/latest"><img alt="Versão" src="https://img.shields.io/github/v/release/NextAgentX/trae-workbuddy-switch?label=Vers%C3%A3o" /></a>
+  <a href="./LICENSE"><img alt="Licença" src="https://img.shields.io/badge/Licen%C3%A7a-PolyForm_Noncommercial-4c8bf5" /></a>
+  <a href="https://github.com/NextAgentX/trae-workbuddy-switch/stargazers"><img alt="Stars" src="https://img.shields.io/github/stars/NextAgentX/trae-workbuddy-switch?style=social" /></a>
 </p>
 
 <p align="center">
@@ -22,11 +31,24 @@
 
 Uma estação de trabalho multicuenta **totalmente local**: reúne as contas de quatro linhas de produto — **WorkBuddy / CodeBuddy / TraeWork / Qoder** — e **6 escopos** num só lugar. Login por QR code ou código de dispositivo, troca de conta em um clique, check-in diário e créditos, análise de uso, sincronização de cópias de sessão — e exposição da sua cota de modelos a outras ferramentas de IA locais por endpoints compatíveis com OpenAI / Anthropic.
 
+|  |  |
+| --- | --- |
+| 🪪 **6 escopos num só lugar** | Três linhas de produto × CN / Global, cada uma com sua base de contas. A troca mostra progresso e reverte sozinha se a gravação falhar. |
+| ✅ **A lista de pendências se monta sozinha** | A visão geral lista «relogin / check-in de hoje / créditos expirando / cliente não iniciado», com a ação na própria linha. |
+| 📊 **Uso e limites à vista** | Tokens, créditos, limites «conta × modelo» e qual cópia de sessão atrasou ou divergiu — tudo numa tela. |
+| 🔌 **A cota também alimenta outras ferramentas** | Exposta como endpoint compatível com OpenAI / Anthropic: Cursor, Claude Code, OpenWebUI. |
+
+<p align="center">
+  <a href="https://github.com/NextAgentX/trae-workbuddy-switch/releases/latest"><img alt="Baixar" src="https://img.shields.io/badge/Baixar-Releases-2ea043?style=for-the-badge" /></a>
+  <a href="https://github.com/NextAgentX/trae-workbuddy-switch/stargazers"><img alt="Dar uma estrela" src="https://img.shields.io/badge/Dar_uma_estrela-Star-f5c542?style=for-the-badge" /></a>
+  <a href="CONTRIBUTING.en.md"><img alt="Contribuir" src="https://img.shields.io/badge/Contribuir-Pull_Request-4c8bf5?style=for-the-badge" /></a>
+</p>
+
+
 > ⚠️ **Ferramenta de terceiros não oficial** (source-available, licença PolyForm Noncommercial). Sem vínculo, autorização ou endosso desses produtos ou de seus titulares. Ela lê e grava os dados de autenticação dos clientes locais, envia requisições automáticas conforme sua programação e pode encaminhar sua cota por uma porta local. Leia o **[aviso legal](docs/DISCLAIMER.en.md)** antes de usar.
 
 ## Capturas de tela
 
-> Obtidas em execução de demonstração (`VITE_DEMO_MODE=1`, camada de rede simulada). Contas, créditos e requisições são fictícios.
 
 <table>
   <thead>
@@ -76,7 +98,72 @@ Uma estação de trabalho multicuenta **totalmente local**: reúne as contas de 
   </tbody>
 </table>
 
-Outras telas (sessões / configurações / contas e uso do TraeWork): [docs/images](docs/images).
+<table>
+  <thead>
+    <tr><th>Gateway Qoder (claro)</th><th>Gateway Qoder (escuro)</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><img src="docs/images/qoder-gateway-light.png" alt="Gateway Qoder (claro)" /></td>
+      <td><img src="docs/images/qoder-gateway-dark.png" alt="Gateway Qoder (escuro)" /></td>
+    </tr>
+  </tbody>
+</table>
+
+<details>
+<summary><b>Mais capturas (sessões / configurações / TraeWork / Qoder)</b></summary>
+
+<table>
+  <thead>
+    <tr><th>Sessões (claro)</th><th>Sessões (escuro)</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><img src="docs/images/sessions-light.png" alt="Sessões (claro)" /></td>
+      <td><img src="docs/images/sessions-dark.png" alt="Sessões (escuro)" /></td>
+    </tr>
+  </tbody>
+</table>
+
+<table>
+  <thead>
+    <tr><th>Configurações (claro)</th><th>Configurações (escuro)</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><img src="docs/images/settings-light.png" alt="Configurações (claro)" /></td>
+      <td><img src="docs/images/settings-dark.png" alt="Configurações (escuro)" /></td>
+    </tr>
+  </tbody>
+</table>
+
+<table>
+  <thead>
+    <tr><th>Contas do TraeWork (claro)</th><th>Contas do TraeWork (escuro)</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><img src="docs/images/trae-accounts-light.png" alt="Contas do TraeWork (claro)" /></td>
+      <td><img src="docs/images/trae-accounts-dark.png" alt="Contas do TraeWork (escuro)" /></td>
+    </tr>
+  </tbody>
+</table>
+
+<table>
+  <thead>
+    <tr><th>Contas do Qoder (claro)</th><th>Contas do Qoder (escuro)</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><img src="docs/images/qoder-accounts-light.png" alt="Contas do Qoder (claro)" /></td>
+      <td><img src="docs/images/qoder-accounts-dark.png" alt="Contas do Qoder (escuro)" /></td>
+    </tr>
+  </tbody>
+</table>
+
+</details>
+
+> Imagens geradas por `scripts/gen-readme-shots.mjs` a partir da build de demonstração (`VITE_DEMO_MODE=1`); contas, créditos e requisições são fictícios. Depois de mudar a interface, basta rodar de novo.
 
 ## Visão geral
 
@@ -317,9 +404,23 @@ Requisitos de ambiente, processo de release e convenções de diretórios: [docs
 
 ## Contribuindo
 
-Issues, documentação, correções de bugs e PRs de funcionalidades são bem-vindos — veja **[CONTRIBUTING.en.md](CONTRIBUTING.en.md)** ([简体中文](CONTRIBUTING.md)) para a checklist e as convenções.
+**Este projeto cresceu com contribuições**: a plataforma Qoder, o gateway unificado, o jitter dos agendamentos e os READMEs multilíngues vieram de issues e pull requests. Não é preciso ser especialista.
+
+| | |
+| --- | --- |
+| 🐞 **Reportar um bug** | Com a versão e uma captura do log: [abrir uma issue](https://github.com/NextAgentX/trae-workbuddy-switch/issues/new) |
+| 🧩 **Adicionar uma plataforma** | As diferenças são declaradas uma vez em `src/lib/platforms/registry.ts` e `product.rs`; as páginas não mudam. |
+| 🌍 **Corrigir traduções** | Os textos ficam em pares `src/locales/domains/*.zh.ts` ↔ `*.en.ts`; revisões dos oito READMEs também são bem-vindas. |
+| 📸 **Atualizar capturas** | Um comando refaz todas as imagens claro/escuro — veja o cabeçalho de `scripts/gen-readme-shots.mjs`. |
+| 🧪 **Adicionar um teste** | A maioria dos testes de guarda foi adicionada por contribuidores; comece pela lista de checagens em `docs/DEVELOPMENT.md`. |
+
+Guia completo (o que dá para pegar, checklist de PR, convenções de código): **[CONTRIBUTING.en.md](CONTRIBUTING.en.md)** ([简体中文](CONTRIBUTING.md)).
 
 ## Apoiar o projeto
+
+- ⭐ **Dar uma estrela** — a ajuda mais direta: o projeto é encontrado com mais facilidade e o autor sabe que vale mantê-lo.
+- 🐞 **Descrever bem o problema** — uma issue reproduzível vale por dez «não funciona» e costuma entrar na versão seguinte.
+- ☕ **Pagar um café ao autor** (totalmente opcional, nenhum recurso fica bloqueado)
 
 <table>
   <thead>
@@ -327,8 +428,8 @@ Issues, documentação, correções de bugs e PRs de funcionalidades são bem-vi
   </thead>
   <tbody>
     <tr>
-      <td><img src="docs/images/donate-wechat.png" alt="QR code do WeChat Pay" width="240" /></td>
-      <td><img src="docs/images/donate-alipay.jpg" alt="QR code do Alipay" width="240" /></td>
+      <td><img src="docs/images/donate-wechat.png" alt="WeChat Pay QR" width="240" /></td>
+      <td><img src="docs/images/donate-alipay.jpg" alt="Alipay QR" width="240" /></td>
     </tr>
   </tbody>
 </table>
