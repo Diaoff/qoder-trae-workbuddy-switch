@@ -297,16 +297,27 @@ pub fn decrypt_field(envelope_b64: &str, protector_key: &[u8; 32]) -> Result<Str
     String::from_utf8(buffer).map_err(|e| AtRestError::Envelope(format!("明文非 UTF-8：{e}")))
 }
 
-/// 客户端可执行文件（Windows 是 exe；macOS 是 `.app` 里的可执行体）。
+/// 客户端可执行文件路径（Windows 为 exe；macOS 为 `.app` 内的可执行体）。
 ///
-/// `workbuddy_app_path_for` 在 macOS 返回的是 **`.app` 包路径**，而 `ELECTRON_RUN_AS_NODE`
-/// 要的是包内的可执行体 ⇒ 这里补一层 `Contents/MacOS/<name>`（Electron 约定：
-/// `CFBundleExecutable` 与包名同名）。名字猜错不会静默：子进程起不来就是 `Spawn`。
+/// macOS 下 `workbuddy_app_path_for` 返回 `.app` 包路径，`ELECTRON_RUN_AS_NODE`
+/// 需要包内可执行体，故名称取自 `Info.plist` 的 `CFBundleExecutable`
+/// （[`crate::modules::process::bundle_executable`]）。
+///
+/// 早期实现假定 `CFBundleExecutable` 与包名相同并按包名拼接。实测两个 WorkBuddy
+/// bundle 的可执行体均为 `Electron`，该假定不成立：拼接结果不存在时，
+/// [`fetch_build_key`] 首行 `exe.exists()` 判假并返回 `ClientMissing`，
+/// 上层据此提示「凭据是加密信封态，请重新登录」，与真实原因无关。
+///
+/// plist 不可读时回落为按包名拼接。该路径仅在 bundle 结构异常时生效，
+/// 由调用方的 `exe.exists()` 判定。
 pub fn client_executable_for(region: Region) -> PathBuf {
     let path = crate::modules::auth_file::workbuddy_app_path_for(region);
     #[cfg(target_os = "macos")]
     {
         if path.extension().and_then(|e| e.to_str()) == Some("app") {
+            if let Some(exe) = crate::modules::process::bundle_executable(&path) {
+                return exe;
+            }
             if let Some(stem) = path.file_stem() {
                 return path.join("Contents").join("MacOS").join(stem);
             }
@@ -779,5 +790,37 @@ mod tests {
         (0..hex.len() / 2)
             .map(|i| u8::from_str_radix(&hex[i * 2..i * 2 + 2], 16).expect("hex"))
             .collect()
+    }
+
+    /// 回归：macOS 下 `client_executable_for` 必须返回存在的路径。
+    ///
+    /// 按包名拼接得到 `.../Contents/MacOS/WorkBuddy AI`，实际文件为 `Electron`；
+    /// 路径不存在时 [`fetch_build_key`] 返回 `ClientMissing`，上层提示与真实原因不符。
+    ///
+    /// 需本机安装客户端，故标记 `#[ignore]`；断言对象为路径本身，不涉及凭据。
+    #[cfg(target_os = "macos")]
+    #[test]
+    #[ignore = "需本机安装 WorkBuddy 客户端"]
+    fn client_executable_exists_on_this_machine() {
+        for region in [Region::Cn, Region::Global] {
+            let app = crate::modules::auth_file::workbuddy_app_path_for(region);
+            if !app.exists() {
+                continue;
+            }
+            let exe = client_executable_for(region);
+            assert!(
+                exe.exists(),
+                "{region:?} 拼出的可执行体不存在（按包名猜名即此后果）：{}",
+                exe.display()
+            );
+            assert_eq!(
+                exe.file_name().and_then(|n| n.to_str()),
+                crate::modules::process::bundle_executable(&app)
+                    .as_deref()
+                    .and_then(|p| p.file_name())
+                    .and_then(|n| n.to_str()),
+                "可执行体名必须来自 Info.plist 的 CFBundleExecutable"
+            );
+        }
     }
 }
