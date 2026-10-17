@@ -6,6 +6,13 @@ use buddy_switch_core::modules::product::Scope;
 use buddy_switch_core::modules::region::{self, Region, RegionMismatch};
 use buddy_switch_core::modules::upstream::UpstreamErrorKind;
 
+/// `pool_busy`（503）建议客户端等多久再试 —— 会写进 `Retry-After` 响应头。
+///
+/// 取值依据：在途额度在**当前那批请求结束**时归还（`InFlightLease` 的 `Drop`），
+/// 本机量级是亚秒到几秒；2s 与 relay 排队等待的默认量级一致，足以避开
+/// 「立刻重试 → 把刚空出来的额度又打满」的抖动。
+const POOL_BUSY_RETRY_AFTER_SECS: u64 = 2;
+
 /// 网关统一错误。
 #[derive(Debug, Clone)]
 pub enum GatewayError {
@@ -174,6 +181,21 @@ impl GatewayError {
             // 503 = 并发占满。凭据正常、几秒内自愈 ⇒ 让客户端退避重试，别去改登录态。
             GatewayError::PoolBusy { .. } => 503,
             GatewayError::Internal(_) => 502,
+        }
+    }
+
+    /// 建议客户端退避的秒数（`Retry-After` 响应头）。
+    ///
+    /// 只给**有确定退避依据**的错误：`pool_busy` 是瞬时并发占满，当前那批请求一结束
+    /// 额度就归还，本机量级是亚秒到几秒。
+    ///
+    /// ★ 限流（429）与余额不足（402）**刻意不给**：真正的解冻时刻在上游的响应里，
+    /// 本仓拿不到可信值 —— 编一个数字（比如 60）会让客户端按错误的节奏重试，
+    /// 比不给更糟（与「不臆造数字」同一纪律）。
+    pub fn retry_after_secs(&self) -> Option<u64> {
+        match self {
+            GatewayError::PoolBusy { .. } => Some(POOL_BUSY_RETRY_AFTER_SECS),
+            _ => None,
         }
     }
 

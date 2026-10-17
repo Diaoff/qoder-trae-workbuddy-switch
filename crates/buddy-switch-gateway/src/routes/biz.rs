@@ -37,7 +37,7 @@ use buddy_switch_core::modules::biz_allowlist::is_allowed_path;
 use buddy_switch_core::modules::region::Region;
 
 use crate::routes::relay::{self, BizMethod, RelayKind, RelayOutcome, RelayRequest};
-use crate::routes::{authenticate, json_response, openai_error};
+use crate::routes::{authenticate, error_response, json_response, openai_error};
 use crate::session_headers;
 use crate::state::GatewayState;
 
@@ -142,8 +142,10 @@ pub async fn biz_for_region(
                 .body(axum::body::Body::from(bytes))
                 .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
         }
-        Err(failure) => json_response(
-            StatusCode::from_u16(failure.error.status()).unwrap_or(StatusCode::BAD_GATEWAY),
+        // ★ 走 `error_response` 而不是自己拼 `json_response`：否则这条路径会漏掉
+        //   `Retry-After`（`pool_busy` 的唯一用途就是告诉客户端「等 2 秒再试」）。
+        Err(failure) => error_response(
+            &failure.error,
             serde_json::json!({
                 "error": failure.error.openai_body(),
                 "upstream": failure.upstream_message,

@@ -67,16 +67,33 @@ pub(crate) fn json_response(status: StatusCode, body: Value) -> Response {
     (status, Json(body)).into_response()
 }
 
+/// 错误响应：状态码 + 错误体 + 可选 `Retry-After`。
+///
+/// `Retry-After` 只在**有确定退避依据**时给（见 [`GatewayError::retry_after_secs`]）——
+/// 目前是 `pool_busy`（503）。不写这个头，客户端只能靠猜：常见结果是立刻重试，
+/// 把刚空出来的在途额度又打满，于是「明明有号、却一直 503」。
+pub(crate) fn error_response(error: &GatewayError, body: Value) -> Response {
+    let status = StatusCode::from_u16(error.status()).unwrap_or(StatusCode::BAD_GATEWAY);
+    let mut response = json_response(status, body);
+    if let Some(secs) = error.retry_after_secs() {
+        if let Ok(value) = header::HeaderValue::from_str(&secs.to_string()) {
+            response.headers_mut().insert(header::RETRY_AFTER, value);
+        }
+    }
+    response
+}
+
 /// OpenAI 端点错误响应。
 pub(crate) fn openai_error(error: GatewayError) -> Response {
-    let status = StatusCode::from_u16(error.status()).unwrap_or(StatusCode::BAD_GATEWAY);
-    json_response(status, error.openai_body())
+    // 先取体再传引用：`openai_body` 借 `&self`，`error_response` 也要读 `status/retry_after`。
+    let body = error.openai_body();
+    error_response(&error, body)
 }
 
 /// Anthropic 端点错误响应。
 pub(crate) fn anthropic_error(error: GatewayError) -> Response {
-    let status = StatusCode::from_u16(error.status()).unwrap_or(StatusCode::BAD_GATEWAY);
-    json_response(status, error.anthropic_body())
+    let body = error.anthropic_body();
+    error_response(&error, body)
 }
 
 /// 解析请求体为 JSON（空体视为空对象）。
@@ -100,4 +117,56 @@ where
         .header("X-Accel-Buffering", "no")
         .body(axum::body::Body::from_stream(stream))
         .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use buddy_switch_core::modules::region::Region;
+    use buddy_switch_core::modules::upstream::UpstreamErrorKind;
+
+    use crate::error::NoCredentialCause;
+
+    /// `pool_busy` ⇒ 503 **且**带 `Retry-After`；认证类与限流类**不得**带该头。
+    ///
+    /// 阳性对照：删掉 `error_response` 里的头注入 ⇒ 第一条断言必红；
+    /// 反过来「给所有错误都加头」⇒ 后两条断言红（编一个假的退避时长比不给更糟）。
+    #[test]
+    fn pool_busy_carries_retry_after_and_others_do_not() {
+        let busy = openai_error(GatewayError::PoolBusy {
+            region: Region::Cn,
+            total: 2,
+        });
+        assert_eq!(busy.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(
+            busy.headers()
+                .get(header::RETRY_AFTER)
+                .and_then(|value| value.to_str().ok()),
+            Some("2"),
+            "503 必须告诉客户端等多久，否则它会立刻重试，把刚空出来的额度又打满"
+        );
+
+        let no_credential = anthropic_error(GatewayError::NoCredential {
+            region: Region::Cn,
+            cause: NoCredentialCause::StoreEmpty,
+        });
+        assert_eq!(no_credential.status(), StatusCode::UNAUTHORIZED);
+        assert!(
+            no_credential.headers().get(header::RETRY_AFTER).is_none(),
+            "认证类错误没有「等一会儿就好」这回事，带 Retry-After 只会拖延用户去登录"
+        );
+
+        // 限流 / 余额不足的真实解冻时刻在上游响应里，本仓拿不到可信值 ⇒ 刻意不给头。
+        let rate_limited = openai_error(GatewayError::Upstream {
+            kind: UpstreamErrorKind::SoftRate,
+            status: 429,
+            message: "429 rate limit".to_string(),
+            attempts: Vec::new(),
+        });
+        assert_eq!(rate_limited.status(), StatusCode::TOO_MANY_REQUESTS);
+        assert!(
+            rate_limited.headers().get(header::RETRY_AFTER).is_none(),
+            "不臆造退避时长：宁可让客户端自己指数退避"
+        );
+    }
 }
