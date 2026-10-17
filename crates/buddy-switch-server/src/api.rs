@@ -5885,23 +5885,54 @@ mod tests {
         assert_eq!(item["error"], "status failed");
     }
 
-    /// 排程配置路由：GET 返回默认值；POST 越界小时返回 400 且错误指向 `*_enabled`。
+    /// 排程配置路由：GET 输出新键 `*_times`；POST 校验非法时点、旧键仍被接受，
+    /// 且错误指向 `*_enabled`。
+    ///
+    /// issue #27 起时点粒度到分钟（`"HH:MM"`）。路由层是**唯一**把配置直接交给客户端的
+    /// 出口，因此这里要钉住三件事：① 响应只出新键（旧键留着会让两套字段长期并存）；
+    /// ② 分钟值原样往返（被截成整点就等于功能没生效）；③ 老客户端提交的 `*_hours`
+    /// 不会 400、也不会静默落默认。
     #[tokio::test]
-    async fn schedule_config_route_validates_hours() {
+    async fn schedule_config_route_validates_times() {
         let _guard = test_guard();
         isolated_home();
 
         let (status, body) = call_api(Method::GET, "/api/schedule/config", None).await;
         assert_eq!(status, StatusCode::OK);
-        assert_eq!(body["checkin_hours"], json!([9, 21]));
-        assert_eq!(body["activity_hours"], json!([10]));
+        assert_eq!(body["checkin_times"], json!(["09:00", "21:00"]));
+        assert_eq!(body["activity_times"], json!(["10:00"]));
         assert_eq!(body["activity_report_count"], json!(5));
         assert_eq!(body["checkin_enabled"], json!(true));
+        assert!(
+            body.get("checkin_hours").is_none(),
+            "响应不得再输出旧键（新旧两套字段并存会让「哪份是真的」无从判断）：{body}"
+        );
 
+        // 分钟粒度必须原样往返。
         let (status, body) = call_api(
             Method::POST,
             "/api/schedule/config",
-            Some(json!({"checkin_hours": [25]})),
+            Some(json!({"checkin_times": ["09:37"]})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["checkin_times"], json!(["09:37"]));
+
+        // 旧键（整点整数）仍可写：等价于 `hour:00`。
+        let (status, body) = call_api(
+            Method::POST,
+            "/api/schedule/config",
+            Some(json!({"travel_hours": [7, 19]})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["travel_times"], json!(["07:00", "19:00"]));
+
+        // 非法时点（分钟越界）→ 400，且文案指向开关。
+        let (status, body) = call_api(
+            Method::POST,
+            "/api/schedule/config",
+            Some(json!({"checkin_times": ["24:00"]})),
         )
         .await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
