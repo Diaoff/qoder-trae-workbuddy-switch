@@ -7357,6 +7357,39 @@ check("★ Q2「指定」不得按账号状态禁用（偏好而非约束，D36�
   return "指定按钮只受 saving / excluded 控制（冷却等临时状态不禁用）";
 });
 
+check("★ 策略哨兵值前后端逐字一致（否则下拉是假开关）", () => {
+  /* 三个哨兵（`__auto__` / `__max_credits__` / `__random__`）在**前端常量**里定义一次、
+     在**后端 `PREFERRED_*`** 里再定义一次。任何一处漂移的后果都不是报错，而是
+     「用户选了『按积分择优』，后端把它当成一个不存在的 uid，静默回落加权」
+     —— 假开关，且从界面上完全看不出来。故用契约检查把两份钉在一起。 */
+  const card = stripComments(
+    fs.readFileSync(path.join(ROOT, "src/components/gateway/account-pool-card.tsx"), "utf8"),
+  );
+  const pick = stripComments(
+    fs.readFileSync(
+      path.join(ROOT, "crates/buddy-switch-gateway/src/pool/pick.rs"),
+      "utf8",
+    ),
+  );
+  const pairs = [
+    ["AUTO_OPTION", "PREFERRED_AUTO"],
+    ["MAX_CREDITS_OPTION", "PREFERRED_MAX_CREDITS"],
+    ["RANDOM_OPTION", "PREFERRED_RANDOM"],
+  ];
+  for (const [tsName, rsName] of pairs) {
+    const ts = new RegExp(`export const ${tsName} = "([^"]+)"`).exec(card);
+    const rs = new RegExp(`pub const ${rsName}: &str = "([^"]+)"`).exec(pick);
+    if (!ts) throw new Error(`前端缺少常量 ${tsName}`);
+    if (!rs) throw new Error(`后端缺少常量 ${rsName}`);
+    if (ts[1] !== rs[1]) {
+      throw new Error(
+        `策略哨兵不一致：前端 ${tsName}="${ts[1]}"，后端 ${rsName}="${rs[1]}" —— 该选项会静默失效`,
+      );
+    }
+  }
+  return "3 个哨兵值前后端逐字一致";
+});
+
 check("★ Q6「登录态快照」不得升为 Capability（D40）", () => {
   /* Capability 语义是「跨目的地复用的功能门控」，而登录态快照只归 TraeSettingsPage
      一个分组所有。升格会牵动 union + 后端枚举 + 两个数组 + 跨语言护栏，代价与收益不成比例。 */

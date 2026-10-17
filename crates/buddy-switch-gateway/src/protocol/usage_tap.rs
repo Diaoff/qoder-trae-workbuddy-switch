@@ -162,6 +162,18 @@ impl<S> UsageTap<S> {
     /// 累积字节并解析所有**完整**帧（以空行分隔）；残帧留在缓冲区等下一块。
     fn scan(&mut self, chunk: &[u8]) {
         self.buffer.extend_from_slice(chunk);
+        // ★ CRLF 归一（只动**内部缓冲**，透传字节一个不改）。
+        //
+        // SSE 允许 `\r\n` 作行结束，而帧分隔符就成了 `\r\n\r\n` —— 里面**不含** `\n\n`
+        // （是 `\n` `\r` `\n`），于是用 `\n\n` 找帧的上游**永远切不出帧**：
+        // usage 解析不到、流内错误也嗅不到。把 `\r` 从缓冲里抹掉，
+        // `\r\n\r\n` 就变成 `\n\n`，两种换行风格走同一条路径。
+        //
+        // 为什么可以安全抹掉：这段缓冲只用于解析（JSON 里的回车会转义成 `\\r`，
+        // 不会以裸字节出现）；客户端收到的仍是原始字节。
+        if self.buffer.contains(&b'\r') {
+            self.buffer.retain(|byte| *byte != b'\r');
+        }
         while let Some(position) = find_subslice(&self.buffer, b"\n\n") {
             let frame: Vec<u8> = self.buffer.drain(..position + 2).collect();
             self.observe_frame(&frame);
@@ -355,6 +367,26 @@ mod tests {
         let calls = sink.calls.lock().expect("lock");
         assert_eq!(calls.len(), 1, "错误只回调一次");
         assert!(calls[0].message.contains("rate limited"));
+    }
+
+    /// ★ CRLF 上游（`\r\n\r\n` 分隔）必须照样切出帧。
+    ///
+    /// 变异：删掉 `scan` 里的 `\r` 归一 ⇒ 本用例红（帧切不出来 ⇒ 错误嗅不到、
+    /// usage 也解析不到 —— 客户端收到的字节仍然是对的，所以这种缺陷**永远不会报错**）。
+    #[tokio::test]
+    async fn crlf_frames_are_split_and_sniffed() {
+        let sink = Arc::new(RecordingErrorSink::default());
+        // 注意：这是 `\r\n` 结尾的 SSE，帧分隔符是 `\r\n\r\n`。
+        let crlf = concat!(
+            "data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\r\n\r\n",
+            "data: {\"code\":6004,\"msg\":\"crlf limited\"}\r\n\r\n",
+        );
+        let mut tap = UsageTap::new(stream_of(vec![crlf]), Vec::new())
+            .with_error_sink(Some(sink.clone() as Arc<dyn StreamErrorSink>));
+        while tap.next().await.is_some() {}
+        let calls = sink.calls.lock().expect("lock");
+        assert_eq!(calls.len(), 1, "CRLF 帧必须被切出并识别");
+        assert!(calls[0].message.contains("crlf limited"));
     }
 
     /// 没有错误帧 ⇒ 一次都不回调（避免把正常流误判成失败、白白冷却好账号）。
