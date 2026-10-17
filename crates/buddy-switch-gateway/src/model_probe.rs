@@ -1279,11 +1279,13 @@ async fn probe_cell_trae(
     // ★ 单格硬超时：**发请求 + 读流都算在内** —— Trae 的业务错误在 SSE 里，必须读到
     //   `event:error` 或流结束；只把「拿响应头」纳入超时的话，上游中途挂住会永久卡住整轮。
     let outcome = tokio::time::timeout(Duration::from_secs(PROBE_CELL_TIMEOUT_SECS), async {
-        let response = trae_chat_once_for_account(state, &account, variant, model, &raw).await?;
+        // 探测不是客户端流量：不落抓取（`None`），否则会把号池探测混进排查材料里。
+        let response =
+            trae_chat_once_for_account(state, &account, variant, model, &raw, None).await?;
         let status = response.status().as_u16();
         // ★ HTTP 2xx **不代表成功**：Trae 上游把业务错误放在 SSE 的 `event:error` 里。
         //   读一次（`max_tokens: 1` ⇒ 极短）只为取出该事件；正文**立刻丢弃**（不聚合、不落账本）。
-        let (_payload, error, _usage) = trae_sse::aggregate(response, "", model).await;
+        let (_payload, error, _usage) = trae_sse::aggregate(response, "", model, None).await;
         Ok::<(u16, Option<(i64, String)>), (u16, String)>((status, error))
     })
     .await;
