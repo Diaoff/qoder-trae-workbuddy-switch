@@ -460,7 +460,7 @@ pub fn account_from_pat(
             TokenKind::Personal.prefix()
         ));
     }
-    let fallback_uid = format!("pt-{}", &pat.chars().skip(3).take(12).collect::<String>());
+    let fallback_uid = format!("pt-{}", pat.chars().skip(3).take(12).collect::<String>());
     Ok(RawAccount {
         uid: fallback_uid,
         nickname,

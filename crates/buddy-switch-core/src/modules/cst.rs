@@ -61,10 +61,10 @@ pub fn cst_yesterday_str(now_ms: i64) -> String {
         .to_string()
 }
 
-/// 夜猫窗口判定：CST `hour >= 23 || hour < 8`（即 23:00–08:00）。
+/// 夜猫窗口判定：CST 23:00–08:00。
 pub fn in_night_window(now_ms: i64) -> bool {
     let hour = cst_hour(now_ms);
-    hour >= 23 || hour < 8
+    !(8..23).contains(&hour)
 }
 
 /// 某 CST 自然日某个整点（`hour:00:00`）的毫秒时间戳；`hour` 越界（>23）返回 `None`。

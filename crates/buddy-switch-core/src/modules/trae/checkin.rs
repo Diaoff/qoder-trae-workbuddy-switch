@@ -312,10 +312,10 @@ pub fn plan(
             }
             // 视图缺失（理论上已被 `entries()` 过滤掉）或状态为 expired/unknown 一律跳过：
             // 这两类账号 claim 必然 401，放进队列只会白造一次会话失效冷却。
-            match jwt_status.get(uid).map(String::as_str) {
-                Some("ok") | Some("warn") => true,
-                _ => false,
-            }
+            matches!(
+                jwt_status.get(uid).map(String::as_str),
+                Some("ok") | Some("warn")
+            )
         })
         .filter(|(uid, _)| {
             // 冷却中（且未到期）的账号跳过。SessionDead 的 until 恒大于 now，即永久跳过。
@@ -880,10 +880,12 @@ mod tests {
 
     #[test]
     fn report_json_exposes_camel_case_shape() {
-        let mut report = CheckinReport::default();
-        report.total = 2;
-        report.total_ok = 1;
-        report.already = 1;
+        let mut report = CheckinReport {
+            total: 2,
+            total_ok: 1,
+            already: 1,
+            ..Default::default()
+        };
         report.results.push(AccountOutcome {
             user_id: "u1".into(),
             name: "n1".into(),

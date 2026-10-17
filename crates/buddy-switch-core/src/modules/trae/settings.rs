@@ -406,8 +406,10 @@ mod tests {
 
     #[test]
     fn proxy_domain_list_trims_and_lowercases() {
-        let mut settings = TraeSettings::default();
-        settings.proxy_domains = " Trae.CN , , api.trae.com.cn ,".into();
+        let settings = TraeSettings {
+            proxy_domains: " Trae.CN , , api.trae.com.cn ,".into(),
+            ..Default::default()
+        };
         assert_eq!(
             settings.proxy_domain_list(),
             vec!["trae.cn", "api.trae.com.cn"]
@@ -416,8 +418,10 @@ mod tests {
 
     #[test]
     fn should_intercept_matches_domain_and_subdomains_only() {
-        let mut settings = TraeSettings::default();
-        settings.proxy_domains = "trae.cn,trae.com.cn".into();
+        let settings = TraeSettings {
+            proxy_domains: "trae.cn,trae.com.cn".into(),
+            ..Default::default()
+        };
         // 精确域名与子域命中
         assert!(settings.should_intercept("trae.cn"));
         assert!(settings.should_intercept("api.trae.cn"));
@@ -435,8 +439,10 @@ mod tests {
 
     #[test]
     fn empty_proxy_domains_intercepts_nothing() {
-        let mut settings = TraeSettings::default();
-        settings.proxy_domains = String::new();
+        let settings = TraeSettings {
+            proxy_domains: String::new(),
+            ..Default::default()
+        };
         assert!(settings.proxy_domain_list().is_empty());
         assert!(!settings.should_intercept("api.trae.cn"));
     }

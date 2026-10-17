@@ -72,7 +72,13 @@ pub fn file_path() -> PathBuf {
 /// ★ 缓存**必须带路径**：测试与「多实例」场景里同时存在多份文件，
 /// 只按 `(mtime, len)` 判会串味（两份空文件都是 `(0, 0)`）。
 fn cache() -> &'static Mutex<Option<(PathBuf, i64, u64, ExclusionsFile)>> {
-    static CACHE: OnceLock<Mutex<Option<(PathBuf, i64, u64, ExclusionsFile)>>> = OnceLock::new();
+    /// 缓存槽：(文件路径, mtime, 大小, 解析结果)。
+    ///
+    /// mtime + size 一起做失效判据（只比 mtime 会在「同一秒内改写」时漏判）；
+    /// 抽别名是为了让 `OnceLock<Mutex<...>>` 这层包装不把判据埋掉。
+    type CacheSlot = Option<(PathBuf, i64, u64, ExclusionsFile)>;
+
+    static CACHE: OnceLock<Mutex<CacheSlot>> = OnceLock::new();
     CACHE.get_or_init(|| Mutex::new(None))
 }
 

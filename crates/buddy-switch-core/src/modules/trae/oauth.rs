@@ -169,23 +169,12 @@ fn login_sessions() -> &'static Mutex<HashMap<String, LoginSession>> {
 }
 
 /// 会话的只读快照（避免在监听循环里长时间持锁）。
-#[derive(Clone)]
+#[derive(Clone, Default)]
 struct SessionView {
     cancelled: bool,
     variant: TraeVariant,
     trace_id: String,
     pkce_verifier: String,
-}
-
-impl Default for SessionView {
-    fn default() -> Self {
-        Self {
-            cancelled: false,
-            variant: TraeVariant::default(),
-            trace_id: String::new(),
-            pkce_verifier: String::new(),
-        }
-    }
 }
 
 /// 读取会话快照；会话不存在时返回默认值（`cancelled = false`）。
@@ -1555,6 +1544,7 @@ fn success_page(account_view: &Value, variant: TraeVariant) -> String {
 ///
 /// - **主路径**：`authCodeInfo.AuthCode` ⇒ `exchange_auth_code` ⇒ 落库；
 /// - **兼容路径**：回调直接给 `refreshToken`（老形态）⇒ 走 refresh 变体链 ⇒ 落库。
+///
 /// `identity` 由 `login_start_for` 在**发起登录时**就取好并随会话带下来：
 /// 授权 URL 的 `device_id`、`DeviceInfo.DeviceID`、`x-device-id` 必须是**同一个值**
 /// （三方同源），回调到达时再取一次就会多出一个可能不一致的来源。
@@ -1735,6 +1725,10 @@ pub fn login_cancel(login_id: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    // 测试串行锁（`lock_*()`）会被**故意**持有到用例结束：它防的是多个用例同时抢占
+    // 同一个回调端口 / 全局状态。`#[tokio::test]` 默认是 current-thread 运行时，
+    // 不存在「持锁跨线程唤醒」的风险；clippy 的 await_holding_lock 在这里是误报。
+    #![allow(clippy::await_holding_lock)]
     use super::*;
     use crate::modules::trae::test_support::TempEnv;
 
@@ -3523,9 +3517,9 @@ mod tests {
 
         assert_eq!(
             declared,
-            body.as_bytes().len(),
+            body.len(),
             "Content-Length 声明 {declared} 与正文字节数 {} 不符（写成字符数了？）",
-            body.as_bytes().len()
+            body.len()
         );
         assert_ne!(
             declared,

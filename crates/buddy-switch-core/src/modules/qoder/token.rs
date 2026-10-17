@@ -100,18 +100,15 @@ pub fn kind_of(token: &str) -> Option<TokenKind> {
     // （`drt-x` 也以 `dt-` 之外的形状开头，但同族前缀只差一个 `r`），
     // 顺序错了会把 `drt-abc` 判成未知。
     // 这里用「整段前缀 + 逐项精确 starts_with」而不是排序技巧：表短、可读性优先。
-    for kind in [
+    [
         TokenKind::DeviceRefresh,
         TokenKind::JobRefresh,
         TokenKind::DeviceAccess,
         TokenKind::JobAccess,
         TokenKind::Personal,
-    ] {
-        if token.starts_with(kind.prefix()) {
-            return Some(kind);
-        }
-    }
-    None
+    ]
+    .into_iter()
+    .find(|kind| token.starts_with(kind.prefix()))
 }
 
 /// 由刷新令牌决定刷新路线（端点）。**fail-closed**：认不出前缀 ⇒ `None`，**不猜**。
@@ -193,7 +190,7 @@ pub fn credential_shape(
     fn classify(raw: Option<&str>) -> (Option<TokenKind>, bool) {
         match raw {
             None => (None, false),
-            Some(value) if value.is_empty() => (None, false),
+            Some("") => (None, false),
             Some(value) => match kind_of(value) {
                 Some(kind) => (Some(kind), false),
                 None => (None, true),

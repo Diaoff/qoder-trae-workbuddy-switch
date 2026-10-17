@@ -103,11 +103,11 @@ fn probe_real_machine_variant_detection() {
             println!("  数据目录 = {}", dir.display());
             // 是否装了会记录 `Authorization` 头的扩展 —— 这是明文凭据的**唯一**来源，
             // 缺了它无论怎么重试导入都拿不到（实测 `TRAE SOLO CN` 就是这种情况）。
-            let ext = dir
-                .join("logs")
-                .is_dir()
-                .then(|| find_extension_dirs(&dir))
-                .unwrap_or_default();
+            let ext = if dir.join("logs").is_dir() {
+                find_extension_dirs(&dir)
+            } else {
+                Default::default()
+            };
             println!(
                 "  日志里的扩展目录 = {ext:?}（凭据来源扩展 trae.ai-code-completion 存在={}）",
                 ext.iter().any(|e| e == "trae.ai-code-completion")

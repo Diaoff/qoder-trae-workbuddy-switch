@@ -12,6 +12,7 @@
 //! 若把 `merge_memory_files` / `merge_connectors_for` 里的备份调用删掉：
 //! - `memory_merge_backs_up_original_target_before_overwrite` 会因 `backup` 为 `None` panic；
 //! - `connector_merge_backs_up_original_target_file` 同理，且备份文件不存在。
+//!
 //! 若把「只在 changed 时备份」改成「无条件备份」：
 //! - `memory_merge_second_run_creates_no_second_backup` 会因第二次仍产生备份而 panic。
 //!

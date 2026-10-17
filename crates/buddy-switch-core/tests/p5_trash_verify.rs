@@ -131,7 +131,7 @@ fn read_accounts(region: Region) -> Vec<Value> {
 fn soft_delete_then_restore_is_lossless_for_every_field() {
     let home = IsolatedHome::new("roundtrip");
     let original = rich_account("acc-1", "u-1");
-    account::save_accounts_for(Region::Cn, &[original.clone()]).expect("seed");
+    account::save_accounts_for(Region::Cn, std::slice::from_ref(&original)).expect("seed");
 
     // 前置：live 有 1 条、trash 为空。
     assert_eq!(read_accounts(Region::Cn), vec![original.clone()]);
@@ -188,7 +188,7 @@ fn restore_refuses_when_live_already_has_the_key() {
     // 用另一份同 key（但内容不同）的记录占住 live。
     let occupant =
         json!({ "id": "acc-1", "uid": "u-1", "nickname": "占位", "access_token": "NEW" });
-    account::save_accounts_for(Region::Cn, &[occupant.clone()]).expect("occupy");
+    account::save_accounts_for(Region::Cn, std::slice::from_ref(&occupant)).expect("occupy");
 
     let err = restore_account_for(Region::Cn, "acc-1").expect_err("必须拒绝覆盖式恢复");
     assert!(err.contains("已存在"), "错误文案应说明冲突，got: {err}");
@@ -358,7 +358,7 @@ fn delete_restore_purge_by_uid_all_hit_when_id_differs() {
     let home = IsolatedHome::new("by-uid");
     // 关键：id 与 uid **不同**，且查找用的 key 是 uid。
     let original = rich_account("id-AAA", "uid-BBB");
-    account::save_accounts_for(Region::Cn, &[original.clone()]).expect("seed");
+    account::save_accounts_for(Region::Cn, std::slice::from_ref(&original)).expect("seed");
 
     // ① 软删除：按 uid。
     trash_account_for(Region::Cn, "uid-BBB").expect("按 uid 软删除必须成功");

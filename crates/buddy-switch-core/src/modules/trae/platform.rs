@@ -1030,7 +1030,7 @@ pub(crate) fn data_dirs_by_activity_for(variant: super::variant::TraeVariant) ->
         })
         .collect();
 
-    scored.sort_by(|a, b| b.1.cmp(&a.1));
+    scored.sort_by_key(|s| std::cmp::Reverse(s.1));
     scored.into_iter().map(|(dir, _)| dir).collect()
 }
 
@@ -1055,7 +1055,7 @@ fn data_dir_names_by_activity() -> Vec<&'static str> {
 
     // 降序：`Option` 的 `Ord` 里 `None < Some(_)`，所以反过来比就是
     // 「有活跃时间的在前、新的在前、没有的垫底」。
-    scored.sort_by(|a, b| b.1.cmp(&a.1));
+    scored.sort_by_key(|s| std::cmp::Reverse(s.1));
     scored.into_iter().map(|(name, _)| name).collect()
 }
 
@@ -1338,14 +1338,14 @@ pub fn kill_client_for(variant: super::variant::TraeVariant) -> Result<bool, Str
         if killed || !is_running_for(variant) {
             return Ok(true);
         }
-        return Err(format!(
+        Err(format!(
             "结束客户端进程失败: {}",
             if last_error.is_empty() {
                 "需要手动关闭 Trae".to_string()
             } else {
                 last_error
             }
-        ));
+        ))
     }
     #[cfg(not(windows))]
     {
@@ -1426,18 +1426,14 @@ pub fn launch_client_for(
 /// CLI/IDE、会话/记忆迁移…）。它们与操作系统无关，故**无条件**下发，`supported_on`
 /// 标为「WorkBuddy」以说明「这条能力在哪有」，界面据此渲染为置灰说明而不造假控件。
 pub fn capabilities() -> Value {
-    let mut unsupported: Vec<Value> = Vec::new();
-
     // ---- 产品级：WorkBuddy 有、Trae 无（与平台无关，故无条件列出）----
-    unsupported.push(
-        Unsupported::new(
-            "auto_travel",
-            "自动旅行（派猫猫）",
-            "WorkBuddy",
-            "Trae 客户端没有该活动接口，本工具也无对应后端实现。",
-        )
-        .to_json(),
-    );
+    let mut unsupported: Vec<Value> = vec![Unsupported::new(
+        "auto_travel",
+        "自动旅行（派猫猫）",
+        "WorkBuddy",
+        "Trae 客户端没有该活动接口，本工具也无对应后端实现。",
+    )
+    .to_json()];
     unsupported.push(
         Unsupported::new(
             "codebuddy_cli",
@@ -2532,7 +2528,7 @@ mod tests {
         let _ = std::fs::create_dir_all(&base);
         let path = base.join("storage.json");
         std::fs::write(&path, r#"{"unrelated":1}"#).unwrap();
-        assert_eq!(rewrite_storage_json(&path, "m", "g").unwrap(), false);
+        assert!(!rewrite_storage_json(&path, "m", "g").unwrap());
         let _ = std::fs::remove_dir_all(&base);
     }
 
@@ -2693,7 +2689,7 @@ mod tests {
             .expect("cn 区域应有合并版程序位")
             .clone();
         assert_eq!(
-            basename(&program, "writeDataDir"),
+            basename(program, "writeDataDir"),
             "Trae CN",
             "writeDataDir 必须是写侧（首个存在的候选）—— 区域页核对「登录态在哪」用的是它"
         );

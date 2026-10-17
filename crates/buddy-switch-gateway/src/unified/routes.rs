@@ -790,6 +790,8 @@ fn presented_key(headers: &HeaderMap) -> Option<&str> {
     }
 }
 
+#[allow(clippy::result_large_err)]
+// `RelayFailure` 承载完整上游响应与诊断上下文，装箱会丢掉「一次就能定位」的可读性。
 /// 鉴权：失败时返回**已经构造好**的错误响应（调用方 `return` 即可）。
 async fn authenticate(
     state: &UnifiedGatewayState,
@@ -909,7 +911,11 @@ mod tests {
         assert_eq!(namespaces["trae-cn"]["source"], "builtin");
         assert_eq!(namespaces["trae-cn"]["fetched_at"], Value::Null);
         assert!(
-            namespaces["trae-cn"]["note"].as_str().unwrap().trim().len() > 0,
+            !namespaces["trae-cn"]["note"]
+                .as_str()
+                .unwrap()
+                .trim()
+                .is_empty(),
             "非实时必须有原因（恒非空契约）"
         );
     }

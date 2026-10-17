@@ -157,8 +157,10 @@ impl SnapshotCarryReport {
 /// 「遗留迁移」（含账号库合并）报错 —— 但失败必须**可见**，落在
 /// [`SnapshotCarryReport::errors`] 里（调用方回传给前端并写日志）。
 pub fn carry_merged_snapshots() -> SnapshotCarryReport {
-    let mut report = SnapshotCarryReport::default();
-    report.first_run = claim_first_run();
+    let mut report = SnapshotCarryReport {
+        first_run: claim_first_run(),
+        ..Default::default()
+    };
 
     for region in TraeRegion::all() {
         let target_program = TraeProgram::Trae;

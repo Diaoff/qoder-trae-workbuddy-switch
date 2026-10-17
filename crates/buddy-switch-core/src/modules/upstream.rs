@@ -812,9 +812,7 @@ impl UpstreamClient {
             let cycle_remain = number("CycleCapacityRemain");
             let cycle_used = number("CycleCapacityUsed");
             let capacity_remain = number("CapacityRemain");
-            let mut remain = if size > 0.0 {
-                cycle_remain
-            } else if cycle_remain > 0.0 || cycle_used > 0.0 {
+            let mut remain = if size > 0.0 || cycle_remain > 0.0 || cycle_used > 0.0 {
                 cycle_remain
             } else {
                 capacity_remain

@@ -449,7 +449,7 @@ async fn main() {
         "hook" => std::process::exit(
             buddy_switch_core::modules::agent_hook_rx::try_run_hook_cli(&args).unwrap_or(0),
         ),
-        "serve" | _ => serve(&args).await,
+        _ => serve(&args).await,
     }
 }
 

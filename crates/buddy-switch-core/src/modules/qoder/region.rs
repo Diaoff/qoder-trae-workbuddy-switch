@@ -193,9 +193,7 @@ fn normalize_domain(raw: &str) -> String {
         value = rest.to_string();
     }
     // 去掉路径 / 查询串 / 片段（第一个 `/`、`?`、`#` 之前是 host[:port]）。
-    let cut = value
-        .find(|c| c == '/' || c == '?' || c == '#')
-        .unwrap_or(value.len());
+    let cut = value.find(['/', '?', '#']).unwrap_or(value.len());
     let mut host = value[..cut].to_string();
     // 去掉端口与可能残留的用户信息（`user@host`）。
     if let Some(at) = host.rfind('@') {

@@ -561,10 +561,7 @@ mod tests {
             on_disk.contains("legacy"),
             "legacy 记录必须被物化: {on_disk}"
         );
-        assert!(
-            !on_disk.contains(&legacy_key),
-            "磁盘不得出现明文：{on_disk}"
-        );
+        assert!(!on_disk.contains(legacy_key), "磁盘不得出现明文：{on_disk}");
     }
 
     #[test]

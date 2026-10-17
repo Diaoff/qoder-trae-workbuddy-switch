@@ -272,7 +272,7 @@ pub fn parse_preferred(value: Option<&str>) -> (PickMode, Option<&str>) {
         Some(PREFERRED_MAX_CREDITS) => (PickMode::MaxCredits, None),
         Some(PREFERRED_RANDOM) => (PickMode::Random, None),
         Some(PREFERRED_AUTO) | None => (PickMode::Weighted, None),
-        Some(uid) if uid.is_empty() => (PickMode::Weighted, None),
+        Some("") => (PickMode::Weighted, None),
         Some(uid) => (PickMode::Weighted, Some(uid)),
     }
 }
@@ -701,6 +701,8 @@ mod tests {
 
     const NOW: i64 = 1_000_000_000_000;
 
+    #[allow(clippy::too_many_arguments)]
+    // 测试夹具的参数逐项对应一个约束维度。
     /// 测试用简写：默认策略（加权）+ 不排除任何账号。
     ///
     /// `PickInput` 是生产签名的唯一入口；这里保留旧的位置参数形式，是为了让

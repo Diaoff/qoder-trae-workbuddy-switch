@@ -99,10 +99,10 @@ pub fn workbuddy_app_path_for(region: Region) -> PathBuf {
             Region::Cn => ("WorkBuddy", "WorkBuddy.exe"),
             Region::Global => ("WorkBuddyAI", "WorkBuddyAI.exe"),
         };
-        return std::path::Path::new(&local)
+        std::path::Path::new(&local)
             .join("Programs")
             .join(folder)
-            .join(exe);
+            .join(exe)
     }
 
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
@@ -485,9 +485,7 @@ fn imported_account_from_root(root: Value) -> Option<Value> {
             .or_else(|| auth_obj.get("refreshExpiresAt")),
     );
 
-    if access_token.is_none() {
-        return None;
-    }
+    access_token.as_ref()?;
 
     Some(json!({
         "id": uuid::Uuid::new_v4().to_string(),

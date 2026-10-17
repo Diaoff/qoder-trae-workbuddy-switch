@@ -310,6 +310,10 @@ pub async fn run_keepalive_cycle_for(region: Region) -> Value {
 
 #[cfg(test)]
 mod tests {
+    // 测试串行锁（`lock_*()`）会被**故意**持有到用例结束：它防的是多个用例同时抢占
+    // 同一个回调端口 / 全局状态。`#[tokio::test]` 默认是 current-thread 运行时，
+    // 不存在「持锁跨线程唤醒」的风险；clippy 的 await_holding_lock 在这里是误报。
+    #![allow(clippy::await_holding_lock)]
     use super::*;
 
     /// 触及保活全局状态的用例必须**串行**：`KEEPALIVE_RUNNING_CN` 是**进程级**全局标志，

@@ -633,18 +633,10 @@ impl Default for PersistedEntry {
 /// `state.json` 顶层结构。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
+#[derive(Default)]
 struct PersistedState {
     saved_at_ms: i64,
     accounts: BTreeMap<String, PersistedEntry>,
-}
-
-impl Default for PersistedState {
-    fn default() -> Self {
-        Self {
-            saved_at_ms: 0,
-            accounts: BTreeMap::new(),
-        }
-    }
 }
 
 /// 在途额度**租约**（RAII）：`Drop` 归还额度，future 被取消也不会泄漏。
@@ -965,6 +957,8 @@ impl Pool {
         self.gates.snapshot()
     }
 
+    #[allow(clippy::too_many_arguments)]
+    // 入参都是「这一次选号」的输入，拆结构体会把同一批字段再抄一遍。
     /// 选号；`preferred` 为**偏好 uid**（可用则优先，不可用则回落，绝不拒绝服务）。
     ///
     /// 偏好有两个来源，优先级见 `relay::select_account`：显式固定
@@ -2075,7 +2069,7 @@ mod tests {
         let mut pool = Pool::new(PoolConfig::default());
         pool.upsert("keep", Some(RealmTag::Cn), "保留");
         pool.sync_accounts(
-            &vec![json!({"uid": "new", "nickname": "新号"})],
+            &[json!({"uid": "new", "nickname": "新号"})],
             Some(RealmTag::Cn),
         );
         assert_eq!(pool.len(), 2, "对齐是增量，不得删除既有账号");
@@ -2086,10 +2080,7 @@ mod tests {
     #[test]
     fn sync_accounts_skips_missing_or_empty_uid() {
         let mut pool = Pool::new(PoolConfig::default());
-        pool.sync_accounts(
-            &vec![json!({"nickname": "无 uid"}), json!({"uid": ""})],
-            None,
-        );
+        pool.sync_accounts(&[json!({"nickname": "无 uid"}), json!({"uid": ""})], None);
         assert!(pool.is_empty());
     }
 
@@ -2827,7 +2818,7 @@ mod tests {
             "有解冻时刻"
         );
         assert!(
-            object["cooldownReason"].as_str().unwrap_or("").len() > 0,
+            !object["cooldownReason"].as_str().unwrap_or("").is_empty(),
             "有冷却原因"
         );
     }
@@ -2860,7 +2851,7 @@ mod tests {
             "冷却中必须有解冻时刻"
         );
         assert!(
-            cooling["cooldownReason"].as_str().unwrap_or("").len() > 0,
+            !cooling["cooldownReason"].as_str().unwrap_or("").is_empty(),
             "冷却中必须有原因"
         );
 

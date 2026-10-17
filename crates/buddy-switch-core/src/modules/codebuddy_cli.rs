@@ -92,7 +92,7 @@ fn persist_settings_at(settings: &Path, value: &Value) -> Result<(), String> {
             )
         })?;
     }
-    atomic_write(&settings, &content).map_err(|_| {
+    atomic_write(settings, &content).map_err(|_| {
         auth_config_error(
             "配置阶段",
             "无法写入 CodeBuddy settings.json，请检查文件权限",
@@ -920,11 +920,7 @@ pub fn set_active_account(account_id: &str) -> Result<Value, String> {
         "authMode": if cfg!(windows) { "settings-env" } else { "api-key-helper" },
         "activeIndex": index,
         "activeAccountId": canonical_id,
-        "message": if cfg!(windows) {
-            "CodeBuddy CLI 默认账号已更新；当前运行会话不会切换，请由 ACP 重新加载会话或重启 CLI 后生效"
-        } else {
-            "CodeBuddy CLI 默认账号已更新；当前运行会话不会切换，请由 ACP 重新加载会话或重启 CLI 后生效"
-        },
+        "message": "CodeBuddy CLI 默认账号已更新；当前运行会话不会切换，请由 ACP 重新加载会话或重启 CLI 后生效",
     }))
 }
 

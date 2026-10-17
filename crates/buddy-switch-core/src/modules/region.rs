@@ -9,9 +9,13 @@ use std::path::PathBuf;
 use crate::modules::config::{home_dir, official_usage_cache_file, store_dir};
 
 /// 目标版本。CN 为既有默认，Global 为国际版。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Debug, Clone, Copy, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize,
+)]
 #[serde(rename_all = "lowercase")]
 pub enum Region {
+    /// 既有默认：CN 是历史行为，不能改（改了等于静默把老用户切到国际版）。
+    #[default]
     Cn,
     Global,
 }
@@ -40,12 +44,6 @@ impl Region {
     }
 }
 
-impl Default for Region {
-    fn default() -> Self {
-        Region::Cn
-    }
-}
-
 /// 统计查询范围：单版（cn / global）或合并（all）。
 ///
 /// 与「实体归属」的 [`Region`] **正交**：`Region` 描述一条账号/凭据/目录真正属于哪一版，
@@ -53,9 +51,13 @@ impl Default for Region {
 /// 允许出现 `All`。刻意不往 `Region` 里加 `All`，因为那会污染所有
 /// `match region { Cn | Global }` 的调用点，且 `region_spec(All)` / `accounts_file_for(All)`
 /// 等语义无定义。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Debug, Clone, Copy, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize,
+)]
 #[serde(rename_all = "lowercase")]
 pub enum RegionFilter {
+    /// 与 `Region` 同一条判据：缺省一律 CN（统计范围不能被「合并」这种新值悄悄改掉）。
+    #[default]
     Cn,
     Global,
     All,
@@ -112,12 +114,6 @@ impl From<Region> for RegionFilter {
             Region::Cn => RegionFilter::Cn,
             Region::Global => RegionFilter::Global,
         }
-    }
-}
-
-impl Default for RegionFilter {
-    fn default() -> Self {
-        RegionFilter::Cn
     }
 }
 

@@ -285,6 +285,8 @@ pub async fn responses_for_region(
     }
 }
 
+#[allow(clippy::result_large_err)]
+// `RelayFailure` 承载完整上游响应与诊断上下文，装箱会丢掉「一次就能定位」的可读性。
 /// 改写 + 中继一趟（供首次尝试与降级重试共用）。
 #[allow(clippy::too_many_arguments)]
 async fn run(

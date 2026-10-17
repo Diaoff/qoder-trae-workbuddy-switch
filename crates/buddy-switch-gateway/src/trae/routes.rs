@@ -566,7 +566,6 @@ async fn stream_chat(
 
 /// 非流式路径：本地聚合。**流内错误也换号**——聚合完成前客户端一个字节都没收到。
 #[allow(clippy::too_many_arguments)]
-#[allow(clippy::too_many_arguments)]
 async fn aggregate_payload(
     state: &TraeGatewayState,
     body: &Bytes,
@@ -962,7 +961,6 @@ async fn send_llm_chat(
 
 /// 一次请求的收尾（流式与非流式共用）。
 #[allow(clippy::too_many_arguments)]
-#[allow(clippy::too_many_arguments)]
 async fn settle(
     state: &TraeGatewayState,
     account: &PickedTraeAccount,
@@ -976,14 +974,13 @@ async fn settle(
 ) {
     let latency_ms = started.elapsed().as_millis() as i64;
 
-    let message = match &error {
-        Some((code, detail)) => Some(format!(
+    let message = error.as_ref().map(|(code, detail)| {
+        format!(
             "账号「{}」流内错误（code={code}）：{}",
             account.name,
             preview(detail, 200)
-        )),
-        None => None,
-    };
+        )
+    });
 
     if let Some((code, detail)) = &error {
         let kind = classify_solo(*code, detail);

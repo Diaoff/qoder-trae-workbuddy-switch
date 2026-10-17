@@ -116,9 +116,12 @@ async fn start_gateway_with_state(
     ));
     std::fs::create_dir_all(&dir).unwrap();
 
-    let mut config = UnifiedGatewayConfig::default();
-    config.port = 0; // 内核分配，避免与并发测试抢端口
-    config.enabled = true;
+    // 端口 0 = 内核分配，避免与并发测试抢端口
+    let mut config = UnifiedGatewayConfig {
+        port: 0,
+        enabled: true,
+        ..Default::default()
+    };
     tune(&mut config);
 
     let state =
@@ -644,9 +647,11 @@ async fn occupied_port_yields_a_readable_error() {
         uuid::Uuid::new_v4().simple()
     ));
     std::fs::create_dir_all(&dir2).unwrap();
-    let mut config = UnifiedGatewayConfig::default();
-    config.enabled = true;
-    config.port = occupied; // 故意撞端口
+    let config = UnifiedGatewayConfig {
+        enabled: true,
+        port: occupied, // 故意撞端口
+        ..Default::default()
+    };
     let state =
         UnifiedGatewayState::with_keys(config, UnifiedApiKeyStore::new(dir2.join("keys.json")));
     let error = match spawn_listener_with_state(state).await {

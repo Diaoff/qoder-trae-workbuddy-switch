@@ -156,7 +156,7 @@ pub fn models_response_filtered(disabled: &BTreeSet<String>) -> Value {
     models_response_from(
         MODEL_NAMES
             .iter()
-            .filter(|name| !crate::disabled_models::is_disabled_in(disabled, **name))
+            .filter(|name| !crate::disabled_models::is_disabled_in(disabled, name))
             .map(|name| (*name, None))
             .collect::<Vec<_>>(),
     )
@@ -200,7 +200,7 @@ pub fn models_response_for(variant: TraeVariant, disabled: &BTreeSet<String>) ->
 
     let entries = servable_entries(&list, variant)
         .into_iter()
-        .filter(|(name, _)| !crate::disabled_models::is_disabled_in(disabled, *name))
+        .filter(|(name, _)| !crate::disabled_models::is_disabled_in(disabled, name))
         .collect();
     models_response_from(entries)
 }

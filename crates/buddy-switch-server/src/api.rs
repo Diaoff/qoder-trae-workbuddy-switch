@@ -615,6 +615,8 @@ fn mismatch_json(mismatch: &auth_file::RegionMismatch) -> Value {
     })
 }
 
+#[allow(clippy::bind_instead_of_map)]
+// 闭包末尾构造 `Some(...)`，与 tauri 侧同构；改成 `map` 会让两边 diff 变大。
 async fn api_status(RawQuery(query): RawQuery) -> Response {
     let region = parse_region(query_value(query.as_deref(), "region").as_deref());
     // 安全红线 F：读取后校验凭据域归属；不匹配即拒绝使用该凭据（current 置空），
@@ -710,7 +712,7 @@ async fn api_accounts_list(RawQuery(query): RawQuery) -> Response {
             )),
             Err(error) => json_err(error, StatusCode::BAD_REQUEST),
         },
-        Product::Qoder => return qoder_scope_not_applicable(),
+        Product::Qoder => qoder_scope_not_applicable(),
     }
 }
 
@@ -747,7 +749,7 @@ async fn api_account_remark(Json(body): Json<Value>) -> Response {
             }
             Err(error) => json_err(error, StatusCode::BAD_REQUEST),
         },
-        Product::Qoder => return qoder_scope_not_applicable(),
+        Product::Qoder => qoder_scope_not_applicable(),
     }
 }
 
@@ -792,7 +794,7 @@ async fn api_account_delete(Json(body): Json<Value>) -> Response {
             }
             Err(error) => json_err(error, StatusCode::BAD_REQUEST),
         },
-        Product::Qoder => return qoder_scope_not_applicable(),
+        Product::Qoder => qoder_scope_not_applicable(),
     }
 }
 
@@ -1116,7 +1118,7 @@ async fn api_accounts_import_local(Json(body): Json<Value>) -> Response {
                 ),
             }
         }
-        Product::Qoder => return qoder_scope_not_applicable(),
+        Product::Qoder => qoder_scope_not_applicable(),
     }
 }
 
@@ -1147,7 +1149,7 @@ async fn api_open_data_dir(Json(body): Json<Value>) -> Response {
             },
             Err(error) => json_err(error, StatusCode::BAD_REQUEST),
         },
-        Product::Qoder => return qoder_scope_not_applicable(),
+        Product::Qoder => qoder_scope_not_applicable(),
     }
 }
 
@@ -1185,7 +1187,7 @@ async fn api_credits_query(Json(body): Json<Value>) -> Response {
             )),
             Err(error) => json_err(error, StatusCode::BAD_REQUEST),
         },
-        Product::Qoder => return qoder_scope_not_applicable(),
+        Product::Qoder => qoder_scope_not_applicable(),
     }
 }
 
@@ -1221,7 +1223,7 @@ async fn api_checkin_status_query(Json(body): Json<Value>) -> Response {
             ))),
             Err(error) => json_err(error, StatusCode::BAD_REQUEST),
         },
-        Product::Qoder => return qoder_scope_not_applicable(),
+        Product::Qoder => qoder_scope_not_applicable(),
     }
 }
 
@@ -4264,6 +4266,10 @@ async fn static_handler(uri: Uri) -> Response {
 
 #[cfg(test)]
 mod tests {
+    // 测试串行锁（`test_guard()`）故意持有到用例结束：它防的是多个用例同时改进程级
+    // 状态（env / 全局配置 / 端口）。`#[tokio::test]` 默认 current-thread ⇒ 无误报风险。
+    #![allow(clippy::await_holding_lock)]
+
     use super::{
         api_routes, cache_control_for, checkin_status_item, parse_region, parse_region_filter,
         query_flag_enabled, query_value, router, Assets,

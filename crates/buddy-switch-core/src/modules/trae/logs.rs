@@ -219,14 +219,12 @@ impl LogQuery {
 
     /// 该条目是否通过过滤。
     fn matches(&self, entry: &LogEntry) -> bool {
-        if self.kind != "" && self.kind != "all" && self.kind != entry.kind {
+        if !self.kind.is_empty() && self.kind != "all" && self.kind != entry.kind {
             return false;
         }
         // 按日期筛选时，无日期行一律排除——否则「筛了某天却冒出无日期行」。
-        if !self.date.is_empty() {
-            if entry.date() != self.date {
-                return false;
-            }
+        if !self.date.is_empty() && entry.date() != self.date {
+            return false;
         }
         if !self.keyword.is_empty() {
             let needle = self.keyword.to_lowercase();

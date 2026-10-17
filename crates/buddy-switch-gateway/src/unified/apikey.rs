@@ -364,7 +364,7 @@ mod tests {
         let (record, plaintext) = store
             .create("k".into(), vec!["wb-cn".into()], None)
             .unwrap();
-        let raw = std::fs::read_to_string(&store.path().to_path_buf()).unwrap();
+        let raw = std::fs::read_to_string(store.path()).unwrap();
         assert!(!raw.contains(&plaintext), "台账里不得出现明文");
         assert!(raw.contains(&record.hash), "台账里应当只有 hash");
         let masked = record.masked();

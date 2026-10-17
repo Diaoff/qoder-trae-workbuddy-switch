@@ -21,9 +21,9 @@
 //! - **重扫有界**：客户端扫描带 **TTL 闸门**（[`CLIENT_SCAN_TTL_MS`]，`force` 可强制重扫），
 //!   且**两道代价控制**：**mtime 预筛**（只有「当天动过」的文件才可能含当天记录）
 //!   + **尾部窗口读取**（当天记录只可能在文件尾部）。见 [`scan_client_rows`]。
-//!   ★ 驱动它的**两个调用点缺一不可**：账号页命令（主动看时立刻刷新）+ 后台周期任务
-//!   （`modules::background` 的 `ClientUsageRecord`，每 2 分钟）—— 后者是 2026-10-15
-//!   用户报障「client 数字不动」的修法（此前只有账号页一个调用点）。
+//!     ★ 驱动它的**两个调用点缺一不可**：账号页命令（主动看时立刻刷新）+ 后台周期任务
+//!     （`modules::background` 的 `ClientUsageRecord`，每 2 分钟）—— 后者是 2026-10-15
+//!     用户报障「client 数字不动」的修法（此前只有账号页一个调用点）。
 //!
 //!   ⚠️ 闸门**曾经**是「当天扫过一次就不再扫」，那是**错的**（2026-10-12 实测）：
 //!   当天第一次扫描通常发生在**任何用量产生之前**，于是当日值被冻结成空，
@@ -1772,7 +1772,6 @@ mod tests {
                     input: 1,
                     output: 1,
                 },
-                ..Default::default()
             },
         );
         store.days.insert("2026-10-10".to_string(), day);
@@ -1895,13 +1894,13 @@ mod tests {
     /// 可证伪：把 `CLIENT_SCAN_TTL_MS` 改成一天 ⇒ 第一条断言变红（「今日 Token」又会一整天不动）。
     #[test]
     fn client_scan_ttl_is_short_enough_for_a_today_metric() {
-        assert!(
+        const _: () = assert!(
             CLIENT_SCAN_TTL_MS <= 10 * 60 * 1000,
-            "TTL 过长（{CLIENT_SCAN_TTL_MS}ms）—— 「今日 Token」又会一整天不动"
+            "TTL 过长 —— 「今日 Token」又会一整天不动"
         );
-        assert!(
+        const _: () = assert!(
             CLIENT_SCAN_TTL_MS >= 30 * 1000,
-            "TTL 过短（{CLIENT_SCAN_TTL_MS}ms）—— 每次进账号页都要重扫"
+            "TTL 过短 —— 每次进账号页都要重扫"
         );
     }
 

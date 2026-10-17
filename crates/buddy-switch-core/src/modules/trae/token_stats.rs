@@ -178,7 +178,7 @@ impl LogEntry {
 ///
 /// 历史标识 `work` / `trae_work` / `trae_cn` **一律归入国内版**（它们都是国内构建），
 /// 因此历史日志与老链接既不会变成「未标注」，也不会串到国际版去。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum TraeTokenScope {
     /// 仅**国内版**（`variant` 属于国内区域的任何取值）。
     Cn,
@@ -187,13 +187,8 @@ pub enum TraeTokenScope {
     /// 仅**未标注**（旧日志：无 `variant` 键）。
     Unlabeled,
     /// 全部（国内 ∪ 国际 ∪ 未标注）。
+    #[default]
     All,
-}
-
-impl Default for TraeTokenScope {
-    fn default() -> Self {
-        Self::All
-    }
 }
 
 impl TraeTokenScope {

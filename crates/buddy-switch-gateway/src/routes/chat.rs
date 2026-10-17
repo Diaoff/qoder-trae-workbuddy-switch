@@ -331,7 +331,7 @@ async fn envelope_error_response(
 
     // 治理副作用与 HTTP 非 2xx 走**同一条**路径（冷却口径、熔断、模型闸门都一致），
     // 收在 `relay::note_envelope_failure` 里供三条路由共用。
-    relay::note_envelope_failure(&state, uid, model, &envelope.event).await;
+    relay::note_envelope_failure(state, uid, model, &envelope.event).await;
 
     let elapsed_ms = started.elapsed().as_millis() as i64;
     state.log.record(
@@ -362,6 +362,8 @@ async fn envelope_error_response(
     })
 }
 
+#[allow(clippy::result_large_err)]
+// `RelayFailure` 承载完整上游响应与诊断上下文，装箱会丢掉「一次就能定位」的可读性。
 /// 改写 + 中继一趟（供首次尝试与降级重试共用）。
 #[allow(clippy::too_many_arguments)]
 async fn run(

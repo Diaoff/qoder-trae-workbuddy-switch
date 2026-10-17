@@ -357,7 +357,7 @@ mod tests {
         // 顶层键在消息**之后**（`serde_json` 排序键的形态）也必须能找到 ——
         // 早先「只看行首 256 字节」的写法在这里会返回 None，窗口只能一路扩到文件开头。
         let mut line = b"{\"cwd\":\"c\",\"message\":\"".to_vec();
-        line.extend(std::iter::repeat(b'y').take(4096));
+        line.extend(std::iter::repeat_n(b'y', 4096));
         line.extend_from_slice(b"\",\"timestamp\":1790000000001,\"type\":\"message\"}");
         assert_eq!(line_timestamp_bytes(&line), Some(1790000000001));
 
@@ -402,13 +402,13 @@ mod tests {
     /// 实测 256KB 会让近 7 天窗口多读 4.2 倍（5.28GB vs 1.25GB）⇒ 这里钉住上限。
     #[test]
     fn tail_chunk_is_small_enough_to_not_waste_io() {
-        assert!(
+        const _: () = assert!(
             TAIL_CHUNK_BYTES <= 64 * 1024,
-            "起始块过大（{TAIL_CHUNK_BYTES} 字节）：窗口小的文件会白读一整块，实测差 4 倍"
+            "起始块过大：窗口小的文件会白读一整块，实测差 4 倍"
         );
-        assert!(
+        const _: () = assert!(
             TAIL_CHUNK_BYTES >= 8 * 1024,
-            "起始块过小（{TAIL_CHUNK_BYTES} 字节）：翻倍轮数增加，收益也早已减半"
+            "起始块过小：翻倍轮数增加，收益也早已减半"
         );
     }
 

@@ -388,7 +388,7 @@ mod tests {
         let mut uids: Vec<String> = target
             .accounts
             .iter()
-            .map(|record| account::resolve_user_id(record))
+            .map(account::resolve_user_id)
             .collect();
         uids.sort();
         assert_eq!(

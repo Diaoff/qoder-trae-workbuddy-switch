@@ -445,6 +445,10 @@ pub async fn run_checkin_all_for(region: Region) -> Value {
 
 #[cfg(test)]
 mod tests {
+    // 测试串行锁（`lock_*()`）会被**故意**持有到用例结束：它防的是多个用例同时抢占
+    // 同一个回调端口 / 全局状态。`#[tokio::test]` 默认是 current-thread 运行时，
+    // 不存在「持锁跨线程唤醒」的风险；clippy 的 await_holding_lock 在这里是误报。
+    #![allow(clippy::await_holding_lock)]
     use super::*;
 
     /// 回归上游 issue #94：信封凭据的签到请求应在入口短路并返回可读错误，

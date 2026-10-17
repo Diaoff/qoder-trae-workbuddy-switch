@@ -1,3 +1,7 @@
+// 测试串行锁（`guard()` / `ENV_LOCK`）会被**故意**持有到用例结束：它防的是多个用例
+// 同时改同一个进程级状态（环境变量 / 全局配置）。`#[tokio::test]` 默认 current-thread，
+// 不存在「持锁跨线程唤醒」的风险；clippy::await_holding_lock 在这里是误报。
+#![allow(clippy::await_holding_lock)]
 //! 路由级测试：请求体上限必须**真的生效**，而不只是配置里存了个数字。
 //!
 //! # 为什么必须有这个测试

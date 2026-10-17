@@ -3092,7 +3092,7 @@ hLkrYGiVNhsErnjKIgS7/EIHdsihRANCAARznG0WLhenNiMW5jA3SwFpTNyet2zw\n\
             assert_eq!(variants.len(), 4, "有凭证时必须是四步链");
             for plan in &variants {
                 assert!(
-                    plan.url.starts_with(&base),
+                    plan.url.starts_with(base),
                     "变体 {variant:?} 的 refresh URL 不是由 icube_base（{base}）拼成的: {}",
                     plan.url
                 );

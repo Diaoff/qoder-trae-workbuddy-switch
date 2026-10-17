@@ -18,6 +18,7 @@
 //! - 会话用例会因源 uid 取到 `uid-global-dst`（而不是 `uid-cn-src`）→ 源库里查不到该会话
 //!   → `copied` 为空，断言 `copied.len() == 1` 直接红；
 //! - 记忆用例的 `appended` 会是 0（源记忆文件根本不存在）→ 断言红。
+//!
 //! 若把「目标 region」误写成「源 region」，则正文会写回 CN 的 projects、
 //! 副本进不了 Global 库 —— 落点断言与「源库不得被写入」断言同时红。
 

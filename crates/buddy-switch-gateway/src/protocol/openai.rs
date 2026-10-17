@@ -407,7 +407,7 @@ mod tests {
     async fn passthrough_appends_done_on_midstream_error() {
         let chunks = vec![
             Ok::<Bytes, std::io::Error>(Bytes::from_static(b"data: {\"a\":1}\n\n")),
-            Err(std::io::Error::new(std::io::ErrorKind::Other, "boom")),
+            Err(std::io::Error::other("boom")),
         ];
         let stream = SsePassthrough::new(futures_util::stream::iter(chunks));
         let collected: Vec<Bytes> = stream.map(|item| item.unwrap()).collect().await;

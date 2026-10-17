@@ -350,10 +350,7 @@ impl<S> AnthropicSseStream<S> {
 
     fn ingest(&mut self, chunk: &[u8]) {
         self.buffer.extend_from_slice(chunk);
-        loop {
-            let Some(position) = self.buffer.iter().position(|&byte| byte == b'\n') else {
-                break;
-            };
+        while let Some(position) = self.buffer.iter().position(|&byte| byte == b'\n') {
             let line: Vec<u8> = self.buffer.drain(..=position).collect();
             let line = String::from_utf8_lossy(&line);
             let line = line.trim_end_matches(['\r', '\n']);
@@ -773,9 +770,7 @@ mod tests {
 
     #[test]
     fn aggregate_message_builds_tool_use() {
-        let sse = concat!(
-            "data: {\"id\":\"c1\",\"model\":\"m\",\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_1\",\"function\":{\"name\":\"f\",\"arguments\":\"{\\\"a\\\":1}\"}}]},\"finish_reason\":\"tool_calls\"}]}\n\n",
-        );
+        let sse =             "data: {\"id\":\"c1\",\"model\":\"m\",\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_1\",\"function\":{\"name\":\"f\",\"arguments\":\"{\\\"a\\\":1}\"}}]},\"finish_reason\":\"tool_calls\"}]}\n\n";
         let message = aggregate_message(sse, "fallback");
         assert_eq!(message["type"], "message");
         assert_eq!(message["stop_reason"], "tool_use");

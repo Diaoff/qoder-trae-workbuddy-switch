@@ -97,7 +97,7 @@ fn flush_at(path: &std::path::Path, counters: &ProxyCounters) {
     let today = crate::timeutil::cst_date_str(crate::timeutil::now_ms());
     let (requests, switches) = counters.snapshot();
 
-    let mut ledger: BTreeMap<String, DayCounters> = std::fs::read_to_string(&path)
+    let mut ledger: BTreeMap<String, DayCounters> = std::fs::read_to_string(path)
         .ok()
         .and_then(|text| serde_json::from_str(&text).ok())
         .unwrap_or_default();
@@ -112,7 +112,7 @@ fn flush_at(path: &std::path::Path, counters: &ProxyCounters) {
         if let Some(dir) = path.parent() {
             let _ = std::fs::create_dir_all(dir);
         }
-        let _ = std::fs::write(&path, text);
+        let _ = std::fs::write(path, text);
     }
     counters.requests.store(0, Ordering::Relaxed);
     counters.switches.store(0, Ordering::Relaxed);

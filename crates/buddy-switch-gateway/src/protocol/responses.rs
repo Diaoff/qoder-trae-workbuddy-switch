@@ -989,9 +989,7 @@ mod tests {
 
     #[test]
     fn response_object_includes_function_calls() {
-        let sse = concat!(
-            "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_1\",\"function\":{\"name\":\"f\",\"arguments\":\"{}\"}}]},\"finish_reason\":\"tool_calls\"}]}\n\n",
-        );
+        let sse =             "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_1\",\"function\":{\"name\":\"f\",\"arguments\":\"{}\"}}]},\"finish_reason\":\"tool_calls\"}]}\n\n";
         let accumulator = CompletionAccumulator::from_sse(sse);
         let response = to_response_object(&accumulator, "m");
         assert_eq!(response["output"][0]["type"], "function_call");

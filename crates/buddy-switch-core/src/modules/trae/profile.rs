@@ -813,7 +813,7 @@ fn collect_log_candidates(data_dir: &Path) -> Vec<PathBuf> {
     }
     // 新的排前面：同时命中的多个 token 由调用方按 exp 取最新，但先扫新文件
     // 能让「确定性截断」发生在最不可能相关的那一批上。
-    files.sort_by(|a, b| b.1.cmp(&a.1));
+    files.sort_by_key(|f| std::cmp::Reverse(f.1));
     files.truncate(LOG_SCAN_MAX_FILES);
     files.into_iter().map(|(path, _)| path).collect()
 }
@@ -3338,7 +3338,7 @@ mod tests {
         for bad in ["..", "../x", "a/b", "", "a\\b"] {
             assert!(!paths::safe_slot_name(bad), "{bad} 不应通过校验");
         }
-        assert_eq!(delete_slot("../x").unwrap_err().contains("非法"), true);
+        assert!(delete_slot("../x").unwrap_err().contains("非法"));
     }
 
     #[test]

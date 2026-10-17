@@ -2223,6 +2223,9 @@ mod tests {
     /// 可证伪：把 `unique_hex32` 换成「直接用源 id」⇒ 目标那条会被覆盖 ⇒ 红。
     #[test]
     fn copy_never_overwrites_existing_target_content() {
+        // 本用例读进程级 HOME / 网关配置：必须与「改 HOME 的用例」串行，
+        // 否则并行跑时会读到别人临时改过的家目录（曾因此 flaky）。
+        let _env = crate::modules::config::env_lock();
         let (home, root) = fixture("copy-additive");
         seed_conversation(&root, ExtClient::Vscode, SRC_UID, WS, CONV);
         // 目标账号在同一工作区里**已经有**一条 id 恰好等于源 id 的会话（内容不同）。
@@ -2439,6 +2442,9 @@ mod tests {
     /// 可证伪：把冲突判定去掉（`KeepUnlessConflict` 直接沿用 id）⇒ 目标那条会被**覆盖** ⇒ 红。
     #[test]
     fn ide_copy_takes_a_new_id_only_on_conflict() {
+        // 本用例读进程级 HOME / 网关配置：必须与「改 HOME 的用例」串行，
+        // 否则并行跑时会读到别人临时改过的家目录（曾因此 flaky）。
+        let _env = crate::modules::config::env_lock();
         let (home, root) = fixture("ide-conflict");
         seed_conversation(&root, ExtClient::CodebuddyIde, SRC_UID, WS, CONV);
 

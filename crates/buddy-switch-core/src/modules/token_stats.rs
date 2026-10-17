@@ -326,7 +326,7 @@ fn groups(groups: HashMap<String, Totals>) -> Vec<Value> {
             value
         })
         .collect();
-    values.sort_by(|left, right| total_value(right).cmp(&total_value(left)));
+    values.sort_by_key(|v| std::cmp::Reverse(total_value(v)));
     values
 }
 
@@ -345,7 +345,7 @@ fn session_groups(sessions: Vec<SessionTotals>) -> Vec<Value> {
             value
         })
         .collect();
-    values.sort_by(|left, right| total_value(right).cmp(&total_value(left)));
+    values.sort_by_key(|v| std::cmp::Reverse(total_value(v)));
     values
 }
 
@@ -1260,9 +1260,7 @@ impl WorkspaceMetaCache {
 
 fn ide_request_usage(request: &Value) -> Option<Usage> {
     let object = request.get("usage")?.as_object()?;
-    if field(object, &["inputTokens", "input_tokens", "prompt_tokens"]).is_none() {
-        return None;
-    }
+    field(object, &["inputTokens", "input_tokens", "prompt_tokens"])?;
     Some(Usage {
         input: field(object, &["inputTokens", "input_tokens", "prompt_tokens"]).unwrap_or(0),
         output: field(
@@ -1500,7 +1498,7 @@ fn merge_grouped_list(field: &str, key_field: &str, values: &[Value]) -> Vec<Val
         .into_iter()
         .filter_map(|key| grouped.remove(&key))
         .collect();
-    values.sort_by(|left, right| total_value(right).cmp(&total_value(left)));
+    values.sort_by_key(|v| std::cmp::Reverse(total_value(v)));
     values
 }
 
@@ -1558,7 +1556,7 @@ fn merge_grouped_list_from_arrays(key_field: &str, arrays: &[Value]) -> Vec<Valu
         .into_iter()
         .filter_map(|key| grouped.remove(&key))
         .collect();
-    result.sort_by(|left, right| total_value(right).cmp(&total_value(left)));
+    result.sort_by_key(|v| std::cmp::Reverse(total_value(v)));
     result
 }
 
@@ -2387,6 +2385,8 @@ mod tests {
     }
 
     /// 构造一个最小可用的 source `Value`（只含合并需要关心的字段）。
+    #[allow(clippy::too_many_arguments)]
+    // 测试夹具：每个入参对应一份独立 JSON 片段，命名参数化反而更难读。
     fn source_fixture(
         source: &str,
         input: u64,
@@ -3012,7 +3012,7 @@ mod tests {
         assert_eq!(restored.cutoff, None);
 
         let before = merge_all(&cold, paths.len());
-        let after = merge_all(&[restored.scan.clone()], paths.len());
+        let after = merge_all(std::slice::from_ref(&restored.scan), paths.len());
         assert_eq!(after, before, "落盘往返后的合并结果必须逐字段相同");
         // 夹具刻意带一条坏行与一条只有标题的行 ⇒ 这些也必须活着往返。
         assert_eq!(after["parseErrors"], 1, "parseErrors 必须往返");
@@ -3054,7 +3054,7 @@ mod tests {
         assert_eq!(restored.mtime_ms, 7);
         assert_eq!(restored.size, 8);
         assert_eq!(
-            merge_all(&[restored.scan.clone()], paths.len()),
+            merge_all(std::slice::from_ref(&restored.scan), paths.len()),
             merge_all(&cold, paths.len()),
             "从文件读回的结果必须与冷路径相同"
         );

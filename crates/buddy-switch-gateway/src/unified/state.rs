@@ -82,8 +82,11 @@ mod tests {
             uuid::Uuid::new_v4().simple()
         ));
         std::fs::create_dir_all(&dir).unwrap();
-        let mut config = UnifiedGatewayConfig::default();
-        config.max_body_mb = 0; // 触发「0 视为未设置」的回落分支
+        // 0 触发「0 视为未设置」的回落分支
+        let config = UnifiedGatewayConfig {
+            max_body_mb: 0,
+            ..Default::default()
+        };
         let state =
             UnifiedGatewayState::with_keys(config, UnifiedApiKeyStore::new(dir.join("keys.json")));
         (state, dir)

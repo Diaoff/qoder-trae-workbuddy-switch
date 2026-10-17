@@ -15,10 +15,13 @@ use buddy_switch_core::modules::region::{self, Region, RegionMismatch};
 use crate::error::{GatewayError, NoCredentialCause};
 
 /// 账号选择策略（按 region 各自独立配置）。
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum AccountStrategy {
     /// 默认：读该 region 认证文件指向的账号（跟随桌面端登录态）。
+    ///
+    /// `#[default]` 钉住「不配置时跟随登录态」—— 改成别的变体会静默改变选号行为。
+    #[default]
     Current,
     /// 固定账号：账号库按 id 选择。
     Pinned { account_id: String },
@@ -37,12 +40,6 @@ pub enum AccountStrategy {
     /// 排除 / 禁用 / 冷却 / 模型冷却 / 在途满 / 成本分层**照样生效** ——
     /// 「随机」只影响「在合格候选里挑谁」，不改变「谁合格」。
     Random,
-}
-
-impl Default for AccountStrategy {
-    fn default() -> Self {
-        AccountStrategy::Current
-    }
 }
 
 /// 以严格大于选择积分最高账号；并列时保留先出现者。
@@ -122,8 +119,8 @@ impl AccountSelector {
                         .unwrap_or(0.0);
                     candidates.push((remaining, account));
                 }
-                let account = select_max_credit_candidate(candidates.into_iter())
-                    .expect("accounts is non-empty");
+                let account =
+                    select_max_credit_candidate(candidates).expect("accounts is non-empty");
                 ensure_region(&account, region)?;
                 Ok(account)
             }
@@ -256,7 +253,7 @@ mod tests {
             (10.0, json!({"id": "tie"})),
             (0.0, json!({"id": "missing"})),
         ];
-        let selected = select_max_credit_candidate(candidates.into_iter()).unwrap();
+        let selected = select_max_credit_candidate(candidates).unwrap();
         assert_eq!(selected["id"], "first");
 
         let empty: Vec<(f64, Value)> = Vec::new();

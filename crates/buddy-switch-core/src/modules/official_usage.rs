@@ -27,6 +27,12 @@ const OFFICIAL_USAGE_PATH: &str = "/billing/meter/get-user-request-usage";
 pub const OFFICIAL_USAGE_URL: &str =
     "https://www.workbuddy.cn/billing/meter/get-user-request-usage";
 
+/// 账号 → 日期 → 模型 → (请求数, 数值) 的三层嵌套。
+///
+/// 抽成别名不是为了省字：clippy 的 `type_complexity` 会拒绝在**函数体**里直接写这么深的
+/// 嵌套泛型，而它确实一眼看不出「按账号、按天、按模型」这三层语义 —— 命名比压行更有用。
+type AccountDailyModels = HashMap<String, HashMap<NaiveDate, HashMap<String, (usize, f64)>>>;
+
 /// 按 region 取官方请求用量端点。
 ///
 /// **为什么必须分主机**：该端点是「用户中心」域的接口，网关按 realm 鉴权。
@@ -351,7 +357,7 @@ fn error_message(response: &Value) -> String {
         .filter(|message| !message.is_empty())
         .map(|message| message.chars().take(160).collect::<String>());
     match response_code(response) {
-        Some(code) if code == -1 => "官方请求失败（网络或服务不可达）".to_string(),
+        Some(-1) => "官方请求失败（网络或服务不可达）".to_string(),
         Some(code) => upstream_message
             .map(|message| format!("官方请求失败（code={code}）：{message}"))
             .unwrap_or_else(|| format!("官方请求失败（code={code}）")),
@@ -689,10 +695,7 @@ pub async fn collect_official_usage_for(region: Region, accounts: &[Value], at_m
     let mut daily_totals: HashMap<NaiveDate, f64> = HashMap::new();
     let mut daily_models: HashMap<NaiveDate, HashMap<String, (usize, f64)>> = HashMap::new();
     let mut account_daily_totals: HashMap<String, HashMap<NaiveDate, f64>> = HashMap::new();
-    let mut account_daily_models: HashMap<
-        String,
-        HashMap<NaiveDate, HashMap<String, (usize, f64)>>,
-    > = HashMap::new();
+    let mut account_daily_models: AccountDailyModels = HashMap::new();
     let mut total_today = 0.0;
     let mut total_week = 0.0;
     let mut total_month = 0.0;
@@ -1000,9 +1003,9 @@ mod tests {
     /// 与全量的聚合口径再次不一致（即用户报障的原状）。
     #[test]
     fn detail_limit_covers_a_full_official_page() {
-        assert!(
+        const _: () = assert!(
             OFFICIAL_USAGE_DETAIL_LIMIT >= OFFICIAL_USAGE_PAGE_SIZE,
-            "明细上限（{OFFICIAL_USAGE_DETAIL_LIMIT}）不得小于官方单页上限（{OFFICIAL_USAGE_PAGE_SIZE}）"
+            "明细上限不得小于官方单页上限"
         );
     }
 

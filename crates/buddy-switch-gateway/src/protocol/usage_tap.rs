@@ -496,7 +496,7 @@ mod tests {
     /// （`calls` 会是空 Vec 而不是 `[None]`）。
     #[tokio::test]
     async fn reports_none_when_no_usable_usage_was_observed() {
-        for chunks in vec![
+        for chunks in [
             vec!["data: {\"choices\":[]}\n\n"],
             vec!["data: {\"usage\":null}\n\n"],
             // 缺 credit：拿不到单价，不得写账本样本

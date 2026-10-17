@@ -294,9 +294,11 @@ mod tests {
     /// `enabled_namespaces` 按**表顺序**返回，与配置文件里的书写顺序无关。
     #[test]
     fn enabled_namespaces_follow_table_order_not_file_order() {
-        let mut config = UnifiedGatewayConfig::default();
         // 故意写反：先 trae-global 再 wb-cn
-        config.namespaces = vec!["trae-global".into(), "wb-cn".into()];
+        let config = UnifiedGatewayConfig {
+            namespaces: vec!["trae-global".into(), "wb-cn".into()],
+            ..Default::default()
+        };
         let ids: Vec<&str> = config.enabled_namespaces().iter().map(|s| s.id).collect();
         assert_eq!(ids, vec!["wb-cn", "trae-global"], "顺序应取自命名空间表");
     }
@@ -313,15 +315,20 @@ mod tests {
     /// 未在册的 id **在保存时报错**，并给出在册清单（用户一次就能改对）。
     #[test]
     fn unknown_namespace_is_rejected_with_the_known_list() {
-        let mut config = UnifiedGatewayConfig::default();
-        config.namespaces = vec!["wb-cn".into(), "wb-cnx".into()];
+        let config = UnifiedGatewayConfig {
+            namespaces: vec!["wb-cn".into(), "wb-cnx".into()],
+            ..Default::default()
+        };
         let error = config.validate().expect_err("不在册的 id 必须被拒绝");
         assert!(error.contains("wb-cnx"), "应回显出错的那个 id：{error}");
         assert!(error.contains("wb-cn"), "应给出在册清单：{error}");
 
         // 默认命名空间同理
-        let mut config = UnifiedGatewayConfig::default();
-        config.default_namespace = Some("trae".into()); // 变体标识，不是命名空间
+        // 变体标识，不是命名空间
+        let config = UnifiedGatewayConfig {
+            default_namespace: Some("trae".into()),
+            ..Default::default()
+        };
         assert!(
             config.validate().is_err(),
             "变体标识不该被接受为默认命名空间"

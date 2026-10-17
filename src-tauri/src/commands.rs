@@ -157,6 +157,8 @@ pub async fn get_status(region: Option<String>) -> Result<AppStatus, String> {
         .map_err(|error| format!("查询应用状态失败: {error}"))
 }
 
+#[allow(clippy::bind_instead_of_map)]
+// 同上：与 server 侧 `api.rs` 保持逐字同构。
 fn build_app_status(region: Region) -> AppStatus {
     // 安全红线 F：读取后校验凭据域归属；不匹配即拒绝使用（current 置空）。
     let (auth, region_mismatch) = match auth_file::read_auth_file_checked_for(region) {
@@ -245,7 +247,7 @@ pub async fn accounts_list(scope: String) -> Result<Value, String> {
             .await
             .map_err(|error| format!("读取 Trae 账号总览失败: {error}"))
         }
-        Product::Qoder => return qoder_scope_not_applicable(),
+        Product::Qoder => qoder_scope_not_applicable(),
     }
 }
 
@@ -275,7 +277,7 @@ pub fn account_remark(
             let remark = remark.unwrap_or_default();
             trae::handlers::set_remark_for(variant, &account_id, Some(remark.as_str()))
         }
-        Product::Qoder => return qoder_scope_not_applicable(),
+        Product::Qoder => qoder_scope_not_applicable(),
     }
 }
 
@@ -307,7 +309,7 @@ pub async fn account_delete(
             .await
             .map_err(|error| format!("删除账号失败: {error}"))?
         }
-        Product::Qoder => return qoder_scope_not_applicable(),
+        Product::Qoder => qoder_scope_not_applicable(),
     }
 }
 
@@ -543,7 +545,7 @@ pub async fn accounts_import_local(scope: String) -> Result<Value, String> {
             .await
             .map_err(|error| format!("导入本机账号失败: {error}"))?
         }
-        Product::Qoder => return qoder_scope_not_applicable(),
+        Product::Qoder => qoder_scope_not_applicable(),
     }
 }
 
@@ -581,7 +583,7 @@ pub async fn credits(scope: String, account_id: Option<String>) -> Result<Value,
             let variant = trae_variant_of_region(require_trae_region(scope)?);
             Ok(trae::handlers::credits_overview_for(variant))
         }
-        Product::Qoder => return qoder_scope_not_applicable(),
+        Product::Qoder => qoder_scope_not_applicable(),
     }
 }
 
@@ -619,7 +621,7 @@ pub async fn checkin_status(scope: String, account_id: Option<String>) -> Result
             let variant = trae_variant_of_region(require_trae_region(scope)?);
             Ok(trae::handlers::checkin_status_for(variant))
         }
-        Product::Qoder => return qoder_scope_not_applicable(),
+        Product::Qoder => qoder_scope_not_applicable(),
     }
 }
 
@@ -645,7 +647,7 @@ pub fn open_data_dir(scope: String) -> Result<Value, String> {
             let variant = trae_variant_of_region(require_trae_region(scope)?);
             trae::handlers::open_data_dir(variant)
         }
-        Product::Qoder => return qoder_scope_not_applicable(),
+        Product::Qoder => qoder_scope_not_applicable(),
     }
 }
 
@@ -2059,10 +2061,9 @@ pub fn get_launch_at_login_enabled(_app: tauri::AppHandle) -> Result<bool, Strin
     #[cfg(desktop)]
     {
         use tauri_plugin_autostart::ManagerExt;
-        return _app
-            .autolaunch()
+        _app.autolaunch()
             .is_enabled()
-            .map_err(|e| format!("查询开机自启状态失败：{e}"));
+            .map_err(|e| format!("查询开机自启状态失败：{e}"))
     }
     #[cfg(not(desktop))]
     {
@@ -3077,7 +3078,7 @@ pub async fn trae_checkin(app: tauri::AppHandle, options: Option<Value>) -> Resu
         let _ = app.emit("trae-checkin-progress", event.clone());
         // P15 · **同一份**进度也喂给悬浮窗 —— 两处消费同一个事件，
         // 不可能出现「页面显示 3/8、窗口显示别的」这种不一致。
-        observe_trae_checkin(&event);
+        observe_trae_checkin(event);
     })
     .await;
     Ok(trae::checkin::report_json(&report))

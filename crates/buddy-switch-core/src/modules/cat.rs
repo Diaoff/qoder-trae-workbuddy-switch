@@ -394,17 +394,20 @@ mod tests {
     // D17 / D19：可注入 CatIo + 时钟缝驱动真实入口 run_cat_cycle_for_with（绝不发网络）。
     // -----------------------------------------------------------------------
 
+    /// 记录的一次 IO 调用：(url, method, body, extra)。
+    /// 抽别名是为了让 `RecordingIo` 的字段与 `calls()` 的返回类型读起来是「一串调用记录」，
+    /// 而不是一坨嵌套泛型（clippy::type_complexity 也在说同一件事）。
+    type RecordedCall = (
+        String,
+        String,
+        Option<Value>,
+        std::collections::HashMap<String, String>,
+    );
+
     /// 记录型桩 IO：按调用次序记录 `(url, method, body, extra)`，并按预设序列返回响应。
     struct RecordingIo {
         responses: Vec<CatResponse>,
-        calls: std::sync::Mutex<
-            Vec<(
-                String,
-                String,
-                Option<Value>,
-                std::collections::HashMap<String, String>,
-            )>,
-        >,
+        calls: std::sync::Mutex<Vec<RecordedCall>>,
     }
 
     impl RecordingIo {
@@ -414,14 +417,7 @@ mod tests {
                 calls: std::sync::Mutex::new(Vec::new()),
             }
         }
-        fn calls(
-            &self,
-        ) -> Vec<(
-            String,
-            String,
-            Option<Value>,
-            std::collections::HashMap<String, String>,
-        )> {
+        fn calls(&self) -> Vec<RecordedCall> {
             self.calls.lock().unwrap().clone()
         }
         fn urls(&self) -> Vec<String> {

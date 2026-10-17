@@ -692,8 +692,7 @@ pub fn record_daily_snapshot_for(variant: TraeVariant, non_checkin_earned: f64) 
     let yesterday_total = file
         .snapshots
         .iter()
-        .filter(|snapshot| snapshot.date < today)
-        .last()
+        .rfind(|snapshot| snapshot.date < today)
         .map(|snapshot| snapshot.total)
         .unwrap_or(0.0);
     let consumed = round2((total - earned - yesterday_total).abs());
@@ -1426,8 +1425,9 @@ mod tests {
 
     #[test]
     fn history_retention_days_is_positive() {
-        // 保留天数为 0 或负数会让明细被立即清空。
-        assert!(crate::modules::trae::TRAE_HISTORY_KEEP_DAYS > 0);
+        // 保留天数为 0 或负数会让明细被立即清空。常量断言放到编译期（`const _`）：
+        // 运行时 `assert!` 对常量是恒真，测不出任何东西，clippy 的 assertions_on_constants 正是这个意思。
+        const _: () = assert!(crate::modules::trae::TRAE_HISTORY_KEEP_DAYS > 0);
     }
 
     /// 钉死上游请求头的固定取值。

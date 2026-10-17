@@ -447,9 +447,16 @@ pub fn fetch_build_key(exe: &Path) -> Result<String, AtRestError> {
 ///
 /// `atRestSecretKey` 是客户端二进制的**编译期 payload**，进程生命周期内不会变
 /// （客户端升级后需重启本应用才生效）⇒ 按 region 记忆是安全的。
-static KEY_CACHE: OnceLock<Mutex<[Option<Result<String, AtRestError>>; 2]>> = OnceLock::new();
+/// 单个 region 的缓存槽：`None` = 还没取过，`Some(Err)` = 取过且失败（失败也缓存，
+/// 否则每个请求都会重新探测一次 exe 并起子进程）。
+type KeyCacheSlot = Option<Result<String, AtRestError>>;
 
-fn key_cache() -> &'static Mutex<[Option<Result<String, AtRestError>>; 2]> {
+/// 两个 region（cn / global）各一个槽 —— 下标由 [`cache_slot`] 给出。
+type KeyCache = [KeyCacheSlot; 2];
+
+static KEY_CACHE: OnceLock<Mutex<KeyCache>> = OnceLock::new();
+
+fn key_cache() -> &'static Mutex<KeyCache> {
     KEY_CACHE.get_or_init(|| Mutex::new([None, None]))
 }
 

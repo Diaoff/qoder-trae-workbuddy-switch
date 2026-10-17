@@ -1,3 +1,7 @@
+// 测试串行锁（`guard()` / `ENV_LOCK`）会被**故意**持有到用例结束：它防的是多个用例
+// 同时改同一个进程级状态（环境变量 / 全局配置）。`#[tokio::test]` 默认 current-thread，
+// 不存在「持锁跨线程唤醒」的风险；clippy::await_holding_lock 在这里是误报。
+#![allow(clippy::await_holding_lock)]
 //! P10 独立验证（p10-verify）：**「接入即识别」的失败不阻断** + **非实时必有原因**。
 //!
 //! # 为什么需要这个集成测试（而不是只读源码）

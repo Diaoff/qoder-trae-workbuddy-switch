@@ -581,6 +581,10 @@ fn format_checkin_tooltip(value: &Value) -> String {
 
 #[cfg(test)]
 mod tests {
+    // `chunks_exact(4)` 在这里是「按 RGBA 四字节分组」的直白写法；
+    // `as_chunks::<4>()` 需要 turbofish + 解构 `.0`，反而更难读。
+    #![allow(clippy::chunks_exact_to_as_chunks)]
+
     use super::{
         color_icon, format_checkin_tooltip, is_silent_startup, menu_bar_icon,
         should_keep_tray_alive,

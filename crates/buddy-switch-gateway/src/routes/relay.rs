@@ -197,6 +197,8 @@ pub async fn body_text_with_prefix(
     text
 }
 
+#[allow(clippy::result_large_err)]
+// `RelayFailure` 承载完整上游响应与诊断上下文，装箱会丢掉「一次就能定位」的可读性。
 /// 把一次请求送到上游；内含换号轮换与失败治理。
 pub async fn relay(
     state: &GatewayState,
@@ -771,6 +773,8 @@ fn sticky_key_of(request: &RelayRequest) -> Option<String> {
         .map(|value| sticky::sticky_key(request.region.as_str(), &request.model, value))
 }
 
+#[allow(clippy::too_many_arguments)]
+// 同上：扁平签名与调用点一一对应，更好读。
 async fn select_account(
     state: &GatewayState,
     region: Region,

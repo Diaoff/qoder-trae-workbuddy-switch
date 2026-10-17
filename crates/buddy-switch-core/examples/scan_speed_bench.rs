@@ -126,7 +126,7 @@ fn main() {
             .map(Vec::len)
             .unwrap_or(0);
         // 等价性核对：`SCAN_BENCH_DUMP=<目录>` 时把完整响应落盘（`date` 之外无时间字段）。
-        if let Some(dir) = std::env::var("SCAN_BENCH_DUMP").ok() {
+        if let Ok(dir) = std::env::var("SCAN_BENCH_DUMP") {
             let path =
                 std::path::Path::new(&dir).join(format!("daily-{}-{pass}.json", region.as_str()));
             std::fs::write(

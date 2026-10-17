@@ -28,6 +28,10 @@
 use rusqlite::Connection;
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
+
+/// 源会话行：(列名, 列值)。两处「读源会话行」共用同一份返回形状，
+/// 抽成别名避免同一条深嵌套签名在 impl 里写两遍（clippy::type_complexity）。
+type SessionRow = (Vec<String>, Vec<rusqlite::types::Value>);
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -1651,7 +1655,7 @@ fn scan_sessions_from_jsonl_for(region: Region) -> Vec<Value> {
             push_jsonl_session(&child.path(), &mut sessions);
         }
     }
-    sessions.sort_by(|a, b| b.0.cmp(&a.0));
+    sessions.sort_by_key(|s| std::cmp::Reverse(s.0));
     sessions.into_iter().map(|(_, v)| v).collect()
 }
 
@@ -2061,10 +2065,7 @@ impl CopyBatch {
     }
 
     /// 读源会话行（列名 + 值）；源库 / 表 / 行缺失 → `Ok(None)`；Claw → `Err`。
-    fn read_session_row(
-        &mut self,
-        cid: &str,
-    ) -> Result<Option<(Vec<String>, Vec<rusqlite::types::Value>)>, String> {
+    fn read_session_row(&mut self, cid: &str) -> Result<Option<SessionRow>, String> {
         let source_uid = self.source_uid.clone();
         let Some(conn) = self.src_conn() else {
             return Ok(None);
@@ -2471,7 +2472,7 @@ fn read_session_row(
     conn: &Connection,
     cid: &str,
     source_uid: &str,
-) -> Result<Option<(Vec<String>, Vec<rusqlite::types::Value>)>, String> {
+) -> Result<Option<SessionRow>, String> {
     if !table_exists(conn, "sessions") {
         return Ok(None);
     }

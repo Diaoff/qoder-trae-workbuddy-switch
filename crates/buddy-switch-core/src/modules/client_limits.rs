@@ -138,7 +138,7 @@ struct RawClientError {
     reset_at: Option<i64>,
     /// 本条错误**所在文件**中，「该错误之后仍有过成功模型活动」的最早时刻（`0` = 无）。
     ///
-    /// 派生字段：缓存里按文件存一份，装载时回填（[`ScanCacheEntry::into_scan`]）。
+    /// 派生字段：缓存里按文件存一份，装载时回填（[`ScanCacheEntry::to_scan`]）。
     #[serde(skip)]
     file_success_ms: i64,
     /// 本条错误**所在文件**中，「用户/客户端在它之后**又试过**」的最晚时刻（`0` = 没再试）。
@@ -508,7 +508,7 @@ struct ScanCacheEntry {
 
 impl ScanCacheEntry {
     /// 缓存里的错误记录**不含** `file_success_ms`（那是派生字段），装载时回填。
-    fn into_scan(&self) -> FileScan {
+    fn to_scan(&self) -> FileScan {
         let mut scan = self.scan.clone();
         let success = scan.last_success_ms;
         let attempt = scan.last_attempt_ms;
@@ -673,7 +673,7 @@ fn scan_entries(files: &[FileEntry], since_ms: i64) -> Vec<FileScan> {
                         && entry.size == file.size
                         && cache_covers(entry, since_ms)
                 })
-                .map(|entry| ScanCacheEntry::into_scan(entry).narrowed_to(since_ms));
+                .map(|entry| ScanCacheEntry::to_scan(entry).narrowed_to(since_ms));
             match hit {
                 Some(scan) => slots[index] = Some(scan),
                 None => pending.push(index),
@@ -2143,7 +2143,7 @@ mod tests {
         assert_eq!(entry.mtime_ms, 111);
         assert_eq!(entry.size, 222);
         assert_eq!(entry.covered_from_ms, Some(333));
-        let scan = entry.into_scan();
+        let scan = entry.to_scan();
         assert_eq!(scan.last_success_ms, 444);
         assert_eq!(scan.errors.len(), 1);
         assert_eq!(

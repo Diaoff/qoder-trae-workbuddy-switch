@@ -1726,6 +1726,9 @@ mod tests {
     /// ⇒ Trae 两条路径断言变红 —— 那正是「hooks 文件与 settings.json 不同源」这条事实。
     #[test]
     fn hook_file_paths_live_under_the_home_directory() {
+        // 本用例读进程级 HOME / 网关配置：必须与「改 HOME 的用例」串行，
+        // 否则并行跑时会读到别人临时改过的家目录（曾因此 flaky）。
+        let _env = crate::modules::config::env_lock();
         let home = home_dir();
         for slot in HOOK_FILE_SLOTS {
             let path = slot.settings_path().expect("家目录可解析 ⇒ 路径必须可解析");

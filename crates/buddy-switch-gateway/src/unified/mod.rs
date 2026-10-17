@@ -778,11 +778,13 @@ mod tests {
             uuid::Uuid::new_v4().simple()
         ));
         std::fs::create_dir_all(&dir).unwrap();
-        let mut config = UnifiedGatewayConfig::default();
-        config.bind_addr = "0.0.0.0".to_string();
-        config.allow_non_loopback = false;
         // 用一个几乎不可能被占用的端口；拒绝发生在 bind **之前**，故不会真的占端口
-        config.port = 57997;
+        let config = UnifiedGatewayConfig {
+            bind_addr: "0.0.0.0".to_string(),
+            allow_non_loopback: false,
+            port: 57997,
+            ..Default::default()
+        };
         let state =
             UnifiedGatewayState::with_keys(config, UnifiedApiKeyStore::new(dir.join("keys.json")));
 
@@ -808,8 +810,10 @@ mod tests {
             uuid::Uuid::new_v4().simple()
         ));
         std::fs::create_dir_all(&dir).unwrap();
-        let mut config = UnifiedGatewayConfig::default();
-        config.bind_addr = "not-an-ip".to_string();
+        let config = UnifiedGatewayConfig {
+            bind_addr: "not-an-ip".to_string(),
+            ..Default::default()
+        };
         let state =
             UnifiedGatewayState::with_keys(config, UnifiedApiKeyStore::new(dir.join("keys.json")));
 

@@ -488,7 +488,7 @@ impl QoderPool {
                     // 用户显式排除（硬约束：选号 / 兜底 / 偏好全跳过）。
                     "excluded": exclusion.is_some(),
                     "excludedNote": exclusion
-                        .map(|note| note.clone())
+                        .cloned()
                         .filter(|note| !note.is_empty()),
                     "authDead": entry.auth_dead,
                     "cooling": entry.cooldown_until > now,
@@ -802,7 +802,7 @@ mod tests {
         let mut cold = entry("cold", "t-cold");
         cold.cooldown_until = now + 60_000;
         pool.entries.insert("cold".into(), cold);
-        let mut model_cold = entry("mc".into(), "t-mc");
+        let mut model_cold = entry("mc", "t-mc");
         model_cold.model_cooldowns.insert("m".into(), now + 60_000);
         pool.entries.insert("mc".into(), model_cold);
 

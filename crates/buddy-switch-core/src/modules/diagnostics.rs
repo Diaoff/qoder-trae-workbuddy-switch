@@ -191,6 +191,9 @@ mod tests {
     /// 诊断包**只读**：除时间戳外，两次导出必须逐字节一致（证明无写入、无随机字段）。
     #[test]
     fn diagnostic_bundle_is_read_only_and_idempotent() {
+        // 本用例读进程级 HOME / 网关配置：必须与「改 HOME 的用例」串行，
+        // 否则并行跑时会读到别人临时改过的家目录（曾因此 flaky）。
+        let _env = crate::modules::config::env_lock();
         // `generatedAt` 是时间戳，两次导出必然不同 ⇒ 比对前先剔除它。
         let strip_ts = |text: &str| -> Value {
             let mut value: Value = serde_json::from_str(text).expect("诊断包应是合法 JSON");

@@ -535,7 +535,7 @@ impl TraePool {
                     // 用户显式排除（硬约束）。前端据此标「已排除」并禁掉「指定」。
                     "excluded": excluded.is_some(),
                     "excludedNote": excluded
-                        .map(|note| note.clone())
+                        .cloned()
                         .filter(|note| !note.is_empty()),
                     "deviceIdMasked": mask_device(&entry.device_id),
                 })

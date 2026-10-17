@@ -690,16 +690,20 @@ impl PoolEntry {
     /// 没有具体原因时才回落到状态默认文案 —— 排查时具体原因远比状态名有用。
     pub fn rejection(&self, now_ms: i64) -> String {
         match self.status_of(now_ms) {
-            "disabled" => self
-                .reason
-                .is_empty()
-                .then(|| "会话失效（需重新登录）".to_string())
-                .unwrap_or_else(|| self.reason.clone()),
-            "cooling" => self
-                .reason
-                .is_empty()
-                .then(|| "冷却中".to_string())
-                .unwrap_or_else(|| self.reason.clone()),
+            "disabled" => {
+                if self.reason.is_empty() {
+                    "会话失效（需重新登录）".to_string()
+                } else {
+                    self.reason.clone()
+                }
+            }
+            "cooling" => {
+                if self.reason.is_empty() {
+                    "冷却中".to_string()
+                } else {
+                    self.reason.clone()
+                }
+            }
             "no_credits" => "零积分".to_string(),
             _ => "可用".to_string(),
         }

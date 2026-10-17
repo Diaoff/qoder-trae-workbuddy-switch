@@ -332,9 +332,10 @@ fn build_app_settings(frontend_segment: Option<&Value>) -> Value {
 ///
 /// ⚠️ `includes_credentials = true`：本地快照必须**全量保真**（撤销导入要还原 token）。
 fn full_selection() -> BackupSelection {
-    let mut selection = BackupSelection::default();
-    selection.includes_credentials = true;
-    selection
+    BackupSelection {
+        includes_credentials: true,
+        ..Default::default()
+    }
 }
 
 /// ★ 导入**预览**（**只读、不写盘** —— 安全阀，§1.7）。

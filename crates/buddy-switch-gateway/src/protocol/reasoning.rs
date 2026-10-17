@@ -70,20 +70,20 @@ fn should_drop_frame(value: &Value) -> bool {
                         let has_role = map
                             .get("role")
                             .and_then(Value::as_str)
-                            .map_or(false, |s| !s.is_empty());
+                            .is_some_and(|s| !s.is_empty());
                         let has_content = map
                             .get("content")
                             .and_then(Value::as_str)
-                            .map_or(false, |s| !s.is_empty());
+                            .is_some_and(|s| !s.is_empty());
                         let has_reasoning = map
                             .get("reasoning_content")
                             .or_else(|| map.get("reasoning"))
                             .and_then(Value::as_str)
-                            .map_or(false, |s| !s.is_empty());
+                            .is_some_and(|s| !s.is_empty());
                         let has_tool_calls = map
                             .get("tool_calls")
                             .and_then(Value::as_array)
-                            .map_or(false, |arr| !arr.is_empty());
+                            .is_some_and(|arr| !arr.is_empty());
                         let has_function_call = match map.get("function_call") {
                             Some(Value::Object(fc)) => {
                                 let name = fc.get("name").and_then(Value::as_str).unwrap_or("");
