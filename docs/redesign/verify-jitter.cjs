@@ -6,7 +6,8 @@
  *
  * 用法：
  *   NODE_PATH=<managed workspace>/node_modules node docs/redesign/verify-jitter.cjs
- *   ... --mutate=jitter   注入「偏移恒为 0」，**期望测试变红**（证明断言不空转）。
+ *   ... --file=buddy-switch-prototype.html   同一套断言跑单文件原型（两份原型不许漂移）
+ *   ... --mutate=jitter                      注入「偏移恒为 0」，**期望测试变红**。
  */
 const path = require("path");
 const fs = require("fs");
@@ -15,17 +16,27 @@ const { JSDOM } = require("jsdom");
 
 const SRC = __dirname;
 const MUT = (process.argv.find((a) => a.startsWith("--mutate")) || "").replace("--mutate", "").replace(/^=/, "");
+/* 默认跑多文件原型（index.html + demo-*.js/css）；`--file=` 可切到单文件原型。
+   两份原型是同一套交互的两个载体，用同一份断言跑，才能发现「改了一边忘了另一边」。 */
+const TARGET = (process.argv.find((a) => a.startsWith("--file=")) || "").slice(7) || "index.html";
+const FILES = TARGET === "index.html" ? ["index.html", "demo.css", "demo-data.js", "demo-app.js"] : [TARGET];
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 const MUTATIONS = {
   jitter: {
     desc: "偏移恒为 0（模拟「开关只翻样式、不真的抖」）",
     apply: (dir) => {
-      const f = path.join(dir, "demo-app.js");
-      const src = fs.readFileSync(f, "utf8");
-      const from = "  return ((h >>> 0) % (max * 2 + 1)) - max;";
-      if (!src.includes(from)) throw new Error("未匹配到 jitterOffset 的返回行");
-      fs.writeFileSync(f, src.replace(from, "  return 0; /* MUTATED */"));
+      const from = "return ((h >>> 0) % (max * 2 + 1)) - max;";
+      /* 多文件原型在 demo-app.js，单文件原型在同一份 html 里 —— 逐个文件找，
+         找到才改，避免「变异没生效、测试却全绿」的假阴性。 */
+      for (const f of FILES) {
+        const file = path.join(dir, f);
+        const src = fs.readFileSync(file, "utf8");
+        if (!src.includes(from)) continue;
+        fs.writeFileSync(file, src.replace(from, "return 0; /* MUTATED */"));
+        return;
+      }
+      throw new Error("未匹配到 jitterOffset 的返回行");
     },
   },
 };
@@ -35,9 +46,7 @@ function prepareDir() {
   if (!MUT) return SRC;
   if (!MUTATIONS[MUT]) throw new Error("未知变异: " + MUT);
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "bs-jitter-"));
-  for (const f of ["index.html", "demo.css", "demo-data.js", "demo-app.js"]) {
-    fs.copyFileSync(path.join(SRC, f), path.join(dir, f));
-  }
+  for (const f of FILES) fs.copyFileSync(path.join(SRC, f), path.join(dir, f));
   MUTATIONS[MUT].apply(dir);
   return dir;
 }
@@ -64,7 +73,7 @@ const delta = (base, t) => {
 
 (async () => {
   const dir = prepareDir();
-  const dom = await JSDOM.fromFile(path.join(dir, "index.html"), {
+  const dom = await JSDOM.fromFile(path.join(dir, TARGET), {
     runScripts: "dangerously", resources: "usable", pretendToBeVisual: true,
   });
   const { window } = dom;
