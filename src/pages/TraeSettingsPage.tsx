@@ -21,7 +21,7 @@ import {
 import { toast } from "sonner";
 
 import { DemoAction } from "@/components/demo-action";
-import { HoursEditor } from "@/components/schedule-hours-editor";
+import { TimesEditor } from "@/components/schedule-times-editor";
 import { ScopeChip, scopeLabel } from "@/components/scope-chip";
 import { AppSettingsGroups } from "@/components/app-settings";
 import { BackupSection } from "@/components/settings/backup-section";
@@ -1473,22 +1473,22 @@ export default function TraeSettingsPage() {
             />
           </SettingsFieldRow>
           <SettingsFieldRow
-            label={t("trae.page.settings.checkinHoursLabel")}
-            description={t("trae.page.settings.checkinHoursDesc")}
-            htmlFor="trae-checkin-hour"
+            label={t("trae.page.settings.checkinTimesLabel")}
+            description={t("trae.page.settings.checkinTimesDesc")}
+            htmlFor="trae-checkin-time"
           >
-            <HoursEditor
-              id="trae-checkin-hour"
-              hours={schedule?.trae_checkin_hours ?? []}
+            <TimesEditor
+              id="trae-checkin-time"
+              times={schedule?.trae_checkin_times ?? []}
               disabled={!schedule || scheduleSaving}
-              onChange={(hours) => void saveSchedule({ trae_checkin_hours: hours }, "trae.page.settings.autoCheckinSaveFailed")}
+              onChange={(times) => void saveSchedule({ trae_checkin_times: times }, "trae.page.settings.autoCheckinSaveFailed")}
             />
           </SettingsFieldRow>
           </CardContent>
         </SettingsGroup>
 
         {/* ---- JWT 自动续期 ----
-             与上面那组**同形**（开关 + 小时表），但默认值是**开**（后端默认如此，
+             与上面那组**同形**（开关 + 时点表），但默认值是**开**（后端默认如此，
              理由见 `schedule::default_schedule`：refresh_token 的唯一用途就是续期，
              它是用户网页登录时明确交出来的）。这里不摆「立即续期」按钮 ——
              手动续期在账号卡片的菜单里，重复摆第二个入口就是「看起来能切」的假控件。 */}
@@ -1506,15 +1506,15 @@ export default function TraeSettingsPage() {
             />
           </SettingsFieldRow>
           <SettingsFieldRow
-            label={t("trae.page.settings.jwtRefreshHoursLabel")}
-            description={t("trae.page.settings.jwtRefreshHoursDesc")}
-            htmlFor="trae-jwt-refresh-hour"
+            label={t("trae.page.settings.jwtRefreshTimesLabel")}
+            description={t("trae.page.settings.jwtRefreshTimesDesc")}
+            htmlFor="trae-jwt-refresh-time"
           >
-            <HoursEditor
-              id="trae-jwt-refresh-hour"
-              hours={schedule?.trae_jwt_refresh_hours ?? []}
+            <TimesEditor
+              id="trae-jwt-refresh-time"
+              times={schedule?.trae_jwt_refresh_times ?? []}
               disabled={!schedule || scheduleSaving}
-              onChange={(hours) => void saveSchedule({ trae_jwt_refresh_hours: hours }, "trae.page.settings.jwtRefreshSaveFailed")}
+              onChange={(times) => void saveSchedule({ trae_jwt_refresh_times: times }, "trae.page.settings.jwtRefreshSaveFailed")}
             />
           </SettingsFieldRow>
           </CardContent>

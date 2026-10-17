@@ -929,25 +929,31 @@ export interface TravelStatus {
  * 定时任务的排程配置（全局单份，无需 region；也不需要「当前产品」——两个产品各占一条任务）。
  *
  * 对照 `buddy-switch-core::modules::schedule::ScheduleConfig` 的扁平序列化（`schedule_to_value`）：
- * 每类任务各有独立的 `*_hours`（0-23 的整数列表）与独立的 `*_enabled` 开关。
+ * 每类任务各有独立的 `*_times`（`"HH:MM"` 字符串列表）与独立的 `*_enabled` 开关。
+ *
+ * ## 为什么是 `*_times` 而不是 `*_hours`（issue #27）
+ *
+ * 旧格式 `*_hours: [9, 21]` 只能表达整点，用户没法把签到定在 09:37。现在时点是
+ * `"HH:MM"` 字符串，天然对齐 `<input type="time">` 的值。**旧键仍被后端读取**
+ * （`[9, 21]` ⇒ `["09:00", "21:00"]`），保存一次即迁移为新键；前端只认新键。
  */
 export interface ScheduleConfig {
-  /** 自动签到的小时点（0-23），可多个，如 [9, 21]。 */
-  checkin_hours: number[];
-  /** 派猫猫旅行的小时点。 */
-  travel_hours: number[];
-  /** 活跃地图上报的小时点。 */
-  activity_hours: number[];
-  /** token 保活的小时点。 */
-  keepalive_hours: number[];
-  /** 开学季任务的小时点。 */
-  school_hours: number[];
-  /** 夜猫子（猫猫领取）的小时点。 */
-  cat_hours: number[];
-  /** Trae 分区自动签到的小时点（第二条产品线，签的是 Trae 自己的区域账号库）。 */
-  trae_checkin_hours: number[];
-  /** Trae 账号 JWT 自动续期的小时点（第二条产品线）。 */
-  trae_jwt_refresh_hours: number[];
+  /** 自动签到的时点（`"HH:MM"`），可多个，如 ["09:00", "21:00"]。 */
+  checkin_times: string[];
+  /** 派猫猫旅行的时点。 */
+  travel_times: string[];
+  /** 活跃地图上报的时点。 */
+  activity_times: string[];
+  /** token 保活的时点。 */
+  keepalive_times: string[];
+  /** 开学季任务的时点。 */
+  school_times: string[];
+  /** 夜猫子（猫猫领取）的时点。 */
+  cat_times: string[];
+  /** Trae 分区自动签到的时点（第二条产品线，签的是 Trae 自己的区域账号库）。 */
+  trae_checkin_times: string[];
+  /** Trae 账号 JWT 自动续期的时点（第二条产品线）。 */
+  trae_jwt_refresh_times: string[];
   /** 自动签到开关（签 WorkBuddy 的账号）。 */
   checkin_enabled: boolean;
   /** 派猫猫旅行开关。 */

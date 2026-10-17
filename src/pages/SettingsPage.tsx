@@ -32,8 +32,8 @@ import { SettingsFieldRow, SettingsGroup, SettingsRow } from "@/components/setti
 import { parseSettingsSubnav, SettingsSubnav, type SettingsSubnavId } from "@/components/settings/settings-subnav";
 import { BackupSection } from "@/components/settings/backup-section";
 import { AppSettingsGroups } from "@/components/app-settings";
-// 小时表编辑器与 Trae 设置页**共用同一份实现**（校验规则属于规则，不属于版式）。
-import { HoursEditor } from "@/components/schedule-hours-editor";
+// 时点表编辑器与 Trae 设置页**共用同一份实现**（校验规则属于规则，不属于版式）。
+import { TimesEditor } from "@/components/schedule-times-editor";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -1338,16 +1338,16 @@ function GatewaySettingsCard() {
 }
 
 // ---------------------------------------------------------------------------
-// 定时任务排程（六类任务：各自独立开关 + 独立小时表）
+// 定时任务排程（六类任务：各自独立开关 + 独立时点表）
 // ---------------------------------------------------------------------------
 
-type ScheduleHoursField =
-  | "checkin_hours"
-  | "travel_hours"
-  | "activity_hours"
-  | "keepalive_hours"
-  | "school_hours"
-  | "cat_hours";
+type ScheduleTimesField =
+  | "checkin_times"
+  | "travel_times"
+  | "activity_times"
+  | "keepalive_times"
+  | "school_times"
+  | "cat_times";
 
 type ScheduleEnabledField =
   | "checkin_enabled"
@@ -1362,7 +1362,7 @@ interface ScheduleTaskDef {
   /** 任务名文案键（模块级常量只存键，渲染处再 `t(labelKey)`）。 */
   labelKey: TranslationKey;
   descKey: TranslationKey;
-  hoursField: ScheduleHoursField;
+  timesField: ScheduleTimesField;
   enabledField: ScheduleEnabledField;
 }
 
@@ -1375,13 +1375,16 @@ interface ScheduleTaskDef {
  * （排程是全局单份，与 region / 产品无关）。
  */
 const SCHEDULE_TASKS: ScheduleTaskDef[] = [
-  { key: "checkin", labelKey: "wbSettings.schedule.task.checkin.label", descKey: "wbSettings.schedule.task.checkin.desc", hoursField: "checkin_hours", enabledField: "checkin_enabled" },
-  { key: "travel", labelKey: "wbSettings.schedule.task.travel.label", descKey: "wbSettings.schedule.task.travel.desc", hoursField: "travel_hours", enabledField: "travel_enabled" },
-  { key: "activity", labelKey: "wbSettings.schedule.task.activity.label", descKey: "wbSettings.schedule.task.activity.desc", hoursField: "activity_hours", enabledField: "activity_enabled" },
-  { key: "keepalive", labelKey: "wbSettings.schedule.task.keepalive.label", descKey: "wbSettings.schedule.task.keepalive.desc", hoursField: "keepalive_hours", enabledField: "keepalive_enabled" },
-  { key: "school", labelKey: "wbSettings.schedule.task.school.label", descKey: "wbSettings.schedule.task.school.desc", hoursField: "school_hours", enabledField: "school_enabled" },
-  { key: "cat", labelKey: "wbSettings.schedule.task.cat.label", descKey: "wbSettings.schedule.task.cat.desc", hoursField: "cat_hours", enabledField: "cat_enabled" },
+  { key: "checkin", labelKey: "wbSettings.schedule.task.checkin.label", descKey: "wbSettings.schedule.task.checkin.desc", timesField: "checkin_times", enabledField: "checkin_enabled" },
+  { key: "travel", labelKey: "wbSettings.schedule.task.travel.label", descKey: "wbSettings.schedule.task.travel.desc", timesField: "travel_times", enabledField: "travel_enabled" },
+  { key: "activity", labelKey: "wbSettings.schedule.task.activity.label", descKey: "wbSettings.schedule.task.activity.desc", timesField: "activity_times", enabledField: "activity_enabled" },
+  { key: "keepalive", labelKey: "wbSettings.schedule.task.keepalive.label", descKey: "wbSettings.schedule.task.keepalive.desc", timesField: "keepalive_times", enabledField: "keepalive_enabled" },
+  { key: "school", labelKey: "wbSettings.schedule.task.school.label", descKey: "wbSettings.schedule.task.school.desc", timesField: "school_times", enabledField: "school_enabled" },
+  { key: "cat", labelKey: "wbSettings.schedule.task.cat.label", descKey: "wbSettings.schedule.task.cat.desc", timesField: "cat_times", enabledField: "cat_enabled" },
 ];
+
+/** `HH:MM`（00:00–23:59）—— 与后端 `schedule::TimeOfDay` 的线上格式逐字一致。 */
+const SCHEDULE_TIME_PATTERN = /^([01]\d|2[0-3]):[0-5]\d$/;
 
 /**
  * 把「立即执行」的返回压成一句可读摘要。
@@ -1413,7 +1416,7 @@ function summarizeScheduleRun(
     : { key: "wbSettings.schedule.summaryStreak", params: { reported, streak } };
 }
 
-/** 定时任务排程配置：六类任务各自独立开关与小时表 + 活跃上报次数。 */
+/** 定时任务排程配置：六类任务各自独立开关与时点表 + 活跃上报次数。 */
 function ScheduleCard() {
   const t = useT();
   const [cfg, setCfg] = useState<ScheduleConfig | null>(null);
@@ -1437,9 +1440,9 @@ function ScheduleCard() {
     };
   }, []);
 
-  function patch(task: ScheduleTaskDef, hours: number[]) {
+  function patch(task: ScheduleTaskDef, times: string[]) {
     if (!cfg) return;
-    setCfg({ ...cfg, [task.hoursField]: hours });
+    setCfg({ ...cfg, [task.timesField]: times });
   }
 
   function toggle(task: ScheduleTaskDef, enabled: boolean) {
@@ -1447,16 +1450,16 @@ function ScheduleCard() {
     setCfg({ ...cfg, [task.enabledField]: enabled });
   }
 
-  /** 前端基本范围校验：小时必须为 0-23 的整数；已启用任务至少需一个小时点。 */
+  /** 前端基本范围校验：时点必须是 `HH:MM`（00:00–23:59）；已启用任务至少需一个时点。 */
   function validate(config: ScheduleConfig): string | null {
     for (const task of SCHEDULE_TASKS) {
-      const hours = config[task.hoursField];
-      const bad = hours.find((hour) => !Number.isInteger(hour) || hour < 0 || hour > 23);
+      const times = config[task.timesField];
+      const bad = times.find((time) => !SCHEDULE_TIME_PATTERN.test(time));
       if (bad !== undefined) {
-        return t("wbSettings.schedule.invalidHour", { label: t(task.labelKey), hour: bad });
+        return t("wbSettings.schedule.invalidTime", { label: t(task.labelKey), time: bad });
       }
-      if (config[task.enabledField] && hours.length === 0) {
-        return t("wbSettings.schedule.emptyHours", { label: t(task.labelKey) });
+      if (config[task.enabledField] && times.length === 0) {
+        return t("wbSettings.schedule.emptyTimes", { label: t(task.labelKey) });
       }
     }
     if (!Number.isInteger(config.activity_report_count) || config.activity_report_count < 1) {
@@ -1548,10 +1551,10 @@ function ScheduleCard() {
                     </DemoAction>
                   </div>
                 </div>
-                <HoursEditor
-                  id={`schedule-${task.key}-hour`}
-                  hours={cfg[task.hoursField]}
-                  onChange={(hours) => patch(task, hours)}
+                <TimesEditor
+                  id={`schedule-${task.key}-time`}
+                  times={cfg[task.timesField]}
+                  onChange={(times) => patch(task, times)}
                 />
               </SettingsRow>
             ))}

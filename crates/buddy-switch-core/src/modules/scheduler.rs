@@ -132,13 +132,13 @@ pub async fn run_scheduled_task(task: ScheduleTask) -> Value {
 
 /// 某一类任务的排程循环：**永不返回**，由调用方 `spawn` 到后台。
 ///
-/// 每轮**重新读取配置**并重算自己的 `next_fire`，因此运行期间改动小时表或开关、
-/// **下一轮即生效**，无需重启应用。任务被禁用（`hours` 为空）时不派发，只按 1 分钟重查。
+/// 每轮**重新读取配置**并重算自己的 `next_fire`，因此运行期间改动时点表或开关、
+/// **下一轮即生效**，无需重启应用。任务被禁用（`times` 为空）时不派发，只按 1 分钟重查。
 pub async fn schedule_loop(task: ScheduleTask) {
     loop {
         let cfg = schedule::load_schedule_config();
         let now = config::now_ms();
-        let at = schedule::next_fire(task.hours(&cfg), now);
+        let at = schedule::next_fire(task.times(&cfg), now);
         let wait_ms = match at {
             Some(at) => (at - now).max(0) as u64,
             // 任务被禁用：1 分钟后重查配置，避免无谓空转。

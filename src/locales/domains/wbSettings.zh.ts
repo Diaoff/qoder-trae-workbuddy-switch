@@ -189,7 +189,7 @@ export const zh = {
 
   // ---- 定时任务排程 ----
   "wbSettings.schedule.groupTitle": "定时任务排程",
-  "wbSettings.schedule.intro": "六类任务各自独立开关与小时表，到点由调度器触发。小时使用 24 小时制本地时间，可配置多个小时点。改完可用「立即执行」当场跑一轮验证，无需等到下一个整点。",
+  "wbSettings.schedule.intro": "六类任务各自独立开关与时点表，到点由调度器触发。时点使用 24 小时制本地时间，可精确到分钟（如 09:37），可配置多个时点。改完可用「立即执行」当场跑一轮验证，无需等到下一个时点。",
   "wbSettings.schedule.task.checkin.label": "签到",
   "wbSettings.schedule.task.checkin.desc": "自动签到各账号",
   "wbSettings.schedule.task.travel.label": "自动旅行",
@@ -208,19 +208,19 @@ export const zh = {
   "wbSettings.schedule.activityCountDesc": "每个账号每天上报的对话次数",
   "wbSettings.schedule.saveBtn": "保存排程",
   "wbSettings.schedule.savedMsg": "排程配置已保存",
-  "wbSettings.schedule.invalidHour": "「{label}」包含非法小时 {hour}，小时必须是 0-23 的整数",
-  "wbSettings.schedule.emptyHours": "「{label}」已启用，请至少设置一个小时点，或关闭该任务",
+  "wbSettings.schedule.invalidTime": "「{label}」包含非法时点 {time}，时点格式必须是 HH:MM（00:00–23:59）",
+  "wbSettings.schedule.emptyTimes": "「{label}」已启用，请至少设置一个时点，或关闭该任务",
   "wbSettings.schedule.invalidReportCount": "活跃上报次数必须是大于 0 的整数",
   "wbSettings.schedule.runDone": "「{label}」{summary}",
   "wbSettings.schedule.summaryExecuted": "已执行",
   "wbSettings.schedule.summaryNoStreak": "已上报 {reported} 条（未读到连登天数）",
   "wbSettings.schedule.summaryStreak": "已上报 {reported} 条，当前连登 {streak} 天",
-  // ---- 小时点编辑器（schedule-hours-editor.tsx，被上面各任务行复用） ----
-  "wbSettings.schedule.hourInvalid": "小时必须是 0-23 之间的整数",
-  "wbSettings.schedule.hourDuplicate": "{hour} 点已在列表中",
-  "wbSettings.schedule.hourEmpty": "未设置小时点",
-  "wbSettings.schedule.hourRemoveAria": "移除 {hour} 点",
-  "wbSettings.schedule.hourAdd": "添加",
+  // ---- 时点编辑器（schedule-times-editor.tsx，被上面各任务行复用） ----
+  "wbSettings.schedule.timeInvalid": "时点格式必须是 HH:MM（00:00–23:59）",
+  "wbSettings.schedule.timeDuplicate": "{time} 已在列表中",
+  "wbSettings.schedule.timeEmpty": "未设置时点",
+  "wbSettings.schedule.timeRemoveAria": "移除 {time}",
+  "wbSettings.schedule.timeAdd": "添加",
 
   // ---- 更新安装弹框 ----
   "wbSettings.update.timeoutError": "检查更新超时，请检查网络连接后重试",

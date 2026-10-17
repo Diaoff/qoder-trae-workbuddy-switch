@@ -2718,14 +2718,16 @@ export function screenshotDemoResponse(command: string, args?: Record<string, un
     case "get_auto_travel_config": return travelConfig();
     case "get_switch_config": return { copy_sessions_by_default: false, pin_current_account: true };
     case "get_schedule_config": return {
-      checkin_hours: [9, 21],
-      travel_hours: [9, 21],
-      activity_hours: [10],
-      keepalive_hours: [22],
-      school_hours: [12],
-      cat_hours: [1],
-      trae_checkin_hours: [9, 21],
-      trae_jwt_refresh_hours: [9, 21],
+      // 演示数据用**非整点**（09:07 / 21:23）：截图要能自证「分钟粒度真的生效」，
+      // 全用整点的话，控件退化成只能选整点也看不出来。
+      checkin_times: ["09:07", "21:23"],
+      travel_times: ["09:00", "21:00"],
+      activity_times: ["10:00"],
+      keepalive_times: ["22:00"],
+      school_times: ["12:00"],
+      cat_times: ["01:00"],
+      trae_checkin_times: ["09:00", "21:00"],
+      trae_jwt_refresh_times: ["09:00", "21:00"],
       checkin_enabled: true,
       travel_enabled: true,
       activity_enabled: true,

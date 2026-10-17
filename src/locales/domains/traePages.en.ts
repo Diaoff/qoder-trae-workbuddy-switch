@@ -232,14 +232,14 @@ export const en = {
   "trae.page.settings.autoCheckinGroup": "Auto check-in",
   "trae.page.settings.autoCheckinEnable": "Enable auto check-in",
   "trae.page.settings.autoCheckinDesc": "At the scheduled time the background scheduler runs one round across every Trae account on both the CN and global lines; it also catches up on launch if today's round has not run. Off by default — once enabled this app actively contacts Trae upstream.",
-  "trae.page.settings.checkinHoursLabel": "Trigger times",
-  "trae.page.settings.checkinHoursDesc": "Run one check-in round at each of these hours (0-23, several allowed). Enable the switch above first; to run a round by hand use the refresh button in the accounts page toolbar.",
+  "trae.page.settings.checkinTimesLabel": "Trigger times",
+  "trae.page.settings.checkinTimesDesc": "Run one check-in round at each of these times (HH:MM, minute precision, several allowed). Enable the switch above first; to run a round by hand use the refresh button in the accounts page toolbar.",
   "trae.page.settings.autoCheckinSaveFailed": "Failed to save auto check-in settings",
   "trae.page.settings.jwtRefreshGroup": "Auto-refresh JWT",
   "trae.page.settings.jwtRefreshEnable": "Enable auto-renewal",
   "trae.page.settings.jwtRefreshDesc": "Once a JWT has under 24 hours left, exchange the account's refresh_token for a new one automatically. The background scheduler does this at the times below and catches up on launch. Only accounts added via web sign-in have a refresh_token. On by default; turn it off and the only way left is the manual \"Refresh JWT\" item in the account card menu.",
-  "trae.page.settings.jwtRefreshHoursLabel": "Check times",
-  "trae.page.settings.jwtRefreshHoursDesc": "Run one check at each of these hours (0-23, several allowed). Only accounts close to expiry are contacted; the rest are skipped.",
+  "trae.page.settings.jwtRefreshTimesLabel": "Check times",
+  "trae.page.settings.jwtRefreshTimesDesc": "Run one check at each of these times (HH:MM, minute precision, several allowed). Only accounts close to expiry are contacted; the rest are skipped.",
   "trae.page.settings.jwtRefreshSaveFailed": "Failed to save JWT renewal settings",
 
   // ---- Check-in policy ----
