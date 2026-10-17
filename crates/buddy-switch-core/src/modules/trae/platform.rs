@@ -1088,21 +1088,40 @@ fn data_dir_activity(dir: &Path) -> Option<SystemTime> {
 }
 
 /// userData 的父目录（平台约定）。
+///
+/// ## 覆盖优先级：`APPDATA` → 平台默认
+///
+/// `APPDATA` 在 Windows 上本来就是平台约定（`...\AppData\Roaming`）；在 macOS / Linux 上
+/// 它**不是**约定变量，但它是**唯一**能被测试注入「userData 父目录」的口子
+/// （[`super::test_support::TempEnv`] 同时隔离 `BUDDY_SWITCH_HOME` 与 `APPDATA`，
+/// fixture 就铺在 `APPDATA` 下）。
+///
+/// 不认它的时候，macOS / Linux 上的用例会去读**真机**客户端目录：
+/// 真机恰好登着账号 ⇒ 断言红；失败输出里还会带上真机的 `userId` / `deviceId`。
+/// 这就是 issue #37 的 5 条失败（`profile::overview_*` / `oauth::*`）。
+/// 更危险的是写路径（`restore_from_slot_for` → `snapshot_data_dir_for`）同样经过本函数，
+/// 用例一旦走到那里就会**真的写进真机目录** —— 所以这里按「根因」修，而不是逐个用例打补丁。
 fn data_dir_base() -> Option<PathBuf> {
+    // 覆盖优先：三平台同一条链。真机 macOS / Linux 上没有 `APPDATA`，这一支不会生效；
+    // Windows 上这一支就是原来的行为（环境变量优先于 `dirs::config_dir()` 兜底）。
+    let overridden = std::env::var("APPDATA")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .map(PathBuf::from);
+    if overridden.is_some() {
+        return overridden;
+    }
+
     #[cfg(windows)]
     {
-        // 优先环境变量；缺失时用 `dirs::config_dir()`（Windows 上就是 `%APPDATA%`，
+        // 缺失时用 `dirs::config_dir()`（Windows 上就是 `%APPDATA%`，
         // 即 `C:\Users\<用户>\AppData\Roaming`）。
         //
         // 这层兜底不多余：`APPDATA` 属于「通常有、但不保证有」的变量，
         // 某些终端、CI、被裁剪过的启动环境里就是没有。缺了它 `detect_data_dir()`
         // 会直接返回 `None`，表现成「登录态快照与账号切换整体不可用」，
         // 而根因仅仅是取不到一个目录 —— 排查成本极高。
-        std::env::var("APPDATA")
-            .ok()
-            .filter(|value| !value.trim().is_empty())
-            .map(PathBuf::from)
-            .or_else(dirs::config_dir)
+        dirs::config_dir()
     }
     #[cfg(target_os = "macos")]
     {

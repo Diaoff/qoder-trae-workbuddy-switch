@@ -520,15 +520,18 @@ mod tests {
     /// 旧版单值 `traePath` 必须**单向迁移**进按区域字段，且区域按 exe 名反推。
     #[test]
     fn legacy_trae_path_migrates_into_its_region() {
+        // 路径**统一用正斜杠**：盘符路径只是字符串，`Path::file_name()` 在 Unix 上
+        // 不按 `\` 切分（整串会被当成文件名，`variant_of_name` 认不出 ⇒ 落默认区域），
+        // 断言就会在 macOS / Linux 上红（issue #37 的第 6 条）。正斜杠三平台都能切。
         // 国际版 exe（`Trae.exe` 精确命中国际 TraeCode）⇒ 落 global。
         let mut settings = TraeSettings {
-            trae_path: Some(r"D:\Apps\Trae\Trae.exe".into()),
+            trae_path: Some("D:/Apps/Trae/Trae.exe".into()),
             ..TraeSettings::default()
         };
         settings.migrate_legacy_trae_path();
         assert_eq!(
             settings.path_for(TraeRegion::Global),
-            Some(r"D:\Apps\Trae\Trae.exe"),
+            Some("D:/Apps/Trae/Trae.exe"),
             "`Trae.exe` 属于国际版，迁移必须落 global"
         );
         assert_eq!(settings.path_for(TraeRegion::Cn), None);
@@ -536,25 +539,25 @@ mod tests {
 
         // 国内版 exe ⇒ 落 cn。
         let mut settings = TraeSettings {
-            trae_path: Some(r"D:\Apps\Trae CN\Trae CN.exe".into()),
+            trae_path: Some("D:/Apps/Trae CN/Trae CN.exe".into()),
             ..TraeSettings::default()
         };
         settings.migrate_legacy_trae_path();
         assert_eq!(
             settings.path_for(TraeRegion::Cn),
-            Some(r"D:\Apps\Trae CN\Trae CN.exe")
+            Some("D:/Apps/Trae CN/Trae CN.exe")
         );
         assert_eq!(settings.path_for(TraeRegion::Global), None);
 
         // 名字认不出 ⇒ 落国内版（默认区域），且不得丢值。
         let mut settings = TraeSettings {
-            trae_path: Some(r"D:\Weird\whatever.exe".into()),
+            trae_path: Some("D:/Weird/whatever.exe".into()),
             ..TraeSettings::default()
         };
         settings.migrate_legacy_trae_path();
         assert_eq!(
             settings.path_for(TraeRegion::Cn),
-            Some(r"D:\Weird\whatever.exe"),
+            Some("D:/Weird/whatever.exe"),
             "认不出区域时落默认（国内版），绝不能把用户的路径丢掉"
         );
     }
