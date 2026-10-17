@@ -274,6 +274,10 @@ export const zh = {
   "unifiedGateway.pool.expired": "{count} 已过期",
   "unifiedGateway.pool.zeroCredits": "{count} 零积分",
   "unifiedGateway.pool.modelCooling": "{count} 模型冷却",
+  // 正交计数（已含在「{count} 可用」里）：账号是好的，只是这一瞬间并发占满。
+  "unifiedGateway.pool.inFlightFull": "{count} 在途已满",
+  "unifiedGateway.pool.inFlightFullHint":
+    "这些账号状态正常，只是并发额度占满（在途请求还没结束）—— 几秒后自动恢复；此刻对它们发请求会得到 503 pool_busy。",
   "unifiedGateway.pool.noAccount": "池里一个账号都没有 —— 去该平台的账号页添加后才能调通。",
   "unifiedGateway.pool.note": "统一网关没有自己的账号池 —— 它按模型名的命名空间前缀分派到三条产品线各自的池：wb-* → WorkBuddy · trae-* / traework-* / traecode-* → Trae · qoder-* → Qoder。所以这里给的是跨平台的汇总视图；选号策略是按产品线设的，改它要回该平台自己的网关页。",
   /* 命名空间行的「账号池」列：把池的归属与规模写在段内（同一池被多段共用时数字相同）。 */

@@ -728,6 +728,7 @@ function demoGatewayConfig(): GatewayConfig {
 function demoGatewayStatus(): GatewayStatus {
   const cnA = { uid: "demo-cn-a", name: t("shared.demo.account.a") };
   const cnB = { uid: "demo-cn-b", name: t("shared.demo.account.b") };
+  const cnD = { uid: "demo-cn-d", name: t("shared.demo.account.d") };
   const globalC = { uid: "demo-global-c", name: t("shared.demo.account.c") };
   const coolingUntil = Math.floor(Date.now() / 1000) + 5400;
   const accounts: GatewayPoolAccount[] = [
@@ -741,6 +742,21 @@ function demoGatewayStatus(): GatewayStatus {
       cooldownUntil: null,
       cooldownReason: null,
       disabled: false,
+    },
+    {
+      uid: cnD.uid,
+      name: cnD.name,
+      realm: "cn",
+      status: "available",
+      credits: 96,
+      cooling: false,
+      cooldownUntil: null,
+      cooldownReason: null,
+      disabled: false,
+      /* 演示「可用但在途已满」：状态照旧是 `available`（账号没问题），
+         计数那一格会说「其中 1 个在途已满」。这正是 2026-10-17 那个
+         「4 个可用却一个都跑不起来」报障的观感版本。 */
+      inFlight: 3,
     },
     {
       uid: cnB.uid,
@@ -782,7 +798,19 @@ function demoGatewayStatus(): GatewayStatus {
     baseUrl: "http://127.0.0.1:57891/v1",
     lastError: null,
     pools: {
-      cn: { total: 2, available: 1, cooling: 1, disabled: 0, expired: 0, zeroCredits: 0, totalCredits: 184.5 },
+      // cn：3 个号 = 2 可用（其中一个在途已满）+ 1 冷却。
+      // ★ `inFlightFull` 是**正交**计数，已含在 `available` 里 —— 与真实后端同形。
+      cn: {
+        total: 3,
+        available: 2,
+        cooling: 1,
+        disabled: 0,
+        expired: 0,
+        zeroCredits: 0,
+        excluded: 0,
+        inFlightFull: 1,
+        totalCredits: 280.5,
+      },
       global: { total: 1, available: 0, cooling: 0, disabled: 1, expired: 0, zeroCredits: 0, totalCredits: 8 },
     },
     accounts,

@@ -1959,6 +1959,13 @@ export interface UnifiedGatewayPool {
   total_credits?: number;
   /** Qoder 独有：此刻有模型级冷却的账号数（与账号级 `cooling` 正交）。 */
   model_cooling?: number;
+  /**
+   * **状态可用、但在途已满**的账号数（**正交计数，已含在 `available` 里**）。
+   *
+   * 缺了它就会重演「4 个可用，却一个都跑不起来」：账号是好的，只是并发占满。
+   * 目前只有 WorkBuddy 池产出（Trae / Qoder 池无在途治理 ⇒ 缺失按 0）。
+   */
+  in_flight_full?: number;
   accounts: UnifiedPoolAccount[];
 }
 

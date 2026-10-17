@@ -273,6 +273,11 @@ export const en = {
   "unifiedGateway.pool.expired": "{count} expired",
   "unifiedGateway.pool.zeroCredits": "{count} zero-credit",
   "unifiedGateway.pool.modelCooling": "{count} model-cooling",
+  // Orthogonal count (already included in "{count} available"): the account is fine,
+  // it is just at its concurrency cap right now.
+  "unifiedGateway.pool.inFlightFull": "{count} at in-flight cap",
+  "unifiedGateway.pool.inFlightFullHint":
+    "These accounts are healthy but at their concurrency cap (earlier requests are still running). They recover on their own in seconds; a request right now would get 503 pool_busy.",
   "unifiedGateway.pool.noAccount": "Empty pool — add an account on the platform that owns it before it can serve.",
   "unifiedGateway.pool.note": "The unified gateway has no pool of its own — it routes by the namespace prefix in the model name: wb-* to WorkBuddy, trae-* / traework-* / traecode-* to Trae, qoder-* to Qoder. This is a cross-platform summary; selection policy is per product line, so change it on the gateway page of that platform.",
   "unifiedGateway.nsPoolOf": "{total} total · pool {target}",

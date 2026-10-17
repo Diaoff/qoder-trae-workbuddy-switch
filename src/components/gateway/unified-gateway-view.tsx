@@ -1047,6 +1047,14 @@ export function UnifiedGatewayView({
                               {(pool.model_cooling ?? 0) > 0 && (
                                 <span>{t("unifiedGateway.pool.modelCooling", { count: pool.model_cooling ?? 0 })}</span>
                               )}
+                              {/* 在途占满也是**正交**计数（已含在 `available` 里）：
+                                  不标出来，「4 个可用」就会被读成「现在能跑 4 个」——
+                                  而请求可能直接被 503 `pool_busy` 挡回。 */}
+                              {(pool.in_flight_full ?? 0) > 0 && (
+                                <span title={t("unifiedGateway.pool.inFlightFullHint")}>
+                                  {t("unifiedGateway.pool.inFlightFull", { count: pool.in_flight_full ?? 0 })}
+                                </span>
+                              )}
                             </div>
                           </td>
                         </tr>
