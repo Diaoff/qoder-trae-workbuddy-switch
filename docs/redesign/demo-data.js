@@ -859,9 +859,13 @@ const SETTINGS = [
   {
     id: "checkin", label: "签到与积分",
     groups: [
-      { title: "自动签到", rows: [
+      /* `foot: "jitter"` = 本组底部挂「随机抖动预览」（由 demo-app.js 渲染）。
+         预览必须与开关同屏，否则「打开就抖动」这件事在原型里看不见。 */
+      { title: "自动签到", foot: "jitter", rows: [
         { label: "启用自动签到", desc: "每天定时为全部账号领取签到积分", type: "switch", value: true },
-        { label: "执行时刻", desc: "每天在此时刻触发（本地时间）", type: "time", value: "08:00" },
+        { label: "执行时刻", desc: "每天在此时刻触发（本地时间）", type: "time", value: "08:00", bind: "checkin-time" },
+        /* 新增：随机抖动（issue #27 的「另一支」）。默认**关** —— 不改变任何既有行为。 */
+        { label: "随机抖动", desc: "打开后，每次触发在设定时刻前后随机偏移，避免每天都精确落在同一分钟", type: "jitter" },
         { label: "跳过今日已签", desc: "已签到的账号不再重复请求", type: "switch", value: true },
       ]},
       { title: "积分与轮换", rows: [

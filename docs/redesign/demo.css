@@ -422,6 +422,27 @@ table.tbl tbody tr.is-current { background: color-mix(in oklab, var(--primary) 7
 }
 .inp:focus { border-color: var(--ring); box-shadow: 0 0 0 3px color-mix(in oklab, var(--ring) 18%, transparent); }
 
+/* ── 随机抖动预览（issue #27 的另一支）──
+   贴在「自动签到」卡片底部：开关一翻，三格时刻立刻变化 —— 原型必须让评审
+   **当场看见差异**，而不是靠文字描述「会随机偏移」。 */
+/* `.srow .lab span` 会把「新增」徽章也变成块级灰字 —— 徽章因此用 <i>，
+   并在这里补回行内基线（`.badge` 自身的 inline-flex 被上一条更具体的选择器盖掉）。 */
+.srow .lab i.badge { font-style: normal; margin-left: 4px; vertical-align: 1px; }
+.jitter-preview {
+  padding: 11px 16px 13px; border-top: 1px dashed var(--border);
+  background: color-mix(in oklab, var(--primary) 4%, transparent);
+}
+.jcells { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 7px; }
+.jcell {
+  display: flex; align-items: baseline; gap: 7px; padding: 5px 10px; border-radius: 8px;
+  border: 1px solid var(--border); background: var(--card);
+}
+.jcell i { font-style: normal; font-size: 11px; color: var(--muted-fg); }
+.jcell b { font-size: 13px; font-weight: 600; letter-spacing: .01em; }
+.jcell em { font-style: normal; font-size: 10.5px; color: var(--muted-fg); }
+.jcell em.hit { color: var(--primary); font-weight: 600; }
+.jitter-preview .jnote { margin: 8px 0 0; line-height: 1.5; }
+
 /* 图表 */
 .bars { display: flex; align-items: flex-end; gap: 5px; height: 150px; padding-top: 8px; }
 .bars .bar { flex: 1; display: flex; flex-direction: column; justify-content: flex-end; gap: 3px; min-width: 0; position: relative; }

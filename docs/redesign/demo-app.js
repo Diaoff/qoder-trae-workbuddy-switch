@@ -46,6 +46,9 @@ const state = {
   proxyOn: false,
   /* 最近一次批量签到的结果：{ ok, failIds }。null 表示没有可展示的汇总。 */
   checkinResult: null,
+  /* 随机抖动（issue #27 的「另一支」）：**默认关** —— 打开才改变触发时刻，
+     默认值不动任何既有行为。幅度三档见 `JITTER_STEPS`。 */
+  jitter: { on: false, minutes: 15 },
   /* 全局备份（§3.14）：parts 懒初始化为「全部作用域 × 全部内容」。
      creds 默认 false —— 安全默认，与 §2.5「默认拒绝」同源。 */
   backup: {
@@ -1585,6 +1588,7 @@ function viewSettings() {
           return `<section class="card">
             <div class="card-head"><h3>${esc(g.title)}</h3></div>
             ${rows.map((r) => settingsRow(r)).join("")}
+            ${g.foot === "jitter" ? jitterPreviewHtml() : ""}
           </section>`;
         }).join("")}
       </div>
@@ -1593,14 +1597,113 @@ function viewSettings() {
 }
 
 function settingsRow(r) {
+  /* 抖动行自带「开关 + 幅度分段器」，形态与普通 switch 行不同，故整体交给渲染函数。 */
+  if (r.type === "jitter") return jitterRowHtml();
   const label = `<div class="lab"><b>${esc(r.label)}</b><span>${esc(r.desc || "")}</span></div>`;
   let ctl = "";
   if (r.type === "switch") ctl = `<button class="switch${r.value ? " on" : ""}" data-act="toggle|${esc(r.label)}"></button>`;
   else if (r.type === "select") ctl = `<select class="inp" data-act="noop">${r.options.map((o) => `<option${o === r.value ? " selected" : ""}>${esc(o)}</option>`).join("")}</select>`;
-  else if (r.type === "number" || r.type === "time") ctl = `<input class="inp" type="${r.type === "time" ? "time" : "text"}" value="${esc(r.value)}" />`;
+  else if (r.type === "number" || r.type === "time") ctl = `<input class="inp" type="${r.type === "time" ? "time" : "text"}" value="${esc(r.value)}"${r.bind ? ` data-bind="${esc(r.bind)}"` : ""} />`;
   else if (r.type === "button") ctl = `<button class="btn sm danger" data-act="setting-action|${esc(r.label)}">${esc(r.value)}</button>`;
   else ctl = `<span class="mono muted">${esc(r.value)}</span>`;
   return `<div class="srow">${label}${ctl}</div>`;
+}
+
+/* ══════════════════════ 随机抖动（签到执行时刻）══════════════════════
+ *
+ * 需求（issue #27 的另一支）：给「执行时刻」加一个开关，打开后每次触发在该时刻
+ * 前后随机偏移一点，避免每天都精确落在同一分钟。
+ *
+ * 原型要回答的问题不是「能不能抖」，而是**抖了之后用户看得懂吗**：
+ *   · 开/关的差异必须一眼可见（预览直接给出未来三次的真实时刻与偏移量）；
+ *   · 偏移必须**可复现** —— 同一 (日期, 幅度) 永远得到同一时刻，否则用户没法解释
+ *     「今天为什么这个点签的」，测试也没法断言。故这里用确定性派生，不用 Math.random。
+ */
+
+/** 幅度三档（分钟）。只给三档：原型验证的是「开关是否被理解」，不是参数空间。 */
+const JITTER_STEPS = [5, 15, 30];
+
+/** 「执行时刻」的当前值（预览基准点）。取自 SETTINGS，避免与上面那一行漂移。 */
+function checkinBaseTime() {
+  const group = SETTINGS.find((s) => s.id === "checkin");
+  const row = group && group.groups.flatMap((g) => g.rows).find((r) => r.type === "time");
+  return (row && row.value) || "08:00";
+}
+
+/**
+ * 抖动偏移（分钟）：由 (日期, 幅度) 派生的**确定性**伪随机，落在 [-max, +max]。
+ *
+ * 用 FNV-1a 而不是 `Math.random()`：真实实现同样要按 (任务, 日期) 派生偏移
+ * （随机源会让「同一份配置两次运行结果不同」，排程不可复现、测试无法断言）。
+ * 原型的数字因此与将来后端算出的形状一致 —— 只是这里的哈希写在前端便于演示。
+ */
+function jitterOffset(dateStr, max) {
+  let h = 2166136261;
+  for (let i = 0; i < dateStr.length; i += 1) {
+    h ^= dateStr.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  return ((h >>> 0) % (max * 2 + 1)) - max;
+}
+
+/** `"08:00"` + n 分钟 → `"07:52"`；跨零点回绕，绝不产出 `24:xx`。 */
+function shiftTime(hhmm, minutes) {
+  const [h, m] = hhmm.split(":").map(Number);
+  const total = (((h * 60 + m + minutes) % 1440) + 1440) % 1440;
+  return `${String(Math.floor(total / 60)).padStart(2, "0")}:${String(total % 60).padStart(2, "0")}`;
+}
+
+/** 演示用的三天：**固定日期**，保证截图与评审看到的是同一组数字。 */
+const JITTER_DAYS = [
+  { iso: "2026-10-17", label: "今天" },
+  { iso: "2026-10-18", label: "明天" },
+  { iso: "2026-10-19", label: "后天" },
+];
+
+/** 设置行：开关 + （开启时）幅度分段器。 */
+function jitterRowHtml() {
+  const j = state.jitter;
+  const seg = j.on
+    ? `<div class="seg" role="group" aria-label="抖动幅度">${JITTER_STEPS.map(
+        (m) =>
+          `<button class="${j.minutes === m ? "on" : ""}" data-act="jitter-range|${m}" aria-pressed="${j.minutes === m}">±${m} 分</button>`,
+      ).join("")}</div>`
+    : "";
+  return `<div class="srow">
+    <div class="lab">
+      <b>随机抖动 <i class="badge info">新增</i></b>
+      <span>${
+        j.on
+          ? `每次触发在 <b>${esc(checkinBaseTime())}</b> 前后 <b>±${j.minutes} 分钟</b>内偏移（每天不同，同一天恒定）`
+          : "关闭时严格按「执行时刻」准点触发（当前行为，默认）"
+      }</span>
+    </div>
+    ${seg}
+    <button class="switch${j.on ? " on" : ""}" role="switch" aria-checked="${j.on}"
+      aria-label="随机抖动" data-act="jitter-toggle"></button>
+  </div>`;
+}
+
+/** 预览：未来三次触发的真实时刻 + 偏移量。开关关掉时三格都是准点，差异一眼可见。 */
+function jitterPreviewHtml() {
+  const j = state.jitter;
+  const base = checkinBaseTime();
+  const cells = JITTER_DAYS.map(({ iso, label }) => {
+    const off = j.on ? jitterOffset(iso, j.minutes) : 0;
+    const delta = off === 0 ? "准点" : `${off > 0 ? "+" : "−"}${Math.abs(off)} 分`;
+    return `<span class="jcell">
+      <i>${label}</i>
+      <b class="mono">${shiftTime(base, off)}</b>
+      <em class="${off === 0 ? "" : "hit"}">${delta}</em>
+    </span>`;
+  }).join("");
+  return `<div class="jitter-preview">
+    <span class="tiny muted">${
+      j.on ? `未来三次触发（基准 ${base}，±${j.minutes} 分钟）` : `未来三次触发（基准 ${base}，抖动已关闭）`
+    }</span>
+    <div class="jcells">${cells}</div>
+    <p class="tiny muted jnote">偏移由 (日期, 幅度) 派生：同一组合永远得到同一时刻 —— 刷新、重启都不会漂移，便于排查「今天为什么是这个点签的」。</p>
+  </div>`;
 }
 
 /* ══════════════════════ 全局备份与恢复（PLAN §3.14）══════════════════════ */
@@ -2699,6 +2802,26 @@ document.addEventListener("click", (e) => {
     }
     case "toggle": stop(); node.classList.toggle("on");
       toast("ok", `${node.classList.contains("on") ? "已开启" : "已关闭"}：${a1}`); break;
+    /* ── 随机抖动（签到执行时刻）──
+       必须**重渲染**而不是只翻 CSS 类：预览区的三次时刻要跟着变，
+       否则评审点完开关看到的仍是准点数字，会以为功能没生效。 */
+    case "jitter-toggle": {
+      stop();
+      state.jitter.on = !state.jitter.on;
+      renderContent();
+      toast(
+        "ok",
+        state.jitter.on ? `已开启随机抖动（±${state.jitter.minutes} 分钟）` : "已关闭随机抖动",
+        state.jitter.on ? "每天在设定时刻前后随机偏移；同一天内恒定，可复现" : "恢复为严格准点触发",
+      );
+      break;
+    }
+    case "jitter-range": {
+      stop();
+      state.jitter.minutes = Number(a1);
+      renderContent();
+      break;
+    }
     case "copy": stop();
       if (navigator.clipboard) navigator.clipboard.writeText(a1).catch(() => {});
       toast("ok", "已复制到剪贴板"); break;
@@ -2904,6 +3027,18 @@ $("#drawer-close").addEventListener("click", closeDrawer);
 $("#drawer-overlay").addEventListener("click", closeDrawer);
 $("#palette-overlay").addEventListener("click", (e) => { if (e.target.id === "palette-overlay") closePalette(); });
 $("#hint-close").addEventListener("click", () => $("#hint").classList.add("hidden"));
+
+/* 「执行时刻」改了要立刻反映到抖动预览 —— 否则评审把 08:00 改成别的时刻后，
+   预览仍显示旧基准，会误判成「预览是死的」。改动写回 SETTINGS 再重渲染。 */
+document.addEventListener("change", (e) => {
+  const el = e.target && e.target.closest && e.target.closest("[data-bind]");
+  if (!el || !el.value) return;
+  const group = SETTINGS.find((s) => s.id === "checkin");
+  const row = group && group.groups.flatMap((g) => g.rows).find((r) => r.bind === el.dataset.bind);
+  if (!row) return;
+  row.value = el.value;
+  renderContent();
+});
 
 /* 确认 Dialog：按钮走 data-act 委托；遮罩点击沿用现有 overlay 模式 */
 $("#confirm-overlay").addEventListener("click", (e) => { if (e.target.id === "confirm-overlay") closeConfirm(); });
