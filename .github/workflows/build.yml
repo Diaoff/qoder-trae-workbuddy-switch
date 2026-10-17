@@ -138,6 +138,8 @@ jobs:
       - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
           target: ${{ matrix.target }}
+          # 同上：它的缓存 key 不含仓库名，改名后会把旧绝对路径的 `target/` 恢复回来。
+          cache: false
           # ⚠️ 不要在这里加 `build-warnings` —— `@v1`（tag）**没有这个输入**。
           # 2026-09-22 实测：四个 job 各报一次
           #   Unexpected input(s) 'build-warnings', valid inputs are

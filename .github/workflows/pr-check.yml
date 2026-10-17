@@ -82,6 +82,12 @@ jobs:
       - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
           components: rustfmt, clippy
+          # ★ 关掉它自带的缓存：它的 key **不含仓库名**，而 `target/` 里的 build-script
+          # 产物记录的是**绝对路径**。仓库改名后它会把旧路径的缓存恢复回来，tauri 的
+          # build script 于是去找一个只存在于旧目录下的文件（2026-10-17 实测：
+          # `failed to read plugin permissions: .../app_hide.toml`，路径里旧名新名并存）。
+          # 缓存统一走下面那个 key 含 `github.repository` 的步骤。
+          cache: false
           # ⚠️ 这个 action 的 `rustflags` 默认就是 `-D warnings`（构造日志里逐字输出）。
           # 也就是说**不做任何配置，CI 就会把警告当错误**。这是好事，但必须知道：
           # 本机 Windows 上看不到的 linux/mac 目标代码，其警告只有这里会暴露。
