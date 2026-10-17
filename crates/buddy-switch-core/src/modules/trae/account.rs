@@ -1814,6 +1814,9 @@ pub fn checkin_url_for(variant: TraeVariant) -> String {
 }
 
 #[cfg(test)]
+// 同 `profile.rs`：本模块的 fixture 辅助只被 `#[cfg(windows)]` 用例消费，
+// Linux / macOS 上必然「未使用」，而 CI 的 `cargo test` 带 `-D warnings`。
+#[cfg_attr(not(windows), allow(dead_code))]
 mod tests {
     use super::*;
     use std::sync::{Arc, Mutex};

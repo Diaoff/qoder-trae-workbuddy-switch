@@ -2333,6 +2333,12 @@ pub fn overview_for(variant: TraeVariant) -> Value {
 }
 
 #[cfg(test)]
+// 本模块的 fixture 辅助（`base64url` / `fixture_uids` 等）只被 `#[cfg(windows)]`
+// 用例消费（真机 `storage.json` 布局与 mtime 活跃度都是 Windows 特有语义）。
+// Linux / macOS 上那些用例被 cfg 掉，辅助函数便无人引用 —— 而 CI 的 `cargo test`
+// 带 `-D warnings`，会把「平台裁剪造成的假未使用」判成编译错误。
+// 只在非 Windows 放行：Windows 上它们确实被用到，放行反而会掩盖真实的未使用项。
+#[cfg_attr(not(windows), allow(dead_code))]
 mod tests {
     use super::*;
 
