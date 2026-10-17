@@ -225,6 +225,10 @@ export const zh = {
 
   // 趋势视图
   "wbStats.usage.trend.total": "区间总 Token",
+  "wbStats.usage.trend.totalTitle": "仅统计客户端会话日志；网关用量单独列为「网关 Token」，两者不加总（配置重叠时同一请求会各记一次）",
+  "wbStats.usage.trend.gatewayTokens": "网关 Token",
+  "wbStats.usage.trend.gatewayTokensHint": "仅网关日志",
+  "wbStats.usage.trend.gatewayTokensTitle": "仅统计本机网关转发的请求；客户端亲用时不会计入，故两项不加总",
   "wbStats.usage.trend.avg": "日均",
   "wbStats.usage.trend.avgHint": "按自然日平均",
   "wbStats.usage.trend.peak": "峰值",

@@ -198,6 +198,10 @@ export const en = {
   "wbStats.usage.chart.export": "Export as image",
 
   "wbStats.usage.trend.total": "Total tokens",
+  "wbStats.usage.trend.totalTitle": "Client session logs only. Gateway traffic is listed separately as “Gateway tokens” — the two are never summed, since overlapping setups record the same request twice.",
+  "wbStats.usage.trend.gatewayTokens": "Gateway tokens",
+  "wbStats.usage.trend.gatewayTokensHint": "Gateway log only",
+  "wbStats.usage.trend.gatewayTokensTitle": "Requests relayed by the local gateway only. Direct client usage is not counted here, so the two figures are never summed.",
   "wbStats.usage.trend.avg": "Daily average",
   "wbStats.usage.trend.avgHint": "Averaged by calendar day",
   "wbStats.usage.trend.peak": "Peak",

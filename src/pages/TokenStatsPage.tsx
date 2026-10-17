@@ -213,10 +213,19 @@ function TrendView({
     );
   }
 
+  /** 窗口内网关用量（与下面那张网关小图**同源同窗**，两处必须对齐）。 */
+  const gatewayTotal = useMemo(
+    () => gatewayColumns.reduce((sum, column) => sum + column.total, 0),
+    [gatewayColumns],
+  );
+
   const tiles: StatTile[] = [
-    { icon: MessagesSquare, label: t("wbStats.usage.trend.total"), value: compactTokens(total), hint: windowLabel(viewWindow) },
+    { icon: MessagesSquare, label: t("wbStats.usage.trend.total"), value: compactTokens(total), hint: windowLabel(viewWindow), title: t("wbStats.usage.trend.totalTitle") },
     { icon: TrendingUp, label: t("wbStats.usage.trend.avg"), value: compactTokens(average), hint: t("wbStats.usage.trend.avgHint") },
     { icon: Gauge, label: t("wbStats.usage.trend.peak"), value: compactTokens(peak.total), hint: peak.label || undefined },
+    /* 网关量单独成 tile 且**不与上面求和**：客户端与网关是两条独立记录（配置重叠时
+       同一请求两处各记一次），求和的数字好看但藏起重复计数。 */
+    { icon: Server, label: t("wbStats.usage.trend.gatewayTokens"), value: compactTokens(gatewayTotal), hint: t("wbStats.usage.trend.gatewayTokensHint"), title: t("wbStats.usage.trend.gatewayTokensTitle") },
     { icon: Coins, label: t("wbStats.usage.trend.models"), value: exactTokens(slices.length) },
   ];
 
@@ -535,13 +544,22 @@ export default function TokenStatsPage({
 
   const source = useMemo(() => (stats ? mergeSources(stats.sources) : null), [stats]);
   const hasSource = (stats?.sources.length ?? 0) > 0;
-  /** 有来源但**一点用量都没有**（区分于「被视图参数筛没」，后者在视图内处理）。 */
-  const trulyEmpty =
-    Boolean(source) &&
-    source!.summary.records === 0 &&
-    source!.daily.length === 0 &&
-    source!.models.length === 0 &&
-    source!.sessions.length === 0;
+  /* 网关用量（`gatewayTrend`，扫 `gateway_logs`）是客户端（扫 `projects/*.jsonl`）
+     之外的另一条记录源，按窗口取。 */
+  const gatewayInWindow = useMemo(() => {
+    const keys = new Set(calendarWindowKeys(viewWindow));
+    return (gatewayTrend?.days ?? []).reduce(
+      (sum, day) => (keys.has(day.key) ? sum + day.total : sum),
+      0,
+    );
+  }, [gatewayTrend, viewWindow]);
+  /**
+   * 有来源但**当前窗口内**一点用量都没有（区分于「被视图参数筛没」，后者在视图内处理）。
+   *
+   * 两个数据源都要按窗口判：客户端为 0 而网关有量时（非 WorkBuddy 客户端如 Pi 只写
+   * 网关日志），整页空态会把 `TrendView` 里唯一有值的网关小图一并吞掉。 */
+  const clientInWindow = (source?.summary.records ?? 0) > 0;
+  const trulyEmpty = Boolean(source) && !clientInWindow && gatewayInWindow === 0;
 
   return (
     /* ⚠️ 页头 / 子 Tab / **视图参数条**都由**上层** `UsagePage` 统一渲染
