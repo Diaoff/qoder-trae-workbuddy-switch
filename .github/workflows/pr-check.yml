@@ -134,22 +134,16 @@ jobs:
             # ★ 失败时把诊断抬成 `::error::` 注解。
             #
             # 判据：job 日志的下载接口要**仓库管理员权限**（匿名 API 返回 403），
-            # 而 check-run 注解是**公开可读**的。没有这一步，「clippy 挂了」在
-            # 仓库外只能看到一句 exit code 1 —— 2026-10-17 就是这样盲猜了一轮
-            # （Windows 上 clippy 全绿，Linux 才有那条诊断）。
+            # 而 check-run 注解是**公开可读**的。没有这一步，「clippy 挂了」在仓库外
+            # 只能看到一句 exit code 1 —— 2026-10-17 就是这样盲猜了两轮。
             #
-            # 只抬前 20 条：注解是给人看的摘要，完整清单仍在 clippy.log 里。
-            #
-            # ⚠️ `--message-format=short` 的一行是 `src/x.rs:3:5: error: ...` ——
-            # 诊断**不以** `error` 开头，所以匹配的是 `error(` / `error:` 出现在行内。
-            # 一条都没匹配上时（cargo 自身报错、ICE、feature 冲突…）退化为尾部 40 行，
-            # 否则注解里又是一句「exit code 101」，等于没抬。
-            picked=$(grep -E "(error|warning)(\[|:)" clippy.log | head -20)
-            if [ -z "$picked" ]; then
-              picked=$(tail -40 clippy.log)
-            fi
-            printf '%s\n' "$picked" | while IFS= read -r line; do
-              printf '::error::%s\n' "${line:0:900}"
+            # 顺序有讲究：注解有条数上限，**先抬尾部**。真正的原因常在
+            # `Caused by:` 之后，而且**不含** `error:` 字样（build script 失败、
+            # feature 冲突就是这样），只按关键字 grep 会把它整段漏掉。
+            tail_part=$(tail -14 clippy.log)
+            diag=$(grep -E "(error|warning)(\[|:)" clippy.log | head -8)
+            printf '%s\n%s\n' "$tail_part" "$diag" | while IFS= read -r line; do
+              [ -n "$line" ] && printf '::error::%s\n' "${line:0:900}"
             done
             exit "$status"
           fi
