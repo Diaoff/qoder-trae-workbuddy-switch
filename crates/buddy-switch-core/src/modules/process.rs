@@ -935,6 +935,25 @@ pub(crate) fn is_app_bundle(path: &Path) -> bool {
     path.is_dir() && path.join("Contents").join("Info.plist").is_file()
 }
 
+/// `.app` 内可执行体的真实路径（macOS）。
+///
+/// 名称取自 `Info.plist` 的 `CFBundleExecutable`。该键与包名**不同**：实测两个
+/// WorkBuddy bundle 的可执行体均为 `Electron`，按包名拼接得到的路径不存在。
+/// 此错误不表现为子进程启动失败，而是被 [`crate::modules::at_rest::fetch_build_key`]
+/// 首行的 `exe.exists()` 判为 `ClientMissing`。
+///
+/// plist 不可读时返回 `None`，由调用方决定回落。
+#[cfg(target_os = "macos")]
+pub(crate) fn bundle_executable(app: &Path) -> Option<PathBuf> {
+    let plist = app.join("Contents").join("Info.plist");
+    let name = crate::modules::identity::read_bundle_executable(&plist)?;
+    let exe = app.join("Contents").join("MacOS").join(&name);
+    // plist 属外部输入。含路径分隔符或 `.` / `..` 的名称会拼出 `Contents/MacOS`
+    // 之外的路径；`starts_with` 是词法比较，对 `MacOS/../../x` 仍判真，不可用作护栏。
+    let safe = !name.contains('/') && !name.contains('\\') && name != "." && name != "..";
+    safe.then_some(exe)
+}
+
 /// 该 region 的 app bundle 名（含 CodeBuddy 变体）。
 #[cfg(target_os = "macos")]
 fn macos_app_bundle_names(region: Region) -> &'static [&'static str] {
@@ -2282,6 +2301,57 @@ C:\\Users\\X\\Programs\\workbuddy-switch\\workbuddy-switch.exe
         assert!(!is_app_bundle(&plain)); // 无 Info.plist
 
         assert!(!is_app_bundle(&dir.join("missing.app"))); // 不存在
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// 回归：可执行体名取自 plist，与包名无关（两个 WorkBuddy bundle 均为 `Electron`）。
+    ///
+    /// 可证伪：`bundle_executable` 改为按包名拼接时，第一条断言得到 `WorkBuddy AI`，
+    /// 与期望的 `Electron` 不符。
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn bundle_executable_comes_from_the_plist_not_the_bundle_name() {
+        let dir = std::env::temp_dir().join(format!(
+            "buddy-switch-bundle-exe-test-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        let app = dir.join("WorkBuddy AI.app");
+        std::fs::create_dir_all(app.join("Contents").join("MacOS")).unwrap();
+        std::fs::write(
+            app.join("Contents").join("Info.plist"),
+            "<plist><dict><key>CFBundleExecutable</key><string>Electron</string></dict></plist>",
+        )
+        .unwrap();
+
+        assert_eq!(
+            bundle_executable(&app),
+            Some(app.join("Contents").join("MacOS").join("Electron"))
+        );
+
+        // 无 plist 或键缺失时返回 None，不猜测名称。
+        std::fs::remove_file(app.join("Contents").join("Info.plist")).unwrap();
+        assert_eq!(bundle_executable(&app), None);
+
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// plist 中的名称含路径分隔符时，不得拼出 `Contents/MacOS` 之外的路径。
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn bundle_executable_rejects_names_that_escape_contents_macos() {
+        let dir = std::env::temp_dir().join(format!(
+            "buddy-switch-bundle-escape-test-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        let app = dir.join("WorkBuddy AI.app");
+        std::fs::create_dir_all(app.join("Contents").join("MacOS")).unwrap();
+        std::fs::write(
+            app.join("Contents").join("Info.plist"),
+            "<plist><dict><key>CFBundleExecutable</key><string>../../../bin/sh</string></dict></plist>",
+        )
+        .unwrap();
+
+        assert_eq!(bundle_executable(&app), None);
         std::fs::remove_dir_all(dir).unwrap();
     }
 }
