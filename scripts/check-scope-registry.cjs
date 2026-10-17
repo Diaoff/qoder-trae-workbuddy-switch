@@ -7390,6 +7390,53 @@ check("★ 策略哨兵值前后端逐字一致（否则下拉是假开关）", 
   return "3 个哨兵值前后端逐字一致";
 });
 
+check("★ 三个网关页的账号池策略档位必须一致（含「随机」）", () => {
+  /* 后端 `account_strategy::AccountStrategy` 是**三平台共用**的枚举（Current / Pinned /
+     MaxCredits / Random），但「策略选项」是每页各自传给池卡的 `autoOptions`。任一页少给一档，
+     症状是**该平台静默失去那个策略**：界面上没有这一项，用户根本无从知道后端支持它，
+     而合并另一页时又会被当成「本来就没有」—— 排查成本极高（2026-10-17 用户报「随机模式没有了」，
+     真因就是 WorkBuddy 页只传了两档）。
+     ⚠️ 这里刻意断言**页面文件**而不是池卡默认值：默认值只覆盖「没传」的情况，
+     三页都传了自己的一份，改默认值救不了漏传。 */
+  const pages = [
+    ["src/pages/ApiServicePage.tsx", "strategy"],
+    ["src/pages/TraeApiServicePage.tsx", "preferredUid"],
+    ["src/pages/QoderApiServicePage.tsx", "preferredUid"],
+  ];
+  for (const [page, writeBack] of pages) {
+    const source = stripComments(fs.readFileSync(path.join(ROOT, page), "utf8"));
+    for (const option of ["AUTO_OPTION", "MAX_CREDITS_OPTION", "RANDOM_OPTION"]) {
+      if (!source.includes(option)) {
+        throw new Error(`${page} 的账号池 autoOptions 缺 ${option} —— 三平台策略档位必须一致`);
+      }
+    }
+    /* 选项有 ⇒ 写回路径也得有：`autoOptions` 里出现了哨兵却没落到持久化上，
+       选了会被当成一个不存在的 uid 静默回落自动择优。
+       ⚠️ 两平台写回形态不同：Trae / Qoder 直接存哨兵串（`preferredUid`，由后端
+       `pool::parse_preferred` 解释），WorkBuddy 存 `AccountStrategy`，故后者的
+       `random` 哨兵必须**显式**映射成 `persist({ kind: "random" })`。 */
+    if (writeBack === "strategy") {
+      if (!/persist\(\{\s*kind:\s*"random"\s*\}\)/.test(source)) {
+        throw new Error(`${page} 没有把 RANDOM_OPTION 映射到 persist({ kind: "random" })`);
+      }
+      if (!/strategy\.kind === "random"/.test(source)) {
+        throw new Error(`${page} 没有把 kind: "random" 读回成下拉值（保存后选项会弹回「不指定」）`);
+      }
+    } else if (!/persist\(\{\s*preferredUid/.test(source)) {
+      throw new Error(`${page} 没有把哨兵值写回 preferredUid`);
+    }
+  }
+  const types = stripComments(fs.readFileSync(path.join(ROOT, "src/lib/types.ts"), "utf8"));
+  /* 终止符取**行尾的分号**：union 成员里自带分号（`{ kind: "pinned"; account_id: string }`），
+     用 `([\s\S]*?);` 会在第一个成员内部就截断，后面几个变体根本进不了检查范围。 */
+  const union = /export type AccountStrategy =([\s\S]*?);\s*(?:\n|$)/.exec(types);
+  if (!union) throw new Error("src/lib/types.ts 找不到 AccountStrategy union");
+  if (!/"random"/.test(union[1])) {
+    throw new Error("AccountStrategy union 缺 `{ kind: \"random\" }` —— 后端枚举已有 Random");
+  }
+  return "3 个网关页 × 3 档策略 + union 一致";
+});
+
 check("★ Q6「登录态快照」不得升为 Capability（D40）", () => {
   /* Capability 语义是「跨目的地复用的功能门控」，而登录态快照只归 TraeSettingsPage
      一个分组所有。升格会牵动 union + 后端枚举 + 两个数组 + 跨语言护栏，代价与收益不成比例。 */

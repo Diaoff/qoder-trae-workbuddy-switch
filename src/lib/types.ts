@@ -1783,7 +1783,19 @@ export interface ModelProbeAdoptRecord {
 export type AccountStrategy =
   | { kind: "current" }
   | { kind: "pinned"; account_id: string }
-  | { kind: "max_credits" };
+  | { kind: "max_credits" }
+  /**
+   * 随机：在**合格候选**内均匀抽签（不看权重）。
+   *
+   * 与「自动择优」的区别：自动择优是**有偏**的（积分多 / 闲置久的号更容易被选中），
+   * 用户要「把额度平均分摊到几个号」时只有均匀抽签满足得了。
+   * 排除 / 禁用 / 冷却 / 模型冷却 / 在途满**照样生效** —— 只影响「在合格候选里挑谁」。
+   *
+   * ⚠️ 三个平台**都必须**能选它：后端 `account_strategy::AccountStrategy::Random`
+   * 是共用枚举，前端少一个选项 = 该能力在这一平台静默消失（见
+   * `check-scope-registry.cjs` 的「三平台策略选项一致」）。
+   */
+  | { kind: "random" };
 
 /** 某 region 的策略 + 当前选用账号（selected 与 AccountMeta 同构）。 */
 export interface AccountStrategyView {

@@ -5,7 +5,13 @@ import { useSearchParams } from "react-router-dom";
 import { toast } from "sonner";
 
 import { ApiKeyTable } from "@/components/gateway/api-key-table";
-import { AccountPoolCard, AUTO_OPTION, WB_POOL_TILES } from "@/components/gateway/account-pool-card";
+import {
+  AccountPoolCard,
+  AUTO_OPTION,
+  MAX_CREDITS_OPTION,
+  RANDOM_OPTION,
+  WB_POOL_TILES,
+} from "@/components/gateway/account-pool-card";
 import { IntegrationGuide } from "@/components/gateway/integration-guide";
 import { ModelList } from "@/components/gateway/model-list";
 import { ModelProbeCard } from "@/components/gateway/model-probe-card";
@@ -53,14 +59,12 @@ import { useGatewayStore } from "@/stores/gateway";
 const LOOPBACK = "127.0.0.1";
 const LAN = "0.0.0.0";
 
-/**
- * 「按实时积分择优」的哨兵值。
- *
- * 它与 [`AUTO_OPTION`] 一样不是 uid：WorkBuddy 的选号策略有三档
- * （跟随登录态 / 指定账号 / 实时积分择优），而池卡只有一个「指定账号」下拉，
- * 故把非账号的两档也放进同一个下拉里，在边界处换成策略。
- */
-const MAX_CREDITS_OPTION = "__max_credits__";
+/* 「按实时积分择优」/「随机」两个哨兵值从 `account-pool-card` 导入（**不**在本页另写一份）：
+ * 它们不是 uid，而是 `AccountStrategy` 的两档，与 Trae / Qoder 侧逐字共用 —— 同一份真值
+ * 在两个地方各写一次，漂移的后果是「用户选了随机、后端当成一个不存在的 uid 静默回落
+ * 自动择优」，界面上完全看不出来。WorkBuddy 的选号策略有四档
+ * （跟随登录态 / 指定账号 / 实时积分择优 / 随机），而池卡只有一个「指定账号」下拉，
+ * 故把非账号的三档也放进同一个下拉里，在 `onPreferredChange` 的边界处换成策略。 */
 
 /** 无启用中的 Key 时返回 null，由渲染处给出占位提示文案。 */
 function representativeKey(keys: ApiKeyRecord[], region: Region): string | null {
@@ -587,7 +591,9 @@ function RegionPoolCard({ region }: { region: Region }) {
       ? strategy.account_id
       : strategy.kind === "max_credits"
         ? MAX_CREDITS_OPTION
-        : "";
+        : strategy.kind === "random"
+          ? RANDOM_OPTION
+          : "";
 
   async function persist(next: AccountStrategy) {
     setSaving(true);
@@ -604,6 +610,12 @@ function RegionPoolCard({ region }: { region: Region }) {
   function onPreferredChange(next: string) {
     if (next === MAX_CREDITS_OPTION) {
       void persist({ kind: "max_credits" });
+      return;
+    }
+    /* 随机：合格候选内**均匀**抽签（不按权重）。与 Trae / Qoder 侧同一档 ——
+       后端 `AccountStrategy::Random` 是三平台共用枚举，这里少一档就是该平台静默失去它。 */
+    if (next === RANDOM_OPTION) {
+      void persist({ kind: "random" });
       return;
     }
     if (next === AUTO_OPTION || next === "") {
@@ -683,6 +695,7 @@ function RegionPoolCard({ region }: { region: Region }) {
       autoOptions={[
         { value: AUTO_OPTION, label: t("shared.gateway.pool.preferredAuto") },
         { value: MAX_CREDITS_OPTION, label: t("shared.gateway.pool.strategyMaxCredits") },
+        { value: RANDOM_OPTION, label: t("shared.gateway.pool.strategyRandom") },
       ]}
       // 不传 `title`：与 Trae 侧一致用默认的「账号池」——版本由**页头切换器**承担，
       // 卡内再挂一次版本后缀只是噪音（Trae 的池卡同样不标区域）。
