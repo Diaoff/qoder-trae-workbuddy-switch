@@ -30,7 +30,7 @@ import { useAccountsStore } from "@/stores/accounts";
  *
  * 它们改的是**本应用**的状态 —— 界面语言、主题偏好、系统登录项、GitHub 更新源，
  * 读的也是**本应用**的版本号（`update::APP_VERSION`），与 WorkBuddy / Trae 两条
- * 产品线无关。`docs/parity` 早已把它们定性为「应用级能力 / 全局共用项，不计为
+ * 产品线无关。`docs/specs` 早已把它们定性为「应用级能力 / 全局共用项，不计为
  * Trae 差距」（`trae-parity-matrix.md:103,231,236`、`trae-parity-design.md:225`）。
  *
  * 与 `settings-primitives.tsx` 的分工：那里共享**纯版式原语**（无取数、无判断），

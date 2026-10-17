@@ -27,7 +27,7 @@
 #
 #   docker compose up -d          # 见 docker-compose.yml（默认只发布到 127.0.0.1）
 #
-# 详细说明与安全须知见 `docs/DOCKER.md`。
+# 详细说明与安全须知见 `docs/guides/DOCKER.md`。
 
 # =============================================================================
 # 阶段 1 · 前端：产出 dist/
@@ -91,7 +91,7 @@ RUN chmod +x /usr/local/bin/entrypoint.sh
 # 数据目录。CLI 对 `BUDDY_SWITCH_HOME` 是 **fail-closed** 的：指向不存在或非绝对的
 # 目录会**拒绝启动**（防的是「以为在隔离目录、实际写到真实数据上」）。
 # entrypoint 负责 `mkdir -p`，这里先把目录建好并交给 buddy，让**命名卷**首次创建时
-# 能继承正确的属主；**bind mount** 需要使用者自己 chown（见 docs/DOCKER.md）。
+# 能继承正确的属主；**bind mount** 需要使用者自己 chown（见 docs/guides/DOCKER.md）。
 RUN mkdir -p /data && chown -R buddy:buddy /data
 VOLUME ["/data"]
 

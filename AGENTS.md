@@ -31,3 +31,24 @@ Managed by Trellis. Edits outside this block are preserved; edits inside may be 
 
 - Use Conventional Commit type prefixes such as `feat:`, `fix:`, and `docs:`.
 - Write the commit subject and body in Chinese by default. Use English only when the user explicitly requests it.
+
+## 文档规范（Documentation Layout）
+
+`docs/` 按**生命周期**分区，入口是 [`docs/README.md`](docs/README.md)（文档地图）。**新增或移动文档前先读它。**
+
+| 目录 | 放什么 | 更新策略 |
+|:--|:--|:--|
+| `docs/guides/` | 安装、开发、客户端接入步骤 | 跟版本更新 |
+| `docs/policies/` | 许可、免责声明（README 引用） | 极少 |
+| `docs/specs/` | 现行架构与决策（`PLAN.md` / `P*-ARCH.md` / `DECISIONS.md` / `VOCABULARY.md`） | **改行为就同步改** |
+| `docs/history/` | 已完结的一次性报告（审计、探针、调研、旧方案） | **只读，不再改** |
+| `docs/prototype/` | 原型 + JSDOM 校验套件 | 新交互先进这里 |
+| `docs/releases/` | 每版发布说明（`gen-release-notes.mjs` 约定路径） | 每版一篇 |
+
+硬性约定：
+
+- **`docs/prototype/` 不是普通文档**：`scripts/check-scope-registry.cjs` 会直接读取其中的 `demo-app.js` 与 `buddy-switch-prototype.html`。改名或移动必须同步改脚本，否则 `npm run build` 会红。
+- **不要新建同义文档**：`docs/specs/` 里已有主题就直接改那一篇；确认过时才新开，并在首段写状态行（`> 状态：现行 / 待拍板 / 实施中`）。
+- **一次性文档带日期**（`xxx-2026-10-17.md`），完结后移入 `docs/history/` 并加 `> 状态：只读历史` 头。
+- **移动/新增文档后必须更新 `docs/README.md` 的表格**——索引与文件不同步比没有索引更坏。
+- 代码注释引用设计依据时写**仓库相对路径**（`docs/specs/P5-ARCH.md`），不要写裸文件名。

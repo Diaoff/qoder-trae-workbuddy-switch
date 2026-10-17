@@ -12,7 +12,7 @@
 //! 四段并列、id 带前缀、**每段单独标来源与原因**。「列得出来」先成立，「调得动」随后接。
 //!
 //! 未挂的业务端点（`/v1/chat/completions` / `/v1/messages` / `/v1/responses` / `/biz/*path`）
-//! 要等 P3 抽 `pub(crate) relay_*` —— 见 `docs/redesign/UNIFIED-GATEWAY-ARCH.md` §7。
+//! 要等 P3 抽 `pub(crate) relay_*` —— 见 `docs/specs/UNIFIED-GATEWAY-ARCH.md` §7。
 
 use axum::body::Bytes;
 use axum::extract::{Path, State};

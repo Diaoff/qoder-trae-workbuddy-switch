@@ -18,7 +18,7 @@ import { poolOf } from "@/lib/gateway";
 import { useGatewayStore, useProbePassive, type ProbePassiveInfo } from "@/stores/gateway";
 
 /**
- * 限流探测卡（方案 §5.1–§5.4；原型 `docs/redesign/demo-app.js` 的 `probeCardHtml()`）。
+ * 限流探测卡（方案 §5.1–§5.4；原型 `docs/prototype/demo-app.js` 的 `probeCardHtml()`）。
  *
  * ## 形态：**模型分区里的普通卡片**，不是弹层（硬约束，方案 2026-10-16 改版）
  *

@@ -45,7 +45,7 @@ A **local-first** multi-account workbench: it gathers accounts from four product
 </p>
 
 
-> ⚠️ **Unofficial third-party tool** (source-available, PolyForm Noncommercial). Not affiliated with, authorized or endorsed by those products or their rights holders. It reads and writes authentication data of local clients, sends automated requests on the schedule you configure, and can forward your quota through a local port. Read the **[Disclaimer](docs/DISCLAIMER.en.md)** before use.
+> ⚠️ **Unofficial third-party tool** (source-available, PolyForm Noncommercial). Not affiliated with, authorized or endorsed by those products or their rights holders. It reads and writes authentication data of local clients, sends automated requests on the schedule you configure, and can forward your quota through a local port. Read the **[Disclaimer](docs/policies/DISCLAIMER.en.md)** before use.
 
 ## Screenshots
 
@@ -323,7 +323,7 @@ The **unified gateway** solves "the same model name overwriting itself across pl
 | `/v1/responses` on `trae-*` | **501** — never a silent downgrade to chat |
 | Default state | **Off**; enable it in the Gateway page's "Unified gateway" type |
 
-> Architecture: [UNIFIED-GATEWAY-ARCH.md](docs/redesign/UNIFIED-GATEWAY-ARCH.md) · Client snippets: [GATEWAY-CLIENT-INTEGRATION.md](docs/GATEWAY-CLIENT-INTEGRATION.md)
+> Architecture: [UNIFIED-GATEWAY-ARCH.md](docs/specs/UNIFIED-GATEWAY-ARCH.md) · Client snippets: [guides/GATEWAY-CLIENT-INTEGRATION.md](docs/guides/GATEWAY-CLIENT-INTEGRATION.md)
 
 ## Automation
 
@@ -400,7 +400,8 @@ src/                     # frontend: components / pages / lib / locales
 npm/                     # npm packages (not published yet)
 ```
 
-Environment requirements, release process and layout conventions: [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md).
+Environment requirements, release process and layout conventions: [docs/guides/DEVELOPMENT.md](docs/guides/DEVELOPMENT.md).
+**Full document map: [docs/README.md](docs/README.md)** — split by lifecycle: guides / living specs / read-only history / prototype.
 
 ## Contributing
 
@@ -412,7 +413,7 @@ Environment requirements, release process and layout conventions: [docs/DEVELOPM
 | 🧩 **Add a platform** | Platform differences are declared once in `src/lib/platforms/registry.ts` and `product.rs`; page components stay untouched. |
 | 🌍 **Fix translations** | UI copy lives in `src/locales/domains/*.zh.ts` ↔ `*.en.ts`; corrections to the eight READMEs are welcome too. |
 | 📸 **Refresh screenshots** | One command re-shoots every light/dark image — see the header of `scripts/gen-readme-shots.mjs`. |
-| 🧪 **Add a test** | Most guard tests in this repo were added by contributors; start from the gate list in `docs/DEVELOPMENT.md`. |
+| 🧪 **Add a test** | Most guard tests in this repo were added by contributors; start from the gate list in `docs/guides/DEVELOPMENT.md`. |
 
 Full guide (what to work on, PR checklist, code conventions): **[CONTRIBUTING.en.md](CONTRIBUTING.en.md)** ([简体中文](CONTRIBUTING.md)).
 
@@ -443,14 +444,14 @@ Each project follows its own license. This project is an independent implementat
 
 ## Disclaimer
 
-Full text in **[docs/DISCLAIMER.en.md](docs/DISCLAIMER.en.md)** ([简体中文](docs/DISCLAIMER.md)), six sections: unofficial third-party tool; terms of service and compliance; data writes and backups; risks of automated behaviour; API gateway exposure; provided "as is". Using the project means you have read and agree to them; if not, stop using it and uninstall.
+Full text in **[docs/policies/DISCLAIMER.en.md](docs/policies/DISCLAIMER.en.md)** ([简体中文](docs/policies/DISCLAIMER.md)), six sections: unofficial third-party tool; terms of service and compliance; data writes and backups; risks of automated behaviour; API gateway exposure; provided "as is". Using the project means you have read and agree to them; if not, stop using it and uninstall.
 
 ## License
 
 **[PolyForm Noncommercial License 1.0.0](./LICENSE)**: noncommercial use is permitted, **commercial use is not licensed**.
 
 - Full text: [LICENSE](./LICENSE)
-- Plain-language summary and FAQ: [docs/LICENSING.en.md](docs/LICENSING.en.md) ([简体中文](docs/LICENSING.md))
+- Plain-language summary and FAQ: [docs/policies/LICENSING.en.md](docs/policies/LICENSING.en.md) ([简体中文](docs/policies/LICENSING.md))
 - For commercial licensing, contact the author via this repository's Issues.
 
 ## Star history

@@ -45,7 +45,7 @@ Una estación de trabajo multicuenta **totalmente local**: reúne las cuentas de
 </p>
 
 
-> ⚠️ **Herramienta de terceros no oficial** (source-available, licencia PolyForm Noncommercial). Sin afiliación, autorización ni respaldo de esos productos ni de sus titulares. Lee y escribe los datos de autenticación de los clientes locales, envía peticiones automáticas según tu programación y puede reenviar tu cuota por un puerto local. Lee el **[aviso legal](docs/DISCLAIMER.en.md)** antes de usarla.
+> ⚠️ **Herramienta de terceros no oficial** (source-available, licencia PolyForm Noncommercial). Sin afiliación, autorización ni respaldo de esos productos ni de sus titulares. Lee y escribe los datos de autenticación de los clientes locales, envía peticiones automáticas según tu programación y puede reenviar tu cuota por un puerto local. Lee el **[aviso legal](docs/policies/DISCLAIMER.en.md)** antes de usarla.
 
 ## Capturas
 
@@ -323,7 +323,7 @@ La **pasarela unificada** resuelve el problema de modelos homónimos que se pisa
 | `/v1/responses` en `trae-*` | **501**, nunca una degradación silenciosa a chat |
 | Estado por defecto | **Apagada**; se activa en la sección «Pasarela unificada» de la página de pasarela |
 
-> Arquitectura: [UNIFIED-GATEWAY-ARCH.md](docs/redesign/UNIFIED-GATEWAY-ARCH.md) · Fragmentos de configuración: [GATEWAY-CLIENT-INTEGRATION.md](docs/GATEWAY-CLIENT-INTEGRATION.md)
+> Arquitectura: [UNIFIED-GATEWAY-ARCH.md](docs/specs/UNIFIED-GATEWAY-ARCH.md) · Fragmentos de configuración: [guides/GATEWAY-CLIENT-INTEGRATION.md](docs/guides/GATEWAY-CLIENT-INTEGRATION.md)
 
 ## Automatización
 
@@ -400,7 +400,8 @@ src/                     # frontend: components / pages / lib / locales
 npm/                     # paquetes npm (sin publicar)
 ```
 
-Requisitos de entorno, proceso de publicación y convenciones de directorios: [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md).
+Requisitos de entorno, proceso de publicación y convenciones de directorios: [docs/guides/DEVELOPMENT.md](docs/guides/DEVELOPMENT.md).
+**Mapa completo de la documentación: [docs/README.md](docs/README.md)** — guías / especificaciones vigentes / histórico de solo lectura / prototipo.
 
 ## Contribuir
 
@@ -412,7 +413,7 @@ Requisitos de entorno, proceso de publicación y convenciones de directorios: [d
 | 🧩 **Añadir una plataforma** | Las diferencias se declaran una vez en `src/lib/platforms/registry.ts` y `product.rs`; las páginas no se tocan. |
 | 🌍 **Corregir traducciones** | Los textos van por parejas `src/locales/domains/*.zh.ts` ↔ `*.en.ts`; también se agradecen revisiones de los ocho README. |
 | 📸 **Actualizar capturas** | Un comando rehace todas las imágenes claro/oscuro: ver la cabecera de `scripts/gen-readme-shots.mjs`. |
-| 🧪 **Añadir un test** | La mayoría de los tests de guarda los añadieron colaboradores; empieza por la lista de controles en `docs/DEVELOPMENT.md`. |
+| 🧪 **Añadir un test** | La mayoría de los tests de guarda los añadieron colaboradores; empieza por la lista de controles en `docs/guides/DEVELOPMENT.md`. |
 
 Guía completa (qué se puede hacer, checklist de PR, convenciones de código): **[CONTRIBUTING.en.md](CONTRIBUTING.en.md)** ([简体中文](CONTRIBUTING.md)).
 
@@ -443,14 +444,14 @@ Cada proyecto sigue su propia licencia. Este proyecto es una implementación ind
 
 ## Aviso legal
 
-Texto completo en **[docs/DISCLAIMER.en.md](docs/DISCLAIMER.en.md)** ([简体中文](docs/DISCLAIMER.md)), seis apartados: herramienta de terceros no oficial; términos de servicio y cumplimiento; escritura de datos y copias; riesgos de la automatización; riesgos de exponer la pasarela API; provista «tal cual». Usar el proyecto implica aceptarlos; si no, deja de usarlo y desinstálalo.
+Texto completo en **[docs/policies/DISCLAIMER.en.md](docs/policies/DISCLAIMER.en.md)** ([简体中文](docs/policies/DISCLAIMER.md)), seis apartados: herramienta de terceros no oficial; términos de servicio y cumplimiento; escritura de datos y copias; riesgos de la automatización; riesgos de exponer la pasarela API; provista «tal cual». Usar el proyecto implica aceptarlos; si no, deja de usarlo y desinstálalo.
 
 ## Licencia
 
 **[PolyForm Noncommercial License 1.0.0](./LICENSE)**: se permite el uso personal no comercial, **el uso comercial no está licenciado**.
 
 - Texto completo: [LICENSE](./LICENSE)
-- Explicación sencilla y preguntas frecuentes: [docs/LICENSING.en.md](docs/LICENSING.en.md) ([简体中文](docs/LICENSING.md))
+- Explicación sencilla y preguntas frecuentes: [docs/policies/LICENSING.en.md](docs/policies/LICENSING.en.md) ([简体中文](docs/policies/LICENSING.md))
 - Para licencia comercial, contacta al autor mediante los Issues del repositorio.
 
 ## Historial de estrellas

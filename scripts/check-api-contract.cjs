@@ -71,7 +71,7 @@ const ROUTE_EXEMPT_COMMANDS = new Set([
 ]);
 
 /**
- * 第 8 条：「参数化命令」清单（`*_for(scope, …)` 风格，与 `docs/redesign/P5-ARCH.md` §2.3
+ * 第 8 条：「参数化命令」清单（`*_for(scope, …)` 风格，与 `docs/specs/P5-ARCH.md` §2.3
  * 命令表**同源**）。对集合内每个命令断言「四处都带了 scope」：
  * ① `commands.rs` 该 fn 签名含 `scope`；② `api.ts` 的 `call("<cmd>", {…})` 顶层键含 `scope`；
  * ③ `api.rs` 的 handler 从 query/body 读到 `scope`。

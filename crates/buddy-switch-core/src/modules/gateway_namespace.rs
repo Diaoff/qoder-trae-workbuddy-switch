@@ -1,6 +1,6 @@
 //! 统一网关的**模型命名空间**（`wb-cn:` / `trae-global:` 这类前缀）。
 //!
-//! 设计依据：`docs/redesign/UNIFIED-GATEWAY-ARCH.md` §2（命名规则）与 §11（新增平台契约）。
+//! 设计依据：`docs/specs/UNIFIED-GATEWAY-ARCH.md` §2（命名规则）与 §11（新增平台契约）。
 //!
 //! # 为什么需要它
 //!

@@ -45,7 +45,7 @@ Uma estação de trabalho multicuenta **totalmente local**: reúne as contas de 
 </p>
 
 
-> ⚠️ **Ferramenta de terceiros não oficial** (source-available, licença PolyForm Noncommercial). Sem vínculo, autorização ou endosso desses produtos ou de seus titulares. Ela lê e grava os dados de autenticação dos clientes locais, envia requisições automáticas conforme sua programação e pode encaminhar sua cota por uma porta local. Leia o **[aviso legal](docs/DISCLAIMER.en.md)** antes de usar.
+> ⚠️ **Ferramenta de terceiros não oficial** (source-available, licença PolyForm Noncommercial). Sem vínculo, autorização ou endosso desses produtos ou de seus titulares. Ela lê e grava os dados de autenticação dos clientes locais, envia requisições automáticas conforme sua programação e pode encaminhar sua cota por uma porta local. Leia o **[aviso legal](docs/policies/DISCLAIMER.en.md)** antes de usar.
 
 ## Capturas de tela
 
@@ -323,7 +323,7 @@ O **gateway unificado** resolve o problema de modelos homônimos se sobrescreven
 | `/v1/responses` em `trae-*` | **501**, nunca rebaixamento silencioso para chat |
 | Estado padrão | **Desligado**; ative na seção «Gateway unificado» da página de gateway |
 
-> Arquitetura: [UNIFIED-GATEWAY-ARCH.md](docs/redesign/UNIFIED-GATEWAY-ARCH.md) · Trechos de configuração: [GATEWAY-CLIENT-INTEGRATION.md](docs/GATEWAY-CLIENT-INTEGRATION.md)
+> Arquitetura: [UNIFIED-GATEWAY-ARCH.md](docs/specs/UNIFIED-GATEWAY-ARCH.md) · Trechos de configuração: [guides/GATEWAY-CLIENT-INTEGRATION.md](docs/guides/GATEWAY-CLIENT-INTEGRATION.md)
 
 ## Automação
 
@@ -400,7 +400,8 @@ src/                     # frontend: components / pages / lib / locales
 npm/                     # pacotes npm (não publicados)
 ```
 
-Requisitos de ambiente, processo de release e convenções de diretórios: [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md).
+Requisitos de ambiente, processo de release e convenções de diretórios: [docs/guides/DEVELOPMENT.md](docs/guides/DEVELOPMENT.md).
+**Mapa completo da documentação: [docs/README.md](docs/README.md)** — guias / especificações atuais / histórico somente leitura / protótipo.
 
 ## Contribuindo
 
@@ -412,7 +413,7 @@ Requisitos de ambiente, processo de release e convenções de diretórios: [docs
 | 🧩 **Adicionar uma plataforma** | As diferenças são declaradas uma vez em `src/lib/platforms/registry.ts` e `product.rs`; as páginas não mudam. |
 | 🌍 **Corrigir traduções** | Os textos ficam em pares `src/locales/domains/*.zh.ts` ↔ `*.en.ts`; revisões dos oito READMEs também são bem-vindas. |
 | 📸 **Atualizar capturas** | Um comando refaz todas as imagens claro/escuro — veja o cabeçalho de `scripts/gen-readme-shots.mjs`. |
-| 🧪 **Adicionar um teste** | A maioria dos testes de guarda foi adicionada por contribuidores; comece pela lista de checagens em `docs/DEVELOPMENT.md`. |
+| 🧪 **Adicionar um teste** | A maioria dos testes de guarda foi adicionada por contribuidores; comece pela lista de checagens em `docs/guides/DEVELOPMENT.md`. |
 
 Guia completo (o que dá para pegar, checklist de PR, convenções de código): **[CONTRIBUTING.en.md](CONTRIBUTING.en.md)** ([简体中文](CONTRIBUTING.md)).
 
@@ -443,14 +444,14 @@ Cada projeto segue sua própria licença. Este projeto é uma implementação in
 
 ## Aviso legal
 
-Texto completo em **[docs/DISCLAIMER.en.md](docs/DISCLAIMER.en.md)** ([简体中文](docs/DISCLAIMER.md)), seis seções: ferramenta de terceiros não oficial; termos de serviço e conformidade; gravação de dados e backups; riscos da automação; riscos de exposição do gateway de API; fornecida «no estado em que se encontra». Usar o projeto implica concordância; caso contrário, pare de usar e desinstale.
+Texto completo em **[docs/policies/DISCLAIMER.en.md](docs/policies/DISCLAIMER.en.md)** ([简体中文](docs/policies/DISCLAIMER.md)), seis seções: ferramenta de terceiros não oficial; termos de serviço e conformidade; gravação de dados e backups; riscos da automação; riscos de exposição do gateway de API; fornecida «no estado em que se encontra». Usar o projeto implica concordância; caso contrário, pare de usar e desinstale.
 
 ## Licença
 
 **[PolyForm Noncommercial License 1.0.0](./LICENSE)**: uso pessoal não comercial é permitido, **uso comercial não é licenciado**.
 
 - Texto completo: [LICENSE](./LICENSE)
-- Explicação em linguagem simples e FAQ: [docs/LICENSING.en.md](docs/LICENSING.en.md) ([简体中文](docs/LICENSING.md))
+- Explicação em linguagem simples e FAQ: [docs/policies/LICENSING.en.md](docs/policies/LICENSING.en.md) ([简体中文](docs/policies/LICENSING.md))
 - Para licença comercial, contate o autor pelas Issues do repositório.
 
 ## Histórico de estrelas

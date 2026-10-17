@@ -1,6 +1,6 @@
 //! **统一网关**：把两个产品线的模型合成一个入口（`wb-cn:` / `trae-global:` 这类命名空间前缀）。
 //!
-//! 设计依据：`docs/redesign/UNIFIED-GATEWAY-ARCH.md`（架构与契约）+ `UNIFIED-GATEWAY-UI.md`（交互）。
+//! 设计依据：`docs/specs/UNIFIED-GATEWAY-ARCH.md`（架构与契约）+ `UNIFIED-GATEWAY-UI.md`（交互）。
 //!
 //! # 现状（**逐步落地中，别把「已建文件」当成「已完成」**）
 //!
@@ -13,7 +13,7 @@
 //! | `GatewayProduct` + 路由 + `/healthz` `/status` `/v1/models`（[`routes`]） | ✅ 已落地 |
 //! | 业务端点 `/v1/chat/completions` `/v1/messages` `/v1/responses` `/biz/*path` | ⬜ 待 P3（抽 `pub(crate) relay_*`） |
 //! | 两处宿主接线（server / src-tauri）+ 管理面四处同步 | ⬜ 待做 |
-//! | 前端「统一入口」子导航页 | ⬜ 待做（原型已可点：`docs/redesign/buddy-switch-prototype.html`） |
+//! | 前端「统一入口」子导航页 | ⬜ 待做（原型已可点：`docs/prototype/buddy-switch-prototype.html`） |
 //!
 //! # 为什么是**第三个**产品线，而不是合并两个 router
 //!

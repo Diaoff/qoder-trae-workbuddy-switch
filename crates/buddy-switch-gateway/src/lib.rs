@@ -49,7 +49,7 @@ pub mod timeutil;
 pub mod trae;
 // 统一网关（第三个产品线）：把两个产品线的模型合成一个入口。
 // ⚠️ 它是**独立端口**上的**第三个** `GatewayProduct` —— 永不与另两个 router merge
-// （axum 同路径 merge 会运行期 panic）。详见模块头与 `docs/redesign/UNIFIED-GATEWAY-ARCH.md`。
+// （axum 同路径 merge 会运行期 panic）。详见模块头与 `docs/specs/UNIFIED-GATEWAY-ARCH.md`。
 pub mod unified;
 
 pub use account_strategy::{AccountSelector, AccountStrategy};

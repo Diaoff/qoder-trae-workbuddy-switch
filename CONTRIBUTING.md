@@ -13,7 +13,7 @@
 | 报告问题 | 到 [Issues](https://github.com/NextAgentX/trae-workbuddy-switch/issues) 反馈 Bug 或提建议。请附**复现步骤**、**客户端版本**和日志；粘贴前先抹掉 token、账号等敏感信息 |
 | 修 Bug | 客户端升级后数据结构或接口变了、某个功能失效 —— 这类修复价值最高 |
 | 适配新客户端版本 | 跟进新版客户端的数据结构与端点变化 |
-| 文档与翻译 | 修正 README / `docs/` 里过时的描述，改进中英文表述 |
+| 文档与翻译 | 修正 README / `docs/` 里过时的描述，改进中英文表述（文档分区见 [docs/README.md](docs/README.md)） |
 | 界面与体验 | 前端交互、可访问性、深色模式细节（见下方[前端组件](#前端组件shadcn-优先)） |
 | 新功能 | 建议先开 Issue 对齐方向，避免做完才发现思路不一致 |
 
@@ -55,7 +55,7 @@ cargo test        # Rust 单元测试
 
 自写组件同样要复用项目主题 token（`primary` / `ring` / `border` / `popover` / `muted` / `destructive` / `brand`）与既有的密度、圆角、可访问性约定；菜单 / 弹层 / 对话框 / 下拉 / 提示一律用组件，不要用 `details` / `summary` 之类的原生写法代替。
 
-完整规则见 [`.trellis/spec/guides/ui-component-guidelines.md`](.trellis/spec/guides/ui-component-guidelines.md)。
+完整规则见 [`AGENTS.md` 的 UI Component Policy 一节](AGENTS.md#ui-component-policy)。
 
 ### 加一个 API 命令要同步的地方
 
@@ -90,13 +90,13 @@ cargo test        # Rust 单元测试
 - 前端产物是**编译期**嵌进服务端二进制的（`rust-embed`）⇒ 改了前端必须重新编译宿主，否则界面不会变
 - 重编前先停掉正在运行的 `buddy-switch`，否则 Windows 上会因二进制被占用而链接失败
 - Windows 上若遇到 `LNK1104` 或 `拒绝访问 (os error 5)`，通常是并发编译的瞬时冲突：重试或改用 `cargo build -j 1` 即可，**不是代码错误**
-- 环境要求、打包与发布流程见 [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md)
+- 环境要求、打包与发布流程见 [docs/guides/DEVELOPMENT.md](docs/guides/DEVELOPMENT.md)
 
 ## 几条硬性要求
 
 - **不要提交本地数据**：账号库、认证文件、API Key、token、日志一律不进仓库。提交前自查一遍 diff，确认没有真实凭据
 - **不要提交来源不明的代码**：引用其他项目的片段必须注明出处，并确认许可兼容
-- **本项目采用 [PolyForm Noncommercial License 1.0.0](./LICENSE)**：提交贡献即表示你同意该贡献以同一许可分发，并确认你有权提交这些代码。说明见 [docs/LICENSING.md](docs/LICENSING.md)
+- **本项目采用 [PolyForm Noncommercial License 1.0.0](./LICENSE)**：提交贡献即表示你同意该贡献以同一许可分发，并确认你有权提交这些代码。说明见 [docs/policies/LICENSING.md](docs/policies/LICENSING.md)
 - 请勿在 Issue / PR 中粘贴完整的 token 或账号凭据，即使是自己的
 
 ## 有问题在哪问

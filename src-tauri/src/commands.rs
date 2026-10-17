@@ -58,7 +58,7 @@ fn parse_region(value: Option<&str>) -> Region {
 ///
 /// OAuth 授权线（`oauth_line()`：TraeWork→SOLO / Trae→TRAE）、打开数据目录、启动客户端、
 /// 签到（按程序位探测）都**按程序位分家**，折叠会把登录态写进错误的客户端 —— 这些命令
-/// **保留 `variant` 参数**，不参与区域折叠（详见 `docs/redesign/P5-ARCH.md` §2.3 的报告）。
+/// **保留 `variant` 参数**，不参与区域折叠（详见 `docs/specs/P5-ARCH.md` §2.3 的报告）。
 fn trae_variant_of_region(region: TraeRegion) -> trae::variant::TraeVariant {
     // 显式穷举，不用 `unwrap_or_default()`：回落分支在这里是不可达的（区域只有两个取值），
     // 显式匹配让「区域 → 主程序」这条约定在代码里可读，也避免引入 fail-open 形态。
@@ -209,7 +209,7 @@ pub fn get_accounts(region: Option<String>) -> Value {
 // P5 T03 · 参数化命令（`scope` 同时决定平台与区域）
 // ---------------------------------------------------------------------------
 //
-// 命名与语义见 `docs/redesign/P5-ARCH.md` §2.3。本组只覆盖**区域纯且 arity 同构**的命令
+// 命名与语义见 `docs/specs/P5-ARCH.md` §2.3。本组只覆盖**区域纯且 arity 同构**的命令
 // （账号列表 / 备注 / 删除）：旧命令保留为别名（见 `src/lib/api.ts` 的 `ALIASES`）。
 //
 // ⚠️ **`scope` 是必填维度且 fail-closed**：未知 / 空 / 缺一律 `Err`（[`resolve_scope_param`]），
@@ -3842,7 +3842,7 @@ mod command_threading_tests {
 
     /// 这些命令做**慢 IO 或起子进程**，必须 `async` + `spawn_blocking`。
     ///
-    /// 2026-09-28 之前它们全是同步的（审计 `docs/perf-audit-2026-09-24.md` 的 P1-3）。
+    /// 2026-09-28 之前它们全是同步的（审计 `docs/history/perf-audit-2026-09-24.md` 的 P1-3）。
     /// 把它们改回同步会让本用例变红。
     const MUST_BE_ASYNC: &[&str] = &[
         "import_local",           // 读客户端认证文件

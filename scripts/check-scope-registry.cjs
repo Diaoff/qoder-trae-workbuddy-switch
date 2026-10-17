@@ -570,7 +570,7 @@ check("★ 默认窗口：原型与项目**必须同一个数**（否则又是�
   if (!mWin) throw new Error("取不到 `DEFAULT_USAGE_WINDOW` 的天数");
   const projectDays = Number(mWin[1]);
 
-  const protos = ["docs/redesign/demo-app.js", "docs/redesign/buddy-switch-prototype.html"];
+  const protos = ["docs/prototype/demo-app.js", "docs/prototype/buddy-switch-prototype.html"];
   for (const p of protos) {
     const code = fs.readFileSync(path.join(ROOT, p), "utf8");
     const hits = code.match(/usageTab:\s*"trend",\s*range:\s*(\d+)/g) || [];
@@ -2284,7 +2284,7 @@ check("★ P10（独立验证）Trae 来源词汇未被统一为三级（决策 
  *      比文本扫描更硬 —— 变异②（计数口径）正是打在这份**被门禁读取的实现文件**上。
  *
  * ⚠️ **两套验收，各验各的对象**（P11 §1.10.1）：本文件验**真实应用**（`src/`）；
- *    原型套件 `docs/redesign/verify-behaviors.cjs` 验**原型**，**不动**。
+ *    原型套件 `docs/prototype/verify-behaviors.cjs` 验**原型**，**不动**。
  */
 
 const typesMod = loadTs(path.join(ROOT, "src/lib/types.ts"));
@@ -2725,7 +2725,7 @@ check("★ P11 Codex 给 base_url+env_key；Claude Code 给 ANTHROPIC_*（删即
  *      **仍走不到**，而「永不执行」和「正确」在测试里长得一样 —— 不模拟就是死代码。
  *
  * ⚠️ **两套验收，各验各的对象**：本文件验**真实应用**（`src/`）；
- *    原型套件 `docs/redesign/verify-behaviors.cjs` / `verify-demo.cjs` 验**原型**，**不动**。
+ *    原型套件 `docs/prototype/verify-behaviors.cjs` / `verify-demo.cjs` 验**原型**，**不动**。
  */
 
 const paletteLib = loadTs(path.join(ROOT, "src/lib/command-palette.ts"));
@@ -3744,7 +3744,7 @@ check("★ P6 边界：无匹配 ⇒ 结构化空态（四要素含出口，非�
  *   ③ 「懒创建」是**设计决策**，不固化就会被改回「写进 `windows[]`」⇒ 第 1 条专门守它。
  *
  * ⚠️ **两套验收，各验各的对象**：本文件验**真实应用**（`src/` + `src-tauri/`）；
- *    原型套件 `docs/redesign/verify-behaviors.cjs` 验**原型**，**不动**。
+ *    原型套件 `docs/prototype/verify-behaviors.cjs` 验**原型**，**不动**。
  */
 
 const COMPANION_RS = "src-tauri/src/companion.rs";
@@ -5097,7 +5097,7 @@ check("★ P5 回收站-⑧ trash 文件损坏 ⇒ 空表容错（不 panic / �
  *   ③ 每条都写明**变异落点**，T01 收尾时逐条打红（见各条注释的「变异①/②/③」）。
  *
  * ⚠️ **两套验收，各验各的对象**（P11 口径）：本文件验**真实应用**（`src/`）；
- *    原型套件 `docs/redesign/verify-behaviors.cjs` 验**原型**，**不动**。
+ *    原型套件 `docs/prototype/verify-behaviors.cjs` 验**原型**，**不动**。
  */
 
 const SESSIONS_PAGE = "src/pages/SessionsPage.tsx";
@@ -5537,7 +5537,7 @@ check("★ P8 侧栏徽章：**只读已加载 store** + 三枚（账号/网关/
 /* ──────────────────────────────────────────────────────────────────────────
  * P4 跨作用域迁移向导（T05 独立验证新增 · 2026-10-07）
  *
- * 依据：`docs/redesign/P4-MIGRATION-ARCH.md` §1.3（能力边界）/ §1.5（如实汇总）/
+ * 依据：`docs/specs/P4-MIGRATION-ARCH.md` §1.3（能力边界）/ §1.5（如实汇总）/
  * §4 T05 / §6 决策记录（#1 收窄为 WB 内跨 region · #2 来源只限当前账号 · #4 不可逆提示 · #5 抽屉）。
  *
  * 这些断言锁住向导**最容易回退**的判据（每条都写明变异落点）：
@@ -5797,7 +5797,7 @@ check("★ P4-MIGRATION 三层会话树（类型 → 目录 → 会话，**跑�
 
 /* ── P3 用量四视图 + 概览今日摘要（**独立验证 · T05**）──────────────────────────
  *
- * 上游：`docs/redesign/P3-ARCH.md`（§1.4 适配层契约 / §1.5 图注统一出口 / §1.6 空态 / §6 决策 #1–#6）。
+ * 上游：`docs/specs/P3-ARCH.md`（§1.4 适配层契约 / §1.5 图注统一出口 / §1.6 空态 / §6 决策 #1–#6）。
  *
  * 与上面的「文本扫描」不同，本段**跑真代码**：
  *   - 纯函数（`usage-charts.ts` / `chart-caption.ts`）经 `loadTs` 求值；
@@ -6760,7 +6760,7 @@ check("★ P0 程序位注册表：5 个程序位全部 available + 显示名两
 });
 
 check("★ 概览待处理：新原型三项（凭据已过期 / 今日未签到 / 积分即将过期）+ 行内可执行动作", () => {
-  /* 依据 `docs/redesign/buddy-switch-prototype.html` 的 `viewOverview`（:2058-2069 / :2092-2098）：
+  /* 依据 `docs/prototype/buddy-switch-prototype.html` 的 `viewOverview`（:2058-2069 / :2092-2098）：
      ① 待处理要覆盖「凭据已过期」「今日未签到」「积分即将过期」三类（旧实现只有登录态到期）；
      ② 「今日未签到」的行内动作是**可执行**的（`run: "batch-checkin"`）—— 不是一律跳转，
         否则「概览答得出有事、却要用户自己去列表页找」； */

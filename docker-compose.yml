@@ -13,7 +13,7 @@
 #   2. 反代加鉴权（Nginx/Caddy + Basic Auth 或 mTLS），并把映射改成
 #      `"57890:57890"`。**不要**在无鉴权的情况下把 57890 直接暴露到公网/局域网。
 #
-# 详细说明见 `docs/DOCKER.md`。
+# 详细说明见 `docs/guides/DOCKER.md`。
 
 services:
   buddy-switch:

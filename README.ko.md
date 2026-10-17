@@ -45,7 +45,7 @@
 </p>
 
 
-> ⚠️ **비공식 서드파티 도구**(source-available, PolyForm Noncommercial)입니다. 위 제품 및 권리자와 제휴·승인·후원 관계가 없습니다. 로컬 클라이언트의 인증 데이터를 읽고 쓰며, 설정한 스케줄대로 자동 요청을 보내고, 로컬 포트를 통해 할당량을 전달할 수 있습니다. 사용 전에 **[면책 고지](docs/DISCLAIMER.en.md)** 를 반드시 읽어 주세요.
+> ⚠️ **비공식 서드파티 도구**(source-available, PolyForm Noncommercial)입니다. 위 제품 및 권리자와 제휴·승인·후원 관계가 없습니다. 로컬 클라이언트의 인증 데이터를 읽고 쓰며, 설정한 스케줄대로 자동 요청을 보내고, 로컬 포트를 통해 할당량을 전달할 수 있습니다. 사용 전에 **[면책 고지](docs/policies/DISCLAIMER.en.md)** 를 반드시 읽어 주세요.
 
 ## 화면
 
@@ -323,7 +323,7 @@ flowchart LR
 | `trae-*` 의 `/v1/responses` | **501** 반환, chat으로 조용히 강등하지 않음 |
 | 기본 상태 | **꺼짐**. 게이트웨이 화면의 "통합 게이트웨이" 구역에서 직접 켜야 함 |
 
-> 설계: [UNIFIED-GATEWAY-ARCH.md](docs/redesign/UNIFIED-GATEWAY-ARCH.md) · 연결 예시: [GATEWAY-CLIENT-INTEGRATION.md](docs/GATEWAY-CLIENT-INTEGRATION.md)
+> 설계: [UNIFIED-GATEWAY-ARCH.md](docs/specs/UNIFIED-GATEWAY-ARCH.md) · 연결 예시: [guides/GATEWAY-CLIENT-INTEGRATION.md](docs/guides/GATEWAY-CLIENT-INTEGRATION.md)
 
 ## 자동화
 
@@ -400,7 +400,8 @@ src/                     # 프런트엔드: components / pages / lib / locales
 npm/                     # npm 패키지(미배포)
 ```
 
-환경 요구 사항·릴리스 절차·디렉터리 규칙은 [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) 를 참고하세요.
+환경 요구 사항·릴리스 절차·디렉터리 규칙은 [docs/guides/DEVELOPMENT.md](docs/guides/DEVELOPMENT.md) 를 참고하세요.
+**문서 전체 색인은 [docs/README.md](docs/README.md)** 에 있습니다(가이드 / 현행 스펙 / 읽기 전용 기록 / 프로토타입).
 
 ## 기여
 
@@ -412,7 +413,7 @@ npm/                     # npm 패키지(미배포)
 | 🧩 **플랫폼 추가** | 차이는 `src/lib/platforms/registry.ts`와 `product.rs`에 한 번만 선언하면 되고, 페이지 컴포넌트는 그대로 둡니다. |
 | 🌍 **번역 수정** | UI 문구는 `src/locales/domains/*.zh.ts` ↔ `*.en.ts`가 짝을 이룹니다. 8개 언어 README 교정도 환영합니다. |
 | 📸 **스크린샷 갱신** | 명령 하나로 라이트/다크 이미지를 모두 다시 찍습니다(`scripts/gen-readme-shots.mjs` 머리말 참고). |
-| 🧪 **테스트 추가** | 이 저장소의 가드 테스트 상당수는 기여자가 추가했습니다. `docs/DEVELOPMENT.md`의 게이트 목록부터 보세요. |
+| 🧪 **테스트 추가** | 이 저장소의 가드 테스트 상당수는 기여자가 추가했습니다. `docs/guides/DEVELOPMENT.md`의 게이트 목록부터 보세요. |
 
 자세한 안내(무엇을 할 수 있는지, PR 체크리스트, 코드 규칙): **[CONTRIBUTING.en.md](CONTRIBUTING.en.md)**([简体中文](CONTRIBUTING.md)).
 
@@ -443,14 +444,14 @@ npm/                     # npm 패키지(미배포)
 
 ## 면책 고지
 
-전문은 **[docs/DISCLAIMER.en.md](docs/DISCLAIMER.en.md)**([简体中文](docs/DISCLAIMER.md))에 있으며 총 6개 조항입니다: 비공식 서드파티 도구, 이용 약관과 컴플라이언스 자기 책임, 데이터 쓰기와 백업, 자동화 행위의 위험, API 게이트웨이 노출 위험, "있는 그대로" 제공. 사용하는 시점에 동의한 것으로 간주하며, 동의하지 않으면 즉시 사용을 중단하고 삭제하세요.
+전문은 **[docs/policies/DISCLAIMER.en.md](docs/policies/DISCLAIMER.en.md)**([简体中文](docs/policies/DISCLAIMER.md))에 있으며 총 6개 조항입니다: 비공식 서드파티 도구, 이용 약관과 컴플라이언스 자기 책임, 데이터 쓰기와 백업, 자동화 행위의 위험, API 게이트웨이 노출 위험, "있는 그대로" 제공. 사용하는 시점에 동의한 것으로 간주하며, 동의하지 않으면 즉시 사용을 중단하고 삭제하세요.
 
 ## 라이선스
 
 **[PolyForm Noncommercial License 1.0.0](./LICENSE)**: 개인 비상업적 사용은 허용되며, **상업적 사용은 허가되지 않습니다**.
 
 - 전문: [LICENSE](./LICENSE)
-- 쉬운 설명과 FAQ: [docs/LICENSING.en.md](docs/LICENSING.en.md)([简体中文](docs/LICENSING.md))
+- 쉬운 설명과 FAQ: [docs/policies/LICENSING.en.md](docs/policies/LICENSING.en.md)([简体中文](docs/policies/LICENSING.md))
 - 상업적 라이선스는 이 저장소의 Issues로 문의해 주세요.
 
 ## Star 추이

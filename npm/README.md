@@ -94,4 +94,4 @@ buddy-switch version      # 版本号
 
 ## 许可
 
-[PolyForm Noncommercial License 1.0.0](https://github.com/NextAgentX/trae-workbuddy-switch/blob/main/LICENSE) —— **个人非商业使用许可，商业使用不被授权**；白话说明与常见问题见[许可说明](https://github.com/NextAgentX/trae-workbuddy-switch/blob/main/docs/LICENSING.md)；如需商业授权，请通过主仓库 Issues 联系作者。
+[PolyForm Noncommercial License 1.0.0](https://github.com/NextAgentX/trae-workbuddy-switch/blob/main/LICENSE) —— **个人非商业使用许可，商业使用不被授权**；白话说明与常见问题见[许可说明](https://github.com/NextAgentX/trae-workbuddy-switch/blob/main/docs/policies/LICENSING.md)；如需商业授权，请通过主仓库 Issues 联系作者。
