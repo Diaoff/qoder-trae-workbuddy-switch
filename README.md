@@ -10,9 +10,9 @@
 </p>
 
 <p align="center">
-  <img alt="平台" src="https://img.shields.io/badge/平台-macOS%20%7C%20Windows%20%7C%20Linux-2ea043" />
-  <a href="https://github.com/NextAgentX/trae-workbuddy-switch/releases/latest"><img alt="最新版本" src="https://img.shields.io/github/v/release/NextAgentX/trae-workbuddy-switch?label=最新版本" /></a>
-  <a href="./LICENSE"><img alt="许可" src="https://img.shields.io/badge/许可-PolyForm%20Noncommercial-4c8bf5" /></a>
+  <img alt="平台" src="https://img.shields.io/badge/%E5%B9%B3%E5%8F%B0-macOS%20%7C%20Windows%20%7C%20Linux-2ea043" />
+  <a href="https://github.com/NextAgentX/trae-workbuddy-switch/releases/latest"><img alt="最新版本" src="https://img.shields.io/github/v/release/NextAgentX/trae-workbuddy-switch?label=%E6%9C%80%E6%96%B0%E7%89%88%E6%9C%AC" /></a>
+  <a href="./LICENSE"><img alt="许可" src="https://img.shields.io/badge/%E8%AE%B8%E5%8F%AF-PolyForm%20Noncommercial-4c8bf5" /></a>
   <a href="https://github.com/NextAgentX/trae-workbuddy-switch/stargazers"><img alt="Stars" src="https://img.shields.io/github/stars/NextAgentX/trae-workbuddy-switch?style=social" /></a>
 </p>
 
@@ -37,9 +37,9 @@
 | 🔌 **额度还能喂给别的工具** | 一键暴露成 OpenAI / Anthropic 兼容接口，直接配进 Cursor、Claude Code、OpenWebUI |
 
 <p align="center">
-  <a href="https://github.com/NextAgentX/trae-workbuddy-switch/releases/latest"><img alt="下载安装包" src="https://img.shields.io/badge/⬇%20下载安装包-Releases-2ea043?style=for-the-badge" /></a>
-  <a href="https://github.com/NextAgentX/trae-workbuddy-switch/stargazers"><img alt="点个 Star" src="https://img.shields.io/badge/⭐%20点个%20Star-让作者知道有人用-f5c542?style=for-the-badge" /></a>
-  <a href="CONTRIBUTING.md"><img alt="参与贡献" src="https://img.shields.io/badge/🛠%20参与贡献-PR%20%E6%AC%A2%E8%BF%8E-4c8bf5?style=for-the-badge" /></a>
+  <a href="https://github.com/NextAgentX/trae-workbuddy-switch/releases/latest"><img alt="下载安装包" src="https://img.shields.io/badge/%E2%AC%87%20%E4%B8%8B%E8%BD%BD%E5%AE%89%E8%A3%85%E5%8C%85-Releases-2ea043?style=for-the-badge" /></a>
+  <a href="https://github.com/NextAgentX/trae-workbuddy-switch/stargazers"><img alt="点个 Star" src="https://img.shields.io/badge/%E2%AD%90%20%E7%82%B9%E4%B8%AA%20Star-%E8%AE%A9%E4%BD%9C%E8%80%85%E7%9F%A5%E9%81%93%E6%9C%89%E4%BA%BA%E7%94%A8-f5c542?style=for-the-badge" /></a>
+  <a href="CONTRIBUTING.md"><img alt="参与贡献" src="https://img.shields.io/badge/%F0%9F%9B%A0%20%E5%8F%82%E4%B8%8E%E8%B4%A1%E7%8C%AE-PR%20%E6%AC%A2%E8%BF%8E-4c8bf5?style=for-the-badge" /></a>
 </p>
 
 > ⚠️ **非官方第三方工具**（source-available，PolyForm Noncommercial 许可）。与上述产品及其权利人不存在隶属、授权或背书关系。它会读写本机客户端的认证数据、按你的配置自动发起请求，并可通过本地端口转发额度。使用前请读完 **[免责声明](docs/DISCLAIMER.md)**。
@@ -108,7 +108,7 @@
 </table>
 
 <details>
-<summary><b>更多截图（会话同步 / 设置 / TraeWork / Qoder 概览与账号 / 积分视图）</b></summary>
+<summary><b>更多截图（会话同步 / 设置 / TraeWork 账号 / Qoder 账号）</b></summary>
 
 <table>
   <thead>
