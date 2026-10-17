@@ -128,6 +128,8 @@ export function normalizeGatewayPoolSummary(raw: unknown): GatewayPoolSummary {
     expired: asNumber(record.expired) ?? 0,
     zeroCredits: asNumber(record.zeroCredits) ?? asNumber(record.zero_credits) ?? 0,
     excluded: asNumber(record.excluded) ?? 0,
+    // 正交计数：缺失/老后端 ⇒ 0（卡片暂不渲染，只保证数据不断链）。
+    inFlightFull: asNumber(record.inFlightFull) ?? asNumber(record.in_flight_full) ?? 0,
     totalCredits: asNumber(record.totalCredits) ?? asNumber(record.total_credits) ?? 0,
   };
 }

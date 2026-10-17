@@ -48,6 +48,21 @@ pub enum GatewayError {
     /// 与 `/v1/models` 的过滤**同源**（读同一份 `disabled` 存储 + 同一个 [`crate::disabled_models::is_disabled`]）——
     /// 否则禁用就是「假开关」。
     ModelDisabled { scope: Scope, model: String },
+    /// 账号都健康，但在途额度已占满 → **503**（凭据、余额、冷却都没问题）。
+    ///
+    /// ★ 为什么不回 401：`no_credential` 会让客户端（与人）去重新登录 / 切换账号，
+    ///   而在途占满**几秒内自己就恢复了**，那条指引是纯误导。并发饱和是「稍后重试」，
+    ///   不是「你没登录」。
+    ///
+    /// 只在「可用账号全是『在途已满』」时给出；混着禁用/冷却时仍归 `no_credential`，
+    /// 但计数里会列出在途已满的个数（否则「N 个号、0 禁用、0 冷却、0 零余额」与
+    /// 「0 个可用」自相矛盾 —— 与 `excluded` 同一个坑）。
+    PoolBusy {
+        /// 归属域。
+        region: Region,
+        /// 池内该域的账号总数（含被排除的：它只影响「能不能选」，不影响「号是好的」）。
+        total: usize,
+    },
     /// 网关自身错误（端口占用/目录失败/内部）→ 502（不返回裸堆栈）
     Internal(String),
 }
@@ -129,6 +144,11 @@ pub enum NoCredentialCause {
         /// 必须单独给出来：否则「5 个号、0 禁用、0 冷却、0 零积分」这句话会自相矛盾
         /// —— 用户看到池里有号、状态都正常，却被告知「0 个可用」。
         excluded: usize,
+        /// 其中「状态可用、但在途已满」的数量（**计入** `available`，不是互斥态）。
+        ///
+        /// 与 `excluded` 是同一个坑的两面：缺了它，「5 个号、0 禁用、0 冷却、0 零积分、
+        /// 0 被排除」与「0 个可用」就自相矛盾 —— 用户会以为网关在胡说。
+        in_flight_full: usize,
     },
 }
 
@@ -151,6 +171,8 @@ impl GatewayError {
             GatewayError::BadRequest(_) => 400,
             // 403 = 明确拒绝（凭据有效、请求合法，但该模型被用户禁用）。
             GatewayError::ModelDisabled { .. } => 403,
+            // 503 = 并发占满。凭据正常、几秒内自愈 ⇒ 让客户端退避重试，别去改登录态。
+            GatewayError::PoolBusy { .. } => 503,
             GatewayError::Internal(_) => 502,
         }
     }
@@ -172,6 +194,7 @@ impl GatewayError {
             },
             GatewayError::BadRequest(_) => "bad_request",
             GatewayError::ModelDisabled { .. } => "model_disabled",
+            GatewayError::PoolBusy { .. } => "pool_busy",
             GatewayError::Internal(_) => "internal",
         }
     }
@@ -196,6 +219,16 @@ impl GatewayError {
             GatewayError::ModelDisabled { scope, model } => {
                 crate::disabled_models::disabled_message(*scope, model)
             }
+            // ★ 不能复用「未找到已登录账号」：号是好的，只是这一瞬间都忙。
+            //   文案必须点名「在途额度」，否则又会变成「三个 0 却说 0 个可用」。
+            //
+            // ⚠️ 措辞不能写成「{total} 个可用账号」：`total` 含**被用户排除**的条目
+            //    （它们不可选，但账号本身是好的），说成「可用」就是新的数字不自洽。
+            GatewayError::PoolBusy { region, total } => format!(
+                "本机{}账号库有 {total} 个账号，可用的那些此刻全被在途请求占满（凭据与余额都正常）：\
+                 稍等几秒重试即可；若长期如此，请在「网关 → 账号池」调高每账号在途上限或增加账号",
+                region_display(*region)
+            ),
             GatewayError::Internal(message) => message.clone(),
         }
     }
@@ -268,6 +301,7 @@ fn no_credential_message(region: Region, cause: NoCredentialCause) -> String {
             cooling,
             zero_credits,
             excluded,
+            in_flight_full,
         } => {
             // ★ 排除必须出现在事实句里（QA 复核指出）：否则「N 个号 / 0 禁用 / 0 冷却 /
             //   0 零积分」会与「0 个可用」自相矛盾，用户根本不知道该去取消排除。
@@ -281,11 +315,25 @@ fn no_credential_message(region: Region, cause: NoCredentialCause) -> String {
             } else {
                 ""
             };
+            // ★ 在途已满同理：它是**瞬时**状态，且**不需要**用户做任何事，
+            //   所以只在事实句里点名、并在提示里说清「会自己好」。
+            let in_flight_clause = if in_flight_full > 0 {
+                format!("、{in_flight_full} 个在途已满（并发占用中）")
+            } else {
+                String::new()
+            };
+            let in_flight_hint = if in_flight_full > 0 {
+                "；在途已满只是瞬时并发，几秒后自行恢复，无需操作"
+            } else {
+                ""
+            };
             format!(
                 "本机{name}账号库有 {total} 个账号，但此刻 0 个可用：\
-                 {disabled} 个已禁用、{cooling} 个冷却中、{zero_credits} 个余额为 0{excluded_clause}。\
+                 {disabled} 个已禁用、{cooling} 个冷却中、{zero_credits} 个余额为 0\
+                 {excluded_clause}{in_flight_clause}。\
                  重新登录 / 切换账号不会解除禁用、冷却与排除 —— \
-                 请在「网关 → 账号池」查看逐账号原因（禁用是终态，需余额刷新成功或人工复活{excluded_hint}）"
+                 请在「网关 → 账号池」查看逐账号原因（禁用是终态，需余额刷新成功或人工复活\
+                 {excluded_hint}{in_flight_hint}）"
             )
         }
     }
@@ -334,6 +382,37 @@ mod tests {
         assert_eq!(GatewayError::Internal("x".into()).status(), 502);
     }
 
+    /// 在途占满是 **503 / `pool_busy`**，不是 401 / `no_credential`。
+    ///
+    /// 阳性对照：把它并进 `NoCredential`（回 401）⇒ 本用例必红。这条错误码会直接
+    /// 决定客户端是「退避重试」还是「弹登录态失效」。
+    #[test]
+    fn pool_busy_is_503_and_names_the_in_flight_quota() {
+        let error = GatewayError::PoolBusy {
+            region: Region::Cn,
+            total: 3,
+        };
+        assert_eq!(error.status(), 503);
+        assert_eq!(error.type_name(), "pool_busy");
+        assert_ne!(
+            error.type_name(),
+            GatewayError::NoCredential {
+                region: Region::Cn,
+                cause: NoCredentialCause::StoreEmpty,
+            }
+            .type_name(),
+            "并发饱和不是认证问题，类别名不得复用 no_credential"
+        );
+
+        let message = error.message();
+        assert!(message.contains("在途"), "文案必须点名在途额度：{message}");
+        assert!(message.contains("3 个"), "应摆出账号数：{message}");
+        assert!(
+            message.contains("重试"),
+            "503 必须告诉客户端「稍后重试」，否则等于没给指引：{message}"
+        );
+    }
+
     /// 信封凭据必须与「未找到已登录账号」**分开**。
     ///
     /// 混用会把排查引向错的方向：这条的用户其实**已经登录了**，让他「去桌面端登录」
@@ -378,6 +457,7 @@ mod tests {
                 cooling: 3,
                 excluded: 0,
                 zero_credits: 0,
+                in_flight_full: 0,
             },
         ];
         let messages: Vec<String> = causes
@@ -425,6 +505,7 @@ mod tests {
                 cooling: 3,
                 excluded: 0,
                 zero_credits: 0,
+                in_flight_full: 0,
             },
         }
         .message();
@@ -493,6 +574,7 @@ mod tests {
                 cooling: 0,
                 excluded: 0,
                 zero_credits: 0,
+                in_flight_full: 0,
             },
         ] {
             let error = GatewayError::NoCredential {

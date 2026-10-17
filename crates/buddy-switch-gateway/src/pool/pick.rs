@@ -355,7 +355,13 @@ pub fn is_usable<E: PoolEntryLike>(
         .unwrap_or(false)
 }
 
-fn in_flight_full<E: PoolEntryLike>(entry: &E, policy: &PickPolicy, now_ms: i64) -> bool {
+/// `pub(crate)`：`Pool::summary` 统计 `PoolSummary::in_flight_full` 复用**同一判据**
+/// —— 卡片说「可用」而选号一个都不给，就是从这里开始分家的。
+pub(crate) fn in_flight_full<E: PoolEntryLike>(
+    entry: &E,
+    policy: &PickPolicy,
+    now_ms: i64,
+) -> bool {
     let limit = match entry.realm() {
         Some(RealmTag::Global) if policy.max_in_flight_global > 0 => policy.max_in_flight_global,
         _ => policy.max_in_flight,

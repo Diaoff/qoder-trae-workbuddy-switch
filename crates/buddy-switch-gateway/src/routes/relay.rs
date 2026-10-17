@@ -14,6 +14,7 @@
 //! 非流式场景无差别（响应体在 handler 内被消费完毕）。
 
 use std::collections::HashSet;
+use std::sync::Arc;
 
 use serde_json::Value;
 
@@ -24,7 +25,9 @@ use buddy_switch_core::modules::upstream::UpstreamChatResult;
 use crate::account_strategy::{AccountSelector, AccountStrategy};
 use crate::error::{GatewayError, NoCredentialCause, UpstreamAttempt};
 use crate::outbound::{self, DegradeGate, OutboundMeta};
-use crate::pool::{classify_event, exclusions, PickMode, PoolSummary, RealmTag, UpstreamEvent};
+use crate::pool::{
+    classify_event, exclusions, InFlightLease, PickMode, PoolSummary, RealmTag, UpstreamEvent,
+};
 use crate::session_headers::{self, ConversationContext};
 
 /// 会话 id 提取已提到共用层（[`crate::session_headers`]）—— Trae 网关复用同一份实现。
@@ -318,17 +321,24 @@ pub async fn relay(
         // ★ 为什么不是「满了立刻换号」：并发稍高（客户端并行 tool calls）时，
         //   账号只是**此刻**忙，立即换号会把「忙」误报成「这个号不可用」——
         //   用户看到的是「网关拒绝服务」。排队 2s 能吃掉绝大部分瞬时拥塞。
-        if !uid.is_empty() {
-            if !acquire_with_wait(state, &uid, config.pool.acquire_timeout_ms).await {
-                attempts.push(UpstreamAttempt {
-                    account: account_name.clone(),
-                    uid: uid.clone(),
-                    status: 0,
-                    reason: "在途已满（排队超时）".to_string(),
-                });
-                tried.insert(uid);
-                continue;
-            }
+        //
+        // ★★ 租约必须绑定到变量（PR #41）：`Drop` 归还额度，于是正常返回、
+        //   提前 `continue`、以及**handler future 被 axum 取消**都会归还；
+        //   手写的「用完再 release」在取消路径上那行永不执行 ⇒ in_flight 漏到整池拒绝。
+        let _lease = if uid.is_empty() {
+            None
+        } else {
+            acquire_with_wait(state, &uid, config.pool.acquire_timeout_ms).await
+        };
+        if !uid.is_empty() && _lease.is_none() {
+            attempts.push(UpstreamAttempt {
+                account: account_name.clone(),
+                uid: uid.clone(),
+                status: 0,
+                reason: "在途已满（排队超时）".to_string(),
+            });
+            tried.insert(uid);
+            continue;
         }
 
         // ★ 出站按 `kind` 分派 —— **治理层（本函数其余部分：选号 / 在途 / 冷却 / 熔断 / 换号）完全共用**。
@@ -366,10 +376,9 @@ pub async fn relay(
             }
         };
 
-        // 无论成败都释放在途（本次偏差见模块文档）。
-        if !uid.is_empty() {
-            state.pool.write().await.release(&uid);
-        }
+        // ★ 这里原本有一句手写的 `release(&uid)`。现在归还由 `_lease` 的 `Drop` 负责
+        //   （见上），**不要再加回来**：两句 release 会把计数压成负数（虽然有幂等保护，
+        //   但语义上会让「同账号并发数」永久少算）。
 
         match result {
             UpstreamChatResult::Ok(ok) => {
@@ -539,10 +548,9 @@ pub async fn relay(
                 pool.summary(now_ms, Some(realm))
             };
             RelayFailure {
-                error: GatewayError::NoCredential {
-                    region: request.region,
-                    cause: no_credential_cause_of(&summary),
-                },
+                // ★ 不要再写死 `NoCredential`：全部健康只是在途占满时那是 401 误报，
+                //   会让客户端去重建登录态（见 `pool_unavailable_error`）。
+                error: pool_unavailable_error(request.region, &summary),
                 account: String::new(),
                 uid: String::new(),
                 upstream_message: String::new(),
@@ -713,7 +721,10 @@ fn describe_event(event: &UpstreamEvent) -> String {
     }
 }
 
-/// 申请在途额度；占满时**轮询等待**至多 `timeout_ms`，超时才返回 `false`。
+/// 申请在途额度；占满时**轮询等待**至多 `timeout_ms`，超时才返回 `None`。
+///
+/// 返回的是**租约**而不是 `bool`（PR #41）：调用方拿到的那个值一旦被 drop 就归还额度，
+/// 因此「占到了却忘了还」在类型层面不再可能发生。
 ///
 /// ## 为什么是轮询而不是 `Notify`
 ///
@@ -721,21 +732,26 @@ fn describe_event(event: &UpstreamEvent) -> String {
 /// 加 `Notify` 要在池里引入等待者队列与唤醒时机（谁 release 谁 notify），
 /// 出错的方式比轮询更隐蔽。这里 50ms 一跳、最长 2s（6 次/40 次），
 /// 对「本机单用户工具」的量级完全够用；真需要时再换成信号量。
-async fn acquire_with_wait(state: &GatewayState, uid: &str, timeout_ms: i64) -> bool {
-    if state.pool.write().await.acquire(uid) {
-        return true;
+async fn acquire_with_wait(
+    state: &GatewayState,
+    uid: &str,
+    timeout_ms: i64,
+) -> Option<InFlightLease> {
+    // 每次尝试都重新 clone 一份 Arc：`InFlightLease` 靠它跨 await 存活，不能借 `&state`。
+    if let Some(lease) = InFlightLease::acquire(Arc::clone(&state.pool), uid).await {
+        return Some(lease);
     }
     if timeout_ms <= 0 {
-        return false;
+        return None;
     }
     let deadline = timeutil::now_ms().saturating_add(timeout_ms);
     while timeutil::now_ms() < deadline {
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-        if state.pool.write().await.acquire(uid) {
-            return true;
+        if let Some(lease) = InFlightLease::acquire(Arc::clone(&state.pool), uid).await {
+            return Some(lease);
         }
     }
-    false
+    None
 }
 
 /// 选号：优先账号池（有治理状态），池给不出时回落既有策略。
@@ -860,7 +876,39 @@ fn no_credential_cause_of(summary: &PoolSummary) -> NoCredentialCause {
             cooling: summary.cooling,
             zero_credits: summary.zero_credits,
             excluded: summary.excluded,
+            in_flight_full: summary.in_flight_full,
         }
+    }
+}
+
+/// 选号失败 → 对外错误（PR #41 新增的一层判定）。
+///
+/// **全部可用的号都只是「在途占满」**时回 [`GatewayError::PoolBusy`]（503）：
+/// 凭据、余额、冷却都没问题，回 401 `no_credential` 会把客户端（和人）引去重新登录 ——
+/// 而这件事**只需要等几秒**。
+///
+/// 其余情形仍归 `no_credential`（401），但计数里必须带上「在途已满」，
+/// 否则「N 个号、0 禁用、0 冷却、0 零余额、0 排除」与「0 个可用」自相矛盾。
+///
+/// ## 与 `excluded` 的关系（本地 main 的第七态，PR 原本没有）
+///
+/// 被排除的号**不参与** 503 判定：它不是「健康但忙」，而是「用户不让用」。
+/// 所以条件是「非排除的号全都健康且都在途满」——
+/// `available > 0 && in_flight_full == available && total == available + excluded`，
+/// 一旦有禁用/冷却/零余额混进来就退回 401（此时「去账号池看逐号原因」才是有效指引）。
+fn pool_unavailable_error(region: Region, summary: &PoolSummary) -> GatewayError {
+    let only_excluded_are_absent = summary.available + summary.excluded == summary.total;
+    let all_usable_are_in_flight_full =
+        summary.available > 0 && summary.in_flight_full == summary.available;
+    if only_excluded_are_absent && all_usable_are_in_flight_full {
+        return GatewayError::PoolBusy {
+            region,
+            total: summary.total,
+        };
+    }
+    GatewayError::NoCredential {
+        region,
+        cause: no_credential_cause_of(summary),
     }
 }
 
@@ -1090,8 +1138,76 @@ mod tests {
                 cooling: 2,
                 excluded: 0,
                 zero_credits: 0,
+                in_flight_full: 0,
             },
             "有号但全不可用 ⇒ 必须带上分类计数，不能退化成「未登录」"
+        );
+    }
+
+    /// 账号全健康、但在途全占 ⇒ **503 `pool_busy`**，而不是 401。
+    ///
+    /// 阳性对照：去掉 `pool_unavailable_error` 里的 `PoolBusy` 分支 ⇒ 第一条断言必红。
+    #[test]
+    fn busy_pool_maps_to_503_not_401() {
+        // ① 纯在途占满：凭据/余额/冷却全正常。
+        let busy = PoolSummary {
+            total: 1,
+            available: 1,
+            in_flight_full: 1,
+            ..PoolSummary::default()
+        };
+        let error = pool_unavailable_error(Region::Global, &busy);
+        assert_eq!(
+            error.status(),
+            503,
+            "并发占满不是认证问题，回 401 会把客户端引去重新登录"
+        );
+        assert_eq!(error.type_name(), "pool_busy");
+        assert!(
+            error.message().contains("在途"),
+            "文案必须点名在途额度，否则又变成「三个 0 却说 0 个可用」: {}",
+            error.message()
+        );
+
+        // ② 混着禁用 ⇒ 仍归 401，但必须把「在途已满」列进计数（否则计数自相矛盾）。
+        let mixed = PoolSummary {
+            total: 2,
+            available: 1,
+            disabled: 1,
+            in_flight_full: 1,
+            ..PoolSummary::default()
+        };
+        let error = pool_unavailable_error(Region::Cn, &mixed);
+        assert_eq!(
+            error.status(),
+            401,
+            "有号被禁用时「去账号池看原因」才是有效指引"
+        );
+        assert!(
+            error.message().contains("1 个在途已满"),
+            "混合情形也要说出在途，否则计数仍然对不上: {}",
+            error.message()
+        );
+
+        // ③ 排除 + 在途占满：排除不是「不健康」，剩下的号确实只是忙 ⇒ 仍是 503。
+        let excluded_and_busy = PoolSummary {
+            total: 2,
+            available: 1,
+            excluded: 1,
+            in_flight_full: 1,
+            ..PoolSummary::default()
+        };
+        assert_eq!(
+            pool_unavailable_error(Region::Cn, &excluded_and_busy).status(),
+            503,
+            "排除项不该把「只是忙」降级成「未登录」"
+        );
+
+        // ④ 一个号都没有 ⇒ 绝对不能说「占满」，那是两码事。
+        assert_eq!(
+            pool_unavailable_error(Region::Cn, &PoolSummary::default()).status(),
+            401,
+            "空池必须仍然是 no_credential / StoreEmpty"
         );
     }
 

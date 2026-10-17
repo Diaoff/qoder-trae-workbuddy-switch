@@ -19,12 +19,13 @@ pub mod pick;
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
 
 use chrono::{NaiveDate, TimeZone};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use tokio::sync::RwLock;
 
 pub use entry::{CoolKind, CostTier, ModelCooldown, ModelCost, PoolEntry};
 pub use entry_like::PoolEntryLike;
@@ -84,6 +85,17 @@ pub struct PoolSummary {
     ///
     /// 不变量：`available + cooling + disabled + expired + zero_credits + excluded == total`。
     pub excluded: usize,
+    /// **状态可用、但在途已满**的账号数（**正交计数，已计入** `available`，2026-10-17 新增）。
+    ///
+    /// 为什么单列而不做第七个互斥态：账号本身是好的（凭据、余额、冷却、排除都没问题），
+    /// 只是**这一瞬间**并发占满，几秒后自己就没了 —— 把它从 `available` 扣掉会让
+    /// 「可用数」随并发抖动，还会破坏上面的六态不变量。
+    ///
+    /// 但缺了它，又会出现和 `excluded` 一模一样的自相矛盾：「4 个号、0 禁用、0 冷却、
+    /// 0 零余额、0 被排除，却 0 个可用」。判据与选号**同源**（`pick::in_flight_full`）。
+    ///
+    /// 不变量：`in_flight_full <= available`。
+    pub in_flight_full: usize,
     pub total_credits: f64,
 }
 
@@ -635,6 +647,64 @@ impl Default for PersistedState {
     }
 }
 
+/// 在途额度**租约**（RAII）：`Drop` 归还额度，future 被取消也不会泄漏。
+///
+/// # 为什么不是 `acquire()` / `release()` 手写配对（PR #41）
+///
+/// 原写法把两者隔着一整个上游往返：
+///
+/// ```ignore
+/// let ok = pool.write().await.acquire(&uid);   // 占
+/// let result = upstream.chat(...).await;        // ← 这里可能永不返回
+/// pool.write().await.release(&uid);             // 放（被取消 ⇒ 永不执行）
+/// ```
+///
+/// handler future 被 drop（客户端断开、axum 在连接关闭时取消任务、超时）时，
+/// 最后一行**根本不会执行** ⇒ `in_flight` 只增不减 ⇒ 选号把整池过滤掉 ⇒
+/// 所有模型 401 `no_credential`，而 `/status` 上「0 禁用、0 冷却、0 零余额」。
+/// `in_flight` 不落库，所以旧版本只能靠重启进程清掉。
+///
+/// 绑到变量上让编译器保证「离开作用域必归还」，正常返回、提前 `return`、
+/// `continue`、panic、future 被 drop 全都覆盖。
+///
+/// ★ 与 `PoolEntry::in_flight_until_ms` 的关系：那个是**兜底自愈**（10 分钟后
+///   把泄漏的额度整体视为已释放），本租约是**即时归还**。两者并存，不互相替代 ——
+///   自愈能救「本机制之外的泄漏」，本机制能免掉「卡 10 分钟」。
+pub struct InFlightLease {
+    pool: Arc<RwLock<Pool>>,
+    uid: String,
+}
+
+impl InFlightLease {
+    /// 申请在途额度；占满（或 uid 为空 / 账号不在池里）返回 `None`。
+    ///
+    /// ★ 返回值**必须绑定到变量**（`let _lease = ...`）。写成 `let _ = ...` 会当场
+    ///   drop ⇒ 额度瞬间归还，等于没占（且不会有任何报错）。
+    pub async fn acquire(pool: Arc<RwLock<Pool>>, uid: &str) -> Option<Self> {
+        if uid.is_empty() || !pool.write().await.acquire(uid) {
+            return None;
+        }
+        Some(Self {
+            pool,
+            uid: uid.to_string(),
+        })
+    }
+}
+
+impl Drop for InFlightLease {
+    fn drop(&mut self) {
+        let pool = Arc::clone(&self.pool);
+        let uid = std::mem::take(&mut self.uid);
+        // `Drop` 不能 `await`，交给运行时释放。取不到 handle ⇒ 运行时已关闭
+        // （进程正在退出），此时 `in_flight` 本就不落库、重启即清，不释放也无害。
+        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            handle.spawn(async move {
+                pool.write().await.release(&uid);
+            });
+        }
+    }
+}
+
 /// 账号池。
 pub struct Pool {
     entries: BTreeMap<String, PoolEntry>,
@@ -1036,6 +1106,10 @@ impl Pool {
     }
 
     /// 释放在途额度（幂等；重复释放不会把计数压成负数）。
+    ///
+    /// ★ **业务代码不要直接调它**：`acquire` / `release` 手写配对在被取消的 future 里会漏
+    /// （release 那行不执行），这正是 PR #41 修掉的 bug。请用
+    /// [`InFlightLease::acquire`]，把归还交给 `Drop`。本方法只在租约内部与测试里用。
     pub fn release(&mut self, uid: &str) {
         if let Some(entry) = self.entries.get_mut(uid) {
             if entry.in_flight > 0 {
@@ -1342,7 +1416,15 @@ impl Pool {
                     "cooling" => summary.cooling += 1,
                     // `expired` 本侧无判据（见 `PoolEntry::status_of`），恒为 0。
                     "no_credits" => summary.zero_credits += 1,
-                    _ => summary.available += 1,
+                    _ => {
+                        summary.available += 1;
+                        // ★ 与选号**同源**判据（`pick::in_flight_full`：自愈计数 + realm 上限），
+                        //   否则「卡片说可用、pick 却一个都不给」又会成为一类新报障。
+                        //   只在可用分支里数：禁用/冷却/零积分/被排除的号即便在途也不能选中。
+                        if pick::in_flight_full(entry, &self.policy(), now_ms) {
+                            summary.in_flight_full += 1;
+                        }
+                    }
                 }
             }
             // 余额未知（从未刷新）不计入总额：把未知当 0 会让「总积分」看起来凭空变少。
@@ -2032,6 +2114,126 @@ mod tests {
             pool.release("u1");
         }
         assert_eq!(pool.get("u1").unwrap().in_flight, 0);
+    }
+
+    /// 在途占满**计入** `available`，另以 `in_flight_full` 单列（PR #41）。
+    #[test]
+    fn summary_reports_in_flight_full_without_changing_available() {
+        let mut pool = Pool::new(PoolConfig {
+            max_in_flight: 1,
+            ..PoolConfig::default()
+        });
+        pool.upsert("only", Some(RealmTag::Cn), "唯一");
+
+        // ★ 必须用**真实** now：`acquire` 按真实时钟打 `in_flight_until_ms`，拿固定的
+        //   `NOW`（2023 年）去比会立刻判成「租约已过期」，测不到占满。
+        let now = crate::timeutil::now_ms();
+
+        let idle = pool.summary(now, Some(RealmTag::Cn));
+        assert_eq!(idle.available, 1);
+        assert_eq!(idle.in_flight_full, 0, "没占额度时不应计满");
+
+        assert!(pool.acquire("only"));
+        let full = pool.summary(now, Some(RealmTag::Cn));
+        assert_eq!(full.available, 1, "在途占满仍是「可用」账号，不是第七态");
+        assert_eq!(
+            full.in_flight_full, 1,
+            "占满必须单列，否则文案说不出「有号却跑不了」"
+        );
+
+        pool.release("only");
+        assert_eq!(pool.summary(now, Some(RealmTag::Cn)).in_flight_full, 0);
+    }
+
+    /// `in_flight_full` 与选号**同源**：认 realm 上限（国际版可能更严）。
+    ///
+    /// 阳性对照：若这里改成只比 `max_in_flight`（3），国际版占 1 个会漏报 ⇒ 本用例必红。
+    #[test]
+    fn summary_in_flight_full_honors_global_limit() {
+        let mut pool = Pool::new(PoolConfig {
+            max_in_flight: 3,
+            max_in_flight_global: 1,
+            ..PoolConfig::default()
+        });
+        pool.upsert("intl", Some(RealmTag::Global), "国际");
+
+        let now = crate::timeutil::now_ms();
+        assert!(pool.acquire("intl"));
+        assert_eq!(
+            pool.summary(now, Some(RealmTag::Global)).in_flight_full,
+            1,
+            "global 上限为 1 ⇒ 占 1 个就是满（不是等到 3）"
+        );
+        pool.release("intl");
+        assert_eq!(pool.summary(now, Some(RealmTag::Global)).in_flight_full, 0);
+    }
+
+    /// 被排除的账号即便在途占满，也**不得**计入 `in_flight_full`：它已不在 `available` 里，
+    /// 再计一次就破坏 `in_flight_full <= available`。
+    #[test]
+    fn excluded_accounts_never_count_as_in_flight_full() {
+        let mut pool = Pool::new(PoolConfig {
+            max_in_flight: 1,
+            ..PoolConfig::default()
+        });
+        pool.upsert("u1", Some(RealmTag::Cn), "一号");
+        pool.sync_exclusions(
+            "wb:cn",
+            &BTreeMap::from([("u1".to_string(), "手排".to_string())]),
+        );
+
+        let now = crate::timeutil::now_ms();
+        assert!(pool.acquire("u1"));
+        let summary = pool.summary(now, Some(RealmTag::Cn));
+        assert_eq!(summary.available, 0);
+        assert_eq!(summary.excluded, 1);
+        assert_eq!(
+            summary.in_flight_full, 0,
+            "排除项不属于「可用但占满」：既已不在 available，就不能再计入"
+        );
+        assert!(summary.in_flight_full <= summary.available);
+    }
+
+    /// future 被取消时，租约仍在 `Drop` 里归还额度（这就是 in_flight 泄漏的根治点）。
+    ///
+    /// 阳性对照：去掉 `Drop` 里的释放 ⇒ 第二次断言看到 1 ⇒ 本用例必红。
+    #[tokio::test]
+    async fn in_flight_lease_returns_the_slot_when_its_future_is_cancelled() {
+        let mut pool = Pool::new(PoolConfig {
+            max_in_flight: 1,
+            ..PoolConfig::default()
+        });
+        pool.upsert("u1", Some(RealmTag::Cn), "一号");
+        let pool = Arc::new(RwLock::new(pool));
+
+        // 模拟真实中断：占额度后走进永不完成的 await，再丢弃 future
+        // （等价于 axum 在连接关闭时取消 handler）。
+        {
+            let pending = async {
+                let _lease = InFlightLease::acquire(Arc::clone(&pool), "u1").await;
+                std::future::pending::<()>().await;
+            };
+            tokio::select! {
+                _ = pending => unreachable!("pending 不应完成"),
+                _ = tokio::time::sleep(std::time::Duration::from_millis(10)) => {}
+            }
+            // ★ 这一行依赖 `#[tokio::test]` 的单线程调度 + 无竞争 `RwLock` 快路径
+            //   （spawn 出来的释放任务只有在主 future 让出时才跑）。若将来改成
+            //   `flavor = "multi_thread"`，删掉这个断言即可，下一段才是真正的护栏。
+            assert_eq!(
+                pool.read().await.get("u1").map(|entry| entry.in_flight),
+                Some(1),
+                "占额度后应先计入 —— 否则后面的断言测不到泄漏"
+            );
+        }
+
+        // `Drop` 里 spawn 的释放任务需要让出一次调度才跑。
+        tokio::task::yield_now().await;
+        assert_eq!(
+            pool.read().await.get("u1").map(|entry| entry.in_flight),
+            Some(0),
+            "future 被取消也必须归还额度"
+        );
     }
 
     #[test]
