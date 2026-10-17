@@ -1080,7 +1080,11 @@ impl Pool {
     ///
     /// 每次成功都把 `in_flight_until_ms` 推到 `now + IN_FLIGHT_LEASE_MS`；
     /// 若发现上一批租约已整体过期，先把裸计数清零（**泄漏自愈**）。
-    pub fn acquire(&mut self, uid: &str) -> bool {
+    ///
+    /// ★ `pub(crate)`（2026-10-17）：业务代码**只能**通过 [`InFlightLease::acquire`] 占用。
+    /// 裸调它 + 手写 `release` 就是 PR #41 之前那个泄漏 bug 的形状，而注释拦不住人，
+    /// 可见性才拦得住。
+    pub(crate) fn acquire(&mut self, uid: &str) -> bool {
         let now = crate::timeutil::now_ms();
         let policy = self.policy();
         let Some(entry) = self.entries.get_mut(uid) else {
@@ -1109,8 +1113,9 @@ impl Pool {
     ///
     /// ★ **业务代码不要直接调它**：`acquire` / `release` 手写配对在被取消的 future 里会漏
     /// （release 那行不执行），这正是 PR #41 修掉的 bug。请用
-    /// [`InFlightLease::acquire`]，把归还交给 `Drop`。本方法只在租约内部与测试里用。
-    pub fn release(&mut self, uid: &str) {
+    /// [`InFlightLease::acquire`]，把归还交给 `Drop`。本方法只在租约内部与测试里用
+    /// —— 因此它是 `pub(crate)`：跳出本 crate 就调不到。
+    pub(crate) fn release(&mut self, uid: &str) {
         if let Some(entry) = self.entries.get_mut(uid) {
             if entry.in_flight > 0 {
                 entry.in_flight -= 1;
@@ -1623,6 +1628,7 @@ impl Pool {
             })
             .collect();
 
+        let policy = self.policy();
         let mut healthy = 0;
         let mut cooling = 0;
         let mut disabled = 0;
@@ -1631,8 +1637,14 @@ impl Pool {
         for entry in self.entries.values() {
             let is_healthy = entry.healthy(now_ms);
             let is_cooling = now_ms < entry.until_ms || now_ms < entry.breaker_until_ms;
-            let full = self.policy().max_in_flight > 0
-                && entry.in_flight_now(now_ms) >= self.policy().max_in_flight;
+            // ★ 「满没满」必须与选号**同一个判据**（`pick::in_flight_full`：自愈计数 +
+            //   realm 上限）。此处曾自己写一遍 `in_flight_now() >= max_in_flight`，
+            //   漏了 `max_in_flight_global` —— 国际版上限更严时，`/status` 会说「没占满」
+            //   而选号已经挑不出号，两边各说一套。
+            //
+            //   与 `PoolSummary::in_flight_full` 的差别只剩**统计范围**（有意如此）：
+            //   这里数全部条目（诊断明细，含禁用/冷却），摘要只数「可用」分支。
+            let full = pick::in_flight_full(entry, &policy, now_ms);
             if is_healthy {
                 healthy += 1;
             }
@@ -2614,6 +2626,41 @@ mod tests {
             .find(|item| item["uid"] == json!("g-dead"))
             .expect("存在");
         assert_eq!(dead["disabled_reason"], json!("12153 session dead"));
+    }
+
+    /// `snapshot()` 的 `in_flight_full` 必须与选号同源：**认 realm 上限**。
+    ///
+    /// 阳性对照：此处若自己写 `in_flight_now() >= max_in_flight`（只有 3），
+    /// 国际版占 1 个（上限 2）会被判成「没满」 ⇒ 第一条断言必红。这正是修复前的形态：
+    /// `/status` 说没占满、选号却已经挑不出号。
+    #[test]
+    fn snapshot_in_flight_full_honors_the_global_limit() {
+        let mut pool = Pool::new(PoolConfig {
+            max_in_flight: 3,
+            max_in_flight_global: 1,
+            ..PoolConfig::default()
+        });
+        pool.upsert("intl", Some(RealmTag::Global), "国际");
+        pool.upsert("cn", Some(RealmTag::Cn), "国内");
+
+        // `acquire` 按**真实**时钟打租约，因此快照也必须给真实 now（用 `NOW` 会判成已过期）。
+        let now = crate::timeutil::now_ms();
+        assert_eq!(pool.snapshot(now)["in_flight_full"], json!(0));
+
+        assert!(pool.acquire("intl"));
+        assert_eq!(
+            pool.snapshot(now)["in_flight_full"],
+            json!(1),
+            "global 上限为 1 ⇒ 占 1 个就该报「满」，而不是等到 3"
+        );
+
+        // 国内账号按 3 的上限：占 1 个不算满。
+        assert!(pool.acquire("cn"));
+        assert_eq!(
+            pool.snapshot(now)["in_flight_full"],
+            json!(1),
+            "国内的 1/3 不该被算成满"
+        );
     }
 
     /// 五态计数：**与 Trae 侧 `summary` 同形状**（管理面共用一张「账号池」卡）。
