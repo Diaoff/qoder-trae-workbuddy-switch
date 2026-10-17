@@ -123,7 +123,7 @@ export const PLANNED_PROGRAMS: readonly ProgramSpec[] = WORKBUDDY_PROGRAMS.filte
 export interface PlatformDescriptor {
   readonly id: Product;
   /**
-   * 展示名文案键。`WorkBuddy` / `TraeWork` 是商标，两种语言下写法相同，但仍走词表。
+   * 展示名文案键。`WorkBuddy` / `Trae` 是商标，两种语言下写法相同，但仍走词表。
    *
    * ⚠️ 类型是 `TranslationKey`（**不是 `string`**）：调用方拿到就能直接 `t(...)`，
    * 不必再 `as TranslationKey` 断言 —— 断言会把「键名写错」这类错误从编译期推到运行时
@@ -134,17 +134,17 @@ export interface PlatformDescriptor {
    * 本表在**模块加载时**就定型，拿不到 `useT()`。渲染处 `t(platformDescriptor(p).labelKey)`
    * 现取一次，语言切换才会反映到侧栏 —— 存成中文会让侧栏永远停在启动时的语言。
    *
-   * ## Trae 分区显示 `TraeWork`（而不是 `Trae`）
+   * ## Trae 分区显示 `Trae`（★ 2026-10-17 起，issue #44）
    *
-   * 它管的就是 TraeWork 这条产品线（国内版 `TRAE SOLO CN` 与国际版 `TRAE SOLO`），
-   * 名字与客户端 `product.json` 的 `nameAlias`（`TraeWork CN` / `TraeWork`）
-   * 及系统注册表显示名一致。
+   * 此前这里显示 `TraeWork` —— 那是**已被官方合并掉**的老程序线名。客户端自 2026-10-13 起
+   * 每个区域只剩一个合并版客户端（`Trae CN` / `Trae`），继续叫 `TraeWork` 会让侧栏名字
+   * 与用户实际在用的客户端对不上。老程序线的名字只在**程序位按钮**（`Work` / `Code` / `Trae`）
+   * 与一次性迁移说明里出现，不进侧栏。
    *
    * ⚠️ 但**区域（国内版 / 国际版）不写进侧栏** —— 它由分区内部顶部的区域切换器表达。
    * 把区域名塞进侧栏会让「国内版 / 国际版」看起来像两个独立产品，而它们共用同一组页面。
-   * 同理，程序线（TraeWork / TraeCode）是**账号卡片上的一枚按钮**，也不进侧栏。
    *
-   * ⚠️ 展示名是 `TraeWork`，而**标识**仍是 `trae`（路由前缀 `/trae/...`）——
+   * ⚠️ 展示名是 `Trae`，而**标识**仍是 `trae`（路由前缀 `/trae/...`）——
    * 改标识会牵动路由表与全部 `/trae` 链接，两者刻意不绑定。
    */
   readonly labelKey: TranslationKey;

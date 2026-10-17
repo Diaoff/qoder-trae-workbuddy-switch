@@ -8,7 +8,10 @@ export const zh = {
   "app.name": "Buddy Switch",
   "app.demoBadge": "演示模式",
   "product.workbuddy": "WorkBuddy",
-  "product.trae": "TraeWork",
+  /* ★ issue #44：`TraeWork` 是**已被官方合并掉**的老程序线名（客户端自 2026-10-13 起只剩
+     每区一个 `Trae`）。侧栏原来仍写 `TraeWork` ⇒ 用户看到的名字与实际在用的客户端对不上。
+     徽标 / 文案一律用合并后的 `Trae`；老程序线的名字只在程序位按钮与迁移说明里出现。 */
+  "product.trae": "Trae",
   /* Qoder 是商标，两种语言下写法相同，但仍走词表（与上面两条同款）。 */
   "product.qoder": "Qoder",
   "product.switchAria": "切换产品",

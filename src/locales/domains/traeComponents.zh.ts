@@ -96,7 +96,11 @@ export const zh = {
   "trae.comp.card.chip.toolsInUse": "使用中 {n} 个工具",
   "trae.comp.card.chip.expired": "凭据已过期",
   "trae.comp.card.chip.needRelogin": "需重新登录",
-  "trae.comp.card.chip.expiring": "{amount} 积分 {days} 天后过期",
+  // 「{amount} 积分 {days} 天内过期」——issue #44：金额是窗口内**全部**临期之和，
+  // 天数取其中最晚那一刻，故只能写「天内」（写「天后」会把不同批次混成一句话，是假话）。
+  "trae.comp.card.chip.expiring": "{amount} 积分 {days} 天内过期",
+  "trae.comp.card.chip.expiringTipTitle": "按到期时间分批（共 {n} 批）",
+  "trae.comp.card.chip.expiringTipLine": "{time} · {amount} 积分",
   "trae.comp.card.chip.unchecked": "今日未签到",
   "trae.comp.card.chip.cooling": "冷却中",
   "trae.comp.card.chip.jwtAuto": "自动刷新 JWT",
@@ -124,6 +128,7 @@ export const zh = {
   "trae.comp.card.selectAria": "选择账号 {name}",
   "trae.comp.card.menu.save": "保存登录态",
   "trae.comp.card.menu.refreshJwt": "刷新 JWT",
+  "trae.comp.card.menu.refreshCredits": "刷新积分",
   "trae.comp.card.menu.checkin": "手动签到",
   "trae.comp.card.menu.thaw": "解除冷却",
   "trae.comp.card.menu.remark": "编辑备注",
@@ -131,7 +136,10 @@ export const zh = {
 
   // ---- 积分区 ----
   "trae.comp.card.credits.remaining": "剩余积分",
-  "trae.comp.card.credits.notQueried": "尚未查询到积分，点右上角菜单「刷新积分」重试",
+  // issue #44：原文案让用户「点右上角菜单『刷新积分』」，而菜单里根本没有这一项 ——
+  // 现在提示只说事实，出口是同一行右侧那枚真的能点的按钮。
+  "trae.comp.card.credits.notQueried": "尚未查询到积分",
+  "trae.comp.card.credits.refresh": "刷新积分",
   "trae.comp.card.section.info": "账号信息",
   "trae.comp.card.package.fallback": "积分包",
   // P4：抽屉 `DetailPack` 的「已用 / 到期」文本（与 WorkBuddy 抽屉同形，各平台自持文案）。
@@ -148,6 +156,9 @@ export const zh = {
   // 所以就地禁用并说明，别让用户点了再吃一句看不懂的拒绝。
   "trae.comp.card.action.saveNoLogin": "该账号当前没有登录在任何 Trae 客户端上 —— 先在客户端里登录它，再保存",
   "trae.comp.card.action.refreshJwtTip": "用 refresh token 换一份新的 JWT",
+  // issue #44：这条说明挂在两个入口上（积分提示行的按钮 / 菜单项）—— 要写清「只动这一个账号」，
+  // 否则用户仍会以为必须全选账号才能刷。
+  "trae.comp.card.action.refreshCreditsTip": "只重新查询该账号的剩余积分，不必全选账号批量刷新",
   "trae.comp.card.footer.updatedAt": "{time} 更新",
   "trae.comp.card.footer.noUpdate": "未记录更新时间",
   "trae.comp.card.footer.updatedTip": "该账号在本地账号库中的最近更新时间",

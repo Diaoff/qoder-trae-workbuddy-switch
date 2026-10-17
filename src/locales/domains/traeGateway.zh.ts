@@ -115,7 +115,9 @@ export const zh = {
   "trae.gateway.key.col.actions": "操作",
 
   // ---- 创建对话框 ----
-  "trae.gateway.key.createDesc": "每个 Key 只能访问其归属程序位的模型与账号池 —— TraeWork 与 TraeCode 的可调模型不同。",
+  // ★ issue #44：原文案写「TraeWork 与 TraeCode 的可调模型不同」—— 这两条程序线已被官方合并，
+  //   下拉里只剩每个区域的合并版客户端，再拿退役名字解释会把人指向已卸载的客户端。
+  "trae.gateway.key.createDesc": "每个 Key 只能访问其归属客户端的模型与账号池 —— 国内版与国际版的可调模型不同。",
   "trae.gateway.key.namePlaceholder": "例如 Cursor",
   "trae.gateway.key.variant": "归属程序位",
   "trae.gateway.key.cancel": "取消",

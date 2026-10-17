@@ -910,6 +910,28 @@ export default function TraeAccountsPage() {
     );
   }
 
+  /**
+   * 单账号刷新积分（issue #44）。
+   *
+   * 此前卡片上的提示让用户「点右上角菜单『刷新积分』」，而菜单里没有该项；唯一能刷的路径是
+   * 「全选 → 批量刷新 → 取消全选」。后端 `trae_refresh_credits` 本来就支持只传一个 `userId`
+   * （批量刷新也是逐账号调它），因此这里直接复用同一接口，成本为零。
+   *
+   * ⚠️ 忙标记必须与卡片约定的 key 一致（`credits-<uid>`），否则按钮点了没转圈，
+   * 用户会以为没生效而反复点。
+   */
+  function refreshCreditsOne(account: TraeAccount) {
+    const name = displayText(account.name) || account.userId;
+    void run(
+      `credits-${account.userId}`,
+      "trae.page.accounts.actionRefreshCredits",
+      () => api.traeRefreshCredits(account.userId, variant),
+      undefined,
+      undefined,
+      () => ({ level: "success" as const, description: name }),
+    );
+  }
+
   function clearCooldown(account: TraeAccount) {
     void run(`thaw-${account.userId}`, "trae.page.accounts.actionThaw", () =>
       api.traeClearCooldown(account.userId, variant),
@@ -1974,6 +1996,7 @@ export default function TraeAccountsPage() {
                                  绿勾那条还在，正是「谎报成功」的来源（2026-09-29 报障）。 */
                               onSwitchTo={requestSwitchTo}
                               onCheckin={(target) => void checkinOne(target)}
+                              onRefreshCredits={refreshCreditsOne}
                               /* 「保存登录态」＝把客户端**此刻**的登录态存到这个账号名下，
                                  因此目标只能是「这个账号当前登录着的那个程序位」。
                                  此前这里传的是页面所属的**区域**（`variant`），而区域只能推出

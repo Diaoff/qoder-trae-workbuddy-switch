@@ -13,6 +13,7 @@ import { ENCRYPTED_CREDENTIAL_REASON } from "@/lib/api";
 import { compactTokens, exactTokens } from "@/components/usage/format";
 import { demoModeEnabled } from "@/lib/demo-mode";
 import { displayText } from "@/lib/display-text";
+import { summarizeExpiring } from "@/lib/credit-expiry";
 import { formatAbsoluteTime, formatRelativeTime } from "@/lib/catalog-source";
 import { useT, type Translate } from "@/lib/i18n";
 import type { AccountMeta, AccountTokenTodayEntry, CreditExpiry, TravelStatus } from "@/lib/types";
@@ -626,37 +627,46 @@ const isCurrentAccount = programSlots.some((slot) => slot.active);
   ) : null;
 
   /**
-   * 「N 积分 M 天后过期」——原型 `.acct-chips` 的第三条（`buddy-switch-prototype.html:2507`）：
+   * 「N 积分 M 天内过期」——原型 `.acct-chips` 的第三条（`buddy-switch-prototype.html:2507`）：
    * `a.expiring ? <span class="badge warn">${fmt(a.expiring)} 积分 ${a.expireInDays} 天后过期</span> : ""`。
    *
-   * 取「**临期（3 天内）**剩余积分之和」+「最早到期时刻」，由 `resources[]` 就地汇总——
-   * 后端 `expiringSoonRemaining` 是 **7 天**口径（统计页 / 总览页还在用），卡片徽章刻意
-   * 用更紧的 3 天窗口 ⇒ 天数**向上取整**。
-   * 没有临期积分、拿不到到期时刻、或那一刻已过 ⇒ **整条不渲染**
-   * （绝不写一个「N 天」是猜出来的标签）。
+   * ★ 2026-10-17 **口径修正**（issue #44）：此前金额取「3 天内临期之和」、天数取「最早那一刻」，
+   * 两者不是同一批积分 ⇒ 100 明天到期 + 200 后天到期会显示「300 积分 1 天后过期」（假话）。
+   * 现在统一由 `summarizeExpiring` 汇总：**金额 = 全部临期之和、天数 = 其中最晚那一刻**
+   * ⇒「N 积分 M 天内过期」对每一笔都成立；逐批明细（最急的排在首位）放进 tooltip。
+   *
+   * ⚠️ 窗口不再是前端自设的 3 天，而是**后端的 `expiringSoon`（7 天）**——统计页 / 总览页
+   * 读的就是同一口径（`expiringSoonRemaining`），卡片若另设窗口，同一件事会出现两个数字。
+   * 拿不到临期批次 ⇒ **整条不渲染**（绝不写一个猜出来的「N 天」标签）。
    */
-  const expiringChip = (() => {
-    if (!credit?.ok) return null;
-    const now = Date.now();
-    const windowMs = 3 * 86_400_000;
-    const expiring = (credit.resources ?? []).filter(
-      (resource) =>
-        !resource.expired &&
-        resource.remaining > 0 &&
-        resource.expireAt != null &&
-        resource.expireAt > now &&
-        resource.expireAt - now <= windowMs,
-    );
-    const amount = expiring.reduce((sum, resource) => sum + resource.remaining, 0);
-    const earliest = expiring.length > 0 ? Math.min(...expiring.map((resource) => resource.expireAt as number)) : null;
-    if (amount <= 0 || earliest === null) return null;
-    const days = Math.ceil((earliest - now) / 86_400_000);
-    return (
-      <Badge variant="warning" className={chipClass}>
-        {t("wbAccounts.card.expiringChip", { amount: formatCredits(amount), days })}
-      </Badge>
-    );
-  })();
+  const expiring = credit?.ok ? summarizeExpiring(metricResources) : null;
+  const expiringChip = expiring ? (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <Badge
+          variant="warning"
+          className={chipClass}
+          aria-label={t("wbAccounts.card.expiringChip", {
+            amount: formatCredits(expiring.total),
+            days: expiring.days,
+          })}
+        >
+          {t("wbAccounts.card.expiringChip", { amount: formatCredits(expiring.total), days: expiring.days })}
+        </Badge>
+      </TooltipTrigger>
+      <TooltipContent side="top">
+        <div className="whitespace-nowrap font-medium">{t("wbAccounts.card.expiringTipTitle", { n: expiring.batches.length })}</div>
+        {expiring.batches.map((batch) => (
+          <div key={batch.expireAt} className="whitespace-nowrap tabular-nums">
+            {t("wbAccounts.card.expiringTipLine", {
+              time: formatAbsoluteTime(batch.expireAt),
+              amount: formatCredits(batch.amount),
+            })}
+          </div>
+        ))}
+      </TooltipContent>
+    </Tooltip>
+  ) : null;
 
   /**
    * 状态标签 —— 与原型 `accountStatus()`（`buddy-switch-prototype.html:2390-2395`）**同一口径**：

@@ -7,7 +7,7 @@
  *
  * 译文约定（全仓一致）：
  * - 术语与客户端一致：account / check-in / credits / token / gateway / profile。
- * - **产品名不译**（WorkBuddy / TraeWork / Buddy Switch）。
+ * - **产品名不译**（WorkBuddy / Trae / Buddy Switch）。
  * - 中文的顿号、书名号按英文习惯改为逗号与引号 —— 照搬标点是最常见的「机翻味」。
  * - 语态用祈使/陈述，不堆砌 Please；长度尽量控制在中文的两倍内，避免挤破 220px 侧栏。
  */
@@ -16,7 +16,9 @@ export const en = {
   "app.name": "Buddy Switch",
   "app.demoBadge": "Demo",
   "product.workbuddy": "WorkBuddy",
-  "product.trae": "TraeWork",
+  /* issue #44: "TraeWork" is the retired legacy program line (each region now ships a single
+     merged "Trae" client). The sidebar must use the merged name. */
+  "product.trae": "Trae",
   "product.qoder": "Qoder",
   "product.switchAria": "Switch product",
   "product.navAria": "{product} navigation",

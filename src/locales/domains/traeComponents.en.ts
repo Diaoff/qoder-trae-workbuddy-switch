@@ -65,7 +65,9 @@ export const en = {
   "trae.comp.card.chip.toolsInUse": "{n} tools in use",
   "trae.comp.card.chip.expired": "Credentials expired",
   "trae.comp.card.chip.needRelogin": "Needs re-login",
-  "trae.comp.card.chip.expiring": "{amount} credits expire in {days} days",
+  "trae.comp.card.chip.expiring": "{amount} credits expire within {days} days",
+  "trae.comp.card.chip.expiringTipTitle": "Expiring batches ({n})",
+  "trae.comp.card.chip.expiringTipLine": "{time} · {amount} credits",
   "trae.comp.card.chip.unchecked": "Not checked in today",
   "trae.comp.card.chip.cooling": "Cooling down",
   "trae.comp.card.chip.jwtAuto": "Auto-refresh JWT",
@@ -90,6 +92,7 @@ export const en = {
   "trae.comp.card.selectAria": "Select account {name}",
   "trae.comp.card.menu.save": "Save login state",
   "trae.comp.card.menu.refreshJwt": "Refresh JWT",
+  "trae.comp.card.menu.refreshCredits": "Refresh credits",
   "trae.comp.card.menu.checkin": "Check in manually",
   "trae.comp.card.menu.thaw": "Clear cooldown",
   "trae.comp.card.menu.remark": "Edit remark",
@@ -97,7 +100,8 @@ export const en = {
 
   // ---- Credits section ----
   "trae.comp.card.credits.remaining": "Credits left",
-  "trae.comp.card.credits.notQueried": "No credits fetched yet. Use “Refresh JWT” in the top-right menu to try again.",
+  "trae.comp.card.credits.notQueried": "No credits fetched yet",
+  "trae.comp.card.credits.refresh": "Refresh credits",
   "trae.comp.card.section.info": "Account info",
   "trae.comp.card.package.fallback": "Credit package",
   // P4: "used / expiry" text for the drawer `DetailPack` (mirrors the WorkBuddy drawer).
@@ -110,6 +114,7 @@ export const en = {
   "trae.comp.card.action.saveTip": "Save the client's current login state under this account (used to restore when switching); the client will be closed and reopened first",
   "trae.comp.card.action.saveNoLogin": "This account is not signed in on any Trae client — sign in on the client first, then save",
   "trae.comp.card.action.refreshJwtTip": "Exchange the refresh token for a new JWT",
+  "trae.comp.card.action.refreshCreditsTip": "Re-query credits for this account only — no need to select all accounts and refresh in bulk",
   "trae.comp.card.footer.updatedAt": "Updated {time}",
   "trae.comp.card.footer.noUpdate": "No update time recorded",
   "trae.comp.card.footer.updatedTip": "Last time this account was updated in the local account library",

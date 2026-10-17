@@ -1,4 +1,4 @@
-import { Check, CircleCheck, CircleSlash, Coins, Ellipsis, Info, KeyRound, Loader2, Save, StickyNote, Trash2 } from "lucide-react";
+import { Check, CircleCheck, CircleSlash, Coins, Ellipsis, Info, KeyRound, Loader2, RefreshCw, Save, StickyNote, Trash2 } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -8,7 +8,8 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSepara
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { AVATAR_TEXT_CLASS, accountInitials, avatarTone } from "@/components/account-card";
 import { displayText } from "@/lib/display-text";
-import { formatRelativeTime } from "@/lib/catalog-source";
+import { summarizeExpiring } from "@/lib/credit-expiry";
+import { formatAbsoluteTime, formatRelativeTime } from "@/lib/catalog-source";
 import { useT, type Translate } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
 import type { TraeAccount, TraeJwtStatus, TraeProgramId, TraeRegionId, TraeVariantId } from "@/lib/trae-types";
@@ -160,6 +161,14 @@ interface Props {
   onSwitchTo?: (account: TraeAccount, variant: TraeVariantId, label: string) => void;
   /** 单账号签到。 */
   onCheckin?: (account: TraeAccount) => void;
+  /**
+   * 单账号**刷新积分**（issue #44）。
+   *
+   * 此前卡片只有一句「点右上角菜单『刷新积分』重试」，而菜单里根本没有这一项 ——
+   * 用户唯一能刷新积分的路径是「全选 → 批量刷新 → 取消全选」，为看一眼某个账号的积分
+   * 动整张列表。有了这个回调，卡片上（未查询到积分的那一行 + 「更多」菜单）都能一键刷新。
+   */
+  onRefreshCredits?: (account: TraeAccount) => void;
   onSaveLogin: (account: TraeAccount) => void;
   onRefreshJwt: (account: TraeAccount) => void;
   onClearCooldown: (account: TraeAccount) => void;
@@ -202,6 +211,7 @@ export function TraeAccountCard({
   featuresDisabled = false,
   onSwitchTo,
   onCheckin,
+  onRefreshCredits,
   onSaveLogin,
   onRefreshJwt,
   onClearCooldown,
@@ -221,6 +231,8 @@ export function TraeAccountCard({
     : null;
   const saving = busy === `save-${account.userId}`;
   const refreshingJwt = busy === `jwt-${account.userId}`;
+  /** 单账号刷新积分中（issue #44）—— 两个入口（积分提示行 / 菜单项）共用这一个忙标记。 */
+  const refreshingCredits = busy === `credits-${account.userId}`;
   const thawing = busy === `thaw-${account.userId}`;
   const checkingIn = busy === `checkin-${account.userId}`;
   const deleting = busy === `delete-${account.userId}`;
@@ -276,24 +288,41 @@ export function TraeAccountCard({
       </Badge>
     );
 
-  /** 第 3 槽「N 积分 M 天后过期」—— 取临期（≤7 天）那部分之和 + 其中最早的到期时刻。 */
-  const expiringChip = (() => {
-    const soon = (account.creditPackages ?? []).filter((pkg) => pkg.expiringSoon && pkg.remaining > 0);
-    const amount = soon.reduce((sum, pkg) => sum + pkg.remaining, 0);
-    if (amount <= 0) return null;
-    const earliest = soon.reduce<number | null>((min, pkg) => {
-      if (typeof pkg.expireAt !== "number" || pkg.expireAt <= 0) return min;
-      return min === null || pkg.expireAt < min ? pkg.expireAt : min;
-    }, null);
-    if (earliest === null) return null;
-    const at = earliest > 1e12 ? earliest : earliest * 1000;
-    if (at <= Date.now()) return null;
-    return (
-      <Badge variant="warning" className={chipClass}>
-        {t("trae.comp.card.chip.expiring", { amount: formatCredits(amount), days: Math.ceil((at - Date.now()) / 86_400_000) })}
-      </Badge>
-    );
-  })();
+  /**
+   * 第 3 槽「N 积分 M 天内过期」—— 口径与 WorkBuddy 卡片**同一实现**（`summarizeExpiring`）：
+   * 金额 = 窗口内全部临期之和、天数 = 其中最晚那一刻，逐批明细进 tooltip。
+   *
+   * ⚠️ Trae 的 `expireAt` 是**秒**（后端直接透传上游 `expire_time`），WorkBuddy 是毫秒 ——
+   * 单位必须显式传给汇总函数，此前这里靠 `> 1e12` 猜单位，猜错一次就会整条徽章消失。
+   */
+  const expiring = summarizeExpiring(account.creditPackages, { unit: "s" });
+  const expiringChip = expiring ? (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <Badge
+          variant="warning"
+          className={chipClass}
+          aria-label={t("trae.comp.card.chip.expiring", {
+            amount: formatCredits(expiring.total),
+            days: expiring.days,
+          })}
+        >
+          {t("trae.comp.card.chip.expiring", { amount: formatCredits(expiring.total), days: expiring.days })}
+        </Badge>
+      </TooltipTrigger>
+      <TooltipContent side="top">
+        <div className="whitespace-nowrap font-medium">{t("trae.comp.card.chip.expiringTipTitle", { n: expiring.batches.length })}</div>
+        {expiring.batches.map((batch) => (
+          <div key={batch.expireAt} className="whitespace-nowrap tabular-nums">
+            {t("trae.comp.card.chip.expiringTipLine", {
+              time: formatAbsoluteTime(batch.expireAt),
+              amount: formatCredits(batch.amount),
+            })}
+          </div>
+        ))}
+      </TooltipContent>
+    </Tooltip>
+  ) : null;
 
   const statusChips = (
     <>
@@ -507,6 +536,17 @@ export function TraeAccountCard({
             <KeyRound />{t("trae.comp.card.menu.refreshJwt")}
           </DropdownMenuItem>
         )}
+        {/* ★ issue #44：菜单里**真的**要有「刷新积分」，卡片上的提示才不是空口指路。
+            此前提示文案指向这个菜单项，而菜单里只有「刷新 JWT」 —— 用户点了也不会刷新积分。
+            可见入口在下面未查询到积分的那一行，这里补的是「已有积分时也想强制更新」的路径。 */}
+        <DropdownMenuItem
+          disabled={featuresDisabled || refreshingCredits || !onRefreshCredits}
+          onSelect={() => onRefreshCredits?.(account)}
+          title={t("trae.comp.card.action.refreshCreditsTip")}
+        >
+          {refreshingCredits ? <Loader2 className="animate-spin" /> : <RefreshCw />}
+          {t("trae.comp.card.menu.refreshCredits")}
+        </DropdownMenuItem>
         {/* 「手动签到」与 WorkBuddy 卡片菜单同位（刷新之后、删除之前）。
             只在今日未签到时出现：已签到的账号再点一次只会被跳过策略拦下，
             摆一个点不动的入口比不摆更差。 */}
@@ -633,9 +673,23 @@ export function TraeAccountCard({
               <span className="min-w-0 truncate">{account.cooldownReason || t("trae.comp.card.cooldown.fallback", { type: account.cooldownType })}</span>
             </div>
           ) : !hasCredits ? (
+            /* ★ issue #44：这句提示原先写「点右上角菜单『刷新积分』重试」—— 而菜单里没有这一项。
+               现在提示只说事实（尚未查询到积分），出口就地给一个真的能点的按钮：
+               为看一眼某个账号的积分去「全选 → 批量刷新 → 取消全选」是没必要的绕路。 */
             <div className="flex min-w-0 items-center gap-2 py-3 text-sm text-muted-foreground">
               <Coins className="size-4 shrink-0" />
-              <span className="min-w-0 truncate">{t("trae.comp.card.credits.notQueried")}</span>
+              <span className="min-w-0 flex-1 truncate">{t("trae.comp.card.credits.notQueried")}</span>
+              <Button
+                variant="outline"
+                size="sm"
+                className="h-7 shrink-0 gap-1 px-2 text-[11px]"
+                disabled={featuresDisabled || refreshingCredits || !onRefreshCredits}
+                onClick={() => onRefreshCredits?.(account)}
+                title={t("trae.comp.card.action.refreshCreditsTip")}
+              >
+                {refreshingCredits ? <Loader2 className="size-3.5 animate-spin" /> : <RefreshCw className="size-3.5" />}
+                {t("trae.comp.card.credits.refresh")}
+              </Button>
             </div>
           ) : null}
         </section>

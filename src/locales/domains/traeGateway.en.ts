@@ -97,7 +97,7 @@ export const en = {
   "trae.gateway.key.col.actions": "Actions",
 
   // ---- Create dialog ----
-  "trae.gateway.key.createDesc": "Each key can only reach the models and account pool of its owned client — TraeWork and TraeCode offer different models.",
+  "trae.gateway.key.createDesc": "Each key can only reach the models and account pool of its own client — the CN and global clients offer different models.",
   "trae.gateway.key.namePlaceholder": "e.g. Cursor",
   "trae.gateway.key.variant": "Owned client",
   "trae.gateway.key.cancel": "Cancel",

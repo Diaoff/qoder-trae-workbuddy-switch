@@ -128,7 +128,11 @@ export const zh = {
   "wbAccounts.card.priority": "优先",
   "wbAccounts.card.priorityTip": "建议优先使用",
   // 原型 `.acct-chips` 第三条（`:2507`）：`{X} 积分 {N} 天后过期`。
-  "wbAccounts.card.expiringChip": "{amount} 积分 {days} 天后过期",
+  // ★ issue #44：金额是窗口内**全部**临期之和、天数取其中最晚那一刻 ⇒ 只能写「天内」。
+  //   照原型写「天后」会把不同批次混成一句话（100 明天到期 + 200 后天到期 ⇒「300 积分 1 天后过期」）。
+  "wbAccounts.card.expiringChip": "{amount} 积分 {days} 天内过期",
+  "wbAccounts.card.expiringTipTitle": "按到期时间分批（共 {n} 批）",
+  "wbAccounts.card.expiringTipLine": "{time} · {amount} 积分",
   "wbAccounts.card.toolsInUse": "使用中 {n} 个工具",
   // 头部「当前登录」徽章（原型 `accountCard` :2502）：绑定任一程序位即为当前登录。
   "wbAccounts.card.currentLogin": "当前登录",
