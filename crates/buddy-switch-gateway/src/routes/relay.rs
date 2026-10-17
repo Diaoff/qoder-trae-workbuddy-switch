@@ -14,6 +14,7 @@
 //! 非流式场景无差别（响应体在 handler 内被消费完毕）。
 
 use std::collections::HashSet;
+use std::sync::Arc;
 
 use serde_json::Value;
 
@@ -24,7 +25,7 @@ use buddy_switch_core::modules::upstream::UpstreamChatResult;
 use crate::account_strategy::{AccountSelector, AccountStrategy};
 use crate::error::{GatewayError, NoCredentialCause};
 use crate::outbound::{self, DegradeGate, OutboundMeta};
-use crate::pool::{classify_event, PoolSummary, RealmTag, UpstreamEvent};
+use crate::pool::{classify_event, InFlightLease, PoolSummary, RealmTag, UpstreamEvent};
 use crate::session_headers::{self, ConversationContext};
 
 /// 会话 id 提取已提到共用层（[`crate::session_headers`]）—— Trae 网关复用同一份实现。
@@ -191,13 +192,15 @@ pub async fn relay(
             state.proxy_kpi.record_switch();
         }
 
-        // 在途租约：占满则标记为已试并换号。
-        if !uid.is_empty() {
-            let acquired = state.pool.write().await.acquire(&uid);
-            if !acquired {
-                tried.insert(uid);
-                continue;
-            }
+        // 在途租约：占满则换号；返回值绑定到变量，释放交给 Drop。
+        let _lease = if uid.is_empty() {
+            None
+        } else {
+            InFlightLease::acquire(Arc::clone(&state.pool), &uid).await
+        };
+        if !uid.is_empty() && _lease.is_none() {
+            tried.insert(uid);
+            continue;
         }
 
         // ★ 出站按 `kind` 分派 —— **治理层（本函数其余部分：选号 / 在途 / 冷却 / 熔断 / 换号）完全共用**。
@@ -234,11 +237,6 @@ pub async fn relay(
                     .await
             }
         };
-
-        // 无论成败都释放在途（本次偏差见模块文档）。
-        if !uid.is_empty() {
-            state.pool.write().await.release(&uid);
-        }
 
         match result {
             UpstreamChatResult::Ok(ok) => {
@@ -322,10 +320,7 @@ pub async fn relay(
                 pool.summary(now_ms, Some(realm))
             };
             RelayFailure {
-                error: GatewayError::NoCredential {
-                    region: request.region,
-                    cause: no_credential_cause_of(&summary),
-                },
+                error: pool_unavailable_error(request.region, &summary),
                 account: String::new(),
                 uid: String::new(),
                 upstream_message: String::new(),
@@ -444,7 +439,27 @@ fn no_credential_cause_of(summary: &PoolSummary) -> NoCredentialCause {
             disabled: summary.disabled,
             cooling: summary.cooling,
             zero_credits: summary.zero_credits,
+            in_flight_full: summary.in_flight_full,
         }
+    }
+}
+
+/// 选号失败 → 对外错误：全部健康但在途全满时返回 `pool_busy`（503），
+/// 其余归 `no_credential`（401）。
+fn pool_unavailable_error(region: Region, summary: &PoolSummary) -> GatewayError {
+    // 混着禁用/冷却时不能说「全部健康」，归 no_credential 并在计数里列出在途已满。
+    let all_healthy_and_full = summary.total > 0
+        && summary.available == summary.total
+        && summary.in_flight_full == summary.total;
+    if all_healthy_and_full {
+        return GatewayError::PoolBusy {
+            region,
+            total: summary.total,
+        };
+    }
+    GatewayError::NoCredential {
+        region,
+        cause: no_credential_cause_of(summary),
     }
 }
 
@@ -673,8 +688,48 @@ mod tests {
                 disabled: 3,
                 cooling: 2,
                 zero_credits: 0,
+                in_flight_full: 0,
             },
             "有号但全不可用 ⇒ 必须带上分类计数，不能退化成「未登录」"
+        );
+    }
+
+    /// 账号全健康、但在途全占 ⇒ 503 `pool_busy`，而非 401。
+    #[test]
+    fn busy_pool_maps_to_503_not_401() {
+        let busy = PoolSummary {
+            total: 1,
+            available: 1,
+            in_flight_full: 1,
+            ..PoolSummary::default()
+        };
+        let error = pool_unavailable_error(Region::Global, &busy);
+        assert_eq!(
+            error.status(),
+            503,
+            "并发占满不是认证问题，回 401 会把客户端引错"
+        );
+        assert_eq!(error.type_name(), "pool_busy");
+        assert!(
+            error.message().contains("在途"),
+            "文案必须点名在途额度，否则又会变成「三个 0 却说 0 个可用」: {}",
+            error.message()
+        );
+
+        // 混合情形（部分禁用 + 部分占满）仍归 `no_credential`，但必须把「在途已满」列出来。
+        let mixed = PoolSummary {
+            total: 2,
+            available: 1,
+            disabled: 1,
+            in_flight_full: 1,
+            ..PoolSummary::default()
+        };
+        let error = pool_unavailable_error(Region::Cn, &mixed);
+        assert_eq!(error.status(), 401);
+        assert!(
+            error.message().contains("1 个在途已满"),
+            "混合情形也要说出在途，否则计数仍然自相矛盾: {}",
+            error.message()
         );
     }
 

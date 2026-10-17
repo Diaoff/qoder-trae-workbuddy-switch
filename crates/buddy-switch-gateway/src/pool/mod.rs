@@ -17,12 +17,13 @@ pub mod pick;
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
 
 use chrono::{NaiveDate, TimeZone};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use tokio::sync::RwLock;
 
 pub use entry::{CoolKind, CostTier, ModelCooldown, ModelCost, PoolEntry};
 pub use entry_like::PoolEntryLike;
@@ -66,6 +67,8 @@ pub struct PoolSummary {
     pub disabled: usize,
     pub expired: usize,
     pub zero_credits: usize,
+    /// 「状态可用但在途已满」的数量，计入 `available`，单独给出以便解释「有号却跑不了」。
+    pub in_flight_full: usize,
     pub total_credits: f64,
 }
 
@@ -513,6 +516,39 @@ impl Default for PersistedState {
     }
 }
 
+/// 在途额度租约（RAII）：drop 时归还额度，future 被取消也不会泄漏。
+pub struct InFlightLease {
+    pool: Arc<RwLock<Pool>>,
+    uid: String,
+}
+
+impl InFlightLease {
+    /// 申请在途额度；占满（或 uid 为空）返回 `None`。返回值必须绑定到变量。
+    pub async fn acquire(pool: Arc<RwLock<Pool>>, uid: &str) -> Option<Self> {
+        if uid.is_empty() || !pool.write().await.acquire(uid) {
+            return None;
+        }
+        Some(Self {
+            pool,
+            uid: uid.to_string(),
+        })
+    }
+}
+
+impl Drop for InFlightLease {
+    fn drop(&mut self) {
+        let pool = Arc::clone(&self.pool);
+        let uid = std::mem::take(&mut self.uid);
+        // Drop 不能 await，交给运行时释放；非 tokio 上下文中取不到 handle，
+        // 此时 in_flight 本就不落库，重启即清，可不释放。
+        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            handle.spawn(async move {
+                pool.write().await.release(&uid);
+            });
+        }
+    }
+}
+
 /// 账号池。
 pub struct Pool {
     entries: BTreeMap<String, PoolEntry>,
@@ -792,7 +828,7 @@ impl Pool {
         true
     }
 
-    /// 释放在途额度（幂等；重复释放不会把计数压成负数）。
+    /// 释放在途额度（幂等）。业务代码应走 [`InFlightLease::acquire`]，释放交给 `Drop`。
     pub fn release(&mut self, uid: &str) {
         if let Some(entry) = self.entries.get_mut(uid) {
             if entry.in_flight > 0 {
@@ -1073,7 +1109,13 @@ impl Pool {
                 "cooling" => summary.cooling += 1,
                 // `expired` 本侧无判据（见 `PoolEntry::status_of`），恒为 0。
                 "no_credits" => summary.zero_credits += 1,
-                _ => summary.available += 1,
+                _ => {
+                    summary.available += 1;
+                    // 与 pick::in_flight_full 同一判据。
+                    if pick::in_flight_full(entry, &self.policy()) {
+                        summary.in_flight_full += 1;
+                    }
+                }
             }
             // 余额未知（从未刷新）不计入总额：把未知当 0 会让「总积分」看起来凭空变少。
             if entry.credits_refreshed_ms > 0 {
@@ -2040,6 +2082,67 @@ mod tests {
             .find(|item| item["uid"] == json!("g-dead"))
             .expect("存在");
         assert_eq!(dead["disabled_reason"], json!("12153 session dead"));
+    }
+
+    /// 在途占满计入 `available`，另以 `in_flight_full` 单列。
+    #[test]
+    fn summary_reports_in_flight_full_without_changing_available() {
+        let mut pool = Pool::new(PoolConfig {
+            max_in_flight: 1,
+            ..PoolConfig::default()
+        });
+        pool.upsert("only", Some(RealmTag::Cn), "唯一");
+
+        let idle = pool.summary(NOW, Some(RealmTag::Cn));
+        assert_eq!(idle.available, 1);
+        assert_eq!(idle.in_flight_full, 0, "没占额度时不应计满");
+
+        assert!(pool.acquire("only"));
+        let full = pool.summary(NOW, Some(RealmTag::Cn));
+        assert_eq!(full.available, 1, "在途占满仍是「可用」账号，不是第六态");
+        assert_eq!(
+            full.in_flight_full, 1,
+            "占满必须单列，否则文案说不出为什么不可用"
+        );
+
+        pool.release("only");
+        assert_eq!(pool.summary(NOW, Some(RealmTag::Cn)).in_flight_full, 0);
+    }
+
+    /// future 被取消时租约仍在 `Drop` 里归还额度（防 in_flight 泄漏）。
+    #[tokio::test]
+    async fn in_flight_lease_returns_the_slot_when_its_future_is_cancelled() {
+        let mut pool = Pool::new(PoolConfig {
+            max_in_flight: 1,
+            ..PoolConfig::default()
+        });
+        pool.upsert("u1", Some(RealmTag::Cn), "一号");
+        let pool = Arc::new(RwLock::new(pool));
+
+        // 模拟真实中断：占额度后走进永不完成的 await，再丢弃 future。
+        {
+            let pending = async {
+                let _lease = InFlightLease::acquire(Arc::clone(&pool), "u1").await;
+                std::future::pending::<()>().await;
+            };
+            tokio::select! {
+                _ = pending => unreachable!("pending 不应完成"),
+                _ = tokio::time::sleep(std::time::Duration::from_millis(10)) => {}
+            }
+            assert_eq!(
+                pool.read().await.get("u1").map(|entry| entry.in_flight),
+                Some(1),
+                "占额度后应先计入 —— 否则后面的断言测不到泄漏"
+            );
+        }
+
+        // Drop 里 spawn 的释放任务需要让出一次调度才跑。
+        tokio::task::yield_now().await;
+        assert_eq!(
+            pool.read().await.get("u1").map(|entry| entry.in_flight),
+            Some(0),
+            "future 被取消也必须归还额度"
+        );
     }
 
     /// 五态计数：**与 Trae 侧 `summary` 同形状**（管理面共用一张「账号池」卡）。

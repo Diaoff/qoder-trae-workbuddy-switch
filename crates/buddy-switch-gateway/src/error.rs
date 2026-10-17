@@ -38,6 +38,15 @@ pub enum GatewayError {
     /// 与 `/v1/models` 的过滤**同源**（读同一份 `disabled` 存储 + 同一个 [`crate::disabled_models::is_disabled`]）——
     /// 否则禁用就是「假开关」。
     ModelDisabled { scope: Scope, model: String },
+    /// 账号都健康但在途额度已占满 → 503（凭据正常，回 401 会误导客户端去重新登录）。
+    ///
+    /// 典型触发：上游长时间不吐字节，handler future 被取消，正常情况下只是瞬时状态。
+    /// 租约已由 [`InFlightLease`](crate::pool::InFlightLease) 的 `Drop` 释放。
+    PoolBusy {
+        region: Region,
+        /// 池内账号总数。
+        total: usize,
+    },
     /// 网关自身错误（端口占用/目录失败/内部）→ 502（不返回裸堆栈）
     Internal(String),
 }
@@ -86,6 +95,8 @@ pub enum NoCredentialCause {
         cooling: usize,
         /// 其中余额为 0 的数量。
         zero_credits: usize,
+        /// 其中「状态可用但在途已满」的数量（计入 `available`）。
+        in_flight_full: usize,
     },
 }
 
@@ -108,6 +119,8 @@ impl GatewayError {
             GatewayError::BadRequest(_) => 400,
             // 403 = 明确拒绝（凭据有效、请求合法，但该模型被用户禁用）。
             GatewayError::ModelDisabled { .. } => 403,
+            // 503 = 并发占满，凭据正常，稍后重试即可。
+            GatewayError::PoolBusy { .. } => 503,
             GatewayError::Internal(_) => 502,
         }
     }
@@ -129,6 +142,7 @@ impl GatewayError {
             },
             GatewayError::BadRequest(_) => "bad_request",
             GatewayError::ModelDisabled { .. } => "model_disabled",
+            GatewayError::PoolBusy { .. } => "pool_busy",
             GatewayError::Internal(_) => "internal",
         }
     }
@@ -153,6 +167,10 @@ impl GatewayError {
             GatewayError::ModelDisabled { scope, model } => {
                 crate::disabled_models::disabled_message(*scope, model)
             }
+            GatewayError::PoolBusy { region, total } => format!(
+                "本机{}账号库有 {total} 个账号且全部健康，但都占满了在途额度，稍后重试即可",
+                region_display(*region)
+            ),
             GatewayError::Internal(message) => message.clone(),
         }
     }
@@ -199,12 +217,24 @@ fn no_credential_message(region: Region, cause: NoCredentialCause) -> String {
             disabled,
             cooling,
             zero_credits,
-        } => format!(
-            "本机{name}账号库有 {total} 个账号，但此刻 0 个可用：\
-             {disabled} 个已禁用、{cooling} 个冷却中、{zero_credits} 个余额为 0。\
-             重新登录 / 切换账号不会解除禁用与冷却 —— \
-             请在「网关 → 账号池」查看逐账号原因（禁用是终态，需余额刷新成功或人工复活）"
-        ),
+            in_flight_full,
+        } => {
+            // 在途占满只在混合不可用时走到这里，但必须列出，否则计数对不上。
+            let mut causes = vec![
+                format!("{disabled} 个已禁用"),
+                format!("{cooling} 个冷却中"),
+                format!("{zero_credits} 个余额为 0"),
+            ];
+            if in_flight_full > 0 {
+                causes.push(format!("{} 个在途已满", in_flight_full));
+            }
+            format!(
+                "本机{name}账号库有 {total} 个账号，但此刻 0 个可用：{}。\
+                 重新登录 / 切换账号不会解除禁用、冷却与在途 —— \
+                 请在「网关 → 账号池」查看逐账号原因（禁用是终态，需余额刷新成功或人工复活）",
+                causes.join("、")
+            )
+        }
     }
 }
 
@@ -293,6 +323,7 @@ mod tests {
                 disabled: 9,
                 cooling: 3,
                 zero_credits: 0,
+                in_flight_full: 0,
             },
         ];
         let messages: Vec<String> = causes
@@ -339,6 +370,7 @@ mod tests {
                 disabled: 9,
                 cooling: 3,
                 zero_credits: 0,
+                in_flight_full: 0,
             },
         }
         .message();
@@ -406,6 +438,7 @@ mod tests {
                 disabled: 1,
                 cooling: 0,
                 zero_credits: 0,
+                in_flight_full: 0,
             },
         ] {
             let error = GatewayError::NoCredential {
