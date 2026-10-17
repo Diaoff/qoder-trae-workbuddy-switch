@@ -99,8 +99,14 @@ pub struct RelayRequest {
 pub enum RelayOutcome {
     /// 上游 2xx，交回原始响应（由调用方决定透传/聚合）。
     Ok {
-        /// 上游响应。
+        /// 上游响应（首块可能已被 [`peek_first_frame`] 取走 —— 见 `prefix`）。
         response: reqwest::Response,
+        /// 已被 peek 取走、**必须补回**的首块字节（`None` = 没取过）。
+        ///
+        /// 为什么是这个形状：`reqwest::Response` **没有**「放回去」的构造入口，
+        /// 所以「看一眼首帧」必然要把它单独交出来。调用方按「prefix + 剩余流」的顺序
+        /// 拼接后，客户端收到的字节与顺序**完全不变**。
+        prefix: Option<axum::body::Bytes>,
         /// 命中账号的展示名。
         account: String,
         /// 命中账号的 uid（用于后续记账本）。
@@ -118,6 +124,74 @@ pub struct RelayFailure {
     pub uid: String,
     /// 上游返回体片段（可能为空）。
     pub upstream_message: String,
+}
+
+/// 等**首帧**再决定：先取一块字节，若它本身就是错误信封就判成失败（可换号）。
+///
+/// ## 为什么必须在这里做
+///
+/// 这是整个链路里**唯一**还能换号的位置：再往后（路由把 `Response` 交给 axum）
+/// 状态码与响应头就已经发出去了，错误只能「记冷却」，客户端必然拿到 200。
+///
+/// ## 为什么可以安全地「取一块再还回去」
+///
+/// 把 body 拆成 `data_stream`，取出首块后用 `iter(head).chain(rest)` 重新拼回去
+/// —— 客户端收到的**字节序列与顺序完全不变**（首块只是被网关看了一眼）。
+///
+/// ## 超时
+///
+/// 上游迟迟不发首块时**不能**把整个请求卡在这里（此前卡住的是客户端读流，
+/// 网关自己的 handler 是空闲的）。所以等待有上限，超时即原样交出去 ——
+/// 宁可不判，也不能把「上游慢」变成「网关挂」。
+pub(crate) async fn peek_first_frame(
+    mut response: reqwest::Response,
+) -> (
+    reqwest::Response,
+    Option<axum::body::Bytes>,
+    Option<crate::protocol::error_sniffer::SniffedError>,
+) {
+    // 等首帧的上限：正常首字节在秒级，20s 足够覆盖慢上游。
+    const FIRST_FRAME_WAIT: std::time::Duration = std::time::Duration::from_secs(20);
+
+    let first = match tokio::time::timeout(FIRST_FRAME_WAIT, response.chunk()).await {
+        Ok(Ok(Some(chunk))) => chunk,
+        // 超时 / 传输错误 / 空体：都不判，原样交回。
+        _ => return (response, None, None),
+    };
+
+    if let Ok(text) = std::str::from_utf8(&first) {
+        if let Some(found) = crate::protocol::error_sniffer::sniff_sse_chunk(text) {
+            // 首帧即错误 ⇒ 调用方丢弃这个响应换号（客户端一个字节都没收到）。
+            return (response, None, Some(found));
+        }
+    }
+    // 不是错误：把这一块交回调用方补到流首（`reqwest::Response` 不能「放回去」）。
+    (response, Some(first), None)
+}
+
+/// 把 peek 取走的首块**拼回流首**，得到完整的字节流。
+///
+/// `prefix = None` 时与 `response.bytes_stream()` 逐字等价 —— 没 peek 过的请求零开销。
+pub fn prefix_stream(
+    prefix: Option<axum::body::Bytes>,
+    response: reqwest::Response,
+) -> impl futures_util::Stream<Item = Result<axum::body::Bytes, reqwest::Error>> {
+    use futures_util::StreamExt;
+    let head: Vec<Result<axum::body::Bytes, reqwest::Error>> = prefix.into_iter().map(Ok).collect();
+    futures_util::stream::iter(head).chain(response.bytes_stream())
+}
+
+/// 非流式：把 peek 取走的首块拼回正文，再读出剩余全部字节。
+pub async fn body_text_with_prefix(
+    prefix: Option<axum::body::Bytes>,
+    response: reqwest::Response,
+) -> String {
+    let mut text = String::new();
+    if let Some(bytes) = prefix {
+        text.push_str(&String::from_utf8_lossy(&bytes));
+    }
+    text.push_str(&response.text().await.unwrap_or_default());
+    text
 }
 
 /// 把一次请求送到上游；内含换号轮换与失败治理。
@@ -299,6 +373,57 @@ pub async fn relay(
 
         match result {
             UpstreamChatResult::Ok(ok) => {
+                // ★★ **等首帧再决定**（2026-10-17）。
+                //
+                // 上游最常见的「200 信封错误」形态是：状态码 2xx、**第一帧**就是
+                // `{"code":6004,...}` 或 `event: error`。此时一个字节都还没发给客户端 ——
+                // 这是唯一还能**换号重试**的时机。
+                //
+                // 判据放在 `note_success` **之前**：一旦先记了成功再发现是错误，
+                // EMA 与模型闸门都会被污染（「失败被记成成功」比不记更坏）。
+                let (response, prefix, first_frame_error) = peek_first_frame(ok.response).await;
+                if let Some(envelope) = first_frame_error {
+                    if !uid.is_empty() {
+                        let event = envelope.event.clone();
+                        let (disabled, gate_opened) = {
+                            let mut pool = state.pool.write().await;
+                            let disabled =
+                                pool.apply_upstream_error(&uid, &request.model, &event, now_ms);
+                            let gate_opened = if is_model_level(&event) {
+                                pool.note_model_failure(&request.model, now_ms)
+                            } else {
+                                false
+                            };
+                            (disabled, gate_opened)
+                        };
+                        tried.insert(uid.clone());
+                        // 粘性立刻解绑：这个号在这一轮已经失败过，下一轮必须换。
+                        if let Some(key) = sticky_key.as_deref() {
+                            state.sticky.write().await.unbind(key);
+                        }
+                        attempts.push(UpstreamAttempt {
+                            account: account_name.clone(),
+                            uid: uid.clone(),
+                            status: envelope.status,
+                            reason: format!("200 但首帧即错误：{}", envelope.message),
+                        });
+                        last = Some(RelayFailure {
+                            error: GatewayError::Upstream {
+                                kind: upstream_kind_of(&event),
+                                status: envelope.status,
+                                message: envelope.message.clone(),
+                                attempts: attempts.clone(),
+                            },
+                            account: account_name,
+                            uid,
+                            upstream_message: envelope.message,
+                        });
+                        if disabled || gate_opened || !should_rotate(&event, attempt) {
+                            break;
+                        }
+                        continue;
+                    }
+                }
                 if !uid.is_empty() {
                     // 成功：清熔断域与退避指数。此处 usage 尚未到达，故不写账本——
                     // 账本由调用方在拿到 usage 后经 [`record_ledger`] 回填。
@@ -316,7 +441,8 @@ pub async fn relay(
                     }
                 }
                 return Ok(RelayOutcome::Ok {
-                    response: ok.response,
+                    response,
+                    prefix,
                     account: account_name,
                     uid,
                 });

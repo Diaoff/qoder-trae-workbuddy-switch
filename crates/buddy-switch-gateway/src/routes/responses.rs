@@ -184,6 +184,7 @@ pub async fn responses_for_region(
         }
         Ok(RelayOutcome::Ok {
             response,
+            prefix,
             account,
             uid,
         }) => {
@@ -215,13 +216,16 @@ pub async fn responses_for_region(
                     &model,
                 );
                 sse_response(ResponsesSseStream::new(
-                    crate::protocol::usage_tap::UsageTap::new(response.bytes_stream(), sinks)
-                        // ★ 流内信封错误：与 chat / messages 同一判据。
-                        .with_error_sink(relay::envelope_error_sink(&state, &uid, &model)),
+                    crate::protocol::usage_tap::UsageTap::new(
+                        relay::prefix_stream(prefix, response),
+                        sinks,
+                    )
+                    // ★ 流内信封错误：与 chat / messages 同一判据。
+                    .with_error_sink(relay::envelope_error_sink(&state, &uid, &model)),
                     model,
                 ))
             } else {
-                let text = response.text().await.unwrap_or_default();
+                let text = relay::body_text_with_prefix(prefix, response).await;
                 // ★ 200 信封错误（P0-3）：与 chat / messages 同一判据、同一治理副作用。
                 if let Some(envelope) = crate::protocol::error_sniffer::sniff_http_body(&text) {
                     relay::note_envelope_failure(&state, &uid, &model, &envelope.event).await;

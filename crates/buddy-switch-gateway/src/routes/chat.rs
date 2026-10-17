@@ -206,6 +206,7 @@ pub async fn chat_for_region(
         }
         Ok(RelayOutcome::Ok {
             response,
+            prefix,
             account,
             uid,
         }) => {
@@ -242,14 +243,17 @@ pub async fn chat_for_region(
                 // (快照差分) -> SsePassthrough (补发 [DONE])
                 sse_response(SsePassthrough::new(
                     crate::protocol::reasoning::ReasoningDelta::new(
-                        crate::protocol::usage_tap::UsageTap::new(response.bytes_stream(), sinks)
-                            // ★ 流内信封错误（P0-3 流式半边）：逐帧旁听，命中就记冷却 +
-                            //   计模型闸门。**不改字节**，客户端看到的内容与改造前完全一致。
-                            .with_error_sink(relay::envelope_error_sink(&state, &uid, &model)),
+                        crate::protocol::usage_tap::UsageTap::new(
+                            relay::prefix_stream(prefix, response),
+                            sinks,
+                        )
+                        // ★ 流内信封错误（P0-3 流式半边）：逐帧旁听，命中就记冷却 +
+                        //   计模型闸门。**不改字节**，客户端看到的内容与改造前完全一致。
+                        .with_error_sink(relay::envelope_error_sink(&state, &uid, &model)),
                     ),
                 ))
             } else {
-                let text = response.text().await.unwrap_or_default();
+                let text = relay::body_text_with_prefix(prefix, response).await;
                 // ★★ **200 信封错误**（P0-3）：上游常把限流/封禁/会话失效装在 2xx 响应体里
                 //    （`{"code":6004,...}`）。旧实现当成功处理 ⇒ 不写冷却、不解绑粘性、
                 //    返回空补全给客户端；那个号在冷却表里永远干净，于是每个请求都优先选它、
