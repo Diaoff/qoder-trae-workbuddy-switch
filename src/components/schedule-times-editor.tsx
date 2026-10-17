@@ -5,10 +5,20 @@ import { Plus, X } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useT } from "@/lib/i18n";
 
 /** `HH:MM`（00:00–23:59）。与后端 `schedule::TimeOfDay` 的线上格式**逐字一致**。 */
 const TIME_PATTERN = /^([01]\d|2[0-3]):[0-5]\d$/;
+
+/**
+ * 抖动幅度选项（分钟）。`0` = 关闭。
+ *
+ * 只给三档而不是自由输入：抖动是「错开同一分钟」的微调，档位太多只会让人纠结；
+ * 后端接受 `0..=60` 的任意整数（老配置里可能有别的值），因此若当前值不在这三档里，
+ * 会**动态补进选项**（见 `jitterOptions`）—— 否则 Select 会显示空白，看起来像没读到配置。
+ */
+const JITTER_OPTIONS = [0, 5, 15, 30];
 
 /** 时点表的排序键：自 00:00 起的分钟数（`"09:37"` → 577）。 */
 function minutesOf(time: string): number {
@@ -39,17 +49,26 @@ function minutesOf(time: string): number {
 export function TimesEditor({
   id,
   times,
+  jitter,
   disabled,
   onChange,
+  onJitterChange,
 }: {
   id: string;
   times: string[];
+  /** 抖动幅度（分钟，`0` = 不抖动）。与 `times` 一起决定「下一次几点触发」。 */
+  jitter: number;
   disabled?: boolean;
   onChange: (times: string[]) => void;
+  onJitterChange: (minutes: number) => void;
 }) {
   const t = useT();
   const [draft, setDraft] = useState("");
   const [error, setError] = useState<string | null>(null);
+  /** 三档之外的值（老配置 / 手改文件）也要能显示出来，故动态补齐并保持升序。 */
+  const jitterOptions = JITTER_OPTIONS.includes(jitter)
+    ? JITTER_OPTIONS
+    : [...JITTER_OPTIONS, jitter].sort((a, b) => a - b);
 
   function add() {
     const value = draft.trim();
@@ -113,6 +132,29 @@ export function TimesEditor({
           <Plus />
           {t("wbSettings.schedule.timeAdd")}
         </Button>
+      </div>
+      {/* 抖动与「什么时候触发」是同一件事的两半，放在同一个控件里：
+          分成两处设置，用户很难意识到「09:00 + ±15 分钟」才是实际触发区间。 */}
+      <div className="flex w-full items-center justify-end gap-2">
+        <span className="text-[11.5px] text-muted-foreground">{t("wbSettings.schedule.jitterLabel")}</span>
+        <Select
+          value={String(jitter)}
+          disabled={disabled}
+          onValueChange={(value) => onJitterChange(Number(value))}
+        >
+          <SelectTrigger size="sm" className="w-[104px]" aria-label={t("wbSettings.schedule.jitterAria")}>
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            {jitterOptions.map((minutes) => (
+              <SelectItem key={minutes} value={String(minutes)}>
+                {minutes === 0
+                  ? t("wbSettings.schedule.jitterOff")
+                  : t("wbSettings.schedule.jitterOption", { minutes })}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
       </div>
       {error && <p className="text-xs text-destructive">{error}</p>}
     </div>

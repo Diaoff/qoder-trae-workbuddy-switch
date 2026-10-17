@@ -138,7 +138,14 @@ pub async fn schedule_loop(task: ScheduleTask) {
     loop {
         let cfg = schedule::load_schedule_config();
         let now = config::now_ms();
-        let at = schedule::next_fire(task.times(&cfg), now);
+        // 抖动在这里叠加（`jitter == 0` 时与 `next_fire` 等价）：salt 用任务标识，
+        // 于是每个任务各自一条偏移序列 —— 同一时点上的多类任务不会一起被推到同一分钟。
+        let at = schedule::next_fire_with_jitter(
+            task.times(&cfg),
+            task.jitter(&cfg),
+            task.as_str(),
+            now,
+        );
         let wait_ms = match at {
             Some(at) => (at - now).max(0) as u64,
             // 任务被禁用：1 分钟后重查配置，避免无谓空转。

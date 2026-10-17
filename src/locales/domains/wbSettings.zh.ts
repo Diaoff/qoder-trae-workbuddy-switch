@@ -189,7 +189,7 @@ export const zh = {
 
   // ---- 定时任务排程 ----
   "wbSettings.schedule.groupTitle": "定时任务排程",
-  "wbSettings.schedule.intro": "六类任务各自独立开关与时点表，到点由调度器触发。时点使用 24 小时制本地时间，可精确到分钟（如 09:37），可配置多个时点。改完可用「立即执行」当场跑一轮验证，无需等到下一个时点。",
+  "wbSettings.schedule.intro": "六类任务各自独立开关与时点表，到点由调度器触发。时点使用 24 小时制本地时间，可精确到分钟（如 09:37），可配置多个；每个任务还可叠加「抖动」（±5/15/30 分钟），让每天的实际触发时刻错开。改完可用「立即执行」当场跑一轮验证，无需等到下一个时点。",
   "wbSettings.schedule.task.checkin.label": "签到",
   "wbSettings.schedule.task.checkin.desc": "自动签到各账号",
   "wbSettings.schedule.task.travel.label": "自动旅行",
@@ -221,6 +221,10 @@ export const zh = {
   "wbSettings.schedule.timeEmpty": "未设置时点",
   "wbSettings.schedule.timeRemoveAria": "移除 {time}",
   "wbSettings.schedule.timeAdd": "添加",
+  "wbSettings.schedule.jitterLabel": "抖动",
+  "wbSettings.schedule.jitterAria": "抖动幅度",
+  "wbSettings.schedule.jitterOff": "不抖动",
+  "wbSettings.schedule.jitterOption": "±{minutes} 分钟",
 
   // ---- 更新安装弹框 ----
   "wbSettings.update.timeoutError": "检查更新超时，请检查网络连接后重试",

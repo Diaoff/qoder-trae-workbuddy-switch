@@ -183,7 +183,7 @@ export const en = {
 
   // ---- Scheduled tasks ----
   "wbSettings.schedule.groupTitle": "Scheduled tasks",
-  "wbSettings.schedule.intro": "Each of the six tasks has its own toggle and time list, and is triggered by the scheduler when due. Times use 24-hour local time and can be set to the minute (e.g. 09:37); multiple times are allowed. Use \"Run now\" to verify right away without waiting for the next trigger.",
+  "wbSettings.schedule.intro": "Each of the six tasks has its own toggle and time list, and is triggered by the scheduler when due. Times use 24-hour local time and can be set to the minute (e.g. 09:37); multiple times are allowed, and each task can add jitter (±5/15/30 min) so the actual trigger shifts day to day. Use \"Run now\" to verify right away without waiting for the next trigger.",
   "wbSettings.schedule.task.checkin.label": "Check-in",
   "wbSettings.schedule.task.checkin.desc": "Check in all accounts automatically",
   "wbSettings.schedule.task.travel.label": "Auto travel",
@@ -214,6 +214,10 @@ export const en = {
   "wbSettings.schedule.timeEmpty": "No times set",
   "wbSettings.schedule.timeRemoveAria": "Remove time {time}",
   "wbSettings.schedule.timeAdd": "Add",
+  "wbSettings.schedule.jitterLabel": "Jitter",
+  "wbSettings.schedule.jitterAria": "Jitter range",
+  "wbSettings.schedule.jitterOff": "Off",
+  "wbSettings.schedule.jitterOption": "±{minutes} min",
 
   // ---- Update install dialog ----
   "wbSettings.update.timeoutError": "Checking for updates timed out; please check your network connection and try again",

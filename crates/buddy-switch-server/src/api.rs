@@ -5933,6 +5933,35 @@ mod tests {
         assert_eq!(status, StatusCode::OK);
         assert_eq!(body["travel_times"], json!(["07:00", "19:00"]));
 
+        // 抖动幅度：默认 0（关闭）→ 可写 → 非法值 400。
+        let (status, body) = call_api(Method::GET, "/api/schedule/config", None).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["checkin_jitter_minutes"], json!(0), "抖动默认必须关闭");
+
+        let (status, body) = call_api(
+            Method::POST,
+            "/api/schedule/config",
+            Some(json!({"checkin_jitter_minutes": 15})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["checkin_jitter_minutes"], json!(15));
+
+        let (status, body) = call_api(
+            Method::POST,
+            "/api/schedule/config",
+            Some(json!({"checkin_jitter_minutes": 61})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(
+            body["error"]
+                .as_str()
+                .unwrap_or("")
+                .contains("checkin_enabled"),
+            "抖动越界的文案必须指向 *_enabled：{body}"
+        );
+
         // 非法时点（分钟越界）→ 400，且文案指向开关。
         let (status, body) = call_api(
             Method::POST,

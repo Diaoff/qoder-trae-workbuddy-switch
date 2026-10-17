@@ -1349,6 +1349,14 @@ type ScheduleTimesField =
   | "school_times"
   | "cat_times";
 
+type ScheduleJitterField =
+  | "checkin_jitter_minutes"
+  | "travel_jitter_minutes"
+  | "activity_jitter_minutes"
+  | "keepalive_jitter_minutes"
+  | "school_jitter_minutes"
+  | "cat_jitter_minutes";
+
 type ScheduleEnabledField =
   | "checkin_enabled"
   | "travel_enabled"
@@ -1363,6 +1371,7 @@ interface ScheduleTaskDef {
   labelKey: TranslationKey;
   descKey: TranslationKey;
   timesField: ScheduleTimesField;
+  jitterField: ScheduleJitterField;
   enabledField: ScheduleEnabledField;
 }
 
@@ -1375,12 +1384,12 @@ interface ScheduleTaskDef {
  * （排程是全局单份，与 region / 产品无关）。
  */
 const SCHEDULE_TASKS: ScheduleTaskDef[] = [
-  { key: "checkin", labelKey: "wbSettings.schedule.task.checkin.label", descKey: "wbSettings.schedule.task.checkin.desc", timesField: "checkin_times", enabledField: "checkin_enabled" },
-  { key: "travel", labelKey: "wbSettings.schedule.task.travel.label", descKey: "wbSettings.schedule.task.travel.desc", timesField: "travel_times", enabledField: "travel_enabled" },
-  { key: "activity", labelKey: "wbSettings.schedule.task.activity.label", descKey: "wbSettings.schedule.task.activity.desc", timesField: "activity_times", enabledField: "activity_enabled" },
-  { key: "keepalive", labelKey: "wbSettings.schedule.task.keepalive.label", descKey: "wbSettings.schedule.task.keepalive.desc", timesField: "keepalive_times", enabledField: "keepalive_enabled" },
-  { key: "school", labelKey: "wbSettings.schedule.task.school.label", descKey: "wbSettings.schedule.task.school.desc", timesField: "school_times", enabledField: "school_enabled" },
-  { key: "cat", labelKey: "wbSettings.schedule.task.cat.label", descKey: "wbSettings.schedule.task.cat.desc", timesField: "cat_times", enabledField: "cat_enabled" },
+  { key: "checkin", labelKey: "wbSettings.schedule.task.checkin.label", descKey: "wbSettings.schedule.task.checkin.desc", timesField: "checkin_times", jitterField: "checkin_jitter_minutes", enabledField: "checkin_enabled" },
+  { key: "travel", labelKey: "wbSettings.schedule.task.travel.label", descKey: "wbSettings.schedule.task.travel.desc", timesField: "travel_times", jitterField: "travel_jitter_minutes", enabledField: "travel_enabled" },
+  { key: "activity", labelKey: "wbSettings.schedule.task.activity.label", descKey: "wbSettings.schedule.task.activity.desc", timesField: "activity_times", jitterField: "activity_jitter_minutes", enabledField: "activity_enabled" },
+  { key: "keepalive", labelKey: "wbSettings.schedule.task.keepalive.label", descKey: "wbSettings.schedule.task.keepalive.desc", timesField: "keepalive_times", jitterField: "keepalive_jitter_minutes", enabledField: "keepalive_enabled" },
+  { key: "school", labelKey: "wbSettings.schedule.task.school.label", descKey: "wbSettings.schedule.task.school.desc", timesField: "school_times", jitterField: "school_jitter_minutes", enabledField: "school_enabled" },
+  { key: "cat", labelKey: "wbSettings.schedule.task.cat.label", descKey: "wbSettings.schedule.task.cat.desc", timesField: "cat_times", jitterField: "cat_jitter_minutes", enabledField: "cat_enabled" },
 ];
 
 /** `HH:MM`（00:00–23:59）—— 与后端 `schedule::TimeOfDay` 的线上格式逐字一致。 */
@@ -1443,6 +1452,11 @@ function ScheduleCard() {
   function patch(task: ScheduleTaskDef, times: string[]) {
     if (!cfg) return;
     setCfg({ ...cfg, [task.timesField]: times });
+  }
+
+  function patchJitter(task: ScheduleTaskDef, minutes: number) {
+    if (!cfg) return;
+    setCfg({ ...cfg, [task.jitterField]: minutes });
   }
 
   function toggle(task: ScheduleTaskDef, enabled: boolean) {
@@ -1554,7 +1568,9 @@ function ScheduleCard() {
                 <TimesEditor
                   id={`schedule-${task.key}-time`}
                   times={cfg[task.timesField]}
+                  jitter={cfg[task.jitterField]}
                   onChange={(times) => patch(task, times)}
+                  onJitterChange={(minutes) => patchJitter(task, minutes)}
                 />
               </SettingsRow>
             ))}

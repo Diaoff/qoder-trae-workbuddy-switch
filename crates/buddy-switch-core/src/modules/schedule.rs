@@ -109,7 +109,7 @@ impl serde::Serialize for TimeOfDay {
 /// 变体，而所有 `match ScheduleTask`（含 `buddy-switch-server` 的派发，**无通配**）随之
 /// **无法编译**——把「集合完整性」从运行时自证升级为编译期强制。
 macro_rules! define_schedule_tasks {
-    ($( $variant:ident => $label:literal, $enabled:ident, $times:ident, $legacy:ident ; )+) => {
+    ($( $variant:ident => $label:literal, $enabled:ident, $times:ident, $legacy:ident, $jitter:ident ; )+) => {
         /// 定时任务的类型标识。
         #[derive(Debug, Clone, Copy, PartialEq, Eq)]
         pub enum ScheduleTask {
@@ -205,29 +205,55 @@ macro_rules! define_schedule_tasks {
                     $( ScheduleTask::$variant => stringify!($enabled), )+
                 }
             }
+
+            /// 该任务的**抖动幅度**（分钟，`0` = 不抖动）。
+            ///
+            /// 与 [`ScheduleTask::times`] 分开取值：抖动是「在时点上叠加多少」的修饰，
+            /// 任务被禁用时无意义，但**不跟着开关清零** —— 用户关掉任务再打开，
+            /// 抖动设置应当还在（否则又是一次静默的配置丢失）。
+            pub fn jitter(self, cfg: &ScheduleConfig) -> u32 {
+                match self {
+                    $( ScheduleTask::$variant => cfg.$jitter, )+
+                }
+            }
+
+            /// 写入该任务的抖动幅度（配置读取时按任务遍历用）。
+            pub fn set_jitter(self, cfg: &mut ScheduleConfig, minutes: u32) {
+                match self {
+                    $( ScheduleTask::$variant => cfg.$jitter = minutes, )+
+                }
+            }
+
+            /// 该任务抖动幅度在 JSON / 接口里的字段名（`checkin_jitter_minutes` 等）。
+            pub fn jitter_field(self) -> &'static str {
+                match self {
+                    $( ScheduleTask::$variant => stringify!($jitter), )+
+                }
+            }
         }
     };
 }
 
 // ⚠️ 这里是「有哪些定时任务」的**唯一来源**：新增/删除一类任务只改这一处。
-// 每行 = 变体 => 标签, 启用开关字段, 时点表字段, 旧时点表字段（整点格式）。漏改必然导致编译失败。
+// 每行 = 变体 => 标签, 启用开关字段, 时点表字段, 旧时点表字段（整点格式）, 抖动幅度字段。
+// 漏改必然导致编译失败。
 define_schedule_tasks! {
-    Checkin => "checkin", checkin_enabled, checkin_times, checkin_hours;
-    Travel => "travel", travel_enabled, travel_times, travel_hours;
-    Activity => "activity", activity_enabled, activity_times, activity_hours;
-    Keepalive => "keepalive", keepalive_enabled, keepalive_times, keepalive_hours;
-    School => "school", school_enabled, school_times, school_hours;
-    Cat => "cat", cat_enabled, cat_times, cat_hours;
+    Checkin => "checkin", checkin_enabled, checkin_times, checkin_hours, checkin_jitter_minutes;
+    Travel => "travel", travel_enabled, travel_times, travel_hours, travel_jitter_minutes;
+    Activity => "activity", activity_enabled, activity_times, activity_hours, activity_jitter_minutes;
+    Keepalive => "keepalive", keepalive_enabled, keepalive_times, keepalive_hours, keepalive_jitter_minutes;
+    School => "school", school_enabled, school_times, school_hours, school_jitter_minutes;
+    Cat => "cat", cat_enabled, cat_times, cat_hours, cat_jitter_minutes;
     // Trae 分区（第二条产品线）的自动签到。**与上面的 `checkin` 是两件事**：
     // 前者签 WorkBuddy 的账号库，本任务签 Trae 的区域账号库（两本互不相通）。
     // 粒度刻意独立 —— 用户完全可能只想自动签其中一个产品。
-    TraeCheckin => "trae_checkin", trae_checkin_enabled, trae_checkin_times, trae_checkin_hours;
+    TraeCheckin => "trae_checkin", trae_checkin_enabled, trae_checkin_times, trae_checkin_hours, trae_checkin_jitter_minutes;
     // Trae 账号的 **JWT 自动续期**（`refresh_token` → 新 JWT）。
     //
     // 与 `trae_checkin` 分开而不是塞进它：签到是「每天签一次就够」的动作，而续期是
     // **凭据维护** —— 账号没到期时它什么也不做，到期了就必须有人换。合在一起会让
     // 「只想保活、不想签到」的用户被迫打开自动签到（那是本仓反复消灭的假控件形态）。
-    TraeJwtRefresh => "trae_jwt_refresh", trae_jwt_refresh_enabled, trae_jwt_refresh_times, trae_jwt_refresh_hours;
+    TraeJwtRefresh => "trae_jwt_refresh", trae_jwt_refresh_enabled, trae_jwt_refresh_times, trae_jwt_refresh_hours, trae_jwt_refresh_jitter_minutes;
 }
 
 /// 排程配置（`~/.buddy-switch/schedule_config.json`）。
@@ -243,6 +269,16 @@ pub struct ScheduleConfig {
     pub trae_checkin_times: Vec<TimeOfDay>,
     /// Trae 账号 JWT 自动续期的时点（第二条产品线，区域账号库）。
     pub trae_jwt_refresh_times: Vec<TimeOfDay>,
+    /// 抖动幅度（分钟，`0` = 关闭）。见 [`next_fire_with_jitter`]：每次触发在时点前后
+    /// 随机偏移至多这么多分钟，用来避免每天都精确落在同一分钟。
+    pub checkin_jitter_minutes: u32,
+    pub travel_jitter_minutes: u32,
+    pub activity_jitter_minutes: u32,
+    pub keepalive_jitter_minutes: u32,
+    pub school_jitter_minutes: u32,
+    pub cat_jitter_minutes: u32,
+    pub trae_checkin_jitter_minutes: u32,
+    pub trae_jwt_refresh_jitter_minutes: u32,
     pub checkin_enabled: bool,
     pub travel_enabled: bool,
     pub activity_enabled: bool,
@@ -297,6 +333,15 @@ pub fn default_schedule() -> ScheduleConfig {
         cat_times: vec![at(1)],
         trae_checkin_times: vec![at(9), at(21)],
         trae_jwt_refresh_times: vec![at(9), at(21)],
+        // 抖动**默认全关**：它改变「几点触发」这一既有行为，不能替老用户默认打开。
+        checkin_jitter_minutes: 0,
+        travel_jitter_minutes: 0,
+        activity_jitter_minutes: 0,
+        keepalive_jitter_minutes: 0,
+        school_jitter_minutes: 0,
+        cat_jitter_minutes: 0,
+        trae_checkin_jitter_minutes: 0,
+        trae_jwt_refresh_jitter_minutes: 0,
         checkin_enabled: true,
         travel_enabled: true,
         activity_enabled: true,
@@ -313,6 +358,41 @@ pub fn default_schedule() -> ScheduleConfig {
 /// `schedule_config.json` 路径。
 pub fn schedule_config_file() -> PathBuf {
     store_dir().join("schedule_config.json")
+}
+
+/// 抖动幅度上限（分钟）。
+///
+/// 为什么不给到「半天」：抖动是「错开同一分钟」的微调，幅度一大就会把任务推进
+/// 另一个时段（例如把 09:00 的签到挪到 08:00 之前），用户看到的触发时刻与配置
+/// 严重不符。60 分钟是「仍能看出是同一个时点」的上界。
+pub const MAX_JITTER_MINUTES: u32 = 60;
+
+/// 单任务的抖动幅度（分钟）。`0` = 关闭；键缺席 / `null` → 默认值。
+///
+/// 与 `times_from` 一样**只报错不静默丢弃**：`-1`、`1.5`、`"15"`、`61` 一律返回
+/// 带字段名的错误（文案同样指向该任务的 `*_enabled` 开关）—— 静默回落成 0 会让
+/// 「我明明开了抖动」变成一个查不出原因的谜。
+fn jitter_from(
+    map: &serde_json::Map<String, Value>,
+    field: &str,
+    switch_key: &str,
+    default: u32,
+) -> Result<u32, String> {
+    let Some(value) = map.get(field) else {
+        return Ok(default);
+    };
+    if value.is_null() {
+        return Ok(default);
+    }
+    match value.as_i64() {
+        Some(minutes) if (0..=i64::from(MAX_JITTER_MINUTES)).contains(&minutes) => {
+            Ok(minutes as u32)
+        }
+        _ => Err(format!(
+            "{field}: {value} 不是合法抖动幅度（0-{MAX_JITTER_MINUTES} 分钟，0 = 关闭）；\
+             如要关闭该任务请设 schedule.{switch_key}=false"
+        )),
+    }
 }
 
 /// 从已解析的 JSON 读时点表；`null` / 非数组 / 空数组一律视为「未配置」→ 保留默认。
@@ -405,6 +485,14 @@ pub fn schedule_from_value(input: &Value) -> Result<ScheduleConfig, String> {
             )?;
             task.set_times(&mut cfg, times);
 
+            let jitter = jitter_from(
+                map,
+                task.jitter_field(),
+                task.switch_field(),
+                task.jitter(&defaults),
+            )?;
+            task.set_jitter(&mut cfg, jitter);
+
             if let Some(enabled) = map.get(task.switch_field()).and_then(Value::as_bool) {
                 task.set_enabled(&mut cfg, enabled);
             }
@@ -437,6 +525,14 @@ pub fn schedule_to_value(cfg: &ScheduleConfig) -> Value {
         "cat_times": cfg.cat_times,
         "trae_checkin_times": cfg.trae_checkin_times,
         "trae_jwt_refresh_times": cfg.trae_jwt_refresh_times,
+        "checkin_jitter_minutes": cfg.checkin_jitter_minutes,
+        "travel_jitter_minutes": cfg.travel_jitter_minutes,
+        "activity_jitter_minutes": cfg.activity_jitter_minutes,
+        "keepalive_jitter_minutes": cfg.keepalive_jitter_minutes,
+        "school_jitter_minutes": cfg.school_jitter_minutes,
+        "cat_jitter_minutes": cfg.cat_jitter_minutes,
+        "trae_checkin_jitter_minutes": cfg.trae_checkin_jitter_minutes,
+        "trae_jwt_refresh_jitter_minutes": cfg.trae_jwt_refresh_jitter_minutes,
         "checkin_enabled": cfg.checkin_enabled,
         "travel_enabled": cfg.travel_enabled,
         "activity_enabled": cfg.activity_enabled,
@@ -473,7 +569,10 @@ pub fn save_schedule_config(input: &Value) -> Result<ScheduleConfig, String> {
     Ok(cfg)
 }
 
-/// 在给定时点表里挑「**现在之后**最近的时点」的毫秒时间戳。
+/// 在给定时点表里挑「**现在之后**最近的时点」的毫秒时间戳（**不带抖动**）。
+///
+/// 等价于 [`next_fire_with_jitter`] 在 `jitter == 0` 时的特化；保留本函数是因为
+/// 「没有抖动时算下一次」是最常用的语义，调用方不该为了取默认行为去传两个空参数。
 ///
 /// - 今天该时点仍晚于 `now_ms` → 取今天；
 /// - 该时点已过（或恰等于 `now_ms`）→ 取次日同一时点；
@@ -483,19 +582,65 @@ pub fn save_schedule_config(input: &Value) -> Result<ScheduleConfig, String> {
 /// 分钟粒度与整点走同一条路径：`TimeOfDay` 自带时分，`cst_hm_ms` 一次算出当天时刻，
 /// 不存在「先算整点再加偏移」那种会在跨日边界上算错的写法。
 pub fn next_fire(times: &[TimeOfDay], now_ms: i64) -> Option<i64> {
+    next_fire_with_jitter(times, 0, "", now_ms)
+}
+
+/// 抖动偏移（分钟）：由 `(salt, 日期, 幅度)` 派生的**确定性**伪随机，落在 `[-jitter, +jitter]`。
+///
+/// ## 为什么不用随机源
+///
+/// 同一份配置在同一天算出的触发时刻必须恒定，否则：重启一次时间就变、日志里两次
+/// 触发对不上、测试只能断言「大致在范围内」。确定性派生让「今天为什么这个点签的」
+/// 有唯一答案，也让 [`next_fire_with_jitter`] 保持纯函数（可单测）。
+///
+/// 幅度参与哈希：用户把 ±15 调成 ±30 时偏移应当整体变化，而不是把旧偏移按比例放大
+/// （按比例放大等于「放大后仍落在同一侧」，看久了会被当成固定偏移）。
+fn jitter_offset_minutes(salt: &str, date: chrono::NaiveDate, jitter: u32) -> i32 {
+    if jitter == 0 {
+        return 0;
+    }
+    // FNV-1a（与原型 `docs/redesign/demo-app.js` 的 `jitterOffset` 同一形状，
+    // 便于拿原型里的数字核对实现）。
+    let key = format!("{salt}|{}|{jitter}", date.format("%Y-%m-%d"));
+    let hash = key.bytes().fold(2_166_136_261u32, |h, b| {
+        (h ^ u32::from(b)).wrapping_mul(16_777_619)
+    });
+    let span = jitter * 2 + 1;
+    (hash % span) as i32 - jitter as i32
+}
+
+/// 带抖动的「下一次触发」：时点 + `[-jitter, +jitter]` 分钟的确定性偏移。
+///
+/// `jitter == 0` 时与 [`next_fire`] 完全等价（偏移恒为 0）。
+///
+/// ## 必须「逐候选比较」，不能「先算基准再补偏移」
+///
+/// 调用方按返回值 `sleep` 到点：若先把基准时刻定下来、再统一加偏移，偏移一旦把时刻
+/// 拉回过去（例如现在 08:58、基准 09:00、偏移 −15），等待时长就是 0 ⇒ 立刻触发，
+/// 下一轮又算出同一个已过时刻 ⇒ **同一分钟内反复触发**。
+/// 因此这里对「今天 / 次日」两个候选各自加偏移，并要求结果**严格晚于 now**，
+/// 不满足就顺延到下一个候选。返回的 `at` 恒 `> now_ms`，调用方无需再兜底。
+pub fn next_fire_with_jitter(
+    times: &[TimeOfDay],
+    jitter: u32,
+    salt: &str,
+    now_ms: i64,
+) -> Option<i64> {
     let today = cst::cst_date(now_ms);
     let mut earliest: Option<i64> = None;
     for time in times {
-        let at = |date| cst::cst_hm_ms(date, time.hour(), time.minute());
-        let mut candidate = at(today);
-        if !matches!(candidate, Some(ts) if ts > now_ms) {
-            candidate = today.succ_opt().and_then(at);
-        }
-        if let Some(ts) = candidate {
-            earliest = Some(match earliest {
-                Some(existing) => existing.min(ts),
-                None => ts,
-            });
+        for day in [Some(today), today.succ_opt()].into_iter().flatten() {
+            let Some(base) = cst::cst_hm_ms(day, time.hour(), time.minute()) else {
+                continue;
+            };
+            let at = base + i64::from(jitter_offset_minutes(salt, day, jitter)) * 60_000;
+            if at > now_ms {
+                earliest = Some(match earliest {
+                    Some(existing) => existing.min(at),
+                    None => at,
+                });
+                break;
+            }
         }
     }
     earliest
@@ -508,7 +653,10 @@ pub fn next_fire(times: &[TimeOfDay], now_ms: i64) -> Option<i64> {
 pub fn next_wake(cfg: &ScheduleConfig, now_ms: i64) -> (Option<i64>, Vec<ScheduleTask>) {
     let slots: Vec<(i64, ScheduleTask)> = ScheduleTask::all()
         .into_iter()
-        .filter_map(|task| next_fire(task.times(cfg), now_ms).map(|at| (at, task)))
+        .filter_map(|task| {
+            next_fire_with_jitter(task.times(cfg), task.jitter(cfg), task.as_str(), now_ms)
+                .map(|at| (at, task))
+        })
         .collect();
     let Some(earliest) = slots.iter().map(|(at, _)| *at).min() else {
         return (None, Vec::new());
@@ -1004,6 +1152,9 @@ mod tests {
     ///   配置里被拆穿。
     ///
     /// 断言的是「等于它自己那一列」（随字段变化），而非某个常量——否则改错映射仍可能蒙对。
+    // 表驱动的八元组（任务 / 标签 / 时点 / 三个字段名 / 抖动值 / 抖动字段名）：
+    // 拆成结构体只会让这张「逐类对账表」更难一眼读完，故在此局部放行 type_complexity。
+    #[allow(clippy::type_complexity)]
     #[test]
     fn schedule_task_mappings_are_pinned_per_variant() {
         // 全关 + 八份互异的时点列表（当作「每类自己的那一列」的探针）。
@@ -1016,6 +1167,15 @@ mod tests {
             cat_times: vec![t(6, 0)],
             trae_checkin_times: vec![t(7, 0)],
             trae_jwt_refresh_times: vec![t(8, 0)],
+            // 抖动也取互异值：若某类任务读到了别人的抖动字段，下面的断言会立刻发现。
+            checkin_jitter_minutes: 1,
+            travel_jitter_minutes: 2,
+            activity_jitter_minutes: 3,
+            keepalive_jitter_minutes: 4,
+            school_jitter_minutes: 5,
+            cat_jitter_minutes: 6,
+            trae_checkin_jitter_minutes: 7,
+            trae_jwt_refresh_jitter_minutes: 8,
             checkin_enabled: false,
             travel_enabled: false,
             activity_enabled: false,
@@ -1028,7 +1188,16 @@ mod tests {
         };
 
         // (1) label + times + 三个字段名：逐类断言等于「它自己那一列」。
-        let expected: [(ScheduleTask, &str, &[TimeOfDay], &str, &str, &str); 8] = [
+        let expected: [(
+            ScheduleTask,
+            &str,
+            &[TimeOfDay],
+            &str,
+            &str,
+            &str,
+            u32,
+            &str,
+        ); 8] = [
             (
                 ScheduleTask::Checkin,
                 "checkin",
@@ -1036,6 +1205,8 @@ mod tests {
                 "checkin_times",
                 "checkin_enabled",
                 "checkin_hours",
+                1,
+                "checkin_jitter_minutes",
             ),
             (
                 ScheduleTask::Travel,
@@ -1044,6 +1215,8 @@ mod tests {
                 "travel_times",
                 "travel_enabled",
                 "travel_hours",
+                2,
+                "travel_jitter_minutes",
             ),
             (
                 ScheduleTask::Activity,
@@ -1052,6 +1225,8 @@ mod tests {
                 "activity_times",
                 "activity_enabled",
                 "activity_hours",
+                3,
+                "activity_jitter_minutes",
             ),
             (
                 ScheduleTask::Keepalive,
@@ -1060,6 +1235,8 @@ mod tests {
                 "keepalive_times",
                 "keepalive_enabled",
                 "keepalive_hours",
+                4,
+                "keepalive_jitter_minutes",
             ),
             (
                 ScheduleTask::School,
@@ -1068,6 +1245,8 @@ mod tests {
                 "school_times",
                 "school_enabled",
                 "school_hours",
+                5,
+                "school_jitter_minutes",
             ),
             (
                 ScheduleTask::Cat,
@@ -1076,6 +1255,8 @@ mod tests {
                 "cat_times",
                 "cat_enabled",
                 "cat_hours",
+                6,
+                "cat_jitter_minutes",
             ),
             (
                 ScheduleTask::TraeCheckin,
@@ -1084,6 +1265,8 @@ mod tests {
                 "trae_checkin_times",
                 "trae_checkin_enabled",
                 "trae_checkin_hours",
+                7,
+                "trae_checkin_jitter_minutes",
             ),
             (
                 ScheduleTask::TraeJwtRefresh,
@@ -1092,6 +1275,8 @@ mod tests {
                 "trae_jwt_refresh_times",
                 "trae_jwt_refresh_enabled",
                 "trae_jwt_refresh_hours",
+                8,
+                "trae_jwt_refresh_jitter_minutes",
             ),
         ];
         // `times()` 仅在任务启用时才返回自己的列表，故 times 断言用「全启用」配置。
@@ -1106,7 +1291,17 @@ mod tests {
             trae_jwt_refresh_enabled: true,
             ..off.clone()
         };
-        for (task, label, own_times, times_field, switch_field, legacy_field) in expected {
+        for (
+            task,
+            label,
+            own_times,
+            times_field,
+            switch_field,
+            legacy_field,
+            jitter,
+            jitter_field,
+        ) in expected
+        {
             assert_eq!(
                 task.as_str(),
                 label,
@@ -1136,6 +1331,12 @@ mod tests {
                 task.legacy_times_field(),
                 legacy_field,
                 "legacy_times_field 映射错误（读老配置靠它）: {label}"
+            );
+            assert_eq!(task.jitter(&on), jitter, "jitter 映射错误: {label}");
+            assert_eq!(
+                task.jitter_field(),
+                jitter_field,
+                "jitter_field 映射错误: {label}"
             );
         }
 
@@ -1256,5 +1457,197 @@ mod tests {
                 "未知标识必须被拒绝: {unknown}"
             );
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // 随机抖动（issue #27 的另一支）
+    // -----------------------------------------------------------------------
+
+    /// 默认**全关**，且 `0` 能原样往返（保存一次不会把「关」变成别的值）。
+    #[test]
+    fn jitter_defaults_to_off_and_round_trips() {
+        let cfg = default_schedule();
+        for task in ScheduleTask::all() {
+            assert_eq!(task.jitter(&cfg), 0, "默认必须关闭: {}", task.as_str());
+        }
+
+        // 键缺席 / null → 默认 0。
+        assert_eq!(
+            schedule_from_value(&json!({}))
+                .unwrap()
+                .checkin_jitter_minutes,
+            0
+        );
+        assert_eq!(
+            schedule_from_value(&json!({"checkin_jitter_minutes": null}))
+                .unwrap()
+                .checkin_jitter_minutes,
+            0
+        );
+
+        // 显式值生效，且序列化 / 反序列化一致。
+        let cfg = schedule_from_value(&json!({
+            "checkin_jitter_minutes": 15,
+            "trae_jwt_refresh_jitter_minutes": 60,
+        }))
+        .unwrap();
+        assert_eq!(cfg.checkin_jitter_minutes, 15);
+        assert_eq!(cfg.trae_jwt_refresh_jitter_minutes, 60);
+        let value = schedule_to_value(&cfg);
+        assert_eq!(value["checkin_jitter_minutes"], json!(15));
+        assert_eq!(
+            schedule_from_value(&value).unwrap(),
+            cfg,
+            "抖动必须能原样往返"
+        );
+    }
+
+    /// 非法幅度**报错**而不是静默回落成 0 —— 否则「我明明开了抖动」查不出原因。
+    #[test]
+    fn invalid_jitter_errors_and_points_to_enabled_switch() {
+        for bad in [json!(-1), json!(61), json!(1.5), json!("15")] {
+            let err = schedule_from_value(&json!({"checkin_jitter_minutes": bad}))
+                .expect_err("非法抖动必须报错");
+            assert!(err.contains("checkin_jitter_minutes"), "{err}");
+            assert!(err.contains("checkin_enabled"), "文案必须指向开关: {err}");
+        }
+        // 边界值 0 / 60 必须通过。
+        assert_eq!(
+            schedule_from_value(&json!({"cat_jitter_minutes": 0}))
+                .unwrap()
+                .cat_jitter_minutes,
+            0
+        );
+        assert_eq!(
+            schedule_from_value(&json!({"cat_jitter_minutes": 60}))
+                .unwrap()
+                .cat_jitter_minutes,
+            60
+        );
+    }
+
+    /// `jitter == 0` 必须与不带抖动的 `next_fire` **逐毫秒一致**（关闭 = 零行为变化）。
+    #[test]
+    fn zero_jitter_is_identical_to_plain_next_fire() {
+        let times = [t(9, 0), t(21, 30)];
+        let mut now = cst_ms(2026, 10, 17, 0, 0);
+        while now < cst_ms(2026, 10, 19, 0, 0) {
+            assert_eq!(
+                next_fire_with_jitter(&times, 0, "checkin", now),
+                next_fire(&times, now),
+                "jitter=0 必须退化为原行为（now={now}）"
+            );
+            now += 17 * 60_000;
+        }
+    }
+
+    /// 偏移必须落在 ±jitter 内、同一 `(salt, 日期)` 恒定、换 salt 得到另一条序列。
+    ///
+    /// 可证伪性：把 `jitter_offset_minutes` 改成「恒为 0」⇒ 第三条断言（换 salt 后
+    /// 序列不同）会红；改成 `Math.random` 式的每次不同 ⇒ 第二条断言会红。
+    #[test]
+    fn jitter_is_bounded_deterministic_and_salt_specific() {
+        let base = t(9, 0);
+        let jitter = 30u32;
+        let day0 = cst_ms(2026, 10, 17, 0, 0);
+
+        let offsets = |salt: &str| -> Vec<i64> {
+            (0..10)
+                .map(|d| {
+                    let now = day0 + d * 86_400_000;
+                    let at = next_fire_with_jitter(&[base], jitter, salt, now).expect("有候选时点");
+                    (at - cst_ms(2026, 10, 17 + d as u32, 9, 0)) / 60_000
+                })
+                .collect()
+        };
+
+        let a = offsets("checkin");
+        assert!(
+            a.iter().all(|off| off.abs() <= i64::from(jitter)),
+            "偏移越界: {a:?}"
+        );
+        assert_eq!(a, offsets("checkin"), "同一 salt 必须恒定（可复现）");
+        assert_ne!(a, offsets("travel"), "不同任务必须有各自的偏移序列");
+
+        // 幅度参与哈希：同一 salt 换幅度，序列不该只是被等比放大。
+        let b: Vec<i64> = (0..10)
+            .map(|d| {
+                let now = day0 + d * 86_400_000;
+                let at = next_fire_with_jitter(&[base], 10, "checkin", now).unwrap();
+                (at - cst_ms(2026, 10, 17 + d as u32, 9, 0)) / 60_000
+            })
+            .collect();
+        assert!(
+            b.iter().all(|off| off.abs() <= 10),
+            "小幅度下偏移越界: {b:?}"
+        );
+        assert_ne!(a, b, "换幅度后偏移序列应当变化");
+    }
+
+    /// **反死循环**：任何 `now` 下返回的时刻都必须严格晚于 `now`。
+    ///
+    /// 这条是最关键的护栏。若实现改成「先算基准、再统一加偏移」，偏移把时刻拉回过去时
+    /// 等待时长会是 0 ⇒ 调度循环在同一分钟内反复触发。用「每分钟推进 now」覆盖
+    /// 偏移可能跨过的所有边界（含 00:05 这种贴近零点、偏移会退到前一天的情形）。
+    #[test]
+    fn jittered_next_fire_is_always_strictly_in_the_future() {
+        let times = [t(0, 5), t(9, 0), t(23, 55)];
+        let mut now = cst_ms(2026, 10, 17, 0, 0);
+        let end = cst_ms(2026, 10, 18, 12, 0);
+        while now < end {
+            for salt in ["checkin", "travel"] {
+                let at = next_fire_with_jitter(&times, 60, salt, now).expect("有候选时点");
+                assert!(
+                    at > now,
+                    "必须严格晚于 now（now={now}, at={at}, salt={salt}）"
+                );
+            }
+            now += 60_000;
+        }
+    }
+
+    /// 抖动必须**真的移动**时刻（否则开关等于摆设），且移动量随日期变化。
+    #[test]
+    fn jitter_actually_moves_the_time() {
+        let day0 = cst_ms(2026, 10, 17, 0, 0);
+        let offsets: Vec<i64> = (0..14)
+            .map(|d| {
+                let now = day0 + d * 86_400_000;
+                let at = next_fire_with_jitter(&[t(9, 0)], 30, "checkin", now).unwrap();
+                (at - cst_ms(2026, 10, 17 + d as u32, 9, 0)) / 60_000
+            })
+            .collect();
+        let distinct: std::collections::HashSet<&i64> = offsets.iter().collect();
+        assert!(
+            offsets.iter().any(|off| *off != 0),
+            "14 天里一次都没移动 —— 抖动没生效: {offsets:?}"
+        );
+        assert!(
+            distinct.len() >= 3,
+            "偏移几乎不变，看起来像固定偏移: {offsets:?}"
+        );
+    }
+
+    /// `next_wake` 必须用**抖动后**的时刻（否则 UI 的「下次唤醒」与实际触发对不上）。
+    #[test]
+    fn next_wake_uses_jittered_times() {
+        let mut cfg = default_schedule();
+        cfg.checkin_times = vec![t(9, 0)];
+        cfg.checkin_jitter_minutes = 30;
+        for task in ScheduleTask::all() {
+            if task != ScheduleTask::Checkin {
+                task.set_enabled(&mut cfg, false);
+            }
+        }
+        let now = cst_ms(2026, 10, 17, 8, 0);
+        let (at, kinds) = next_wake(&cfg, now);
+        assert_eq!(kinds, vec![ScheduleTask::Checkin]);
+        assert_eq!(
+            at,
+            next_fire_with_jitter(&[t(9, 0)], 30, "checkin", now),
+            "next_wake 必须走抖动版本"
+        );
+        let plain = next_fire(&[t(9, 0)], now).unwrap();
+        assert_ne!(at, Some(plain), "这次抖动应当改变了时刻（否则用例无意义）");
     }
 }

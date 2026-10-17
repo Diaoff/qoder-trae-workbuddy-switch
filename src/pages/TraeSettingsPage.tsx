@@ -1480,8 +1480,12 @@ export default function TraeSettingsPage() {
             <TimesEditor
               id="trae-checkin-time"
               times={schedule?.trae_checkin_times ?? []}
+              jitter={schedule?.trae_checkin_jitter_minutes ?? 0}
               disabled={!schedule || scheduleSaving}
               onChange={(times) => void saveSchedule({ trae_checkin_times: times }, "trae.page.settings.autoCheckinSaveFailed")}
+              onJitterChange={(minutes) =>
+                void saveSchedule({ trae_checkin_jitter_minutes: minutes }, "trae.page.settings.autoCheckinSaveFailed")
+              }
             />
           </SettingsFieldRow>
           </CardContent>
@@ -1513,8 +1517,12 @@ export default function TraeSettingsPage() {
             <TimesEditor
               id="trae-jwt-refresh-time"
               times={schedule?.trae_jwt_refresh_times ?? []}
+              jitter={schedule?.trae_jwt_refresh_jitter_minutes ?? 0}
               disabled={!schedule || scheduleSaving}
               onChange={(times) => void saveSchedule({ trae_jwt_refresh_times: times }, "trae.page.settings.jwtRefreshSaveFailed")}
+              onJitterChange={(minutes) =>
+                void saveSchedule({ trae_jwt_refresh_jitter_minutes: minutes }, "trae.page.settings.jwtRefreshSaveFailed")
+              }
             />
           </SettingsFieldRow>
           </CardContent>

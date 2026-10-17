@@ -954,6 +954,21 @@ export interface ScheduleConfig {
   trae_checkin_times: string[];
   /** Trae 账号 JWT 自动续期的时点（第二条产品线）。 */
   trae_jwt_refresh_times: string[];
+  /**
+   * 抖动幅度（分钟，`0` = 关闭）。每次触发在时点前后**确定性**随机偏移至多这么多分钟。
+   *
+   * 与 `*_times` 成对出现：`09:00 + 15` 表示实际触发落在 08:45–09:15 之间的某个固定时刻
+   * （同一天恒定、跨天不同），用来避免每天都精确落在同一分钟。
+   * 后端接受 `0..=60`，默认 `0`（关闭）。
+   */
+  checkin_jitter_minutes: number;
+  travel_jitter_minutes: number;
+  activity_jitter_minutes: number;
+  keepalive_jitter_minutes: number;
+  school_jitter_minutes: number;
+  cat_jitter_minutes: number;
+  trae_checkin_jitter_minutes: number;
+  trae_jwt_refresh_jitter_minutes: number;
   /** 自动签到开关（签 WorkBuddy 的账号）。 */
   checkin_enabled: boolean;
   /** 派猫猫旅行开关。 */

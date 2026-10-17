@@ -2728,6 +2728,16 @@ export function screenshotDemoResponse(command: string, args?: Record<string, un
       cat_times: ["01:00"],
       trae_checkin_times: ["09:00", "21:00"],
       trae_jwt_refresh_times: ["09:00", "21:00"],
+      // 签到开 ±15 分钟抖动：截图要能自证「这个能力存在且真的在界内」，
+      // 全为 0 的话控件看起来就只是个永远不动的下拉框。
+      checkin_jitter_minutes: 15,
+      travel_jitter_minutes: 0,
+      activity_jitter_minutes: 0,
+      keepalive_jitter_minutes: 0,
+      school_jitter_minutes: 0,
+      cat_jitter_minutes: 0,
+      trae_checkin_jitter_minutes: 0,
+      trae_jwt_refresh_jitter_minutes: 0,
       checkin_enabled: true,
       travel_enabled: true,
       activity_enabled: true,
