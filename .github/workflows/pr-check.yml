@@ -135,8 +135,17 @@ jobs:
             # （Windows 上 clippy 全绿，Linux 才有那条诊断）。
             #
             # 只抬前 20 条：注解是给人看的摘要，完整清单仍在 clippy.log 里。
-            grep -E "^(error|warning)(\[|:)" clippy.log | head -20 | while IFS= read -r line; do
-              printf '::error::%s\n' "$line"
+            #
+            # ⚠️ `--message-format=short` 的一行是 `src/x.rs:3:5: error: ...` ——
+            # 诊断**不以** `error` 开头，所以匹配的是 `error(` / `error:` 出现在行内。
+            # 一条都没匹配上时（cargo 自身报错、ICE、feature 冲突…）退化为尾部 40 行，
+            # 否则注解里又是一句「exit code 101」，等于没抬。
+            picked=$(grep -E "(error|warning)(\[|:)" clippy.log | head -20)
+            if [ -z "$picked" ]; then
+              picked=$(tail -40 clippy.log)
+            fi
+            printf '%s\n' "$picked" | while IFS= read -r line; do
+              printf '::error::%s\n' "${line:0:900}"
             done
             exit "$status"
           fi
