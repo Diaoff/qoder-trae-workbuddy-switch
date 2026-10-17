@@ -697,7 +697,9 @@ function demoRegionStatus(region: Region): AppStatus {
       : "/demo/WorkBuddy/auth/workbuddy-desktop.info",
     current: { uid: account.uid, nickname: account.nickname, email: account.email },
     appPath: isGlobal ? "/demo/WorkBuddy AI.app" : "/demo/WorkBuddy.app",
-    version: "2026.9.16",
+    /* ⚠️ 这是**本应用**的版本号（真机取自 `update::APP_VERSION`），侧栏与设置抽屉都显示它。
+       演示值跟发行线走：截图会被直接放进 README，写着半年前的版本会让人以为项目停更了。 */
+    version: "2026.10.16",
     installed: true,
     regionMismatch: null,
     region,

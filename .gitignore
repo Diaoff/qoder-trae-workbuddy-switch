@@ -68,6 +68,10 @@ deliverables/
 .qa-tmp/
 .debug-tmp/
 .playwright-mcp/
+# README 截图脚本（scripts/gen-readme-shots.mjs）的临时目录与探针图：
+# 前者是一次性 playwright 安装（500+ 文件），后者是取景用的中间产物 —— 都不该进仓库。
+.tmp-pcli/
+docs/images/.probe/
 _*.txt
 _*.py
 _*.png

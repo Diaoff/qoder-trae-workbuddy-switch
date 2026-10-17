@@ -534,8 +534,8 @@ function Layout() {
   const [traeRegion] = useTraeVariant();
   const navRegion = product === "trae" ? traeRegion : wbRegion;
   const scope = scopeOf(product, navRegion);
-  /** 四个作用域的环境状态（顶栏作用域菜单的唯一取数来源）。 */
-  const { statuses, refreshTrae } = useScopeStatus();
+  /** 六个作用域的环境状态（顶栏作用域菜单的唯一取数来源）。 */
+  const { statuses, refreshProduct } = useScopeStatus();
 
   /* P6：命令面板（⌘K）的开关状态。入口有两个 —— 顶栏搜索按钮与全局 ⌘K。
      状态放在 `Layout`（而非 `App`）里，是为了与顶栏入口共享、且都处于 Router 上下文内。 */
@@ -691,7 +691,8 @@ function Layout() {
    *
    * - **WorkBuddy**：走账号 store 自己的命令（`refreshRegionStatus` + `reconcileAccounts`），
    *   与命令面板的「刷新当前作用域」同口径；
-   * - **Trae**：走 `useScopeStatus` 聚合快照的 `refreshTrae`（顶栏状态的数据源）。
+   * - **Trae / Qoder**：走 `useScopeStatus` 聚合快照的 `refreshProduct`（顶栏状态的数据源；
+   *   两条产品线的快照是两个键，所以必须按产品分派）。
    *
    * ★ 返回 Promise 且**自带结果反馈**（原型 `doRefresh` 的「已刷新」toast）：
    * 成功/失败都给出显式提示，不再让请求静默跑完 —— 顶栏按钮的进行中态由它驱动
@@ -706,9 +707,9 @@ function Layout() {
         void store.refreshRegionStatus(navRegion);
         await store.reconcileAccounts(navRegion);
       } else {
-        // Trae 的刷新失败不抛错（写进快照的 `error` 字段）⇒ 用显式结果判成败。
-        const traeError = await refreshTrae();
-        if (traeError) throw new Error(traeError);
+        // Trae / Qoder 的刷新失败不抛错（写进快照的 `error` 字段）⇒ 用显式结果判成败。
+        const aggregateError = await refreshProduct(product);
+        if (aggregateError) throw new Error(aggregateError);
       }
       toast.success(t("topbar.refreshDone"), {
         description: t("topbar.refreshDoneDesc", { scope: scopeLabel(scope, t) }),

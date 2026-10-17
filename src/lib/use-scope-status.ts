@@ -16,6 +16,12 @@
  *   安装 / 运行态取自 `trae-variant-status` 的同一次探测（`loadTraeVariantStatuses`，
  *   即侧栏运行点的数据源），「当前登录」与「账号数」在其上各取一次。
  *   快照走 `useCachedResource` + **本 hook 自己的 60 秒轮询**（见 [`TRAE_SCOPE_STATUS_POLL_MS`]）。
+ * - **Qoder 侧**（`qoder-cn` / `qoder-global`）：同样是一次聚合快照 ——
+ *   `get_qoder_accounts`（账号数 / 当前登录 / 需处理）+ `qoder_program_status`
+ *   （两处程序位的安装与运行态），**与 Trae 侧同一节奏**。
+ *   ⚠️ 2026-10-17 之前 Qoder 两条恒为 `UNKNOWN_STATUS`（当时确实没有数据源）——
+ *   后果是顶栏写着「未检测到 · 0 个账号」，而账号页里明明躺着两条账号。
+ *   「不知道」与「0」必须分开，所以要么取到真数，要么保持未知，不能编。
  *
  * ## 为什么 Trae 侧要在 WorkBuddy 作用域下也探测
  *
@@ -131,8 +137,7 @@ function regionLoginName(
   return null;
 }
 
-async function loadTraeScopeSnapshot(): Promise<TraeScopeSnapshot> {
-  const statuses = await loadTraeVariantStatuses();
+async function loadTraeScopeSnapshot(): Promise<TraeScopeSnapshot> {  const statuses = await loadTraeVariantStatuses();
   // 三次请求互不依赖：登录态按程序位、账号数按区域（每区域恰一个合并版程序位，
   // issue #28 收敛 ⇒ 国内取 `trae_merged`、国际取 `global_trae_merged`）。
   const [logins, cnAccounts, globalAccounts] = await Promise.all([
@@ -157,6 +162,63 @@ async function loadTraeScopeSnapshot(): Promise<TraeScopeSnapshot> {
     cn: build("cn", cnAccounts?.total ?? 0),
     global: build("global", globalAccounts?.total ?? 0),
   };
+}
+
+/** Qoder 聚合快照的缓存键（与 Trae 侧分开：两者取数路径完全不同）。 */
+const QODER_SCOPE_STATUS_KEY = "qoder:scope-status";
+
+/**
+ * Qoder 快照的新鲜窗口：**50 秒**，与 Trae 侧同值。
+ *
+ * 轮询**共用** [`TRAE_SCOPE_STATUS_POLL_MS`]（同一个 60 秒定时器里两条都 revalidate）——
+ * 两条快照同一档期，分开起定时器只会让同一秒打两轮请求。
+ */
+const QODER_SCOPE_STATUS_FRESH_MS = TRAE_SCOPE_STATUS_FRESH_MS;
+
+interface QoderScopeSnapshot {
+  cn: ScopeStatus;
+  global: ScopeStatus;
+}
+
+/**
+ * Qoder 两个区域的状态快照。
+ *
+ * 两个事实源在**同一次**快照里取齐：
+ * - `get_qoder_accounts(scope)` → 账号数 / 当前登录 uid / 是否有可用凭据；
+ * - `qoder_program_status(scope)` → 桌面版与 CLI 两处程序位的 `state` 与 `running`。
+ *
+ * ⚠️ **安装判据用 `state`，不用「有账号」**：Qoder 允许先粘 PAT 再装客户端
+ * （`state = missing` 而账号库非空）—— 那时说「已安装」是假的。
+ * `empty` / `ready` 都表示「客户端在、只是登录态空/有」，都算装过。
+ */
+async function loadQoderScopeSnapshot(): Promise<QoderScopeSnapshot> {
+  const build = async (scope: Scope): Promise<ScopeStatus> => {
+    const [view, programs] = await Promise.all([
+      api.getQoderAccounts(scope).catch(() => null),
+      api.qoderProgramStatus(scope).catch(() => null),
+    ]);
+    const accounts = view?.accounts ?? [];
+    const list = programs?.programs ?? [];
+    const currentUid = list.find((program) => program.currentUid)?.currentUid ?? null;
+    const logged = currentUid ? accounts.find((account) => account.uid === currentUid) : undefined;
+    const now = Date.now();
+    return {
+      installed: list.some(
+        (program) => program.running || program.state === "ready" || program.state === "empty",
+      ),
+      running: list.some((program) => program.running),
+      loggedInName: logged ? (logged.nickname ?? logged.name) : null,
+      accountCount: accounts.length,
+      // 与 WorkBuddy 侧同一口径（过期 or 无可用凭据 ⇒ 需处理）；Qoder 没有「需重登」概念。
+      attentionCount: accounts.filter(
+        (account) =>
+          !account.hasCredential ||
+          (account.expiresAt != null && account.expiresAt <= now),
+      ).length,
+    };
+  };
+  const [cn, global] = await Promise.all([build("qoder-cn"), build("qoder-global")]);
+  return { cn, global };
 }
 
 /** WorkBuddy 一个区域的切片 → 状态（登录名优先昵称、其次邮箱）。 */
@@ -201,15 +263,19 @@ function workbuddyStatus(status: AppStatus | null, accounts: AccountMeta[]): Sco
 export function useScopeStatus(): {
   statuses: ScopeStatusMap;
   /**
-   * 强制刷新 Trae 侧快照；**返回刷新后的错误文案**（`null` = 成功）。
+   * 强制刷新**非 WorkBuddy** 作用域的聚合快照（Trae / Qoder）；**返回错误文案**（`null` = 成功）。
+   *
+   * WorkBuddy 的刷新不在这里：它走账号 store 自己的命令（见 `Layout.refreshCurrentScope`）。
+   * ⚠️ 两个产品线的快照**来自不同键**，所以刷新也必须按产品分派 —— 用同一个函数刷另一条，
+   * 只会让顶栏那个「已刷新」toast 说谎。
    *
    * ⚠️ 为什么返回值不是 `void`：`useCachedResource.refresh` 吞掉异常（失败写进
    * 快照的 `error`，见 `stores/resources.ts` 的 `load`）⇒ 顶栏刷新若只看
-   * 「await 有没有抛」，Trae 的失败会被当成成功去报「已刷新」。这里在刷新结束
+   * 「await 有没有抛」，Trae / Qoder 的失败会被当成成功去报「已刷新」。这里在刷新结束
    * 后直接读 store 的**最新** entry（不受 React 渲染时序影响），把结果转成
    * 显式值给调用方。
    */
-  refreshTrae: () => Promise<string | null>;
+  refreshProduct: (product: "trae" | "qoder") => Promise<string | null>;
 } {
   const cnStatus = useAccountsStore((s) => s.status);
   const cnAccounts = useAccountsStore((s) => s.accounts);
@@ -222,15 +288,26 @@ export function useScopeStatus(): {
     { freshMs: TRAE_SCOPE_STATUS_FRESH_MS },
   );
 
+  const qoder = useCachedResource<QoderScopeSnapshot>(
+    QODER_SCOPE_STATUS_KEY,
+    loadQoderScopeSnapshot,
+    { freshMs: QODER_SCOPE_STATUS_FRESH_MS },
+  );
+
   const visible = useDocumentVisible();
   // 取出函数本体再进依赖：`trae` 对象每次渲染都是新的，直接用它会每帧重建定时器。
   const revalidateTrae = trae.revalidate;
+  const revalidateQoder = qoder.revalidate;
 
   useEffect(() => {
     if (!visible) return;
-    const timer = window.setInterval(() => void revalidateTrae(), TRAE_SCOPE_STATUS_POLL_MS);
+    const timer = window.setInterval(() => {
+      void revalidateTrae();
+      // 两条快照同一个周期触发：分开起定时器只会在同一秒打两轮请求。
+      void revalidateQoder();
+    }, TRAE_SCOPE_STATUS_POLL_MS);
     return () => window.clearInterval(timer);
-  }, [visible, revalidateTrae]);
+  }, [visible, revalidateTrae, revalidateQoder]);
 
   const statuses = useMemo<ScopeStatusMap>(
     () => ({
@@ -238,21 +315,22 @@ export function useScopeStatus(): {
       "wb-global": workbuddyStatus(globalStatus, globalAccounts),
       "trae-cn": trae.data?.cn ?? UNKNOWN_STATUS,
       "trae-global": trae.data?.global ?? UNKNOWN_STATUS,
-      /* ⚠️ Qoder 侧**尚无运行状态数据源**（客户端探测与账号库计数都还没接）。
-         这里给 `UNKNOWN_STATUS` 而不是编一个「未运行」—— 后者会被读成
-         「装了但没开」，而事实是我们还不知道。 */
-      "qoder-cn": UNKNOWN_STATUS,
-      "qoder-global": UNKNOWN_STATUS,
+      "qoder-cn": qoder.data?.cn ?? UNKNOWN_STATUS,
+      "qoder-global": qoder.data?.global ?? UNKNOWN_STATUS,
     }),
-    [cnStatus, cnAccounts, globalStatus, globalAccounts, trae.data],
+    [cnStatus, cnAccounts, globalStatus, globalAccounts, trae.data, qoder.data],
   );
 
   // 见返回类型处的说明：refresh 不抛错 ⇒ 刷新完成后从 store 读最新 entry 判成败。
-  const refreshTrae = useCallback(async (): Promise<string | null> => {
-    await trae.refresh();
-    const entry = useResourceStore.getState().entries[TRAE_SCOPE_STATUS_KEY];
-    return entry?.error == null ? null : api.asError(entry.error);
-  }, [trae.refresh]);
+  const refreshProduct = useCallback(
+    async (product: "trae" | "qoder"): Promise<string | null> => {
+      const key = product === "trae" ? TRAE_SCOPE_STATUS_KEY : QODER_SCOPE_STATUS_KEY;
+      await (product === "trae" ? trae.refresh() : qoder.refresh());
+      const entry = useResourceStore.getState().entries[key];
+      return entry?.error == null ? null : api.asError(entry.error);
+    },
+    [trae.refresh, qoder.refresh],
+  );
 
-  return { statuses, refreshTrae };
+  return { statuses, refreshProduct };
 }
