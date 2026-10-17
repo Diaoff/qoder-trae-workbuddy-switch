@@ -12,7 +12,7 @@
 | [`history/`](history/) | 已完结的一次性报告：审计、探针、外部调研、旧方案 | **只读，不再改** |
 | [`prototype/`](prototype/) | 可点原型 + JSDOM 校验套件（门禁读这里的文件） | 新增交互先进这里 |
 | [`releases/`](releases/) | 每版人工措辞的发布说明（`gen-release-notes.mjs` 约定路径） | 每版一篇 |
-| [`images/`](images/) | README 与文档用的截图（浅/深两套） | 换 UI 时更新 |
+| [`images/`](images/) | README 与文档用的截图（浅/深两套）；`brand/logo.png` 是**图标生成源图**，`scripts/gen-icons.mjs` 默认读它 | 换 UI / 换 logo 时更新 |
 
 ---
 

@@ -128,6 +128,25 @@ macOS 未签名会触发 Gatekeeper，先 `xattr -d com.apple.quarantine <路径
 
 ## 目录结构
 
+### 根目录：哪些是入口、哪些是产物
+
+根目录只放**必须在这一层**的东西（构建工具按约定找它们）；其余一律进子目录。
+
+| 条目 | 是什么 | 能不能动 |
+| --- | --- | --- |
+| `build-quick.cmd` | **双击入口**：日常打包（默认 `fast` 跳过 tsc，`full` 走全套门禁）。内部靠 `%~dp0` 定位 `scripts\` 与 `deliverables\` | ⚠️ 只能留在根；位置与文件名是使用习惯的一部分 |
+| `build-exe.cmd` | **双击入口**：完整打包（= `scripts/package-windows.ps1`），产物进 `deliverables\` | 同上 |
+| `index.html` `vite.config.ts` `tsconfig*.json` `components.json` | 前端构建入口与工具配置，工具链按固定路径找它们 | 不能动 |
+| `package.json` `package-lock.json` / `Cargo.toml` `Cargo.lock` `rustfmt.toml` | 两套依赖清单与格式化配置 | 不能动 |
+| `Dockerfile` `docker-compose.yml` `.dockerignore` `docker/` | 服务端容器形态；`docker/entrypoint.sh` 被 Dockerfile 引用 | 构建上下文必须在根 |
+| `README*.md`（8 语种）`CONTRIBUTING*.md` `LICENSE` `AGENTS.md` | 面向使用者与协作者的门面；`AGENTS.md` 另含 UI / 提交 / 文档规范 | 不能动 |
+| `src/` `src-tauri/` `crates/` `npm/` `scripts/` `docs/` `public/` | 源码、宿主、核心库、npm 包、工具脚本、文档、Web 静态资源 | — |
+| `node_modules/` `target/` `dist/` `deliverables/` | 依赖与构建产物（**全部被 `.gitignore` 忽略**） | 可随时删，重跑 `npm ci` / 构建即回来 |
+
+> 想往根目录加文件前先问一句：**构建工具或使用习惯是否非得在根？** 不是的话放进 `scripts/`（工具）、`docs/`（文档）、`public/`（前端静态资源）。
+
+### 源码目录
+
 ```
 src-tauri/
   src/
@@ -150,7 +169,7 @@ docs/
   history/           # 只读历史：审计、探针、外部调研、旧方案
   prototype/         # 可点原型 + JSDOM 校验套件（check:scope 会直接读这里）
   releases/          # 每版发布说明（gen-release-notes.mjs 约定路径）
-  images/            # README 截图（浅/深两套）
+  images/            # README 截图（浅/深两套）+ brand/（图标源图，scripts/gen-icons.mjs 默认读它）
 ```
 
 ## 端口与文件速查
