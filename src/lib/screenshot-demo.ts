@@ -2196,6 +2196,8 @@ function demoTraeGatewayConfig(): TraeGatewayConfigRaw {
     // 「已指定的账号（当前不在池中）」，看起来像 bug）。
     preferred_uid: "7481920",
     sticky_ttl_ms: 30 * 60 * 1000,
+    // 抓取旁路默认关：演示站也不该呈现「已开启诊断抓取」的假状态。
+    capture_enabled: false,
   };
 }
 

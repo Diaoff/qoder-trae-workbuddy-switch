@@ -26,6 +26,7 @@
 //! 与签到页的变体分家口径一致：两个页面看到的是同一份状态。
 
 pub mod apikey;
+pub mod capture;
 pub mod payload;
 pub mod pool;
 pub mod routes;
@@ -229,6 +230,17 @@ pub struct TraeGatewayConfig {
     /// 与 WorkBuddy 网关的 `sticky_ttl_ms` 同默认值。
     #[serde(alias = "stickyTtlMs")]
     pub sticky_ttl_ms: i64,
+    /// 对话转发抓取开关（诊断旁路，落盘 `~/.buddy-switch/trae/capture/<程序位>/`）。
+    ///
+    /// 默认 **false**：抓取会把对话正文（含提示词与响应）原样落盘，
+    /// 属敏感内容，只在排查问题时手动打开；**无轮转、无上限**，用完请手工清理目录。
+    ///
+    /// ★ 本字段没有界面开关，靠 `api_gateway.json` 手改 + 重启网关生效 ——
+    /// 因此它**必须**在管理面的整份保存里被原样带回：配置保存是「整份覆盖」，
+    /// 缺键就回落 `false`（前端 `toTraeGatewayConfigRaw` 负责带上它）。
+    /// 漏了这一步的后果不是报错，而是「用户以为还开着、其实已被静默关掉」。
+    #[serde(alias = "captureEnabled")]
+    pub capture_enabled: bool,
 }
 
 impl Default for TraeGatewayConfig {
@@ -245,6 +257,7 @@ impl Default for TraeGatewayConfig {
             max_rotate: DEFAULT_MAX_ROTATE,
             preferred_uid: String::new(),
             sticky_ttl_ms: 30 * 60 * 1000,
+            capture_enabled: false,
         }
     }
 }
@@ -842,6 +855,7 @@ mod tests {
             "max_rotate",
             "preferred_uid",
             "sticky_ttl_ms",
+            "capture_enabled",
         ]
         .into_iter()
         .collect();

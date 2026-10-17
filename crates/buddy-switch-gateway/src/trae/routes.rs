@@ -41,6 +41,7 @@ use crate::protocol::anthropic;
 use crate::session_headers;
 use crate::sticky;
 
+use super::capture::Capture;
 use super::payload;
 use super::pool::{classify_http, classify_solo, PickedTraeAccount, TraeErrKind, TraePool};
 use super::sse::{self, TokenUsage};
@@ -509,14 +510,24 @@ async fn stream_chat(
         {
             None => break,
             Some(AttemptResult::Failed { failure, .. }) => last = Some(failure),
-            Some(AttemptResult::Ok { account, response }) => {
+            Some(AttemptResult::Ok {
+                account,
+                response,
+                capture,
+            }) => {
                 let (tx, rx) = mpsc::channel::<Result<Bytes, std::io::Error>>(64);
                 let task_state = state.clone();
                 let task_model = model.to_string();
                 let task_chat_id = chat_id.to_string();
                 tokio::spawn(async move {
-                    let outcome =
-                        sse::stream_convert(response, tx, &task_chat_id, &task_model).await;
+                    let outcome = sse::stream_convert(
+                        response,
+                        tx,
+                        &task_chat_id,
+                        &task_model,
+                        capture.as_ref(),
+                    )
+                    .await;
                     settle(
                         &task_state,
                         &account,
@@ -573,7 +584,7 @@ async fn aggregate_payload(
     let mut last: Option<UpstreamFailure> = None;
 
     for _ in 0..max_rotate {
-        let (account, response) = match attempt_once(
+        let (account, response, capture) = match attempt_once(
             state,
             body,
             default_model,
@@ -589,10 +600,15 @@ async fn aggregate_payload(
                 last = Some(failure);
                 continue;
             }
-            Some(AttemptResult::Ok { account, response }) => (account, response),
+            Some(AttemptResult::Ok {
+                account,
+                response,
+                capture,
+            }) => (account, response, capture),
         };
 
-        let (payload, error, usage) = sse::aggregate(response, chat_id, model).await;
+        let (payload, error, usage) =
+            sse::aggregate(response, chat_id, model, capture.as_ref()).await;
 
         match (payload, error) {
             (Some(payload), None) => {
@@ -715,6 +731,9 @@ enum AttemptResult {
     Ok {
         account: PickedTraeAccount,
         response: reqwest::Response,
+        /// 抓取旁路句柄（诊断用）：`Some` 表示本次尝试开着抓取，编号已生成、
+        /// 请求对已落盘；响应消费方接着用同一编号追加原始流。
+        capture: Option<Capture>,
     },
     /// 出站失败：已分类、已写回冷却文件。
     Failed {
@@ -755,13 +774,32 @@ async fn attempt_once(
     }?;
     tried.insert(picked.uid.clone());
 
-    match chat_once_for_account(state, &picked, variant, default_model, body).await {
+    // 抓取（诊断旁路）：开关打开时为**本次尝试**建句柄（目录解析 + 编号各一次）。
+    // 关闭时连目录都不碰 —— 热路径上零 IO 开销。编号随 `AttemptResult::Ok`
+    // 交给响应消费方，同一编号继续追加原始流（请求与响应靠它配对）。
+    let capture = if state.config_snapshot().await.capture_enabled {
+        Some(Capture::new(variant))
+    } else {
+        None
+    };
+
+    match chat_once_for_account(
+        state,
+        &picked,
+        variant,
+        default_model,
+        body,
+        capture.as_ref(),
+    )
+    .await
+    {
         Ok(response) => {
             // 会话粘性：**只在成功之后**绑定，让下一轮优先复用这个账号。
             state.bind_sticky(sticky_key, &picked.uid).await;
             Some(AttemptResult::Ok {
                 account: picked,
                 response,
+                capture,
             })
         }
         Err((status, detail)) => {
@@ -818,12 +856,18 @@ async fn attempt_once(
 ///
 /// 原 [`attempt_once`] 里的两步（[`payload::prepare_llm_chat_body`] + [`send_llm_chat`]）
 /// 原样搬进来，无任何逻辑改动；`attempt_once` 改为调本函数 ⇒ 真实流量行为逐字不变。
+///
+/// ## 抓取旁路
+///
+/// `capture` 为 `Some` 时，改写完成后立刻落盘**请求对**（入口体 + 改写后上游体）：
+/// 两者形状可比对，是排查「上游为什么不认」的第一手材料。探测路径传 `None`。
 pub(crate) async fn chat_once_for_account(
     state: &TraeGatewayState,
     account: &PickedTraeAccount,
     variant: TraeVariant,
     default_model: &str,
     body: &[u8],
+    capture: Option<&Capture>,
 ) -> Result<reqwest::Response, (u16, String)> {
     let converted = payload::prepare_llm_chat_body(
         body,
@@ -833,7 +877,11 @@ pub(crate) async fn chat_once_for_account(
         &account.device_id,
         &account.machine_id,
     );
-    send_llm_chat(state, account, &converted).await
+    // 抓取（诊断旁路）：此时改写已完成、尚未发出 —— 请求对就在这一刻落盘。
+    if let Some(capture) = capture {
+        capture.request_pair(body, &converted);
+    }
+    send_llm_chat(state, account, &converted, capture).await
 }
 
 /// 发一次 `llm_utils_chat`：拿到响应头即返回，不读 body。
@@ -841,10 +889,15 @@ pub(crate) async fn chat_once_for_account(
 /// 头部逐字对齐参考实现（`x-ide-token` 用裸 JWT，**不带** `Cloud-IDE-JWT ` 前缀，
 /// 前缀只在 `Authorization` 场景使用）。`accept-encoding` 显式写 `identity`：
 /// 本 crate 的 reqwest 未开 gzip/br/zstd 特性，若上游压缩返回，读出来就是乱码。
+///
+/// `capture` 为 `Some` 时，非 2xx 的完整错误体额外落盘一份
+/// （`_upstream_http_error.txt`）—— 回传给客户端的只有 300 字预览，
+/// 排查时真正要看的是完整原文。
 async fn send_llm_chat(
     state: &TraeGatewayState,
     account: &PickedTraeAccount,
     body: &[u8],
+    capture: Option<&Capture>,
 ) -> Result<reqwest::Response, (u16, String)> {
     let url = format!("{}{TRAE_LLM_CHAT_PATH}", state.upstream);
     let trace_id = trace_id();
@@ -896,6 +949,10 @@ async fn send_llm_chat(
 
     // 错误体可能很长（含堆栈），截断后再回传与落日志。
     let text = response.text().await.unwrap_or_default();
+    // 抓取（诊断旁路）：完整错误体另存一份（回传客户端的只是截断预览）。
+    if let Some(capture) = capture {
+        capture.write("_upstream_http_error.txt", text.as_bytes());
+    }
     Err((status, preview(&text, 300)))
 }
 
@@ -1589,7 +1646,7 @@ mod tests {
             body["model_name"] = serde_json::json!(model_name);
             let encoded = serde_json::to_vec(&body).expect("序列化");
 
-            match send_llm_chat(&state, &picked, &encoded).await {
+            match send_llm_chat(&state, &picked, &encoded, None).await {
                 Ok(mut response) => {
                     // 累积若干块，直到看见 `event:metadata`（上游认了）或 `event:error`（上游拒了）。
                     // ⚠️ 只看**首块**会把 `event:progress_notice`（排队中）误判成结论 —— 踩过。
@@ -1695,7 +1752,7 @@ mod tests {
             body["model_name"] = serde_json::json!(model_name);
             let encoded = serde_json::to_vec(&body).expect("序列化");
 
-            match send_llm_chat(&state, &picked, &encoded).await {
+            match send_llm_chat(&state, &picked, &encoded, None).await {
                 Ok(mut response) => {
                     let mut buffer = String::new();
                     let mut verdict = "超时".to_string();

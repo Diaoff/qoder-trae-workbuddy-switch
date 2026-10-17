@@ -35,6 +35,8 @@ export const DEFAULT_TRAE_GATEWAY_CONFIG: TraeGatewayConfig = {
   preferredUid: "",
   // 会话粘性：与 WorkBuddy 网关同默认值（30 分钟）。
   stickyTtlMs: 30 * 60 * 1000,
+  // 抓取旁路默认关（会原样落盘对话正文，属敏感内容）。
+  captureEnabled: false,
 };
 
 function asString(value: unknown): string | undefined {
@@ -85,6 +87,11 @@ export function normalizeTraeGatewayConfig(raw: unknown): TraeGatewayConfig {
     stickyTtlMs:
       asNumber(read("stickyTtlMs", "sticky_ttl_ms")) ??
       DEFAULT_TRAE_GATEWAY_CONFIG.stickyTtlMs,
+    // 诊断开关没有界面入口，但必须完整往返：缺这一格 ⇒ 保存时整份覆盖
+    // 会把用户手开的抓取**静默打回 false**（配置缺键即回落默认）。
+    captureEnabled:
+      asBoolean(read("captureEnabled", "capture_enabled")) ??
+      DEFAULT_TRAE_GATEWAY_CONFIG.captureEnabled,
   };
 }
 
@@ -107,6 +114,8 @@ export function toTraeGatewayConfigRaw(config: TraeGatewayConfig): TraeGatewayCo
     max_rotate: config.maxRotate,
     preferred_uid: config.preferredUid,
     sticky_ttl_ms: config.stickyTtlMs,
+    // ★ 必须写回：保存是整份覆盖，缺键 = 抓取被静默关闭（见 `captureEnabled` 注释）。
+    capture_enabled: config.captureEnabled,
   };
 }
 

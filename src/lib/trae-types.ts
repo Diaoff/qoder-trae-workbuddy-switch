@@ -808,6 +808,14 @@ export interface TraeGatewayConfigRaw {
   preferred_uid: string;
   /** 会话粘性绑定存活时长（毫秒；`<= 0` 由后端归一为 30 分钟）。 */
   sticky_ttl_ms: number;
+  /**
+   * 对话转发抓取开关（诊断旁路，默认 `false`）。
+   *
+   * ★ 界面上**没有**这个开关，只能手改 `api_gateway.json` + 重启网关。
+   * 但它必须出现在读写两端：配置保存是「整份覆盖」，缺键就回落 `false` ——
+   * 漏带这一格会让用户手开的抓取在任意一次「保存」后被**静默关掉**。
+   */
+  capture_enabled: boolean;
 }
 
 /** 归一化后的网关配置（前端统一用 camelCase）。 */
@@ -825,6 +833,8 @@ export interface TraeGatewayConfig {
   preferredUid: string;
   /** 会话粘性绑定存活时长（毫秒）。 */
   stickyTtlMs: number;
+  /** 对话转发抓取开关（诊断旁路；无界面开关，只在配置里往返，默认 `false`）。 */
+  captureEnabled: boolean;
 }
 
 /** 账号池摘要（`pool` 字段）。 */
