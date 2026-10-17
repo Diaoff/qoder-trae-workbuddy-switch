@@ -122,10 +122,14 @@ jobs:
         env:
           RUSTFLAGS: ""
         run: |
-          set -o pipefail
+          # ⚠️ GitHub 的 bash 默认是 `-e -o pipefail`：`cargo | tee` 一失败，
+          # **整段脚本立刻中止**，下面抬注解的代码根本不会执行（2026-10-17 实测：
+          # 注解里始终只有一句 exit code 101）。所以这里必须先 `set +e`。
+          set +e
           # `--message-format=short` 把每条诊断压成一行，便于下面抬成注解。
           cargo clippy --workspace --all-targets --message-format=short 2>&1 | tee clippy.log
           status=${PIPESTATUS[0]}
+          set -e
           if [ "$status" -ne 0 ]; then
             # ★ 失败时把诊断抬成 `::error::` 注解。
             #
