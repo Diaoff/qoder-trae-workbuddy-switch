@@ -58,6 +58,27 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev
 
+      # ⚠️ **必须先生成 `dist/`，否则 rust job 在编译期就挂，与 fmt/clippy/test 无关。**
+      #
+      # `crates/buddy-switch-server/src/api.rs` 里有 `#[derive(RustEmbed)] folder = "../../dist/"`。
+      # `dist/` 被 `.gitignore` 忽略、本 job 又不产出前端，于是 derive 展开时直接报
+      #   `folder '.../dist/' does not exist`
+      # 并连带把 `Assets::{get,iter}` 全部判成「不存在的方法」——一次报十几条，全是假象。
+      # 这是本 job 长期红的**第二个**原因（第一个是历史 clippy 提示，已在上面的 Clippy step 处理）。
+      #
+      # 只跑 `build:fast`（= `vite build`）而不是 `npm run build`：`tsc` 与 6 个契约检查
+      # 已由 frontend job 负责，这里重复跑只会把同一条失败信息印两遍、把 job 拖长一分钟。
+      # 不加 `needs: frontend` + 产物传递，是为了保住两个 job 的并行（见文件头 concurrency 说明）。
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Build webui assets (RustEmbed 需要 dist/)
+        run: |
+          npm ci
+          npm run build:fast
+
       - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
           components: rustfmt, clippy
