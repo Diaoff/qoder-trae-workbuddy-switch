@@ -47,14 +47,15 @@ impl TempEnv {
         Self::new(true)
     }
 
-    /// 隔离 home 与 `APPDATA`，**不铺任何 fixture**（由调用方自行铺）。
+    /// 隔离 home 与 `APPDATA`，不铺任何 fixture（由调用方自行铺）。
     ///
-    /// 调用方拿 [`TempEnv::appdata`] 当「客户端 userData 的父目录」用：
-    /// 在里面建 `<产品线目录>/User/globalStorage/storage.json` 即可。
+    /// 调用方将 [`TempEnv::appdata`] 作为「客户端 userData 的父目录」使用：
+    /// 在其中建 `<产品线目录>/User/globalStorage/storage.json` 即可。
     ///
-    /// 只在 Windows 上提供：`platform::data_dir_base()` 只在 Windows 分支读环境变量，
-    /// 本仓库所有依赖「客户端数据目录」的用例也都是 `#[cfg(windows)]`（既有约定）。
-    #[cfg(windows)]
+    /// 与 [`TempEnv::appdata`] 不同，本函数不限平台：仅隔离 home 的用例
+    /// （Trae 账号库与台账读写）在 Linux / macOS 上同样需要执行。此处曾受
+    /// `#[cfg(windows)]` 约束，而三处调用点无对应 cfg，导致 `cargo test` 在 macOS 上
+    /// 以 `E0599` 编译失败，整个测试 target 不可用。
     pub(crate) fn empty() -> Self {
         Self::new(false)
     }
