@@ -257,6 +257,9 @@ export function AccountPoolCard({
       >
         {tiles.map((key, index) => {
           const meta = TILE_META[key];
+          // 「可路由」格里的在途占满小字：`inFlightFull ⊆ available`，所以只在
+          // available 格上注，不另立一格（瞬时态与故障态不能并排，见字段注释）。
+          const inFlightFull = key === "available" ? (pool?.inFlightFull ?? 0) : 0;
           return (
             <div
               key={key}
@@ -280,6 +283,14 @@ export function AccountPoolCard({
               >
                 {pool?.[key] ?? 0}
               </span>
+              {inFlightFull > 0 ? (
+                <span
+                  className="mt-1 text-[11px] leading-tight text-muted-foreground"
+                  title={t("shared.gateway.pool.tile.availableBusyHint")}
+                >
+                  {t("shared.gateway.pool.tile.availableBusy", { count: inFlightFull })}
+                </span>
+              ) : null}
             </div>
           );
         })}

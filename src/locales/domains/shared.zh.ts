@@ -252,6 +252,11 @@ export const zh = {
     "这些账号都没有可用凭据——可能没登录、凭据是加密信封、或已被移出账号库。请到「账号」页重新登录或导入账号；若本机没有对应桌面客户端（Docker / headless），请在「网关 → 账号池」用扫码方式添加；若用的是「指定账号」策略，请确认该账号仍在本机账号库中。",
   "shared.gateway.pool.totalRequests": "累计请求 {count}",
   "shared.gateway.pool.tile.available": "可路由",
+  // 「可路由」格里的小字注：其中几个只是**并发占满**（账号正常、几秒自愈）。
+  // 不做第七格的理由见 `GatewayPoolSummary.inFlightFull` 的注释 —— 瞬时态与故障态不能并排。
+  "shared.gateway.pool.tile.availableBusy": "其中 {count} 个在途已满",
+  "shared.gateway.pool.tile.availableBusyHint":
+    "这些账号状态正常，只是并发额度占满（在途请求还没结束）；几秒后自动恢复，无需任何操作。",
   "shared.gateway.pool.tile.cooling": "冷却中",
   "shared.gateway.pool.tile.disabled": "会话失效",
   "shared.gateway.pool.tile.expired": "积分过期",

@@ -224,6 +224,12 @@ export const en = {
     "None of these accounts have a usable credential — they may be signed out, hold an encrypted-envelope credential, or have been removed from the account store. Sign in again or import an account on the \"Accounts\" page; if there is no desktop client on this machine (Docker / headless), add an account by QR scan under \"Gateway → Account pool\"; if the \"Pinned account\" strategy is in use, make sure that account is still in the local account store.",
   "shared.gateway.pool.totalRequests": "{count} requests",
   "shared.gateway.pool.tile.available": "Routable",
+  // Sub-line inside the "Routable" tile: some of them are merely **at the in-flight cap**
+  // (account is fine, clears by itself in seconds). See `GatewayPoolSummary.inFlightFull`
+  // for why this is a sub-line and not a seventh tile.
+  "shared.gateway.pool.tile.availableBusy": "{count} at in-flight cap",
+  "shared.gateway.pool.tile.availableBusyHint":
+    "These accounts are healthy; they are just at their concurrency cap because earlier requests are still running. They recover on their own in seconds — nothing to do.",
   "shared.gateway.pool.tile.cooling": "Cooling",
   "shared.gateway.pool.tile.disabled": "Session dead",
   "shared.gateway.pool.tile.expired": "Credits expired",
