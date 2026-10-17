@@ -5904,7 +5904,12 @@ mod tests {
         assert_eq!(body["activity_report_count"], json!(5));
         assert_eq!(body["checkin_enabled"], json!(true));
         assert!(
-            body.get("checkin_hours").is_none(),
+            // 用 `contains_key` 而不是 `body.get("…")`：`check:api` 的 [naming] 规则要求
+            // 服务端任何 `.get("snake_key")` 都必须带 camelCase 双读（前端发 camelCase），
+            // 而这里要断言的恰恰是「旧键**不存在**」，双读语义完全不适用。
+            !body
+                .as_object()
+                .is_some_and(|map| map.contains_key("checkin_hours")),
             "响应不得再输出旧键（新旧两套字段并存会让「哪份是真的」无从判断）：{body}"
         );
 
