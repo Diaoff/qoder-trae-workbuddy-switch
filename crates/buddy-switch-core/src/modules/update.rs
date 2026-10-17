@@ -20,7 +20,7 @@ use crate::modules::config::{
 /// 应用当前版本（来自 Cargo.toml package.version）。
 pub const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
 pub const GITHUB_OWNER: &str = "NextAgentX";
-pub const GITHUB_REPO: &str = "trae-workbuddy-switch";
+pub const GITHUB_REPO: &str = "qoder-trae-workbuddy-switch";
 
 /// 自动轮询间隔，与前端 `src/lib/update-preference.ts` 的
 /// `AUTO_CHECK_UPDATE_INTERVAL_MS`（30 分钟）保持一致。
@@ -664,8 +664,8 @@ mod tests {
         assert_eq!(
             urls,
             vec![
-                "https://github.com/NextAgentX/trae-workbuddy-switch/releases/latest/download/latest.json",
-                "https://github.com/NextAgentX/trae-workbuddy-switch/releases/latest/download/latest-macos-aarch64.json",
+                "https://github.com/NextAgentX/qoder-trae-workbuddy-switch/releases/latest/download/latest.json",
+                "https://github.com/NextAgentX/qoder-trae-workbuddy-switch/releases/latest/download/latest-macos-aarch64.json",
             ]
         );
     }
@@ -676,9 +676,9 @@ mod tests {
         assert_eq!(
             urls,
             vec![
-                "https://github.com/NextAgentX/trae-workbuddy-switch/releases/latest/download/latest.json",
-                "https://github.com/NextAgentX/trae-workbuddy-switch/releases/latest/download/latest-windows-x86_64.json",
-                "https://github.com/NextAgentX/trae-workbuddy-switch/releases/latest/download/latest-macos-x86_64.json",
+                "https://github.com/NextAgentX/qoder-trae-workbuddy-switch/releases/latest/download/latest.json",
+                "https://github.com/NextAgentX/qoder-trae-workbuddy-switch/releases/latest/download/latest-windows-x86_64.json",
+                "https://github.com/NextAgentX/qoder-trae-workbuddy-switch/releases/latest/download/latest-macos-x86_64.json",
             ]
         );
     }

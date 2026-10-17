@@ -11,9 +11,9 @@
 
 <p align="center">
   <img alt="지원 OS" src="https://img.shields.io/badge/%EC%A7%80%EC%9B%90_OS-macOS_%7C_Windows_%7C_Linux-2ea043" />
-  <a href="https://github.com/NextAgentX/trae-workbuddy-switch/releases/latest"><img alt="최신 버전" src="https://img.shields.io/github/v/release/NextAgentX/trae-workbuddy-switch?label=%EC%B5%9C%EC%8B%A0_%EB%B2%84%EC%A0%84" /></a>
+  <a href="https://github.com/NextAgentX/qoder-trae-workbuddy-switch/releases/latest"><img alt="최신 버전" src="https://img.shields.io/github/v/release/NextAgentX/qoder-trae-workbuddy-switch?label=%EC%B5%9C%EC%8B%A0_%EB%B2%84%EC%A0%84" /></a>
   <a href="./LICENSE"><img alt="라이선스" src="https://img.shields.io/badge/%EB%9D%BC%EC%9D%B4%EC%84%A0%EC%8A%A4-PolyForm_Noncommercial-4c8bf5" /></a>
-  <a href="https://github.com/NextAgentX/trae-workbuddy-switch/stargazers"><img alt="Stars" src="https://img.shields.io/github/stars/NextAgentX/trae-workbuddy-switch?style=social" /></a>
+  <a href="https://github.com/NextAgentX/qoder-trae-workbuddy-switch/stargazers"><img alt="Stars" src="https://img.shields.io/github/stars/NextAgentX/qoder-trae-workbuddy-switch?style=social" /></a>
 </p>
 
 <p align="center">
@@ -39,8 +39,8 @@
 | 🔌 **할당량을 다른 도구에 연결** | OpenAI / Anthropic 호환 엔드포인트로 노출해 Cursor, Claude Code, OpenWebUI에 그대로 설정할 수 있습니다. |
 
 <p align="center">
-  <a href="https://github.com/NextAgentX/trae-workbuddy-switch/releases/latest"><img alt="다운로드" src="https://img.shields.io/badge/%EB%8B%A4%EC%9A%B4%EB%A1%9C%EB%93%9C-Releases-2ea043?style=for-the-badge" /></a>
-  <a href="https://github.com/NextAgentX/trae-workbuddy-switch/stargazers"><img alt="Star로 응원" src="https://img.shields.io/badge/Star%EB%A1%9C_%EC%9D%91%EC%9B%90-Star-f5c542?style=for-the-badge" /></a>
+  <a href="https://github.com/NextAgentX/qoder-trae-workbuddy-switch/releases/latest"><img alt="다운로드" src="https://img.shields.io/badge/%EB%8B%A4%EC%9A%B4%EB%A1%9C%EB%93%9C-Releases-2ea043?style=for-the-badge" /></a>
+  <a href="https://github.com/NextAgentX/qoder-trae-workbuddy-switch/stargazers"><img alt="Star로 응원" src="https://img.shields.io/badge/Star%EB%A1%9C_%EC%9D%91%EC%9B%90-Star-f5c542?style=for-the-badge" /></a>
   <a href="CONTRIBUTING.en.md"><img alt="기여하기" src="https://img.shields.io/badge/%EA%B8%B0%EC%97%AC%ED%95%98%EA%B8%B0-Pull_Request-4c8bf5?style=for-the-badge" /></a>
 </p>
 
@@ -197,7 +197,7 @@ flowchart TB
 
 | 형태 | 얻는 방법 | 설명 |
 | --- | --- | --- |
-| **데스크톱 앱** | [GitHub Releases](https://github.com/NextAgentX/trae-workbuddy-switch/releases/latest) 에서 설치 파일 다운로드 | Tauri 패키지, 일상 사용에 권장 |
+| **데스크톱 앱** | [GitHub Releases](https://github.com/NextAgentX/qoder-trae-workbuddy-switch/releases/latest) 에서 설치 파일 다운로드 | Tauri 패키지, 일상 사용에 권장 |
 | **webui** | 소스에서 빌드(아래 참조) | 데스크톱 앱과 동일한 프런트엔드 산출물을 로컬 HTTP로 제공 |
 | **온라인 데모** | [GitHub Pages](https://nextagentx.github.io/qoder-trae-workbuddy-switch/) | 읽기 전용 데모, 계정·사용량은 모두 가상 데이터 |
 
@@ -409,7 +409,7 @@ npm/                     # npm 패키지(미배포)
 
 | | |
 | --- | --- |
-| 🐞 **버그 제보** | 버전과 로그 스크린샷을 함께 담아 [이슈 작성](https://github.com/NextAgentX/trae-workbuddy-switch/issues/new) |
+| 🐞 **버그 제보** | 버전과 로그 스크린샷을 함께 담아 [이슈 작성](https://github.com/NextAgentX/qoder-trae-workbuddy-switch/issues/new) |
 | 🧩 **플랫폼 추가** | 차이는 `src/lib/platforms/registry.ts`와 `product.rs`에 한 번만 선언하면 되고, 페이지 컴포넌트는 그대로 둡니다. |
 | 🌍 **번역 수정** | UI 문구는 `src/locales/domains/*.zh.ts` ↔ `*.en.ts`가 짝을 이룹니다. 8개 언어 README 교정도 환영합니다. |
 | 📸 **스크린샷 갱신** | 명령 하나로 라이트/다크 이미지를 모두 다시 찍습니다(`scripts/gen-readme-shots.mjs` 머리말 참고). |
@@ -456,11 +456,11 @@ npm/                     # npm 패키지(미배포)
 
 ## Star 추이
 
-<a href="https://www.star-history.com/?repos=NextAgentX%2Ftrae-workbuddy-switch&type=date&legend=top-left">
+<a href="https://www.star-history.com/?repos=NextAgentX%2Fqoder-trae-workbuddy-switch&type=date&legend=top-left">
 
  <picture>
-   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=NextAgentX/trae-workbuddy-switch&type=date&theme=dark&legend=top-left" />
-   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=NextAgentX/trae-workbuddy-switch&type=date&legend=top-left" />
-   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=NextAgentX/trae-workbuddy-switch&type=date&legend=top-left" />
+   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=NextAgentX/qoder-trae-workbuddy-switch&type=date&theme=dark&legend=top-left" />
+   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=NextAgentX/qoder-trae-workbuddy-switch&type=date&legend=top-left" />
+   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=NextAgentX/qoder-trae-workbuddy-switch&type=date&legend=top-left" />
  </picture>
 </a>

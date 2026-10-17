@@ -3,7 +3,7 @@
 > **状态：只读历史（不再更新，2026-10-17 归档）** —— 外部同产品实现的调研记录。
 > 现行文档见 [`docs/README.md`](../README.md)（文档地图）。
 > 调研日期：2026-10-09 ｜ 对象：`https://github.com/changexbc/workbuddy-switch`（MIT，Tauri + React + Rust）
-> 目的：判断这个项目对 **buddy-switch**（本仓，`NextAgentX/trae-workbuddy-switch`）有什么可参考的。
+> 目的：判断这个项目对 **buddy-switch**（本仓，`NextAgentX/qoder-trae-workbuddy-switch`）有什么可参考的。
 > 结论口径：**它不是上游也不是下游，而是同一产品的另一份独立实现** —— 两边**功能高度重叠**，
 > 真正的差集**很小且集中**；最值钱的是它已经落地、而本仓 PLAN 只写到一半的**两处体验机制**，
 > 以及一个**独立成组件的「外部 Agent 监听」**。
@@ -15,7 +15,7 @@
 
 ## 0. 结论先行（四条）
 
-1. **两仓同源不同实现，不是上下级。** 本仓是 `NextAgentX/trae-workbuddy-switch`（PolyForm-Noncommercial，
+1. **两仓同源不同实现，不是上下级。** 本仓是 `NextAgentX/qoder-trae-workbuddy-switch`（PolyForm-Noncommercial，
    2026-09-22 起）；参考是 `changexbc/workbuddy-switch`（MIT）。两边都在 2026-09/10 高频发版
    （参考 npm 最新 `0.1.60`，发布于 2026-10-09），**功能表逐条对得上**（账号管理 / 会话复制 / 积分到期 /
    积分统计 / Token 统计 / CodeBuddy CLI / 自动轮换 / 自动更新 / 权限检测 / npm + webui + Pages 只读演示）。

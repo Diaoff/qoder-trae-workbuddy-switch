@@ -5586,7 +5586,7 @@ mod tests {
             assert!(
                 Assets::get(key).is_some(),
                 "dist/index.html references `{reference}` which is NOT embedded. \
-                 `dist/` most likely holds a **demo** build (Vite base `/trae-workbuddy-switch/`). \
+                 `dist/` most likely holds a **demo** build (Vite base `/qoder-trae-workbuddy-switch/`). \
                  Run `npm run build` (NOT `npm run build:demo`) before compiling the server / Tauri app. \
                  Embedded paths: {:?}",
                 Assets::iter().collect::<Vec<_>>()

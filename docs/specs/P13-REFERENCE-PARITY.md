@@ -37,7 +37,7 @@
 
 三句话：
 
-1. **两仓是同一产品的两条分叉，不是上下游**（本仓 `NextAgentX/trae-workbuddy-switch`，参考 `changexbc/workbuddy-switch`）。
+1. **两仓是同一产品的两条分叉，不是上下游**（本仓 `NextAgentX/qoder-trae-workbuddy-switch`，参考 `changexbc/workbuddy-switch`）。
    **功能表逐条对得上，真正的差集只有 4 处** —— 且其中 **3 处本仓 `PLAN.md` 已经写成目标，只是没落地**。
    ⇒ 本方案的多数条目**不是新增功能，而是「把已拍板的设计做完」**。
 2. **最该先做的不是参考的大功能，而是两件「小而硬」的事**：

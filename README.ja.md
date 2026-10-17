@@ -11,9 +11,9 @@
 
 <p align="center">
   <img alt="対応OS" src="https://img.shields.io/badge/%E5%AF%BE%E5%BF%9COS-macOS_%7C_Windows_%7C_Linux-2ea043" />
-  <a href="https://github.com/NextAgentX/trae-workbuddy-switch/releases/latest"><img alt="最新版" src="https://img.shields.io/github/v/release/NextAgentX/trae-workbuddy-switch?label=%E6%9C%80%E6%96%B0%E7%89%88" /></a>
+  <a href="https://github.com/NextAgentX/qoder-trae-workbuddy-switch/releases/latest"><img alt="最新版" src="https://img.shields.io/github/v/release/NextAgentX/qoder-trae-workbuddy-switch?label=%E6%9C%80%E6%96%B0%E7%89%88" /></a>
   <a href="./LICENSE"><img alt="ライセンス" src="https://img.shields.io/badge/%E3%83%A9%E3%82%A4%E3%82%BB%E3%83%B3%E3%82%B9-PolyForm_Noncommercial-4c8bf5" /></a>
-  <a href="https://github.com/NextAgentX/trae-workbuddy-switch/stargazers"><img alt="Stars" src="https://img.shields.io/github/stars/NextAgentX/trae-workbuddy-switch?style=social" /></a>
+  <a href="https://github.com/NextAgentX/qoder-trae-workbuddy-switch/stargazers"><img alt="Stars" src="https://img.shields.io/github/stars/NextAgentX/qoder-trae-workbuddy-switch?style=social" /></a>
 </p>
 
 <p align="center">
@@ -39,8 +39,8 @@
 | 🔌 **枠を他のツールにも** | OpenAI / Anthropic 互換エンドポイントとして公開し、Cursor・Claude Code・OpenWebUI にそのまま設定できます。 |
 
 <p align="center">
-  <a href="https://github.com/NextAgentX/trae-workbuddy-switch/releases/latest"><img alt="ダウンロード" src="https://img.shields.io/badge/%E3%83%80%E3%82%A6%E3%83%B3%E3%83%AD%E3%83%BC%E3%83%89-Releases-2ea043?style=for-the-badge" /></a>
-  <a href="https://github.com/NextAgentX/trae-workbuddy-switch/stargazers"><img alt="Star で応援" src="https://img.shields.io/badge/Star_%E3%81%A7%E5%BF%9C%E6%8F%B4-Star-f5c542?style=for-the-badge" /></a>
+  <a href="https://github.com/NextAgentX/qoder-trae-workbuddy-switch/releases/latest"><img alt="ダウンロード" src="https://img.shields.io/badge/%E3%83%80%E3%82%A6%E3%83%B3%E3%83%AD%E3%83%BC%E3%83%89-Releases-2ea043?style=for-the-badge" /></a>
+  <a href="https://github.com/NextAgentX/qoder-trae-workbuddy-switch/stargazers"><img alt="Star で応援" src="https://img.shields.io/badge/Star_%E3%81%A7%E5%BF%9C%E6%8F%B4-Star-f5c542?style=for-the-badge" /></a>
   <a href="CONTRIBUTING.en.md"><img alt="コントリビュート" src="https://img.shields.io/badge/%E3%82%B3%E3%83%B3%E3%83%88%E3%83%AA%E3%83%93%E3%83%A5%E3%83%BC%E3%83%88-Pull_Request-4c8bf5?style=for-the-badge" /></a>
 </p>
 
@@ -197,7 +197,7 @@ flowchart TB
 
 | 形態 | 入手方法 | 説明 |
 | --- | --- | --- |
-| **デスクトップアプリ** | [GitHub Releases](https://github.com/NextAgentX/trae-workbuddy-switch/releases/latest) からインストーラーを取得 | Tauri 製。日常利用に推奨 |
+| **デスクトップアプリ** | [GitHub Releases](https://github.com/NextAgentX/qoder-trae-workbuddy-switch/releases/latest) からインストーラーを取得 | Tauri 製。日常利用に推奨 |
 | **webui** | ソースからビルド（下記） | デスクトップ版と同じフロントエンド成果物をローカル HTTP で配信 |
 | **オンラインデモ** | [GitHub Pages](https://nextagentx.github.io/qoder-trae-workbuddy-switch/) | 読み取り専用。アカウントや利用量はすべて架空のデータ |
 
@@ -409,7 +409,7 @@ npm/                     # npm パッケージ（未公開）
 
 | | |
 | --- | --- |
-| 🐞 **不具合を報告** | バージョンとログのスクリーンショットを添えて [Issue を作成](https://github.com/NextAgentX/trae-workbuddy-switch/issues/new) |
+| 🐞 **不具合を報告** | バージョンとログのスクリーンショットを添えて [Issue を作成](https://github.com/NextAgentX/qoder-trae-workbuddy-switch/issues/new) |
 | 🧩 **プラットフォームを追加** | 差異は `src/lib/platforms/registry.ts` と `product.rs` に一度だけ宣言すればよく、ページ側は変更不要です。 |
 | 🌍 **翻訳の修正** | UI 文言は `src/locales/domains/*.zh.ts` ↔ `*.en.ts` が対になっています。8 言語の README 校訂も歓迎です。 |
 | 📸 **スクリーンショット更新** | 1 コマンドでライト/ダークの全画像を撮り直せます（`scripts/gen-readme-shots.mjs` の冒頭コメント参照）。 |
@@ -456,11 +456,11 @@ npm/                     # npm パッケージ（未公開）
 
 ## Star 推移
 
-<a href="https://www.star-history.com/?repos=NextAgentX%2Ftrae-workbuddy-switch&type=date&legend=top-left">
+<a href="https://www.star-history.com/?repos=NextAgentX%2Fqoder-trae-workbuddy-switch&type=date&legend=top-left">
 
  <picture>
-   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=NextAgentX/trae-workbuddy-switch&type=date&theme=dark&legend=top-left" />
-   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=NextAgentX/trae-workbuddy-switch&type=date&legend=top-left" />
-   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=NextAgentX/trae-workbuddy-switch&type=date&legend=top-left" />
+   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=NextAgentX/qoder-trae-workbuddy-switch&type=date&theme=dark&legend=top-left" />
+   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=NextAgentX/qoder-trae-workbuddy-switch&type=date&legend=top-left" />
+   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=NextAgentX/qoder-trae-workbuddy-switch&type=date&legend=top-left" />
  </picture>
 </a>

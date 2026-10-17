@@ -11,9 +11,9 @@
 
 <p align="center">
   <img alt="Plataformas" src="https://img.shields.io/badge/Plataformas-macOS_%7C_Windows_%7C_Linux-2ea043" />
-  <a href="https://github.com/NextAgentX/trae-workbuddy-switch/releases/latest"><img alt="Versión" src="https://img.shields.io/github/v/release/NextAgentX/trae-workbuddy-switch?label=Versi%C3%B3n" /></a>
+  <a href="https://github.com/NextAgentX/qoder-trae-workbuddy-switch/releases/latest"><img alt="Versión" src="https://img.shields.io/github/v/release/NextAgentX/qoder-trae-workbuddy-switch?label=Versi%C3%B3n" /></a>
   <a href="./LICENSE"><img alt="Licencia" src="https://img.shields.io/badge/Licencia-PolyForm_Noncommercial-4c8bf5" /></a>
-  <a href="https://github.com/NextAgentX/trae-workbuddy-switch/stargazers"><img alt="Stars" src="https://img.shields.io/github/stars/NextAgentX/trae-workbuddy-switch?style=social" /></a>
+  <a href="https://github.com/NextAgentX/qoder-trae-workbuddy-switch/stargazers"><img alt="Stars" src="https://img.shields.io/github/stars/NextAgentX/qoder-trae-workbuddy-switch?style=social" /></a>
 </p>
 
 <p align="center">
@@ -39,8 +39,8 @@ Una estación de trabajo multicuenta **totalmente local**: reúne las cuentas de
 | 🔌 **La cuota también alimenta otras herramientas** | Se expone como endpoint compatible con OpenAI / Anthropic: Cursor, Claude Code, OpenWebUI. |
 
 <p align="center">
-  <a href="https://github.com/NextAgentX/trae-workbuddy-switch/releases/latest"><img alt="Descargar" src="https://img.shields.io/badge/Descargar-Releases-2ea043?style=for-the-badge" /></a>
-  <a href="https://github.com/NextAgentX/trae-workbuddy-switch/stargazers"><img alt="Dar una estrella" src="https://img.shields.io/badge/Dar_una_estrella-Star-f5c542?style=for-the-badge" /></a>
+  <a href="https://github.com/NextAgentX/qoder-trae-workbuddy-switch/releases/latest"><img alt="Descargar" src="https://img.shields.io/badge/Descargar-Releases-2ea043?style=for-the-badge" /></a>
+  <a href="https://github.com/NextAgentX/qoder-trae-workbuddy-switch/stargazers"><img alt="Dar una estrella" src="https://img.shields.io/badge/Dar_una_estrella-Star-f5c542?style=for-the-badge" /></a>
   <a href="CONTRIBUTING.en.md"><img alt="Contribuir" src="https://img.shields.io/badge/Contribuir-Pull_Request-4c8bf5?style=for-the-badge" /></a>
 </p>
 
@@ -197,7 +197,7 @@ flowchart TB
 
 | Forma | Cómo obtenerla | Nota |
 | --- | --- | --- |
-| **Aplicación de escritorio** | Descargar el instalador desde [GitHub Releases](https://github.com/NextAgentX/trae-workbuddy-switch/releases/latest) | Empaquetada con Tauri; recomendada para el día a día |
+| **Aplicación de escritorio** | Descargar el instalador desde [GitHub Releases](https://github.com/NextAgentX/qoder-trae-workbuddy-switch/releases/latest) | Empaquetada con Tauri; recomendada para el día a día |
 | **webui** | Compilar desde el código (abajo) | El mismo bundle del frontend, servido por HTTP local |
 | **Demo en línea** | [GitHub Pages](https://nextagentx.github.io/qoder-trae-workbuddy-switch/) | Demo de solo lectura; cuentas y uso son ficticios |
 
@@ -409,7 +409,7 @@ Requisitos de entorno, proceso de publicación y convenciones de directorios: [d
 
 | | |
 | --- | --- |
-| 🐞 **Reportar un fallo** | Con la versión y una captura del registro: [abrir una issue](https://github.com/NextAgentX/trae-workbuddy-switch/issues/new) |
+| 🐞 **Reportar un fallo** | Con la versión y una captura del registro: [abrir una issue](https://github.com/NextAgentX/qoder-trae-workbuddy-switch/issues/new) |
 | 🧩 **Añadir una plataforma** | Las diferencias se declaran una vez en `src/lib/platforms/registry.ts` y `product.rs`; las páginas no se tocan. |
 | 🌍 **Corregir traducciones** | Los textos van por parejas `src/locales/domains/*.zh.ts` ↔ `*.en.ts`; también se agradecen revisiones de los ocho README. |
 | 📸 **Actualizar capturas** | Un comando rehace todas las imágenes claro/oscuro: ver la cabecera de `scripts/gen-readme-shots.mjs`. |
@@ -456,11 +456,11 @@ Texto completo en **[docs/policies/DISCLAIMER.en.md](docs/policies/DISCLAIMER.en
 
 ## Historial de estrellas
 
-<a href="https://www.star-history.com/?repos=NextAgentX%2Ftrae-workbuddy-switch&type=date&legend=top-left">
+<a href="https://www.star-history.com/?repos=NextAgentX%2Fqoder-trae-workbuddy-switch&type=date&legend=top-left">
 
  <picture>
-   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=NextAgentX/trae-workbuddy-switch&type=date&theme=dark&legend=top-left" />
-   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=NextAgentX/trae-workbuddy-switch&type=date&legend=top-left" />
-   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=NextAgentX/trae-workbuddy-switch&type=date&legend=top-left" />
+   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=NextAgentX/qoder-trae-workbuddy-switch&type=date&theme=dark&legend=top-left" />
+   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=NextAgentX/qoder-trae-workbuddy-switch&type=date&legend=top-left" />
+   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=NextAgentX/qoder-trae-workbuddy-switch&type=date&legend=top-left" />
  </picture>
 </a>

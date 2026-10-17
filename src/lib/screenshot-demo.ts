@@ -2785,7 +2785,7 @@ export function screenshotDemoResponse(command: string, args?: Record<string, un
     case "rotate_status": return rotateStatus;
     case "get_rotate_logs": return { logs: rotateLogs() };
     case "get_github_config": return githubConfig;
-    case "check_update": return { ok: true, current: "2026.9.16", latest: "2026.9.17", latestTag: "v2026.9.17", hasUpdate: true, releaseName: t("shared.demo.updateTitle"), releaseUrl: "https://github.com/NextAgentX/trae-workbuddy-switch/releases/tag/v2026.9.17" };
+    case "check_update": return { ok: true, current: "2026.9.16", latest: "2026.9.17", latestTag: "v2026.9.17", hasUpdate: true, releaseName: t("shared.demo.updateTitle"), releaseUrl: "https://github.com/NextAgentX/qoder-trae-workbuddy-switch/releases/tag/v2026.9.17" };
     case "get_launch_at_login_enabled": return true;
     /* 应用级偏好（宿主也要读的那一类）。演示站里「关闭窗口」本来就没有真窗口，
        但开关必须能显示、也必须能记住 → 读写同一份会话内状态，归一化规则与后端

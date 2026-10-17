@@ -11,9 +11,9 @@
 
 <p align="center">
   <img alt="Platforms" src="https://img.shields.io/badge/Platforms-macOS_%7C_Windows_%7C_Linux-2ea043" />
-  <a href="https://github.com/NextAgentX/trae-workbuddy-switch/releases/latest"><img alt="Latest" src="https://img.shields.io/github/v/release/NextAgentX/trae-workbuddy-switch?label=Latest" /></a>
+  <a href="https://github.com/NextAgentX/qoder-trae-workbuddy-switch/releases/latest"><img alt="Latest" src="https://img.shields.io/github/v/release/NextAgentX/qoder-trae-workbuddy-switch?label=Latest" /></a>
   <a href="./LICENSE"><img alt="License" src="https://img.shields.io/badge/License-PolyForm_Noncommercial-4c8bf5" /></a>
-  <a href="https://github.com/NextAgentX/trae-workbuddy-switch/stargazers"><img alt="Stars" src="https://img.shields.io/github/stars/NextAgentX/trae-workbuddy-switch?style=social" /></a>
+  <a href="https://github.com/NextAgentX/qoder-trae-workbuddy-switch/stargazers"><img alt="Stars" src="https://img.shields.io/github/stars/NextAgentX/qoder-trae-workbuddy-switch?style=social" /></a>
 </p>
 
 <p align="center">
@@ -39,8 +39,8 @@ A **local-first** multi-account workbench: it gathers accounts from four product
 | 🔌 **Feed the quota to your other tools** | Expose it as an OpenAI / Anthropic compatible endpoint and drop it into Cursor, Claude Code or OpenWebUI. |
 
 <p align="center">
-  <a href="https://github.com/NextAgentX/trae-workbuddy-switch/releases/latest"><img alt="Download" src="https://img.shields.io/badge/Download-Releases-2ea043?style=for-the-badge" /></a>
-  <a href="https://github.com/NextAgentX/trae-workbuddy-switch/stargazers"><img alt="Star the repo" src="https://img.shields.io/badge/Star_the_repo-Star-f5c542?style=for-the-badge" /></a>
+  <a href="https://github.com/NextAgentX/qoder-trae-workbuddy-switch/releases/latest"><img alt="Download" src="https://img.shields.io/badge/Download-Releases-2ea043?style=for-the-badge" /></a>
+  <a href="https://github.com/NextAgentX/qoder-trae-workbuddy-switch/stargazers"><img alt="Star the repo" src="https://img.shields.io/badge/Star_the_repo-Star-f5c542?style=for-the-badge" /></a>
   <a href="CONTRIBUTING.en.md"><img alt="Contribute" src="https://img.shields.io/badge/Contribute-Pull_Request-4c8bf5?style=for-the-badge" /></a>
 </p>
 
@@ -197,7 +197,7 @@ flowchart TB
 
 | Form | How to get it | Notes |
 | --- | --- | --- |
-| **Desktop app** | Download from [GitHub Releases](https://github.com/NextAgentX/trae-workbuddy-switch/releases/latest) | Packaged with Tauri; recommended for daily use |
+| **Desktop app** | Download from [GitHub Releases](https://github.com/NextAgentX/qoder-trae-workbuddy-switch/releases/latest) | Packaged with Tauri; recommended for daily use |
 | **webui** | Build from source (below) | Same frontend bundle as the desktop app, served over local HTTP |
 | **Online demo** | [GitHub Pages](https://nextagentx.github.io/qoder-trae-workbuddy-switch/) | Read-only demo; accounts and usage are fictional |
 
@@ -409,7 +409,7 @@ Environment requirements, release process and layout conventions: [docs/guides/D
 
 | | |
 | --- | --- |
-| 🐞 **Report a bug** | Include the version and a screenshot of the log: [open an issue](https://github.com/NextAgentX/trae-workbuddy-switch/issues/new) |
+| 🐞 **Report a bug** | Include the version and a screenshot of the log: [open an issue](https://github.com/NextAgentX/qoder-trae-workbuddy-switch/issues/new) |
 | 🧩 **Add a platform** | Platform differences are declared once in `src/lib/platforms/registry.ts` and `product.rs`; page components stay untouched. |
 | 🌍 **Fix translations** | UI copy lives in `src/locales/domains/*.zh.ts` ↔ `*.en.ts`; corrections to the eight READMEs are welcome too. |
 | 📸 **Refresh screenshots** | One command re-shoots every light/dark image — see the header of `scripts/gen-readme-shots.mjs`. |
@@ -456,11 +456,11 @@ Full text in **[docs/policies/DISCLAIMER.en.md](docs/policies/DISCLAIMER.en.md)*
 
 ## Star history
 
-<a href="https://www.star-history.com/?repos=NextAgentX%2Ftrae-workbuddy-switch&type=date&legend=top-left">
+<a href="https://www.star-history.com/?repos=NextAgentX%2Fqoder-trae-workbuddy-switch&type=date&legend=top-left">
 
  <picture>
-   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=NextAgentX/trae-workbuddy-switch&type=date&theme=dark&legend=top-left" />
-   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=NextAgentX/trae-workbuddy-switch&type=date&legend=top-left" />
-   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=NextAgentX/trae-workbuddy-switch&type=date&legend=top-left" />
+   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=NextAgentX/qoder-trae-workbuddy-switch&type=date&theme=dark&legend=top-left" />
+   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=NextAgentX/qoder-trae-workbuddy-switch&type=date&legend=top-left" />
+   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=NextAgentX/qoder-trae-workbuddy-switch&type=date&legend=top-left" />
  </picture>
 </a>
