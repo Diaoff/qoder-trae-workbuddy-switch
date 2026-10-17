@@ -24,6 +24,60 @@
 
 > ⚠️ **非官方第三方工具**（source-available，PolyForm Noncommercial 许可）。与上述产品及其权利人不存在隶属、授权或背书关系。它会读写本机客户端的认证数据、按你的配置自动发起请求，并可通过本地端口转发额度。使用前请读完 **[免责声明](docs/DISCLAIMER.md)**。
 
+## 界面预览
+
+> 截图为演示运行（`VITE_DEMO_MODE=1`，请求层打桩），账号、积分与请求记录均为虚构数据。
+
+<table>
+  <thead>
+    <tr><th>概览（浅色）</th><th>概览（深色）</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><img src="docs/images/overview-light.png" alt="概览页（浅色）" /></td>
+      <td><img src="docs/images/overview-dark.png" alt="概览页（深色）" /></td>
+    </tr>
+  </tbody>
+</table>
+
+<table>
+  <thead>
+    <tr><th>WorkBuddy 账号（浅色）</th><th>WorkBuddy 账号（深色）</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><img src="docs/images/workbuddy-accounts-light.png" alt="WorkBuddy 账号页（浅色）" /></td>
+      <td><img src="docs/images/workbuddy-accounts-dark.png" alt="WorkBuddy 账号页（深色）" /></td>
+    </tr>
+  </tbody>
+</table>
+
+<table>
+  <thead>
+    <tr><th>用量 · 趋势（浅色）</th><th>用量 · 趋势（深色）</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><img src="docs/images/usage-trend-light.png" alt="用量趋势（浅色）" /></td>
+      <td><img src="docs/images/usage-trend-dark.png" alt="用量趋势（深色）" /></td>
+    </tr>
+  </tbody>
+</table>
+
+<table>
+  <thead>
+    <tr><th>网关（浅色）</th><th>网关（深色）</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><img src="docs/images/api-service-light.png" alt="网关页（浅色）" /></td>
+      <td><img src="docs/images/api-service-dark.png" alt="网关页（深色）" /></td>
+    </tr>
+  </tbody>
+</table>
+
+更多页面（会话 / 设置 / TraeWork 账号与用量）：[docs/images](docs/images)。
+
 ## 全景
 
 ```mermaid
@@ -223,60 +277,6 @@ flowchart LR
 | 客户端会话监听（默认关） | 在 WorkBuddy `settings.json` 装 hook，把任务状态实时送进悬浮窗（接收端 `127.0.0.1:57893`） |
 
 </details>
-
-## 界面预览
-
-> 截图为演示运行（`VITE_DEMO_MODE=1`，请求层打桩），账号、积分与请求记录均为虚构数据。
-
-<table>
-  <thead>
-    <tr><th>概览（浅色）</th><th>概览（深色）</th></tr>
-  </thead>
-  <tbody>
-    <tr>
-      <td><img src="docs/images/overview-light.png" alt="概览页（浅色）" /></td>
-      <td><img src="docs/images/overview-dark.png" alt="概览页（深色）" /></td>
-    </tr>
-  </tbody>
-</table>
-
-<table>
-  <thead>
-    <tr><th>WorkBuddy 账号（浅色）</th><th>WorkBuddy 账号（深色）</th></tr>
-  </thead>
-  <tbody>
-    <tr>
-      <td><img src="docs/images/workbuddy-accounts-light.png" alt="WorkBuddy 账号页（浅色）" /></td>
-      <td><img src="docs/images/workbuddy-accounts-dark.png" alt="WorkBuddy 账号页（深色）" /></td>
-    </tr>
-  </tbody>
-</table>
-
-<table>
-  <thead>
-    <tr><th>用量 · 趋势（浅色）</th><th>用量 · 趋势（深色）</th></tr>
-  </thead>
-  <tbody>
-    <tr>
-      <td><img src="docs/images/usage-trend-light.png" alt="用量趋势（浅色）" /></td>
-      <td><img src="docs/images/usage-trend-dark.png" alt="用量趋势（深色）" /></td>
-    </tr>
-  </tbody>
-</table>
-
-<table>
-  <thead>
-    <tr><th>网关（浅色）</th><th>网关（深色）</th></tr>
-  </thead>
-  <tbody>
-    <tr>
-      <td><img src="docs/images/api-service-light.png" alt="网关页（浅色）" /></td>
-      <td><img src="docs/images/api-service-dark.png" alt="网关页（深色）" /></td>
-    </tr>
-  </tbody>
-</table>
-
-更多页面（会话 / 设置 / TraeWork 账号与用量）：[docs/images](docs/images)。
 
 ## 数据与隐私
 

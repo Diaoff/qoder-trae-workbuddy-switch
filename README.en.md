@@ -24,6 +24,60 @@ A **local-first** multi-account workbench: it gathers accounts from four product
 
 > ⚠️ **Unofficial third-party tool** (source-available, PolyForm Noncommercial). Not affiliated with, authorized or endorsed by those products or their rights holders. It reads and writes authentication data of local clients, sends automated requests on the schedule you configure, and can forward your quota through a local port. Read the **[Disclaimer](docs/DISCLAIMER.en.md)** before use.
 
+## Screenshots
+
+> Taken from a demo run (`VITE_DEMO_MODE=1`, stubbed request layer). Accounts, credits and request records are fictional.
+
+<table>
+  <thead>
+    <tr><th>Overview (light)</th><th>Overview (dark)</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><img src="docs/images/overview-light.png" alt="Overview, light" /></td>
+      <td><img src="docs/images/overview-dark.png" alt="Overview, dark" /></td>
+    </tr>
+  </tbody>
+</table>
+
+<table>
+  <thead>
+    <tr><th>WorkBuddy accounts (light)</th><th>WorkBuddy accounts (dark)</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><img src="docs/images/workbuddy-accounts-light.png" alt="WorkBuddy accounts, light" /></td>
+      <td><img src="docs/images/workbuddy-accounts-dark.png" alt="WorkBuddy accounts, dark" /></td>
+    </tr>
+  </tbody>
+</table>
+
+<table>
+  <thead>
+    <tr><th>Usage · trend (light)</th><th>Usage · trend (dark)</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><img src="docs/images/usage-trend-light.png" alt="Usage trend, light" /></td>
+      <td><img src="docs/images/usage-trend-dark.png" alt="Usage trend, dark" /></td>
+    </tr>
+  </tbody>
+</table>
+
+<table>
+  <thead>
+    <tr><th>Gateway (light)</th><th>Gateway (dark)</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><img src="docs/images/api-service-light.png" alt="Gateway, light" /></td>
+      <td><img src="docs/images/api-service-dark.png" alt="Gateway, dark" /></td>
+    </tr>
+  </tbody>
+</table>
+
+More pages (sessions / settings / TraeWork accounts and usage): [docs/images](docs/images).
+
 ## The big picture
 
 ```mermaid
@@ -223,60 +277,6 @@ A background loop sets the account used by **subsequent CodeBuddy CLI launches**
 | Client session watching (off by default) | Installs a hook into WorkBuddy's `settings.json` and streams task states into the overlay (receiver `127.0.0.1:57893`) |
 
 </details>
-
-## Screenshots
-
-> Taken from a demo run (`VITE_DEMO_MODE=1`, stubbed request layer). Accounts, credits and request records are fictional.
-
-<table>
-  <thead>
-    <tr><th>Overview (light)</th><th>Overview (dark)</th></tr>
-  </thead>
-  <tbody>
-    <tr>
-      <td><img src="docs/images/overview-light.png" alt="Overview, light" /></td>
-      <td><img src="docs/images/overview-dark.png" alt="Overview, dark" /></td>
-    </tr>
-  </tbody>
-</table>
-
-<table>
-  <thead>
-    <tr><th>WorkBuddy accounts (light)</th><th>WorkBuddy accounts (dark)</th></tr>
-  </thead>
-  <tbody>
-    <tr>
-      <td><img src="docs/images/workbuddy-accounts-light.png" alt="WorkBuddy accounts, light" /></td>
-      <td><img src="docs/images/workbuddy-accounts-dark.png" alt="WorkBuddy accounts, dark" /></td>
-    </tr>
-  </tbody>
-</table>
-
-<table>
-  <thead>
-    <tr><th>Usage · trend (light)</th><th>Usage · trend (dark)</th></tr>
-  </thead>
-  <tbody>
-    <tr>
-      <td><img src="docs/images/usage-trend-light.png" alt="Usage trend, light" /></td>
-      <td><img src="docs/images/usage-trend-dark.png" alt="Usage trend, dark" /></td>
-    </tr>
-  </tbody>
-</table>
-
-<table>
-  <thead>
-    <tr><th>Gateway (light)</th><th>Gateway (dark)</th></tr>
-  </thead>
-  <tbody>
-    <tr>
-      <td><img src="docs/images/api-service-light.png" alt="Gateway, light" /></td>
-      <td><img src="docs/images/api-service-dark.png" alt="Gateway, dark" /></td>
-    </tr>
-  </tbody>
-</table>
-
-More pages (sessions / settings / TraeWork accounts and usage): [docs/images](docs/images).
 
 ## Data and privacy
 

@@ -24,6 +24,60 @@
 
 > ⚠️ **非公式のサードパーティ製ツール**（source-available、PolyForm Noncommercial）。上記製品および権利者との提携・承認・後援関係はありません。ローカルクライアントの認証データを読み書きし、設定したスケジュールで自動リクエストを送信し、ローカルポート経由で利用枠を転送できます。使用前に **[免責事項](docs/DISCLAIMER.en.md)** を必ずお読みください。
 
+## 画面
+
+> デモ実行（`VITE_DEMO_MODE=1`、リクエスト層はスタブ）による撮影です。アカウント・クレジット・リクエスト記録はすべて架空のデータです。
+
+<table>
+  <thead>
+    <tr><th>概要（ライト）</th><th>概要（ダーク）</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><img src="docs/images/overview-light.png" alt="概要（ライト）" /></td>
+      <td><img src="docs/images/overview-dark.png" alt="概要（ダーク）" /></td>
+    </tr>
+  </tbody>
+</table>
+
+<table>
+  <thead>
+    <tr><th>WorkBuddy アカウント（ライト）</th><th>WorkBuddy アカウント（ダーク）</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><img src="docs/images/workbuddy-accounts-light.png" alt="WorkBuddy アカウント（ライト）" /></td>
+      <td><img src="docs/images/workbuddy-accounts-dark.png" alt="WorkBuddy アカウント（ダーク）" /></td>
+    </tr>
+  </tbody>
+</table>
+
+<table>
+  <thead>
+    <tr><th>利用状況・推移（ライト）</th><th>利用状況・推移（ダーク）</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><img src="docs/images/usage-trend-light.png" alt="利用状況の推移（ライト）" /></td>
+      <td><img src="docs/images/usage-trend-dark.png" alt="利用状況の推移（ダーク）" /></td>
+    </tr>
+  </tbody>
+</table>
+
+<table>
+  <thead>
+    <tr><th>ゲートウェイ（ライト）</th><th>ゲートウェイ（ダーク）</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><img src="docs/images/api-service-light.png" alt="ゲートウェイ（ライト）" /></td>
+      <td><img src="docs/images/api-service-dark.png" alt="ゲートウェイ（ダーク）" /></td>
+    </tr>
+  </tbody>
+</table>
+
+その他の画面（セッション / 設定 / TraeWork のアカウントと利用状況）：[docs/images](docs/images)。
+
 ## 全体像
 
 ```mermaid
@@ -223,60 +277,6 @@ flowchart LR
 | クライアントセッション監視（既定オフ） | WorkBuddy の `settings.json` にフックを入れ、タスク状態を小窓へ送信（受信側 `127.0.0.1:57893`） |
 
 </details>
-
-## 画面
-
-> デモ実行（`VITE_DEMO_MODE=1`、リクエスト層はスタブ）による撮影です。アカウント・クレジット・リクエスト記録はすべて架空のデータです。
-
-<table>
-  <thead>
-    <tr><th>概要（ライト）</th><th>概要（ダーク）</th></tr>
-  </thead>
-  <tbody>
-    <tr>
-      <td><img src="docs/images/overview-light.png" alt="概要（ライト）" /></td>
-      <td><img src="docs/images/overview-dark.png" alt="概要（ダーク）" /></td>
-    </tr>
-  </tbody>
-</table>
-
-<table>
-  <thead>
-    <tr><th>WorkBuddy アカウント（ライト）</th><th>WorkBuddy アカウント（ダーク）</th></tr>
-  </thead>
-  <tbody>
-    <tr>
-      <td><img src="docs/images/workbuddy-accounts-light.png" alt="WorkBuddy アカウント（ライト）" /></td>
-      <td><img src="docs/images/workbuddy-accounts-dark.png" alt="WorkBuddy アカウント（ダーク）" /></td>
-    </tr>
-  </tbody>
-</table>
-
-<table>
-  <thead>
-    <tr><th>利用状況・推移（ライト）</th><th>利用状況・推移（ダーク）</th></tr>
-  </thead>
-  <tbody>
-    <tr>
-      <td><img src="docs/images/usage-trend-light.png" alt="利用状況の推移（ライト）" /></td>
-      <td><img src="docs/images/usage-trend-dark.png" alt="利用状況の推移（ダーク）" /></td>
-    </tr>
-  </tbody>
-</table>
-
-<table>
-  <thead>
-    <tr><th>ゲートウェイ（ライト）</th><th>ゲートウェイ（ダーク）</th></tr>
-  </thead>
-  <tbody>
-    <tr>
-      <td><img src="docs/images/api-service-light.png" alt="ゲートウェイ（ライト）" /></td>
-      <td><img src="docs/images/api-service-dark.png" alt="ゲートウェイ（ダーク）" /></td>
-    </tr>
-  </tbody>
-</table>
-
-その他の画面（セッション / 設定 / TraeWork のアカウントと利用状況）：[docs/images](docs/images)。
 
 ## データとプライバシー
 

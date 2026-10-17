@@ -24,6 +24,60 @@
 
 > ⚠️ **비공식 서드파티 도구**(source-available, PolyForm Noncommercial)입니다. 위 제품 및 권리자와 제휴·승인·후원 관계가 없습니다. 로컬 클라이언트의 인증 데이터를 읽고 쓰며, 설정한 스케줄대로 자동 요청을 보내고, 로컬 포트를 통해 할당량을 전달할 수 있습니다. 사용 전에 **[면책 고지](docs/DISCLAIMER.en.md)** 를 반드시 읽어 주세요.
 
+## 화면
+
+> 데모 실행(`VITE_DEMO_MODE=1`, 요청 계층 스텁)으로 촬영했습니다. 계정·크레딧·요청 기록은 모두 가상 데이터입니다.
+
+<table>
+  <thead>
+    <tr><th>개요(라이트)</th><th>개요(다크)</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><img src="docs/images/overview-light.png" alt="개요(라이트)" /></td>
+      <td><img src="docs/images/overview-dark.png" alt="개요(다크)" /></td>
+    </tr>
+  </tbody>
+</table>
+
+<table>
+  <thead>
+    <tr><th>WorkBuddy 계정(라이트)</th><th>WorkBuddy 계정(다크)</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><img src="docs/images/workbuddy-accounts-light.png" alt="WorkBuddy 계정(라이트)" /></td>
+      <td><img src="docs/images/workbuddy-accounts-dark.png" alt="WorkBuddy 계정(다크)" /></td>
+    </tr>
+  </tbody>
+</table>
+
+<table>
+  <thead>
+    <tr><th>사용량 · 추세(라이트)</th><th>사용량 · 추세(다크)</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><img src="docs/images/usage-trend-light.png" alt="사용량 추세(라이트)" /></td>
+      <td><img src="docs/images/usage-trend-dark.png" alt="사용량 추세(다크)" /></td>
+    </tr>
+  </tbody>
+</table>
+
+<table>
+  <thead>
+    <tr><th>게이트웨이(라이트)</th><th>게이트웨이(다크)</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><img src="docs/images/api-service-light.png" alt="게이트웨이(라이트)" /></td>
+      <td><img src="docs/images/api-service-dark.png" alt="게이트웨이(다크)" /></td>
+    </tr>
+  </tbody>
+</table>
+
+그 밖의 화면(세션 / 설정 / TraeWork 계정과 사용량): [docs/images](docs/images).
+
 ## 전체 구조
 
 ```mermaid
@@ -223,60 +277,6 @@ flowchart LR
 | 클라이언트 세션 감시(기본 꺼짐) | WorkBuddy의 `settings.json` 에 hook을 설치해 작업 상태를 오버레이로 전송(수신 `127.0.0.1:57893`) |
 
 </details>
-
-## 화면
-
-> 데모 실행(`VITE_DEMO_MODE=1`, 요청 계층 스텁)으로 촬영했습니다. 계정·크레딧·요청 기록은 모두 가상 데이터입니다.
-
-<table>
-  <thead>
-    <tr><th>개요(라이트)</th><th>개요(다크)</th></tr>
-  </thead>
-  <tbody>
-    <tr>
-      <td><img src="docs/images/overview-light.png" alt="개요(라이트)" /></td>
-      <td><img src="docs/images/overview-dark.png" alt="개요(다크)" /></td>
-    </tr>
-  </tbody>
-</table>
-
-<table>
-  <thead>
-    <tr><th>WorkBuddy 계정(라이트)</th><th>WorkBuddy 계정(다크)</th></tr>
-  </thead>
-  <tbody>
-    <tr>
-      <td><img src="docs/images/workbuddy-accounts-light.png" alt="WorkBuddy 계정(라이트)" /></td>
-      <td><img src="docs/images/workbuddy-accounts-dark.png" alt="WorkBuddy 계정(다크)" /></td>
-    </tr>
-  </tbody>
-</table>
-
-<table>
-  <thead>
-    <tr><th>사용량 · 추세(라이트)</th><th>사용량 · 추세(다크)</th></tr>
-  </thead>
-  <tbody>
-    <tr>
-      <td><img src="docs/images/usage-trend-light.png" alt="사용량 추세(라이트)" /></td>
-      <td><img src="docs/images/usage-trend-dark.png" alt="사용량 추세(다크)" /></td>
-    </tr>
-  </tbody>
-</table>
-
-<table>
-  <thead>
-    <tr><th>게이트웨이(라이트)</th><th>게이트웨이(다크)</th></tr>
-  </thead>
-  <tbody>
-    <tr>
-      <td><img src="docs/images/api-service-light.png" alt="게이트웨이(라이트)" /></td>
-      <td><img src="docs/images/api-service-dark.png" alt="게이트웨이(다크)" /></td>
-    </tr>
-  </tbody>
-</table>
-
-그 밖의 화면(세션 / 설정 / TraeWork 계정과 사용량): [docs/images](docs/images).
 
 ## 데이터와 개인정보
 

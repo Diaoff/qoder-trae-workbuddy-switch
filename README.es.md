@@ -24,6 +24,60 @@ Una estación de trabajo multicuenta **totalmente local**: reúne las cuentas de
 
 > ⚠️ **Herramienta de terceros no oficial** (source-available, licencia PolyForm Noncommercial). Sin afiliación, autorización ni respaldo de esos productos ni de sus titulares. Lee y escribe los datos de autenticación de los clientes locales, envía peticiones automáticas según tu programación y puede reenviar tu cuota por un puerto local. Lee el **[aviso legal](docs/DISCLAIMER.en.md)** antes de usarla.
 
+## Capturas
+
+> Tomadas en una ejecución de demostración (`VITE_DEMO_MODE=1`, capa de red simulada). Cuentas, créditos y peticiones son ficticios.
+
+<table>
+  <thead>
+    <tr><th>Resumen (claro)</th><th>Resumen (oscuro)</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><img src="docs/images/overview-light.png" alt="Resumen, tema claro" /></td>
+      <td><img src="docs/images/overview-dark.png" alt="Resumen, tema oscuro" /></td>
+    </tr>
+  </tbody>
+</table>
+
+<table>
+  <thead>
+    <tr><th>Cuentas de WorkBuddy (claro)</th><th>Cuentas de WorkBuddy (oscuro)</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><img src="docs/images/workbuddy-accounts-light.png" alt="Cuentas de WorkBuddy, tema claro" /></td>
+      <td><img src="docs/images/workbuddy-accounts-dark.png" alt="Cuentas de WorkBuddy, tema oscuro" /></td>
+    </tr>
+  </tbody>
+</table>
+
+<table>
+  <thead>
+    <tr><th>Uso · tendencia (claro)</th><th>Uso · tendencia (oscuro)</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><img src="docs/images/usage-trend-light.png" alt="Tendencia de uso, tema claro" /></td>
+      <td><img src="docs/images/usage-trend-dark.png" alt="Tendencia de uso, tema oscuro" /></td>
+    </tr>
+  </tbody>
+</table>
+
+<table>
+  <thead>
+    <tr><th>Pasarela (claro)</th><th>Pasarela (oscuro)</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><img src="docs/images/api-service-light.png" alt="Pasarela, tema claro" /></td>
+      <td><img src="docs/images/api-service-dark.png" alt="Pasarela, tema oscuro" /></td>
+    </tr>
+  </tbody>
+</table>
+
+Más pantallas (sesiones / ajustes / cuentas y uso de TraeWork): [docs/images](docs/images).
+
 ## Vista general
 
 ```mermaid
@@ -223,60 +277,6 @@ Un bucle en segundo plano fija la cuenta por defecto de **los siguientes arranqu
 | Vigilancia de sesiones del cliente (apagada por defecto) | Instala un hook en el `settings.json` de WorkBuddy y envía los estados a la ventana (receptor `127.0.0.1:57893`) |
 
 </details>
-
-## Capturas
-
-> Tomadas en una ejecución de demostración (`VITE_DEMO_MODE=1`, capa de red simulada). Cuentas, créditos y peticiones son ficticios.
-
-<table>
-  <thead>
-    <tr><th>Resumen (claro)</th><th>Resumen (oscuro)</th></tr>
-  </thead>
-  <tbody>
-    <tr>
-      <td><img src="docs/images/overview-light.png" alt="Resumen, tema claro" /></td>
-      <td><img src="docs/images/overview-dark.png" alt="Resumen, tema oscuro" /></td>
-    </tr>
-  </tbody>
-</table>
-
-<table>
-  <thead>
-    <tr><th>Cuentas de WorkBuddy (claro)</th><th>Cuentas de WorkBuddy (oscuro)</th></tr>
-  </thead>
-  <tbody>
-    <tr>
-      <td><img src="docs/images/workbuddy-accounts-light.png" alt="Cuentas de WorkBuddy, tema claro" /></td>
-      <td><img src="docs/images/workbuddy-accounts-dark.png" alt="Cuentas de WorkBuddy, tema oscuro" /></td>
-    </tr>
-  </tbody>
-</table>
-
-<table>
-  <thead>
-    <tr><th>Uso · tendencia (claro)</th><th>Uso · tendencia (oscuro)</th></tr>
-  </thead>
-  <tbody>
-    <tr>
-      <td><img src="docs/images/usage-trend-light.png" alt="Tendencia de uso, tema claro" /></td>
-      <td><img src="docs/images/usage-trend-dark.png" alt="Tendencia de uso, tema oscuro" /></td>
-    </tr>
-  </tbody>
-</table>
-
-<table>
-  <thead>
-    <tr><th>Pasarela (claro)</th><th>Pasarela (oscuro)</th></tr>
-  </thead>
-  <tbody>
-    <tr>
-      <td><img src="docs/images/api-service-light.png" alt="Pasarela, tema claro" /></td>
-      <td><img src="docs/images/api-service-dark.png" alt="Pasarela, tema oscuro" /></td>
-    </tr>
-  </tbody>
-</table>
-
-Más pantallas (sesiones / ajustes / cuentas y uso de TraeWork): [docs/images](docs/images).
 
 ## Datos y privacidad
 

@@ -24,6 +24,60 @@ Un poste de travail multi-comptes **100 % local** : il rassemble les comptes de 
 
 > ⚠️ **Outil tiers non officiel** (source-available, licence PolyForm Noncommercial). Aucun lien d'affiliation, d'autorisation ou de parrainage avec ces produits ni leurs ayants droit. Il lit et écrit les données d'authentification des clients locaux, envoie des requêtes automatiques selon votre planification et peut relayer votre quota via un port local. Lisez l'**[avertissement](docs/DISCLAIMER.en.md)** avant utilisation.
 
+## Captures d'écran
+
+> Prises en mode démo (`VITE_DEMO_MODE=1`, couche réseau simulée). Comptes, crédits et requêtes sont fictifs.
+
+<table>
+  <thead>
+    <tr><th>Vue d'ensemble (clair)</th><th>Vue d'ensemble (sombre)</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><img src="docs/images/overview-light.png" alt="Vue d'ensemble, thème clair" /></td>
+      <td><img src="docs/images/overview-dark.png" alt="Vue d'ensemble, thème sombre" /></td>
+    </tr>
+  </tbody>
+</table>
+
+<table>
+  <thead>
+    <tr><th>Comptes WorkBuddy (clair)</th><th>Comptes WorkBuddy (sombre)</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><img src="docs/images/workbuddy-accounts-light.png" alt="Comptes WorkBuddy, thème clair" /></td>
+      <td><img src="docs/images/workbuddy-accounts-dark.png" alt="Comptes WorkBuddy, thème sombre" /></td>
+    </tr>
+  </tbody>
+</table>
+
+<table>
+  <thead>
+    <tr><th>Usage · tendance (clair)</th><th>Usage · tendance (sombre)</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><img src="docs/images/usage-trend-light.png" alt="Tendance d'usage, thème clair" /></td>
+      <td><img src="docs/images/usage-trend-dark.png" alt="Tendance d'usage, thème sombre" /></td>
+    </tr>
+  </tbody>
+</table>
+
+<table>
+  <thead>
+    <tr><th>Passerelle (clair)</th><th>Passerelle (sombre)</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><img src="docs/images/api-service-light.png" alt="Passerelle, thème clair" /></td>
+      <td><img src="docs/images/api-service-dark.png" alt="Passerelle, thème sombre" /></td>
+    </tr>
+  </tbody>
+</table>
+
+Autres pages (sessions / réglages / comptes et usage TraeWork) : [docs/images](docs/images).
+
 ## Vue d'ensemble
 
 ```mermaid
@@ -223,60 +277,6 @@ Une boucle d'arrière-plan définit le compte par défaut des **prochains lancem
 | Surveillance des sessions client (désactivée par défaut) | Installe un hook dans le `settings.json` de WorkBuddy et pousse les états de tâches vers la fenêtre (récepteur `127.0.0.1:57893`) |
 
 </details>
-
-## Captures d'écran
-
-> Prises en mode démo (`VITE_DEMO_MODE=1`, couche réseau simulée). Comptes, crédits et requêtes sont fictifs.
-
-<table>
-  <thead>
-    <tr><th>Vue d'ensemble (clair)</th><th>Vue d'ensemble (sombre)</th></tr>
-  </thead>
-  <tbody>
-    <tr>
-      <td><img src="docs/images/overview-light.png" alt="Vue d'ensemble, thème clair" /></td>
-      <td><img src="docs/images/overview-dark.png" alt="Vue d'ensemble, thème sombre" /></td>
-    </tr>
-  </tbody>
-</table>
-
-<table>
-  <thead>
-    <tr><th>Comptes WorkBuddy (clair)</th><th>Comptes WorkBuddy (sombre)</th></tr>
-  </thead>
-  <tbody>
-    <tr>
-      <td><img src="docs/images/workbuddy-accounts-light.png" alt="Comptes WorkBuddy, thème clair" /></td>
-      <td><img src="docs/images/workbuddy-accounts-dark.png" alt="Comptes WorkBuddy, thème sombre" /></td>
-    </tr>
-  </tbody>
-</table>
-
-<table>
-  <thead>
-    <tr><th>Usage · tendance (clair)</th><th>Usage · tendance (sombre)</th></tr>
-  </thead>
-  <tbody>
-    <tr>
-      <td><img src="docs/images/usage-trend-light.png" alt="Tendance d'usage, thème clair" /></td>
-      <td><img src="docs/images/usage-trend-dark.png" alt="Tendance d'usage, thème sombre" /></td>
-    </tr>
-  </tbody>
-</table>
-
-<table>
-  <thead>
-    <tr><th>Passerelle (clair)</th><th>Passerelle (sombre)</th></tr>
-  </thead>
-  <tbody>
-    <tr>
-      <td><img src="docs/images/api-service-light.png" alt="Passerelle, thème clair" /></td>
-      <td><img src="docs/images/api-service-dark.png" alt="Passerelle, thème sombre" /></td>
-    </tr>
-  </tbody>
-</table>
-
-Autres pages (sessions / réglages / comptes et usage TraeWork) : [docs/images](docs/images).
 
 ## Données et vie privée
 

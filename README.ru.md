@@ -24,6 +24,60 @@
 
 > ⚠️ **Неофициальный сторонний инструмент** (source-available, лицензия PolyForm Noncommercial). Не связан с перечисленными продуктами и их правообладателями, не авторизован и не одобрен ими. Он читает и изменяет файлы аутентификации локальных клиентов, отправляет автоматические запросы по вашему расписанию и может передавать квоту через локальный порт. Перед использованием прочитайте **[отказ от ответственности](docs/DISCLAIMER.en.md)**.
 
+## Скриншоты
+
+> Сняты в демо-режиме (`VITE_DEMO_MODE=1`, слой запросов замокан). Аккаунты, кредиты и записи запросов вымышлены.
+
+<table>
+  <thead>
+    <tr><th>Обзор (светлая тема)</th><th>Обзор (тёмная тема)</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><img src="docs/images/overview-light.png" alt="Обзор, светлая тема" /></td>
+      <td><img src="docs/images/overview-dark.png" alt="Обзор, тёмная тема" /></td>
+    </tr>
+  </tbody>
+</table>
+
+<table>
+  <thead>
+    <tr><th>Аккаунты WorkBuddy (светлая)</th><th>Аккаунты WorkBuddy (тёмная)</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><img src="docs/images/workbuddy-accounts-light.png" alt="Аккаунты WorkBuddy, светлая тема" /></td>
+      <td><img src="docs/images/workbuddy-accounts-dark.png" alt="Аккаунты WorkBuddy, тёмная тема" /></td>
+    </tr>
+  </tbody>
+</table>
+
+<table>
+  <thead>
+    <tr><th>Расход · динамика (светлая)</th><th>Расход · динамика (тёмная)</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><img src="docs/images/usage-trend-light.png" alt="Динамика расхода, светлая тема" /></td>
+      <td><img src="docs/images/usage-trend-dark.png" alt="Динамика расхода, тёмная тема" /></td>
+    </tr>
+  </tbody>
+</table>
+
+<table>
+  <thead>
+    <tr><th>Шлюз (светлая)</th><th>Шлюз (тёмная)</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><img src="docs/images/api-service-light.png" alt="Шлюз, светлая тема" /></td>
+      <td><img src="docs/images/api-service-dark.png" alt="Шлюз, тёмная тема" /></td>
+    </tr>
+  </tbody>
+</table>
+
+Другие экраны (сессии / настройки / аккаунты и расход TraeWork): [docs/images](docs/images).
+
 ## Общая схема
 
 ```mermaid
@@ -223,60 +277,6 @@ flowchart LR
 | Наблюдение за сессиями клиента (по умолчанию выкл.) | Ставит hook в `settings.json` WorkBuddy и передаёт статусы задач в оверлей (приёмник `127.0.0.1:57893`) |
 
 </details>
-
-## Скриншоты
-
-> Сняты в демо-режиме (`VITE_DEMO_MODE=1`, слой запросов замокан). Аккаунты, кредиты и записи запросов вымышлены.
-
-<table>
-  <thead>
-    <tr><th>Обзор (светлая тема)</th><th>Обзор (тёмная тема)</th></tr>
-  </thead>
-  <tbody>
-    <tr>
-      <td><img src="docs/images/overview-light.png" alt="Обзор, светлая тема" /></td>
-      <td><img src="docs/images/overview-dark.png" alt="Обзор, тёмная тема" /></td>
-    </tr>
-  </tbody>
-</table>
-
-<table>
-  <thead>
-    <tr><th>Аккаунты WorkBuddy (светлая)</th><th>Аккаунты WorkBuddy (тёмная)</th></tr>
-  </thead>
-  <tbody>
-    <tr>
-      <td><img src="docs/images/workbuddy-accounts-light.png" alt="Аккаунты WorkBuddy, светлая тема" /></td>
-      <td><img src="docs/images/workbuddy-accounts-dark.png" alt="Аккаунты WorkBuddy, тёмная тема" /></td>
-    </tr>
-  </tbody>
-</table>
-
-<table>
-  <thead>
-    <tr><th>Расход · динамика (светлая)</th><th>Расход · динамика (тёмная)</th></tr>
-  </thead>
-  <tbody>
-    <tr>
-      <td><img src="docs/images/usage-trend-light.png" alt="Динамика расхода, светлая тема" /></td>
-      <td><img src="docs/images/usage-trend-dark.png" alt="Динамика расхода, тёмная тема" /></td>
-    </tr>
-  </tbody>
-</table>
-
-<table>
-  <thead>
-    <tr><th>Шлюз (светлая)</th><th>Шлюз (тёмная)</th></tr>
-  </thead>
-  <tbody>
-    <tr>
-      <td><img src="docs/images/api-service-light.png" alt="Шлюз, светлая тема" /></td>
-      <td><img src="docs/images/api-service-dark.png" alt="Шлюз, тёмная тема" /></td>
-    </tr>
-  </tbody>
-</table>
-
-Другие экраны (сессии / настройки / аккаунты и расход TraeWork): [docs/images](docs/images).
 
 ## Данные и приватность
 
