@@ -95,8 +95,13 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: ${{ runner.os }}-cargo-
+          # ★ key 里带仓库名：`target/` 里的 build-script 产物会**记录绝对路径**。
+          # 2026-10-17 仓库改名（trae-workbuddy-switch → qoder-trae-workbuddy-switch）后，
+          # 恢复出来的缓存里那些路径全部指向旧目录，tauri 的 build script 于是报
+          #   failed to read plugin permissions: .../target/.../app_hide.toml: No such file or directory
+          # 带仓库名之后，再改名会自动换 key，不必手工清缓存。
+          key: ${{ runner.os }}-${{ github.repository }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-${{ github.repository }}-cargo-
 
       # ⚠️ **fmt 现在是真门禁**（2026-10-16 起）。此前它必然失败：仓库基线
       # 173/201 个 .rs 文件不符合 rustfmt，共 1675 处违规。已用一次独立的纯格式
