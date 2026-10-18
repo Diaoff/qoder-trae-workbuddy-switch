@@ -207,24 +207,81 @@ jobs:
             echo "::error title=失败现场::${line}"
           done
 
+  # ★ issue #37：macOS 侧的回归此前**无法由 CI 证明** ——
+  # `rust` job 只在 ubuntu 上跑，而 `build.yml` 的 `macos-14` 只产出 bundle、不跑
+  # `cargo test`。于是「Windows 全绿、macOS 仍有 6 条失败」只能靠人工在 mac 机器上
+  # 复跑（那一条修复：`data_dir_base()` 不认 `home` 覆盖）才敢确认。
+  #
+  # 本 job 的存在意义就是**把那 6 条变成 CI 可复跑的**：
+  # - 只跑 `-p buddy-switch-core --lib`：这 6 条全在 core，且 lib target 免去 Tauri
+  #   链接（macOS runner 上 `cargo test --workspace` 会编 src-tauri，慢且脆）；
+  # - **不需要**先构建 `dist/`：`RustEmbed` 只在 server 里用，core 不依赖它；
+  # - `--test-threads=1` 与 `rust` job 同款理由（进程级 `HOME` / `APPDATA` 隔离闸门，
+  #   并行会随机红，见 `rust` job 里那段注释）；
+  # - 失败时抛**注解**而不是把结论留在需登录才能看的日志里（与 `rust` job 一致的取舍）。
+  rust-macos:
+    name: Rust tests on macOS (core)
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        # 缓存键不含仓库名的问题与 `rust` job 相同 ⇒ 这里也关掉自带缓存。
+        with:
+          cache: false
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-${{ github.repository }}-cargo-macos-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-${{ github.repository }}-cargo-macos-
+
+      - name: Test (buddy-switch-core)
+        shell: bash
+        run: |
+          set -o pipefail
+          cargo test -p buddy-switch-core --lib --no-fail-fast -- --test-threads=1 2>&1 \
+            | tee "$RUNNER_TEMP/test-macos.log"
+
+      - name: Test failure summary
+        if: failure()
+        shell: bash
+        run: |
+          LOG="$RUNNER_TEMP/test-macos.log"
+          if [ ! -f "$LOG" ]; then
+            echo "::error::没有测试日志（Test step 未产出，可能是更早的 step 失败）"
+            exit 0
+          fi
+          grep -E '^test .* \.\.\. FAILED$' "$LOG" | head -20 | while IFS= read -r line; do
+            echo "::error title=macOS 失败用例::${line#test }"
+          done
+          grep -nE 'panicked at|^error(\[E[0-9]+\])?:|^test result: FAILED' "$LOG" \
+            | head -20 | while IFS= read -r line; do
+            echo "::error title=macOS 失败现场::${line}"
+          done
+
   pr-summary:
     name: PR summary
     runs-on: ubuntu-latest
     # 汇总门禁：任一 job 失败 ⇒ 整体红。放在最后而不是让前端/Rust 互相 `needs`，
     # 是为了让两个 job 并行跑完、失败信息一次性看全。
     if: always()
-    needs: [frontend, rust]
+    needs: [frontend, rust, rust-macos]
     steps:
       # `skipped` 视为通过：某个 job 因条件未触发而跳过时，不该把整轮门禁判成红。
       # 只有 failure / cancelled 才算不通过。
       - name: Verdict
         run: |
           FAIL=""
-          for r in "${{ needs.frontend.result }}" "${{ needs.rust.result }}"; do
+          for r in "${{ needs.frontend.result }}" "${{ needs.rust.result }}" "${{ needs.rust-macos.result }}"; do
             if [ "$r" = "failure" ] || [ "$r" = "cancelled" ]; then FAIL=1; fi
           done
           if [ -n "$FAIL" ]; then
-            echo "::error::PR 校验未通过（frontend=${{ needs.frontend.result }}, rust=${{ needs.rust.result }}）"
+            echo "::error::PR 校验未通过（frontend=${{ needs.frontend.result }}, rust=${{ needs.rust.result }}, rust-macos=${{ needs.rust-macos.result }}）"
             exit 1
           fi
           echo "PR 校验通过"
