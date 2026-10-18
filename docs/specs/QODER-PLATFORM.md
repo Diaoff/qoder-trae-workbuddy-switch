@@ -147,6 +147,33 @@ URL query `Encode=1` 决定「先解码再按 JSON 解析」还是「直接按 J
    `code`·`msgCode` / 非空 `error` / Java 异常转储），正常 delta 与 `event:finish`
    一类计时元数据仍 Skip。
 
+### 7.2 流式链上的**泄漏回声守卫**（issue #46 的 A 项，2026-10-18）
+
+文本模式下历史里的工具调用会被序列化成 `<LEAK_MARKER>` + JSON 数组塞进正文，模型很可能
+**原样回声**。非流式 `sse::aggregate` 末尾用 `api::parse_leaked_tool_calls` 还原，而
+**流式中继是逐帧透传的** ⇒ 泄漏文本直接打到客户端界面。
+
+⇒ 三条纪律（`sse::LeakGuardStream`）：
+
+1. **接入点固定在 `QoderOpenAiStream` 之内、`UsageTapStream` 之外**：
+   - 不改 `QoderOpenAiStream::new` 的签名（8 处调用点零改动）；
+   - `aggregate` 内部自建流、**不经过**本层 ⇒ 结构上不可能被还原两次
+     （两次会各生成一组随机 id 的 `tool_calls`，客户端会把同一组工具**执行两遍**）。
+2. **判错一律 fail-open**：标记写一半 / 超过 64 KiB / 不是合法回声 ⇒ 原样透传。
+   唯一例外是**剥正文**：`Recovering` 且上游已给结构化 `tool_calls` 时**不合成第二组**，
+   但**仍必须剥掉回声正文** —— 「不双发」与「不泄漏」是两件事，合成不了就整帧放行
+   等于把标记原样还给用户。
+3. **合成形状对齐 Anthropic 侧读法**（*实现时读 `anthropic::push_tool_call` 发现的协议约束，非评审要求*）：`[anthropic::push_tool_call]` 读
+   `delta.tool_calls[i].index` 且 `unwrap_or(0)` ⇒ 合成帧必须逐个带 `index`；
+   `finish_reason` 必须落在上游 usage 帧**之前**，否则 Anthropic 侧补不出 usage。
+
+> **评审指引（归属披露）**：`#46` 的 A/B/C/D 四项修复分处
+> `5f6c52a`（A 守卫）/ `7fca77d`（B 白名单）/ `803c727`（C 用量页）/
+> `de932d7`（D 签到后端与共用组件）。⚠️ **D 的页面层主体**
+> （`runCheckin` 的三档分流 + `skippedNames` 透传，改 `QoderAccountsPage.tsx`）
+> 与两条 i18n 词条落在并行会话的 `cdb54b2` —— 评审 D 时请连同该 commit 一起看，
+> 不要只翻 `de932d7`。
+
 ---
 
 ## 8. 在本仓的建模决策
