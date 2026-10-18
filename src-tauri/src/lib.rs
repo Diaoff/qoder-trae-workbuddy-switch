@@ -512,6 +512,9 @@ pub fn run() {
             commands::get_trae_capabilities,
             commands::get_trae_accounts,
             commands::get_trae_checkin_status,
+            // issue #47：逐账号「今日」只读重取（与 server 的同名路由一一对应）。
+            commands::get_trae_checkin_status_map,
+            commands::get_trae_account_token_today,
             commands::get_trae_credits,
             commands::get_trae_token_statistics,
             commands::get_trae_logs,
@@ -547,6 +550,8 @@ pub fn run() {
             commands::qoder_delete_account,
             commands::qoder_refresh_account,
             commands::qoder_checkin_status,
+            // issue #47：逐账号「今日签到状态」只读重取（与 server 的同名路由一一对应）。
+            commands::qoder_checkin_status_map,
             commands::qoder_checkin_claim,
             commands::qoder_credits,
             commands::qoder_oauth_start,

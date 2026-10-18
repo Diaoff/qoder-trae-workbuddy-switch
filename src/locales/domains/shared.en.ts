@@ -506,6 +506,14 @@ export const en = {
   "shared.stat.credential": "Credential",
   "shared.stat.checkedIn": "Checked in",
   "shared.stat.notCheckedIn": "Not checked in",
+  // issue #47: the honest wording Trae / Qoder need for check-in and token tiles.
+  // "Unreadable" / "not available" / "from local ledger" must stay three separate
+  // states — collapsing them turns "don't know" into "no", and the user keeps
+  // retrying a button that can never work.
+  "shared.stat.checkinUnreadable": "Unreadable",
+  "shared.stat.checkinUnavailable": "Not available here",
+  "shared.stat.checkinFromLedger": "From local ledger (refresh to confirm upstream)",
+  "shared.stat.tokensGatewayOnly": "Requests via this gateway only",
   "shared.stat.credentialOk": "Valid",
   "shared.stat.credentialExpired": "Expired",
   "shared.stat.credentialRelogin": "Sign in again",

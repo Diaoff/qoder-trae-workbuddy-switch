@@ -55,7 +55,10 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
+import { compactTokens } from "@/components/usage/format";
 import * as api from "@/lib/api";
+import type { CheckinStatusEntry } from "@/lib/api";
+import type { AccountTokenTodayEntry } from "@/lib/types";
 import { accountSearchText } from "@/lib/account-search";
 import { lastSevenDays } from "@/lib/checkin-history";
 import {
@@ -971,16 +974,36 @@ export default function TraeAccountsPage() {
    * 用户会以为没生效而反复点。
    */
   /**
-   * 本平台**真的能刷**的项。
+   * 本平台**真的能刷**的项（issue #47 后是四项）。
    *
-   * ⚠️ 只有两项：Trae 侧没有「今日 Token」与「签到状态」的**只读重取**接口
-   * （签到是一次写操作，Token 由客户端会话日志算出、没有单账号强制重算的入口）。
-   * 摆一个点了只重读列表的菜单项，用户会以为刷过了 —— 宁可少给两项。
+   * 新增两项的**数据来源**与诚实边界：
+   * - `tokens` → `get_trae_account_token_today`（**只读**网关日志）。Trae 没有客户端
+   *   会话落盘 ⇒ 客户端那一档**不可得**（响应带 `clientSource: "unavailable"`），
+   *   绝不能渲染成「客户端用了 0」；
+   * - `checkin` → `get_trae_checkin_status_map`（**只读**上游状态端点）。本地台账只记
+   *   「本工具签过谁」，用户在 IDE 里手动签时台账里没有 ⇒ 必须真去问上游。
+   *   **绝不**借刷新之名触发 claim（那是写操作，走独立的「签到」入口）。
    */
-  const TRAE_REFRESH_KINDS = ["credits", "credential"] as const;
+  const TRAE_REFRESH_KINDS = ["credits", "tokens", "checkin", "credential"] as const;
   const refreshBusy = useAccountRefreshBusy();
 
-  /** 单项刷新（与卡片「更多」里的四项同源；Trae 只有积分 / 凭据两项）。 */
+  /**
+   * 「今日 Token」按账号（`get_trae_account_token_today`）——抽屉指标块的数据源。
+   *
+   * **缺席即「—」**：只存后端真的返回的账号，不给缺席的账号补 0。
+   */
+  const [todayTokens, setTodayTokens] = useState<Record<string, AccountTokenTodayEntry>>({});
+  const [todayTokensTruncated, setTodayTokensTruncated] = useState(false);
+  /**
+   * 逐账号签到状态（`get_trae_checkin_status_map`）——**只覆盖被刷新过的账号**。
+   *
+   * 刻意不在进页面时全量拉：这要逐账号打上游（N 个账号 = N 次请求），
+   * 而账号视图自带的 `checkedToday`（本地台账）足够画初值。用户点「刷新签到状态」
+   * 才去问上游 —— 那一次是真值。
+   */
+  const [checkinMap, setCheckinMap] = useState<Record<string, CheckinStatusEntry>>({});
+
+  /** 单项刷新（与卡片「更多」里的四项同源）。 */
   const onRefreshPart = useCallback(
     async (account: TraeAccount, kind: AccountRefreshKind) => {
       const label = displayText(account.name) || account.userId;
@@ -988,6 +1011,17 @@ export default function TraeAccountsPage() {
         try {
           if (kind === "credits") {
             await api.traeRefreshCredits(account.userId, variant);
+          } else if (kind === "tokens") {
+            /* 一次调用取全部账号（网关日志是区域共用的），按 uid 落到 state。 */
+            const today = await api.getTraeAccountTokenToday(variant, true);
+            setTodayTokens(
+              Object.fromEntries(today.accounts.map((entry) => [entry.uid, entry])),
+            );
+            setTodayTokensTruncated(today.gatewayTruncated);
+          } else if (kind === "checkin") {
+            /* 只问这一个账号（批量接口传 1 个 id 即可，不新增「单账号」变体）。 */
+            const map = await api.getTraeCheckinStatusMap(variant, [account.userId]);
+            setCheckinMap((prev) => ({ ...prev, ...map }));
           } else {
             /* 凭据状态 = 重取账号元数据（JWT 有效期 / 需重登标记都在列表载荷里）。 */
             await loadAll();
@@ -1669,6 +1703,60 @@ export default function TraeAccountsPage() {
     const soon =
       detail.creditsExpireAt != null && detail.creditsExpireAt - Date.now() <= 7 * 86_400_000;
     const credBad = detail.jwtStatus === "expired";
+
+    /* 今日 Token（issue #47）：只统计**经本网关**的调用，客户端那一档 Trae 拿不到
+       （对话历史在 IDE 私有存储里）⇒ subText 必须说明「仅网关」，否则读者会把
+       这条当成「全部用量」。`gatewayTruncated` ⇒ 加 `≥` 前缀（下界）。 */
+    const detailTokens = todayTokens[detail.userId];
+    const detailTokensTotal = detailTokens
+      ? detailTokens.gatewayIn + detailTokens.gatewayOut
+      : null;
+    const tokensBlock: DetailStat = {
+      key: "tokens",
+      label: t("shared.stat.tokens"),
+      // 缺席 = 今日无记录 / 未刷新 ⇒「—」（**绝不当 0**）。
+      valueText:
+        detailTokensTotal === null
+          ? "—"
+          : todayTokensTruncated
+            ? t("wbAccounts.card.metric.atLeast", {
+                value: compactTokens(detailTokensTotal),
+              })
+            : compactTokens(detailTokensTotal),
+      subText: t("shared.stat.tokensGatewayOnly"),
+      refreshKind: "tokens",
+    };
+
+    /* 签到：被刷新过的账号用上游读数（`ok` 为假 ⇒ 显示「读不到」，与「未签到」分开）；
+       没刷新过的退回账号视图自带的本地台账口径，并如实标明来源。 */
+    const detailCheckin = checkinMap[detail.userId];
+    const checkinBlock: DetailStat =
+      detailCheckin === undefined
+        ? {
+            key: "checkin",
+            label: t("shared.stat.checkin"),
+            valueText: detail.checkedToday
+              ? t("shared.stat.checkedIn")
+              : t("shared.stat.notCheckedIn"),
+            subText: t("shared.stat.checkinFromLedger"),
+          }
+        : {
+            key: "checkin",
+            label: t("shared.stat.checkin"),
+            valueText: !detailCheckin.ok
+              ? t("shared.stat.checkinUnreadable")
+              : detailCheckin.todayCheckedIn
+                ? t("shared.stat.checkedIn")
+                : detailCheckin.active === false
+                  ? t("shared.stat.checkinUnavailable")
+                  : t("shared.stat.notCheckedIn"),
+            subText:
+              detailCheckin.ok && detailCheckin.source === "ledger"
+                ? t("shared.stat.checkinFromLedger")
+                : undefined,
+            refreshKind: "checkin",
+          };
+
     return [
       {
         key: "credits",
@@ -1681,11 +1769,8 @@ export default function TraeAccountsPage() {
         tone: soon ? "warn" : undefined,
         refreshKind: "credits",
       },
-      {
-        key: "checkin",
-        label: t("shared.stat.checkin"),
-        valueText: detail.checkedToday ? t("shared.stat.checkedIn") : t("shared.stat.notCheckedIn"),
-      },
+      tokensBlock,
+      checkinBlock,
       {
         key: "credential",
         label: t("shared.stat.credential"),
@@ -1694,7 +1779,7 @@ export default function TraeAccountsPage() {
         refreshKind: "credential",
       },
     ];
-  }, [detail, t]);
+  }, [detail, t, todayTokens, todayTokensTruncated, checkinMap]);
 
   const detailPacks: DetailPack[] = detail
     ? (detail.creditPackages ?? [])

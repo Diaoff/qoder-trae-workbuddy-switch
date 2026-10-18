@@ -161,6 +161,15 @@ const SCOPE_PARAMETERIZED = new Set([
   "qoder_switch_account",
   "qoder_set_account_group",
   "qoder_usage",
+  /* ✅ 2026-10-18（issue #47）：逐账号「今日」只读重取三条 —— **生来参数化**。
+     判据同 `checkin_status` / `qoder_checkin_status`：三者都是**区域纯**的
+     （只读该区域的账号库 / 网关日志 / 上游签到状态），缺 scope 就无从判断该读哪一本。
+     `get_trae_account_token_today` 的 `force` 是**第二参数**，不影响 scope 在场性。
+     ⚠️ 它们与 WB 的 `get_account_token_today` / `get_checkin_status_map` **同构**：
+     前端三平台共用一套渲染，字段名不得分叉。 */
+  "get_trae_checkin_status_map",
+  "get_trae_account_token_today",
+  "qoder_checkin_status_map",
   /* ✅ 2026-10-15（续）：导入预览 —— 原签名第二个参数是 `region` 且**后端一直忽略**它
      （纯函数解析）。Qoder 的预览要按区域判「归属不符」，而裸 `region=cn` 分不出
      `wb-cn` 与 `qoder-cn` ⇒ 升级为 `scope`（前端传、服务端读、桌面端读）。 */

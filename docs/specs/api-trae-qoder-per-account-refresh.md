@@ -2,8 +2,18 @@
 
 **日期**：2026-10-18
 **提出方**：账号页（`AccountsPage` / `TraeAccountsPage` / `QoderAccountsPage`）
-**状态**：待后端实现
-**影响面**：卡片「更多」菜单与详情抽屉指标块的刷新项（当前两平台各只有「积分 / 凭据状态」）
+**状态**：**已实现**（2026-10-18；`get_trae_account_token_today` / `get_trae_checkin_status_map` /
+`qoder_checkin_status_map` 三条命令 + 两端接线 + 抽屉指标块）
+**影响面**：卡片「更多」菜单与详情抽屉指标块的刷新项（此前两平台各只有「积分 / 凭据状态」）
+
+> **实现期对本文的两处修订**（实现与初稿不一致的地方，以本文为准）：
+>
+> 1. **`accountIds` 是逗号分隔串**，不是 `string[]`：`httpCall` 的 `queryString` 对数组
+>    只会产出 `String(["a","b"])`，桌面端却天然拿到 `Vec<String>` ⇒ 两端形状分叉。
+>    统一收一个串（后端 `parse_id_list` / `split_id_list`），前端传 `ids.join(",")`。
+> 2. **Trae 的 `clientSource: "unavailable"`**：Trae 没有可解析的客户端会话落盘
+>    （对话历史在 IDE 私有存储里），`clientIn/clientOut` 恒为 0 只为**形状同构**，
+>    UI 必须把那一档渲染成「不可得」而不是真实 `0`。
 
 ---
 
@@ -33,7 +43,7 @@ WorkBuddy 四项都能刷；**Trae / Qoder 只开了两项**，因为缺「这�
 |:--|:--|
 | 命令名 | `get_trae_account_token_today` / `get_qoder_account_token_today` |
 | HTTP | `GET /api/trae/account/token-today`、`GET /api/qoder/account/token-today` |
-| 参数 | `scope`（`trae-cn` / `trae-global` / `qoder-cn` / `qoder-global`）、`force?: bool`（缺省 `false`） |
+| 参数 | `scope`（`trae-cn` / `trae-global` / `qoder-cn` / `qoder-global`，**fail-closed**）、`force?: bool`（缺省 `false`） |
 | 返回 | `AccountTokenTodayResponse`（**与 WB 同构**，见 `src/lib/types.ts:85`） |
 
 ```ts
@@ -58,7 +68,7 @@ interface AccountTokenTodayResponse {
 |:--|:--|
 | 命令名 | `get_trae_checkin_status_map` / `get_qoder_checkin_status_map` |
 | HTTP | `GET /api/trae/checkin/status-map`、`GET /api/qoder/checkin/status-map` |
-| 参数 | `scope`、`accountIds: string[]`（**批量**，最多 50 个；空数组直接返回 `{}`） |
+| 参数 | `scope`、`accountIds`（**逗号分隔**的 uid 串，批量，最多 50 个；空串直接返回 `{}`） |
 | 返回 | `Record<uid, CheckinStatusEntry>`（**与 WB 同构**，见 `src/lib/api.ts:1457`） |
 
 **语义边界**
@@ -75,28 +85,34 @@ interface AccountTokenTodayResponse {
 ## 3. 后端实现要点
 
 1. **数据来源**
-   - Trae Token：客户端会话日志（同 `get_trae_token_statistics` 的 `filesScanned` 路径）+ 网关日志，按 `uid` 归并到当天。
-   - Qoder Token：**先确认上游是否有 token 级用量**。若 Qoder 只有 credits 计量（当前 `qoder_usage` 的形态），
-     **这条命令不要实现** —— 见 §5「明确不做」。
+   - Trae Token：**只有网关日志**（`api_gateway_logs.json`）—— Trae 没有可解析的客户端会话落盘
+     （见 `trae::token_stats` 模块头）⇒ `clientSource: "unavailable"`；
+     Qoder Token：**不实现**（见 §5「明确不做」）。
 2. **时区**：`date` 必须是**本地日期键**，与签到日志 / 积分统计事件同口径（WB 已如此）。
 3. **裁剪标志**：网关日志按滚动窗口保留，今天的部分可能已被裁 ⇒ 必须回 `gatewayTruncated`。
+   判据取「文件已到 `logKeep` 上限」（保守：只在真的可能被裁时报警）。
 4. **性能**：批量签到状态一次调用返回全部账号（前端**禁止**逐账号循环调，见 `AccountsPage.tsx:143` 的注释）；
-   单账号刷新时前端传长度为 1 的数组即可，不新增「单账号」变体。
+   单账号刷新时前端传长度为 1 的列表即可，不新增「单账号」变体。
+   后端并发上限 4（串行问 50 个账号要十几秒，全并发又会把 50 个请求一次性打到上游）。
 5. **幂等**：两条命令都是只读，可安全重试；不要因为 `force=true` 触发任何写操作。
+   `force` 在 Trae 侧**恒等**（读的是本地文件，无 TTL 缓存）—— 参数仅为契约保留。
+6. **进页面时不要全量拉签到状态**（那要逐账号打上游）。账号视图自带的 `checkedToday`
+   （本地台账）足够画初值；用户点「刷新签到状态」才去问上游，那一次是真值。
 
 ---
 
-## 4. 前端接线清单（后端合入后我一侧要做的事）
+## 4. 前端接线（已落地）
 
 | 文件 | 改动 |
 |:--|:--|
-| `src/lib/api.ts` | `ROUTES` 加 4 条（2 命令 × 2 平台）、`ROUTE_COMMAND` 别名、`call()` 封装、`demoModeEnabled` 分支的假数据 |
-| `src/pages/TraeAccountsPage.tsx` | `TRAE_REFRESH_KINDS` 加 `"tokens"` / `"checkin"`；`onRefreshPart` 两个分支接新命令 |
-| `src/pages/QoderAccountsPage.tsx` | 同上（tokens 视 §3.1 结论决定是否加） |
-| `scripts/check-api-contract.cjs` | 计数会变（routes/call/server/invoke/demoRead/demoCase），需要同步 |
+| `src/lib/api.ts` | `ROUTES` 加 3 条（`get_trae_account_token_today` / `get_trae_checkin_status_map` / `qoder_checkin_status_map`）、`call()` 封装、`DEMO_READ_COMMANDS` 登记 |
+| `src/lib/types.ts` | `AccountTokenTodayResponse` 加 `clientSource`（边界 5） |
+| `src/pages/TraeAccountsPage.tsx` | `TRAE_REFRESH_KINDS` 加 `"tokens"` / `"checkin"`；`onRefreshPart` 两条分支接新命令；抽屉指标块从 3 块 → **4 块**（多一块「今日 Token」，副文本写明「仅经本网关的调用」） |
+| `src/pages/QoderAccountsPage.tsx` | `QODER_REFRESH_KINDS` 加 `"checkin"`（**不加** `tokens`）；抽屉签到块接上「读不到 / 本区域未开放」两档 |
+| `scripts/check-api-contract.cjs` | 三条命令登记进 `SCOPE_PARAMETERIZED`（防「参数化只做一半」） |
 
-> ⚠️ `check:api` 是**硬门禁**：`ROUTES` / `call` / 后端 `server` 三张表任缺一条都会红。
-> 所以后端合并后前端必须同一次提交里补齐，不能分两次上。
+> ⚠️ `check:api` 是**硬门禁**：`ROUTES` / `call` / 后端 `server` 三张表任缺一条都会红 ——
+> 本次三处（前端 / server / invoke）在同一次提交里补齐。
 
 ---
 

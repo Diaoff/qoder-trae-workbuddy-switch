@@ -535,6 +535,119 @@ where
     map.iter().map(|(key, bucket)| build(key, bucket)).collect()
 }
 
+/// 网关日志默认保留条数（`api_gateway.json` 的 `logKeep` 缺省值，与网关侧 `state`/`trae` 同值）。
+const DEFAULT_LOG_KEEP: usize = 200;
+
+/// 读网关配置里的 `logKeep`（读不到 / 非法 ⇒ [`DEFAULT_LOG_KEEP`]）。
+///
+/// 只用来判定「今天的日志是否可能已被挤出」——**不要**在这里做任何写入。
+fn gateway_log_keep() -> usize {
+    std::fs::read_to_string(paths::api_gateway_file())
+        .ok()
+        .and_then(|text| serde_json::from_str::<Value>(&text).ok())
+        .and_then(|value| {
+            value
+                .get("logKeep")
+                .and_then(Value::as_u64)
+                .map(|keep| keep as usize)
+        })
+        .filter(|keep| *keep > 0)
+        .unwrap_or(DEFAULT_LOG_KEEP)
+}
+
+/// 「今日 · 按账号」的网关桶（**纯函数**，便于单测）。
+///
+/// 判据三件套，缺一条都会把别的账号 / 别的日子的量算进来：
+/// 1. `ts` 落在**本地日期** `day`（与签到日志 / 积分事件同口径）；
+/// 2. `account`（网关写入的就是 **uid**）属于该区域 —— 用「账号库里存在」**或**
+///    「日志自带的变体属于该区域」两条并集：前者兜住旧日志缺 `variant`，
+///    后者兜住「账号已被删除、但今天的调用确实发生过」（删号不该抹掉用量）；
+/// 3. 空 `account`（无法归属）不进任何账号桶。
+fn today_gateway_buckets(
+    entries: &[LogEntry],
+    day: &str,
+    region: super::region::TraeRegion,
+    known: &std::collections::HashSet<String>,
+) -> BTreeMap<String, (u64, u64)> {
+    let mut buckets: BTreeMap<String, (u64, u64)> = BTreeMap::new();
+    for entry in entries {
+        if entry.ts <= 0 || entry.account.is_empty() || local_date(entry.ts) != day {
+            continue;
+        }
+        let belongs =
+            known.contains(&entry.account) || entry.variant.map(|v| v.region()) == Some(region);
+        if !belongs {
+            continue;
+        }
+        let slot = buckets.entry(entry.account.clone()).or_insert((0, 0));
+        slot.0 = slot.0.saturating_add(entry.prompt_tokens);
+        slot.1 = slot.1.saturating_add(entry.completion_tokens);
+    }
+    buckets
+}
+
+/// 「今日 Token · 按账号」（`get_trae_account_token_today`；**只读**，issue #47）。
+///
+/// ## 形状照抄 WorkBuddy，但**客户端一档不可得**
+///
+/// 返回体与 `get_account_token_today`（WB）同构，四个字段一个不少 —— 前端三平台共用
+/// 同一套渲染。但数据源只有本机网关日志（Trae 没有可解析的客户端会话落盘，见模块头），
+/// 因此：
+///
+/// - `clientIn` / `clientOut` 恒为 `0`，并**额外下发 `clientSource: "unavailable"`** ——
+///   前端据此把「客户端」渲染成「不可得」而不是真实 `0`（否则会把「没测到」说成「没用」）；
+/// - `unknownClient` 恒为 `{in:0,out:0}`（网关日志每条都带 uid，不存在归属不明的客户端量）；
+/// - `gatewayTruncated = true` 表示**日志文件已到 `logKeep` 上限** ⇒ 今日部分可能已被
+///   昨天的流量挤出 ⇒ 网关数只是**下界**（前端渲染 `≥N`）。判据刻意选「文件满」而不是
+///   「今天条目数到上限」：前者只会在真的可能被裁时报警。
+///
+/// ## 缺席 ≠ 0
+///
+/// `accounts` 里**没有**某账号 = 今天没有经过本网关的调用（**不是** 0）。真实 `0`
+/// 只有一种情况：今天有该账号的记录但 token 都是 0（失败请求），此时会显式出现 `0`。
+///
+/// `force` 仅为契约保留：本接口读的是本地文件（≤ `logKeep` 条），重读成本远低于一次
+/// IPC / HTTP，因此**不设 TTL 缓存**，`force` 在这里恒等。
+pub fn account_token_today(variant: TraeVariant, force: bool) -> Value {
+    let _ = force;
+    let now = chrono::Local::now().timestamp_millis();
+    let day = local_date(now);
+    let keep = gateway_log_keep();
+    let (entries, _) = load_entries();
+    // 「文件已满」= 今日部分可能被挤出（保守判据，见函数文档）。
+    let truncated = entries.len() >= keep;
+
+    let known: std::collections::HashSet<String> = account::list_account_views_for(variant)
+        .iter()
+        .filter_map(|view| view.get("userId").and_then(Value::as_str))
+        .map(str::to_string)
+        .collect();
+
+    let buckets = today_gateway_buckets(&entries, &day, variant.region(), &known);
+    let accounts: Vec<Value> = buckets
+        .into_iter()
+        .map(|(uid, (input, output))| {
+            json!({
+                "uid": uid,
+                // 客户端一档不可得（见函数文档）：这里给 0 只为形状同构，
+                // 语义由 `clientSource` 决定，前端**不得**把它当真实 0。
+                "clientIn": 0,
+                "clientOut": 0,
+                "gatewayIn": input,
+                "gatewayOut": output,
+            })
+        })
+        .collect();
+
+    json!({
+        "date": day,
+        "accounts": accounts,
+        "unknownClient": { "in": 0, "out": 0 },
+        "gatewayTruncated": truncated,
+        "clientSource": "unavailable",
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -686,6 +799,143 @@ mod tests {
         assert_eq!(
             unlabeled["summary"]["records"], 1,
             "旧日志（无 variant）在 Unlabeled 下必须可见，不得被静默丢弃（R9）"
+        );
+
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    /// 今日桶：只认「今天 + 本区域 + 有 uid」，跨日 / 跨区域 / 空 uid 一条都不许进。
+    #[test]
+    fn today_gateway_buckets_filters_day_region_and_empty_account() {
+        let now = chrono::Local::now().timestamp_millis();
+        let yesterday = now - 24 * 60 * 60 * 1000;
+        let mut known = std::collections::HashSet::new();
+        known.insert("u-known".to_string());
+
+        let entries = vec![
+            entry(now, "m", "u-known", 10, 5),        // 今天 + 在账号库 ⇒ 计入
+            entry(now, "m", "u-gone", 1, 1),          // 今天但不在库、也无变体 ⇒ 不计入
+            entry(yesterday, "m", "u-known", 99, 99), // 昨天 ⇒ 不计入
+            entry(now, "m", "", 7, 7),                // 空 uid ⇒ 不计入
+        ];
+        let buckets = today_gateway_buckets(
+            &entries,
+            &local_date(now),
+            super::super::region::TraeRegion::Cn,
+            &known,
+        );
+        assert_eq!(
+            buckets.len(),
+            1,
+            "只有「今天 + 本区域 + 有 uid」那一条：{buckets:?}"
+        );
+        assert_eq!(buckets.get("u-known"), Some(&(10, 5)));
+
+        // 变体命中区域 ⇒ 即使账号已被删除（不在库里）也要计入（删号不该抹掉已发生的用量）。
+        let mut deleted = entry(now, "m", "u-deleted", 3, 4);
+        deleted.variant = Some(TraeVariant::TraeWork);
+        let buckets = today_gateway_buckets(
+            &[deleted],
+            &local_date(now),
+            super::super::region::TraeRegion::Cn,
+            &known,
+        );
+        assert_eq!(buckets.get("u-deleted"), Some(&(3, 4)));
+
+        // 国际版日志不得混进国内版（同一 uid 在两区是不同账号）。
+        let mut global = entry(now, "m", "u-global", 1, 1);
+        global.variant = Some(TraeVariant::Global);
+        let buckets = today_gateway_buckets(
+            &[global],
+            &local_date(now),
+            super::super::region::TraeRegion::Cn,
+            &known,
+        );
+        assert!(buckets.is_empty(), "国际版调用不得计入国内版");
+    }
+
+    /// `account_token_today`：缺席 ≠ 0，且客户端一档必须自报「不可得」。
+    #[test]
+    fn account_token_today_omits_absent_accounts_and_flags_client_unavailable() {
+        let home = std::env::temp_dir().join(format!("trae-token-today-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        std::fs::create_dir_all(home.join(".buddy-switch").join("trae")).expect("创建隔离目录");
+        let _guard = crate::modules::config::HomeOverrideGuard::set(&home);
+
+        let now = chrono::Local::now().timestamp_millis();
+        let entries = json!([
+            { "ts": now, "model": "m", "account": "u1", "status": 200, "promptTokens": 10, "completionTokens": 2, "stream": true, "variant": "trae_work" },
+            { "ts": now, "model": "m", "account": "u1", "status": 200, "promptTokens": 5, "completionTokens": 1, "stream": true, "variant": "trae_work" },
+            // 今天有记录、但 token 全 0（失败请求）⇒ 必须**显式**出现 0，而不是缺席。
+            { "ts": now, "model": "m", "account": "u2", "status": 429, "promptTokens": 0, "completionTokens": 0, "stream": false, "variant": "trae_work" },
+            // 昨天 ⇒ 不进今日桶。
+            { "ts": now - 86_400_000, "model": "m", "account": "u3", "status": 200, "promptTokens": 99, "completionTokens": 99, "stream": true, "variant": "trae_work" },
+        ]);
+        std::fs::write(paths::api_gateway_log_file(), entries.to_string()).expect("写入日志");
+
+        let value = account_token_today(TraeVariant::TraeWork, false);
+        assert_eq!(
+            value["clientSource"], "unavailable",
+            "Trae 没有客户端会话落盘 ⇒ 必须自报不可得，前端据此不渲染成真实 0"
+        );
+        assert_eq!(value["date"], local_date(now));
+        assert_eq!(value["unknownClient"]["in"], 0);
+        assert_eq!(
+            value["gatewayTruncated"], false,
+            "日志远未到上限 ⇒ 不是下界"
+        );
+
+        let accounts = value["accounts"].as_array().expect("accounts 是数组");
+        let uids: Vec<&str> = accounts
+            .iter()
+            .filter_map(|item| item["uid"].as_str())
+            .collect();
+        assert_eq!(uids, vec!["u1", "u2"], "只列今天的账号（u3 是昨天）");
+        let u1 = accounts
+            .iter()
+            .find(|item| item["uid"] == "u1")
+            .expect("u1");
+        assert_eq!(u1["gatewayIn"], 15, "同一账号多条必须累加");
+        assert_eq!(u1["gatewayOut"], 3);
+        assert_eq!(u1["clientIn"], 0);
+        let u2 = accounts
+            .iter()
+            .find(|item| item["uid"] == "u2")
+            .expect("u2");
+        assert_eq!(u2["gatewayIn"], 0, "今天的真实 0 必须显式给出");
+        assert!(
+            accounts.iter().all(|item| item["uid"] != "u4"),
+            "从未出现的账号不得被凭空造出 0"
+        );
+
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    /// 日志文件已到 `logKeep` 上限 ⇒ 今日部分是下界（`gatewayTruncated`）。
+    #[test]
+    fn account_token_today_marks_truncated_when_log_is_full() {
+        let home = std::env::temp_dir().join(format!("trae-token-trunc-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        std::fs::create_dir_all(home.join(".buddy-switch").join("trae")).expect("创建隔离目录");
+        let _guard = crate::modules::config::HomeOverrideGuard::set(&home);
+
+        // 配置里把 logKeep 调到 2，再写 2 条 ⇒ 视为「可能已被挤出」。
+        std::fs::write(
+            paths::api_gateway_file(),
+            json!({ "logKeep": 2 }).to_string(),
+        )
+        .expect("写入网关配置");
+        let now = chrono::Local::now().timestamp_millis();
+        let entries = json!([
+            { "ts": now, "model": "m", "account": "u1", "status": 200, "promptTokens": 1, "completionTokens": 1, "variant": "trae_work" },
+            { "ts": now, "model": "m", "account": "u1", "status": 200, "promptTokens": 1, "completionTokens": 1, "variant": "trae_work" },
+        ]);
+        std::fs::write(paths::api_gateway_log_file(), entries.to_string()).expect("写入日志");
+
+        let value = account_token_today(TraeVariant::TraeWork, true);
+        assert_eq!(
+            value["gatewayTruncated"], true,
+            "文件已满 ⇒ 今日可能被裁，必须如实报下界"
         );
 
         let _ = std::fs::remove_dir_all(&home);

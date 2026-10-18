@@ -614,11 +614,157 @@ pub fn report_json(report: &CheckinReport) -> Value {
     })
 }
 
+// ---------------------------------------------------------------------------
+// 逐账号「今日签到状态」（issue #47）
+// ---------------------------------------------------------------------------
+
+/// 批量上限：一次最多问这么多个账号（与 WorkBuddy 的 `get_checkin_status_map` 同值）。
+///
+/// 超出部分**忽略**而不是报错：调用方（前端）只会传「当前页选中的账号」或单个账号，
+/// 传超说明上游有 bug；静默截断比让整次刷新失败更可接受，且不会把上游打爆。
+pub const STATUS_MAP_MAX_ACCOUNTS: usize = 50;
+
+/// 同时打开的上游请求数。
+///
+/// 状态端点是**逐账号**的 GET，串行问 50 个账号要十几秒（用户会以为卡死）；
+/// 全部并发又会在一瞬间把 50 个请求打到 Trae 上游（风控暴露面）。
+const STATUS_MAP_MAX_INFLIGHT: usize = 4;
+
+/// 把一个预检结果投影成 `CheckinStatusEntry`（**纯函数**，便于单测）。
+///
+/// 三档语义必须分开，否则前端无法区分「没签」与「读不到」：
+/// - `ok = false` ⇒ `todayCheckedIn` 一律 `false` + `error`（**不得**当成「未签到」事实）；
+/// - `ok = true` 且上游给了 `checked_in` ⇒ 那就是事实（`source = upstream`）；
+/// - `ok = true` 但上游没给 `checked_in` ⇒ 回落本地台账，并标 `source = ledger`。
+fn status_entry(
+    ok: bool,
+    checked_in: Option<bool>,
+    credits: Option<i64>,
+    ledger_says_checked: bool,
+    message: &str,
+) -> Value {
+    if !ok {
+        return json!({
+            "ok": false,
+            "todayCheckedIn": false,
+            "error": if message.is_empty() {
+                "状态预检失败".to_string()
+            } else {
+                message.to_string()
+            },
+        });
+    }
+    let (today_checked_in, source) = match checked_in {
+        Some(value) => (value, "upstream"),
+        None => (ledger_says_checked, "ledger"),
+    };
+    json!({
+        "ok": true,
+        "todayCheckedIn": today_checked_in,
+        "dailyCredit": credits,
+        "source": source,
+    })
+}
+
+/// 单账号预检 → 条目（IO 部分；投影逻辑见 [`status_entry`]）。
+async fn status_entry_for(
+    variant: TraeVariant,
+    uid: &str,
+    raw: &account::RawAccount,
+    ledger_says_checked: bool,
+) -> Value {
+    let device_entry = match device::ensure_for_variant(variant, uid) {
+        Ok(entry) => entry,
+        Err(error) => {
+            return status_entry(
+                false,
+                None,
+                None,
+                ledger_says_checked,
+                &format!("设备标识生成失败: {error}"),
+            )
+        }
+    };
+    let probe = probe_status(&raw.jwt, &device_entry).await;
+    status_entry(
+        probe.ok,
+        probe.checked_in,
+        probe.credits,
+        ledger_says_checked,
+        &probe.message,
+    )
+}
+
+/// 逐账号「今日签到状态」（`get_trae_checkin_status_map`；**只读**，issue #47）。
+///
+/// 返回 `Record<uid, { ok, todayCheckedIn, dailyCredit?, source?, error? }>`，与 WorkBuddy
+/// 的 `get_checkin_status_map` **同构** ⇒ 前端三平台共用同一套渲染。
+///
+/// ## 为什么不能只读本地台账
+///
+/// 台账（`credits::checked_in_today_for`）只记「**本工具**签过谁」。用户在 Trae IDE 里
+/// 手动签到时台账里没有 ⇒ 拿台账当答案会把「已签」报成「未签」。所以这里真去问上游
+/// 状态端点（只读 GET）——**绝不**在这里顺带 claim（Qoder/Trae 的签到都是写操作，
+/// 各有独立命令）。
+///
+/// ## 边界（前端照此渲染）
+///
+/// 1. 请求的 uid **不在账号库**（已删除 / 传错）⇒ **不进 map** ⇒ 前端显示「—」，
+///    而不是「未签到」（用 `false` 表示「不知道」是本仓明令禁止的）；
+/// 2. 上游读失败 / 设备标识生成失败 ⇒ `{ok:false, todayCheckedIn:false, error}`；
+/// 3. 上游回 `ok` 却没给 `checked_in` ⇒ 回落台账，`source` 标明来源（见 [`status_entry`]）；
+/// 4. 空数组 ⇒ `{}`（一次上游请求都不发）。
+pub async fn status_map_for(variant: TraeVariant, user_ids: Vec<String>) -> Value {
+    let ledger = credits::checked_in_today_for(variant);
+    let accounts: std::collections::HashMap<String, account::RawAccount> =
+        account::entries_for(variant).into_iter().collect();
+
+    let wanted: Vec<String> = user_ids
+        .into_iter()
+        .map(|uid| uid.trim().to_string())
+        .filter(|uid| !uid.is_empty() && accounts.contains_key(uid))
+        .take(STATUS_MAP_MAX_ACCOUNTS)
+        .collect();
+    if wanted.is_empty() {
+        return json!({});
+    }
+
+    let semaphore = std::sync::Arc::new(tokio::sync::Semaphore::new(STATUS_MAP_MAX_INFLIGHT));
+    let mut tasks = Vec::with_capacity(wanted.len());
+    for uid in wanted {
+        let raw = accounts
+            .get(&uid)
+            .cloned()
+            .expect("wanted 已按账号库存在性过滤");
+        let permit = semaphore.clone();
+        let from_ledger = ledger.contains(&uid);
+        tasks.push(tokio::spawn(async move {
+            // 拿到许可才发请求（`acquire_owned` 失败 = 信号量已关闭，直接放弃该账号）。
+            let Ok(_permit) = permit.acquire_owned().await else {
+                return (
+                    uid,
+                    status_entry(false, None, None, from_ledger, "并发闸门已关闭"),
+                );
+            };
+            let entry = status_entry_for(variant, &uid, &raw, from_ledger).await;
+            (uid, entry)
+        }));
+    }
+
+    let mut map = serde_json::Map::with_capacity(tasks.len());
+    for task in tasks {
+        // 任务 panic 时**不写条目**（前端显示「—」）——绝不编一个 `false` 顶上。
+        if let Ok((uid, entry)) = task.await {
+            map.insert(uid, entry);
+        }
+    }
+    Value::Object(map)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::modules::trae::account::RawAccount;
-
     /// 造一个「可解析且 30 小时后过期」的 JWT，使 jwtStatus = ok。
     fn valid_jwt(uid: &str) -> String {
         use base64::Engine;
@@ -664,6 +810,63 @@ mod tests {
             credits::CooldownsFile::default(),
             credits::RemainingCreditsFile::default(),
         )
+    }
+
+    #[test]
+    fn status_entry_never_reports_read_failure_as_not_checked_in() {
+        // 上游读失败：`ok:false` + 错误文案，`todayCheckedIn` 不得被当成事实。
+        let failed = status_entry(false, None, None, true, "HTTP 500");
+        assert_eq!(failed["ok"], false);
+        assert_eq!(failed["todayCheckedIn"], false);
+        assert_eq!(failed["error"], "HTTP 500");
+        assert!(
+            failed.get("source").is_none(),
+            "读失败没有来源可标，不得伪造"
+        );
+
+        // 上游明确回答「没签」⇒ 事实，`ok:true`。
+        let not_checked = status_entry(true, Some(false), Some(150), false, "");
+        assert_eq!(not_checked["ok"], true);
+        assert_eq!(not_checked["todayCheckedIn"], false);
+        assert_eq!(not_checked["dailyCredit"], 150);
+        assert_eq!(not_checked["source"], "upstream");
+
+        // 上游明确回答「已签」⇒ 事实。
+        let checked = status_entry(true, Some(true), None, false, "");
+        assert_eq!(checked["todayCheckedIn"], true);
+        assert_eq!(checked["source"], "upstream");
+
+        // 上游 ok 但没给 checked_in ⇒ 回落台账，并标明来源（不伪装成上游事实）。
+        let fallback = status_entry(true, None, None, true, "");
+        assert_eq!(fallback["ok"], true);
+        assert_eq!(fallback["todayCheckedIn"], true);
+        assert_eq!(fallback["source"], "ledger");
+    }
+
+    /// 空数组 / 全是不存在的 uid ⇒ 一条上游请求都不发，直接回 `{}`（前端显示「—」）。
+    #[tokio::test]
+    async fn status_map_returns_empty_without_upstream_calls() {
+        // 账号库读的是 `$HOME` 下的文件 ⇒ 必须隔离（本仓单测纪律）。
+        let home = std::env::temp_dir().join(format!("trae-status-map-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        std::fs::create_dir_all(&home).expect("创建隔离目录");
+        let _guard = crate::modules::config::HomeOverrideGuard::set(&home);
+
+        let empty = status_map_for(TraeVariant::TraeWork, Vec::new()).await;
+        assert_eq!(empty, json!({}));
+
+        let unknown = status_map_for(
+            TraeVariant::TraeWork,
+            vec!["不存在的账号".to_string(), "   ".to_string()],
+        )
+        .await;
+        assert_eq!(
+            unknown,
+            json!({}),
+            "未知账号不进 map —— 用 false 表示「不知道」是本仓明令禁止的"
+        );
+
+        let _ = std::fs::remove_dir_all(&home);
     }
 
     #[test]

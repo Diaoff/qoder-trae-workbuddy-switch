@@ -91,6 +91,18 @@ export interface AccountTokenTodayResponse {
   unknownClient: { in: number; out: number };
   /** 网关日志的**今日**部分可能已被裁掉（滚动窗口滑过今天）⇒ 网关部分为下界。 */
   gatewayTruncated: boolean;
+  /**
+   * ★ 边界 5（Trae / issue #47）：`client*` 这一档**是否可信**。
+   *
+   * - 缺省 / `"client"` ⇒ WB：`clientIn/clientOut` 来自客户端会话日志，是真实读数；
+   * - `"unavailable"` ⇒ **Trae**：本机没有可解析的客户端会话落盘（TRAE SOLO 的对话历史在
+   *   IDE 私有存储里），`clientIn/clientOut` 恒为 0 只是为了**形状同构** ——
+   *   UI **不得**把它渲染成「今日客户端用了 0」，必须显示成「不可得 / —」。
+   *
+   * 用「自报不可得」而不是「返回 null」：`null` 会与「字段缺失」混淆，而这里是
+   * **确定的事实**（这个平台拿不到这一档），前端可以据此换一套文案。
+   */
+  clientSource?: "client" | "unavailable";
 }
 
 /** 网关逐日趋势的一天（`get_gateway_token_trend` 的一条；全区服合计）。 */

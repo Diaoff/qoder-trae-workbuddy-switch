@@ -4892,20 +4892,24 @@ check("★ P5-③ `id|uid` 统一谓词：软删除 / 查找 / 备注共用 `res
   return "谓词 = id||uid · 软删除走谓词 · 按 uid 删除单测在";
 });
 
-check("★ P5-④ 参数化命令**恰 35 条**且后端带 scope（commands.rs 签名 + api.rs 读取）", () => {
+check("★ P5-④ 参数化命令**恰 38 条**且后端带 scope（commands.rs 签名 + api.rs 读取）", () => {
   /* 变异④（落点 = commands.rs / check-api-contract.cjs）：删掉某参数化命令的 `scope` 参数
      ⇒ 本条变红（桌面端与 webui 行为分叉，而构建全绿）。 */
   const contract = stripComments(fs.readFileSync(path.join(ROOT, P5_API_CONTRACT_CJS), "utf8"));
   const m = contract.match(/const SCOPE_PARAMETERIZED = new Set\(\[([\s\S]*?)\]\);/);
   if (!m) throw new Error("check-api-contract.cjs 找不到 `SCOPE_PARAMETERIZED`");
   const names = [...m[1].matchAll(/"([a-z_]+)"/g)].map((x) => x[1]);
+  /* 2026-10-18（issue #47）新增三条：逐账号「今日」只读重取 —— Trae token-today、
+     Trae checkin status-map、Qoder checkin status-map。都是**区域纯**的，
+     缺 scope 就无从判断该读哪一本账号库 / 网关日志。 */
   const EXPECTED = [
     "account_delete", "account_remark", "accounts_export", "accounts_export_to_path",
     "accounts_import", "accounts_import_local", "accounts_list", "checkin_status",
     "create_qoder_api_key", "credits", "get_disabled_models", "get_qoder_accounts",
-    "get_qoder_gateway_models", "get_qoder_local_sources", "open_data_dir",
+    "get_qoder_gateway_models", "get_qoder_local_sources", "get_trae_account_token_today",
+    "get_trae_checkin_status_map", "open_data_dir",
     "preview_import_accounts", "probe_cancel", "probe_start", "probe_status",
-    "qoder_checkin_claim", "qoder_checkin_status", "qoder_credits",
+    "qoder_checkin_claim", "qoder_checkin_status", "qoder_checkin_status_map", "qoder_credits",
     "qoder_delete_account", "qoder_gateway_status", "qoder_import_local",
     "qoder_import_pat", "qoder_oauth_start", "qoder_oauth_status",
     "qoder_program_status", "qoder_refresh_account", "qoder_set_account_group",
@@ -4913,7 +4917,7 @@ check("★ P5-④ 参数化命令**恰 35 条**且后端带 scope（commands.rs 
     "set_model_disabled",
   ];
   if (JSON.stringify([...names].sort()) !== JSON.stringify(EXPECTED)) {
-    throw new Error(`参数化命令集变了（应恰 35 条）：${JSON.stringify([...names].sort())}`);
+    throw new Error(`参数化命令集变了（应恰 38 条）：${JSON.stringify([...names].sort())}`);
   }
   const commands = readCode(COMMANDS_RS);
   const apiTs = readCode(P5_API_TS);

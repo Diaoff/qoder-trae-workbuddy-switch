@@ -84,6 +84,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import * as api from "@/lib/api";
 import type {
+  CheckinStatusEntry,
   QoderAccountView,
   QoderCheckinRow,
   QoderCreditsRow,
@@ -543,11 +544,27 @@ export default function QoderAccountsPage() {
     }
   }
 
-  /** 本平台真的能刷的项（Qoder 无「今日 Token」/「签到状态」的只读重取接口，见 Trae 页同名字段的注释）。 */
-  const QODER_REFRESH_KINDS = ["credits", "credential"] as const;
+  /**
+   * 本平台真的能刷的项。
+   *
+   * issue #47 新增 `checkin`：Qoder 的签到读侧此前只有**整区域**快照
+   * （`qoder_checkin_status`），现在多了**逐账号**的只读重取
+   * （`qoder_checkin_status_map`）。仍然**没有** `tokens` —— Qoder 的计量单位是
+   * credits、没有 token 概念（见 `qoder::usage` 模块头），摆一个点了只能重读缓存的
+   * 菜单项比不摆更坏。
+   */
+  const QODER_REFRESH_KINDS = ["credits", "checkin", "credential"] as const;
   const refreshPartBusy = useAccountRefreshBusy();
 
-  /** 单项刷新（与卡片「更多」里的四项同源；Qoder 只有积分 / 凭据两项）。 */
+  /**
+   * 逐账号签到状态（`qoder_checkin_status_map`）——**只覆盖被刷新过的账号**。
+   *
+   * 刻意不在进页面时全量拉：那要逐账号打上游（N 个账号 = N 次请求），
+   * 而 `qoder_checkin_status` 的区域快照足够画初值。用户点刷新才去问。
+   */
+  const [checkinMap, setCheckinMap] = useState<Record<string, CheckinStatusEntry>>({});
+
+  /** 单项刷新（与卡片「更多」里的四项同源）。 */
   const onRefreshPart = useCallback(
     async (account: QoderAccountView, kind: AccountRefreshKind) => {
       const label = qoderAccountName(account);
@@ -556,6 +573,10 @@ export default function QoderAccountsPage() {
           if (kind === "credits") {
             await api.qoderRefreshAccount(scope, account.uid);
             await reload();
+          } else if (kind === "checkin") {
+            /* 只问这一个账号（批量接口传 1 个 id 即可，不新增「单账号」变体）。 */
+            const map = await api.qoderCheckinStatusMap(scope, [account.uid]);
+            setCheckinMap((prev) => ({ ...prev, ...map }));
           } else {
             await reload();
           }
@@ -789,12 +810,28 @@ export default function QoderAccountsPage() {
       {
         key: "checkin",
         label: t("shared.stat.checkin"),
-        valueText:
-          checked === null
-            ? "—"
-            : checked
+        // 三档必须分开（issue #47）：被刷新过的账号按上游读数渲染；读失败显示「读不到」
+        // 而不是「未签到」；上游说活动未开放则显示「本区域未开放」。
+        // 没刷新过的退回区域快照口径，并如实标明来源是本地台账。
+        valueText: (() => {
+          const entry = detail ? checkinMap[detail.uid] : undefined;
+          if (entry && !entry.ok) return t("shared.stat.checkinUnreadable");
+          if (entry) {
+            return entry.todayCheckedIn
               ? t("shared.stat.checkedIn")
-              : t("shared.stat.notCheckedIn"),
+              : entry.active === false
+                ? t("shared.stat.checkinUnavailable")
+                : t("shared.stat.notCheckedIn");
+          }
+          return checked === null ? "—" : checked ? t("shared.stat.checkedIn") : t("shared.stat.notCheckedIn");
+        })(),
+        subText:
+          detail && checkinMap[detail.uid]?.source === "ledger"
+            ? t("shared.stat.checkinFromLedger")
+            : !detail || checkinMap[detail.uid]
+              ? undefined
+              : t("shared.stat.checkinFromLedger"),
+        refreshKind: "checkin",
       },
       {
         key: "credential",
@@ -809,7 +846,7 @@ export default function QoderAccountsPage() {
         refreshKind: "credential",
       },
     ];
-  }, [detail, credits, checkinTodayOf, t]);
+  }, [detail, credits, checkinTodayOf, checkinMap, t]);
 
   const detailPacks = useMemo<DetailPack[]>(() => {
     if (!detail) return [];

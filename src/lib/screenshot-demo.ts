@@ -34,7 +34,7 @@ import { demoModeEnabled } from "./demo-mode";
 import { t } from "./i18n";
 import type { TranslationKey } from "@/locales/zh";
 import type { CompanionSnapshot } from "./companion";
-import type { AgentHookStatus } from "./api";
+import type { AgentHookStatus, CheckinStatusEntry } from "./api";
 import type { QoderGatewayConfigRaw } from "./qoder-gateway";
 
 export const screenshotDemoEnabled = demoModeEnabled;
@@ -2098,8 +2098,85 @@ function demoTraeCheckinStatus(): TraeCheckinStatus {
   };
 }
 
-function demoTraeCredits(): TraeCreditsOverview {
-  const list = traeDemoAccounts();
+/**
+ * 演示夹具里 `accountIds` 的解析：**与线上同一形状**（逗号分隔串）。
+ *
+ * 演示若自己改成数组，就会掩盖「两端参数形状分叉」这类缺陷 —— 夹具必须与契约同形。
+ */
+function demoAccountIds(args: unknown): string[] {
+  const raw = (args as { accountIds?: unknown } | undefined)?.accountIds;
+  return typeof raw === "string"
+    ? raw.split(",").map((item) => item.trim()).filter((item) => item.length > 0)
+    : [];
+}
+
+/**
+ * 演示：Trae 逐账号「今日 Token」（`get_trae_account_token_today`；issue #47）。
+ *
+ * 刻意保留三条边界：① `clientSource: "unavailable"`（客户端一档不可得，**不是 0**）；
+ * ② 某个账号**缺席**（`7482044`）⇒ 抽屉显示「—」；③ 有量的账号给干净数值。
+ */
+function demoTraeAccountTokenToday(): AccountTokenTodayResponse {
+  return {
+    date: localDate(0),
+    accounts: [
+      { uid: "7481920", clientIn: 0, clientOut: 0, gatewayIn: 28000, gatewayOut: 9000 },
+      { uid: "7481999", clientIn: 0, clientOut: 0, gatewayIn: 6000, gatewayOut: 2000 },
+      // `7482044` 故意缺席：今日无记录 ⇒「—」（缺席 ≠ 0 的活样本）。
+    ],
+    unknownClient: { in: 0, out: 0 },
+    gatewayTruncated: false,
+    clientSource: "unavailable",
+  };
+}
+
+/** 演示：Trae 逐账号签到状态（`get_trae_checkin_status_map`；issue #47）。 */
+function demoTraeCheckinStatusMap(ids: string[]): Record<string, CheckinStatusEntry> {
+  const map: Record<string, CheckinStatusEntry> = {};
+  for (const uid of ids) {
+    // 缺席 ⇒「—」；读失败 ⇒「读不到」（与「未签到」区分开）。
+    if (uid === "7482044") continue;
+    if (uid === "7481999") {
+      map[uid] = { ok: false, todayCheckedIn: false, error: "HTTP 503（演示：上游读不到）" };
+      continue;
+    }
+    map[uid] = { ok: true, todayCheckedIn: true, dailyCredit: 150, source: "upstream" };
+  }
+  return map;
+}
+
+/** 演示：Qoder 逐账号签到状态（`qoder_checkin_status_map`；issue #47）。 */
+function demoQoderCheckinStatusMap(ids: string[]): Record<string, CheckinStatusEntry> {
+  const map: Record<string, CheckinStatusEntry> = {};
+  for (const uid of ids) {
+    if (uid === "demo-global-c") continue;
+    if (uid === "demo-cn-d") {
+      // 上游说「活动未开放」⇒ 有状态词但没签（前端据此说「本区域未开放」）。
+      map[uid] = {
+        ok: true,
+        todayCheckedIn: false,
+        status: "DISABLED",
+        active: false,
+        dailyCredit: 100,
+        streakDays: 0,
+      };
+      continue;
+    }
+    map[uid] = {
+      ok: true,
+      todayCheckedIn: true,
+      status: "CLAIMED",
+      active: true,
+      dailyCredit: 100,
+      todayCredit: 100,
+      totalCredits: 1200,
+      streakDays: 3,
+    };
+  }
+  return map;
+}
+
+function demoTraeCredits(): TraeCreditsOverview {  const list = traeDemoAccounts();
   const daily = [188, 172.5, 180, 165.25, 158, 148.5, 140, 192.5].map((total, index, all) => ({
     date: localDate(all.length - 1 - index),
     total,
@@ -2852,6 +2929,9 @@ export function screenshotDemoResponse(command: string, args?: Record<string, un
     case "get_trae_capabilities": return demoTraeCapabilities();
     case "get_trae_accounts": return demoTraeAccounts();
     case "get_trae_checkin_status": return demoTraeCheckinStatus();
+    /* issue #47：逐账号「今日」只读重取（演示数据保留「缺席 / 读失败 / 不可得」三条边界）。 */
+    case "get_trae_checkin_status_map": return demoTraeCheckinStatusMap(demoAccountIds(args));
+    case "get_trae_account_token_today": return demoTraeAccountTokenToday();
     case "get_trae_credits": return demoTraeCredits();
     case "get_trae_profiles": return demoTraeProfiles(args);
     case "get_trae_settings": return demoTraeSettings();
@@ -2902,6 +2982,8 @@ export function screenshotDemoResponse(command: string, args?: Record<string, un
       const scope = String((args as { scope?: unknown } | undefined)?.scope ?? "");
       return demoQoderUsage(scope);
     }
+    /* issue #47：逐账号「今日签到状态」（只读；演示数据保留「缺席 / 未开放」两条边界）。 */
+    case "qoder_checkin_status_map": return demoQoderCheckinStatusMap(demoAccountIds(args));
     /* Qoder 网关（只读五条）—— 形状与真机逐字段同构（snake_case / 未过滤清单 +
        逐条 `disabled` / 来源三级）。写操作（保存配置 / 建 Key / 吊销…）不进演示只读面。 */
     case "get_qoder_gateway_config": return demoQoderGatewayConfig();

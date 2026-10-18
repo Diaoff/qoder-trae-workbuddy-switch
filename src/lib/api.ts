@@ -187,6 +187,8 @@ const DEMO_READ_COMMANDS = new Set([
   // 由 `DemoAction` 包裹后在演示模式下统一提示不可操作。
   "get_trae_env", "get_trae_variants", "get_trae_capabilities", "get_trae_accounts",
   "get_trae_checkin_status",
+  // issue #47：逐账号「今日」只读重取（**只读**；演示站同样要虚构数据）。
+  "get_trae_checkin_status_map", "get_trae_account_token_today",
   "get_trae_credits", "get_trae_token_statistics", "get_trae_logs", "get_trae_profiles",
   "get_trae_settings", "get_trae_gateway_config", "trae_gateway_status",
   "get_trae_gateway_models", "get_trae_client_models", "list_trae_api_keys",
@@ -216,6 +218,8 @@ const DEMO_READ_COMMANDS = new Set([
   // 网关五条只读：config / status / models / keys / logs —— 同样不进写操作
   //（保存配置 / 建 Key / 吊销 / 恢复 / 删除 / 清日志）。
   "get_qoder_accounts", "get_qoder_local_sources", "qoder_program_status", "qoder_usage",
+  // issue #47：逐账号「今日签到状态」（**只读**）。
+  "qoder_checkin_status_map",
   "get_qoder_gateway_config", "qoder_gateway_status", "get_qoder_gateway_models",
   "list_qoder_api_keys", "get_qoder_gateway_logs",
 ]);
@@ -447,6 +451,12 @@ const ROUTES: Record<string, Route> = {
   get_trae_capabilities: { method: "GET", path: "/api/trae/capabilities" },
   get_trae_accounts: { method: "GET", path: "/api/trae/accounts" },
   get_trae_checkin_status: { method: "GET", path: "/api/trae/checkin/status" },
+  // issue #47 · 逐账号「今日」只读重取（与 WB 的同名命令**同构**，前端三平台共用一套渲染）。
+  // ⚠️ `accountIds` 是**逗号分隔串**（`ids.join(",")`）而不是数组：GET 语义下
+  //    `queryString` 对数组只会产出 `String([...])`，桌面端却天然拿到 `Vec<String>`
+  //    ⇒ 两端形状分叉。统一收一个串，两个通道才一致（见后端 `parse_id_list`）。
+  get_trae_checkin_status_map: { method: "GET", path: "/api/trae/checkin/status-map" },
+  get_trae_account_token_today: { method: "GET", path: "/api/trae/account/token-today" },
   get_trae_credits: { method: "GET", path: "/api/trae/credits" },
   get_trae_token_statistics: { method: "GET", path: "/api/trae/token-stats" },
   get_trae_logs: { method: "GET", path: "/api/trae/logs" },
@@ -516,6 +526,8 @@ const ROUTES: Record<string, Route> = {
   qoder_delete_account: { method: "POST", path: "/api/qoder/accounts/delete" },
   qoder_refresh_account: { method: "POST", path: "/api/qoder/accounts/refresh" },
   qoder_checkin_status: { method: "GET", path: "/api/qoder/checkin/status" },
+  // issue #47 · 逐账号「今日签到状态」只读重取（`accountIds` 逗号分隔，见 Trae 侧同一注释）。
+  qoder_checkin_status_map: { method: "GET", path: "/api/qoder/checkin/status-map" },
   qoder_checkin_claim: { method: "POST", path: "/api/qoder/checkin/claim" },
   qoder_credits: { method: "GET", path: "/api/qoder/credits" },
   qoder_oauth_start: { method: "POST", path: "/api/qoder/oauth/start" },
@@ -1471,6 +1483,20 @@ export type CheckinStatusEntry = {
   streakBonusCredit?: number | null;
   /** 已签到的日期（倒序，如 `["2026-10-07", …]`）。 */
   checkinDates?: string[] | null;
+  /**
+   * ★ issue #47：`todayCheckedIn` 的**来源**。
+   *
+   * - `"upstream"` ⇒ 上游明确回答（可信）；
+   * - `"ledger"` ⇒ 上游回成功但没给「今天签没签」⇒ 回落到本地台账（本工具签过的记录）。
+   *   台账看不到「用户在 IDE 里手动签」，所以这一档要在 tooltip 里说明来源，
+   *   不能与 `"upstream"` 说成同一件事。
+   * - 缺省 ⇒ WB 侧（无此概念）。
+   */
+  source?: "upstream" | "ledger";
+  /** ★ Qoder 专有：上游原始状态词（`CLAIMABLE` / `CLAIMED` / `DISABLED`）。 */
+  status?: string;
+  /** ★ Qoder 专有：活动是否活跃（`false` ⇒ 本区域未开放，前端据此换文案）。 */
+  active?: boolean;
   raw?: unknown;
 };
 
@@ -2477,6 +2503,43 @@ export function getTraeTokenStatistics(
 }
 
 /**
+ * 逐账号「今日 Token」（`get_trae_account_token_today`；issue #47）。
+ *
+ * ⚠️ **与 WB 同构、但客户端一档不可得**：Trae 没有可解析的客户端会话落盘，所以响应带
+ * `clientSource: "unavailable"` —— 客户端那一档是「没测到」，**不是**「没用」（见
+ * {@link AccountTokenTodayResponse} 的边界 5）。`accounts` 里缺席的账号同样显示「—」。
+ */
+export function getTraeAccountTokenToday(
+  variant: TraeVariantId | null | undefined,
+  force = false,
+): Promise<AccountTokenTodayResponse> {
+  return call("get_trae_account_token_today", {
+    scope: scopeOf("trae", traeRegionOf(variant ?? "cn")),
+    force,
+  });
+}
+
+/**
+ * 逐账号「今日签到状态」（`get_trae_checkin_status_map`；issue #47）。
+ *
+ * 形状与 WB 的 `get_checkin_status_map` 同构（`uid → 条目`）。三条边界：
+ * ① 未知 uid **不进** map ⇒ 显示「—」；② `ok:false` ⇒ 显示「读不到」而不是「未签到」；
+ * ③ `source: "ledger"` 表示上游没给明确答案、回落到本地台账（tooltip 用得上）。
+ *
+ * `accountIds` 以**逗号串**下发（见 `ROUTES` 里同名条目的注释）。
+ */
+export function getTraeCheckinStatusMap(
+  variant: TraeVariantId | null | undefined,
+  accountIds: string[],
+): Promise<Record<string, CheckinStatusEntry>> {
+  if (accountIds.length === 0) return Promise.resolve({});
+  return call("get_trae_checkin_status_map", {
+    scope: scopeOf("trae", traeRegionOf(variant ?? "cn")),
+    accountIds: accountIds.join(","),
+  });
+}
+
+/**
  * 运行日志（系统日志页的「运行日志」标签页）。
  *
  * 只读本机 `logs/` 下的纯文本日志（app / checkin / switcher）；文件不存在时返回空列表，
@@ -3051,6 +3114,21 @@ export interface QoderCheckinStatusView {
 
 export function qoderCheckinStatus(scope: Scope): Promise<QoderCheckinStatusView> {
   return call<QoderCheckinStatusView>("qoder_checkin_status", { scope });
+}
+
+/**
+ * 逐账号「今日签到状态」（`qoder_checkin_status_map`；issue #47）。
+ *
+ * 与 Trae 侧、WB 侧**同一个条目形状**（`CheckinStatusEntry`），前端共用一套渲染。
+ * 边界：未知 uid 不进 map（显示「—」）；`ok:false` ⇒ 「读不到」；国际版接口不存在时
+ * 条目带上游原因，前端据此显示「本区域未开放」而不是「未签到」。
+ */
+export function qoderCheckinStatusMap(
+  scope: Scope,
+  accountIds: string[],
+): Promise<Record<string, CheckinStatusEntry>> {
+  if (accountIds.length === 0) return Promise.resolve({});
+  return call("qoder_checkin_status_map", { scope, accountIds: accountIds.join(",") });
 }
 
 /** 单账号签到结果（状态驱动：`already` 幂等 / `disabled` 活动未开放）。 */

@@ -563,6 +563,13 @@ export const zh = {
   "shared.stat.credential": "凭据",
   "shared.stat.checkedIn": "已签到",
   "shared.stat.notCheckedIn": "未签到",
+  // issue #47：Trae / Qoder 的签到与 Token 两个块多出来的**诚实**措辞。
+  // 「读不到」「未开放」「按本地台账」三档必须分开 —— 合成一句就是把「不知道」
+  // 说成「没有」，用户会反复去点一个注定无效的按钮。
+  "shared.stat.checkinUnreadable": "读不到",
+  "shared.stat.checkinUnavailable": "本区域未开放",
+  "shared.stat.checkinFromLedger": "按本地台账（刷新签到状态可向上游确认）",
+  "shared.stat.tokensGatewayOnly": "仅经本网关的调用",
   "shared.stat.credentialOk": "有效",
   "shared.stat.credentialExpired": "已过期",
   "shared.stat.credentialRelogin": "需重登",

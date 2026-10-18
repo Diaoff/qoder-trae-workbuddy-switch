@@ -397,6 +397,15 @@ fn api_routes() -> Router {
         .route("/api/trae/accounts/import", post(api_trae_import_accounts))
         .route("/api/trae/groups", post(api_trae_group_op))
         .route("/api/trae/checkin/status", get(api_trae_checkin_status))
+        // issue #47：逐账号「今日」只读重取（与 WB 的同名命令同构）。
+        .route(
+            "/api/trae/checkin/status-map",
+            get(api_trae_checkin_status_map),
+        )
+        .route(
+            "/api/trae/account/token-today",
+            get(api_trae_account_token_today),
+        )
         .route("/api/trae/checkin", post(api_trae_checkin))
         .route("/api/trae/credits", get(api_trae_credits))
         .route("/api/trae/token-stats", get(api_trae_token_statistics))
@@ -431,6 +440,11 @@ fn api_routes() -> Router {
             post(api_qoder_refresh_account),
         )
         .route("/api/qoder/checkin/status", get(api_qoder_checkin_status))
+        // issue #47：逐账号「今日」只读重取（与 WB 的同名命令同构）。
+        .route(
+            "/api/qoder/checkin/status-map",
+            get(api_qoder_checkin_status_map),
+        )
         .route("/api/qoder/checkin/claim", post(api_qoder_checkin_claim))
         .route("/api/qoder/credits", get(api_qoder_credits))
         // OAuth 设备授权（PKCE S256）：发起 + 轮询。与 WB 的 `/api/oauth/*` 同形，
@@ -564,6 +578,25 @@ fn query_value(query: Option<&str>, name: &str) -> Option<String> {
     })
 }
 
+/// 解析**逗号分隔**的账号 id 列表（`accountIds=a,b,c`；缺失 / 空串 ⇒ 空数组）。
+///
+/// ## 为什么是逗号串而不是重复键 / JSON 数组
+///
+/// 这两条「按账号」的读命令是 **GET**（只读、可缓存、可重试）。而 `httpCall` 的
+/// `queryString` 对数组只会产出 `String(["a","b"])` = `"a,b"`，桌面端则天然拿到
+/// `Vec<String>` —— 若两端各用一套形状，就会出现「浏览器好用、桌面端拿不到 id」的
+/// 分叉（本仓已因同类漂移踩过 `trae_switch_account`）。
+/// 因此**两个通道统一收一个逗号串**，前端只需 `ids.join(",")`。
+///
+/// 逐项 `trim` 并丢弃空项：`"a, ,b,"` 与 `"a,b"` 等价。
+fn parse_id_list(raw: Option<String>) -> Vec<String> {
+    raw.unwrap_or_default()
+        .split(',')
+        .map(|item| item.trim().to_string())
+        .filter(|item| !item.is_empty())
+        .collect()
+}
+
 /// 解析 region 参数，缺省为 `cn`（保证旧行为）。
 fn parse_region(value: Option<&str>) -> Region {
     value.and_then(Region::parse).unwrap_or(Region::Cn)
@@ -665,6 +698,17 @@ fn trae_variant_of_region(region: TraeRegion) -> trae::variant::TraeVariant {
         TraeRegion::Cn => trae::variant::TraeVariant::TraeMerged,
         TraeRegion::Global => trae::variant::TraeVariant::GlobalTraeMerged,
     }
+}
+
+/// 从查询串的 `scope` 解析 Trae 变体（区域 → 主程序）；缺失 / 拼错 / 非 Trae 作用域 ⇒ `Err`。
+///
+/// 供 issue #47 的两条「按账号」读命令使用：P5 T03 之后新增的 Trae 命令一律收 `scope`
+/// （平台 + 区域），不再收 `variant` —— 同一族命令并存两套参数形状是漂移的温床。
+fn trae_variant_from_scope_query(
+    query: Option<&str>,
+) -> Result<trae::variant::TraeVariant, String> {
+    let scope = resolve_scope_param(query_value(query, "scope").as_deref())?;
+    Ok(trae_variant_of_region(require_trae_region(scope)?))
 }
 
 /// WorkBuddy 账号列表的**唯一实现**（旧 `api_accounts` 与参数化 `api_accounts_list` 共用）。
@@ -3167,6 +3211,48 @@ async fn api_trae_checkin_status(RawQuery(query): RawQuery) -> Response {
 async fn api_trae_credits(RawQuery(query): RawQuery) -> Response {
     let variant = parse_trae_variant(query_value(query.as_deref(), "variant").as_deref());
     json_ok(trae::handlers::credits_overview_for(variant))
+}
+
+/// GET /api/trae/checkin/status-map —— 逐账号「今日签到状态」（**只读**；issue #47）。
+///
+/// `scope` 决定区域（`trae-cn` / `trae-global`，**fail-closed**：缺失 / 拼错 ⇒ 400）；
+/// `accountIds` 是**逗号分隔**的 uid 列表（见 [`parse_id_list`]）；空 / 缺失 ⇒ `{}`
+/// （一次上游请求都不发）。未知 uid **不进** map —— 前端显示「—」，不是「未签到」。
+///
+/// ⚠️ 这是**读**：绝不在这里触发 claim（签到是写操作，走 `/api/trae/checkin`）。
+async fn api_trae_checkin_status_map(RawQuery(query): RawQuery) -> Response {
+    let variant = match trae_variant_from_scope_query(query.as_deref()) {
+        Ok(variant) => variant,
+        Err(error) => return json_err(error, StatusCode::BAD_REQUEST),
+    };
+    let ids = parse_id_list(query_value(query.as_deref(), "accountIds"));
+    json_ok(trae::checkin::status_map_for(variant, ids).await)
+}
+
+/// GET /api/trae/account/token-today —— 逐账号「今日 Token」（**只读**；issue #47）。
+///
+/// 形状与 WB 的 `/api/account/token-today` 同构；`clientSource: "unavailable"` 表示
+/// Trae 没有客户端会话落盘 ⇒ 客户端那一档**不可得**（不是 0）。见
+/// [`trae::token_stats::account_token_today`]。
+///
+/// 读网关日志是阻塞 IO ⇒ 放进 blocking 线程池。
+async fn api_trae_account_token_today(RawQuery(query): RawQuery) -> Response {
+    let variant = match trae_variant_from_scope_query(query.as_deref()) {
+        Ok(variant) => variant,
+        Err(error) => return json_err(error, StatusCode::BAD_REQUEST),
+    };
+    let force = query_flag_enabled(query.as_deref(), "force");
+    match tokio::task::spawn_blocking(move || {
+        trae::token_stats::account_token_today(variant, force)
+    })
+    .await
+    {
+        Ok(value) => json_ok(value),
+        Err(error) => json_err(
+            format!("读取今日 Token 失败: {error}"),
+            StatusCode::INTERNAL_SERVER_ERROR,
+        ),
+    }
 }
 
 /// GET /api/trae/token-stats —— Token 统计（`days` / `scope` 可选）。
@@ -6569,6 +6655,20 @@ async fn api_qoder_checkin_status(RawQuery(query): RawQuery) -> Response {
         Ok(region) => json_ok(qoder::checkin::status_for(region).await),
         Err(error) => json_err(error, StatusCode::BAD_REQUEST),
     }
+}
+
+/// GET /api/qoder/checkin/status-map —— 逐账号「今日签到状态」（**只读**；issue #47）。
+///
+/// `scope` 决定区域（`qoder-cn` / `qoder-global`），`accountIds` 是逗号分隔的 uid 列表。
+/// 未知 uid **不进** map；读失败回 `{ok:false, error}` —— 前端据 `ok` 区分「没签」与
+/// 「读不到」。**绝不**在这里调 claim。
+async fn api_qoder_checkin_status_map(RawQuery(query): RawQuery) -> Response {
+    let region = match qoder_region_from_query(query.as_deref()) {
+        Ok(region) => region,
+        Err(error) => return json_err(error, StatusCode::BAD_REQUEST),
+    };
+    let ids = parse_id_list(query_value(query.as_deref(), "accountIds"));
+    json_ok(qoder::checkin::status_map_for(region, ids).await)
 }
 
 /// POST /api/qoder/checkin/claim —— 单账号签到（状态驱动；见 checkin 模块头）。

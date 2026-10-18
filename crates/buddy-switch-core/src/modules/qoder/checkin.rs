@@ -215,6 +215,121 @@ pub async fn claim_for(region: QoderRegion, uid: &str) -> Result<Value, String> 
     }
 }
 
+// ---------------------------------------------------------------------------
+// 逐账号「今日签到状态」（issue #47）
+// ---------------------------------------------------------------------------
+
+/// 批量上限（与 WorkBuddy 的 `get_checkin_status_map` 同值；超出部分忽略）。
+pub const STATUS_MAP_MAX_ACCOUNTS: usize = 50;
+
+/// 同时打开的上游请求数（逐账号 GET，串行会明显卡住刷新）。
+const STATUS_MAP_MAX_INFLIGHT: usize = 4;
+
+/// 把一次上游结果投影成 `CheckinStatusEntry`（**纯函数**，便于单测）。
+///
+/// 字段名与 WB 的 `CheckinStatusEntry` 对齐（`dailyCredit` / `todayCredit` /
+/// `totalCredits` / `streakDays`），这样前端三平台共用同一套渲染：
+/// - Qoder 的「今日可得」= `reward_credits` ⇒ `dailyCredit`；
+/// - 「今日已得」只在**今天确实签过**时才有意义 ⇒ `todayCredit = reward`，
+///   否则 `null`（`0` 会被读成「签了但没给分」）；
+/// - 「累计已得」= `total_reward_credits` ⇒ `totalCredits`。
+fn status_entry(status: &api::CheckinStatus) -> Value {
+    json!({
+        "ok": true,
+        "todayCheckedIn": status.today_checked_in,
+        "dailyCredit": status.reward_credits,
+        "todayCredit": if status.today_checked_in { json!(status.reward_credits) } else { Value::Null },
+        "totalCredits": status.total_reward_credits,
+        "streakDays": status.streak_days,
+        // 上游原始状态词（`CLAIMABLE` / `CLAIMED` / `DISABLED`）——「未开放」那一档
+        // 前端要据此说明原因，不能只看到一个 `false`。
+        "status": status.status,
+        "active": status.active,
+    })
+}
+
+/// 读失败 / 无可用凭据时的条目（`ok:false`，**不得**当成「未签到」事实）。
+fn failure_entry(error: String) -> Value {
+    json!({
+        "ok": false,
+        "todayCheckedIn": false,
+        "error": error,
+    })
+}
+
+/// 逐账号「今日签到状态」（`get_qoder_checkin_status_map`；**只读**，issue #47）。
+///
+/// 返回 `Record<uid, CheckinStatusEntry>`（**与 WorkBuddy 同构**）。
+///
+/// ## 为什么是「逐个问上游」而不是读 `status_for` 的快照
+///
+/// `status_for` 是**整区域**的一次性视图（打开签到页时用），口径是「全部账号」；
+/// 而这里要回答的是「**这几个**账号今天签没签」，且用户点的是单个账号的刷新。
+/// 直接复用 `status_for` 会让一次单账号刷新拉全量上游请求（N 个账号 = N 次），
+/// 正是 WB 侧 `getCheckinStatusMap` 文档里记录过的那个 N² 问题。
+///
+/// ## 边界（前端照此渲染）
+///
+/// 1. 请求的 uid **不在账号库** ⇒ **不进 map** ⇒ 前端显示「—」；
+/// 2. 没有可用 `access`（PAT）⇒ `{ok:false, …, error}`（这是**账号自身**的结论，
+///    与「上游挂了」不同，文案要说清）；
+/// 3. 上游读失败 ⇒ `{ok:false, todayCheckedIn:false, error}`；
+/// 4. 区域接口不存在（`CHECKIN_REASON_NOT_FOUND`，国际版）⇒ 同样走 `ok:false`，
+///    但**文案保留上游原因**，前端会把它显示成「本区域未开放」而不是「未签到」；
+/// 5. 只读：**绝不**在这里调 `checkin_claim`（签到是写操作，走 `claim_for`）。
+pub async fn status_map_for(region: QoderRegion, uids: Vec<String>) -> Value {
+    let file = account::load_accounts_for(region);
+    let by_uid: std::collections::HashMap<&str, &RawAccount> = file
+        .accounts
+        .iter()
+        .map(|account| (account.uid.as_str(), account))
+        .collect();
+
+    let wanted: Vec<String> = uids
+        .into_iter()
+        .map(|uid| uid.trim().to_string())
+        .filter(|uid| !uid.is_empty() && by_uid.contains_key(uid.as_str()))
+        .take(STATUS_MAP_MAX_ACCOUNTS)
+        .collect();
+    if wanted.is_empty() {
+        return json!({});
+    }
+
+    let semaphore = std::sync::Arc::new(tokio::sync::Semaphore::new(STATUS_MAP_MAX_INFLIGHT));
+    let mut tasks = Vec::with_capacity(wanted.len());
+    for uid in wanted {
+        let access = by_uid
+            .get(uid.as_str())
+            .and_then(|account| access_token_of(account))
+            .map(str::to_string);
+        let permit = semaphore.clone();
+        tasks.push(tokio::spawn(async move {
+            let Ok(_permit) = permit.acquire_owned().await else {
+                return (uid, failure_entry("并发闸门已关闭".to_string()));
+            };
+            let Some(access) = access else {
+                return (
+                    uid,
+                    failure_entry("没有可调用的 access token（PAT 不能用于签到端点）".to_string()),
+                );
+            };
+            match api::checkin_status(region, &uid, &access).await {
+                Ok(status) => (uid, status_entry(&status)),
+                Err(error) => (uid, failure_entry(error)),
+            }
+        }));
+    }
+
+    let mut map = serde_json::Map::with_capacity(tasks.len());
+    for task in tasks {
+        // 任务 panic 时**不写条目**（前端显示「—」）——绝不编一个 `false` 顶上。
+        if let Ok((uid, entry)) = task.await {
+            map.insert(uid, entry);
+        }
+    }
+    Value::Object(map)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -232,6 +347,57 @@ mod tests {
             last_claimed_at: 0,
             reward_expires_at: 0,
         }
+    }
+
+    /// 状态映射：字段名必须与 WB 的 `CheckinStatusEntry` 对齐，且「读不到」≠「没签」。
+    #[test]
+    fn status_entry_maps_fields_and_keeps_failures_distinguishable() {
+        let checked = status_entry(&status("CLAIMED", true));
+        assert_eq!(checked["ok"], Value::Bool(true));
+        assert_eq!(checked["todayCheckedIn"], Value::Bool(true));
+        assert_eq!(checked["dailyCredit"], 100, "今日可得 = reward_credits");
+        assert_eq!(checked["todayCredit"], 100, "今天签过才有今日已得");
+        assert_eq!(checked["totalCredits"], 1200);
+        assert_eq!(checked["streakDays"], 3);
+        assert_eq!(checked["status"], "CLAIMED");
+
+        // 今天没签 ⇒ `todayCredit` 是 null（0 会被读成「签了但没给分」）。
+        let pending = status_entry(&status("CLAIMABLE", false));
+        assert_eq!(pending["todayCheckedIn"], Value::Bool(false));
+        assert_eq!(pending["todayCredit"], Value::Null);
+
+        // 读失败：`ok:false` + 文案，且**没有** `status` 之类的伪事实字段。
+        let failed = failure_entry("HTTP 500".to_string());
+        assert_eq!(failed["ok"], Value::Bool(false));
+        assert_eq!(failed["todayCheckedIn"], Value::Bool(false));
+        assert_eq!(failed["error"], "HTTP 500");
+        assert!(
+            failed.get("status").is_none(),
+            "读失败不得带上游状态词（会被读成「未开放」）"
+        );
+    }
+
+    /// 空数组 / 未知 uid ⇒ 一条上游请求都不发，直接回 `{}`。
+    #[tokio::test]
+    async fn status_map_returns_empty_without_upstream_calls() {
+        // 账号库读的是 `$HOME` 下的文件 ⇒ 必须隔离（本仓单测纪律）。
+        let home = std::env::temp_dir().join(format!("qoder-status-map-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        std::fs::create_dir_all(&home).expect("创建隔离目录");
+        let _guard = crate::modules::config::HomeOverrideGuard::set(&home);
+
+        assert_eq!(
+            status_map_for(QoderRegion::Cn, Vec::new()).await,
+            json!({}),
+            "空数组 ⇒ 不发请求"
+        );
+        assert_eq!(
+            status_map_for(QoderRegion::Cn, vec!["不存在".to_string()]).await,
+            json!({}),
+            "未知账号不进 map（前端显示「—」）"
+        );
+
+        let _ = std::fs::remove_dir_all(&home);
     }
 
     /// 变异：把「已签」判据从 `today_checked_in` 改成只看 status ⇒ 断言红

@@ -98,6 +98,19 @@ fn parse_trae_variant(value: Option<&str>) -> trae::variant::TraeVariant {
         .unwrap_or_default()
 }
 
+/// 解析**逗号分隔**的账号 id 列表（`"a,b,c"`；缺失 / 空串 ⇒ 空数组）。
+///
+/// ⚠️ 与 `crates/buddy-switch-server/src/api.rs` 的 `parse_id_list` **同语义、必须同步**：
+/// 两条通道收同一个形状，否则「浏览器里刷新成功、桌面端一条 id 都传不进去」这种漂移
+/// 只会在真机上暴露（本仓已因同类问题踩过 `trae_switch_account`）。
+fn split_id_list(raw: Option<String>) -> Vec<String> {
+    raw.unwrap_or_default()
+        .split(',')
+        .map(|item| item.trim().to_string())
+        .filter(|item| !item.is_empty())
+        .collect()
+}
+
 /// 解析统计查询范围参数，缺省为 `cn`（保证旧行为）；额外支持 `"all"` 合并视图。
 ///
 /// 复用 core 的 `parse_region_filter`，绑定规则与既有 [`parse_region`] 一致，
@@ -2821,6 +2834,41 @@ pub fn get_trae_checkin_status(variant: Option<String>) -> Value {
     trae::handlers::checkin_status_for(parse_trae_variant(variant.as_deref()))
 }
 
+/// GET /api/trae/checkin/status-map —— 逐账号「今日签到状态」（**只读**；issue #47）。
+///
+/// `scope` 决定区域（`trae-cn` / `trae-global`，fail-closed）；`accountIds` 是逗号分隔的
+/// uid 列表（见 [`split_id_list`]）。未知 uid 不进 map；读失败回 `{ok:false, error}`。
+/// **绝不**在这里触发签到。
+#[tauri::command(rename_all = "camelCase")]
+pub async fn get_trae_checkin_status_map(
+    scope: String,
+    account_ids: Option<String>,
+) -> Result<Value, String> {
+    let scope = resolve_scope_param(Some(&scope))?;
+    let variant = trae_variant_of_region(require_trae_region(scope)?);
+    Ok(trae::checkin::status_map_for(variant, split_id_list(account_ids)).await)
+}
+
+/// GET /api/trae/account/token-today —— 逐账号「今日 Token」（**只读**；issue #47）。
+///
+/// 形状与 WB 的 `get_account_token_today` 同构，但 Trae 没有客户端会话落盘 ⇒
+/// 响应带 `clientSource: "unavailable"`（客户端那一档不可得，**不是 0**）。
+/// 读网关日志是阻塞 IO ⇒ `spawn_blocking`。
+#[tauri::command(rename_all = "camelCase")]
+pub async fn get_trae_account_token_today(
+    scope: String,
+    force: Option<bool>,
+) -> Result<Value, String> {
+    let scope = resolve_scope_param(Some(&scope))?;
+    let variant = trae_variant_of_region(require_trae_region(scope)?);
+    let force = force.unwrap_or(false);
+    tauri::async_runtime::spawn_blocking(move || {
+        trae::token_stats::account_token_today(variant, force)
+    })
+    .await
+    .map_err(|error| format!("读取今日 Token 失败: {error}"))
+}
+
 /// GET /api/trae/credits —— 剩余积分、明细、每日趋势。
 ///
 /// ⚠️ **别名**：P5 T03 起前端改调参数化命令 [`credits`]（带 `scope`）。本命令保留，
@@ -4190,6 +4238,20 @@ pub async fn qoder_checkin_claim(scope: String, uid: String) -> Result<Value, St
     let scope = resolve_scope_param(Some(&scope))?;
     let region = require_qoder_region(scope)?;
     qoder::checkin::claim_for(region, &uid).await
+}
+
+/// GET /api/qoder/checkin/status-map —— 逐账号「今日签到状态」（**只读**；issue #47）。
+///
+/// `account_ids` 是**逗号分隔**的 uid 列表（与 HTTP 通道同一形状，见 server 侧
+/// `parse_id_list` 的说明）：两个通道收同一个串，才不会出现「浏览器好用、桌面端拿不到 id」。
+#[tauri::command(rename_all = "camelCase")]
+pub async fn qoder_checkin_status_map(
+    scope: String,
+    account_ids: Option<String>,
+) -> Result<Value, String> {
+    let scope = resolve_scope_param(Some(&scope))?;
+    let region = require_qoder_region(scope)?;
+    Ok(qoder::checkin::status_map_for(region, split_id_list(account_ids)).await)
 }
 
 /// GET /api/qoder/credits —— 区域额度 / 套餐视图（逐账号 + 汇总；部分失败如实报）。
