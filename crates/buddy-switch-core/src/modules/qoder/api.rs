@@ -819,6 +819,13 @@ pub enum ChatFrame {
 
 /// 解包一行信封 SSE（见模块头的帧形态）。
 pub fn unwrap_envelope_line(line: &str) -> ChatFrame {
+    // ★ 先过「非信封错误形态」守卫：上游有一类失败是 **HTTP 200 + 非信封错误帧**
+    //   （真机取证 2026-10-17，Qoder CN：`event:error` + Jackson 堆栈 +
+    //   `{"success":false,"msgCode":500,…}`，三行都没有 `body`/`statusCodeValue`）。
+    //   旧实现逐行 Skip ⇒ 客户端拿到一个**静默的空补全**（0 token），排查方向被带偏。
+    if let Some(frame) = unwrap_non_envelope_error(line.trim()) {
+        return frame;
+    }
     let data = strip_data_prefix(line);
     if data.is_empty() {
         return ChatFrame::Skip;
@@ -862,6 +869,95 @@ pub fn unwrap_envelope_line(line: &str) -> ChatFrame {
         return ChatFrame::Skip;
     }
     ChatFrame::Chunk(cleaned)
+}
+
+/// 非信封形态的错误帧识别（保守白名单：只认**明确**的错误信号）。
+///
+/// 判据顺序与「宁可漏判也不误杀正常帧」的纪律一致：
+/// 1. `event:` 行只有含 `error` 才算错误（`event:finish` 一类计时元数据仍走 Skip）；
+/// 2. JSON 对象必须**没有信封字段**（`body` / `statusCodeValue` 都没有）才可能被判错
+///    —— 有信封字段的行走 [`unwrap_envelope_line`] 的原路径（含非 200 报错）；
+/// 3. 错误信号 = `success:false` / 非 0 `msgCode` / 非 0 `code` / 非空 `error` /
+///    Java 异常转储（`stackTrace` / `localizedMessage` / `exception`），
+///    与 WorkBuddy 侧 `error_sniffer` 同一套信号词。
+fn unwrap_non_envelope_error(text: &str) -> Option<ChatFrame> {
+    if text.is_empty() {
+        return None;
+    }
+    if let Some(rest) = text.strip_prefix("event:") {
+        if rest.trim().starts_with("error") {
+            return Some(ChatFrame::UpstreamError {
+                status: 502,
+                detail: "上游以 event:error 结束本流（非信封错误帧）".to_string(),
+            });
+        }
+        return None;
+    }
+    let data = strip_data_prefix(text);
+    if data.is_empty() {
+        return None;
+    }
+    let Ok(Value::Object(object)) = serde_json::from_str::<Value>(&data) else {
+        return None;
+    };
+    if object.contains_key("body") || object.contains_key("statusCodeValue") {
+        return None;
+    }
+    let exception_dump = object.contains_key("stackTrace")
+        || object.contains_key("localizedMessage")
+        || object.contains_key("exceptionClass");
+    // ★ `code` / `msgCode` 只认「非 0 且不在 2xx」：`{"code":200,"message":"ok"}` 这类
+    //   「业务成功」信封很常见，把它判成错误就等于把正常帧变成上游错误。
+    let code = error_code(&object, "msgCode").or_else(|| error_code(&object, "code"));
+    let has_error_signal = exception_dump
+        || matches!(object.get("success"), Some(Value::Bool(false)))
+        || code.is_some()
+        || object
+            .get("error")
+            .map(|value| match value {
+                Value::Null => false,
+                Value::Object(map) => !map.is_empty(),
+                Value::String(text) => !text.trim().is_empty(),
+                _ => true,
+            })
+            .unwrap_or(false);
+    if !has_error_signal {
+        return None;
+    }
+    let status = code
+        .filter(|value| (100..600).contains(value))
+        .unwrap_or(502);
+    let detail = ["message", "msgInfo", "msg", "localizedMessage", "error"]
+        .iter()
+        .find_map(|key| object.get(*key).and_then(nonempty_str))
+        .map(|text| text.chars().take(400).collect())
+        .unwrap_or_else(|| data.chars().take(400).collect());
+    Some(ChatFrame::UpstreamError {
+        status: status as u16,
+        detail,
+    })
+}
+
+/// 取一个非空字符串（`error` 键在异常转储里可能是对象，此时不参与取词）。
+fn nonempty_str(value: &Value) -> Option<&str> {
+    value
+        .as_str()
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+}
+
+/// 取「业务错误码」：`0`（无错误）与 **2xx**（业务成功信封，如 `{"code":200}`）不算错误。
+fn error_code(object: &serde_json::Map<String, Value>, key: &str) -> Option<i64> {
+    let value = object.get(key)?;
+    let number = value.as_i64().or_else(|| {
+        value
+            .as_str()
+            .and_then(|text| text.trim().parse::<i64>().ok())
+    })?;
+    if number == 0 || (200..300).contains(&number) {
+        return None;
+    }
+    Some(number)
 }
 
 // ---------------------------------------------------------------------------
@@ -1758,6 +1854,103 @@ mod tests {
         );
         assert_eq!(unwrap_envelope_line(": keep-alive"), ChatFrame::Skip);
         assert_eq!(unwrap_envelope_line(""), ChatFrame::Skip);
+    }
+
+    /// ★★ 上游以 **HTTP 200 + 非信封错误帧**收尾时，**不得**静默成空补全。
+    ///
+    /// 真机取证（2026-10-17，Qoder CN，`agent_chat_generation` 带编码体但**漏了
+    /// `?Encode=1`**）：响应共三行 ——
+    /// `event:error` / `data:{"stackTrace":[…Jackson JsonParseException…"}` /
+    /// `{"success":false,"msgCode":500,…}`，**没有一行**带 `body`/`statusCodeValue`。
+    /// 旧实现逐行 Skip ⇒ 客户端拿到「HTTP 200 + 0 token 的空回答」（界面上表现为
+    /// 「模型完全不能用」，且没有任何错误线索）。
+    ///
+    /// 可证伪：删掉 `unwrap_non_envelope_error` 的调用，本用例三行全变 Skip ⇒ 红。
+    #[test]
+    fn non_envelope_error_frames_are_not_silently_skipped() {
+        // ① `event:error` ⇒ 错误帧（不是计时元数据）。
+        match unwrap_envelope_line("event:error") {
+            ChatFrame::UpstreamError { status, detail } => {
+                assert_eq!(status, 502);
+                assert!(detail.contains("event:error"), "{detail}");
+            }
+            other => panic!("event:error 必须是错误帧: {other:?}"),
+        }
+        // ② `data:` + 堆栈 JSON（无 body / 无 statusCodeValue）⇒ 错误帧，且 detail 取人话字段。
+        let stack = "data:{\"stackTrace\":[{\"fileName\":\"JsonParser.java\"}],\"localizedMessage\":\"Unrecognized token 'dwmxdL'\"}";
+        match unwrap_envelope_line(stack) {
+            ChatFrame::UpstreamError { status, detail } => {
+                assert_eq!(status, 502, "没有可用状态字段 ⇒ 502");
+                assert!(detail.contains("Unrecognized token"), "{detail}");
+            }
+            other => panic!("堆栈帧必须是错误帧: {other:?}"),
+        }
+        // ③ 裸 JSON 信封 `success:false` + `msgCode:500` ⇒ 错误帧，状态取 msgCode。
+        let biz = "{\"success\":false,\"traceId\":\"abc\",\"msgCode\":500,\"msgInfo\":\"Internal Server Error\",\"message\":\"Internal Server Error\"}";
+        match unwrap_envelope_line(biz) {
+            ChatFrame::UpstreamError { status, detail } => {
+                assert_eq!(status, 500);
+                assert!(detail.contains("Internal Server Error"), "{detail}");
+            }
+            other => panic!("业务错误信封必须是错误帧: {other:?}"),
+        }
+    }
+
+    /// 守卫必须**保守**：正常帧与计时元数据一个都不能误判成错误。
+    #[test]
+    fn normal_and_metadata_frames_never_match_the_error_guard() {
+        // 正常 chunk（带 body）仍走原路径。
+        assert!(matches!(
+            unwrap_envelope_line("data:{\"body\":\"{\\\"choices\\\":[{\\\"delta\\\":{\\\"content\\\":\\\"hi\\\"}}]}\",\"statusCodeValue\":200}"),
+            ChatFrame::Chunk(_)
+        ));
+        assert_eq!(
+            unwrap_envelope_line("data:{\"body\":\"[DONE]\"}"),
+            ChatFrame::Done
+        );
+        // `event:finish` 是计时元数据 ⇒ Skip（只有 `event:*error` 才算错误）。
+        assert_eq!(
+            unwrap_envelope_line("event:finish{\"cost\":12}"),
+            ChatFrame::Skip
+        );
+        // `code:0` / `success:true` / 空 error ⇒ 不是错误。
+        assert_eq!(
+            unwrap_envelope_line("{\"code\":0,\"data\":{\"ok\":true}}"),
+            ChatFrame::Skip
+        );
+        assert_eq!(
+            unwrap_envelope_line("{\"success\":true,\"data\":1}"),
+            ChatFrame::Skip
+        );
+        assert_eq!(
+            unwrap_envelope_line("{\"error\":{},\"data\":1}"),
+            ChatFrame::Skip
+        );
+        // `code:200` 是**业务成功**信封（不是「HTTP 200 的上游错误」）—— 2xx 一律不算错误码。
+        assert_eq!(
+            unwrap_envelope_line("{\"code\":200,\"message\":\"ok\",\"data\":1}"),
+            ChatFrame::Skip
+        );
+        assert_eq!(
+            unwrap_envelope_line("{\"msgCode\":\"200\",\"msgInfo\":\"ok\"}"),
+            ChatFrame::Skip
+        );
+        // 非 0 且非 2xx 的业务码（如权益/额度类 `112`）仍然判错，状态沿用业务码。
+        match unwrap_envelope_line("{\"code\":112,\"message\":\"no entitlement\"}") {
+            ChatFrame::UpstreamError { status, detail } => {
+                assert_eq!(status, 112);
+                assert!(detail.contains("no entitlement"), "{detail}");
+            }
+            other => panic!("非 2xx 业务码必须判错: {other:?}"),
+        }
+        // 普通正文里出现 "error" 字样不误判（这是 delta 帧，带 body）。
+        let text = serde_json::json!({"choices": [{"delta": {"content": "the word error here"}}]})
+            .to_string();
+        let frame = unwrap_envelope_line(&format!(
+            "data:{}",
+            serde_json::json!({"body": text, "statusCodeValue": 200})
+        ));
+        assert!(matches!(frame, ChatFrame::Chunk(_)), "{frame:?}");
     }
 
     #[test]

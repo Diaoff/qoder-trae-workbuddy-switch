@@ -104,7 +104,20 @@ enum Behavior {
     FailFirstTimes(Arc<AtomicUsize>),
     /// 一直 429（**轮换耗尽**验证）。
     Always429,
+    /// HTTP 200 + **非信封错误帧**（issue #46 的真机形态：`event:error` + Jackson
+    /// 堆栈 + `{"success":false,"msgCode":500}`）——验证「不再静默成空补全」。
+    NonEnvelopeError,
 }
+
+/// 真机取证（2026-10-17，Qoder CN）里「编码体 + 漏 `?Encode=1`」时上游回的三行。
+///
+/// 注意状态是 **200**：上游解析失败也照样先发响应头，错误只出现在帧里 ——
+/// 这正是旧实现「HTTP 200 + 空回答 + 0 token」的来源。
+const NON_ENVELOPE_ERROR_FRAMES: &str = concat!(
+    "event:error\n",
+    "data:{\"stackTrace\":[{\"className\":\"com.fasterxml.jackson.core.JsonParser\",\"methodName\":\"_constructError\"}],\"localizedMessage\":\"Unrecognized token 'dwmxdL': was expecting (JSON String, Number, …)\"}\n",
+    "{\"success\":false,\"traceId\":\"t-1\",\"msgCode\":500,\"msgInfo\":\"Internal Server Error\"}\n",
+);
 
 /// 构造一帧信封 SSE（`body` 为内层 OpenAI chunk 的 JSON 字符串）。
 fn envelope(body: &Value) -> String {
@@ -114,11 +127,38 @@ fn envelope(body: &Value) -> String {
     )
 }
 
-async fn mock_chat(State(behavior): State<Behavior>, headers: HeaderMap) -> Response {
+async fn mock_chat(
+    State(behavior): State<Behavior>,
+    headers: HeaderMap,
+    uri: axum::http::Uri,
+) -> Response {
     let request_count = match &behavior {
         Behavior::FailFirstTimes(counter) => counter.fetch_add(1, Ordering::SeqCst),
         _ => 0,
     };
+    // ★ 真机契约（issue #46）：请求体是 `qoder_encode` 过的自定义 base64，上游只按
+    //   query `?Encode=1` 决定「先解码再按 JSON 解析」还是「直接按 JSON 解析」。
+    //   漏了这个 query ⇒ 上游把 base64 当 JSON 读失败 ⇒ **HTTP 200 + 非信封错误帧**。
+    //   mock 照这个行为回放：URL 参数被漏掉时本文件所有 chat 用例直接红，
+    //   而不是像修复前那样「mock 一律回正常信封 ⇒ 永远绿」。
+    let encoded_query = uri
+        .query()
+        .map(|query| query.split('&').any(|pair| pair == "Encode=1"))
+        .unwrap_or(false);
+    if !encoded_query {
+        return Response::builder()
+            .status(StatusCode::OK)
+            .header("content-type", "text/event-stream")
+            .body(Body::from(NON_ENVELOPE_ERROR_FRAMES))
+            .expect("构造 mock 响应");
+    }
+    if matches!(behavior, Behavior::NonEnvelopeError) {
+        return Response::builder()
+            .status(StatusCode::OK)
+            .header("content-type", "text/event-stream")
+            .body(Body::from(NON_ENVELOPE_ERROR_FRAMES))
+            .expect("构造 mock 响应");
+    }
     let should_fail = match &behavior {
         // `counter` 在上一段已经 `fetch_add` 过了，这里只需**匹配到变体**，
         // 不读它的值 ⇒ 用 `_` 占位。写成 `counter` 会触发
@@ -129,7 +169,7 @@ async fn mock_chat(State(behavior): State<Behavior>, headers: HeaderMap) -> Resp
             request_count == 0
         }
         Behavior::Always429 => true,
-        Behavior::Normal => false,
+        Behavior::Normal | Behavior::NonEnvelopeError => false,
     };
     if should_fail {
         return Response::builder()
@@ -344,6 +384,55 @@ async fn chat_stream_relays_and_closes_with_done() {
     let text = body_text(response).await;
     assert!(text.contains("来自 q1"), "{text}");
     assert!(text.contains(" 的回答"), "{text}");
+    assert!(text.trim_end().ends_with("data: [DONE]"), "{text}");
+}
+
+/// issue #46：上游「HTTP 200 + 非信封错误帧」必须**浮出来**，不能再是「200 + 空补全」。
+///
+/// 可证伪：去掉 `api::unwrap_non_envelope_error` 的调用 ⇒ 三行全 Skip ⇒ 本用例
+/// 收到 200 + 空 content（正是用户看到的现象）。
+#[tokio::test]
+async fn chat_non_envelope_error_is_not_a_silent_empty_completion() {
+    let _guard = guard();
+    let (state, key) = gateway_for("nonenv", &[("q1", "dt-1")], Behavior::NonEnvelopeError).await;
+    let response = router(state)
+        .oneshot(chat_request(
+            Some(&key),
+            r#"{"model": "ultimate", "messages": []}"#,
+        ))
+        .await
+        .expect("请求");
+    assert_eq!(
+        response.status(),
+        StatusCode::BAD_GATEWAY,
+        "有上游错误就不能回 200 空补全"
+    );
+    let text = body_text(response).await;
+    assert!(text.contains("Internal Server Error"), "{text}");
+}
+
+/// 同一形态走流式：错误帧要转发给客户端（不是只补一个 [DONE]），且仍然不悬挂。
+#[tokio::test]
+async fn chat_stream_surfaces_non_envelope_error_frame() {
+    let _guard = guard();
+    let (state, key) = gateway_for(
+        "nonenvstream",
+        &[("q1", "dt-1")],
+        Behavior::NonEnvelopeError,
+    )
+    .await;
+    let response = router(state)
+        .oneshot(chat_request(
+            Some(&key),
+            r#"{"model": "ultimate", "stream": true, "messages": []}"#,
+        ))
+        .await
+        .expect("请求");
+    // 流式响应头在读到上游帧之前就发了 ⇒ 状态仍是 200，错误只能在帧里。
+    assert_eq!(response.status(), StatusCode::OK);
+    let text = body_text(response).await;
+    assert!(text.contains("\"error\""), "错误帧必须转发给客户端: {text}");
+    assert!(text.contains("Internal Server Error"), "{text}");
     assert!(text.trim_end().ends_with("data: [DONE]"), "{text}");
 }
 

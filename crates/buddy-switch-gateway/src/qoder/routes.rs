@@ -26,7 +26,7 @@ use tokio::sync::mpsc;
 
 use buddy_switch_core::modules::product::scope_of_qoder_region;
 use buddy_switch_core::modules::qoder::region::{self as qoder_region, QoderRegion};
-use buddy_switch_core::modules::qoder::{api, cosy, PATH_CHAT_SSE};
+use buddy_switch_core::modules::qoder::{api, cosy, PATH_CHAT_SSE, PATH_CHAT_SSE_ENCODED};
 
 use super::pool::{classify_http, QoderErrKind};
 use super::{payload, sse, QoderGatewayState};
@@ -514,7 +514,11 @@ pub(crate) async fn chat_once_for_account(
     };
     let mut transport_error = String::new();
     for host in hosts {
-        let url = format!("{host}{PATH_CHAT_SSE}");
+        // ★ 发送用 `?Encode=1` 的请求路径，签名仍用**无 query** 的 `PATH_CHAT_SSE`
+        //   （见 `chat_once_for_account` 文档与 `core::qoder::PATH_CHAT_SSE_ENCODED`）。
+        //   上游按 query 决定要不要先解码：裸路径 + 编码体 ⇒ 把自定义 base64 当 JSON
+        //   解析 ⇒ HTTP 200 + `event:error`（真机取证 2026-10-17）。
+        let url = format!("{host}{PATH_CHAT_SSE_ENCODED}");
         let mut request = state
             .http
             .post(&url)
@@ -558,15 +562,20 @@ async fn stream_relay(
     let upstream = response.bytes_stream();
     let stream_model = model.to_string();
     let usage_slot = std::sync::Arc::new(std::sync::Mutex::new(None::<Value>));
+    // 上游错误帧留痕：流式账本在流结束才落，没有它就只能记成「200 + 0 token」。
+    let error_slot = std::sync::Arc::new(std::sync::Mutex::new(None::<String>));
     let state_for_task = state.clone();
     let uid = uid.to_string();
     let model_for_task = model.to_string();
 
-    // 转换链：信封解包 → `UsageTapStream`（旁路取 usage）→（Anthropic 入口再包一层）。
+    // 转换链：信封解包 → `UsageTapStream`（旁路取 usage / 错误）→（Anthropic 入口再包一层）。
     // ⚠️ UsageTap **必须在 Anthropic 转换之前** —— 转换后帧是 Anthropic 事件，
     //    取不到 OpenAI 的 `usage` 字段。
-    let tapped =
-        sse::UsageTapStream::new(sse::QoderOpenAiStream::new(upstream), usage_slot.clone());
+    let tapped = sse::UsageTapStream::new(
+        sse::QoderOpenAiStream::new(upstream),
+        usage_slot.clone(),
+        error_slot.clone(),
+    );
     let (tx, rx) = mpsc::channel::<Result<Bytes, std::io::Error>>(32);
     let converter: std::pin::Pin<
         Box<dyn futures_util::Stream<Item = Result<Bytes, std::io::Error>> + Send>,
@@ -597,18 +606,25 @@ async fn stream_relay(
             Some(usage) => usage_counts(usage),
             None => (0, 0),
         };
+        // 上游中途发过错误帧 ⇒ 记 502 + 详情，别写成「200 / 0 token / 无错误」
+        // （那正是 issue #46 里最难排查的形态）。
+        let upstream_error = error_slot.lock().ok().and_then(|guard| guard.clone());
+        let (status, error) = match &upstream_error {
+            Some(detail) => (502u16, Some(detail.clone())),
+            None => (200u16, None),
+        };
         state_for_task
             .record_request(
                 "chat",
                 region,
                 &model_for_task,
-                200,
+                status,
                 &uid,
                 started.elapsed().as_millis() as i64,
                 true,
                 prompt_tokens as i64,
                 completion_tokens as i64,
-                None,
+                error,
             )
             .await;
     });
@@ -635,18 +651,24 @@ async fn aggregate_relay(
         Some(usage) => usage_counts(usage),
         None => (0, 0),
     };
+    // ★ 账本先定「这一请求到底成没成」再落：上游只要给过错误帧就不是 200，
+    //   否则日志会显示「200 + 0 token + error:null」（issue #46 的隐身故障）。
+    let (log_status, log_error) = match &aggregated.upstream_error {
+        Some(detail) => (502u16, Some(detail.clone())),
+        None => (200u16, None),
+    };
     state
         .record_request(
             "chat",
             region,
             model,
-            200,
+            log_status,
             uid,
             started.elapsed().as_millis() as i64,
             false,
             prompt_tokens as i64,
             completion_tokens as i64,
-            None,
+            log_error,
         )
         .await;
 

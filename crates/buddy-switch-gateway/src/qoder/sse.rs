@@ -365,24 +365,42 @@ where
     out
 }
 
-/// 旁路取 `usage` 的流适配器：逐帧透传，顺手把含 `usage` 的 chunk 记进槽位。
+/// 旁路取 `usage` / 上游错误的流适配器：逐帧透传，顺手把含 `usage` 或 `error`
+/// 的 chunk 记进槽位。
 ///
 /// **必须挂在 Anthropic 转换之前**（转换后帧是 Anthropic 事件，取不到 OpenAI 的
 /// `usage` 字段）。放在流链里而不是放进消费循环 —— 两种入口（OpenAI / Anthropic）
 /// 共用同一条链，取数自然同源。
+///
+/// ★ 错误槽位是「故障不隐身」的一半：流式请求的账本在**流结束**时才落，若上游中途
+/// 发了错误帧而我们只记 200，日志就会显示「200 + 0 token + 无错误」——正是
+/// issue #46 里最难排查的那种形态。
 pub struct UsageTapStream<S> {
     inner: S,
     slot: std::sync::Arc<std::sync::Mutex<Option<Value>>>,
+    error_slot: std::sync::Arc<std::sync::Mutex<Option<String>>>,
 }
 
 impl<S> UsageTapStream<S> {
-    pub fn new(inner: S, slot: std::sync::Arc<std::sync::Mutex<Option<Value>>>) -> Self {
-        Self { inner, slot }
+    pub fn new(
+        inner: S,
+        slot: std::sync::Arc<std::sync::Mutex<Option<Value>>>,
+        error_slot: std::sync::Arc<std::sync::Mutex<Option<String>>>,
+    ) -> Self {
+        Self {
+            inner,
+            slot,
+            error_slot,
+        }
     }
 }
 
-/// 从一帧下游数据里解析 `usage`（只有末帧会带；不含 `usage` 的帧直接跳过）。
-fn tap_frame(frame: &Bytes, slot: &std::sync::Mutex<Option<Value>>) {
+/// 从一帧下游数据里解析 `usage` / `error`（不含这两个键的帧直接跳过）。
+fn tap_frame(
+    frame: &Bytes,
+    slot: &std::sync::Mutex<Option<Value>>,
+    error_slot: &std::sync::Mutex<Option<String>>,
+) {
     let Ok(text) = std::str::from_utf8(frame) else {
         return;
     };
@@ -390,10 +408,23 @@ fn tap_frame(frame: &Bytes, slot: &std::sync::Mutex<Option<Value>>) {
         return;
     };
     let data = data.trim();
-    if data == "[DONE]" || !data.contains("usage") {
+    if data == "[DONE]" || !(data.contains("usage") || data.contains("error")) {
         return;
     }
     if let Ok(chunk) = serde_json::from_str::<Value>(data) {
+        // 错误帧（`{"error":{"message":…}}`）单独留痕：客户端已经收到它，账本也要记。
+        if let Some(error) = chunk.get("error") {
+            let message = error
+                .get("message")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+                .unwrap_or_else(|| error.to_string());
+            if let Ok(mut guard) = error_slot.lock() {
+                if guard.is_none() {
+                    *guard = Some(message.chars().take(400).collect());
+                }
+            }
+        }
         if let Some(usage) = chunk.get("usage") {
             if !usage.is_null() {
                 if let Ok(mut guard) = slot.lock() {
@@ -414,7 +445,7 @@ where
         let this = self.get_mut();
         match Pin::new(&mut this.inner).poll_next(cx) {
             Poll::Ready(Some(Ok(frame))) => {
-                tap_frame(&frame, &this.slot);
+                tap_frame(&frame, &this.slot, &this.error_slot);
                 Poll::Ready(Some(Ok(frame)))
             }
             other => other,
@@ -560,5 +591,59 @@ mod tests {
         let error = out.upstream_error.expect("必须带上游错误");
         assert!(error.contains("429"), "{error}");
         assert!(error.contains("quota exceeded"), "{error}");
+    }
+
+    /// 错误帧必须被**旁路留痕**：流式账本在流结束才落，没有这一槽就只能记
+    /// 「200 + 0 token + error:null」——正是 issue #46 里隐身的那条日志。
+    ///
+    /// 可证伪：去掉 `tap_frame` 里的 error 分支 ⇒ 第一条断言红。
+    #[tokio::test]
+    async fn usage_tap_records_error_frames() {
+        use std::sync::{Arc, Mutex};
+
+        let frames = vec!["data:{\"body\":\"boom\",\"statusCodeValue\":429}\n".to_string()];
+        let usage = Arc::new(Mutex::new(None::<Value>));
+        let error = Arc::new(Mutex::new(None::<String>));
+        let mut tap = UsageTapStream::new(
+            QoderOpenAiStream::new(upstream_from(&frames)),
+            usage.clone(),
+            error.clone(),
+        );
+        let text = collect(&mut tap).await;
+        assert!(
+            text.contains("\"code\":429"),
+            "错误帧仍要透传给客户端: {text}"
+        );
+        let captured = error
+            .lock()
+            .expect("锁未中毒")
+            .clone()
+            .expect("错误必须留痕");
+        assert!(captured.contains("429"), "{captured}");
+        assert!(
+            usage.lock().expect("锁未中毒").is_none(),
+            "错误帧不带 usage"
+        );
+
+        // 正常流：usage 被取到，错误槽保持空（别把正常请求记成失败）。
+        let frames = vec![
+            frame(&json!({"choices": [{"delta": {"content": "好"}}]})),
+            frame(
+                &json!({"usage": {"prompt_tokens": 3, "completion_tokens": 4, "total_tokens": 7}}),
+            ),
+        ];
+        let usage = Arc::new(Mutex::new(None::<Value>));
+        let error = Arc::new(Mutex::new(None::<String>));
+        let mut tap = UsageTapStream::new(
+            QoderOpenAiStream::new(upstream_from(&frames)),
+            usage.clone(),
+            error.clone(),
+        );
+        let _ = collect(&mut tap).await;
+        assert_eq!(
+            usage.lock().expect("锁未中毒").as_ref().unwrap()["total_tokens"],
+            7
+        );
+        assert!(error.lock().expect("锁未中毒").is_none(), "正常流不得记错");
     }
 }

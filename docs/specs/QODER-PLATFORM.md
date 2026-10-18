@@ -128,6 +128,25 @@ sessionId）。目的：同一账号长期固定在同一台「虚拟物理设�
 
 ⇒ 与本仓既有网关三态动作（吊销 / 恢复 / 删除）**同形**，可直接复用既有 UI 与命令。
 
+### 7.1 推理端点必须带 `?Encode=1`（真机取证 2026-10-17）
+
+`agent_chat_generation` 的请求体是 `cosy::qoder_encode` 过的**自定义 base64**；上游只按
+URL query `Encode=1` 决定「先解码再按 JSON 解析」还是「直接按 JSON 解析」。
+
+带编码体打**裸路径**时上游**不发 4xx**：它先回 `HTTP 200`，再在流里补三行**非信封错误帧**
+（`event:error` / Jackson `JsonParseException` 堆栈 / `{"success":false,"msgCode":500}`），
+客户端侧表现为「空回答 + 0 token」，网关日志表现为「200 / 0 token / error:null」。
+
+⇒ 两处纪律（issue #46 的修复即此二条）：
+
+1. **签名路径与发送路径分开**：`PATH_CHAT_SSE`（签名，无 query）/
+   `PATH_CHAT_SSE_ENCODED`（发送，带 `Encode=1`），与 `PATH_MODELS_SIGN` /
+   `PATH_MODELS_ENCODED` 同一约定；
+2. **非信封错误帧不得 Skip**：`api::unwrap_non_envelope_error` 按保守白名单判成
+   `ChatFrame::UpstreamError`（只认 `event:error` / `success:false` / 非 0 且非 2xx 的
+   `code`·`msgCode` / 非空 `error` / Java 异常转储），正常 delta 与 `event:finish`
+   一类计时元数据仍 Skip。
+
 ---
 
 ## 8. 在本仓的建模决策

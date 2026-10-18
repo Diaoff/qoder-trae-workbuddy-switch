@@ -87,7 +87,19 @@ pub const PATH_CAMPAIGN_CLAIM_TEMPLATE: &str = "/sash/api/v1/me/campaigns/{id}/c
 /// 推理（SSE）：对话生成。
 ///
 /// ⚠️ 请求体要过 [`cosy::qoder_encode`] 编码、整体走 COSY 签名头 —— 见 `cosy` 模块头。
+///
+/// ⚠️ **签名路径**（不带 query）；实际**发送**要用 [`PATH_CHAT_SSE_ENCODED`]。
+/// 上游按 `?Encode=1` 决定「先解码再按 JSON 解析」还是「直接按 JSON 解析」：
+/// 带编码体打这条**裸路径**，上游会把自定义 base64 当 JSON 读 ⇒ HTTP 200 +
+/// `event:error` + Jackson `JsonParseException`（真机取证 2026-10-17，Qoder CN）。
+/// 与模型清单 [`api::PATH_MODELS_ENCODED`] 同一个约定，别只给清单加、忘了推理。
 pub const PATH_CHAT_SSE: &str = "/algo/api/v2/service/pro/sse/agent_chat_generation";
+/// 推理（SSE）的**请求路径**：与 [`PATH_CHAT_SSE`] 同一端点，带 `Encode=1`。
+///
+/// 签名仍然只覆盖 [`PATH_CHAT_SSE`]（query 不参与签名 —— 见 `api` 模块头对
+/// `PATH_MODELS_SIGN` 的同款说明）。
+pub const PATH_CHAT_SSE_ENCODED: &str =
+    "/algo/api/v2/service/pro/sse/agent_chat_generation?Encode=1";
 
 /// 签到活动的奖励数值（「每日领取 100 Credits」）。
 ///
