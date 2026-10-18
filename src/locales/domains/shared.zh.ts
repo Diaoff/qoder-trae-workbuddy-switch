@@ -539,8 +539,46 @@ export const zh = {
   // =====================================================================
   // 抽屉是**共享壳**：平台差异由调用方装配成 sections / packs / programs 注入，
   // 因此抽屉自身的文案（标题 / 备注 / 只读程序位 / 加载）放这里，不各写一份。
+  // 卡片「更多」菜单：四项刷新 + 账号动作分组（三平台共用同一套文案，避免各自造词）。
+  "shared.cardMenu.refreshGroup": "刷新",
+  "shared.cardMenu.refresh.credits": "刷新积分",
+  "shared.cardMenu.refresh.tokens": "刷新今日 Token",
+  "shared.cardMenu.refresh.checkin": "刷新签到状态",
+  "shared.cardMenu.refresh.credential": "刷新凭据状态",
+  "shared.cardMenu.accountGroup": "账号",
+  "shared.cardMenu.busy": "刷新中…",
+  "shared.cardMenu.done": "已更新",
+  "shared.cardMenu.checkinDone": "今日已签到",
+  "shared.cardMenu.checkinNeedsLogin": "需先登录",
+  // 单项刷新的结果（四项各自一句，别用「已刷新」糊住 —— 用户要知道刷的是哪一层）。
+  "shared.refreshPart.credits": "积分已刷新",
+  "shared.refreshPart.tokens": "今日 Token 已刷新",
+  "shared.refreshPart.checkin": "签到状态已刷新",
+  "shared.refreshPart.credential": "凭据状态已刷新",
+  "shared.refreshPart.fail": "刷新失败",
+  // 详情抽屉顶部的四个指标块（文本在页面侧格式化，这里只提供标签与固定短语）。
+  "shared.stat.credits": "积分",
+  "shared.stat.tokens": "今日 Token",
+  "shared.stat.checkin": "今日签到",
+  "shared.stat.credential": "凭据",
+  "shared.stat.checkedIn": "已签到",
+  "shared.stat.notCheckedIn": "未签到",
+  "shared.stat.credentialOk": "有效",
+  "shared.stat.credentialExpired": "已过期",
+  "shared.stat.credentialRelogin": "需重登",
+  "shared.stat.credentialOkSub": "可正常使用",
+  "shared.stat.credentialBadSub": "先重新登录",
+  "shared.stat.noExpiring": "无临期积分",
+  "shared.stat.expiringSoon": "{n} 积分 {d} 天内到期",
+  "shared.stat.total": "累计 {n}",
   "shared.drawer.close": "关闭",
   "shared.drawer.loading": "正在加载详情…",
+  // 详情页签：把 7 段长滚动切成四块（概览 / 积分 / 签到 / 凭据）。只切「看」的部分，
+  // 备注 / 分组 / 程序位切换固定在上方，不随页签隐藏。
+  "shared.drawer.tab.overview": "概览",
+  "shared.drawer.tab.credits": "积分",
+  "shared.drawer.tab.checkin": "签到",
+  "shared.drawer.tab.credential": "凭据",
   // 备注区（就地编辑）—— 语义与卡片时代的备注编辑器一致，只是搬进了抽屉。
   "shared.drawer.remark.title": "备注",
   "shared.drawer.remark.placeholder": "例如：DS4.1 额度 · 10/03 解禁",

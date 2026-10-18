@@ -3,11 +3,13 @@ import { ArrowRight, Check, Download, Info, Loader2, MessageSquare, Pencil, Refr
 
 import { avatarTone, formatCredits } from "@/components/account-card";
 import { AccountGroupPicker } from "@/components/account-group-picker";
+import type { AccountRefreshKind } from "@/lib/account-refresh";
 import { EmptyState } from "@/components/ui/empty-state";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Sheet, SheetClose, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Skeleton } from "@/components/ui/skeleton";
 import { displayText } from "@/lib/display-text";
 import { useT } from "@/lib/i18n";
@@ -58,6 +60,27 @@ export interface DetailRow {
   mono?: boolean;
   /** 悬停完整值（`value` 被截断时）。 */
   title?: string;
+}
+
+/**
+ * 顶部指标块（积分 / 今日 Token / 签到 / 凭据）。
+ *
+ * ⚠️ 四段文本**已在调用方格式化**（与本文件其余区块同一约束）：抽屉不判断单位与日期格式。
+ * `refreshKind` 指向 `lib/account-refresh` 的四项之一 ⇒ 块右上角出现就地 ⟳，
+ * 与卡片「更多」菜单里的四项**同源**（同一个 `onRefreshPart`）。
+ */
+export interface DetailStat {
+  key: string;
+  /** 已 i18n 的指标名。 */
+  label: string;
+  /** 已格式化的主值（如 `1,240/2,000`）。 */
+  valueText: string;
+  /** 已格式化的副文本（如「320 积分 3 天内到期」）。 */
+  subText?: string;
+  /** 副文本语气：临期用 warn、凭据失效用 bad。 */
+  tone?: "warn" | "bad";
+  /** 该指标对应的刷新项；不传 ⇒ 不渲染 ⟳。 */
+  refreshKind?: AccountRefreshKind;
 }
 
 /** 详情里的一个区块（标题 + 若干行）。 */
@@ -163,6 +186,12 @@ export interface AccountDetailDrawerProps {
   loading?: boolean;
   /** 积分 / 资源包明细；空数组 = 不渲染该区块。 */
   packs?: DetailPack[];
+  /** 顶部指标块（按序渲染；空数组 = 不渲染该区域）。 */
+  stats?: DetailStat[];
+  /** 本账号正在进行中的刷新项（指标块上的 ⟳ 用它显示转圈）。 */
+  refreshingKinds?: readonly AccountRefreshKind[];
+  /** 指标块上的就地刷新；不传 ⇒ 块上不出现 ⟳。 */
+  onRefreshPart?: (kind: AccountRefreshKind) => void;
   /** 信息区块（按序渲染）。 */
   sections?: DetailSection[];
   /** 只读程序位徽标；空数组 = 不渲染。 */
@@ -252,6 +281,9 @@ export function AccountDetailDrawer({
   avatarSeed,
   loading = false,
   packs = [],
+  stats = [],
+  refreshingKinds,
+  onRefreshPart,
   sections = [],
   programs = [],
   remark,
@@ -419,6 +451,57 @@ export function AccountDetailDrawer({
         </SheetHeader>
 
         <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto p-4">
+          {/* 指标块：一打开就知道「这个账号现在什么状态」，不用滚。
+              每块右上角的 ⟳ 与卡片「更多」里的四项**同一个回调**（同源，不是第二套实现）。 */}
+          {!loading && stats.length > 0 && (
+            <div className="grid grid-cols-2 gap-2">
+              {stats.map((stat) => {
+                const busy = stat.refreshKind ? (refreshingKinds ?? []).includes(stat.refreshKind) : false;
+                return (
+                  <div
+                    key={stat.key}
+                    className="min-w-0 rounded-[10px] border border-border bg-muted/40 px-2.5 py-2"
+                  >
+                    <div className="flex items-center gap-1">
+                      <span className="truncate text-[10.5px] text-muted-foreground">{stat.label}</span>
+                      {stat.refreshKind && onRefreshPart && (
+                        <button
+                          type="button"
+                          disabled={busy}
+                          onClick={() => onRefreshPart(stat.refreshKind as AccountRefreshKind)}
+                          aria-label={stat.label}
+                          className="ml-auto grid size-5 shrink-0 place-items-center rounded-md text-muted-foreground opacity-60 transition-colors hover:bg-accent hover:text-foreground hover:opacity-100 focus-visible:ring-2 focus-visible:ring-ring/40 focus-visible:outline-none disabled:opacity-60"
+                        >
+                          {busy ? (
+                            <Loader2 className="size-3 animate-spin" />
+                          ) : (
+                            <RefreshCw className="size-3" />
+                          )}
+                        </button>
+                      )}
+                    </div>
+                    <div className="mt-0.5 truncate text-base font-semibold tabular-nums">{stat.valueText}</div>
+                    {stat.subText ? (
+                      <div
+                        className={cn(
+                          "mt-0.5 truncate text-[10.5px]",
+                          stat.tone === "warn"
+                            ? "text-warning"
+                            : stat.tone === "bad"
+                              ? "text-destructive"
+                              : "text-muted-foreground",
+                        )}
+                        title={stat.subText}
+                      >
+                        {stat.subText}
+                      </div>
+                    ) : null}
+                  </div>
+                );
+              })}
+            </div>
+          )}
+
           {/* 备注区：就地编辑，自包含（失败保持编辑态让用户改完重试）。 */}
           <section>
             <h3 className="mb-2 text-[11.5px] font-medium text-muted-foreground">
@@ -576,8 +659,89 @@ export function AccountDetailDrawer({
               />
             ) : null
           ) : (
-            <>
-              {/* 积分 / 资源包：文本已由调用方格式化，这里只排版。 */}
+            /* 页签只切「看」的部分：概览（信息区块 + 程序位）/ 积分 / 签到 / 凭据。
+               ⚠️ 备注、分组、程序位切换**留在页签之上** —— 它们是身份与操作，
+               藏进页签会让「改个备注」变成「先猜在哪个页签里」。 */
+            <Tabs defaultValue="overview" className="min-h-0">
+              <TabsList>
+                <TabsTrigger value="overview">{t("shared.drawer.tab.overview")}</TabsTrigger>
+                {packs.length > 0 && (
+                  <TabsTrigger value="credits">{t("shared.drawer.tab.credits")}</TabsTrigger>
+                )}
+                {(checkin || (checkinHistory && checkinHistory.length > 0)) && (
+                  <TabsTrigger value="checkin">{t("shared.drawer.tab.checkin")}</TabsTrigger>
+                )}
+                {hasActions && (
+                  <TabsTrigger value="credential">{t("shared.drawer.tab.credential")}</TabsTrigger>
+                )}
+              </TabsList>
+
+              <TabsContent value="overview" className="space-y-4 pt-1">
+{/* 信息区块（按序渲染）。 */}
+              {sections.map((section) => (
+                <section key={section.key}>
+                  <h3 className="mb-2 text-[11.5px] font-medium text-muted-foreground">
+                    {section.title}
+                  </h3>
+                  {/* 原型 `.kv`（`demo.css:492-495`）：`flex gap10` + `12.5px` + `padding:7px 0`
+      + **`border-bottom:1px dashed --border`**（虚线分隔，此前完全没有）+末行无边框；
+      `.kv .k` 是**固定 `width:96px`** 的标签列（此前 `auto` 随内容伸缩 ⇒ 每行标签起点都在变）。*/}
+                  <dl className="space-y-0">
+                    {section.rows.map((row, index) => (
+                      <div
+                        key={`${section.key}-${index}`}
+                        className={cn(
+                          "grid min-w-0 grid-cols-[96px_minmax(0,1fr)] items-baseline gap-2.5 border-b border-dashed border-border py-1.5 text-[12.5px] last:border-b-0",
+                        )}
+                      >
+                        <dt className="shrink-0 text-[11.5px] text-muted-foreground">{row.label}</dt>
+                        <dd
+                          className={cn(
+                            "min-w-0 truncate text-right text-foreground/80",
+                            row.mono && "font-mono tabular-nums",
+                          )}
+                          title={row.title ?? row.value}
+                        >
+                          {row.value}
+                        </dd>
+                      </div>
+                    ))}
+                  </dl>
+                </section>
+              ))}
+
+              {/* 只读程序位徽标 —— **不是**切换控件（见文件头约束 2）。 */}
+              {programs.length > 0 && (
+                <section>
+                  <h3 className="mb-2 text-[11.5px] font-medium text-muted-foreground">
+                    {t("shared.drawer.programs.title")}
+                  </h3>
+                  <div className="flex flex-wrap gap-1.5">
+                    {programs.map((program) => (
+                      <Badge
+                        key={program.key}
+                        variant={program.current ? "success" : "secondary"}
+                        className={cn(!program.current && "text-muted-foreground")}
+                      >
+                        {program.label}
+                        <span className="opacity-80">· {programBadgeText(program, t)}</span>
+                      </Badge>
+                    ))}
+                  </div>
+                </section>
+              )}
+
+                            {actions?.onExport && (
+                <Button type="button" variant="outline" size="sm" onClick={actions.onExport}>
+                  <Download className="size-4" />
+                  {t("shared.drawer.actions.export")}
+                </Button>
+              )}
+              </TabsContent>
+
+              {packs.length > 0 && (
+                <TabsContent value="credits" className="space-y-4 pt-1">
+{/* 积分 / 资源包：文本已由调用方格式化，这里只排版。 */}
               {packs.length > 0 && (
                 <section>
                   <h3 className="mb-2 text-[11.5px] font-medium text-muted-foreground">
@@ -615,7 +779,12 @@ export function AccountDetailDrawer({
                 </section>
               )}
 
-              {/* ★ B5：签到积分（**有数据才渲染** —— 不摆「+0」「0 天」这类无信息量的行）。 */}
+                              </TabsContent>
+              )}
+
+              {(checkin || (checkinHistory && checkinHistory.length > 0)) && (
+                <TabsContent value="checkin" className="space-y-4 pt-1">
+{/* ★ B5：签到积分（**有数据才渲染** —— 不摆「+0」「0 天」这类无信息量的行）。 */}
               {checkin?.todayCheckedIn && (
                 <section>
                   <h3 className="mb-2 text-[11.5px] font-medium text-muted-foreground">
@@ -710,67 +879,18 @@ export function AccountDetailDrawer({
                 </section>
               )}
 
-              {/* 信息区块（按序渲染）。 */}
-              {sections.map((section) => (
-                <section key={section.key}>
-                  <h3 className="mb-2 text-[11.5px] font-medium text-muted-foreground">
-                    {section.title}
-                  </h3>
-                  {/* 原型 `.kv`（`demo.css:492-495`）：`flex gap10` + `12.5px` + `padding:7px 0`
-      + **`border-bottom:1px dashed --border`**（虚线分隔，此前完全没有）+末行无边框；
-      `.kv .k` 是**固定 `width:96px`** 的标签列（此前 `auto` 随内容伸缩 ⇒ 每行标签起点都在变）。*/}
-                  <dl className="space-y-0">
-                    {section.rows.map((row, index) => (
-                      <div
-                        key={`${section.key}-${index}`}
-                        className={cn(
-                          "grid min-w-0 grid-cols-[96px_minmax(0,1fr)] items-baseline gap-2.5 border-b border-dashed border-border py-1.5 text-[12.5px] last:border-b-0",
-                        )}
-                      >
-                        <dt className="shrink-0 text-[11.5px] text-muted-foreground">{row.label}</dt>
-                        <dd
-                          className={cn(
-                            "min-w-0 truncate text-right text-foreground/80",
-                            row.mono && "font-mono tabular-nums",
-                          )}
-                          title={row.title ?? row.value}
-                        >
-                          {row.value}
-                        </dd>
-                      </div>
-                    ))}
-                  </dl>
-                </section>
-              ))}
-
-              {/* 只读程序位徽标 —— **不是**切换控件（见文件头约束 2）。 */}
-              {programs.length > 0 && (
-                <section>
-                  <h3 className="mb-2 text-[11.5px] font-medium text-muted-foreground">
-                    {t("shared.drawer.programs.title")}
-                  </h3>
-                  <div className="flex flex-wrap gap-1.5">
-                    {programs.map((program) => (
-                      <Badge
-                        key={program.key}
-                        variant={program.current ? "success" : "secondary"}
-                        className={cn(!program.current && "text-muted-foreground")}
-                      >
-                        {program.label}
-                        <span className="opacity-80">· {programBadgeText(program, t)}</span>
-                      </Badge>
-                    ))}
-                  </div>
-                </section>
+                              </TabsContent>
               )}
 
-              {/* ★ 操作区（原型 :3518-3527）：刷新 Token / 手动签到 / 编辑备注 / 导出 / 权限诊断 / 删除。
+              {hasActions && (
+                <TabsContent value="credential" className="space-y-4 pt-1">
+{/* ★ 操作区（原型 :3518-3527）：刷新 Token / 手动签到 / 编辑备注 / 导出 / 权限诊断 / 删除。
                   每枚按钮都接**页面既有**的处理函数；缺回调就不渲染该按钮（不摆点不动的灰按钮）。
                   编辑备注复用抽屉内部就地编辑器（`beginEdit`）。 */}
               {hasActions && (
                 <section>
                   <h3 className="mb-2 text-[11.5px] font-medium text-muted-foreground">
-                    {t("shared.drawer.actions.title")}
+                    {t("shared.drawer.tab.credential")}
                   </h3>
                   <div className="flex flex-wrap gap-2">
                     {actions?.onRefresh && (
@@ -789,12 +909,6 @@ export function AccountDetailDrawer({
                         {t("shared.drawer.actions.refresh")}
                       </Button>
                     )}
-                    {actions?.onExport && (
-                      <Button type="button" variant="outline" size="sm" onClick={actions.onExport}>
-                        <Download className="size-4" />
-                        {t("shared.drawer.actions.export")}
-                      </Button>
-                    )}
                     {actions?.onPermission && (
                       <Button type="button" variant="outline" size="sm" onClick={actions.onPermission}>
                         <ShieldCheck className="size-4" />
@@ -809,7 +923,9 @@ export function AccountDetailDrawer({
                   )}
                 </section>
               )}
-            </>
+                </TabsContent>
+              )}
+            </Tabs>
           )}
         </div>
 

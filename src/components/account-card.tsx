@@ -7,6 +7,8 @@ import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { DemoAction } from "@/components/demo-action";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
+import { MenuGroupLabel, RefreshMenuGroup } from "@/components/account-menu-parts";
+import type { AccountRefreshKind } from "@/lib/account-refresh";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 import { ENCRYPTED_CREDENTIAL_REASON } from "@/lib/api";
@@ -373,6 +375,17 @@ interface Props {
   onDelete: (a: AccountMeta) => void;
   onCheckin?: (a: AccountMeta) => void;
   onRefresh?: (a: AccountMeta) => void;
+  /**
+   * 单项刷新（积分 / 今日 Token / 签到状态 / 凭据状态）。
+   *
+   * 不传 ⇒ 菜单退回旧的单条「刷新 Token」项（向后兼容：页面还没接上时行为不变）。
+   * 传了 ⇒ 渲染「刷新」分组，四项各自独立（理由见 `lib/account-refresh.ts` 文件头）。
+   */
+  onRefreshPart?: (a: AccountMeta, kind: AccountRefreshKind) => void;
+  /** 本账号正在进行中的刷新项；用于把对应菜单项标成「刷新中…」。 */
+  refreshingKinds?: readonly AccountRefreshKind[];
+  /** 本平台真的能刷的项（缺省四项）；见 `RefreshMenuGroup` 的注释。 */
+  refreshKinds?: readonly AccountRefreshKind[];
   onSwitch?: (a: AccountMeta) => void;
   todayCheckedIn?: boolean;
   /** 今日旅行状态（undefined=查询中/未知，不渲染标签） */
@@ -487,7 +500,7 @@ function ProductCurrentState({
   );
 }
 
-export function AccountCard({ account, onDelete, onCheckin, onRefresh, onSwitch, todayCheckedIn, travelStatus, credit, creditLoading, creditPriority, workbuddyActive, codebuddyCliConfigured, codebuddyCliActive, codebuddyCliBusy, onSwitchCodebuddyCli, codebuddyCliLoading, codebuddyCnIdeAvailable, codebuddyCnIdeActive, codebuddyCnIdeBusy, codebuddyCnIdeLoading, onSwitchCodebuddyCnIde, vscodePluginAvailable, vscodePluginActive, vscodePluginBusy, vscodePluginLoading, onSwitchVscodePlugin, jetbrainsPluginAvailable, jetbrainsPluginActive, jetbrainsPluginBusy, jetbrainsPluginLoading, onSwitchJetbrainsPlugin, onGuidePlugin, onAddPlaintextAccount, onGuideToSetting, selected = false, onToggleSelect, onOpenDetail, onEditRemark, onEditGroup, todayTokens, todayTokensTruncated = false, featuresDisabled = true }: Props) {
+export function AccountCard({ account, onDelete, onCheckin, onRefresh, onRefreshPart, refreshingKinds, refreshKinds, onSwitch, todayCheckedIn, travelStatus, credit, creditLoading, creditPriority, workbuddyActive, codebuddyCliConfigured, codebuddyCliActive, codebuddyCliBusy, onSwitchCodebuddyCli, codebuddyCliLoading, codebuddyCnIdeAvailable, codebuddyCnIdeActive, codebuddyCnIdeBusy, codebuddyCnIdeLoading, onSwitchCodebuddyCnIde, vscodePluginAvailable, vscodePluginActive, vscodePluginBusy, vscodePluginLoading, onSwitchVscodePlugin, jetbrainsPluginAvailable, jetbrainsPluginActive, jetbrainsPluginBusy, jetbrainsPluginLoading, onSwitchJetbrainsPlugin, onGuidePlugin, onAddPlaintextAccount, onGuideToSetting, selected = false, onToggleSelect, onOpenDetail, onEditRemark, onEditGroup, todayTokens, todayTokensTruncated = false, featuresDisabled = true }: Props) {
   const t = useT();
   /**
    * 兜底归一（第三道闸）。
@@ -1000,9 +1013,15 @@ const workbuddyControl = workbuddyActive ? (
           <Info />{t("wbAccounts.card.viewDetail")}
         </DropdownMenuItem>
         <DropdownMenuSeparator />
-        <DropdownMenuItem disabled={featuresDisabled || !onRefresh} onSelect={() => onRefresh?.(account)}>
-          <RefreshCw />{t("wbAccounts.card.refreshToken")}
-        </DropdownMenuItem>
+        {onRefreshPart ? (
+          <RefreshMenuGroup refreshingKinds={refreshingKinds} kinds={refreshKinds} onPick={(kind) => onRefreshPart(account, kind)} />
+        ) : (
+          <DropdownMenuItem disabled={featuresDisabled || !onRefresh} onSelect={() => onRefresh?.(account)}>
+            <RefreshCw />{t("wbAccounts.card.refreshToken")}
+          </DropdownMenuItem>
+        )}
+        <DropdownMenuSeparator />
+        <MenuGroupLabel>{t("shared.cardMenu.accountGroup")}</MenuGroupLabel>
         {/* ★ F5：**过期 / 需重登**账号不给「手动签到」——token 已失效，签到必失败；
             批量签到也按同一口径把这类账号算「结构性失败」。
             ⚠️ 缺这个门控就是「两处口径自相矛盾」（卡片给入口、批量却当失败）。 */}

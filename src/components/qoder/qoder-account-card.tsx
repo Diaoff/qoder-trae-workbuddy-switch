@@ -46,6 +46,8 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import { MenuGroupLabel, RefreshMenuGroup } from "@/components/account-menu-parts";
+import type { AccountRefreshKind } from "@/lib/account-refresh";
 import type { QoderAccountView, QoderProgramStatus } from "@/lib/api";
 import { demoModeEnabled } from "@/lib/demo-mode";
 import { displayText } from "@/lib/display-text";
@@ -207,6 +209,15 @@ export interface QoderAccountCardProps {
   onSwitch?: (program: QoderProgramStatus) => void;
   /** 「更多 → 设置分组」。 */
   onSetGroup?: (account: QoderAccountView) => void;
+  /**
+   * 单项刷新（积分 / 今日 Token / 签到状态 / 凭据状态）。
+   * 传了 ⇒ 菜单出现「刷新」分组（四项各自独立）；不传 ⇒ 菜单与原来一致。
+   */
+  onRefreshPart?: (account: QoderAccountView, kind: AccountRefreshKind) => void;
+  /** 本账号正在进行中的刷新项。 */
+  refreshingKinds?: readonly AccountRefreshKind[];
+  /** 本平台真的能刷的项（缺省四项）；见 `RefreshMenuGroup` 的注释。 */
+  refreshKinds?: readonly AccountRefreshKind[];
 }
 
 export function QoderAccountCard({
@@ -221,6 +232,9 @@ export function QoderAccountCard({
   programs = null,
   onSwitch,
   onSetGroup,
+  onRefreshPart,
+  refreshingKinds,
+  refreshKinds,
 }: QoderAccountCardProps) {
   const t = useT();
   const name = qoderAccountName(account);
@@ -264,6 +278,13 @@ export function QoderAccountCard({
           {t("qoder.page.accounts.card.viewDetail")}
         </DropdownMenuItem>
         <DropdownMenuSeparator />
+        {onRefreshPart && (
+          <>
+            <RefreshMenuGroup refreshingKinds={refreshingKinds} kinds={refreshKinds} onPick={(kind) => onRefreshPart(account, kind)} />
+            <DropdownMenuSeparator />
+            <MenuGroupLabel>{t("shared.cardMenu.accountGroup")}</MenuGroupLabel>
+          </>
+        )}
         <DropdownMenuItem disabled={!onEditRemark} onSelect={() => onEditRemark?.(account)}>
           <StickyNote />
           {t("qoder.page.accounts.card.editRemark")}

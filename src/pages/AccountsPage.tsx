@@ -14,12 +14,13 @@ import {
 } from "lucide-react";
 
 import { AccountCard, accountIdentity, accountDisplayName, formatCredits, formatCreditExpiry, formatTodayTokens, todayTokensBreakdown, type GuideTarget } from "@/components/account-card";
+import { REFRESH_DONE_LABEL, useAccountRefreshBusy, type AccountRefreshKind } from "@/lib/account-refresh";
 import { AccountsTableAvatar } from "@/components/account-list-parts";
 import { AccountWorkbench } from "@/components/account-workbench";
 import { type AccountColumn } from "@/components/account-table";
 import { type ToolbarOption } from "@/components/account-toolbar";
 import { AddAccountDrawer, type AddAccountWay } from "@/components/add-account-drawer";
-import { AccountDetailDrawer, type DetailActions, type DetailCheckinHistoryRow, type DetailPack, type DetailProgramBadge, type DetailSection, type DetailSwitchTarget } from "@/components/account-detail-drawer";
+import { AccountDetailDrawer, type DetailActions, type DetailCheckinHistoryRow, type DetailPack, type DetailProgramBadge, type DetailSection, type DetailStat, type DetailSwitchTarget } from "@/components/account-detail-drawer";
 import { ClientLimitsCard } from "@/components/client-limits-card";
 import { DemoAction } from "@/components/demo-action";
 import { ScopeChip, scopeLabel } from "@/components/scope-chip";
@@ -1087,6 +1088,40 @@ function RegionPanel({ region }: { region: Region }) {
    * 现在按「用户在点这个账号的刷新 ⇒ 想看这个账号此刻的真实数据」的口径，
    * 成功后把这四路一并重拉（失败各自吞掉，不影响已成功的 token 刷新提示）。
    */
+  const refreshBusy = useAccountRefreshBusy();
+
+  /**
+   * 单项刷新（四项各自独立）。
+   *
+   * 与 {@link onRefresh} 的区别：那个是**续期**凭据（写 `refresh_token`），
+   * 这里是**重读**某一层数据 —— 积分打上游、Token 重扫本机会话日志、签到读签到状态、
+   * 凭据只是重取账号元数据。合成一个动作会让「刷新失败」分不清是哪一层的问题。
+   */
+  const onRefreshPart = useCallback(
+    async (a: AccountMeta, kind: AccountRefreshKind) => {
+      const label = accountDisplayName(a);
+      await refreshBusy.run(a.id, kind, async () => {
+        try {
+          if (kind === "credits") {
+            await refreshCredits([a.id], { region });
+          } else if (kind === "tokens") {
+            /* `force=true`：用户显式点了刷新，就绕过后端「距上次扫描不足 TTL」的闸门。 */
+            await loadTokenToday(true);
+          } else if (kind === "checkin") {
+            const next = await fetchTodayCheckinMap([a.id], region);
+            if (Object.keys(next).length > 0) setCheckinMap((prev) => ({ ...prev, ...next }));
+          } else {
+            await reconcileAccounts(region);
+          }
+          toast.success(t(REFRESH_DONE_LABEL[kind]), { description: label });
+        } catch (e) {
+          toast.error(t("shared.refreshPart.fail"), { description: api.asError(e) });
+        }
+      });
+    },
+    [refreshBusy, refreshCredits, region, loadTokenToday, reconcileAccounts, t],
+  );
+
   async function onRefresh(a: AccountMeta) {
     try {
       const res = await api.refreshAccountToken(a.id, region);
@@ -1802,6 +1837,67 @@ function RegionPanel({ region }: { region: Region }) {
    * 下界与上界必须取**同一个** `now` —— 各写一次 `Date.now()` 会跨毫秒各算一次。
    */
   const now = Date.now();
+  /**
+   * 抽屉顶部的四个指标块。
+   *
+   * ⚠️ 全部**在这里格式化**（抽屉只排版，见 `account-detail-drawer.tsx` 文件头约束 1）：
+   * 单位、日期、千分位都在页面侧决定，避免同一句话在两个组件里各写一遍。
+   * `refreshKind` 让每块带上就地 ⟳ —— 与卡片「更多」的四项**同一个回调**。
+   */
+  const detailStats = useMemo<DetailStat[]>(() => {
+    if (!detail) return [];
+    const credit = creditMap[detail.id];
+    const todayEntry = detail.uid ? tokenTodayMap.get(detail.uid) : undefined;
+    const checkedIn = checkinMap[detail.id];
+    const expired = detail.expiresAt != null && detail.expiresAt < Date.now();
+    const credBad = expired || Boolean(detail.needsRelogin);
+    const soon = credit?.expiringSoonRemaining ?? 0;
+    const soonestDays =
+      credit?.soonestExpireAt != null
+        ? Math.max(1, Math.ceil((credit.soonestExpireAt - Date.now()) / 86_400_000))
+        : 0;
+    return [
+      {
+        key: "credits",
+        label: t("shared.stat.credits"),
+        valueText:
+          credit && credit.totalCapacity != null
+            ? `${formatCredits(credit.totalRemaining ?? 0)}/${formatCredits(credit.totalCapacity)}`
+            : "—",
+        subText:
+          soon > 0
+            ? t("shared.stat.expiringSoon", { n: formatCredits(soon), d: soonestDays })
+            : t("shared.stat.noExpiring"),
+        tone: soon > 0 ? "warn" : undefined,
+        refreshKind: "credits",
+      },
+      {
+        key: "tokens",
+        label: t("shared.stat.tokens"),
+        valueText: formatTodayTokens(todayEntry, tokenTodayTruncated, t),
+        refreshKind: "tokens",
+      },
+      {
+        key: "checkin",
+        label: t("shared.stat.checkin"),
+        valueText: checkedIn ? t("shared.stat.checkedIn") : t("shared.stat.notCheckedIn"),
+        refreshKind: "checkin",
+      },
+      {
+        key: "credential",
+        label: t("shared.stat.credential"),
+        valueText: credBad
+          ? detail.needsRelogin
+            ? t("shared.stat.credentialRelogin")
+            : t("shared.stat.credentialExpired")
+          : t("shared.stat.credentialOk"),
+        subText: credBad ? t("shared.stat.credentialBadSub") : t("shared.stat.credentialOkSub"),
+        tone: credBad ? "bad" : undefined,
+        refreshKind: "credential",
+      },
+    ];
+  }, [detail, creditMap, tokenTodayMap, tokenTodayTruncated, checkinMap, t]);
+
   const detailPacks: DetailPack[] =
     detail && detailCredit?.ok
       ? (detailCredit.resources ?? [])
@@ -2256,6 +2352,8 @@ function RegionPanel({ region }: { region: Region }) {
                               onSwitch={setSwitchAccount}
                               onCheckin={onCheckin}
                               onRefresh={onRefresh}
+                              onRefreshPart={onRefreshPart}
+                              refreshingKinds={refreshBusy.kindsOf(a.id)}
                               todayCheckedIn={checkinMap[a.id]}
                               travelStatus={travelMap[a.id]}
                               todayTokens={a.uid ? tokenTodayMap.get(a.uid) : undefined}
@@ -2600,6 +2698,9 @@ function RegionPanel({ region }: { region: Region }) {
         avatarSeed={detailName}
         loading={detailLoading}
         packs={detailPacks}
+        stats={detailStats}
+        refreshingKinds={detail ? refreshBusy.kindsOf(detail.id) : []}
+        onRefreshPart={detail ? (kind) => void onRefreshPart(detail, kind) : undefined}
         sections={detailSections}
         programs={detailPrograms}
         /* ★ 头部「当前登录」徽章 + 可点「切换到此账号」程序位 + 向导入口（原型 :3475 / :3480-3486）。 */

@@ -31,6 +31,7 @@ import {
 } from "@/components/account-detail-drawer";
 import { ScopeChip, scopeLabel } from "@/components/scope-chip";
 import { TraeAccountCard, formatCredits, jwtBadge, shortTime, type TraeProgram } from "@/components/trae-account-card";
+import { REFRESH_DONE_LABEL, useAccountRefreshBusy, type AccountRefreshKind } from "@/lib/account-refresh";
 import { TraeExportAccountsDialog } from "@/components/trae-export-accounts-dialog";
 import { TraeImportAccountsDialog } from "@/components/trae-import-accounts-dialog";
 import { TraeOAuthLoginDialog } from "@/components/trae-oauth-login-dialog";
@@ -920,6 +921,37 @@ export default function TraeAccountsPage() {
    * ⚠️ 忙标记必须与卡片约定的 key 一致（`credits-<uid>`），否则按钮点了没转圈，
    * 用户会以为没生效而反复点。
    */
+  /**
+   * 本平台**真的能刷**的项。
+   *
+   * ⚠️ 只有两项：Trae 侧没有「今日 Token」与「签到状态」的**只读重取**接口
+   * （签到是一次写操作，Token 由客户端会话日志算出、没有单账号强制重算的入口）。
+   * 摆一个点了只重读列表的菜单项，用户会以为刷过了 —— 宁可少给两项。
+   */
+  const TRAE_REFRESH_KINDS = ["credits", "credential"] as const;
+  const refreshBusy = useAccountRefreshBusy();
+
+  /** 单项刷新（与卡片「更多」里的四项同源；Trae 只有积分 / 凭据两项）。 */
+  const onRefreshPart = useCallback(
+    async (account: TraeAccount, kind: AccountRefreshKind) => {
+      const label = displayText(account.name) || account.userId;
+      await refreshBusy.run(account.userId, kind, async () => {
+        try {
+          if (kind === "credits") {
+            await api.traeRefreshCredits(account.userId, variant);
+          } else {
+            /* 凭据状态 = 重取账号元数据（JWT 有效期 / 需重登标记都在列表载荷里）。 */
+            await loadAll();
+          }
+          toast.success(t(REFRESH_DONE_LABEL[kind]), { description: label });
+        } catch (e) {
+          toast.error(t("shared.refreshPart.fail"), { description: api.asError(e) });
+        }
+      });
+    },
+    [refreshBusy, variant, loadAll, t],
+  );
+
   function refreshCreditsOne(account: TraeAccount) {
     const name = displayText(account.name) || account.userId;
     void run(
@@ -1997,6 +2029,9 @@ export default function TraeAccountsPage() {
                               onSwitchTo={requestSwitchTo}
                               onCheckin={(target) => void checkinOne(target)}
                               onRefreshCredits={refreshCreditsOne}
+                              onRefreshPart={onRefreshPart}
+                              refreshingKinds={refreshBusy.kindsOf(account.userId)}
+                              refreshKinds={TRAE_REFRESH_KINDS}
                               /* 「保存登录态」＝把客户端**此刻**的登录态存到这个账号名下，
                                  因此目标只能是「这个账号当前登录着的那个程序位」。
                                  此前这里传的是页面所属的**区域**（`variant`），而区域只能推出

@@ -103,6 +103,7 @@ import {
 } from "@/lib/account-list-view";
 import { formatAbsoluteTime } from "@/lib/catalog-source";
 import { displayText } from "@/lib/display-text";
+import { REFRESH_DONE_LABEL, useAccountRefreshBusy, type AccountRefreshKind } from "@/lib/account-refresh";
 import { useT } from "@/lib/i18n";
 import { platformDescriptor, platformOfPath } from "@/lib/platforms/registry";
 import { scopeOf, type Scope } from "@/lib/scope";
@@ -535,6 +536,31 @@ export default function QoderAccountsPage() {
       setSwitchBusy(false);
     }
   }
+
+  /** 本平台真的能刷的项（Qoder 无「今日 Token」/「签到状态」的只读重取接口，见 Trae 页同名字段的注释）。 */
+  const QODER_REFRESH_KINDS = ["credits", "credential"] as const;
+  const refreshPartBusy = useAccountRefreshBusy();
+
+  /** 单项刷新（与卡片「更多」里的四项同源；Qoder 只有积分 / 凭据两项）。 */
+  const onRefreshPart = useCallback(
+    async (account: QoderAccountView, kind: AccountRefreshKind) => {
+      const label = qoderAccountName(account);
+      await refreshPartBusy.run(account.uid, kind, async () => {
+        try {
+          if (kind === "credits") {
+            await api.qoderRefreshAccount(scope, account.uid);
+            await reload();
+          } else {
+            await reload();
+          }
+          toast.success(t(REFRESH_DONE_LABEL[kind]), { description: label });
+        } catch (e) {
+          toast.error(t("shared.refreshPart.fail"), { description: api.asError(e) });
+        }
+      });
+    },
+    [refreshPartBusy, scope, reload, t],
+  );
 
   /**
    * 刷新一条账号的令牌。
@@ -1019,6 +1045,9 @@ export default function QoderAccountsPage() {
               onToggleSelect={toggleSelect}
               onOpenDetail={openDetail}
               onEditRemark={openRemark}
+              onRefreshPart={onRefreshPart}
+              refreshingKinds={refreshPartBusy.kindsOf(account.uid)}
+              refreshKinds={QODER_REFRESH_KINDS}
               onDelete={setPendingDelete}
               onSetGroup={openGroup}
               credits={

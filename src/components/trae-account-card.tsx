@@ -5,6 +5,8 @@ import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { DemoAction } from "@/components/demo-action";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
+import { MenuGroupLabel, RefreshMenuGroup } from "@/components/account-menu-parts";
+import type { AccountRefreshKind } from "@/lib/account-refresh";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { AVATAR_TEXT_CLASS, accountInitials, avatarTone } from "@/components/account-card";
 import { displayText } from "@/lib/display-text";
@@ -169,6 +171,16 @@ interface Props {
    * 动整张列表。有了这个回调，卡片上（未查询到积分的那一行 + 「更多」菜单）都能一键刷新。
    */
   onRefreshCredits?: (account: TraeAccount) => void;
+
+  /**
+   * 单项刷新（积分 / 今日 Token / 签到状态 / 凭据状态）。
+   * 不传 ⇒ 菜单保留原来的单项「刷新积分」（向后兼容）；传了 ⇒ 换成四项分组的「刷新」。
+   */
+  onRefreshPart?: (account: TraeAccount, kind: AccountRefreshKind) => void;
+  /** 本账号正在进行中的刷新项。 */
+  refreshingKinds?: readonly AccountRefreshKind[];
+  /** 本平台真的能刷的项（缺省四项）；见 `RefreshMenuGroup` 的注释。 */
+  refreshKinds?: readonly AccountRefreshKind[];
   onSaveLogin: (account: TraeAccount) => void;
   onRefreshJwt: (account: TraeAccount) => void;
   onClearCooldown: (account: TraeAccount) => void;
@@ -212,6 +224,9 @@ export function TraeAccountCard({
   onSwitchTo,
   onCheckin,
   onRefreshCredits,
+  onRefreshPart,
+  refreshingKinds,
+  refreshKinds,
   onSaveLogin,
   onRefreshJwt,
   onClearCooldown,
@@ -539,14 +554,19 @@ export function TraeAccountCard({
         {/* ★ issue #44：菜单里**真的**要有「刷新积分」，卡片上的提示才不是空口指路。
             此前提示文案指向这个菜单项，而菜单里只有「刷新 JWT」 —— 用户点了也不会刷新积分。
             可见入口在下面未查询到积分的那一行，这里补的是「已有积分时也想强制更新」的路径。 */}
-        <DropdownMenuItem
-          disabled={featuresDisabled || refreshingCredits || !onRefreshCredits}
-          onSelect={() => onRefreshCredits?.(account)}
-          title={t("trae.comp.card.action.refreshCreditsTip")}
-        >
-          {refreshingCredits ? <Loader2 className="animate-spin" /> : <RefreshCw />}
-          {t("trae.comp.card.menu.refreshCredits")}
-        </DropdownMenuItem>
+        {onRefreshPart ? (
+          <RefreshMenuGroup refreshingKinds={refreshingKinds} kinds={refreshKinds} onPick={(kind) => onRefreshPart(account, kind)} />
+        ) : (
+          <DropdownMenuItem
+            disabled={featuresDisabled || refreshingCredits || !onRefreshCredits}
+            onSelect={() => onRefreshCredits?.(account)}
+            title={t("trae.comp.card.action.refreshCreditsTip")}
+          >
+            {refreshingCredits ? <Loader2 className="animate-spin" /> : <RefreshCw />}
+            {t("trae.comp.card.menu.refreshCredits")}
+          </DropdownMenuItem>
+        )}
+        <MenuGroupLabel>{t("shared.cardMenu.accountGroup")}</MenuGroupLabel>
         {/* 「手动签到」与 WorkBuddy 卡片菜单同位（刷新之后、删除之前）。
             只在今日未签到时出现：已签到的账号再点一次只会被跳过策略拦下，
             摆一个点不动的入口比不摆更差。 */}
