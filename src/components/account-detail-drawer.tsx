@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { ArrowRight, Check, Download, Info, Loader2, MessageSquare, Pencil, RefreshCw, ShieldCheck, Sparkles, StickyNote, Tag, Trash2, XIcon } from "lucide-react";
+import { ArrowRight, Check, Download, Info, Loader2, MessageSquare, Pencil, RefreshCw, ShieldCheck, StickyNote, XIcon } from "lucide-react";
 
 import { avatarTone, formatCredits } from "@/components/account-card";
+import { AccountGroupPicker } from "@/components/account-group-picker";
 import { EmptyState } from "@/components/ui/empty-state";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -35,8 +36,11 @@ import { cn } from "@/lib/utils";
  *    头部 `name` / `subtitle` 的类型都是 `string` —— 调用方必须过 `displayText`
  *    （`@/lib/display-text`）。对象当 React 子节点渲染会让 React **卸载整棵树** ⇒ 白屏
  *    （issue #2）。这里用 `string` 而非 `unknown` 是为了让「忘了归一」在编译期暴露。
- * 2. **不放「看起来能切」的第二个控件**。抽屉是纯展示 + 备注就地编辑；程序位只以
- *    **只读徽标**呈现，绝不渲染切换按钮（区域 / 程序位的切换属于列表页）。
+ * 2. **动作只留「必须看上下文才敢做」的那几个**。抽屉是**看**的地方：
+ *    备注 / 分组就地编辑（改之前必须看见原文、看见已有哪些组）、续期 JWT、
+ *    权限诊断、导出；**手动签到 / 删除**这类一步就能做完的动作只在卡片的「更多」菜单里
+ *    （2026-10-18 分工判据，见 `docs/specs/PLAN.md` §3.3）—— 同一个动作两处都有入口
+ *    正是上一版被吐槽的「乱」。程序位只以**只读徽标**呈现（切换属于列表页）。
  *
  * ## 状态语言（PLAN §3.6）
  *
@@ -174,6 +178,13 @@ export interface AccountDetailDrawerProps {
    */
   group?: string;
   onSaveGroup?: (group: string) => Promise<boolean>;
+  /**
+   * 本作用域里**已有的分组名**（去重，不含空串）。
+   *
+   * 只给「分组选择器」用：用户要能看见「已经有哪些组」（避免把同一个组打成三种写法），
+   * 也要能建新组（自由文本）。缺省 = 只知道当前值 —— 选择器仍然可用，只是列表更短。
+   */
+  groups?: string[];
   featuresDisabled?: boolean;
   /** 由「更多 → 编辑备注」打开时，直接进入备注编辑态。 */
   autoEditRemark?: boolean;
@@ -247,6 +258,7 @@ export function AccountDetailDrawer({
   onSaveRemark,
   group,
   onSaveGroup,
+  groups = [],
   featuresDisabled = false,
   autoEditRemark = false,
   autoEditGroup = false,
@@ -287,12 +299,6 @@ export function AccountDetailDrawer({
   /* 分组编辑器：**与备注编辑器完全同构**（同一套 editing / draft / saving / autoEdit 语义），
      只是状态与渲染分开 —— 两个字段各自独立编辑，互不干扰。仅在调用方注入 `onSaveGroup`
      时渲染（未注入 = 不显示该区块，见 `Props.group` 的注释）。 */
-  const [editingGroup, setEditingGroup] = useState(false);
-  const [groupDraft, setGroupDraft] = useState("");
-  const [savingGroup, setSavingGroup] = useState(false);
-  const groupInputRef = useRef<HTMLInputElement | null>(null);
-  const skipGroupCommitRef = useRef(false);
-  const autoEditGroupDoneRef = useRef(false);
   const showGroup = Boolean(onSaveGroup);
   const savedGroup = displayText(group)?.trim() || "";
   const canEditGroup = !featuresDisabled && showGroup;
@@ -304,21 +310,12 @@ export function AccountDetailDrawer({
     return () => window.clearTimeout(timer);
   }, [editing]);
 
-  useEffect(() => {
-    if (!editingGroup) return;
-    const timer = window.setTimeout(() => groupInputRef.current?.focus(), 0);
-    return () => window.clearTimeout(timer);
-  }, [editingGroup]);
-
   // 打开 / 关闭时同步编辑态：关闭一律收起并丢弃草稿（下次打开重新从已保存值起算）。
   useEffect(() => {
     if (!open) {
       autoEditDoneRef.current = false;
       setEditing(false);
       setDraft("");
-      autoEditGroupDoneRef.current = false;
-      setEditingGroup(false);
-      setGroupDraft("");
       return;
     }
     if (autoEditRemark && canEdit && !autoEditDoneRef.current) {
@@ -327,13 +324,9 @@ export function AccountDetailDrawer({
       setDraft(savedRemark);
       setEditing(true);
     }
-    if (autoEditGroup && canEditGroup && !autoEditGroupDoneRef.current) {
-      autoEditGroupDoneRef.current = true;
-      skipGroupCommitRef.current = false;
-      setGroupDraft(savedGroup);
-      setEditingGroup(true);
-    }
-  }, [open, autoEditRemark, canEdit, savedRemark, autoEditGroup, canEditGroup, savedGroup]);
+    /* 分组不再有「编辑态」：选择器自己管展开（`autoEditGroup` 直接透给它）。
+       这一处只保留备注的自动进入编辑。 */
+  }, [open, autoEditRemark, canEdit, savedRemark]);
 
   function beginEdit() {
     if (!canEdit || saving) return;
@@ -364,46 +357,17 @@ export function AccountDetailDrawer({
     if (saved) setEditing(false);
   }
 
-  function beginGroupEdit() {
-    if (!canEditGroup || savingGroup) return;
-    skipGroupCommitRef.current = false;
-    setGroupDraft(savedGroup);
-    setEditingGroup(true);
-  }
-
-  function cancelGroupEdit() {
-    skipGroupCommitRef.current = true;
-    setEditingGroup(false);
-    setGroupDraft("");
-  }
-
-  async function commitGroup() {
-    if (skipGroupCommitRef.current) {
-      skipGroupCommitRef.current = false;
-      return;
-    }
-    if (!onSaveGroup || savingGroup) return;
-    if (groupDraft.trim() === savedGroup) {
-      cancelGroupEdit();
-      return;
-    }
-    setSavingGroup(true);
-    const saved = await onSaveGroup(groupDraft);
-    setSavingGroup(false);
-    if (saved) setEditingGroup(false);
-  }
-
   /* 操作区只在调用方**显式注入** `actions` 时出现 —— 未注入（如 Trae）时保持原样，
      不因为共享壳新增了一个「编辑备注」入口而改变另一平台的行为。 */
+  /**
+   * 操作区是否渲染。
+   *
+   * ⚠️ 只数**抽屉独有**的动作（刷新 Token / 导出 / 权限诊断）。
+   * 手动签到 / 编辑备注 / 编辑分组 / 删除**不在这里** —— 它们已经在卡片的「更多」菜单里，
+   * 同一个动作两处都有入口正是上一版被吐槽的「乱」（见 PLAN §3.3 与原型的分工表）。
+   */
   const hasActions = Boolean(
-    actions &&
-      (canEdit ||
-        canEditGroup ||
-        actions.onRefresh ||
-        actions.onCheckin ||
-        actions.onExport ||
-        actions.onPermission ||
-        actions.onDelete),
+    actions && (actions.onRefresh || actions.onExport || actions.onPermission),
   );
   const isEmpty =
     packs.length === 0 &&
@@ -517,68 +481,22 @@ export function AccountDetailDrawer({
             )}
           </section>
 
-          {/* 分组区：与备注区**同构**的就地编辑（仅在注入 `onSaveGroup` 时渲染，见 `Props.group`）。 */}
+          {/* 分组区：**选择器**（既有分组 + 就地新建），不是自由文本框。
+              理由见 `account-group-picker.tsx` 的文件头：分组是自由文本，但让用户每次手打
+              必然把同一个组写成三种；只给下拉又建不出新组。 */}
           {showGroup && (
             <section>
               <h3 className="mb-2 text-[11.5px] font-medium text-muted-foreground">
                 {t("shared.drawer.group.title")}
               </h3>
-              {editingGroup ? (
-                <Input
-                  ref={groupInputRef}
-                  value={groupDraft}
-                  disabled={savingGroup}
-                  onChange={(event) => setGroupDraft(event.target.value)}
-                  onKeyDown={(event) => {
-                    if (event.key === "Enter") {
-                      event.preventDefault();
-                      void commitGroup();
-                    } else if (event.key === "Escape") {
-                      event.preventDefault();
-                      cancelGroupEdit();
-                    }
-                  }}
-                  onBlur={() => void commitGroup()}
-                  maxLength={40}
-                  placeholder={t("shared.drawer.group.placeholder")}
-                  spellCheck={false}
-                  autoComplete="off"
-                  aria-label={t("shared.drawer.group.aria", { name })}
-                  className="h-8 w-full text-xs"
-                />
-              ) : savedGroup ? (
-                canEditGroup ? (
-                  <button
-                    type="button"
-                    onClick={beginGroupEdit}
-                    title={savedGroup}
-                    aria-label={t("shared.drawer.group.editAria", { name })}
-                    className="-mx-1 flex w-[calc(100%+0.5rem)] min-w-0 items-center gap-1.5 rounded-md px-1 text-left text-xs leading-5 text-foreground/80 transition-colors hover:bg-foreground/[0.04] focus-visible:ring-2 focus-visible:ring-ring/40 focus-visible:outline-none"
-                  >
-                    <Tag className="size-3.5 shrink-0 stroke-[1.75] text-muted-foreground" aria-hidden="true" />
-                    <span className="min-w-0 flex-1 truncate">{savedGroup}</span>
-                  </button>
-                ) : (
-                  <p className="flex min-w-0 items-center gap-1.5 text-xs leading-5 text-foreground/80">
-                    <Tag className="size-3.5 shrink-0 stroke-[1.75] text-muted-foreground" aria-hidden="true" />
-                    <span className="min-w-0 flex-1 truncate" title={savedGroup}>
-                      {savedGroup}
-                    </span>
-                  </p>
-                )
-              ) : canEditGroup ? (
-                <button
-                  type="button"
-                  onClick={beginGroupEdit}
-                  className="-mx-1 flex items-center gap-1.5 rounded-md px-1 text-left text-xs leading-5 text-muted-foreground/70 transition-colors hover:bg-foreground/[0.04] hover:text-muted-foreground focus-visible:ring-2 focus-visible:ring-ring/40 focus-visible:outline-none"
-                >
-                  <Pencil className="size-3 shrink-0" aria-hidden="true" />
-                  {t("shared.drawer.group.add")}
-                </button>
-              ) : (
-                /* 不可编辑时的兜底（与备注区同款「—」；实际 WB 恒可编辑，此分支仅在 featuresDisabled 时命中）。 */
-                <p className="text-xs text-muted-foreground">—</p>
-              )}
+              <AccountGroupPicker
+                value={savedGroup}
+                groups={groups}
+                disabled={!canEditGroup}
+                autoOpen={autoEditGroup}
+                accountName={name}
+                onCommit={(next) => (onSaveGroup ? onSaveGroup(next) : Promise.resolve(false))}
+              />
             </section>
           )}
 
@@ -621,12 +539,6 @@ export function AccountDetailDrawer({
                   );
                 })}
               </div>
-              {onWizardSwitch && (
-                <Button type="button" size="sm" className="mt-2.5" onClick={onWizardSwitch}>
-                  <ArrowRight className="size-4" />
-                  {t("shared.drawer.switch.wizard")}
-                </Button>
-              )}
               {onExtSessions && (
                 /* ★ P14 S4a · 插件会话复制的入口。
                    为什么在**这里**、不在「关联会话」页：那边是**副本组**模型
@@ -877,24 +789,6 @@ export function AccountDetailDrawer({
                         {t("shared.drawer.actions.refresh")}
                       </Button>
                     )}
-                    {actions?.showCheckin && actions.onCheckin && (
-                      <Button type="button" variant="outline" size="sm" onClick={actions.onCheckin}>
-                        <Sparkles className="size-4" />
-                        {t("shared.drawer.actions.checkin")}
-                      </Button>
-                    )}
-                    {canEdit && (
-                      <Button type="button" variant="outline" size="sm" onClick={beginEdit}>
-                        <StickyNote className="size-4" />
-                        {t("shared.drawer.actions.editRemark")}
-                      </Button>
-                    )}
-                    {canEditGroup && (
-                      <Button type="button" variant="outline" size="sm" onClick={beginGroupEdit}>
-                        <Tag className="size-4" />
-                        {t("shared.drawer.actions.editGroup")}
-                      </Button>
-                    )}
                     {actions?.onExport && (
                       <Button type="button" variant="outline" size="sm" onClick={actions.onExport}>
                         <Download className="size-4" />
@@ -913,17 +807,22 @@ export function AccountDetailDrawer({
                       {t("shared.drawer.actions.credentialNote")}
                     </p>
                   )}
-                  {actions?.onDelete && (
-                    <Button type="button" variant="destructive" size="sm" className="mt-2.5" onClick={actions.onDelete}>
-                      <Trash2 className="size-4" />
-                      {t("shared.drawer.actions.delete")}
-                    </Button>
-                  )}
                 </section>
               )}
             </>
           )}
         </div>
+
+        {/* 固定底栏：全抽屉**唯一**的流程出口。
+            放在滚动区外，永远在视野内 —— 上一版它在正文最下面，长列表时要滚到底才找得到。 */}
+        {onWizardSwitch && (
+          <div className="shrink-0 border-t border-border p-4">
+            <Button type="button" className="w-full" onClick={onWizardSwitch}>
+              <ArrowRight className="size-4" />
+              {t("shared.drawer.switch.wizard")}
+            </Button>
+          </div>
+        )}
       </SheetContent>
     </Sheet>
   );

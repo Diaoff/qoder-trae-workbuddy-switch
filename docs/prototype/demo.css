@@ -642,6 +642,7 @@ table.tbl tbody tr.is-current { background: color-mix(in oklab, var(--primary) 7
   background: var(--card-2); border: 1px solid var(--border); color: var(--foreground);
 }
 .sel-inline:hover { border-color: var(--border-strong); }
+.group-new { display: inline-flex; align-items: center; gap: 4px; }
 
 /* 向导 */
 .steps { display: flex; align-items: center; gap: 6px; margin-bottom: 4px; }

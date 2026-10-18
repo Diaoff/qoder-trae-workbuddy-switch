@@ -2099,6 +2099,40 @@ async function boot(query) {
     return `${before} → ${next}`;
   });
 
+  check("★ 可以「新建分组」：选「＋ 新建分组…」就地变输入框，创建后写回且下拉能选到", () => {
+    gotoTabOf("a1", "overview");
+    const sel = drawerBody().querySelector("[data-account-group]");
+    if (!sel) throw new Error("没有分组选择器");
+    if (![...sel.options].some((o) => o.value === "__new__")) throw new Error("下拉里没有「新建分组」入口");
+    sel.value = "__new__";
+    sel.dispatchEvent(new wD.Event("change", { bubbles: true }));
+    const input = dD.querySelector("#group-new-input");
+    if (!input) throw new Error("选了「新建分组」没有出现输入框");
+    input.value = "客户 A";
+    dD.querySelector('[data-act="group-create|a1"]').click();
+    const group = wD.eval("curScope().accounts.find((x) => x.id === 'a1').group");
+    if (group !== "客户 A") throw new Error("新建的分组没有写回账号：" + group);
+    const sel2 = drawerBody().querySelector("[data-account-group]");
+    if (!sel2) throw new Error("创建后没有回到选择器");
+    if (sel2.value !== "客户 A") throw new Error("选择器没显示新建的分组");
+    if (![...sel2.options].some((o) => o.value === "客户 A")) throw new Error("新建的分组没进下拉选项（下次选不到）");
+    return "客户 A";
+  });
+
+  check("★ 新建分组：空名被拒（不造一个空分组）", () => {
+    const sel = drawerBody().querySelector("[data-account-group]");
+    sel.value = "__new__";
+    sel.dispatchEvent(new wD.Event("change", { bubbles: true }));
+    const input = dD.querySelector("#group-new-input");
+    input.value = "   ";
+    dD.querySelector('[data-act="group-create|a1"]').click();
+    const group = wD.eval("curScope().accounts.find((x) => x.id === 'a1').group");
+    if (group !== "客户 A") throw new Error("空名把原分组改掉了：" + group);
+    if (!dD.querySelector("#toasts .toast.err")) throw new Error("空名没有报错提示");
+    dD.querySelector('[data-act="group-create-cancel|a1"]').click();
+    return true;
+  });
+
   check("★ 备注可就地编辑并保存（改之前能看见原文）", () => {
     gotoTabOf("a1", "overview");
     const editBtn = drawerBody().querySelector('[data-act="act|remark|a1"]');

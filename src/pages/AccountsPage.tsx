@@ -1403,6 +1403,22 @@ function RegionPanel({ region }: { region: Region }) {
     }
   }
 
+  /**
+   * 抽屉里的**分组候选**：本版本账号已经用过的分组名（去重 + 排序）。
+   *
+   * 为什么由页面算：分组是账号数据的派生物，抽屉只是「壳」（它不该去读账号库）。
+   * 用户在这里看得见「我已经有哪些组」，选一下就能归入，而不是每次手打一遍
+   * ——手打必然出现「客户A / 客户 A / 客户a」三份。
+   */
+  const detailGroups = useMemo(() => {
+    const names = new Set<string>();
+    for (const account of accounts) {
+      const name = displayText(account.groupName)?.trim();
+      if (name) names.add(name);
+    }
+    return [...names].sort((a, b) => a.localeCompare(b, "zh-Hans-CN"));
+  }, [accounts]);
+
   const creditOrderingReady =
     accounts.length > 0 &&
     accounts.every((account) => Boolean(creditMap[account.id]) && !creditLoadingMap[account.id]);
@@ -2625,6 +2641,7 @@ function RegionPanel({ region }: { region: Region }) {
         /* ★ 自定义分组（与备注**同一交互**）：注入 `onSaveGroup` ⇒ 抽屉渲染「分组」区块。 */
         group={detail ? displayText(detail.groupName)?.trim() || "" : ""}
         onSaveGroup={detail ? (group) => onSaveGroup(detail, group) : undefined}
+        groups={detailGroups}
         autoEditGroup={detailAutoEditGroup}
         empty={{
           title: t("shared.drawer.empty.title"),

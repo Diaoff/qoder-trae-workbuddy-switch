@@ -19,6 +19,8 @@ const state = {
   refreshing: new Set(),
   /* 刚刷完、还在显示「已更新」的项（900ms 后自动清掉，避免永久挂着一个完成态）。 */
   refreshDone: new Set(),
+  /* 正在「新建分组」的账号 id（下拉里选「＋ 新建分组…」后就地变成输入框）。 */
+  groupNew: null,
   /* 用量工作台 */
   usageTab: "trend", range: 30, rangeMode: "preset", customFrom: "", customTo: "", rangeOpen: false, merge: false,
   /* 子导航 */
@@ -1980,8 +1982,15 @@ const ACCOUNT_TABS = [
   { id: "credential", label: "凭据" },
 ];
 
-/* 分组：真实的组是用户自建的，这里给一组与演示数据一致的常用值 + 当前值兜底。 */
+/* 分组：真实的组是**用户自建**的。下面几档只是演示数据里已经在用的名字，
+   真正的来源是 `curScope().groups`（新建分组会写进去）+ 当前值兜底。 */
 const ACCOUNT_GROUPS = ["常用", "测试", "闲置", "团队", "默认"];
+
+/** 当前作用域里可选的分组名：内置 ∪ 用户新建过的 ∪ 当前值。 */
+function scopeGroups() {
+  const own = curScope().groups || [];
+  return [...new Set([...ACCOUNT_GROUPS, ...own])];
+}
 
 /**
  * 分组选择器（就地改，改完即存）。
@@ -1992,9 +2001,20 @@ const ACCOUNT_GROUPS = ["常用", "测试", "闲置", "团队", "默认"];
  */
 function groupSelect(a) {
   const cur = a.group || "默认";
-  const opts = ACCOUNT_GROUPS.includes(cur) ? ACCOUNT_GROUPS : [cur, ...ACCOUNT_GROUPS];
+  const base = scopeGroups();
+  const opts = base.includes(cur) ? base : [cur, ...base];
+  /* 新建态：下拉原地变成输入框 —— 不弹第二个弹层，避免「弹层里开弹层」的焦点跳走。 */
+  if (state.groupNew === a.id) {
+    return `<span class="group-new">
+      <input id="group-new-input" class="inp sel-inline" style="width:118px" maxlength="20"
+        placeholder="新分组名" aria-label="新分组名" autocomplete="off" />
+      <button class="btn xs primary" data-act="group-create|${a.id}">创建</button>
+      <button class="btn ghost xs" data-act="group-create-cancel|${a.id}">取消</button>
+    </span>`;
+  }
   return `<select class="inp sel-inline" data-account-group="${a.id}" aria-label="分组">
     ${opts.map((g) => `<option value="${esc(g)}"${g === cur ? " selected" : ""}>${esc(g)}</option>`).join("")}
+    <option value="__new__">＋ 新建分组…</option>
   </select>`;
 }
 
@@ -2123,6 +2143,8 @@ function drawerAccount(id, editing) {
   const a = s.accounts.find((x) => x.id === id);
   if (!a) return;
   /* 保持当前 Tab：点「续期 JWT」这类动作后会重绘抽屉，跳回「概览」会让用户以为点错了。 */
+  /* 换账号就别留在「新建分组」输入态（那只属于上一个账号）。 */
+  if (state.groupNew && state.groupNew !== id) state.groupNew = null;
   const keepTab = state.drawer && state.drawer.kind === "account" && state.drawer.id === id ? state.drawer.tab : "overview";
   const tab = editing ? "overview" : (keepTab || "overview");
   state.drawer = { kind: "account", id, tab, editingRemark: Boolean(editing) };
@@ -2890,6 +2912,32 @@ function closeAcctMenu() {
   renderAccountList();
 }
 
+/**
+ * 新建分组并把账号归入其中。
+ *
+ * 分组是**自由文本**（后端 `groupName`），所以「新建」= 记到本作用域的分组清单里
+ * （下拉下次能选到）+ 立刻归入。空名 / 同名不新建，直接归入已有那个。
+ */
+function createGroup(id) {
+  const a = curScope().accounts.find((x) => x.id === id);
+  const input = $("#group-new-input");
+  if (!a || !input) return;
+  const name = input.value.trim();
+  if (!name) {
+    toast("err", "分组名不能为空", "输入一个名字，或点「取消」回到原来的分组");
+    input.focus();
+    return;
+  }
+  const exists = scopeGroups().includes(name);
+  if (!exists) curScope().groups = [...(curScope().groups || []), name];
+  state.groupNew = null;
+  a.group = name;
+  renderAll();
+  syncOpenDrawer(id);
+  toast("ok", exists ? `${a.name} 已归入「${name}」` : `已新建分组「${name}」`,
+    exists ? "该分组已存在，直接归入" : "分组下拉里下次可以直接选它");
+}
+
 /** 改分组：写回账号 + 重绘（抽屉保持当前 Tab，列表上的分组统计同步）。 */
 function setAccountGroup(id, group) {
   const a = curScope().accounts.find((x) => x.id === id);
@@ -3194,6 +3242,13 @@ document.addEventListener("click", (e) => {
       renderAccountList(); break;
     case "acct-open": stop(); drawerAccount(a1); break;
     /* 抽屉 Tab：只切内容区，不动抽屉本身（保留滚动位置与底部动作）。 */
+    case "group-create": stop(); createGroup(a1); break;
+    case "group-create-cancel": {
+      stop();
+      state.groupNew = null;
+      drawerAccount(a1);
+      break;
+    }
     case "drawer-tab": {
       stop();
       if (state.drawer && state.drawer.kind === "account") state.drawer.tab = a2;
@@ -3555,7 +3610,16 @@ document.addEventListener("change", (e) => {
   if (t.dataset && t.dataset.input === "sort") { state.sort = t.value; renderAccountList(); }
   if (t.dataset && t.dataset.input === "group") { state.group = t.value; renderAccountList(); }
   /* 抽屉里的分组选择器：改完即存（单值枚举，没有「保存」这一步的必要）。 */
-  if (t.dataset && t.dataset.accountGroup) setAccountGroup(t.dataset.accountGroup, t.value);
+  if (t.dataset && t.dataset.accountGroup) {
+    if (t.value === "__new__") {
+      /* 选「＋ 新建分组…」⇒ 就地变输入框，并把焦点放进去（用户刚做了选择，下一步必然是打字）。 */
+      state.groupNew = t.dataset.accountGroup;
+      drawerAccount(t.dataset.accountGroup);
+      setTimeout(() => { const i = $("#group-new-input"); if (i) i.focus(); }, 30);
+    } else {
+      setAccountGroup(t.dataset.accountGroup, t.value);
+    }
+  }
 });
 
 /* 全局快捷键 */

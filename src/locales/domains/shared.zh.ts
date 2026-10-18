@@ -553,6 +553,14 @@ export const zh = {
   "shared.drawer.group.aria": "{name} 的分组",
   "shared.drawer.group.editAria": "编辑 {name} 的分组",
   "shared.drawer.group.add": "设置分组",
+  // 分组选择器（可新建）：既有的组列出来、最后一枚是「新建分组」。
+  "shared.drawer.group.picker.aria": "{name} 的分组",
+  "shared.drawer.group.picker.unassigned": "未分组",
+  "shared.drawer.group.picker.create": "新建分组",
+  "shared.drawer.group.picker.newPlaceholder": "新分组名",
+  "shared.drawer.group.picker.confirm": "创建",
+  "shared.drawer.group.picker.cancel": "取消",
+  "shared.drawer.group.picker.exists": "该分组已存在，将直接归入",
   // 积分 / 资源包区块：文本已由调用方格式化，抽屉只负责排版。
   "shared.drawer.packs.title": "积分 / 资源包",
   // 只读程序位徽标（**不是**切换控件）—— 抽屉里不允许出现第二个「看起来能切」的控件。

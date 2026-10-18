@@ -711,6 +711,16 @@ export default function QoderAccountsPage() {
    * ⚠️ `expiryText` 给 `—`：额度响应里的 `expiresAt` 单位未取证，按毫秒渲染会把秒值
    * 显示成 1970（谎报）。宁可写「未知」。
    */
+  /** 分组候选（本作用域已用过的组名）—— 抽屉里的分组选择器用，见 WB 页同名变量。 */
+  const detailGroups = useMemo(() => {
+    const names = new Set<string>();
+    for (const account of accounts ?? []) {
+      const name = displayText(account.group)?.trim();
+      if (name) names.add(name);
+    }
+    return [...names].sort((a, b) => a.localeCompare(b, "zh-Hans-CN"));
+  }, [accounts]);
+
   const detailPacks = useMemo<DetailPack[]>(() => {
     if (!detail) return [];
     const row = credits[detail.uid];
@@ -1170,6 +1180,7 @@ export default function QoderAccountsPage() {
         autoEditRemark={detailAutoEditRemark}
         group={detail?.group ?? ""}
         onSaveGroup={detail ? (group) => saveGroup(detail, group) : undefined}
+        groups={detailGroups}
         autoEditGroup={detailAutoEditGroup}
         switchTargets={detail ? switchTargetsFor(detail) : []}
         /* 与 WB / Trae 抽屉**同一取值**（备注是否可编辑不受演示模式影响）。 */
