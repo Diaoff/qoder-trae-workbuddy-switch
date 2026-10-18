@@ -25,6 +25,7 @@ import {
   type DetailActions,
   type DetailCheckinHistoryRow,
   type DetailPack,
+  type DetailStat,
   type DetailProgramBadge,
   type DetailSection,
   type DetailSwitchTarget,
@@ -1607,6 +1608,46 @@ export default function TraeAccountsPage() {
     : [];
   /** 判定「临期」的同一时刻（下界与上界取同一个 `now`，口径见后端 `trae/credits.rs`）。 */
   const now = Date.now();
+  /**
+   * 抽屉顶部的指标块（Trae 侧只有三个：积分 / 签到 / 凭据 —— 没有「今日 Token」的数据源，
+   * 不摆一个永远「—」的块）。
+   *
+   * ⚠️ 文本全部在这里格式化（抽屉只排版）；`refreshKind` 只给本平台真的能刷的项
+   * （Trae 没有签到状态的只读重取接口，所以签到块不带 ⟳）。
+   */
+  const detailStats = useMemo<DetailStat[]>(() => {
+    if (!detail) return [];
+    const badge = jwtBadge(detail.jwtStatus, detail.jwtExpHours, t);
+    const soon =
+      detail.creditsExpireAt != null && detail.creditsExpireAt - Date.now() <= 7 * 86_400_000;
+    const credBad = detail.jwtStatus === "expired";
+    return [
+      {
+        key: "credits",
+        label: t("shared.stat.credits"),
+        valueText: detail.credits != null ? formatCredits(detail.credits) : "—",
+        subText:
+          detail.creditsExpireAt != null
+            ? t("shared.stat.expiresAt", { when: shortTime(detail.creditsExpireAt) })
+            : t("shared.stat.noExpiry"),
+        tone: soon ? "warn" : undefined,
+        refreshKind: "credits",
+      },
+      {
+        key: "checkin",
+        label: t("shared.stat.checkin"),
+        valueText: detail.checkedToday ? t("shared.stat.checkedIn") : t("shared.stat.notCheckedIn"),
+      },
+      {
+        key: "credential",
+        label: t("shared.stat.credential"),
+        valueText: badge.text,
+        tone: credBad ? "bad" : undefined,
+        refreshKind: "credential",
+      },
+    ];
+  }, [detail, t]);
+
   const detailPacks: DetailPack[] = detail
     ? (detail.creditPackages ?? [])
         .filter((item) => item.remaining > 0)
@@ -2342,6 +2383,9 @@ export default function TraeAccountsPage() {
         checkinHistory={detailCheckinHistory}
         checkin={detailCheckin}
         packs={detailPacks}
+        stats={detailStats}
+        refreshingKinds={detail ? refreshBusy.kindsOf(detail.userId) : []}
+        onRefreshPart={detail ? (kind) => void onRefreshPart(detail, kind) : undefined}
         sections={detailSections}
         programs={detailPrograms}
         remark={detailRemark}

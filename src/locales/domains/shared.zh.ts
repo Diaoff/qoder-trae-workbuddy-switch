@@ -571,6 +571,9 @@ export const zh = {
   "shared.stat.noExpiring": "无临期积分",
   "shared.stat.expiringSoon": "{n} 积分 {d} 天内到期",
   "shared.stat.total": "累计 {n}",
+  "shared.stat.expiresAt": "到期 {when}",
+  "shared.stat.noExpiry": "无到期时间",
+  "shared.stat.plan": "{plan} 套餐",
   "shared.drawer.close": "关闭",
   "shared.drawer.loading": "正在加载详情…",
   // 详情页签：把 7 段长滚动切成四块（概览 / 积分 / 签到 / 凭据）。只切「看」的部分，
@@ -666,6 +669,8 @@ export const zh = {
   "shared.checkinResult.failedNames": "失败账号：{names}",
   "shared.checkinResult.allOk": "全部账号已签到",
   "shared.checkinResult.retryFailed": "重试失败项",
+  "shared.checkinResult.summary4": "成功 {ok} · 未开放 {skip} · 失败 {fail}",
+  "shared.checkinResult.skippedNames": "以下账号的签到通道未开放（桌面端网页活动页才可领）：{names}",
   "shared.checkinResult.dismiss": "知道了",
   // 分组标题右侧的数量（原型 `.tiny muted`，`buddy-switch-prototype.html:2471`）。
   "shared.list.groupCount": "{n} 个",

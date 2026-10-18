@@ -53,7 +53,7 @@ import {
 import { toast } from "sonner";
 
 import {
-  AccountDetailDrawer,
+  AccountDetailDrawer, DetailStat,
   type DetailActions,
   type DetailPack,
   type DetailSwitchTarget,
@@ -103,6 +103,7 @@ import {
 } from "@/lib/account-list-view";
 import { formatAbsoluteTime } from "@/lib/catalog-source";
 import { displayText } from "@/lib/display-text";
+import { formatCredits } from "@/components/account-card";
 import { REFRESH_DONE_LABEL, useAccountRefreshBusy, type AccountRefreshKind } from "@/lib/account-refresh";
 import { useT } from "@/lib/i18n";
 import { platformDescriptor, platformOfPath } from "@/lib/platforms/registry";
@@ -173,7 +174,12 @@ export default function QoderAccountsPage() {
   /** 批量动作 / 删除的进行中态（**按钮态**，与区块加载态分家）。 */
   const [busy, setBusy] = useState(false);
   /** 批量签到结果条（含失败项，可只重试失败项）。`null` = 不渲染。 */
-  const [checkinResult, setCheckinResult] = useState<{ okCount: number; failed: FailedItem[] } | null>(null);
+  /* 三档：成功数 / 通道未开放 / 失败（见 `runCheckin` 的口径说明）。 */
+  const [checkinResult, setCheckinResult] = useState<{
+    okCount: number;
+    disabled: FailedItem[];
+    failed: FailedItem[];
+  } | null>(null);
 
   /** 失败态「重新检测」按钮的进行中态（操作进行中 ⇒ 按钮内 Loader2）。 */
   const { busy: refreshBusy, run } = useRefreshAction();
@@ -584,23 +590,33 @@ export default function QoderAccountsPage() {
    * ⚠️ 后端只有**单账号** `qoder_checkin_claim` ⇒ 这里顺序逐条调，并**如实汇报成败**
    * （批量操作必然可能部分失败，不能让「批量签到」看起来永远 100% 成功）。
    * `baseOk` 用于「只重试失败项」时把上一轮的成果累计进去。
+   *
+   * ★ **三档**（issue #46 的 D 项，2026-10-18）：
+   * ① 成功（含 `already` 今日已签 —— 那有 `today_checked_in` 作依据）；
+   * ② **通道未开放**（`disabled`）—— 既不是成功、也**不进失败桶**：
+   *    legacy 签到端点对**任何** campaignKey 都回 409（含编造的），上游已关停，
+   *    「重试失败项」对它永远无效，混进失败只会教用户做没用的操作；
+   * ③ 失败（真失败，可重试）。
    */
   async function runCheckin(targets: QoderAccountView[], baseOk = 0) {
     if (targets.length === 0 || busy) return;
     setBusy(true);
     const failed: FailedItem[] = [];
+    const disabled: FailedItem[] = [];
     let ok = 0;
     for (const account of targets) {
+      const item = { uid: account.uid, name: qoderAccountName(account) };
       try {
         const res = await api.qoderCheckinClaim(scope, account.uid);
         if (res.ok) ok += 1;
-        else failed.push({ uid: account.uid, name: qoderAccountName(account) });
+        else if (res.disabled) disabled.push(item);
+        else failed.push(item);
       } catch {
-        failed.push({ uid: account.uid, name: qoderAccountName(account) });
+        failed.push(item);
       }
     }
     setBusy(false);
-    setCheckinResult({ okCount: baseOk + ok, failed });
+    setCheckinResult({ okCount: baseOk + ok, disabled, failed });
     await loadEnrichment();
   }
 
@@ -746,6 +762,54 @@ export default function QoderAccountsPage() {
     }
     return [...names].sort((a, b) => a.localeCompare(b, "zh-Hans-CN"));
   }, [accounts]);
+
+  /**
+   * 抽屉顶部的指标块（Qoder 侧只有三个：积分 / 签到 / 凭据 —— 没有「今日 Token」的数据源，
+   * 不摆一个永远「—」的块）。
+   *
+   * ⚠️ 文本全部在这里格式化（抽屉只排版）；`refreshKind` 只给本平台真的能刷的项。
+   */
+  const detailStats = useMemo<DetailStat[]>(() => {
+    if (!detail) return [];
+    const row = credits[detail.uid];
+    const checked = checkinTodayOf(detail);
+    const expired = detail.expiresAt != null && detail.expiresAt < Date.now();
+    const credBad = expired || !detail.hasCredential;
+    return [
+      {
+        key: "credits",
+        label: t("shared.stat.credits"),
+        valueText:
+          row && row.ok
+            ? `${formatCredits(row.remaining ?? 0)}/${formatCredits(row.total ?? 0)}`
+            : "—",
+        subText: row?.ok && row.plan ? t("shared.stat.plan", { plan: row.plan }) : undefined,
+        refreshKind: "credits",
+      },
+      {
+        key: "checkin",
+        label: t("shared.stat.checkin"),
+        valueText:
+          checked === null
+            ? "—"
+            : checked
+              ? t("shared.stat.checkedIn")
+              : t("shared.stat.notCheckedIn"),
+      },
+      {
+        key: "credential",
+        label: t("shared.stat.credential"),
+        valueText: credBad
+          ? expired
+            ? t("shared.stat.credentialExpired")
+            : t("shared.stat.credentialRelogin")
+          : t("shared.stat.credentialOk"),
+        subText: credBad ? t("shared.stat.credentialBadSub") : t("shared.stat.credentialOkSub"),
+        tone: credBad ? "bad" : undefined,
+        refreshKind: "credential",
+      },
+    ];
+  }, [detail, credits, checkinTodayOf, t]);
 
   const detailPacks = useMemo<DetailPack[]>(() => {
     if (!detail) return [];
@@ -971,6 +1035,8 @@ export default function QoderAccountsPage() {
             ? {
                 okCount: checkinResult.okCount,
                 failedNames: checkinResult.failed.map((item) => item.name),
+                /* ⚠️ 「通道未开放」单独一档：不算成功、也不进重试桶。 */
+                skippedNames: checkinResult.disabled.map((item) => item.name),
                 /* 只重试失败项（原型 `checkin-bar` 的既有语义）。 */
                 onRetry:
                   checkinResult.failed.length > 0
@@ -1203,6 +1269,9 @@ export default function QoderAccountsPage() {
         avatarSeed={detail ? qoderAccountName(detail) : ""}
         sections={detail ? [{ key: "account", title: t("qoder.page.accounts.drawer.info"), rows: detailRows }] : []}
         packs={detailPacks}
+        stats={detailStats}
+        refreshingKinds={detail ? refreshPartBusy.kindsOf(detail.uid) : []}
+        onRefreshPart={detail ? (kind) => void onRefreshPart(detail, kind) : undefined}
         checkin={detailCheckin}
         remark={detail?.remark ?? ""}
         onSaveRemark={detail ? (remark) => saveRemark(detail, remark) : undefined}

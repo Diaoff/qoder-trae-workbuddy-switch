@@ -514,6 +514,9 @@ export const en = {
   "shared.stat.noExpiring": "No expiring credits",
   "shared.stat.expiringSoon": "{n} credits expire within {d} days",
   "shared.stat.total": "Total {n}",
+  "shared.stat.expiresAt": "Expires {when}",
+  "shared.stat.noExpiry": "No expiry",
+  "shared.stat.plan": "{plan} plan",
   "shared.drawer.close": "Close",
   "shared.drawer.loading": "Loading details…",
   "shared.drawer.tab.overview": "Overview",
@@ -591,6 +594,8 @@ export const en = {
   "shared.checkinResult.failedNames": "Failed: {names}",
   "shared.checkinResult.allOk": "All accounts checked in",
   "shared.checkinResult.retryFailed": "Retry failed",
+  "shared.checkinResult.summary4": "{ok} ok · {skip} unavailable · {fail} failed",
+  "shared.checkinResult.skippedNames": "Check-in channel unavailable for: {names}",
   "shared.checkinResult.dismiss": "Got it",
   "shared.list.groupCount": "{n}",
 
