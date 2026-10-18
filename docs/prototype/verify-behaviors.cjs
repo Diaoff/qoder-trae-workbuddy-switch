@@ -253,13 +253,19 @@ const MUTATIONS = {
     from: 'onOk: () => { key.revoked = false; renderContent();',
     to: 'onOk: () => { /* MUTATED: 恢复不生效 */',
   },
-  /* ★ 单账号刷新：退化成「刷新整个作用域」—— 正是用户抱怨的
-     「全选 → 批量刷新 → 取消全选」绕路，只是把它藏进卡片按钮里。 */
+  /* ★ 四类刷新：退回「一个进行中标记」= 点一项四项一起转圈（等于没拆）。 */
   acctrefresh: {
-    desc: "卡片 ⟳ 退化成刷新整个作用域（单账号刷新名不副实）",
+    desc: "四项刷新共用一个进行中标记（拆成四项退化成「一起转圈」）",
     file: "demo-app.js",
-    from: "  state.refreshing.add(id);",
-    to: "  curScope().accounts.forEach((x) => state.refreshing.add(x.id)); /* MUTATED: 刷全作用域 */",
+    from: "  state.refreshing.add(key);",
+    to: "  state.refreshing.add(`${id}:credits`).add(`${id}:tokens`); /* MUTATED: 不分项 */",
+  },
+  /* ★ 凭据状态退回「跟着积分一起失败」= 用户永远分不清挂在哪一层。 */
+  acctcredential: {
+    desc: "凭据状态跟着积分一起判失败（拆成四项失去意义）",
+    file: "demo-app.js",
+    from: 'if (kind === "credential") {',
+    to: 'if (false) { /* MUTATED: 凭据状态不再单独成功 */',
   },
   /* ★ Qoder（第三个平台）—— 两条数据层变异。 */
   qodertotal: {
@@ -1739,37 +1745,60 @@ async function boot(query) {
     return true;
   });
 
-  /* ── 单账号刷新（原型 · 待确认）──
-     用户原话：「每个账号卡片都需要添加刷新功能，可以单独刷新这个账号的所有数据」。
-     守四件事：① 每张卡都有（不是只给第一张）；② 只动**这一个**账号（不选中、不开抽屉、
-     不顺手刷别人）；③ 点了有进行中反馈（转圈 + 禁用，否则读成「点了没反应」）；
-     ④ 结果如实 —— 凭据过期的账号刷新必然失败，不能一律报「已刷新」。 */
+  /* ── 卡片「更多」菜单：四类数据**各自**刷新（原型 · 待确认）──
+     用户原话：「拆分成积分、Token、签到、凭据状态四个刷新，放入更多中」。
+     守五件事：
+       ① 「更多」打开的是**真菜单**（不是一句 toast），四类数据一项一条；
+       ② 点其中一项只刷**这一项**（其余三项仍可点，不变成全量刷新）；
+       ③ 进行中 / 完成在菜单里看得见（「刷新中…」→「已更新」），菜单不关；
+       ④ 结果如实：凭据失效的账号刷积分**报失败**，而刷凭据状态**成功**并说出已过期 ——
+          这正是「拆成四项」的意义：知道挂在哪一层；
+       ⑤ 点菜单里的说明行不会顺带打开账号抽屉。 */
   const domR = await boot("dest=accounts&hint=0");
   const dR = domR.window.document;
   const wR = domR.window;
   const cardsR = () => [...dR.querySelectorAll(".acct")];
-  const idOf = (card) => card.querySelector('[data-act^="acct-refresh|"]').dataset.act.split("|")[1];
+  const moreOf = (card) => card.querySelector('[data-act^="acct-more|"]');
+  const idOf = (card) => moreOf(card).dataset.act.split("|")[1];
   const accOf = (id) => wR.eval(`curScope().accounts.find((x) => x.id === ${JSON.stringify(id)})`);
+  const openMenu = (id) => {
+    const card = cardsR().find((c) => idOf(c) === id);
+    if (!card) throw new Error("找不到账号卡：" + id);
+    /* 已经是这张卡的菜单开着就不要再点 —— 「更多」是开关，多点一次会把它关掉。 */
+    if (wR.eval("state.acctMenu") !== id) moreOf(card).click();
+    return card;
+  };
+  const itemOf = (id, kind) => dR.querySelector(`[data-act="acct-refresh|${id}|${kind}"]`);
+  const KINDS = ["credits", "tokens", "checkin", "credential"];
 
-  check("★ 每张账号卡都有「刷新该账号」按钮（不是只有第一张）", () => {
+  check("★ 每张卡都有「更多」，点开是**真菜单**而不是一句 toast", () => {
     const cards = cardsR();
     if (cards.length < 2) throw new Error("账号页卡片不足，用例前提不成立");
-    const missing = cards.filter((c) => !c.querySelector('[data-act^="acct-refresh|"]'));
-    if (missing.length) throw new Error(`${missing.length}/${cards.length} 张卡没有刷新按钮`);
-    return `${cards.length} 张卡`;
-  });
-
-  check("★ 刷新按钮在卡片页脚，且说明它刷什么（不是无字图标）", () => {
-    const btn = cardsR()[0].querySelector('[data-act^="acct-refresh|"]');
-    if (!btn.closest(".acct-actions")) throw new Error("刷新按钮不在 .acct-actions（卡片页脚）里");
-    const tip = btn.getAttribute("title") || "";
-    if (!/刷新/.test(tip)) throw new Error("title 没说是刷新：" + tip);
-    if (!/积分/.test(tip)) throw new Error("title 没说清刷新哪些数据（积分 / Token / 签到）：" + tip);
-    if (!btn.getAttribute("aria-label")) throw new Error("缺 aria-label —— 图标按钮没有可读名字");
+    const missing = cards.filter((c) => !moreOf(c));
+    if (missing.length) throw new Error(`${missing.length}/${cards.length} 张卡没有「更多」`);
+    openMenu(idOf(cards[0]));
+    const menu = dR.querySelector(".acct-menu");
+    if (!menu) throw new Error("点了「更多」没有出现菜单");
+    /* 菜单是 body 级浮层（与 Radix DropdownMenu 同构）：塞进卡片会被 `#content` 的
+       `overflow:auto` 裁掉 —— 四项刷新的菜单比卡片还高。 */
+    if (menu.closest(".acct")) throw new Error("菜单被塞回了卡片里（会被滚动容器裁掉）");
+    if (dR.querySelector("#toasts .toast")) throw new Error("点「更多」还是在弹 toast（菜单没做出来）");
     return true;
   });
 
-  /* 挑一个**能刷成功**的账号（凭据过期的留给下一条用例）。 */
+  check("★ 菜单里是**四个分开的刷新**（积分 / Token / 签到 / 凭据），不是一个「刷新全部」", () => {
+    const items = [...dR.querySelectorAll(".acct-menu .am-item")];
+    if (items.length !== 4) throw new Error(`菜单项 ${items.length} 个，应为 4 个`);
+    const kinds = items.map((n) => n.dataset.act.split("|")[2]).join(",");
+    if (kinds !== KINDS.join(",")) throw new Error("四类数据没有一一对应：" + kinds);
+    const labels = items.map((n) => n.textContent.replace(/\s+/g, ""));
+    const want = ["刷新积分", "刷新今日Token", "刷新签到状态", "刷新凭据状态"];
+    const bad = labels.filter((l, i) => !l.startsWith(want[i]));
+    if (bad.length) throw new Error("菜单项名称不对：" + labels.join(" / "));
+    return kinds;
+  });
+
+  /* 挑一个**能刷成功**的账号（凭据失效的留给后面那条用例）。 */
   const okCard = cardsR().find((c) => {
     const a = accOf(idOf(c));
     return a && !a.expired && !a.needsRelogin;
@@ -1777,57 +1806,98 @@ async function boot(query) {
   if (!okCard) throw new Error("演示数据里没有可正常刷新的账号（用例前提不成立）");
   const okId = idOf(okCard);
   const okName = accOf(okId).name;
-  okCard.querySelector('[data-act^="acct-refresh|"]').click();
+  openMenu(okId);
+  itemOf(okId, "credits").click();
 
-  check("★ 点 ⟳ 立刻有进行中反馈，且只刷这一个账号", () => {
-    const btn = dR.querySelector(`[data-act="acct-refresh|${okId}"]`);
-    if (!btn) throw new Error("点完按钮消失了");
-    if (!btn.classList.contains("spinning")) throw new Error("没有转圈（图标不动 = 用户读成「点了没反应」）");
-    if (!btn.disabled) throw new Error("进行中仍可重复点（会并发打上游）");
+  check("★ 点「刷新积分」只让**这一项**进入刷新中（其余三项不受影响）", () => {
+    const credits = itemOf(okId, "credits");
+    if (!credits) throw new Error("点完「刷新积分」项不见了");
+    if (!credits.disabled) throw new Error("进行中仍可重复点（会并发打上游）");
+    if (!/刷新中/.test(credits.textContent)) throw new Error("没有进行中文案（点了没反应）");
+    if (!credits.querySelector(".spinner")) throw new Error("进行中没有转圈");
     const busy = wR.eval("Array.from(state.refreshing)");
-    if (busy.length !== 1 || busy[0] !== okId) throw new Error("刷新范围不止这一个账号：" + JSON.stringify(busy));
-    if (wR.eval("state.selected.size") !== 0) throw new Error("点 ⟳ 顺手把账号选中了（用户只想刷新）");
-    if (dR.querySelector(".drawer.open")) throw new Error("点 ⟳ 顺手打开了详情抽屉");
+    if (busy.length !== 1 || busy[0] !== `${okId}:credits`)
+      throw new Error("刷新的范围不止「这个账号的积分」：" + JSON.stringify(busy));
+    const frozen = KINDS.filter((k) => k !== "credits" && itemOf(okId, k).disabled);
+    if (frozen.length) throw new Error("另外三项也被禁用了（没拆开）：" + frozen.join(","));
+    if (!dR.querySelector(".acct-menu")) throw new Error("点一项就把菜单关了（进行中 / 已更新看不见）");
+    if (wR.eval("state.selected.size") !== 0) throw new Error("点刷新顺手选中了账号");
+    if (dR.querySelector(".drawer.open")) throw new Error("点刷新顺手打开了抽屉");
     return true;
   });
 
-  await sleep(700);
+  await sleep(800);
 
-  check("★ 刷新完成：按钮恢复可点，结果里带账号名与刷到的数据", () => {
-    const btn = dR.querySelector(`[data-act="acct-refresh|${okId}"]`);
-    if (!btn) throw new Error("刷新后按钮不见了");
-    if (btn.classList.contains("spinning") || btn.disabled) throw new Error("没有恢复可点（卡在转圈）");
-    if (dR.querySelectorAll(".acct-refresh.spinning").length) throw new Error("别的账号也被拖进了刷新态");
+  check("★ 刷新积分完成：该项显示「已更新」并恢复可点，toast 带上积分值", () => {
+    const credits = itemOf(okId, "credits");
+    if (!credits) throw new Error("刷新后菜单项不见了");
+    if (credits.disabled) throw new Error("完成后仍禁用");
+    if (!/已更新/.test(credits.textContent)) throw new Error("完成态没有提示（用户不知道刷完没）");
     const toast = [...dR.querySelectorAll("#toasts .toast")].pop();
-    if (!toast) throw new Error("刷新没有任何结果提示（静默完成）");
+    if (!toast) throw new Error("没有任何结果提示（静默完成）");
     if (!toast.classList.contains("ok")) throw new Error("正常账号却报了失败");
     const text = toast.textContent;
-    if (!text.includes(okName)) throw new Error("提示里没有账号名，多账号时分不清刷了谁：" + text);
-    if (!/积分/.test(text)) throw new Error("只说「已刷新」却没给刷到的数据（等于没说）");
+    if (!text.includes(okName)) throw new Error("提示里没有账号名：" + text);
+    if (!/积分/.test(text) || !/\d/.test(text)) throw new Error("只说刷完了却没给数值：" + text);
     return true;
   });
 
-  /* 诚实边界：凭据已过期的账号，刷新**必然失败** —— 不能为了好看一律报成功。 */
+  /* 另外三项各点一次：确认它们**各自**给的是自己那份数据（不是一份数据糊弄三项）。 */
+  const wantInToast = { tokens: /今日/, checkin: /签到/, credential: /凭据/ };
+  for (const kind of ["tokens", "checkin", "credential"]) {
+    itemOf(okId, kind).click();
+    await sleep(600);
+    check(`★ 刷「${kind}」给的是它自己那份数据`, () => {
+      const toast = [...dR.querySelectorAll("#toasts .toast")].pop();
+      if (!toast) throw new Error("没有任何结果提示");
+      if (!toast.classList.contains("ok")) throw new Error("正常账号却报了失败：" + toast.textContent);
+      if (!wantInToast[kind].test(toast.textContent)) throw new Error("提示里不是这一类数据：" + toast.textContent);
+      return true;
+    });
+  }
+
+  /* 诚实边界：凭据失效的账号，四项里只有「凭据状态」能给出答案。 */
   const badCard = cardsR().find((c) => {
     const a = accOf(idOf(c));
     return a && (a.expired || a.needsRelogin);
   });
-  if (badCard) {
-    const badId = idOf(badCard);
-    badCard.querySelector('[data-act^="acct-refresh|"]').click();
-    await sleep(700);
-    check("★ 凭据过期 / 需重登的账号刷新如实报失败（不谎报「已刷新」）", () => {
-      const toast = [...dR.querySelectorAll("#toasts .toast")].pop();
-      if (!toast) throw new Error("刷新没有任何结果提示");
-      if (!toast.classList.contains("err")) throw new Error("凭据已失效却报了成功 —— 谎报");
-      if (!/失败|过期|重新登录/.test(toast.textContent)) throw new Error("失败提示没说清原因：" + toast.textContent);
-      return true;
-    });
-  } else {
-    check("★ 凭据过期 / 需重登的账号刷新如实报失败（不谎报「已刷新」）", () => {
-      throw new Error("演示数据里没有失效凭据的账号，这条断言没被验证过（用例前提不成立）");
-    });
-  }
+  if (!badCard) throw new Error("演示数据里没有凭据失效的账号（用例前提不成立）");
+  const badId = idOf(badCard);
+  openMenu(badId);
+  itemOf(badId, "credits").click();
+  await sleep(800);
+  check("★ 凭据失效的账号：刷积分**报失败**并指出先重新登录", () => {
+    const toast = [...dR.querySelectorAll("#toasts .toast")].pop();
+    if (!toast) throw new Error("没有任何结果提示");
+    if (!toast.classList.contains("err")) throw new Error("凭据已失效却报了成功 —— 谎报");
+    if (!/重新登录/.test(toast.textContent)) throw new Error("失败提示没说清下一步：" + toast.textContent);
+    return true;
+  });
+
+  itemOf(badId, "credential").click();
+  await sleep(500);
+  check("★★ 同一账号刷「凭据状态」却成功（拆成四项的意义：知道挂在哪一层）", () => {
+    const toast = [...dR.querySelectorAll("#toasts .toast")].pop();
+    if (!toast) throw new Error("没有任何结果提示");
+    if (!toast.classList.contains("ok")) throw new Error("凭据状态不该跟着积分一起失败：" + toast.textContent);
+    if (!/过期|失效|重新登录/.test(toast.textContent)) throw new Error("没读出「凭据已过期」这个事实：" + toast.textContent);
+    return true;
+  });
+
+  check("★ 点菜单里的说明行不会顺带打开账号抽屉", () => {
+    const note = dR.querySelector(".acct-menu .am-note");
+    if (!note) throw new Error("菜单里没有说明行");
+    note.click();
+    if (dR.querySelector(".drawer.open")) throw new Error("点菜单空白处把抽屉打开了（菜单没拦住卡片点击）");
+    return true;
+  });
+
+  check("★ 再点「更多」能收起菜单（开关是双向的）", () => {
+    const card = cardsR().find((c) => idOf(c) === badId);
+    moreOf(card).click();
+    if (dR.querySelector(".acct-menu")) throw new Error("再点「更多」没有收起菜单");
+    return true;
+  });
 
   /* ── 两份原型不许漂移：单文件原型（视觉基准）守同一条关键行为 ──
      只守「先说明、后动作」与「必读置顶」两条 —— 单文件是同一套代码的镜像，
@@ -1854,19 +1924,29 @@ async function boot(query) {
     return true;
   });
 
-  /* 单文件原型也必须带上「每张卡都能单独刷新」—— 它是视觉基准，
-     少了这枚按钮，两份原型就会在评审时给出两种卡片形态。 */
+  /* 单文件原型也必须带上同一套「更多 → 四项刷新」—— 它是视觉基准，
+     少了这块菜单，两份原型就会在评审时给出两种卡片形态。 */
   const singleAcct = await JSDOM.fromFile(path.join(DIR, "buddy-switch-prototype.html"), {
     runScripts: "dangerously", resources: "usable", pretendToBeVisual: true,
     url: "file://" + path.join(DIR, "buddy-switch-prototype.html").replace(/\\/g, "/") + "?dest=accounts&hint=0",
   });
   await new Promise((r) => singleAcct.window.addEventListener("load", r));
   await sleep(120);
-  check("单文件原型同形：每张账号卡都有 ⟳（两份不许漂移）", () => {
-    const cards = [...singleAcct.window.document.querySelectorAll(".acct")];
+  const dsAcct = singleAcct.window.document;
+  check("单文件原型同形：「更多」里同样是四个分开的刷新（两份不许漂移）", () => {
+    const cards = [...dsAcct.querySelectorAll(".acct")];
     if (!cards.length) throw new Error("单文件原型的账号页没有卡片");
-    const missing = cards.filter((c) => !c.querySelector('[data-act^="acct-refresh|"]'));
-    if (missing.length) throw new Error(`单文件原型 ${missing.length}/${cards.length} 张卡缺 ⟳（两份漂移了）`);
+    const card = cards[0];
+    const more = card.querySelector('[data-act^="acct-more|"]');
+    if (!more) throw new Error("单文件原型的卡片没有「更多」");
+    const id = more.dataset.act.split("|")[1];
+    more.click();
+    const items = [...dsAcct.querySelectorAll(".acct-menu .am-item")];
+    if (items.length !== 4) throw new Error(`单文件原型菜单项 ${items.length} 个，应为 4 个（两份漂移了）`);
+    const kinds = items.map((n) => n.dataset.act.split("|")[2]).join(",");
+    if (kinds !== "credits,tokens,checkin,credential") throw new Error("单文件原型四类数据没对上：" + kinds);
+    if (dsAcct.querySelector(`[data-act="acct-refresh|${id}|credits"]`) === null)
+      throw new Error("单文件原型点开菜单后拿不到这一项的刷新入口");
     return true;
   });
 

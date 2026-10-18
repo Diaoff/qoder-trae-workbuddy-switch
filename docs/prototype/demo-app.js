@@ -12,9 +12,13 @@ const state = {
   /* 账号工作台 */
   q: "", sort: "priority", group: "none", view: "card",
   selected: new Set(),
-  /* 正在刷新「单个账号」的 id 集合（卡片页脚 ⟳ 转圈 + 禁用用）。
-     ⚠️ 用集合而不是单值：允许同时刷两个账号，且互不吞掉对方的进行中态。 */
+  /* 卡片「更多」菜单：打开中的账号 id（`null` = 关着）。 */
+  acctMenu: null,
+  /* 正在刷新的**单项数据**：key = `${id}:${kind}`，kind ∈ credits / tokens / checkin / credential。
+     用集合而不是一个布尔：四类数据各自独立，同时刷两项时互不吞掉对方的进行中态。 */
   refreshing: new Set(),
+  /* 刚刷完、还在显示「已更新」的项（900ms 后自动清掉，避免永久挂着一个完成态）。 */
+  refreshDone: new Set(),
   /* 用量工作台 */
   usageTab: "trend", range: 30, rangeMode: "preset", customFrom: "", customTo: "", rangeOpen: false, merge: false,
   /* 子导航 */
@@ -667,6 +671,7 @@ function renderAccountList() {
 function accountCard(a) {
   const p = curPlatform();
   const sel = state.selected.has(a.id);
+  const menuOpen = state.acctMenu === a.id;
   /* 一个账号可绑 0..N 个程序位 ⇒ 「当前登录」= 绑定了任一程序位（不只是第一个）。 */
   const activeN = p.programs.filter((pg) => a.programs[pg.id]).length;
   const isCur = activeN > 0;
@@ -707,12 +712,8 @@ function accountCard(a) {
             data-act="acct-prog|${a.id}|${pg.id}">${on ? ICON.check : ""}${esc(pg.short)}</button>`;
         }).join("")}
       </div>
-      <button class="btn ghost sm acct-refresh${state.refreshing.has(a.id) ? " spinning" : ""}"
-        data-act="acct-refresh|${a.id}"
-        title="刷新 ${esc(a.name)} 的全部数据（积分 / 今日 Token / 签到状态 / 凭据有效期）"
-        aria-label="刷新 ${esc(a.name)} 的全部数据"
-        ${state.refreshing.has(a.id) ? "disabled" : ""}>${ICON.refresh}</button>
-      <button class="btn ghost sm" data-act="acct-more|${a.id}" title="更多操作">${ICON.more}</button>
+      <button class="btn ghost sm${menuOpen ? " is-open" : ""}" data-act="acct-more|${a.id}"
+        title="更多操作：单项刷新 / 详情 / 删除" aria-haspopup="menu" aria-expanded="${menuOpen}">${ICON.more}</button>
     </div>
   </div>`;
 }
@@ -2586,6 +2587,8 @@ function switchScope(id, silent) {
   state.scope = id;
   state.selected.clear();
   state.q = "";
+  /* 菜单跟着账号走：不清掉的话，切到另一个作用域时同 id 的账号会被误挂上菜单。 */
+  closeAcctMenu();
   state.checkinResult = null;
   state.loading = true;
   renderAll();
@@ -2625,34 +2628,145 @@ function doRefresh() {
     toast("ok", "已刷新", scopeLabel(state.scope) + " 的账号与积分状态已更新");
   }, 500);
 }
-/* ── 单账号刷新（原型 · 待确认）────────────────────────────────
-   卡片页脚的 ⟳ 只刷新**这一个账号**的全部数据：积分 / 今日 Token / 签到状态 / 凭据有效期。
-   此前要刷某个账号只能「全选 → 批量刷新 Token → 取消全选」—— 为看一眼一个账号动整张列表。
+/* ── 卡片「更多」菜单：四类数据**各自**刷新（原型 · 待确认）──────────────
+   为什么拆成四个而不是一个「刷新全部」：
+     · 积分要走**上游**接口（慢、可能限流）；
+     · 今日 Token 读**本机**客户端会话日志 + 网关日志（快，离线也能读）；
+     · 签到状态读本机签到记录（快）；
+     · 凭据状态读本机 JWT（最快）。
+   合成一个动作时，慢的那项把另外三项一起拖住，而且**失败原因分不清**——
+   凭据过期的账号其实只有「凭据状态」能刷出真值，另外三项必然失败。
+   拆开之后，用户能只刷手上要用的那一项，也能从失败项里看出到底卡在哪一层。 */
+const REFRESH_KINDS = [
+  { kind: "credits", label: "刷新积分", icon: "refresh", ms: 650, hint: "向上游查询剩余积分与到期时间（最慢，可能被限流）" },
+  { kind: "tokens", label: "刷新今日 Token", icon: "usage", ms: 420, hint: "重读本机客户端会话日志 + 网关日志（本地，快）" },
+  { kind: "checkin", label: "刷新签到状态", icon: "spark", ms: 260, hint: "重读今天这个账号的签到结果（本地）" },
+  { kind: "credential", label: "刷新凭据状态", icon: "key", ms: 180, hint: "重读本机登录凭据的有效期（凭据过期时只有这项还能用）" },
+];
 
-   ⚠️ 演示里**不改数字**：演示数据不是真从上游读的，刷新就改数等于编数据。
-   真正的反馈是「转圈 + 结果 toast」，而结果必须如实：
-   凭据已过期 / 需重新登录的账号刷新**必然失败**，不能一律报「已刷新」。 */
-function refreshAccount(id) {
-  const a = curScope().accounts.find((x) => x.id === id);
-  if (!a || state.refreshing.has(id)) return;
-  state.refreshing.add(id);
+/** 某一项刷新的结果。**必须如实**：凭据失效时积分 / Token / 签到读不到，就是失败。 */
+function refreshOutcome(a, kind) {
+  const dead = a.expired ? "凭据已过期" : a.needsRelogin ? "需要重新登录" : null;
+  /* 凭据状态**永远能刷出答案**：它读的是本机凭据，过期与否本身就是要读的结果 ——
+     这也是「拆成四项」最直接的好处：账号挂了，至少还能知道挂在哪一步。 */
+  if (kind === "credential") {
+    return {
+      ok: true,
+      desc: a.expired ? "凭据已过期 —— 需要重新登录" : a.needsRelogin ? "会话已失效 —— 需要重新登录" : "凭据有效，客户端可正常使用",
+    };
+  }
+  if (dead) {
+    const what = kind === "credits" ? "积分" : kind === "tokens" ? "今日 Token" : "签到状态";
+    return { ok: false, desc: `${dead}，读不到${what} —— 先在客户端重新登录` };
+  }
+  if (kind === "credits") {
+    return {
+      ok: true,
+      desc: `积分 ${fmt(a.credits)}/${fmt(a.creditsTotal)}${a.expiring ? ` · ${fmt(a.expiring)} 积分 ${a.expireInDays} 天内到期` : ""}`,
+    };
+  }
+  if (kind === "tokens") return { ok: true, desc: `今日 ${fmtTok(a.todayTokens)} · 累计 ${fmtTok(a.totalTokens)}` };
+  return { ok: true, desc: a.checkedIn ? "今日已签到" : "今日未签到" };
+}
+
+function acctMenuInner(a) {
+  const keyOf = (kind) => `${a.id}:${kind}`;
+  return `<div class="am-head">刷新 · ${esc(a.name)}</div>
+    ${REFRESH_KINDS.map((k) => {
+      const busy = state.refreshing.has(keyOf(k.kind));
+      const done = state.refreshDone.has(keyOf(k.kind));
+      return `<button class="am-item${done ? " done" : ""}" role="menuitem"
+        data-act="acct-refresh|${a.id}|${k.kind}" title="${esc(k.hint)}"${busy ? " disabled" : ""}>
+        <span class="am-ico">${busy ? '<span class="spinner"></span>' : done ? ICON.check : ICON[k.icon]}</span>
+        <span class="am-lab">${k.label}</span>
+        <span class="am-state">${busy ? "刷新中…" : done ? "已更新" : ""}</span>
+      </button>`;
+    }).join("")}
+    <div class="am-sep"></div>
+    <div class="am-note">签到 / 备注 / 删除在账号的抽屉里</div>`;
+}
+
+/* 菜单挂在 **body** 上（`position: fixed`），不塞进卡片：
+   卡片高度只有 ~170px，四项刷新的菜单比它还高 —— 塞进去必然溢出卡片；
+   而 `#content` 是滚动容器，`overflow:auto` 会把溢出的菜单裁掉。
+   真实实现里这就是 Radix `DropdownMenu` 的行为（Portal + 视口定位），原型照它来。 */
+function renderAcctMenu() {
+  const a = state.acctMenu ? curScope().accounts.find((x) => x.id === state.acctMenu) : null;
+  let node = document.getElementById("acct-menu");
+  if (!a) { if (node) node.remove(); return; }
+  if (!node) {
+    node = document.createElement("div");
+    node.id = "acct-menu";
+    node.className = "acct-menu";
+    node.dataset.act = "noop";      /* 点菜单空白处不冒泡成「打开账号抽屉」 */
+    node.setAttribute("role", "menu");
+    document.body.appendChild(node);
+  }
+  node.setAttribute("aria-label", `刷新 ${a.name} 的数据`);
+  node.innerHTML = acctMenuInner(a);
+}
+
+/**
+ * 打开 / 收起「更多」。位置在**打开时算一次**：
+ * 之后菜单内容会随「刷新中 → 已更新」重绘，重绘不能让它跳位。
+ */
+function toggleAcctMenu(id, btn) {
+  if (state.acctMenu === id) { closeAcctMenu(); return; }
+  state.acctMenu = id;
+  renderAcctMenu();
+  const node = document.getElementById("acct-menu");
+  if (node && btn) {
+    const r = btn.getBoundingClientRect();
+    const w = node.offsetWidth || 250;
+    const h = node.offsetHeight || 210;
+    const left = Math.max(12, Math.min(r.right - w, window.innerWidth - w - 12));
+    /* 默认从按钮下面展开；下方放不下就翻到上面（与桌面下拉菜单同一套翻转规则）。 */
+    let top = r.bottom + 6;
+    if (top + h > window.innerHeight - 12) top = Math.max(12, r.top - h - 6);
+    node.style.left = `${Math.round(left)}px`;
+    node.style.top = `${Math.round(top)}px`;
+  }
   renderAccountList();
+}
+
+function closeAcctMenu() {
+  if (!state.acctMenu) return;
+  state.acctMenu = null;
+  renderAcctMenu();     /* 传不了 id ⇒ 内部直接移除节点 */
+  renderAccountList();
+}
+
+/**
+ * 刷新某个账号的**某一项**数据。
+ *
+ * 菜单**不关**：刷完一项还想刷另一项是很常见的（比如先看凭据再决定要不要刷积分），
+ * 关掉菜单等于让用户重新点开一次；而且进行中/已更新这两个状态只有在菜单里才看得见。
+ */
+function refreshAccountPart(id, kind) {
+  const a = curScope().accounts.find((x) => x.id === id);
+  const conf = REFRESH_KINDS.find((k) => k.kind === kind);
+  if (!a || !conf) return;
+  const key = `${id}:${kind}`;
+  if (state.refreshing.has(key)) return;
+  state.refreshing.add(key);
+  state.refreshDone.delete(key);
+  renderAccountList();
+  renderAcctMenu();
   setTimeout(() => {
-    state.refreshing.delete(id);
+    state.refreshing.delete(key);
+    const outcome = refreshOutcome(a, kind);
+    if (outcome.ok) {
+      state.refreshDone.add(key);
+      /* 「已更新」只停留 900ms：它是**刚刚发生了什么**的反馈，不是常驻状态。 */
+      setTimeout(() => { state.refreshDone.delete(key); renderAccountList(); renderAcctMenu(); }, 900);
+      toast("ok", `${a.name} · ${conf.label}完成`, outcome.desc);
+    } else {
+      toast("err", `${a.name} · ${conf.label}失败`, outcome.desc,
+        { label: "打开账号", run: () => drawerAccount(id) });
+    }
     renderAccountList();
-    if (a.expired) {
-      toast("err", `${a.name} 刷新失败`, "凭据已过期 —— 先在客户端重新登录，再回来刷新",
-        { label: "打开账号", run: () => drawerAccount(id) });
-      return;
-    }
-    if (a.needsRelogin) {
-      toast("err", `${a.name} 刷新失败`, "需要重新登录后再刷新",
-        { label: "打开账号", run: () => drawerAccount(id) });
-      return;
-    }
-    toast("ok", `已刷新 ${a.name} 的全部数据`,
-      `积分 ${fmt(a.credits)}/${fmt(a.creditsTotal)} · 今日 ${fmtTok(a.todayTokens)} · ${a.checkedIn ? "已签到" : "今日未签到"}`);
-  }, 500);
+    renderAcctMenu();
+  }, conf.ms);
 }
 /* 批量签到：目标 = 已勾选账号（若有），否则整个作用域。
    批量操作必然可能部分失败——凭据过期 / 需重新登录是结构性失败，
@@ -2688,6 +2802,9 @@ document.addEventListener("click", (e) => {
   const trigger = e.target.closest("#scope-trigger");
   if (trigger) { $("#scope-menu").classList.contains("open") ? closeScopeMenu() : openScopeMenu(); return; }
   if (!e.target.closest("#scope-menu")) closeScopeMenu();
+  /* 卡片「更多」菜单：点菜单外的地方收起（点菜单本身、或点另一张卡的「更多」不算外面 ——
+     后者由 `acct-more` 分支接管，直接换到那张卡的菜单）。 */
+  if (state.acctMenu && !e.target.closest(".acct-menu") && !e.target.closest('[data-act^="acct-more|"]')) closeAcctMenu();
 
   const node = e.target.closest("[data-act]");
   /* 自定义时间弹层：点弹层外部收起（触发器与弹层内部除外），与本次动作同帧生效。 */
@@ -2698,7 +2815,7 @@ document.addEventListener("click", (e) => {
   const stop = () => { e.preventDefault(); e.stopPropagation(); };
 
   switch (act) {
-    case "nav": stop(); state.dest = a1; state.selected.clear(); renderAll(); break;
+    case "nav": stop(); state.dest = a1; state.selected.clear(); closeAcctMenu(); renderAll(); break;
     case "scope": stop(); switchScope(a1); break;
     case "view": stop(); state.view = a1; renderAccountList(); break;
     case "range": stop();
@@ -2904,11 +3021,9 @@ document.addEventListener("click", (e) => {
       state.selected.has(a1) ? state.selected.delete(a1) : state.selected.add(a1);
       renderAccountList(); break;
     case "acct-open": stop(); drawerAccount(a1); break;
-    case "acct-refresh": stop(); refreshAccount(a1); break;
-    case "acct-more": stop();
-      toast("ok", "操作都在账号抽屉里", "点账号卡打开抽屉即可操作", null,
-        "刷新 Token / 手动签到 / 编辑备注 / 删除 —— 卡片只留 ⟳（刷新该账号）这一个高频动作");
-      break;
+    /* 单项刷新：a1 = 账号 id，a2 = 数据种类（credits / tokens / checkin / credential）。 */
+    case "acct-refresh": stop(); refreshAccountPart(a1, a2); break;
+    case "acct-more": stop(); toggleAcctMenu(a1, node); break;
     case "acct-prog": {
       stop();
       const acc = curScope().accounts.find((x) => x.id === a1);
@@ -3282,6 +3397,8 @@ document.addEventListener("keydown", (e) => {
     else if (e.key === "Enter") { e.preventDefault(); const it = items[state.palette.cursor]; if (it) { closePalette(); it.run(); } }
     return;
   }
+  /* 卡片「更多」菜单：Esc 收起（菜单是浮层，键盘用户必须能不用鼠标退出）。 */
+  if (e.key === "Escape" && state.acctMenu) { e.preventDefault(); closeAcctMenu(); return; }
   /* 升级说明弹窗在上层：Esc 先关它，且**下载中不响应**（关掉 = 安装半途而废）。 */
   if (state.update.open && e.key === "Escape") {
     e.preventDefault();
@@ -3317,6 +3434,9 @@ $("#app-settings-btn").addEventListener("click", () => {
     </div>
   </div>`, "应用设置");
 });
+/* 卡片「更多」菜单是 fixed 浮层：页面一滚动它就和锚点脱开了 —— 直接收起，
+   比「跟着乱飘 / 悬在半空」好。捕获阶段监听，`#content` 自己的滚动也能收到。 */
+window.addEventListener("scroll", () => { if (state.acctMenu) closeAcctMenu(); }, { passive: true, capture: true });
 $("#drawer-close").addEventListener("click", closeDrawer);
 $("#drawer-overlay").addEventListener("click", closeDrawer);
 $("#palette-overlay").addEventListener("click", (e) => { if (e.target.id === "palette-overlay") closePalette(); });
