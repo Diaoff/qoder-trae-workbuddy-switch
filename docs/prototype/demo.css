@@ -372,7 +372,8 @@ kbd {
   border: 1px solid var(--border-strong); box-shadow: var(--shadow-lg);
   cursor: default; text-align: left;
 }
-.am-head { padding: 4px 8px 6px; font-size: 11px; color: var(--muted-fg); }
+.am-head { padding: 4px 8px 6px; font-size: 12px; font-weight: 600; color: var(--foreground);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .am-item {
   display: flex; align-items: center; gap: 8px; width: 100%; padding: 7px 8px;
   border-radius: 8px; font-size: 12.5px; text-align: left; transition: background .12s;
@@ -388,6 +389,11 @@ kbd {
 .am-item.done .am-state { color: var(--success); }
 .am-sep { height: 1px; margin: 5px 6px; background: var(--border); }
 .am-note { padding: 4px 8px 3px; font-size: 10.5px; line-height: 1.5; color: var(--muted-fg); }
+.am-grp { padding: 6px 8px 2px; font-size: 10.5px; color: var(--muted-fg); }
+.am-item.danger { color: var(--destructive); }
+.am-item.danger:hover:not(:disabled) { background: color-mix(in oklab, var(--destructive) 12%, transparent); }
+.am-item.danger .am-ico { color: var(--destructive); }
+
 
 /* 表格 */
 table.tbl { width: 100%; border-collapse: collapse; font-size: 12.5px; }
@@ -566,6 +572,51 @@ table.tbl tbody tr.is-current { background: color-mix(in oklab, var(--primary) 7
 .kv:last-child { border-bottom: 0; }
 .kv .k { width: 96px; flex-shrink: 0; color: var(--muted-fg); font-size: 11.5px; }
 .kv .v { flex: 1; min-width: 0; word-break: break-all; }
+
+/* ─────────── 账号详情抽屉（v2：指标条 + Tab + 固定底栏） ───────────
+   分工：**抽屉只负责「看」和「必须看上下文才敢做的流程」**，单步动作全在卡片「更多」里。
+   所以这里没有删除 / 导出 / 手动签到 / 刷新 —— 只有「带迁移的切换」和凭据相关的深操作。 */
+.acct-hd { display: flex; align-items: center; gap: 12px; }
+.acct-hd .who { flex: 1; min-width: 0; }
+.acct-hd .who b { display: block; font-size: 15px; font-weight: 600; }
+.acct-hd .who span { display: block; font-size: 11.5px; color: var(--muted-fg); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+/* 4 个关键指标：一眼看清「这个账号现在什么状态」，不用往下滚 */
+.acct-stats { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.stat-tile { padding: 9px 11px; border-radius: 10px; background: var(--card-2); border: 1px solid var(--border); }
+.stat-tile .lab { display: flex; align-items: center; gap: 6px; }
+/* 指标块上的就地刷新：常态半隐（不抢数据的注意力），悬停/键盘聚焦才完全显形。 */
+.tile-rf {
+  margin-left: auto; width: 20px; height: 20px; border-radius: 6px;
+  display: grid; place-items: center; color: var(--muted-fg); opacity: .5;
+  transition: opacity .12s, background .12s, color .12s;
+}
+.stat-tile:hover .tile-rf, .tile-rf:focus-visible { opacity: 1; }
+.tile-rf:hover:not(:disabled) { background: var(--accent); color: var(--foreground); }
+.tile-rf svg { width: 12px; height: 12px; }
+.tile-rf .spinner { width: 12px; height: 12px; border-width: 1.5px; }
+.stat-tile.busy .val { opacity: .6; }
+.stat-tile .val { margin-top: 2px; font-size: 16px; font-weight: 620; font-variant-numeric: tabular-nums; line-height: 1.25; }
+.stat-tile .val em { font-style: normal; font-size: 11px; font-weight: 400; color: var(--muted-fg); }
+.stat-tile .sub { margin-top: 2px; font-size: 10.5px; color: var(--muted-fg); }
+.stat-tile .sub.warn { color: var(--warning); }
+.stat-tile .sub.bad { color: var(--destructive); }
+
+/* Tab：把原来 7 段长滚动切成四块，找不到按钮的问题随之消失 */
+.drawer-tabs { display: flex; gap: 2px; border-bottom: 1px solid var(--border); }
+.drawer-tabs button {
+  padding: 8px 10px; font-size: 12px; color: var(--muted-fg);
+  border-bottom: 2px solid transparent; margin-bottom: -1px; transition: color .12s, border-color .12s;
+}
+.drawer-tabs button:hover { color: var(--foreground); }
+.drawer-tabs button.on { color: var(--foreground); font-weight: 600; border-bottom-color: var(--primary); }
+.drawer-tabs .n { margin-left: 5px; font-size: 10.5px; color: var(--muted-fg); font-weight: 400; }
+
+/* 固定底栏：抽屉里唯一的「流程入口」永远在手指/鼠标够得着的地方 */
+.drawer-foot { display: none; gap: 8px; padding: 12px 16px; border-top: 1px solid var(--border); background: var(--card); }
+.drawer-foot.show { display: flex; }
+.drawer-foot .btn { flex: 1; }
+.drawer-foot .btn.grow0 { flex: 0 0 auto; }
 
 /* 向导 */
 .steps { display: flex; align-items: center; gap: 6px; margin-bottom: 4px; }

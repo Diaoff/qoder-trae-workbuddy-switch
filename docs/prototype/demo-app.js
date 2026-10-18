@@ -1852,10 +1852,21 @@ function backupResultHtml(r) {
 }
 
 /* ══════════════════════ 抽屉 ══════════════════════ */
-function openDrawer(html, title) {
+/**
+ * 打开右侧抽屉。
+ *
+ * @param foot 固定底栏的 HTML（只有**账号详情**用；向导 / 扫描这类流程不给底栏，
+ *   它们的「上一步 / 下一步」在正文里，底栏再放一份就成了两套按钮）。
+ */
+function openDrawer(html, title, foot) {
   clearInterval(permTimer); permTimer = null;
   $("#drawer-title").textContent = title;
   $("#drawer-body").innerHTML = html;
+  const footEl = $("#drawer-foot");
+  if (footEl) {
+    footEl.innerHTML = foot || "";
+    footEl.classList.toggle("show", Boolean(foot));
+  }
   $("#drawer").classList.add("open");
   $("#drawer").setAttribute("aria-hidden", "false");
   $("#drawer-overlay").classList.add("open");
@@ -1915,84 +1926,154 @@ function nowStamp() {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 
-function drawerAccount(id, editing) {
-  const s = curScope(), p = curPlatform();
-  const a = s.accounts.find((x) => x.id === id);
-  if (!a) return;
-  state.drawer = { kind: "account", id, editingRemark: Boolean(editing) };
-  /* 与账号卡同口径：绑定任一程序位即「当前登录」（多对多，不是只看第一个程序位）。 */
-  const isCur = p.programs.some((pg) => a.programs[pg.id]);
-  openDrawer(`
-    <div class="dsec">
-      <div class="row" style="gap:12px">
-        <span class="avatar" style="width:44px;height:44px;border-radius:13px;font-size:16px;background:${avatarTone(a.name)}">${initials(a.name)}</span>
-        <div class="grow"><div style="font-size:15px;font-weight:600">${esc(a.name)}</div>
-          <div class="tiny muted">${esc(maskEmail(a.email) || "—")}</div></div>
-        ${isCur ? `<span class="badge info">当前登录</span>` : ""}
-      </div>
-    </div>
+/* ─────────── 账号详情抽屉（v2：指标条 + Tab + 固定底栏）───────────
+   重设计的核心是**分工**，评审请看这一条：
+     · 卡片页脚     → 勾选 / 切换程序位（点一下就切，最高频）
+     · 卡片「更多」 → **所有单步动作**：4 项刷新、手动签到、导出、删除
+     · 账号详情     → **只看 + 需要上下文的深操作**：指标 / 资源包 / 签到历史 / 凭据 / 快照，
+                      动作只剩「带迁移的切换」「续期 JWT」「权限诊断」「复制插件会话」
+   判据：**能一步做完的进菜单；要看数据才敢决定的留在抽屉。** 同一个动作不许两处都有 ——
+   上一版「刷新」在菜单、「刷新 Token」在抽屉、「手动签到」两边都能点，就是乱在重复上。 */
+const ACCOUNT_TABS = [
+  { id: "overview", label: "概览" },
+  { id: "checkin", label: "签到" },
+  { id: "credential", label: "凭据" },
+];
 
-    <div class="dsec">
-      <h4>切换到此账号</h4>
-      <div class="row wrap">
-        ${p.programs.map((pg) => `<button class="prog${a.programs[pg.id] ? " on" : ""}${pg.installed ? "" : " off"}"
-          data-act="acct-prog|${a.id}|${pg.id}">${a.programs[pg.id] ? ICON.check : ""}${esc(pg.label)}${pg.installed ? "" : "（未检测到）"}</button>`).join("")}
-      </div>
-      <button class="btn primary" data-act="wizard|${a.id}">${ICON.arrowRight}使用向导切换（可选迁移内容）</button>
-      ${(() => {
-        /* ★★ P14 S4a · 插件侧会话复制的入口 —— **只在账号绑定了插件类程序位**时出现。
-           为什么入口在这里、**不在**「关联会话」页：那边是**副本组**模型
-           （有账本、可双向同步、有「谁落后 / 谁分叉」），而插件侧是**一次性单向复制**
-           （副本恒取新 id）⇒ 塞进去只会多出一个永远空的组列表。 */
-        const ext = p.programs.find((pg) => (pg.id === "vscode" || pg.id === "ide") && a.programs[pg.id]);
-        return ext
-          ? `<button class="btn sm" data-act="ext-sess|open|${a.id}">${ICON.sessions}复制插件会话（${esc(ext.label)}）</button>`
-          : "";
-      })()}
-    </div>
+/**
+ * 指标块 + **就地刷新**。
+ *
+ * ★ 为什么抽屉里也留刷新入口：抽屉就是「看数据」的地方，看完发现数字旧了却要关掉抽屉、
+ * 点卡片「⋯」、再点刷新、再打开抽屉 —— 这个来回正是上一版被吐槽的那种别扭。
+ * 四个块各对应一个数据源，`data-act` 与卡片菜单里的四项**完全一致**（`acct-refresh|<id>|<kind>`），
+ * 所以状态、反馈、失败口径全都复用同一套，不是第二套实现。
+ */
+function drawerStatTile(a, kind, label, valueHtml, subHtml, tone) {
+  const key = `${a.id}:${kind}`;
+  const busy = state.refreshing.has(key);
+  const done = state.refreshDone.has(key);
+  return `<div class="stat-tile${busy ? " busy" : ""}">
+      <div class="lab">${label}<button class="tile-rf" data-act="acct-refresh|${a.id}|${kind}"
+        title="刷新${label}" aria-label="刷新${label}"${busy ? " disabled" : ""}
+        >${busy ? '<span class="spinner"></span>' : done ? ICON.check : ICON.refresh}</button></div>
+      <div class="val">${valueHtml}</div>
+      <div class="sub${tone ? " " + tone : ""}">${subHtml}</div>
+    </div>`;
+}
 
-    <div class="dsec">
+/** 四个关键指标：一眼看清「这个账号现在什么状态」，不用往下滚。 */
+function drawerStats(a) {
+  const hist = a.checkinHistory || [];
+  const okDays = hist.filter((h) => h.ok).length;
+  const credTone = a.expired ? "bad" : a.needsRelogin ? "bad" : "";
+  const credText = a.expired ? "已过期" : a.needsRelogin ? "需重登" : "有效";
+  const credSub = a.expired ? "先重新登录" : a.needsRelogin ? "会话已失效" : "可正常使用";
+  return `<div class="acct-stats">
+    ${drawerStatTile(a, "credits", "积分",
+      `${fmt(a.credits)}<em>/${fmt(a.creditsTotal)}</em>`,
+      a.expiring ? `${fmt(a.expiring)} 积分 ${a.expireInDays} 天内到期` : "无临期积分",
+      a.expiring ? "warn" : "")}
+    ${drawerStatTile(a, "tokens", "今日 Token", fmtTok(a.todayTokens), `累计 ${fmtTok(a.totalTokens)}`)}
+    ${drawerStatTile(a, "checkin", "今日签到", a.checkedIn ? "已签到" : "未签到", `近 7 天 ${okDays}/${hist.length || 0}`)}
+    ${drawerStatTile(a, "credential", "凭据", credText, credSub, credTone)}
+  </div>`;
+}
+
+function drawerTabsNav(a, active, tabCounts) {
+  const items = ACCOUNT_TABS.concat(curPlatform().capabilities.includes("snapshot") ? [{ id: "snapshot", label: "快照" }] : []);
+  return `<div class="drawer-tabs" role="tablist">
+    ${items.map((t) => `<button role="tab" aria-selected="${t.id === active}" class="${t.id === active ? "on" : ""}"
+      data-act="drawer-tab|${a.id}|${t.id}">${t.label}${tabCounts && tabCounts[t.id] ? `<span class="n">${tabCounts[t.id]}</span>` : ""}</button>`).join("")}
+  </div>`;
+}
+
+/** 概览：身份类信息 + 资源包 + 插件会话（备注在这一页就地编辑，因为改之前必须看见原文）。 */
+function drawerOverview(a, editing) {
+  const p = curPlatform();
+  const ext = p.programs.find((pg) => (pg.id === "vscode" || pg.id === "ide") && a.programs[pg.id]);
+  const loginOn = p.programs.filter((pg) => a.programs[pg.id]).map((pg) => pg.label);
+  return `<div class="dsec">
       <h4>账号信息</h4>
-      <div class="kv"><span class="k">积分</span><span class="v">${fmt(a.credits)} / ${fmt(a.creditsTotal)}${a.expiring ? ` · <span style="color:var(--warning)">${fmt(a.expiring)} 将在 ${a.expireInDays} 天后过期</span>` : ""}</span></div>
-      <div class="kv"><span class="k">今日 Token</span><span class="v">${fmt(a.todayTokens)}</span></div>
-      <div class="kv"><span class="k">累计 Token</span><span class="v">${fmt(a.totalTokens)}</span></div>
-      <div class="kv"><span class="k">今日签到</span><span class="v">${a.checkedIn ? `<span class="badge ok">已签到</span>` : `<span class="badge warn">未签到</span>`}</span></div>
-      <div class="kv"><span class="k">分组</span><span class="v">${esc(a.group)}</span></div>
+      <div class="kv"><span class="k">分组</span><span class="v">${esc(a.group || "未分组")}</span></div>
       ${editing
         ? `<div class="kv"><span class="k">备注</span><span class="v"><input id="remark-input" class="inp" style="width:100%" value="${esc(a.remark || "")}" placeholder="输入备注…" /></span></div>
-           <div class="row" style="gap:6px;margin-top:2px">
+           <div class="row" style="gap:6px">
              <button class="btn sm primary" data-act="act|remark-save|${a.id}">保存</button>
              <button class="btn ghost sm" data-act="act|remark-cancel|${a.id}">取消</button>
            </div>`
-        : `<div class="kv"><span class="k">备注</span><span class="v">${esc(a.remark || "—")}</span></div>`}
+        : `<div class="kv"><span class="k">备注</span><span class="v">${esc(a.remark || "—")}
+             <button class="btn ghost xs" style="margin-left:6px" data-act="act|remark|${a.id}">${ICON.wand}编辑</button></span></div>`}
       <div class="kv"><span class="k">最后使用</span><span class="v">${esc(a.lastUsed)}</span></div>
+      <div class="kv"><span class="k">登录程序位</span><span class="v">${loginOn.length ? esc(loginOn.join(" · ")) : `<span class="muted">未绑定</span>`}</span></div>
     </div>
-
     <div class="dsec">
       <h4>资源包明细</h4>
       ${packsHtml(a)}
     </div>
+    ${ext ? `<div class="dsec">
+      <h4>插件会话</h4>
+      <button class="btn sm" data-act="ext-sess|open|${a.id}">${ICON.sessions}复制插件会话（${esc(ext.label)}）</button>
+      <div class="tiny muted">把该账号在插件侧的历史会话<b>单向复制</b>到当前工作区，不会回写。</div>
+    </div>` : ""}`;
+}
 
-    <div class="dsec">
-      <h4>签到历史（近 7 天）</h4>
+function drawerCheckin(a) {
+  return `<div class="dsec">
+      <h4>近 7 天签到</h4>
       ${checkinHistoryHtml(a)}
-    </div>
+      <div class="tiny muted">手动签到在卡片右上角的「更多」里 —— 这里只负责看历史，不放第二个签到按钮。</div>
+    </div>`;
+}
 
-    ${p.capabilities.includes("snapshot") ? snapshotsHtml(a) : ""}
-
-    <div class="dsec">
-      <h4>操作</h4>
-      <div class="row wrap">
-        <button class="btn sm" data-act="act|refresh-token|${a.id}">${ICON.refresh}刷新 Token</button>
-        ${!a.checkedIn && !a.expired && !a.needsRelogin ? `<button class="btn sm" data-act="act|checkin|${a.id}">${ICON.spark}手动签到</button>` : ""}
-        <button class="btn sm" data-act="act|remark|${a.id}">${ICON.wand}编辑备注</button>
-        <button class="btn sm" data-act="act|export|${a.id}">${ICON.download}导出</button>
+/** 凭据：这里才有写操作（续期会改写客户端凭据），所以必须先把当前状态摆在上面。 */
+function drawerCredential(a) {
+  const state = a.expired ? { tone: "bad", text: "已过期" } : a.needsRelogin ? { tone: "bad", text: "需重新登录" } : { tone: "ok", text: "有效" };
+  return `<div class="dsec">
+      <h4>凭据状态</h4>
+      <div class="kv"><span class="k">状态</span><span class="v"><span class="badge ${state.tone}">${state.text}</span></span></div>
+      <div class="kv"><span class="k">来源</span><span class="v">本机客户端登录态</span></div>
+      <div class="row wrap" style="margin-top:2px">
+        <button class="btn sm" data-act="act|refresh-token|${a.id}">${ICON.refresh}续期 JWT</button>
         <button class="btn sm" data-act="perm-guide|${a.id}">${ICON.shield}切换权限诊断</button>
       </div>
-      ${(a.expired || a.needsRelogin) ? `<div class="proto-note">凭据${a.expired ? "已过期" : "需重新登录"}，不提供签到入口——与批量签到的「结构性失败」口径一致，需先处理凭据。</div>` : ""}
-      <button class="btn sm danger" style="margin-top:4px" data-act="act|delete|${a.id}">${ICON.trash}删除账号</button>
+      <div class="tiny muted">「续期 JWT」会<b>写入</b>客户端凭据文件；只想看有效期，用卡片「更多 → 刷新凭据状态」（只读）。</div>
+      ${(a.expired || a.needsRelogin)
+        ? `<div class="tiny" style="color:var(--destructive)">凭据已失效：积分 / Token / 签到三项在修好它之前都读不到，先重新登录。</div>`
+        : ""}
+    </div>`;
+}
+
+function accountDrawerBody(a, tab, editing) {
+  if (tab === "checkin") return drawerCheckin(a);
+  if (tab === "credential") return drawerCredential(a);
+  if (tab === "snapshot") return snapshotsHtml(a);
+  return drawerOverview(a, editing);
+}
+
+/** 抽屉底栏：**全抽屉唯一的动作出口** —— 带迁移的切换（正文里的程序位按钮已上移到卡片）。 */
+function accountDrawerFoot(a) {
+  return `<button class="btn primary" data-act="wizard|${a.id}">${ICON.arrowRight}用向导切换（可选迁移内容）</button>`;
+}
+
+function drawerAccount(id, editing) {
+  const s = curScope(), p = curPlatform();
+  const a = s.accounts.find((x) => x.id === id);
+  if (!a) return;
+  /* 保持当前 Tab：点「续期 JWT」这类动作后会重绘抽屉，跳回「概览」会让用户以为点错了。 */
+  const keepTab = state.drawer && state.drawer.kind === "account" && state.drawer.id === id ? state.drawer.tab : "overview";
+  const tab = editing ? "overview" : (keepTab || "overview");
+  state.drawer = { kind: "account", id, tab, editingRemark: Boolean(editing) };
+  const isCur = p.programs.some((pg) => a.programs[pg.id]);
+  openDrawer(`
+    <div class="acct-hd">
+      <span class="avatar" style="width:44px;height:44px;border-radius:13px;font-size:16px;background:${avatarTone(a.name)}">${initials(a.name)}</span>
+      <span class="who"><b>${esc(a.name)}</b><span>${esc(maskEmail(a.email) || "—")} · UID ${esc(a.id)}</span></span>
+      ${isCur ? `<span class="badge info">当前登录</span>` : ""}
     </div>
-  `, a.name);
+    ${drawerStats(a)}
+    ${drawerTabsNav(a, tab)}
+    ${accountDrawerBody(a, tab, Boolean(editing))}
+  `, "账号详情", accountDrawerFoot(a));
   if (editing) setTimeout(() => { const i = $("#remark-input"); if (i) { i.focus(); if (i.select) i.select(); } }, 40);
 }
 
@@ -2671,7 +2752,8 @@ function refreshOutcome(a, kind) {
 
 function acctMenuInner(a) {
   const keyOf = (kind) => `${a.id}:${kind}`;
-  return `<div class="am-head">刷新 · ${esc(a.name)}</div>
+  return `<div class="am-head">${esc(a.name)}</div>
+    <div class="am-grp">刷新</div>
     ${REFRESH_KINDS.map((k) => {
       const busy = state.refreshing.has(keyOf(k.kind));
       const done = state.refreshDone.has(keyOf(k.kind));
@@ -2683,7 +2765,16 @@ function acctMenuInner(a) {
       </button>`;
     }).join("")}
     <div class="am-sep"></div>
-    <div class="am-note">签到 / 备注 / 删除在账号的抽屉里</div>`;
+    <div class="am-grp">账号</div>
+    ${a.checkedIn
+      ? `<button class="am-item" disabled title="今天已经签过，无需重复"><span class="am-ico">${ICON.check}</span><span class="am-lab">今日已签到</span></button>`
+      : (a.expired || a.needsRelogin)
+        ? `<button class="am-item" disabled title="凭据已失效，先重新登录才能签到"><span class="am-ico">${ICON.spark}</span><span class="am-lab">手动签到</span><span class="am-state">需先登录</span></button>`
+        : `<button class="am-item" data-act="act|checkin|${a.id}"><span class="am-ico">${ICON.spark}</span><span class="am-lab">手动签到</span></button>`}
+    <button class="am-item" data-act="act|export|${a.id}"><span class="am-ico">${ICON.download}</span><span class="am-lab">导出账号</span></button>
+    <div class="am-sep"></div>
+    <button class="am-item danger" data-act="act|delete|${a.id}"><span class="am-ico">${ICON.trash}</span><span class="am-lab">删除账号</span></button>
+    <div class="am-note">备注与登录态在账号详情里（点卡片打开）</div>`;
 }
 
 /* 菜单挂在 **body** 上（`position: fixed`），不塞进卡片：
@@ -2736,6 +2827,11 @@ function closeAcctMenu() {
   renderAccountList();
 }
 
+/** 抽屉正开着这个账号时重绘它（保持当前 Tab）；没开着就什么都不做。 */
+function syncOpenDrawer(id) {
+  if (state.drawer && state.drawer.kind === "account" && state.drawer.id === id) drawerAccount(id);
+}
+
 /**
  * 刷新某个账号的**某一项**数据。
  *
@@ -2752,6 +2848,8 @@ function refreshAccountPart(id, kind) {
   state.refreshDone.delete(key);
   renderAccountList();
   renderAcctMenu();
+  /* 抽屉开着同一个账号时也要重绘：指标块上的 ⟳ 就在抽屉里，不重绘就没有「进行中」。 */
+  syncOpenDrawer(id);
   setTimeout(() => {
     state.refreshing.delete(key);
     const outcome = refreshOutcome(a, kind);
@@ -2766,6 +2864,7 @@ function refreshAccountPart(id, kind) {
     }
     renderAccountList();
     renderAcctMenu();
+    syncOpenDrawer(id);
   }, conf.ms);
 }
 /* 批量签到：目标 = 已勾选账号（若有），否则整个作用域。
@@ -3021,6 +3120,13 @@ document.addEventListener("click", (e) => {
       state.selected.has(a1) ? state.selected.delete(a1) : state.selected.add(a1);
       renderAccountList(); break;
     case "acct-open": stop(); drawerAccount(a1); break;
+    /* 抽屉 Tab：只切内容区，不动抽屉本身（保留滚动位置与底部动作）。 */
+    case "drawer-tab": {
+      stop();
+      if (state.drawer && state.drawer.kind === "account") state.drawer.tab = a2;
+      drawerAccount(a1);
+      break;
+    }
     /* 单项刷新：a1 = 账号 id，a2 = 数据种类（credits / tokens / checkin / credential）。 */
     case "acct-refresh": stop(); refreshAccountPart(a1, a2); break;
     case "acct-more": stop(); toggleAcctMenu(a1, node); break;
@@ -3134,6 +3240,8 @@ document.addEventListener("click", (e) => {
     }
     case "act": {
       stop();
+      /* 菜单里的动作点完就收起（刷新四项除外 —— 它们要在菜单里显示进行中/已更新）。 */
+      closeAcctMenu();
       if (a1 === "delete") {
         const a = curScope().accounts.find((x) => x.id === a2);
         if (!a) break;
@@ -3150,7 +3258,10 @@ document.addEventListener("click", (e) => {
         });
       } else if (a1 === "checkin") {
         const a = curScope().accounts.find((x) => x.id === a2);
-        a.checkedIn = true; renderAll(); drawerAccount(a2);
+        if (!a) break;
+        a.checkedIn = true; renderAll();
+        /* 只有抽屉正开着这个账号时才重绘 —— 从卡片菜单签到时**不该**顺手打开抽屉。 */
+        if (state.drawer && state.drawer.kind === "account" && state.drawer.id === a2) drawerAccount(a2);
         toast("ok", `${a.name} 签到成功`, "获得 100 积分");
       } else if (a1 === "refresh-token") {
         toast("ok", "Token 已刷新", "凭据有效期已延长");

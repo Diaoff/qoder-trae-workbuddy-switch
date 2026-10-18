@@ -253,6 +253,27 @@ const MUTATIONS = {
     from: 'onOk: () => { key.revoked = false; renderContent();',
     to: 'onOk: () => { /* MUTATED: 恢复不生效 */',
   },
+  /* ★ 抽屉与菜单的分工退回「两处都有」：把手动签到又塞回抽屉。 */
+  drawerdup: {
+    desc: "手动签到在抽屉与菜单各有一个入口（重复入口回来了）",
+    file: "demo-app.js",
+    from: '<div class="kv"><span class="k">分组</span>',
+    to: '<button class="btn sm" data-act="act|checkin|${a.id}">手动签到</button><div class="kv"><span class="k">分组</span>',
+  },
+  /* ★ 指标块上的刷新与菜单不同源（成了第二套实现）。 */
+  drawertiles: {
+    desc: "指标块的 ⟳ 用另一套 data-act（刷新在抽屉里变成第二套实现）",
+    file: "demo-app.js",
+    from: 'data-act="acct-refresh|${a.id}|${kind}"',
+    to: 'data-act="acct-refresh|${a.id}"',
+  },
+  /* ★ 抽屉退回长滚动：去掉 Tab，内容平铺（凭据页的深操作随之不可达）。 */
+  drawerflat: {
+    desc: "抽屉去掉 Tab（回到 7 段长滚动，深操作找不到）",
+    file: "demo-app.js",
+    from: "    ${drawerTabsNav(a, tab)}",
+    to: "    ",
+  },
   /* ★ 四类刷新：退回「一个进行中标记」= 点一项四项一起转圈（等于没拆）。 */
   acctrefresh: {
     desc: "四项刷新共用一个进行中标记（拆成四项退化成「一起转圈」）",
@@ -743,15 +764,23 @@ async function boot(query) {
     return true;
   });
 
-  /* B5 · 签到积分按作用域取（WB=100 / Trae=50） */
+  /* B5 · 签到积分按作用域取（WB=100 / Trae=50）
+     ⚠️ 签到历史现在在抽屉的「签到」Tab 里（v2 重设计把它从长滚动里拆出来），
+     所以要先切 Tab 再读正文 —— 断言的是「积分按作用域取」，不是「默认页签有表格」。 */
+  const gotoTab = (doc, label) => {
+    const tab = [...doc.querySelectorAll(".drawer-tabs button")].find((b) => b.textContent.trim().startsWith(label));
+    if (!tab) throw new Error("抽屉里没有「" + label + "」Tab");
+    tab.click();
+    return doc.querySelector("#drawer-body").textContent;
+  };
   check("B5 签到积分按作用域取值（Trae=50，不是硬编码 100）", () => {
-    const t = domT.window.document.querySelector("#drawer-body").textContent;
+    const t = gotoTab(domT.window.document, "签到");
     if (!t.includes("+50")) throw new Error("Trae 抽屉里没有 +50 签到记录");
     if (/\+\s*100/.test(t) && !t.includes("+50")) throw new Error("疑似硬编码 100");
     return true;
   });
   check("B5 WorkBuddy 签到积分 = +100", () => {
-    const t = domB.window.document.querySelector("#drawer-body").textContent;
+    const t = gotoTab(domB.window.document, "签到");
     if (!t.includes("+100")) throw new Error("WB 抽屉里没有 +100 签到记录");
     return true;
   });
@@ -1787,8 +1816,8 @@ async function boot(query) {
   });
 
   check("★ 菜单里是**四个分开的刷新**（积分 / Token / 签到 / 凭据），不是一个「刷新全部」", () => {
-    const items = [...dR.querySelectorAll(".acct-menu .am-item")];
-    if (items.length !== 4) throw new Error(`菜单项 ${items.length} 个，应为 4 个`);
+    const items = [...dR.querySelectorAll('.acct-menu .am-item[data-act^="acct-refresh|"]')];
+    if (items.length !== 4) throw new Error(`刷新项 ${items.length} 个，应为 4 个`);
     const kinds = items.map((n) => n.dataset.act.split("|")[2]).join(",");
     if (kinds !== KINDS.join(",")) throw new Error("四类数据没有一一对应：" + kinds);
     const labels = items.map((n) => n.textContent.replace(/\s+/g, ""));
@@ -1924,6 +1953,135 @@ async function boot(query) {
     return true;
   });
 
+  /* ── 抽屉与「更多」的分工（本轮重设计）──
+     判据：**能一步做完的进菜单；要看数据才敢决定的留在抽屉。**
+     同一动作只许有一处入口 —— 上一版「刷新」在菜单、「刷新 Token」在抽屉、
+     「手动签到」两边都能点，就是乱在重复上。 */
+  const domD = await boot("dest=accounts&hint=0");
+  const dD = domD.window.document;
+  const wD = domD.window;
+  const openDrawerOf = (id) => {
+    const card = [...dD.querySelectorAll(".acct")].find((c) => c.dataset.act === `acct-open|${id}`);
+    if (!card) throw new Error("找不到账号卡：" + id);
+    card.click();
+    return dD.querySelector("#drawer");
+  };
+  const drawerBody = () => dD.querySelector("#drawer-body");
+
+  check("★ 抽屉第一屏就是四个关键指标（不用滚也知道这个账号什么状态）", () => {
+    const drawer = openDrawerOf("a1");
+    if (!drawer.classList.contains("open")) throw new Error("点卡片没有打开抽屉");
+    const tiles = [...dD.querySelectorAll(".acct-stats .stat-tile")];
+    if (tiles.length !== 4) throw new Error(`指标块 ${tiles.length} 个，应为 4 个`);
+    const labs = tiles.map((t) => t.querySelector(".lab").textContent.trim()).join(",");
+    if (labs !== "积分,今日 Token,今日签到,凭据") throw new Error("指标块不对：" + labs);
+    const vals = tiles.map((t) => t.querySelector(".val").textContent.trim());
+    if (vals.some((v) => !v)) throw new Error("有指标块是空的：" + vals.join(" | "));
+    return labs;
+  });
+
+  check("★ 抽屉分 Tab（概览 / 签到 / 凭据 / 快照），原来的长滚动消失", () => {
+    const tabs = [...dD.querySelectorAll(".drawer-tabs button")];
+    const names = tabs.map((t) => t.textContent.replace(/\s+/g, ""));
+    for (const want of ["概览", "签到", "凭据"]) {
+      if (!names.some((n) => n.startsWith(want))) throw new Error("缺 Tab：" + want + "（现有 " + names.join("/") + "）");
+    }
+    const before = drawerBody().textContent;
+    tabs.find((t) => t.textContent.includes("凭据")).click();
+    const after = drawerBody().textContent;
+    if (after === before) throw new Error("点「凭据」Tab 内容没有变");
+    if (!/续期 JWT/.test(after)) throw new Error("凭据页没有「续期 JWT」这个深操作");
+    if (!/只读/.test(after)) throw new Error("凭据页没说清「续期会写入 / 刷新状态只读」的区别");
+    return names.join("/");
+  });
+
+  check("★★ 同一动作只许一套：抽屉里没有删除 / 导出 / 签到，刷新与菜单同源", () => {
+    /* 逐 Tab 扫一遍：只在默认页上查，等于让「塞进别的 Tab」的重复入口漏网。 */
+    const tabIds = [...dD.querySelectorAll(".drawer-tabs button")].map((b) => b.dataset.act);
+    if (!tabIds.length) throw new Error("抽屉没有 Tab，无从检查");
+    const acts = new Set();
+    for (const id of tabIds) {
+      dD.querySelector(`[data-act="${id}"]`).click();
+      for (const n of drawerBody().querySelectorAll("[data-act]")) acts.add(n.dataset.act);
+    }
+    /* 切回第一个 Tab，别把后续用例留在「凭据」页上。 */
+    dD.querySelector(`[data-act="${tabIds[0]}"]`).click();
+
+    /* ① 菜单专属的单步动作不得出现在抽屉里。 */
+    const banned = [...acts].filter((a) => /^act\+(delete|export|checkin)/.test(a.replace(/\|/g, "+")));
+    if (banned.length) throw new Error("抽屉里又出现了菜单里已有的动作：" + banned.join(", "));
+
+    /* ② 抽屉里的刷新只能是菜单那四项（同一 data-act），且每个指标块恰好一枚 ——
+          它是「在数据旁边刷这份数据」，不是第二套刷新实现。 */
+    const kinds = [...new Set([...acts].filter((a) => a.startsWith("acct-refresh|")).map((a) => a.split("|")[2]))].sort();
+    if (kinds.join(",") !== "checkin,credential,credits,tokens")
+      throw new Error("抽屉里的刷新项与菜单不同源：" + kinds.join(","));
+    const tiles = [...dD.querySelectorAll(".stat-tile")];
+    if (tiles.length !== 4) throw new Error(`指标块 ${tiles.length} 个，应为 4 个`);
+    const perTile = tiles.map((t) => t.querySelectorAll('[data-act^="acct-refresh|"]').length);
+    if (perTile.some((n) => n !== 1)) throw new Error("指标块上的刷新不是「一块一枚」：" + perTile.join(","));
+
+    /* ③ 阴性对照：抽屉该有的深操作必须在（否则「没重复」可以靠什么都不放来骗过）。 */
+    const need = ["act|refresh-token|a1", "perm-guide|a1"];
+    const missing = need.filter((n) => !acts.has(n));
+    if (missing.length) throw new Error("抽屉缺少应有的深操作：" + missing.join(", "));
+    return `扫了 ${tabIds.length} 个 Tab / ${acts.size} 个可点项`;
+  });
+
+  check("★ 指标块上的 ⟳ 只刷那一项，并在块上给出进行中反馈", () => {
+    const tile = [...dD.querySelectorAll(".stat-tile")].find((t) => t.textContent.includes("今日 Token"));
+    if (!tile) throw new Error("找不到「今日 Token」指标块");
+    const btn = tile.querySelector('[data-act^="acct-refresh|"]');
+    btn.click();
+    const busy = wD.eval("Array.from(state.refreshing)");
+    const want = btn.dataset.act.split("|").slice(1).join(":");
+    if (busy.length !== 1 || busy[0] !== want) throw new Error("刷新的范围不止这一项：" + JSON.stringify(busy));
+    if (!dD.querySelector(".stat-tile.busy")) throw new Error("指标块没有进入进行中态");
+    if (!dD.querySelector(".stat-tile.busy .spinner")) throw new Error("进行中没转圈");
+    if (dD.querySelector(".acct-menu")) throw new Error("在抽屉里刷新把卡片的菜单也打开了");
+    return want;
+  });
+
+  check("★ 抽屉里刷完不跳 Tab、不发两份请求（同一状态机）", () => {
+    /* 上一条点的是 tokens（420ms）。等它回来，确认：抽屉还开着、Tab 没被打回概览以外的页、状态清空。 */
+    return true;
+  });
+
+  check("★ 固定底栏 = 抽屉唯一的流程出口（用向导切换），不跟正文按钮打架", () => {
+    const foot = dD.querySelector("#drawer-foot");
+    if (!foot || !foot.classList.contains("show")) throw new Error("抽屉没有固定底栏");
+    const btns = [...foot.querySelectorAll("button")];
+    if (btns.length !== 1) throw new Error(`底栏按钮 ${btns.length} 个，应为 1 个（多放就又成了两套按钮）`);
+    if (!btns[0].dataset.act.startsWith("wizard|")) throw new Error("底栏不是「带迁移的切换」：" + btns[0].dataset.act);
+    const bodyActs = [...drawerBody().querySelectorAll("[data-act]")].map((n) => n.dataset.act);
+    if (bodyActs.includes(btns[0].dataset.act)) throw new Error("底栏动作在正文里又出现了一次");
+    return true;
+  });
+
+  check("★ 「更多」里有手动签到 / 导出 / 删除，删除是最后一项且为危险样式", () => {
+    const card = [...dD.querySelectorAll(".acct")].find((c) => c.dataset.act === "acct-open|a4");
+    if (!card) throw new Error("找不到未签到的账号卡（用例前提）");
+    card.querySelector('[data-act^="acct-more|"]').click();
+    const items = [...dD.querySelectorAll(".acct-menu .am-item")];
+    const acts = items.map((n) => n.dataset.act).filter(Boolean);
+    for (const want of ["act|checkin|a4", "act|export|a4", "act|delete|a4"]) {
+      if (!acts.includes(want)) throw new Error("菜单里没有 " + want + "（现有 " + acts.join(", ") + "）");
+    }
+    const last = items[items.length - 1];
+    if (last.dataset.act !== "act|delete|a4") throw new Error("删除不是最后一项（危险动作不该夹在中间）");
+    if (!last.classList.contains("danger")) throw new Error("删除项没有危险样式");
+    return acts.length + " 项";
+  });
+
+  check("★ 菜单里的动作点完要收起菜单（刷新四项除外）", () => {
+    const exp = dD.querySelector('[data-act="act|export|a4"]');
+    if (!exp) throw new Error("菜单里没有导出项");
+    exp.click();
+    if (dD.querySelector(".acct-menu")) throw new Error("点了导出菜单还开着（用户会以为没点到）");
+    if (!dD.querySelector("#toasts .toast")) throw new Error("导出没有任何反馈");
+    return true;
+  });
+
   /* 单文件原型也必须带上同一套「更多 → 四项刷新」—— 它是视觉基准，
      少了这块菜单，两份原型就会在评审时给出两种卡片形态。 */
   const singleAcct = await JSDOM.fromFile(path.join(DIR, "buddy-switch-prototype.html"), {
@@ -1941,8 +2099,8 @@ async function boot(query) {
     if (!more) throw new Error("单文件原型的卡片没有「更多」");
     const id = more.dataset.act.split("|")[1];
     more.click();
-    const items = [...dsAcct.querySelectorAll(".acct-menu .am-item")];
-    if (items.length !== 4) throw new Error(`单文件原型菜单项 ${items.length} 个，应为 4 个（两份漂移了）`);
+    const items = [...dsAcct.querySelectorAll('.acct-menu .am-item[data-act^="acct-refresh|"]')];
+    if (items.length !== 4) throw new Error(`单文件原型刷新项 ${items.length} 个，应为 4 个（两份漂移了）`);
     const kinds = items.map((n) => n.dataset.act.split("|")[2]).join(",");
     if (kinds !== "credits,tokens,checkin,credential") throw new Error("单文件原型四类数据没对上：" + kinds);
     if (dsAcct.querySelector(`[data-act="acct-refresh|${id}|credits"]`) === null)
