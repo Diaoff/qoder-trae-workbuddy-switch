@@ -260,6 +260,34 @@ const MUTATIONS = {
     from: '<div class="kv"><span class="k">分组</span>',
     to: '<button class="btn sm" data-act="act|checkin|${a.id}">手动签到</button><div class="kv"><span class="k">分组</span>',
   },
+  /* ★ 进度条画成「已用占比」：条越长越穷，正是最容易画反的一处。 */
+  pkbar: {
+    desc: "资源包进度条画成已用占比（条越长越穷）",
+    file: "demo-app.js",
+    from: 'style="width:${pct.toFixed(1)}%"',
+    to: 'style="width:${(100 - pct).toFixed(1)}%" /* MUTATED */',
+  },
+  /* ★ 染色按用量而不是按到期紧迫度（没动过的临期包反而不提醒）。 */
+  pkcolor: {
+    desc: "资源包颜色按用量染（临期但没动过的包不再提醒）",
+    file: "demo-app.js",
+    from: "        const soon = p.expireAt ? p.expireAt - now <= 7 * 86400000 : p.expireInDays <= 7;",
+    to: "        const soon = p.total > 0 && p.remaining / p.total < 0.5; /* MUTATED: 按用量染色 */",
+  },
+  /* ★ 临期积分与资源包脱钩（手写字段，回到两个数字打架的状态）。 */
+  pkexpiring: {
+    desc: "临期积分写死为 0，与资源包明细脱钩",
+    file: "demo-data.js",
+    from: "  a.expiring = _soon.reduce((sum, p) => sum + p.remaining, 0);",
+    to: "  a.expiring = 0; /* MUTATED: 与包明细脱钩 */",
+  },
+  /* ★ 分组只改 UI 不写回（假选择器）。 */
+  pkgroup: {
+    desc: "分组选择器只改控件、不写回数据（假选择器）",
+    file: "demo-app.js",
+    from: "  a.group = group;\n",
+    to: "  /* MUTATED: 不写回 */\n",
+  },
   /* ★ 指标块上的刷新与菜单不同源（成了第二套实现）。 */
   drawertiles: {
     desc: "指标块的 ⟳ 用另一套 data-act（刷新在抽屉里变成第二套实现）",
@@ -2047,6 +2075,142 @@ async function boot(query) {
     return true;
   });
 
+  /* ── 分组 / 备注 / 积分明细（本轮补充）── */
+  const gotoTabOf = (id, tabId) => {
+    const btn = dD.querySelector(`[data-act="drawer-tab|${id}|${tabId}"]`);
+    if (!btn) throw new Error("抽屉里没有 " + tabId + " Tab");
+    btn.click();
+  };
+
+  check("★ 抽屉能改分组：改完立刻写回数据并重绘", () => {
+    gotoTabOf("a1", "overview");
+    const sel = drawerBody().querySelector("[data-account-group]");
+    if (!sel) throw new Error("概览里没有分组选择器（分组还是只读）");
+    const id = sel.dataset.accountGroup;
+    const groupOf = () => wD.eval(`curScope().accounts.find(x => x.id === ${JSON.stringify(id)}).group`);
+    const before = groupOf();
+    const next = before === "测试" ? "常用" : "测试";
+    sel.value = next;
+    sel.dispatchEvent(new wD.Event("change", { bubbles: true }));
+    if (groupOf() !== next) throw new Error(`分组没写回数据：${before} → ${groupOf()}`);
+    const sel2 = drawerBody().querySelector("[data-account-group]");
+    if (!sel2 || sel2.value !== next) throw new Error("重绘后选择器没跟上新值");
+    if (!dD.querySelector("#toasts .toast")) throw new Error("改分组没有任何反馈");
+    return `${before} → ${next}`;
+  });
+
+  check("★ 备注可就地编辑并保存（改之前能看见原文）", () => {
+    gotoTabOf("a1", "overview");
+    const editBtn = drawerBody().querySelector('[data-act="act|remark|a1"]');
+    if (!editBtn) throw new Error("备注行没有「编辑」入口");
+    editBtn.click();
+    const input = dD.querySelector("#remark-input");
+    if (!input) throw new Error("点了编辑没有出现输入框");
+    if (!input.value) throw new Error("输入框里没有预填当前备注 —— 用户看不见原文就改");
+    input.value = "原型备注 · 已保存";
+    dD.querySelector('[data-act="act|remark-save|a1"]').click();
+    const saved = wD.eval("curScope().accounts.find(x => x.id === 'a1').remark");
+    if (saved !== "原型备注 · 已保存") throw new Error("备注没写回数据：" + saved);
+    if (!drawerBody().textContent.includes("原型备注")) throw new Error("抽屉里没显示新备注");
+    return saved;
+  });
+
+  check("★ 「积分」Tab 是完整的资源包明细（名称 / 到期 / 剩余·总量 / 已用 / 进度条）", () => {
+    gotoTabOf("a1", "credits");
+    const rows = [...drawerBody().querySelectorAll(".pk")];
+    const data = wD.eval("curScope().accounts.find(x => x.id === 'a1').packs.filter(p => p.remaining > 0)");
+    if (!data.length) throw new Error("演示数据里该账号没有可用资源包（用例前提不成立）");
+    if (rows.length !== data.length) throw new Error(`渲染 ${rows.length} 个包，数据 ${data.length} 个`);
+    for (const row of rows) {
+      for (const sel of [".pk-name", ".pk-exp", ".pk-left", ".pk-used"]) {
+        if (!row.querySelector(sel) || !row.querySelector(sel).textContent.trim())
+          throw new Error("资源包行缺内容：" + sel);
+      }
+      if (!row.querySelector(".pk-bar > i")) throw new Error("资源包行没有进度条");
+    }
+    if (!/积分 \/ 资源包/.test(drawerBody().textContent)) throw new Error("缺「积分 / 资源包」标题");
+    return `${rows.length} 个包`;
+  });
+
+  check("★★ 进度条画的是「剩余占比」，且按到期紧迫度染色（不是按用量）", () => {
+    /* 逐账号查：只看一张卡的话，一个账号的包刚好「用得多的也都快到期」，
+       染色按用量 / 按到期两种实现会给出同样的结果 —— 变异测试里就是这么漏过去的。 */
+    const ids = wD.eval("curScope().accounts.map((a) => a.id)");
+    const now = Date.now();
+    let rowsSeen = 0, sawSoon = false, sawFresh = false;
+    for (const id of ids) {
+      openDrawerOf(id);
+      gotoTabOf(id, "credits");
+      const rows = [...drawerBody().querySelectorAll(".pk")];
+      const data = wD.eval(`curScope().accounts.find((x) => x.id === ${JSON.stringify(id)}).packs.filter((p) => p.remaining > 0)`)
+        .slice()
+        .sort((x, y) => (x.expireAt || Infinity) - (y.expireAt || Infinity) || x.expireInDays - y.expireInDays);
+      if (rows.length !== data.length) throw new Error(`${id}：渲染 ${rows.length} 个包，数据 ${data.length} 个`);
+      rows.forEach((row, i) => {
+        const p = data[i];
+        const pct = Math.max(0, Math.min(100, (p.remaining / p.total) * 100));
+        const width = parseFloat(row.querySelector(".pk-bar > i").style.width);
+        if (Math.abs(width - pct) > 0.2)
+          throw new Error(`${id} 第 ${i + 1} 个包进度条 ${width}%，应为剩余占比 ${pct.toFixed(1)}%`);
+        const soon = p.expireAt ? p.expireAt - now <= 7 * 86400000 : p.expireInDays <= 7;
+        const barWarn = row.querySelector(".pk-bar > i").classList.contains("warn");
+        if (soon !== barWarn) throw new Error(`${id} 第 ${i + 1} 个包染色不对：临期=${soon} 但 warn=${barWarn}`);
+        if (soon) sawSoon = true; else sawFresh = true;
+      });
+      rowsSeen += rows.length;
+    }
+    /* 阴性对照：整个作用域里必须同时出现临期与非临期包，否则颜色断言是恒真的空转。 */
+    if (!sawSoon || !sawFresh) throw new Error("演示数据里没有同时出现临期 / 非临期包，颜色断言无从验证");
+    return `${ids.length} 个账号 / ${rowsSeen} 个包 · 临期与非临期都在`;
+  });
+
+  check("★★ 包明细合计 = 账号积分（指标块与包列表不许各说各话）", () => {
+    const ids = wD.eval("curScope().accounts.map((a) => a.id)");
+    for (const id of ids) {
+      const [credits, sum] = wD.eval(`(() => {
+        const a = curScope().accounts.find((x) => x.id === ${JSON.stringify(id)});
+        return [a.credits, (a.packs || []).reduce((s, p) => s + p.remaining, 0)];
+      })()`);
+      if (Math.abs(credits - sum) > 0.01)
+        throw new Error(`${id}：账号积分 ${credits}，包剩余合计 ${sum}（应相等）`);
+    }
+    return `${ids.length} 个账号合计一致`;
+  });
+
+  check("★★ 指标块的「临期积分」与积分页的临期包必须一致（不能一个说无、一个摆着）", () => {
+    /* 这条守的是**数据口径**：临期积分若手写在账号上、而包明细是另一份数据，
+       两边迟早打架（修复前 a2 就是「指标块说无临期积分，积分页有个 10-20 到期的包」）。 */
+    const ids = wD.eval("curScope().accounts.map((a) => a.id)");
+    let soonAccounts = 0;
+    for (const id of ids) {
+      openDrawerOf(id);
+      const tile = [...dD.querySelectorAll(".stat-tile")].find((t) => t.textContent.includes("积分"));
+      const sub = tile.querySelector(".sub").textContent.trim();
+      gotoTabOf(id, "credits");
+      const soonRows = [...drawerBody().querySelectorAll(".pk")].filter((r) => r.querySelector(".pk-bar > i").classList.contains("warn"));
+      if (soonRows.length && /无临期积分/.test(sub))
+        throw new Error(`${id}：指标块说「无临期积分」，积分页却有 ${soonRows.length} 个临期包`);
+      if (!soonRows.length && !/无临期积分/.test(sub))
+        throw new Error(`${id}：积分页没有临期包，指标块却说「${sub}」`);
+      if (soonRows.length) soonAccounts++;
+    }
+    if (!soonAccounts) throw new Error("演示数据里没有任何账号有临期包，断言无从验证");
+    return `${ids.length} 个账号 · ${soonAccounts} 个有临期`;
+  });
+
+  check("★ 资源包行按到期升序（最急的在最上面），已用完的不占位置", () => {
+    const rows = [...drawerBody().querySelectorAll(".pk")];
+    const shown = rows.map((r) => r.querySelector(".pk-name").textContent.trim() + "|" + r.querySelector(".pk-exp").textContent.trim());
+    const all = wD.eval("curScope().accounts.find(x => x.id === 'a1').packs");
+    const usedUp = all.filter((p) => p.remaining <= 0).length;
+    if (rows.length + usedUp !== all.length) throw new Error("已用完的包没有按约定隐藏");
+    /* 到期时间在文本里，直接比字符串即按 MM-DD HH:mm 排序。 */
+    const exps = rows.map((r) => r.querySelector(".pk-exp").textContent.replace("到期 ", "").trim());
+    const asc = exps.every((v, i) => i === 0 || exps[i - 1] <= v);
+    if (!asc) throw new Error("没有按到期升序：" + exps.join(" / "));
+    return shown.length + " 行";
+  });
+
   check("★ 固定底栏 = 抽屉唯一的流程出口（用向导切换），不跟正文按钮打架", () => {
     const foot = dD.querySelector("#drawer-foot");
     if (!foot || !foot.classList.contains("show")) throw new Error("抽屉没有固定底栏");
@@ -2106,6 +2270,19 @@ async function boot(query) {
     if (dsAcct.querySelector(`[data-act="acct-refresh|${id}|credits"]`) === null)
       throw new Error("单文件原型点开菜单后拿不到这一项的刷新入口");
     return true;
+  });
+
+  check("单文件原型同形：抽屉也是「指标 + Tab + 积分明细 + 分组可选」", () => {
+    const card = dsAcct.querySelector('[data-act="acct-open|a1"]');
+    if (!card) throw new Error("单文件原型找不到 a1 的卡片");
+    card.click();
+    if (!dsAcct.querySelector(".acct-stats .stat-tile")) throw new Error("单文件原型的抽屉没有指标块");
+    const tabActs = [...dsAcct.querySelectorAll(".drawer-tabs button")].map((b) => b.dataset.act);
+    if (!tabActs.includes("drawer-tab|a1|credits")) throw new Error("单文件原型没有「积分」Tab");
+    if (!dsAcct.querySelector("[data-account-group]")) throw new Error("单文件原型的抽屉不能改分组");
+    dsAcct.querySelector('[data-act="drawer-tab|a1|credits"]').click();
+    if (!dsAcct.querySelector(".pk")) throw new Error("单文件原型的积分页没有资源包明细（两份漂移了）");
+    return "指标 / Tab / 积分明细 / 分组 都在";
   });
 
   const pass = results.filter((r) => r.ok).length;

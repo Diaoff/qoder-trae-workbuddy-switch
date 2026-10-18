@@ -618,6 +618,31 @@ table.tbl tbody tr.is-current { background: color-mix(in oklab, var(--primary) 7
 .drawer-foot .btn { flex: 1; }
 .drawer-foot .btn.grow0 { flex: 0 0 auto; }
 
+/* ─────────── 积分 / 资源包列表（抽屉「积分」页） ───────────
+   对齐设计参考图：包名 + 到期时刻（临期转橙）、剩余/总量 + 已用、剩余占比进度条。 */
+.pk-sum { font-size: 11.5px; color: var(--muted-fg); }
+.pk-sum b { color: var(--foreground); font-weight: 620; font-variant-numeric: tabular-nums; }
+.pk-list { display: flex; flex-direction: column; gap: 13px; }
+.pk { display: flex; flex-direction: column; gap: 5px; }
+.pk-top { display: flex; align-items: baseline; gap: 10px; min-width: 0; }
+.pk-name { flex: 1; min-width: 0; font-size: 12.5px; font-weight: 550; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.pk-exp { flex-shrink: 0; font-size: 11px; color: var(--muted-fg); font-variant-numeric: tabular-nums; }
+.pk-exp.warn { color: var(--warning); }
+.pk-num { display: flex; align-items: baseline; gap: 10px; font-variant-numeric: tabular-nums; }
+.pk-left { font-size: 13px; font-weight: 620; }
+.pk-left em { font-style: normal; font-size: 11.5px; font-weight: 400; color: var(--muted-fg); }
+.pk-used { margin-left: auto; font-size: 11px; color: var(--muted-fg); }
+.pk-bar { height: 4px; border-radius: 999px; background: var(--border); overflow: hidden; }
+.pk-bar > i { display: block; height: 100%; border-radius: 999px; background: var(--success); }
+.pk-bar > i.warn { background: var(--warning); }
+
+/* 行内单选（分组）：长得像值，点开是原生下拉 —— 单值枚举不需要自建弹层 */
+.sel-inline {
+  height: 26px; padding: 0 6px; font-size: 12.5px; border-radius: 7px;
+  background: var(--card-2); border: 1px solid var(--border); color: var(--foreground);
+}
+.sel-inline:hover { border-color: var(--border-strong); }
+
 /* 向导 */
 .steps { display: flex; align-items: center; gap: 6px; margin-bottom: 4px; }
 .steps .s { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--muted-fg); }

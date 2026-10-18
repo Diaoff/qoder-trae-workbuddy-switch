@@ -168,16 +168,54 @@ function makePacks(seedStr, credits, creditsTotal) {
   const n = 2 + (rnd() % 3);
   /* 包名先洗牌再取前 n 个，保证同一账号内不出现重名资源包。 */
   const names = _pick(["新手礼包", "月度订阅", "活动赠送", "团队共享", "年度包"], n, rnd);
-  const out = [];
-  let remLeft = credits, totLeft = creditsTotal;
+
+  /* ① 先定每个包的**总量**（最后一包吃余数 ⇒ 合计恒等于 creditsTotal）。 */
+  const packs = [];
+  let totLeft = creditsTotal;
   for (let i = 0; i < n; i++) {
-    const last = i === n - 1;
-    const tot = last ? Math.max(0, totLeft) : Math.round(creditsTotal / n);
-    const rem = last ? Math.max(0, remLeft) : Math.min(tot, Math.round(credits / n));
-    totLeft -= tot; remLeft -= rem;
-    out.push({ name: names[i], remaining: rem, total: tot, expireInDays: 2 + (rnd() % 60) });
+    const tot = i === n - 1 ? Math.max(0, totLeft) : Math.round(creditsTotal / n);
+    totLeft -= tot;
+    packs.push({ name: names[i], total: tot, remaining: tot });
   }
-  return out;
+
+  /* ② 再把「已用掉的量」随机摊到各包上 —— 之前每包都写 `credits / n`，
+        结果一屏四行全是「310 / 500 · 已用 190」，进度条一模一样，
+        既不像真实发放（有的包没动、有的用掉大半），也让设计评审看不出条形图的差异。
+        ⚠️ 摊完的合计必须**精确**等于 `credits`（否则「积分」指标块与包明细对不上）。 */
+  let used = creditsTotal - Math.min(credits, creditsTotal);
+  const order = packs.map((_, i) => i).sort(() => rnd() - 0.5);
+  for (const i of order) {
+    if (used <= 0) break;
+    const p = packs[i];
+    /* 每包用掉 20%~90%（而不是固定 90%）：额度紧的账号（如 120/2000）否则会变成
+       「每包都恰好用 450」的一排相同进度条 —— 那正是这版要修掉的观感。 */
+    const take = Math.min(Math.floor(p.total * (0.2 + rnd() * 0.7)), used);
+    p.remaining = p.total - take;
+    used -= take;
+  }
+  /* ③ 还有没摊完的（都被上限挡住时）继续往后摊，允许把包用光 ——
+        ⚠️ 必须摊完：`sum(remaining)` 要**精确**等于 `credits`，否则指标块与包明细对不上
+        （曾经把余量一次性压到最后一包，被 clamp 吃掉几百，合计就漂了）。 */
+  for (const p of packs) {
+    if (used <= 0) break;
+    const take = Math.min(p.remaining, used);
+    p.remaining -= take;
+    used -= take;
+  }
+
+  /* ④ 到期：`expireAt`（毫秒）是真实后端 `CreditResource.expireAt` 的对应字段 ——
+        抽屉的「积分 / 资源包」要显示「到期 10-24 12:00」，只有天数不够。
+        抖动 ±6.5h 让到期时刻看起来像真的发放时间，而不是每包都「今天此刻 + N 天」。 */
+  for (let i = 0; i < packs.length; i++) {
+    const p = packs[i];
+    /* 第一包约一半概率落在 7 天内 ⇒ 演示里能看到「临期」的橙色条与卡片徽章；
+       其余包 2~61 天，保证「未临期」也始终有样本（颜色断言需要两种都在）。 */
+    const days = i === 0 && rnd() < 0.55 ? 2 + (rnd() % 6) : 2 + (rnd() % 60);
+    const jitterMs = ((rnd() % 780) - 390) * 60000;
+    p.expireAt = Date.now() + days * 86400000 + jitterMs;
+    p.expireInDays = Math.max(1, Math.ceil((p.expireAt - Date.now()) / 86400000));
+  }
+  return packs;
 }
 function makeCheckinHistory(seedStr) {
   const rnd = _rng(seedStr + "c");
@@ -191,7 +229,7 @@ function makeCheckinHistory(seedStr) {
 function makeAccount(id, name, email, o) {
   const a = Object.assign({
     id, name, email, remark: "", group: "默认",
-    credits: 1200, creditsTotal: 2000, expiring: 0, expireInDays: 30,
+    credits: 1200, creditsTotal: 2000,
     checkedIn: true, expired: false, needsRelogin: false, priority: false,
     programs: {}, lastUsed: "刚刚", lastUsedTs: Date.now(),
     todayTokens: 0, totalTokens: 0, status: "ok",
@@ -199,6 +237,18 @@ function makeAccount(id, name, email, o) {
   }, o || {});
   a.sessionTree = a.sessionTree || makeSessionTree(id);
   a.packs = a.packs || makePacks(id, a.credits, a.creditsTotal);
+  /* 「临期积分 / 最近到期」**从资源包派生**，不再手写在账号字面量里。
+     真实后端的 `expiringSoonRemaining` 也是这么算的；手写会与包明细打架 ——
+     a2 就出现过「指标块说无临期积分、积分页却摆着一个 10-20 到期的包」。
+       · expiring      = 7 天内到期的包里还剩多少（卡片徽章 + 指标块用）
+       · expireInDays  = 这些包里最早到期的天数（没有临期包时退回全部包里最近的） */
+  const _now = Date.now();
+  const _soon = a.packs.filter((p) => p.remaining > 0 && p.expireAt && p.expireAt - _now <= 7 * 86400000);
+  a.expiring = _soon.reduce((sum, p) => sum + p.remaining, 0);
+  const _live = a.packs.filter((p) => p.remaining > 0 && p.expireAt);
+  a.expireInDays = _soon.length
+    ? Math.min(..._soon.map((p) => Math.ceil((p.expireAt - _now) / 86400000)))
+    : (_live.length ? Math.min(..._live.map((p) => Math.ceil((p.expireAt - _now) / 86400000))) : null);
   a.checkinHistory = a.checkinHistory || makeCheckinHistory(id);
   return a;
 }
@@ -210,12 +260,12 @@ const SCOPES = {
     todayCredits: 46, gatewayRequests: 312, gatewayKeys: 3, checkinReward: 100,
     accounts: [
       makeAccount("a1", "jackey", "jackey@example.com", {
-        remark: "主号 · 长期", credits: 1240, creditsTotal: 2000, expiring: 320, expireInDays: 3,
+        remark: "主号 · 长期", credits: 1240, creditsTotal: 2000,
         programs: { workbuddy: true, ide: true, cli: false }, priority: true,
         lastUsed: "2 分钟前", todayTokens: 42100, totalTokens: 862400,
       }),
       makeAccount("a2", "team-shared", "shared@example.com", {
-        remark: "团队共用", credits: 860, creditsTotal: 1000, expiring: 0, expireInDays: 21,
+        remark: "团队共用", credits: 860, creditsTotal: 1000,
         programs: { workbuddy: false, ide: true, cli: false },
         lastUsed: "1 小时前", todayTokens: 28400, totalTokens: 512000,
       }),
@@ -225,7 +275,7 @@ const SCOPES = {
         lastUsed: "3 天前", todayTokens: 0, totalTokens: 96400,
       }),
       makeAccount("a4", "qa-bot", "qa@example.com", {
-        remark: "自动化测试", credits: 120, creditsTotal: 2000, expiring: 120, expireInDays: 2,
+        remark: "自动化测试", credits: 120, creditsTotal: 2000,
         checkedIn: false, programs: { workbuddy: false, ide: true, cli: false },
         lastUsed: "5 分钟前", todayTokens: 31200, totalTokens: 288100,
       }),
@@ -257,7 +307,7 @@ const SCOPES = {
     todayCredits: 7, gatewayRequests: 26, gatewayKeys: 1, checkinReward: 100,
     accounts: [
       makeAccount("g1", "jackey-global", "jackey@global.example.com", {
-        remark: "国际版主号", credits: 720, creditsTotal: 1000, expiring: 180, expireInDays: 4,
+        remark: "国际版主号", credits: 720, creditsTotal: 1000,
         programs: { workbuddy: true, ide: false, cli: false }, priority: true,
         lastUsed: "1 天前", todayTokens: 14200, totalTokens: 88300,
       }),
@@ -274,7 +324,7 @@ const SCOPES = {
     todayCredits: 31, gatewayRequests: 148, gatewayKeys: 2, checkinReward: 50,
     accounts: [
       makeAccount("t1", "jackey", "jackey@example.com", {
-        remark: "TraeWork 主号", credits: 880, creditsTotal: 1500, expiring: 140, expireInDays: 5,
+        remark: "TraeWork 主号", credits: 880, creditsTotal: 1500,
         programs: { trae_work: true, trae_code: true }, priority: true, group: "常用",
         lastUsed: "刚刚", todayTokens: 51400, totalTokens: 402100,
         snapshots: [{ ts: "2026-09-28 14:20", size: "18.4 MB" }, { ts: "2026-09-21 09:05", size: "17.9 MB" }],
@@ -285,7 +335,7 @@ const SCOPES = {
         lastUsed: "20 分钟前", todayTokens: 26800, totalTokens: 296400,
       }),
       makeAccount("t3", "solo-test", "solo@example.com", {
-        remark: "TRAE SOLO 测试", credits: 90, creditsTotal: 500, expiring: 90, expireInDays: 1,
+        remark: "TRAE SOLO 测试", credits: 90, creditsTotal: 500,
         checkedIn: false, programs: { trae_work: false, trae_code: false }, group: "测试",
         lastUsed: "2 天前", todayTokens: 12000, totalTokens: 74800,
       }),
@@ -314,7 +364,7 @@ const SCOPES = {
     todayCredits: 52, gatewayRequests: 184, gatewayKeys: 2, checkinReward: 100,
     accounts: [
       makeAccount("q1", "jackey", "jackey@qoder.cn", {
-        remark: "主号 · 长期", credits: 1180, creditsTotal: 2000, expiring: 260, expireInDays: 4,
+        remark: "主号 · 长期", credits: 1180, creditsTotal: 2000,
         programs: { qoder_app: true, qoder_cli: true }, priority: true, group: "常用",
         lastUsed: "3 分钟前", todayTokens: 38400, totalTokens: 512000,
       }),
@@ -324,7 +374,7 @@ const SCOPES = {
         lastUsed: "1 小时前", todayTokens: 12600, totalTokens: 208000,
       }),
       makeAccount("q3", "trial-01", "trial@qoder.cn", {
-        remark: "新人试用", credits: 80, creditsTotal: 500, expiring: 80, expireInDays: 2,
+        remark: "新人试用", credits: 80, creditsTotal: 500,
         checkedIn: false, programs: { qoder_app: false, qoder_cli: false }, group: "测试",
         lastUsed: "20 分钟前", todayTokens: 5200, totalTokens: 34800,
       }),
@@ -346,7 +396,7 @@ const SCOPES = {
     todayCredits: 18, gatewayRequests: 21, gatewayKeys: 1, checkinReward: 100,
     accounts: [
       makeAccount("qg1", "jackey-global", "jackey@qoder.com", {
-        remark: "国际版主号", credits: 900, creditsTotal: 1500, expiring: 150, expireInDays: 6,
+        remark: "国际版主号", credits: 900, creditsTotal: 1500,
         programs: { qoder_app: true, qoder_cli: false }, priority: true,
         lastUsed: "2 小时前", todayTokens: 21800, totalTokens: 176400,
       }),

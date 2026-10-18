@@ -86,6 +86,15 @@ const maskEmail = (email) => {
 };
 
 const fmt = (n) => Number(n || 0).toLocaleString("zh-CN");
+/* 资源包数量：最多两位小数、去掉多余的 0（1000 → 1,000；30.86 → 30.86；6 → 6）。 */
+const fmtQty = (n) => Number(Number(n || 0).toFixed(2)).toLocaleString("zh-CN", { maximumFractionDigits: 2 });
+/* 到期时刻：MM-DD HH:mm —— 资源包最多几十天到期，再带年份是噪声。 */
+function fmtMonthDay(ts) {
+  const d = new Date(ts);
+  if (!Number.isFinite(ts) || Number.isNaN(d.getTime())) return "";
+  const p = (n) => String(n).padStart(2, "0");
+  return `${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+}
 const fmtTok = (n) => (n >= 1e6 ? (n / 1e6).toFixed(1) + "M" : n >= 1e3 ? (n / 1e3).toFixed(1) + "K" : String(n || 0));
 const curScope = () => SCOPES[state.scope];
 const curPlatform = () => PLATFORMS[curScope().platform];
@@ -543,7 +552,8 @@ function filteredAccounts() {
   const sorters = {
     priority: (a, b) => (b.priority - a.priority) || (b.credits - a.credits),
     name: (a, b) => a.name.localeCompare(b.name),
-    expiry: (a, b) => a.expireInDays - b.expireInDays,
+    /* 没有可用资源包时 `expireInDays` 为 null ⇒ 排到最后，别参与减法（NaN 会让排序乱掉）。 */
+    expiry: (a, b) => (a.expireInDays == null ? Infinity : a.expireInDays) - (b.expireInDays == null ? Infinity : b.expireInDays),
     recent: (a, b) => b.lastUsedTs - a.lastUsedTs,
   };
   list.sort(sorters[state.sort] || sorters.priority);
@@ -736,7 +746,7 @@ function tableView(list) {
         <td>${st ? `<span class="badge ${st.tone}">${st.text}</span>` : `<span class="badge ok">正常</span>`}</td>
         <td class="num">${fmt(a.credits)}</td>
         <td class="num">${fmtTok(a.todayTokens)}</td>
-        <td class="num">${a.expireInDays} 天</td>
+        <td class="num">${a.expireInDays == null ? `<span class="muted tiny">—</span>` : `${a.expireInDays} 天`}</td>
         <td>${p.programs.map((pg) => a.programs[pg.id] ? `<span class="badge info" style="margin-right:3px">${esc(pg.label)}</span>` : "").join("") || `<span class="muted tiny">未绑定</span>`}</td>
       </tr>`;
     }).join("")}</tbody>
@@ -1879,17 +1889,46 @@ function closeDrawer() {
   state.drawer = null;
 }
 
-/* 资源包明细：按到期升序，已用完的隐藏；超过 2 个时折叠。 */
-function packsHtml(a) {
-  const packs = (a.packs || []).filter((p) => p.remaining > 0).sort((x, y) => x.expireInDays - y.expireInDays);
-  if (!packs.length) return `<div class="tiny muted">暂无可用资源包</div>`;
-  const open = Boolean(a._packsOpen);
-  const show = open ? packs : packs.slice(0, 2);
-  return `${show.map((p) => `<div class="kv"><span class="k">${esc(p.name)}</span>
-      <span class="v">${fmt(p.remaining)} / ${fmt(p.total)} <span class="tiny muted">· ${p.expireInDays} 天后过期</span></span></div>`).join("")}
-    ${packs.length > 2 ? `<button class="btn ghost xs" style="align-self:flex-start" data-act="packs-toggle|${a.id}">${open ? "收起" : `查看全部 ${packs.length} 个资源包`}</button>` : ""}`;
-}
+/* 积分 / 资源包明细 —— 对齐「积分统计」页与设计参考图：
+   每行 = 包名 + 到期时刻 + 剩余/总量 + 已用 + 进度条；按到期升序，已用完的不占位置。
 
+   三条容易做错的：
+   ① 进度条画的是**剩余 / 总量**，不是已用 —— 用户关心「这个包还能用多少」，
+      画反了就变成「条越长越穷」；已用只做右侧对照数字。
+   ② 颜色按**到期紧迫度**（7 天内橙、否则绿），不是按用了多少：
+      同一批发放的包，没动过的也可能下周就过期，那才是要提醒的事。
+   ③ 到期显示到分钟（`expireAt`）—— 只写「3 天后过期」时，用户没法判断赶不赶得上；
+      数据里没有 `expireAt` 的旧包才退回天数。 */
+function packsHtml(a) {
+  const now = Date.now();
+  const packs = (a.packs || [])
+    .filter((p) => p.remaining > 0)
+    .sort((x, y) => (x.expireAt || Infinity) - (y.expireAt || Infinity) || x.expireInDays - y.expireInDays);
+  if (!packs.length) return `<div class="tiny muted">暂无可用资源包</div>`;
+  const sumLeft = packs.reduce((sum, p) => sum + p.remaining, 0);
+  const sumAll = packs.reduce((sum, p) => sum + p.total, 0);
+  const nearest = packs[0];
+  const nearestText = nearest.expireAt ? fmtMonthDay(nearest.expireAt) : `${nearest.expireInDays} 天后`;
+  return `<div class="pk-sum">共 ${packs.length} 个包 · 剩余 <b>${fmtQty(sumLeft)}</b> / ${fmtQty(sumAll)} · 最近 ${nearestText} 到期</div>
+    <div class="pk-list">
+      ${packs.map((p) => {
+        const pct = p.total > 0 ? Math.max(0, Math.min(100, (p.remaining / p.total) * 100)) : 0;
+        const soon = p.expireAt ? p.expireAt - now <= 7 * 86400000 : p.expireInDays <= 7;
+        const expText = p.expireAt ? `到期 ${fmtMonthDay(p.expireAt)}` : `${p.expireInDays} 天后过期`;
+        return `<div class="pk">
+          <div class="pk-top">
+            <span class="pk-name">${esc(p.name)}</span>
+            <span class="pk-exp${soon ? " warn" : ""}">${expText}</span>
+          </div>
+          <div class="pk-num">
+            <span class="pk-left">${fmtQty(p.remaining)}<em> / ${fmtQty(p.total)}</em></span>
+            <span class="pk-used">已用 ${fmtQty(p.total - p.remaining)}</span>
+          </div>
+          <div class="pk-bar"><i class="${soon ? "warn" : ""}" style="width:${pct.toFixed(1)}%"></i></div>
+        </div>`;
+      }).join("")}
+    </div>`;
+}
 /* 签到历史：近 7 天。积分数额按作用域取（Trae +50 / WorkBuddy +100），不硬编码。 */
 function checkinHistoryHtml(a) {
   const reward = curScope().checkinReward || 100;
@@ -1936,9 +1975,28 @@ function nowStamp() {
    上一版「刷新」在菜单、「刷新 Token」在抽屉、「手动签到」两边都能点，就是乱在重复上。 */
 const ACCOUNT_TABS = [
   { id: "overview", label: "概览" },
+  { id: "credits", label: "积分" },
   { id: "checkin", label: "签到" },
   { id: "credential", label: "凭据" },
 ];
+
+/* 分组：真实的组是用户自建的，这里给一组与演示数据一致的常用值 + 当前值兜底。 */
+const ACCOUNT_GROUPS = ["常用", "测试", "闲置", "团队", "默认"];
+
+/**
+ * 分组选择器（就地改，改完即存）。
+ *
+ * 为什么用原生 `<select>` 而不是自建弹层：分组是**单值枚举**，原生 select 自带键盘、
+ * 触屏与无障碍语义；自建弹层只会得到一个「看起来像下拉但其实不会用 Tab 操作」的控件。
+ * 真实实现里这里是 shadcn 的 `Select`（同样是 Radix 的单值选择器）。
+ */
+function groupSelect(a) {
+  const cur = a.group || "默认";
+  const opts = ACCOUNT_GROUPS.includes(cur) ? ACCOUNT_GROUPS : [cur, ...ACCOUNT_GROUPS];
+  return `<select class="inp sel-inline" data-account-group="${a.id}" aria-label="分组">
+    ${opts.map((g) => `<option value="${esc(g)}"${g === cur ? " selected" : ""}>${esc(g)}</option>`).join("")}
+  </select>`;
+}
 
 /**
  * 指标块 + **就地刷新**。
@@ -1994,7 +2052,7 @@ function drawerOverview(a, editing) {
   const loginOn = p.programs.filter((pg) => a.programs[pg.id]).map((pg) => pg.label);
   return `<div class="dsec">
       <h4>账号信息</h4>
-      <div class="kv"><span class="k">分组</span><span class="v">${esc(a.group || "未分组")}</span></div>
+      <div class="kv"><span class="k">分组</span><span class="v">${groupSelect(a)}</span></div>
       ${editing
         ? `<div class="kv"><span class="k">备注</span><span class="v"><input id="remark-input" class="inp" style="width:100%" value="${esc(a.remark || "")}" placeholder="输入备注…" /></span></div>
            <div class="row" style="gap:6px">
@@ -2005,10 +2063,6 @@ function drawerOverview(a, editing) {
              <button class="btn ghost xs" style="margin-left:6px" data-act="act|remark|${a.id}">${ICON.wand}编辑</button></span></div>`}
       <div class="kv"><span class="k">最后使用</span><span class="v">${esc(a.lastUsed)}</span></div>
       <div class="kv"><span class="k">登录程序位</span><span class="v">${loginOn.length ? esc(loginOn.join(" · ")) : `<span class="muted">未绑定</span>`}</span></div>
-    </div>
-    <div class="dsec">
-      <h4>资源包明细</h4>
-      ${packsHtml(a)}
     </div>
     ${ext ? `<div class="dsec">
       <h4>插件会话</h4>
@@ -2043,7 +2097,16 @@ function drawerCredential(a) {
     </div>`;
 }
 
+function drawerCredits(a) {
+  return `<div class="dsec">
+      <h4>积分 / 资源包</h4>
+      ${packsHtml(a)}
+      <div class="tiny muted">「刷新积分」在卡片「更多」里，也可以直接点上面「积分」指标块右上角的 ⟳。</div>
+    </div>`;
+}
+
 function accountDrawerBody(a, tab, editing) {
+  if (tab === "credits") return drawerCredits(a);
   if (tab === "checkin") return drawerCheckin(a);
   if (tab === "credential") return drawerCredential(a);
   if (tab === "snapshot") return snapshotsHtml(a);
@@ -2827,6 +2890,16 @@ function closeAcctMenu() {
   renderAccountList();
 }
 
+/** 改分组：写回账号 + 重绘（抽屉保持当前 Tab，列表上的分组统计同步）。 */
+function setAccountGroup(id, group) {
+  const a = curScope().accounts.find((x) => x.id === id);
+  if (!a || a.group === group) return;
+  a.group = group;
+  renderAll();
+  syncOpenDrawer(id);
+  toast("ok", `${a.name} 已归入「${group}」`, "分组只影响本机的整理方式");
+}
+
 /** 抽屉正开着这个账号时重绘它（保持当前 Tab）；没开着就什么都不做。 */
 function syncOpenDrawer(id) {
   if (state.drawer && state.drawer.kind === "account" && state.drawer.id === id) drawerAccount(id);
@@ -3481,6 +3554,8 @@ document.addEventListener("change", (e) => {
   const t = e.target;
   if (t.dataset && t.dataset.input === "sort") { state.sort = t.value; renderAccountList(); }
   if (t.dataset && t.dataset.input === "group") { state.group = t.value; renderAccountList(); }
+  /* 抽屉里的分组选择器：改完即存（单值枚举，没有「保存」这一步的必要）。 */
+  if (t.dataset && t.dataset.accountGroup) setAccountGroup(t.dataset.accountGroup, t.value);
 });
 
 /* 全局快捷键 */
