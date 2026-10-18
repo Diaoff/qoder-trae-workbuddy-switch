@@ -55,7 +55,26 @@ pub const LEAK_MARKER: &str = "[assistant 请求调用工具]";
 /// 上游给 delta 填充的空噪声字段（值为空时剥掉，避免客户端读到空壳字段）。
 const NOISE_KEYS: [&str; 3] = ["extra_fields", "refusal", "reasoning_content"];
 /// 结构化工具有效历史的作用域白名单（只在 CN 出口、且模型 key 前缀命中时启用）。
-const STRUCTURED_TOOL_HISTORY_WHITELIST: [&str; 4] = ["qwen", "glm", "gm4", "gm5"];
+///
+/// ⚠️ 匹配的是**模型 key**，不是 `display_name`。官方清单里 Qwen 族的 key 形如
+/// `qfmodel` / `qmodel*` / `q37fmodel`（`Qwen3.8-Flash` 只是展示名），GLM 族形如
+/// `gmodel` / `gfmodel` / `gm51model`（`GLM-5.3` 同理）。
+///
+/// ★ 2026-10-18（issue #46 的 B 项）：旧名单只有 `qwen` / `glm` / `gm4` / `gm5`
+/// ⇒ **一个真实 key 都不命中** ⇒ CN 全量模型退化成文本模式，历史里的工具调用被序列化
+/// 成标记文本塞进正文，模型回声后直接泄漏到用户界面（即 A 项的诱因）。
+/// 刻意**不纳入** Kimi / MiniMax 族；DeepSeek 由 [`DEEPSEEK_MODEL_KEYS`] 单独处理。
+const STRUCTURED_TOOL_HISTORY_WHITELIST: [&str; 9] = [
+    "qmodel",  // qmodel / qmodel_38max …
+    "qfmodel", // qfmodel / qfmodel_…
+    "q37",     // q37fmodel
+    "qwen",    // 兼容以 `qwen` 开头的 key（展示名形态）
+    "gmodel",  // gmodel / gmodel_…
+    "gfmodel", // gfmodel
+    "gm5",     // gm51model（已被此前缀覆盖）
+    "gm4",     // gm4model
+    "glm",     // 兼容以 `glm` 开头的 key
+];
 /// DeepSeek 族的模型 key：历史多轮一致性与 `reasoning_content` 绑定。
 const DEEPSEEK_MODEL_KEYS: [&str; 2] = ["dmodel", "dfmodel"];
 /// 模型清单的**签名路径**（不含 query）。
@@ -2186,6 +2205,59 @@ mod tests {
         assert!(structured_tool_history_enabled(
             "qwen3.8-max",
             QoderRegion::Cn,
+            &good
+        ));
+    }
+
+    /// ★ 真实模型 key 必须命中白名单（issue #46 的 B 项的回归钉子）。
+    ///
+    /// 背景：白名单原本只有 `qwen`/`glm`/`gm4`/`gm5`，而国内版（CN）Qwen 族的 key 是
+    /// `q37fmodel`（本仓 `docs/specs/QODER-PLATFORM.md` §5 在册）⇒ **不命中** ⇒ CN 全量
+    /// 模型退化成文本模式 ⇒ 工具历史被序列化进正文、模型回声后泄漏到用户界面（A 项）。
+    ///
+    /// ## 取证来源（不猜）
+    ///
+    /// - `q37fmodel` / `gm51model`：**本仓文档在册**（`docs/specs/QODER-PLATFORM.md` §5）；
+    /// - `qfmodel` / `qmodel*` / `gmodel` / `gfmodel`：issue #46 作者在**真实账号**的 CN
+    ///   模型清单里取到的 key 形态（作者 2026-10-18 实测）；本机无 Qoder 账号，
+    ///   **未二次复核** —— 真账号复核前不要往这张表里加**没在任一来源出现过**的 key。
+    ///
+    /// 可证伪：把常量改回旧名单（4 项）⇒ 第一条断言红。
+    #[test]
+    fn real_qoder_model_keys_hit_the_structured_tool_history_whitelist() {
+        let good = vec![
+            serde_json::json!({"role": "assistant", "tool_calls": [{"id": "c1"}]}),
+            serde_json::json!({"role": "tool", "tool_call_id": "c1", "content": "x"}),
+        ];
+        // ① 本仓文档在册的两个 key（硬契约）。
+        for key in ["q37fmodel", "gm51model"] {
+            assert!(
+                structured_tool_history_enabled(key, QoderRegion::Cn, &good),
+                "`{key}` 必须命中白名单（否则退化成文本模式 → 泄漏回声）"
+            );
+        }
+        // ② 作者真机清单里的族前缀（qwen / glm 族）。
+        for key in ["qmodel", "qfmodel", "gmodel", "gfmodel"] {
+            assert!(
+                structured_tool_history_enabled(key, QoderRegion::Cn, &good),
+                "`{key}` 应命中（issue #46 真机清单）"
+            );
+        }
+        // 反向：刻意排除的族**不能**被捞进来（DeepSeek 走单独常量；Kimi / MiniMax 族
+        // 不在本仓 CN 清单；`smodel` / `cmodel` 是**国际版**的 key）。
+        for key in [
+            "dmodel", "dfmodel", "kimodel", "mmmodel", "smodel", "cmodel",
+        ] {
+            assert!(
+                !structured_tool_history_enabled(key, QoderRegion::Cn, &good),
+                "`{key}` 不该命中 CN 结构化工具历史白名单"
+            );
+        }
+        /* ⚠️ region 判据**必须留在白名单之前**（`structured_tool_history_enabled` 开头）：
+        国际版出口即便 key 命中也不启用结构化工具历史。删掉这一句 ⇒ 下面这条红。 */
+        assert!(!structured_tool_history_enabled(
+            "gm51model",
+            QoderRegion::Global,
             &good
         ));
     }
