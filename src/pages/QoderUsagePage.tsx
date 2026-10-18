@@ -52,7 +52,7 @@ import { scopeOf } from "@/lib/scope";
 import { useLocation } from "react-router-dom";
 import { useScope } from "@/lib/use-scope";
 import { useRefreshAction } from "@/lib/use-refresh-action";
-import { usageWindowSpanDays, type UsageWindow } from "@/lib/usage-window";
+import { usageWindowKeys, usageWindowSpanDays, type UsageWindow } from "@/lib/usage-window";
 
 interface Props {
   /** 受控的取数窗口（参数条在 `UsagePage`）。 */
@@ -66,6 +66,12 @@ export default function QoderUsagePage({ viewWindow }: Props) {
   const [region] = useScope(product);
   const scope = scopeOf(product, region);
 
+  /**
+   * 取数跨度：后端 `days` 的语义是「**含今天**的回看窗口」（`usage::usage_view_for`），
+   * 而 `custom` 的 `to` 可以落在过去 ⇒ 单靠 `days` 会多取一段。
+   * ⚠️ 前端因此**再按窗口键切一刀**（下面 `windowDays`），否则图与统计会**多说一段数据**
+   *   —— 参数条回执写着 A~B，图上却是 A~今天。
+   */
   const days = usageWindowSpanDays(viewWindow);
   const [data, setData] = useState<api.QoderUsageView | null>(null);
   const [error, setError] = useState("");
@@ -84,42 +90,84 @@ export default function QoderUsagePage({ viewWindow }: Props) {
     void load();
   }, [load]);
 
-  const totals = data?.totals;
+  /** 窗口键集合（`today` / 档位 / 自定义三态统一口径）。 */
+  const windowKeys = useMemo(() => new Set(usageWindowKeys(viewWindow)), [viewWindow]);
+  /** 真正落在窗口内的逐日数据（★ 与 `data.days` 同源，切的是**窗口**不是**数据**）。 */
+  const windowDays = useMemo(
+    () => (data?.days ?? []).filter((day) => windowKeys.has(day.date)),
+    [data, windowKeys],
+  );
+  /** 窗口内按模型汇总（逐日 `byModel` 跨天相加；与后端 `totals.credits` 同源同窗）。 */
+  const windowByModel = useMemo(() => {
+    const merged = new Map<string, number>();
+    for (const day of windowDays) {
+      for (const row of day.byModel ?? []) {
+        merged.set(row.model, (merged.get(row.model) ?? 0) + row.credits);
+      }
+    }
+    return [...merged.entries()]
+      .map(([model, credits]) => ({ model, credits }))
+      .sort((left, right) => right.credits - left.credits);
+  }, [windowDays]);
+  /**
+   * 窗口内合计。⚠️ `sessions` **刻意不给数**：
+   * 后端的 `sessions` 是「窗口内**去重**的会话 id 个数」，而逐日数据里没有会话列表 ——
+   * 自定义区间下前端**算不出**这个去重值，与其猜一个（按天相加会把跨天会话重复计数）
+   * 不如显示 `—`（同「概览」页未知即 `—` 的纪律）。
+   */
+  const windowTotals = useMemo(
+    () => ({
+      credits: windowDays.reduce((sum, day) => sum + day.credits, 0),
+      requests: windowDays.reduce((sum, day) => sum + day.requests, 0),
+      models: windowByModel.length,
+      /** 后端窗口与前端窗口**完全一致**时（today / 档位）才可直接引用去重会话数。 */
+      sessionsExact: !data || windowDays.length === data.days.length,
+      sessions: data?.totals.sessions ?? 0,
+    }),
+    [windowDays, windowByModel, data],
+  );
+
   const tiles = useMemo<StatTile[]>(() => {
-    if (!data || !totals) return [];
+    if (!data) return [];
     return [
       {
         icon: Coins,
         label: t("qoder.page.usage.totals.credits"),
-        value: formatCredits(totals.credits),
+        value: formatCredits(windowTotals.credits),
         hint: t("qoder.page.usage.unit.credits"),
       },
       {
         icon: Hash,
         label: t("qoder.page.usage.totals.requests"),
-        value: formatCredits(totals.requests),
+        value: formatCredits(windowTotals.requests),
       },
       {
         icon: MessagesSquare,
         label: t("qoder.page.usage.totals.sessions"),
-        value: formatCredits(totals.sessions),
+        /* 自定义区间下算不出「去重会话数」⇒ 显示 `—`，不拿「按天相加」冒充。 */
+        value: windowTotals.sessionsExact
+          ? formatCredits(windowTotals.sessions)
+          : "—",
+        hint: windowTotals.sessionsExact
+          ? undefined
+          : t("qoder.page.usage.totals.sessionsCustomHint"),
       },
       {
         icon: Layers,
         label: t("qoder.page.usage.totals.models"),
-        value: formatCredits(totals.models),
+        value: formatCredits(windowTotals.models),
       },
     ];
-  }, [data, totals, t]);
+  }, [data, windowTotals, t]);
 
   /* 逐日柱的数据：`date` 截成 `MM-DD` 当横轴标签（完整 ISO 太长，会把轴挤满）。 */
   const bars = useMemo(
     () =>
-      (data?.days ?? []).map((day) => ({
+      windowDays.map((day) => ({
         label: day.date.slice(5),
         credits: day.credits,
       })),
-    [data],
+    [windowDays],
   );
   const peak = useMemo(
     () => bars.reduce((max, bar) => Math.max(max, bar.credits), 0),
@@ -147,7 +195,9 @@ export default function QoderUsagePage({ viewWindow }: Props) {
   if (!data) return <Skeleton className="h-32" />;
 
   /* ★ 两种空态**绝不混用**：目录不存在（去装客户端 / 去对话）与
-     「有目录但这段时间没有记录」（去换个窗口）是两种不同的用户动作。 */
+     「有目录但这段时间没有记录」（去换个窗口）是两种不同的用户动作。
+     ⚠️ 两处都**必须带出口**（§1.6 四要素：icon + title + description + action）——
+     没有出口等于把用户丢在原地，2026-10-18 接回入口时补上。 */
   if (!data.source.exists) {
     return (
       <Card className="gap-0 py-0">
@@ -157,18 +207,30 @@ export default function QoderUsagePage({ viewWindow }: Props) {
           description={t("qoder.page.usage.missing.description", {
             path: data.source.paths[0] ?? "~/.qoder-cn/projects",
           })}
+          action={
+            <Button size="sm" variant="outline" disabled={busy} onClick={() => void run(() => load())}>
+              {busy ? <RefreshCw className="animate-spin" /> : <RefreshCw />}
+              {t("qoder.page.usage.recheck")}
+            </Button>
+          }
         />
       </Card>
     );
   }
 
-  if (data.days.length === 0) {
+  if (windowDays.length === 0) {
     return (
       <Card className="gap-0 py-0">
         <EmptyState
           icon={MessagesSquare}
           title={t("qoder.page.usage.empty.title")}
           description={t("qoder.page.usage.empty.description")}
+          action={
+            <Button size="sm" variant="outline" disabled={busy} onClick={() => void run(() => load())}>
+              {busy ? <RefreshCw className="animate-spin" /> : <RefreshCw />}
+              {t("qoder.page.usage.recheck")}
+            </Button>
+          }
         />
       </Card>
     );
@@ -180,7 +242,7 @@ export default function QoderUsagePage({ viewWindow }: Props) {
 
       <ChartFrame
         title={t("qoder.page.usage.trend")}
-        caption={creditTrendCaption(t, totals?.credits ?? 0, peak)}
+        caption={creditTrendCaption(t, windowTotals.credits, peak)}
         ariaLabel={t("qoder.page.usage.trend")}
         exportable={false}
       >
@@ -210,8 +272,8 @@ export default function QoderUsagePage({ viewWindow }: Props) {
         exportable={false}
       >
         <div className="space-y-2.5">
-          {(data.byModel ?? []).map((row, index) => {
-            const total = (data.byModel ?? []).reduce((sum, item) => sum + item.credits, 0);
+          {windowByModel.map((row, index) => {
+            const total = windowByModel.reduce((sum, item) => sum + item.credits, 0);
             const ratio = total > 0 ? (row.credits / total) * 100 : 0;
             return (
               <div key={row.model} className="min-w-0">

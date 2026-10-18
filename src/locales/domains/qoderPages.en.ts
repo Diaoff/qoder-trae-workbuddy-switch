@@ -134,6 +134,7 @@ export const en = {
   "qoder.page.usage.totals.requests": "Requests",
   "qoder.page.usage.totals.sessions": "Sessions",
   "qoder.page.usage.totals.models": "Models",
+  "qoder.page.usage.totals.sessionsCustomHint": "Custom ranges cannot de-duplicate sessions",
   "qoder.page.usage.trend": "Daily credits",
   "qoder.page.usage.byModel": "By model",
   "qoder.page.usage.empty.title": "No usage in this window",
@@ -217,8 +218,8 @@ export const en = {
   "qoder.page.overview.kpi.domainHint": "Account store and requests are split by it",
   "qoder.page.overview.kpi.domainTitle":
     "The official domain of this realm — the two realms are separate stores",
-  "qoder.page.overview.kpi.usage": "Usage today",
-  "qoder.page.overview.kpi.usageHint": "Gateway not wired ⇒ no data source",
+  "qoder.page.overview.kpi.usage": "Credits recorded today",
+  "qoder.page.overview.kpi.usageHint": "From this machine's client session records (no other devices or third-party calls)",
   "qoder.page.overview.kpi.usageTitle":
     "Daily tokens and credits come from gateway request logs and a local credit cache, neither of which is landed; unknown shows “—” rather than 0",
   "qoder.page.overview.clients.title": "Local credential sources",

@@ -142,6 +142,7 @@ export const zh = {
   "qoder.page.usage.totals.requests": "请求数",
   "qoder.page.usage.totals.sessions": "会话数",
   "qoder.page.usage.totals.models": "模型数",
+  "qoder.page.usage.totals.sessionsCustomHint": "自定义区间不支持会话去重计数",
   "qoder.page.usage.trend": "每日积分",
   "qoder.page.usage.byModel": "按模型拆分",
   "qoder.page.usage.empty.title": "这段时间没有用量记录",
@@ -223,8 +224,8 @@ export const zh = {
   "qoder.page.overview.kpi.domain": "区域域名",
   "qoder.page.overview.kpi.domainHint": "账号库与请求都按它分家",
   "qoder.page.overview.kpi.domainTitle": "该区域的官方域名 —— 双区域是两本互不相通的库",
-  "qoder.page.overview.kpi.usage": "今日用量",
-  "qoder.page.overview.kpi.usageHint": "网关未接入 ⇒ 没有数据源",
+  "qoder.page.overview.kpi.usage": "今日已记录积分",
+  "qoder.page.overview.kpi.usageHint": "本机客户端会话记录（不含其它设备与第三方调用）",
   "qoder.page.overview.kpi.usageTitle":
     "逐日 Token 与额度来自网关请求日志与本地额度缓存，两者尚未落地；未知用「—」而不是 0",
   "qoder.page.overview.clients.title": "本机凭据来源",

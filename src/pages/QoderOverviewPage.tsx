@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
-import { CloudOff, Loader2, MonitorSmartphone, RefreshCw, ShieldAlert, Users } from "lucide-react";
+import { CloudOff, Coins, Loader2, MonitorSmartphone, RefreshCw, ShieldAlert, Users } from "lucide-react";
 
 import { QoderLocalSourceRow } from "@/components/qoder/qoder-local-source-row";
 import { ScopeChip, scopeLabel } from "@/components/scope-chip";
@@ -17,6 +17,8 @@ import { platformOfPath } from "@/lib/platforms/registry";
 import { scopeOf } from "@/lib/scope";
 import { useScope } from "@/lib/use-scope";
 import { useRefreshAction } from "@/lib/use-refresh-action";
+import { todayKey } from "@/lib/usage-window";
+import { formatCredits } from "@/components/usage/format";
 
 /** 账号概览里最多平铺几个名字（再多就去账号页看）。 */
 const MAX_ACCOUNT_CHIPS = 6;
@@ -24,13 +26,17 @@ const MAX_ACCOUNT_CHIPS = 6;
 /**
  * Qoder 概览页。
  *
- * ## 只摆**读得到**的四格（§3.5：不假承诺）
+ * ## 四格都是**读得到**的（§3.5：不假承诺）
  *
- * 概览的四格（账号 / 本机客户端 / 区域域名 / 用量）里，前三格**今天就有真数据**
- * （账号库条数、两处官方凭据的四态探测、区域域名），第四格（用量）**没有数据源** ——
- * 它来自网关请求日志与额度缓存，而网关未接入。此时给 `—`（未知）并**在副标题里说明原因**，
- * 而**不是**填 `0`：`0` 会被读成「今天确实没有用量」，那是谎报（与 `overview-metrics.ts`
- * 里 `qoder` 两表返回空序列 / `null` 同一条纪律）。
+ * 账号库条数 / 两处官方凭据四态 / 区域域名这三格一直是真数据；第四格（今日用量）
+ * 在 2026-10-18 接上了**本机客户端会话记录**（`api.qoderUsage(scope, 1)`，纯本地扫描，
+ * 与「概览是纯本地视图」不冲突）—— 用量页既然已接回，概览再说「没有数据源」就是**自相矛盾**。
+ *
+ * ⚠️ 两条不可让步的纪律：
+ * ① **取数失败 ⇒ `—`，绝不回落 0**（`0` 会被读成「今天确实没有记录」）；
+ * ② **口径只承诺「本机客户端已记录」**：不含其它设备、不含经网关的第三方调用 ——
+ *    故标签是「今日已记录积分」而不是「今日用量 / 已入账」（后者是结算语义，
+ *    本地记录证明不了）。
  *
  * ## 为什么不复用 `OverviewStats`
  *
@@ -47,6 +53,9 @@ export default function QoderOverviewPage() {
   const scope = scopeOf(product, region);
 
   const [accounts, setAccounts] = useState<QoderAccountsView | null>(null);
+  /* 今日积分（`null` = 未知/取数失败 ⇒ 显示 `—`）。**独立取数**：失败只让这一格
+     回落 `—`，绝不能把整页带成错误态（其余三格仍有真数据）。 */
+  const [todayCredits, setTodayCredits] = useState<number | null>(null);
   const [sources, setSources] = useState<QoderLocalSourcesView | null>(null);
   const [error, setError] = useState("");
   const [reloading, setReloading] = useState(false);
@@ -71,6 +80,23 @@ export default function QoderOverviewPage() {
       })
       .finally(() => {
         if (!cancelled) setReloading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [scope]);
+
+  useEffect(() => {
+    let cancelled = false;
+    api
+      .qoderUsage(scope, 1)
+      .then((view) => {
+        if (cancelled) return;
+        // 成功扫到就是事实：今天没有记录 ⇒ 0（不是未知）。
+        setTodayCredits(view.days.find((day) => day.date === todayKey())?.credits ?? 0);
+      })
+      .catch(() => {
+        if (!cancelled) setTodayCredits(null);
       });
     return () => {
       cancelled = true;
@@ -114,10 +140,11 @@ export default function QoderOverviewPage() {
       title: t("qoder.page.overview.kpi.domainTitle"),
     },
     {
-      icon: CloudOff,
+      /* 概览里换图标语义：不再是「无数据源」，而是「本机已记录的消耗」。 */
+      icon: Coins,
       label: t("qoder.page.overview.kpi.usage"),
-      /* ★ 未知用 `—`，**不是** `0` —— 见模块头。 */
-      value: "—",
+      /* ★ 取数失败仍用 `—`，**不是** `0` —— 见模块头。 */
+      value: todayCredits === null ? "—" : formatCredits(todayCredits),
       hint: t("qoder.page.overview.kpi.usageHint"),
       title: t("qoder.page.overview.kpi.usageTitle"),
     },

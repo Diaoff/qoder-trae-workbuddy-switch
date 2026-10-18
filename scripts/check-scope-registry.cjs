@@ -666,8 +666,16 @@ check("★ P3 用量页视图参数条**只有一条**：由 `UsagePage` 渲染�
     }
   }
 
-  /* 四个视图页：**都不许**自己再放参数条 / 区域选择器 / 自持参数状态。 */
-  const views = ["TokenStatsPage", "CreditStatsPage", "TraeTokenStatsPage", "TraeCreditsPage"];
+  /* 四个视图页：**都不许**自己再放参数条 / 区域选择器 / 自持参数状态。
+     ★ 2026-10-18：`QoderUsagePage` 加入名单（Qoder 用量页接回，`usage` 入口不再停在
+       占位页）—— 它同样只吃 `UsagePage` 传入的 `viewWindow`。 */
+  const views = [
+    "TokenStatsPage",
+    "CreditStatsPage",
+    "TraeTokenStatsPage",
+    "TraeCreditsPage",
+    "QoderUsagePage",
+  ];
   for (const name of views) {
     const code = stripComments(fs.readFileSync(path.join(ROOT, `src/pages/${name}.tsx`), "utf8"));
     if (/<ViewParamBar\b/.test(code)) {
@@ -899,27 +907,45 @@ check("★ 用量·积分「合并全部作用域」**真的聚合**（跨区域
   return `合计 ${merged.total} · 两区同 uid ⇒ ${merged.rows.length} 行 · 到期轴 30 天 · D+3 = ${buckets[2].value}`;
 });
 
-check("★ P3 用量页两平台共用同一组件（同概览页的模式）", () => {
+check("★ P3 用量页三平台共用同一组件（同概览页的模式；Qoder 于 2026-10-18 接回）", () => {
   const app = stripComments(fs.readFileSync(path.join(ROOT, "src/App.tsx"), "utf8"));
   const block = app.match(/const SCOPED_ROUTES[\s\S]*?\n\};/);
   if (!block) throw new Error("找不到 SCOPED_ROUTES");
 
+  /* 三个平台（workbuddy / trae / qoder）都把 `usage` 指到同一个 `UsagePage`。
+     ★ 2026-10-18：Qoder 由 `QoderPendingPage` 改为 `UsagePage`（issue #46 的 C 项）——
+       后端 `qoder_usage` 命令、`USAGE_PAGES.qoder`、`QoderUsagePage` 早已就位，
+       入口停在占位页 = 有真实数据却显示「尚未接入」。期望值随之 2 → 3。 */
   const n = (block[0].match(/\busage: UsagePage,/g) || []).length;
-  if (n !== 2) {
-    throw new Error(`\`usage: UsagePage\` 在 SCOPED_ROUTES 里出现 ${n} 次，期望 2（两平台共用）`);
+  if (n !== 3) {
+    throw new Error(`\`usage: UsagePage\` 在 SCOPED_ROUTES 里出现 ${n} 次，期望 3（三平台共用）`);
+  }
+  /* 反向钉住「不要退回占位页」：Qoder 的 usage 入口一旦改回 `QoderPendingPage` 立即红。 */
+  if (!/qoder:\s*\{[\s\S]*?usage: UsagePage,/.test(block[0])) {
+    throw new Error("qoder 的 usage 入口没有指向 UsagePage —— 不该退回占位页");
   }
 
   const page = stripComments(fs.readFileSync(path.join(ROOT, "src/pages/UsagePage.tsx"), "utf8"));
   if (!/platformOfPath\(/.test(page)) throw new Error("用量页没有从路由推平台");
   if (!/USAGE_PAGES/.test(page)) throw new Error("用量页没有按平台映射子页面");
 
-  /* 四个页面都要 **lazy**：都静态引入会让「用量」首次加载同时拉多页。 */
-  for (const c of ["TokenStatsPage", "CreditStatsPage", "TraeTokenStatsPage", "TraeCreditsPage"]) {
+  /* 五个页面都要 **lazy**：都静态引入会让「用量」首次加载同时拉多页。 */
+  for (const c of [
+    "TokenStatsPage",
+    "CreditStatsPage",
+    "TraeTokenStatsPage",
+    "TraeCreditsPage",
+    "QoderUsagePage",
+  ]) {
     if (!new RegExp(`lazy\\(\\(\\) => import\\("@/pages/${c}"\\)\\)`).test(page)) {
       throw new Error(`用量页没有 lazy 加载 \`${c}\``);
     }
   }
-  return "两平台共用 · 从路由推平台 · 4 个子页面均 lazy";
+  /* Qoder 只有 credits 视图（tokens 数据源不存在）⇒ 必须显式关掉 token 视图与子 Tab。 */
+  if (!/qoder:\s*\{[^}]*tokenViews: false/.test(page)) {
+    throw new Error("`USAGE_PAGES.qoder` 没有关掉 token 视图（Qoder 无 token 台账）");
+  }
+  return "三平台共用 · 从路由推平台 · 5 个子页面均 lazy · Qoder 仅 credits 视图";
 });
 
 check("★ P2 顶栏作用域选择器：存在 ScopeSelector · 由 TopBar 渲染 · 覆盖全部作用域 · 不在页面内", () => {
@@ -1667,6 +1693,91 @@ check("★ Qoder 程序位 id 必须与**凭据来源 id 同源**（一事实一
     throw new Error("`profile::KIND_DESKTOP` / `KIND_CLI` 不再是 pub —— 同源关系断了");
   }
   return "程序位 id = 凭据来源 id（引用同一常量）· 无字面量分叉";
+});
+
+check("★ Qoder 签到结果**三档**：「通道未开放」既不算成功、也不进重试桶（issue #46 的 D 项）", () => {
+  const page = stripComments(fs.readFileSync(path.join(ROOT, "src/pages/QoderAccountsPage.tsx"), "utf8"));
+  if (!/else if \(res\.disabled\)/.test(page)) {
+    throw new Error("`runCheckin` 没有把 `disabled` 单独成档 —— 未开放会被混进成功或失败");
+  }
+  if (!/res\.disabled\) disabled\.push\(item\)/.test(page)) {
+    throw new Error("`disabled` 必须进第三个桶（`disabled.push`），不能进 `failed`");
+  }
+  if (!/skippedNames: checkinResult\.disabled\.map/.test(page)) {
+    throw new Error("第三档没有透传给结果条（`skippedNames`）");
+  }
+  /* 后端那一侧：`Disabled` 必须回 `ok:false`（上游 409 不携带幂等语义）。 */
+  const core = readCode("crates/buddy-switch-core/src/modules/qoder/checkin.rs");
+  if (!/fn disabled_claim_response/.test(core)) {
+    throw new Error("core 没有 `disabled_claim_response`（未开放那一档的纯函数）");
+  }
+  const response = core.match(/pub fn disabled_claim_response[\s\S]*?\n}/);
+  if (!response || !/"ok":\s*false/.test(response[0])) {
+    throw new Error("`disabled_claim_response` 必须回 `ok:false` —— 回 `ok:true` 就是谎报成功");
+  }
+  /* 反向也钉住：「今日已签」是**真成功**，不能跟着一起被改成 false。 */
+  const already = core.match(/pub fn already_claim_response[\s\S]*?\n}/);
+  if (!already || !/"ok":\s*true/.test(already[0])) {
+    throw new Error("`already_claim_response` 必须回 `ok:true` —— 「今日已签」是真成功");
+  }
+  return "三档分流 · 未开放回 ok:false · 已签回 ok:true · 透传 skippedNames";
+});
+
+check("★ 签到结果条：不传 `skippedNames` ⇒ 渲染与加这个 prop 之前**逐字一致**（WB / Trae 复用方零影响）", () => {
+  const React = require("react");
+  const { renderToStaticMarkup } = require("react-dom/server");
+  /* `useT` 直接回 key（不查词表）⇒ 断言只认「走了哪一档」，不依赖任何文案。 */
+  const stubs = {
+    react: React,
+    "lucide-react": new Proxy({}, { get: (_t, name) => stubComponent(String(name)) }),
+    "@/components/account-card": {
+      AVATAR_TEXT_CLASS: "",
+      accountInitials: (name) => String(name).slice(0, 1),
+      avatarTone: () => "",
+    },
+    "@/components/ui/badge": { Badge: stubComponent("Badge") },
+    "@/components/ui/button": { Button: stubComponent("Button") },
+    "@/components/ui/skeleton": { Skeleton: stubComponent("Skeleton") },
+    "@/lib/i18n": { useT: () => (key, vars) => (vars ? `${key}:${JSON.stringify(vars)}` : key) },
+    "@/lib/use-refresh-action": { useRefreshAction: () => ({ busy: false, run: (fn) => fn() }) },
+    "@/lib/utils": { cn: (...parts) => parts.filter(Boolean).join(" ") },
+  };
+  const { CheckinResultBar } = loadUsageComponent("src/components/account-list-parts.tsx", stubs);
+  const base = { okCount: 2, failedNames: ["账号A"], onRetry: () => {}, onDismiss: () => {} };
+
+  // ① 旧用法（不传第三档）：仍是「成功/失败」两档，且**不出现**第三档词条。
+  const legacyFail = renderToStaticMarkup(React.createElement(CheckinResultBar, base));
+  const legacyOk = renderToStaticMarkup(
+    React.createElement(CheckinResultBar, { ...base, failedNames: [] }),
+  );
+  if (legacyFail.includes("shared.checkinResult.summary4")) {
+    throw new Error("不传 skippedNames 却走了三档词条 —— WB / Trae 的界面会被改写");
+  }
+  if (legacyFail.includes("shared.checkinResult.skippedNames")) {
+    throw new Error("不传 skippedNames 却渲染了「通道未开放」说明");
+  }
+  if (legacyOk.includes("shared.checkinResult.summary4")) {
+    throw new Error("全成功时不该用三档词条");
+  }
+  // ② 传第三档：走 `summary4` + `skippedNames`，且**没有**重试出口（重试永远无效）。
+  const threeTier = renderToStaticMarkup(
+    React.createElement(CheckinResultBar, {
+      ...base,
+      failedNames: [],
+      skippedNames: ["账号B"],
+      onRetry: undefined,
+    }),
+  );
+  if (!threeTier.includes("shared.checkinResult.summary4")) {
+    throw new Error("传了 skippedNames 却没用三档汇总词条");
+  }
+  if (!threeTier.includes("shared.checkinResult.skippedNames")) {
+    throw new Error("传了 skippedNames 却没有「未开放」账号说明");
+  }
+  if (threeTier.includes("shared.checkinResult.retryFailed")) {
+    throw new Error("「未开放」不该给出「重试失败项」出口（重试永远不会成功）");
+  }
+  return "两档路径逐字不变 · 三档路径用 summary4/skippedNames · 未开放不给重试出口";
 });
 
 check("★ Qoder 删除端点必须走**软删除**（core 有对的函数 ≠ 命令面接对了）", () => {

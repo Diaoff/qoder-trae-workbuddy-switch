@@ -93,19 +93,38 @@ const PLATFORM_TABS: Record<Product, UsageTab[]> = {
 /** 平台 → 子页面（Token 页 / 积分页）。 */
 const USAGE_PAGES: Record<
   Product,
-  { tokens: ElementType; credits: ElementType; tokenViews: boolean }
+  {
+    tokens: ElementType;
+    credits: ElementType;
+    tokenViews: boolean;
+    /** 该平台的数据源能否**跨区域合并**（决定参数条要不要渲染合并态控件）。 */
+    mergeScopes: boolean;
+  }
 > = {
-  /* `tokenViews` = 该平台的 Token 页**是否消费 `view` 参数**。
-     两平台现在都消费（Trae 有 趋势 / 模型 两个视图），故两处都是 `true`；
-     保留这个字段是因为它是**数据**（新增平台时该不该传 `view` 由它回答），
-     而不是「现在恰好都为 true」就可以删掉的巧合。 */
-  workbuddy: { tokens: TokenStatsPage, credits: CreditStatsPage, tokenViews: true },
-  trae: { tokens: TraeTokenStatsPage, credits: TraeCreditsPage, tokenViews: true },
+  workbuddy: {
+    tokens: TokenStatsPage,
+    credits: CreditStatsPage,
+    tokenViews: true,
+    mergeScopes: true,
+  },
+  trae: {
+    tokens: TraeTokenStatsPage,
+    credits: TraeCreditsPage,
+    tokenViews: true,
+    mergeScopes: true,
+  },
   /* Qoder：**单位是 credits，不是 Token**（客户端按 credits 计费、token 计数恒为 0，
      三处取证见 `QoderUsagePage` 文件头）⇒ 只有一张 credits 视图。
      「积分」页也指向同一张：quota 是**余额快照**（实时查询），与「逐日用量」是两个口径。
-     `tokenViews: false` 因为它不消费 `view` 参数（没有视图可切）。 */
-  qoder: { tokens: QoderUsagePage, credits: QoderUsagePage, tokenViews: false },
+     `tokenViews: false` 因为它不消费 `view` 参数（没有视图可切）。
+     ⚠️ `mergeScopes: false`（2026-10-18）：Qoder 用量来自**本机客户端会话记录**，
+        只扫当前区域的目录 ⇒ 合并两个区域没有可合并的数据，参数条那枚控件是死的。 */
+  qoder: {
+    tokens: QoderUsagePage,
+    credits: QoderUsagePage,
+    tokenViews: false,
+    mergeScopes: false,
+  },
 };
 
 export default function UsagePage({ defaultTab = "trend" }: { defaultTab?: UsageTab } = {}) {
@@ -135,7 +154,7 @@ export default function UsagePage({ defaultTab = "trend" }: { defaultTab?: Usage
   const [viewWindow, setViewWindow] = useState<UsageWindow>(DEFAULT_USAGE_WINDOW);
   const [combineAll, setCombineAll] = useState(() => readPreferredCombineAll());
 
-  const { tokens: TokenPage, credits: CreditPage, tokenViews } = USAGE_PAGES[product];
+  const { tokens: TokenPage, credits: CreditPage, tokenViews, mergeScopes } = USAGE_PAGES[product];
   /* 页头刷新：只重挂**当前视图**（`key` 变化 ⇒ 子页面重新取数）。
      ⚠️ 不做「全局刷新信号」：四个视图数据源不同，重挂当前视图是唯一不会
      让「另一个视图的空请求」也一起打的方案。 */
@@ -188,12 +207,15 @@ export default function UsagePage({ defaultTab = "trend" }: { defaultTab?: Usage
         </TabsList>
       </Tabs>
 
-      {/* ★ 视图参数条：**整页唯一一条**，四个视图共用（含 Trae）。 */}
+      {/* ★ 视图参数条：**整页唯一一条**，三个平台共用（WB / Trae / Qoder）。
+          合并态控件由 `USAGE_PAGES[product].mergeScopes` 决定是否渲染 ——
+          Qoder 只有单区域数据源，渲染它等于给一个死开关。 */}
       <ViewParamBar
         viewWindow={viewWindow}
         onViewWindowChange={setViewWindow}
         combineAll={combineAll}
         onCombineAllChange={setCombineAll}
+        canMergeScopes={mergeScopes}
       />
 
       {/* ⚠️ 不在这里加 `overflow-auto`：子页面**各自有滚动容器**，再套一层会出双滚动条。 */}

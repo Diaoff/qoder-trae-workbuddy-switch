@@ -72,6 +72,15 @@ export interface ViewParamBarProps {
   /** 合并态（仅本作用域 / 合并全部作用域）—— 两平台同一枚控件。 */
   combineAll: boolean;
   onCombineAllChange: (next: boolean) => void;
+  /**
+   * 该平台是否**支持合并两个作用域**。缺省 `true`（历史行为不变）。
+   *
+   * ⚠️ 2026-10-18：`qoder` 传 `false`。Qoder 的用量数据源是**本机客户端会话记录**
+   *   （只扫当前区域的目录），合并两个区域没有可合并的数据 ⇒ 那枚控件在 Qoder 分区
+   *   是**死的**（点了没反应）。渲染一个无效控件比不渲染更糟 ⇒ 由 `USAGE_PAGES`
+   *   的 `mergeScopes` 数据驱动隐藏，不在组件里判平台。
+   */
+  canMergeScopes?: boolean;
   className?: string;
 }
 
@@ -111,6 +120,7 @@ export function ViewParamBar({
   onViewWindowChange,
   combineAll,
   onCombineAllChange,
+  canMergeScopes = true,
   className,
 }: ViewParamBarProps) {
   const t = useT();
@@ -238,7 +248,9 @@ export function ViewParamBar({
         </span>
       )}
       <div className="grow" />
-      <RegionBar value={combineAll} onChange={onCombineAllChange} />
+      {/* ⚠️ `canMergeScopes === false` 时**不渲染**：Qoder 只有一个区域的数据源，
+          渲染那枚控件等于给用户一个点了没反应的开关。 */}
+      {canMergeScopes ? <RegionBar value={combineAll} onChange={onCombineAllChange} /> : null}
     </div>
   );
 }

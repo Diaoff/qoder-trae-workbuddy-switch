@@ -181,12 +181,16 @@ const SCOPED_ROUTES: Record<Product, Record<Destination, ElementType>> = {
   qoder: {
     /* 概览 / 设置是**真实页面**（概览：账号数 + 本机客户端四态；设置：应用级设置 + 备份）。
        网关也已落地（**第三个平台的产品线**：独立监听 57895 + 按区域分家的池与 Key 库）。
-       用量 / 会话**尚未落地** —— 它们的数据源（用量台账 / 会话副本）不存在，
-       给「尚未接入」空态而不是空壳 KPI。刻意**不复用** `OverviewPage` / `UsagePage`：
-       那两个组件读的是 WorkBuddy 的 store，会给 Qoder 分区渲染出**别的平台的数据**。 */
+       ★ 用量页**已接回**（2026-10-18，issue #46 的 C 项）：`UsagePage` 按 `USAGE_PAGES.qoder`
+         映射到 `QoderUsagePage`（后端 `qoder_usage` 命令早已存在，数据源有真实值），
+         而 `usage` 入口此前还停在占位页 ⇒「有数据却显示尚未接入」。
+         ⚠️ 与 `OverviewPage` 的处理**刻意不同**：概览页读的是 WorkBuddy 的 store，复用会给
+         Qoder 分区渲染别的平台的数据；`UsagePage` 本身**从路由推平台**（`platformOfPath`），
+         三个平台共用是设计内复用，不是妥协。
+       会话**仍未落地**（数据源「会话副本」不存在）⇒ 继续给「尚未接入」空态而不是空壳 KPI。 */
     overview: QoderOverviewPage,
     accounts: QoderAccountsPage,
-    usage: QoderPendingPage,
+    usage: UsagePage,
     sessions: QoderPendingPage,
     gateway: QoderApiServicePage,
     settings: QoderSettingsPage,
