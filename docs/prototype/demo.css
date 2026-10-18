@@ -132,6 +132,8 @@ kbd {
 .icon-btn:focus-visible { outline: 2px solid var(--ring); outline-offset: 1px; }
 /* 刷新进行中：顶栏 ⟳ 原地旋转（doRefresh 的 500ms 期间；图标不动会被读成「点了没反应」）。 */
 .icon-btn.spinning svg { animation: spin .7s linear infinite; }
+/* 卡片级 ⟳（`acct-refresh`）：与顶栏同一套「转圈 = 正在读」的语言，别为它另造动效。 */
+.btn.spinning svg { animation: spin .7s linear infinite; }
 
 /* ─────────────── 侧栏 ─────────────── */
 .sidebar {
@@ -343,8 +345,13 @@ kbd {
 .acct-chips { display: flex; flex-wrap: wrap; gap: 5px; }
 .acct-metrics { display: flex; gap: 14px; font-size: 11.5px; color: var(--muted-fg); }
 .acct-metrics b { color: var(--foreground); font-weight: 600; font-variant-numeric: tabular-nums; }
-.acct-actions { display: flex; align-items: center; gap: 6px; padding-top: 10px; border-top: 1px solid var(--border); }
-.progs { display: flex; gap: 4px; flex: 1; min-width: 0; }
+/* ⚠️ `align-items: flex-end`（不是 center）：窄卡片里程序位会折成两行，
+   `center` 会把 ⟳ / ⋯ 浮在两行中间，看着像「这一行坏了」；靠底与最后一行程序位齐平。 */
+.acct-actions { display: flex; align-items: flex-end; gap: 6px; padding-top: 10px; border-top: 1px solid var(--border); }
+/* 页脚程序位行：卡片页脚现在有「程序位 + ⟳ 刷新该账号 + 更多」三组控件。
+   ⚠️ `flex-wrap: wrap` 是必须的：窄卡片（1100px 三列时卡宽约 260px）放不下 4~5 枚程序位 +
+   两枚图标按钮，不换行会把最后一枚程序位**压到 ⟳ 按钮底下**（实测）。 */
+.progs { display: flex; flex-wrap: wrap; gap: 4px; flex: 1; min-width: 0; }
 .prog {
   height: 26px; padding: 0 8px; border-radius: 8px; font-size: 11px; border: 1px solid var(--border);
   color: var(--muted-fg); display: inline-flex; align-items: center; gap: 4px; transition: all .14s;

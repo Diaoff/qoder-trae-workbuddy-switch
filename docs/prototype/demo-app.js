@@ -12,6 +12,9 @@ const state = {
   /* 账号工作台 */
   q: "", sort: "priority", group: "none", view: "card",
   selected: new Set(),
+  /* 正在刷新「单个账号」的 id 集合（卡片页脚 ⟳ 转圈 + 禁用用）。
+     ⚠️ 用集合而不是单值：允许同时刷两个账号，且互不吞掉对方的进行中态。 */
+  refreshing: new Set(),
   /* 用量工作台 */
   usageTab: "trend", range: 30, rangeMode: "preset", customFrom: "", customTo: "", rangeOpen: false, merge: false,
   /* 子导航 */
@@ -704,6 +707,11 @@ function accountCard(a) {
             data-act="acct-prog|${a.id}|${pg.id}">${on ? ICON.check : ""}${esc(pg.short)}</button>`;
         }).join("")}
       </div>
+      <button class="btn ghost sm acct-refresh${state.refreshing.has(a.id) ? " spinning" : ""}"
+        data-act="acct-refresh|${a.id}"
+        title="刷新 ${esc(a.name)} 的全部数据（积分 / 今日 Token / 签到状态 / 凭据有效期）"
+        aria-label="刷新 ${esc(a.name)} 的全部数据"
+        ${state.refreshing.has(a.id) ? "disabled" : ""}>${ICON.refresh}</button>
       <button class="btn ghost sm" data-act="acct-more|${a.id}" title="更多操作">${ICON.more}</button>
     </div>
   </div>`;
@@ -2617,6 +2625,35 @@ function doRefresh() {
     toast("ok", "已刷新", scopeLabel(state.scope) + " 的账号与积分状态已更新");
   }, 500);
 }
+/* ── 单账号刷新（原型 · 待确认）────────────────────────────────
+   卡片页脚的 ⟳ 只刷新**这一个账号**的全部数据：积分 / 今日 Token / 签到状态 / 凭据有效期。
+   此前要刷某个账号只能「全选 → 批量刷新 Token → 取消全选」—— 为看一眼一个账号动整张列表。
+
+   ⚠️ 演示里**不改数字**：演示数据不是真从上游读的，刷新就改数等于编数据。
+   真正的反馈是「转圈 + 结果 toast」，而结果必须如实：
+   凭据已过期 / 需重新登录的账号刷新**必然失败**，不能一律报「已刷新」。 */
+function refreshAccount(id) {
+  const a = curScope().accounts.find((x) => x.id === id);
+  if (!a || state.refreshing.has(id)) return;
+  state.refreshing.add(id);
+  renderAccountList();
+  setTimeout(() => {
+    state.refreshing.delete(id);
+    renderAccountList();
+    if (a.expired) {
+      toast("err", `${a.name} 刷新失败`, "凭据已过期 —— 先在客户端重新登录，再回来刷新",
+        { label: "打开账号", run: () => drawerAccount(id) });
+      return;
+    }
+    if (a.needsRelogin) {
+      toast("err", `${a.name} 刷新失败`, "需要重新登录后再刷新",
+        { label: "打开账号", run: () => drawerAccount(id) });
+      return;
+    }
+    toast("ok", `已刷新 ${a.name} 的全部数据`,
+      `积分 ${fmt(a.credits)}/${fmt(a.creditsTotal)} · 今日 ${fmtTok(a.todayTokens)} · ${a.checkedIn ? "已签到" : "今日未签到"}`);
+  }, 500);
+}
 /* 批量签到：目标 = 已勾选账号（若有），否则整个作用域。
    批量操作必然可能部分失败——凭据过期 / 需重新登录是结构性失败，
    再补 1 个瞬时失败，凑成「8 个里 3 个失败」。失败项保留 checkedIn=false，
@@ -2867,9 +2904,10 @@ document.addEventListener("click", (e) => {
       state.selected.has(a1) ? state.selected.delete(a1) : state.selected.add(a1);
       renderAccountList(); break;
     case "acct-open": stop(); drawerAccount(a1); break;
+    case "acct-refresh": stop(); refreshAccount(a1); break;
     case "acct-more": stop();
       toast("ok", "操作都在账号抽屉里", "点账号卡打开抽屉即可操作", null,
-        "刷新 Token / 手动签到 / 编辑备注 / 删除 —— 卡片不再堆按钮");
+        "刷新 Token / 手动签到 / 编辑备注 / 删除 —— 卡片只留 ⟳（刷新该账号）这一个高频动作");
       break;
     case "acct-prog": {
       stop();

@@ -253,6 +253,14 @@ const MUTATIONS = {
     from: 'onOk: () => { key.revoked = false; renderContent();',
     to: 'onOk: () => { /* MUTATED: 恢复不生效 */',
   },
+  /* ★ 单账号刷新：退化成「刷新整个作用域」—— 正是用户抱怨的
+     「全选 → 批量刷新 → 取消全选」绕路，只是把它藏进卡片按钮里。 */
+  acctrefresh: {
+    desc: "卡片 ⟳ 退化成刷新整个作用域（单账号刷新名不副实）",
+    file: "demo-app.js",
+    from: "  state.refreshing.add(id);",
+    to: "  curScope().accounts.forEach((x) => state.refreshing.add(x.id)); /* MUTATED: 刷全作用域 */",
+  },
   /* ★ Qoder（第三个平台）—— 两条数据层变异。 */
   qodertotal: {
     desc: "Qoder 国内版今日 Token 与账号合计脱钩（days 末值不再自洽）",
@@ -1731,6 +1739,96 @@ async function boot(query) {
     return true;
   });
 
+  /* ── 单账号刷新（原型 · 待确认）──
+     用户原话：「每个账号卡片都需要添加刷新功能，可以单独刷新这个账号的所有数据」。
+     守四件事：① 每张卡都有（不是只给第一张）；② 只动**这一个**账号（不选中、不开抽屉、
+     不顺手刷别人）；③ 点了有进行中反馈（转圈 + 禁用，否则读成「点了没反应」）；
+     ④ 结果如实 —— 凭据过期的账号刷新必然失败，不能一律报「已刷新」。 */
+  const domR = await boot("dest=accounts&hint=0");
+  const dR = domR.window.document;
+  const wR = domR.window;
+  const cardsR = () => [...dR.querySelectorAll(".acct")];
+  const idOf = (card) => card.querySelector('[data-act^="acct-refresh|"]').dataset.act.split("|")[1];
+  const accOf = (id) => wR.eval(`curScope().accounts.find((x) => x.id === ${JSON.stringify(id)})`);
+
+  check("★ 每张账号卡都有「刷新该账号」按钮（不是只有第一张）", () => {
+    const cards = cardsR();
+    if (cards.length < 2) throw new Error("账号页卡片不足，用例前提不成立");
+    const missing = cards.filter((c) => !c.querySelector('[data-act^="acct-refresh|"]'));
+    if (missing.length) throw new Error(`${missing.length}/${cards.length} 张卡没有刷新按钮`);
+    return `${cards.length} 张卡`;
+  });
+
+  check("★ 刷新按钮在卡片页脚，且说明它刷什么（不是无字图标）", () => {
+    const btn = cardsR()[0].querySelector('[data-act^="acct-refresh|"]');
+    if (!btn.closest(".acct-actions")) throw new Error("刷新按钮不在 .acct-actions（卡片页脚）里");
+    const tip = btn.getAttribute("title") || "";
+    if (!/刷新/.test(tip)) throw new Error("title 没说是刷新：" + tip);
+    if (!/积分/.test(tip)) throw new Error("title 没说清刷新哪些数据（积分 / Token / 签到）：" + tip);
+    if (!btn.getAttribute("aria-label")) throw new Error("缺 aria-label —— 图标按钮没有可读名字");
+    return true;
+  });
+
+  /* 挑一个**能刷成功**的账号（凭据过期的留给下一条用例）。 */
+  const okCard = cardsR().find((c) => {
+    const a = accOf(idOf(c));
+    return a && !a.expired && !a.needsRelogin;
+  });
+  if (!okCard) throw new Error("演示数据里没有可正常刷新的账号（用例前提不成立）");
+  const okId = idOf(okCard);
+  const okName = accOf(okId).name;
+  okCard.querySelector('[data-act^="acct-refresh|"]').click();
+
+  check("★ 点 ⟳ 立刻有进行中反馈，且只刷这一个账号", () => {
+    const btn = dR.querySelector(`[data-act="acct-refresh|${okId}"]`);
+    if (!btn) throw new Error("点完按钮消失了");
+    if (!btn.classList.contains("spinning")) throw new Error("没有转圈（图标不动 = 用户读成「点了没反应」）");
+    if (!btn.disabled) throw new Error("进行中仍可重复点（会并发打上游）");
+    const busy = wR.eval("Array.from(state.refreshing)");
+    if (busy.length !== 1 || busy[0] !== okId) throw new Error("刷新范围不止这一个账号：" + JSON.stringify(busy));
+    if (wR.eval("state.selected.size") !== 0) throw new Error("点 ⟳ 顺手把账号选中了（用户只想刷新）");
+    if (dR.querySelector(".drawer.open")) throw new Error("点 ⟳ 顺手打开了详情抽屉");
+    return true;
+  });
+
+  await sleep(700);
+
+  check("★ 刷新完成：按钮恢复可点，结果里带账号名与刷到的数据", () => {
+    const btn = dR.querySelector(`[data-act="acct-refresh|${okId}"]`);
+    if (!btn) throw new Error("刷新后按钮不见了");
+    if (btn.classList.contains("spinning") || btn.disabled) throw new Error("没有恢复可点（卡在转圈）");
+    if (dR.querySelectorAll(".acct-refresh.spinning").length) throw new Error("别的账号也被拖进了刷新态");
+    const toast = [...dR.querySelectorAll("#toasts .toast")].pop();
+    if (!toast) throw new Error("刷新没有任何结果提示（静默完成）");
+    if (!toast.classList.contains("ok")) throw new Error("正常账号却报了失败");
+    const text = toast.textContent;
+    if (!text.includes(okName)) throw new Error("提示里没有账号名，多账号时分不清刷了谁：" + text);
+    if (!/积分/.test(text)) throw new Error("只说「已刷新」却没给刷到的数据（等于没说）");
+    return true;
+  });
+
+  /* 诚实边界：凭据已过期的账号，刷新**必然失败** —— 不能为了好看一律报成功。 */
+  const badCard = cardsR().find((c) => {
+    const a = accOf(idOf(c));
+    return a && (a.expired || a.needsRelogin);
+  });
+  if (badCard) {
+    const badId = idOf(badCard);
+    badCard.querySelector('[data-act^="acct-refresh|"]').click();
+    await sleep(700);
+    check("★ 凭据过期 / 需重登的账号刷新如实报失败（不谎报「已刷新」）", () => {
+      const toast = [...dR.querySelectorAll("#toasts .toast")].pop();
+      if (!toast) throw new Error("刷新没有任何结果提示");
+      if (!toast.classList.contains("err")) throw new Error("凭据已失效却报了成功 —— 谎报");
+      if (!/失败|过期|重新登录/.test(toast.textContent)) throw new Error("失败提示没说清原因：" + toast.textContent);
+      return true;
+    });
+  } else {
+    check("★ 凭据过期 / 需重登的账号刷新如实报失败（不谎报「已刷新」）", () => {
+      throw new Error("演示数据里没有失效凭据的账号，这条断言没被验证过（用例前提不成立）");
+    });
+  }
+
   /* ── 两份原型不许漂移：单文件原型（视觉基准）守同一条关键行为 ──
      只守「先说明、后动作」与「必读置顶」两条 —— 单文件是同一套代码的镜像，
      逐条复刻断言会让两份用例各自漂移，判据仍是上面那套。 */
@@ -1753,6 +1851,22 @@ async function boot(query) {
     if (!brk || !notes) throw new Error("单文件原型缺必读区块或更新分组");
     if (!(brk.compareDocumentPosition(notes) & single.window.Node.DOCUMENT_POSITION_FOLLOWING))
       throw new Error("单文件原型的必读区块没有置顶");
+    return true;
+  });
+
+  /* 单文件原型也必须带上「每张卡都能单独刷新」—— 它是视觉基准，
+     少了这枚按钮，两份原型就会在评审时给出两种卡片形态。 */
+  const singleAcct = await JSDOM.fromFile(path.join(DIR, "buddy-switch-prototype.html"), {
+    runScripts: "dangerously", resources: "usable", pretendToBeVisual: true,
+    url: "file://" + path.join(DIR, "buddy-switch-prototype.html").replace(/\\/g, "/") + "?dest=accounts&hint=0",
+  });
+  await new Promise((r) => singleAcct.window.addEventListener("load", r));
+  await sleep(120);
+  check("单文件原型同形：每张账号卡都有 ⟳（两份不许漂移）", () => {
+    const cards = [...singleAcct.window.document.querySelectorAll(".acct")];
+    if (!cards.length) throw new Error("单文件原型的账号页没有卡片");
+    const missing = cards.filter((c) => !c.querySelector('[data-act^="acct-refresh|"]'));
+    if (missing.length) throw new Error(`单文件原型 ${missing.length}/${cards.length} 张卡缺 ⟳（两份漂移了）`);
     return true;
   });
 
