@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useState } from "react";
+import { useCallback, useRef, useState } from "react";
 
 /**
  * 账号「单项刷新」的共用契约（三平台卡片 + 详情抽屉都按这一套来）。
@@ -64,8 +64,19 @@ export const REFRESH_DONE_LABEL = {
  * ⚠️ `kindsOf` 每次返回**新数组**：调用方不要把它放进 `useMemo`/`useEffect` 依赖里
  * （会每次重算）。卡片只需要读它来决定哪一项显示转圈。
  */
+/**
+ * 「已更新」的停留时长（ms）。
+ *
+ * ⚠️ 它是**刚刚发生了什么**的反馈，不是常驻状态（原型同样只留 900ms）：
+ * 常驻会让用户以为「这个值只在我点的那一刻是对的」。
+ */
+export const REFRESH_DONE_MS = 900;
+
 export function useAccountRefreshBusy() {
   const [busy, setBusy] = useState<Map<string, Set<AccountRefreshKind>>>(() => new Map());
+  const [done, setDone] = useState<Map<string, Set<AccountRefreshKind>>>(() => new Map());
+  /** 定时器句柄：同一项重复刷新时先撤掉旧的，避免「早就撤了却被旧定时器清了新状态」。 */
+  const doneTimers = useRef(new Map<string, number>());
 
   const setOne = useCallback((accountId: string, kind: AccountRefreshKind, on: boolean) => {
     setBusy((prev) => {
@@ -101,21 +112,65 @@ export function useAccountRefreshBusy() {
     [busy],
   );
 
+  /** 置 / 清「已更新」。 */
+  const markDone = useCallback((accountId: string, kind: AccountRefreshKind, on: boolean) => {
+    setDone((prev) => {
+      const current = prev.get(accountId);
+      if (on) {
+        const set = new Set(current ?? []);
+        set.add(kind);
+        const next = new Map(prev);
+        next.set(accountId, set);
+        return next;
+      }
+      if (!current?.has(kind)) return prev;
+      const next = new Map(prev);
+      const set = new Set(current);
+      set.delete(kind);
+      if (set.size === 0) next.delete(accountId);
+      else next.set(accountId, set);
+      return next;
+    });
+  }, []);
+
+  const doneKindsOf = useCallback(
+    (accountId: string): AccountRefreshKind[] => {
+      const set = done.get(accountId);
+      return set ? [...set] : [];
+    },
+    [done],
+  );
+
   /**
    * 跑一次单项刷新：先标记进行中，**无论成功失败都撤掉**（`finally`）。
-   * 失败的处理（toast / 重试）交给调用方 —— 这个 hook 只管「谁在转圈」。
+   *
+   * 成功后额外亮 {@link REFRESH_DONE_MS} 毫秒的「已更新」—— 与原型一致：菜单里要能看出
+   * 刚刚发生了什么，而不只是一个转圈的瞬间。
+   * 失败的处理（toast / 重试）交给调用方 —— 这个 hook 只管状态。
    */
   const run = useCallback(
-    async (accountId: string, kind: AccountRefreshKind, task: () => Promise<unknown>): Promise<void> => {
+    async (accountId: string, kind: AccountRefreshKind, task: () => Promise<unknown>): Promise<boolean> => {
       setOne(accountId, kind, true);
       try {
         await task();
+        markDone(accountId, kind, true);
+        const timerKey = keyOf(accountId, kind);
+        const previous = doneTimers.current.get(timerKey);
+        if (previous !== undefined) window.clearTimeout(previous);
+        doneTimers.current.set(
+          timerKey,
+          window.setTimeout(() => {
+            markDone(accountId, kind, false);
+            doneTimers.current.delete(timerKey);
+          }, REFRESH_DONE_MS),
+        );
+        return true;
       } finally {
         setOne(accountId, kind, false);
       }
     },
-    [setOne],
+    [setOne, markDone],
   );
 
-  return { kindsOf, isBusy, run, keyOf };
+  return { kindsOf, doneKindsOf, isBusy, run, keyOf };
 }

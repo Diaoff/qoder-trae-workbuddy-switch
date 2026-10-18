@@ -1,4 +1,4 @@
-import { Ban, Check, CircleCheck, Coins, Ellipsis, Info, Loader2, PlaneTakeoff, QrCode, RefreshCw, StickyNote, Tag, Trash2 } from "lucide-react";
+import { Ban, Check, CircleCheck, Coins, Loader2, PlaneTakeoff, QrCode } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
 // P0 · 程序位表（含「计划新增 / 尚未支持」态）—— 展示侧镜像，与后端 `programs.rs` 逐字对齐。
@@ -6,8 +6,7 @@ import { PLANNED_PROGRAMS } from "@/lib/platforms/registry";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { DemoAction } from "@/components/demo-action";
-import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
-import { MenuGroupLabel, RefreshMenuGroup } from "@/components/account-menu-parts";
+import { AccountMoreMenu, AccountMoreMenuDemo } from "@/components/account-more-menu";
 import type { AccountRefreshKind } from "@/lib/account-refresh";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
@@ -384,6 +383,10 @@ interface Props {
   onRefreshPart?: (a: AccountMeta, kind: AccountRefreshKind) => void;
   /** 本账号正在进行中的刷新项；用于把对应菜单项标成「刷新中…」。 */
   refreshingKinds?: readonly AccountRefreshKind[];
+  /** 刚刚刷新成功（自行淡出）的项，菜单里显示「已更新」。 */
+  doneKinds?: readonly AccountRefreshKind[];
+  /** 「导出账号」（原型同位项）。页面侧弹导出对话框。 */
+  onExport?: (a: AccountMeta) => void;
   /** 本平台真的能刷的项（缺省四项）；见 `RefreshMenuGroup` 的注释。 */
   refreshKinds?: readonly AccountRefreshKind[];
   onSwitch?: (a: AccountMeta) => void;
@@ -451,9 +454,7 @@ interface Props {
   /** 打开详情抽屉（抽屉状态由页面持有）。 */
   onOpenDetail?: (a: AccountMeta) => void;
   /** 「更多 → 编辑备注」：打开抽屉并进入编辑态。 */
-  onEditRemark?: (a: AccountMeta) => void;
   /** 「更多 → 设置分组」：打开抽屉并进入分组编辑态（与备注同一交互）。 */
-  onEditGroup?: (a: AccountMeta) => void;
   /**
    * 该账号「今日 Token」明细（`get_account_token_today`）。
    *
@@ -500,7 +501,7 @@ function ProductCurrentState({
   );
 }
 
-export function AccountCard({ account, onDelete, onCheckin, onRefresh, onRefreshPart, refreshingKinds, refreshKinds, onSwitch, todayCheckedIn, travelStatus, credit, creditLoading, creditPriority, workbuddyActive, codebuddyCliConfigured, codebuddyCliActive, codebuddyCliBusy, onSwitchCodebuddyCli, codebuddyCliLoading, codebuddyCnIdeAvailable, codebuddyCnIdeActive, codebuddyCnIdeBusy, codebuddyCnIdeLoading, onSwitchCodebuddyCnIde, vscodePluginAvailable, vscodePluginActive, vscodePluginBusy, vscodePluginLoading, onSwitchVscodePlugin, jetbrainsPluginAvailable, jetbrainsPluginActive, jetbrainsPluginBusy, jetbrainsPluginLoading, onSwitchJetbrainsPlugin, onGuidePlugin, onAddPlaintextAccount, onGuideToSetting, selected = false, onToggleSelect, onOpenDetail, onEditRemark, onEditGroup, todayTokens, todayTokensTruncated = false, featuresDisabled = true }: Props) {
+export function AccountCard({ account, onDelete, onCheckin, onRefresh, onRefreshPart, refreshingKinds, doneKinds, refreshKinds, onExport, onSwitch, todayCheckedIn, travelStatus, credit, creditLoading, creditPriority, workbuddyActive, codebuddyCliConfigured, codebuddyCliActive, codebuddyCliBusy, onSwitchCodebuddyCli, codebuddyCliLoading, codebuddyCnIdeAvailable, codebuddyCnIdeActive, codebuddyCnIdeBusy, codebuddyCnIdeLoading, onSwitchCodebuddyCnIde, vscodePluginAvailable, vscodePluginActive, vscodePluginBusy, vscodePluginLoading, onSwitchVscodePlugin, jetbrainsPluginAvailable, jetbrainsPluginActive, jetbrainsPluginBusy, jetbrainsPluginLoading, onSwitchJetbrainsPlugin, onGuidePlugin, onAddPlaintextAccount, onGuideToSetting, selected = false, onToggleSelect, onOpenDetail, todayTokens, todayTokensTruncated = false, featuresDisabled = true }: Props) {
   const t = useT();
   /**
    * 兜底归一（第三道闸）。
@@ -995,53 +996,30 @@ const workbuddyControl = workbuddyActive ? (
    * `.progs` → 更多按钮，`buddy-switch-prototype.html:2515-2534`）。
    * 原先它绝对定位在头部右上角 —— 那是本仓自己的做法，原型里没有。
    */
+  /**
+   * 「更多」菜单 —— 与**表格视图共用同一份**（`account-more-menu.tsx`）。
+   *
+   * ⚠️ 这里不再内联菜单结构：同一个账号在卡片和表格里是同一批动作，
+   * 两处各写一遍必然漂移（上一版就出现过「卡片有刷新、表格没有」）。
+   */
   const menu = demoModeEnabled ? (
-    <DemoAction>
-      <Button variant="ghost" size="sm" className="!px-[10px] text-muted-foreground hover:bg-accent hover:text-foreground" aria-label={t("wbAccounts.card.manageAria", { name })} title={t("wbAccounts.card.moreActions")}>
-        <Ellipsis className="size-4" />
-      </Button>
-    </DemoAction>
+    <AccountMoreMenuDemo />
   ) : (
-    <DropdownMenu>
-      <DropdownMenuTrigger asChild>
-        <Button variant="ghost" size="sm" className="!px-[10px] text-muted-foreground hover:bg-accent hover:text-foreground" aria-label={t("wbAccounts.card.manageAria", { name })} title={t("wbAccounts.card.moreActions")}>
-          <Ellipsis className="size-4" />
-        </Button>
-      </DropdownMenuTrigger>
-      <DropdownMenuContent align="end" className="w-40">
-        <DropdownMenuItem disabled={!onOpenDetail} onSelect={() => onOpenDetail?.(account)}>
-          <Info />{t("wbAccounts.card.viewDetail")}
-        </DropdownMenuItem>
-        <DropdownMenuSeparator />
-        {onRefreshPart ? (
-          <RefreshMenuGroup refreshingKinds={refreshingKinds} kinds={refreshKinds} onPick={(kind) => onRefreshPart(account, kind)} />
-        ) : (
-          <DropdownMenuItem disabled={featuresDisabled || !onRefresh} onSelect={() => onRefresh?.(account)}>
-            <RefreshCw />{t("wbAccounts.card.refreshToken")}
-          </DropdownMenuItem>
-        )}
-        <DropdownMenuSeparator />
-        <MenuGroupLabel>{t("shared.cardMenu.accountGroup")}</MenuGroupLabel>
-        {/* ★ F5：**过期 / 需重登**账号不给「手动签到」——token 已失效，签到必失败；
-            批量签到也按同一口径把这类账号算「结构性失败」。
-            ⚠️ 缺这个门控就是「两处口径自相矛盾」（卡片给入口、批量却当失败）。 */}
-        {todayCheckedIn === false && !expired && !account.needsRelogin && (
-          <DropdownMenuItem disabled={featuresDisabled || !onCheckin} onSelect={() => onCheckin?.(account)}>
-            <CircleCheck />{t("wbAccounts.card.manualCheckin")}
-          </DropdownMenuItem>
-        )}
-        <DropdownMenuItem disabled={featuresDisabled || !onEditRemark} onSelect={() => onEditRemark?.(account)}>
-          <StickyNote />{t("wbAccounts.card.editRemark")}
-        </DropdownMenuItem>
-        <DropdownMenuItem disabled={featuresDisabled || !onEditGroup} onSelect={() => onEditGroup?.(account)}>
-          <Tag />{t("wbAccounts.card.editGroup")}
-        </DropdownMenuItem>
-        <DropdownMenuSeparator />
-        <DropdownMenuItem className="text-destructive focus:bg-destructive/5 focus:text-destructive" onSelect={() => onDelete(account)}>
-          <Trash2 />{t("wbAccounts.card.deleteAccount")}
-        </DropdownMenuItem>
-      </DropdownMenuContent>
-    </DropdownMenu>
+    <AccountMoreMenu
+      accountName={name}
+      onRefreshPart={onRefreshPart ? (kind) => onRefreshPart(account, kind) : undefined}
+      refreshingKinds={refreshingKinds}
+      doneKinds={doneKinds}
+      refreshKinds={refreshKinds}
+      onRefresh={onRefresh ? () => onRefresh(account) : undefined}
+      todayCheckedIn={todayCheckedIn}
+      expired={expired}
+      needsRelogin={account.needsRelogin}
+      onCheckin={onCheckin ? () => onCheckin(account) : undefined}
+      onExport={onExport ? () => onExport(account) : undefined}
+      onDelete={() => onDelete(account)}
+      featuresDisabled={featuresDisabled}
+    />
   );
 
   return (

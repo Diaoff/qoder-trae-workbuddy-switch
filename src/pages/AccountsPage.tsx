@@ -13,6 +13,7 @@ import {
   Terminal,
 } from "lucide-react";
 
+import { AccountMoreMenu } from "@/components/account-more-menu";
 import { AccountCard, accountIdentity, accountDisplayName, formatCredits, formatCreditExpiry, formatTodayTokens, todayTokensBreakdown, type GuideTarget } from "@/components/account-card";
 import { REFRESH_DONE_LABEL, useAccountRefreshBusy, type AccountRefreshKind } from "@/lib/account-refresh";
 import { AccountsTableAvatar } from "@/components/account-list-parts";
@@ -504,19 +505,6 @@ function RegionPanel({ region }: { region: Region }) {
       .getCreditStatistics(false, region)
       .then((stats) => setDetailCreditEvents(stats.events))
       .catch(() => setDetailCreditEvents(null));
-  }
-
-  function openRemark(account: AccountMeta) {
-    setDetailAutoEditRemark(true);
-    setDetailAutoEditGroup(false);
-    setDetailAccount(account);
-  }
-
-  /** 「更多 → 设置分组」：打开抽屉并进入**分组**编辑态（与 `openRemark` 同一交互）。 */
-  function openGroup(account: AccountMeta) {
-    setDetailAutoEditRemark(false);
-    setDetailAutoEditGroup(true);
-    setDetailAccount(account);
   }
 
   /**
@@ -2145,6 +2133,25 @@ function RegionPanel({ region }: { region: Region }) {
           「一段代码」。 */}
       <AccountWorkbench
         query={query}
+        /* ★ 表格视图的「更多」：与卡片**同一个菜单组件**，避免「卡片有刷新、表格没有」。 */
+        renderActions={(row) => (
+          <AccountMoreMenu
+            accountName={accountDisplayName(row)}
+            compact
+            onRefreshPart={(kind) => void onRefreshPart(row, kind)}
+            refreshingKinds={refreshBusy.kindsOf(row.id)}
+            doneKinds={refreshBusy.doneKindsOf(row.id)}
+            todayCheckedIn={checkinMap[row.id]}
+            expired={typeof row.expiresAt === "number" && row.expiresAt < Date.now()}
+            needsRelogin={row.needsRelogin}
+            onCheckin={() => void onCheckin(row)}
+            onExport={() => {
+              setExportTargets([row]);
+              setExportOpen(true);
+            }}
+            onDelete={() => onDelete(row)}
+          />
+        )}
         onQueryChange={setQuery}
         searchInputRef={searchRef}
         sort={sort}
@@ -2354,6 +2361,11 @@ function RegionPanel({ region }: { region: Region }) {
                               onRefresh={onRefresh}
                               onRefreshPart={onRefreshPart}
                               refreshingKinds={refreshBusy.kindsOf(a.id)}
+                              doneKinds={refreshBusy.doneKindsOf(a.id)}
+                              onExport={(target) => {
+                                setExportTargets([target]);
+                                setExportOpen(true);
+                              }}
                               todayCheckedIn={checkinMap[a.id]}
                               travelStatus={travelMap[a.id]}
                               todayTokens={a.uid ? tokenTodayMap.get(a.uid) : undefined}
@@ -2388,8 +2400,6 @@ function RegionPanel({ region }: { region: Region }) {
                               selected={selectedKeys.has(selectionKey(a.id))}
                               onToggleSelect={toggleSelect}
                               onOpenDetail={openDetail}
-                              onEditRemark={openRemark}
-                              onEditGroup={openGroup}
                               /* ★ 两平台**同一取值**（Trae 侧同为 `false`）。
                                  ⚠️ 此前 WB 传 `false`、Trae 传 `api.isDemoMode()` ⇒ 同一个演示构建里
                                  「WB 的按钮能点、Trae 的按钮点不动」，用户看到两个平台行为不一致。

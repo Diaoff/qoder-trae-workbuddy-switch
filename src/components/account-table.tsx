@@ -60,6 +60,14 @@ export interface AccountTableProps<T> {
   selectAllLabel: string;
   selectRowLabel: (row: T) => string;
   openRowLabel: (row: T) => string;
+  /**
+   * 行尾「更多」按钮（已归一节点）。
+   *
+   * ⚠️ 由调用方注入**与卡片同一个菜单组件**（`account-more-menu.tsx`）——
+   * 表格与卡片列的是同一批账号、同一批动作，两处各写一遍必然漂移。
+   * 不传 ⇒ 不渲染该列（网关等无账号动作的表格不受影响）。
+   */
+  renderActions?: (row: T) => ReactNode;
 }
 
 export function AccountTable<T>({
@@ -76,6 +84,7 @@ export function AccountTable<T>({
   selectAllLabel,
   selectRowLabel,
   openRowLabel,
+  renderActions,
 }: AccountTableProps<T>) {
   return (
     <div className="overflow-x-auto rounded-[12px] border border-border bg-card">
@@ -110,7 +119,14 @@ export function AccountTable<T>({
                 key={key}
                 tabIndex={0}
                 aria-label={openRowLabel(row)}
-                onClick={() => onOpen(row)}
+                onClick={(event) => {
+                  /* 行尾「更多」按钮不算「点行」：点它不该顺带打开详情。
+                     ⚠️ 用**行自身的 onClick 里判断**而不是给动作格再挂一个 `stopPropagation` ——
+                     表格行的可点区预算只有 2 个（勾选格 + 行本身，见 P4 门禁），
+                     多一个 onClick 处理器就会被那条守门判红。 */
+                  if (event.target instanceof Element && event.target.closest("[data-row-actions]")) return;
+                  onOpen(row);
+                }}
                 onKeyDown={(event) => {
                   if (event.key === "Enter") onOpen(row);
                 }}
@@ -136,6 +152,12 @@ export function AccountTable<T>({
                     {column.render(row)}
                   </td>
                 ))}
+                {/* 行尾动作：标记 `data-row-actions`，由上面的行 onClick 识别（见那里的注释）。 */}
+                {renderActions ? (
+                  <td data-row-actions className="w-10 px-2 py-1.5 text-right align-middle">
+                    {renderActions(row)}
+                  </td>
+                ) : null}
               </tr>
             );
           })}

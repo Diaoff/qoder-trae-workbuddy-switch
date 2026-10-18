@@ -46,7 +46,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { MenuGroupLabel, RefreshMenuGroup } from "@/components/account-menu-parts";
+import { MenuGroupLabel, MenuHead, MenuNote, RefreshMenuGroup } from "@/components/account-menu-parts";
 import type { AccountRefreshKind } from "@/lib/account-refresh";
 import type { QoderAccountView, QoderProgramStatus } from "@/lib/api";
 import { demoModeEnabled } from "@/lib/demo-mode";
@@ -216,6 +216,8 @@ export interface QoderAccountCardProps {
   onRefreshPart?: (account: QoderAccountView, kind: AccountRefreshKind) => void;
   /** 本账号正在进行中的刷新项。 */
   refreshingKinds?: readonly AccountRefreshKind[];
+  /** 刚刚刷新成功（自行淡出）的项，菜单里显示「已更新」。 */
+  doneKinds?: readonly AccountRefreshKind[];
   /** 本平台真的能刷的项（缺省四项）；见 `RefreshMenuGroup` 的注释。 */
   refreshKinds?: readonly AccountRefreshKind[];
 }
@@ -234,6 +236,7 @@ export function QoderAccountCard({
   onSetGroup,
   onRefreshPart,
   refreshingKinds,
+  doneKinds,
   refreshKinds,
 }: QoderAccountCardProps) {
   const t = useT();
@@ -272,7 +275,8 @@ export function QoderAccountCard({
           <Ellipsis className="size-4" />
         </Button>
       </DropdownMenuTrigger>
-      <DropdownMenuContent align="end" className="w-40">
+      <DropdownMenuContent align="end" className="w-56">
+        <MenuHead>{displayText(account.name) || account.uid}</MenuHead>
         <DropdownMenuItem disabled={!onOpenDetail} onSelect={() => onOpenDetail?.(account)}>
           <Info />
           {t("qoder.page.accounts.card.viewDetail")}
@@ -280,7 +284,7 @@ export function QoderAccountCard({
         <DropdownMenuSeparator />
         {onRefreshPart && (
           <>
-            <RefreshMenuGroup refreshingKinds={refreshingKinds} kinds={refreshKinds} onPick={(kind) => onRefreshPart(account, kind)} />
+            <RefreshMenuGroup refreshingKinds={refreshingKinds} doneKinds={doneKinds} kinds={refreshKinds} onPick={(kind) => onRefreshPart(account, kind)} />
             <DropdownMenuSeparator />
             <MenuGroupLabel>{t("shared.cardMenu.accountGroup")}</MenuGroupLabel>
           </>
@@ -302,6 +306,7 @@ export function QoderAccountCard({
           <Trash2 />
           {t("qoder.page.accounts.card.deleteAccount")}
         </DropdownMenuItem>
+              <MenuNote>{t("shared.cardMenu.note")}</MenuNote>
       </DropdownMenuContent>
     </DropdownMenu>
   );

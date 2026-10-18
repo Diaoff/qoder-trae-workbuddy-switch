@@ -2204,6 +2204,7 @@ export default function TraeAccountsPage() {
                               onCheckin={(target) => void checkinOne(target)}
                               onRefreshCredits={refreshCreditsOne}
                               onRefreshPart={onRefreshPart}
+                              doneKinds={refreshBusy.doneKindsOf(account.userId)}
                               refreshingKinds={refreshBusy.kindsOf(account.userId)}
                               refreshKinds={TRAE_REFRESH_KINDS}
                               /* 「保存登录态」＝把客户端**此刻**的登录态存到这个账号名下，

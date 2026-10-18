@@ -6423,20 +6423,33 @@ check("★ F5 过期 / 需重登账号不给「手动签到」（卡片菜单与
      ⚠️ 曾经的漏洞：**抽屉**里本就没有该入口（原型断言因此**空转通过**），而**卡片菜单**仍给
      ⇒ 卡片给入口、批量签到却把这类账号算「结构性失败」⇒ **两处口径自相矛盾**。
      本断言锚**卡片菜单的渲染条件**，防它退化回「只看 todayCheckedIn」。 */
-  const src = stripComments(
-    fs.readFileSync(path.join(ROOT, "src/components/account-card.tsx"), "utf8"),
-  );
-  const m = src.match(/\{todayCheckedIn === false &&[^{]*\(/);
-  if (!m) {
-    throw new Error("account-card.tsx 找不到「手动签到」的渲染条件（可能已重构，请更新本断言）");
+  /* ⚠️ 2026-10-18：菜单按原型改成**三态**（已签到 / 凭据失效 / 可点），并且结构抽到了
+     `account-more-menu.tsx`（卡片与表格共用同一份）。断言因此改为守住三态的**顺序与门控**：
+       已签到 ⇒ 禁用状态行；凭据失效 ⇒ 禁用状态行「需先登录」；其余才给可点的「手动签到」。
+     守的是**行为**，不是某段字面量 —— 组件搬家 / 写法调整不该让守门变摆设。 */
+  const sources = ["src/components/account-more-menu.tsx", "src/components/account-card.tsx"]
+    .map((file) => stripComments(fs.readFileSync(path.join(ROOT, file), "utf8")))
+    .join("\n");
+  if (!/Boolean\(expired\) \|\| Boolean\(needsRelogin\)/.test(sources)) {
+    throw new Error("凭据失效判定丢了 expired / needsRelogin 任一项（F5 违反）");
   }
-  if (!/!expired/.test(m[0])) {
-    throw new Error("「手动签到」未按 expired 门控 —— 过期账号仍给入口（F5 违反）");
+  const deadBranch = sources.indexOf("credentialDead ? (");
+  const checkedBranch = sources.indexOf("todayCheckedIn === true ? (");
+  const liveBranch = sources.indexOf("todayCheckedIn === false ? (");
+  if (checkedBranch < 0 || deadBranch < 0 || liveBranch < 0) {
+    throw new Error("签到三态的分支不完整（可能已重构，请更新本断言）");
   }
-  if (!/needsRelogin/.test(m[0])) {
-    throw new Error("「手动签到」未按 needsRelogin 门控 —— 需重登账号仍给入口（F5 违反）");
+  if (!(checkedBranch < deadBranch && deadBranch < liveBranch)) {
+    throw new Error("签到三态顺序不对 —— 必须先判「已签到」，再判「凭据失效」，最后才给可点入口");
   }
-  return "expired + needsRelogin 双门控";
+  const deadSlice = sources.slice(deadBranch, liveBranch);
+  if (!/MenuStateItem/.test(deadSlice)) {
+    throw new Error("凭据失效分支渲染的是可点入口而不是禁用状态行（F5 违反）");
+  }
+  if (!/needLogin/.test(deadSlice)) {
+    throw new Error("凭据失效分支缺少「需先登录」说明 —— 用户看不出为什么点不了");
+  }
+  return "expired + needsRelogin 双门控 · 三态顺序正确";
 });
 
 check("★ P1-5 账号卡可键盘聚焦（tabIndex + 语义 role + Enter/Space 有用途）", () => {

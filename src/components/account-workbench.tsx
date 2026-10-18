@@ -174,6 +174,8 @@ export interface AccountWorkbenchProps<T> {
    */
   rowSelectLabel: (item: T) => string;
   rowOpenLabel: (item: T) => string;
+  /** 行尾「更多」按钮（透传给 `AccountTable`；见那里的说明）。 */
+  renderActions?: (item: T) => ReactNode;
 
   /* ────────── 卡片视图 ────────── */
   /** 渲染一张卡（页面注入 `AccountCard` 或 `TraeAccountCard`）。 */
@@ -222,6 +224,7 @@ export function AccountWorkbench<T>({
   isRowCurrent,
   rowSelectLabel,
   rowOpenLabel,
+  renderActions,
   renderCard,
   footer,
 }: AccountWorkbenchProps<T>) {
@@ -319,6 +322,7 @@ export function AccountWorkbench<T>({
                       selectAllLabel={t("shared.table.selectAllAria")}
                       selectRowLabel={rowSelectLabel}
                       openRowLabel={rowOpenLabel}
+                      renderActions={renderActions}
                     />
                   ) : (
                     /* 原型 `.grid.g3`（`:242-247`）：宽屏**恰好 3 列**、间距 12px，逐级降 2 / 1 列。

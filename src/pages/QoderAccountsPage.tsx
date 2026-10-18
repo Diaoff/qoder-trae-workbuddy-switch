@@ -1149,6 +1149,7 @@ export default function QoderAccountsPage() {
               onOpenDetail={openDetail}
               onEditRemark={openRemark}
               onRefreshPart={onRefreshPart}
+              doneKinds={refreshPartBusy.doneKindsOf(account.uid)}
               refreshingKinds={refreshPartBusy.kindsOf(account.uid)}
               refreshKinds={QODER_REFRESH_KINDS}
               onDelete={setPendingDelete}
