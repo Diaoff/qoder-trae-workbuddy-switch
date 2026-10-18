@@ -387,8 +387,18 @@ pub async fn chat_for_region(
             }
             state.bind_sticky(sticky_key.as_deref(), &uid).await;
             return if wants_stream {
+                // ★ `allowed_tools` 一并传进流式路径：泄漏回声守卫要按**声明过的工具名**
+                //   校验才还原（未声明的工具名不合成），与非流式同判据。
                 stream_relay(
-                    state, response, protocol, region, &model, &chat_id, &uid, started,
+                    state,
+                    response,
+                    protocol,
+                    region,
+                    &model,
+                    &chat_id,
+                    &uid,
+                    started,
+                    allowed_tools,
                 )
                 .await
             } else {
@@ -558,6 +568,7 @@ async fn stream_relay(
     _chat_id: &str,
     uid: &str,
     started: Instant,
+    allowed_tools: Option<HashSet<String>>,
 ) -> Response {
     let upstream = response.bytes_stream();
     let stream_model = model.to_string();
@@ -568,11 +579,16 @@ async fn stream_relay(
     let uid = uid.to_string();
     let model_for_task = model.to_string();
 
-    // 转换链：信封解包 → `UsageTapStream`（旁路取 usage / 错误）→（Anthropic 入口再包一层）。
-    // ⚠️ UsageTap **必须在 Anthropic 转换之前** —— 转换后帧是 Anthropic 事件，
-    //    取不到 OpenAI 的 `usage` 字段。
+    // 转换链：信封解包 → **泄漏回声守卫** → `UsageTapStream`（旁路取 usage / 错误）
+    //        →（Anthropic 入口再包一层）。
+    // ⚠️ 两处顺序都是硬约束：
+    //   ① 守卫必须在 `UsageTapStream` **之内** —— 它不改 `QoderOpenAiStream::new` 的签名，
+    //      而 `aggregate`（非流式）内部自建流、**不经过**本层 ⇒ 结构上不可能被还原两次；
+    //   ② `UsageTapStream` **必须在 Anthropic 转换之前** —— 转换后帧是 Anthropic 事件，
+    //      取不到 OpenAI 的 `usage` 字段。
+    let allowed_tools_shared = allowed_tools.map(std::sync::Arc::new);
     let tapped = sse::UsageTapStream::new(
-        sse::QoderOpenAiStream::new(upstream),
+        sse::LeakGuardStream::new(sse::QoderOpenAiStream::new(upstream), allowed_tools_shared),
         usage_slot.clone(),
         error_slot.clone(),
     );

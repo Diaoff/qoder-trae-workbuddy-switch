@@ -453,6 +453,477 @@ where
     }
 }
 
+/// 扣帧期允许累积的字节上限（超出 ⇒ fail-open 原样透传）。
+///
+/// 取 64 KiB：合法回声（标记 + 工具参数数组）远小于它；而正文一旦超过这个量级，
+/// 它已经不可能是「模型把整段工具调用原样回声」，继续扣着只会白等用户。
+const LEAK_GUARD_MAX_HELD_BYTES: usize = 64 * 1024;
+
+/// 泄漏守卫的状态。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LeakGuardMode {
+    /// 逐字透传（默认）。**只有正文看起来是标记前缀时才进入扣帧态**。
+    Passthrough,
+    /// 累计正文仍是 [`api::LEAK_MARKER`] 的**逐字节前缀** —— 还在等后续分片。
+    Probing,
+    /// 正文已越过标记前缀、且形状像回声（标记后紧跟 `[`）—— 等到流末整段判定。
+    Recovering,
+}
+
+/// 累计正文与「回声」的形状关系。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LeakShape {
+    /// 仍是标记的逐字节前缀。
+    Prefix,
+    /// 标记开头 + 后面是 `[`（JSON 数组的起点）—— 有可能。
+    Echo,
+    /// 不可能是回声。
+    NotEcho,
+}
+
+/// 一帧是不是「正文可能是标记开头」。
+fn starts_leak(text: &str) -> bool {
+    api::LEAK_MARKER.starts_with(text) || text.starts_with(api::LEAK_MARKER)
+}
+
+/// 累计正文处于哪种形状（判定与 [`api::parse_leaked_tool_calls`] 同源：标记 + `[` 开头）。
+fn classify(text: &str) -> LeakShape {
+    if api::LEAK_MARKER.starts_with(text) {
+        return LeakShape::Prefix;
+    }
+    if !text.starts_with(api::LEAK_MARKER) {
+        return LeakShape::NotEcho;
+    }
+    let rest = text[api::LEAK_MARKER.len()..].trim_start();
+    if rest.is_empty() || rest.starts_with('[') {
+        LeakShape::Echo
+    } else {
+        LeakShape::NotEcho
+    }
+}
+
+/// 解出 `data: {...}` 帧里的 JSON（`[DONE]` / 不可解析 ⇒ `None`）。
+fn parse_frame(frame: &Bytes) -> Option<Value> {
+    let text = std::str::from_utf8(frame).ok()?;
+    let data = text.strip_prefix("data: ")?.trim();
+    if data == "[DONE]" {
+        return None;
+    }
+    serde_json::from_str::<Value>(data).ok()
+}
+
+/// 一帧 delta 里的正文（字符串或 parts 数组都拼起来）；没有正文 ⇒ `None`。
+fn delta_content(chunk: &Value) -> Option<String> {
+    let choices = chunk.get("choices")?.as_array()?;
+    let mut text = String::new();
+    let mut found = false;
+    for choice in choices {
+        let Some(delta) = choice.get("delta") else {
+            continue;
+        };
+        match delta.get("content") {
+            Some(Value::String(value)) => {
+                text.push_str(value);
+                found = true;
+            }
+            Some(Value::Array(parts)) => {
+                for part in parts {
+                    match part {
+                        Value::String(value) => {
+                            text.push_str(value);
+                            found = true;
+                        }
+                        Value::Object(object) => {
+                            if let Some(value) = object.get("text").and_then(Value::as_str) {
+                                text.push_str(value);
+                                found = true;
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    found.then_some(text)
+}
+
+/// 一帧是否**已经带结构化 `tool_calls`**。
+///
+/// ★ 这是「绝不双发」的判据（P0-A0）：上游既给了结构化调用、又在正文里带了标记时，
+/// 守卫**不再合成第二组** —— 否则客户端会把同一组工具执行两次。
+fn has_structured_tool_calls(chunk: &Value) -> bool {
+    chunk
+        .get("choices")
+        .and_then(Value::as_array)
+        .map(|choices| {
+            choices.iter().any(|choice| {
+                choice
+                    .get("delta")
+                    .and_then(|delta| delta.get("tool_calls"))
+                    .and_then(Value::as_array)
+                    .map(|calls| !calls.is_empty())
+                    .unwrap_or(false)
+            })
+        })
+        .unwrap_or(false)
+}
+
+/// 把扣住的一帧改写成「无正文」（`finish_reason` 可选改写为 `tool_calls`）。
+///
+/// ⚠️ **必须无条件去掉 `delta.content`** —— 纯正文帧（没有 `finish_reason`）同样是回声，
+///   留着就会把标记原样放回客户端（第一版实现的两处 bug 都由
+///   `leak_guard_recovers_echo_into_structured_tool_calls` 与
+///   `leak_guard_never_synthesizes_a_second_tool_call_set` 钉住）。
+/// `saw_finish` 是**出参**：本帧是否改写过一个非空 `finish_reason`（决定要不要补收尾帧）。
+/// 不可解析 ⇒ 原样字节。
+fn strip_content(frame: &Bytes, finish_reason: Option<&str>, saw_finish: &mut bool) -> Bytes {
+    let Some(text) = std::str::from_utf8(frame).ok() else {
+        return frame.clone();
+    };
+    let Some(rest) = text.strip_prefix("data: ") else {
+        return frame.clone();
+    };
+    let Ok(Value::Object(mut chunk)) = serde_json::from_str::<Value>(rest.trim()) else {
+        return frame.clone();
+    };
+    let Some(choices) = chunk.get_mut("choices").and_then(Value::as_array_mut) else {
+        return frame.clone();
+    };
+    for choice in choices.iter_mut() {
+        let Some(object) = choice.as_object_mut() else {
+            continue;
+        };
+        if let Some(delta) = object.get_mut("delta").and_then(Value::as_object_mut) {
+            delta.remove("content");
+        }
+        if let Some(reason) = finish_reason {
+            if object
+                .get("finish_reason")
+                .map(|value| !value.is_null())
+                .unwrap_or(false)
+            {
+                object.insert("finish_reason".into(), Value::String(reason.into()));
+                *saw_finish = true;
+            }
+        }
+    }
+    Bytes::from(format!("data: {}\n\n", Value::Object(chunk)))
+}
+
+/// 流式**泄漏回声守卫**：把模型原样回声的 `[assistant 请求调用工具]` + JSON 数组
+/// 还原成结构化 `tool_calls` 帧，与非流式 [`aggregate`] 同一判据、同一函数
+/// （`api::parse_leaked_tool_calls`）。
+///
+/// ## 为什么必须有这一层（issue #46 的 A 项）
+///
+/// 文本模式下历史里的工具调用会被序列化进正文，模型很可能**原样回声**；
+/// 非流式路径在 [`aggregate`] 末尾兜底还原，而**流式中继是逐帧透传的** ——
+/// 泄漏文本会直接打到客户端界面。
+///
+/// ## 接入点（为什么在 `QoderOpenAiStream` **之外**、`UsageTapStream` **之内**）
+///
+/// - 流式入口 `routes::stream_relay` 的链是
+///   `QoderOpenAiStream → 本守卫 → UsageTapStream →（Anthropic 时）转换`，
+///   本层**必经**，且合成的是 OpenAI 形状的帧 ⇒ Anthropic 入口自动覆盖；
+/// - [`aggregate`] 内部自建 `QoderOpenAiStream`、**不经过本守卫** ⇒
+///   **结构上不可能被处理两次**（两次还原会各生成一组随机 id 的 `tool_calls`，
+///   客户端会把同一组工具执行两遍）；
+/// - [`QoderOpenAiStream::new`] 的签名与全部调用点保持不变。
+///
+/// ## 正常流**逐字不变**
+///
+/// 只有「正文看起来是标记开头」才扣帧；一旦分叉（或超上限 / 上游已给结构化调用 /
+/// 流末仍不是合法回声）即**原样透传**（fail-open）。首帧若是正文，回执延迟至多一帧。
+///
+/// ## 兜底合成形状（`finish_reason` 必须在 usage 之前）
+///
+/// `[anthropic::push_tool_call]` 读 `chunk["choices"][0]["delta"]["tool_calls"][i]["index"]`
+/// 且 `unwrap_or(0)` ⇒ 合成帧**必须**逐个带 `index`，否则并行调用会被压成同一个；
+/// `AnthropicSseStream` 又按「**见到 finish_reason 就补 usage**」收尾
+/// ⇒ 合成帧的 `finish_reason` 必须落在上游 usage 帧**之前**，否则 usage 永远补不出来。
+pub struct LeakGuardStream<S> {
+    inner: S,
+    mode: LeakGuardMode,
+    text: String,
+    held: std::collections::VecDeque<Bytes>,
+    held_bytes: usize,
+    saw_tool_calls: bool,
+    allowed_tools: Option<std::sync::Arc<std::collections::HashSet<String>>>,
+    out: std::collections::VecDeque<Bytes>,
+    finished: bool,
+}
+
+impl<S> LeakGuardStream<S> {
+    pub fn new(
+        inner: S,
+        allowed_tools: Option<std::sync::Arc<std::collections::HashSet<String>>>,
+    ) -> Self {
+        Self {
+            inner,
+            mode: LeakGuardMode::Passthrough,
+            text: String::new(),
+            held: std::collections::VecDeque::new(),
+            held_bytes: 0,
+            saw_tool_calls: false,
+            allowed_tools,
+            out: std::collections::VecDeque::new(),
+            finished: false,
+        }
+    }
+
+    /// 放弃扣帧：把扣住的帧**原样**按顺序放出（fail-open 的唯一出口）。
+    fn flush_held(&mut self) {
+        while let Some(frame) = self.held.pop_front() {
+            self.out.push_back(frame);
+        }
+        self.held_bytes = 0;
+        self.text.clear();
+        self.saw_tool_calls = false;
+        self.mode = LeakGuardMode::Passthrough;
+    }
+
+    /// 剥掉扣住帧里的回声正文，但**保留上游自己的 `finish_reason`**（fail-open 的「清泄漏」半边）。
+    ///
+    /// 用在「上游已给结构化 `tool_calls`、绝不能合成第二组」那条路上：
+    /// 不合成调用是防双发，剥正文是清泄漏 —— **两件事必须分别做**，
+    /// 合成不了就整帧放行等于把标记原样还给用户（那正是 issue #46 的症状）。
+    fn flush_held_without_leaking(&mut self) {
+        let held: Vec<Bytes> = self.held.drain(..).collect();
+        let mut saw_finish = false;
+        for frame in held {
+            self.out
+                .push_back(strip_content(&frame, None, &mut saw_finish));
+        }
+        self.held_bytes = 0;
+        self.text.clear();
+        self.saw_tool_calls = false;
+        self.mode = LeakGuardMode::Passthrough;
+    }
+
+    /// 扣帧期收尾：只对**确实像回声**的情形做还原，其余一律原样透传。
+    fn finalize(&mut self) {
+        match self.mode {
+            LeakGuardMode::Passthrough => {}
+            /* 标记只写了一半（上游断流 / 恰好停在前缀）⇒ 原样透传：
+            宁可让用户看见半句标记，也不要凭空造出工具调用。 */
+            LeakGuardMode::Probing => self.flush_held(),
+            LeakGuardMode::Recovering => {
+                if self.saw_tool_calls {
+                    /* 上游已给结构化调用 ⇒ 绝不合成第二组（双发）。
+                    ⚠️ 但**仍要剥掉回声正文**：不合成 ≠ 把标记原样还给用户
+                    （那是 issue #46 的症状）。`finish_reason` 保持上游原值。 */
+                    self.flush_held_without_leaking();
+                    return;
+                }
+                let (calls, cleaned) =
+                    api::parse_leaked_tool_calls(&self.text, self.allowed_tools.as_deref());
+                let Some(calls) = calls.filter(|calls| !calls.is_empty()) else {
+                    self.flush_held();
+                    return;
+                };
+                self.emit_recovered(calls, &cleaned);
+            }
+        }
+    }
+
+    /// 还原成功：合成 `tool_calls` 帧 + 把扣住的帧去正文后按原顺序放回。
+    ///
+    /// `cleaned` 是 [`api::parse_leaked_tool_calls`] 给出的「清掉标记后的正文」
+    /// （识别成功时为空串）。它被当作**唯一**正文来源：扣住的帧一律去正文，
+    /// 而 `cleaned` 若非空（防御性：识别成功却带出正文）则**先**补一帧正文 ——
+    /// 这样「正文」永远等于判据算出来的结果，而不是「我们以为的正文」。
+    fn emit_recovered(&mut self, calls: Vec<Value>, cleaned: &str) {
+        // 模板取最后一个能解析的帧（沿用上游的 `id` / `model` / `created`）。
+        let mut template = Map::new();
+        for frame in &self.held {
+            if let Some(chunk) = parse_frame(frame) {
+                if let Some(object) = chunk.as_object() {
+                    for key in ["id", "model", "created"] {
+                        if let Some(value) = object.get(key) {
+                            template.insert(key.to_string(), value.clone());
+                        }
+                    }
+                }
+            }
+        }
+        // ⚠️ 逐个带 `index`：Anthropic 侧靠它归并并行调用（`unwrap_or(0)` 会压成同一个）。
+        let tool_calls: Vec<Value> = calls
+            .iter()
+            .enumerate()
+            .map(|(index, call)| {
+                let mut entry = Map::new();
+                entry.insert("index".into(), Value::from(index));
+                if let Some(id) = call.get("id").and_then(Value::as_str) {
+                    if !id.is_empty() {
+                        entry.insert("id".into(), Value::String(id.to_string()));
+                    }
+                }
+                entry.insert(
+                    "type".into(),
+                    call.get("type")
+                        .cloned()
+                        .unwrap_or_else(|| Value::String("function".into())),
+                );
+                entry.insert(
+                    "function".into(),
+                    call.get("function").cloned().unwrap_or_else(|| json!({})),
+                );
+                Value::Object(entry)
+            })
+            .collect();
+        // 没有上游 id 时补一个（客户端要求 `tool_calls[].id` 非空）。
+        let tool_calls: Vec<Value> = tool_calls
+            .into_iter()
+            .map(|mut call| {
+                if let Some(object) = call.as_object_mut() {
+                    if !object.contains_key("id") {
+                        object.insert(
+                            "id".into(),
+                            Value::String(format!("call_{}", uuid::Uuid::new_v4().simple())),
+                        );
+                    }
+                }
+                call
+            })
+            .collect();
+
+        template.insert(
+            "choices".into(),
+            json!([{ "index": 0, "delta": { "tool_calls": tool_calls }, "finish_reason": null }]),
+        );
+        let synthesized = Bytes::from(format!("data: {}\n\n", Value::Object(template.clone())));
+
+        let held: Vec<Bytes> = self.held.drain(..).collect();
+        let mut saw_finish = false;
+        let mut tail = Vec::new();
+        // `cleaned` 非空时先补正文（识别成功却带出正文的防御分支）。
+        if !cleaned.trim().is_empty() {
+            let mut body = template.clone();
+            body.insert(
+                "choices".into(),
+                json!([{ "index": 0, "delta": { "content": cleaned }, "finish_reason": null }]),
+            );
+            tail.push(Bytes::from(format!("data: {}\n\n", Value::Object(body))));
+        }
+        tail.push(synthesized);
+        for frame in held {
+            tail.push(strip_content(&frame, Some("tool_calls"), &mut saw_finish));
+        }
+        if !saw_finish {
+            // 上游这一路没有 `finish_reason`（罕见）⇒ 补一帧收尾，
+            // 否则客户端会一直等 `finish_reason`（Anthropic 侧还会补不出 usage）。
+            tail.push(Bytes::from(
+                "data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n",
+            ));
+        }
+        for frame in tail {
+            self.out.push_back(frame);
+        }
+        self.held_bytes = 0;
+        self.text.clear();
+        self.saw_tool_calls = false;
+        self.mode = LeakGuardMode::Passthrough;
+    }
+
+    /// 处理一帧。
+    fn push_frame(&mut self, frame: Bytes) {
+        if self.mode == LeakGuardMode::Passthrough {
+            let enter = parse_frame(&frame)
+                .and_then(|chunk| delta_content(&chunk))
+                .map(|text| starts_leak(&text))
+                .unwrap_or(false);
+            if !enter {
+                self.out.push_back(frame);
+                return;
+            }
+            let chunk = parse_frame(&frame);
+            let text = chunk.as_ref().and_then(delta_content).unwrap_or_default();
+            self.text.push_str(&text);
+            if let Some(chunk) = &chunk {
+                if has_structured_tool_calls(chunk) {
+                    self.saw_tool_calls = true;
+                }
+            }
+            self.held_bytes += frame.len();
+            self.held.push_back(frame);
+            self.mode = match classify(&self.text) {
+                LeakShape::Prefix => LeakGuardMode::Probing,
+                _ => LeakGuardMode::Recovering,
+            };
+            return;
+        }
+
+        // 扣帧期：超上限 ⇒ fail-open（放行全部，不再判断）。
+        let len = frame.len();
+        if self.held_bytes + len > LEAK_GUARD_MAX_HELD_BYTES {
+            self.flush_held();
+            self.out.push_back(frame);
+            return;
+        }
+        self.held_bytes += len;
+        let Some(chunk) = parse_frame(&frame) else {
+            self.held.push_back(frame);
+            return;
+        };
+        if has_structured_tool_calls(&chunk) {
+            self.saw_tool_calls = true;
+        }
+        let Some(text) = delta_content(&chunk) else {
+            self.held.push_back(frame);
+            return;
+        };
+        self.text.push_str(&text);
+        /* 三态在这里**双向**流转：前缀继续等分片（Probing），越过标记前缀就转
+        Recovering 等流末整段判定，分叉则立刻原样透传（fail-open）。
+        ⚠️ 只判「不是回声就放行」是不够的 —— 那样 Probing 会一直停在 Probing，
+        流末按 fail-open 放行，整段回声就会漏给客户端。 */
+        self.mode = match classify(&self.text) {
+            LeakShape::Prefix => LeakGuardMode::Probing,
+            LeakShape::Echo => LeakGuardMode::Recovering,
+            LeakShape::NotEcho => {
+                self.held.push_back(frame);
+                self.flush_held();
+                return;
+            }
+        };
+        self.held.push_back(frame);
+    }
+}
+
+impl<S, E> Stream for LeakGuardStream<S>
+where
+    S: Stream<Item = Result<Bytes, E>> + Unpin,
+{
+    type Item = Result<Bytes, io::Error>;
+
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let this = self.get_mut();
+        loop {
+            if let Some(frame) = this.out.pop_front() {
+                return Poll::Ready(Some(Ok(frame)));
+            }
+            if this.finished {
+                return Poll::Ready(None);
+            }
+            match Pin::new(&mut this.inner).poll_next(cx) {
+                Poll::Ready(Some(Ok(frame))) => this.push_frame(frame),
+                Poll::Ready(Some(Err(_error))) => {
+                    /* 传输错误：把扣着的帧原样放出（fail-open），不悬挂。 */
+                    this.flush_held();
+                    this.finished = true;
+                }
+                Poll::Ready(None) => {
+                    this.finalize();
+                    this.finished = true;
+                }
+                Poll::Pending => return Poll::Pending,
+            }
+        }
+    }
+}
+
 /// mpsc 接收端 → 流。
 pub fn stream_from_receiver(
     rx: tokio::sync::mpsc::Receiver<Result<Bytes, io::Error>>,
@@ -645,5 +1116,332 @@ mod tests {
             7
         );
         assert!(error.lock().expect("锁未中毒").is_none(), "正常流不得记错");
+    }
+
+    /// P0：**普通流经守卫后必须字节级不变**（issue #46 的 A 项的回归钉子）。
+    ///
+    /// 可证伪：把守卫改成「无条件扣帧到流末」⇒ 第一条 `==` 失败。
+    #[tokio::test]
+    async fn leak_guard_is_transparent_for_normal_streams() {
+        use std::sync::Arc;
+
+        let frames = vec![
+            frame(&json!({"id": "c1", "model": "m", "choices": [{"delta": {"content": "你好"}}]})),
+            frame(&json!({"id": "c1", "choices": [{"delta": {"content": "，世界"}}]})),
+            frame(
+                &json!({"choices": [{"delta": {}, "finish_reason": "stop"}], "usage": {"prompt_tokens": 5, "completion_tokens": 6, "total_tokens": 11}}),
+            ),
+            "data:{\"body\":\"[DONE]\"}\n".to_string(),
+        ];
+        let mut guarded = LeakGuardStream::new(
+            QoderOpenAiStream::new(upstream_from(&frames)),
+            Some(Arc::new(std::collections::HashSet::from([
+                "search".to_string()
+            ]))),
+        );
+        let guarded_text = collect(&mut guarded).await;
+        let mut bare = QoderOpenAiStream::new(upstream_from(&frames));
+        let bare_text = collect(&mut bare).await;
+        assert_eq!(guarded_text, bare_text, "正常流必须逐字不变");
+        assert!(guarded_text.contains("你好"), "{guarded_text}");
+        assert!(
+            guarded_text.trim_end().ends_with("data: [DONE]"),
+            "{guarded_text}"
+        );
+    }
+
+    /// 合法回声 ⇒ 还原成结构化 `tool_calls` + `finish_reason:"tool_calls"`，
+    /// 且**整条流只出现一组** `tool_calls`（双发会被客户端执行两遍）。
+    #[tokio::test]
+    async fn leak_guard_recovers_echo_into_structured_tool_calls() {
+        use std::sync::Arc;
+
+        let echo = format!(
+            "{}\n{}",
+            api::LEAK_MARKER,
+            json!([{ "name": "search", "arguments": "{\"q\":\"北京\"}" }])
+        );
+        let frames = vec![
+            frame(&json!({"id": "c1", "model": "m", "choices": [{"delta": {"content": echo}}]})),
+            frame(
+                &json!({"choices": [{"delta": {}, "finish_reason": "stop"}], "usage": {"prompt_tokens": 7, "completion_tokens": 9, "total_tokens": 16}}),
+            ),
+            "data:{\"body\":\"[DONE]\"}\n".to_string(),
+        ];
+        let mut guarded = LeakGuardStream::new(
+            QoderOpenAiStream::new(upstream_from(&frames)),
+            Some(Arc::new(std::collections::HashSet::from([
+                "search".to_string()
+            ]))),
+        );
+        let text = collect(&mut guarded).await;
+        assert!(
+            !text.contains(api::LEAK_MARKER),
+            "标记不得泄漏到客户端: {text}"
+        );
+        let chunks: Vec<Value> = text
+            .lines()
+            .filter_map(|line| line.strip_prefix("data: "))
+            .filter(|data| data.trim() != "[DONE]")
+            .map(|data| serde_json::from_str::<Value>(data.trim()).expect("帧是 JSON"))
+            .collect();
+        let call_frames: Vec<&Value> = chunks
+            .iter()
+            .filter(|chunk| {
+                chunk
+                    .get("choices")
+                    .and_then(Value::as_array)
+                    .map(|choices| {
+                        choices.iter().any(|choice| {
+                            choice
+                                .get("delta")
+                                .and_then(|delta| delta.get("tool_calls"))
+                                .and_then(Value::as_array)
+                                .map(|calls| !calls.is_empty())
+                                .unwrap_or(false)
+                        })
+                    })
+                    .unwrap_or(false)
+            })
+            .collect();
+        assert_eq!(call_frames.len(), 1, "整条流只允许一组 tool_calls: {text}");
+        let calls = call_frames[0]["choices"][0]["delta"]["tool_calls"]
+            .as_array()
+            .expect("tool_calls 是数组");
+        assert_eq!(calls.len(), 1);
+        assert_eq!(
+            calls[0]["index"], 0,
+            "并行调用靠 index 归并（Anthropic 侧 unwrap_or(0)）"
+        );
+        assert_eq!(calls[0]["function"]["name"], "search");
+        assert!(
+            !calls[0]["id"].as_str().unwrap_or_default().is_empty(),
+            "id 不能空"
+        );
+        assert_eq!(call_frames[0]["id"], "c1", "沿用上游 id");
+        // finish_reason 必须改成 tool_calls（否则客户端当普通回答结束）。
+        let finish = chunks
+            .iter()
+            .find_map(|chunk| {
+                chunk["choices"][0]["finish_reason"]
+                    .as_str()
+                    .filter(|reason| !reason.is_empty())
+                    .map(str::to_string)
+            })
+            .expect("必须有 finish_reason");
+        assert_eq!(finish, "tool_calls", "{text}");
+        assert!(
+            text.contains("\"total_tokens\":16"),
+            "usage 帧必须还在: {text}"
+        );
+        assert!(text.trim_end().ends_with("data: [DONE]"), "{text}");
+    }
+
+    /// 标记**分片到达**（模型分多次吐标记）⇒ 仍能还原。
+    #[tokio::test]
+    async fn leak_guard_recovers_marker_arriving_in_pieces() {
+        use std::sync::Arc;
+
+        let mut frames = Vec::new();
+        for piece in [
+            "[assistant ",
+            "请求调用",
+            "工具]\n",
+            "[{\"name\":\"search\",\"arguments\":\"{}\"}]",
+        ] {
+            frames.push(frame(&json!({"choices": [{"delta": {"content": piece}}]})));
+        }
+        frames.push(frame(
+            &json!({"choices": [{"delta": {}, "finish_reason": "stop"}]}),
+        ));
+        frames.push("data:{\"body\":\"[DONE]\"}\n".to_string());
+        let mut guarded = LeakGuardStream::new(
+            QoderOpenAiStream::new(upstream_from(&frames)),
+            Some(Arc::new(std::collections::HashSet::from([
+                "search".to_string()
+            ]))),
+        );
+        let text = collect(&mut guarded).await;
+        assert!(!text.contains(api::LEAK_MARKER), "{text}");
+        assert!(text.contains("\"tool_calls\""), "{text}");
+        assert!(text.contains("\"finish_reason\":\"tool_calls\""), "{text}");
+    }
+
+    /// 散文混排（标记开头但不是合法回声）⇒ **原样透传**，不误杀。
+    #[tokio::test]
+    async fn leak_guard_does_not_kill_prose_that_starts_with_the_marker() {
+        let frames = vec![
+            frame(
+                &json!({"choices": [{"delta": {"content": "[assistant 请求调用工具] 这个功能怎么用？"}}]}),
+            ),
+            frame(&json!({"choices": [{"delta": {"finish_reason": "stop"}}]})),
+            "data:{\"body\":\"[DONE]\"}\n".to_string(),
+        ];
+        let mut guarded =
+            LeakGuardStream::new(QoderOpenAiStream::new(upstream_from(&frames)), None);
+        let text = collect(&mut guarded).await;
+        assert!(text.contains("这个功能怎么用"), "散文必须原样送达: {text}");
+        assert!(
+            !text.contains("\"tool_calls\""),
+            "不得凭空造工具调用: {text}"
+        );
+    }
+
+    /// 未声明的工具名**不还原**（否则会凭空造出客户端没要求的能力）。
+    #[tokio::test]
+    async fn leak_guard_respects_declared_tool_names() {
+        use std::sync::Arc;
+
+        let echo = format!(
+            "{}\n{}",
+            api::LEAK_MARKER,
+            json!([{ "name": "delete_everything", "arguments": "{}" }])
+        );
+        let frames = vec![
+            frame(&json!({"choices": [{"delta": {"content": echo}}]})),
+            frame(&json!({"choices": [{"delta": {}, "finish_reason": "stop"}]})),
+            "data:{\"body\":\"[DONE]\"}\n".to_string(),
+        ];
+        let mut guarded = LeakGuardStream::new(
+            QoderOpenAiStream::new(upstream_from(&frames)),
+            Some(Arc::new(std::collections::HashSet::from([
+                "search".to_string()
+            ]))),
+        );
+        let text = collect(&mut guarded).await;
+        assert!(
+            text.contains("delete_everything"),
+            "未声明工具应原样透传: {text}"
+        );
+        assert!(
+            !text.contains("\"tool_calls\""),
+            "不得还原未声明的工具: {text}"
+        );
+    }
+
+    /// P0-A0：上游**已经**给了结构化 `tool_calls`、正文又带标记 ⇒ 绝不合成第二组。
+    ///
+    /// 两组 `tool_calls`（各带随机 id）会被客户端**执行两遍**同一个副作用。
+    #[tokio::test]
+    async fn leak_guard_never_synthesizes_a_second_tool_call_set() {
+        let frames = vec![
+            frame(&json!({"choices": [{"delta": {"content": api::LEAK_MARKER}}]})),
+            frame(&json!({"choices": [{
+                "delta": { "content": "\n[{\"name\":\"search\",\"arguments\":\"{}\"}]",
+                            "tool_calls": [{ "index": 0, "id": "upstream-1", "type": "function",
+                                              "function": { "name": "search", "arguments": "{}" } }] },
+                "finish_reason": "tool_calls",
+            }]})),
+            "data:{\"body\":\"[DONE]\"}\n".to_string(),
+        ];
+        let mut guarded =
+            LeakGuardStream::new(QoderOpenAiStream::new(upstream_from(&frames)), None);
+        let text = collect(&mut guarded).await;
+        let call_count = text.matches("\"tool_calls\":[").count();
+        assert_eq!(call_count, 1, "整条流只能有一组 tool_calls: {text}");
+        assert!(text.contains("upstream-1"), "必须保留上游那份: {text}");
+        /* ⚠️ 这条才是本用例的**主断言**：不合成 ≠ 可以把标记原样还给用户。
+        可证伪：把 `flush_held_without_leaking()` 改回 `flush_held()` ⇒ 这里红。
+        （第一版实现就是「整帧放行」，症状与 issue #46 一字不差。） */
+        assert!(
+            !text.contains(api::LEAK_MARKER),
+            "上游已给结构化调用时也**必须**剥掉回声正文: {text}"
+        );
+    }
+
+    /// 上游在标记中间断掉（没有 `[DONE]`）⇒ 扣住的内容**必须释放**，且仍补 `[DONE]`。
+    #[tokio::test]
+    async fn leak_guard_releases_held_frames_when_upstream_drops() {
+        let frames = vec![frame(
+            &json!({"choices": [{"delta": {"content": "[assistant 请求"}}]}),
+        )];
+        let mut guarded =
+            LeakGuardStream::new(QoderOpenAiStream::new(upstream_from(&frames)), None);
+        let text = collect(&mut guarded).await;
+        assert!(
+            text.contains("[assistant 请求"),
+            "扣住的内容必须释放: {text}"
+        );
+        assert!(
+            text.trim_end().ends_with("data: [DONE]"),
+            "仍要补 [DONE]: {text}"
+        );
+    }
+
+    /// 超过扣帧上限 ⇒ fail-open 立刻透传（不让用户为了一个误判等 64 KiB）。
+    #[tokio::test]
+    async fn leak_guard_fails_open_when_held_bytes_exceed_the_cap() {
+        let huge = "x".repeat(LEAK_GUARD_MAX_HELD_BYTES + 16);
+        let frames = vec![frame(&json!({"choices": [{"delta": {"content": huge}}]}))];
+        let mut guarded =
+            LeakGuardStream::new(QoderOpenAiStream::new(upstream_from(&frames)), None);
+        let text = collect(&mut guarded).await;
+        assert!(
+            text.contains("xxxx"),
+            "超上限必须原样透传: {} 字节",
+            text.len()
+        );
+    }
+
+    /// 非流式路径（[`aggregate`]）**只还原一次**：自带结构化调用与自带 id 都不重复。
+    #[tokio::test]
+    async fn aggregate_recovers_the_echo_exactly_once() {
+        let echo = format!(
+            "{}\n{}",
+            api::LEAK_MARKER,
+            json!([{ "name": "search", "arguments": "{}" }])
+        );
+        let frames = vec![
+            frame(&json!({"choices": [{"delta": {"content": echo}}]})),
+            frame(&json!({"choices": [{"delta": {}, "finish_reason": "stop"}]})),
+            "data:{\"body\":\"[DONE]\"}\n".to_string(),
+        ];
+        let out = aggregate(upstream_from(&frames), None).await;
+        assert_eq!(out.tool_calls.len(), 1, "{:?}", out.tool_calls);
+        let ids: std::collections::HashSet<String> = out
+            .tool_calls
+            .iter()
+            .filter_map(|call| call["id"].as_str().map(str::to_string))
+            .collect();
+        assert_eq!(ids.len(), out.tool_calls.len(), "工具 id 不得重复: {out:?}");
+        assert_eq!(out.content, "", "回声必须从正文清掉");
+        assert_eq!(out.finish_reason, "tool_calls");
+    }
+
+    /// 流式端到端：合成帧经过**完整生产链**后，客户端只看到一组 `tool_calls`。
+    #[tokio::test]
+    async fn streaming_chain_yields_exactly_one_tool_call_set() {
+        use std::sync::Arc;
+
+        let echo = format!(
+            "{}\n{}",
+            api::LEAK_MARKER,
+            json!([{ "name": "search", "arguments": "{}" }, { "name": "ls", "arguments": "{}" }])
+        );
+        let frames = vec![
+            frame(&json!({"id": "c1", "choices": [{"delta": {"content": echo}}]})),
+            frame(
+                &json!({"choices": [{"delta": {}, "finish_reason": "stop"}], "usage": {"total_tokens": 5}}),
+            ),
+            "data:{\"body\":\"[DONE]\"}\n".to_string(),
+        ];
+        let tapped = UsageTapStream::new(
+            LeakGuardStream::new(
+                QoderOpenAiStream::new(upstream_from(&frames)),
+                Some(Arc::new(std::collections::HashSet::from([
+                    "search".to_string(),
+                    "ls".to_string(),
+                ]))),
+            ),
+            std::sync::Arc::new(std::sync::Mutex::new(None::<Value>)),
+            std::sync::Arc::new(std::sync::Mutex::new(None::<String>)),
+        );
+        let mut stream = tapped;
+        let text = collect(&mut stream).await;
+        assert!(!text.contains(api::LEAK_MARKER), "{text}");
+        // 两个工具 ⇒ 两个 index（Anthropic 侧靠它归并）。
+        assert!(text.contains("\"index\":0"), "{text}");
+        assert!(text.contains("\"index\":1"), "{text}");
+        assert_eq!(text.matches("\"tool_calls\":[").count(), 1, "{text}");
     }
 }
