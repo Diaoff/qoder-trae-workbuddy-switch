@@ -201,6 +201,19 @@ function TrendView({
   }, [columns]);
   const peakDelta = columns.reduce((max, column) => Math.max(max, column.total), 0);
 
+  /**
+   * 窗口内网关用量（与下面那张网关小图**同源同窗**，两处必须对齐）。
+   *
+   * ⚠️ **必须在 `filtered` 早退之前**（issue #45）：hook 放在条件 `return` 之后，
+   * 「今天无请求 ⇒ filtered=true」时这一轮少调一个 hook、恢复时又多调一个 ⇒
+   * React #300（rendered more hooks than during the previous render），整个
+   * Token 统计页被错误边界接住。**任何新增 hook 都放这个位置以上。**
+   */
+  const gatewayTotal = useMemo(
+    () => gatewayColumns.reduce((sum, column) => sum + column.total, 0),
+    [gatewayColumns],
+  );
+
   if (filtered) {
     return (
       <ViewEmpty
@@ -212,12 +225,6 @@ function TrendView({
       />
     );
   }
-
-  /** 窗口内网关用量（与下面那张网关小图**同源同窗**，两处必须对齐）。 */
-  const gatewayTotal = useMemo(
-    () => gatewayColumns.reduce((sum, column) => sum + column.total, 0),
-    [gatewayColumns],
-  );
 
   const tiles: StatTile[] = [
     { icon: MessagesSquare, label: t("wbStats.usage.trend.total"), value: compactTokens(total), hint: windowLabel(viewWindow), title: t("wbStats.usage.trend.totalTitle") },
