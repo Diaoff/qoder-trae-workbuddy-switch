@@ -28,6 +28,7 @@ import {
   type DetailStat,
   type DetailProgramBadge,
   type DetailSection,
+  type DetailSnapshot,
   type DetailSwitchTarget,
 } from "@/components/account-detail-drawer";
 import { ScopeChip, scopeLabel } from "@/components/scope-chip";
@@ -94,6 +95,7 @@ import type {
   TraeCreditsOverview,
   TraeEnvStatus,
   TraeSettings,
+  TraeProfileInfo,
   TraeSnapshotCarryReport,
   TraeVariantId,
   TraeVariantStatus,
@@ -415,6 +417,52 @@ export default function TraeAccountsPage() {
    */
   const [detailCheckinLogs, setDetailCheckinLogs] = useState<TraeLogEntry[] | null>(null);
   const [detailAutoEditRemark, setDetailAutoEditRemark] = useState(false);
+  /**
+   * 抽屉「快照」页签的数据源（打开抽屉时按需拉取）。
+   *
+   * 为什么不在账号列表里一起拉：`get_trae_profiles` 是**逐账号槽位**的目录扫描，
+   * 列表页一次拉 20 个账号的槽位只为了一个可能不打开的抽屉，属于白花钱。
+   * 取不到时给空数组 ⇒ 页签**不渲染**（不摆空表）。
+   */
+  const [detailProfiles, setDetailProfiles] = useState<TraeProfileInfo[] | null>(null);
+
+  useEffect(() => {
+    if (!detailAccount) {
+      setDetailProfiles(null);
+      return;
+    }
+    let alive = true;
+    void api
+      .getTraeProfiles(variant)
+      .then((overview) => {
+        if (alive) setDetailProfiles(overview.profiles ?? []);
+      })
+      .catch(() => {
+        if (alive) setDetailProfiles([]);
+      });
+    return () => {
+      alive = false;
+    };
+  }, [detailAccount, variant]);
+
+  /**
+   * 该账号的快照行。
+   *
+   * `TraeProfileInfo.slot` 就是**账号的 userId**（后端 `backup_to_slot_for(variant, user_id)`），
+   * 所以按 userId 精确匹配即可 —— 不要按 name 匹配（改名后会失配）。
+   */
+  const detailSnapshots = useMemo<DetailSnapshot[]>(() => {
+    if (!detailAccount || !detailProfiles) return [];
+    return detailProfiles
+      .filter((profile) => profile.slot === detailAccount.userId)
+      .map((profile) => ({
+        key: profile.slot,
+        timeText: profile.lastModified,
+        sizeText: profile.sizeText,
+        fileCountText: t("shared.drawer.snapshot.files", { n: profile.fileCount }),
+      }));
+  }, [detailAccount, detailProfiles, t]);
+
   /**
    * ★ 跨作用域选择集按 **(scope, userId)** 键控（P5 §2.5 第 (4) 条）。
    *
@@ -2384,6 +2432,7 @@ export default function TraeAccountsPage() {
         checkin={detailCheckin}
         packs={detailPacks}
         stats={detailStats}
+        snapshots={detailSnapshots}
         refreshingKinds={detail ? refreshBusy.kindsOf(detail.userId) : []}
         onRefreshPart={detail ? (kind) => void onRefreshPart(detail, kind) : undefined}
         sections={detailSections}

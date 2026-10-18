@@ -582,6 +582,12 @@ export const zh = {
   "shared.drawer.tab.credits": "积分",
   "shared.drawer.tab.checkin": "签到",
   "shared.drawer.tab.credential": "凭据",
+  "shared.drawer.tab.snapshot": "快照",
+  "shared.drawer.snapshot.title": "登录态快照",
+  "shared.drawer.snapshot.time": "最近修改",
+  "shared.drawer.snapshot.size": "大小",
+  "shared.drawer.snapshot.files": "{n} 个文件",
+  "shared.drawer.snapshot.empty": "该账号还没有快照",
   // 备注区（就地编辑）—— 语义与卡片时代的备注编辑器一致，只是搬进了抽屉。
   "shared.drawer.remark.title": "备注",
   "shared.drawer.remark.placeholder": "例如：DS4.1 额度 · 10/03 解禁",
@@ -623,14 +629,9 @@ export const zh = {
   // 头部「当前登录」徽章（原型 :3475）—— 与只读徽标 `program.current` 区分：后者是「该程序位的当前账号」。
   "shared.drawer.currentLogin": "当前登录",
   // 操作区（原型 drawerAccount :3518-3527）：刷新 / 手动签到 / 编辑备注 / 导出 / 权限诊断 / 删除。
-  "shared.drawer.actions.title": "操作",
   "shared.drawer.actions.refresh": "刷新 Token",
-  "shared.drawer.actions.checkin": "手动签到",
-  "shared.drawer.actions.editRemark": "编辑备注",
-  "shared.drawer.actions.editGroup": "编辑分组",
   "shared.drawer.actions.export": "导出",
   "shared.drawer.actions.permission": "切换权限诊断",
-  "shared.drawer.actions.delete": "删除账号",
   // 凭据不可用时的说明（原型 `.proto-note` :3526）—— 过期 / 需重登不给签到入口。
   "shared.drawer.actions.credentialNote": "凭据已过期或需重新登录，不提供签到入口，请先处理凭据。",
   // 签到历史（近 7 天）：日期 / 结果 / 获得积分（原型 checkinHistoryHtml :3428-3439）。

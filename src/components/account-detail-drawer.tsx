@@ -83,6 +83,18 @@ export interface DetailStat {
   refreshKind?: AccountRefreshKind;
 }
 
+/**
+ * 登录态快照的一行（只有声明了 `snapshot` 能力的平台才有）。
+ *
+ * ⚠️ 与 `DetailPack` 同一条约束：四段文本**已在调用方格式化**，抽屉不判断单位与日期格式。
+ */
+export interface DetailSnapshot {
+  key: string;
+  timeText: string;
+  sizeText: string;
+  fileCountText: string;
+}
+
 /** 详情里的一个区块（标题 + 若干行）。 */
 export interface DetailSection {
   /** React key，稳定。 */
@@ -186,6 +198,8 @@ export interface AccountDetailDrawerProps {
   loading?: boolean;
   /** 积分 / 资源包明细；空数组 = 不渲染该区块。 */
   packs?: DetailPack[];
+  /** 登录态快照（空数组 = 不渲染「快照」页签）。 */
+  snapshots?: DetailSnapshot[];
   /** 顶部指标块（按序渲染；空数组 = 不渲染该区域）。 */
   stats?: DetailStat[];
   /** 本账号正在进行中的刷新项（指标块上的 ⟳ 用它显示转圈）。 */
@@ -282,6 +296,7 @@ export function AccountDetailDrawer({
   loading = false,
   packs = [],
   stats = [],
+  snapshots = [],
   refreshingKinds,
   onRefreshPart,
   sections = [],
@@ -663,7 +678,10 @@ export function AccountDetailDrawer({
                ⚠️ 备注、分组、程序位切换**留在页签之上** —— 它们是身份与操作，
                藏进页签会让「改个备注」变成「先猜在哪个页签里」。 */
             <Tabs defaultValue="overview" className="min-h-0">
-              <TabsList>
+              {/* 页签最多五个（含「快照」），抽屉又窄 ⇒ 必须**不换行**：
+                  `inline-flex` 默认允许折行，五个页签会在 300px 里挤成两排（快照孤零零掉到第二行）。
+                  改成 nowrap + 横向滚动：一行排开，实在放不下时能滑，而不是折行。 */}
+              <TabsList className="max-w-full flex-nowrap overflow-x-auto">
                 <TabsTrigger value="overview">{t("shared.drawer.tab.overview")}</TabsTrigger>
                 {packs.length > 0 && (
                   <TabsTrigger value="credits">{t("shared.drawer.tab.credits")}</TabsTrigger>
@@ -673,6 +691,9 @@ export function AccountDetailDrawer({
                 )}
                 {hasActions && (
                   <TabsTrigger value="credential">{t("shared.drawer.tab.credential")}</TabsTrigger>
+                )}
+                {snapshots.length > 0 && (
+                  <TabsTrigger value="snapshot">{t("shared.drawer.tab.snapshot")}</TabsTrigger>
                 )}
               </TabsList>
 
@@ -923,6 +944,40 @@ export function AccountDetailDrawer({
                   )}
                 </section>
               )}
+                </TabsContent>
+              )}
+              {snapshots.length > 0 && (
+                <TabsContent value="snapshot" className="space-y-4 pt-1">
+                  <section>
+                    <h3 className="mb-2 text-[11.5px] font-medium text-muted-foreground">
+                      {t("shared.drawer.snapshot.title")}
+                    </h3>
+                    <div className="overflow-hidden rounded-lg border border-border">
+                      <table className="w-full text-[11.5px]">
+                        <thead className="bg-muted/40 text-muted-foreground">
+                          <tr>
+                            <th className="px-2.5 py-1.5 text-left font-normal">
+                              {t("shared.drawer.snapshot.time")}
+                            </th>
+                            <th className="px-2.5 py-1.5 text-right font-normal">
+                              {t("shared.drawer.snapshot.size")}
+                            </th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {snapshots.map((snapshot) => (
+                            <tr key={snapshot.key} className="border-t border-border">
+                              <td className="px-2.5 py-1.5 tabular-nums">
+                                {snapshot.timeText}
+                                <span className="ml-2 text-muted-foreground">{snapshot.fileCountText}</span>
+                              </td>
+                              <td className="px-2.5 py-1.5 text-right tabular-nums">{snapshot.sizeText}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </section>
                 </TabsContent>
               )}
             </Tabs>
