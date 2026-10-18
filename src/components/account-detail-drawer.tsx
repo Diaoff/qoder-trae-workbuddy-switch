@@ -465,7 +465,11 @@ export function AccountDetailDrawer({
           </div>
         </SheetHeader>
 
-        <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto p-4">
+        {/* ⚠️ `[&>*]:shrink-0` 不是装饰：滚动容器是 flex 列，子元素默认可收缩，
+            一旦内容超高，`<Tabs>`（内含很长的 TabContent）会被压扁 —— 它内部的
+            TabsList 因此被裁成一条 8px 的缝（2026-10-18 用户截图）。
+            让每个直接子元素都不收缩，超出的部分交给 `overflow-y-auto` 滚动。 */}
+        <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto p-4 [&>*]:shrink-0">
           {/* 指标块：一打开就知道「这个账号现在什么状态」，不用滚。
               每块右上角的 ⟳ 与卡片「更多」里的四项**同一个回调**（同源，不是第二套实现）。 */}
           {!loading && stats.length > 0 && (

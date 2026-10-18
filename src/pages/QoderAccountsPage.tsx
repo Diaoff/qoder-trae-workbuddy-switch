@@ -366,14 +366,28 @@ export default function QoderAccountsPage() {
   const sorted = useMemo(() => sortAccounts(filtered, sort, listConfig), [filtered, sort, listConfig]);
   const buckets = useMemo(() => groupAccounts(sorted, group, listConfig), [sorted, group, listConfig]);
 
-  /** 今日签到三态（`null` = 未知，**不伪装成未签**）。 */
+  /**
+   * 逐账号签到状态（`qoder_checkin_status_map`）——**只覆盖被刷新过的账号**。
+   *
+   * 刻意不在进页面时全量拉：那要逐账号打上游（N 个账号 = N 次请求），
+   * 而 `qoder_checkin_status` 的区域快照足够画初值。用户点刷新才去问。
+   */
+  const [checkinMap, setCheckinMap] = useState<Record<string, CheckinStatusEntry>>({});
+
+  /** 今日签到三态（`null` = 未知，**不伪装成未签**）。
+   *
+   * ⚠️ `checkinMap`（用户点「刷新签到状态」后问上游拿到的真值）**优先**于列表快照：
+   * 否则那条入口点完卡片纹丝不动 —— 用户会以为没生效而反复点（issue #44 同款教训）。
+   */
   const checkinTodayOf = useCallback(
     (account: QoderAccountView): boolean | null => {
+      const fresh = checkinMap[account.uid];
+      if (fresh?.ok) return fresh.todayCheckedIn === true;
       const row = checkinRows[account.uid];
       if (!row || !row.ok) return null;
       return row.todayCheckedIn === true;
     },
-    [checkinRows],
+    [checkinRows, checkinMap],
   );
 
   /* ── 选择（照 Trae：全选只作用于**当前可见**的行） ── */
@@ -556,13 +570,6 @@ export default function QoderAccountsPage() {
   const QODER_REFRESH_KINDS = ["credits", "checkin", "credential"] as const;
   const refreshPartBusy = useAccountRefreshBusy();
 
-  /**
-   * 逐账号签到状态（`qoder_checkin_status_map`）——**只覆盖被刷新过的账号**。
-   *
-   * 刻意不在进页面时全量拉：那要逐账号打上游（N 个账号 = N 次请求），
-   * 而 `qoder_checkin_status` 的区域快照足够画初值。用户点刷新才去问。
-   */
-  const [checkinMap, setCheckinMap] = useState<Record<string, CheckinStatusEntry>>({});
 
   /** 单项刷新（与卡片「更多」里的四项同源）。 */
   const onRefreshPart = useCallback(

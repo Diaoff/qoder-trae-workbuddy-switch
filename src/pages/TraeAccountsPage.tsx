@@ -2207,6 +2207,13 @@ export default function TraeAccountsPage() {
                               doneKinds={refreshBusy.doneKindsOf(account.userId)}
                               refreshingKinds={refreshBusy.kindsOf(account.userId)}
                               refreshKinds={TRAE_REFRESH_KINDS}
+                              todayTokens={todayTokens[account.userId] ?? null}
+                              todayTokensTruncated={todayTokensTruncated}
+                              checkedTodayOverride={
+                                checkinMap[account.userId]?.ok
+                                  ? checkinMap[account.userId].todayCheckedIn
+                                  : undefined
+                              }
                               /* 「保存登录态」＝把客户端**此刻**的登录态存到这个账号名下，
                                  因此目标只能是「这个账号当前登录着的那个程序位」。
                                  此前这里传的是页面所属的**区域**（`variant`），而区域只能推出

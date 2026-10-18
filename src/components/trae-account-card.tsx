@@ -7,6 +7,8 @@ import { DemoAction } from "@/components/demo-action";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { MenuGroupLabel, MenuHead, MenuNote, RefreshMenuGroup } from "@/components/account-menu-parts";
 import type { AccountRefreshKind } from "@/lib/account-refresh";
+import type { AccountTokenTodayEntry } from "@/lib/types";
+import { compactTokens } from "@/components/usage/format";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { AVATAR_TEXT_CLASS, accountInitials, avatarTone } from "@/components/account-card";
 import { displayText } from "@/lib/display-text";
@@ -181,6 +183,24 @@ interface Props {
   refreshingKinds?: readonly AccountRefreshKind[];
   /** 刚刚刷新成功（自行淡出）的项，菜单里显示「已更新」。 */
   doneKinds?: readonly AccountRefreshKind[];
+  /**
+   * 「今日是否已签到」的**局部覆盖**（页面侧刷新签到状态后立即生效）。
+   *
+   * ⚠️ 为什么不直接改 `account.checkedToday`：那属于账号列表的数据，刷新一个账号
+   * 却重取整页会让「点一下刷新」变成整页闪烁；这里把最新事实单独交给卡片渲染。
+   */
+  checkedTodayOverride?: boolean;
+  /**
+   * 「今日 Token」（`get_trae_account_token_today` 的单账号条目；issue #47）。
+   *
+   * ⚠️ **缺席不补 0**：Trae 没有客户端会话落盘，客户端那一档不可得
+   * （响应带 `clientSource: "unavailable"`），因此这里只有网关那一档。
+   * 没有这一行时菜单里的「刷新今日 Token」会显得「点了没反应」——
+   * 刷新出来的数字必须有个落点，否则那条入口就是假的。
+   */
+  todayTokens?: AccountTokenTodayEntry | null;
+  /** 网关日志的今日部分可能被裁 ⇒ 渲染成「≥N」（下界）。 */
+  todayTokensTruncated?: boolean;
   /** 本平台真的能刷的项（缺省四项）；见 `RefreshMenuGroup` 的注释。 */
   refreshKinds?: readonly AccountRefreshKind[];
   onSaveLogin: (account: TraeAccount) => void;
@@ -229,6 +249,9 @@ export function TraeAccountCard({
   onRefreshPart,
   refreshingKinds,
   doneKinds,
+  checkedTodayOverride,
+  todayTokens,
+  todayTokensTruncated,
   refreshKinds,
   onSaveLogin,
   onRefreshJwt,
@@ -296,7 +319,7 @@ export function TraeAccountCard({
           ? t("trae.comp.card.chip.needRelogin")
           : t("trae.comp.card.chip.expired")}
       </Badge>
-    ) : !account.checkedToday ? (
+    ) : !(checkedTodayOverride ?? account.checkedToday) ? (
       <Badge variant="warning" className={chipClass} title={cooling ? cooldownTip : undefined}>
         {t("trae.comp.card.chip.unchecked")}
       </Badge>
@@ -502,6 +525,10 @@ export function TraeAccountCard({
     return sum > 0 ? sum : null;
   })();
 
+  /** 今日 Token 合计（客户端 + 网关；Trae 客户端档恒为 0）。 */
+  const todayTokenTotal = (entry: AccountTokenTodayEntry) =>
+    entry.clientIn + entry.clientOut + entry.gatewayIn + entry.gatewayOut;
+
   const lastUpdatedRelative = formatRelativeTime(updatedSeconds === null ? null : updatedSeconds * 1000, t);
   const metricsRow = (
     <div className="flex min-w-0 gap-[14px] text-[11.5px] text-muted-foreground">
@@ -516,6 +543,16 @@ export function TraeAccountCard({
           {formatExpiryDate(account.creditsExpireAt) ?? t("trae.comp.card.expiry.permanent")}
         </b>
       </span>
+      {todayTokens ? (
+        <span title={t("shared.cardMenu.refresh.tokensHint")}>
+          {t("shared.stat.tokens")}{" "}
+          <b className="font-semibold tabular-nums text-foreground">
+            {todayTokensTruncated
+              ? t("wbAccounts.card.metric.atLeast", { value: compactTokens(todayTokenTotal(todayTokens)) })
+              : compactTokens(todayTokenTotal(todayTokens))}
+          </b>
+        </span>
+      ) : null}
       {lastUpdatedRelative !== null && (
         <span title={t("trae.comp.card.footer.updatedTip")}>{lastUpdatedRelative}</span>
       )}
@@ -574,7 +611,7 @@ export function TraeAccountCard({
         {/* 「手动签到」与 WorkBuddy 卡片菜单同位（刷新之后、删除之前）。
             只在今日未签到时出现：已签到的账号再点一次只会被跳过策略拦下，
             摆一个点不动的入口比不摆更差。 */}
-        {!account.checkedToday && (
+        {!(checkedTodayOverride ?? account.checkedToday) && (
           <DropdownMenuItem disabled={featuresDisabled || checkingIn} onSelect={() => onCheckin?.(account)}>
             <CircleCheck />{t("trae.comp.card.menu.checkin")}
           </DropdownMenuItem>
