@@ -112,8 +112,15 @@ export interface AccountWorkbenchProps<T> {
   notices?: ReactNode;
 
   /* ────────── 结果条与批量条 ────────── */
-  /** 批量签到结果（`failedNames` 由页面按各自 id 字段装配好）。 */
-  checkinResult?: { okCount: number; failedNames: string[]; onRetry?: () => void } | null;
+  /** 批量签到结果（`failedNames` 由页面按各自 id 字段装配好）。
+   *  ⚠️ `skippedNames` = 「通道未开放」第三档（Qoder 专用，**可选**：不传时
+   *    `CheckinResultBar` 的渲染与加这个 prop 之前逐字一致 ⇒ WB / Trae 不受影响）。 */
+  checkinResult?: {
+    okCount: number;
+    failedNames: string[];
+    skippedNames?: string[];
+    onRetry?: () => void;
+  } | null;
   /** 结果条「知道了」的回执（只在有结果条时用得到；不传 = 不渲染结果条也就无所谓）。 */
   onDismissCheckinResult?: () => void;
   /**
@@ -256,6 +263,7 @@ export function AccountWorkbench<T>({
           <CheckinResultBar
             okCount={checkinResult.okCount}
             failedNames={checkinResult.failedNames}
+            skippedNames={checkinResult.skippedNames}
             onRetry={checkinResult.onRetry}
             onDismiss={onDismissCheckinResult ?? (() => undefined)}
           />

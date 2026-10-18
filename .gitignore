@@ -71,6 +71,9 @@ deliverables/
 # README 截图脚本（scripts/gen-readme-shots.mjs）的临时目录与探针图：
 # 前者是一次性 playwright 安装（500+ 文件），后者是取景用的中间产物 —— 都不该进仓库。
 .tmp-pcli/
+# 一次性调查 / 探针产物（多 Agent 协作时落在仓库根的临时笔记与脚本）。
+# ⚠️ `git add -A` 会把它们一起提交 —— 用 `git add <具体文件>`，或在清理前先看这里。
+.tmp-*
 docs/images/.probe/
 _*.txt
 _*.py

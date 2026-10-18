@@ -97,6 +97,16 @@ export interface CheckinResultBarProps {
   okCount: number;
   /** **失败账号的显示名**（不是 id）—— 由页面装配，本组件只渲染。 */
   failedNames: string[];
+  /**
+   * 「通道未开放」的账号显示名（**第三档**，Qoder 专用；其它平台不传）。
+   *
+   * ⚠️ 可选且**默认为空**：不传时本组件的渲染与加这个 prop 之前**逐字一致**
+   *   （WB / Trae 复用同一组件，改成必填会把它们的门禁与文案一起改红）。
+   *   2026-10-18：Qoder 的 legacy 签到端点已关停，对任何 campaignKey 都回 409，
+   *   「未开放」既不是成功、也不该混进「重试失败项」（重试永远不会成功）——
+   *   故单独成档如实呈现。
+   */
+  skippedNames?: string[];
   /** 有失败项时的「只重试失败项」出口；无失败传 `undefined`（不渲染该按钮）。 */
   onRetry?: () => void | Promise<void>;
   /** 「知道了」：关闭结果条。 */
@@ -114,9 +124,20 @@ export interface CheckinResultBarProps {
  *
  * ⚠️ 位置固定为**工具栏与列表之间**（`role="status"`，不打断读屏）。
  */
-export function CheckinResultBar({ okCount, failedNames, onRetry, onDismiss }: CheckinResultBarProps) {
+export function CheckinResultBar({
+  okCount,
+  failedNames,
+  skippedNames,
+  onRetry,
+  onDismiss,
+}: CheckinResultBarProps) {
   const t = useT();
+  /* 「通道未开放」是第三档：既不是成功、也不算失败（重试它永远不会成功）。
+     ⚠️ 默认空数组 ⇒ WB / Trae 走的仍是原来那两档分支，渲染逐字不变。 */
+  const skipped = skippedNames ?? [];
   const hasFail = failedNames.length > 0;
+  const hasSkipped = skipped.length > 0;
+  const degraded = hasFail || hasSkipped;
   const { busy, run } = useRefreshAction();
 
   return (
@@ -124,22 +145,36 @@ export function CheckinResultBar({ okCount, failedNames, onRetry, onDismiss }: C
       role="status"
       className={cn(
         "mb-4 flex flex-wrap items-center gap-x-3 gap-y-2 rounded-lg border px-3.5 py-2.5",
-        hasFail
+        degraded
           ? "border-warning/40 bg-warning/[0.07]"
           : "border-primary/35 bg-primary/[0.07]",
       )}
     >
       <Badge
-        variant={hasFail ? "warning" : "success"}
+        variant={degraded ? "warning" : "success"}
         className="shrink-0 gap-1 border-transparent"
       >
-        {hasFail ? <TriangleAlert /> : <CircleCheck />}
-        {t("shared.checkinResult.summary", { ok: okCount, fail: failedNames.length })}
+        {degraded ? <TriangleAlert /> : <CircleCheck />}
+        {/* 三档齐全时用 `summary4`（成功 / 未开放 / 失败）；只有两档时沿用旧词条 ⇒
+            WB / Trae 的界面输出逐字不变。 */}
+        {hasSkipped
+          ? t("shared.checkinResult.summary4", {
+              ok: String(okCount),
+              skip: String(skipped.length),
+              fail: String(failedNames.length),
+            })
+          : t("shared.checkinResult.summary", { ok: okCount, fail: failedNames.length })}
       </Badge>
       <span className="min-w-0 flex-1 text-[11.5px] text-muted-foreground">
         {hasFail
           ? t("shared.checkinResult.failedNames", { names: failedNames.join(t("shared.punct.comma")) })
-          : t("shared.checkinResult.allOk")}
+          : hasSkipped
+            ? /* ⚠️ 只说「未开放」+ 原因，**不给重试出口**（重试永远不会成功）。
+                 账号逐个 toasting 会刷屏，批量场景一律留在这条汇总里。 */
+              t("shared.checkinResult.skippedNames", {
+                names: skipped.join(t("shared.punct.comma")),
+              })
+            : t("shared.checkinResult.allOk")}
       </span>
       {hasFail && onRetry ? (
         <Button
