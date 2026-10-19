@@ -22,6 +22,7 @@ import { useT } from "@/lib/i18n";
 import { scopeLabel } from "@/lib/command-palette";
 import type { TranslationKey } from "@/locales/zh";
 import { planScopeShortcuts, scopeShortcutTarget } from "@/lib/scope-shortcuts";
+import { useVisibleScopes } from "@/lib/scope-visibility";
 import { useShortcutsEnabled } from "@/lib/shortcut-preference";
 import { AUTO_CHECK_UPDATE_INTERVAL_MS, currentSeenUpdateVersion, shouldAutoShowNotes, useAutoCheckUpdate } from "@/lib/update-preference";
 import { normalizeReleaseNotes } from "@/lib/release-notes";
@@ -71,7 +72,7 @@ const QoderApiServicePage = lazy(() => import("@/pages/QoderApiServicePage"));
 /* P0 收敛清单第 1 项：`Product` 的类型定义**已搬进注册表**，这里改为 import。
    （原来 App.tsx 里有一份局部 `type Product`，两处重复 —— 现在只剩一处。） */
 import { DESTINATION_CAPABILITY, type Destination, DESTINATIONS, destinationOfLegacyPath, hasCapability, platformDescriptor, type Product, platformOfPath } from "@/lib/platforms/registry";
-import { parseScope, type Scope, SCOPES, scopeOf, scopeParts, writeLastScope } from "@/lib/scope";
+import { parseScope, type Scope, scopeOf, scopeParts, writeLastScope } from "@/lib/scope";
 import { useCachedResource } from "@/lib/use-cached-resource";
 import { useScope } from "@/lib/use-scope";
 import { useTraeVariant } from "@/lib/use-trae-variant";
@@ -600,11 +601,13 @@ function Layout() {
      状态放在 `Layout`（而非 `App`）里，是为了与顶栏入口共享、且都处于 Router 上下文内。 */
   const [paletteOpen, setPaletteOpen] = useState(false);
 
-  /* P6：作用域快捷键规划。降级（>9 个作用域或用户关闭）⇒ 空绑定 ⇒ 序号提示同步消失。 */
+  /* P6：作用域快捷键规划。降级（>9 个作用域或用户关闭）⇒ 空绑定 ⇒ 序号提示同步消失。
+     P17：只用**可见**作用域 —— 隐藏的作用域不给 ⌘N（面板提示与全局键同源，不会漂移）。 */
   const [shortcutsEnabled] = useShortcutsEnabled();
+  const visibleScopes = useVisibleScopes((s) => s.visibleScopes);
   const shortcutPlan = useMemo(
-    () => planScopeShortcuts({ scopes: SCOPES, enabled: shortcutsEnabled }),
-    [shortcutsEnabled],
+    () => planScopeShortcuts({ scopes: visibleScopes, enabled: shortcutsEnabled }),
+    [visibleScopes, shortcutsEnabled],
   );
 
   /* P2：**侧栏由注册表生成** —— 平台之间只差 scope（§3.1「侧栏固定 6 项」）。

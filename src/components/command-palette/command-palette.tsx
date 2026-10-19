@@ -59,8 +59,9 @@ import {
 } from "@/lib/command-palette";
 import { collectPaletteActions } from "@/lib/palette-actions";
 import { DESTINATIONS, platformOfPath } from "@/lib/platforms/registry";
-import { SCOPES, scopeOf, scopeParts } from "@/lib/scope";
+import { scopeOf, scopeParts } from "@/lib/scope";
 import { planScopeShortcuts } from "@/lib/scope-shortcuts";
+import { useVisibleScopes } from "@/lib/scope-visibility";
 import { useShortcutsEnabled } from "@/lib/shortcut-preference";
 import { useRefreshAction } from "@/lib/use-refresh-action";
 import { useScope } from "@/lib/use-scope";
@@ -126,10 +127,11 @@ export function CommandPalette({ open, onOpenChange }: CommandPaletteProps) {
   const product = platformOfPath(location.pathname);
   const [region] = useScope(product);
   const currentScope = scopeOf(product, region);
+  const visibleScopes = useVisibleScopes((s) => s.visibleScopes);
 
   const plan = useMemo(
-    () => planScopeShortcuts({ scopes: SCOPES, enabled: shortcutsEnabled }),
-    [shortcutsEnabled],
+    () => planScopeShortcuts({ scopes: visibleScopes, enabled: shortcutsEnabled }),
+    [visibleScopes, shortcutsEnabled],
   );
 
   const [query, setQuery] = useState("");
@@ -212,7 +214,7 @@ export function CommandPalette({ open, onOpenChange }: CommandPaletteProps) {
     () => ({
       t,
       currentScope,
-      scopes: SCOPES,
+      scopes: visibleScopes,
       scopeShortcutIndex: plan.bindings,
       accounts: accounts ?? [],
       destinations: DESTINATIONS,

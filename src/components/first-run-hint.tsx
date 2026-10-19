@@ -33,9 +33,9 @@ import { X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { dismissFirstRunHint, shouldShowFirstRunHint } from "@/lib/first-run";
 import { useT } from "@/lib/i18n";
-import { SCOPES } from "@/lib/scope";
 import { planScopeShortcuts } from "@/lib/scope-shortcuts";
 import { useShortcutsEnabled } from "@/lib/shortcut-preference";
+import { useVisibleScopes } from "@/lib/scope-visibility";
 
 /** 取可用的 `localStorage`（不可用返回 `undefined`）。 */
 function safeStorage(): Storage | undefined {
@@ -49,11 +49,12 @@ function safeStorage(): Storage | undefined {
 export function FirstRunHint() {
   const t = useT();
   const [shortcutsEnabled] = useShortcutsEnabled();
+  const visibleScopes = useVisibleScopes((s) => s.visibleScopes);
   const [dismissed, setDismissed] = useState(() => !shouldShowFirstRunHint(safeStorage()));
 
   const plan = useMemo(
-    () => planScopeShortcuts({ scopes: SCOPES, enabled: shortcutsEnabled }),
-    [shortcutsEnabled],
+    () => planScopeShortcuts({ scopes: visibleScopes, enabled: shortcutsEnabled }),
+    [visibleScopes, shortcutsEnabled],
   );
 
   if (dismissed) return null;

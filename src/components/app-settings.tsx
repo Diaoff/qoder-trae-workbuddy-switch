@@ -1,6 +1,8 @@
 import type { ReactNode } from "react";
 import { useEffect, useMemo, useState } from "react";
+import { useLocation } from "react-router-dom";
 import { ArrowUpCircle, ExternalLink, Loader2, RefreshCw, Save } from "lucide-react";
+import { toast } from "sonner";
 
 import { DemoAction } from "@/components/demo-action";
 import { SettingsFieldRow, SettingsGroup } from "@/components/settings-primitives";
@@ -11,16 +13,20 @@ import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { UpdateInstallDialog } from "@/components/update-install-dialog";
+import { ScopeMark, scopeLabel } from "@/components/scope-chip";
 import * as api from "@/lib/api";
 import { isLocale, setLocale, useLocale, useT } from "@/lib/i18n";
 import { normalizeReleaseNotes } from "@/lib/release-notes";
-import { SCOPES } from "@/lib/scope";
+import { SCOPES, scopeOf, scopeParts, type Scope } from "@/lib/scope";
 import { planScopeShortcuts, SCOPE_SHORTCUT_LIMIT } from "@/lib/scope-shortcuts";
+import { useVisibleScopes } from "@/lib/scope-visibility";
 import { useShortcutsEnabled } from "@/lib/shortcut-preference";
 import { getThemePreference, setThemePreference, type ThemePreference } from "@/lib/theme";
 import { useAutoCheckUpdate } from "@/lib/update-preference";
 import type { GithubConfig, UpdateInfo } from "@/lib/types";
 import { GITHUB_RELEASE_URL, GITHUB_REPOSITORY_URL, openReleaseUrl } from "@/lib/update";
+import { platformOfPath } from "@/lib/platforms/registry";
+import { useScope } from "@/lib/use-scope";
 import { cn } from "@/lib/utils";
 import { useAccountsStore } from "@/stores/accounts";
 
@@ -554,7 +560,11 @@ function LanguageCard({ variant }: { variant: AppSettingsVariant }) {
 function ShortcutsCard({ variant }: { variant: AppSettingsVariant }) {
   const t = useT();
   const [enabled, setEnabled] = useShortcutsEnabled();
-  const plan = useMemo(() => planScopeShortcuts({ scopes: SCOPES, enabled }), [enabled]);
+  const visibleScopes = useVisibleScopes((s) => s.visibleScopes);
+  const plan = useMemo(
+    () => planScopeShortcuts({ scopes: visibleScopes, enabled }),
+    [visibleScopes, enabled],
+  );
   const isMac = typeof navigator !== "undefined" && navigator.userAgent.includes("Macintosh");
   const label = t("shortcuts.settings.label");
   // 降级（作用域超过上限）⇒ 无可开启之物，不显示开关。
@@ -571,7 +581,7 @@ function ShortcutsCard({ variant }: { variant: AppSettingsVariant }) {
               ? t("shortcuts.settings.degraded", { limit: SCOPE_SHORTCUT_LIMIT })
               : t("shortcuts.settings.description", {
                   mod: isMac ? "⌘" : "Ctrl",
-                  n: SCOPES.length,
+                  n: plan.bindings.size,
                 })
           }
           htmlFor="shortcuts-enabled"
@@ -587,6 +597,81 @@ function ShortcutsCard({ variant }: { variant: AppSettingsVariant }) {
           )}
         </SettingsFieldRow>
       </GroupBody>
+    </SettingsGroup>
+  );
+}
+
+/**
+ * 作用域可见性设置 —— **白名单**模型（存可见的作用域）。
+ *
+ * ## 为什么是应用级设置
+ *
+ * 作用域可见性是全局偏好，与语言 / 主题属于同一层级：它影响整个应用的导航入口，
+ * 而不是某个产品线的局部行为。
+ *
+ * ## 约束规则
+ *
+ * - 当前作用域**不可隐藏**（开关禁用）—— 它是顶栏选择器与全局键的锚点；
+ * - 至少保留 1 个可见：勾到最后只剩 1 个时，其余开关自动禁用。
+ */
+function ScopeVisibilityCard() {
+  const t = useT();
+  const location = useLocation();
+  const product = platformOfPath(location.pathname);
+  const [region] = useScope(product);
+  const currentScope = scopeOf(product, region);
+  const visibleScopes = useVisibleScopes((s) => s.visibleScopes);
+  const setVisibleScopes = useVisibleScopes((s) => s.setVisibleScopes);
+
+  function toggleScope(scope: Scope) {
+    const isCurrentlyVisible = visibleScopes.includes(scope);
+    const next = isCurrentlyVisible
+      ? visibleScopes.filter((s) => s !== scope)
+      : [...visibleScopes, scope];
+    setVisibleScopes(next);
+    // 隐藏到只剩 1 个时提示（开启方向不存在降级，无需提示）
+    if (isCurrentlyVisible && next.length === 1) {
+      toast.info(t("appSettings.scopeVisibility.onlyOneLeft"));
+    }
+  }
+
+  return (
+    <SettingsGroup id="settings-scope-visibility" title={t("appSettings.scopeVisibility.groupTitle")}>
+      <CardContent className="space-y-0 p-0">
+        {SCOPES.map((scope) => {
+          const { product: scopeProduct } = scopeParts(scope);
+          const isVisible = visibleScopes.includes(scope);
+          // 禁用逻辑：当前作用域永远禁用；只剩 1 个可见时，其余全部禁用
+          const disabled = scope === currentScope || visibleScopes.length === 1;
+
+          return (
+            <SettingsFieldRow
+              key={scope}
+              label={
+                <div className="flex items-center gap-2">
+                  <ScopeMark product={scopeProduct} size={14} className="shrink-0" />
+                  <span>{scopeLabel(t, scope)}</span>
+                </div>
+              }
+              operational
+              htmlFor={`scope-visible-${scope}`}
+            >
+              <Switch
+                id={`scope-visible-${scope}`}
+                checked={isVisible}
+                disabled={disabled}
+                onCheckedChange={() => toggleScope(scope)}
+                aria-label={t("appSettings.scopeVisibility.toggleAria", { scope })}
+              />
+            </SettingsFieldRow>
+          );
+        })}
+
+        {/* 全局提示 */}
+        <p className="border-t border-border/60 px-4 py-3 text-xs text-muted-foreground">
+          {t("appSettings.scopeVisibility.hint")}
+        </p>
+      </CardContent>
     </SettingsGroup>
   );
 }
@@ -611,6 +696,7 @@ export function AppSettingsGroups({ variant = "card" }: { variant?: AppSettingsV
       <ShortcutsCard variant={variant} />
       {api.isDesktop() || api.isDemoMode() ? <StartupCard variant={variant} /> : null}
       {api.isWebui() && !api.isDemoMode() ? null : <UpdateCard variant={variant} />}
+      <ScopeVisibilityCard />
     </>
   );
 }
