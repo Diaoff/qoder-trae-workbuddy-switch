@@ -204,8 +204,10 @@ runtime  (debian:12) →  二进制 + ca-certificates + curl
 
 `.github/workflows/docker.yml` 在推 `v*` tag 时自动发布 `ghcr.io/nextagentx/buddy-switch`：
 
-1. `prepare` 把版本号**只算一次**（tag 触发取 tag，手动触发取打包时刻），两个架构共用。
-   各算各的会因跨分钟而产出「两个层报不同版本」的镜像。
+1. **版本戳只在 tag 触发时盖**（`stamp-version.sh --tag "$GITHUB_REF_NAME"`）：两个架构各跑一次，
+   但取值来自同一个 tag，结果一致。手动触发**不盖** —— `gen-release-notes.mjs` 是按 tag 取提交
+   区间的，时间戳版本在 git 里没有对应 ref，它只会打一条 warning 并**跳过写文件**，随后
+   `check:scope` 在 docker build 里红（错误信息只说「内置说明是 vA，应用版本是 vB」）。
 2. `build` 在两个**原生** runner 上构建（`ubuntu-latest` = amd64、`ubuntu-24.04-arm` = arm64），
    各自 `push-by-digest` 推一个无名 digest。**不用 QEMU**：Rust release 编译在模拟下慢一个
    数量级，而本项目 `rusqlite` 走 `bundled`，等于用模拟器再编一份 SQLite 的 C 源码。
