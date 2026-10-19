@@ -958,21 +958,59 @@ fn models_request(key: &str) -> Request<Body> {
 }
 
 /// 取 `/v1/models` 返回的模型 id 列表（走真实路由 + 鉴权中间件）。
-async fn models_ids(app: &axum::Router, key: &str) -> Vec<String> {
+async fn models_json(app: &axum::Router, key: &str) -> serde_json::Value {
     let response = app
         .clone()
         .oneshot(models_request(key))
         .await
         .expect("请求应完成");
     assert_eq!(response.status(), StatusCode::OK, "/v1/models 应 200");
-    let value: serde_json::Value =
-        serde_json::from_str(&body_text(response).await).expect("响应应为 JSON");
-    value["data"]
+    serde_json::from_str(&body_text(response).await).expect("响应应为 JSON")
+}
+
+async fn models_ids(app: &axum::Router, key: &str) -> Vec<String> {
+    models_json(app, key).await["data"]
         .as_array()
         .expect("data 应为数组")
         .iter()
         .filter_map(|model| model["id"].as_str().map(str::to_string))
         .collect()
+}
+
+/// ★ Max Mode 的对外表现（issue #53 二版）：支持表内的模型**只有一条**记录，
+/// 且直接声明 1M —— 不再有 `<模型>-max` 影子条目。
+///
+/// 可证伪：把 `models_response_from` 的 `context_length` 退回 `default` ⇒ 第一条变红；
+/// 恢复影子条目 ⇒ 第二条变红。
+#[tokio::test]
+async fn max_mode_is_declared_in_place_without_shadow_ids() {
+    let _guard = guard();
+    let home = isolated_home("max-mode", &[("uid-mm", "jwt-mm")]);
+    let key = create_key(&home, TraeVariant::default());
+    let app = router(TraeGatewayState::new(TraeGatewayConfig::default()));
+
+    let body = models_json(&app, &key).await;
+    let rows = body["data"].as_array().expect("data 应为数组");
+    let find = |id: &str| rows.iter().find(|row| row["id"] == id).cloned();
+
+    let glm = find("glm-5.3").expect("静态兜底清单必须有 glm-5.3");
+    assert_eq!(
+        glm["context_length"], 1_000_000,
+        "支持 Max Mode 的模型要对客户端声明 1M"
+    );
+    assert_eq!(glm["max_mode"], true);
+    assert!(
+        find("glm-5.3-max").is_none(),
+        "不得再有 `-max` 影子条目 —— Max Mode 是请求级开关，不是模型"
+    );
+
+    let plain = find("kimi-k2.6").expect("静态兜底清单必须有 kimi-k2.6");
+    assert_eq!(
+        plain["max_mode"], false,
+        "不支持 Max Mode 的模型不标 max_mode"
+    );
+
+    let _ = std::fs::remove_dir_all(&home);
 }
 
 /// ★★ P11 **路由级**端到端：被禁用的模型**真的**不在 `/v1/models`，且**真的**被调用拒绝（403）。
@@ -1025,22 +1063,9 @@ async fn p11_disabled_model_is_hidden_from_models_and_rejected_on_call() {
         !after.iter().any(|id| id == target),
         "禁用后不应出现在 /v1/models：{after:?}"
     );
-    // 目标模型支持 Max Mode ⇒ 它的 `-max` 变体也一并消失（禁用是**逐条**判定：
-    // 基名被禁时变体继承该决定），因此正好少两条。
-    let variant_id = format!("{target}-max");
-    assert!(
-        before.iter().any(|id| id == &variant_id),
-        "前提：{target} 支持 Max Mode，清单里应有 {variant_id}：{before:?}"
-    );
-    assert!(
-        !after.iter().any(|id| id == &variant_id),
-        "禁用基名后 {variant_id} 也必须消失（否则「禁用」是可绕过的）：{after:?}"
-    );
-    assert_eq!(
-        after.len() + 2,
-        before.len(),
-        "禁用后应正好少两条（基名 + Max 变体）"
-    );
+    // Max Mode 是**策略**（`is_max_mode` 注入），不再产生影子条目 ⇒ 一个模型一条记录，
+    // 禁用后正好少一条。
+    assert_eq!(after.len() + 1, before.len(), "禁用后应正好少一条");
 
     // 出口②：硬调用真的回 403 `model_disabled`（在触达上游之前就拒）。
     let response = app
@@ -1076,23 +1101,6 @@ async fn p11_disabled_model_is_hidden_from_models_and_rejected_on_call() {
         response.status(),
         StatusCode::FORBIDDEN,
         "大写变体的调用也必须 403（否则禁用被绕过）"
-    );
-
-    // ★ Max Mode 变体同样必须被拒（issue #53 引入 `<模型>-max` 后新增的绕过面）：
-    //   入口把 `<模型>-max` 归一成基名再做禁用判定，否则「禁用 glm-5.3」之后
-    //   `glm-5.3-max` 仍能调用 —— 那就是假开关。
-    let response = app
-        .clone()
-        .oneshot(chat_request(
-            Some(&key),
-            &format!(r#"{{"model":"{variant_id}","messages":[]}}"#),
-        ))
-        .await
-        .expect("请求应完成");
-    assert_eq!(
-        response.status(),
-        StatusCode::FORBIDDEN,
-        "Max Mode 变体的调用也必须 403（禁用按基名判定）"
     );
 
     // 清理：禁用存储是**进程级全局**（同进程其余用例会读到它）。

@@ -139,26 +139,21 @@ pub const MODEL_NAMES: &[&str] = &[
 /// 静态兜底清单的上下文窗口（客户端清单里取不到时沿用，保持既有形状不变）。
 const DEFAULT_CONTEXT_LENGTH: i64 = 131_072;
 
-/// Max Mode 的模型 ID 后缀：`<模型>-max` ⇒ **本次请求**走 Max Mode（1M 上下文）。
+/// Max Mode 声明的上下文窗口（官方口径 1M）。
 ///
-/// ## 为什么是「后缀 + 请求级开关」而不是一个独立模型（issue #53）
+/// ## 为什么不再有 `<模型>-max` 影子条目（issue #53 二版）
 ///
-/// 上游没有 `glm-5.3-max` 这个模型：Max Mode 是请求体里的布尔字段
-/// `is_max_mode: true`（参考实现 2026-09 真机实证：布尔 `true` 通过，数值 `1` 被
-/// `4001` 拒）。但 `/v1/models` 只能表达「模型」这一维度 —— OpenAI 客户端不会去读
-/// 一个自定义的 `max_mode` 标志，它只会把**列表里的 id** 念给用户。
-/// ⇒ 因此对支持 Max Mode 的模型**额外**列一条 `<模型>-max`，声明 1M 上下文；
-/// 请求到达时剥掉后缀、注入 `is_max_mode`（见 [`prepare_llm_chat_body`]）。
+/// 上游没有「1M 模型」：Max Mode 是请求体里的布尔字段 `is_max_mode: true`（真机实证）。
+/// 初版把它编码成模型名后缀（`glm-5.3-max`），代价是一串本不该存在的规则 ——
+/// 影子模型、与真模型 `qwen3.8-max` 的命名冲突（于是又有 `qwen3.8-max-max`）、
+/// 禁用 / 粘性 / 冷却 / 探测网格全要「按基名」特判。
 ///
-/// 不这么做的话，客户端只知道 200k（见 issue #53 的截图）：用户即便想要 1M
-/// 也无处可选。
-pub const MAX_MODE_SUFFIX: &str = "-max";
-
-/// Max Mode 声明的上下文窗口：官方口径 1M。
+/// ⇒ 现在改为**策略层**：对支持表内的模型**始终**注入 `is_max_mode`
+/// （见 [`prepare_llm_chat_body`]），`/v1/models` 里这些模型**直接声明 1M**。
+/// 一个模型一条记录，客户端不需要选，也没有第二个 id 要解释。
 ///
-/// ⚠️ 它不是「上游会按这个数字截断」—— 上游自己的 `prompt_max_tokens` 仍固定
-/// 168000（见 [`prepare_llm_chat_body`]；实测该字段在 Max Mode 下**不钳制**实际
-/// 上下文，1M 窗口由上游内部决策）。本值只用于**告诉客户端**「这条 id 能装多少」。
+/// ⚠️ 它不是「上游会按这个数字截断」：`prompt_max_tokens` 仍固定 168000
+/// （实测该字段在 Max Mode 下不钳制实际上下文，1M 窗口由上游内部决策）。
 pub const MAX_MODE_CONTEXT_LENGTH: i64 = 1_000_000;
 
 /// 支持 Max Mode 的模型（**canonical** 形态：trim + 小写后逐字比较）。
@@ -185,33 +180,10 @@ pub fn max_mode_supported(model: &str) -> bool {
     !canonical.is_empty() && MAX_MODE_MODELS.contains(&canonical.as_str())
 }
 
-/// 把 `<模型>-max` 解析回**基名**；不是 Max Mode 请求时返回 `None`。
-///
-/// ## 为什么必须带「整名优先」守卫
-///
-/// `qwen3.8-max` **本身就是一个真模型**（结尾也是 `-max`）。若无条件剥后缀，
-/// 它会变成 `qwen3.8` —— 上游 `4023 model is unknown`。
-/// 规则（参考实现 T4.2 固化）：**整名在支持表里 ⇒ 不剥**；
-/// 否则剥掉外层 `-max` 且**基名必须在支持表里**才认（表外名字原样透传，
-/// 让上游照旧给出「模型不存在」，而不是把用户的模型名悄悄改掉）。
-///
-/// ⇒ 真模型 `qwen3.8-max` 想开 Max Mode，写成 `qwen3.8-max-max` 即可。
-pub fn max_mode_base(model: &str) -> Option<&str> {
-    let trimmed = model.trim();
-    let canonical = trimmed.to_lowercase();
-    if !canonical.ends_with(MAX_MODE_SUFFIX) || max_mode_supported(trimmed) {
-        return None;
-    }
-    // 后缀是纯 ASCII ⇒ 按字节切安全（上面已按小写确认结尾）。
-    let base = &trimmed[..trimmed.len() - MAX_MODE_SUFFIX.len()];
-    max_mode_supported(base).then_some(base)
-}
-
 /// 一条 `/v1/models` 条目。
 ///
-/// `max_mode` 是**新增的说明字段**（OpenAI 兼容客户端会忽略未知字段）：
-/// 基础条目上的 `true` = 「这条模型支持 Max Mode，加 `-max` 后缀启用」；
-/// `-max` 变体上的 `true` = 「这就是 Max Mode」（且 `context_length` 为 1M）。
+/// `max_mode` 是**说明字段**（OpenAI 兼容客户端会忽略未知字段）：
+/// `true` = 本网关已对该模型开启 Max Mode（`context_length` 即 1M 或上游声明的上限）。
 fn model_entry(id: &str, context_length: i64, max_mode: bool) -> Value {
     json!({
         "id": id,
@@ -230,24 +202,19 @@ pub fn models_response() -> Value {
     models_response_from(
         MODEL_NAMES
             .iter()
-            .map(|name| (*name, None))
+            .map(|name| (*name, None, None))
             .collect::<Vec<_>>(),
-        true,
         None,
     )
 }
 
 /// 静态兜底清单 + **禁用过滤**（出口 ① 的兜底分支也必须过滤 —— 否则 runtime 关闭瞬间会漏出被禁模型）。
-///
-/// `include_max_variants`：是否附带 Max Mode 的 `-max` 变体（`/v1/models` 要、
-/// 探测网格不要 —— 见 [`probe_models_response_for`]）。
-pub fn models_response_filtered(disabled: &BTreeSet<String>, include_max_variants: bool) -> Value {
+pub fn models_response_filtered(disabled: &BTreeSet<String>) -> Value {
     models_response_from(
         MODEL_NAMES
             .iter()
-            .map(|name| (*name, None))
+            .map(|name| (*name, None, None))
             .collect::<Vec<_>>(),
-        include_max_variants,
         Some(disabled),
     )
 }
@@ -283,39 +250,18 @@ pub fn models_response_filtered(disabled: &BTreeSet<String>, include_max_variant
 /// 被禁用的模型**不出现**；`available`（= 该模型 ∈ 本 function 分组）已由 [`servable_entries`]
 /// （或静态兜底清单）保证。两条来源都要过滤 —— 禁用是用户偏好，与清单来源无关。
 ///
-/// ## ★ Max Mode 变体（issue #53）
+/// ## ★ Max Mode 不再产生影子条目（issue #53 二版）
 ///
-/// 支持 Max Mode 的模型会**额外**多列一条 `<模型>-max`（`context_length` = 1M）。
-/// 禁用按**逐条**生效：禁用 `glm-5.3` ⇒ 两条都不出现；只禁用 `glm-5.3-max` ⇒
-/// 基础条目照旧（用户就是不想让人走 1M）。
+/// 支持 Max Mode 的模型只有**一条**记录，`context_length` 直接声明 1M（或上游
+/// `context_window_size.max`）。不再有 `<模型>-max`，因此禁用 / 粘性 / 冷却 / 探测
+/// 都回归「一个模型一个名字」，不需要按基名特判。
 pub fn models_response_for(variant: TraeVariant, disabled: &BTreeSet<String>) -> Value {
-    models_response_inner(variant, disabled, true)
-}
-
-/// **探测网格**用的清单（[`crate::model_probe`]）—— **不含** Max Mode 变体。
-///
-/// 为什么必须分开：探测网格是「每个账号 × 每个模型各发一次真请求」，而 `-max`
-/// 只是同一上游模型的一个**请求级开关** —— 列进去等于把探测成本与网格行数直接
-/// 翻倍，却验证不出任何新信息（`is_max_mode` 是布尔字段，不是模型）。
-pub fn probe_models_response_for(variant: TraeVariant, disabled: &BTreeSet<String>) -> Value {
-    models_response_inner(variant, disabled, false)
-}
-
-fn models_response_inner(
-    variant: TraeVariant,
-    disabled: &BTreeSet<String>,
-    include_max_variants: bool,
-) -> Value {
     let list = buddy_switch_core::modules::trae::model_list::read_client_model_list(variant);
     if list.groups.is_empty() {
-        return models_response_filtered(disabled, include_max_variants);
+        return models_response_filtered(disabled);
     }
 
-    models_response_from(
-        servable_entries(&list, variant),
-        include_max_variants,
-        Some(disabled),
-    )
+    models_response_from(servable_entries(&list, variant), Some(disabled))
 }
 
 /// 取**本变体真能调**的模型：该程序位 `function` 对应的那个分组。
@@ -323,7 +269,10 @@ fn models_response_inner(
 /// 分组缺失时回落**全分组并集**（改造前的口径）：客户端版本变动 / 上游给分组改名时，
 /// 宁可多列（老行为），也不要因为一个分组名对不上就把整张清单清空 ——
 /// 「列模型」是开箱能力，不能因为清单结构漂移而失效。
-fn servable_entries(list: &ClientModelList, variant: TraeVariant) -> Vec<(&str, Option<i64>)> {
+fn servable_entries(
+    list: &ClientModelList,
+    variant: TraeVariant,
+) -> Vec<(&str, Option<i64>, Option<i64>)> {
     let function = function_for(variant);
     let Some(group) = list.groups.iter().find(|group| group.function == function) else {
         return dedupe_entries(list);
@@ -340,62 +289,67 @@ fn servable_entries(list: &ClientModelList, variant: TraeVariant) -> Vec<(&str, 
         .iter()
         .filter(|model| !model.is_bypass)
         .filter(|model| seen.insert(model.name.as_str()))
-        .map(|model| (model.name.as_str(), model.context_window))
+        .map(|model| {
+            (
+                model.name.as_str(),
+                model.context_window,
+                model.context_window_max,
+            )
+        })
         .collect()
 }
 
-/// 把客户端清单展平成 `(模型名, 上下文窗口)`，并**按出现顺序去重**。
+/// 把客户端清单展平成 `(模型名, 默认窗口, 上限窗口)`，并**按出现顺序去重**。
 ///
 /// 去重是必需的：同一个模型会在多个 function 分组里重复出现（本机实测
 /// `solo_work_lite` 与 `solo_work_remote` 内容完全相同）。
 /// **保序**（而不是排序）是为了让 `/v1/models` 的顺序与客户端里看到的一致。
-fn dedupe_entries(list: &ClientModelList) -> Vec<(&str, Option<i64>)> {
+fn dedupe_entries(list: &ClientModelList) -> Vec<(&str, Option<i64>, Option<i64>)> {
     let mut seen = std::collections::HashSet::new();
-    let mut entries: Vec<(&str, Option<i64>)> = Vec::new();
+    let mut entries: Vec<(&str, Option<i64>, Option<i64>)> = Vec::new();
     for group in &list.groups {
         for model in &group.models {
             if seen.insert(model.name.as_str()) {
-                entries.push((model.name.as_str(), model.context_window));
+                entries.push((
+                    model.name.as_str(),
+                    model.context_window,
+                    model.context_window_max,
+                ));
             }
         }
     }
     entries
 }
 
-/// 把 `(模型名, 上下文窗口)` 组装成 OpenAI `/v1/models` 形状。
+/// 把 `(模型名, 默认窗口, 上限窗口)` 组装成 OpenAI `/v1/models` 形状。
 ///
 /// 两条来源（客户端清单 / 静态兜底）共用本函数 —— 形状只有一处，不会漂移。
 ///
-/// `include_max_variants` 为真时，支持 Max Mode 的模型会在**其后紧跟**一条
-/// `<模型>-max`（上下文声明 1M）—— 紧跟而不是集中放在末尾，是为了让「同一模型的
-/// 两档」在客户端的下拉里挨着，用户不会以为那是两个不相干的模型。
+/// `context_length` 的口径（**一个模型只有一条记录**）：
+/// - 支持 Max Mode（[`max_mode_supported`]）⇒ 声明**上限窗口**：优先上游给的
+///   `context_window_size.max`，取不到用官方 1M 口径 —— 因为网关对该模型的每个请求
+///   都会注入 `is_max_mode`，声明 1M 才是实话；
+/// - 其余模型 ⇒ 上游给的默认窗口，取不到回落 [`DEFAULT_CONTEXT_LENGTH`]。
 ///
-/// 禁用过滤也在这里做（而不是交给调用方，三处各过滤一遍必然漂移）：
-/// 基础条目被禁用 ⇒ 变体一并不出现；变体自己也能被单独禁用。
+/// 禁用过滤也在这里做（三处各过滤一遍必然漂移）。
 fn models_response_from(
-    entries: Vec<(&str, Option<i64>)>,
-    include_max_variants: bool,
+    entries: Vec<(&str, Option<i64>, Option<i64>)>,
     disabled: Option<&BTreeSet<String>>,
 ) -> Value {
     let allowed =
         |name: &str| disabled.is_none_or(|set| !crate::disabled_models::is_disabled_in(set, name));
     let mut data: Vec<Value> = Vec::with_capacity(entries.len());
-    for (name, context_window) in entries {
+    for (name, default_window, max_window) in entries {
         if !allowed(name) {
             continue;
         }
         let max_mode = max_mode_supported(name);
-        data.push(model_entry(
-            name,
-            context_window.unwrap_or(DEFAULT_CONTEXT_LENGTH),
-            max_mode,
-        ));
-        if include_max_variants && max_mode {
-            let variant = format!("{name}{MAX_MODE_SUFFIX}");
-            if allowed(&variant) {
-                data.push(model_entry(&variant, MAX_MODE_CONTEXT_LENGTH, true));
-            }
-        }
+        let context_length = if max_mode {
+            max_window.unwrap_or(MAX_MODE_CONTEXT_LENGTH)
+        } else {
+            default_window.unwrap_or(DEFAULT_CONTEXT_LENGTH)
+        };
+        data.push(model_entry(name, context_length, max_mode));
     }
     json!({ "object": "list", "data": data })
 }
@@ -560,19 +514,18 @@ pub fn prepare_llm_chat_body(
     normalize_tool_choice(object);
     normalize_tools(object);
 
-    let requested_model = object
+    let model = object
         .get("model")
         .and_then(Value::as_str)
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .unwrap_or(default_model)
         .to_string();
-    // ★ Max Mode（issue #53）：`<模型>-max` 是**请求级开关**，不是上游模型名。
-    //   剥回基名再派生 `config_name` / `model_name` —— 否则会派生出
-    //   `glm-5.3-max__dev`，上游 `4023 model is unknown`（参考实现 issue #38 的真实根因）。
-    let max_mode = max_mode_base(&requested_model);
-    let model = max_mode.unwrap_or(&requested_model);
-    let (config_name, model_name) = model_config(model);
+    // ★ Max Mode（issue #53 二版）：策略层开关，**不是**模型名的一部分。
+    //   支持表内的模型一律注入 `is_max_mode`（用户已在网关侧「始终开启」），
+    //   因此这里不需要解析任何后缀，模型名原样派生 `config_name` / `model_name`。
+    let max_mode = max_mode_supported(&model);
+    let (config_name, model_name) = model_config(&model);
 
     // 固定字段：覆盖客户端可能传来的同名值（上游只认这一套）。
     object.insert("config_name".into(), json!(config_name));
@@ -612,10 +565,7 @@ pub fn prepare_llm_chat_body(
     object.insert("ide_version_code".into(), json!(TRAE_IDE_VERSION_CODE));
     object.insert("app_id".into(), json!(TRAE_APP_ID));
     object.insert("package_type".into(), json!("stable_cn"));
-    if max_mode.is_some() {
-        // 上游只认 `config_name` / `model_name`，但 `model` 字段必须写回**基名**：
-        // 留着 `-max` 会随 payload 一起上行，上游按模型名的一部分处理（`4001`）。
-        object.insert("model".into(), json!(model));
+    if max_mode {
         object.insert("is_max_mode".into(), json!(true));
     }
 
@@ -1176,10 +1126,8 @@ mod tests {
     fn models_response_lists_every_name_as_openai_objects() {
         let response = models_response();
         let data = response["data"].as_array().unwrap();
-        // 每条基础名都在；支持 Max Mode 的模型**再多一条** `-max` 变体。
-        let expected =
-            MODEL_NAMES.len() + MODEL_NAMES.iter().filter(|n| max_mode_supported(n)).count();
-        assert_eq!(data.len(), expected);
+        // 一个模型一条记录（Max Mode 是策略，不再产生影子条目）。
+        assert_eq!(data.len(), MODEL_NAMES.len());
         assert_eq!(data[0]["object"], "model");
         assert_eq!(response["object"], "list");
         for name in MODEL_NAMES {
@@ -1193,7 +1141,8 @@ mod tests {
     /// 客户端清单里的**真实**上下文窗口优先；取不到时回落既有常量（形状不退化）。
     #[test]
     fn models_response_from_uses_real_context_window_and_falls_back() {
-        let response = models_response_from(vec![("a", Some(256_000)), ("b", None)], false, None);
+        let response =
+            models_response_from(vec![("a", Some(256_000), None), ("b", None, None)], None);
         let data = response["data"].as_array().unwrap();
 
         assert_eq!(data[0]["id"], "a");
@@ -1206,73 +1155,53 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Max Mode（issue #53）
+    // Max Mode（issue #53 二版：策略层，无影子模型）
     // -----------------------------------------------------------------------
 
-    /// ★★ 护栏：`-max` 后缀只在「整名不是真模型、基名在支持表」时剥离。
+    /// ★★ 护栏：支持 Max Mode 的模型**只有一条**记录，且直接声明 1M；
+    /// 不支持的一律保持上游默认窗口。
     ///
-    /// 反例（改坏会红）：
-    /// - 无条件剥前缀 ⇒ `qwen3.8-max` 变成 `qwen3.8`，上游 `4023 model is unknown`
-    ///   （它是真模型，只是名字里带 `-max`）；
-    /// - 表外名字也剥 ⇒ 用户拼错的模型名被**悄悄改写**，错误更难发现。
+    /// 反例（改坏会红）：把支持模型的窗口退回 `context_window_size.default`（200k）
+    /// ⇒ 客户端以为只有 200k，用户又回到「明明开了 Max 列表里还是 200k」的原始报障。
     #[test]
-    fn max_mode_suffix_only_strips_when_base_is_supported() {
-        // 常规：支持的模型 + 后缀。
-        assert_eq!(max_mode_base("glm-5.3-max"), Some("glm-5.3"));
-        assert_eq!(
-            max_mode_base("Kimi-K3-MAX"),
-            Some("Kimi-K3"),
-            "大小写不敏感"
-        );
-        assert_eq!(max_mode_base("  glm-5.2-max  "), Some("glm-5.2"));
-        // 真模型名（整名在支持表里）⇒ 不剥。
-        assert_eq!(max_mode_base("qwen3.8-max"), None);
-        // 真模型想开 Max：双后缀（剥外层，基名仍是真模型）。
-        assert_eq!(max_mode_base("qwen3.8-max-max"), Some("qwen3.8-max"));
-        // 没后缀 / 基名不支持 / 基名完全不认识 ⇒ 原样透传。
-        assert_eq!(max_mode_base("glm-5.3"), None);
-        assert_eq!(max_mode_base("glm-5.3-flash-max"), None);
-        assert_eq!(max_mode_base("no-such-model-max"), None);
-        assert_eq!(max_mode_base(""), None);
-    }
-
-    /// `/v1/models` 里支持 Max Mode 的模型**必须**多一条 1M 的 `-max` 条目，
-    /// 且基础条目的窗口不被改写（1M 只在显式开 Max 时成立）。
-    #[test]
-    fn models_list_advertises_max_variants_with_1m_context() {
+    fn max_mode_models_declare_one_megabyte_and_others_keep_default() {
         let body = models_response_from(
-            vec![("glm-5.3", Some(200_000)), ("kimi-k2.6", None)],
-            true,
+            vec![
+                ("glm-5.3", Some(200_000), None),
+                ("kimi-k2.6", Some(256_000), None),
+            ],
             None,
         );
         let data = body["data"].as_array().unwrap();
         let ids: Vec<&str> = data.iter().filter_map(|row| row["id"].as_str()).collect();
-        assert_eq!(ids, vec!["glm-5.3", "glm-5.3-max", "kimi-k2.6"]);
-
+        assert_eq!(ids, vec!["glm-5.3", "kimi-k2.6"], "一个模型只能有一条记录");
         assert_eq!(
-            data[0]["context_length"], 200_000,
-            "基础条目保持上游给的窗口"
+            data[0]["context_length"], MAX_MODE_CONTEXT_LENGTH,
+            "支持 Max Mode 的模型要声明 1M（请求侧会始终注入 is_max_mode）"
         );
-        assert_eq!(data[0]["max_mode"], true, "基础条目要标明支持 Max Mode");
+        assert_eq!(data[0]["max_mode"], true);
         assert_eq!(
-            data[1]["context_length"], MAX_MODE_CONTEXT_LENGTH,
-            "变体声明 1M"
+            data[1]["context_length"], 256_000,
+            "不支持的模型保持上游默认窗口"
         );
-        assert_eq!(data[2]["max_mode"], false, "不支持的模型不标 Max Mode");
-
-        // 关掉变体（探测网格）⇒ 只剩基础条目。
-        let probe = models_response_from(vec![("glm-5.3", Some(200_000))], false, None);
-        assert_eq!(probe["data"].as_array().unwrap().len(), 1);
+        assert_eq!(data[1]["max_mode"], false);
     }
 
-    /// 禁用按**逐条**生效：禁基名 ⇒ 变体一起消失；只禁变体 ⇒ 基名照旧。
+    /// 上游若在 `context_window_size.max` 里给了具体上限，优先用它（可能是 1.5M、
+    /// 也可能是别的值）—— 不要用我们的常量把上游口径盖掉。
     #[test]
-    fn disabled_filter_is_per_entry_across_max_variants() {
+    fn declared_window_prefers_upstream_max_when_present() {
+        let body = models_response_from(vec![("glm-5.3", Some(200_000), Some(1_500_000))], None);
+        assert_eq!(body["data"][0]["context_length"], 1_500_000);
+    }
+
+    /// 禁用过滤：被禁用的模型整条消失（没有影子条目需要连带处理）。
+    #[test]
+    fn disabled_models_are_filtered_out() {
         let mut disabled = BTreeSet::new();
         disabled.insert("glm-5.3".to_string());
         let body = models_response_from(
-            vec![("glm-5.3", None), ("kimi-k3", None)],
-            true,
+            vec![("glm-5.3", None, None), ("kimi-k3", None, None)],
             Some(&disabled),
         );
         let ids: Vec<&str> = body["data"]
@@ -1281,77 +1210,48 @@ mod tests {
             .iter()
             .filter_map(|row| row["id"].as_str())
             .collect();
-        assert_eq!(
-            ids,
-            vec!["kimi-k3", "kimi-k3-max"],
-            "禁用基名要连变体一起消失"
-        );
-
-        let mut only_variant = BTreeSet::new();
-        only_variant.insert("glm-5.3-max".to_string());
-        let body = models_response_from(vec![("glm-5.3", None)], true, Some(&only_variant));
-        let ids: Vec<&str> = body["data"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .filter_map(|row| row["id"].as_str())
-            .collect();
-        assert_eq!(ids, vec!["glm-5.3"], "只禁变体时基础条目必须还在");
+        assert_eq!(ids, vec!["kimi-k3"]);
     }
 
-    /// ★★ 护栏：请求体里出现 `-max` ⇒ 派生**基名**的 config/model_name，并注入
-    /// `is_max_mode: true`；`model` 字段写回基名（否则上游按 `xxx-max__dev` 报 4023）。
+    /// ★★ 护栏：支持表内的模型**始终**注入 `is_max_mode`，且模型名原样派生
+    /// （不再剥任何后缀）；表外模型不注入（零行为差异）。
     ///
-    /// 反例（改坏会红）：只注入 `is_max_mode` 而不剥后缀 ⇒ `model_name` 变成
-    /// `glm-5.3-max__dev`，上游 `model is unknown`。
+    /// 反例（改坏会红）：给所有模型都注入 ⇒ 上游对不支持 Max Mode 的模型报 4001，
+    /// 用户「什么都没改却用不了了」。
     #[test]
-    fn prepare_body_injects_max_mode_and_rewrites_model_to_base() {
-        let src = br#"{"model":"glm-5.3-max","messages":[{"role":"user","content":"hi"}]}"#;
-        let converted = prepare_llm_chat_body(
-            src,
-            TraeVariant::TraeWork,
-            "default",
-            "uid",
-            "device",
-            "machine",
-        );
-        let body: Value = serde_json::from_slice(&converted).expect("合法 JSON");
+    fn prepare_body_injects_max_mode_for_supported_models_only() {
+        let prepare = |src: &[u8]| -> Value {
+            let converted = prepare_llm_chat_body(
+                src,
+                TraeVariant::TraeWork,
+                "default",
+                "uid",
+                "device",
+                "machine",
+            );
+            serde_json::from_slice(&converted).expect("合法 JSON")
+        };
+
+        // 支持表内：注入，且模型名不被改写。
+        let body = prepare(br#"{"model":"glm-5.3","messages":[{"role":"user","content":"hi"}]}"#);
         assert_eq!(body["is_max_mode"], true);
-        assert_eq!(body["model"], "glm-5.3", "上游看到的 model 必须是基名");
+        assert_eq!(body["model"], "glm-5.3");
         assert_eq!(body["config_name"], "glm-5.3");
         assert_eq!(body["model_name"], "glm-5.3__dev");
         assert_eq!(
             body["prompt_max_tokens"], 168_000,
-            "Max Mode 也必须固定 168000 —— 上游拒绝 1M 值"
+            "Max Mode 也固定 168000 —— 上游拒绝 1M 值"
         );
 
-        // 不带后缀 ⇒ 不注入（零行为差异）。
-        let plain = br#"{"model":"glm-5.3","messages":[{"role":"user","content":"hi"}]}"#;
-        let converted = prepare_llm_chat_body(
-            plain,
-            TraeVariant::TraeWork,
-            "default",
-            "uid",
-            "device",
-            "machine",
-        );
-        let body: Value = serde_json::from_slice(&converted).expect("合法 JSON");
-        assert!(body.get("is_max_mode").is_none(), "普通请求不得带该字段");
+        // 名字本身以 -max 结尾的**真模型**：照常注入，且不会被误剥。
+        let body =
+            prepare(br#"{"model":"qwen3.8-max","messages":[{"role":"user","content":"hi"}]}"#);
+        assert_eq!(body["is_max_mode"], true);
+        assert_eq!(body["model_name"], "qwen3.8-max__dev");
 
-        // 表外模型带后缀 ⇒ 不认（原样透传，让上游报「模型不存在」而不是悄悄改名）。
-        let unknown =
-            br#"{"model":"no-such-model-max","messages":[{"role":"user","content":"hi"}]}"#;
-        let converted = prepare_llm_chat_body(
-            unknown,
-            TraeVariant::TraeWork,
-            "default",
-            "uid",
-            "device",
-            "machine",
-        );
-        let body: Value = serde_json::from_slice(&converted).expect("合法 JSON");
-        assert!(body.get("is_max_mode").is_none());
-        assert_eq!(body["model_name"], "no-such-model-max__dev");
+        // 表外模型：不注入。
+        let body = prepare(br#"{"model":"kimi-k2.6","messages":[{"role":"user","content":"hi"}]}"#);
+        assert!(body.get("is_max_mode").is_none(), "表外模型不得带该字段");
     }
 
     /// ★ 去重必须**保序**（不是排序）：同一模型在多个 function 分组里重复出现，
@@ -1380,7 +1280,7 @@ mod tests {
 
         let entries = dedupe_entries(&list);
         assert_eq!(
-            entries.iter().map(|(name, _)| *name).collect::<Vec<_>>(),
+            entries.iter().map(|(name, ..)| *name).collect::<Vec<_>>(),
             vec!["m1", "m2", "m3"],
             "重复的 m2 只能出现一次，且位置保持在首次出现处"
         );
@@ -1475,7 +1375,7 @@ mod tests {
         assert_eq!(
             servable_entries(&work, TraeVariant::TraeWork)
                 .iter()
-                .map(|(name, _)| *name)
+                .map(|(name, ..)| *name)
                 .collect::<Vec<_>>(),
             vec!["glm-5.3", "deepseek-v4.1-flash"]
         );
@@ -1489,7 +1389,7 @@ mod tests {
         assert_eq!(
             servable_entries(&code, TraeVariant::Trae)
                 .iter()
-                .map(|(name, _)| *name)
+                .map(|(name, ..)| *name)
                 .collect::<Vec<_>>(),
             vec!["glm-5.3-flash", "qwen3.8-flash"]
         );
@@ -1502,7 +1402,7 @@ mod tests {
         assert_eq!(
             servable_entries(&renamed, TraeVariant::TraeWork)
                 .iter()
-                .map(|(name, _)| *name)
+                .map(|(name, ..)| *name)
                 .collect::<Vec<_>>(),
             vec!["glm-5.3", "Doubao-Seed-Code"],
             "分组名对不上时宁可多列（老行为），也不能把清单清空"
@@ -1521,7 +1421,7 @@ mod tests {
         assert_eq!(
             servable_entries(&bypass, TraeVariant::TraeWork)
                 .iter()
-                .map(|(name, _)| *name)
+                .map(|(name, ..)| *name)
                 .collect::<Vec<_>>(),
             vec!["glm-5.3"],
             "第三方路由条目不得进对外清单"
@@ -1532,7 +1432,7 @@ mod tests {
         assert_eq!(
             servable_entries(&dup, TraeVariant::Trae)
                 .iter()
-                .map(|(name, _)| *name)
+                .map(|(name, ..)| *name)
                 .collect::<Vec<_>>(),
             vec!["a", "b"]
         );
@@ -1555,6 +1455,7 @@ mod tests {
             is_beta: false,
             is_bypass,
             context_window,
+            context_window_max: None,
             prompt_max_tokens: None,
         }
     }

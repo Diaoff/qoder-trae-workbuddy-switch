@@ -84,6 +84,11 @@ pub struct ClientModel {
     pub is_bypass: bool,
     /// 默认上下文窗口（`context_window_size.default`），取不到为 `None`。
     pub context_window: Option<i64>,
+    /// 上限上下文窗口（`context_window_size.max`），取不到为 `None`。
+    ///
+    /// 上游给 Max Mode 声明的上限（如 `1000000`）；实测客户端缓存里**常为 `null`**，
+    /// 因此消费方（Trae 网关的 `/v1/models`）必须有兜底，不能只依赖本字段。
+    pub context_window_max: Option<i64>,
     /// 单次回复上限（`prompt_max_tokens`），取不到为 `None`。
     pub prompt_max_tokens: Option<i64>,
 }
@@ -423,6 +428,10 @@ fn parse_model(value: &Value) -> Option<ClientModel> {
         context_window: value
             .get("context_window_size")
             .and_then(|size| size.get("default"))
+            .and_then(as_i64),
+        context_window_max: value
+            .get("context_window_size")
+            .and_then(|size| size.get("max"))
             .and_then(as_i64),
         prompt_max_tokens: value.get("prompt_max_tokens").and_then(as_i64),
     })

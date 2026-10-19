@@ -13,16 +13,14 @@
       ]
     },
     {
-      "title": "Trae 1M 上下文：/v1/models 新增 <模型>-max 变体（issue #53）",
+      "title": "Trae 1M 上下文：直接开，不再需要特殊模型名（issue #53）",
       "items": [
-        "此前反代清单只声明 200k（取客户端清单的 context_window_size.default），而 Max Mode 在上游是请求级布尔字段（is_max_mode），不是另一个模型名 —— 客户端里根本无从选起。",
-        "现在对支持 Max Mode 的模型会紧跟多列一条 <模型>-max，context_length 为 1000000；请求这条 id 时网关自动剥掉后缀、按基名发给上游并注入 is_max_mode。",
+        "一个模型只有一条记录：用 glm-5.3 就是 1M，统一入口用 trae-cn:glm-5.3，不用加后缀、不用另选一条。",
         "支持表（与上游实证口径一致）：doubao-seed-evolving / glm-5.3 / glm-5.2 / deepseek-v4-pro(-official) / deepseek-v4-flash(-official) / kimi-k3 / minimax-m3 / qwen3.8-max / qwen-3.7-plus。",
-        "基础条目不受影响：窗口仍是上游默认值（如 200k）；不想用 1M 就继续用基名。",
-        "特例：qwen3.8-max 本身就以 -max 结尾（是真模型，不会被误剥），要给它开 Max Mode 写 qwen3.8-max-max。",
-        "统一入口同样适用：trae-cn:glm-5.3-max。",
-        "表外模型带 -max 不会被识别（原样透传，由上游报「模型不存在」）—— 刻意如此，避免悄悄改写填错的模型名。",
-        "模型探测网格不含这些变体：-max 是请求开关不是独立模型，列进去只会让每个账号的探测请求凭空翻倍。"
+        "表外模型不注入，窗口保持上游默认值 —— 不给不支持的模型发它们会拒的字段。",
+        "上游若在 context_window_size.max 给了具体上限（如 1.5M），清单以它为准，不用我们的常量盖掉。",
+        "清单里的 max_mode: true 表示「这条已开 Max」，供客户端做角标。",
+        "早先尝试过的 <模型>-max 影子条目已移除：它带来影子模型、与真模型 qwen3.8-max 的命名冲突（还要 qwen3.8-max-max 这种逃生口），以及禁用 / 粘性 / 冷却 / 探测全部要「按基名」特判 —— 收益不抵复杂度。"
       ]
     },
     {
@@ -44,6 +42,8 @@
     {
       "title": "内部",
       "items": [
+        "Trae 客户端清单新增解析 context_window_size.max（此前只读 .default），1M 声明优先用它。",
+        "删掉 -max 后缀解析与清单双列，探测网格与 /v1/models 重新同源（少一处特判）。",
         "四个网关的路径所有权表、鉴权豁免、集成指南与架构文档同步。",
         "版本号统一为 2026.10.191740（19 处载体，stamp-version --check 通过）。"
       ]

@@ -990,6 +990,8 @@ export interface TraeClientModel {
   isBeta: boolean;
   /** 默认上下文窗口；取不到为 `null`。 */
   contextWindow: number | null;
+  /** 上限上下文窗口（`context_window_size.max`，Max Mode 口径）；取不到为 `null`。 */
+  contextWindowMax?: number | null;
   /** 单次回复上限；取不到为 `null`。 */
   promptMaxTokens: number | null;
 }
