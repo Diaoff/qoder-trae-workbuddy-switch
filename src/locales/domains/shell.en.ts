@@ -373,6 +373,12 @@ export const en = {
     "This section only holds this tool's settings and backup entries; WorkBuddy's own runtime logs live in a logs subdirectory of its data dir (not surfaced here yet).",
   "settings.logs.emptyAction": "Open gateway settings",
 
+  // ---- Scope visibility (app-settings.tsx) ----
+  "appSettings.scopeVisibility.groupTitle": "Scope Visibility",
+  "appSettings.scopeVisibility.toggleAria": "Toggle visibility for {scope}",
+  "appSettings.scopeVisibility.hint": "Hidden scopes disappear from the top bar and shortcuts; direct URLs remain accessible.",
+  "appSettings.scopeVisibility.onlyOneLeft": "Only one scope left visible — cannot hide more",
+
   // ---- Shared fallbacks ----
   "common.unknownError": "Unknown error",
 

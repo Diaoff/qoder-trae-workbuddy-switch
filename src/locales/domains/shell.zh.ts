@@ -382,6 +382,12 @@ export const zh = {
     "这里只有本工具的设置与备份入口；WorkBuddy 客户端自己的运行日志在其数据目录的 logs 子目录下（本工具暂未接入展示）。",
   "settings.logs.emptyAction": "查看网关设置",
 
+  // ---- 作用域可见性设置（app-settings.tsx）----
+  "appSettings.scopeVisibility.groupTitle": "作用域显示",
+  "appSettings.scopeVisibility.toggleAria": "{scope} 可见性开关",
+  "appSettings.scopeVisibility.hint": "隐藏的作用域不再出现在顶栏菜单与快捷键中；URL 直达仍可达。",
+  "appSettings.scopeVisibility.onlyOneLeft": "只剩一个作用域可见——不能再隐藏更多",
+
   // ---- 通用兜底 ----
   "common.unknownError": "未知错误",
 

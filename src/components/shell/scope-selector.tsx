@@ -12,6 +12,7 @@ import { useT } from "@/lib/i18n";
 import { SCOPES, type Scope, scopeParts } from "@/lib/scope";
 import type { ScopeStatus, ScopeStatusMap } from "@/lib/use-scope-status";
 import { cn } from "@/lib/utils";
+import { useVisibleScopes } from "@/lib/scope-visibility";
 
 /**
  * **L1 作用域选择器** —— 顶栏左一（§3.1）。
@@ -45,6 +46,7 @@ export function ScopeSelector({
   onSelect: (next: Scope) => void;
 }) {
   const t = useT();
+  const visibleScopes = useVisibleScopes((s) => s.visibleScopes);
 
   const nameOf = (s: Scope): string => scopeLabel(t, s);
 
@@ -92,7 +94,7 @@ export function ScopeSelector({
         <div className="px-2.5 pb-1 pt-2 text-[10.5px] font-medium tracking-[0.02em] text-muted-foreground">
           {t("topbar.scope.menuLabel")}
         </div>
-        {SCOPES.map((s) => {
+        {SCOPES.filter((s) => visibleScopes.includes(s)).map((s) => {
           const status: ScopeStatus = statuses[s];
           const index = shortcutBindings.get(s);
           return (

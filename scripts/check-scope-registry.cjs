@@ -962,9 +962,10 @@ check("★ P2 顶栏作用域选择器：存在 ScopeSelector · 由 TopBar 渲�
     throw new Error("没有 `ScopeSelector` 组件（`src/components/shell/scope-selector.tsx`）");
   }
 
-  /* ② 覆盖**全部**作用域：必须遍历注册表常量 `SCOPES`，而不是写死某几个 ——
-     写死会在新增平台/区域时静默漏项（正是本门禁要防的那类漂移）。 */
-  if (!/SCOPES\.map\(/.test(scopeSelector)) {
+  /* ② 覆盖**全部**作用域：必须遍历注册表常量 `SCOPES`（可带过滤）——
+     写死会在新增平台/区域时静默漏项（正是本门禁要防的那类漂移）。
+     P17：白名单模式允许使用 `SCOPES.filter((s) => visibleScopes.includes(s)).map(...)` */
+  if (!/SCOPES\.filter[\s\S]*?visibleScopes[\s\S]*?\.map\s*\(|SCOPES\.map\s*\(/.test(scopeSelector)) {
     throw new Error("`ScopeSelector` 没有遍历 `SCOPES` —— 作用域菜单会漏项");
   }
 
