@@ -1,55 +1,113 @@
 {
-  "version": "2026.10.191740",
-  "publishedAt": "2026-10-19T17:40:00+08:00",
+  "version": "2026.10.191907",
+  "publishedAt": "2026-10-19T19:07:00+08:00",
   "sections": [
     {
       "title": "修复：统一网关（57892）重启后必须手动「关一下再开」",
       "items": [
-        "症状：配置里 enabled: true、界面开关也是绿的，但彻底退出再启动后 57892 上没有监听，/health 连接被拒；客户端只会一直「生成中」，网关侧一条日志都没有。",
+        "症状：配置里已启用、界面开关也是绿的，但彻底退出再启动后 57892 没有监听，客户端一直「生成中」，网关侧一条日志都没有。",
         "根因：setup() 只登记了网关运行时句柄，漏了「按配置拉起监听」那一段 —— 只有「保存配置」这个动作能启动它。",
-        "修复：启动时补齐 apply()，并新增跨两侧宿主（桌面端 / web 端）的回归护栏，任何一侧漏掉都会让测试变红。",
-        "可观测：网关页「启用统一网关」一行现在显示真实监听状态（监听中 / 未监听），开关是绿的但端口没人 accept 一眼可见。",
-        "升级后无需任何操作：配置启用即启动监听。"
+        "修复：启动时补齐 apply()，并新增跨两侧宿主（桌面端 / web 端）的回归护栏，任何一侧漏掉测试即变红。",
+        "可观测：网关页「启用统一网关」一行现在显示真实监听状态（监听中 / 未监听），开关绿但端口没人 accept 一眼可见。",
+        "升级后无需操作：配置启用即启动监听。"
       ]
     },
     {
-      "title": "Trae 1M 上下文：直接开，不再需要特殊模型名（issue #53）",
+      "title": "Trae 上下文与 Max Mode：逐模型从官方目录读取，不再是统一 1M（issue #53）",
       "items": [
-        "一个模型只有一条记录：用 glm-5.3 就是 1M，统一入口用 trae-cn:glm-5.3，不用加后缀、不用另选一条。",
-        "支持表（与上游实证口径一致）：doubao-seed-evolving / glm-5.3 / glm-5.2 / deepseek-v4-pro(-official) / deepseek-v4-flash(-official) / kimi-k3 / minimax-m3 / qwen3.8-max / qwen-3.7-plus。",
-        "表外模型不注入，窗口保持上游默认值 —— 不给不支持的模型发它们会拒的字段。",
-        "上游若在 context_window_size.max 给了具体上限（如 1.5M），清单以它为准，不用我们的常量盖掉。",
-        "清单里的 max_mode: true 表示「这条已开 Max」，供客户端做角标。",
-        "早先尝试过的 <模型>-max 影子条目已移除：它带来影子模型、与真模型 qwen3.8-max 的命名冲突（还要 qwen3.8-max-max 这种逃生口），以及禁用 / 粘性 / 冷却 / 探测全部要「按基名」特判 —— 收益不抵复杂度。"
+        "此前清单只声明 200k（取客户端缓存的 context_window_size.default），而 Max Mode 是请求级布尔字段，客户端里无从选起。",
+        "网关现在重放 Trae 官方模型目录接口，读取每个模型的 dev（__dev 通道实际窗口）与 max（Max Mode 上限）。",
+        "max > dev 的模型在请求时注入 is_max_mode，/v1/models 直接声明它自己的上限：glm-5.3 1M、mimo-v2.6-pro 982k、Doubao-Seed-2.1-Turbo 仍是 256k —— 上限各不相同。",
+        "目录缓存 24 小时；拉不到时静默沿用旧缓存，没有缓存就按客户端默认窗口声明，不猜数字。",
+        "模型名保持不变：基名（glm-5.3、统一入口 trae-cn:glm-5.3）即可，没有 -max 之类的影子模型。"
+      ]
+    },
+    {
+      "title": "三个平台的模型表都显示「上下文」",
+      "items": [
+        "WorkBuddy：目录 API 的 context_window（同一份目录里 256k / 960k / 1M 都有）。",
+        "Qoder：模型元数据的 max_input_tokens。",
+        "Trae：上面那份 dev/max（开启 Max Mode 后显示该模型自己的上限，并注明默认值）。",
+        "未知时显示 —，不编造数字；原型（docs/prototype/buddy-switch-prototype.html）同步补齐三平台交互与 ?max=off 对照。"
       ]
     },
     {
       "title": "健康检查统一为 /health（/healthz 保留为别名）",
       "items": [
-        "四条网关此前是 3:1 分裂（WB / Qoder / 统一入口用 /healthz，Trae 用 /health），现在统一为 canonical GET /health。",
-        "/healthz 作为兼容别名继续可用：两个路径由同一个处理器产出、返回体逐字相同，已写死 /healthz 的探活脚本不用改。",
-        "单一挂载点（HEALTH_PATHS + health_routes），四条网关共用；护栏要求「真发两个请求、都 200 且返回体逐字相同」。"
+        "四条网关此前 3:1 分裂（WB / Qoder / 统一入口用 /healthz，Trae 用 /health），现在统一为 GET /health。",
+        "/healthz 作为兼容别名继续可用：同一处理器、返回体逐字相同，已写死它的探活脚本不用改。"
       ]
     },
     {
       "title": "Docker：预构建多架构镜像（GHCR）",
       "items": [
-        "推 v* tag 时发布 ghcr.io/nextagentx/buddy-switch（amd64 / arm64 多架构 manifest），不再需要先本地全量构建。",
-        "docker-compose.yml 默认引用预构建镜像，保留 build: 作为回落；八份 README 的形态表补上 Docker 入口。",
+        "推 v* tag 时发布 ghcr.io/nextagentx/buddy-switch（amd64 / arm64 多架构 manifest），不必先本地全量构建。",
+        "docker-compose.yml 默认引用预构建镜像，保留 build: 作为回落；README 形态表补 Docker 入口。",
         "边界不变：容器里运行的是 headless 服务端（webui + 网关），不是桌面切换器。"
       ]
     },
     {
       "title": "内部",
       "items": [
-        "Trae 客户端清单新增解析 context_window_size.max（此前只读 .default），1M 声明优先用它。",
-        "删掉 -max 后缀解析与清单双列，探测网格与 /v1/models 重新同源（少一处特判）。",
-        "四个网关的路径所有权表、鉴权豁免、集成指南与架构文档同步。",
-        "版本号统一为 2026.10.191740（19 处载体，stamp-version --check 通过）。"
+        "新增 trae/catalog.rs（目录重放 + 解析 + 24h 缓存 + 单飞同步），三个入口列清单前触发。",
+        "删除写死的 MAX_MODE_MODELS 常量表与「统一 1M」假设。",
+        "版本号统一为 2026.10.191907（19 处载体，stamp-version --check 通过）。"
       ]
     }
   ],
   "history": [
+    {
+      "version": "2026.10.191740",
+      "publishedAt": "2026-10-19T17:40:00+08:00",
+      "sections": [
+        {
+          "title": "修复：统一网关（57892）重启后必须手动「关一下再开」",
+          "items": [
+            "症状：配置里 enabled: true、界面开关也是绿的，但彻底退出再启动后 57892 上没有监听，/health 连接被拒；客户端只会一直「生成中」，网关侧一条日志都没有。",
+            "根因：setup() 只登记了网关运行时句柄，漏了「按配置拉起监听」那一段 —— 只有「保存配置」这个动作能启动它。",
+            "修复：启动时补齐 apply()，并新增跨两侧宿主（桌面端 / web 端）的回归护栏，任何一侧漏掉都会让测试变红。",
+            "可观测：网关页「启用统一网关」一行现在显示真实监听状态（监听中 / 未监听），开关是绿的但端口没人 accept 一眼可见。",
+            "升级后无需任何操作：配置启用即启动监听。"
+          ]
+        },
+        {
+          "title": "Trae 1M 上下文：直接开，不再需要特殊模型名（issue #53）",
+          "items": [
+            "一个模型只有一条记录：用 glm-5.3 就是 1M，统一入口用 trae-cn:glm-5.3，不用加后缀、不用另选一条。",
+            "支持表（与上游实证口径一致）：doubao-seed-evolving / glm-5.3 / glm-5.2 / deepseek-v4-pro(-official) / deepseek-v4-flash(-official) / kimi-k3 / minimax-m3 / qwen3.8-max / qwen-3.7-plus。",
+            "表外模型不注入，窗口保持上游默认值 —— 不给不支持的模型发它们会拒的字段。",
+            "上游若在 context_window_size.max 给了具体上限（如 1.5M），清单以它为准，不用我们的常量盖掉。",
+            "清单里的 max_mode: true 表示「这条已开 Max」，供客户端做角标。",
+            "早先尝试过的 <模型>-max 影子条目已移除：它带来影子模型、与真模型 qwen3.8-max 的命名冲突（还要 qwen3.8-max-max 这种逃生口），以及禁用 / 粘性 / 冷却 / 探测全部要「按基名」特判 —— 收益不抵复杂度。"
+          ]
+        },
+        {
+          "title": "健康检查统一为 /health（/healthz 保留为别名）",
+          "items": [
+            "四条网关此前是 3:1 分裂（WB / Qoder / 统一入口用 /healthz，Trae 用 /health），现在统一为 canonical GET /health。",
+            "/healthz 作为兼容别名继续可用：两个路径由同一个处理器产出、返回体逐字相同，已写死 /healthz 的探活脚本不用改。",
+            "单一挂载点（HEALTH_PATHS + health_routes），四条网关共用；护栏要求「真发两个请求、都 200 且返回体逐字相同」。"
+          ]
+        },
+        {
+          "title": "Docker：预构建多架构镜像（GHCR）",
+          "items": [
+            "推 v* tag 时发布 ghcr.io/nextagentx/buddy-switch（amd64 / arm64 多架构 manifest），不再需要先本地全量构建。",
+            "docker-compose.yml 默认引用预构建镜像，保留 build: 作为回落；八份 README 的形态表补上 Docker 入口。",
+            "边界不变：容器里运行的是 headless 服务端（webui + 网关），不是桌面切换器。"
+          ]
+        },
+        {
+          "title": "内部",
+          "items": [
+            "Trae 客户端清单新增解析 context_window_size.max（此前只读 .default），1M 声明优先用它。",
+            "删掉 -max 后缀解析与清单双列，探测网格与 /v1/models 重新同源（少一处特判）。",
+            "四个网关的路径所有权表、鉴权豁免、集成指南与架构文档同步。",
+            "版本号统一为 2026.10.191740（19 处载体，stamp-version --check 通过）。"
+          ]
+        }
+      ]
+    },
     {
       "version": "2026.10.181354",
       "publishedAt": "2026-10-18T13:54:00+08:00",
