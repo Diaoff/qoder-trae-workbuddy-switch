@@ -1254,43 +1254,48 @@ function proxyPanelHtml() {
 /* 当前作用域的网关配置。禁用/启用模型直接改这份数据（原型重启即恢复）。 */
 function curGateway() { return GATEWAY[state.scope]; }
 
-/* ─────────── Trae Max Mode（1M 上下文）───────────
+/* ─────────── Trae Max Mode（上下文上限）───────────
    上游没有「1M 模型」：Max Mode 是请求体里的布尔字段 `is_max_mode`。
-   网关的做法是**策略层**：对支持表内的模型始终注入该字段，`/v1/models` 里这些模型
-   直接声明 1M —— 于是「glm-5.3」就是 1M，不需要 `-max` 这种影子模型名。
-   支持表与 Rust 侧 `payload::MAX_MODE_MODELS` 逐条对齐。 */
-const MAX_MODE_MODELS = [
-  "doubao-seed-evolving", "glm-5.3", "glm-5.2",
-  "deepseek-v4-pro", "deepseek-v4-pro-official",
-  "deepseek-v4-flash", "deepseek-v4-flash-official",
-  "kimi-k3", "minimax-m3", "qwen3.8-max", "qwen-3.7-plus",
-];
-const supportsMaxMode = (name) => MAX_MODE_MODELS.includes(String(name ?? "").trim().toLowerCase());
+   ★ 而且**上限不是统一的 1M**：每个模型在 Max Mode 下的上限不同（有的 1M，有的 256k，
+   有的与默认相同）。所以清单必须**逐模型**声明上限，策略只负责「开/关」这一件事。 */
 const maxModeOn = () => state.maxMode !== "off";
 
-/* 一行模型的上下文口径：支持且已开启 ⇒ 1M；否则上游默认（演示数据统一按 200k 展示）。 */
-function contextCell(model) {
-  if (supportsMaxMode(model.name) && maxModeOn()) {
-    return `<span class="badge ok">1M</span>`;
-  }
-  return `<span class="tiny muted">上游默认</span>`;
+/* 把窗口数格式化成 200k / 1M；未知返回 null（调用方不要编造数字）。 */
+function fmtWindow(value) {
+  if (!value) return null;
+  if (value >= 1_000_000) return `${Math.round(value / 100_000) / 10}M`;
+  return `${Math.round(value / 1000)}k`;
 }
 
-/* Max Mode 策略条（只在 Trae 平台出现）：两个状态，切换即时反映到下方清单。 */
+/* 一行模型的上下文口径：开启时声明该模型**自己的**上限（没有上限就保持默认），
+   关闭时统一回到默认。绝不把「1M」当成所有模型的默认上限。 */
+function contextCell(model) {
+  const def = fmtWindow(model.context) ?? "未知";
+  if (!maxModeOn() || !model.maxWindow) {
+    return `<span class="tiny muted">${def}</span>`;
+  }
+  const max = fmtWindow(model.maxWindow);
+  if (max === def) {
+    return `<span class="badge">${max}</span> <span class="tiny muted">已是上限</span>`;
+  }
+  return `<span class="badge ok">${max}</span> <span class="tiny muted">默认 ${def}</span>`;
+}
+
+/* Max Mode 策略条（只在 Trae 平台出现）：开关即时反映到下方清单的「上下文」列。 */
 function maxModePolicyCard() {
   const on = maxModeOn();
   return `<section class="card">
     <div style="display:flex;align-items:center;gap:18px;padding:14px 16px">
       <div style="flex:1;min-width:0">
-        <b style="display:block;font-size:12.5px;font-weight:550">上下文上限（Max Mode）</b>
+        <b style="display:block;font-size:12.5px;font-weight:550">Max Mode（按各模型上限）</b>
         <div class="tiny muted" style="margin-top:3px;line-height:1.55">
-          对支持 Max Mode 的模型<b>始终</b>注入 <span class="mono">is_max_mode</span>，清单直接声明 1M；
-          关闭后回到上游默认窗口。Max Mode 是<b>请求级开关</b>，不是模型 —— 一个模型只有一条记录，不会有
-          <span class="mono">glm-5.3-max</span> 这类影子 id。
+          开启后对支持 Max Mode 的模型注入 <span class="mono">is_max_mode</span>，清单按<b>每个模型自己的上限</b>声明
+          —— 不是统一的 1M（例如 <span class="mono">glm-5.3</span> 1M、<span class="mono">Doubao-Seed-Evolving</span> 256k）。
+          不支持或上限未知的模型不会因此虚报窗口。
         </div>
       </div>
-      <div class="seg" role="group" aria-label="Trae 上下文上限" style="flex-shrink:0">
-        <button class="${on ? "on" : ""}" data-act="max-mode|always">始终 1M</button>
+      <div class="seg" role="group" aria-label="Trae Max Mode" style="flex-shrink:0">
+        <button class="${on ? "on" : ""}" data-act="max-mode|always">开启</button>
         <button class="${on ? "" : "on"}" data-act="max-mode|off">关闭</button>
       </div>
     </div>
@@ -3117,10 +3122,10 @@ document.addEventListener("click", (e) => {
       stop();
       state.maxMode = a1 === "off" ? "off" : "always";
       toast(state.maxMode === "off" ? "info" : "ok",
-        state.maxMode === "off" ? "已回到上游默认窗口" : "已开启 1M 上下文",
+        state.maxMode === "off" ? "已关闭 Max Mode" : "已开启 Max Mode",
         state.maxMode === "off"
-          ? "支持 Max Mode 的模型不再注入 is_max_mode，清单声明回到上游默认"
-          : "支持 Max Mode 的模型始终注入 is_max_mode，清单直接声明 1M");
+          ? "清单回到各模型的默认窗口，不再注入 is_max_mode"
+          : "清单按各模型自己的上限声明（1M / 256k …），不是统一的 1M");
       renderContent();
       break;
     }
