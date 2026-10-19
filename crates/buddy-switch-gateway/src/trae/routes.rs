@@ -241,7 +241,7 @@ pub async fn models(
     let body =
         tokio::task::spawn_blocking(move || payload::models_response_for(variant, &disabled))
             .await
-            .unwrap_or_else(|_| payload::models_response_filtered(&fallback));
+            .unwrap_or_else(|_| payload::models_response_filtered(&fallback, true));
     json_response(StatusCode::OK, body)
 }
 
@@ -288,7 +288,14 @@ pub async fn chat_for_variant(
     };
 
     let config = state.config_snapshot().await;
-    let model = payload::model_of(&parsed, &config.default_model);
+    let requested_model = payload::model_of(&parsed, &config.default_model);
+    // ★ Max Mode（issue #53）：`<模型>-max` 只是**请求级开关**，下游一律按基名处理
+    //   （禁用判定 / 粘性键 / 模型冷却 / 日志同一口径 —— 否则「禁用了 glm-5.3，
+    //   glm-5.3-max 却还能调」就是又一个假开关）。真正注入 `is_max_mode` 在
+    //   `prepare_llm_chat_body`（它自己从 body 里读、不会丢这个开关）。
+    let model = payload::max_mode_base(&requested_model)
+        .unwrap_or(&requested_model)
+        .to_string();
     // ★ 出口 ②（P11）：被禁用的模型直接拒绝 —— 与 `/v1/models` 读**同一份** `disabled`
     //   （`is_disabled` 是唯一判断点）。只改过滤不拒绝 = 假开关。
     {
@@ -398,7 +405,11 @@ pub async fn messages_for_variant(
 
     // 模型取**转换后**的请求体（那是真正发给上游的东西）；
     // 流式开关见 [`anthropic_wants_stream`]（**必须**读原始请求体）。
-    let model = payload::model_of(&upstream, &config.default_model);
+    // Max Mode 与 OpenAI 入口同口径：按基名做禁用 / 粘性 / 冷却 / 日志。
+    let requested_model = payload::model_of(&upstream, &config.default_model);
+    let model = payload::max_mode_base(&requested_model)
+        .unwrap_or(&requested_model)
+        .to_string();
     // ★ 出口 ②（P11）：与 `/v1/chat/completions` 同源 —— 被禁用的模型直接拒绝（Anthropic 错误体）。
     {
         let scope = scope_of_trae_region(variant.region());

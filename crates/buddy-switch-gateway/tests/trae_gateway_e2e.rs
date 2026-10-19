@@ -1023,7 +1023,18 @@ async fn p11_disabled_model_is_hidden_from_models_and_rejected_on_call() {
         !after.iter().any(|id| id == target),
         "禁用后不应出现在 /v1/models：{after:?}"
     );
-    assert_eq!(after.len() + 1, before.len(), "禁用后应正好少一条");
+    // 目标模型支持 Max Mode ⇒ 它的 `-max` 变体也一并消失（禁用是**逐条**判定：
+    // 基名被禁时变体继承该决定），因此正好少两条。
+    let variant_id = format!("{target}-max");
+    assert!(
+        before.iter().any(|id| id == &variant_id),
+        "前提：{target} 支持 Max Mode，清单里应有 {variant_id}：{before:?}"
+    );
+    assert!(
+        !after.iter().any(|id| id == &variant_id),
+        "禁用基名后 {variant_id} 也必须消失（否则「禁用」是可绕过的）：{after:?}"
+    );
+    assert_eq!(after.len() + 2, before.len(), "禁用后应正好少两条（基名 + Max 变体）");
 
     // 出口②：硬调用真的回 403 `model_disabled`（在触达上游之前就拒）。
     let response = app
@@ -1059,6 +1070,23 @@ async fn p11_disabled_model_is_hidden_from_models_and_rejected_on_call() {
         response.status(),
         StatusCode::FORBIDDEN,
         "大写变体的调用也必须 403（否则禁用被绕过）"
+    );
+
+    // ★ Max Mode 变体同样必须被拒（issue #53 引入 `<模型>-max` 后新增的绕过面）：
+    //   入口把 `<模型>-max` 归一成基名再做禁用判定，否则「禁用 glm-5.3」之后
+    //   `glm-5.3-max` 仍能调用 —— 那就是假开关。
+    let response = app
+        .clone()
+        .oneshot(chat_request(
+            Some(&key),
+            &format!(r#"{{"model":"{variant_id}","messages":[]}}"#),
+        ))
+        .await
+        .expect("请求应完成");
+    assert_eq!(
+        response.status(),
+        StatusCode::FORBIDDEN,
+        "Max Mode 变体的调用也必须 403（禁用按基名判定）"
     );
 
     // 清理：禁用存储是**进程级全局**（同进程其余用例会读到它）。
