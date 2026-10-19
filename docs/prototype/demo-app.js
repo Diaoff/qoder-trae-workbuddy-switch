@@ -30,6 +30,11 @@ const state = {
   /* Trae 上下文策略（Max Mode）：always = 支持表内模型始终注入 is_max_mode；off = 回到上游默认窗口。
      Max Mode 是**请求级开关**，不是模型 —— 所以清单里一个模型只有一条记录，没有 `-max` 影子 id。 */
   maxMode: "always",
+  /* 逐模型上限**覆盖**：`{ "glm-5.3": 2000000 }`（值 = 上限 token 数；`null` = 显式清空）。
+     内置表在 demo-data 的 `maxWindow` 上；这里是用户改过的部分。 */
+  maxOverrides: {},
+  /* 正在行内编辑上限的模型名（`null` = 没在编辑）。 */
+  maxEditing: null,
   gwTool: "codex",      // 接入说明里选中的客户端（§3.18.3）
   setSub: "general",
   /* 会话工作台（v2.3）：客户端 Tab + 状态筛选 + 排序 */
@@ -1267,18 +1272,49 @@ function fmtWindow(value) {
   return `${Math.round(value / 1000)}k`;
 }
 
-/* 一行模型的上下文口径：开启时声明该模型**自己的**上限（没有上限就保持默认），
-   关闭时统一回到默认。绝不把「1M」当成所有模型的默认上限。 */
+/* 生效上限 = 用户覆盖（若改过） ?? 内置表 ?? 未知。未知时**不虚报**，清单按默认窗口声明。 */
+function effectiveMax(model) {
+  const override = state.maxOverrides[model.name];
+  if (override !== undefined) return override;
+  return model.maxWindow ?? null;
+}
+
+/* 「上下文」单元格：
+   - 关闭 Max Mode ⇒ 一律显示默认窗口；
+   - 开启 ⇒ 显示该模型**自己的**上限（1M / 256k …），并注明默认值；
+     内置值可点「编辑」改成别的数（例如官方后改了上限、或想自己压一档），改过标「自定义」；
+   - 上限未知 ⇒ 只显示默认窗口，不给数字。 */
 function contextCell(model) {
   const def = fmtWindow(model.context) ?? "未知";
-  if (!maxModeOn() || !model.maxWindow) {
-    return `<span class="tiny muted">${def}</span>`;
+  if (!maxModeOn()) return `<span class="tiny muted">${def}</span>`;
+
+  if (state.maxEditing === model.name) {
+    const current = effectiveMax(model);
+    return `<span style="display:inline-flex;align-items:center;gap:6px">
+      <input id="max-input" class="inp" style="height:26px;width:76px" inputmode="numeric"
+        value="${current ? Math.round(current / 1000) : ""}" placeholder="如 1000" aria-label="上限（k tokens）">
+      <span class="tiny muted">k</span>
+      <button class="btn xs primary" data-act="max-save|${esc(model.name)}">保存</button>
+      <button class="btn xs" data-act="max-reset|${esc(model.name)}">重置</button>
+    </span>`;
   }
-  const max = fmtWindow(model.maxWindow);
-  if (max === def) {
-    return `<span class="badge">${max}</span> <span class="tiny muted">已是上限</span>`;
+
+  if (!model.supportsMax) {
+    return `<span class="tiny muted">${def}</span> <span class="tiny muted">不支持 Max</span>`;
   }
-  return `<span class="badge ok">${max}</span> <span class="tiny muted">默认 ${def}</span>`;
+
+  const max = effectiveMax(model);
+  const custom = state.maxOverrides[model.name] !== undefined;
+  if (!max) {
+    // 支持 Max 但还没有上限数据：不虚报，只显示默认窗口，允许人工补一个值。
+    return `<span class="tiny muted">上限未知</span> <span class="tiny muted">默认 ${def}</span>
+      <button class="btn xs" data-act="max-edit|${esc(model.name)}">补充</button>`;
+  }
+  const bigger = max > (model.context ?? 0);
+  return `<span class="badge ${bigger ? "ok" : ""}">${fmtWindow(max)}</span>
+    <span class="tiny muted">${bigger ? `默认 ${def}` : "已是上限"}</span>
+    ${custom ? `<span class="badge info">自定义</span>` : ""}
+    <button class="btn xs" data-act="max-edit|${esc(model.name)}">编辑</button>`;
 }
 
 /* Max Mode 策略条（只在 Trae 平台出现）：开关即时反映到下方清单的「上下文」列。 */
@@ -1291,7 +1327,7 @@ function maxModePolicyCard() {
         <div class="tiny muted" style="margin-top:3px;line-height:1.55">
           开启后对支持 Max Mode 的模型注入 <span class="mono">is_max_mode</span>，清单按<b>每个模型自己的上限</b>声明
           —— 不是统一的 1M（例如 <span class="mono">glm-5.3</span> 1M、<span class="mono">Doubao-Seed-Evolving</span> 256k）。
-          不支持或上限未知的模型不会因此虚报窗口。
+          上限来自内置表，可在行内改；未知时按默认窗口声明，不虚报。
         </div>
       </div>
       <div class="seg" role="group" aria-label="Trae Max Mode" style="flex-shrink:0">
@@ -3118,6 +3154,31 @@ document.addEventListener("click", (e) => {
     case "gw-sub": stop(); state.gwSub = a1; renderContent(); break;
     /* Trae 上下文策略（Max Mode）：切换即时反映到清单的「上下文」列。
        演示「一个模型一条记录」—— 不存在 -max 影子 id。 */
+    /* 逐模型上限覆盖：编辑 → 输入 k tokens → 保存；重置回内置表。 */
+    case "max-edit": stop(); state.maxEditing = a1; renderContent();
+      setTimeout(() => { const el = $("#max-input"); if (el) { el.focus(); el.select(); } }, 0);
+      break;
+    case "max-save": {
+      stop();
+      const el = $("#max-input");
+      const raw = el ? String(el.value).trim() : "";
+      if (!raw) { toast("err", "请输入上限（k tokens）"); break; }
+      const k = Number(raw);
+      if (!Number.isFinite(k) || k <= 0) { toast("err", "上限必须是正数"); break; }
+      state.maxOverrides[a1] = Math.round(k * 1000);
+      state.maxEditing = null;
+      toast("ok", `已更新 ${a1} 的上限`, `${fmtWindow(Math.round(k * 1000))} · 清单将按这个值声明`);
+      renderContent();
+      break;
+    }
+    case "max-reset": {
+      stop();
+      delete state.maxOverrides[a1];
+      state.maxEditing = null;
+      toast("info", `${a1} 的上限已恢复内置值`);
+      renderContent();
+      break;
+    }
     case "max-mode": {
       stop();
       state.maxMode = a1 === "off" ? "off" : "always";

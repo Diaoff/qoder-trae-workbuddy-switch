@@ -674,12 +674,13 @@ const GATEWAY = {
        `context` = 上游给的默认窗口；`maxWindow` = 该模型 Max Mode 下的上限（来自官方文档，
        未知为 `null`）。★ 上限**不是统一的 1M**：有的模型 1M，有的只有 256k —— 清单必须逐模型声明。 */
     models: [
-      { name: "glm-5.3", provider: "trae", scope: "TraeWork", available: true, context: 200000, maxWindow: 1000000 },
-      { name: "qwen3.8-max", provider: "trae", scope: "TraeWork", available: true, context: 200000, maxWindow: 1000000 },
-      { name: "Doubao-Seed-Evolving", provider: "trae", scope: "TraeWork", available: true, context: 256000, maxWindow: 256000 },
-      { name: "kimi-k3", provider: "trae", scope: "TraeCode", available: true, context: 200000, maxWindow: 1000000 },
-      { name: "kimi-k2.6", provider: "trae", scope: "TraeCode", available: true, context: 200000, maxWindow: null },
-      { name: "deepseek-v4.1-flash", provider: "trae", scope: "TraeWork", available: true, context: 200000, maxWindow: null, disabled: true },
+      { name: "glm-5.3", provider: "trae", scope: "TraeWork", available: true, supportsMax: true, context: 200000, maxWindow: 1000000 },
+      { name: "qwen3.8-max", provider: "trae", scope: "TraeWork", available: true, supportsMax: true, context: 200000, maxWindow: 1000000 },
+      { name: "Doubao-Seed-Evolving", provider: "trae", scope: "TraeWork", available: true, supportsMax: true, context: 256000, maxWindow: 256000 },
+      { name: "kimi-k3", provider: "trae", scope: "TraeCode", available: true, supportsMax: true, context: 200000, maxWindow: 1000000 },
+      /* 下面两个不支持 Max Mode：上限永远等于默认窗口，不给「上限未知」这种含混文案。 */
+      { name: "kimi-k2.6", provider: "trae", scope: "TraeCode", available: true, supportsMax: false, context: 200000, maxWindow: null },
+      { name: "deepseek-v4.1-flash", provider: "trae", scope: "TraeWork", available: true, supportsMax: false, context: 200000, maxWindow: null, disabled: true },
     ],
     /* Trae 侧按**程序位**分家下发清单（TraeWork=solo_work_lite / TraeCode=chat_v3），
        所以识别也必须按 scope 分家，不能一份清单打天下。 */
