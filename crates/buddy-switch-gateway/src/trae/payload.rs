@@ -1178,7 +1178,8 @@ mod tests {
         let response = models_response();
         let data = response["data"].as_array().unwrap();
         // 每条基础名都在；支持 Max Mode 的模型**再多一条** `-max` 变体。
-        let expected = MODEL_NAMES.len() + MODEL_NAMES.iter().filter(|n| max_mode_supported(n)).count();
+        let expected =
+            MODEL_NAMES.len() + MODEL_NAMES.iter().filter(|n| max_mode_supported(n)).count();
         assert_eq!(data.len(), expected);
         assert_eq!(data[0]["object"], "model");
         assert_eq!(response["object"], "list");
@@ -1236,7 +1237,8 @@ mod tests {
     /// 且基础条目的窗口不被改写（1M 只在显式开 Max 时成立）。
     #[test]
     fn models_list_advertises_max_variants_with_1m_context() {
-        let body = models_response_from(vec![("glm-5.3", Some(200_000)), ("kimi-k2.6", None)], true, None);
+        let body =
+            models_response_from(vec![("glm-5.3", Some(200_000)), ("kimi-k2.6", None)], true, None);
         let data = body["data"].as_array().unwrap();
         let ids: Vec<&str> = data.iter().filter_map(|row| row["id"].as_str()).collect();
         assert_eq!(ids, vec!["glm-5.3", "glm-5.3-max", "kimi-k2.6"]);
@@ -1256,7 +1258,11 @@ mod tests {
     fn disabled_filter_is_per_entry_across_max_variants() {
         let mut disabled = BTreeSet::new();
         disabled.insert("glm-5.3".to_string());
-        let body = models_response_from(vec![("glm-5.3", None), ("kimi-k3", None)], true, Some(&disabled));
+        let body = models_response_from(
+            vec![("glm-5.3", None), ("kimi-k3", None)],
+            true,
+            Some(&disabled),
+        );
         let ids: Vec<&str> = body["data"]
             .as_array()
             .unwrap()
@@ -1317,7 +1323,8 @@ mod tests {
         assert!(body.get("is_max_mode").is_none(), "普通请求不得带该字段");
 
         // 表外模型带后缀 ⇒ 不认（原样透传，让上游报「模型不存在」而不是悄悄改名）。
-        let unknown = br#"{"model":"no-such-model-max","messages":[{"role":"user","content":"hi"}]}"#;
+        let unknown =
+            br#"{"model":"no-such-model-max","messages":[{"role":"user","content":"hi"}]}"#;
         let converted = prepare_llm_chat_body(
             unknown,
             TraeVariant::TraeWork,
