@@ -181,6 +181,7 @@ Trae 分区：把端口换成 `57894`，且**认证头统一用 `Authorization: 
 
 | 症状 | 真实原因 | 怎么办 |
 |:---|:---|:---|
+| **`400` + `"code":"11-128"`**（`request illegal` / 「这次调用没通过渠道校验」） | 上游渠道校验要求**会话头三件套**齐全（`X-Conversation-ID` / `X-Conversation-Request-ID` / `X-Conversation-Message-ID`）；旧版网关在客户端没传 `X-Conversation-ID` 时会漏发 | 升级到 **`v2026.10.171833`+** 后重启网关。**与额度、登录态无关** —— 重登 / 换号 / 改客户端配置都没用 |
 | `401 缺少凭据` | 客户端没发认证头 | 检查 Key 环境变量是否真的存在（新开终端 / 重启客户端） |
 | `401 API Key 无效或已吊销` | Key 错、被吊销、或跨区使用 | 重新创建；确认 Key 属于当前分区 |
 | `401` + Trae 网关 + Claude Code | 用了 `ANTHROPIC_API_KEY`（发 `x-api-key`） | 改用 `ANTHROPIC_AUTH_TOKEN` |
@@ -199,6 +200,11 @@ Trae 分区：把端口换成 `57894`，且**认证头统一用 `Authorization: 
 >
 > **`Retry-After` 只出现在 `pool_busy` 上**：429 / 402 的真正解冻时刻在上游响应里，本仓拿不到
 > 可信值，宁可让客户端自己指数退避，也不编一个假的秒数。
+>
+> **`11-128` 是版本问题，不是配置问题**：`092c5e3` 起 chat 出站恒发上面那三件套
+> （`session_headers::resolve_conversation_id` 阶梯到按 `session_key` 稳定派生，不再留空），
+> 国际版 `wb-global` 与国内版走同一条出站路径 —— WB 老入口 `57891` 与统一网关 `57892` 都吃这个修复。
+> 仍报 400 就先看「设置 → 关于」的版本号，别去翻 Key 或重登账号。
 
 ---
 
