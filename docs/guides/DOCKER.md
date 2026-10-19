@@ -64,13 +64,15 @@ docker compose down                   # 停止（命名卷里的数据保留）
 标签由 `.github/workflows/docker.yml` 在推 `v*` tag 时自动发布（两个架构各跑一台**原生**
 runner，再由 merge job 拼 manifest）。手动触发该工作流只产出 `edge`。
 
-### 镜像可见性（首次发布后确认一次）
+### 镜像可见性
 
-GHCR 新建的包**默认私有**。发布后到
+本仓是公开仓库，包也按 **Public** 发布 —— 2026-10-19 实测匿名 token 可直接拉到 manifest
+（`ghcr.io/v2/nextagentx/buddy-switch/manifests/edge` 返回 200）。
+
+若某次之后 `docker pull` 报 `denied` / `unauthorized`，到
 `https://github.com/orgs/NextAgentX/packages/container/buddy-switch/settings`
-把可见性改成 **Public** —— 否则匿名 `docker pull` 会以 `denied` / `unauthorized` 失败，
-而 `docker compose up -d` 会**静默回落到本地构建**（看起来像「卡住了」）。
-私有也可以，只是每台机器都要先 `docker login ghcr.io`。
+确认 Visibility 仍是 Public。改成 Private 也能用，只是每台机器都要先 `docker login ghcr.io`；
+而 `docker compose up -d` 拉不到时会**静默回落到本地构建**（看起来像「卡住了」）。
 
 ---
 
@@ -224,7 +226,7 @@ runtime  (debian:12) →  二进制 + ca-certificates + curl
 | 症状 | 原因 | 处理 |
 |:---|:---|:---|
 | `up -d` 不下载镜像、直接开始**编译**（几分钟后才起来） | 预构建镜像没拉到（包私有 / 网络不通 / 该 tag 还没发布），Compose 回落成本地构建 | 先单独 `docker pull ghcr.io/nextagentx/buddy-switch:latest` 看真实报错；私有包需 `docker login ghcr.io`，或把包改成 Public |
-| `docker pull` 报 `denied` / `unauthorized` | 包默认私有；或登录用的 Token 没有 `read:packages` | 见「镜像可见性」一节 |
+| `docker pull` 报 `denied` / `unauthorized` | 包被改成 Private；或登录用的 Token 没有 `read:packages` | 见「镜像可见性」一节 |
 | `no matching manifest for linux/arm/v7` | 只发布了 `amd64` / `arm64` | 32 位 ARM 自行 `docker compose up -d --pull build` 本地构建 |
 | 镜像版本与 tag 对不上 | 用了 `latest`，而它不是这次的 tag | 显式拉 `ghcr.io/nextagentx/buddy-switch:<版本>` |
 | 容器起来后**立刻退出**，日志说「拒绝启动」 | `BUDDY_SWITCH_HOME` 不存在 / 非绝对路径 / 无写权限 | 检查卷挂载与属主（见「数据持久化」） |

@@ -135,6 +135,12 @@ jobs:
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
             type=raw,value=edge,enable=${{ github.event_name == 'workflow_dispatch' }}
+          # 不覆盖会被仓库描述顶掉（那份描述讲的是**桌面 App**，与这个 headless 镜像不符），
+          # 许可证也会落成 NOASSERTION。包页面上第一眼看到的就是这两项。
+          labels: |
+            org.opencontainers.image.title=Buddy Switch Server
+            org.opencontainers.image.description=Buddy Switch 服务端镜像（headless）：webui 管理面板 + WorkBuddy / Trae / Qoder API 网关。不含桌面切换器（切换登录态、托盘、悬浮窗依赖同机图形客户端）。
+            org.opencontainers.image.licenses=PolyForm-Noncommercial-1.0.0
 
       - id: build
         uses: docker/build-push-action@v6
