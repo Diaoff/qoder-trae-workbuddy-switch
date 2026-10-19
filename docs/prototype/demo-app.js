@@ -27,6 +27,9 @@ const state = {
   gwSub: "overview",
   gwApi: "openai",      // 快速接入的协议 Tab：openai / anthropic
   gwScanning: false,    // 模型清单「识别中」（§3.17）
+  /* Trae 上下文策略（Max Mode）：always = 支持表内模型始终注入 is_max_mode；off = 回到上游默认窗口。
+     Max Mode 是**请求级开关**，不是模型 —— 所以清单里一个模型只有一条记录，没有 `-max` 影子 id。 */
+  maxMode: "always",
   gwTool: "codex",      // 接入说明里选中的客户端（§3.18.3）
   setSub: "general",
   /* 会话工作台（v2.3）：客户端 Tab + 状态筛选 + 排序 */
@@ -1251,6 +1254,49 @@ function proxyPanelHtml() {
 /* 当前作用域的网关配置。禁用/启用模型直接改这份数据（原型重启即恢复）。 */
 function curGateway() { return GATEWAY[state.scope]; }
 
+/* ─────────── Trae Max Mode（1M 上下文）───────────
+   上游没有「1M 模型」：Max Mode 是请求体里的布尔字段 `is_max_mode`。
+   网关的做法是**策略层**：对支持表内的模型始终注入该字段，`/v1/models` 里这些模型
+   直接声明 1M —— 于是「glm-5.3」就是 1M，不需要 `-max` 这种影子模型名。
+   支持表与 Rust 侧 `payload::MAX_MODE_MODELS` 逐条对齐。 */
+const MAX_MODE_MODELS = [
+  "doubao-seed-evolving", "glm-5.3", "glm-5.2",
+  "deepseek-v4-pro", "deepseek-v4-pro-official",
+  "deepseek-v4-flash", "deepseek-v4-flash-official",
+  "kimi-k3", "minimax-m3", "qwen3.8-max", "qwen-3.7-plus",
+];
+const supportsMaxMode = (name) => MAX_MODE_MODELS.includes(String(name ?? "").trim().toLowerCase());
+const maxModeOn = () => state.maxMode !== "off";
+
+/* 一行模型的上下文口径：支持且已开启 ⇒ 1M；否则上游默认（演示数据统一按 200k 展示）。 */
+function contextCell(model) {
+  if (supportsMaxMode(model.name) && maxModeOn()) {
+    return `<span class="badge ok">1M</span>`;
+  }
+  return `<span class="tiny muted">上游默认</span>`;
+}
+
+/* Max Mode 策略条（只在 Trae 平台出现）：两个状态，切换即时反映到下方清单。 */
+function maxModePolicyCard() {
+  const on = maxModeOn();
+  return `<section class="card">
+    <div style="display:flex;align-items:center;gap:18px;padding:14px 16px">
+      <div style="flex:1;min-width:0">
+        <b style="display:block;font-size:12.5px;font-weight:550">上下文上限（Max Mode）</b>
+        <div class="tiny muted" style="margin-top:3px;line-height:1.55">
+          对支持 Max Mode 的模型<b>始终</b>注入 <span class="mono">is_max_mode</span>，清单直接声明 1M；
+          关闭后回到上游默认窗口。Max Mode 是<b>请求级开关</b>，不是模型 —— 一个模型只有一条记录，不会有
+          <span class="mono">glm-5.3-max</span> 这类影子 id。
+        </div>
+      </div>
+      <div class="seg" role="group" aria-label="Trae 上下文上限" style="flex-shrink:0">
+        <button class="${on ? "on" : ""}" data-act="max-mode|always">始终 1M</button>
+        <button class="${on ? "" : "on"}" data-act="max-mode|off">关闭</button>
+      </div>
+    </div>
+  </section>`;
+}
+
 function viewGateway() {
   const g = GATEWAY[state.scope], p = curPlatform();
   const subs = [["overview", "概览"], ["keys", "密钥"], ["models", "模型"], ["pool", "账号池"], ["proxy", "请求代理"], ["logs", "请求日志"]];
@@ -1302,11 +1348,13 @@ function viewGateway() {
           `<button class="btn primary" data-act="new-key">${ICON.plus}创建密钥</button>`);
   } else if (state.gwSub === "models") {
     const served = g.models.filter((m) => m.available && !m.disabled).length;
-    main = `${catalogBar(g.catalog)}
+    const trae = curScope().platform === "trae";
+    main = `${trae ? maxModePolicyCard() : ""}${catalogBar(g.catalog)}
     <div class="tbl-wrap"><table class="tbl">
-      <thead><tr><th>模型</th><th>协议</th><th>归属</th><th>上游状态</th><th style="width:124px">网关暴露</th></tr></thead>
+      <thead><tr><th>模型</th><th>协议</th><th>归属</th>${trae ? "<th>上下文</th>" : ""}<th>上游状态</th><th style="width:124px">网关暴露</th></tr></thead>
       <tbody>${g.models.map((m) => `<tr${m.disabled ? ' class="row-off"' : ""}>
         <td class="mono"><b>${esc(m.name)}</b></td><td>${esc(m.provider)}</td><td>${esc(m.scope)}</td>
+        ${trae ? `<td>${contextCell(m)}</td>` : ""}
         <td>${m.available ? `<span class="badge ok">可用</span>` : `<span class="badge warn">不可用</span>`}</td>
         <td>${m.disabled
           ? `<span class="badge bad">已禁用</span> <button class="btn xs" data-act="model-enable|${esc(m.name)}|${esc(m.scope)}">启用</button>`
@@ -3063,6 +3111,19 @@ document.addEventListener("click", (e) => {
     case "merge": stop(); state.merge = a1 === "1"; renderContent(); break;
     case "usage-tab": stop(); state.usageTab = a1; renderContent(); break;
     case "gw-sub": stop(); state.gwSub = a1; renderContent(); break;
+    /* Trae 上下文策略（Max Mode）：切换即时反映到清单的「上下文」列。
+       演示「一个模型一条记录」—— 不存在 -max 影子 id。 */
+    case "max-mode": {
+      stop();
+      state.maxMode = a1 === "off" ? "off" : "always";
+      toast(state.maxMode === "off" ? "info" : "ok",
+        state.maxMode === "off" ? "已回到上游默认窗口" : "已开启 1M 上下文",
+        state.maxMode === "off"
+          ? "支持 Max Mode 的模型不再注入 is_max_mode，清单声明回到上游默认"
+          : "支持 Max Mode 的模型始终注入 is_max_mode，清单直接声明 1M");
+      renderContent();
+      break;
+    }
     case "gw-api": stop(); state.gwApi = a1; state.gwTool = ACCESS_TOOLS[a1][0][0]; renderContent(); break;
     case "gw-tool": stop(); state.gwTool = a1; renderContent(); break;
     /* 禁用 / 启用模型（§3.18）：禁用是**用户偏好**，与「上游可用性」正交。
@@ -3722,6 +3783,8 @@ function bootFromUrl() {
   if (p.get("scope") && SCOPES[p.get("scope")]) state.scope = p.get("scope");
   if (p.get("dest") && DESTINATIONS.some((d) => d.id === p.get("dest"))) state.dest = p.get("dest");
   if (p.get("gw")) state.gwSub = p.get("gw");
+  /* Trae 上下文策略也可深链：`?max=off` 直接看「关闭」态，便于评审对照。 */
+  if (p.get("max") === "off") state.maxMode = "off";
   if (p.get("api")) state.gwApi = p.get("api");
   if (p.get("pin")) state.pins[state.scope] = p.get("pin");
   if (p.get("set")) state.setSub = p.get("set");

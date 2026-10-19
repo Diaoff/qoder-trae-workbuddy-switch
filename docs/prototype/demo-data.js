@@ -670,10 +670,14 @@ const GATEWAY = {
       /* 已吊销（同 wb-cn 的 k2）：两平台各留一条，确认「恢复 + 删除」在两边同形。 */
       { id: "k6", name: "TraeCode Key", masked: "ts_live_e310••••••••••••9c77", scope: "国内版", created: "2026-09-26", lastUsed: "40 分钟前", requests: 254, revoked: true },
     ],
+    /* 用**真实模型名**（原先是 chat_v3 / solo_work_lite 这类 function 名，看不出上下文差异）：
+       Max Mode 支持表内的模型在清单里直接声明 1M，其余保持上游默认 —— 切换策略即可对照。 */
     models: [
-      { name: "chat_v3", provider: "trae", scope: "TraeCode", available: true },
-      { name: "solo_work_lite", provider: "trae", scope: "TraeWork", available: true },
-      { name: "trae-code-pro", provider: "trae", scope: "TraeCode", available: true },
+      { name: "glm-5.3", provider: "trae", scope: "TraeWork", available: true },
+      { name: "qwen3.8-max", provider: "trae", scope: "TraeWork", available: true },
+      { name: "kimi-k3", provider: "trae", scope: "TraeCode", available: true },
+      { name: "kimi-k2.6", provider: "trae", scope: "TraeCode", available: true },
+      { name: "deepseek-v4.1-flash", provider: "trae", scope: "TraeWork", available: true, disabled: true },
     ],
     /* Trae 侧按**程序位**分家下发清单（TraeWork=solo_work_lite / TraeCode=chat_v3），
        所以识别也必须按 scope 分家，不能一份清单打天下。 */
