@@ -597,15 +597,14 @@ mod tests {
         for path in crate::HEALTH_PATHS {
             let app = router(state.clone());
             let response = app
-                .oneshot(
-                    Request::builder()
-                        .uri(path)
-                        .body(Body::empty())
-                        .unwrap(),
-                )
+                .oneshot(Request::builder().uri(path).body(Body::empty()).unwrap())
                 .await
                 .expect("router 必须能构建并响应（构建期 panic 会让网关完全起不来）");
-            assert_eq!(response.status(), axum::http::StatusCode::OK, "{path} 必须 200");
+            assert_eq!(
+                response.status(),
+                axum::http::StatusCode::OK,
+                "{path} 必须 200"
+            );
 
             let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
                 .await

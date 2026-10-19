@@ -738,7 +738,10 @@ mod tests {
             });
             // `apply` 必须紧跟在取用之后（几行内），确保它真的被用于启动而不是弃之不用。
             assert!(
-                setup[at..].lines().take(4).any(|line| line.contains(".apply()")),
+                setup[at..]
+                    .lines()
+                    .take(4)
+                    .any(|line| line.contains(".apply()")),
                 "{label} 取到运行时后没有调用 `.apply()` —— 开关打开也不会起监听"
             );
         }

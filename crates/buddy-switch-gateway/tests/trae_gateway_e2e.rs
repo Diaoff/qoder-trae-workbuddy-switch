@@ -1036,7 +1036,11 @@ async fn p11_disabled_model_is_hidden_from_models_and_rejected_on_call() {
         !after.iter().any(|id| id == &variant_id),
         "禁用基名后 {variant_id} 也必须消失（否则「禁用」是可绕过的）：{after:?}"
     );
-    assert_eq!(after.len() + 2, before.len(), "禁用后应正好少两条（基名 + Max 变体）");
+    assert_eq!(
+        after.len() + 2,
+        before.len(),
+        "禁用后应正好少两条（基名 + Max 变体）"
+    );
 
     // 出口②：硬调用真的回 403 `model_disabled`（在触达上游之前就拒）。
     let response = app

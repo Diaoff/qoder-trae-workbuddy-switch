@@ -377,9 +377,8 @@ fn models_response_from(
     include_max_variants: bool,
     disabled: Option<&BTreeSet<String>>,
 ) -> Value {
-    let allowed = |name: &str| {
-        disabled.is_none_or(|set| !crate::disabled_models::is_disabled_in(set, name))
-    };
+    let allowed =
+        |name: &str| disabled.is_none_or(|set| !crate::disabled_models::is_disabled_in(set, name));
     let mut data: Vec<Value> = Vec::with_capacity(entries.len());
     for (name, context_window) in entries {
         if !allowed(name) {
@@ -1220,7 +1219,11 @@ mod tests {
     fn max_mode_suffix_only_strips_when_base_is_supported() {
         // 常规：支持的模型 + 后缀。
         assert_eq!(max_mode_base("glm-5.3-max"), Some("glm-5.3"));
-        assert_eq!(max_mode_base("Kimi-K3-MAX"), Some("Kimi-K3"), "大小写不敏感");
+        assert_eq!(
+            max_mode_base("Kimi-K3-MAX"),
+            Some("Kimi-K3"),
+            "大小写不敏感"
+        );
         assert_eq!(max_mode_base("  glm-5.2-max  "), Some("glm-5.2"));
         // 真模型名（整名在支持表里）⇒ 不剥。
         assert_eq!(max_mode_base("qwen3.8-max"), None);
@@ -1237,15 +1240,24 @@ mod tests {
     /// 且基础条目的窗口不被改写（1M 只在显式开 Max 时成立）。
     #[test]
     fn models_list_advertises_max_variants_with_1m_context() {
-        let body =
-            models_response_from(vec![("glm-5.3", Some(200_000)), ("kimi-k2.6", None)], true, None);
+        let body = models_response_from(
+            vec![("glm-5.3", Some(200_000)), ("kimi-k2.6", None)],
+            true,
+            None,
+        );
         let data = body["data"].as_array().unwrap();
         let ids: Vec<&str> = data.iter().filter_map(|row| row["id"].as_str()).collect();
         assert_eq!(ids, vec!["glm-5.3", "glm-5.3-max", "kimi-k2.6"]);
 
-        assert_eq!(data[0]["context_length"], 200_000, "基础条目保持上游给的窗口");
+        assert_eq!(
+            data[0]["context_length"], 200_000,
+            "基础条目保持上游给的窗口"
+        );
         assert_eq!(data[0]["max_mode"], true, "基础条目要标明支持 Max Mode");
-        assert_eq!(data[1]["context_length"], MAX_MODE_CONTEXT_LENGTH, "变体声明 1M");
+        assert_eq!(
+            data[1]["context_length"], MAX_MODE_CONTEXT_LENGTH,
+            "变体声明 1M"
+        );
         assert_eq!(data[2]["max_mode"], false, "不支持的模型不标 Max Mode");
 
         // 关掉变体（探测网格）⇒ 只剩基础条目。
@@ -1269,7 +1281,11 @@ mod tests {
             .iter()
             .filter_map(|row| row["id"].as_str())
             .collect();
-        assert_eq!(ids, vec!["kimi-k3", "kimi-k3-max"], "禁用基名要连变体一起消失");
+        assert_eq!(
+            ids,
+            vec!["kimi-k3", "kimi-k3-max"],
+            "禁用基名要连变体一起消失"
+        );
 
         let mut only_variant = BTreeSet::new();
         only_variant.insert("glm-5.3-max".to_string());

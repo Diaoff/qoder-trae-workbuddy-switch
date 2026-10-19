@@ -326,12 +326,7 @@ async fn health_paths_need_no_authorization() {
     for path in buddy_switch_gateway::HEALTH_PATHS {
         let (state, _key) = gateway_for("health", &[("q1", "dt-1")], Behavior::Normal).await;
         let response = router(state)
-            .oneshot(
-                Request::builder()
-                    .uri(path)
-                    .body(Body::empty())
-                    .unwrap(),
-            )
+            .oneshot(Request::builder().uri(path).body(Body::empty()).unwrap())
             .await
             .expect("请求");
         assert_eq!(response.status(), StatusCode::OK, "{path} 必须免鉴权且 200");
