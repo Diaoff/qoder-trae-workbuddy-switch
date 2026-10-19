@@ -403,8 +403,17 @@ src/                     # frontend: components / pages / lib / locales
 npm/                     # pacotes npm (não publicados)
 ```
 
-Requisitos de ambiente, processo de release e convenções de diretórios: [docs/guides/DEVELOPMENT.md](docs/guides/DEVELOPMENT.md).
-**Mapa completo da documentação: [docs/README.md](docs/README.md)** — guias / especificações atuais / histórico somente leitura / protótipo.
+## Documentação
+
+O índice completo está em [docs/README.md](docs/README.md) — por ciclo de vida: guias / especificações atuais / histórico somente leitura / protótipo. Os mais consultados:
+
+| Documento | O que cobre |
+| --- | --- |
+| [guides/DEVELOPMENT.md](docs/guides/DEVELOPMENT.md) | Requisitos, desenvolvimento local, lista de checagens, processo de release, convenções de diretórios |
+| [guides/DOCKER.md](docs/guides/DOCKER.md) | Implantação em contêiner: imagem pré-construída / compilação do código, portas e segurança, solução de problemas |
+| [guides/GATEWAY-CLIENT-INTEGRATION.md](docs/guides/GATEWAY-CLIENT-INTEGRATION.md) | Conectar Codex / Claude Code / outros clientes ao gateway local |
+| [specs/](docs/specs/) | Arquitetura e decisões atuais (leia antes de mexer no código) |
+| [policies/](docs/policies/) | Licença e aviso legal |
 
 ## Contribuindo
 

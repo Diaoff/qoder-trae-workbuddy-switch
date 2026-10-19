@@ -403,8 +403,17 @@ src/                     # 프런트엔드: components / pages / lib / locales
 npm/                     # npm 패키지(미배포)
 ```
 
-환경 요구 사항·릴리스 절차·디렉터리 규칙은 [docs/guides/DEVELOPMENT.md](docs/guides/DEVELOPMENT.md) 를 참고하세요.
-**문서 전체 색인은 [docs/README.md](docs/README.md)** 에 있습니다(가이드 / 현행 스펙 / 읽기 전용 기록 / 프로토타입).
+## 문서
+
+전체 색인은 [docs/README.md](docs/README.md) 에 있습니다(가이드 / 현행 스펙 / 읽기 전용 기록 / 프로토타입). 자주 보는 문서:
+
+| 문서 | 내용 |
+| --- | --- |
+| [guides/DEVELOPMENT.md](docs/guides/DEVELOPMENT.md) | 환경 요구 사항, 로컬 개발, 게이트 목록, 릴리스 절차, 디렉터리 규칙 |
+| [guides/DOCKER.md](docs/guides/DOCKER.md) | 컨테이너 배포: 사전 빌드 이미지 / 소스 빌드, 포트와 보안, 문제 해결 |
+| [guides/GATEWAY-CLIENT-INTEGRATION.md](docs/guides/GATEWAY-CLIENT-INTEGRATION.md) | Codex / Claude Code 등 클라이언트를 로컬 게이트웨이에 연결 |
+| [specs/](docs/specs/) | 현행 아키텍처와 결정(코드를 바꾸기 전에 읽기) |
+| [policies/](docs/policies/) | 라이선스와 면책 고지 |
 
 ## 기여
 

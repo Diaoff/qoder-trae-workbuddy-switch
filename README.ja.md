@@ -403,8 +403,17 @@ src/                     # フロントエンド：components / pages / lib / lo
 npm/                     # npm パッケージ（未公開）
 ```
 
-環境要件・リリース手順・構成の規約は [docs/guides/DEVELOPMENT.md](docs/guides/DEVELOPMENT.md) を参照してください。
-**ドキュメント全体の索引は [docs/README.md](docs/README.md)** にあります（ガイド / 現行仕様 / 読み取り専用の履歴 / プロトタイプ）。
+## ドキュメント
+
+全体の索引は [docs/README.md](docs/README.md) にあります（ガイド / 現行仕様 / 読み取り専用の履歴 / プロトタイプ）。よく参照するもの:
+
+| ドキュメント | 内容 |
+| --- | --- |
+| [guides/DEVELOPMENT.md](docs/guides/DEVELOPMENT.md) | 環境要件・ローカル開発・ゲート一覧・リリース手順・構成の規約 |
+| [guides/DOCKER.md](docs/guides/DOCKER.md) | コンテナでのデプロイ: ビルド済みイメージ / ソースからのビルド、ポートとセキュリティ、トラブルシューティング |
+| [guides/GATEWAY-CLIENT-INTEGRATION.md](docs/guides/GATEWAY-CLIENT-INTEGRATION.md) | Codex / Claude Code などのクライアントをローカルゲートウェイに接続する |
+| [specs/](docs/specs/) | 現行のアーキテクチャと決定（コードを変える前に読む） |
+| [policies/](docs/policies/) | ライセンスと免責事項 |
 
 ## コントリビューション
 

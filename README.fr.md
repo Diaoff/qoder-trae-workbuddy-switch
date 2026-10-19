@@ -403,8 +403,17 @@ src/                     # frontend : components / pages / lib / locales
 npm/                     # paquets npm (non publiés)
 ```
 
-Prérequis, processus de publication et conventions de répertoires : [docs/guides/DEVELOPMENT.md](docs/guides/DEVELOPMENT.md).
-**Carte complète de la documentation : [docs/README.md](docs/README.md)** — guides / spécifications courantes / historique en lecture seule / prototype.
+## Documentation
+
+L'index complet est dans [docs/README.md](docs/README.md) — par cycle de vie : guides / spécifications courantes / historique en lecture seule / prototype. Les plus consultés :
+
+| Document | Contenu |
+| --- | --- |
+| [guides/DEVELOPMENT.md](docs/guides/DEVELOPMENT.md) | Prérequis, développement local, liste des contrôles, processus de publication, conventions de répertoires |
+| [guides/DOCKER.md](docs/guides/DOCKER.md) | Déploiement en conteneur : image préconstruite / compilation depuis les sources, ports et sécurité, dépannage |
+| [guides/GATEWAY-CLIENT-INTEGRATION.md](docs/guides/GATEWAY-CLIENT-INTEGRATION.md) | Brancher Codex / Claude Code / d'autres clients sur la passerelle locale |
+| [specs/](docs/specs/) | Architecture et décisions courantes (à lire avant de modifier le code) |
+| [policies/](docs/policies/) | Licence et avertissement |
 
 ## Contribuer
 

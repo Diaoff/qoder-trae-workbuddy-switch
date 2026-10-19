@@ -403,8 +403,17 @@ src/                     # frontend: components / pages / lib / locales
 npm/                     # npm packages (not published yet)
 ```
 
-Environment requirements, release process and layout conventions: [docs/guides/DEVELOPMENT.md](docs/guides/DEVELOPMENT.md).
-**Full document map: [docs/README.md](docs/README.md)** — split by lifecycle: guides / living specs / read-only history / prototype.
+## Docs
+
+The full index lives in [docs/README.md](docs/README.md) — split by lifecycle: guides / living specs / read-only history / prototype. The ones you will open most:
+
+| Document | What it covers |
+| --- | --- |
+| [guides/DEVELOPMENT.md](docs/guides/DEVELOPMENT.md) | Requirements, local development, gate list, release process, layout conventions |
+| [guides/DOCKER.md](docs/guides/DOCKER.md) | Container deployment: prebuilt image / source build, ports and security, troubleshooting |
+| [guides/GATEWAY-CLIENT-INTEGRATION.md](docs/guides/GATEWAY-CLIENT-INTEGRATION.md) | Wiring Codex / Claude Code / other clients to the local gateway |
+| [specs/](docs/specs/) | Living architecture and decisions (read before changing code) |
+| [policies/](docs/policies/) | License and disclaimer |
 
 ## Contributing
 

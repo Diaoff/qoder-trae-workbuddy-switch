@@ -400,8 +400,17 @@ src/                     # 前端：components / pages / lib / locales
 npm/                     # npm 包（尚未发布）
 ```
 
-环境要求、发布流程、目录约定见 [docs/guides/DEVELOPMENT.md](docs/guides/DEVELOPMENT.md)。
-**全部文档的索引在 [docs/README.md](docs/README.md)** —— 按生命周期分区：指南 / 现行规格 / 只读历史 / 原型。
+## 文档
+
+完整索引在 [docs/README.md](docs/README.md) —— 按生命周期分区：指南 / 现行规格 / 只读历史 / 原型。最常翻的几份：
+
+| 文档 | 讲什么 |
+| --- | --- |
+| [guides/DEVELOPMENT.md](docs/guides/DEVELOPMENT.md) | 环境要求、本地开发、门禁清单、发布流程、目录约定 |
+| [guides/DOCKER.md](docs/guides/DOCKER.md) | 容器部署：预构建镜像 / 源码构建、端口与安全、排障 |
+| [guides/GATEWAY-CLIENT-INTEGRATION.md](docs/guides/GATEWAY-CLIENT-INTEGRATION.md) | 把 Codex / Claude Code / 其它客户端接到本机网关 |
+| [specs/](docs/specs/) | 现行架构与决策（改代码前该读的依据） |
+| [policies/](docs/policies/) | 许可与免责声明 |
 
 ## 参与贡献
 
