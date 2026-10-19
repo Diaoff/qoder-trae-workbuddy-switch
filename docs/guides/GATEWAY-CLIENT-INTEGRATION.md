@@ -145,11 +145,13 @@ Anthropic 系客户端**自己会拼 `/v1/messages`**；给它带 `/v1` 的地�
 - **Codex、Trae 自定义模型、CodeBuddy `models.json` 需要手填模型 ID** —— 从 `/v1/models` 里复制，别猜。
 - `/v1/models` 返回 200 **不等于**该模型此刻一定能用（上游可能限流）。清单只代表「网关愿意暴露」。
 - **统一入口的模型名必须带命名空间前缀**（`wb-cn:…`）—— 不带前缀一律 400，不做兜底猜测。见 §1.3。
-- **Trae 的 1M 上下文（Max Mode）不需要特殊模型名**：网关对支持 Max Mode 的模型**始终**注入上游的
-  `is_max_mode`，`/v1/models` 里这些模型的 `context_length` 直接声明 `1000000` —— 基名（`glm-5.3`、
-  统一入口的 `trae-cn:glm-5.3`）就是 1M，不用加后缀、也不用另选一条。
-  - 支持表外的模型不注入，窗口保持上游默认值；清单里的 `max_mode: true` 表示「这条已开 Max」。
-  - 上游若在 `context_window_size.max` 给了其他上限（如 1.5M），清单以它为准。
+- **Trae 的上下文上限（Max Mode）逐模型不同，且不需要特殊模型名**：网关从 Trae 官方模型目录
+  读取每个模型的 `dev`（`__dev` 通道实际窗口）与 `max`（Max Mode 上限）；`max > dev` 的模型在请求时
+  注入 `is_max_mode`，`/v1/models` 直接声明它**自己的** `max`。
+  - 不是统一 1M：实测 `glm-5.3` 200k→1M、`mimo-v2.6-pro` 200k→981504、`Doubao-Seed-2.1-Turbo` 上限仍是 256k；
+    清单里 `max_mode: true` 表示这条已开 Max。
+  - 目录拉不到（无账号 / 网络）⇒ 按客户端清单的默认窗口声明，**不猜数字**。
+  - 基名即可（`glm-5.3`、统一入口 `trae-cn:glm-5.3`），不用加后缀、不用另选一条。
 
 ### 2.5 流式
 

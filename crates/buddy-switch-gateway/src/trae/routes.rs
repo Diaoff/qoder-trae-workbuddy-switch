@@ -237,12 +237,15 @@ pub async fn models(
         .get(scope_of_trae_region(variant.region()))
         .clone();
     let fallback = disabled.clone();
+    // ★ 官方模型目录（逐模型 `dev/max`）：过期就先同步一次；失败**静默**沿用旧缓存，
+    //   绝不让「目录拉不到」变成「列模型失败」。
+    super::catalog::ensure_fresh(variant).await;
     // `models_response_for` 自己**不失败**（读不到就回落静态清单），所以这里的
     // `JoinError` 只可能是运行时正在关闭 —— 用（过滤后的）静态清单兜底，别让「列模型」挂掉。
     let body =
         tokio::task::spawn_blocking(move || payload::models_response_for(variant, &disabled))
             .await
-            .unwrap_or_else(|_| payload::models_response_filtered(&fallback));
+            .unwrap_or_else(|_| payload::models_response_filtered(&fallback, Some(variant)));
     json_response(StatusCode::OK, body)
 }
 

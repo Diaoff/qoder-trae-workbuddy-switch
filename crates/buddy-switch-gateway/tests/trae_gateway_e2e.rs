@@ -977,13 +977,13 @@ async fn models_ids(app: &axum::Router, key: &str) -> Vec<String> {
         .collect()
 }
 
-/// ★ Max Mode 的对外表现（issue #53 二版）：支持表内的模型**只有一条**记录，
-/// 且直接声明 1M —— 不再有 `<模型>-max` 影子条目。
+/// ★ Max Mode 的对外表现（issue #53 三版）：清单里**一个模型只有一条记录**，
+/// 不再有 `<模型>-max` 影子条目；窗口数字来自官方目录（本用例没有目录缓存 ⇒
+/// 回落到客户端清单，只验「不虚报、不产生影子 id」这两条硬约束）。
 ///
-/// 可证伪：把 `models_response_from` 的 `context_length` 退回 `default` ⇒ 第一条变红；
-/// 恢复影子条目 ⇒ 第二条变红。
+/// 目录驱动的数字口径由 `payload` 的单测钉住（`catalog_decides_per_model_window_...`）。
 #[tokio::test]
-async fn max_mode_is_declared_in_place_without_shadow_ids() {
+async fn max_mode_has_no_shadow_ids() {
     let _guard = guard();
     let home = isolated_home("max-mode", &[("uid-mm", "jwt-mm")]);
     let key = create_key(&home, TraeVariant::default());
@@ -991,23 +991,21 @@ async fn max_mode_is_declared_in_place_without_shadow_ids() {
 
     let body = models_json(&app, &key).await;
     let rows = body["data"].as_array().expect("data 应为数组");
-    let find = |id: &str| rows.iter().find(|row| row["id"] == id).cloned();
+    let ids: Vec<&str> = rows.iter().filter_map(|row| row["id"].as_str()).collect();
 
-    let glm = find("glm-5.3").expect("静态兜底清单必须有 glm-5.3");
-    assert_eq!(
-        glm["context_length"], 1_000_000,
-        "支持 Max Mode 的模型要对客户端声明 1M"
-    );
-    assert_eq!(glm["max_mode"], true);
     assert!(
-        find("glm-5.3-max").is_none(),
-        "不得再有 `-max` 影子条目 —— Max Mode 是请求级开关，不是模型"
+        ids.contains(&"glm-5.3"),
+        "静态兜底清单必须有 glm-5.3：{ids:?}"
     );
-
-    let plain = find("kimi-k2.6").expect("静态兜底清单必须有 kimi-k2.6");
-    assert_eq!(
-        plain["max_mode"], false,
-        "不支持 Max Mode 的模型不标 max_mode"
+    assert!(
+        !ids.iter()
+            .any(|id| id.ends_with("-max") && *id != "qwen3.8-max"),
+        "不得出现 `-max` 影子条目：{ids:?}"
+    );
+    let glm = rows.iter().find(|row| row["id"] == "glm-5.3").unwrap();
+    assert!(
+        glm["context_length"].as_i64().unwrap_or(0) >= 200_000,
+        "没有目录时也要给出客户端/兜底窗口，不能是 0/null：{glm:?}"
     );
 
     let _ = std::fs::remove_dir_all(&home);

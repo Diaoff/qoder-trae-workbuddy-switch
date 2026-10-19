@@ -684,6 +684,8 @@ async fn collect_namespace_models(
                 }
             }
             RelayTarget::Trae(variant) => {
+                // 官方目录（逐模型 dev/max）：过期先同步；失败静默沿用旧缓存。
+                crate::trae::catalog::ensure_fresh(variant).await;
                 let list =
                     buddy_switch_core::modules::trae::model_list::read_client_model_list(variant);
                 // 客户端拉过清单 ⇒ 视作「实时」（它的新鲜度 = 客户端最后一次刷新）

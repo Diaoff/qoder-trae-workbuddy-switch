@@ -3844,6 +3844,7 @@ async fn api_trae_gateway_models(RawQuery(query): RawQuery) -> Response {
             ))
             .clone()
     };
+    buddy_switch_gateway::trae::catalog::ensure_fresh(variant).await;
     json_ok(buddy_switch_gateway::trae::payload::models_response_for(
         variant, &disabled,
     ))

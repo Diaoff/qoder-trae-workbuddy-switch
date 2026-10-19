@@ -27,6 +27,7 @@
 
 pub mod apikey;
 pub mod capture;
+pub mod catalog;
 pub mod payload;
 pub mod pool;
 pub mod routes;
