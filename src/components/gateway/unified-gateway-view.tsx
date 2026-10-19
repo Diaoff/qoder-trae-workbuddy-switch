@@ -483,6 +483,38 @@ export function UnifiedGatewayView({
               {t("unifiedGateway.enableHint")}
             </div>
           </div>
+          {/* ★ 「开关开着 ≠ 端口上有监听」（issue #52：重启后只 manage 不 apply，
+              开关是绿的、57892 却没人 accept）。所以把**真实监听状态**摆在开关旁边——
+              与「独立网关」页 `wbStats.gateway.running` 同一套视觉，用户不必去 netstat。 */}
+          {snapshot?.config.enabled && (
+            <span
+              className="flex items-center gap-1.5 text-xs"
+              title={t(
+                snapshot.running
+                  ? "unifiedGateway.listeningHint"
+                  : "unifiedGateway.notListeningHint",
+              )}
+            >
+              <span
+                className={cn(
+                  "size-2 rounded-full",
+                  snapshot.running ? "bg-success" : "bg-destructive",
+                )}
+              />
+              <span
+                className={cn(
+                  "font-medium",
+                  snapshot.running ? "text-success" : "text-destructive",
+                )}
+              >
+                {t(
+                  snapshot.running
+                    ? "unifiedGateway.listening"
+                    : "unifiedGateway.notListening",
+                )}
+              </span>
+            </span>
+          )}
           <Switch
             checked={Boolean(snapshot?.config.enabled)}
             disabled={saving}

@@ -252,6 +252,11 @@ export const zh = {
   "unifiedGateway.err.oldPort.body": "模型名 wb-cn:deepseek-v4.1-flash 看起来是统一网关的命名空间前缀，\n但本端口（57891）不解析命名空间。请改用统一网关 http://127.0.0.1:57892/v1，\n或去掉前缀、改用 cn: / global: 前缀。",
   /* 未启用态的一行提示（关着开关时改配置，用户不确定有没有生效）。 */
   "unifiedGateway.notEnabled": "当前未启用：下面的配置会照常保存，启用后生效；端口上现在没有监听，任何调用都会连接失败。",
+  /* 开关旁的**真实监听状态**（issue #52：开关开着 ≠ 端口上有人 accept）。 */
+  "unifiedGateway.listening": "监听中",
+  "unifiedGateway.notListening": "未监听",
+  "unifiedGateway.listeningHint": "端口上已有监听，客户端可以直接连。",
+  "unifiedGateway.notListeningHint": "配置已启用，但端口上没有监听 —— 把开关关掉再打开，或重启应用后重试。",
   "unifiedGateway.addr": "接入地址",
   "unifiedGateway.copyBaseUrl": "复制 Base URL",
   "unifiedGateway.loopback": "仅本机 127.0.0.1",

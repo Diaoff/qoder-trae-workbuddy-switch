@@ -1,7 +1,13 @@
 //! 桌面宿主（Tauri）的**统一网关**接入（第三个产品线，默认 `127.0.0.1:57892`）。
 //!
-//! 与 [`crate::gateway`]（WorkBuddy 57891）/ [`crate::trae_gateway`]（Trae 57894）平行，
-//! **各持一个泛型 [`GatewayHost`]** —— 三个入口、三个端口、三套 Key 库。
+//! 与 [`crate::gateway`]（WorkBuddy 57891）/ [`crate::trae_gateway`]（Trae 57894）/
+//! [`crate::qoder_gateway`]（Qoder 57895）平行，**各持一个泛型 [`GatewayHost`]** ——
+//! 四个监听入口、四个端口、四套 Key 库。
+//!
+//! ⚠️ 「第三个产品线」说的是**数据/策略**维度（WB / Trae / Qoder 之后的第四个入口）；
+//! 端口分工上它是**第四个监听**。`src-tauri/src/lib.rs` 的 `setup` 必须有四段
+//! `spawn + apply()` —— 只 `manage` 不 `apply` 会让开关「看起来开着、实际没监听」
+//! （issue #52，统一网关就曾漏了这一段）。
 //!
 //! ## 为什么必须是独立端口
 //!

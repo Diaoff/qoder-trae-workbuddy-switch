@@ -4,7 +4,10 @@ mod gateway;
 // Qoder 网关（第三个平台，默认 57895）：独立端口，不与另三个 merge（axum 同路径 merge 会 panic）。
 mod qoder_gateway;
 mod trae_gateway;
-// 统一网关（第三个产品线，默认 57892）：跨产品线的单一入口 —— 独立端口，不与另两个 merge。
+// 统一网关（第三个产品线，默认 57892）：跨产品线的单一入口 —— 独立端口，不与另三个 merge。
+// ⚠️ 端口分工上是**第四个监听**（WB 57891 / Trae 57894 / Qoder 57895 / 统一 57892），
+//    因此 setup 里必须有**四段** apply spawn —— 漏一段只在「保存配置」时才起监听，
+//    重启后静默断服（issue #52）。
 #[cfg(desktop)]
 mod companion;
 #[cfg(desktop)]
@@ -343,6 +346,20 @@ pub fn run() {
                         Ok(Some(addr)) => eprintln!("[qoder-gateway] 已启动: http://{addr}"),
                         Ok(None) => {}
                         Err(error) => eprintln!("[qoder-gateway] 启动失败: {error}"),
+                    }
+                });
+                // 按配置启动**统一网关**独立监听（默认关闭；默认 127.0.0.1:57892）。
+                // ⚠️ 跨产品线单一入口：第四个监听，不与另三个 merge（同路径 merge 会 panic）。
+                // ★ 少了这一段，`gateway_unified.json` 里的 `enabled: true` 只在
+                //   `save_unified_gateway_config` 那一刻被应用 —— 重启后端口上没有监听，
+                //   客户端只会「一直生成中」，网关侧一条日志都没有（issue #52）。
+                let handle = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    let runtime = handle.state::<unified_gateway::UnifiedGatewayRuntime>();
+                    match runtime.apply().await {
+                        Ok(Some(addr)) => eprintln!("[unified-gateway] 已启动: http://{addr}"),
+                        Ok(None) => {}
+                        Err(error) => eprintln!("[unified-gateway] 启动失败: {error}"),
                     }
                 });
             }
@@ -686,5 +703,68 @@ mod tests {
             "注册表缺少客户端用量今日快照 —— 缺了它 record_client_today 只剩账号页一个\
              调用点，账号卡片「今日 Token」的 client 列长时间不刷新"
         );
+    }
+
+    /// ★★ 护栏：**四个**网关在 `setup` 里都必须被 `apply()` 拉起（issue #52）。
+    ///
+    /// 回归背景：统一网关只 `app.manage(...)`、没有对应的 `spawn + apply()` ——
+    /// 于是配置里 `enabled: true` 只在「保存配置」那一刻生效，重启应用后 57892
+    /// 上没有监听，客户端表现为「一直生成中」，网关侧连一条日志都没有。
+    ///
+    /// 为什么是**源码级**断言而不是起一个 app：`setup` 里需要 `tauri::Builder` +
+    /// 事件循环，单测起不来。四个运行时的 `state::<...>()` 取用 + `.apply()` 只在这里
+    /// 出现一次，标记足够精确（`commands.rs` 里是 `app.state::<...>()`，不会被误命中）。
+    ///
+    /// 可证伪：删掉任一段 `spawn + apply`（或只留 `manage`）⇒ 本用例立刻变红。
+    #[test]
+    fn every_gateway_is_started_from_setup() {
+        // ★ 读**运行期**源码并截掉测试段：`include_str!` 会把本用例自己也算进去，
+        //   那几条标记字面量就会自己满足断言（护栏空转）。
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/src/lib.rs");
+        let source = std::fs::read_to_string(path).unwrap_or_else(|e| panic!("读不到 {path}: {e}"));
+        let setup = source
+            .split("#[cfg(test)]")
+            .next()
+            .expect("文件必有一段非测试部分");
+        for (label, runtime) in [
+            ("WorkBuddy 57891", "gateway::GatewayRuntime"),
+            ("Trae 57894", "trae_gateway::TraeGatewayRuntime"),
+            ("Qoder 57895", "qoder_gateway::QoderGatewayRuntime"),
+            ("统一网关 57892", "unified_gateway::UnifiedGatewayRuntime"),
+        ] {
+            let marker = format!("handle.state::<{runtime}>()");
+            let at = setup.find(&marker).unwrap_or_else(|| {
+                panic!("setup 里没有取用 {label} 的运行时 —— 该网关不会随应用启动监听")
+            });
+            // `apply` 必须紧跟在取用之后（几行内），确保它真的被用于启动而不是弃之不用。
+            assert!(
+                setup[at..].lines().take(4).any(|line| line.contains(".apply()")),
+                "{label} 取到运行时后没有调用 `.apply()` —— 开关打开也不会起监听"
+            );
+        }
+
+        // 另一侧宿主（`buddy-switch-server`）同样必须启动四个 —— 它与桌面端**各持一份**
+        // 启动序列（刻意不去重），任何一侧漏一段都是同一个缺陷。
+        let server_path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../crates/buddy-switch-server/src/main.rs"
+        );
+        let server = std::fs::read_to_string(server_path)
+            .unwrap_or_else(|e| panic!("读不到 {server_path}: {e}"));
+        let server_main = server
+            .split("#[cfg(test)]")
+            .next()
+            .expect("文件必有一段非测试部分");
+        for host in [
+            "gateway_host::apply()",
+            "trae_gateway_host::apply()",
+            "qoder_gateway_host::apply()",
+            "unified_gateway_host::apply()",
+        ] {
+            assert!(
+                server_main.contains(host),
+                "buddy-switch-server 的启动序列缺少 `{host}` —— 该网关在 webui 侧不会随进程启动"
+            );
+        }
     }
 }
