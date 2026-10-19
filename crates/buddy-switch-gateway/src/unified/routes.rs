@@ -1,4 +1,4 @@
-//! 统一网关的处理器（当前挂 `/healthz` · `/status` · `/v1/models`）。
+//! 统一网关的处理器（当前挂 `/health`（兼容 `/healthz`）· `/status` · `/v1/models`）。
 //!
 //! # 不合并 router，只合并**入口**
 //!
@@ -29,8 +29,9 @@ use super::state::UnifiedGatewayState;
 use crate::disabled_models::is_disabled;
 use crate::routes::json_response;
 
-/// `GET /healthz`：存活探针，**免鉴权**（与 WB 网关同名同义）。
-pub async fn healthz(State(state): State<UnifiedGatewayState>) -> Response {
+/// `GET /health`：存活探针，**免鉴权**（与 WB 网关同名同义；`/healthz` 是兼容别名，
+/// 两个路径由 [`crate::health_routes`] 挂到**同一个**处理器上）。
+pub async fn health(State(state): State<UnifiedGatewayState>) -> Response {
     let config = state.config_snapshot().await;
     let keys = state.keys.list();
     json_response(

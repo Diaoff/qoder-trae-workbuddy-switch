@@ -60,7 +60,7 @@
 ```
                     ┌───────────────────────────────────────────────┐
  一个 provider ─────►│ 统一网关  127.0.0.1:57892   「新增」           │
- sk-uni-…           │ /healthz /status /v1/models                   │
+ sk-uni-…           │ /health（兼容 /healthz）/status /v1/models    │
                     │ /v1/chat/completions /v1/messages             │
                     │ /v1/responses /biz/*path                      │
                     │ ① 认证：统一 Key 库（namespaces 授权）         │
@@ -517,9 +517,10 @@ llm-pi-ai:
 
 **进度（2026-10-14 第二轮）**：第 1、2 步（`GatewayProduct` + `router` + `UnifiedGatewayState` + `/v1/models` 聚合）
 与 **server 侧宿主**（`unified_gateway_host.rs` + `main.rs` 起监听）已落地。
-`OWNED_PATHS` 目前**只声明已挂的三条**（`/healthz` `/status` `/v1/models`）——
+`OWNED_PATHS` 与 `router()` **两侧一致**，当前 8 条（`/health` `/healthz` `/status` `/v1/models`
+`/v1/chat/completions` `/v1/messages` `/v1/responses` `/biz/*path`）——
 声明了却没挂就是撒谎（有专门用例钉住两侧一致）；未挂的业务端点在 57892 上是**明确的 404**
-（不是假装能用的 501）。★ 新增门禁：`listener_serves_http_on_a_real_socket`（**真实 TCP** 打 `/healthz`，
+（不是假装能用的 501）。★ 新增门禁：`listener_serves_http_on_a_real_socket`（**真实 TCP** 打 `/health`，
 端口 0 由内核分配）· `unified_gateway_also_overlaps_both_products`（三个 `OWNED_PATHS` 两两相交 ⇒ 必须三个端口）。
 ★ server 宿主的 `shared_state()` / `status()` **刻意未写**：管理面还没接，写了就是死代码。
 **src-tauri 侧宿主未接**（沙箱内编译不了 src-tauri ⇒ 盲写风险高，留下一步）。
@@ -527,7 +528,7 @@ llm-pi-ai:
 **未做（下一步按此顺序）**：
 
 1. 新 `crates/buddy-switch-gateway/src/unified/{mod.rs,config.rs,apikey.rs}`：`UnifiedGateway: GatewayProduct`。
-   `OWNED_PATHS` = `["/healthz","/status","/v1/models","/v1/chat/completions","/v1/messages","/v1/responses","/biz/*path"]` + `router()` + `UnifiedGatewayState`。
+   `OWNED_PATHS` = `["/health","/healthz","/status","/v1/models","/v1/chat/completions","/v1/messages","/v1/responses","/biz/*path"]` + `router()` + `UnifiedGatewayState`。
 2. 宿主接线：`crates/buddy-switch-server/src/unified_gateway_host.rs`（照 `gateway_host.rs`）+ `src-tauri` 一份（**两处宿主，各一套命令**）。
 3. `/v1/models` 聚合（WB 取 `WbGateway::shared_state()` 的目录，Trae 取 `payload::models_response_for(variant, disabled)`）——
    建议做成**纯函数**（命名空间清单 + 两个取数闭包 + 禁用集 ⇒ 响应体），不起 HTTP 就能测。

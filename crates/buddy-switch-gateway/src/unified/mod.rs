@@ -10,7 +10,7 @@
 //! | 运行配置（[`config`]） | ✅ 已落地 |
 //! | 密钥与命名空间授权（[`apikey`]） | ✅ 已落地 |
 //! | 运行状态（[`state`]） | ✅ 已落地 |
-//! | `GatewayProduct` + 路由 + `/healthz` `/status` `/v1/models`（[`routes`]） | ✅ 已落地 |
+//! | `GatewayProduct` + 路由 + `/health`（兼容 `/healthz`）`/status` `/v1/models`（[`routes`]） | ✅ 已落地 |
 //! | 业务端点 `/v1/chat/completions` `/v1/messages` `/v1/responses` `/biz/*path` | ⬜ 待 P3（抽 `pub(crate) relay_*`） |
 //! | 两处宿主接线（server / src-tauri）+ 管理面四处同步 | ⬜ 待做 |
 //! | 前端「统一入口」子导航页 | ⬜ 待做（原型已可点：`docs/prototype/buddy-switch-prototype.html`） |
@@ -60,6 +60,7 @@ impl GatewayProduct for UnifiedGateway {
     /// —— 声明了却没挂就是撒谎（有专门用例钉住两侧一致）。**七个路径全部已挂**；
     /// 新增路由必须同步本表，否则泛型层会拿一份过期的所有权去判断两个 router 能否 merge。
     const OWNED_PATHS: &'static [&'static str] = &[
+        "/health",
         "/healthz",
         "/status",
         "/v1/models",
@@ -327,7 +328,7 @@ pub fn router(state: UnifiedGatewayState) -> axum::Router {
     // 请求体上限在 **router 构建期**固化：改配置需重启（与两个既有网关同款语义）。
     let body_limit = state.body_limit_bytes;
     axum::Router::new()
-        .route("/healthz", get(routes::healthz))
+        .merge(crate::health_routes(routes::health))
         .route("/status", get(routes::status))
         .route("/v1/models", get(routes::models))
         // ★ 三个 LLM 端点：**共用一份分派**（`relay_llm`），差异只有错误体形状与 Trae 是否支持。
@@ -584,35 +585,44 @@ mod tests {
     /// 但 axum 语法不对（如把 0.7 的 `*path` 写成 0.8 的 `{*path}`）⇒ **router 构建期 panic**
     /// ⇒ 网关根本起不来，而编译期完全测不出来。故本用例**真的构建 router 并真的发一条请求**。
     #[tokio::test]
-    async fn router_builds_and_healthz_answers() {
+    async fn router_builds_and_answers_both_health_paths() {
         use axum::body::Body;
         use axum::http::Request;
         use tower::ServiceExt; // oneshot
 
         let (state, dir) = temp_state("router");
-        let app = router(state);
 
-        let response = app
-            .oneshot(
-                Request::builder()
-                    .uri("/healthz")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .expect("router 必须能构建并响应（构建期 panic 会让网关完全起不来）");
-        assert_eq!(response.status(), axum::http::StatusCode::OK);
+        // ★ 两个路径都必须 200，且返回体逐字相同（同一个处理器）。
+        let mut bodies = Vec::new();
+        for path in crate::HEALTH_PATHS {
+            let app = router(state.clone());
+            let response = app
+                .oneshot(
+                    Request::builder()
+                        .uri(path)
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .expect("router 必须能构建并响应（构建期 panic 会让网关完全起不来）");
+            assert_eq!(response.status(), axum::http::StatusCode::OK, "{path} 必须 200");
 
-        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-        assert_eq!(body["service"], "unified-gateway");
-        assert_eq!(body["running"], true);
+            let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .unwrap();
+            let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+            assert_eq!(body["service"], "unified-gateway");
+            assert_eq!(body["running"], true);
+            assert_eq!(
+                body["namespaces"].as_array().unwrap().len(),
+                6,
+                "默认启用集应是派生层 6 条（3 平台 × 2 区域）"
+            );
+            bodies.push(bytes.to_vec());
+        }
         assert_eq!(
-            body["namespaces"].as_array().unwrap().len(),
-            6,
-            "默认启用集应是派生层 6 条（3 平台 × 2 区域）"
+            bodies[0], bodies[1],
+            "`/health` 与 `/healthz` 必须由同一个处理器产出（返回体逐字相同）"
         );
         std::fs::remove_dir_all(dir).unwrap();
     }
@@ -635,6 +645,7 @@ mod tests {
         assert_eq!(
             UnifiedGateway::OWNED_PATHS,
             &[
+                "/health",
                 "/healthz",
                 "/status",
                 "/v1/models",
@@ -712,7 +723,7 @@ mod tests {
         let addr = handle.addr();
         assert_ne!(addr.port(), 0, "端口 0 应由内核分配成真实端口");
 
-        let response = reqwest::get(format!("http://{addr}/healthz"))
+        let response = reqwest::get(format!("http://{addr}/health"))
             .await
             .expect("真实 HTTP 请求应成功（起不来会在这里连不上）");
         assert_eq!(response.status(), reqwest::StatusCode::OK);

@@ -1,4 +1,4 @@
-//! `GET /healthz`：免鉴权，返回可用性摘要（P1-6）。
+//! `GET /health`（兼容别名 `/healthz`）：免鉴权，返回可用性摘要（P1-6）。
 
 use axum::extract::State;
 use axum::http::StatusCode;

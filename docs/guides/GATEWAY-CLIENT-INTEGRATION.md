@@ -40,7 +40,7 @@
 | `POST /v1/chat/completions` | ✅ | ✅ | ✅ |
 | `POST /v1/messages`（Anthropic） | ✅ | ✅ | ✅ |
 | `POST /v1/responses`（Responses API） | ✅ | ❌ **没有** | ⚠️ 取决于命名空间：`wb-*` 可用，`trae-*` 返回 **501** |
-| 健康检查（免鉴权） | `GET /healthz` | `GET /health` | `GET /healthz` |
+| 健康检查（免鉴权） | `GET /health`（兼容 `/healthz`） | `GET /health`（兼容 `/healthz`） | `GET /health`（兼容 `/healthz`） |
 | `GET /status`（需鉴权） | ✅ | ✅ | ✅ |
 | 业务转发 `POST /biz/*path` | ✅（WB 独有） | ❌ | ✅（命名空间来自 Key 的 `biz_namespace`） |
 | **认证头** | `x-api-key` **优先**，其次 `Authorization: Bearer` | **只认 `Authorization: Bearer`** | **两者都收**（同 WB 规则） |

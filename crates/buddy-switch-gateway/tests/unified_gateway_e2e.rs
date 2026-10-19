@@ -95,7 +95,7 @@ async fn start_gateway(
 /// 统一网关的 `config` 是 `Arc<RwLock<…>>`，`Clone` 廉价且**共享同一个 Arc**
 /// ⇒ 外部拿克隆改配置，监听下一跳就读到新值 —— 「配置热改立刻生效」因此**可测**。
 ///
-/// （改造前那条用例以为「无法从测试外部拿到监听持有的 state」，退而断言 `/healthz`
+/// （改造前那条用例以为「无法从测试外部拿到监听持有的 state」，退而断言 `/health`
 /// 的命名空间条数，等于**没测**它名字说的那件事。）
 async fn start_gateway_with_state(
     key_namespaces: &[&str],
@@ -229,21 +229,29 @@ async fn every_path_is_mounted_and_requires_credentials() {
     std::fs::remove_dir_all(dir).unwrap();
 }
 
-/// `/healthz` 免鉴权，且内容能反映配置。
+/// 两个健康检查路径都免鉴权，且内容能反映配置。
 #[tokio::test]
-async fn healthz_is_public_and_reflects_the_config() {
+async fn health_paths_are_public_and_reflect_the_config() {
     let (base, _key, dir, handle) = start_gateway(&["wb-cn"], None, |_| {}).await;
-    let (status, body) = get(&base, "/healthz", None).await;
-    assert_eq!(status, StatusCode::OK);
-    assert_eq!(body["service"], "unified-gateway");
-    assert_eq!(body["running"], true);
-    assert_eq!(body["enabled"], true);
+    let mut bodies = Vec::new();
+    for path in buddy_switch_gateway::HEALTH_PATHS {
+        let (status, body) = get(&base, path, None).await;
+        assert_eq!(status, StatusCode::OK, "{path} 必须免鉴权且 200");
+        assert_eq!(body["service"], "unified-gateway");
+        assert_eq!(body["running"], true);
+        assert_eq!(body["enabled"], true);
+        assert_eq!(
+            body["namespaces"].as_array().unwrap().len(),
+            6,
+            "默认启用集应是派生层 6 条（3 平台 × 2 区域；Qoder 于 2026-10-15 加入）"
+        );
+        bodies.push(body);
+    }
     assert_eq!(
-        body["namespaces"].as_array().unwrap().len(),
-        6,
-        "默认启用集应是派生层 6 条（3 平台 × 2 区域；Qoder 于 2026-10-15 加入）"
+        bodies[0], bodies[1],
+        "`/health` 与 `/healthz` 必须同源（返回体逐字相同）"
     );
-    assert_eq!(body["keys"]["total"], 1);
+    assert_eq!(bodies[0]["keys"]["total"], 1);
 
     handle.shutdown().await;
     std::fs::remove_dir_all(dir).unwrap();
@@ -682,7 +690,7 @@ async fn every_owned_path_is_really_mounted() {
     let mut probed: BTreeSet<&str> = BTreeSet::new();
     for path in UnifiedGateway::OWNED_PATHS {
         let target = path.replace("/*path", "/probe");
-        let (status, _) = if target.starts_with("/healthz") {
+        let (status, _) = if buddy_switch_gateway::HEALTH_PATHS.contains(path) {
             get(&base, &target, None).await
         } else {
             post(&base, &target, None, "{}").await
@@ -695,7 +703,8 @@ async fn every_owned_path_is_really_mounted() {
         probed.insert(path);
     }
     assert_eq!(probed.len(), UnifiedGateway::OWNED_PATHS.len());
-    assert_eq!(probed.len(), 7, "统一网关应声明 7 条路径");
+    // 8 条 = 健康检查 2 条（canonical + 兼容别名）+ status / models / chat / messages / responses / biz
+    assert_eq!(probed.len(), 8, "统一网关应声明 8 条路径");
 
     handle.shutdown().await;
     std::fs::remove_dir_all(dir).unwrap();
@@ -720,7 +729,7 @@ async fn router_can_be_used_without_a_listener() {
     let response = router(state)
         .oneshot(
             Request::builder()
-                .uri("/healthz")
+                .uri(buddy_switch_gateway::HEALTH_CANONICAL_PATH)
                 .body(Body::empty())
                 .unwrap(),
         )

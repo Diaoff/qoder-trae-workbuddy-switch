@@ -585,7 +585,7 @@ pub fn router(state: QoderGatewayState) -> axum::Router {
     use axum::routing::{get, post};
     let body_limit = state.body_limit_bytes;
     axum::Router::new()
-        .route("/healthz", get(routes::healthz))
+        .merge(crate::health_routes(routes::health))
         .route("/status", get(routes::status))
         .route("/v1/models", get(routes::models))
         .route("/v1/chat/completions", post(routes::chat_completions))
@@ -642,6 +642,7 @@ impl GatewayProduct for QoderGateway {
     type State = QoderGatewayState;
 
     const OWNED_PATHS: &'static [&'static str] = &[
+        "/health",
         "/healthz",
         "/status",
         "/v1/models",

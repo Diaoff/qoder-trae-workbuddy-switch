@@ -239,22 +239,24 @@ async fn body_text(response: Response) -> String {
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
-async fn health_needs_no_authorization() {
+async fn health_paths_need_no_authorization() {
     let _guard = guard();
     let home = isolated_home("health", &[("uid-a", "jwt-a")]);
     let (state, _key) = gateway_for(Behavior::Normal).await;
 
-    let response = router(state)
-        .oneshot(
-            Request::builder()
-                .uri("/health")
-                .body(Body::empty())
-                .expect("构造请求"),
-        )
-        .await
-        .expect("路由调用");
-
-    assert_eq!(response.status(), StatusCode::OK, "/health 必须免鉴权");
+    // canonical `/health` + 兼容别名 `/healthz`：两者都必须免鉴权且 200。
+    for path in buddy_switch_gateway::HEALTH_PATHS {
+        let response = router(state.clone())
+            .oneshot(
+                Request::builder()
+                    .uri(path)
+                    .body(Body::empty())
+                    .expect("构造请求"),
+            )
+            .await
+            .expect("路由调用");
+        assert_eq!(response.status(), StatusCode::OK, "{path} 必须免鉴权");
+    }
     let _ = std::fs::remove_dir_all(&home);
 }
 

@@ -1585,7 +1585,7 @@ cc-switch 能改的只有 **LLM API 的 base URL** ⇒ **它接管的只有 LLM 
 
 ```
 一个 provider ──► 统一网关 127.0.0.1:57892（新增，默认关）
-sk-uni-…          /healthz /status /v1/models
+sk-uni-…          /health /status /v1/models
                   /v1/chat/completions /v1/messages /v1/responses /biz/*path
                             │ 按模型名的命名空间前缀分派
                 ┌───────────┴───────────┐

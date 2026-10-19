@@ -320,19 +320,22 @@ impl Drop for ResetDisabled {
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
-async fn healthz_needs_no_authorization() {
+async fn health_paths_need_no_authorization() {
     let _guard = guard();
-    let (state, _key) = gateway_for("health", &[("q1", "dt-1")], Behavior::Normal).await;
-    let response = router(state)
-        .oneshot(
-            Request::builder()
-                .uri("/healthz")
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .expect("请求");
-    assert_eq!(response.status(), StatusCode::OK);
+    // 两个路径都必须免鉴权且 200（canonical `/health` + 兼容别名 `/healthz`）。
+    for path in buddy_switch_gateway::HEALTH_PATHS {
+        let (state, _key) = gateway_for("health", &[("q1", "dt-1")], Behavior::Normal).await;
+        let response = router(state)
+            .oneshot(
+                Request::builder()
+                    .uri(path)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .expect("请求");
+        assert_eq!(response.status(), StatusCode::OK, "{path} 必须免鉴权且 200");
+    }
 }
 
 #[tokio::test]

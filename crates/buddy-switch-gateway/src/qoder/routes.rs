@@ -2,7 +2,7 @@
 //!
 //! | 端点 | 说明 |
 //! |:--|:--|
-//! | `GET /healthz` | 免鉴权 |
+//! | `GET /health`（兼容 `/healthz`） | 免鉴权 |
 //! | `GET /status` | 池状态 / Key 数 / 计数（管理面用） |
 //! | `GET /v1/models` | 该 Key 归属区域的清单（**禁用过滤同源**） |
 //! | `POST /v1/chat/completions` | OpenAI 协议入口 |
@@ -90,12 +90,12 @@ pub enum Protocol {
 // 基础端点
 // ---------------------------------------------------------------------------
 
-/// `GET /healthz`（免鉴权）。
-pub async fn healthz() -> Response {
+/// `GET /health`（免鉴权；`/healthz` 为兼容别名，见 [`crate::HEALTH_PATHS`]）。
+pub async fn health() -> Response {
     axum::Json(json!({ "ok": true })).into_response()
 }
 
-/// 鉴权中间件：`/healthz` 免鉴权；其余端点校验 `Bearer <API Key>`。
+/// 鉴权中间件：健康检查（[`crate::HEALTH_PATHS`]）免鉴权；其余端点校验 `Bearer <API Key>`。
 ///
 /// 错误体形状按**端点**分派（`/v1/messages` 用 Anthropic 形状）—— 给 Anthropic
 /// 客户端 OpenAI 形状的话，它报的是「响应格式错误」而不是「凭据无效」，排查方向被带偏。
@@ -104,7 +104,7 @@ pub async fn bearer_auth(
     mut request: Request,
     next: Next,
 ) -> Response {
-    if request.uri().path() == "/healthz" {
+    if crate::HEALTH_PATHS.contains(&request.uri().path()) {
         return next.run(request).await;
     }
     let protocol = if request.uri().path() == "/v1/messages" {

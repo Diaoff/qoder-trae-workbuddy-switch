@@ -71,11 +71,52 @@ use std::sync::OnceLock;
 use tokio::net::TcpListener;
 use tokio::sync::oneshot;
 
+/// 健康检查的**两个等价路径**：canonical [`HEALTH_CANONICAL_PATH`]，另一个是兼容别名。
+///
+/// ## 为什么改名为 `/health` 又保留 `/healthz`
+///
+/// `-z` 后缀是 k8s / Google 的探针命名习惯（用来和「名为 health 的资源」区分）；本仓四个
+/// 网关都是**固定路由的独立端口**，不存在这种冲突 ⇒ 这个后缀换不到任何东西，只换来
+/// 「为什么不是 health」这一个反复被问的问题。故 canonical 改为 `/health`。
+///
+/// 但 `/healthz` 已经随 WB / Qoder / 统一入口发出去过，用户的探活脚本里可能写死它 ——
+/// 直接删属于没必要的破坏。**两个都留、只宣传 `/health`**：文档、示例、验收脚本一律用
+/// `/health`；`/healthz` 作为兼容别名长期保留（成本是一条路由，收益是不打断任何人）。
+///
+/// ⚠️ 不要在别处再手写这两个路径：挂载点唯一（[`health_routes`]），
+/// 否则「都支持」迟早退化成「四条线有的挂了一个、有的挂了两个」。
+pub const HEALTH_CANONICAL_PATH: &str = "/health";
+
+/// 健康检查的兼容别名（旧路径，见 [`HEALTH_CANONICAL_PATH`] 的说明）。
+pub const HEALTH_LEGACY_PATH: &str = "/healthz";
+
+/// 健康检查的全部路径（canonical 在前）。
+pub const HEALTH_PATHS: [&str; 2] = [HEALTH_CANONICAL_PATH, HEALTH_LEGACY_PATH];
+
+/// 把**同一个**健康检查处理器挂到 [`HEALTH_PATHS`] 的每一个路径上。
+///
+/// 单一挂载点：四个网关都经本函数取路由 ⇒ 「两个路径等价」是结构保证，不靠自觉。
+/// 泛型只为让各网关的 state 类型（`GatewayState` / `TraeGatewayState` / …）各自成立。
+pub fn health_routes<S, H, T>(handler: H) -> axum::Router<S>
+where
+    S: Clone + Send + Sync + 'static,
+    H: axum::handler::Handler<T, S> + Clone,
+    T: 'static,
+{
+    use axum::routing::get;
+    let mut router = axum::Router::new();
+    for path in HEALTH_PATHS {
+        router = router.route(path, get(handler.clone()));
+    }
+    router
+}
+
 /// 组装网关对外路由（**不含 fallback**）。
 ///
-/// 挂载：`GET /healthz`、`GET /v1/models`、`GET /status`、
-/// `POST /v1/chat/completions`、`POST /v1/messages`、`POST /v1/responses`。
-/// 鉴权在各自 handler 内完成（Key 绑定 region）；`/healthz` 免鉴权。
+/// 挂载：`GET /health`（兼容 `/healthz`，见 [`HEALTH_PATHS`]）、`GET /v1/models`、
+/// `GET /status`、`POST /v1/chat/completions`、`POST /v1/messages`、
+/// `POST /v1/responses`。
+/// 鉴权在各自 handler 内完成（Key 绑定 region）；健康检查免鉴权。
 pub fn router(state: GatewayState) -> axum::Router {
     use axum::routing::{get, post};
     // 请求体上限：axum 的 `DefaultBodyLimit` **默认只有 2MB**，大上下文（长代码文件、
@@ -83,7 +124,7 @@ pub fn router(state: GatewayState) -> axum::Router {
     // （见 `GatewayConfig::max_body_mb`）。
     let body_limit = state.body_limit_bytes;
     axum::Router::new()
-        .route("/healthz", get(routes::health::handler))
+        .merge(health_routes(routes::health::handler))
         .route("/v1/models", get(routes::models::handler))
         .route("/status", get(routes::status::handler))
         .route("/v1/chat/completions", post(routes::chat::handler))
@@ -345,8 +386,9 @@ impl<P: GatewayProduct> GatewayHost<P> {
 
 /// WorkBuddy 网关产品线（[`GatewayProduct`] 的 WB 实现）。
 ///
-/// **路径所有权**：`GET /healthz`、`GET /v1/models`、`GET /status`、
-/// `POST /v1/chat/completions`、`POST /v1/messages`、`POST /v1/responses`（见 [`router`]）。
+/// **路径所有权**：`GET /health` + `/healthz`（见 [`HEALTH_PATHS`]）、`GET /v1/models`、
+/// `GET /status`、`POST /v1/chat/completions`、`POST /v1/messages`、
+/// `POST /v1/responses`（见 [`router`]）。
 pub struct WbGateway;
 
 /// WorkBuddy 网关的进程内共享状态（惰性初始化，读一次配置）。
@@ -356,6 +398,7 @@ impl GatewayProduct for WbGateway {
     type State = GatewayState;
 
     const OWNED_PATHS: &'static [&'static str] = &[
+        "/health",
         "/healthz",
         "/v1/models",
         "/status",
@@ -572,15 +615,83 @@ mod tests {
         std::fs::remove_dir_all(&home).ok();
     }
 
-    /// 两平台各自的路径所有权**互不相同**（各挂自己的健康检查 / 状态路径），
-    /// 且**各自非空**。
+    /// 四个网关的路径所有权都**非空**，且**都声明了两个健康检查路径**。
+    ///
+    /// 回归背景：改名 `/healthz` → `/health` 时最省事的做法是「只改路由、不改声明」，
+    /// 或只改三条线里的两条 ⇒ 文档写着两个等价、实际某条线 404。本用例把
+    /// 「都支持」钉在每个 `OWNED_PATHS` 上（真正的挂载由
+    /// [`health_endpoints_answer_on_every_gateway`] 真发请求守）。
     #[test]
-    fn each_product_declares_a_nonempty_distinct_path_set() {
-        for paths in [WbGateway::OWNED_PATHS, trae::TraeGateway::OWNED_PATHS] {
-            assert!(!paths.is_empty(), "路径所有权不得为空");
+    fn every_product_declares_both_health_paths() {
+        for (label, paths) in [
+            ("WorkBuddy", WbGateway::OWNED_PATHS),
+            ("Trae", trae::TraeGateway::OWNED_PATHS),
+            // Qoder 与统一网关的 `OWNED_PATHS` 在各自模块里，平级模块可直接读。
+            ("Qoder", crate::qoder::QoderGateway::OWNED_PATHS),
+            ("统一网关", crate::unified::UnifiedGateway::OWNED_PATHS),
+        ] {
+            assert!(!paths.is_empty(), "{label} 的路径所有权不得为空");
+            for path in HEALTH_PATHS {
+                assert!(
+                    paths.contains(&path),
+                    "{label} 的 OWNED_PATHS 缺少健康检查路径 `{path}` —— \
+                     声明与实现脱节（四个网关必须都支持 `{HEALTH_CANONICAL_PATH}` 与兼容别名）"
+                );
+            }
         }
-        // WB 有 `/healthz`，Trae 有 `/health`：各自独有。
-        assert!(WbGateway::OWNED_PATHS.contains(&"/healthz"));
-        assert!(trae::TraeGateway::OWNED_PATHS.contains(&"/health"));
+    }
+
+    /// ★★ 真发请求：`/health` 与 `/healthz` 都必须 200，且返回体**逐字相同**。
+    ///
+    /// 为什么不能只查 `OWNED_PATHS`：那张表是声明，axum 里没挂照样 404。
+    /// 为什么要求「逐字相同」：两个路径必须是**同一个处理器**；各写一份迟早分家
+    /// （这正是本次统一要消灭的那类缺陷）。
+    #[tokio::test]
+    async fn health_endpoints_answer_on_every_gateway() {
+        use axum::body::Body;
+        use axum::http::Request;
+        use tower::ServiceExt;
+
+        // 隔离 home：`GatewayState::new` 会读配置与目录。
+        let home = std::env::temp_dir().join(format!("buddy-switch-health-{}", std::process::id()));
+        std::fs::create_dir_all(&home).unwrap();
+        std::env::set_var(
+            buddy_switch_core::modules::config::BUDDY_SWITCH_HOME_ENV,
+            &home,
+        );
+
+        // ★ 必须复用**同一份** state：返回体里带 `startedAt`，两次新建 state 会差几毫秒，
+        //   断言「逐字相同」就会因为时间戳而不成立（不是路由分家）。
+        let state = GatewayState::new(GatewayConfig::default());
+        let mut bodies = Vec::new();
+        for path in HEALTH_PATHS {
+            let app = router(state.clone());
+            let response = app
+                .oneshot(
+                    Request::builder()
+                        .method("GET")
+                        .uri(path)
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(
+                response.status(),
+                axum::http::StatusCode::OK,
+                "WB 网关的 `{path}` 没有 200 —— 健康检查路径只改了声明、没挂路由？"
+            );
+            let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .unwrap();
+            bodies.push(bytes.to_vec());
+        }
+        assert_eq!(
+            bodies[0], bodies[1],
+            "`{HEALTH_CANONICAL_PATH}` 与 `{HEALTH_LEGACY_PATH}` 的返回体必须逐字相同 \
+             —— 两个路径共用同一个处理器，不能各写一份"
+        );
+
+        std::fs::remove_dir_all(&home).ok();
     }
 }

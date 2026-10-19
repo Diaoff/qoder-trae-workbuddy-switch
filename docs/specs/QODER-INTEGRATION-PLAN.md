@@ -82,7 +82,7 @@ L5 门禁同步 + 全量验证   check-scope-registry.cjs / check-api-contract.c
 | 文件 | 改动 | 备注 |
 |:--|:--|:--|
 | `qoder/mod.rs`（新建） | `QoderGateway` + `impl GatewayProduct` + `OWNED_PATHS` + 进程内单例 | 照 `trae/mod.rs` |
-| `qoder/routes.rs`（新建） | `/healthz` `/status` `/v1/models` `/v1/chat/completions` `/v1/messages`；鉴权 `Authorization: Bearer` | ★ `/v1/responses` 明确 **501**（Qoder 无等价协议） |
+| `qoder/routes.rs`（新建） | `/health`（兼容 `/healthz`）`/status` `/v1/models` `/v1/chat/completions` `/v1/messages`；鉴权 `Authorization: Bearer` | ★ `/v1/responses` 明确 **501**（Qoder 无等价协议） |
 | `qoder/pool.rs`（新建） | `QoderPoolEntry` + `impl PoolEntryLike` + `qoder_pick_policy()` | 照 `trae/pool.rs` |
 | `qoder/apikey.rs`（新建） | 密钥库（`qd-` 前缀）+ 三态动作 | 照 `trae/apikey.rs` |
 | `qoder/payload.rs` / `qoder/sse.rs`（新建） | 请求体构造 / SSE 解析 | |

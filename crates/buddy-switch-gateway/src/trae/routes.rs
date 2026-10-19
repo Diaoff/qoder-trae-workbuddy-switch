@@ -123,7 +123,8 @@ pub async fn health(State(state): State<TraeGatewayState>) -> Response {
     )
 }
 
-/// Bearer 鉴权中间件：`/health` 免鉴权，其余端点校验 `Authorization: Bearer <key>`。
+/// Bearer 鉴权中间件：健康检查（[`crate::HEALTH_PATHS`]）免鉴权，其余端点校验
+/// `Authorization: Bearer <key>`。
 ///
 /// 与参考实现的一处**有意差异**：没有任何可用 Key 时**拒绝**而不是放行。参考实现
 /// 「留空即不鉴权」意味着任何人只要猜到 57894 端口就能白嫖额度；本网关要求 Key 由
@@ -137,7 +138,7 @@ pub async fn bearer_auth(
     mut request: Request,
     next: Next,
 ) -> Response {
-    if request.uri().path() == "/health" {
+    if crate::HEALTH_PATHS.contains(&request.uri().path()) {
         return next.run(request).await;
     }
 

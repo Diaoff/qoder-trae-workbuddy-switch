@@ -667,13 +667,14 @@ pub async fn status_view(
 
 /// 组装 Trae 网关路由（**不含 fallback**）。
 ///
-/// 挂载 `GET /health`、`GET /status`、`GET /v1/models`、`POST /v1/chat/completions`。
-/// 鉴权由 [`routes::bearer_auth`] 统一处理，`/health` 免鉴权。
+/// 挂载 `GET /health`（兼容 `/healthz`，见 [`crate::HEALTH_PATHS`]）、`GET /status`、
+/// `GET /v1/models`、`POST /v1/chat/completions`。
+/// 鉴权由 [`routes::bearer_auth`] 统一处理，健康检查免鉴权。
 pub fn router(state: TraeGatewayState) -> axum::Router {
     use axum::routing::{get, post};
     let body_limit = state.body_limit_bytes;
     axum::Router::new()
-        .route("/health", get(routes::health))
+        .merge(crate::health_routes(routes::health))
         .route("/status", get(routes::status))
         .route("/v1/models", get(routes::models))
         .route("/v1/chat/completions", post(routes::chat_completions))
@@ -751,6 +752,7 @@ impl crate::GatewayProduct for TraeGateway {
 
     const OWNED_PATHS: &'static [&'static str] = &[
         "/health",
+        "/healthz",
         "/status",
         "/v1/models",
         "/v1/chat/completions",
