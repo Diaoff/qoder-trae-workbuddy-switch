@@ -42,9 +42,9 @@ COPY package.json package-lock.json ./
 RUN npm ci
 
 # 再拷源码。
-# ⚠️ `npm run build`（不是 `build:fast`）：它带 `tsc` 类型检查与四条门禁
-# （api 契约 / store 选择器 / 作用域注册表 / npm 平台表）。镜像与发布走同一条路径，
-# 否则容器里跑的可能是一份类型就不通过的前端。
+# ⚠️ `npm run build`（不是 `build:fast`）：它带 `tsc` 类型检查与**全部**契约门禁
+# （api 契约 / docker / store 选择器 / 作用域注册表 / npm 平台表 / hook 来源 / Pages base）。
+# 镜像与发布走同一条路径，否则容器里跑的可能是一份类型就不通过的前端。
 COPY . .
 RUN npm run build
 

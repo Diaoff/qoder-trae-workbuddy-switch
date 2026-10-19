@@ -190,15 +190,18 @@ flowchart TB
 
 **三条硬纪律**，贯穿全部功能：数据只落本机、凭据只写客户端登录态（不代登录、不改上游协议）、任何写入前先备份。
 
-## 三种形态
+## 四种形态
 
 | 形态 | 获取方式 | 说明 |
 | --- | --- | --- |
 | **桌面 App** | [GitHub Releases](https://github.com/NextAgentX/qoder-trae-workbuddy-switch/releases/latest) 下载安装包 | Tauri 打包，推荐日常使用 |
 | **webui** | 从源码构建（见下） | 与桌面 App 同一份前端产物，走本地 HTTP 通道 |
+| **Docker** | 拉预构建镜像 `ghcr.io/nextagentx/buddy-switch`（amd64 / arm64） | 容器内是 **headless 服务端**（webui + API 网关），**不是**桌面切换器；见 [Docker 部署](docs/guides/DOCKER.md) |
 | **在线演示** | [GitHub Pages](https://nextagentx.github.io/qoder-trae-workbuddy-switch/) | 只读演示，账号与用量均为虚构数据 |
 
 > npm 包尚未发布，`npm i -g` 暂时装不到；webui 请按下面的源码构建。
+>
+> Docker 形态只跑**服务端**：切换客户端登录态、启动客户端、托盘、悬浮窗这些依赖**同机图形客户端**的能力在容器里一律不可用（webui 上会显示为不可用/无数据）。
 
 ## 快速开始
 

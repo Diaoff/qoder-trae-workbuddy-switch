@@ -17,6 +17,11 @@
 //      宿主访问不到，而容器日志一切正常（只打印一行 webui 地址）。
 //   ④ `.dockerignore` **必须**排除 `dist/` —— 否则宿主机那份旧前端可能被编进二进制，
 //      表现为「页面正常但内容是旧的」。
+//   ⑥ 发布工作流（`.github/workflows/docker.yml`）里的**镜像名**必须与
+//      `docker-compose.yml` / `README.md` / `docs/guides/DOCKER.md` 逐字一致。
+//      漂移的症状极隐蔽：compose 拉不到镜像就**静默回落成本地构建**，
+//      用户只看到「很慢」，看不到「错」。同一个工作流还必须留 `packages: write`，
+//      少了它只有到打 tag 那一轮才会 403。
 //
 // 用法：node scripts/check-docker.cjs   （npm run check:docker）
 
@@ -168,6 +173,75 @@ if (dockerfile) {
   }
   if (!dockerfile.includes("entrypoint.sh")) {
     fail("Dockerfile 没有引用 docker/entrypoint.sh —— BUDDY_SWITCH_HOME 不会被创建，CLI 会拒绝启动");
+  }
+}
+
+// ---------------------------------------------------------------------------
+// ⑥ 镜像名：发布工作流 / compose / README / 部署指南 四处必须逐字一致
+// ---------------------------------------------------------------------------
+// 镜像名是一串**没有任何编译期保护**的字面量，漂移后的症状极其隐蔽：
+// compose 里写的名字与工作流推的名字不同 ⇒ 拉不到 ⇒ 静默回落成本地构建
+// （那一轮构建要几分钟到十几分钟），用户只会觉得「慢」，不会觉得「错」。
+const WORKFLOWS_DIR = path.join(ROOT, ".github", "workflows");
+const DOCKER_WORKFLOW = path.join(WORKFLOWS_DIR, "docker.yml");
+const README = path.join(ROOT, "README.md");
+const DOCKER_GUIDE = path.join(ROOT, "docs", "guides", "DOCKER.md");
+
+let publishedImage = null;
+
+// `.github` 在 `.dockerignore` 里被排除 —— 镜像内跑 `npm run build` 时本目录**不存在**，
+// 这是**预期**状态，不是缺失。只有「本目录存在但工作流文件不见了」才算失败。
+if (!fs.existsSync(WORKFLOWS_DIR)) {
+  notes.push("跳过镜像名校验：构建上下文里没有 .github（.dockerignore 已排除）");
+} else {
+  const workflow = read(DOCKER_WORKFLOW);
+  if (workflow) {
+    const match = workflow.match(/^\s*IMAGE:\s*(\S+)\s*$/m);
+    if (!match) {
+      fail("`.github/workflows/docker.yml` 里找不到 `IMAGE:` —— 镜像名必须只有一处定义");
+    } else {
+      publishedImage = match[1];
+      if (publishedImage !== publishedImage.toLowerCase()) {
+        fail(`镜像名 \`${publishedImage}\` 含大写 —— docker 会判 invalid reference format`);
+      }
+      // `packages: write` 少了的话，构建能一路绿到 push 才 403（release 才暴露）。
+      if (!/^\s*packages:\s*write\s*$/m.test(workflow)) {
+        fail("`.github/workflows/docker.yml` 没有 `packages: write` —— 推 GHCR 会 403");
+      }
+      // tag 触发是唯一的正式发布通道；漏了它镜像永远只有 edge/不发布。
+      if (!/tags:\s*\[\s*["']v\*["']\s*\]/.test(workflow)) {
+        fail("`.github/workflows/docker.yml` 没有 `on.push.tags: [\"v*\"]` —— 打 tag 不会发布镜像");
+      }
+
+      // compose：`image:` 必须指向同一个名字（tag 随意），且**保留** `build:` 作为回落。
+      const composeImageMatch = /^\s*image:\s*(\S+)\s*$/m.exec(compose || "");
+      if (!composeImageMatch) {
+        fail("docker-compose.yml 里没有 `image:` —— `up -d` 会变成纯源码构建");
+      } else {
+        const composeImage = composeImageMatch[1];
+        if (!composeImage.startsWith(`${publishedImage}:`)) {
+          fail(
+            `docker-compose.yml 的 image \`${composeImage}\` 与工作流发布的 \`${publishedImage}\` 不一致` +
+              "（症状：拉不到镜像 → 静默回落成本地构建）",
+          );
+        } else if (!/^\s*build:\s*$/m.test(compose)) {
+          fail("docker-compose.yml 丢了 `build:` —— 离线 / 拉不到镜像时没有任何来源码构建的入口");
+        } else {
+          notes.push(`镜像名一致：${publishedImage}`);
+        }
+      }
+
+      // 文档：README 是「发现 Docker 入口」的唯一地方，部署指南是唯一细节来源。
+      for (const [label, file] of [
+        ["README.md", README],
+        ["docs/guides/DOCKER.md", DOCKER_GUIDE],
+      ]) {
+        const source = read(file);
+        if (source && !source.includes(publishedImage)) {
+          fail(`${label} 里没有出现镜像名 \`${publishedImage}\` —— 用户无从知道该拉什么`);
+        }
+      }
+    }
   }
 }
 

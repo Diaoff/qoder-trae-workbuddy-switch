@@ -193,15 +193,18 @@ flowchart TB
 
 **Three hard rules** hold everywhere: data stays on this machine, credentials are only written into client login state (no proxy login, no upstream protocol hacks), and every write is backed up first.
 
-## Three forms
+## Four forms
 
 | Form | How to get it | Notes |
 | --- | --- | --- |
 | **Desktop app** | Download from [GitHub Releases](https://github.com/NextAgentX/qoder-trae-workbuddy-switch/releases/latest) | Packaged with Tauri; recommended for daily use |
 | **webui** | Build from source (below) | Same frontend bundle as the desktop app, served over local HTTP |
+| **Docker** | Pull the prebuilt image `ghcr.io/nextagentx/buddy-switch` (amd64 / arm64) | The container runs the **headless server** (webui + API gateways), **not** the desktop switcher; see [Docker deployment](docs/guides/DOCKER.md) |
 | **Online demo** | [GitHub Pages](https://nextagentx.github.io/qoder-trae-workbuddy-switch/) | Read-only demo; accounts and usage are fictional |
 
 > The npm package is not published yet, so `npm i -g` will not install it; use the source build below for the webui form.
+>
+> The Docker form is **server-only**: switching client login state, launching the client, the tray and the floating window all need a **graphical client on the same machine**, so none of them work inside the container.
 
 ## Quick start
 

@@ -193,15 +193,18 @@ flowchart TB
 
 **3 つの不変ルール**：データは常にローカル、認証情報はクライアントのログイン状態に書き込むだけ（代理ログインや上流プロトコルの改変はしない）、書き込み前には必ずバックアップ。
 
-## 3 つの形態
+## 4 つの形態
 
 | 形態 | 入手方法 | 説明 |
 | --- | --- | --- |
 | **デスクトップアプリ** | [GitHub Releases](https://github.com/NextAgentX/qoder-trae-workbuddy-switch/releases/latest) からインストーラーを取得 | Tauri 製。日常利用に推奨 |
 | **webui** | ソースからビルド（下記） | デスクトップ版と同じフロントエンド成果物をローカル HTTP で配信 |
+| **Docker** | ビルド済みイメージ `ghcr.io/nextagentx/buddy-switch`（amd64 / arm64）を取得 | コンテナ内で動くのは **headless サーバー**（webui + API ゲートウェイ）で、デスクトップ版の切り替え機能は**ありません**。詳細は [Docker でのデプロイ](docs/guides/DOCKER.md) |
 | **オンラインデモ** | [GitHub Pages](https://nextagentx.github.io/qoder-trae-workbuddy-switch/) | 読み取り専用。アカウントや利用量はすべて架空のデータ |
 
 > npm パッケージは未公開のため `npm i -g` ではインストールできません。webui は下記のソースビルドをご利用ください。
+>
+> Docker 形態は**サーバーのみ**です。クライアントのログイン状態の切り替え、クライアントの起動、トレイ、フローティングウィンドウは**同じマシン上の GUI クライアント**が前提のため、コンテナ内では一切使えません。
 
 ## クイックスタート
 

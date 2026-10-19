@@ -193,15 +193,18 @@ flowchart TB
 
 **Trois règles intangibles** partout : les données restent sur cette machine, les identifiants ne sont écrits que dans l'état de connexion des clients (pas de connexion proxy, pas de modification des protocoles amont), et toute écriture est précédée d'une sauvegarde.
 
-## Trois formes
+## Quatre formes
 
 | Forme | Comment l'obtenir | Remarque |
 | --- | --- | --- |
 | **Application de bureau** | Télécharger l'installateur depuis [GitHub Releases](https://github.com/NextAgentX/qoder-trae-workbuddy-switch/releases/latest) | Empaquetée avec Tauri ; recommandée au quotidien |
 | **webui** | Compiler depuis les sources (ci-dessous) | Même bundle frontal que l'application, servi en HTTP local |
+| **Docker** | Récupérer l'image préconstruite `ghcr.io/nextagentx/buddy-switch` (amd64 / arm64) | Le conteneur embarque le **serveur headless** (webui + passerelles API), **pas** le commutateur de bureau ; voir [Déploiement Docker](docs/guides/DOCKER.md) |
 | **Démo en ligne** | [GitHub Pages](https://nextagentx.github.io/qoder-trae-workbuddy-switch/) | Démo en lecture seule ; comptes et usage fictifs |
 
 > Le paquet npm n'est pas encore publié : `npm i -g` ne l'installera pas. Pour la forme webui, utilisez la compilation depuis les sources ci-dessous.
+>
+> La forme Docker est **serveur uniquement** : changer la session du client, lancer le client, la zone de notification et la fenêtre flottante exigent un **client graphique sur la même machine** — rien de tout cela ne fonctionne dans le conteneur.
 
 ## Démarrage rapide
 

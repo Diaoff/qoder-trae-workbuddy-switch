@@ -1,8 +1,17 @@
 # Buddy Switch 服务端（headless）—— webui + API 网关。
 #
-#   docker compose up -d          # 构建并后台启动
-#   docker compose logs -f        # 看启动日志（会打印最终监听地址）
-#   docker compose down           # 停止（数据保留在命名卷里）
+#   docker compose up -d                 # 拉预构建镜像并后台启动（推荐）
+#   docker compose up -d --pull build    # 忽略镜像、纯源码构建
+#   docker compose logs -f               # 看启动日志（会打印最终监听地址）
+#   docker compose down                  # 停止（数据保留在命名卷里）
+#
+# 镜像从 GHCR 拉取（`linux/amd64` / `linux/arm64` 各一份，打 tag 时由
+# `.github/workflows/docker.yml` 发布）。这里同时写了 `image:` 与 `build:`，走的是
+# Compose 的既定语义：**先 pull，拉不到才 build**（见
+# https://docs.docker.com/reference/compose-file/build/ → "Using build and image"）。
+# 于是 `up -d` = 用预构建镜像（快）；拉不到（离线 / 镜像还没发布 / 想自己改代码）时
+# 才回落到本地全量构建（`npm ci` + 前端门禁 + Rust release，很慢）。
+# ⚠️ 别把 `build:` 删掉 —— 它是**唯一**的源码构建入口。
 #
 # ⚠️ 安全须知（先读再改端口映射）
 #
@@ -17,10 +26,13 @@
 
 services:
   buddy-switch:
+    # 预构建镜像。名字必须与 .github/workflows/docker.yml 的 `IMAGE` 逐字一致
+    # （`scripts/check-docker.cjs` 会校验，连 README 与 docs/guides/DOCKER.md 一起）。
+    image: ghcr.io/nextagentx/buddy-switch:latest
+    # 源码构建 fallback：只有 pull 不到时才用到，见文件头。
     build:
       context: .
       dockerfile: Dockerfile
-    image: buddy-switch:local
     container_name: buddy-switch
     restart: unless-stopped
     ports:
