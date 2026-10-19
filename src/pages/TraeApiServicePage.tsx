@@ -190,10 +190,15 @@ export default function TraeApiServicePage() {
       api.getTraeGatewayConfig(),
       api.getTraeGatewayStatus(variant),
       api.getTraeGatewayLogs(),
-      ...programs.map(async (program) => ({
-        data: await api.getTraeClientModels(program.variant),
-        gatewayNames: readModelNames(await api.getTraeGatewayModels(program.variant)),
-      })),
+      ...programs.map(async (program) => {
+        const gateway = await api.getTraeGatewayModels(program.variant);
+        return {
+          data: await api.getTraeClientModels(program.variant),
+          gatewayNames: readModelNames(gateway),
+          // 逐模型上下文：官方目录的 dev/max（不是统一 1M），表里直接显示。
+          gatewayContexts: readModelContexts(gateway),
+        };
+      }),
     ]);
     return {
       config: normalizeTraeGatewayConfig(configRaw),
@@ -202,6 +207,7 @@ export default function TraeApiServicePage() {
         ...program,
         data: perProgram[index]?.data ?? null,
         gatewayNames: perProgram[index]?.gatewayNames ?? null,
+        gatewayContexts: perProgram[index]?.gatewayContexts ?? null,
       })),
       logs: normalizeTraeGatewayLogs(logsRaw),
     };
@@ -809,6 +815,23 @@ export default function TraeApiServicePage() {
  * 不在对外清单里（那就是「看得见、调不动」的那批）。只解析 `id` 一个字段，
  * 不必再建一份模型类型。
  */
+/**
+ * 同上，但取 `id → context_length` 映射（`/v1/models` 已经按官方目录声明了每个模型**自己的**
+ * 上限：`max > dev` 时是 max，否则是 dev）。表格的「上下文」列直接用这份数字。
+ */
+function readModelContexts(raw: unknown): Record<string, number | null> | null {
+  const record = (raw && typeof raw === "object" ? raw : {}) as Record<string, unknown>;
+  if (!Array.isArray(record.data)) return null;
+  const out: Record<string, number | null> = {};
+  for (const item of record.data) {
+    if (!item || typeof item !== "object") continue;
+    const row = item as Record<string, unknown>;
+    if (typeof row.id !== "string") continue;
+    out[row.id] = typeof row.context_length === "number" ? row.context_length : null;
+  }
+  return out;
+}
+
 function readModelNames(raw: unknown): string[] | null {
   const record = (raw && typeof raw === "object" ? raw : {}) as Record<string, unknown>;
   if (!Array.isArray(record.data)) return null;

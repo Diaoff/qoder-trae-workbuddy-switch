@@ -91,6 +91,7 @@ export function ModelList({ region, className }: { region: Region; className?: s
         // WB 无「非可服务」概念：在清单里即可用（决策 #3）。
         available: true,
         disabled: disabledSet.has(model.id),
+        context_window: model.context_window,
       })),
     [snapshot, disabledSet, scope],
   );
@@ -200,6 +201,7 @@ export function ModelList({ region, className }: { region: Region; className?: s
 
   const labels = {
     colModel: t("shared.gateway.models.colModel"),
+    colContext: t("shared.gateway.models.colContext"),
     colUpstream: t("shared.gateway.models.colUpstream"),
     colExposed: t("shared.gateway.models.colExposed"),
     upstreamAvailable: t("shared.gateway.models.upstreamAvailable"),

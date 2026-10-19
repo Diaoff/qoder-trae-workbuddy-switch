@@ -161,11 +161,12 @@ export function TraeModelList({
           // 上游状态：∈ 网关对外清单即可服务；清单未取到（null）时不谎称「不可用」。
           available: servableNames ? servableNames.has(model.name) : true,
           disabled: disabledSet.has(id),
+          context_window: active?.gatewayContexts?.[model.name] ?? null,
         });
       }
     }
     return out;
-  }, [data, servableNames, disabledSet, scope]);
+  }, [data, servableNames, active, disabledSet, scope]);
 
   const { served, total } = servedCount(rows);
   const loaded = data?.source === "client-cache" && total > 0;
@@ -173,6 +174,7 @@ export function TraeModelList({
 
   const labels = {
     colModel: t("shared.gateway.models.colModel"),
+    colContext: t("shared.gateway.models.colContext"),
     colUpstream: t("shared.gateway.models.colUpstream"),
     colExposed: t("shared.gateway.models.colExposed"),
     upstreamAvailable: t("shared.gateway.models.upstreamAvailable"),

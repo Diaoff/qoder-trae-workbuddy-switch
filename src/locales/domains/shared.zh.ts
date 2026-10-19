@@ -100,6 +100,7 @@ export const zh = {
      ⚠️ 「上游状态」列只可能在 Trae 侧出现（WB 的 `available` 恒 true ⇒ 不渲染该列，决策 #3），
         但文案仍放共享域：它是**共用壳**的一部分，由调用方按 `showUpstream` 决定是否渲染。 */
   "shared.gateway.models.colModel": "模型",
+  "shared.gateway.models.colContext": "上下文",
   "shared.gateway.models.colUpstream": "上游状态",
   "shared.gateway.models.colExposed": "网关暴露",
   "shared.gateway.models.upstreamAvailable": "可用",

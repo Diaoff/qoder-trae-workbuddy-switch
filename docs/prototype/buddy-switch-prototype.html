@@ -1992,13 +1992,15 @@ const GATEWAY = {
     ],
     /* available = 上游事实（能不能调）；disabled = 用户偏好（主动拿掉）。
        两者**正交**，四种组合都合法 —— UI 必须能区分「已禁用」与「上游不可用」。 */
+    /* `context` = 官方目录给的上下文窗口（真实来源：WB 目录 API 的 `context_window`，
+       实测同一份目录里 256k / 960k / 1M 都有 —— 这里按同名模型给出演示值）。 */
     models: [
-      { name: "claude-sonnet-4.5", provider: "anthropic", scope: "国内版", available: true },
-      { name: "claude-opus-4.1", provider: "anthropic", scope: "国内版", available: true, disabled: true },
-      { name: "gpt-5-codex", provider: "openai", scope: "国内版", available: true },
-      { name: "gemini-2.5-pro", provider: "openai", scope: "国内版", available: true },
-      { name: "claude-sonnet-4.5", provider: "anthropic", scope: "国际版", available: true },
-      { name: "gpt-5-codex", provider: "openai", scope: "国际版", available: false, disabled: true },
+      { name: "claude-sonnet-4.5", provider: "anthropic", scope: "国内版", available: true, context: 200000 },
+      { name: "claude-opus-4.1", provider: "anthropic", scope: "国内版", available: true, disabled: true, context: 200000 },
+      { name: "gpt-5-codex", provider: "openai", scope: "国内版", available: true, context: 400000 },
+      { name: "gemini-2.5-pro", provider: "openai", scope: "国内版", available: true, context: 1000000 },
+      { name: "claude-sonnet-4.5", provider: "anthropic", scope: "国际版", available: true, context: 200000 },
+      { name: "gpt-5-codex", provider: "openai", scope: "国际版", available: false, disabled: true, context: 400000 },
     ],
     /* 模型清单的来源（§3.17）：实时 / 已保存 / 内置 —— 三级都必须显式标注，
        不许把「内置」伪装成「实时」（用户照着清单调用会扑空）。 */
@@ -2049,10 +2051,17 @@ const GATEWAY = {
       /* 已吊销（同 wb-cn 的 k2）：两平台各留一条，确认「恢复 + 删除」在两边同形。 */
       { id: "k6", name: "TraeCode Key", masked: "ts_live_e310••••••••••••9c77", scope: "国内版", created: "2026-09-26", lastUsed: "40 分钟前", requests: 254, revoked: true },
     ],
+    /* 真实模型名 + **逐模型**的目录口径（2026-10-19 `batch_get_detail_param` 实测）：
+       `context` = `__dev` 通道实际窗口，`maxWindow` = Max Mode 上限（null = 目录里没有）。
+       ★ 上限不是统一 1M：mimo 981504、Doubao-Turbo 与默认相同。 */
     models: [
-      { name: "chat_v3", provider: "trae", scope: "TraeCode", available: true },
-      { name: "solo_work_lite", provider: "trae", scope: "TraeWork", available: true },
-      { name: "trae-code-pro", provider: "trae", scope: "TraeCode", available: true },
+      { name: "glm-5.3", provider: "trae", scope: "TraeWork", available: true, context: 200000, maxWindow: 1000000 },
+      { name: "qwen3.8-max", provider: "trae", scope: "TraeWork", available: true, context: 200000, maxWindow: 1000000 },
+      { name: "Doubao-Seed-Evolving", provider: "trae", scope: "TraeWork", available: true, context: 256000, maxWindow: 1000000 },
+      { name: "Doubao-Seed-2.1-Turbo", provider: "trae", scope: "TraeWork", available: true, context: 256000, maxWindow: 256000 },
+      { name: "mimo-v2.6-pro", provider: "trae", scope: "TraeCode", available: true, context: 200000, maxWindow: 981504 },
+      { name: "kimi-k3", provider: "trae", scope: "TraeCode", available: true, context: 200000, maxWindow: 1000000 },
+      { name: "kimi-k2.6", provider: "trae", scope: "TraeCode", available: true, context: 200000, maxWindow: null },
     ],
     /* Trae 侧按**程序位**分家下发清单（TraeWork=solo_work_lite / TraeCode=chat_v3），
        所以识别也必须按 scope 分家，不能一份清单打天下。 */
@@ -2084,14 +2093,15 @@ const GATEWAY = {
          确认「恢复 + 删除」这条三态动作在**每个**平台上都同形。 */
       { id: "k8", name: "Qoder CLI", masked: "qd_live_9a07••••••••••••4e83", scope: "国内版", created: "2026-10-02", lastUsed: "2 小时前", requests: 214, revoked: true },
     ],
+    /* `context` 来自 Qoder 模型元数据的 `max_input_tokens`（该字段本来就在返回里）。 */
     models: [
-      { name: "Qwen3.8-Max", provider: "qoder", scope: "国内版", available: true },
-      { name: "GLM-5.1", provider: "qoder", scope: "国内版", available: true },
-      { name: "Kimi-K3", provider: "qoder", scope: "国内版", available: true, disabled: true },
-      { name: "MiniMax-M3", provider: "qoder", scope: "国内版", available: true },
+      { name: "Qwen3.8-Max", provider: "qoder", scope: "国内版", available: true, context: 200000 },
+      { name: "GLM-5.1", provider: "qoder", scope: "国内版", available: true, context: 200000 },
+      { name: "Kimi-K3", provider: "qoder", scope: "国内版", available: true, disabled: true, context: 200000 },
+      { name: "MiniMax-M3", provider: "qoder", scope: "国内版", available: true, context: 200000 },
       /* 区域独占模型（国际版独有）也列出来 —— 与 WB 网关页的跨区域清单同形，
          用来暴露「Key 出口与模型区域不匹配」这个真实存在的错配。 */
-      { name: "Ultimate", provider: "qoder", scope: "国际版", available: true },
+      { name: "Ultimate", provider: "qoder", scope: "国际版", available: true, context: 400000 },
     ],
     catalog: { source: "live", fetchedAt: "8 分钟前", fetchedAbs: "2026-10-14 16:35", note: null },
     pool: [
@@ -2494,6 +2504,9 @@ const state = {
   gwSub: "overview",
   gwApi: "openai",      // 快速接入的协议 Tab：openai / anthropic
   gwScanning: false,    // 模型清单「识别中」（§3.17）
+  /* Trae 的 Max Mode（上下文上限）开关：**默认开**；只影响 Trae 清单的「上下文」列。
+     它不改变任何模型名（Max Mode 是请求级字段，不是另一个模型）。 */
+  maxMode: "always",
   gwTool: "codex",      // 接入说明里选中的客户端（§3.18.3）
   setSub: "general",
   /* 会话工作台（v2.3）：客户端 Tab + 状态筛选 + 排序 */
@@ -3574,6 +3587,61 @@ const CATALOG_META = {
   builtin: { label: "内置", cls: "bad", hint: "从未成功识别过，使用内置兜底清单" },
 };
 
+/* ─────────── 上下文（Max Mode）───────────
+   三家的窗口数字都是**数据**，不是常量：
+   - WorkBuddy：官方目录的 `context_window`；
+   - Qoder：模型元数据的 `max_input_tokens`；
+   - Trae：`__dev` 通道的 `dev` 与 Max Mode 的 `max`（逐模型不同，**不是统一 1M**）。
+   Max Mode 是请求体里的布尔字段，网关只决定「注入与否」，清单数字始终按模型自己的上限声明。 */
+const maxModeOn = () => state.maxMode !== "off";
+
+/** 200000 → 200k、981504 → 982k、1000000 → 1M；空值返回 null（不编造）。 */
+function fmtWindow(value) {
+  if (!value) return null;
+  if (value >= 1_000_000) return `${Math.round(value / 100_000) / 10}M`;
+  return `${Math.round(value / 1000)}k`;
+}
+
+/** 「上下文」单元格。Trae 有 Max Mode（开关影响 max），WB / Qoder 只有目录给的一个值。 */
+function contextCell(m) {
+  const platform = curScope().platform;
+  const def = fmtWindow(m.context) ?? "未知";
+  if (platform !== "trae") {
+    return m.context ? `<span class="badge">${def}</span>` : `<span class="tiny muted">—</span>`;
+  }
+  if (!maxModeOn()) return `<span class="tiny muted">${def}</span>`;
+  const max = m.maxWindow;
+  if (!max) return `<span class="tiny muted">${def}</span> <span class="tiny muted">无上限数据</span>`;
+  if (max > (m.context ?? 0)) {
+    return `<span class="badge ok">${fmtWindow(max)}</span> <span class="tiny muted">默认 ${def}</span>`;
+  }
+  return `<span class="badge">${fmtWindow(max)}</span> <span class="tiny muted">已是上限</span>`;
+}
+
+/** Trae 专属策略条：开 / 关 Max Mode；数字来自官方目录，不是写死的 1M。 */
+function maxModePolicyCard() {
+  const on = maxModeOn();
+  return `<section class="card">
+    <div style="display:flex;align-items:center;gap:18px;padding:14px 16px">
+      <div style="flex:1;min-width:0">
+        <b style="display:block;font-size:12.5px;font-weight:550">Max Mode（按各模型上限）</b>
+        <div class="tiny muted" style="margin-top:3px;line-height:1.55">
+          开启后对支持 Max Mode 的模型注入 <span class="mono">is_max_mode</span>，清单按<b>每个模型自己的上限</b>声明
+          —— 不是统一的 1M（例如 <span class="mono">glm-5.3</span> 1M、<span class="mono">mimo-v2.6-pro</span> 982k、
+          <span class="mono">Doubao-Seed-2.1-Turbo</span> 与默认相同）。数字来自<b>官方模型目录</b>。
+        </div>
+      </div>
+      <div style="display:flex;align-items:center;gap:10px;flex-shrink:0">
+        <span class="badge ok" title="目录缓存 24h 后自动刷新">目录 · 实时</span>
+        <div class="seg" role="group" aria-label="Trae Max Mode">
+          <button class="${on ? "on" : ""}" data-act="max-mode|always">开启</button>
+          <button class="${on ? "" : "on"}" data-act="max-mode|off">关闭</button>
+        </div>
+      </div>
+    </div>
+  </section>`;
+}
+
 function catalogBar(cat) {
   const c = cat || { source: "builtin", fetchedAt: null, note: null };
   const m = CATALOG_META[c.source] || CATALOG_META.builtin;
@@ -4134,11 +4202,13 @@ function viewGateway() {
           `<button class="btn primary" data-act="new-key">${ICON.plus}创建密钥</button>`)}`;
   } else if (sub === "models") {
     const served = g.models.filter((m) => m.available && !m.disabled).length;
-    main = `${catalogBar(g.catalog)}
+    const trae = curScope().platform === "trae";
+    main = `${trae ? maxModePolicyCard() : ""}${catalogBar(g.catalog)}
     <div class="tbl-wrap"><table class="tbl">
-      <thead><tr><th>模型</th><th>协议</th><th>归属</th><th>上游状态</th><th style="width:124px">网关暴露</th></tr></thead>
+      <thead><tr><th>模型</th><th>协议</th><th>归属</th><th>上下文</th><th>上游状态</th><th style="width:124px">网关暴露</th></tr></thead>
       <tbody>${g.models.map((m) => `<tr${m.disabled ? ' class="row-off"' : ""}>
         <td class="mono"><b>${esc(m.name)}</b></td><td>${esc(m.provider)}</td><td>${esc(m.scope)}</td>
+        <td>${contextCell(m)}</td>
         <td>${m.available ? `<span class="badge ok">可用</span>` : `<span class="badge warn">不可用</span>`}</td>
         <td>${m.disabled
           ? `<span class="badge bad">已禁用</span> <button class="btn xs" data-act="model-enable|${esc(m.name)}|${esc(m.scope)}">启用</button>`
@@ -6453,6 +6523,18 @@ document.addEventListener("click", (e) => {
     case "merge": stop(); state.merge = a1 === "1"; renderContent(); break;
     case "usage-tab": stop(); state.usageTab = a1; renderContent(); break;
     case "gw-sub": stop(); state.gwSub = a1; renderContent(); break;
+    /* Trae Max Mode 开关：只切换注入策略与「上下文」列的显示，不改模型名。 */
+    case "max-mode": {
+      stop();
+      state.maxMode = a1 === "off" ? "off" : "always";
+      toast(state.maxMode === "off" ? "info" : "ok",
+        state.maxMode === "off" ? "已关闭 Max Mode" : "已开启 Max Mode",
+        state.maxMode === "off"
+          ? "清单回到各模型的默认窗口，不再注入 is_max_mode"
+          : "清单按各模型自己的上限声明（1M / 982k / 256k…），不是统一的 1M");
+      renderContent();
+      break;
+    }
     /* ★ 切**网关类型**：两个类型的分区 id 集合不相交 ⇒ 切类型必须**重置到该类型的第一项**，
        否则会停在另一个类型的分区上（`gwSubId()` 也会 fail-closed，但显式重置更清楚）。 */
     case "gw-type": {
@@ -7335,6 +7417,8 @@ function bootFromUrl() {
     state.gwSub = gwParam;
   }
   if (p.get("api")) state.gwApi = p.get("api");
+  /* Max Mode 也走深链：`?max=off` 直接看关闭态（评审对照用）。 */
+  if (p.get("max") === "off") state.maxMode = "off";
   if (p.get("pin")) state.pins[state.scope] = p.get("pin");
   if (p.get("set")) state.setSub = p.get("set");
   if (p.get("usage")) state.usageTab = p.get("usage");

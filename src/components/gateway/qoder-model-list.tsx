@@ -85,6 +85,7 @@ export function QoderModelList({
         // Qoder 无「非可服务」概念：在清单里即可用（与 WB 同一判据，决策 #3）。
         available: true,
         disabled: disabledSet.has(model.id),
+        context_window: model.maxInputTokens,
       })),
     [catalog, disabledSet, scope],
   );
@@ -92,6 +93,7 @@ export function QoderModelList({
 
   const labels = {
     colModel: t("shared.gateway.models.colModel"),
+    colContext: t("shared.gateway.models.colContext"),
     colUpstream: t("shared.gateway.models.colUpstream"),
     colExposed: t("shared.gateway.models.colExposed"),
     upstreamAvailable: t("shared.gateway.models.upstreamAvailable"),

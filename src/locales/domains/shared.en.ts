@@ -79,6 +79,7 @@ export const en = {
   /* Model table (P11 §1.6) — components/gateway/model-table.tsx, shared by both platforms.
      Columns = model / upstream / gateway exposure; no "scope" column (#1), no "protocol" column (#2). */
   "shared.gateway.models.colModel": "Model",
+  "shared.gateway.models.colContext": "Context",
   "shared.gateway.models.colUpstream": "Upstream",
   "shared.gateway.models.colExposed": "Gateway exposure",
   "shared.gateway.models.upstreamAvailable": "Available",

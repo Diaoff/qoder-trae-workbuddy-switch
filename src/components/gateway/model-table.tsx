@@ -72,6 +72,8 @@ import type { GatewayModelRow } from "@/lib/types";
 /** 已 i18n 的列头 / 状态文案 / 按钮标签（**无 `colScope`** —— 无归属列，决策 #1）。 */
 export interface ModelTableLabels {
   colModel: string;
+  /** 上下文窗口列头（如「上下文」/「Context」）。 */
+  colContext: string;
   colUpstream: string;
   colExposed: string;
   upstreamAvailable: string;
@@ -105,6 +107,13 @@ export interface ModelTableProps {
   extraColumn?: { header: string; render: (row: GatewayModelRow) => ReactNode };
 }
 
+/** 上下文窗口 → 人类可读：200000→`200k`、981504→`982k`、1000000→`1M`；未知给 `—`。 */
+function formatContext(value: number | null | undefined): string {
+  if (!value || value <= 0) return "—";
+  if (value >= 1_000_000) return `${Math.round(value / 100_000) / 10}M`;
+  return `${Math.round(value / 1000)}k`;
+}
+
 export function ModelTable({
   rows,
   pendingId,
@@ -134,6 +143,9 @@ export function ModelTable({
           <tr className="border-b border-border/60 text-left text-xs text-muted-foreground">
             <th scope="col" className="px-2 py-2 font-medium">
               {labels.colModel}
+            </th>
+            <th scope="col" className="px-2 py-2 font-medium">
+              {labels.colContext}
             </th>
             {showUpstream && (
               <th scope="col" className="px-2 py-2 font-medium">
@@ -198,6 +210,10 @@ export function ModelTable({
                       </TooltipContent>
                     </Tooltip>
                   </div>
+                </td>
+                <td className="px-2 py-2">
+                  {/* 上下文窗口：数字来自官方目录（逐模型不同），未知就显示 `—`，不猜。 */}
+                  <span className="font-mono text-xs">{formatContext(row.context_window)}</span>
                 </td>
                 {showUpstream && (
                   <td className="px-2 py-2">

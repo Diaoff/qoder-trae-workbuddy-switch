@@ -957,6 +957,11 @@ export interface TraeModelSource {
   /** 该程序位的客户端清单；未取到（后端不可用）为 `null`。 */
   data: TraeClientModelList | null;
   /**
+   * 该程序位**网关对外清单**的逐模型上下文（`/v1/models` 的 `context_length`）。
+   * 数字来自官方模型目录，逐模型不同（不是统一 1M）；未取到为 `null`。
+   */
+  gatewayContexts?: Record<string, number | null> | null;
+  /**
    * 该程序位下**网关对外清单**的模型 id（`get_trae_gateway_models(variant)`）。
    *
    * 与 `data` 口径不同：`data` 是该客户端的**全部**分组（同一模型会在多个分组里重复出现），

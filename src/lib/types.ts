@@ -1690,6 +1690,11 @@ export interface GatewayModelRow {
   available: boolean;
   /** 用户偏好：是否被禁用（来自后端存储）。 */
   disabled: boolean;
+  /**
+   * 上下文窗口（token）：WB 取官方目录 `context_window`；Qoder 取 `max_input_tokens`；
+   * Trae 取官方目录的 `dev/max`（由 `/v1/models` 给出）。未知 / 不适用为 `null`。
+   */
+  context_window?: number | null;
 }
 
 /**
