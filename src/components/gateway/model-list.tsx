@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { EmptyState } from "@/components/ui/empty-state";
 import { CatalogSourceBar } from "@/components/gateway/catalog-source-bar";
+import { ContextSourceCard } from "@/components/gateway/context-source-card";
 import { ModelTable } from "@/components/gateway/model-table";
 import { focusProbeModel, PROBE_LIMIT_STATES } from "@/components/gateway/model-probe-card";
 import * as api from "@/lib/api";
@@ -256,6 +257,7 @@ export function ModelList({ region, className }: { region: Region; className?: s
     <div className={cn(className)}>
       {/* 无卡头 —— 分区名由左栏导航承担（与 Trae / Qoder 侧同口径）。
           版本也不在这里显示 / 切换：页头切换器是唯一入口。 */}
+      <ContextSourceCard />
       <CatalogSourceBar
         view={view}
         scanning={refreshing}

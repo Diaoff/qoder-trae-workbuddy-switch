@@ -80,6 +80,9 @@ export const en = {
      Columns = model / upstream / gateway exposure; no "scope" column (#1), no "protocol" column (#2). */
   "shared.gateway.models.colModel": "Model",
   "shared.gateway.models.colContext": "Context",
+  "shared.gateway.models.contextTitle": "Context limit",
+  "shared.gateway.models.contextFixedDesc": "WorkBuddy / Qoder have no request-level Max Mode: the model list always advertises each model's own catalog limit, so clients can use it as-is.",
+  "shared.gateway.models.contextFromCatalog": "From catalog",
   "shared.gateway.models.colUpstream": "Upstream",
   "shared.gateway.models.colExposed": "Gateway exposure",
   "shared.gateway.models.upstreamAvailable": "Available",

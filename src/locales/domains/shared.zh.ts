@@ -101,6 +101,9 @@ export const zh = {
         但文案仍放共享域：它是**共用壳**的一部分，由调用方按 `showUpstream` 决定是否渲染。 */
   "shared.gateway.models.colModel": "模型",
   "shared.gateway.models.colContext": "上下文",
+  "shared.gateway.models.contextTitle": "上下文上限",
+  "shared.gateway.models.contextFixedDesc": "WorkBuddy / Qoder 没有请求级 Max Mode：清单始终按官方目录声明每个模型自己的上下文上限，客户端直接用即可。",
+  "shared.gateway.models.contextFromCatalog": "按目录声明",
   "shared.gateway.models.colUpstream": "上游状态",
   "shared.gateway.models.colExposed": "网关暴露",
   "shared.gateway.models.upstreamAvailable": "可用",

@@ -662,18 +662,11 @@ async fn collect_namespace_models(
                         )
                     })
                     .map(|model| {
-                        json!({
-                            "id": model.id,
-                            "object": "model",
-                            "namespace": spec.id,
-                            "owned_by": "workbuddy",
-                            "context_window": model.context_window,
-                            "max_tokens": model.max_tokens,
-                            "supports_images": model.supports_images,
-                            "credits": model.credits,
-                            "badges": model.badges,
-                            "free": model.free,
-                        })
+                        let mut entry = crate::routes::models::model_entry(model);
+                        if let Some(object) = entry.as_object_mut() {
+                            object.insert("namespace".into(), json!(spec.id));
+                        }
+                        entry
                     })
                     .collect();
                 NamespaceModels {

@@ -5,6 +5,7 @@ import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { EmptyState } from "@/components/ui/empty-state";
 import { CatalogSourceBar } from "@/components/gateway/catalog-source-bar";
+import { ContextSourceCard } from "@/components/gateway/context-source-card";
 import { ModelTable } from "@/components/gateway/model-table";
 import { DemoAction } from "@/components/demo-action";
 import * as api from "@/lib/api";
@@ -159,6 +160,8 @@ export function QoderModelList({
     <div className={cn(className)}>
       {/* 无卡头 —— 分区名由左栏导航承担（与 WB / Trae 侧同口径）。 */}
       <p className="mb-3 text-xs text-muted-foreground">{t("qoder.gateway.models.note")}</p>
+
+      <ContextSourceCard />
 
       <CatalogSourceBar
         view={view}

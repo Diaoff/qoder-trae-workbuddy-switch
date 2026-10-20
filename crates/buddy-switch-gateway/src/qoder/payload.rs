@@ -89,6 +89,8 @@ pub fn models_response(catalog: &[Value], disabled: &BTreeSet<String>) -> Value 
                 "display_name": entry.get("display_name").cloned().unwrap_or(Value::String(id.to_string())),
                 "is_reasoning": entry.get("is_reasoning").cloned().unwrap_or(Value::Bool(false)),
                 "max_input_tokens": entry.get("max_input_tokens").cloned(),
+                // 与 WB / Trae 对齐：OpenAI 兼容客户端读 `context_length`。
+                "context_length": entry.get("max_input_tokens").cloned(),
             })
         })
         .collect();
@@ -133,6 +135,7 @@ pub fn admin_models_response(
                     .cloned()
                     .unwrap_or(Value::Bool(false)),
                 "max_input_tokens": entry.get("max_input_tokens").cloned(),
+                "context_length": entry.get("max_input_tokens").cloned(),
                 "disabled": crate::disabled_models::is_disabled_in(disabled, id),
             })
         })
@@ -178,6 +181,20 @@ pub fn meta_for(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// ★ 出口①必须带 `context_length`（OpenAI 兼容客户端读这个字段），
+    /// 与 Trae / WB 三平台同名同义；`max_input_tokens` 保留为上游原字段。
+    #[test]
+    fn models_response_declares_openai_context_length() {
+        let catalog = vec![json!({
+            "key": "Qwen3.8-Max",
+            "display_name": "Qwen3.8-Max",
+            "max_input_tokens": 200_000,
+        })];
+        let body = models_response(&catalog, &BTreeSet::new());
+        assert_eq!(body["data"][0]["context_length"], 200_000);
+        assert_eq!(body["data"][0]["max_input_tokens"], 200_000);
+    }
 
     #[test]
     fn model_defaulting_and_stream_flag() {

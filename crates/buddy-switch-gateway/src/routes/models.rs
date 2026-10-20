@@ -8,7 +8,28 @@ use serde_json::json;
 use crate::disabled_models::is_disabled;
 use crate::routes::{authenticate, json_response, openai_error};
 use crate::state::GatewayState;
+use buddy_switch_core::modules::catalog::CatalogModel;
 use buddy_switch_core::modules::product::scope_of_wb_region;
+
+/// 一条 WB 模型在 OpenAI `/v1/models` 里的形状（**唯一产出点**：独立网关与统一网关共用）。
+///
+/// ★ `context_length` 必须与 Trae 侧同名字段对齐 —— OpenAI 兼容客户端读的是它；
+/// `context_window` 保留给老客户端与管理面（WB 目录原本就用这个名字）。
+pub fn model_entry(model: &CatalogModel) -> serde_json::Value {
+    json!({
+        "id": model.id,
+        "object": "model",
+        "created": 0,
+        "owned_by": "workbuddy",
+        "context_length": model.context_window,
+        "context_window": model.context_window,
+        "max_tokens": model.max_tokens,
+        "supports_images": model.supports_images,
+        "credits": model.credits,
+        "badges": model.badges,
+        "free": model.free,
+    })
+}
 
 /// 模型列表处理器。
 pub async fn handler(State(state): State<GatewayState>, headers: HeaderMap) -> Response {
@@ -26,20 +47,7 @@ pub async fn handler(State(state): State<GatewayState>, headers: HeaderMap) -> R
         .models
         .iter()
         .filter(|model| !is_disabled(&disabled, scope_of_wb_region(record.region), &model.id))
-        .map(|model| {
-            json!({
-                "id": model.id,
-                "object": "model",
-                "created": 0,
-                "owned_by": "workbuddy",
-                "context_window": model.context_window,
-                "max_tokens": model.max_tokens,
-                "supports_images": model.supports_images,
-                "credits": model.credits,
-                "badges": model.badges,
-                "free": model.free,
-            })
-        })
+        .map(model_entry)
         .collect();
     drop(disabled);
 
@@ -54,4 +62,27 @@ pub async fn handler(State(state): State<GatewayState>, headers: HeaderMap) -> R
             "wb_note": snapshot.note,
         }),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// ★ 出口①必须同时给 `context_length`（OpenAI 客户端读）与 `context_window`（老字段）。
+    #[test]
+    fn wb_model_entry_declares_openai_context_length() {
+        let model = CatalogModel {
+            id: "hy4-preview".into(),
+            name: "Hy4 preview".into(),
+            context_window: 960_000,
+            max_tokens: 64_000,
+            supports_images: true,
+            credits: None,
+            badges: vec![],
+            free: false,
+        };
+        let entry = model_entry(&model);
+        assert_eq!(entry["context_length"], 960_000);
+        assert_eq!(entry["context_window"], 960_000);
+    }
 }

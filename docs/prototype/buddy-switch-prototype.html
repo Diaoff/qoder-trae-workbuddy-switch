@@ -3618,6 +3618,23 @@ function contextCell(m) {
   return `<span class="badge">${fmtWindow(max)}</span> <span class="tiny muted">已是上限</span>`;
 }
 
+/** WorkBuddy / Qoder：没有请求级 Max Mode，只有「目录给的那个上限」——只读说明，不放假开关。 */
+function contextFixedCard() {
+  return `<section class="card">
+    <div style="display:flex;align-items:flex-start;gap:18px;padding:14px 16px">
+      <div style="flex:1;min-width:0">
+        <b style="display:block;font-size:12.5px;font-weight:550">上下文上限</b>
+        <div class="tiny muted" style="margin-top:3px;line-height:1.55">
+          本平台没有请求级 Max Mode：清单<b>始终</b>按官方目录声明每个模型自己的上下文上限
+          （WorkBuddy = 目录的 <span class="mono">context_window</span>，Qoder = 模型元数据的
+          <span class="mono">max_input_tokens</span>），客户端直接用即可。
+        </div>
+      </div>
+      <span class="badge" style="flex-shrink:0">按目录声明</span>
+    </div>
+  </section>`;
+}
+
 /** Trae 专属策略条：开 / 关 Max Mode；数字来自官方目录，不是写死的 1M。 */
 function maxModePolicyCard() {
   const on = maxModeOn();
@@ -4203,7 +4220,7 @@ function viewGateway() {
   } else if (sub === "models") {
     const served = g.models.filter((m) => m.available && !m.disabled).length;
     const trae = curScope().platform === "trae";
-    main = `${trae ? maxModePolicyCard() : ""}${catalogBar(g.catalog)}
+    main = `${trae ? maxModePolicyCard() : contextFixedCard()}${catalogBar(g.catalog)}
     <div class="tbl-wrap"><table class="tbl">
       <thead><tr><th>模型</th><th>协议</th><th>归属</th><th>上下文</th><th>上游状态</th><th style="width:124px">网关暴露</th></tr></thead>
       <tbody>${g.models.map((m) => `<tr${m.disabled ? ' class="row-off"' : ""}>
