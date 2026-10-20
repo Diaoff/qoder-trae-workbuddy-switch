@@ -219,7 +219,8 @@ fn measure_parallel(path: &Path) -> (u64, usize) {
             .map(|handle| handle.join().unwrap_or((0, 0)))
             .collect()
     });
-    sums.into_iter().fold((0, 0), |acc, s| (acc.0 + s.0, acc.1 + s.1))
+    sums.into_iter()
+        .fold((0, 0), |acc, s| (acc.0 + s.0, acc.1 + s.1))
 }
 
 /// 顺序递归删（并行版的工作线程内部用它 —— 线程数只在一层上有界）。
@@ -255,7 +256,10 @@ fn remove_tree_parallel(path: &Path) -> std::io::Result<()> {
     if !meta.is_dir() {
         return Ok(());
     }
-    let items: Vec<PathBuf> = std::fs::read_dir(path)?.flatten().map(|e| e.path()).collect();
+    let items: Vec<PathBuf> = std::fs::read_dir(path)?
+        .flatten()
+        .map(|e| e.path())
+        .collect();
     if items.is_empty() {
         return std::fs::remove_dir(path);
     }
@@ -481,10 +485,7 @@ mod tests {
         );
         // 先合法再非法：**一个字节都不该动**（校验先于执行）。
         write(&config::store_dir().join("accounts.json"), 16);
-        let plan = vec![
-            CATEGORY_LOGS.to_string(),
-            "not-a-category".to_string(),
-        ];
+        let plan = vec![CATEGORY_LOGS.to_string(), "not-a-category".to_string()];
         assert!(clear(&plan).is_err());
         assert!(
             config::store_dir().join("accounts.json").exists(),
@@ -518,7 +519,10 @@ mod tests {
             4096,
         );
         write(&store.join("backups/auto-backup-2026-10-19.json"), 2048);
-        write(&store.join("backups/workbuddy-desktop.2026-10-16T03-59-31Z.info"), 512);
+        write(
+            &store.join("backups/workbuddy-desktop.2026-10-16T03-59-31Z.info"),
+            512,
+        );
         write(&store.join("session-fingerprints.bin"), 1024);
         write(&store.join("trae/logs/a.log"), 8);
 
@@ -527,7 +531,10 @@ mod tests {
         assert_eq!(bytes_of(&report, CATEGORY_SNAPSHOTS), 2048 + 512);
         assert_eq!(bytes_of(&report, CATEGORY_CACHES), 1024);
         assert_eq!(bytes_of(&report, CATEGORY_LOGS), 8);
-        assert_eq!(report["totalBytes"].as_u64().unwrap(), 4096 + 2048 + 512 + 1024 + 8);
+        assert_eq!(
+            report["totalBytes"].as_u64().unwrap(),
+            4096 + 2048 + 512 + 1024 + 8
+        );
     }
 
     /// 清除**只动选定类别**：别的类别与受保护文件原样留着。
@@ -535,8 +542,14 @@ mod tests {
     fn clear_session_backups_only_removes_that_category() {
         let (_root, _guard) = fixture("clear-one");
         let store = config::store_dir();
-        write(&store.join("backups/sessions/2026-10-13T01-06-16Z/workbuddy.db"), 4096);
-        write(&store.join("backups/sessions/2026-10-13T01-06-15Z/workbuddy.db"), 4096);
+        write(
+            &store.join("backups/sessions/2026-10-13T01-06-16Z/workbuddy.db"),
+            4096,
+        );
+        write(
+            &store.join("backups/sessions/2026-10-13T01-06-15Z/workbuddy.db"),
+            4096,
+        );
         write(&store.join("backups/auto-backup-2026-10-19.json"), 2048);
         write(&store.join("session-fingerprints.bin"), 1024);
         write(&store.join("accounts.json"), 16);
@@ -545,12 +558,18 @@ mod tests {
         let out = clear(&[CATEGORY_SESSION_BACKUPS.to_string()]).unwrap();
         assert_eq!(out["freedBytes"].as_u64().unwrap(), 8192);
         assert!(out["errors"].as_array().unwrap().is_empty());
-        assert!(!store.join("backups/sessions").exists(), " sessions 备份必须被清掉");
+        assert!(
+            !store.join("backups/sessions").exists(),
+            " sessions 备份必须被清掉"
+        );
         assert!(
             store.join("backups/auto-backup-2026-10-19.json").exists(),
             "未选中的类别不得被动"
         );
-        assert!(store.join("session-fingerprints.bin").exists(), "未选中的类别不得被动");
+        assert!(
+            store.join("session-fingerprints.bin").exists(),
+            "未选中的类别不得被动"
+        );
         assert!(store.join("accounts.json").exists(), "账号库永不受影响");
         assert!(store.join("state.json").exists(), "运行状态永不受影响");
     }
@@ -560,9 +579,15 @@ mod tests {
     fn clear_never_touches_accounts_ledger_and_config() {
         let (_root, _guard) = fixture("clear-all");
         let store = config::store_dir();
-        write(&store.join("backups/sessions/2026-10-13T01-06-16Z/workbuddy.db"), 4096);
+        write(
+            &store.join("backups/sessions/2026-10-13T01-06-16Z/workbuddy.db"),
+            4096,
+        );
         write(&store.join("backups/auto-backup-2026-10-19.json"), 2048);
-        write(&store.join("backups/skills/2026-10-13T07-20-31Z/skill.json"), 64);
+        write(
+            &store.join("backups/skills/2026-10-13T07-20-31Z/skill.json"),
+            64,
+        );
         write(&store.join("session-fingerprints.bin"), 1024);
         write(&store.join("official_usage_cache.json"), 32);
         write(&store.join("gateway_models.cn.json"), 32);
@@ -584,7 +609,10 @@ mod tests {
 
         let ids: Vec<String> = CATEGORY_IDS.iter().map(|s| s.to_string()).collect();
         let out = clear(&ids).unwrap();
-        assert_eq!(out["freedBytes"].as_u64().unwrap(), 4096 + 2048 + 64 + 1024 + 32 + 32 + 16 + 16);
+        assert_eq!(
+            out["freedBytes"].as_u64().unwrap(),
+            4096 + 2048 + 64 + 1024 + 32 + 32 + 16 + 16
+        );
         for protected in [
             "accounts.json",
             "accounts.global.json",
@@ -596,7 +624,10 @@ mod tests {
             "gateway_keys.json",
             "gateway_config.json",
         ] {
-            assert!(store.join(protected).exists(), "受保护文件被误删：{protected}");
+            assert!(
+                store.join(protected).exists(),
+                "受保护文件被误删：{protected}"
+            );
         }
         assert!(!store.join("backups/sessions").exists());
         assert!(!store.join("session-fingerprints.bin").exists());
@@ -616,7 +647,10 @@ mod tests {
         for i in 1..=12 {
             for j in 1..=3 {
                 let size = 1024 * i + j;
-                write(&store.join(format!("backups/sessions/stamp-{i:02}/f{j}.db")), size);
+                write(
+                    &store.join(format!("backups/sessions/stamp-{i:02}/f{j}.db")),
+                    size,
+                );
                 expected += size as u64;
             }
         }
@@ -642,8 +676,14 @@ mod tests {
         let store = config::store_dir();
         let root = store.join("backups/sessions");
         for i in 1..=12 {
-            write(&root.join(format!("2026-10-{i:02}T00-00-00Z/workbuddy.db")), 4096);
-            write(&root.join(format!("2026-10-{i:02}T00-00-00Z/workbuddy.db-wal")), 64);
+            write(
+                &root.join(format!("2026-10-{i:02}T00-00-00Z/workbuddy.db")),
+                4096,
+            );
+            write(
+                &root.join(format!("2026-10-{i:02}T00-00-00Z/workbuddy.db-wal")),
+                64,
+            );
         }
         remove_tree_parallel(&root).expect("并行删除必须成功");
         assert!(!root.exists(), "整棵树必须被删干净");
@@ -707,7 +747,9 @@ mod tests {
         // sessions-unify 同步建几份，验证三个根都被管到。
         for i in 1..=3 {
             write(
-                &store.join(format!("backups/sessions-unify/2026-10-{i:02}T00-00-00Z/workbuddy.db")),
+                &store.join(format!(
+                    "backups/sessions-unify/2026-10-{i:02}T00-00-00Z/workbuddy.db"
+                )),
                 4096,
             );
         }
@@ -716,9 +758,18 @@ mod tests {
 
         let removed = prune_session_backup_dirs(SESSION_BACKUP_KEEP);
         assert_eq!(removed, 2, "12 份留 10 ⇒ 删 2（unify 只有 3 份，不动）");
-        assert!(!root.join("2026-10-01T01-06-16Z").exists(), "最旧的必须被删");
-        assert!(!root.join("2026-10-02T01-06-16Z").exists(), "第二旧的必须被删");
-        assert!(root.join("2026-10-03T01-06-16Z").exists(), "第 3 旧起必须保留");
+        assert!(
+            !root.join("2026-10-01T01-06-16Z").exists(),
+            "最旧的必须被删"
+        );
+        assert!(
+            !root.join("2026-10-02T01-06-16Z").exists(),
+            "第二旧的必须被删"
+        );
+        assert!(
+            root.join("2026-10-03T01-06-16Z").exists(),
+            "第 3 旧起必须保留"
+        );
         assert!(root.join("2026-10-12T01-06-16Z").exists(), "最新的必须保留");
         assert_eq!(
             std::fs::read_dir(&root).unwrap().count(),
@@ -726,7 +777,9 @@ mod tests {
             "留下的必须正好是保留份数"
         );
         assert!(
-            store.join("backups/sessions-unify/2026-10-01T00-00-00Z").exists(),
+            store
+                .join("backups/sessions-unify/2026-10-01T00-00-00Z")
+                .exists(),
             "unify 未超量不得被删"
         );
     }

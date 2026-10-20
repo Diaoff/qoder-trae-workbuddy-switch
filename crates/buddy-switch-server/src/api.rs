@@ -1297,11 +1297,13 @@ async fn api_accounts_paste_credential(Json(body): Json<Value>) -> Response {
             }
         }
         Product::Trae => json_err(
-            "Trae 请用「粘贴 JWT」或「浏览器授权」——换 token 需要客户端里的设备私钥"
-                .to_string(),
+            "Trae 请用「粘贴 JWT」或「浏览器授权」——换 token 需要客户端里的设备私钥".to_string(),
             StatusCode::BAD_REQUEST,
         ),
-        Product::Qoder => json_err("Qoder 请用「粘贴 PAT」".to_string(), StatusCode::BAD_REQUEST),
+        Product::Qoder => json_err(
+            "Qoder 请用「粘贴 PAT」".to_string(),
+            StatusCode::BAD_REQUEST,
+        ),
     }
 }
 

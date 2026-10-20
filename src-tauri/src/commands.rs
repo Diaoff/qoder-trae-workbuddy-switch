@@ -609,7 +609,10 @@ pub async fn accounts_paste_credential(scope: String, text: String) -> Result<Va
 /// 失败直接返回可读原因（不转成 `{done:false}`）：用户此刻正盯着这个动作，
 /// 静默等待只会被当成「卡住」。
 #[tauri::command(rename_all = "camelCase")]
-pub async fn trae_oauth_submit_callback(login_id: String, callback_url: String) -> Result<Value, String> {
+pub async fn trae_oauth_submit_callback(
+    login_id: String,
+    callback_url: String,
+) -> Result<Value, String> {
     require_capability(Product::Trae, capability::Capability::Oauth)?;
     trae::handlers::oauth_login_submit_callback(&login_id, &callback_url).await
 }

@@ -1852,9 +1852,12 @@ mod tests {
     /// 没有 `pkce_verifier` 与 `trace_id` 就兑换不出 token，直接说清比静默失败好。
     #[tokio::test]
     async fn submit_callback_rejects_unknown_login_id() {
-        let error = submit_callback("trae_never_inserted", "http://127.0.0.1:17388/authorize?code=x")
-            .await
-            .unwrap_err();
+        let error = submit_callback(
+            "trae_never_inserted",
+            "http://127.0.0.1:17388/authorize?code=x",
+        )
+        .await
+        .unwrap_err();
         assert!(
             error.contains("不存在") || error.contains("过期"),
             "未知会话应明说已过期: {error}"

@@ -441,8 +441,8 @@ pub fn import_account_from_text_for(region: Region, text: &str) -> Result<Value,
     }
     let root: Value = serde_json::from_str(trimmed)
         .map_err(|error| format!("不是合法的认证文件 JSON：{error}"))?;
-    let account =
-        imported_account_from_root(root).ok_or("没有找到可用的凭据（accessToken / refreshToken）")?;
+    let account = imported_account_from_root(root)
+        .ok_or("没有找到可用的凭据（accessToken / refreshToken）")?;
     if !crate::modules::at_rest::is_unlockable(&account) {
         return Ok(account);
     }
