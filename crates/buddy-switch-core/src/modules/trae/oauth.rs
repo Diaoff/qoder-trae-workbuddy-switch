@@ -1915,12 +1915,18 @@ mod tests {
         let facts = synthetic_facts(identity.clone());
 
         // (变体, auth_from, client_id, 是否带 hide_saas_login)
-        let cases: [(TraeVariant, &str, &str, bool); 3] = [
+        let cases: [(TraeVariant, &str, &str, bool); 5] = [
             // TRAE / IDE 线：与抓包固化值逐字一致（**零行为变化**的回归护栏）。
             (TraeVariant::Trae, "trae", "ono9krqynydwx5", false),
             // SOLO 线：CN 与 国际版**同属 SOLO 线**（`packageType` 都是 SOLO_*）。
             (TraeVariant::TraeWork, "solo", "en1oxy7wnw8j9n", true),
             (TraeVariant::Global, "solo", "en1oxy7wnw8j9n", true),
+            // ★ 两个区域**真正在用的客户端**（合并版 `Trae CN` / `Trae`，`packageType`
+            //   `TRAE_CN` / `TRAE_I18N`）走 TRAE 线。曾经的缺陷是区域标识被解析成
+            //   `Global`（TraeWork）⇒ 国际版登录打开 TraeWork 授权页，页面报
+            //   `TraeWork is currently not available in your region`（用户报障原文）。
+            (TraeVariant::TraeMerged, "trae", "ono9krqynydwx5", false),
+            (TraeVariant::GlobalTraeMerged, "trae", "ono9krqynydwx5", false),
         ];
 
         for (variant, auth_from, client_id, hide_saas) in cases {
@@ -2003,6 +2009,49 @@ mod tests {
             assert!(!url.contains("auth_callback_url=http://"));
             // `x_env=` 必须保留这一对（空值也要出现）。
             assert!(url.contains("&x_env=&"), "x_env 空参数对丢失: {url}");
+        }
+    }
+
+    /// ★★ 回归护栏：前端只传**区域**（`cn` / `global`），授权 URL 必须落在本区域
+    /// **真正在用的客户端**那条产品线上。
+    ///
+    /// 缺陷形态（2026-10-20 用户报障）：`global` 被 `TraeVariant::parse` 认成
+    /// 国际版 TraeWork（`SOLO_I18N`）⇒ URL 带 `auth_from=solo` + `hide_saas_login=true`
+    /// ⇒ 浏览器打开 **TraeWork 授权页**，页面直接回
+    /// `TraeWork is currently not available in your region`。
+    /// 用户要授权的国际版 Trae（`Trae.exe`，`TRAE_I18N`）本身是可用的。
+    ///
+    /// 本用例把「区域标识 → 变体 → 授权页产品线/域」三段钉在一起：
+    /// 只改其中一段（例如又有人把 `parse_variant_id` 简化回 `TraeVariant::parse`）就会红。
+    #[test]
+    fn region_param_authorizes_the_regions_real_client() {
+        let facts = synthetic_facts(identity_with_device_id("dev"));
+        let cases = [
+            ("cn", TraeVariant::TraeMerged, "https://www.trae.cn"),
+            ("global", TraeVariant::GlobalTraeMerged, "https://www.trae.ai"),
+        ];
+        for (raw, expected_variant, expected_console) in cases {
+            let variant = crate::modules::trae::handlers::parse_variant_id(Some(raw));
+            assert_eq!(
+                variant, expected_variant,
+                "区域标识 {raw} 必须解析到本区域的合并版客户端"
+            );
+
+            let url = build_authorize_url(variant, &facts, 12345, "trace-1", "challenge-1");
+            let (base, query) = url.split_once('?').expect("授权 URL 必须带查询串");
+            assert_eq!(base, format!("{expected_console}{AUTHORIZE_PATH}"));
+            let params = parse_query(query);
+            // TRAE / IDE 线才是两个区域合并版的真实产品线。
+            assert_eq!(params.get("auth_from").map(String::as_str), Some("trae"));
+            assert_eq!(
+                params.get("client_id").map(String::as_str),
+                Some("ono9krqynydwx5")
+            );
+            // SOLO 线专属的从属参数不得出现：带上它就等于又走回 TraeWork 流程。
+            assert!(
+                !url.contains("hide_saas_login"),
+                "{raw} 不该带 hide_saas_login（那是 solo/TraeWork 专属）: {url}"
+            );
         }
     }
 

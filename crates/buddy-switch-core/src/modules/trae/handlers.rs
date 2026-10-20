@@ -18,6 +18,7 @@
 
 use serde_json::{json, Value};
 
+use crate::modules::client_settings::variant_for_program;
 use crate::modules::config::RunFlagGuard;
 use crate::modules::trae::account::{self, Scope};
 use crate::modules::trae::checkin::{self, CheckinOptions};
@@ -25,7 +26,7 @@ use crate::modules::trae::credits;
 use crate::modules::trae::paths;
 use crate::modules::trae::platform;
 use crate::modules::trae::profile::{self, SwitchOptions};
-use crate::modules::trae::region::TraeRegion;
+use crate::modules::trae::region::{TraeProgram, TraeRegion};
 use crate::modules::trae::settings;
 use crate::modules::trae::store;
 use crate::modules::trae::token_stats::TraeTokenScope;
@@ -390,26 +391,52 @@ pub fn group_op_for(variant: TraeVariant, action: &str, params: &Value) -> Resul
 
 /// 从请求参数里解析产品线变体（两条通道共用的唯一入口）。
 ///
-/// ## 为什么缺省 / 非法一律回落默认变体，而不是报错
-///
-/// `variant` 是本轮新加的**可选**参数：老前端的请求里根本没有这个键，
+/// 规则见 [`parse_variant_id`]（区域标识优先）。缺省 / 非法一律回落默认变体：
+/// `variant` 是本轮新加的**可选**参数，老前端的请求里根本没有这个键，
 /// 若把它做成必填或对未知值报错，用户升级后会立刻看到一片「参数非法」的红字，
-/// 而真正的问题只是「客户端还没跟上」。因此规则是**宽容的**：
-///
-/// - `trae_work` → [`TraeVariant::TraeWork`]（同时也是缺省）
-/// - `trae_cn` → [`TraeVariant::Trae`]
-/// - 其它任何值（含缺失、空串、拼错、旧前端的 `null`）→ 默认变体
+/// 而真正的问题只是「客户端还没跟上」。
 ///
 /// **默认变体沿用旧文件名**（存续层已如此设计），所以「回落默认」对老用户而言
 /// 语义就是「行为和升级前一模一样」——这是安全的失败方向。
-///
-/// 反过来若回落成 `Trae`，老用户的账号库会瞬间看起来空了。
 pub fn parse_variant_param(params: &Value) -> TraeVariant {
-    params
-        .get("variant")
-        .and_then(Value::as_str)
-        .and_then(TraeVariant::parse)
-        .unwrap_or_default()
+    parse_variant_id(params.get("variant").and_then(Value::as_str))
+}
+
+/// 解析**前端传入的变体标识**（wire 层唯一入口：`api.rs` 与 `commands.rs` 都走这里）。
+///
+/// ## ★ 区域标识必须落到本区域的**合并版**（曾经落到退役的 TraeWork，真实缺陷）
+///
+/// 前端只有一个轴：**区域**（`useTraeVariant` 只会产出 `cn` / `global`）。
+/// issue #28 收敛后每区域只剩一个程序位（合并版 `Trae` / `Trae CN`），
+/// 因此区域标识的正确落点由 [`variant_for_program`] 决定。
+///
+/// 改造前这里直接把字符串交给 [`TraeVariant::parse`]，而它把 `global` 认成
+/// **国际版 TraeWork**（`packageType = SOLO_I18N`，授权页产品线 `auth_from=solo`）：
+/// 授权 URL 因此带 `auth_from=solo&client_id=en1oxy7wnw8j9n&hide_saas_login=true`，
+/// 浏览器打开的是 **TraeWork 的授权页**。国际版 TraeWork 在部分地区被直接拦下
+/// （页面原文 `TraeWork is currently not available in your region`），
+/// 而用户要授权的**国际版 Trae**（`Trae.exe`，`TRAE_I18N` ⇒ `auth_from=trae`
+/// + `client_id=ono9krqynydwx5`）本来是可用的 —— 症状就是「授权页说产品不可用」。
+///
+/// 同一处还会顺带读错**设备身份来源**：`TraeWork` 的 userData 是 `TRAE SOLO`，
+/// `global` 登录会拿另一代客户端（甚至另一代客户端残留目录）的设备凭证去签名。
+///
+/// ## 只认区域标识，**不**放宽到 `TraeRegion::parse` 的全部别名
+///
+/// `TraeRegion::parse` 同时也认 `trae_work` / `trae_cn` / `trae` 这类**程序位**历史值
+/// （一律回 CN）。若拿它做前置判定，显式传 `trae_work` 的老调用点会被静默改指合并版
+/// —— 快照目录从 `profiles` 漂到 `profiles_trae_merged`。因此这里只列前端真会产出的
+/// 区域词（与 `useTraeVariant` 的取值逐字一致），其余仍交给 [`TraeVariant::parse`]。
+pub fn parse_variant_id(raw: Option<&str>) -> TraeVariant {
+    match raw.map(|value| value.trim().to_ascii_lowercase()).as_deref() {
+        Some("cn") | Some("china") | Some("domestic") => {
+            variant_for_program(TraeRegion::Cn, TraeProgram::Trae)
+        }
+        Some("global") | Some("intl") | Some("international") | Some("sg") => {
+            variant_for_program(TraeRegion::Global, TraeProgram::Trae)
+        }
+        other => other.and_then(TraeVariant::parse).unwrap_or_default(),
+    }
 }
 
 /// 签到网络失败重试次数的上限。
@@ -968,8 +995,10 @@ pub async fn run_checkin_report(options: CheckinOptions) -> Value {
 pub async fn run_scheduled_checkin() -> Value {
     let mut regions = Vec::new();
     for region in TraeRegion::all() {
-        // `TraeVariant::parse` 收口区域标识（`cn` 落到该区域的**主程序**）。
-        let variant = TraeVariant::parse(region.as_str()).unwrap_or_default();
+        // 区域标识必须走**同一个**解析器（[`parse_variant_id`]）：直接交给
+        // `TraeVariant::parse` 会落到退役的 `TraeWork` / `Global`，
+        // 与账号页（区域 ⇒ 合并版）就不是同一条产品线了。
+        let variant = parse_variant_id(Some(region.as_str()));
         let options = match parse_checkin_options(&json!({
             "variant": variant.as_str(),
             "scope": "all",
@@ -995,6 +1024,60 @@ pub async fn run_scheduled_checkin() -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// ★★ 回归护栏：**区域标识**必须解析到本区域的**合并版**客户端。
+    ///
+    /// 2026-10-20 用户报障「国际版授权打开的是 TraeWork 的授权页，页面说该地区不可用」：
+    /// 根因就是这里把 `global` 交给了 `TraeVariant::parse`，它返回国际版 TraeWork
+    /// （`SOLO_I18N`）⇒ 授权 URL 走 `auth_from=solo`。区域标识的唯一正确落点是
+    /// 该区域**唯一**的程序位（issue #28），由 [`variant_for_program`] 决定。
+    #[test]
+    fn region_ids_resolve_to_the_regions_merged_client() {
+        assert_eq!(parse_variant_id(Some("cn")), TraeVariant::TraeMerged);
+        assert_eq!(
+            parse_variant_id(Some("global")),
+            TraeVariant::GlobalTraeMerged
+        );
+        // 大小写 / 空白容忍（前端会 `trim().toLowerCase()`，但手写参数不一定）。
+        assert_eq!(parse_variant_id(Some(" GLOBAL ")), TraeVariant::GlobalTraeMerged);
+        assert_eq!(parse_variant_id(Some("Intl")), TraeVariant::GlobalTraeMerged);
+        // 区域必须跟着走 —— 账号库按区域分家，解析错区域 = 账号凭空消失。
+        assert_eq!(
+            parse_variant_id(Some("global")).region(),
+            TraeRegion::Global
+        );
+        assert_eq!(parse_variant_id(Some("cn")).region(), TraeRegion::Cn);
+    }
+
+    /// 显式的**程序位**历史值**不许**被区域映射顺手改掉：它们的落盘槽位不同
+    /// （`profiles` vs `profiles_trae_merged`），改了指就会把快照写进另一代客户端目录。
+    #[test]
+    fn legacy_program_ids_keep_their_own_variant() {
+        assert_eq!(parse_variant_id(Some("trae_work")), TraeVariant::TraeWork);
+        assert_eq!(parse_variant_id(Some("trae_cn")), TraeVariant::Trae);
+        assert_eq!(
+            parse_variant_id(Some("global_trae_code")),
+            TraeVariant::GlobalTraeCode
+        );
+        assert_eq!(
+            parse_variant_id(Some("global_trae_merged")),
+            TraeVariant::GlobalTraeMerged
+        );
+        // 未知 / 空 / 缺省 ⇒ 默认变体（宽容回落，不 panic）。
+        assert_eq!(parse_variant_id(Some("trae_bogus")), TraeVariant::default());
+        assert_eq!(parse_variant_id(Some("")), TraeVariant::default());
+        assert_eq!(parse_variant_id(None), TraeVariant::default());
+    }
+
+    /// `parse_variant_param` 只是 [`parse_variant_id`] 的取值壳（从 JSON 里拿 `variant`）。
+    #[test]
+    fn parse_variant_param_reads_the_variant_key() {
+        assert_eq!(
+            parse_variant_param(&json!({ "variant": "global" })),
+            TraeVariant::GlobalTraeMerged
+        );
+        assert_eq!(parse_variant_param(&json!({})), TraeVariant::default());
+    }
 
     #[test]
     fn accounts_overview_has_stable_shape() {

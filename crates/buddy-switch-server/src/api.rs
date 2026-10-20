@@ -609,14 +609,13 @@ fn parse_region(value: Option<&str>) -> Region {
 /// 老版本前端不带该参数、或从探测结果里回传目录名（如 `TRAE SOLO CN`）都应被接受；
 /// 无法解析时等价于未传。
 ///
-/// ⚠️ **本函数在 `src-tauri/src/commands.rs` 有一份同款实现，两处必须保持一致**
-/// （同样的「缺失/未知 → `default()`」语义）。不要为了去重跨 crate 抽公共函数——
-/// server 与 tauri 是两个独立 crate，为这 4 行引入共享依赖不值得。
-/// 两处各自带 `parse_trae_variant_*` 单测（含未知值回落护栏）钉住行为。
+/// ★ 实际映射规则在 core 的 `trae::handlers::parse_variant_id`：
+/// **区域标识（`cn` / `global`）必须落到本区域的合并版变体**，否则国际版登录会打开
+/// TraeWork（SOLO 线）的授权页，用户看到「TraeWork 在所在地区不可用」。
+/// 本函数只保留「可选参数 + 缺省回落」这层形态，规则**不在两条通道各写一份**
+/// （``src-tauri/src/commands.rs`` 的同名录事）。
 fn parse_trae_variant(value: Option<&str>) -> trae::variant::TraeVariant {
-    value
-        .and_then(trae::variant::TraeVariant::parse)
-        .unwrap_or_default()
+    trae::handlers::parse_variant_id(value)
 }
 
 /// 解析统计查询范围参数，缺省为 `cn`（保证旧行为）；额外支持 `"all"` 合并视图。
@@ -6328,9 +6327,9 @@ mod tests {
 
 /// `parse_trae_variant` 的回归护栏。
 ///
-/// 覆盖：合法值、大小写与空白、**未知值回落默认**（且不 panic）。
+/// 覆盖：合法值、大小写与空白、**区域标识落到本区域合并版**、**未知值回落默认**。
 /// 与 `src-tauri/src/commands.rs` 的同名单测**互为镜像**，
-/// 两处实现必须保持一致（见 [`parse_trae_variant`] 的文档注释）。
+/// 两处实现必须保持一致（规则本身在 `trae::handlers::parse_variant_id`）。
 #[cfg(test)]
 mod parse_trae_variant_tests {
     use super::parse_trae_variant;
@@ -6347,6 +6346,19 @@ mod parse_trae_variant_tests {
         // `TraeVariant::parse` 内部会 `trim + to_ascii_lowercase`。
         assert_eq!(parse_trae_variant(Some("TRAE_WORK")), TraeVariant::TraeWork);
         assert_eq!(parse_trae_variant(Some(" Trae CN ")), TraeVariant::Trae);
+    }
+
+    /// ★ 前端只传区域（`cn` / `global`）：必须落到**本区域的合并版**。
+    ///
+    /// 反例（2026-10-20 用户报障）：`global` → 国际版 TraeWork ⇒ 授权页
+    /// `auth_from=solo` ⇒ 「TraeWork is currently not available in your region」。
+    #[test]
+    fn region_ids_resolve_to_the_regions_merged_client() {
+        assert_eq!(parse_trae_variant(Some("cn")), TraeVariant::TraeMerged);
+        assert_eq!(
+            parse_trae_variant(Some("global")),
+            TraeVariant::GlobalTraeMerged
+        );
     }
 
     #[test]
