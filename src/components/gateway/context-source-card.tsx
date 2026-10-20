@@ -54,7 +54,7 @@ export function ContextSourceCard({
             checked={checked ?? true}
             disabled={disabled}
             onCheckedChange={onChange}
-            aria-label={t("shared.gateway.models.contextTitle")}
+            aria-label={title ?? t("shared.gateway.models.contextTitle")}
           />
         ) : (
           <Badge variant="secondary" className="shrink-0 rounded-md">
