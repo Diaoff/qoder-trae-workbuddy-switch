@@ -72,6 +72,7 @@ export function ModelList({ region, className }: { region: Region; className?: s
   const setModelDisabled = useGatewayStore((s) => s.setModelDisabled);
   const config = useGatewayStore((s) => s.config);
   const saveConfig = useGatewayStore((s) => s.saveConfig);
+  const loadModels = useGatewayStore((s) => s.loadModels);
   /* 限流探测：与探测卡读**同一份**派生数据（`probe.cells` 实测 + `useProbePassive()` 被动底色）。 */
   const status = useGatewayStore((s) => s.status);
   const probe = useGatewayStore((s) => s.probe);
@@ -264,8 +265,8 @@ export function ModelList({ region, className }: { region: Region; className?: s
         onChange={(checked) => {
           void (async () => {
             await saveConfig({ ...config, max_context: checked });
-            // 清单数字按开关选档 ⇒ 保存后重新识别，否则表格停在旧窗口。
-            await onRescan();
+            // 清单数字按开关选档 ⇒ 保存后浅读一次（不强制打上游），表格才会跟着变。
+            await loadModels(region);
           })();
         }}
       />
