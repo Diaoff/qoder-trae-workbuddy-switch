@@ -39,7 +39,10 @@ fn host(uri: &str) -> String {
 async fn probe_region_authorize_url() {
     for region in ["cn", "global"] {
         let variant = handlers::parse_variant_id(Some(region));
-        println!("\n=========== region={region} → variant={} ===========", variant.as_str());
+        println!(
+            "\n=========== region={region} → variant={} ===========",
+            variant.as_str()
+        );
 
         match handlers::oauth_login_start_for(variant).await {
             Ok(value) => {
@@ -67,9 +70,21 @@ async fn probe_region_authorize_url() {
                     "code_challenge_method",
                 ] {
                     let value = param(&uri, key);
-                    println!("  {key:22} = {}", if value.is_empty() { "(缺失)".to_string() } else { value });
+                    println!(
+                        "  {key:22} = {}",
+                        if value.is_empty() {
+                            "(缺失)".to_string()
+                        } else {
+                            value
+                        }
+                    );
                 }
-                println!("参数总个数 : {}", uri.split_once('?').map(|(_, q)| q.split('&').count()).unwrap_or(0));
+                println!(
+                    "参数总个数 : {}",
+                    uri.split_once('?')
+                        .map(|(_, q)| q.split('&').count())
+                        .unwrap_or(0)
+                );
                 if let Some(cred) = value.get("deviceCredential") {
                     println!("设备凭证诊断 : {cred}");
                 }

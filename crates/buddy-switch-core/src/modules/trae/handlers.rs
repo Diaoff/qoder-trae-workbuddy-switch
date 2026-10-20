@@ -428,7 +428,10 @@ pub fn parse_variant_param(params: &Value) -> TraeVariant {
 /// —— 快照目录从 `profiles` 漂到 `profiles_trae_merged`。因此这里只列前端真会产出的
 /// 区域词（与 `useTraeVariant` 的取值逐字一致），其余仍交给 [`TraeVariant::parse`]。
 pub fn parse_variant_id(raw: Option<&str>) -> TraeVariant {
-    match raw.map(|value| value.trim().to_ascii_lowercase()).as_deref() {
+    match raw
+        .map(|value| value.trim().to_ascii_lowercase())
+        .as_deref()
+    {
         Some("cn") | Some("china") | Some("domestic") => {
             variant_for_program(TraeRegion::Cn, TraeProgram::Trae)
         }
@@ -1039,8 +1042,14 @@ mod tests {
             TraeVariant::GlobalTraeMerged
         );
         // 大小写 / 空白容忍（前端会 `trim().toLowerCase()`，但手写参数不一定）。
-        assert_eq!(parse_variant_id(Some(" GLOBAL ")), TraeVariant::GlobalTraeMerged);
-        assert_eq!(parse_variant_id(Some("Intl")), TraeVariant::GlobalTraeMerged);
+        assert_eq!(
+            parse_variant_id(Some(" GLOBAL ")),
+            TraeVariant::GlobalTraeMerged
+        );
+        assert_eq!(
+            parse_variant_id(Some("Intl")),
+            TraeVariant::GlobalTraeMerged
+        );
         // 区域必须跟着走 —— 账号库按区域分家，解析错区域 = 账号凭空消失。
         assert_eq!(
             parse_variant_id(Some("global")).region(),

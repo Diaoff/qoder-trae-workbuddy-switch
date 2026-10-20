@@ -1926,7 +1926,12 @@ mod tests {
             //   `Global`（TraeWork）⇒ 国际版登录打开 TraeWork 授权页，页面报
             //   `TraeWork is currently not available in your region`（用户报障原文）。
             (TraeVariant::TraeMerged, "trae", "ono9krqynydwx5", false),
-            (TraeVariant::GlobalTraeMerged, "trae", "ono9krqynydwx5", false),
+            (
+                TraeVariant::GlobalTraeMerged,
+                "trae",
+                "ono9krqynydwx5",
+                false,
+            ),
         ];
 
         for (variant, auth_from, client_id, hide_saas) in cases {
@@ -2028,7 +2033,11 @@ mod tests {
         let facts = synthetic_facts(identity_with_device_id("dev"));
         let cases = [
             ("cn", TraeVariant::TraeMerged, "https://www.trae.cn"),
-            ("global", TraeVariant::GlobalTraeMerged, "https://www.trae.ai"),
+            (
+                "global",
+                TraeVariant::GlobalTraeMerged,
+                "https://www.trae.ai",
+            ),
         ];
         for (raw, expected_variant, expected_console) in cases {
             let variant = crate::modules::trae::handlers::parse_variant_id(Some(raw));
