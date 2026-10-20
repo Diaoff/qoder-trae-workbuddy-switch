@@ -1,31 +1,60 @@
 {
-  "version": "2026.10.200958",
-  "publishedAt": "2026-10-20T09:58:00+08:00",
+  "version": "2026.10.201130",
+  "publishedAt": "2026-10-20T11:30:00+08:00",
   "sections": [
     {
-      "title": "三个平台的模型清单都声明上下文大小",
+      "title": "WorkBuddy / Qoder 也支持「使用最大上下文」开关（默认开启）",
       "items": [
-        "/v1/models 现在统一带 context_length：WorkBuddy 取目录的 context_window、Qoder 取模型元数据的 max_input_tokens、Trae 取官方目录的逐模型上限。OpenAI 兼容客户端读这一个字段就能知道每个模型能装多少。",
-        "原字段（context_window / max_input_tokens）保留，老客户端与管理面不受影响。"
+        "WorkBuddy：300k 默认 / 1M 上限 这类模型，开启开关后清单声明 1M，关闭回到 300k。",
+        "Qoder：200K 默认 / 400K / 1M 多窗口模型，开启后清单声明最大档，并把它写进请求的上下文元数据；关闭回到默认档。",
+        "两处开关都在「模型」页顶部，默认开启，保存即生效。"
       ]
     },
     {
-      "title": "为什么只有 Trae 有 Max Mode 开关",
+      "title": "Trae 仍然是唯一的「请求级 Max Mode」",
       "items": [
-        "Max Mode 是 Trae 上游的请求级布尔字段：同一个模型有 dev（__dev 通道实际窗口）与 max（上限）两个值，才需要「开 / 关」。",
-        "WorkBuddy 与 Qoder 的目录只有一个上限值，没有第二个模式可切 —— 所以模型页给的是「上下文上限 · 按目录声明」只读说明卡，而不是一个点了没反应的开关。",
-        "模型页的「上下文」列三家都有：200k / 400k / 1M / 982k 直接可见；Trae 关闭 Max Mode 后回到 dev。"
+        "Trae 的开关对应上游 is_max_mode 布尔字段；WB / Qoder 没有这个字段，开关只决定声明 / 使用哪一档窗口。",
+        "三家清单现在都带 context_length，数值随开关变化，客户端读同一个字段即可。"
       ]
     },
     {
       "title": "内部",
       "items": [
-        "WB 模型条目抽成 routes::models::model_entry，独立网关与统一网关共用一份（避免两处 JSON 漂移）。",
-        "版本号统一为 2026.10.200958（19 处载体校验通过）。"
+        "WB 目录解析：contextWindow.defaultLength 记为默认档，maxInputTokens / maxAllowedSize 记为上限档（修复国际版一直只显示默认档的问题）。",
+        "Qoder：解析 context_config 的多窗口与 is_default 标记。",
+        "版本号统一为 2026.10.201130（19 处载体校验通过）。"
       ]
     }
   ],
   "history": [
+    {
+      "version": "2026.10.200958",
+      "publishedAt": "2026-10-20T09:58:00+08:00",
+      "sections": [
+        {
+          "title": "三个平台的模型清单都声明上下文大小",
+          "items": [
+            "/v1/models 现在统一带 context_length：WorkBuddy 取目录的 context_window、Qoder 取模型元数据的 max_input_tokens、Trae 取官方目录的逐模型上限。OpenAI 兼容客户端读这一个字段就能知道每个模型能装多少。",
+            "原字段（context_window / max_input_tokens）保留，老客户端与管理面不受影响。"
+          ]
+        },
+        {
+          "title": "为什么只有 Trae 有 Max Mode 开关",
+          "items": [
+            "Max Mode 是 Trae 上游的请求级布尔字段：同一个模型有 dev（__dev 通道实际窗口）与 max（上限）两个值，才需要「开 / 关」。",
+            "WorkBuddy 与 Qoder 的目录只有一个上限值，没有第二个模式可切 —— 所以模型页给的是「上下文上限 · 按目录声明」只读说明卡，而不是一个点了没反应的开关。",
+            "模型页的「上下文」列三家都有：200k / 400k / 1M / 982k 直接可见；Trae 关闭 Max Mode 后回到 dev。"
+          ]
+        },
+        {
+          "title": "内部",
+          "items": [
+            "WB 模型条目抽成 routes::models::model_entry，独立网关与统一网关共用一份（避免两处 JSON 漂移）。",
+            "版本号统一为 2026.10.200958（19 处载体校验通过）。"
+          ]
+        }
+      ]
+    },
     {
       "version": "2026.10.200904",
       "publishedAt": "2026-10-20T09:04:00+08:00",
