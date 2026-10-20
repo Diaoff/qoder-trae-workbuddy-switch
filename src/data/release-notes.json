@@ -1,26 +1,54 @@
 {
-  "version": "2026.10.200904",
-  "publishedAt": "2026-10-20T09:04:00+08:00",
+  "version": "2026.10.200958",
+  "publishedAt": "2026-10-20T09:58:00+08:00",
   "sections": [
     {
-      "title": "Max Mode 开关：现在真的能关（接前端 + 后端）",
+      "title": "三个平台的模型清单都声明上下文大小",
       "items": [
-        "网关页配置卡新增「Max Mode（按各模型上限）」开关，默认开启，保存即生效（无需重启）。",
-        "开启：对官方目录里 max > dev 的模型注入 is_max_mode，/v1/models 声明它自己的上限（glm-5.3 1M、mimo 982k…）。",
-        "关闭：清单回到 dev（__dev 通道实际窗口），请求不再注入 —— 适合「先按默认窗口用」的场景。",
-        "三条入口（Trae 独立网关 / 统一网关 trae 命名空间 / web 管理面）读同一份配置，不存在「清单关了、请求还开着」的半截状态。"
+        "/v1/models 现在统一带 context_length：WorkBuddy 取目录的 context_window、Qoder 取模型元数据的 max_input_tokens、Trae 取官方目录的逐模型上限。OpenAI 兼容客户端读这一个字段就能知道每个模型能装多少。",
+        "原字段（context_window / max_input_tokens）保留，老客户端与管理面不受影响。"
+      ]
+    },
+    {
+      "title": "为什么只有 Trae 有 Max Mode 开关",
+      "items": [
+        "Max Mode 是 Trae 上游的请求级布尔字段：同一个模型有 dev（__dev 通道实际窗口）与 max（上限）两个值，才需要「开 / 关」。",
+        "WorkBuddy 与 Qoder 的目录只有一个上限值，没有第二个模式可切 —— 所以模型页给的是「上下文上限 · 按目录声明」只读说明卡，而不是一个点了没反应的开关。",
+        "模型页的「上下文」列三家都有：200k / 400k / 1M / 982k 直接可见；Trae 关闭 Max Mode 后回到 dev。"
       ]
     },
     {
       "title": "内部",
       "items": [
-        "TraeGatewayConfig 新增 max_mode（默认 true，兼容 camelCase 别名）；读取用同步快照，拿不到锁按开启处理。",
-        "models_response_for / prepare_llm_chat_body 显式接收该开关；check:scope 随签名更新，仍钉住「禁用集合是第二个实参」。",
-        "版本号统一为 2026.10.200904（19 处载体校验通过）。"
+        "WB 模型条目抽成 routes::models::model_entry，独立网关与统一网关共用一份（避免两处 JSON 漂移）。",
+        "版本号统一为 2026.10.200958（19 处载体校验通过）。"
       ]
     }
   ],
   "history": [
+    {
+      "version": "2026.10.200904",
+      "publishedAt": "2026-10-20T09:04:00+08:00",
+      "sections": [
+        {
+          "title": "Max Mode 开关：现在真的能关（接前端 + 后端）",
+          "items": [
+            "网关页配置卡新增「Max Mode（按各模型上限）」开关，默认开启，保存即生效（无需重启）。",
+            "开启：对官方目录里 max > dev 的模型注入 is_max_mode，/v1/models 声明它自己的上限（glm-5.3 1M、mimo 982k…）。",
+            "关闭：清单回到 dev（__dev 通道实际窗口），请求不再注入 —— 适合「先按默认窗口用」的场景。",
+            "三条入口（Trae 独立网关 / 统一网关 trae 命名空间 / web 管理面）读同一份配置，不存在「清单关了、请求还开着」的半截状态。"
+          ]
+        },
+        {
+          "title": "内部",
+          "items": [
+            "TraeGatewayConfig 新增 max_mode（默认 true，兼容 camelCase 别名）；读取用同步快照，拿不到锁按开启处理。",
+            "models_response_for / prepare_llm_chat_body 显式接收该开关；check:scope 随签名更新，仍钉住「禁用集合是第二个实参」。",
+            "版本号统一为 2026.10.200904（19 处载体校验通过）。"
+          ]
+        }
+      ]
+    },
     {
       "version": "2026.10.191907",
       "publishedAt": "2026-10-19T19:07:00+08:00",
