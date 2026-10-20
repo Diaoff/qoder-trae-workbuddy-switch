@@ -19,6 +19,7 @@ import { ModelProbeCard } from "@/components/gateway/model-probe-card";
 // ⚠️ 只接 WB 侧：C 路本期不做 Trae（`proxy.rs` 的 `PROXY_GATEWAY_BASE` 只覆盖 WB 网关端口）。
 import { ProxyPanel } from "@/components/gateway/proxy-panel";
 import { RequestLog } from "@/components/gateway/request-log";
+import { GatewayClientlessNotice } from "@/components/clientless-notice";
 import { GatewayShell } from "@/components/gateway/gateway-shell";
 import {
   GW_SECTIONS,
@@ -310,6 +311,8 @@ export default function ApiServicePage() {
       {/* ---- 主区：子导航 + 分区内容（PLAN §3.9：替代原来的 6 卡纵向堆叠）----
           方向 / 对齐 / 间距整组在 `index.css` 的 `[data-split-layout]`（原型 `.split`，
           含 900px 转纵向），故这里不再写 `flex-col` / `lg:flex-row` / `gap-*`。 */}
+      {/* 无客户端形态（issue #62）：网关只依赖账号池里的凭据，与客户端是否同机无关。 */}
+      <GatewayClientlessNotice scope={scope} />
       <GatewayShell
         type={type}
         section={section}

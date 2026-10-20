@@ -212,6 +212,17 @@ export const zh = {
   "trae.comp.oauth.retryBusy": "正在发起登录…",
   "trae.comp.oauth.launch": "启动 {variant} 客户端",
   "trae.comp.oauth.launchBusy": "正在启动 {variant} 客户端…",
+  // ---- 远程 / 无客户端部署（issue #62）：授权页要探 127.0.0.1:17388 ----
+  "trae.comp.oauth.tunnel.title": "远程部署要多一步：授权页会探本机 {port}",
+  "trae.comp.oauth.tunnel.desc": "Trae 授权页停在「认证中」时会去探 127.0.0.1:{port} 确认客户端在线。服务器上没有这个端口，而你点授权的浏览器在自己电脑上 —— 先在自己电脑开一条端口转发接过去，转发后别关终端：",
+  "trae.comp.oauth.tunnel.copy": "复制命令",
+  "trae.comp.oauth.tunnel.copied": "已复制",
+  "trae.comp.oauth.pasteCallback.title": "回调没打回来？把地址栏整串贴进来",
+  "trae.comp.oauth.pasteCallback.hint": "授权完成后浏览器会跳向 127.0.0.1:{port}/authorize?… 并打不开 —— 把那一整串地址复制到这里，由服务端补完兑换。",
+  "trae.comp.oauth.pasteCallback.placeholder": "http://127.0.0.1:{port}/authorize?authCodeInfo=…",
+  "trae.comp.oauth.pasteCallback.submit": "提交回调",
+  "trae.comp.oauth.pasteCallback.busy": "正在兑换…",
+  "trae.comp.oauth.keyNote": "另外：Trae 的换 token 与续期都用客户端 storage.json 里的 icube 设备私钥。本机没有客户端就没有这把钥匙 —— 把装了客户端那台机器的 storage.json 拷到服务器同一路径，或改用「导入备份」（备份不含私钥，续期会失败，只能用到 access_token 过期）。",
   "trae.comp.oauth.launchOk": "已启动 {variant} 客户端。等它写完设备凭证（首次启动还会弹出登录页，按提示登录一次），再点「重新发起登录」。",
 
   // =====================================================================

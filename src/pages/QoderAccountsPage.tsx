@@ -79,6 +79,7 @@ import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { ClientlessStrip } from "@/components/clientless-notice";
 import { EmptyState } from "@/components/ui/empty-state";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -1049,6 +1050,11 @@ export default function QoderAccountsPage() {
         emptyState={emptyState}
         notices={
           <>
+            {/* 无客户端形态（issue #62）：本机没有 Qoder 来源时，登录授权与网关照常可用 ——
+                缺的只是「从本机导入」这条读客户端目录的路。空态卡片仍保留来源四态诊断。 */}
+            {sources !== null && !localInstalled ? (
+              <ClientlessStrip scopeLabel={scopeLabel(t, scopeOf("qoder", region))} />
+            ) : null}
             {error && rows.length > 0 ? (
               <Alert variant="destructive" className="mb-4">
                 <AlertTriangle />
@@ -1196,6 +1202,13 @@ export default function QoderAccountsPage() {
            粘贴 PAT 走 extraOptions（它不属于原型的三种「添加方式」）。 */
         ways={["oauth", "local", "backup"]}
         onPick={(way) => {
+          /* 本机没有 Qoder 来源时，「从本机导入」没有目录可读 —— 给替代路径（issue #62）。 */
+          if (way === "local" && !localInstalled) {
+            toast.error(t("shared.srv.localUnavailable"), {
+              description: t("shared.srv.localUnavailableDesc"),
+            });
+            return;
+          }
           if (way === "oauth") setOauthOpen(true);
           if (way === "local") void onImportLocal();
           if (way === "backup") setImportOpen(true);

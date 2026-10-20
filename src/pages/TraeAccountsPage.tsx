@@ -36,6 +36,7 @@ import { TraeAccountCard, formatCredits, jwtBadge, shortTime, type TraeProgram }
 import { REFRESH_DONE_LABEL, useAccountRefreshBusy, type AccountRefreshKind } from "@/lib/account-refresh";
 import { TraeExportAccountsDialog } from "@/components/trae-export-accounts-dialog";
 import { TraeImportAccountsDialog } from "@/components/trae-import-accounts-dialog";
+import { ClientlessEmptyCard, ClientlessStrip } from "@/components/clientless-notice";
 import { TraeOAuthLoginDialog } from "@/components/trae-oauth-login-dialog";
 import { RecycleBinSheet } from "@/components/recycle-bin-sheet";
 import { RestartConfirmDialog } from "@/components/restart-confirm-dialog";
@@ -2063,6 +2064,19 @@ export default function TraeAccountsPage() {
         /* 首屏空态：与 WorkBuddy 的 `EmptyRegionCard` 同构（可能原因 + 期望产物 + 动作）。 */
         emptyState={
           accounts.length === 0 ? (
+            /* ★ 无客户端形态（issue #62）：本机没有该产品线的客户端时，
+               「从本机导入 / 启动客户端」都是死路，换成「浏览器授权 + 导入备份」，
+               并把「Trae 还需要客户端里的设备私钥」提前说清（`trae` 标记）。 */
+            regionStatus && regionStatus.installed === false ? (
+              <ClientlessEmptyCard
+                scopeLabel={scopeLabel(t, scopeOf("trae", variant))}
+                platformLabel={traeVariantLabel(variant)}
+                trae
+                onOauth={() => setOauthOpen(true)}
+                onBackup={() => setImportOpen(true)}
+                onRecheck={() => loadAll()}
+              />
+            ) : (
             <EmptyTraeCard
           // ⚠️ 三个字段都必须取**当前区域**那份（见 `EmptyTraeCard` 的 prop 文档）：
           // `env`（`get_trae_env`）是横跨全部产品线的全局探测，在区域页里会张冠李戴
@@ -2081,10 +2095,15 @@ export default function TraeAccountsPage() {
               importing={importing}
               launching={busy === "launch-client"}
             />
+            )
           ) : null
         }
         notices={
           <>
+            {/* 有账号、但本机没有该产品线的客户端：一行说清影响面（网关不受影响）。 */}
+            {regionStatus?.installed === false && accounts.length > 0 ? (
+              <ClientlessStrip scopeLabel={scopeLabel(t, scopeOf("trae", variant))} />
+            ) : null}
             {error && (
               <Alert variant="destructive" className="mb-4">
                 <AlertTriangle />
@@ -2301,6 +2320,13 @@ export default function TraeAccountsPage() {
         installed={regionStatus?.installed ?? false}
         onPick={(way: AddAccountWay) => {
           /* 与 WorkBuddy 同构：先关抽屉，再进入对应流程。 */
+          /* 无客户端时「从本机导入」没有目录可读 —— 给替代路径，不静默失败（issue #62）。 */
+          if (way === "local" && regionStatus?.installed === false) {
+            toast.error(t("shared.srv.localUnavailable"), {
+              description: t("shared.srv.localUnavailableDesc"),
+            });
+            return;
+          }
           if (way === "oauth") setOauthOpen(true);
           else if (way === "backup") setImportOpen(true);
           else void importLocal();
@@ -2403,6 +2429,8 @@ export default function TraeAccountsPage() {
       <TraeOAuthLoginDialog
         open={oauthOpen}
         onOpenChange={setOauthOpen}
+        /* 无客户端时弹窗要多讲一条「设备私钥」—— 只讲端口转发会让用户以为是网络问题。 */
+        clientless={regionStatus?.installed === false}
         onSuccess={(account) => {
           toast.success(t("trae.page.accounts.accountAdded"), {
             description: `${account.name || account.userId}${account.hasRefreshToken ? t("trae.page.accounts.autoRenewSuffix") : ""}`,

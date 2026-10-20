@@ -826,6 +826,15 @@ pub fn oauth_login_status(login_id: &str) -> Value {
 }
 
 /// 取消 OAuth 登录（用户关掉了对话框），释放监听端口。
+/// 手工提交回调链接（远程部署，issue #62）。
+///
+/// 与监听回调走**同一套**解析 / CSRF / 兑换 / 落库（见
+/// [`crate::modules::trae::oauth::submit_callback`]），差别只是「回调从哪来」。
+/// 返回账号视图；失败直接把可读原因抛给调用方（前端要展示它，不能吞成 `{done:false}`）。
+pub async fn oauth_login_submit_callback(login_id: &str, url: &str) -> Result<Value, String> {
+    crate::modules::trae::oauth::submit_callback(login_id, url).await
+}
+
 pub fn oauth_login_cancel(login_id: &str) -> Value {
     let cancelled = crate::modules::trae::oauth::login_cancel(login_id);
     json!({ "cancelled": cancelled })

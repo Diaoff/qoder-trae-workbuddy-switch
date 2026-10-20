@@ -8,10 +8,10 @@ use serde_json::{json, Value};
 use std::sync::Mutex;
 
 use buddy_switch_core::modules::{
-    account, app_prefs, auth_file, backup, capability, checkin, client_limits, client_settings,
-    config, credit_usage, credits, diagnostics, export_import, migrate, oauth, process, programs,
-    qoder, refresh, region::Region, region::RegionFilter, rotate, session, skill, switch,
-    token_daily, token_stats, trae, travel, update, vscode_session,
+    account, app_prefs, auth_file, backup, cache, capability, checkin, client_limits,
+    client_settings, config, credit_usage, credits, diagnostics, export_import, migrate, oauth,
+    process, programs, qoder, refresh, region::Region, region::RegionFilter, rotate, session,
+    skill, switch, token_daily, token_stats, trae, travel, update, vscode_session,
 };
 use tauri::{Emitter, Manager};
 // P5 §2.5 第 (2) 条：capability **默认拒绝**。表数据只在 core（`product_spec`），本文件只查表。
@@ -561,6 +561,59 @@ pub async fn accounts_import_local(scope: String) -> Result<Value, String> {
     }
 }
 
+/// 粘贴授权凭据（issue #62，无客户端部署）。
+///
+/// ## 为什么需要它
+///
+/// 服务器 / 容器里没有客户端目录，「从本机导入」无从读起。让用户把另一台机器上
+/// `auth/workbuddy-desktop-ai.info` 的内容整段粘过来，是与「浏览器授权」并列的
+/// 第二条**不需要客户端**的路。
+///
+/// ## 只接 WorkBuddy
+///
+/// 另两家各有更合适的入口：Qoder 走「粘贴 PAT」（`qoder_account_add_pat`），
+/// Trae 走「粘贴 JWT」（`trae_import_jwt`）。对它们返回明确指引，而不是
+/// 让一个「看起来通用」的命令在两家上静默失败。
+///
+/// 落库与解锁链与 [`accounts_import_local`] **完全一致**（同一个
+/// `auth_file::import_account_from_text_for` → `save_collected_account_for`），
+/// 差别只是凭据从「文件」换成「文本」。
+#[tauri::command(rename_all = "camelCase")]
+pub async fn accounts_paste_credential(scope: String, text: String) -> Result<Value, String> {
+    let scope = resolve_scope_param(Some(&scope))?;
+    match scope.product() {
+        Product::Workbuddy => {
+            let region = require_wb_region(scope)?;
+            tauri::async_runtime::spawn_blocking(move || {
+                let collected = auth_file::import_account_from_text_for(region, &text)?;
+                let saved = account::save_collected_account_for(region, collected)
+                    .map_err(|error| format!("写入账号库失败: {error}"))?;
+                Ok(json!({ "ok": true, "account": account::account_meta_for(region, &saved) }))
+            })
+            .await
+            .map_err(|error| format!("粘贴凭据失败: {error}"))?
+        }
+        Product::Trae => Err(
+            "Trae 请用「粘贴 JWT」或「浏览器授权」——换 token 需要客户端里的设备私钥".to_string(),
+        ),
+        Product::Qoder => Err("Qoder 请用「粘贴 PAT」".to_string()),
+    }
+}
+
+/// 手工提交 Trae 授权回调链接（issue #62，远程部署）。
+///
+/// 授权页把回调打到固定 `127.0.0.1:17388`；容器部署时用户的浏览器在另一台机器上，
+/// 那条回调回不到服务端。端口转发能解决，但用户也可能只想把地址栏整串粘回来 ——
+/// 本命令用**与监听路径同一套**函数补完解析 / CSRF / 兑换 / 落库。
+///
+/// 失败直接返回可读原因（不转成 `{done:false}`）：用户此刻正盯着这个动作，
+/// 静默等待只会被当成「卡住」。
+#[tauri::command(rename_all = "camelCase")]
+pub async fn trae_oauth_submit_callback(login_id: String, callback_url: String) -> Result<Value, String> {
+    require_capability(Product::Trae, capability::Capability::Oauth)?;
+    trae::handlers::oauth_login_submit_callback(&login_id, &callback_url).await
+}
+
 /// ★ 参数化命令：积分 / 积分总览 —— `scope` 同时决定**平台**与**区域**。
 ///
 /// 合并旧 `get_credit_expiry`（WB，单账号积分资源与到期时间）与 `get_trae_credits`
@@ -670,6 +723,32 @@ fn build_open_data_dir(scope: String) -> Result<Value, String> {
         }
         Product::Qoder => qoder_scope_not_applicable(),
     }
+}
+
+/// GET /api/cache/scan 的桌面孪生 —— 只读扫描数据目录各类缓存体积（**不清任何东西**）。
+///
+/// 与 `crates/buddy-switch-server/src/api.rs::api_cache_scan` 一一对应（刻意不去重）。
+/// 无 scope 参数 —— `~/.buddy-switch` 是全局单目录（`config::store_dir`）。
+///
+/// async + `spawn_blocking`：扫描要遍历几千个目录，同步跑会占住 UI 响应
+/// （与 [`get_codebuddy_cli_status`] 同款纪律）。
+#[tauri::command]
+pub async fn cache_scan() -> Result<Value, String> {
+    tauri::async_runtime::spawn_blocking(cache::scan)
+        .await
+        .map_err(|error| format!("扫描缓存失败: {error}"))
+}
+
+/// POST /api/cache/clear 的桌面孪生 —— 按类别清除缓存（**不可逆**）。
+///
+/// `categories` 为空 / 含未知 id ⇒ 整体报错（fail-closed：先校验全部 id 再动手，
+/// 一个字节都不删）。与 `api_cache_clear` 一一对应。async + `spawn_blocking`：
+/// 清除可能卸载几十 GB（core 内有界并行删除）。
+#[tauri::command(rename_all = "camelCase")]
+pub async fn cache_clear(categories: Vec<String>) -> Result<Value, String> {
+    tauri::async_runtime::spawn_blocking(move || cache::clear(&categories))
+        .await
+        .map_err(|error| format!("清除缓存失败: {error}"))?
 }
 
 /// GET /api/codebuddy-cli/status —— CodeBuddy CLI helper 轮换状态（不含 token）。
@@ -2133,13 +2212,6 @@ mod parse_trae_variant_tests {
         assert_eq!(parse_trae_variant(Some("trae_cn")), TraeVariant::Trae);
     }
 
-    #[test]
-    fn parses_case_and_whitespace_insensitively() {
-        // `TraeVariant::parse` 内部会 `trim + to_ascii_lowercase`。
-        assert_eq!(parse_trae_variant(Some("TRAE_WORK")), TraeVariant::TraeWork);
-        assert_eq!(parse_trae_variant(Some(" Trae CN ")), TraeVariant::Trae);
-    }
-
     /// ★ 前端只传区域（`cn` / `global`）：必须落到**本区域的合并版**。
     ///
     /// 反例（2026-10-20 用户报障）：`global` → 国际版 TraeWork ⇒ 授权页
@@ -2151,6 +2223,13 @@ mod parse_trae_variant_tests {
             parse_trae_variant(Some("global")),
             TraeVariant::GlobalTraeMerged
         );
+    }
+
+    #[test]
+    fn parses_case_and_whitespace_insensitively() {
+        // `TraeVariant::parse` 内部会 `trim + to_ascii_lowercase`。
+        assert_eq!(parse_trae_variant(Some("TRAE_WORK")), TraeVariant::TraeWork);
+        assert_eq!(parse_trae_variant(Some(" Trae CN ")), TraeVariant::Trae);
     }
 
     #[test]

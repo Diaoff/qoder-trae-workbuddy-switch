@@ -426,6 +426,40 @@ pub fn import_from_auth_file_for(region: Region) -> Option<Value> {
     }
 }
 
+/// 从**文本**导入账号（粘贴凭据，issue #62）。
+///
+/// 与 [`import_from_auth_file_for`] 共用**同一条解析与解锁链**，差别只在数据源：
+/// 那边读本机认证文件，这边吃用户粘进来的 JSON。服务器 / 容器里没有客户端目录，
+/// 让用户把 `auth/workbuddy-desktop-ai.info` 的内容贴过来是最省事的入库方式。
+///
+/// 解锁口径与文件导入**逐字一致**：解不开就保留信封（账号仍可用于切换 / 网关），
+/// 绝不因为「本机拿不到密钥」把整个导入判失败。
+pub fn import_account_from_text_for(region: Region, text: &str) -> Result<Value, String> {
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return Err("凭据内容为空".to_string());
+    }
+    let root: Value = serde_json::from_str(trimmed)
+        .map_err(|error| format!("不是合法的认证文件 JSON：{error}"))?;
+    let account =
+        imported_account_from_root(root).ok_or("没有找到可用的凭据（accessToken / refreshToken）")?;
+    if !crate::modules::at_rest::is_unlockable(&account) {
+        return Ok(account);
+    }
+    match crate::modules::at_rest::unlock_account_for(region, &account) {
+        Ok(Some(unlocked)) => Ok(unlocked),
+        // `None` = 读取与解锁之间字段变了（并发切换），用原值即可。
+        Ok(None) => Ok(account),
+        Err(error) => {
+            eprintln!(
+                "[at-rest] 粘贴的凭据未解锁（{}）：{error}；保留信封，账号仍可用于切换",
+                error.code()
+            );
+            Ok(account)
+        }
+    }
+}
+
 /// 字段取值：**明文优先**（`get_str`：trim + 空串视为缺失，保持历史回落链），
 /// 明文取不到时接受 WorkBuddy 5.6 的**加密信封**并原样返回。
 ///
@@ -526,6 +560,60 @@ fn parse_ts(v: Option<&Value>) -> Option<i64> {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    /// 粘贴凭据（issue #62）：空内容 / 非 JSON 必须给**可读原因**，
+    /// 不能返回一个「没有凭据」的模糊错误（用户会以为是自己的凭据坏了）。
+    #[test]
+    fn paste_credential_rejects_empty_and_invalid_json() {
+        let empty = import_account_from_text_for(Region::Cn, "   ").unwrap_err();
+        assert!(empty.contains("为空"), "空内容的提示应点明是空的: {empty}");
+
+        let invalid = import_account_from_text_for(Region::Cn, "{not-json").unwrap_err();
+        assert!(
+            invalid.contains("JSON"),
+            "非 JSON 必须说清是格式问题: {invalid}"
+        );
+    }
+
+    /// 粘贴凭据：结构对但没有凭据字段 ⇒ 明确说「没有可用凭据」。
+    #[test]
+    fn paste_credential_reports_missing_tokens() {
+        let error = import_account_from_text_for(Region::Cn, r#"{"uid":"u1"}"#).unwrap_err();
+        assert!(
+            error.contains("accessToken") || error.contains("refreshToken"),
+            "应指出缺哪个字段: {error}"
+        );
+    }
+
+    /// 粘贴凭据与文件导入共用解析链：最小可用的 auth 结构应能解析出账号。
+    ///
+    /// 断言的是**同一条链**（`imported_account_from_root`）：字段名与嵌套形态与
+    /// 客户端 auth 文件一致（`auth.accessToken` + `account.uid`）。
+    #[test]
+    fn paste_credential_parses_minimal_auth_payload() {
+        let text = r#"{
+            "uid": "u-paste-1",
+            "auth": { "accessToken": "at-123", "refreshToken": "rt-456" }
+        }"#;
+        let account = import_account_from_text_for(Region::Cn, text).expect("应能解析出账号");
+        // ⚠️ `id` 是**本仓生成的 UUID**（与客户端 uid 不是一回事），
+        // 断言要落在真正搬运的字段上：uid 与两个 token。
+        assert_eq!(
+            account.get("uid").and_then(Value::as_str),
+            Some("u-paste-1"),
+            "uid 应原样保留: {account}"
+        );
+        assert_eq!(
+            account.get("access_token").and_then(Value::as_str),
+            Some("at-123"),
+            "access_token 应取自 auth.accessToken: {account}"
+        );
+        assert_eq!(
+            account.get("refresh_token").and_then(Value::as_str),
+            Some("rt-456"),
+            "refresh_token 应取自 auth.refreshToken: {account}"
+        );
+    }
 
     #[test]
     fn auth_file_path_is_expected_location() {

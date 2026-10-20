@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
-import { ExternalLink } from "lucide-react";
 
+import { AuthLinkPanel } from "@/components/auth-link-panel";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import {
@@ -32,6 +32,8 @@ export function OAuthLoginDialog({ open, onOpenChange, region }: Props) {
   const [busy, setBusy] = useState(false);
   const [loginId, setLoginId] = useState<string | null>(null);
   const [uri, setUri] = useState("");
+  /** 授权链接有效期（后端 `expiresIn`）—— 面板据此走倒计时。 */
+  const [expiresIn, setExpiresIn] = useState<number | null>(null);
   const [error, setError] = useState("");
   const [result, setResult] = useState<AccountMeta | null>(null);
 
@@ -41,6 +43,7 @@ export function OAuthLoginDialog({ open, onOpenChange, region }: Props) {
       setBusy(false);
       setLoginId(null);
       setUri("");
+      setExpiresIn(null);
       setError("");
       setResult(null);
     }
@@ -86,8 +89,10 @@ export function OAuthLoginDialog({ open, onOpenChange, region }: Props) {
       const res = await api.oauthStart(region);
       setLoginId(res.loginId);
       setUri(res.verificationUri);
-      // 按当前宿主能力打开验证页
-      await openInBrowser(res.verificationUri);
+      setExpiresIn(res.expiresIn ?? null);
+      /* 自动开浏览器是**尽力而为**：服务器 / 容器里没有 GUI，失败不能算登录失败 ——
+         面板里的链接与二维码才是完整路径（issue #62）。 */
+      void openInBrowser(res.verificationUri).catch(() => {});
     } catch (e) {
       setError(api.asError(e));
     } finally {
@@ -114,31 +119,16 @@ export function OAuthLoginDialog({ open, onOpenChange, region }: Props) {
         )}
 
         {loginId && !result && (
-          <div className="space-y-3">
-            <Alert>
-              <ExternalLink className="size-4" />
-              <AlertDescription className="break-all">
-                <a
-                  href={uri}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="text-primary underline-offset-2 hover:underline"
-                  onClick={(e) => {
-                    // WebUI 直接使用浏览器默认链接行为，确保即使自动弹窗被拦截
-                    // 也能通过用户点击打开验证页。
-                    if (api.isWebui()) return;
-                    e.preventDefault();
-                    void openInBrowser(uri);
-                  }}
-                >
-                  {uri}
-                </a>
-              </AlertDescription>
-            </Alert>
-            <p className="text-sm text-muted-foreground">
-              {t("wbAccounts.dialog.oauthWaiting")}
+          /* 链接 + 二维码 + 倒计时：弹窗本身就是完整路径，不依赖「自动开浏览器」。 */
+          <AuthLinkPanel
+            url={uri}
+            expiresIn={expiresIn}
+            status={error ? "expired" : "waiting"}
+          >
+            <p className="text-[11px] leading-relaxed text-muted-foreground">
+              {t("shared.authPanel.noCallback")}
             </p>
-          </div>
+          </AuthLinkPanel>
         )}
 
         {result && (

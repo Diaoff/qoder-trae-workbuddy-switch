@@ -13,6 +13,7 @@ import {
   AccountPoolCard,
   QODER_POOL_TILES,
 } from "@/components/gateway/account-pool-card";
+import { GatewayClientlessNotice } from "@/components/clientless-notice";
 import { GatewayShell } from "@/components/gateway/gateway-shell";
 import {
   GW_INDEPENDENT_SECTIONS_NO_PROXY,
@@ -431,6 +432,8 @@ export default function QoderApiServicePage() {
       )}
 
       {/* ---- 主区：子导航 + 分区内容（与另两个分区同一套骨架）---- */}
+      {/* 无客户端形态（issue #62）：网关只依赖账号池里的凭据，与客户端是否同机无关。 */}
+      <GatewayClientlessNotice scope={scope} />
       <GatewayShell
         type={type}
         section={section}

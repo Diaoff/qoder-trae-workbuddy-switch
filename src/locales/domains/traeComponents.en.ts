@@ -167,6 +167,17 @@ export const en = {
   "trae.comp.oauth.retryBusy": "Starting sign-in…",
   "trae.comp.oauth.launch": "Launch the {variant} client",
   "trae.comp.oauth.launchBusy": "Launching the {variant} client…",
+  // ---- Remote / client-less deployment (issue #62): the authorize page probes 127.0.0.1:17388 ----
+  "trae.comp.oauth.tunnel.title": "Remote deployment needs one extra step: the authorize page probes local port {port}",
+  "trae.comp.oauth.tunnel.desc": "While stuck on \"authorizing\", the Trae authorize page probes 127.0.0.1:{port} to confirm the client is online. A server has no such port, and the browser you click in runs on your own machine — open a port forward there first, and keep the terminal open:",
+  "trae.comp.oauth.tunnel.copy": "Copy command",
+  "trae.comp.oauth.tunnel.copied": "Copied",
+  "trae.comp.oauth.pasteCallback.title": "Callback never arrived? Paste the address bar here",
+  "trae.comp.oauth.pasteCallback.hint": "After approving, the browser jumps to 127.0.0.1:{port}/authorize?… and fails to load — copy that whole URL here and the server finishes the exchange.",
+  "trae.comp.oauth.pasteCallback.placeholder": "http://127.0.0.1:{port}/authorize?authCodeInfo=…",
+  "trae.comp.oauth.pasteCallback.submit": "Submit callback",
+  "trae.comp.oauth.pasteCallback.busy": "Exchanging…",
+  "trae.comp.oauth.keyNote": "Also: Trae signs token exchange and refresh with the icube device private key stored in the client's storage.json. Without a client on this machine there is no such key — copy storage.json from the machine that has the client to the same path here, or use \"Import backup\" (backups carry no private key, so refresh will fail and the account only lasts until the access_token expires).",
   "trae.comp.oauth.launchOk": "The {variant} client has been launched. Wait for it to write its device credential (a first launch also shows a sign-in page — sign in there once), then click “Restart sign-in”.",
 
   // =====================================================================

@@ -20,6 +20,7 @@ pub mod background;
 // P12 T03 · 业务转发的**路径白名单**（本地路由）—— 放在 core 是因为**两侧都要用**：
 // `gateway` 拿它做 404 判定，`proxy.rs` 拿它暴露给面板（**避免两侧各写一份**）。
 pub mod biz_allowlist;
+pub mod cache;
 pub mod capability;
 pub mod cat;
 pub mod catalog;

@@ -9,6 +9,9 @@ import type {
   AppStatus,
   AutoBackupConfig,
   AutoBackupEntry,
+  CacheCategoryId,
+  CacheClearResult,
+  CacheScanReport,
   AutoRotateConfig,
   BackupConflictPolicy,
   CatalogSnapshot,
@@ -252,6 +255,10 @@ type Route = { method: "GET" | "POST"; path: string };
 /** Tauri command → HTTP 路由映射（webui 模式）。 */
 const ROUTES: Record<string, Route> = {
   get_status: { method: "GET", path: "/api/status" },
+  // 缓存清理（「清除缓存」分区）：全局单目录（`~/.buddy-switch`），**无 scope**。
+  // `scan` 只读量体积；`clear` 按类别删（不可逆）。
+  cache_scan: { method: "GET", path: "/api/cache/scan" },
+  cache_clear: { method: "POST", path: "/api/cache/clear" },
   get_accounts: { method: "GET", path: "/api/accounts" },
   // P5 T03 · 参数化命令（`scope` 决定平台与区域）。旧路由保留为别名（见 ALIASES）。
   accounts_list: { method: "GET", path: "/api/accounts/list" },
@@ -271,6 +278,9 @@ const ROUTES: Record<string, Route> = {
   // / `trae_import_local_account`（Trae）保留为别名（见 ALIASES）。名字**不**沿用 §2.3 的
   // `import_local`（与 WB 旧命令同名），改取 `accounts_import_local`（与 `accounts_import` 同族）。
   accounts_import_local: { method: "POST", path: "/api/accounts/import-local" },
+  // 粘贴授权凭据（issue #62，无客户端部署）：只接 WorkBuddy —— 另两家各有专用入口
+  // （Qoder 粘贴 PAT、Trae 粘贴 JWT）。凭据落库走与 `accounts_import_local` 同一条链。
+  accounts_paste_credential: { method: "POST", path: "/api/accounts/paste-credential" },
   // 打开客户端数据目录（只读路径）：`scope` 决定平台与区域；旧路由 `open_workbuddy_data_dir`
   // / `open_trae_data_dir` 保留为别名（见 ALIASES）。
   open_data_dir: { method: "POST", path: "/api/data-dir/open" },
@@ -474,6 +484,8 @@ const ROUTES: Record<string, Route> = {
   // （Trae 只有一套账号库与一套上游，见 crates/buddy-switch-core/src/modules/trae/mod.rs）。
   trae_oauth_start: { method: "POST", path: "/api/trae/oauth/start" },
   trae_oauth_status: { method: "POST", path: "/api/trae/oauth/status" },
+  // 手工提交回调链接（issue #62）：远程部署时浏览器在另一台机器，回调打不回 127.0.0.1。
+  trae_oauth_submit_callback: { method: "POST", path: "/api/trae/oauth/submit-callback" },
   trae_oauth_cancel: { method: "POST", path: "/api/trae/oauth/cancel" },
   trae_export_accounts: { method: "POST", path: "/api/trae/accounts/export" },
   trae_export_accounts_to_path: { method: "POST", path: "/api/trae/accounts/export-to-path" },
@@ -883,6 +895,45 @@ export function importLocal(region?: Region): Promise<{ ok: boolean; account: Ac
   // 保留为别名（见 `ALIASES`），桌面端仍登记、webui 仍路由。
   return call<{ ok: boolean; account: AccountMeta }>("accounts_import_local", {
     scope: scopeOf("workbuddy", region ?? "cn"),
+  }).then((result) => ({ ...result, account: normalizeAccountMeta(result.account) }));
+}
+
+/**
+ * 只读扫描数据目录的各类缓存体积（**不清任何东西**）。
+ *
+ * 与 `src-tauri/src/commands.rs::cache_scan` / `server::api_cache_scan` 一一对应；
+ * 无 `scope` 参数 —— `~/.buddy-switch` 是全局单目录。
+ */
+export function cacheScan(): Promise<CacheScanReport> {
+  return call<CacheScanReport>("cache_scan");
+}
+
+/**
+ * 按类别清除缓存（**不可逆**）。
+ *
+ * 返回 `{ freedBytes, errors[] }`：**部分失败必须原样带回**，页面据此区分
+ * 「全清干净」与「清了但有几项失败」—— 一律报成功就是在骗用户。
+ */
+export function cacheClear(categories: CacheCategoryId[]): Promise<CacheClearResult> {
+  return call<CacheClearResult>("cache_clear", { categories });
+}
+
+/**
+ * 粘贴授权凭据（issue #62，无客户端部署）。
+ *
+ * 服务器 / 容器里没有客户端目录，「从本机导入」无从读起；把另一台机器上
+ * `auth/workbuddy-desktop-ai.info` 的内容整段粘过来即可入库。
+ *
+ * 只接 WorkBuddy：另两家各有专用入口（Qoder 粘贴 PAT、Trae 粘贴 JWT）。
+ * 后端对这两家返回**明确指引**而不是静默失败。
+ */
+export function accountsPasteCredential(
+  scope: Scope,
+  text: string,
+): Promise<{ ok: boolean; account: AccountMeta }> {
+  return call<{ ok: boolean; account: AccountMeta }>("accounts_paste_credential", {
+    scope,
+    text,
   }).then((result) => ({ ...result, account: normalizeAccountMeta(result.account) }));
 }
 
@@ -2693,6 +2744,23 @@ export function traeOAuthStart(variant: TraeVariantId): Promise<TraeOAuthStartRe
  * **永不抛错**：`{ done: false }` 表示「还没好」，前端据此继续轮询。
  * 终态时后端会把会话摘掉，再轮询会得到 `done: true` + `error: 不存在或已过期`。
  */
+/**
+ * 手工提交 Trae 授权回调链接（issue #62，远程部署）。
+ *
+ * 授权页把回调打到固定 `127.0.0.1:17388`；容器部署时用户的浏览器在另一台机器上，
+ * 那条回调回不到服务端。用户把地址栏整串粘进来，后端用**与监听路径同一套**逻辑
+ * （解析 / CSRF / 兑换 / 落库）补完。
+ *
+ * ★ 与轮询不同，本函数**会抛错**：用户此刻正盯着这个动作，
+ * 静默等待（`{done:false}`）只会被当成「卡住」。
+ */
+export function traeOAuthSubmitCallback(
+  loginId: string,
+  callbackUrl: string,
+): Promise<TraeAccount> {
+  return call<TraeAccount>("trae_oauth_submit_callback", { loginId, callbackUrl });
+}
+
 export function traeOAuthStatus(loginId: string): Promise<TraeOAuthPollResult> {
   return call("trae_oauth_status", { loginId });
 }

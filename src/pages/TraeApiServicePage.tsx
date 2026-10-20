@@ -11,7 +11,8 @@ import {
   MAX_CREDITS_OPTION,
   RANDOM_OPTION,
   AccountPoolCard,
-} from "@/components/gateway/account-pool-card";import { GatewayShell } from "@/components/gateway/gateway-shell";
+} from "@/components/gateway/account-pool-card";import { GatewayClientlessNotice } from "@/components/clientless-notice";
+import { GatewayShell } from "@/components/gateway/gateway-shell";
 import {
   GW_INDEPENDENT_SECTIONS_NO_PROXY,
   GW_SECTIONS,
@@ -527,6 +528,8 @@ export default function TraeApiServicePage() {
           方向 / 对齐 / 间距整组在 `index.css` 的 `[data-split-layout]`（原型 `.split`，
           含 900px 转纵向）。⚠️ 此前这里**缺 `data-split-layout`** ⇒ 900px 以下不转纵向、
           子导航也不换行，与 WB 网关页行为不同。 */}
+      {/* 无客户端形态（issue #62）：网关只依赖账号池里的凭据，与客户端是否同机无关。 */}
+      <GatewayClientlessNotice scope={scope} />
       <GatewayShell
         type={type}
         section={section}

@@ -1120,3 +1120,150 @@ tr.row-off td { opacity: .62; }
   padding: 6px 11px; font-size: 10.5px; color: var(--muted-fg);
   border-top: 1px solid var(--border); background: var(--card-2);
 }
+
+/* ══════════════════════════════════════════════════════════════════════════
+   无客户端形态（服务器部署）—— issue #62
+   ══════════════════════════════════════════════════════════════════════════
+   旧原型只有「有客户端」一种形态，缺客户端时唯一能显示的就是「未检测到」。
+   这一组样式服务三处：账号页引导卡 / 账号页细条 / 网关页细条，外加授权弹窗。 */
+
+/* 细条：已经有账号、只是没有客户端时用 —— 一行说清「什么受影响、什么不受」。 */
+.srv-strip {
+  display: flex; align-items: center; gap: 10px;
+  margin: 0 0 14px; padding: 10px 13px; border-radius: 12px;
+  border: 1px solid color-mix(in oklab, var(--primary) 30%, var(--border));
+  background: color-mix(in oklab, var(--primary) 7%, var(--card));
+  font-size: 12px; line-height: 1.55;
+}
+.srv-strip .grow { flex: 1; min-width: 0; }
+.srv-strip b { font-weight: 600; }
+.srv-strip .btn { flex-shrink: 0; }
+
+/* 引导卡：一个账号都没有时用 —— 三条可用路径 + 能力矩阵。 */
+.srv-card { padding: 0; overflow: hidden; }
+.srv-card-head {
+  padding: 20px 20px 16px; border-bottom: 1px solid var(--border);
+  background: color-mix(in oklab, var(--primary) 6%, var(--card));
+}
+.srv-card-head .badge { margin-bottom: 10px; }
+.srv-card-head b { display: block; font-size: 15px; font-weight: 620; letter-spacing: -.01em; }
+.srv-card-head p { margin: 6px 0 0; font-size: 12px; line-height: 1.65; color: var(--muted-fg); max-width: 68ch; }
+.srv-ways { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; padding: 16px 20px; }
+.srv-way {
+  display: flex; flex-direction: column; align-items: flex-start; gap: 7px;
+  padding: 13px; border-radius: 12px; text-align: left;
+  border: 1px solid var(--border); background: var(--card-2); transition: all .14s;
+}
+.srv-way:hover { border-color: var(--border-strong); background: var(--accent); }
+.srv-way .ico {
+  width: 30px; height: 30px; border-radius: 9px; display: grid; place-items: center;
+  background: color-mix(in oklab, var(--primary) 16%, transparent); color: var(--primary);
+}
+.srv-way b { font-size: 12.5px; font-weight: 600; }
+.srv-way span { font-size: 11px; line-height: 1.5; color: var(--muted-fg); }
+.srv-way.primary { border-color: color-mix(in oklab, var(--primary) 45%, var(--border)); }
+
+/* 平台例外提示（Trae）：贴在三条路径下面，**先破幻想再给矩阵** ——
+   否则用户会先点「浏览器授权」，走到最后一步才发现换不了 token。 */
+.cap-note {
+  display: flex; align-items: flex-start; gap: 8px;
+  padding: 0 20px 12px; font-size: 11.5px; line-height: 1.6; color: var(--muted-fg);
+}
+.cap-note svg { width: 13px; height: 13px; flex-shrink: 0; margin-top: 2px; color: var(--warning); }
+.cap-note b { color: var(--foreground); font-weight: 600; }
+
+/* 能力矩阵：可用 / 需要客户端 两列并排，避免用户把「缺客户端」理解成「全都不能用」。 */
+.cap-matrix {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 0;
+  border-top: 1px solid var(--border);
+}
+.cap-col { padding: 14px 20px 18px; }
+.cap-col + .cap-col { border-left: 1px solid var(--border); }
+.cap-col h5 {
+  margin: 0 0 9px; font-size: 11px; font-weight: 600; letter-spacing: .04em;
+  display: flex; align-items: center; gap: 6px; color: var(--muted-fg);
+}
+.cap-col h5 svg { width: 12px; height: 12px; }
+.cap-col.ok h5 { color: var(--success); }
+.cap-col.off h5 { color: var(--warning); }
+.cap-col ul { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 6px; }
+.cap-col li { font-size: 11.5px; line-height: 1.5; display: flex; gap: 7px; align-items: flex-start; }
+.cap-col li::before { content: ""; width: 5px; height: 5px; border-radius: 50%; margin-top: 6px; flex-shrink: 0; background: var(--border-strong); }
+.cap-col.ok li::before { background: color-mix(in oklab, var(--success) 70%, transparent); }
+.cap-col.off li::before { background: color-mix(in oklab, var(--warning) 70%, transparent); }
+.cap-col li em { font-style: normal; color: var(--muted-fg); }
+
+/* ─────────────── 授权弹窗（链接 + 二维码 + 轮询） ───────────────
+   一套 UI 覆盖「桌面自动开浏览器」与「服务器手工打开」两种情形：
+   差别只有「要不要自动开一次浏览器」，弹窗本身就是完整路径。 */
+.auth {
+  /* ★ `align-self: flex-start` 必须有：`.overlay` 是 flex 容器且默认 `align-items: stretch`，
+     少了这句弹窗会被拉满整屏高度，正文下面留一大片空白。 */
+  align-self: flex-start;
+  width: min(700px, 94vw); margin-top: 4vh; max-height: 88vh; display: flex; flex-direction: column;
+  background: var(--popover); border: 1px solid var(--border); border-radius: 16px;
+  box-shadow: var(--shadow-lg); transform: translateY(-10px); transition: transform .16s; overflow: hidden;
+}
+.overlay.open .auth { transform: none; }
+.auth-head { display: flex; align-items: flex-start; gap: 12px; padding: 16px 18px 14px; border-bottom: 1px solid var(--border); }
+.auth-head .t { flex: 1; min-width: 0; }
+.auth-head h3 { margin: 0; font-size: 14.5px; font-weight: 620; }
+.auth-head p { margin: 4px 0 0; font-size: 11.5px; color: var(--muted-fg); }
+.auth-body { display: grid; grid-template-columns: 196px 1fr; gap: 18px; padding: 16px 18px; overflow-y: auto; }
+.auth-qr { display: flex; flex-direction: column; align-items: center; gap: 9px; }
+.qr-frame {
+  width: 176px; height: 176px; padding: 9px; border-radius: 14px; background: #fff;
+  box-shadow: 0 0 0 1px var(--border);
+}
+.qr-frame svg { display: block; width: 100%; height: 100%; }
+.qr-cap { font-size: 10.5px; color: var(--muted-fg); text-align: center; line-height: 1.5; }
+.auth-right { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+.auth-status { display: flex; align-items: center; gap: 8px; font-size: 12px; }
+.auth-status .spinner { width: 13px; height: 13px; }
+.auth-status .left { margin-left: auto; font-variant-numeric: tabular-nums; color: var(--muted-fg); font-size: 11.5px; }
+.auth-steps { display: flex; flex-direction: column; gap: 8px; margin: 0; padding: 0; list-style: none; }
+.auth-steps li { display: flex; gap: 9px; font-size: 11.5px; line-height: 1.6; }
+.auth-steps i {
+  width: 18px; height: 18px; flex-shrink: 0; border-radius: 999px; display: grid; place-items: center;
+  font-style: normal; font-size: 10px; font-weight: 600;
+  background: color-mix(in oklab, var(--primary) 18%, transparent); color: var(--primary); margin-top: 1px;
+}
+.link-box {
+  display: flex; align-items: center; gap: 8px; padding: 8px 10px; border-radius: 10px;
+  border: 1px solid var(--border); background: var(--card-2);
+}
+.link-box code {
+  flex: 1; min-width: 0; font-size: 11px; font-family: var(--mono, ui-monospace, monospace);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--muted-fg);
+}
+.auth-note {
+  padding: 10px 12px; border-radius: 10px; font-size: 11.5px; line-height: 1.6;
+  border: 1px solid var(--border); background: var(--card-2); color: var(--muted-fg);
+}
+.auth-note b { color: var(--foreground); font-weight: 600; }
+.tunnel {
+  padding: 12px; border-radius: 11px; display: flex; flex-direction: column; gap: 9px;
+  border: 1px dashed color-mix(in oklab, var(--warning) 45%, var(--border));
+  background: color-mix(in oklab, var(--warning) 6%, var(--card-2));
+}
+.tunnel .hd { display: flex; align-items: center; gap: 8px; font-size: 12px; font-weight: 600; }
+.code-line {
+  display: flex; align-items: center; gap: 8px; padding: 8px 10px; border-radius: 9px;
+  background: var(--background); border: 1px solid var(--border);
+}
+/* ★ `white-space: pre` 而不是 `nowrap`：Windows 路径里的反斜杠会被当成断行机会，
+   `nowrap` 在某些字体/断行策略下仍会折成 5 行（实测），`pre` 一定不折。 */
+.code-line code { flex: 1; min-width: 0; display: block; font-size: 11px; white-space: pre; overflow-x: auto; }
+.auth-foot { display: flex; gap: 8px; padding: 12px 18px; border-top: 1px solid var(--border); background: var(--card); }
+.auth-foot .grow { flex: 1; }
+.auth-done { display: flex; flex-direction: column; gap: 10px; padding: 6px 0 2px; }
+.auth-done .who { display: flex; align-items: center; gap: 10px; font-size: 13px; font-weight: 600; }
+
+/* 多行输入（粘贴凭据用）：`.inp` 是单行固定高度，textarea 要自己撑开。 */
+.inp.area {
+  height: auto; min-height: 132px; padding: 9px 10px; line-height: 1.55;
+  font-family: var(--mono, ui-monospace, monospace); font-size: 11.5px; resize: vertical; width: 100%;
+}
+/* 不可用的选项：**不禁用**（禁用既不给原因也不给替代），只弱化 + 右侧提示。 */
+.opt.is-off { opacity: .62; }
+.opt.is-off:hover { opacity: 1; }

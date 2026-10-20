@@ -7,6 +7,7 @@ import {
   Download,
   FileDown,
   Loader2,
+  KeyRound,
   Plane,
   QrCode,
   RefreshCw,
@@ -40,6 +41,8 @@ import {
 } from "@/components/ui/dialog";
 import { ExportAccountsDialog } from "@/components/export-accounts-dialog";
 import { ImportAccountsDialog } from "@/components/import-accounts-dialog";
+import { ClientlessEmptyCard, ClientlessStrip } from "@/components/clientless-notice";
+import { PasteCredentialDialog } from "@/components/paste-credential-dialog";
 import { OAuthLoginDialog } from "@/components/oauth-login-dialog";
 import { RecycleBinSheet } from "@/components/recycle-bin-sheet";
 import { RestartConfirmDialog } from "@/components/restart-confirm-dialog";
@@ -265,6 +268,8 @@ function RegionPanel({ region }: { region: Region }) {
   const { busy: recheckDrawerBusy, run: runRecheckDrawer } = useRefreshAction();
 
   const [oauthOpen, setOauthOpen] = useState(false);
+  /** 粘贴授权凭据（issue #62）：无客户端部署的第二条入库路径。 */
+  const [pasteCredentialOpen, setPasteCredentialOpen] = useState(false);
   const [exportOpen, setExportOpen] = useState(false);
   /* ★「添加账号」三选抽屉（原型 `drawerAdd()`）。选完方式后**关闭抽屉**再开对应流程
      （原型 `case "add-way"` 也是 `closeDrawer()` 之后才继续）。 */
@@ -2183,18 +2188,37 @@ function RegionPanel({ region }: { region: Region }) {
         /* 首屏空态（未安装 / 未登录）：整块替换工具栏与列表（原型 `emptyBlock` 也不带工具栏）。 */
         emptyState={
           showEmpty ? (
-            <EmptyRegionCard
-              region={region}
-              installed={presence !== "absent"}
-              expectedAuthFile={expectedAuthFile}
-              onRecheck={onRecheck}
-              onImport={() => void onImport()}
-              importing={importing}
-            />
+            /* ★ 无客户端形态（issue #62）：服务器 / 容器里「没装客户端」是正常形态。
+               旧卡片只给「重新检测 / 从本机导入」两条死路，等于告诉服务器用户「你用不了」。
+               现在换成「浏览器授权 + 导入备份」两条真能走的路 + 能力矩阵。 */
+            presence === "absent" ? (
+              <ClientlessEmptyCard
+                scopeLabel={scopeLabel(t, scopeOf("workbuddy", region))}
+                platformLabel={descriptor.versionLabel}
+                expectedAuthFile={expectedAuthFile}
+                onOauth={() => setOauthOpen(true)}
+                onBackup={() => setImportOpen(true)}
+                onPaste={() => setPasteCredentialOpen(true)}
+                onRecheck={onRecheck}
+              />
+            ) : (
+              <EmptyRegionCard
+                region={region}
+                installed
+                expectedAuthFile={expectedAuthFile}
+                onRecheck={onRecheck}
+                onImport={() => void onImport()}
+                importing={importing}
+              />
+            )
           ) : null
         }
         notices={
           <>
+          {/* 有账号、但本机没有客户端：一行说清影响面（网关不受影响），别让用户以为整页降级。 */}
+          {presence === "absent" && accounts.length > 0 ? (
+            <ClientlessStrip scopeLabel={scopeLabel(t, scopeOf("workbuddy", region))} />
+          ) : null}
           {error && (
             <Alert variant="destructive" className="mb-4">
               <AlertTitle>{t("wbAccounts.page.loadFailed")}</AlertTitle>
@@ -2423,8 +2447,29 @@ function RegionPanel({ region }: { region: Region }) {
         onOpenChange={setAddDrawerOpen}
         scopeLabel={scopeLabel(t, scopeOf("workbuddy", region))}
         installed={presence !== "absent"}
+        /* 无客户端时的第三条路（issue #62）：把另一台机器上的 auth 文件内容整段粘进来。 */
+        extraOptions={
+          presence === "absent"
+            ? [
+                {
+                  key: "paste-credential",
+                  icon: KeyRound,
+                  title: t("shared.srv.paste.title"),
+                  desc: t("shared.srv.paste.hint.wb"),
+                  onClick: () => setPasteCredentialOpen(true),
+                },
+              ]
+            : undefined
+        }
         onPick={(way: AddAccountWay) => {
           /* 与原型 `case "add-way"`（`:4236`）同构：先关抽屉，再进入对应流程。 */
+          /* 「从本机导入」在无客户端时**不静默失败**：给出两条能走的路（issue #62）。 */
+          if (way === "local" && presence === "absent") {
+            toast.error(t("shared.srv.localUnavailable"), {
+              description: t("shared.srv.localUnavailableDesc"),
+            });
+            return;
+          }
           if (way === "oauth") setOauthOpen(true);
           else if (way === "backup") setImportOpen(true);
           else void onImport();
@@ -2516,6 +2561,17 @@ function RegionPanel({ region }: { region: Region }) {
       />
 
       <OAuthLoginDialog open={oauthOpen} onOpenChange={setOauthOpen} region={region} />
+      <PasteCredentialDialog
+        open={pasteCredentialOpen}
+        onOpenChange={setPasteCredentialOpen}
+        scope={scopeOf("workbuddy", region)}
+        onAdded={(name) => {
+          void reconcileAccounts(region);
+          toast.success(t("shared.srv.paste.ok", { name: name || "—" }), {
+            description: t("shared.srv.paste.okDesc"),
+          });
+        }}
+      />
       <ExportAccountsDialog
         open={exportOpen}
         onOpenChange={(open) => {

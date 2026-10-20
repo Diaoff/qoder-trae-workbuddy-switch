@@ -755,4 +755,71 @@ export const zh = {
   "shared.table.selectAllAria": "全选当前列表",
   "shared.table.selectRowAria": "选择 {name}",
   "shared.table.openRowAria": "打开 {name} 的详情",
+
+  // =====================================================================
+  // ---- 授权链接面板（components/auth-link-panel.tsx，三平台共用）----
+  // =====================================================================
+  // 为什么三平台共用：交互链同构（发起 → 展示链接 → 轮询结果），平台差异只在
+  // 「额外说明块」。**不能只靠自动开浏览器** —— 服务器 / 容器里没有系统浏览器，
+  // 旧实现整个流程就断在 `openInBrowser` 那一行。
+  "shared.authPanel.scanHint": "手机扫码，或复制链接在任意浏览器打开",
+  "shared.authPanel.copy": "复制链接",
+  "shared.authPanel.copied": "已复制",
+  "shared.authPanel.authorized": "已授权",
+  "shared.authPanel.waiting": "等待授权…",
+  "shared.authPanel.remaining": "剩余 {time}",
+  "shared.authPanel.expired": "已超时",
+  "shared.authPanel.expiredDesc": "这条链接已作废，重新生成一条",
+  "shared.authPanel.regenerate": "重新生成",
+  "shared.authPanel.step1": "用手机或任意电脑的浏览器打开上面的链接。",
+  "shared.authPanel.step2": "登录并点「授权」—— 不需要在这台机器上装客户端。",
+  "shared.authPanel.step3": "本窗口自动收到结果，账号直接进账号库。",
+  "shared.authPanel.noCallback": "不需要本机回调：服务端轮询官方接口取结果，服务器 / 容器里也能完成登录。",
+  "shared.authPanel.qrAlt": "授权二维码",
+
+  // =====================================================================
+  // ---- 无客户端形态（服务器 / 容器部署，issue #62）----
+  // =====================================================================
+  // 缺客户端不是故障，是**部署形态**：账号与网关只依赖凭据本身。
+  // 旧文案把它渲染成红字 + 只留「重新检测 / 从本机导入」，等于告诉服务器用户「你用不了」。
+  "shared.srv.badge": "无客户端",
+  "shared.srv.help": "降级说明",
+  "shared.srv.strip.accounts": "未检测到 {scope} 客户端 —— 账号与网关不受影响：缺的只是程序位切换、客户端用量扫描与会话浏览。",
+  "shared.srv.strip.gateway": "未检测到 {scope} 客户端 —— 网关照常可用：它只依赖账号池里的凭据。",
+  "shared.srv.card.title": "本机没有 {platform} 客户端 —— 也能登录，也能开网关",
+  "shared.srv.card.desc": "账号库里存的是凭据本身；客户端只是「现成的登录态来源」与「程序位开关」。选一条路登录一次，之后与装了客户端的机器没有区别。",
+  "shared.srv.capOk": "没有客户端也能用",
+  "shared.srv.capOff": "需要客户端在场",
+  "shared.srv.capOk.oauth": "浏览器授权登录（链接 / 二维码，任意设备）",
+  "shared.srv.capOk.accounts": "账号库、凭据刷新、签到与积分",
+  "shared.srv.capOk.gateway": "API 网关、密钥管理、请求日志",
+  "shared.srv.capOk.context": "上下文档位：用内置默认值（不再向上游探测）",
+  "shared.srv.capOff.local": "从本机导入 —— 需要读客户端目录里的登录态",
+  "shared.srv.capOff.programs": "程序位切换 —— 要改客户端自己的配置",
+  "shared.srv.capOff.usage": "客户端用量扫描 —— 数据源是客户端会话文件",
+  "shared.srv.capOff.sessions": "会话浏览与复制 —— 同上",
+  "shared.srv.traeNote": "Trae 例外：授权与续期都依赖客户端里的设备私钥，纯浏览器登录走不通 —— 点「浏览器授权登录」看两条现实路径。",
+  "shared.srv.help.title": "无客户端说明",
+  "shared.srv.help.whyTitle": "为什么「没客户端」不是故障",
+  "shared.srv.help.why1": "账号库里存的是凭据（access / refresh token），网关转发、签到、积分统计都只用它。客户端在不在同一台机器上，对这三件事没有影响。",
+  "shared.srv.help.why2": "旧版把「未检测到客户端」渲染成红字 + 只留「重新检测 / 从本机导入」，等于告诉服务器用户「你用不了」—— 那是把一种部署形态当成了错误。",
+  "shared.srv.help.moveTitle": "想把另一台机器上的账号搬过来",
+  "shared.srv.help.moveDesc": "在那台机器上导出备份（JSON），回到这里用「导入备份文件」。备份里含凭据，导入后刷新与网关立即生效，不需要再登录一次。",
+  "shared.srv.paste.title": "粘贴授权凭据",
+  "shared.srv.paste.desc": "从任意一台装了客户端的机器复制凭据，或在浏览器授权后手工粘贴。本机不需要装客户端。",
+  "shared.srv.paste.whyTitle": "为什么可以手工粘贴",
+  "shared.srv.paste.whyDesc": "账号库存的就是凭据本身，「从本机导入」只是替你去客户端目录里读一次。入库之后，刷新、签到、网关走的是同一条路。",
+  "shared.srv.paste.verify": "验证并添加",
+  "shared.srv.paste.empty": "凭据是空的",
+  "shared.srv.paste.emptyDesc": "把 auth 文件内容或 refresh_token 粘进来",
+  "shared.srv.paste.failed": "凭据校验失败",
+  "shared.srv.paste.ok": "已添加 {name}",
+  "shared.srv.paste.okDesc": "凭据已入库 · 刷新与网关立即生效",
+  "shared.srv.paste.hint.wb": "粘贴 auth/workbuddy-desktop-ai.info 里的 JSON（access_token / refresh_token）",
+  "shared.srv.paste.hint.trae": "粘贴 refresh_token，或授权页跳回的那串回调链接",
+  "shared.srv.paste.hint.qoder": "粘贴 Qoder 的个人访问令牌（PAT）",
+  "shared.srv.localUnavailable": "本机没有客户端可读",
+  "shared.srv.localUnavailableDesc": "改用「浏览器授权登录」或「粘贴授权凭据」；也可以在装了客户端的机器上导出备份再导入",
+  "shared.srv.oauthTitle": "浏览器授权登录",
+  "shared.srv.oauthDesc": "生成链接与二维码，用任意设备浏览器授权，服务端自己收结果",
 } as const;

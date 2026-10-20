@@ -1,5 +1,5 @@
 import type {
-  AccountMeta, AccountStrategyMap, AccountTokenTodayResponse, ApiKeyRecord, AppStatus, AutoBackupConfig, AutoBackupEntry, AutoRotateConfig, CatalogSnapshot,
+  AccountMeta, AccountStrategyMap, AccountTokenTodayResponse, ApiKeyRecord, AppStatus, AutoBackupConfig, AutoBackupEntry, AutoRotateConfig, CacheScanReport, CatalogSnapshot,
   CheckinConfig, CheckinLog, CodeBuddyCliStatus, CodeBuddyCliSwitchResult, CodeBuddyCnIdeStatus, ClientLimitsResponse, CreditExpiry,
   JetbrainsCodebuddyPluginStatus,
   VscodeCodebuddyPluginStatus,
@@ -1485,6 +1485,25 @@ function traeDemoCheckinResults() {
   ];
 }
 
+/**
+ * 演示数据：「清除缓存」的扫描结果。
+ *
+ * 数值取**真实量级**（会话复制备份是大头，与线上 18GB 的成因同构）——
+ * 演示站要能显示「哪一类最占地方」，全 0 会让勾选与预估失去演示意义。
+ */
+function demoCacheScan(): CacheScanReport {
+  return {
+    storePath: "C:\\Users\\demo\\.buddy-switch",
+    totalBytes: 1823221145,
+    categories: [
+      { id: "session_backups", bytes: 1760937431, entries: 3042 },
+      { id: "snapshots", bytes: 3984588, entries: 47 },
+      { id: "caches", bytes: 87031807, entries: 12 },
+      { id: "logs", bytes: 262019, entries: 9 },
+    ],
+  };
+}
+
 function demoTraeEnv(): TraeEnvStatus {
   return {
     installed: true, running: true, version: "1.107.1",
@@ -2396,6 +2415,9 @@ function demoTraeClientModels(args?: Record<string, unknown>): TraeClientModelLi
     name: string,
     displayName: string,
     isDefault = false,
+    // Max Mode 口径的上下文上限（`trae-types.ts` 的 `contextWindowMax`，必填）。
+    // 默认 `null`（取不到）；旗舰模型给 1M，让演示站能看出这个新字段的差异。
+    contextWindowMax: number | null = null,
   ): TraeClientModel => ({
     name,
     displayName,
@@ -2406,6 +2428,7 @@ function demoTraeClientModels(args?: Record<string, unknown>): TraeClientModelLi
     isNew: false,
     isBeta: false,
     contextWindow: 256000,
+    contextWindowMax,
     promptMaxTokens: 224000,
   });
 
@@ -2438,7 +2461,7 @@ function demoTraeClientModels(args?: Record<string, unknown>): TraeClientModelLi
           models: [
             model("Doubao-Seed-Evolving", "Seed-Evolving"),
             model("glm-5.3-flash", "GLM-5.3-Flash"),
-            model("glm-5.3", "GLM-5.3"),
+            model("glm-5.3", "GLM-5.3", false, 1_000_000),
             model("deepseek-v4.1-flash", "DeepSeek-V4.1-Flash"),
             model("openrouter//stealth/ox-alpha", "ox-alpha"),
           ],
@@ -2463,7 +2486,7 @@ function demoTraeClientModels(args?: Record<string, unknown>): TraeClientModelLi
       {
         function: "solo_work_lite",
         models: [
-          model("Doubao-Seed-Evolving", "Seed-Evolving"),
+          model("Doubao-Seed-Evolving", "Seed-Evolving", false, 1_000_000),
           model("Doubao-Seed-2.1-Pro", "Seed-2.1-Pro-0915"),
           model("deepseek-v4.1-flash", "DeepSeek-V4.1-Flash"),
           model("glm-5.3", "GLM-5.3"),
@@ -2877,6 +2900,8 @@ export function screenshotDemoResponse(command: string, args?: Record<string, un
        但开关必须能显示、也必须能记住 → 读写同一份会话内状态，归一化规则与后端
        `app_prefs::normalize_app_prefs` 一致（非布尔 ⇒ 回落默认 true）。 */
     case "get_app_prefs": return { ...demoAppPrefs };
+    // 「清除缓存」的只读扫描（清除动作是写操作，由 DemoAction 统一拦截）。
+    case "cache_scan": return demoCacheScan();
     case "set_app_prefs": {
       const raw = (args?.prefs as { close_to_tray?: unknown } | undefined)?.close_to_tray;
       demoAppPrefs = { close_to_tray: typeof raw === "boolean" ? raw : true };

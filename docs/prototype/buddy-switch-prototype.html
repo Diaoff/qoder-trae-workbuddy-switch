@@ -1269,6 +1269,152 @@ table.tbl tr.uni-grp td {
   background: color-mix(in oklab, var(--muted) 55%, transparent);
   padding-top: 7px; padding-bottom: 7px;
 }
+/* ══════════════════════════════════════════════════════════════════════════
+   无客户端形态（服务器部署）—— issue #62
+   ══════════════════════════════════════════════════════════════════════════
+   旧原型只有「有客户端」一种形态，缺客户端时唯一能显示的就是「未检测到」。
+   这一组样式服务三处：账号页引导卡 / 账号页细条 / 网关页细条，外加授权弹窗。 */
+
+/* 细条：已经有账号、只是没有客户端时用 —— 一行说清「什么受影响、什么不受」。 */
+.srv-strip {
+  display: flex; align-items: center; gap: 10px;
+  margin: 0 0 14px; padding: 10px 13px; border-radius: 12px;
+  border: 1px solid color-mix(in oklab, var(--primary) 30%, var(--border));
+  background: color-mix(in oklab, var(--primary) 7%, var(--card));
+  font-size: 12px; line-height: 1.55;
+}
+.srv-strip .grow { flex: 1; min-width: 0; }
+.srv-strip b { font-weight: 600; }
+.srv-strip .btn { flex-shrink: 0; }
+
+/* 引导卡：一个账号都没有时用 —— 三条可用路径 + 能力矩阵。 */
+.srv-card { padding: 0; overflow: hidden; }
+.srv-card-head {
+  padding: 20px 20px 16px; border-bottom: 1px solid var(--border);
+  background: color-mix(in oklab, var(--primary) 6%, var(--card));
+}
+.srv-card-head .badge { margin-bottom: 10px; }
+.srv-card-head b { display: block; font-size: 15px; font-weight: 620; letter-spacing: -.01em; }
+.srv-card-head p { margin: 6px 0 0; font-size: 12px; line-height: 1.65; color: var(--muted-fg); max-width: 68ch; }
+.srv-ways { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; padding: 16px 20px; }
+.srv-way {
+  display: flex; flex-direction: column; align-items: flex-start; gap: 7px;
+  padding: 13px; border-radius: 12px; text-align: left;
+  border: 1px solid var(--border); background: var(--card-2); transition: all .14s;
+}
+.srv-way:hover { border-color: var(--border-strong); background: var(--accent); }
+.srv-way .ico {
+  width: 30px; height: 30px; border-radius: 9px; display: grid; place-items: center;
+  background: color-mix(in oklab, var(--primary) 16%, transparent); color: var(--primary);
+}
+.srv-way b { font-size: 12.5px; font-weight: 600; }
+.srv-way span { font-size: 11px; line-height: 1.5; color: var(--muted-fg); }
+.srv-way.primary { border-color: color-mix(in oklab, var(--primary) 45%, var(--border)); }
+
+/* 能力矩阵：可用 / 需要客户端 两列并排，避免用户把「缺客户端」理解成「全都不能用」。 */
+.cap-matrix {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 0;
+  border-top: 1px solid var(--border);
+}
+.cap-col { padding: 14px 20px 18px; }
+.cap-col + .cap-col { border-left: 1px solid var(--border); }
+.cap-col h5 {
+  margin: 0 0 9px; font-size: 11px; font-weight: 600; letter-spacing: .04em;
+  display: flex; align-items: center; gap: 6px; color: var(--muted-fg);
+}
+.cap-col h5 svg { width: 12px; height: 12px; }
+.cap-col.ok h5 { color: var(--success); }
+.cap-col.off h5 { color: var(--warning); }
+.cap-col ul { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 6px; }
+.cap-col li { font-size: 11.5px; line-height: 1.5; display: flex; gap: 7px; align-items: flex-start; }
+.cap-col li::before { content: ""; width: 5px; height: 5px; border-radius: 50%; margin-top: 6px; flex-shrink: 0; background: var(--border-strong); }
+.cap-col.ok li::before { background: color-mix(in oklab, var(--success) 70%, transparent); }
+.cap-col.off li::before { background: color-mix(in oklab, var(--warning) 70%, transparent); }
+.cap-col li em { font-style: normal; color: var(--muted-fg); }
+
+/* ─────────────── 授权弹窗（链接 + 二维码 + 轮询） ───────────────
+   一套 UI 覆盖「桌面自动开浏览器」与「服务器手工打开」两种情形：
+   差别只有「要不要自动开一次浏览器」，弹窗本身就是完整路径。 */
+.auth {
+  /* ★ `align-self: flex-start` 必须有：`.overlay` 是 flex 容器且默认 `align-items: stretch`，
+     少了这句弹窗会被拉满整屏高度，正文下面留一大片空白。 */
+  align-self: flex-start;
+  width: min(700px, 94vw); margin-top: 4vh; max-height: 88vh; display: flex; flex-direction: column;
+  background: var(--popover); border: 1px solid var(--border); border-radius: 16px;
+  box-shadow: var(--shadow-lg); transform: translateY(-10px); transition: transform .16s; overflow: hidden;
+}
+.overlay.open .auth { transform: none; }
+.auth-head { display: flex; align-items: flex-start; gap: 12px; padding: 16px 18px 14px; border-bottom: 1px solid var(--border); }
+.auth-head .t { flex: 1; min-width: 0; }
+.auth-head h3 { margin: 0; font-size: 14.5px; font-weight: 620; }
+.auth-head p { margin: 4px 0 0; font-size: 11.5px; color: var(--muted-fg); }
+.auth-body { display: grid; grid-template-columns: 196px 1fr; gap: 18px; padding: 16px 18px; overflow-y: auto; }
+.auth-qr { display: flex; flex-direction: column; align-items: center; gap: 9px; }
+.qr-frame {
+  width: 176px; height: 176px; padding: 9px; border-radius: 14px; background: #fff;
+  box-shadow: 0 0 0 1px var(--border);
+}
+.qr-frame svg { display: block; width: 100%; height: 100%; }
+.qr-cap { font-size: 10.5px; color: var(--muted-fg); text-align: center; line-height: 1.5; }
+.auth-right { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+.auth-status { display: flex; align-items: center; gap: 8px; font-size: 12px; }
+.auth-status .spinner { width: 13px; height: 13px; }
+.auth-status .left { margin-left: auto; font-variant-numeric: tabular-nums; color: var(--muted-fg); font-size: 11.5px; }
+.auth-steps { display: flex; flex-direction: column; gap: 8px; margin: 0; padding: 0; list-style: none; }
+.auth-steps li { display: flex; gap: 9px; font-size: 11.5px; line-height: 1.6; }
+.auth-steps i {
+  width: 18px; height: 18px; flex-shrink: 0; border-radius: 999px; display: grid; place-items: center;
+  font-style: normal; font-size: 10px; font-weight: 600;
+  background: color-mix(in oklab, var(--primary) 18%, transparent); color: var(--primary); margin-top: 1px;
+}
+.link-box {
+  display: flex; align-items: center; gap: 8px; padding: 8px 10px; border-radius: 10px;
+  border: 1px solid var(--border); background: var(--card-2);
+}
+.link-box code {
+  flex: 1; min-width: 0; font-size: 11px; font-family: var(--mono, ui-monospace, monospace);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--muted-fg);
+}
+.auth-note {
+  padding: 10px 12px; border-radius: 10px; font-size: 11.5px; line-height: 1.6;
+  border: 1px solid var(--border); background: var(--card-2); color: var(--muted-fg);
+}
+.auth-note b { color: var(--foreground); font-weight: 600; }
+.tunnel {
+  padding: 12px; border-radius: 11px; display: flex; flex-direction: column; gap: 9px;
+  border: 1px dashed color-mix(in oklab, var(--warning) 45%, var(--border));
+  background: color-mix(in oklab, var(--warning) 6%, var(--card-2));
+}
+.tunnel .hd { display: flex; align-items: center; gap: 8px; font-size: 12px; font-weight: 600; }
+.code-line {
+  display: flex; align-items: center; gap: 8px; padding: 8px 10px; border-radius: 9px;
+  background: var(--background); border: 1px solid var(--border);
+}
+/* ★ `white-space: pre` 而不是 `nowrap`：Windows 路径里的反斜杠会被当成断行机会，
+   `nowrap` 在某些字体/断行策略下仍会折成 5 行（实测），`pre` 一定不折。 */
+.code-line code { flex: 1; min-width: 0; display: block; font-size: 11px; white-space: pre; overflow-x: auto; }
+.auth-foot { display: flex; gap: 8px; padding: 12px 18px; border-top: 1px solid var(--border); background: var(--card); }
+.auth-foot .grow { flex: 1; }
+.auth-done { display: flex; flex-direction: column; gap: 10px; padding: 6px 0 2px; }
+.auth-done .who { display: flex; align-items: center; gap: 10px; font-size: 13px; font-weight: 600; }
+
+/* 多行输入（粘贴凭据用）：`.inp` 是单行固定高度，textarea 要自己撑开。 */
+.inp.area {
+  height: auto; min-height: 132px; padding: 9px 10px; line-height: 1.55;
+  font-family: var(--mono, ui-monospace, monospace); font-size: 11.5px; resize: vertical; width: 100%;
+}
+/* 不可用的选项：**不禁用**（禁用既不给原因也不给替代），只弱化 + 右侧提示。 */
+.opt.is-off { opacity: .62; }
+.opt.is-off:hover { opacity: 1; }
+/* 平台例外提示（Trae）：贴在三条路径下面，**先破幻想再给矩阵** ——
+   否则用户会先点「浏览器授权」，走到最后一步才发现换不了 token。 */
+.cap-note {
+  display: flex; align-items: flex-start; gap: 8px;
+  padding: 0 20px 12px; font-size: 11.5px; line-height: 1.6; color: var(--muted-fg);
+}
+.cap-note svg { width: 13px; height: 13px; flex-shrink: 0; margin-top: 2px; color: var(--warning); }
+.cap-note b { color: var(--foreground); font-weight: 600; }
+
 </style>
 </head>
 <body>
@@ -2488,6 +2634,16 @@ const state = {
   selected: new Set(),
   /* 卡片「更多」菜单：打开中的账号 id（`null` = 关着）。 */
   acctMenu: null,
+  /* 授权弹窗（issue #62）：`null` = 关着；打开后由 `openAuth()` 填。
+     step ∈ waiting / expired / done —— 超时不自动重试，旧 state 已作废，必须重新生成。 */
+  auth: null,
+  /* 正在刷新的**单项数据**：key = `${id}:${kind}`，kind ∈ credits / tokens / checkin / credential。
+     用集合而不是一个布尔：四类数据各自独立，同时刷两项时互不吞掉对方的进行中态。 */
+  refreshing: new Set(),
+  /* 刚刷完、还在显示「已更新」的项（900ms 后自动清掉，避免永久挂着一个完成态）。 */
+  refreshDone: new Set(),
+  /* 正在「新建分组」的账号 id（下拉里选「＋ 新建分组…」后就地变成输入框）。 */
+  groupNew: null,
   /* 正在刷新的**单项数据**：key = `${id}:${kind}`，kind ∈ credits / tokens / checkin / credential。
      用集合而不是一个布尔：四类数据各自独立，同时刷两项时互不吞掉对方的进行中态。 */
   refreshing: new Set(),
@@ -2637,7 +2793,8 @@ function renderTopbar() {
   $("#scope-sub").textContent = (cur ? cur.name + (cur.email ? " · " : "") : "") + `${s.accounts.length} 个账号`;
   const pill = $("#run-pill");
   pill.className = "run-pill" + (s.running ? "" : " off");
-  pill.innerHTML = `<i class="dot"></i><span>${s.running ? "运行中" : s.installed ? "未运行" : "未检测到"}</span>`;
+  /* 没装客户端时不能写「未检测到」——应用本身在跑，读起来像故障。这里说的是**客户端**状态。 */
+  pill.innerHTML = `<i class="dot"></i><span>${s.running ? "运行中" : s.installed ? "未运行" : "无客户端"}</span>`;
   $("#foot-dot").style.color = s.running ? "var(--success)" : "var(--muted-fg)";
 }
 
@@ -2811,7 +2968,7 @@ function viewOverview() {
               const oc = currentAccount(id);
               return `<button class="scope-item" data-act="scope|${id}" style="width:100%">
                 <span class="scope-mark" style="background:color-mix(in oklab, ${op.accent} 18%, transparent);color:${op.accent}">${op.mark}</span>
-                <span class="t"><b>${scopeLabel(id)}</b><span>${oc ? "已登录 " + esc(oc.name) : os.installed ? "未登录" : "未检测到"} · ${os.accounts.length} 个账号</span></span>
+                <span class="t"><b>${scopeLabel(id)}</b><span>${oc ? "已登录 " + esc(oc.name) : os.installed ? "未登录" : "未装客户端"} · ${os.accounts.length} 个账号</span></span>
                 <span class="run-pill${os.running ? "" : " off"}" style="height:18px;padding:0 7px"><i class="dot"></i></span>
               </button>`;
             }).join("")}
@@ -3120,6 +3277,7 @@ function viewAccounts() {
       <span class="scope-chip">${p.mark}${scopeLabel(state.scope)}</span>
     </div>
     ${toolbar}
+    <div id="srv-slot">${srvSlotHtml()}</div>
     <div id="batch-slot">${checkinResultHtml()}${batchBarHtml()}</div>
     <div id="acct-list">${accountListHtml()}</div>
   </div>`;
@@ -3142,6 +3300,9 @@ function accountListHtml() {
   const s = curScope();
   const list = filteredAccounts();
   if (!s.accounts.length) {
+    /* 无客户端 + 0 个账号 ⇒ 走「三条可用路径 + 能力矩阵」的引导卡。
+       旧的「这个作用域还没有账号」在这里是**误导**：它暗示「先去装客户端」。 */
+    if (isClientless(s)) return clientlessEmptyHtml();
     return emptyBlock(ICON.accounts, "这个作用域还没有账号", `添加第一个账号，开始管理 ${scopeLabel(state.scope)} 的凭据与积分。`,
       `<button class="btn primary" data-act="add-account">${ICON.plus}添加账号</button>`);
   }
@@ -3163,6 +3324,8 @@ function renderAccountList() {
   const allSel = list.length > 0 && list.every((a) => state.selected.has(a.id));
   const btn = $("#select-all-btn");
   if (btn) { btn.textContent = allSel ? "取消全选" : "全选"; btn.dataset.act = "select-all|" + (allSel ? "0" : "1"); }
+  const srv = $("#srv-slot");
+  if (srv) srv.innerHTML = srvSlotHtml();
   const slot = $("#batch-slot");
   const box = $("#acct-list");
   if (slot) slot.innerHTML = checkinResultHtml() + batchBarHtml();
@@ -5011,6 +5174,7 @@ function viewSettings() {
       <div class="grow"></div>
       <span class="scope-chip">${p.mark}${scopeLabel(state.scope)}</span>
     </div>
+    ${isClientless(curScope()) ? srvStripHtml("gateway") : ""}
     <div class="split">
       <nav class="subnav">${SETTINGS.map((s) => `<button class="${state.setSub === s.id ? "on" : ""}" data-act="set-sub|${s.id}">${s.label}</button>`).join("")}</nav>
       <div class="split-main">
@@ -5727,18 +5891,27 @@ function drawerWizard(id, step, opts) {
 
 function drawerAdd() {
   state.drawer = { kind: "add" };
-  const s = curScope();
+  const s = curScope(), headless = isClientless(s);
   openDrawer(`
     <p class="tiny muted" style="margin:0">当前作用域：<b>${scopeLabel(state.scope)}</b>。选择一种方式添加账号。</p>
     <div class="dsec">
       <button class="opt" data-act="add-way|oauth">
         <span class="ico">${ICON.login}</span>
-        <span class="t"><b>OAuth 登录</b><span>打开官方授权页，用浏览器登录后自动导入</span></span>
+        <span class="t"><b>浏览器授权登录</b><span>${headless
+          ? "生成链接与二维码，用任意设备浏览器授权，服务端自己收结果"
+          : "打开官方授权页，登录后自动入库（也可复制链接到手机）"}</span></span>
         ${ICON.arrowRight}
       </button>
-      <button class="opt" data-act="add-way|local">
+      <button class="opt" data-act="add-way|paste">
+        <span class="ico">${ICON.key}</span>
+        <span class="t"><b>粘贴授权凭据</b><span>${esc(pasteHint())}</span></span>
+        ${ICON.arrowRight}
+      </button>
+      <button class="opt${headless ? " is-off" : ""}" data-act="add-way|local">
         <span class="ico">${ICON.upload}</span>
-        <span class="t"><b>从本机导入</b><span>读取当前客户端的登录态，把正在用的账号加进来</span></span>
+        <span class="t"><b>从本机导入${headless ? "（本机没有客户端）" : ""}</b><span>${headless
+          ? "读不到客户端目录 —— 改用上面两条，或在装了客户端的机器上导出备份再导入"
+          : "读取当前客户端的登录态，把正在用的账号加进来"}</span></span>
         ${ICON.arrowRight}
       </button>
       <button class="opt" data-act="add-way|backup">
@@ -5747,9 +5920,12 @@ function drawerAdd() {
         ${ICON.arrowRight}
       </button>
     </div>
-    ${!s.installed ? `<div class="card card-pad row" style="border-color:color-mix(in oklab, var(--warning) 40%, transparent)">
-      <span class="badge warn">${ICON.warn}</span>
-      <span class="tiny">当前作用域未检测到客户端，「从本机导入」不可用。可先用 OAuth 登录。</span></div>` : ""}
+    ${headless ? `<div class="card card-pad">
+      <div class="row" style="gap:9px;align-items:flex-start">
+        <span class="badge info">无客户端</span>
+        <span class="tiny muted">缺客户端只影响「从本机导入 / 程序位切换 / 客户端用量 / 会话浏览」。
+          <b>登录授权与网关都不受影响</b> —— 前两条路就是为了这种部署形态留的。</span>
+      </div></div>` : ""}
   `, "添加账号");
 }
 
@@ -5807,6 +5983,357 @@ function drawerPermGuide(id) {
     </div>
   `, "权限诊断");
   startPermCheck();
+}
+
+/* ══════════════════════ 运行形态：无客户端（服务器部署）══════════════════════
+ *
+ * 缘起（issue #62）：用户在服务器上部署，本机没装任何平台的客户端，账号页只给
+ * 「重新检测 / 从本机导入」两条**死路** —— 登录不了，也就开不了网关。
+ *
+ * 结论：这不是「缺一个入口」，而是**少了一个维度**。旧设计把「没装客户端」当成
+ * 异常态（未检测到 → 劝你去装），但在服务器 / 容器部署里它是**正常形态**：
+ *
+ *   · 客户端提供的是「登录态来源」+「程序位切换」+「本地会话/用量文件」；
+ *   · 账号与网关只依赖**凭据本身**，与客户端在不在同一台机器上无关。
+ *
+ * 所以这里把「无客户端」升格成一等形态，四处表达：
+ *   ① 账号页：没账号 ⇒ 引导卡（三条可用登录路径 + 能力矩阵）；
+ *              有账号 ⇒ 细条（一句说清什么受影响、什么不受）；
+ *   ② 添加账号：「从本机导入」不可用时**给出替代**，而不是只报错；
+ *   ③ 授权弹窗：链接 + 二维码 + 轮询，浏览器在哪台机器上都能完成
+ *      （Trae 例外：授权页要探 127.0.0.1:17388，额外给端口转发 / 粘贴回调两条路）；
+ *   ④ 网关页：一条常驻说明 —— 网关不受影响，别让用户以为「没客户端 = 网关不能用」。
+ *
+ * ⚠️ 判据是 `scope.installed === false`（本机没这个客户端），**不是**「本机是不是服务器」：
+ *    桌面用户也可能只装了其中一个平台。两种情形下 UI 与行为完全一样。
+ */
+const isClientless = (s) => Boolean(s) && s.installed === false;
+
+/** 细条：已经有账号、只是没有客户端。`kind` 决定说哪一句话。 */
+function srvStripHtml(kind) {
+  const what = kind === "gateway"
+    ? "<b>网关照常可用</b>：它只依赖账号池里的凭据，与客户端在不在本机无关。"
+    : "<b>账号与网关不受影响</b>：缺的只是程序位切换、客户端用量扫描与会话浏览。";
+  return `<div class="srv-strip" role="status">
+    <span class="badge info">无客户端</span>
+    <span class="grow">未检测到 ${esc(scopeLabel(state.scope))} 客户端 —— ${what}</span>
+    <button class="btn ghost xs" data-act="srv-help">降级说明</button>
+  </div>`;
+}
+
+/** 账号页细条的挂载点内容：只有「无客户端 + 已经有账号」才出现（0 个账号走引导卡）。 */
+function srvSlotHtml() {
+  const s = curScope();
+  return isClientless(s) && s.accounts.length ? srvStripHtml() : "";
+}
+
+/** 能力矩阵：**必须两列并排**。只列「不可用」会让用户以为整页都废了。 */function capMatrixHtml() {
+  const ok = [
+    "浏览器授权登录（链接 / 二维码，任意设备）",
+    "账号库、凭据刷新、签到与积分",
+    "API 网关、密钥管理、请求日志",
+    "上下文档位：用内置默认值（不再向上游探测）",
+  ];
+  const off = [
+    "从本机导入 —— 需要读客户端目录里的登录态",
+    "程序位切换 —— 要改客户端自己的配置",
+    "客户端用量扫描 —— 数据源是客户端会话文件",
+    "会话浏览与复制 —— 同上",
+  ];
+  return `<div class="cap-matrix">
+    <div class="cap-col ok"><h5>${ICON.check}没有客户端也能用</h5><ul>${ok.map((x) => `<li>${esc(x)}</li>`).join("")}</ul></div>
+    <div class="cap-col off"><h5>${ICON.minus}需要客户端在场</h5><ul>${off.map((x) => `<li>${esc(x)}</li>`).join("")}</ul></div>
+  </div>`;
+}
+
+/** 账号页空态（无客户端 + 0 个账号）：三条可用路径 + 能力矩阵。 */
+function clientlessEmptyHtml() {
+  const p = curPlatform();
+  return `<div class="card srv-card">
+    <div class="srv-card-head">
+      <span class="badge info">无客户端形态</span>
+      <b>本机没有 ${esc(p.label)} 客户端 —— 也能登录，也能开网关</b>
+      <p>账号库里存的是凭据本身；客户端只是「现成的登录态来源」与「程序位开关」。选一条路登录一次，之后与装了客户端的机器没有区别。</p>
+    </div>
+    <div class="srv-ways">
+      <button class="srv-way primary" data-act="add-way|oauth">
+        <span class="ico">${ICON.login}</span>
+        <b>浏览器授权登录</b>
+        <span>生成链接与二维码，手机或任意电脑打开即可</span>
+      </button>
+      <button class="srv-way" data-act="add-way|paste">
+        <span class="ico">${ICON.key}</span>
+        <b>粘贴授权凭据</b>
+        <span>${esc(pasteHint())}</span>
+      </button>
+      <button class="srv-way" data-act="add-way|backup">
+        <span class="ico">${ICON.download}</span>
+        <b>导入备份文件</b>
+        <span>在装了客户端的机器上导出，这里导入</span>
+      </button>
+    </div>
+    ${curScope().platform === "trae" ? `<div class="cap-note">${ICON.warn}
+      <span>Trae 例外：授权与续期都依赖客户端里的<b>设备私钥</b>，纯浏览器登录走不通 —— 点「浏览器授权登录」看两条现实路径。</span></div>` : ""}
+    ${capMatrixHtml()}
+  </div>`;
+}
+
+/** 「粘贴凭据」的字段说明 —— 三家拿到的凭据形状不同，别写一句万能话。 */
+function pasteHint() {
+  const id = curScope().platform;
+  if (id === "workbuddy") return "粘贴 auth/workbuddy-desktop-ai.info 里的 JSON（access_token / refresh_token）";
+  if (id === "trae") return "粘贴 refresh_token，或授权页跳回的那串回调链接";
+  return "粘贴 Qoder 的个人访问令牌（PAT）";
+}
+function pastePlaceholder() {
+  const id = curScope().platform;
+  if (id === "workbuddy") return `{"accessToken":"…","refreshToken":"…","expiresAt":1790000000000}`;
+  if (id === "trae") return "http://127.0.0.1:17388/authorize?authCodeInfo=…";
+  return "qdr_pat_…";
+}
+
+/** 降级说明抽屉：账号页细条与空态卡片的「降级说明」都落在这里。 */
+function drawerSrvHelp() {
+  state.drawer = { kind: "srvHelp" };
+  openDrawer(`
+    <div class="dsec">
+      <h4>为什么「没客户端」不是故障</h4>
+      <p class="tiny muted" style="margin:0 0 4px">账号库里存的是<b>凭据</b>（access / refresh token），网关转发、签到、积分统计都只用它。客户端在不在同一台机器上，对这三件事没有影响。</p>
+      <p class="tiny muted" style="margin:0">旧版把「未检测到客户端」渲染成红字 + 只留「重新检测 / 从本机导入」，等于告诉服务器用户「你用不了」—— 那是把<b>一种部署形态</b>当成了错误。</p>
+    </div>
+    ${capMatrixHtml()}
+    <div class="dsec">
+      <h4>想把另一台机器上的账号搬过来</h4>
+      <p class="tiny muted" style="margin:0">在那台机器上「设置 → 备份 → 导出账号」，得到 JSON；回到这里用「导入备份文件」。备份里含凭据，导入后刷新与网关立即生效，不需要再登录一次。</p>
+    </div>
+  `, "无客户端说明");
+}
+
+/* ── 授权弹窗：链接 + 二维码 + 轮询 ──
+ *
+ * 设计要点（为什么不是「点一下自动打开浏览器」就完事）：
+ *   ① 服务器上 `openInBrowser` 必然失败（没有 GUI），旧实现整个流程就断在这里；
+ *   ② 所以**弹窗本身就是完整路径**：链接可复制、二维码可扫、状态自己轮询；
+ *   ③ 桌面形态只是「额外帮你自动开一次浏览器」，失败不报错、不影响上面的路径。
+ *
+ * 平台差异只有一处：Trae 的授权页在「认证中」会探 `127.0.0.1:17388` 判断客户端在线，
+ * 远程部署必须先把这条端口接回去（ssh -L）或手工粘贴回调链接；WB / Qoder 是纯轮询，
+ * 服务端就能收结果，不需要任何本机端口。 */
+const AUTH_TTL = 300;   // 与后端 `OAUTH_TIMEOUT_SECONDS` 对齐（5 分钟）
+let authTimer = null;   // 倒计时句柄；关闭弹窗 / 超时 / 成功都要清，否则会往已销毁的 DOM 写
+
+/** 二维码（**原型示意**）：真实现引 qrcode 库渲染同一个 `verificationUri`；
+    原型不引依赖，画确定性的伪点阵 + 三个定位角，只为评审「版面留没留位置」。 */
+function qrSvg(seed) {
+  const N = 25, M = 4;
+  let h = 2166136261;
+  for (let i = 0; i < seed.length; i++) h = ((h ^ seed.charCodeAt(i)) * 16777619) >>> 0;
+  const rnd = () => ((h = (h * 1664525 + 1013904223) >>> 0) / 4294967296);
+  const inFinder = (x, y) => (x < 7 && y < 7) || (x > N - 8 && y < 7) || (x < 7 && y > N - 8);
+  let cells = "";
+  for (let y = 0; y < N; y++) for (let x = 0; x < N; x++) {
+    if (inFinder(x, y) || rnd() <= 0.5) continue;
+    cells += `<rect x="${x + M}" y="${y + M}" width="1" height="1"/>`;
+  }
+  const finder = (x, y) => `<rect x="${x + M}" y="${y + M}" width="7" height="7"/>` +
+    `<rect x="${x + M + 1}" y="${y + M + 1}" width="5" height="5" fill="#fff"/>` +
+    `<rect x="${x + M + 2}" y="${y + M + 2}" width="3" height="3"/>`;
+  return `<svg viewBox="0 0 ${N + M * 2} ${N + M * 2}" shape-rendering="crispEdges" role="img" aria-label="授权二维码（原型示意）">
+    <rect width="${N + M * 2}" height="${N + M * 2}" fill="#fff"/>
+    <g fill="#111">${cells}${finder(0, 0)}${finder(N - 7, 0)}${finder(0, N - 7)}</g>
+  </svg>`;
+}
+
+/** 授权地址（示意）：三家各用自己的授权页域名。 */
+function authUrlFor(s, nonce) {
+  const tag = `${s.platform}_${s.region}_${nonce}`;
+  if (s.platform === "workbuddy") return `${s.region === "cn" ? "https://www.codebuddy.cn" : "https://www.codebuddy.ai"}/login?state=${tag}`;
+  if (s.platform === "trae") return `${s.region === "cn" ? "https://www.trae.cn" : "https://www.trae.ai"}/authorize?login_channel=native_ide&state=${tag}`;
+  return `${s.region === "cn" ? "https://qoder.cn" : "https://qoder.com"}/device?code=${tag}`;
+}
+
+const fmtLeft = (sec) => `${Math.floor(sec / 60)}:${String(sec % 60).padStart(2, "0")}`;
+
+function ensureAuthOverlay() {
+  let el = $("#auth-overlay");
+  if (el) return el;
+  el = document.createElement("div");
+  el.className = "overlay";
+  el.id = "auth-overlay";
+  el.setAttribute("aria-hidden", "true");
+  el.innerHTML = `<div class="auth" role="dialog" aria-modal="true" aria-labelledby="auth-title"></div>`;
+  document.body.appendChild(el);
+  el.addEventListener("click", (e) => { if (e.target.id === "auth-overlay") closeAuth(); });
+  return el;
+}
+
+function openAuth() {
+  const s = curScope();
+  /* 每次打开 / 重新生成都换 nonce：旧 state 立刻作废，与后端「一 state 一登录」一致。 */
+  const nonce = Math.random().toString(36).slice(2, 10);
+  state.auth = { step: "waiting", left: AUTH_TTL, nonce, cb: "", url: authUrlFor(s, nonce), who: "" };
+  const el = ensureAuthOverlay();
+  el.classList.add("open");
+  el.setAttribute("aria-hidden", "false");
+  paintAuth();
+  clearInterval(authTimer);
+  authTimer = setInterval(() => {
+    const a = state.auth;
+    if (!a || a.step !== "waiting") { clearInterval(authTimer); authTimer = null; return; }
+    a.left -= 1;
+    if (a.left <= 0) { a.step = "expired"; clearInterval(authTimer); authTimer = null; paintAuth(); return; }
+    /* 只改倒计时文本，不整块重绘 —— 重绘会把用户在回调输入框里的光标打掉。 */
+    const left = $("#auth-left");
+    if (left) left.textContent = fmtLeft(a.left);
+  }, 1000);
+}
+
+function closeAuth() {
+  clearInterval(authTimer); authTimer = null;
+  state.auth = null;
+  const el = $("#auth-overlay");
+  if (el) { el.classList.remove("open"); el.setAttribute("aria-hidden", "true"); }
+}
+
+function paintAuth() {
+  const el = $("#auth-overlay");
+  const a = state.auth;
+  if (!el || !a) return;
+  el.querySelector(".auth").innerHTML = authDialogHtml();
+}
+
+function authDialogHtml() {
+  const s = curScope(), a = state.auth;
+  const trae = s.platform === "trae";
+
+  if (a.step === "done") {
+    return `<div class="auth-head">
+      <div class="t"><h3 id="auth-title">已登录 ${esc(scopeLabel(state.scope))}</h3>
+        <p>授权结果已由服务端轮询取回，账号写进账号库。</p></div>
+      <button class="cp-x" data-act="auth-close" aria-label="关闭">✕</button>
+    </div>
+    <div class="auth-body" style="grid-template-columns:1fr">
+      <div class="auth-done">
+        <div class="who"><span class="badge ok">${ICON.check}</span>${esc(a.who)}</div>
+        <div class="auth-note">凭据已入库：<b>刷新、签到、网关</b>都走这一条，不再需要客户端。<br>
+          ${trae ? "Trae 的刷新要发 DeviceProof，私钥只在内存里用，不落盘、不进日志。" : "授权结果里没有设备指纹，服务端轮询即可。"}</div>
+      </div>
+    </div>
+    <div class="auth-foot"><span class="grow"></span>
+      <button class="btn primary" data-act="auth-complete">${ICON.check}完成</button>
+    </div>`;
+  }
+
+  const expired = a.step === "expired";
+  return `<div class="auth-head">
+      <div class="t"><h3 id="auth-title">登录 ${esc(scopeLabel(state.scope))}</h3>
+        <p>授权在浏览器里完成，本窗口只负责等结果 —— 浏览器在哪台机器上都行。</p></div>
+      <button class="cp-x" data-act="auth-close" aria-label="关闭">✕</button>
+    </div>
+    <div class="auth-body">
+      <div class="auth-qr">
+        <div class="qr-frame">${qrSvg(a.url)}</div>
+        <div class="qr-cap">手机扫码，或复制链接<br>在任意浏览器打开</div>
+      </div>
+      <div class="auth-right">
+        ${trae ? tunnelHtml() : ""}
+        <div class="auth-status">
+          ${expired
+            ? `<span class="badge warn">已超时</span><span class="tiny muted">这个 state 已作废，重新生成一条</span>`
+            : `<span class="spinner" aria-hidden="true"></span><span>等待授权…</span><span class="left" id="auth-left">${fmtLeft(a.left)}</span>`}
+        </div>
+        <div class="link-box">
+          <code title="${esc(a.url)}">${esc(a.url)}</code>
+          <button class="btn xs" data-act="copy|${esc(a.url)}">${ICON.copy}复制</button>
+        </div>
+        <ol class="auth-steps">
+          <li><i>1</i><span>用手机或任意电脑的浏览器打开上面的链接。</span></li>
+          <li><i>2</i><span>登录并点「授权」——<b>不需要在这台机器上装客户端</b>。</span></li>
+          <li><i>3</i><span>本窗口自动收到结果，账号直接进账号库。</span></li>
+        </ol>
+        ${trae ? "" : `<div class="auth-note"><b>不需要本机回调。</b>服务端轮询官方接口取结果，所以服务器 / 容器里也能登录完成。</div>`}
+      </div>
+    </div>
+    <div class="auth-foot">
+      <span class="tiny muted" style="align-self:center">${expired ? "超时后必须重新生成（旧 state 已作废）" : "关闭窗口后这条链接立即失效"}</span>
+      <span class="grow"></span>
+      <button class="btn" data-act="auth-retry">${ICON.refresh}重新生成</button>
+      <button class="btn primary" data-act="auth-done"${expired ? " disabled" : ""}>模拟：已完成授权</button>
+    </div>`;
+}
+
+/** Trae 专属限制块（★ 必须说实话，别画一个「扫码就能用」的饼）。
+ *
+ *  实测两处硬依赖，缺一不可：
+ *    ① **设备私钥**：`storage.json` 的 icube 条目里那把 EC P-256 私钥 —— 换 token 要它签名、
+ *       续期（DeviceProof）也要它。本机没客户端 = 没有这把钥匙，授权页登得进去，
+ *       换 token 会失败在 20403。备份里只有 `device_bindings`（uid → deviceId），**不含私钥**。
+ *    ② **127.0.0.1:17388**：授权页停在「认证中」时会探这个端口，远程部署得用 ssh -L 接回来。
+ *  ⇒ 所以 Trae 的「无客户端」不是「扫码即可」，而是「把客户端那把钥匙带过来」。 */
+function tunnelHtml() {
+  const cmd = "ssh -L 17388:127.0.0.1:17388 root@your-server";
+  const store = "%APPDATA%\\Trae CN\\User\\globalStorage\\storage.json";
+  return `<div class="tunnel">
+    <div class="hd">${ICON.warn}<span>Trae 不能纯浏览器授权：它要客户端里那把设备私钥</span></div>
+    <p class="tiny muted" style="margin:0">Trae 的<b>换 token 与续期</b>都用客户端 <span class="mono">storage.json</span> 里的 icube 设备密钥（EC P-256）签名。本机没有客户端就没有这把钥匙 —— 授权页能登进去，最后一步会失败在 <span class="mono">20403</span>。备份文件里只有设备绑定，<b>不含私钥</b>。</p>
+    <p class="tiny muted" style="margin:0"><b>两条现实路径：</b></p>
+    <div class="code-line"><code>${esc(store)}</code>
+      <button class="btn xs" data-act="copy|${esc(store)}">${ICON.copy}复制路径</button></div>
+    <p class="tiny muted" style="margin:0">① 把装了客户端那台机器的这个文件拷到服务器<b>同一路径</b>，再回来授权；<br>
+      ② 或者不在这台机器登录 —— 用「导入备份文件」搬已有账号，但<b>续期仍要这把私钥</b>，没有就只能用到 access_token 过期。</p>
+    <p class="tiny muted" style="margin:0">另外授权页还要探 <span class="mono">127.0.0.1:17388</span> 判断客户端在线。它在你的浏览器机器上，不在服务器上，所以要么开端口转发：</p>
+    <div class="code-line"><code>${esc(cmd)}</code>
+      <button class="btn xs" data-act="copy|${esc(cmd)}">${ICON.copy}复制</button></div>
+    <p class="tiny muted" style="margin:0">要么把授权后地址栏那串 <span class="mono">127.0.0.1:17388/authorize?…</span> 贴进来：</p>
+    <div class="row" style="gap:8px">
+      <input class="inp" id="auth-cb" placeholder="http://127.0.0.1:17388/authorize?authCodeInfo=…"
+        value="${esc(state.auth.cb || "")}" style="flex:1" autocomplete="off" />
+      <button class="btn sm" data-act="auth-cb">解析</button>
+    </div>
+  </div>`;
+}
+
+/** 模拟「浏览器那边授权完成」—— 真实现里这是 `oauth_status` 返回 `done`。 */
+function finishAuth() {
+  const a = state.auth;
+  if (!a || a.step === "done") return;
+  a.step = "done";
+  a.who = curScope().platform === "trae" ? "jackey@example.com" : "ops@example.com";
+  paintAuth();
+}
+
+/** 「完成」：把账号写进账号库（真实现走 `reconcileAccounts` 后重绘）。 */
+function completeAuth() {
+  const a = state.auth, s = curScope();
+  if (!a) return;
+  const acc = makeAccount(`srv-${Date.now()}`, `server-${s.accounts.length + 1}`, a.who, {
+    remark: "服务器授权", credits: 500, creditsTotal: 1000, programs: {},
+    lastUsed: "刚刚", todayTokens: 0, totalTokens: 0,
+  });
+  s.accounts.push(acc);
+  closeAuth();
+  renderAll();
+  toast("ok", `已添加 ${acc.name}`, "凭据已入库 · 网关立即可用", {
+    label: "去网关", run: () => { state.dest = "gateway"; renderAll(); },
+  });
+}
+
+/** 粘贴凭据抽屉：服务器场景下唯一「不用浏览器」的入库路径。 */
+function drawerPaste() {
+  state.drawer = { kind: "paste" };
+  openDrawer(`
+    <p class="tiny muted" style="margin:0">从任意一台装了客户端的机器复制凭据，或在浏览器授权后手工粘贴。本机不需要装客户端。</p>
+    <div class="dsec">
+      <h4>${esc(scopeLabel(state.scope))} 的凭据</h4>
+      <textarea class="inp area" id="paste-box" rows="6" placeholder="${esc(pastePlaceholder())}" spellcheck="false"></textarea>
+      <p class="tiny muted" style="margin:8px 0 0">${esc(pasteHint())}。凭据只写入本机账号库，不上传任何地方。</p>
+    </div>
+    <div class="dsec">
+      <h4>为什么可以手工粘贴</h4>
+      <p class="tiny muted" style="margin:0">账号库存的就是凭据本身，「从本机导入」只是替你去客户端目录里读一次。入库之后，刷新、签到、网关走的是同一条路 —— 所以「没客户端」不影响这三件事。</p>
+    </div>
+  `, "粘贴授权凭据", `<button class="btn" data-act="close-drawer">取消</button>
+     <button class="btn primary" data-act="paste-save">${ICON.check}验证并添加</button>`);
 }
 
 /* ── 不可逆操作的确认 Dialog ── */
@@ -6124,7 +6651,7 @@ function renderScopeMenu() {
     return `<button class="scope-item${id === state.scope ? " on" : ""}" data-act="scope|${id}">
       <span class="scope-mark" style="background:color-mix(in oklab, ${p.accent} 18%, transparent);color:${p.accent}">${p.mark}</span>
       <span class="t"><b>${scopeLabel(id)}</b>
-        <span>${c ? "已登录 " + esc(c.name) : s.installed ? "未登录" : "未检测到"} · ${s.accounts.length} 个账号${expiredCount(s) ? ` · ${expiredCount(s)} 个需处理` : ""}</span></span>
+        <span>${c ? "已登录 " + esc(c.name) : s.installed ? "未登录" : "未装客户端"} · ${s.accounts.length} 个账号${expiredCount(s) ? ` · ${expiredCount(s)} 个需处理` : ""}</span></span>
       <span class="run-pill${s.running ? "" : " off"}" style="height:18px;padding:0 7px"><i class="dot"></i></span>
       <span class="key">⌘${i + 1}</span>
     </button>`;
@@ -7052,9 +7579,51 @@ document.addEventListener("click", (e) => {
     case "add-account": stop(); drawerAdd(); break;
     case "add-way": {
       stop();
-      const label = { oauth: "OAuth 登录", local: "从本机导入", backup: "导入备份" }[a1];
+      const label = { oauth: "浏览器授权登录", paste: "粘贴授权凭据", local: "从本机导入", backup: "导入备份" }[a1];
+      /* 授权：抽屉换成弹窗（抽屉里放不下二维码 + 轮询状态，且授权期间还要能看别的页面）。 */
+      if (a1 === "oauth") { closeDrawer(); openAuth(); break; }
+      if (a1 === "paste") { drawerPaste(); break; }
+      /* 「从本机导入」在无客户端时**不静默失败**：给出两条能走的路。 */
+      if (a1 === "local" && isClientless(curScope())) {
+        toast("err", "本机没有客户端可读", "改用「浏览器授权登录」或「粘贴授权凭据」；也可以在装了客户端的机器上导出备份再导入");
+        break;
+      }
       closeDrawer();
       toast("ok", `已开始「${label}」`, "这里会打开对应的流程抽屉");
+      break;
+    }
+    /* ── 无客户端形态（issue #62）── */
+    case "srv-help": stop(); drawerSrvHelp(); break;
+    case "auth-close": stop(); closeAuth(); break;
+    case "auth-retry": stop(); openAuth(); break;
+    case "auth-done": stop(); finishAuth(); break;
+    case "auth-complete": stop(); completeAuth(); break;
+    case "auth-cb": {
+      stop();
+      const box = $("#auth-cb");
+      const v = (box && box.value || "").trim();
+      /* 只认整串回调地址：手工粘贴最容易漏掉 `http://`，那时后端解析会失败在半路。 */
+      if (!/^https?:\/\//.test(v) || !/authCodeInfo=/.test(v)) {
+        toast("err", "回调链接不完整", "需要整串 http://127.0.0.1:17388/authorize?authCodeInfo=…");
+        break;
+      }
+      state.auth.cb = v;
+      finishAuth();
+      break;
+    }
+    case "paste-save": {
+      stop();
+      const box = $("#paste-box");
+      const v = (box && box.value || "").trim();
+      if (!v) { toast("err", "凭据是空的", "把 auth 文件内容或 refresh_token 粘进来"); break; }
+      const s = curScope();
+      const acc = makeAccount(`paste-${Date.now()}`, `pasted-${s.accounts.length + 1}`, "pasted@example.com", {
+        remark: "粘贴导入", credits: 500, creditsTotal: 1000, programs: {},
+        lastUsed: "刚刚", todayTokens: 0, totalTokens: 0,
+      });
+      s.accounts.push(acc);
+      closeDrawer(); renderAll();
+      toast("ok", `已添加 ${acc.name}`, "凭据校验通过 · 刷新与网关立即生效");
       break;
     }
     case "act": {
@@ -7300,6 +7869,8 @@ document.addEventListener("input", (e) => {
   const t = e.target;
   if (t.id === "acct-q") { state.q = t.value; renderAccountList(); return; }
   if (t.id === "palette-input") { state.palette.q = t.value; state.palette.cursor = 0; renderPalette(); return; }
+  /* 回调链接要写回 state：倒计时每秒刷新时**不整块重绘**，但「解析」失败重绘时必须还在。 */
+  if (t.id === "auth-cb" && state.auth) { state.auth.cb = t.value; return; }
 });
 document.addEventListener("change", (e) => {
   const t = e.target;
@@ -7367,6 +7938,8 @@ document.addEventListener("keydown", (e) => {
     if (!updBusy()) closeUpdateDialog();
     return;
   }
+  /* 授权弹窗在抽屉之上：Esc 先关它（否则用户按 Esc 只关掉底下的抽屉，弹窗还挂着）。 */
+  if (state.auth && e.key === "Escape") { e.preventDefault(); closeAuth(); return; }
   if (e.key === "Escape") { if ($("#drawer").classList.contains("open")) closeDrawer(); }
   if (e.key === "/" && !/INPUT|SELECT|TEXTAREA/.test(document.activeElement.tagName)) {
     e.preventDefault();
@@ -7481,6 +8054,13 @@ function bootFromUrl() {
   const open = p.get("open");
   if (open === "palette") openPalette();
   else if (open === "add") drawerAdd();
+  /* 授权弹窗也可深链：`?open=auth` 直接看「等待授权」；`&auth=expired|done` 审另外两态。 */
+  else if (open === "auth") {
+    openAuth();
+    const stage = p.get("auth");
+    if (stage === "expired" && state.auth) { state.auth.step = "expired"; clearInterval(authTimer); authTimer = null; paintAuth(); }
+    else if (stage === "done") finishAuth();
+  }
   else if (open && open.startsWith("account:")) drawerAccount(open.slice(8));
   else if (open && open.startsWith("wizard:")) drawerWizard(open.slice(7), 1);
   else if (open && open.startsWith("perm:")) drawerPermGuide(open.slice(5));

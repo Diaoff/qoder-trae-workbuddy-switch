@@ -1944,6 +1944,36 @@ export interface AutoBackupEntry {
   kind: "auto" | "preImport" | "other";
 }
 
+/** 「清除缓存」的类别 id —— 与 core `cache.rs` 的类别常量一一对应（勿单方面改）。 */
+export type CacheCategoryId = "session_backups" | "snapshots" | "caches" | "logs";
+
+/** `cache_scan` 里一个类别的体积（`entries` 是文件数，仅作次要信息）。 */
+export interface CacheCategoryStat {
+  id: CacheCategoryId;
+  bytes: number;
+  entries: number;
+}
+
+/** `cache_scan` 的返回：各类别体积 + 总量 + 数据目录路径（给页脚展示）。 */
+export interface CacheScanReport {
+  storePath: string;
+  totalBytes: number;
+  categories: CacheCategoryStat[];
+}
+
+/** `cache_clear` 单类的清除结果（`bytes` 是实际释放的字节）。 */
+export interface CacheClearedEntry {
+  id: CacheCategoryId;
+  bytes: number;
+}
+
+/** `cache_clear` 的返回：逐类释放量 + 总量 + 逐条 errors（部分失败不中断）。 */
+export interface CacheClearResult {
+  cleared: CacheClearedEntry[];
+  freedBytes: number;
+  errors: { id: CacheCategoryId; error: string }[];
+}
+
 /** 自动备份配置（**默认开**；可在设置里关掉，§7 #7）。 */
 export interface AutoBackupConfig {
   enabled: boolean;

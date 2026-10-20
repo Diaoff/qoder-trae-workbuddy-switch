@@ -1,4 +1,5 @@
 import { en as backup } from "./domains/backup.en";
+import { en as cache } from "./domains/cache.en";
 import { en as clientSettings } from "./domains/clientSettings.en";
 import { en as recycleBin } from "./domains/recycleBin.en";
 import { en as proxy } from "./domains/proxy.en";
@@ -39,6 +40,7 @@ import type { TranslationKey } from "./zh";
 export const en: Partial<Record<TranslationKey, string>> = {
   ...shell,
   ...backup,
+  ...cache,
   ...shared,
   ...wbSettings,
   ...wbAccounts,

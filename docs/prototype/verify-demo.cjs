@@ -285,10 +285,15 @@ function check(name, fn) {
     if (t !== "TraeWork 国际版") throw new Error("实际「" + t + "」");
     return true;
   });
+  /* 当前作用域是 `trae-global`（0 个账号、本机无客户端）⇒ 走「无客户端形态」引导卡，
+     不是旧的「这个作用域还没有账号」。两种都算**结构化空态**，判据是「有块、有出路」，
+     而不是某一句固定文案 —— 否则改一次空态设计就要改一次门禁，门禁会退化成文案快照。 */
   check("空作用域给出结构化空态而非空白", () => {
     click('[data-act="nav|accounts"]');
     const t = text("#content");
-    if (!t.includes("还没有账号")) throw new Error("没有空态：" + t.slice(0, 80));
+    const structured = doc.querySelector("#content .empty, #content .srv-card");
+    if (!structured) throw new Error("没有空态块：" + t.slice(0, 80));
+    if (!/还没有账号|无客户端形态/.test(t)) throw new Error("空态没有说清是什么情况：" + t.slice(0, 80));
     return true;
   });
 

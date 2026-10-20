@@ -120,9 +120,18 @@ fn api_routes() -> Router {
             "/api/accounts/import-local",
             post(api_accounts_import_local),
         )
+        // 粘贴授权凭据（issue #62）：无客户端时与「浏览器授权」并列的第二条路。
+        .route(
+            "/api/accounts/paste-credential",
+            post(api_accounts_paste_credential),
+        )
         // P5 T03 · 参数化「打开客户端数据目录」（`scope` 决定平台与区域）。旧路由
         // `/api/gateway/open-data-dir`（WB）与 `/api/trae/open-data-dir`（Trae）保留为别名。
         .route("/api/data-dir/open", post(api_open_data_dir))
+        // 缓存清理（「清除缓存」）：`scan` 只读量体积，`clear` 按类别删（不可逆）。
+        // 无 scope 参数 —— `~/.buddy-switch` 是全局单目录（见 core `config::store_dir`）。
+        .route("/api/cache/scan", get(api_cache_scan))
+        .route("/api/cache/clear", post(api_cache_clear))
         // P5 T03 · 参数化积分命令（`scope` 决定平台与区域）。旧路由 `/api/credits`（WB）与
         // `/api/trae/credits`（Trae）保留为别名，故这里用**新路径**，避免与旧路由同路径冲突。
         .route("/api/credits/query", post(api_credits_query))
@@ -384,6 +393,11 @@ fn api_routes() -> Router {
         )
         // ---- Trae OAuth 登录（对齐 WorkBuddy 的 /api/oauth/*）----
         .route("/api/trae/oauth/start", post(api_trae_oauth_start))
+        // 手工提交回调链接（issue #62）：远程部署时浏览器在另一台机器，回调打不回 127.0.0.1。
+        .route(
+            "/api/trae/oauth/submit-callback",
+            post(api_trae_oauth_submit_callback),
+        )
         .route("/api/trae/oauth/status", post(api_trae_oauth_status))
         .route("/api/trae/oauth/cancel", post(api_trae_oauth_cancel))
         .route("/api/trae/accounts/export", post(api_trae_export_accounts))
@@ -1197,12 +1211,123 @@ async fn api_open_data_dir(Json(body): Json<Value>) -> Response {
     }
 }
 
+/// GET /api/cache/scan —— 只读扫描数据目录各类缓存体积（**不清任何东西**）。
+///
+/// 与 `src-tauri/src/commands.rs::cache_scan` **一一对应**（刻意不去重）。
+///
+/// `spawn_blocking`：扫描要遍历几千个目录，同步跑会占住 tokio worker
+/// （与 `api_codebuddy_cli_status` 同款纪律）。
+async fn api_cache_scan() -> Response {
+    match tokio::task::spawn_blocking(buddy_switch_core::modules::cache::scan).await {
+        Ok(value) => json_ok(value),
+        Err(error) => json_err(
+            format!("扫描缓存失败: {error}"),
+            StatusCode::INTERNAL_SERVER_ERROR,
+        ),
+    }
+}
+
+/// POST /api/cache/clear —— 按类别清除缓存（**不可逆**）。
+///
+/// body：`{ "categories": ["session_backups", …] }`（缺失 ⇒ 空列表）。
+/// 未知类别 / 空列表 ⇒ 400 且**一个字节都不删**（fail-closed 由 core 保证：
+/// 先校验全部 id 再动手）。与 `src-tauri/src/commands.rs::cache_clear` 一一对应。
+///
+/// `spawn_blocking`：清除可能要卸载几十 GB（core 内有界并行），同步跑会占住
+/// tokio worker。
+async fn api_cache_clear(Json(body): Json<Value>) -> Response {
+    let categories: Vec<String> = body
+        .get("categories")
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| item.as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default();
+    match tokio::task::spawn_blocking(move || buddy_switch_core::modules::cache::clear(&categories))
+        .await
+    {
+        Ok(Ok(value)) => json_ok(value),
+        Ok(Err(error)) => json_err(error, StatusCode::BAD_REQUEST),
+        Err(error) => json_err(
+            format!("清除缓存失败: {error}"),
+            StatusCode::INTERNAL_SERVER_ERROR,
+        ),
+    }
+}
+
 /// POST /api/credits/query —— 参数化积分查询（`scope` 决定平台与区域）。
 ///
 /// 与 `src-tauri/src/commands.rs::credits` **一一对应**（刻意不去重）。旧路由 `/api/credits`
 /// （WB）与 `/api/trae/credits`（Trae）保留为别名。形状按 `scope.product()` 分叉：
 /// WB 分支返回单账号 `CreditExpiry`（**必须**带 `accountId`），Trae 分支返回区域级
 /// `TraeCreditsOverview`（忽略 `accountId`）。
+/// POST /api/accounts/paste-credential —— 粘贴授权凭据（issue #62）。
+///
+/// 只接 WorkBuddy：另两家各有专用入口（Qoder `paste PAT`、Trae `import JWT`），
+/// 让一个「看起来通用」的端点在家家上静默失败是最坏的选择。
+async fn api_accounts_paste_credential(Json(body): Json<Value>) -> Response {
+    let scope = match resolve_scope_param(body.get("scope").and_then(Value::as_str)) {
+        Ok(scope) => scope,
+        Err(error) => return json_err(error, StatusCode::BAD_REQUEST),
+    };
+    let text = match body.get("text").and_then(Value::as_str) {
+        Some(text) => text.to_string(),
+        None => return json_err("缺少 text 参数".to_string(), StatusCode::BAD_REQUEST),
+    };
+    match scope.product() {
+        Product::Workbuddy => {
+            let region = match require_wb_region(scope) {
+                Ok(region) => region,
+                Err(error) => return json_err(error, StatusCode::BAD_REQUEST),
+            };
+            match auth_file::import_account_from_text_for(region, &text) {
+                Ok(collected) => match account::save_collected_account_for(region, collected) {
+                    Ok(saved) => json_ok(json!({
+                        "ok": true,
+                        "account": account::account_meta_for(region, &saved),
+                    })),
+                    Err(error) => {
+                        json_err(format!("写入账号库失败: {error}"), StatusCode::BAD_REQUEST)
+                    }
+                },
+                Err(error) => json_err(error, StatusCode::BAD_REQUEST),
+            }
+        }
+        Product::Trae => json_err(
+            "Trae 请用「粘贴 JWT」或「浏览器授权」——换 token 需要客户端里的设备私钥"
+                .to_string(),
+            StatusCode::BAD_REQUEST,
+        ),
+        Product::Qoder => json_err("Qoder 请用「粘贴 PAT」".to_string(), StatusCode::BAD_REQUEST),
+    }
+}
+
+/// POST /api/trae/oauth/submit-callback —— 手工提交回调链接（issue #62）。
+async fn api_trae_oauth_submit_callback(Json(body): Json<Value>) -> Response {
+    if let Err(error) = require_capability(Product::Trae, capability::Capability::Oauth) {
+        return json_err(error, StatusCode::FORBIDDEN);
+    }
+    let login_id = match body.get("loginId").and_then(Value::as_str) {
+        Some(value) if !value.trim().is_empty() => value.to_string(),
+        _ => return json_err("缺少 loginId".to_string(), StatusCode::BAD_REQUEST),
+    };
+    let callback_url = match body
+        .get("callbackUrl")
+        .and_then(Value::as_str)
+        .or_else(|| body.get("url").and_then(Value::as_str))
+    {
+        Some(value) if !value.trim().is_empty() => value.to_string(),
+        _ => return json_err("缺少 callbackUrl".to_string(), StatusCode::BAD_REQUEST),
+    };
+    match trae::handlers::oauth_login_submit_callback(&login_id, &callback_url).await {
+        Ok(value) => json_ok(value),
+        Err(error) => json_err(error, StatusCode::BAD_REQUEST),
+    }
+}
+
 async fn api_credits_query(Json(body): Json<Value>) -> Response {
     let scope = match resolve_scope_param(body.get("scope").and_then(Value::as_str)) {
         Ok(scope) => scope,
@@ -6341,13 +6466,6 @@ mod parse_trae_variant_tests {
         assert_eq!(parse_trae_variant(Some("trae_cn")), TraeVariant::Trae);
     }
 
-    #[test]
-    fn parses_case_and_whitespace_insensitively() {
-        // `TraeVariant::parse` 内部会 `trim + to_ascii_lowercase`。
-        assert_eq!(parse_trae_variant(Some("TRAE_WORK")), TraeVariant::TraeWork);
-        assert_eq!(parse_trae_variant(Some(" Trae CN ")), TraeVariant::Trae);
-    }
-
     /// ★ 前端只传区域（`cn` / `global`）：必须落到**本区域的合并版**。
     ///
     /// 反例（2026-10-20 用户报障）：`global` → 国际版 TraeWork ⇒ 授权页
@@ -6359,6 +6477,13 @@ mod parse_trae_variant_tests {
             parse_trae_variant(Some("global")),
             TraeVariant::GlobalTraeMerged
         );
+    }
+
+    #[test]
+    fn parses_case_and_whitespace_insensitively() {
+        // `TraeVariant::parse` 内部会 `trim + to_ascii_lowercase`。
+        assert_eq!(parse_trae_variant(Some("TRAE_WORK")), TraeVariant::TraeWork);
+        assert_eq!(parse_trae_variant(Some(" Trae CN ")), TraeVariant::Trae);
     }
 
     #[test]

@@ -31,6 +31,7 @@ import { SettingsFieldRow, SettingsGroup, SettingsRow } from "@/components/setti
 // P7 T03：设置页子导航（9 项）+「备份与恢复」分区 + 通用设置分组（与侧栏弹层共用）。
 import { parseSettingsSubnav, SettingsSubnav, type SettingsSubnavId } from "@/components/settings/settings-subnav";
 import { BackupSection } from "@/components/settings/backup-section";
+import { CacheSection } from "@/components/settings/cache-section";
 import { AppSettingsGroups } from "@/components/app-settings";
 // 时点表编辑器与 Trae 设置页**共用同一份实现**（校验规则属于规则，不属于版式）。
 import { TimesEditor } from "@/components/schedule-times-editor";
@@ -1743,7 +1744,12 @@ export default function SettingsPage() {
             />
           )}
 
-          {section === "backup" && <BackupSection />}
+          {section === "backup" && (
+            <>
+              <BackupSection />
+              <CacheSection />
+            </>
+          )}
         </div>
       </div>
     </div>

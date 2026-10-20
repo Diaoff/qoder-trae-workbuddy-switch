@@ -1654,6 +1654,96 @@ fn finish_session(login_id: &str, result: Option<Value>, error: Option<String>) 
     }
 }
 
+/// 手工提交回调链接（远程 / 无客户端部署，issue #62）。
+///
+/// ## 为什么需要它
+///
+/// 授权页把回调打到**固定的** `127.0.0.1:17388`。容器部署时用户的浏览器在另一台机器上，
+/// 那条回调永远回不到服务端；端口转发能解决，但不是所有环境都允许。
+/// 于是留一条「把地址栏整串粘回来」的路：后端用**与监听路径完全相同的**
+/// 解析 / CSRF 校验 / 兑换 / 落库函数做完剩下的部分。
+///
+/// ## 语义与监听路径保持一致
+///
+/// - 会话不存在 / 已取消 / 已落定 ⇒ 明确报错（重复兑换会把同一个 AuthCode 用两次，上游必拒）；
+/// - CSRF：`loginTraceID` 必须等于本次会话的 `trace_id`（`verify_login_trace` 同一判据）；
+/// - 设备身份：`ClientFacts::load_for` 现取（**与发起时同源**：都要求客户端 `storage.json`；
+///   没有客户端就是没有私钥，这里必然失败 —— 如实报错，不假装成功）。
+///
+/// 成功后同时通知监听任务收工，让固定端口立刻释放。
+pub async fn submit_callback(login_id: &str, callback_url: &str) -> Result<Value, String> {
+    let view = session_view(login_id);
+    if view.trace_id.is_empty() {
+        return Err("登录请求不存在或已过期".to_string());
+    }
+    if view.cancelled {
+        return Err("本次登录已取消".to_string());
+    }
+    {
+        let sessions = login_sessions().lock().unwrap();
+        if let Some(session) = sessions.get(login_id) {
+            if session.done {
+                return Err("本次登录已结束，请重新发起".to_string());
+            }
+        }
+    }
+
+    // 允许两种粘贴形态：整串 `http://127.0.0.1:17388/authorize?…`，或只有 `?a=b&…`。
+    let trimmed = callback_url.trim();
+    if trimmed.is_empty() {
+        return Err("回调链接为空".to_string());
+    }
+    let query = trimmed
+        .split_once('?')
+        .map(|(_, rest)| rest)
+        .unwrap_or(trimmed);
+    let params = parse_query(query);
+    if params.is_empty() {
+        return Err("回调链接里没有参数（应包含 authCodeInfo 或 refreshToken）".to_string());
+    }
+
+    // 用户点了「拒绝授权」：区分出来，别报成「凭据缺失」。
+    if let Some(error) = params.get("error").filter(|value| !value.trim().is_empty()) {
+        let message = format!("授权被拒绝: {error}");
+        finish_session(login_id, None, Some(message.clone()));
+        stop_listener(login_id);
+        return Err(message);
+    }
+
+    verify_login_trace(&params, Some(view.trace_id.as_str()))
+        .map_err(|error| classify_error("csrf", &error))?;
+    let callback = parse_callback(&params)?;
+    if callback.auth_code.is_none() && callback.refresh_token.is_none() {
+        return Err(classify_error(
+            "callback",
+            "回调带了参数，但既无 AuthCode 也无 refreshToken",
+        ));
+    }
+
+    let facts = ClientFacts::load_for(view.variant)
+        .map_err(|error| classify_error("credential", &error))?;
+    match perform_login(view.variant, &callback, &view.pkce_verifier, &facts).await {
+        Ok(account_view) => {
+            finish_session(login_id, Some(account_view.clone()), None);
+            stop_listener(login_id);
+            Ok(account_view)
+        }
+        Err(error) => {
+            finish_session(login_id, None, Some(error.clone()));
+            stop_listener(login_id);
+            Err(error)
+        }
+    }
+}
+
+/// 让监听任务立刻收工（释放固定端口），而不是干等到超时。
+fn stop_listener(login_id: &str) {
+    if let Some(session) = login_sessions().lock().unwrap().get(login_id) {
+        // `notify_one`（不是 `notify_waiters`）：取消可能发生在任务开始 await 之前。
+        session.cancel.notify_one();
+    }
+}
+
 /// 轮询一次登录状态。
 ///
 /// 与 WorkBuddy 侧同构地返回 `{ done, account?, error?, port?, variant }`：
@@ -1754,6 +1844,74 @@ mod tests {
             public_key_pem: "-----BEGIN PUBLIC KEY-----\nMFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEc5xtFi4XpzYjFuYwN0sBaUzcnrds\n8NWA0zU4mSNC+HoBUNCM5VD4K2SvzuZ8JJjSUdDLpFmR+zYL3aAy7EtDQQ==\n-----END PUBLIC KEY-----".into(),
             source_app: "TRAE SOLO CN".into(),
         }
+    }
+
+    /// 手工提交回调（issue #62）：**没有会话就不兑换**。
+    ///
+    /// 这条护栏防的是「用户重启应用后，把上一个进程的回调链接贴进来」：
+    /// 没有 `pkce_verifier` 与 `trace_id` 就兑换不出 token，直接说清比静默失败好。
+    #[tokio::test]
+    async fn submit_callback_rejects_unknown_login_id() {
+        let error = submit_callback("trae_never_inserted", "http://127.0.0.1:17388/authorize?code=x")
+            .await
+            .unwrap_err();
+        assert!(
+            error.contains("不存在") || error.contains("过期"),
+            "未知会话应明说已过期: {error}"
+        );
+    }
+
+    /// 会话存在但链接是空的 ⇒ 报「空」而不是去兑换。
+    ///
+    /// 会话由本用例自己插入（不绑端口）：本用例只校验**入参**前的那几道判定，
+    /// 不触发网络与设备凭证读取。
+    #[tokio::test]
+    async fn submit_callback_rejects_blank_url() {
+        let login_id = format!("trae_test_{}", uuid::Uuid::new_v4().simple());
+        {
+            let mut sessions = login_sessions().lock().unwrap();
+            sessions.insert(
+                login_id.clone(),
+                LoginSession {
+                    variant: TraeVariant::default(),
+                    trace_id: "trace-1".into(),
+                    pkce_verifier: "verifier-1".into(),
+                    ..Default::default()
+                },
+            );
+        }
+        let error = submit_callback(&login_id, "   ").await.unwrap_err();
+        assert!(error.contains("为空"), "空链接应点明是空的: {error}");
+
+        // 清理：不留残留会话（本仓测试共享全局表）。
+        login_sessions().lock().unwrap().remove(&login_id);
+    }
+
+    /// CSRF：回调里的 `loginTraceID` 与会话的 `trace_id` 不一致 ⇒ 拒。
+    ///
+    /// 这是**安全护栏**，不是体验问题：没有它，别人可以把自己的 AuthCode 塞进你的会话。
+    #[tokio::test]
+    async fn submit_callback_rejects_csrf_mismatch() {
+        let login_id = format!("trae_test_{}", uuid::Uuid::new_v4().simple());
+        {
+            let mut sessions = login_sessions().lock().unwrap();
+            sessions.insert(
+                login_id.clone(),
+                LoginSession {
+                    variant: TraeVariant::default(),
+                    trace_id: "expected-trace".into(),
+                    pkce_verifier: "verifier-1".into(),
+                    ..Default::default()
+                },
+            );
+        }
+        let url = "http://127.0.0.1:17388/authorize?authCodeInfo=%7B%22AuthCode%22%3A%22ac-1%22%7D&loginTraceID=other-trace";
+        let error = submit_callback(&login_id, url).await.unwrap_err();
+        assert!(
+            !error.is_empty(),
+            "CSRF 不匹配必须有明确错误（而不是继续兑换）"
+        );
+        login_sessions().lock().unwrap().remove(&login_id);
     }
 
     /// 造一个指定 `device_id` 的合成身份（授权 URL / 同源护栏用）。

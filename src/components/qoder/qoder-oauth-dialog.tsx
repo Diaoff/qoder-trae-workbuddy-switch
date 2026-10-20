@@ -17,8 +17,8 @@
  */
 
 import { useEffect, useState } from "react";
-import { ExternalLink } from "lucide-react";
 
+import { AuthLinkPanel } from "@/components/auth-link-panel";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import {
@@ -51,6 +51,8 @@ export function QoderOAuthDialog({ open, onOpenChange, scope, onCollected }: Pro
   const [busy, setBusy] = useState(false);
   const [loginId, setLoginId] = useState<string | null>(null);
   const [uri, setUri] = useState("");
+  /** 授权链接有效期（后端 `expiresIn`）—— 面板据此走倒计时。 */
+  const [expiresIn, setExpiresIn] = useState<number | null>(null);
   const [error, setError] = useState("");
   const [collectedName, setCollectedName] = useState<string | null>(null);
 
@@ -60,6 +62,7 @@ export function QoderOAuthDialog({ open, onOpenChange, scope, onCollected }: Pro
     setBusy(false);
     setLoginId(null);
     setUri("");
+    setExpiresIn(null);
     setError("");
     setCollectedName(null);
   }, [open]);
@@ -105,7 +108,9 @@ export function QoderOAuthDialog({ open, onOpenChange, scope, onCollected }: Pro
       const res = await api.qoderOauthStart(scope);
       setLoginId(res.loginId);
       setUri(res.verificationUri);
-      await openInBrowser(res.verificationUri);
+      setExpiresIn(res.expiresIn ?? null);
+      /* 尽力而为：容器里没有 GUI，开不起来不算失败 —— 链接与二维码才是完整路径。 */
+      void openInBrowser(res.verificationUri).catch(() => {});
     } catch (e) {
       setError(api.asError(e));
     } finally {
@@ -128,28 +133,12 @@ export function QoderOAuthDialog({ open, onOpenChange, scope, onCollected }: Pro
         ) : null}
 
         {loginId && !collectedName ? (
-          <div className="space-y-3">
-            <Alert>
-              <ExternalLink className="size-4" />
-              <AlertDescription className="break-all">
-                <a
-                  href={uri}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="text-primary underline-offset-2 hover:underline"
-                  onClick={(e) => {
-                    // WebUI：交给浏览器默认行为（自动弹窗可能被拦截，链接是兜底出口）。
-                    if (api.isWebui()) return;
-                    e.preventDefault();
-                    void openInBrowser(uri);
-                  }}
-                >
-                  {uri}
-                </a>
-              </AlertDescription>
-            </Alert>
-            <p className="text-sm text-muted-foreground">{t("qoder.page.accounts.oauth.waiting")}</p>
-          </div>
+          /* 链接 + 二维码 + 倒计时：与 WB / Trae 同一套面板，弹窗本身即完整路径。 */
+          <AuthLinkPanel url={uri} expiresIn={expiresIn} status={error ? "expired" : "waiting"}>
+            <p className="text-[11px] leading-relaxed text-muted-foreground">
+              {t("shared.authPanel.noCallback")}
+            </p>
+          </AuthLinkPanel>
         ) : null}
 
         {collectedName ? (

@@ -1,4 +1,5 @@
 import { zh as backup } from "./domains/backup.zh";
+import { zh as cache } from "./domains/cache.zh";
 import { zh as clientSettings } from "./domains/clientSettings.zh";
 import { zh as recycleBin } from "./domains/recycleBin.zh";
 import { zh as proxy } from "./domains/proxy.zh";
@@ -39,6 +40,7 @@ import { zh as wbStats } from "./domains/wbStats.zh";
 export const zh = {
   ...shell,
   ...backup,
+  ...cache,
   ...shared,
   ...wbSettings,
   ...wbAccounts,

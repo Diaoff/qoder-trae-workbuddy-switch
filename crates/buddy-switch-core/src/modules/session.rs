@@ -1524,6 +1524,9 @@ pub fn unify_session_replicas_for(region: Region, items: &[Value]) -> Value {
     }
 
     let fail_count = results.len() - ok_count;
+    // 分歧处理同样会往 `backups/sessions-unify/<utc>` 拍备份 ⇒ 一并做自动保留
+    // （与 `run_copy_batch` 同一条保留纪律，见 `cache::prune_session_backup_dirs`）。
+    crate::modules::cache::prune_session_backup_dirs(crate::modules::cache::SESSION_BACKUP_KEEP);
     json!({
         "results": results,
         "okCount": ok_count,
@@ -2414,6 +2417,11 @@ fn run_copy_batch(
     }
     // ★ P14 S2：基线表同样整批一次落盘（失败不致命：下次复制会重建）。
     batch.flush_baselines();
+
+    // 会话复制备份的自动保留：本批（可能）刚拍了一份 `backups/sessions/<utc>`，
+    // 超出 `SESSION_BACKUP_KEEP` 的旧份在这里清掉 —— 否则每批复制留一份、无界增长
+    // （现场曾累积 3042 份 / 18GB）。显式清理入口见 `cache::clear`。
+    crate::modules::cache::prune_session_backup_dirs(crate::modules::cache::SESSION_BACKUP_KEEP);
 
     let mut report = json!({
         "sourceUid": batch.source_uid,

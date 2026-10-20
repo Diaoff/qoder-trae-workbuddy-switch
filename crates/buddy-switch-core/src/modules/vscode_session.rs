@@ -1051,12 +1051,17 @@ pub fn copy_conversations_in(
 }
 
 /// 统一出口形状。
+///
+/// 同时是 `backups/vscode-sessions/<utc>/` 自动保留的执行点：本函数的三个出口
+/// （两条早退 + 正常结束）覆盖 `copy_conversations_in` 的全部路径，放在这里
+/// 只需一处。显式清理入口见 `cache::clear`。
 fn copy_report(
     source_uid: &str,
     target_uid: &str,
     copied: Vec<Value>,
     errors: Vec<Value>,
 ) -> Value {
+    crate::modules::cache::prune_session_backup_dirs(crate::modules::cache::SESSION_BACKUP_KEEP);
     json!({
         "sourceUid": source_uid,
         "targetUid": target_uid,

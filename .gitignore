@@ -86,3 +86,7 @@ _*.cjs
 /release-notes.md
 
 .key
+
+# Agent 运行时状态（本机工具目录，不入库）
+.omc/
+.claude-flow/

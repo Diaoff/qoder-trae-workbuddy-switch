@@ -258,11 +258,12 @@ export function AddAccountDrawer({
               />
             )}
             {ways.includes("local") && (
+              /* ⚠️ **不置灰**（issue #62）：禁用既不给原因也不给替代，用户只会看到
+                 「点不动」。没装客户端时它仍然可点，由页面回一句「改用哪两条路」。 */
               <Option
                 icon={Upload}
                 title={labels.localTitle}
-                desc={labels.localDesc}
-                disabled={!installed}
+                desc={installed ? labels.localDesc : labels.notInstalled}
                 onClick={() => {
                   onOpenChange(false);
                   onPick("local");

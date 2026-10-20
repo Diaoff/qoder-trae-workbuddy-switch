@@ -376,9 +376,13 @@ pub fn run() {
             commands::accounts_export_to_path,
             commands::accounts_import,
             commands::accounts_import_local,
+            commands::accounts_paste_credential,
             commands::credits,
             commands::checkin_status,
             commands::open_data_dir,
+            // 缓存清理（「清除缓存」）：`cache_scan` 只读量体积，`cache_clear` 按类别删。
+            commands::cache_scan,
+            commands::cache_clear,
             // P5 §2.7 · 回收站 4 命令（**全新命令**，非参数化、无别名；带 scope 且 fail-closed）。
             commands::account_trash_list,
             commands::account_restore,
@@ -544,6 +548,7 @@ pub fn run() {
             commands::trae_delete_account,
             commands::trae_import_local_account,
             commands::trae_oauth_start,
+            commands::trae_oauth_submit_callback,
             commands::trae_oauth_status,
             commands::trae_oauth_cancel,
             commands::trae_export_accounts,
