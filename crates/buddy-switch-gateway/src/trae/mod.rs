@@ -251,6 +251,11 @@ pub struct TraeGatewayConfig {
     pub max_mode: bool,
 }
 
+/// 进程内 Trae 网关当前的 Max Mode 开关（给**命令面**等拿不到 `TraeGatewayState` 的地方用）。
+pub fn max_mode_now() -> bool {
+    <TraeGateway as crate::GatewayProduct>::shared_state().max_mode_now()
+}
+
 impl Default for TraeGatewayConfig {
     fn default() -> Self {
         Self {

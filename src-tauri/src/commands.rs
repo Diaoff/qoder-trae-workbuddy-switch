@@ -3329,7 +3329,11 @@ pub fn get_trae_gateway_models(variant: Option<String>) -> Value {
                 .clone()
         })
         .unwrap_or_default();
-    buddy_switch_gateway::trae::payload::models_response_for(variant, &disabled)
+    buddy_switch_gateway::trae::payload::models_response_for(
+        variant,
+        &disabled,
+        buddy_switch_gateway::trae::max_mode_now(),
+    )
 }
 
 /// GET /api/trae/gateway/client-models —— 客户端（**上游下发**）的模型清单。
