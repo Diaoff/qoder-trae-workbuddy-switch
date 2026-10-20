@@ -11,8 +11,6 @@ import type {
   AutoBackupEntry,
   AutoRotateConfig,
   BackupConflictPolicy,
-  CacheClearResult,
-  CacheScanReport,
   CatalogSnapshot,
   CodeBuddyCliInstallResult,
   CodeBuddyCliStatus,
@@ -171,8 +169,6 @@ const DEMO_READ_COMMANDS = new Set([
   "get_app_prefs", "set_app_prefs",
   "get_travel_status", "get_auto_travel_config", "get_schedule_config",
   "get_switch_config",
-  // 「清除缓存」的只读扫描（设置页渲染类别体积与勾选）；清除动作是写操作，不进这里。
-  "cache_scan",
   // P8 T02 · 会话页两个只读命令：演示站必须能渲染副本视图（否则 build:demo 报错）。
   // `list_sessions` 是**既有**命令，这里补进演示面 —— 会话页要用它 join 标题 / updatedAt。
   "list_sessions", "list_session_replicas",
@@ -278,10 +274,6 @@ const ROUTES: Record<string, Route> = {
   // 打开客户端数据目录（只读路径）：`scope` 决定平台与区域；旧路由 `open_workbuddy_data_dir`
   // / `open_trae_data_dir` 保留为别名（见 ALIASES）。
   open_data_dir: { method: "POST", path: "/api/data-dir/open" },
-  // 缓存清理（「清除缓存」）：`scan` 只读量体积；`clear` 按类别删（不可逆，fail-closed）。
-  // 无 scope 参数 —— `~/.buddy-switch` 是全局单目录（core `config::store_dir`）。
-  cache_scan: { method: "GET", path: "/api/cache/scan" },
-  cache_clear: { method: "POST", path: "/api/cache/clear" },
   // 积分（区域纯）：`scope` 决定平台与区域；旧路由 `get_credit_expiry` / `get_trae_credits`
   // 保留为别名（见 ALIASES）。
   credits: { method: "POST", path: "/api/credits/query" },
@@ -1855,26 +1847,6 @@ export function openDataDir(scope: Scope): Promise<{
 }
 
 /**
- * 扫描数据目录各类缓存的体积（**只读**，不清任何东西）。
- *
- * 无 scope 参数 —— `~/.buddy-switch` 是全局单目录。返回按类别的字节数 /
- * 文件数 + 总量；前端据此渲染「清除缓存」的勾选与预估。
- */
-export function cacheScan(): Promise<CacheScanReport> {
-  return call("cache_scan");
-}
-
-/**
- * 按类别清除缓存（**不可逆**）。
- *
- * `categories` 为空 / 含未知 id ⇒ 整体报错（fail-closed：先校验全部 id 再动手，
- * 一个字节都不删）。返回每类释放的字节与逐条 errors（部分失败不中断）。
- */
-export function cacheClear(categories: string[]): Promise<CacheClearResult> {
-  return call("cache_clear", { categories });
-}
-
-/**
  * 打开 **WorkBuddy 客户端**的数据目录（在文件管理器中）。
  *
  * ⚠️ 这是 {@link openDataDir} 的**薄壳**（只为既有调用点保留）。新代码请直接传 `scope` ——
@@ -3175,28 +3147,9 @@ export interface QoderCheckinClaimResult {
   uid: string;
   already?: boolean;
   disabled?: boolean;
-  /** 本次**真领到**的额度（活动通道；旧通道可能没有该字段）。 */
   rewardCredits?: number;
   status?: string;
   rechecked?: boolean;
-  /* ── 活动通道明细（`source === "campaign"` 时才有；旧通道不带）── */
-  source?: "campaign" | "legacy";
-  /** 本次领取成功的活动条数。 */
-  claimedCount?: number;
-  /** 逐活动结果（`campaignId` / `title` / `amount` / `redemptionCode`）。 */
-  claimed?: { campaignId: string; title: string; amount: number; redemptionCode?: string }[];
-  /** 今日已领的活动。 */
-  alreadyItems?: { campaignId: string; title: string; benefitAmount: number }[];
-  /** 服务端按「人」去重被挡下的活动（同机其它账号本轮已领）。 */
-  blocked?: { campaignId: string; title: string; failureCode?: string }[];
-  /** 名额发完 / 需先完成任务。 */
-  pending?: unknown[];
-  locked?: unknown[];
-  /** 可读结论文案（活动通道）。 */
-  message?: string;
-  /** 下一次可领时刻（epoch 秒）与说明。 */
-  nextAvailableAt?: number;
-  nextAvailableNote?: string;
 }
 
 export function qoderCheckinClaim(scope: Scope, uid: string): Promise<QoderCheckinClaimResult> {
