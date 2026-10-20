@@ -2752,12 +2752,24 @@ async fn api_save_gateway_config(Json(body): Json<Value>) -> Response {
         return json_err(error, StatusCode::BAD_REQUEST);
     }
     let state = crate::gateway_host::shared_state();
+    let previous = state.config.read().await.clone();
     *state.config.write().await = config.clone();
     state.log.set_keep(config.log_keep);
     state.log.set_log_bodies(config.log_bodies);
-    let addr = match crate::gateway_host::apply().await {
-        Ok(addr) => addr,
-        Err(error) => return json_err(error, StatusCode::BAD_REQUEST),
+    /* 只有监听相关字段变了才重新 apply（理由同桌面命令：纯策略改动不该因端口被占而失败）。 */
+    let listener_changed = previous.enabled != config.enabled
+        || previous.bind_addr != config.bind_addr
+        || previous.port != config.port
+        || previous.allow_non_loopback != config.allow_non_loopback;
+    let addr = if listener_changed {
+        match crate::gateway_host::apply().await {
+            Ok(addr) => addr,
+            Err(error) => return json_err(error, StatusCode::BAD_REQUEST),
+        }
+    } else if config.enabled {
+        Some(format!("{}:{}", config.bind_addr, config.port))
+    } else {
+        None
     };
     json_ok(json!({
         "ok": true,
