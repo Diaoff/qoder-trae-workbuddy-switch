@@ -1648,6 +1648,10 @@ export interface CatalogModel {
   id: string;
   name: string;
   context_window: number;
+  /** 默认档（上游 `contextWindow.defaultLength`）；缺省 = 没有默认档。 */
+  context_window_default?: number | null;
+  /** 上限档（后端 `snapshot_view` 输出；与 `context_window` 在旧响应里同值）。 */
+  context_length_max?: number | null;
   max_tokens: number;
   supports_images: boolean;
   credits?: string | null;

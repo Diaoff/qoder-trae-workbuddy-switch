@@ -167,12 +167,17 @@ export function TraeModelList({
           // 上游状态：∈ 网关对外清单即可服务；清单未取到（null）时不谎称「不可用」。
           available: servableNames ? servableNames.has(model.name) : true,
           disabled: disabledSet.has(id),
-          context_window: active?.gatewayContexts?.[model.name] ?? null,
+          // 本地按开关选档：点开关立刻变，不等后端重取。
+          context_window: (() => {
+            const windows = active?.gatewayContexts?.[model.name];
+            if (!windows) return null;
+            return maxMode ? (windows.max ?? windows.dev) : windows.dev;
+          })(),
         });
       }
     }
     return out;
-  }, [data, servableNames, active, disabledSet, scope]);
+  }, [data, servableNames, active, disabledSet, scope, maxMode]);
 
   const { served, total } = servedCount(rows);
   const loaded = data?.source === "client-cache" && total > 0;

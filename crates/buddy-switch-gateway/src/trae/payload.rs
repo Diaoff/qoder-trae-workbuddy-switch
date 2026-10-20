@@ -166,13 +166,22 @@ fn max_mode_window(variant: Option<TraeVariant>, model: &str) -> Option<(i64, i6
 ///
 /// `max_mode` 是**说明字段**（OpenAI 兼容客户端会忽略未知字段）：
 /// `true` = 该模型支持 Max Mode（`context_length` 已按它自己的上限声明）。
-fn model_entry(id: &str, context_length: i64, max_mode: bool) -> Value {
+fn model_entry(
+    id: &str,
+    context_length: i64,
+    max_mode: bool,
+    default_window: Option<i64>,
+    max_window: Option<i64>,
+) -> Value {
     json!({
         "id": id,
         "object": "model",
         "created": 1_753_600_000,
         "owned_by": "trae",
         "context_length": context_length,
+        // 两档原值：管理面据此**本地即时**切换显示，不必等重新取数。
+        "context_length_default": default_window,
+        "context_length_max": max_window,
         "max_mode": max_mode,
     })
 }
@@ -345,23 +354,27 @@ fn models_response_from(
         if !allowed(name) {
             continue;
         }
-        let (context_length, max_mode_flag) = match max_mode_window(variant, name) {
-            // 开关开着才声明 max 并标 max_mode；关掉就按 dev（实际通道窗口）声明。
-            Some((_, max)) if max_mode => (max, true),
-            Some((dev, _)) => (dev, false),
-            None => {
-                let dev = variant
-                    .and_then(|variant| crate::trae::catalog::context_for(variant, name))
-                    .and_then(|(dev, _)| dev);
-                (
-                    dev.or(max_window)
-                        .or(default_window)
-                        .unwrap_or(DEFAULT_CONTEXT_LENGTH),
-                    false,
-                )
-            }
-        };
-        data.push(model_entry(name, context_length, max_mode_flag));
+        // 两档原值：目录优先，客户端清单兜底；`max` 只在确实大于 `dev` 时才算「有上限档」。
+        let catalog = variant.and_then(|variant| crate::trae::catalog::context_for(variant, name));
+        let dev = catalog
+            .and_then(|(dev, _)| dev)
+            .or(default_window)
+            .or(max_window)
+            .unwrap_or(DEFAULT_CONTEXT_LENGTH);
+        let max = catalog
+            .and_then(|(_, max)| max)
+            .filter(|max| *max > dev)
+            .or(max_window.filter(|max| *max > dev));
+        // 开关开着才声明 max 并标 max_mode；关掉就按 dev（实际通道窗口）声明。
+        let context_length = if max_mode { max.unwrap_or(dev) } else { dev };
+        let max_mode_flag = max_mode && max.is_some();
+        data.push(model_entry(
+            name,
+            context_length,
+            max_mode_flag,
+            Some(dev),
+            max,
+        ));
     }
     json!({ "object": "list", "data": data })
 }

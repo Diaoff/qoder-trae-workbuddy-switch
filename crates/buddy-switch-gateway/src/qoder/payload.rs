@@ -92,6 +92,9 @@ pub fn models_response(catalog: &[Value], disabled: &BTreeSet<String>, max_conte
                 // 与 WB / Trae 对齐：OpenAI 兼容客户端读 `context_length`。
                 // 开关开 ⇒ 上游最大档（如 1M）；关 ⇒ 默认档（如 200K）。
                 "context_length": selected_window(entry, max_context),
+                // 两档原值（前端本地即时切换用）。
+                "context_length_default": context_windows(entry).0,
+                "context_length_max": context_windows(entry).1,
             })
         })
         .collect();
@@ -138,6 +141,8 @@ pub fn admin_models_response(
                     .unwrap_or(Value::Bool(false)),
                 "max_input_tokens": entry.get("max_input_tokens").cloned(),
                 "context_length": selected_window(entry, max_context),
+                "context_length_default": context_windows(entry).0,
+                "context_length_max": context_windows(entry).1,
                 "disabled": crate::disabled_models::is_disabled_in(disabled, id),
             })
         })
@@ -260,6 +265,8 @@ mod tests {
 
         let max = models_response(&catalog, &BTreeSet::new(), true);
         assert_eq!(max["data"][0]["context_length"], 1_000_000);
+        assert_eq!(max["data"][0]["context_length_default"], 200_000);
+        assert_eq!(max["data"][0]["context_length_max"], 1_000_000);
         let lower = models_response(&catalog, &BTreeSet::new(), false);
         assert_eq!(lower["data"][0]["context_length"], 200_000);
 

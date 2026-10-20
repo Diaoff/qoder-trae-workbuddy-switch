@@ -91,9 +91,12 @@ export function QoderModelList({
         // Qoder 无「非可服务」概念：在清单里即可用（与 WB 同一判据，决策 #3）。
         available: true,
         disabled: disabledSet.has(model.id),
-        context_window: model.maxInputTokens,
+        // 本地按开关选档：点开关立即变，不等重新取数。
+        context_window: maxContext
+          ? (model.contextMax ?? model.maxInputTokens)
+          : (model.contextDefault ?? model.maxInputTokens),
       })),
-    [catalog, disabledSet, scope],
+    [catalog, disabledSet, scope, maxContext],
   );
   const { served, total } = servedCount(rows);
 

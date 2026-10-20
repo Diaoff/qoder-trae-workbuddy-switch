@@ -28,6 +28,9 @@ pub fn model_entry(model: &CatalogModel, max_context: bool) -> serde_json::Value
         "created": 0,
         "owned_by": "workbuddy",
         "context_length": window,
+        // 两档原值：前端据此本地即时切换，不必等重新取数。
+        "context_length_default": model.context_window_default,
+        "context_length_max": model.context_window,
         "context_window": window,
         "max_tokens": model.max_tokens,
         "supports_images": model.supports_images,
@@ -43,10 +46,20 @@ pub fn model_entry(model: &CatalogModel, max_context: bool) -> serde_json::Value
 /// 没有这一步，管理面会一直显示目录原始字段（上限档），开关在界面上看起来「没反应」。
 pub fn snapshot_view(snapshot: &CatalogSnapshot, max_context: bool) -> serde_json::Value {
     let mut snapshot = snapshot.clone();
+    // 先记上限档，再把 `context_window` 换成生效档 —— 前端要两档原值才能本地即时切换。
+    let maxes: Vec<u64> = snapshot.models.iter().map(|m| m.context_window).collect();
     for model in &mut snapshot.models {
         model.context_window = model.effective_window(max_context);
     }
-    serde_json::to_value(&snapshot).unwrap_or(serde_json::Value::Null)
+    let mut value = serde_json::to_value(&snapshot).unwrap_or(serde_json::Value::Null);
+    if let Some(rows) = value.get_mut("models").and_then(|v| v.as_array_mut()) {
+        for (row, max) in rows.iter_mut().zip(maxes) {
+            if let Some(object) = row.as_object_mut() {
+                object.insert("context_length_max".into(), serde_json::json!(max));
+            }
+        }
+    }
+    value
 }
 
 /// 模型列表处理器。

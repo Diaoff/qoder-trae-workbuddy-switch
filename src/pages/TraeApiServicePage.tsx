@@ -316,7 +316,8 @@ export default function TraeApiServicePage() {
       patchSnapshot({ status: normalizeTraeGatewayStatus(statusRaw) });
       // ★ 清单里的「上下文」是按 `/v1/models` 当前声明抓的 ⇒ **只有改开关**才需要重取
       //   （改端口/地址不必白跑一趟）；否则表格停在旧值，就是「点了、列表没变」。
-      if (next.maxMode !== undefined) await onRefreshModels();
+      // 表格已按开关本地选档，重取只用于对齐服务端计数/来源，**不阻塞交互**。
+      if (next.maxMode !== undefined) void onRefreshModels();
       toast.success(
         merged.enabled
           ? t("trae.stats.api.toast.savedStarted")
@@ -828,15 +829,20 @@ export default function TraeApiServicePage() {
  * 同上，但取 `id → context_length` 映射（`/v1/models` 已经按官方目录声明了每个模型**自己的**
  * 上限：`max > dev` 时是 max，否则是 dev）。表格的「上下文」列直接用这份数字。
  */
-function readModelContexts(raw: unknown): Record<string, number | null> | null {
+function readModelContexts(
+  raw: unknown,
+): Record<string, { dev: number | null; max: number | null }> | null {
   const record = (raw && typeof raw === "object" ? raw : {}) as Record<string, unknown>;
   if (!Array.isArray(record.data)) return null;
-  const out: Record<string, number | null> = {};
+  const out: Record<string, { dev: number | null; max: number | null }> = {};
   for (const item of record.data) {
     if (!item || typeof item !== "object") continue;
     const row = item as Record<string, unknown>;
     if (typeof row.id !== "string") continue;
-    out[row.id] = typeof row.context_length === "number" ? row.context_length : null;
+    const chosen = typeof row.context_length === "number" ? row.context_length : null;
+    const dev = typeof row.context_length_default === "number" ? row.context_length_default : chosen;
+    const max = typeof row.context_length_max === "number" ? row.context_length_max : null;
+    out[row.id] = { dev, max };
   }
   return out;
 }

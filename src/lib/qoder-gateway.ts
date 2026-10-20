@@ -136,6 +136,9 @@ export interface QoderGatewayModelRow {
   name: string;
   isReasoning: boolean;
   maxInputTokens: number | null;
+  /** 两档原值（上下文开关本地即时切换用）。 */
+  contextDefault: number | null;
+  contextMax: number | null;
   /** 后端现算的一份禁用标记（渲染以 store 为准；这里用于交叉校验与计数）。 */
   disabled: boolean;
 }
@@ -325,6 +328,9 @@ export function normalizeQoderGatewayCatalog(raw: unknown): QoderGatewayCatalog 
             isReasoning: asBoolean(pick(entry, "isReasoning", "is_reasoning")) ?? false,
             maxInputTokens:
               asNumber(pick(entry, "maxInputTokens", "max_input_tokens")) ?? null,
+            contextDefault:
+              asNumber(pick(entry, "contextDefault", "context_length_default")) ?? null,
+            contextMax: asNumber(pick(entry, "contextMax", "context_length_max")) ?? null,
             disabled: asBoolean(entry.disabled) ?? false,
           };
         })

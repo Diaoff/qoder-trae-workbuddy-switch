@@ -232,7 +232,7 @@ export default function QoderApiServicePage() {
       const statusRaw = await api.qoderGatewayStatus(scope);
       patchSnapshot({ status: normalizeQoderGatewayStatus(statusRaw) });
       // 清单数字按开关选档 ⇒ 只有改开关才重取（不强制打上游，见 `refetchCatalog`）。
-      if (next.maxContext !== undefined) await refetchCatalog();
+      if (next.maxContext !== undefined) void refetchCatalog();
       toast.success(
         merged.enabled
           ? t("qoder.gateway.savedStarted")

@@ -73,6 +73,11 @@ export function ModelList({ region, className }: { region: Region; className?: s
   const config = useGatewayStore((s) => s.config);
   const saveConfig = useGatewayStore((s) => s.saveConfig);
   const loadModels = useGatewayStore((s) => s.loadModels);
+  /**
+   * 开关的本地草案值：点击立刻生效（不等保存 / 回读）。
+   * 保存或浅读结束后清空，之后以 store 配置为准。
+   */
+  const [maxContextDraft, setMaxContextDraft] = useState<boolean | null>(null);
   /* 限流探测：与探测卡读**同一份**派生数据（`probe.cells` 实测 + `useProbePassive()` 被动底色）。 */
   const status = useGatewayStore((s) => s.status);
   const probe = useGatewayStore((s) => s.probe);
@@ -95,9 +100,12 @@ export function ModelList({ region, className }: { region: Region; className?: s
         // WB 无「非可服务」概念：在清单里即可用（决策 #3）。
         available: true,
         disabled: disabledSet.has(model.id),
-        context_window: model.context_window,
+        // 本地按开关选档（后端两档原值都在）：点开关立即变，不等重取。
+        context_window: (maxContextDraft ?? config.max_context)
+          ? (model.context_length_max ?? model.context_window)
+          : (model.context_window_default ?? model.context_window),
       })),
-    [snapshot, disabledSet, scope],
+    [snapshot, disabledSet, scope, config.max_context, maxContextDraft],
   );
   const { served, total } = servedCount(rows);
 
@@ -261,12 +269,17 @@ export function ModelList({ region, className }: { region: Region; className?: s
       {/* 无卡头 —— 分区名由左栏导航承担（与 Trae / Qoder 侧同口径）。
           版本也不在这里显示 / 切换：页头切换器是唯一入口。 */}
       <ContextSourceCard
-        checked={config.max_context}
+        checked={maxContextDraft ?? config.max_context}
         onChange={(checked) => {
+          setMaxContextDraft(checked);
           void (async () => {
-            await saveConfig({ ...config, max_context: checked });
-            // 清单数字按开关选档 ⇒ 保存后浅读一次（不强制打上游），表格才会跟着变。
-            await loadModels(region);
+            try {
+              await saveConfig({ ...config, max_context: checked });
+              // 清单数字按开关选档 ⇒ 保存后浅读一次（不强制打上游）。
+              await loadModels(region);
+            } finally {
+              setMaxContextDraft(null);
+            }
           })();
         }}
       />
