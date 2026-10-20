@@ -2585,7 +2585,13 @@ pub fn get_gateway_models(region: Option<String>) -> Value {
     let region = parse_region(region.as_deref());
     let state = gateway::shared_state();
     let snapshot = state.catalogs.current(region);
-    serde_json::to_value(snapshot).unwrap_or(Value::Null)
+    // 同步命令：拿不到配置读锁时按「上限」处理（与其它同步读取口同口径）。
+    let max_context = state
+        .config
+        .try_read()
+        .map(|config| config.max_context)
+        .unwrap_or(true);
+    buddy_switch_gateway::routes::models::snapshot_view(&snapshot, max_context)
 }
 
 /// POST /api/gateway/models/refresh —— 手动刷新目录（按 region）。

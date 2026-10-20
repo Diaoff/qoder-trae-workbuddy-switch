@@ -58,6 +58,17 @@ pub struct CatalogModel {
     pub free: bool,
 }
 
+impl CatalogModel {
+    /// 按策略选声明/使用的窗口：`true` ⇒ 上限档，`false` ⇒ 默认档（没有默认档回落到上限）。
+    pub fn effective_window(&self, max_context: bool) -> u64 {
+        if max_context {
+            self.context_window
+        } else {
+            self.context_window_default.unwrap_or(self.context_window)
+        }
+    }
+}
+
 /// 一次目录快照。
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct CatalogSnapshot {

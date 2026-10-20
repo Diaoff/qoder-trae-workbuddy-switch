@@ -8,7 +8,7 @@ use serde_json::json;
 use crate::disabled_models::is_disabled;
 use crate::routes::{authenticate, json_response, openai_error};
 use crate::state::GatewayState;
-use buddy_switch_core::modules::catalog::CatalogModel;
+use buddy_switch_core::modules::catalog::{CatalogModel, CatalogSnapshot};
 use buddy_switch_core::modules::product::scope_of_wb_region;
 
 /// 一条 WB 模型在 OpenAI `/v1/models` 里的形状（**唯一产出点**：独立网关与统一网关共用）。
@@ -35,6 +35,18 @@ pub fn model_entry(model: &CatalogModel, max_context: bool) -> serde_json::Value
         "badges": model.badges,
         "free": model.free,
     })
+}
+
+/// 管理面用的目录快照视图：把每个模型的 `context_window` 按开关换成**生效窗口**，
+/// 并补上 `context_length`（与网关出口 ① 同源同值）。
+///
+/// 没有这一步，管理面会一直显示目录原始字段（上限档），开关在界面上看起来「没反应」。
+pub fn snapshot_view(snapshot: &CatalogSnapshot, max_context: bool) -> serde_json::Value {
+    let mut snapshot = snapshot.clone();
+    for model in &mut snapshot.models {
+        model.context_window = model.effective_window(max_context);
+    }
+    serde_json::to_value(&snapshot).unwrap_or(serde_json::Value::Null)
 }
 
 /// 模型列表处理器。

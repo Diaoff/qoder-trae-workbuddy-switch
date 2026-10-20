@@ -2973,7 +2973,11 @@ async fn api_gateway_models(RawQuery(query): RawQuery) -> Response {
     let region = parse_region(query_value(query.as_deref(), "region").as_deref());
     let state = crate::gateway_host::shared_state();
     let snapshot = state.catalogs.current(region);
-    json_ok(serde_json::to_value(snapshot).unwrap_or(Value::Null))
+    let max_context = state.config.read().await.max_context;
+    json_ok(buddy_switch_gateway::routes::models::snapshot_view(
+        &snapshot,
+        max_context,
+    ))
 }
 
 async fn api_gateway_refresh_models(Json(body): Json<Value>) -> Response {
