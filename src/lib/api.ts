@@ -1801,8 +1801,11 @@ export async function saveGatewayConfig(config: GatewayConfig): Promise<GatewayC
   /* 命令面回的是 `{ ok, config, running, addr }`（桌面与 web 同形）。
      ★ 以前直接把整包喂给 `normalizeGatewayConfig` ⇒ 读不到字段、全部回落默认值，
      表现为「保存后开关又弹回默认」（如 `max_context` 的默认 true）。 */
-  const inner = (raw?.config ?? raw) as unknown;
-  return inner as GatewayConfig;
+  const inner = raw?.config;
+  if (inner && typeof inner === "object") return inner as GatewayConfig;
+  /* 兼容异常形状：万一宿主没带 `config`，以**提交值**为准，绝不回落到默认配置
+     （否则会出现「保存成功但开关被重置」这种假故障）。 */
+  return (raw && "enabled" in raw ? raw : config) as GatewayConfig;
 }
 
 export function gatewayStatus(): Promise<GatewayStatus> {
