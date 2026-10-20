@@ -1,7 +1,7 @@
 {
   "name": "buddy-switch-rust",
   "private": true,
-  "version": "2026.10.201625",
+  "version": "2026.10.201725",
   "type": "module",
   "scripts": {
     "dev": "vite",
