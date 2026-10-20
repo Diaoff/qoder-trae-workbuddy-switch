@@ -2310,9 +2310,9 @@ pub async fn save_gateway_config(app: tauri::AppHandle, config: Value) -> Result
     state.log.set_keep(parsed.log_keep);
     state.log.set_log_bodies(parsed.log_bodies);
 
-    /* ★ 只有「监听相关」字段变了才重新 apply。
-    纯策略改动（如 `max_context`）重启监听毫无意义，而在多实例 / 端口被占时
-    重启会失败并让整次保存报错 —— 前端就会把开关回滚，表现为「点了没反应」。 */
+    // ★ 只有「监听相关」字段变了才重新 apply。
+    //   纯策略改动（如 `max_context`）重启监听毫无意义，而在多实例 / 端口被占时
+    //   重启会失败并让整次保存报错 —— 前端就会把开关回滚，表现为「点了没反应」。
     let listener_changed = previous.enabled != parsed.enabled
         || previous.bind_addr != parsed.bind_addr
         || previous.port != parsed.port

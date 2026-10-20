@@ -2756,7 +2756,7 @@ async fn api_save_gateway_config(Json(body): Json<Value>) -> Response {
     *state.config.write().await = config.clone();
     state.log.set_keep(config.log_keep);
     state.log.set_log_bodies(config.log_bodies);
-    /* 只有监听相关字段变了才重新 apply（理由同桌面命令：纯策略改动不该因端口被占而失败）。 */
+    // 只有监听相关字段变了才重新 apply（理由同桌面命令：纯策略改动不该因端口被占而失败）。
     let listener_changed = previous.enabled != config.enabled
         || previous.bind_addr != config.bind_addr
         || previous.port != config.port
