@@ -22,8 +22,8 @@ use buddy_switch_core::modules::{
     region::Region, region::RegionFilter, rotate, schedule, scheduler, session, skill, switch,
     token_daily, token_stats, trae, travel, update, vscode_session,
 };
-use buddy_switch_gateway::GatewayProduct;
 use buddy_switch_gateway::unified::UnifiedGatewayConfig;
+use buddy_switch_gateway::GatewayProduct;
 use buddy_switch_gateway::{GatewayConfig, GatewayStatusView};
 
 // P9 · 悬浮窗**只读**数据模型 + provider（core）；两宿主同源。
@@ -3848,9 +3848,7 @@ async fn api_trae_gateway_models(RawQuery(query): RawQuery) -> Response {
     buddy_switch_gateway::trae::catalog::ensure_fresh(variant).await;
     let max_mode = buddy_switch_gateway::trae::TraeGateway::shared_state().max_mode_now();
     json_ok(buddy_switch_gateway::trae::payload::models_response_for(
-        variant,
-        &disabled,
-        max_mode,
+        variant, &disabled, max_mode,
     ))
 }
 
