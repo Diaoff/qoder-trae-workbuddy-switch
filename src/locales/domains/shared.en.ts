@@ -81,7 +81,7 @@ export const en = {
   "shared.gateway.models.colModel": "Model",
   "shared.gateway.models.colContext": "Context",
   "shared.gateway.models.contextTitle": "Context limit",
-  "shared.gateway.models.contextFixedDesc": "WorkBuddy / Qoder have no request-level Max Mode: the model list always advertises each model's own catalog limit, so clients can use it as-is.",
+  "shared.gateway.models.contextFixedDesc": "On: lists and requests use the upstream maximum window (e.g. 1M). Off: fall back to the default window (e.g. 300k). Numbers come from the official catalog.",
   "shared.gateway.models.contextFromCatalog": "From catalog",
   "shared.gateway.models.colUpstream": "Upstream",
   "shared.gateway.models.colExposed": "Gateway exposure",

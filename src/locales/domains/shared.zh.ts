@@ -102,7 +102,7 @@ export const zh = {
   "shared.gateway.models.colModel": "模型",
   "shared.gateway.models.colContext": "上下文",
   "shared.gateway.models.contextTitle": "上下文上限",
-  "shared.gateway.models.contextFixedDesc": "WorkBuddy / Qoder 没有请求级 Max Mode：清单始终按官方目录声明每个模型自己的上下文上限，客户端直接用即可。",
+  "shared.gateway.models.contextFixedDesc": "开启：清单与请求使用上游的上限窗口（如 1M）；关闭：回到默认窗口（如 300k）。数字来自官方目录，不是写死的 1M。",
   "shared.gateway.models.contextFromCatalog": "按目录声明",
   "shared.gateway.models.colUpstream": "上游状态",
   "shared.gateway.models.colExposed": "网关暴露",

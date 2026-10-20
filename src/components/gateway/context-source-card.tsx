@@ -20,12 +20,17 @@ export function ContextSourceCard({
   checked,
   disabled,
   onChange,
+  title,
+  description,
 }: {
   className?: string;
   /** 传入即渲染开关（默认 true = 使用上限）。 */
   checked?: boolean;
   disabled?: boolean;
   onChange?: (checked: boolean) => void;
+  /** 标题 / 描述覆盖（Trae 的开关叫 Max Mode，文案不同）。 */
+  title?: string;
+  description?: string;
 }) {
   const t = useT();
   return (
@@ -37,9 +42,11 @@ export function ContextSourceCard({
     >
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
-          <div className="text-sm font-medium">{t("shared.gateway.models.contextTitle")}</div>
+          <div className="text-sm font-medium">
+            {title ?? t("shared.gateway.models.contextTitle")}
+          </div>
           <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
-            {t("shared.gateway.models.contextFixedDesc")}
+            {description ?? t("shared.gateway.models.contextFixedDesc")}
           </p>
         </div>
         {onChange ? (

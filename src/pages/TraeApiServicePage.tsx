@@ -615,25 +615,6 @@ export default function TraeApiServicePage() {
                       属「接入信息」而不是「服务开关」）。 */}
                 </div>
 
-                {/* ★ Max Mode：与原型同一个交互 —— 关闭后清单只声明 dev（实际通道窗口），
-                    请求不再注入 is_max_mode。默认开启。 */}
-                <div className="flex items-center justify-between gap-3 border-t border-border/60 px-5 py-4">
-                  <div className="min-w-0">
-                    <div className="text-sm font-medium">
-                      {t("trae.stats.api.gateway.maxMode")}
-                    </div>
-                    <p className="mt-1 text-xs text-muted-foreground">
-                      {t("trae.stats.api.gateway.maxModeDesc")}
-                    </p>
-                  </div>
-                  <Switch
-                    checked={config.maxMode}
-                    disabled={saving}
-                    onCheckedChange={(checked) => void persist({ maxMode: checked })}
-                    aria-label={t("trae.stats.api.gateway.maxMode")}
-                  />
-                </div>
-
                 <div className="flex flex-wrap items-center gap-2 border-t border-border/60 px-5 py-3 text-xs text-muted-foreground">
                   {t("trae.stats.api.gateway.noteLead")}
                   <code className="font-mono">/v1/chat/completions</code>
@@ -756,6 +737,8 @@ export default function TraeApiServicePage() {
                 defaultModel={config.defaultModel}
                 refreshing={refreshingModels}
                 onRefresh={() => onRefreshModels()}
+                maxMode={config.maxMode}
+                onToggleMaxMode={(checked) => void persist({ maxMode: checked })}
               />
             </>
           )}
