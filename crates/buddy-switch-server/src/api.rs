@@ -5329,6 +5329,7 @@ mod tests {
                 "pool",
                 "allow_model_region_prefix",
                 "max_body_mb",
+                "max_context",
             ])
         );
 
