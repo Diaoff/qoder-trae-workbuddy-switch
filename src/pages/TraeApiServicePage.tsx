@@ -304,19 +304,26 @@ export default function TraeApiServicePage() {
 
   async function persist(next: Partial<TraeGatewayConfig>) {
     const merged = { ...config, ...next };
+    // 乐观更新：开关立刻跟手，失败再回滚 —— 本地保存很快，但「点了没反应」的体感
+    // 通常就是等 IO 这段。注意主流程仍以服务端返回为准（下面 `loadAll` 会重读）。
+    const previous = config;
+    patchSnapshot({ config: merged });
     setSaving(true);
     try {
       await api.saveTraeGatewayConfig(toTraeGatewayConfigRaw(merged));
-      patchSnapshot({ config: merged });
       // 保存会启动/重启监听，状态要重读（仍按当前产品线）。
       const statusRaw = await api.getTraeGatewayStatus(variant);
       patchSnapshot({ status: normalizeTraeGatewayStatus(statusRaw) });
+      // ★ 清单里的「上下文」是按 `/v1/models` 当前声明抓的 ⇒ **只有改开关**才需要重取
+      //   （改端口/地址不必白跑一趟）；否则表格停在旧值，就是「点了、列表没变」。
+      if (next.maxMode !== undefined) await onRefreshModels();
       toast.success(
         merged.enabled
           ? t("trae.stats.api.toast.savedStarted")
           : t("trae.stats.api.toast.savedDisabled"),
       );
     } catch (e) {
+      patchSnapshot({ config: previous });
       toast.error(t("trae.stats.api.toast.saveFailed"), { description: api.asError(e) });
     } finally {
       setSaving(false);

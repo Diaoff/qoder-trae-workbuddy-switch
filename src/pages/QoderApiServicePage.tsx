@@ -222,19 +222,24 @@ export default function QoderApiServicePage() {
 
   async function persist(next: Partial<QoderGatewayConfig>) {
     const merged = { ...config, ...next };
+    // 乐观更新（与 Trae 同口径）：开关立刻跟手，失败回滚。
+    const previous = config;
+    patchSnapshot({ config: merged });
     setSaving(true);
     try {
       await api.saveQoderGatewayConfig(toQoderGatewayConfigRaw(merged));
-      patchSnapshot({ config: merged });
       // 保存会启动 / 重启监听，状态要重读（仍按当前作用域）。
       const statusRaw = await api.qoderGatewayStatus(scope);
       patchSnapshot({ status: normalizeQoderGatewayStatus(statusRaw) });
+      // 清单数字按开关选档 ⇒ 只有改开关才重取（改端口/地址不必白跑）。
+      if (next.maxContext !== undefined) await onRefreshModels();
       toast.success(
         merged.enabled
           ? t("qoder.gateway.savedStarted")
           : t("qoder.gateway.savedDisabled"),
       );
     } catch (e) {
+      patchSnapshot({ config: previous });
       toast.error(t("qoder.gateway.saveFailed"), { description: api.asError(e) });
     } finally {
       setSaving(false);

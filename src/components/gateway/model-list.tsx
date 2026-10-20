@@ -261,7 +261,13 @@ export function ModelList({ region, className }: { region: Region; className?: s
           版本也不在这里显示 / 切换：页头切换器是唯一入口。 */}
       <ContextSourceCard
         checked={config.max_context}
-        onChange={(checked) => void saveConfig({ ...config, max_context: checked })}
+        onChange={(checked) => {
+          void (async () => {
+            await saveConfig({ ...config, max_context: checked });
+            // 清单数字按开关选档 ⇒ 保存后重新识别，否则表格停在旧窗口。
+            await onRescan();
+          })();
+        }}
       />
       <CatalogSourceBar
         view={view}
