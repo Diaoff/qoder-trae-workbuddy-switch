@@ -64,11 +64,7 @@ pub fn allowed_tool_names(parsed: &Value) -> Option<HashSet<String>> {
 }
 
 /// `/v1/models` 响应：清单元数据 + **禁用过滤**（`disabled` 是该区域作用域的集合）。
-pub fn models_response(
-    catalog: &[Value],
-    disabled: &BTreeSet<String>,
-    max_context: bool,
-) -> Value {
+pub fn models_response(catalog: &[Value], disabled: &BTreeSet<String>, max_context: bool) -> Value {
     let data: Vec<Value> = catalog
         .iter()
         .filter(|entry| {
@@ -267,8 +263,14 @@ mod tests {
         let lower = models_response(&catalog, &BTreeSet::new(), false);
         assert_eq!(lower["data"][0]["context_length"], 200_000);
 
-        assert_eq!(meta_for(&catalog, "qmodel_38max", true).max_input_tokens, 1_000_000);
-        assert_eq!(meta_for(&catalog, "qmodel_38max", false).max_input_tokens, 200_000);
+        assert_eq!(
+            meta_for(&catalog, "qmodel_38max", true).max_input_tokens,
+            1_000_000
+        );
+        assert_eq!(
+            meta_for(&catalog, "qmodel_38max", false).max_input_tokens,
+            200_000
+        );
     }
 
     /// 没有 `context_config` 的老条目 ⇒ 用 `max_input_tokens` 单档，开关不改变结果。

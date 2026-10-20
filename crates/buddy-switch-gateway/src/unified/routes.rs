@@ -663,8 +663,7 @@ async fn collect_namespace_models(
                         )
                     })
                     .map(|model| {
-                        let mut entry =
-                            crate::routes::models::model_entry(model, wb_max_context);
+                        let mut entry = crate::routes::models::model_entry(model, wb_max_context);
                         if let Some(object) = entry.as_object_mut() {
                             object.insert("namespace".into(), json!(spec.id));
                         }
@@ -726,16 +725,15 @@ async fn collect_namespace_models(
                 let scope = buddy_switch_core::modules::product::scope_of_qoder_region(region);
                 let disabled_store = crate::disabled_models::shared();
                 let disabled = disabled_store.read().await;
-                let models =
-                    crate::qoder::payload::models_response(
-                        &catalog.models,
-                        disabled.get(scope),
-                        qoder.max_context_now(),
-                    )
-                        .get("data")
-                        .and_then(|data| data.as_array())
-                        .cloned()
-                        .unwrap_or_default();
+                let models = crate::qoder::payload::models_response(
+                    &catalog.models,
+                    disabled.get(scope),
+                    qoder.max_context_now(),
+                )
+                .get("data")
+                .and_then(|data| data.as_array())
+                .cloned()
+                .unwrap_or_default();
                 drop(disabled);
                 NamespaceModels {
                     namespace: spec.id,

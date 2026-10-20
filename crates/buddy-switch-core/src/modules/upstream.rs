@@ -1223,8 +1223,9 @@ mod tests {
         assert!(!models[1].supports_images);
     }
 
+    /// ★ 国际版也要区分两档：`maxInputTokens` 是**上限**、`contextWindow.defaultLength` 是**默认**。
     #[test]
-    fn parse_model_catalog_reads_billing_and_international_window() {
+    fn parse_model_catalog_reads_billing_and_both_windows() {
         let data = json!({
             "agents": [{"name": "cli", "models": ["m"]}],
             "models": [{
@@ -1234,13 +1235,33 @@ mod tests {
                 "maxOutputTokens": 100,
                 "credits": "x0.00",
                 "tags": ["badge:限时免费:#FF0000", "other"],
-                "contextWindow": {"defaultLength": 2000, "supportedLengths": [1000, 2000]}
+                "contextWindow": {"defaultLength": 500, "supportedLengths": [500, 1000]}
             }]
         });
         let models = parse_model_catalog(&data, true).unwrap();
-        assert_eq!(models[0].context_window, 2000);
+        assert_eq!(models[0].context_window, 1000, "上限档取 maxInputTokens");
+        assert_eq!(
+            models[0].context_window_default,
+            Some(500),
+            "默认档取 defaultLength"
+        );
         assert!(models[0].free);
         assert_eq!(models[0].badges, vec!["限时免费".to_string()]);
+    }
+
+    /// 默认档不小于上限（脏数据）⇒ 不认默认档，避免出现「默认 > 上限」。
+    #[test]
+    fn parse_model_catalog_ignores_inverted_default_window() {
+        let data = json!({
+            "agents": [{"name": "cli", "models": ["m"]}],
+            "models": [{
+                "id": "m", "maxInputTokens": 1000, "maxOutputTokens": 100,
+                "contextWindow": {"defaultLength": 2000}
+            }]
+        });
+        let models = parse_model_catalog(&data, true).unwrap();
+        assert_eq!(models[0].context_window, 1000);
+        assert_eq!(models[0].context_window_default, None);
     }
 
     #[test]
