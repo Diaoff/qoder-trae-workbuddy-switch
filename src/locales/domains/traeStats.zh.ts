@@ -118,6 +118,8 @@ export const zh = {
   "trae.stats.api.gateway.stopped": "已停止",
   "trae.stats.api.gateway.openDataDir": "打开数据目录",
   "trae.stats.api.gateway.noteLead": "默认端口 57894，与 WorkBuddy 网关（57891）错开——两者都占用 ",
+  "trae.stats.api.gateway.maxMode": "Max Mode（按各模型上限）",
+  "trae.stats.api.gateway.maxModeDesc": "对支持 Max Mode 的模型注入 is_max_mode，清单按各模型自己的上限声明（不是统一 1M）；关闭后回到 __dev 通道的默认窗口。",
   "trae.stats.api.gateway.noteTail": "。",
   "trae.stats.api.gateway.lanWarning": "局域网模式下，同网段任何设备拿到 Key 都能消耗你的 Trae 积分。",
   "trae.stats.api.gateway.lastError": "最近一次错误",

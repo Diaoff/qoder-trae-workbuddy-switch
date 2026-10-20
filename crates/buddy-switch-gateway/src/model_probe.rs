@@ -499,7 +499,7 @@ impl ProbeTarget {
                         .map(str::to_string)
                 })
                 .collect(),
-            ProbeTarget::Trae(_, variant) => {
+            ProbeTarget::Trae(state, variant) => {
                 // 按**变体**读客户端（上游下发）清单 —— 所有账号共用同一份 ⇒ **全行同列**
                 // （方案 §1.1 的坑）。复用网关 `/v1/models` 的同一份选择逻辑
                 // （`models_response_for`：只取该变体 `function` 真能调的模型；客户端缓存
@@ -509,10 +509,12 @@ impl ProbeTarget {
                 // ⚠️ 读客户端 `state.vscdb` 是**同步阻塞** IO（网关 `/v1/models` 同样走
                 // `spawn_blocking`）⇒ 这里也搬进阻塞线程池，别卡住异步运行时。
                 let variant = *variant;
+                let max_mode = state.max_mode_now();
                 tokio::task::spawn_blocking(move || {
                     let body = trae_payload::models_response_for(
                         variant,
                         &std::collections::BTreeSet::new(),
+                        max_mode,
                     );
                     body.get("data")
                         .and_then(Value::as_array)

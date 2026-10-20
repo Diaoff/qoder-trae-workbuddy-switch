@@ -2685,7 +2685,8 @@ check("★ P11 Trae 出口① 按**该作用域**的禁用集合过滤（串了�
       "Trae 出口① 未按 `scope_of_trae_region(variant.region())` 取禁用集合（可能串了作用域）",
     );
   }
-  if (!/models_response_for\(\s*variant\s*,\s*&disabled\s*\)/.test(routes)) {
+  // 2026-10-20：签名多了 `max_mode`（前端开关），但**禁用集合必须是第二个实参**这一点不变。
+  if (!/models_response_for\(\s*variant\s*,\s*&disabled\s*(?:,\s*[^)]*)?\)/.test(routes)) {
     throw new Error("Trae 出口① 未把该作用域的禁用集合传给 `models_response_for`");
   }
   return "scope_of_trae_region → models_response_for(&disabled)";

@@ -37,6 +37,8 @@ export const DEFAULT_TRAE_GATEWAY_CONFIG: TraeGatewayConfig = {
   stickyTtlMs: 30 * 60 * 1000,
   // 抓取旁路默认关（会原样落盘对话正文，属敏感内容）。
   captureEnabled: false,
+  // Max Mode 默认开（与 Rust `TraeGatewayConfig::default` 同值）。
+  maxMode: true,
 };
 
 function asString(value: unknown): string | undefined {
@@ -92,6 +94,8 @@ export function normalizeTraeGatewayConfig(raw: unknown): TraeGatewayConfig {
     captureEnabled:
       asBoolean(read("captureEnabled", "capture_enabled")) ??
       DEFAULT_TRAE_GATEWAY_CONFIG.captureEnabled,
+    maxMode:
+      asBoolean(read("maxMode", "max_mode")) ?? DEFAULT_TRAE_GATEWAY_CONFIG.maxMode,
   };
 }
 
@@ -116,6 +120,7 @@ export function toTraeGatewayConfigRaw(config: TraeGatewayConfig): TraeGatewayCo
     sticky_ttl_ms: config.stickyTtlMs,
     // ★ 必须写回：保存是整份覆盖，缺键 = 抓取被静默关闭（见 `captureEnabled` 注释）。
     capture_enabled: config.captureEnabled,
+    max_mode: config.maxMode,
   };
 }
 

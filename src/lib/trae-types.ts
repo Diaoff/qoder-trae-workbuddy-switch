@@ -816,6 +816,8 @@ export interface TraeGatewayConfigRaw {
    * 漏带这一格会让用户手开的抓取在任意一次「保存」后被**静默关掉**。
    */
   capture_enabled: boolean;
+  /** Max Mode：对「目录里 max > dev」的模型注入 is_max_mode（默认 true）。 */
+  max_mode: boolean;
 }
 
 /** 归一化后的网关配置（前端统一用 camelCase）。 */
@@ -835,6 +837,8 @@ export interface TraeGatewayConfig {
   stickyTtlMs: number;
   /** 对话转发抓取开关（诊断旁路；无界面开关，只在配置里往返，默认 `false`）。 */
   captureEnabled: boolean;
+  /** Max Mode：按官方目录逐模型注入 `is_max_mode`（默认开启）。 */
+  maxMode: boolean;
 }
 
 /** 账号池摘要（`pool` 字段）。 */

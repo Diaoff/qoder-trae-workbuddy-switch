@@ -242,6 +242,13 @@ pub struct TraeGatewayConfig {
     /// 漏了这一步的后果不是报错，而是「用户以为还开着、其实已被静默关掉」。
     #[serde(alias = "captureEnabled")]
     pub capture_enabled: bool,
+    /// **Max Mode**：对「官方目录里 `max > dev`」的模型注入 `is_max_mode`，并在
+    /// `/v1/models` 声明它自己的上限（逐模型，**不是统一 1M**）。默认 `true`。
+    ///
+    /// 关闭后：清单只声明 `dev`（`__dev` 通道实际窗口），请求不再注入 —— 用于
+    /// 「Max Mode 万一加价 / 拖慢，先按默认窗口用」的场景。与原型里的开关同义。
+    #[serde(alias = "maxMode")]
+    pub max_mode: bool,
 }
 
 impl Default for TraeGatewayConfig {
@@ -259,6 +266,7 @@ impl Default for TraeGatewayConfig {
             preferred_uid: String::new(),
             sticky_ttl_ms: 30 * 60 * 1000,
             capture_enabled: false,
+            max_mode: true,
         }
     }
 }
@@ -410,6 +418,17 @@ impl TraeGatewayState {
     /// 读取配置快照。
     pub async fn config_snapshot(&self) -> TraeGatewayConfig {
         self.config.read().await.clone()
+    }
+
+    /// Max Mode 当前是否开启（**同步**，供 `/v1/models` 与出站注入使用）。
+    ///
+    /// 用 `try_read`：这两条路径都不是 async 上下文里的「配置主流程」，拿不到读锁时
+    /// 按**开启**处理（宁可多注入一次、也不要因为一次瞬时锁竞争静默把 1M 关掉）。
+    pub fn max_mode_now(&self) -> bool {
+        self.config
+            .try_read()
+            .map(|config| config.max_mode)
+            .unwrap_or(true)
     }
 
     /// 查询会话粘性绑定（已过期视为无绑定）。
@@ -859,6 +878,7 @@ mod tests {
             "preferred_uid",
             "sticky_ttl_ms",
             "capture_enabled",
+            "max_mode",
         ]
         .into_iter()
         .collect();
@@ -869,6 +889,7 @@ mod tests {
     fn config_defaults_are_loopback_and_off_by_default() {
         let config = TraeGatewayConfig::default();
         assert!(!config.enabled, "默认不得自动开始监听");
+        assert!(config.max_mode, "Max Mode 默认开启（逐模型按目录上限）");
         assert_eq!(config.bind_addr, "127.0.0.1");
         assert!(!config.allow_non_loopback);
         assert_eq!(config.port, TRAE_DEFAULT_API_PORT);

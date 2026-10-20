@@ -188,6 +188,7 @@ pub fn models_response() -> Value {
             .collect::<Vec<_>>(),
         None,
         None,
+        true,
     )
 }
 
@@ -195,6 +196,7 @@ pub fn models_response() -> Value {
 pub fn models_response_filtered(
     disabled: &BTreeSet<String>,
     variant: Option<TraeVariant>,
+    max_mode: bool,
 ) -> Value {
     models_response_from(
         MODEL_NAMES
@@ -203,6 +205,7 @@ pub fn models_response_filtered(
             .collect::<Vec<_>>(),
         Some(disabled),
         variant,
+        max_mode,
     )
 }
 
@@ -242,16 +245,21 @@ pub fn models_response_filtered(
 /// 支持 Max Mode 的模型只有**一条**记录，`context_length` 直接声明 1M（或上游
 /// `context_window_size.max`）。不再有 `<模型>-max`，因此禁用 / 粘性 / 冷却 / 探测
 /// 都回归「一个模型一个名字」，不需要按基名特判。
-pub fn models_response_for(variant: TraeVariant, disabled: &BTreeSet<String>) -> Value {
+pub fn models_response_for(
+    variant: TraeVariant,
+    disabled: &BTreeSet<String>,
+    max_mode: bool,
+) -> Value {
     let list = buddy_switch_core::modules::trae::model_list::read_client_model_list(variant);
     if list.groups.is_empty() {
-        return models_response_filtered(disabled, Some(variant));
+        return models_response_filtered(disabled, Some(variant), max_mode);
     }
 
     models_response_from(
         servable_entries(&list, variant),
         Some(disabled),
         Some(variant),
+        max_mode,
     )
 }
 
@@ -328,6 +336,7 @@ fn models_response_from(
     entries: Vec<(&str, Option<i64>, Option<i64>)>,
     disabled: Option<&BTreeSet<String>>,
     variant: Option<TraeVariant>,
+    max_mode: bool,
 ) -> Value {
     let allowed =
         |name: &str| disabled.is_none_or(|set| !crate::disabled_models::is_disabled_in(set, name));
@@ -336,8 +345,10 @@ fn models_response_from(
         if !allowed(name) {
             continue;
         }
-        let (context_length, max_mode) = match max_mode_window(variant, name) {
-            Some((_, max)) => (max, true),
+        let (context_length, max_mode_flag) = match max_mode_window(variant, name) {
+            // 开关开着才声明 max 并标 max_mode；关掉就按 dev（实际通道窗口）声明。
+            Some((_, max)) if max_mode => (max, true),
+            Some((dev, _)) => (dev, false),
             None => {
                 let dev = variant
                     .and_then(|variant| crate::trae::catalog::context_for(variant, name))
@@ -350,7 +361,7 @@ fn models_response_from(
                 )
             }
         };
-        data.push(model_entry(name, context_length, max_mode));
+        data.push(model_entry(name, context_length, max_mode_flag));
     }
     json!({ "object": "list", "data": data })
 }
@@ -502,6 +513,7 @@ pub fn prepare_llm_chat_body(
     uid: &str,
     device_id: &str,
     machine_id: &str,
+    max_mode: bool,
 ) -> Vec<u8> {
     let mut body: Value = match serde_json::from_slice(src) {
         Ok(value) => value,
@@ -525,7 +537,7 @@ pub fn prepare_llm_chat_body(
     // ★ Max Mode（issue #53 三版）：策略层开关，**不是**模型名的一部分。
     //   是否注入取决于**官方目录**里该模型的 `max > dev`（逐模型，不写死 1M）；
     //   模型名原样派生 `config_name` / `model_name`。
-    let max_mode = max_mode_window(Some(variant), &model).is_some();
+    let max_mode = max_mode && max_mode_window(Some(variant), &model).is_some();
     let (config_name, model_name) = model_config(&model);
 
     // 固定字段：覆盖客户端可能传来的同名值（上游只认这一套）。
@@ -719,6 +731,7 @@ mod tests {
             "u1",
             "dev1",
             "mach1",
+            true,
         );
         serde_json::from_slice(&out).expect("output must stay valid JSON")
     }
@@ -855,6 +868,7 @@ mod tests {
                 uid,
                 "dev1",
                 "mach1",
+                true,
             ))
             .unwrap()
         };
@@ -1053,13 +1067,13 @@ mod tests {
     fn invalid_json_is_passed_through_untouched() {
         let raw = b"not json at all";
         assert_eq!(
-            prepare_llm_chat_body(raw, TraeVariant::TraeWork, "m", "u", "d", "m"),
+            prepare_llm_chat_body(raw, TraeVariant::TraeWork, "m", "u", "d", "m", true),
             raw.to_vec()
         );
         // 合法 JSON 但不是对象，同样原样返回。
         let array = b"[1,2,3]";
         assert_eq!(
-            prepare_llm_chat_body(array, TraeVariant::TraeWork, "m", "u", "d", "m"),
+            prepare_llm_chat_body(array, TraeVariant::TraeWork, "m", "u", "d", "m", true),
             array.to_vec()
         );
     }
@@ -1147,6 +1161,7 @@ mod tests {
             vec![("a", Some(256_000), None), ("b", None, None)],
             None,
             None,
+            true,
         );
         let data = response["data"].as_array().unwrap();
 
@@ -1186,6 +1201,7 @@ mod tests {
             ],
             None,
             Some(TraeVariant::TraeWork),
+            true,
         );
         let data = body["data"].as_array().unwrap();
         assert_eq!(data[0]["context_length"], 1_000_000, "glm-5.3 上限 1M");
@@ -1207,6 +1223,50 @@ mod tests {
         assert_eq!(data[3]["max_mode"], false);
     }
 
+    /// ★★ 护栏：Max Mode **关掉**时按 `dev` 声明、且不注入 —— 开关必须两端一致。
+    ///
+    /// 反例（改坏会红）：只改清单不改注入（或反之）⇒ 用户「关了开关，请求里还在发
+    /// is_max_mode」，或者「声明 200k、实际仍按 1M 花额度」。
+    #[test]
+    fn max_mode_switch_off_declares_dev_and_skips_injection() {
+        catalog::install_for_test(
+            TraeVariant::GlobalTraeCode,
+            vec![("glm-5.3", Some(200_000), Some(1_000_000))],
+        );
+        let entries = vec![("glm-5.3", Some(200_000), None)];
+
+        let off = models_response_from(
+            entries.clone(),
+            None,
+            Some(TraeVariant::GlobalTraeCode),
+            false,
+        );
+        assert_eq!(off["data"][0]["context_length"], 200_000, "关闭时声明 dev");
+        assert_eq!(off["data"][0]["max_mode"], false);
+
+        let on = models_response_from(entries, None, Some(TraeVariant::GlobalTraeCode), true);
+        assert_eq!(on["data"][0]["context_length"], 1_000_000, "开启时声明 max");
+        assert_eq!(on["data"][0]["max_mode"], true);
+
+        let prepare = |max_mode: bool| -> Value {
+            let converted = prepare_llm_chat_body(
+                br#"{"model":"glm-5.3","messages":[{"role":"user","content":"hi"}]}"#,
+                TraeVariant::GlobalTraeCode,
+                "default",
+                "uid",
+                "device",
+                "machine",
+                max_mode,
+            );
+            serde_json::from_slice(&converted).expect("合法 JSON")
+        };
+        assert!(prepare(true).get("is_max_mode").is_some(), "开启时必须注入");
+        assert!(
+            prepare(false).get("is_max_mode").is_none(),
+            "关闭时不得注入 is_max_mode"
+        );
+    }
+
     /// 禁用过滤：被禁用的模型整条消失。
     #[test]
     fn disabled_models_are_filtered_out() {
@@ -1216,6 +1276,7 @@ mod tests {
             vec![("glm-5.3", None, None), ("kimi-k3", None, None)],
             Some(&disabled),
             None,
+            true,
         );
         let ids: Vec<&str> = body["data"]
             .as_array()
@@ -1247,6 +1308,7 @@ mod tests {
                 "uid",
                 "device",
                 "machine",
+                true,
             );
             serde_json::from_slice(&converted).expect("合法 JSON")
         };
@@ -1358,6 +1420,7 @@ mod tests {
             "u1",
             "dev1",
             "mach1",
+            true,
         ))
         .unwrap();
 

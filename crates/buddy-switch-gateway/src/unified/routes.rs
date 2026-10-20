@@ -14,6 +14,7 @@
 //! 未挂的业务端点（`/v1/chat/completions` / `/v1/messages` / `/v1/responses` / `/biz/*path`）
 //! 要等 P3 抽 `pub(crate) relay_*` —— 见 `docs/specs/UNIFIED-GATEWAY-ARCH.md` §7。
 
+use crate::GatewayProduct;
 use axum::body::Bytes;
 use axum::extract::{Path, State};
 use axum::http::{header, HeaderMap, StatusCode};
@@ -690,11 +691,13 @@ async fn collect_namespace_models(
                     buddy_switch_core::modules::trae::model_list::read_client_model_list(variant);
                 // 客户端拉过清单 ⇒ 视作「实时」（它的新鲜度 = 客户端最后一次刷新）
                 let from_client = !list.groups.is_empty();
+                let max_mode = crate::trae::TraeGateway::shared_state().max_mode_now();
                 let models = crate::trae::payload::models_response_for(
                     variant,
                     trae_disabled.get(buddy_switch_core::modules::product::scope_of_trae_region(
                         variant.region(),
                     )),
+                    max_mode,
                 )
                 .get("data")
                 .and_then(|data| data.as_array())

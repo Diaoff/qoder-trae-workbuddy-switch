@@ -2305,6 +2305,7 @@ function demoTraeGatewayConfig(): TraeGatewayConfigRaw {
     sticky_ttl_ms: 30 * 60 * 1000,
     // 抓取旁路默认关：演示站也不该呈现「已开启诊断抓取」的假状态。
     capture_enabled: false,
+    max_mode: true,
   };
 }
 

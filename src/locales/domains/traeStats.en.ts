@@ -109,6 +109,8 @@ export const en = {
   "trae.stats.api.gateway.stopped": "Stopped",
   "trae.stats.api.gateway.openDataDir": "Open data directory",
   "trae.stats.api.gateway.noteLead": "The default port is 57894, deliberately clear of the WorkBuddy gateway (57891) — both serve ",
+  "trae.stats.api.gateway.maxMode": "Max Mode (per-model limits)",
+  "trae.stats.api.gateway.maxModeDesc": "Inject is_max_mode for models that support it and advertise each model's own limit (not a fixed 1M). Turn off to use the __dev channel's default window.",
   "trae.stats.api.gateway.noteTail": ".",
   "trae.stats.api.gateway.lanWarning": "In LAN mode, any device on the same network that gets hold of a key can spend your Trae credits.",
   "trae.stats.api.gateway.lastError": "Most recent error",
