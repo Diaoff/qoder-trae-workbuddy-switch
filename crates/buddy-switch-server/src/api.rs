@@ -6998,7 +6998,10 @@ async fn api_qoder_gateway_models(RawQuery(query): RawQuery) -> Response {
             .clone()
     };
     json_ok(buddy_switch_gateway::qoder::payload::admin_models_response(
-        region, &catalog, &disabled,
+        region,
+        &catalog,
+        &disabled,
+        state.max_context_now(),
     ))
 }
 

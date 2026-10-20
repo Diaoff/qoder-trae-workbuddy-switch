@@ -1,4 +1,5 @@
 import { Badge } from "@/components/ui/badge";
+import { Switch } from "@/components/ui/switch";
 import { useT } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
 
@@ -11,10 +12,21 @@ import { cn } from "@/lib/utils";
  * 两个窗口，才需要「开 / 关」。WorkBuddy 的目录只有一个 `context_window`、Qoder 的模型
  * 元数据只有一个 `max_input_tokens` —— 它们**本来就是模型上限**，没有第二个模式可切。
  *
- * 因此这里只说明「数字从哪来、怎么用」，不放一个点了没反应的假开关：
- * `/v1/models` 已按目录声明 `context_length`，客户端直接用即可。
+ * 开关的语义是「清单声明上限档还是默认档」：上游给两档（如 300k 默认 / 1M 上限），
+ * 默认使用上限。Trae 另有请求级 `is_max_mode`，在网关页单独给开关。
  */
-export function ContextSourceCard({ className }: { className?: string }) {
+export function ContextSourceCard({
+  className,
+  checked,
+  disabled,
+  onChange,
+}: {
+  className?: string;
+  /** 传入即渲染开关（默认 true = 使用上限）。 */
+  checked?: boolean;
+  disabled?: boolean;
+  onChange?: (checked: boolean) => void;
+}) {
   const t = useT();
   return (
     <div
@@ -30,9 +42,18 @@ export function ContextSourceCard({ className }: { className?: string }) {
             {t("shared.gateway.models.contextFixedDesc")}
           </p>
         </div>
-        <Badge variant="secondary" className="shrink-0 rounded-md">
-          {t("shared.gateway.models.contextFromCatalog")}
-        </Badge>
+        {onChange ? (
+          <Switch
+            checked={checked ?? true}
+            disabled={disabled}
+            onCheckedChange={onChange}
+            aria-label={t("shared.gateway.models.contextTitle")}
+          />
+        ) : (
+          <Badge variant="secondary" className="shrink-0 rounded-md">
+            {t("shared.gateway.models.contextFromCatalog")}
+          </Badge>
+        )}
       </div>
     </div>
   );

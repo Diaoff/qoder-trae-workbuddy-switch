@@ -52,6 +52,8 @@ export function QoderModelList({
   region,
   refreshing,
   onRefresh,
+  maxContext,
+  onToggleMaxContext,
   className,
 }: {
   catalog: QoderGatewayCatalog;
@@ -59,6 +61,9 @@ export function QoderModelList({
   region: Region;
   refreshing: boolean;
   onRefresh: () => void;
+  /** 是否声明上游**最大**上下文窗口（默认 true）。 */
+  maxContext: boolean;
+  onToggleMaxContext: (checked: boolean) => void;
   className?: string;
 }) {
   const t = useT();
@@ -161,7 +166,10 @@ export function QoderModelList({
       {/* 无卡头 —— 分区名由左栏导航承担（与 WB / Trae 侧同口径）。 */}
       <p className="mb-3 text-xs text-muted-foreground">{t("qoder.gateway.models.note")}</p>
 
-      <ContextSourceCard />
+      <ContextSourceCard
+        checked={maxContext}
+        onChange={(checked) => onToggleMaxContext(checked)}
+      />
 
       <CatalogSourceBar
         view={view}

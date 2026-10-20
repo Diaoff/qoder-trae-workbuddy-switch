@@ -599,6 +599,8 @@ export default function QoderApiServicePage() {
                 region={region}
                 refreshing={refreshingModels}
                 onRefresh={() => void onRefreshModels()}
+                maxContext={config.maxContext}
+                onToggleMaxContext={(checked) => void persist({ maxContext: checked })}
               />
             </>
           )}

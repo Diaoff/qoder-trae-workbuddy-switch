@@ -715,6 +715,7 @@ function demoGatewayConfig(): GatewayConfig {
     log_keep: 200,
     log_bodies: false,
     per_key_rate_limit: null,
+    max_context: true,
   };
 }
 

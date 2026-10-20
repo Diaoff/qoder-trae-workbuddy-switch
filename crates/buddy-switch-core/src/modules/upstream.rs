@@ -917,7 +917,7 @@ async fn wait_for_cancel(mut receiver: watch::Receiver<bool>) {
 /// 正数否则跳过。`international` 决定是否解析 `contextWindow.defaultLength`。
 pub fn parse_model_catalog(
     data: &Value,
-    international: bool,
+    _international: bool,
 ) -> Result<Vec<CatalogModel>, UpstreamFailure> {
     let raw_models = data
         .get("models")
@@ -981,17 +981,21 @@ pub fn parse_model_catalog(
         if input == 0 || output == 0 {
             continue;
         }
-        let context_window = if international {
-            wrapped
-                .get("contextWindow")
-                .and_then(Value::as_object)
-                .and_then(|c| c.get("defaultLength"))
-                .and_then(Value::as_u64)
-                .filter(|value| *value > 0)
-                .unwrap_or(input)
-        } else {
-            input
-        };
+        // ★ 上游给两档：`maxInputTokens`/`maxAllowedSize` 是**上限**，
+        // `contextWindow.defaultLength` 是**默认**（如 300k 默认 / 1M 上限）。
+        // 过去国际版直接拿 defaultLength 当 window ⇒ 清单永远只显示下限，用户看到的 300k 其实不是上限。
+        let context_window = wrapped
+            .get("maxInputTokens")
+            .and_then(Value::as_u64)
+            .or_else(|| wrapped.get("maxAllowedSize").and_then(Value::as_u64))
+            .filter(|value| *value > 0)
+            .unwrap_or(input);
+        let default_window = wrapped
+            .get("contextWindow")
+            .and_then(Value::as_object)
+            .and_then(|c| c.get("defaultLength"))
+            .and_then(Value::as_u64)
+            .filter(|value| *value > 0 && *value < context_window);
         let name = wrapped
             .get("name")
             .and_then(Value::as_str)
@@ -1014,6 +1018,7 @@ pub fn parse_model_catalog(
                 id,
                 name,
                 context_window,
+                context_window_default: default_window,
                 max_tokens: output,
                 supports_images,
                 credits,

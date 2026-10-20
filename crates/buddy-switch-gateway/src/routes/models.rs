@@ -15,14 +15,20 @@ use buddy_switch_core::modules::product::scope_of_wb_region;
 ///
 /// ★ `context_length` 必须与 Trae 侧同名字段对齐 —— OpenAI 兼容客户端读的是它；
 /// `context_window` 保留给老客户端与管理面（WB 目录原本就用这个名字）。
-pub fn model_entry(model: &CatalogModel) -> serde_json::Value {
+pub fn model_entry(model: &CatalogModel, max_context: bool) -> serde_json::Value {
+    // 开关决定声明「上限档」还是「默认档」（上游两档：如 300k 默认 / 1M 上限）。
+    let window = if max_context {
+        model.context_window
+    } else {
+        model.context_window_default.unwrap_or(model.context_window)
+    };
     json!({
         "id": model.id,
         "object": "model",
         "created": 0,
         "owned_by": "workbuddy",
-        "context_length": model.context_window,
-        "context_window": model.context_window,
+        "context_length": window,
+        "context_window": window,
         "max_tokens": model.max_tokens,
         "supports_images": model.supports_images,
         "credits": model.credits,
@@ -43,11 +49,12 @@ pub async fn handler(State(state): State<GatewayState>, headers: HeaderMap) -> R
     //   WB 侧 `available` 恒 true（无「非可服务」概念，故此处无 no-op 过滤）；
     //   禁用过滤读的是**与出口 ② 同一份** `disabled`（`is_disabled` 是唯一判断点）。
     let disabled = state.disabled.read().await;
+    let max_context = state.config.read().await.max_context;
     let data: Vec<serde_json::Value> = snapshot
         .models
         .iter()
         .filter(|model| !is_disabled(&disabled, scope_of_wb_region(record.region), &model.id))
-        .map(model_entry)
+        .map(|model| model_entry(model, max_context))
         .collect();
     drop(disabled);
 
@@ -75,14 +82,37 @@ mod tests {
             id: "hy4-preview".into(),
             name: "Hy4 preview".into(),
             context_window: 960_000,
+            context_window_default: Some(300_000),
             max_tokens: 64_000,
             supports_images: true,
             credits: None,
             badges: vec![],
             free: false,
         };
-        let entry = model_entry(&model);
-        assert_eq!(entry["context_length"], 960_000);
-        assert_eq!(entry["context_window"], 960_000);
+        let max = model_entry(&model, true);
+        assert_eq!(max["context_length"], 960_000, "默认用上限档");
+        assert_eq!(max["context_window"], 960_000);
+
+        // 开关关 ⇒ 声明默认档（上游 contextWindow.defaultLength）。
+        let lower = model_entry(&model, false);
+        assert_eq!(lower["context_length"], 300_000);
+        assert_eq!(lower["context_window"], 300_000);
+    }
+
+    /// 没有默认档的上游（如国内目录只给一个数）⇒ 关开关也回落到上限，不能变 0。
+    #[test]
+    fn wb_model_entry_falls_back_when_no_default_window() {
+        let model = CatalogModel {
+            id: "glm-5.3".into(),
+            name: "GLM-5.3".into(),
+            context_window: 1_000_000,
+            context_window_default: None,
+            max_tokens: 48_000,
+            supports_images: true,
+            credits: None,
+            badges: vec![],
+            free: false,
+        };
+        assert_eq!(model_entry(&model, false)["context_length"], 1_000_000);
     }
 }

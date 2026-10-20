@@ -100,6 +100,7 @@ mod tests {
             id: id.into(),
             name: id.into(),
             context_window: 1,
+            context_window_default: None,
             max_tokens: 1,
             supports_images: false,
             credits: None,

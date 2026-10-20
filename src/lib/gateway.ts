@@ -24,6 +24,7 @@ export const DEFAULT_GATEWAY_CONFIG: GatewayConfig = {
   log_keep: 200,
   log_bodies: false,
   per_key_rate_limit: null,
+  max_context: true,
 };
 
 function asString(value: unknown): string | undefined {
@@ -203,6 +204,7 @@ export function normalizeGatewayConfig(raw: unknown): GatewayConfig {
     log_bodies: asBoolean(record.log_bodies) ?? asBoolean(record.logBodies) ?? DEFAULT_GATEWAY_CONFIG.log_bodies,
     per_key_rate_limit:
       asNumber(record.per_key_rate_limit) ?? asNumber(record.perKeyRateLimit) ?? null,
+    max_context: asBoolean(record.max_context) ?? DEFAULT_GATEWAY_CONFIG.max_context,
   };
 }
 

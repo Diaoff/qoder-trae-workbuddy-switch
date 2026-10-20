@@ -650,6 +650,7 @@ async fn collect_namespace_models(
                     let _ = crate::catalog_probe::probe_region(&wb, region).await;
                 }
                 let snapshot = wb.catalogs.current(region);
+                let wb_max_context = wb.config.read().await.max_context;
                 let models = snapshot
                     .models
                     .iter()
@@ -662,7 +663,8 @@ async fn collect_namespace_models(
                         )
                     })
                     .map(|model| {
-                        let mut entry = crate::routes::models::model_entry(model);
+                        let mut entry =
+                            crate::routes::models::model_entry(model, wb_max_context);
                         if let Some(object) = entry.as_object_mut() {
                             object.insert("namespace".into(), json!(spec.id));
                         }
@@ -725,7 +727,11 @@ async fn collect_namespace_models(
                 let disabled_store = crate::disabled_models::shared();
                 let disabled = disabled_store.read().await;
                 let models =
-                    crate::qoder::payload::models_response(&catalog.models, disabled.get(scope))
+                    crate::qoder::payload::models_response(
+                        &catalog.models,
+                        disabled.get(scope),
+                        qoder.max_context_now(),
+                    )
                         .get("data")
                         .and_then(|data| data.as_array())
                         .cloned()

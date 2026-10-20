@@ -30,6 +30,8 @@ const state = {
   /* Trae 上下文策略（Max Mode）：always = 支持表内模型始终注入 is_max_mode；off = 回到上游默认窗口。
      Max Mode 是**请求级开关**，不是模型 —— 所以清单里一个模型只有一条记录，没有 `-max` 影子 id。 */
   maxMode: "always",
+  /* WB / Qoder：默认使用**上限**窗口（关 ⇒ 默认档）。 */
+  maxContext: true,
   gwTool: "codex",      // 接入说明里选中的客户端（§3.18.3）
   setSub: "general",
   /* 会话工作台（v2.3）：客户端 Tab + 状态筛选 + 排序 */
@@ -1271,6 +1273,13 @@ function fmtWindow(value) {
    上限不存在 / 与默认相同 / 模型不在目录里，都只显示默认值 —— 不虚报。 */
 function contextCell(model) {
   const def = fmtWindow(model.context) ?? "未知";
+  // WB / Qoder：按「上限 / 默认」开关选；Trae：按 Max Mode 开关选。
+  if (curScope().platform !== "trae") {
+    const chosen = state.maxContext ? (model.maxWindow ?? model.context) : model.context;
+    if (!chosen) return `<span class="tiny muted">—</span>`;
+    const note = chosen > (model.context ?? 0) ? ` <span class="tiny muted">默认 ${def}</span>` : "";
+    return `<span class="badge ${chosen > (model.context ?? 0) ? "ok" : ""}">${fmtWindow(chosen)}</span>${note}`;
+  }
   if (!maxModeOn()) return `<span class="tiny muted">${def}</span>`;
 
   const max = model.maxWindow;
@@ -1283,16 +1292,20 @@ function contextCell(model) {
 
 /* WorkBuddy / Qoder 的只读说明：没有请求级 Max Mode，清单直接按目录声明上限。 */
 function contextFixedCard() {
+  const on = state.maxContext;
   return `<section class="card">
-    <div style="display:flex;align-items:flex-start;gap:18px;padding:14px 16px">
+    <div style="display:flex;align-items:center;gap:18px;padding:14px 16px">
       <div style="flex:1;min-width:0">
-        <b style="display:block;font-size:12.5px;font-weight:550">上下文上限</b>
+        <b style="display:block;font-size:12.5px;font-weight:550">上下文上限（默认使用上限）</b>
         <div class="tiny muted" style="margin-top:3px;line-height:1.55">
-          本平台没有请求级 Max Mode：清单<b>始终</b>按官方目录声明每个模型自己的上下文上限，
-          客户端直接用即可。
+          上游给「默认档 / 上限档」两个窗口（如 300k 默认、1M 上限）。开启 ⇒ 清单声明<b>上限</b>；
+          关闭 ⇒ 声明默认档。数字来自官方目录。
         </div>
       </div>
-      <span class="badge" style="flex-shrink:0">按目录声明</span>
+      <div class="seg" role="group" aria-label="上下文上限">
+        <button class="${on ? "on" : ""}" data-act="max-context|1">上限</button>
+        <button class="${on ? "" : "on"}" data-act="max-context|0">默认</button>
+      </div>
     </div>
   </section>`;
 }
@@ -1375,10 +1388,10 @@ function viewGateway() {
     const trae = curScope().platform === "trae";
     main = `${trae ? maxModePolicyCard() : contextFixedCard()}${catalogBar(g.catalog)}
     <div class="tbl-wrap"><table class="tbl">
-      <thead><tr><th>模型</th><th>协议</th><th>归属</th>${trae ? "<th>上下文</th>" : ""}<th>上游状态</th><th style="width:124px">网关暴露</th></tr></thead>
+      <thead><tr><th>模型</th><th>协议</th><th>归属</th><th>上下文</th><th>上游状态</th><th style="width:124px">网关暴露</th></tr></thead>
       <tbody>${g.models.map((m) => `<tr${m.disabled ? ' class="row-off"' : ""}>
         <td class="mono"><b>${esc(m.name)}</b></td><td>${esc(m.provider)}</td><td>${esc(m.scope)}</td>
-        ${trae ? `<td>${contextCell(m)}</td>` : ""}
+        <td>${contextCell(m)}</td>
         <td>${m.available ? `<span class="badge ok">可用</span>` : `<span class="badge warn">不可用</span>`}</td>
         <td>${m.disabled
           ? `<span class="badge bad">已禁用</span> <button class="btn xs" data-act="model-enable|${esc(m.name)}|${esc(m.scope)}">启用</button>`
@@ -3135,6 +3148,15 @@ document.addEventListener("click", (e) => {
     case "merge": stop(); state.merge = a1 === "1"; renderContent(); break;
     case "usage-tab": stop(); state.usageTab = a1; renderContent(); break;
     case "gw-sub": stop(); state.gwSub = a1; renderContent(); break;
+    case "max-context": {
+      stop();
+      state.maxContext = a1 !== "0";
+      toast(state.maxContext ? "ok" : "info",
+        state.maxContext ? "已使用最大上下文" : "已回到默认上下文",
+        state.maxContext ? "清单声明目录里的上限窗口" : "清单声明目录里的默认窗口");
+      renderContent();
+      break;
+    }
     /* Trae 上下文策略（Max Mode）：切换即时反映到清单的「上下文」列。
        演示「一个模型一条记录」—— 不存在 -max 影子 id。 */
     case "max-mode": {

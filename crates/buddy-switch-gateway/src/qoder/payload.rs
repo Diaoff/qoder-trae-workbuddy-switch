@@ -64,7 +64,11 @@ pub fn allowed_tool_names(parsed: &Value) -> Option<HashSet<String>> {
 }
 
 /// `/v1/models` 响应：清单元数据 + **禁用过滤**（`disabled` 是该区域作用域的集合）。
-pub fn models_response(catalog: &[Value], disabled: &BTreeSet<String>) -> Value {
+pub fn models_response(
+    catalog: &[Value],
+    disabled: &BTreeSet<String>,
+    max_context: bool,
+) -> Value {
     let data: Vec<Value> = catalog
         .iter()
         .filter(|entry| {
@@ -90,7 +94,8 @@ pub fn models_response(catalog: &[Value], disabled: &BTreeSet<String>) -> Value 
                 "is_reasoning": entry.get("is_reasoning").cloned().unwrap_or(Value::Bool(false)),
                 "max_input_tokens": entry.get("max_input_tokens").cloned(),
                 // 与 WB / Trae 对齐：OpenAI 兼容客户端读 `context_length`。
-                "context_length": entry.get("max_input_tokens").cloned(),
+                // 开关开 ⇒ 上游最大档（如 1M）；关 ⇒ 默认档（如 200K）。
+                "context_length": selected_window(entry, max_context),
             })
         })
         .collect();
@@ -112,6 +117,7 @@ pub fn admin_models_response(
     region: QoderRegion,
     catalog: &super::CatalogView,
     disabled: &BTreeSet<String>,
+    max_context: bool,
 ) -> Value {
     let data: Vec<Value> = catalog
         .models
@@ -135,7 +141,7 @@ pub fn admin_models_response(
                     .cloned()
                     .unwrap_or(Value::Bool(false)),
                 "max_input_tokens": entry.get("max_input_tokens").cloned(),
-                "context_length": entry.get("max_input_tokens").cloned(),
+                "context_length": selected_window(entry, max_context),
                 "disabled": crate::disabled_models::is_disabled_in(disabled, id),
             })
         })
@@ -150,6 +156,43 @@ pub fn admin_models_response(
     })
 }
 
+/// 从 `context_config` 里取 (默认窗口, 最大窗口)。
+///
+/// 上游形态：`{"200K":{"token_count":200000,"is_default":true},"400K":{...},"1M":{...}}`
+/// —— 默认档与上限档是**两个数**；没有 `context_config` 时回落 `max_input_tokens`（单档）。
+pub fn context_windows(entry: &Value) -> (Option<i64>, Option<i64>) {
+    let mut default = None;
+    let mut max = None;
+    if let Some(config) = entry.get("context_config").and_then(Value::as_object) {
+        for window in config.values() {
+            let Some(tokens) = window.get("token_count").and_then(Value::as_i64) else {
+                continue;
+            };
+            if tokens <= 0 {
+                continue;
+            }
+            max = Some(max.map_or(tokens, |current: i64| current.max(tokens)));
+            if window.get("is_default").and_then(Value::as_bool) == Some(true) {
+                default = Some(tokens);
+            }
+        }
+    }
+    if max.is_none() {
+        max = entry.get("max_input_tokens").and_then(Value::as_i64);
+    }
+    (default.filter(|value| Some(*value) < max), max)
+}
+
+/// 按开关选要用的窗口（默认取上限）。
+pub fn selected_window(entry: &Value, max_context: bool) -> Option<i64> {
+    let (default, max) = context_windows(entry);
+    if max_context {
+        max.or(default)
+    } else {
+        default.or(max)
+    }
+}
+
 /// 从清单里找某模型的元数据（大小写不敏感 —— 上游对模型名大小写不敏感）。
 ///
 /// 找不到 ⇒ 合成一份**中性元数据**（`key = 用户传的名字`）：不虚构
@@ -158,6 +201,7 @@ pub fn admin_models_response(
 pub fn meta_for(
     catalog: &[Value],
     model: &str,
+    max_context: bool,
 ) -> buddy_switch_core::modules::qoder::api::ModelMeta {
     for entry in catalog {
         let key = entry
@@ -166,7 +210,14 @@ pub fn meta_for(
             .and_then(Value::as_str)
             .unwrap_or("");
         if key.eq_ignore_ascii_case(model) {
-            return buddy_switch_core::modules::qoder::api::ModelMeta::from_catalog_entry(entry);
+            let mut meta =
+                buddy_switch_core::modules::qoder::api::ModelMeta::from_catalog_entry(entry);
+            // ★ 请求里的窗口跟着开关走：开 = 上限档，关 = 默认档。
+            //   上游 `max_input_tokens` 是**单值**，所以这里直接覆盖成选中的窗口。
+            if let Some(window) = selected_window(entry, max_context) {
+                meta.max_input_tokens = window;
+            }
+            return meta;
         }
     }
     buddy_switch_core::modules::qoder::api::ModelMeta {
@@ -191,9 +242,41 @@ mod tests {
             "display_name": "Qwen3.8-Max",
             "max_input_tokens": 200_000,
         })];
-        let body = models_response(&catalog, &BTreeSet::new());
+        let body = models_response(&catalog, &BTreeSet::new(), true);
         assert_eq!(body["data"][0]["context_length"], 200_000);
         assert_eq!(body["data"][0]["max_input_tokens"], 200_000);
+    }
+
+    /// ★ 多窗口：开关开 ⇒ 声明 `context_config` 的最大档（1M），关 ⇒ `is_default` 档（200K）；
+    /// 请求里的 `model_config.max_input_tokens` 同源。
+    #[test]
+    fn context_switch_picks_max_or_default_window() {
+        let catalog = vec![json!({
+            "key": "qmodel_38max",
+            "display_name": "Qwen3.8-Max",
+            "max_input_tokens": 180_000,
+            "context_config": {
+                "200K": {"token_count": 200_000, "is_default": true},
+                "400K": {"token_count": 400_000},
+                "1M": {"token_count": 1_000_000}
+            }
+        })];
+
+        let max = models_response(&catalog, &BTreeSet::new(), true);
+        assert_eq!(max["data"][0]["context_length"], 1_000_000);
+        let lower = models_response(&catalog, &BTreeSet::new(), false);
+        assert_eq!(lower["data"][0]["context_length"], 200_000);
+
+        assert_eq!(meta_for(&catalog, "qmodel_38max", true).max_input_tokens, 1_000_000);
+        assert_eq!(meta_for(&catalog, "qmodel_38max", false).max_input_tokens, 200_000);
+    }
+
+    /// 没有 `context_config` 的老条目 ⇒ 用 `max_input_tokens` 单档，开关不改变结果。
+    #[test]
+    fn context_switch_handles_single_window_entries() {
+        let catalog = vec![json!({"key": "legacy", "max_input_tokens": 128_000})];
+        assert_eq!(selected_window(&catalog[0], true), Some(128_000));
+        assert_eq!(selected_window(&catalog[0], false), Some(128_000));
     }
 
     #[test]
@@ -228,7 +311,7 @@ mod tests {
         ];
         let mut disabled = BTreeSet::new();
         disabled.insert("ultimate".to_string());
-        let response = models_response(&catalog, &disabled);
+        let response = models_response(&catalog, &disabled, true);
         let ids: Vec<&str> = response["data"]
             .as_array()
             .unwrap()
@@ -243,11 +326,11 @@ mod tests {
         let catalog = vec![
             json!({"key": "qwen3.8-max", "display_name": "Qwen3.8-Max", "is_reasoning": true}),
         ];
-        let meta = meta_for(&catalog, "QWEN3.8-MAX");
+        let meta = meta_for(&catalog, "QWEN3.8-MAX", true);
         assert_eq!(meta.key, "qwen3.8-max");
         assert!(meta.is_reasoning);
         // 未知名 ⇒ 中性合成（不猜 is_reasoning）。
-        let unknown = meta_for(&catalog, "mystery-model");
+        let unknown = meta_for(&catalog, "mystery-model", true);
         assert_eq!(unknown.key, "mystery-model");
         assert!(!unknown.is_reasoning);
     }
@@ -281,7 +364,7 @@ mod tests {
         let mut disabled = BTreeSet::new();
         disabled.insert("ultimate".to_string());
 
-        let body = admin_models_response(QoderRegion::Global, &catalog, &disabled);
+        let body = admin_models_response(QoderRegion::Global, &catalog, &disabled, true);
         assert_eq!(body["region"], "global");
         assert_eq!(body["source"], "cached");
         assert_eq!(body["fetchedAt"], 1_700_000_000_000i64);

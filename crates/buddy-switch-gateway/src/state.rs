@@ -93,6 +93,13 @@ pub struct GatewayConfig {
     /// （不能像其它配置那样热生效）。
     #[serde(alias = "maxBodyMb")]
     pub max_body_mb: usize,
+    /// **上下文上限策略**（默认 `true`）：模型清单声明上游的**上限**窗口
+    /// （`maxInputTokens`），关闭则声明**默认**窗口（`contextWindow.defaultLength`）。
+    ///
+    /// 上游给两档（如 300k 默认 / 1M 上限）；过去国际版直接拿默认档当窗口，
+    /// 用户会误以为 300k 就是上限。
+    #[serde(alias = "maxContext")]
+    pub max_context: bool,
 }
 
 impl Default for GatewayConfig {
@@ -113,6 +120,7 @@ impl Default for GatewayConfig {
             pool: PoolConfig::default(),
             allow_model_region_prefix: false,
             max_body_mb: DEFAULT_MAX_BODY_MB,
+            max_context: true,
         }
     }
 }
@@ -616,6 +624,7 @@ mod tests {
             "pool",
             "allow_model_region_prefix",
             "max_body_mb",
+            "max_context",
         ]
         .into_iter()
         .collect();

@@ -128,6 +128,10 @@ pub struct QoderGatewayConfig {
     /// 会话粘性存活时长（毫秒；`<= 0` 由 [`crate::StickyTable`] 归一为 30 分钟）。
     #[serde(alias = "stickyTtlMs")]
     pub sticky_ttl_ms: i64,
+    /// **上下文上限策略**（默认 `true`）：清单声明 `context_config` 里的**最大**窗口
+    /// （如 1M），并把它写进请求的 `model_config.max_input_tokens`；关闭则用默认档（如 200K）。
+    #[serde(alias = "maxContext")]
+    pub max_context: bool,
 }
 
 impl Default for QoderGatewayConfig {
@@ -147,6 +151,7 @@ impl Default for QoderGatewayConfig {
             max_rotate: 3,
             preferred_uid: String::new(),
             sticky_ttl_ms: 30 * 60 * 1000,
+            max_context: true,
         }
     }
 }
@@ -267,6 +272,14 @@ impl QoderGatewayState {
 
     pub async fn config_snapshot(&self) -> QoderGatewayConfig {
         self.config.read().await.clone()
+    }
+
+    /// 上下文上限策略（同步，供清单与请求构造用）；拿不到锁按「上限」处理。
+    pub fn max_context_now(&self) -> bool {
+        self.config
+            .try_read()
+            .map(|config| config.max_context)
+            .unwrap_or(true)
     }
 
     /// 取模型清单（带缓存；无账号 / 拉取失败时给**可读 note**，绝不假装有数据）。

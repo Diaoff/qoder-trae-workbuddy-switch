@@ -185,7 +185,11 @@ pub async fn models(
     let catalog = state.catalog_for(key.0).await;
     let scope = scope_of_qoder_region(key.0);
     let disabled = state.disabled.read().await;
-    let filtered = payload::models_response(&catalog.models, disabled.get(scope));
+    let filtered = payload::models_response(
+        &catalog.models,
+        disabled.get(scope),
+        state.max_context_now(),
+    );
     drop(disabled);
     let mut body = filtered;
     if let Some(note) = catalog.note {
@@ -289,7 +293,7 @@ pub async fn chat_for_region(
         }
     }
 
-    let meta = payload::meta_for(&catalog.models, &model);
+    let meta = payload::meta_for(&catalog.models, &model, state.max_context_now());
     let allowed_tools = payload::allowed_tool_names(&openai_payload);
     let sticky_key = payload::sticky_key_of(&parsed);
     let preferred = {

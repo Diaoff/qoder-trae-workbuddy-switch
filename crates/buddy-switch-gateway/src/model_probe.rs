@@ -1105,7 +1105,7 @@ async fn probe_cell_qoder(
 
     // 模型元数据：清单里查不到 ⇒ 中性合成（与中继 `payload::meta_for` 同源）。
     let catalog = state.cached_catalog_models(region).await;
-    let meta = payload::meta_for(&catalog, model);
+    let meta = payload::meta_for(&catalog, model, state.max_context_now());
 
     // 最小请求体（`max_tokens: 1` + 探测文案）：与中继同一套构造。
     let payload_value = json!({

@@ -1495,6 +1495,8 @@ export interface GatewayConfig {
   log_keep: number;
   log_bodies: boolean;
   per_key_rate_limit?: number | null;
+  /** 上下文上限策略（默认 true）：清单声明上游上限窗口；false ⇒ 默认窗口。 */
+  max_context: boolean;
 }
 
 /**

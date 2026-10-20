@@ -4454,7 +4454,10 @@ pub async fn get_qoder_gateway_models(
             .clone()
     };
     Ok(buddy_switch_gateway::qoder::payload::admin_models_response(
-        region, &catalog, &disabled,
+        region,
+        &catalog,
+        &disabled,
+        state.max_context_now(),
     ))
 }
 

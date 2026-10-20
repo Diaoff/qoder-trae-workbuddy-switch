@@ -38,6 +38,7 @@ export const DEFAULT_QODER_GATEWAY_CONFIG: QoderGatewayConfig = {
   // 空串 = 不指定账号（自动择优 / 会话粘性）。
   preferredUid: "",
   stickyTtlMs: 30 * 60 * 1000,
+  maxContext: true,
 };
 
 /** 网关配置（前端形状）。 */
@@ -53,6 +54,8 @@ export interface QoderGatewayConfig {
   maxRotate: number;
   preferredUid: string;
   stickyTtlMs: number;
+  /** 上下文上限策略（默认 true）。 */
+  maxContext: boolean;
 }
 
 /** 配置的线上形状（snake_case；写回时用）。 */
@@ -68,6 +71,8 @@ export interface QoderGatewayConfigRaw {
   max_rotate: number;
   preferred_uid: string;
   sticky_ttl_ms: number;
+  /** 上下文上限策略（默认 true）：清单声明最大窗口，false ⇒ 默认窗口。 */
+  max_context?: boolean;
 }
 
 /**
@@ -211,6 +216,8 @@ export function normalizeQoderGatewayConfig(raw: unknown): QoderGatewayConfig {
       DEFAULT_QODER_GATEWAY_CONFIG.preferredUid,
     stickyTtlMs:
       asNumber(read("stickyTtlMs", "sticky_ttl_ms")) ?? DEFAULT_QODER_GATEWAY_CONFIG.stickyTtlMs,
+    maxContext:
+      asBoolean(read("maxContext", "max_context")) ?? DEFAULT_QODER_GATEWAY_CONFIG.maxContext,
   };
 }
 
@@ -233,6 +240,7 @@ export function toQoderGatewayConfigRaw(config: QoderGatewayConfig): QoderGatewa
     max_rotate: config.maxRotate,
     preferred_uid: config.preferredUid,
     sticky_ttl_ms: config.stickyTtlMs,
+    max_context: config.maxContext,
   };
 }
 

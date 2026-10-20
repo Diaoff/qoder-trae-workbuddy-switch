@@ -70,6 +70,8 @@ export function ModelList({ region, className }: { region: Region; className?: s
   const disabledSet = useGatewayStore((s) => s.disabled[scope]) ?? EMPTY_DISABLED_SET;
   const loadDisabled = useGatewayStore((s) => s.loadDisabled);
   const setModelDisabled = useGatewayStore((s) => s.setModelDisabled);
+  const config = useGatewayStore((s) => s.config);
+  const saveConfig = useGatewayStore((s) => s.saveConfig);
   /* 限流探测：与探测卡读**同一份**派生数据（`probe.cells` 实测 + `useProbePassive()` 被动底色）。 */
   const status = useGatewayStore((s) => s.status);
   const probe = useGatewayStore((s) => s.probe);
@@ -257,7 +259,10 @@ export function ModelList({ region, className }: { region: Region; className?: s
     <div className={cn(className)}>
       {/* 无卡头 —— 分区名由左栏导航承担（与 Trae / Qoder 侧同口径）。
           版本也不在这里显示 / 切换：页头切换器是唯一入口。 */}
-      <ContextSourceCard />
+      <ContextSourceCard
+        checked={config.max_context}
+        onChange={(checked) => void saveConfig({ ...config, max_context: checked })}
+      />
       <CatalogSourceBar
         view={view}
         scanning={refreshing}
