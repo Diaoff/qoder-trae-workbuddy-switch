@@ -67,6 +67,7 @@ import { ImportAccountsDialog } from "@/components/import-accounts-dialog";
 import { RecycleBinSheet } from "@/components/recycle-bin-sheet";
 import {
   QoderAccountCard,
+  QoderAccountMenu,
   QoderForeignBadge,
   QoderStatusChips,
   qoderAccountName,
@@ -1243,6 +1244,29 @@ export default function QoderAccountsPage() {
         }
         rowSelectLabel={(account) => t("shared.table.selectRowAria", { name: qoderAccountName(account) })}
         rowOpenLabel={(account) => t("shared.table.openRowAria", { name: qoderAccountName(account) })}
+        /* ★ 表格视图的「更多」：与卡片**同一个菜单组件**（WB 的 `renderActions` 同形）。
+           此前 Qoder 表格没有任何行尾动作 ⇒ 表格里除了点行就没有别的出口。 */
+        renderActions={(account) => (
+          <QoderAccountMenu
+            compact
+            account={account}
+            name={qoderAccountName(account)}
+            checkinToday={checkinTodayOf(account)}
+            onOpenDetail={openDetail}
+            onEditRemark={openRemark}
+            onSetGroup={openGroup}
+            onCheckin={(target) => void runCheckin([target])}
+            onExport={(target) => {
+              setExportTargets([target]);
+              setExportOpen(true);
+            }}
+            onDelete={setPendingDelete}
+            onRefreshPart={(kind) => onRefreshPart(account, kind)}
+            refreshingKinds={refreshPartBusy.kindsOf(account.uid)}
+            doneKinds={refreshPartBusy.doneKindsOf(account.uid)}
+            refreshKinds={QODER_REFRESH_KINDS}
+          />
+        )}
         renderCard={(account) => {
           const row = credits[account.uid];
           return (
@@ -1259,6 +1283,12 @@ export default function QoderAccountsPage() {
               refreshKinds={QODER_REFRESH_KINDS}
               onDelete={setPendingDelete}
               onSetGroup={openGroup}
+              /* 签到 / 导出与批量操作**同一条路径**：菜单只是把目标缩到一个账号。 */
+              onCheckin={(account) => void runCheckin([account])}
+              onExport={(account) => {
+                setExportTargets([account]);
+                setExportOpen(true);
+              }}
               credits={
                 row && row.ok
                   ? { remaining: row.remaining ?? 0, total: row.total ?? 0, plan: row.plan ?? null }

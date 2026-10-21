@@ -749,7 +749,7 @@ function tableView(list) {
   const p = curPlatform();
   return `<div class="tbl-wrap"><table class="tbl">
     <thead><tr>
-      <th style="width:34px"></th><th>账号</th><th>状态</th><th>积分</th><th>今日 Token</th><th>到期</th><th>程序位</th>
+      <th style="width:34px"></th><th>账号</th><th>状态</th><th>积分</th><th>今日 Token</th><th>到期</th><th>程序位</th><th style="width:40px"></th>
     </tr></thead>
     <tbody>${list.map((a) => {
       const sel = state.selected.has(a.id);
@@ -765,6 +765,10 @@ function tableView(list) {
         <td class="num">${fmtTok(a.todayTokens)}</td>
         <td class="num">${a.expireInDays == null ? `<span class="muted tiny">—</span>` : `${a.expireInDays} 天`}</td>
         <td>${p.programs.map((pg) => a.programs[pg.id] ? `<span class="badge info" style="margin-right:3px">${esc(pg.label)}</span>` : "").join("") || `<span class="muted tiny">未绑定</span>`}</td>
+        <!-- ★ 表格行也必须有「更多」：与卡片同一个菜单（App 的 renderActions 同形）。
+             此前表格没有行尾动作 ⇒ 用户在表格里除了点行就没别的出口 = 同一能力两种形态的分叉。 -->
+        <td><button class="btn ghost sm${state.acctMenu === a.id ? " is-open" : ""}" data-act="acct-more|${a.id}"
+          title="更多操作：单项刷新 / 签到 / 导出 / 删除" aria-haspopup="menu" aria-expanded="${state.acctMenu === a.id}">${ICON.more}</button></td>
       </tr>`;
     }).join("")}</tbody>
   </table></div>`;

@@ -47,6 +47,8 @@ export const en = {
   "qoder.page.accounts.card.manageAria": "More actions for {name}",
   "qoder.page.accounts.card.moreActions": "More actions",
   "qoder.page.accounts.card.viewDetail": "View details",
+  "qoder.page.accounts.card.checkin": "Manual check-in",
+  "qoder.page.accounts.card.checkinUnknownHint": "Today's check-in status is unknown — click to query and claim upstream (it will say \"already checked in\" if so)",
   "qoder.page.accounts.card.editRemark": "Edit remark",
   "qoder.page.accounts.card.deleteAccount": "Delete account",
   "qoder.page.accounts.card.selectAria": "Select {name}",

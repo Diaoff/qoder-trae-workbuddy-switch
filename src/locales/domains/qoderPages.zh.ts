@@ -55,6 +55,8 @@ export const zh = {
   "qoder.page.accounts.card.manageAria": "{name} 的更多操作",
   "qoder.page.accounts.card.moreActions": "更多操作",
   "qoder.page.accounts.card.viewDetail": "查看详情",
+  "qoder.page.accounts.card.checkin": "手动签到",
+  "qoder.page.accounts.card.checkinUnknownHint": "今日签到状态尚未确认 —— 点一下即向上游查询并领取（已领过会提示「今日已签到」）",
   "qoder.page.accounts.card.editRemark": "编辑备注",
   "qoder.page.accounts.card.deleteAccount": "删除账号",
   "qoder.page.accounts.card.selectAria": "选择 {name}",

@@ -476,6 +476,38 @@ function check(name, fn) {
       if (!again || again.value !== "1234") throw new Error("保存后回填值 = " + (again && again.value));
       return true;
     });
+    /* ── 表格视图的行尾「更多」：与卡片**同一个菜单**（含签到）──────────
+       App 侧对应 `renderActions` + `QoderAccountMenu`；原型此前表格没有任何行尾动作。 */
+    const domT = await JSDOM.fromFile(path.join(dir, "index.html"), {
+      runScripts: "dangerously", resources: "usable", pretendToBeVisual: true,
+      url: qUrl("scope=qoder-cn&dest=accounts&view=table"),
+    });
+    const dT = domT.window.document;
+    await new Promise((r) => domT.window.addEventListener("load", r));
+    await sleep(80);
+    const tableMore = dT.querySelector('tbody [data-act^="acct-more|"]');
+    check("拆分形态：表格视图每行都有行尾「更多」（不是只有卡片有）", () => {
+      const rows = dT.querySelectorAll("#content tbody tr").length;
+      const mores = dT.querySelectorAll('#content tbody [data-act^="acct-more|"]').length;
+      if (!rows || mores !== rows) throw new Error(`行 ${rows} 个、更多按钮 ${mores} 个`);
+      return `${mores} 行都有`;
+    });
+    check("拆分形态：表格行的「更多」打开的是同一个菜单（含「手动签到」）", () => {
+      if (!tableMore) throw new Error("找不到行尾更多按钮");
+      tableMore.click();
+      const menu = dT.getElementById("acct-menu");
+      if (!menu) throw new Error("菜单没打开");
+      const t = String(menu.textContent || "").replace(/\s+/g, " ").trim();
+      for (const want of ["导出账号", "刷新积分"]) {
+        if (!t.includes(want)) throw new Error("菜单缺「" + want + "」：" + t.slice(0, 140));
+      }
+      /* 签到是**三态**：已签到 / 可点 / 需先登录 —— 断言「命中且只命中一种」，
+         而不是钉死某一个词（夹具里那条账号恰好已签到，钉死就成了假红）。 */
+      const states = ["今日已签到", "手动签到", "需先登录"].filter((w) => t.includes(w));
+      if (states.length !== 1) throw new Error("签到三态命中 " + states.length + " 个：" + t.slice(0, 140));
+      return "签到态：" + states[0];
+    });
+
     /* ⚠️ `check()` 只支持同步函数（返回值不是 `false` 即算通过）⇒ 异步部分必须
        **在 check 外面**先做完，否则断言里的异常会变成未处理的 rejection、静默假绿。 */
     const domW = await JSDOM.fromFile(path.join(dir, "index.html"), {

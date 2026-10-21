@@ -6522,6 +6522,46 @@ check("★ F5 过期 / 需重登账号不给「手动签到」（卡片菜单与
   return "expired + needsRelogin 双门控 · 三态顺序正确";
 });
 
+check("★ F5（Qoder）：卡片/表格**同一个菜单**，签到三态齐全，且「未知」时仍留入口", () => {
+  /* 2026-10-21 实测缺陷：Qoder 的卡片菜单里**没有签到项**（只有「刷新签到状态」），
+     用户只能先勾选账号走批量条、或打开抽屉才签得了。原型 `acctMenuInner` 一直是有的 ——
+     实现漏了，而没有任何门禁守它。
+     本断言守三件事（都是**行为**，不是字面量）：
+       ① 三态顺序：已签到 → 凭据不可用 → 可点（与 WB 同口径）；
+       ② **未知也必须留入口**：Qoder 的签到态常为「未知」，照搬 WB 的「未知不渲染」
+          会让入口时有时无 —— 所以要求有专门的未知态说明；
+       ③ 页面与表格**真的接上**了 `onCheckin` / `renderActions`（否则菜单项恒 disabled = 死入口）。 */
+  const menu = stripComments(
+    fs.readFileSync(path.join(ROOT, "src/components/qoder/qoder-account-card.tsx"), "utf8"),
+  );
+  const page = stripComments(
+    fs.readFileSync(path.join(ROOT, "src/pages/QoderAccountsPage.tsx"), "utf8"),
+  );
+  const checked = menu.indexOf("checkinToday === true ? (");
+  const dead = menu.indexOf("credentialDead ? (");
+  const live = menu.indexOf("onCheckin?.(account)", dead);
+  if (checked < 0 || dead < 0 || live < 0) {
+    throw new Error("Qoder 签到三态分支不完整（可能已重构，请更新本断言）");
+  }
+  if (!(checked < dead && dead < live)) {
+    throw new Error("Qoder 签到三态顺序不对 —— 先判已签到，再判凭据不可用，最后才给可点入口");
+  }
+  const deadSlice = menu.slice(dead, live);
+  if (!/MenuStateItem/.test(deadSlice) || !/needLogin/.test(deadSlice)) {
+    throw new Error("凭据不可用时要渲染「需先登录」状态行，而不是可点入口");
+  }
+  if (!/checkinUnknownHint/.test(menu)) {
+    throw new Error("签到态未知时没有说明 —— 照搬 WB「未知不渲染」会让入口时有时无");
+  }
+  if (!/onCheckin=\{\(account\) => void runCheckin\(\[account\]\)\}/.test(page)) {
+    throw new Error("Qoder 账号页没把 onCheckin 接给卡片 —— 菜单项会恒 disabled（死入口）");
+  }
+  if (!/renderActions=\{\(account\) => \(\s*<QoderAccountMenu/.test(page)) {
+    throw new Error("表格视图没有接同一个菜单（renderActions）—— 卡片有、表格没有 = 两形态分叉");
+  }
+  return "三态顺序 · 未知留入口 · 卡片与表格同源";
+});
+
 check("★ P1-5 账号卡可键盘聚焦（tabIndex + 语义 role + Enter/Space 有用途）", () => {
   /* 原型 P1-5（`verify-behaviors.cjs:452-457`）：卡片根元素须 `tabindex="0"` 且有 `role`。
      ⚠️ 只加 tabIndex 不加键盘处理 = 「**可聚焦但无操作**」（WCAG 2.4.3 反模式）⇒

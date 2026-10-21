@@ -229,6 +229,23 @@ const flat = (s) => String(s || "").replace(/\s+/g, " ").trim();
     return true;
   });
 
+  /* ── 3-c. 表格视图的行尾「更多」（与卡片同一个菜单，含签到三态）── */
+  const domT = await boot("scope=qoder-cn&dest=accounts&view=table&hint=0");
+  const dT = domT.window.document;
+  check("单文件：表格视图每行都有行尾「更多」，点开是同一个菜单（含签到三态）", () => {
+    const rows = dT.querySelectorAll("#content tbody tr").length;
+    const mores = [...dT.querySelectorAll('#content tbody [data-act^="acct-more|"]')];
+    if (!rows || mores.length !== rows) throw new Error(`行 ${rows} 个、更多按钮 ${mores.length} 个`);
+    mores[0].click();
+    const menu = dT.getElementById("acct-menu");
+    if (!menu) throw new Error("菜单没打开");
+    const t = flat(menu.textContent);
+    if (!t.includes("导出账号")) throw new Error("菜单缺「导出账号」：" + t.slice(0, 120));
+    const states = ["今日已签到", "手动签到", "需先登录"].filter((w) => t.includes(w));
+    if (states.length !== 1) throw new Error("签到三态命中 " + states.length + " 个：" + t.slice(0, 120));
+    return `${rows} 行 · 签到态 ${states[0]}`;
+  });
+
   /* ── 4. Qoder 国际版：用量 + 网关 ── */
   const domU = await boot("scope=qoder-global&dest=usage&hint=0");
   const dU = domU.window.document;
