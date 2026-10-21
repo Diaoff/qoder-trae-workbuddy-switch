@@ -371,7 +371,12 @@ where
         }
     }
     // DSML 回退：模型把调用写成 `<｜｜DSML｜｜ calls>` 标签时还原成结构化调用。
-    if out.tool_calls.is_empty() && !out.content.is_empty() {
+    // 前置：本次请求**声明了 tools** —— 没声明就没有「调用」这回事，合成出来客户端
+    // 也执行不了（那条路只会把正文变成一次必然报错的工具调用）。
+    let tools_declared = allowed_tool_names
+        .map(|names| !names.is_empty())
+        .unwrap_or(false);
+    if tools_declared && out.tool_calls.is_empty() && !out.content.is_empty() {
         let (recovered, cleaned) = api::parse_dsml_tool_calls(&out.content);
         if let Some(calls) = recovered {
             out.tool_calls = calls;
@@ -1170,6 +1175,9 @@ fn delta_is_empty(frame: &Bytes) -> bool {
 ///   其余情况 fail-open 放行。
 pub struct DsmlGuardStream<S> {
     inner: S,
+    /// 本次请求**声明了 tools** 才启用。没声明工具的请求里出现 DSML 只可能是模型幻觉，
+    /// 此时合成 `tool_calls` 是错的（客户端根本没法执行）⇒ 原样透传。
+    enabled: bool,
     buffering: bool,
     buffer: String,
     /// 被扣住的收尾帧（`finish_reason` 必须在合成调用**之后**发，否则 Anthropic 侧补不出 usage）。
@@ -1186,9 +1194,19 @@ pub struct DsmlGuardStream<S> {
 }
 
 impl<S> DsmlGuardStream<S> {
-    pub fn new(inner: S) -> Self {
+    /// `allowed_tools` 与 [`LeakGuardStream`] 同一来源（本次请求声明的工具名集合）。
+    /// 为空 / `None` ⇒ 本层**纯透传**（不来声明 tools 的请求里不该出现工具调用）。
+    pub fn new(
+        inner: S,
+        allowed_tools: Option<std::sync::Arc<std::collections::HashSet<String>>>,
+    ) -> Self {
+        let enabled = allowed_tools
+            .as_ref()
+            .map(|names| !names.is_empty())
+            .unwrap_or(false);
         Self {
             inner,
+            enabled,
             buffering: false,
             buffer: String::new(),
             pending_finish: None,
@@ -1322,6 +1340,10 @@ impl<S> DsmlGuardStream<S> {
 
     /// 处理一帧。
     fn push_frame(&mut self, frame: Bytes) {
+        if !self.enabled {
+            self.out.push_back(frame);
+            return;
+        }
         let Some(chunk) = parse_frame(&frame) else {
             if self.buffering {
                 // 不可解析的帧（错误帧 / 空行）：先结算，再原样放行。
@@ -1334,7 +1356,9 @@ impl<S> DsmlGuardStream<S> {
         if has_structured_tool_calls(&chunk) {
             self.saw_tool_calls = true;
         }
-        let content = delta_content(&chunk);
+        // ⚠️ 空字符串也算「无正文」：上游常在收尾帧里带 `"content":""`，若当成正文就会
+        // 走「正常帧」分支、绕过收尾改写（实测：合成调用后 finish 仍是 `stop`）。
+        let content = delta_content(&chunk).filter(|text| !text.is_empty());
         let has_finish = chunk_finish_reason(&chunk).is_some();
         if has_finish {
             self.saw_finish = true;
@@ -1988,16 +2012,19 @@ mod tests {
             })
             .collect();
         frames.push(frame(
-            &json!({"choices": [{"delta": {}, "finish_reason": "stop"}], "usage": {"total_tokens": 9}}),
+            // ★ 上游收尾帧常带 `"content":""` —— 必须仍被识别为收尾（否则不改写 finish）。
+            &json!({"choices": [{"delta": {"content": ""}, "finish_reason": "stop"}], "usage": {"total_tokens": 9}}),
         ));
         frames.push("data:{\"body\":\"[DONE]\"}\n".to_string());
 
-        let mut stream = DsmlGuardStream::new(LeakGuardStream::new(
-            QoderOpenAiStream::new(upstream_from(&frames)),
-            Some(std::sync::Arc::new(std::collections::HashSet::from([
-                "pwsh".to_string(),
-            ]))),
-        ));
+        let allowed = std::sync::Arc::new(std::collections::HashSet::from(["pwsh".to_string()]));
+        let mut stream = DsmlGuardStream::new(
+            LeakGuardStream::new(
+                QoderOpenAiStream::new(upstream_from(&frames)),
+                Some(allowed.clone()),
+            ),
+            Some(allowed),
+        );
         let text = collect(&mut stream).await;
         assert!(
             !text.to_ascii_uppercase().contains("DSML"),
@@ -2035,7 +2062,11 @@ mod tests {
             ),
             "data:{\"body\":\"[DONE]\"}\n".to_string(),
         ];
-        let mut stream = DsmlGuardStream::new(QoderOpenAiStream::new(upstream_from(&frames)));
+        let allowed = std::sync::Arc::new(std::collections::HashSet::from(["ls".to_string()]));
+        let mut stream = DsmlGuardStream::new(
+            QoderOpenAiStream::new(upstream_from(&frames)),
+            Some(allowed),
+        );
         let text = collect(&mut stream).await;
         assert!(text.contains("\"tool_calls\":["), "{text}");
         assert!(text.contains("\"finish_reason\":\"tool_calls\""), "{text}");
@@ -2050,11 +2081,34 @@ mod tests {
             frame(&json!({"choices": [{"delta": {}, "finish_reason": "stop"}]})),
             "data:{\"body\":\"[DONE]\"}\n".to_string(),
         ];
-        let mut guarded = DsmlGuardStream::new(QoderOpenAiStream::new(upstream_from(&frames)));
+        let allowed = std::sync::Arc::new(std::collections::HashSet::from(["shell".to_string()]));
+        let mut guarded = DsmlGuardStream::new(
+            QoderOpenAiStream::new(upstream_from(&frames)),
+            Some(allowed),
+        );
         let guarded_text = collect(&mut guarded).await;
         let mut bare = QoderOpenAiStream::new(upstream_from(&frames));
         let bare_text = collect(&mut bare).await;
         assert_eq!(guarded_text, bare_text, "普通流必须逐字不变");
+    }
+
+    /// 没声明 tools 的请求：DSML 标签**原样透传**（合成一个客户端执行不了的调用更糟）。
+    #[tokio::test]
+    async fn dsml_guard_is_passthrough_when_no_tools_were_declared() {
+        let frames = vec![
+            frame(
+                &json!({"choices": [{"delta": {"content": "<｜｜DSML｜｜ calls><｜｜DSML｜｜ invoke name=\"x\"></｜｜DSML｜｜ invoke></｜｜DSML｜｜ calls>"}}]}),
+            ),
+            frame(&json!({"choices": [{"delta": {}, "finish_reason": "stop"}]})),
+            "data:{\"body\":\"[DONE]\"}\n".to_string(),
+        ];
+        let mut guarded =
+            DsmlGuardStream::new(QoderOpenAiStream::new(upstream_from(&frames)), None);
+        let guarded_text = collect(&mut guarded).await;
+        let mut bare = QoderOpenAiStream::new(upstream_from(&frames));
+        let bare_text = collect(&mut bare).await;
+        assert_eq!(guarded_text, bare_text, "未声明 tools 时不得改写流");
+        assert!(guarded_text.contains("DSML"), "{guarded_text}");
     }
 
     /// 截断的 DSML 块：还原不了，也绝不把内部标签交给用户。
@@ -2067,7 +2121,11 @@ mod tests {
             frame(&json!({"choices": [{"delta": {}, "finish_reason": "length"}]})),
             "data:{\"body\":\"[DONE]\"}\n".to_string(),
         ];
-        let mut stream = DsmlGuardStream::new(QoderOpenAiStream::new(upstream_from(&frames)));
+        let allowed = std::sync::Arc::new(std::collections::HashSet::from(["shell".to_string()]));
+        let mut stream = DsmlGuardStream::new(
+            QoderOpenAiStream::new(upstream_from(&frames)),
+            Some(allowed),
+        );
         let text = collect(&mut stream).await;
         assert!(
             !text.to_ascii_uppercase().contains("DSML"),
@@ -2138,11 +2196,17 @@ mod tests {
             frame(&json!({"choices": [{"delta": {}, "finish_reason": "stop"}]})),
             "data:{\"body\":\"[DONE]\"}\n".to_string(),
         ];
-        let out = aggregate(upstream_from(&frames), None).await;
+        let allowed: std::collections::HashSet<String> = ["ls".to_string()].into_iter().collect();
+        let out = aggregate(upstream_from(&frames), Some(&allowed)).await;
         assert_eq!(out.tool_calls.len(), 1, "{out:?}");
         assert_eq!(out.tool_calls[0]["function"]["name"], "ls");
         assert_eq!(out.content, "说明。");
         assert_eq!(out.finish_reason, "tool_calls");
+
+        // 未声明 tools ⇒ 不合成（客户端没有可执行的工具，合成只会换来一次必然报错）。
+        let out = aggregate(upstream_from(&frames), None).await;
+        assert!(out.tool_calls.is_empty(), "{out:?}");
+        assert!(out.content.contains("DSML"), "{out:?}");
     }
 
     /// 「散文 + 标记 + 收尾」同帧：收尾必须**排在合成调用之后**（否则 Anthropic 侧补不出 usage）。

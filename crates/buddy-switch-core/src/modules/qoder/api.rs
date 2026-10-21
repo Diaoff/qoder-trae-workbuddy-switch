@@ -1272,23 +1272,27 @@ fn classify_tag(inner: &str) -> (DsmlTag, Option<String>) {
     let trimmed = inner.trim();
     let closing = trimmed.starts_with('/');
     let body = trimmed.trim_start_matches('/').trim();
+    /* ★ 标签名可能**紧贴**哨兵：真机实测模型写成 `<｜｜DSML｜｜calls>`（中间没有空格），
+    按「整词等于 calls」判会全部落空 ⇒ 整块还原失败 ⇒ 正文被吞（用户看到空回答）。
+    因此按「词尾」匹配：`｜｜DSML｜｜calls` / `｜｜DSML｜｜ calls` / `calls` 都认。 */
     let mut kind = DsmlTag::Other;
     for token in body.split_whitespace() {
         let word = token.trim_end_matches('>').to_ascii_lowercase();
-        match word.as_str() {
-            "calls" => {
-                kind = DsmlTag::Calls { closing };
-                break;
-            }
-            "invoke" => {
-                kind = DsmlTag::Invoke { closing };
-                break;
-            }
-            "parameter" => {
-                kind = DsmlTag::Parameter { closing };
-                break;
-            }
-            _ => {}
+        // 属性 token（`name="calls"`）不带引号收尾时不该被当成标签名。
+        if word.contains('=') {
+            continue;
+        }
+        if word.ends_with("parameter") {
+            kind = DsmlTag::Parameter { closing };
+            break;
+        }
+        if word.ends_with("invoke") {
+            kind = DsmlTag::Invoke { closing };
+            break;
+        }
+        if word.ends_with("calls") {
+            kind = DsmlTag::Calls { closing };
+            break;
         }
     }
     // `name="x"` / `name='x'`：只认引号包裹（无引号的值不是官方形态，不猜）。
@@ -2492,6 +2496,19 @@ mod tests {
         )
         .0
         .is_none());
+        // 真机形态：标签名**紧贴**哨兵（`<｜｜DSML｜｜calls>`、中间没有空格）。
+        // 可证伪：把 `classify_tag` 的「词尾匹配」改回「整词相等」⇒ 本段拿不到调用。
+        let compact = "<｜｜DSML｜｜calls>\n<｜｜DSML｜｜invoke name=\"shell\">\n\
+                       <｜｜DSML｜｜parameter name=\"command\">echo hello</｜｜DSML｜｜parameter>\n\
+                       </｜｜DSML｜｜invoke>\n</｜｜DSML｜｜calls>";
+        let (calls, clean) = parse_dsml_tool_calls(compact);
+        let calls = calls.expect("紧凑写法必须还原");
+        assert_eq!(calls[0]["function"]["name"], "shell");
+        let arguments: Value =
+            serde_json::from_str(calls[0]["function"]["arguments"].as_str().unwrap()).unwrap();
+        assert_eq!(arguments["command"], "echo hello");
+        assert_eq!(clean, "");
+
         // 普通 HTML 标签不误判。
         assert!(parse_dsml_tool_calls("<div class=\"x\">hi</div>")
             .0

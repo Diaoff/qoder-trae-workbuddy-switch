@@ -604,10 +604,13 @@ async fn stream_relay(
     //      取不到 OpenAI 的 `usage` 字段。
     let allowed_tools_shared = allowed_tools.map(std::sync::Arc::new);
     let tapped = sse::UsageTapStream::new(
-        sse::DsmlGuardStream::new(sse::LeakGuardStream::new(
-            sse::QoderOpenAiStream::new(upstream),
+        sse::DsmlGuardStream::new(
+            sse::LeakGuardStream::new(
+                sse::QoderOpenAiStream::new(upstream),
+                allowed_tools_shared.clone(),
+            ),
             allowed_tools_shared,
-        )),
+        ),
         usage_slot.clone(),
         error_slot.clone(),
     );
