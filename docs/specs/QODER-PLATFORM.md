@@ -223,6 +223,31 @@ Qoder 上游跑文本模式时模型会**照学**，把调用写成标签塞进�
 读不到签到状态时，账号抽屉必须给出**原因**（上游错误 / 无机器身份 / 本区域无活动），
 不能像从前那样让整个「签到」页签静默消失。
 
+### 7.4 与参考实现的功能对等（2026-10-21）
+
+以 `qoder2api-hub` 为参照补齐的能力（每条都有测试或真机证据）：
+
+| 能力 | 落点 | 关键取舍 |
+|:--|:--|:--|
+| Responses API（Codex） | `protocol/responses.rs` + 两条 Responses 路由 | 协议翻译复用同一条中继（选号/换号/记账一份） |
+| **freeform（custom）工具** | 同上 + `custom_tool_names` | `apply_patch` 出站降级成单 `input` function；入站历史还原；出站还原成 `custom_tool_call`。**不发 `custom_tool_call_input.delta`**（上游给的是 JSON 片段，按规范会被拼进原文；原文只在 `.done` 给） |
+| 模型清单计费与能力 | `payload::admin_models_response` + 模型页「价格 / 思考」列 | `price_factor` / `is_free` / `promotion` / `thinking_efforts` 原样带上；官方没给就渲染「—」 |
+| 排队信号（HTTP 级） | `pool::classify_http_with_detail` | 401/403 里的 `10605` / `isQueued` ⇒ `Queued`：不冷却、不标 dead、不推 EMA；真失效词优先 |
+| 排队信号（信封级） | `sse::process_line` + `aggregate_relay` | 200 + `statusCodeValue:403` ⇒ 429 `upstream_queued`，文案说清「不是账号问题」 |
+| 风控遥测 | `/health` 的 `risk.{queued,rateLimited,rejected}` | 进程级累计、只读、不落盘；只在分类处记一次 |
+
+**刻意不做**（附理由，别当遗漏）：
+
+1. **Pro 升级包领取**：真机（本机 CN 账号）请求 `/sash/api/v1/me/pro-upgrade/eligibility`
+   返回 **HTTP 404**（活动已下线 / 该账号不适用）。参考实现把 404 当「不可领取」，
+   我们若照做就是一个**点了没反应的按钮** —— 等官方活动重新上线再做。
+2. **单号并发闸门 + 最小间隔**：参考实现只对**团队/企业账号**启用（issue #56 的自用保护）。
+   本仓没有「团队账号」这一分类，硬加一套 lease 机制等于给所有个人账号降速；
+   等有真实的团队账号需求再引入。
+3. **历史工具结果削减（首尾保留 + 中间省略）**：能省 token、也能降低回声概率，
+   但会**截断当前轮的工具证据**（模型据此改代码时可能缺关键行）。没有真机样本回归
+   前不默认开启；需要时按参考实现的 `QD_TOOL_RESULT_KEEP` 思路做成显式开关。
+
 ---
 
 ## 8. 在本仓的建模决策
