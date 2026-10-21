@@ -235,7 +235,9 @@ impl GatewayError {
                 region_display(*region)
             ),
             GatewayError::RegionMismatch(mismatch) => mismatch.message(),
-            GatewayError::Upstream { message, .. } => message.chars().take(400).collect(),
+            // ★ 截断必须带标记：否则下游拿到的是**未闭合的 JSON**，且无法区分
+            //   「上游只发了这么多」与「网关截掉了」（issue #67 因此无法核对上游原文）。
+            GatewayError::Upstream { message, .. } => truncate_upstream_message(message),
             GatewayError::BadRequest(message) => message.clone(),
             // 与 Trae 侧共用同一句文案（`disabled_models::disabled_message`），避免两处漂移。
             GatewayError::ModelDisabled { scope, model } => {
@@ -364,6 +366,29 @@ fn no_credential_message(region: Region, cause: NoCredentialCause) -> String {
 /// region 展示名（错误文案用）。
 pub fn region_display(region: Region) -> &'static str {
     region::region_spec(region).display_name
+}
+
+/// 上游错误消息的字符上限（防止超长错误体拖垮客户端）。
+const UPSTREAM_MESSAGE_LIMIT: usize = 400;
+
+/// 截断标记：下游必须能分辨「上游只发了这么多」与「网关截掉了」。
+///
+/// 缺了它，被截断的上游 JSON 会以**未闭合**形态发给客户端，`json.loads` 直接报
+/// `Unterminated string`，排查者还会误以为上游报文就长这样（issue #67 的实测证据
+/// 因此无法与上游原文核对）。
+const TRUNCATION_MARKER: &str = "…[truncated]";
+
+/// 超限才截断：保留 `LIMIT - 标记长度` 个字符并追加 [`TRUNCATION_MARKER`]，
+/// 使总字符数仍等于 `UPSTREAM_MESSAGE_LIMIT`。
+fn truncate_upstream_message(message: &str) -> String {
+    if message.chars().count() <= UPSTREAM_MESSAGE_LIMIT {
+        return message.to_string();
+    }
+    let head: String = message
+        .chars()
+        .take(UPSTREAM_MESSAGE_LIMIT - TRUNCATION_MARKER.chars().count())
+        .collect();
+    format!("{head}{TRUNCATION_MARKER}")
 }
 
 #[cfg(test)]
@@ -626,6 +651,23 @@ mod tests {
             attempts: Vec::new(),
         };
         assert_eq!(upstream.message().chars().count(), 400);
+        assert!(
+            upstream.message().ends_with(TRUNCATION_MARKER),
+            "截断必须带标记，否则下游无法分辨上游原文与网关截断: {}",
+            upstream.message()
+        );
+
+        // 未超限的消息必须逐字透传（标记只应出现在真的截断过的消息上）。
+        let short = GatewayError::Upstream {
+            kind: UpstreamErrorKind::Client,
+            status: 400,
+            message: "Illegal API invocation from an unapproved channel".to_string(),
+            attempts: Vec::new(),
+        };
+        assert_eq!(
+            short.message(),
+            "Illegal API invocation from an unapproved channel"
+        );
     }
 
     #[test]

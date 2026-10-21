@@ -478,6 +478,27 @@ mod tests {
         assert_eq!(value["messages"][0]["content"], json!("code 11-128"));
     }
 
+    /// issue #67：`sanitize_fingerprints` 开启时，system 里的 Harness 身份句必须在
+    /// **出站请求体**里被改写（上游对该句偏移 0 命中即 400 / 11-128）。
+    /// 断言的是 `prepare_outbound_body` 的返回值，即真正发往上游的字节。
+    #[test]
+    fn sanitize_rewrites_harness_identity_in_system_message() {
+        let source = r#"{"model":"glm-5.2","messages":[{"role":"system","content":"You are an AI agent powered by DeepSeek Harness."},{"role":"user","content":"hi"}]}"#;
+        let out = prepare_outbound_body(
+            Region::Cn,
+            source,
+            &options(true, PromptSettings::default()),
+            &meta(),
+            false,
+        );
+        let value: Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(
+            value["messages"][0]["content"],
+            json!("You are an AI agent powered by the DeepSeek Harness."),
+            "出站请求体里不得残留被上游拦截的身份句: {out}"
+        );
+    }
+
     #[test]
     fn orphan_tool_calls_are_cleaned() {
         let value = cn(r#"{"model":"glm-5.2","messages":[
