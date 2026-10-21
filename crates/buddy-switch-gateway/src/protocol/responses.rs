@@ -832,23 +832,22 @@ impl<S> ResponsesSseStream<S> {
                 if !argument_delta.is_empty() {
                     let item_id = self.tool_calls[index].id.clone();
                     let custom = self.custom.contains(&self.tool_calls[index].name);
-                    // ⚠️ freeform 的 delta 仍是上游**原始 JSON 片段**（`{"input":"…"`）：
-                    // 客户端（Codex）只消费 `.done` 里的完整 `input`，delta 仅用于展示，
-                    // 与参考实现保持同一形状；`.done` 处再拆成原文。
-                    let (event, key) = if custom {
-                        ("response.custom_tool_call_input.delta", "delta")
-                    } else {
-                        ("response.function_call_arguments.delta", "delta")
-                    };
-                    let mut data = json!({
-                        "type": event,
-                        "item_id": item_id,
-                        "output_index": 2 + index,
-                    });
-                    if let Some(object) = data.as_object_mut() {
-                        object.insert(key.to_string(), json!(argument_delta));
+                    /* ★ freeform 的增量**刻意不发**：上游给的是 `{"input":"…"}` 的 JSON 片段，
+                    而 `custom_tool_call_input.delta` 的语义是**原文片段**。把 JSON 片段当原文
+                    发出去，按规范累加 delta 的客户端会拼出一坨 `{"input":"…"}`（协议违约）。
+                    原文只在 `.done` / `output_item.done` 里给（Codex 正是读那里）。
+                    （参考实现发的是 JSON 片段，实测 Codex 能用，但对别的客户端是隐患。） */
+                    if !custom {
+                        self.push_event(
+                            "response.function_call_arguments.delta",
+                            json!({
+                                "type": "response.function_call_arguments.delta",
+                                "item_id": item_id,
+                                "output_index": 2 + index,
+                                "delta": argument_delta,
+                            }),
+                        );
                     }
-                    self.push_event(event, data);
                 }
             }
         }
@@ -1578,12 +1577,12 @@ mod tests {
         let events = collect_events(stream).await;
         let types = event_types(&events);
         assert!(
-            types.contains(&"response.custom_tool_call_input.delta".to_string()),
-            "缺 custom 增量事件: {types:?}"
+            types.contains(&"response.custom_tool_call_input.done".to_string()),
+            "缺 custom 收尾事件（原文只在这里给）: {types:?}"
         );
         assert!(
-            types.contains(&"response.custom_tool_call_input.done".to_string()),
-            "缺 custom 收尾事件: {types:?}"
+            !types.contains(&"response.custom_tool_call_input.delta".to_string()),
+            "custom 不得发 delta（上游是 JSON 片段，按规范会被拼进原文）: {types:?}"
         );
         assert!(
             !types.contains(&"response.function_call_arguments.delta".to_string()),

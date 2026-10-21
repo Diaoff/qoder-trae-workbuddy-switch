@@ -96,7 +96,7 @@ pub fn classify_http(status: u16) -> QoderErrKind {
 /// 面板看起来就是凭证坏了（参考实现 issue #71 的同一个坑）。
 ///
 /// ⚠️ 必须排除**真正的**会话失效词：`401 token expired` 也带 401，不能被当成排队放过去。
-fn queue_signal(detail: &str) -> bool {
+pub(crate) fn queue_signal(detail: &str) -> bool {
     let low = detail.to_ascii_lowercase();
     let queued = detail.contains("10605") || low.contains("isqueued");
     if !queued {
@@ -110,6 +110,17 @@ fn queue_signal(detail: &str) -> bool {
         "login expired",
     ];
     !SESSION_DEAD_HINTS.iter().any(|hint| low.contains(hint))
+}
+
+/// 排队时给客户端看的文案（流式 / 非流式**同一句**，避免两处各拼一份）。
+///
+/// 入参可能已经是我们自己的措辞（信封错误帧先格式化过一次）⇒ 幂等，不重复前缀。
+pub(crate) fn queue_message(detail: &str) -> String {
+    if detail.contains("上游排队中") {
+        detail.to_string()
+    } else {
+        format!("上游排队中（不是账号或凭据问题，稍后重试即可）：{detail}")
+    }
 }
 
 /// 带 body 的分类：`401/403` 里若是排队信号 ⇒ [`QoderErrKind::Queued`]（不惩罚账号）。

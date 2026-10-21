@@ -756,6 +756,16 @@ async fn aggregate_relay(
         .await;
 
     if let Some(error) = &aggregated.upstream_error {
+        // 信封层排队（403 + `10605` / `isQueued`）：报 429 + 明确「不是账号问题」。
+        if super::pool::queue_signal(error) {
+            // 计数已在信封解包处记过一次（`sse::process_line`）⇒ 这里**不再记**，免得双计。
+            return protocol_error(
+                protocol,
+                StatusCode::TOO_MANY_REQUESTS,
+                "upstream_queued",
+                &super::pool::queue_message(error),
+            );
+        }
         return protocol_error(protocol, StatusCode::BAD_GATEWAY, "upstream_error", error);
     }
 

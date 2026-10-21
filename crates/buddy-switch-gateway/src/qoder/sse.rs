@@ -33,15 +33,33 @@ fn process_line(line: &str) -> (Vec<Bytes>, bool) {
         ChatFrame::Chunk(cleaned) => (vec![Bytes::from(format!("data: {cleaned}\n\n"))], false),
         ChatFrame::Done => (Vec::new(), true),
         ChatFrame::UpstreamError { status, detail } => {
-            // 错误帧带**可操作信息**（状态码 + 上游详情）再收尾 —— 只补 [DONE] 会让
-            // 客户端把「上游 429」显示成「回答就这么短」。
-            let frame = json!({
-                "error": {
-                    "message": format!("上游错误（HTTP {status}）：{detail}"),
-                    "type": "upstream_error",
-                    "code": status,
-                }
-            });
+            /* 错误帧带**可操作信息**（状态码 + 上游详情）再收尾 —— 只补 [DONE] 会让
+            客户端把「上游 429」显示成「回答就这么短」。
+
+            ★ 排队（`10605` / `isQueued`）必须单独措辞 + 429：上游把它塞在 403 信封里，
+            原样报「上游错误（HTTP 403）」会让人以为账号/凭据出了问题（实测真机就是
+            403 + `{"code":"10605","isQueued":true}`）。 */
+            let queued = super::pool::queue_signal(&detail);
+            if queued {
+                super::risk::note_queued();
+            }
+            let frame = if queued {
+                json!({
+                    "error": {
+                        "message": super::pool::queue_message(&detail),
+                        "type": "upstream_queued",
+                        "code": 429,
+                    }
+                })
+            } else {
+                json!({
+                    "error": {
+                        "message": format!("上游错误（HTTP {status}）：{detail}"),
+                        "type": "upstream_error",
+                        "code": status,
+                    }
+                })
+            };
             (vec![Bytes::from(format!("data: {frame}\n\n"))], true)
         }
     }
@@ -2300,6 +2318,29 @@ mod tests {
         let text = collect(&mut stream).await;
         assert!(!text.contains(api::LEAK_MARKER_ALT), "标记泄漏: {text}");
         assert!(text.contains("\"tool_calls\":["), "必须还原: {text}");
+    }
+
+    /// 信封层排队（403 + `10605`/`isQueued`）⇒ 错误帧是 **429 `upstream_queued`**，
+    /// 文案必须说清「不是账号或凭据问题」（真机就是这样回来的）。
+    #[tokio::test]
+    async fn queued_envelope_is_reported_as_upstream_queued() {
+        let body = "{\"code\":\"10605\",\"isQueued\":true,\"retryAfterSeconds\":30}";
+        let frame_line = format!("data:{}\n", json!({ "body": body, "statusCodeValue": 403 }));
+        let frames = vec![frame_line];
+        let mut stream = QoderOpenAiStream::new(upstream_from(&frames));
+        let text = collect(&mut stream).await;
+        assert!(text.contains("upstream_queued"), "{text}");
+        assert!(text.contains("\"code\":429"), "{text}");
+        assert!(text.contains("排队"), "{text}");
+        // 真·鉴权失败不能被误判成排队（`token_invalid` 优先）。
+        let auth = format!(
+            "data:{}\n",
+            json!({ "body": "{\"code\":\"TOKEN_INVALID\",\"isQueued\":true}", "statusCodeValue": 401 })
+        );
+        let mut stream = QoderOpenAiStream::new(upstream_from(&[auth]));
+        let text = collect(&mut stream).await;
+        assert!(text.contains("upstream_error"), "{text}");
+        assert!(!text.contains("upstream_queued"), "{text}");
     }
 
     /// 非流式：截断回声 ⇒ `upstream_error`（调用方据此回 502），不是「200 + 空正文」。
