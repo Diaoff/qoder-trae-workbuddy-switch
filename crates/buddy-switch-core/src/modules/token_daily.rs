@@ -596,7 +596,7 @@ fn gateway_round(
         None => GatewayWrite::Correct(bucket_gateway(rows, region, day, uids, names, None)),
     };
     /* 维度的水位线与账号桶**同源**，只多一条升级过渡：v2 → v3 时水位线存在、
-       但维度桶还是空的 ⇒ 维度单独做一次整窗播种，并标记「不完整」。 */
+    但维度桶还是空的 ⇒ 维度单独做一次整窗播种，并标记「不完整」。 */
     let dim_since = match (watermark, dims_empty) {
         (None, _) => None,
         (Some(_), false) => watermark,
@@ -611,8 +611,8 @@ fn gateway_round(
         }
     };
     /* 账号维度的键与 `bucket_gateway` 同一套解析（新行取 uid，旧行回落展示名）。
-       ⚠️ 不要在外面维护「第几条」的游标：`bucket_dim` 会先按 region/日/水位线过滤，
-       游标与实际计入的行数一旦错位，账号维度就会贴到别的账号上。 */
+    ⚠️ 不要在外面维护「第几条」的游标：`bucket_dim` 会先按 region/日/水位线过滤，
+    游标与实际计入的行数一旦错位，账号维度就会贴到别的账号上。 */
     let by_account = dim(&|row| match row.account_uid.as_deref() {
         Some(uid) => uid.to_string(),
         None => resolve_account_key(&row.account, uids, names),
@@ -1143,7 +1143,7 @@ pub fn record_gateway_today(region: Region) -> Value {
         apply_dim_write(&mut record.gateway_accounts, round.accounts_dim);
         apply_dim_write(&mut record.gateway_endpoints, round.endpoints);
         /* 升级播种：只有该日**原本就有**账号桶时才标「不完整」——
-           新的一天整窗播种就是全量，不该挂污点。 */
+        新的一天整窗播种就是全量，不该挂污点。 */
         let had_prior = record
             .accounts
             .values()
@@ -1348,8 +1348,8 @@ pub fn reconcile_today(region: Region) -> Value {
             })
             .collect();
     /* `proxy_enabled = None`：当前没有可靠的「客户端是否走网关」配置读取点
-       （P12 的代理是改客户端 baseUrl / hosts 实现的，不在本应用配置里）。
-       未知时以**匹配率**为准 —— 逐条对上本身就是比配置更强的证据。 */
+    （P12 的代理是改客户端 baseUrl / hosts 实现的，不在本应用配置里）。
+    未知时以**匹配率**为准 —— 逐条对上本身就是比配置更强的证据。 */
     let report = crate::modules::reconcile::reconcile(&client_rows, &gateway_rows, None);
     let mut value = report.to_value(None);
     value["window"] = json!({ "date": day, "logRows": entries.len() });
@@ -1827,16 +1827,26 @@ mod tests {
         let models = dim_map(round.models);
         let accounts_dim = dim_map(round.accounts_dim);
         let endpoints = dim_map(round.endpoints);
-        for (label, map) in [("模型", &models), ("账号", &accounts_dim), ("端点", &endpoints)] {
+        for (label, map) in [
+            ("模型", &models),
+            ("账号", &accounts_dim),
+            ("端点", &endpoints),
+        ] {
             let (input, output, requests, failed, credit) = dim_total(map);
             assert_eq!(
                 (input, output),
                 account_total,
                 "{label}维度的 token 合计必须等于账号桶合计"
             );
-            assert_eq!(requests, 3, "{label}维度必须计入 cn + 今日的 3 条（global 那条不算）");
+            assert_eq!(
+                requests, 3,
+                "{label}维度必须计入 cn + 今日的 3 条（global 那条不算）"
+            );
             assert_eq!(failed, 1, "{label}维度必须把 429 计成 failed");
-            assert!((credit - 1.75).abs() < 1e-9, "{label}维度的积分合计应为 1.75，实际 {credit}");
+            assert!(
+                (credit - 1.75).abs() < 1e-9,
+                "{label}维度的积分合计应为 1.75，实际 {credit}"
+            );
         }
         assert!(
             models.contains_key(UNKNOWN_MODEL),
@@ -1860,18 +1870,28 @@ mod tests {
             "promptTokens": 10, "completionTokens": 1, "credit": 0.1
         })];
         let round = gateway_round(
-            Some(base - 1),          // 水位线存在
-            true,                    // 但维度桶是空的
+            Some(base - 1), // 水位线存在
+            true,           // 但维度桶是空的
             &parse_gateway_rows(&entries),
             Region::Cn,
             &day,
             &HashSet::new(),
             &HashMap::new(),
         );
-        assert!(round.dims_partial, "升级播种必须标 partial（UI 要披露拆分不完整）");
+        assert!(
+            round.dims_partial,
+            "升级播种必须标 partial（UI 要披露拆分不完整）"
+        );
         let models = dim_map(round.models);
-        assert_eq!(dim_total(&models).0, 10, "播种轮取整窗读数，不是「只加新条目」");
-        assert!(matches!(round.accounts, GatewayWrite::Add(_)), "账号桶仍走增量（它的水位线是有效的）");
+        assert_eq!(
+            dim_total(&models).0,
+            10,
+            "播种轮取整窗读数，不是「只加新条目」"
+        );
+        assert!(
+            matches!(round.accounts, GatewayWrite::Add(_)),
+            "账号桶仍走增量（它的水位线是有效的）"
+        );
     }
 
     /// 从写入意图里取出值表；变体不符合预期直接 panic（把「语义」也钉进断言）。

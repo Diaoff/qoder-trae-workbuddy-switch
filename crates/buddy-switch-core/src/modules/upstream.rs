@@ -1337,7 +1337,10 @@ mod tests {
             "`effort` 等价于 defaultEffort"
         );
 
-        assert!(models[2].reasoning.is_none(), "整块缺失 ⇒ None（不是空档位）");
+        assert!(
+            models[2].reasoning.is_none(),
+            "整块缺失 ⇒ None（不是空档位）"
+        );
     }
 
     /// 默认档不小于上限（脏数据）⇒ 不认默认档，避免出现「默认 > 上限」。

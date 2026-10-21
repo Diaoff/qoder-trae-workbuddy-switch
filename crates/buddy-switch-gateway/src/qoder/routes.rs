@@ -329,12 +329,8 @@ pub async fn chat_for_region(
     // `structured` 由网关显式决定（而不是在 `build_chat_body` 里再判一次）：
     // 自动降级需要「强制文本模式」重发，判定必须只有一处。
     let build_encoded = |user_type: &str, structured: bool| -> Result<String, String> {
-        let body_value = api::build_chat_body_with_structured(
-            &openai_payload,
-            &meta,
-            user_type,
-            structured,
-        )?;
+        let body_value =
+            api::build_chat_body_with_structured(&openai_payload, &meta, user_type, structured)?;
         Ok(cosy::qoder_encode(body_value.to_string().as_bytes()))
     };
 

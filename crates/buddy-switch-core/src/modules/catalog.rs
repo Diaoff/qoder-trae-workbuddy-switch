@@ -943,8 +943,8 @@ impl CatalogStore {
         }
         let mut models = cached.models;
         /* ★ 老缓存里的 `free` 是按旧判据（只认 `x0.00`，不认 `x0.00 credits`）算出来的
-           —— 读盘时就地重算，否则上游给的 `x0.00 credits` 会一直显示「收费」，
-           直到下一次成功识别上游（最长 24h）。派生字段只有 `is_free()` 一个真值。 */
+        —— 读盘时就地重算，否则上游给的 `x0.00 credits` 会一直显示「收费」，
+        直到下一次成功识别上游（最长 24h）。派生字段只有 `is_free()` 一个真值。 */
         for model in &mut models {
             model.refresh_derived();
         }

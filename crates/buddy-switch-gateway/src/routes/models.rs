@@ -91,10 +91,7 @@ pub fn snapshot_view(snapshot: &CatalogSnapshot, max_context: bool) -> serde_jso
                     "default_effort".into(),
                     serde_json::json!(ability.default_effort),
                 );
-                object.insert(
-                    "efforts_source".into(),
-                    serde_json::json!(ability.source),
-                );
+                object.insert("efforts_source".into(), serde_json::json!(ability.source));
             }
         }
     }
@@ -329,7 +326,10 @@ mod tests {
             )]),
             true,
         );
-        assert_eq!(view["models"][0]["reasoning_efforts"], serde_json::json!(["low"]));
+        assert_eq!(
+            view["models"][0]["reasoning_efforts"],
+            serde_json::json!(["low"])
+        );
         assert!(view["models"][0]["default_effort"].is_null());
     }
 }

@@ -248,7 +248,12 @@ mod tests {
     use super::*;
 
     fn row(ts: i64, model: &str, tokens: u64, credit: f64) -> ReconRow {
-        ReconRow { ts, model: model.to_string(), tokens, credit }
+        ReconRow {
+            ts,
+            model: model.to_string(),
+            tokens,
+            credit,
+        }
     }
 
     /// ★ 一对一：一条网关记录**最多**抵一条客户端记录。
@@ -278,9 +283,17 @@ mod tests {
     fn reconcile_rejects_time_gap_over_the_limit() {
         let client = vec![row(0, "m", 1000, 0.1)];
         let gateway = vec![row(MAX_GAP_MS + 1, "m", 1000, 0.1)];
-        assert_eq!(reconcile(&client, &gateway, None).matched, 0, "超时窗不得配对");
+        assert_eq!(
+            reconcile(&client, &gateway, None).matched,
+            0,
+            "超时窗不得配对"
+        );
         let close = vec![row(MAX_GAP_MS, "m", 1000, 0.1)];
-        assert_eq!(reconcile(&client, &close, None).matched, 1, "恰好等于上限应配对");
+        assert_eq!(
+            reconcile(&client, &close, None).matched,
+            1,
+            "恰好等于上限应配对"
+        );
     }
 
     #[test]
@@ -325,12 +338,23 @@ mod tests {
     fn verdict_thresholds_follow_the_match_ratio() {
         let client: Vec<ReconRow> = (0..100).map(|i| row(i * 1000, "m", 1000, 0.1)).collect();
         let gateway_all: Vec<ReconRow> = (0..100).map(|i| row(i * 1000, "m", 1000, 0.1)).collect();
-        assert_eq!(reconcile(&client, &gateway_all, Some(true)).verdict, Verdict::Subset);
+        assert_eq!(
+            reconcile(&client, &gateway_all, Some(true)).verdict,
+            Verdict::Subset
+        );
         // 配置明确说「没开代理」⇒ 高匹配率只判 mixed（那更可能是别的客户端在跑同样模型）
-        assert_eq!(reconcile(&client, &gateway_all, Some(false)).verdict, Verdict::Mixed);
+        assert_eq!(
+            reconcile(&client, &gateway_all, Some(false)).verdict,
+            Verdict::Mixed
+        );
 
-        let gateway_none: Vec<ReconRow> = (0..100).map(|i| row(9_999_999 + i, "m", 1000, 0.1)).collect();
-        assert_eq!(reconcile(&client, &gateway_none, Some(true)).verdict, Verdict::Independent);
+        let gateway_none: Vec<ReconRow> = (0..100)
+            .map(|i| row(9_999_999 + i, "m", 1000, 0.1))
+            .collect();
+        assert_eq!(
+            reconcile(&client, &gateway_none, Some(true)).verdict,
+            Verdict::Independent
+        );
     }
 
     /// 空输入不能 panic，也不能给出 `estimate < 0`。
@@ -338,7 +362,10 @@ mod tests {
     fn reconcile_handles_empty_sides() {
         let empty: Vec<ReconRow> = Vec::new();
         let only_client = reconcile(&[row(0, "m", 10, 0.1)], &empty, None);
-        assert_eq!((only_client.lower, only_client.upper, only_client.estimate), (10, 10, 10));
+        assert_eq!(
+            (only_client.lower, only_client.upper, only_client.estimate),
+            (10, 10, 10)
+        );
         assert_eq!(only_client.verdict, Verdict::Independent);
         let none = reconcile(&empty, &empty, None);
         assert_eq!((none.estimate, none.matched), (0, 0));

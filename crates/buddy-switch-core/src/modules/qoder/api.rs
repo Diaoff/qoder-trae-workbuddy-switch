@@ -2625,7 +2625,9 @@ mod tests {
             "工具结果必须保持 `role:\"tool\"` + `tool_call_id`：{raw}"
         );
         assert!(
-            messages.iter().any(|message| message["tool_calls"].is_array()),
+            messages
+                .iter()
+                .any(|message| message["tool_calls"].is_array()),
             "助手历史必须保持结构化 `tool_calls`：{raw}"
         );
         assert!(
@@ -2737,7 +2739,10 @@ mod tests {
         // 所以断言要看**正文**，不是 id。
         let text = build_chat_body_with_structured(&payload, &deepseek, "", false).unwrap();
         let raw = serde_json::to_string(text["messages"].as_array().unwrap()).unwrap();
-        assert!(raw.contains("残留"), "文本模式不做清洗（保留悬空结果）：{raw}");
+        assert!(
+            raw.contains("残留"),
+            "文本模式不做清洗（保留悬空结果）：{raw}"
+        );
     }
 
     /// 自动降级的**执行面**：显式 `structured = false` 必须真的退成文本模式，
@@ -2777,7 +2782,10 @@ mod tests {
         // …但显式 override 说了算（降级重发走这条）。
         let text = build_chat_body_with_structured(&payload, &deepseek, "", false).unwrap();
         let raw = serde_json::to_string(text["messages"].as_array().unwrap()).unwrap();
-        assert!(raw.contains(LEAK_MARKER), "override 后必须是文本模式：{raw}");
+        assert!(
+            raw.contains(LEAK_MARKER),
+            "override 后必须是文本模式：{raw}"
+        );
         assert!(
             !raw.contains("\"tool_calls\""),
             "override 后不得再带结构化字段：{raw}"
@@ -3416,7 +3424,11 @@ mod tests {
                 structured_tool_history_enabled(key, QoderRegion::Cn, &good),
                 "`{key}` 必须启用结构化工具历史（issue #72：文本模式会泄漏伪格式）"
             );
-            assert!(!structured_tool_history_enabled(key, QoderRegion::Global, &good));
+            assert!(!structured_tool_history_enabled(
+                key,
+                QoderRegion::Global,
+                &good
+            ));
         }
         // 反向：无依据的族**不能**被捞进来（Kimi / MiniMax 不在本仓 CN 清单；
         // `smodel` / `cmodel` 是**国际版**的 key）。

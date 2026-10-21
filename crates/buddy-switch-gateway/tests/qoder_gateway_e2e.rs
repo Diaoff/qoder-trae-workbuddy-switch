@@ -543,12 +543,7 @@ async fn structured_tool_history_degrades_to_text_after_a_400() {
 #[tokio::test]
 async fn degrade_memo_is_not_written_when_the_text_retry_also_fails() {
     let _guard = guard();
-    let (state, key) = gateway_for(
-        "degrade-fail",
-        &[("q1", "dt-1")],
-        Behavior::Always400,
-    )
-    .await;
+    let (state, key) = gateway_for("degrade-fail", &[("q1", "dt-1")], Behavior::Always400).await;
     let request = json!({
         "model": "qwen-always-400",
         "messages": [
@@ -568,10 +563,7 @@ async fn degrade_memo_is_not_written_when_the_text_retry_also_fails() {
         .expect("请求");
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     assert!(
-        !buddy_switch_gateway::qoder::degrade::is_unsupported(
-            QoderRegion::Cn,
-            "qwen-always-400"
-        ),
+        !buddy_switch_gateway::qoder::degrade::is_unsupported(QoderRegion::Cn, "qwen-always-400"),
         "重发也失败 ⇒ 400 与结构化无关，不该落降级记忆"
     );
 }
@@ -586,7 +578,8 @@ async fn degrade_memo_is_not_written_when_the_text_retry_also_fails() {
 async fn orphan_tool_history_is_cleaned_before_reaching_upstream() {
     let _guard = guard();
     let seen = Arc::new(Mutex::new(Vec::new()));
-    let (state, key) = gateway_for("clean", &[("q1", "dt-1")], Behavior::Record(seen.clone())).await;
+    let (state, key) =
+        gateway_for("clean", &[("q1", "dt-1")], Behavior::Record(seen.clone())).await;
     let request = json!({
         "model": "qwen3.8-max",
         "messages": [

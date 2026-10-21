@@ -21,7 +21,7 @@ use crate::modules::config::{atomic_write, store_dir};
 use crate::modules::region::{Region, RegionFilter};
 
 /* ⚠️ 不能 derive `Eq`：`credit` 是 f64（上游给的是小数）。
-   缓存比对走的是 `PersistedTotals`（把 credit 换成整数微积分），不依赖 `Usage: Eq`。 */
+缓存比对走的是 `PersistedTotals`（把 credit 换成整数微积分），不依赖 `Usage: Eq`。 */
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 struct Usage {
     input: u64,
@@ -1797,7 +1797,11 @@ mod tests {
             "message": { "usage": { "input_tokens": 44078, "output_tokens": 198, "credit": 1.28 } }
         });
         let usage = usage(&value).expect("有 usage");
-        assert!((usage.credit - 1.28).abs() < 1e-9, "credit 必须原样解析，实际 {}", usage.credit);
+        assert!(
+            (usage.credit - 1.28).abs() < 1e-9,
+            "credit 必须原样解析，实际 {}",
+            usage.credit
+        );
     }
 
     /// 没有 credit 字段 ⇒ 0.0（= 不知道），不是负数、不是 NaN。
@@ -1814,10 +1818,26 @@ mod tests {
     #[test]
     fn credit_survives_the_scan_cache_roundtrip() {
         let mut totals = Totals::default();
-        totals.add(Usage { input: 10, output: 2, read: 0, write: 0, credit: 1.28 });
-        totals.add(Usage { input: 10, output: 2, read: 0, write: 0, credit: 0.06 });
+        totals.add(Usage {
+            input: 10,
+            output: 2,
+            read: 0,
+            write: 0,
+            credit: 1.28,
+        });
+        totals.add(Usage {
+            input: 10,
+            output: 2,
+            read: 0,
+            write: 0,
+            credit: 0.06,
+        });
         let back = totals_from_persisted(totals_to_persisted(&totals));
-        assert!((back.usage.credit - 1.34).abs() < 1e-6, "实际 {}", back.usage.credit);
+        assert!(
+            (back.usage.credit - 1.34).abs() < 1e-6,
+            "实际 {}",
+            back.usage.credit
+        );
         assert_eq!(back.usage.input, 20);
     }
 

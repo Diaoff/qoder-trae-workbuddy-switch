@@ -445,8 +445,7 @@ fn parse_model(value: &Value) -> Option<ClientModel> {
         .map(str::to_string)
         .unwrap_or_else(|| name.clone());
 
-    let (efforts, default_effort, thinking) =
-        parse_thinking(value.get("reasoning_effort_config"));
+    let (efforts, default_effort, thinking) = parse_thinking(value.get("reasoning_effort_config"));
 
     Some(ClientModel {
         name,
@@ -558,7 +557,11 @@ fn as_i64(value: &Value) -> Option<i64> {
 fn as_f64(value: &Value) -> Option<f64> {
     match value {
         Value::Number(number) => number.as_f64().filter(|rate| rate.is_finite()),
-        Value::String(text) => text.trim().parse::<f64>().ok().filter(|rate| rate.is_finite()),
+        Value::String(text) => text
+            .trim()
+            .parse::<f64>()
+            .ok()
+            .filter(|rate| rate.is_finite()),
         _ => None,
     }
 }

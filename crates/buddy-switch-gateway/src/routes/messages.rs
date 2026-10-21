@@ -268,7 +268,7 @@ pub async fn messages_for_region(
                     .and_then(serde_json::Value::as_u64)
                     .unwrap_or(0);
                 /* 积分：与 chat / responses 同一口径（上游 `usage.credit`）。
-                   缺字段记 0.0（= 不知道），不猜、不按 token 折算。 */
+                缺字段记 0.0（= 不知道），不猜、不按 token 折算。 */
                 let credit = message
                     .get("usage")
                     .and_then(|usage| usage.get("credit"))
