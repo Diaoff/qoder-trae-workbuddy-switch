@@ -31,6 +31,7 @@
 pub mod apikey;
 pub mod payload;
 pub mod pool;
+pub mod quota;
 pub mod risk;
 pub mod routes;
 pub mod sse;
@@ -134,6 +135,18 @@ pub struct QoderGatewayConfig {
     /// （如 1M），并把它写进请求的 `model_config.max_input_tokens`；关闭则用默认档（如 200K）。
     #[serde(alias = "maxContext")]
     pub max_context: bool,
+    /// **G1 余额地板**：账号剩余额度 `<= 该值` 即暂停使用（`0` = 关闭）。
+    ///
+    /// 只在余额**已知**时生效（额度视图写快照，30 分钟内有效）；未知一律放行 ——
+    /// 「猜着拦」会把可用账号误判成耗尽。
+    #[serde(default, alias = "reserveCredits")]
+    pub reserve_credits: i64,
+    /// **G2 当日 token 上限**（逐账号，`0` = 关闭）。计数来自网关自己的记账漏斗。
+    #[serde(default, alias = "dailyTokenLimit")]
+    pub daily_token_limit: i64,
+    /// **G4 单模型当日 token 上限**（`0` = 关闭）。用于「贵的模型单独限额」。
+    #[serde(default, alias = "modelDailyTokenLimit")]
+    pub model_daily_token_limit: i64,
 }
 
 impl Default for QoderGatewayConfig {
@@ -154,6 +167,11 @@ impl Default for QoderGatewayConfig {
             preferred_uid: String::new(),
             sticky_ttl_ms: 30 * 60 * 1000,
             max_context: true,
+            // 护栏**默认全关**：个人自用形态（一账号一主人），默认限额只会让用户
+            // 莫名其妙被拦；需要时在网关页显式打开。
+            reserve_credits: 0,
+            daily_token_limit: 0,
+            model_daily_token_limit: 0,
         }
     }
 }
@@ -175,6 +193,11 @@ impl QoderGatewayConfig {
         }
         let text = serde_json::to_string_pretty(self).map_err(|error| error.to_string())?;
         core_config::atomic_write(&file, &text).map_err(|error| error.to_string())
+    }
+
+    /// 限额护栏（归一后的三条；`0` = 该条关闭）。
+    pub fn quota_limits(&self) -> quota::QuotaLimits {
+        quota::QuotaLimits::from_config(self)
     }
 
     /// 独立监听的基址。
@@ -274,6 +297,23 @@ impl QoderGatewayState {
 
     pub async fn config_snapshot(&self) -> QoderGatewayConfig {
         self.config.read().await.clone()
+    }
+
+    /// 限额护栏视图（`GET /gateway/quota`）：逐账号当日用量 / 拦截状态 / 余额快照。
+    ///
+    /// 池先同步一次：刚导入的账号要**立刻**出现在表里（否则用户会以为护栏没生效）。
+    /// 判定与选号共用 [`quota::blocked`] ⇒ 界面上的「已拦」就是选号时的真实结论。
+    pub async fn quota_view(&self, region: QoderRegion) -> Value {
+        let limits = self.config_snapshot().await.quota_limits();
+        let accounts: Vec<(String, String)> = {
+            let mut pools = self.pools.lock().await;
+            let pool = pools.entry(region).or_default();
+            pool.sync_for(region);
+            pool.entries()
+                .map(|entry| (entry.uid.clone(), entry.name.clone()))
+                .collect()
+        };
+        quota::snapshot(region, limits, &accounts, core_config::now_ms())
     }
 
     /// 上下文上限策略（同步，供清单与请求构造用）；拿不到锁按「上限」处理。
@@ -465,6 +505,16 @@ impl QoderGatewayState {
             "stream": stream,
             "error": error,
         }));
+        // ★ 限额护栏的唯一计数入口：**就在记账一处**累加，别在别处再记一次
+        //   （记两次会把「当日已用」算成两倍，护栏提前触发）。
+        if prompt_tokens > 0 || completion_tokens > 0 {
+            quota::record_tokens(
+                region,
+                uid,
+                model,
+                (prompt_tokens.max(0) + completion_tokens.max(0)) as u64,
+            );
+        }
         if let Some(message) = error {
             *self.last_error.write().await = Some(message);
         }

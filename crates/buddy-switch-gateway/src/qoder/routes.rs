@@ -261,6 +261,8 @@ pub async fn chat_for_region(
     };
 
     let config = state.config_snapshot().await;
+    // 限额护栏（三条，`0` = 关闭）：一次请求取一次配置快照，循环里不再读锁。
+    let quota_limits = config.quota_limits();
     // 非 OpenAI 入口先转成 OpenAI chat 形态（中继内部只认一份形态）。
     let openai_payload = match protocol {
         Protocol::OpenAi => parsed.clone(),
@@ -335,19 +337,39 @@ pub async fn chat_for_region(
     let mut queued = 0usize;
     // 每账号在途上限（0 = 关闭；见 `pool::max_inflight`）。
     let inflight_limit = super::pool::max_inflight();
+    // 本轮有多少个号是被**限额护栏**拦下的（决定收尾文案与状态码）。
+    let mut quota_blocked_count = 0usize;
 
     for _ in 0..max_rotate {
         // 池随账号库同步（导入 / 刷新后即时生效），然后选号。
+        // 选号连同**展示名**一起取：失败原因要给用户看名字，不是一串 uid
+        //（护栏 / 在途 / 上游错误的文案统一用名字，混用会让同一条报错里出现两种身份）。
         let picked = {
             let mut pools = state.pools.lock().await;
             let pool = pools.entry(region).or_default();
             pool.sync_for(region);
-            pool.pick(&model, &tried, preferred.as_deref())
+            pool.pick(&model, &tried, preferred.as_deref()).map(|uid| {
+                let name = pool
+                    .entries()
+                    .find(|entry| entry.uid == uid)
+                    .map(|entry| entry.name.clone())
+                    .unwrap_or_else(|| uid.clone());
+                (uid, name)
+            })
         };
-        let Some(uid) = picked else {
+        let Some((uid, display_name)) = picked else {
             break;
         };
         tried.insert(uid.clone());
+
+        /* ★ 限额护栏（G1 余额地板 / G2 当日 token / G4 单模型 token / 402 停放）：
+        拦下的号直接跳过并留下**可读原因**（不是静默少一个账号）。必须在取在途
+        名额之前判 —— 名额是稀缺资源，给一个注定被拦的号占着会挤掉可用账号。 */
+        if let Some(block) = super::quota::blocked(quota_limits, region, &uid, &model) {
+            quota_blocked_count += 1;
+            failures.push(format!("{}：{}", display_name, block.message()));
+            continue;
+        }
 
         /* ★ 在途闸门（默认关）：名额抢不到就**跳过这个号**，不排队等 ——
         网关在这里等会把客户端超时拖成「上游很慢」。 */
@@ -358,7 +380,9 @@ pub async fn chat_for_region(
                 .and_then(|pool| pool.acquire(&uid, inflight_limit))
         };
         let Some(inflight) = inflight else {
-            failures.push(format!("{uid}：该账号在途请求已满（{inflight_limit}）"));
+            failures.push(format!(
+                "{display_name}：该账号在途请求已满（{inflight_limit}）"
+            ));
             continue;
         };
 
@@ -472,6 +496,7 @@ pub async fn chat_for_region(
             QoderErrKind::Queued => super::risk::note_queued(),
             QoderErrKind::RateLimited => super::risk::note_rate_limited(),
             QoderErrKind::ClientError => super::risk::note_rejected(),
+            QoderErrKind::BalanceExhausted => super::risk::note_exhausted(),
             QoderErrKind::AuthDead | QoderErrKind::Transient => {}
         }
         {
@@ -512,10 +537,19 @@ pub async fn chat_for_region(
     // 轮换耗尽 / 无可用账号。
     // ★ 若「全部失败都是排队」⇒ 明确说是**上游排队**，别让用户去查账号/凭据。
     let all_queued = queued > 0 && queued == failures.len();
+    // ★ 若「全部失败都是被限额拦下」⇒ 说清是**限额**（去网关页调阈值 / 等重置），
+    //   报 429 而不是 503 —— 503 会被读成「服务坏了」，这里是**预期行为**。
+    let all_quota = quota_blocked_count > 0 && quota_blocked_count == failures.len();
     let message = if failures.is_empty() {
         format!(
             "{} 没有可用账号：请在「账号」页导入（账号需带可调用的访问令牌）",
             region.display_name()
+        )
+    } else if all_quota {
+        format!(
+            "全部账号都被限额护栏拦下（{} 个）：这不是故障，请到「网关 → 账号池 → 限额护栏」调整阈值，或等下一个额度重置窗口；详情：{}",
+            quota_blocked_count,
+            failures.join("；")
         )
     } else if all_queued {
         format!(
@@ -530,7 +564,7 @@ pub async fn chat_for_region(
             failures.join("；")
         )
     };
-    let exhausted_status = if all_queued {
+    let exhausted_status = if all_queued || all_quota {
         StatusCode::TOO_MANY_REQUESTS
     } else {
         StatusCode::SERVICE_UNAVAILABLE
@@ -551,6 +585,8 @@ pub async fn chat_for_region(
         .await;
     let code = if all_queued {
         "upstream_queued"
+    } else if all_quota {
+        "quota_exceeded"
     } else {
         "no_available_account"
     };
@@ -873,7 +909,7 @@ mod tests {
             .expect("读得到 body");
         let body: Value = serde_json::from_slice(&bytes).expect("必须是 JSON");
         assert_eq!(body["ok"], true);
-        for key in ["queued", "rateLimited", "rejected"] {
+        for key in ["queued", "rateLimited", "rejected", "exhausted"] {
             assert!(
                 body["risk"][key].is_u64(),
                 "缺 `risk.{key}`（遥测契约）: {body}"

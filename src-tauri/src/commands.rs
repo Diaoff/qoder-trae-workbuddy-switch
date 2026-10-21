@@ -4481,7 +4481,11 @@ pub async fn qoder_checkin_status_map(
 pub async fn qoder_credits(scope: String) -> Result<Value, String> {
     let scope = resolve_scope_param(Some(&scope))?;
     let region = require_qoder_region(scope)?;
-    Ok(qoder::credits::region_view(region).await)
+    let view = qoder::credits::region_view(region).await;
+    // ★ 与 server 宿主同一条：额度视图写**限额护栏**的余额快照（G1 的唯一来源），
+    //   余额 > 0 时解除 402 停放。两宿主不许只改一边。
+    buddy_switch_gateway::qoder::quota::note_credits_view(region, &view);
+    Ok(view)
 }
 
 /// POST /api/qoder/oauth/start —— 发起设备授权，返回 `{ loginId, verificationUri, expiresIn }`。
@@ -4648,6 +4652,18 @@ pub async fn qoder_gateway_status(app: tauri::AppHandle, scope: String) -> Resul
 ///
 /// 响应形状由 gateway crate 的 `payload::admin_models_response` **唯一产出**
 /// （两宿主共用，本层不拼装）。`refresh = true` ⇒ 绕过 10 分钟缓存强制重拉。
+#[tauri::command]
+/// GET /api/qoder/gateway/quota —— **限额护栏**视图（逐账号当日用量 + 拦截原因）。
+///
+/// 与 `/gateway/status` 同一条纪律：`scope` 必填（两区两本计数文件）。
+#[tauri::command]
+pub async fn qoder_gateway_quota(scope: String) -> Result<Value, String> {
+    let scope = resolve_scope_param(Some(&scope))?;
+    let region = require_qoder_region(scope)?;
+    Ok(qoder_gateway::shared_state().quota_view(region).await)
+}
+
+/// GET /api/qoder/gateway/models —— 对外暴露的模型清单（**随上游刷新**）。
 #[tauri::command]
 pub async fn get_qoder_gateway_models(
     scope: String,

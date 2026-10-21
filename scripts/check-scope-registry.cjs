@@ -311,7 +311,11 @@ check("P1 回滚开关默认开启（VITE_SCOPE_UNIFIED 未设时）", () => {
  * （简单正则对字符串里的 `//` 会误伤，但本断言只找 `useState` / 函数调用，风险可接受。）
  */
 function stripComments(source) {
-  return source.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/.*$/gm, "");
+  // ⚠️ 顺序：**先剥行注释再剥块注释**。反过来的话，行注释里出现块注释起始标记
+  //（本仓真实存在：`// … /api/oauth/…` 后跟一个星号）会被当成块注释起点，
+  // 一路吃到下一个结束标记，把成百上千行源码吞掉 ⇒ 后面所有“handler 是否存在”
+  // 的断言都变成假红（`check-api-contract.cjs` 踩过同一个坑）。
+  return source.replace(/\/\/.*$/gm, "").replace(/\/\*[\s\S]*?\*\//g, "");
 }
 
 check("★ P2 路由：`/s/:scope/:dest` 已注册，且旧路由**保留**（旧书签可达）", () => {
@@ -4958,7 +4962,7 @@ check("★ P5-③ `id|uid` 统一谓词：软删除 / 查找 / 备注共用 `res
   return "谓词 = id||uid · 软删除走谓词 · 按 uid 删除单测在";
 });
 
-check("★ P5-④ 参数化命令**恰 38 条**且后端带 scope（commands.rs 签名 + api.rs 读取）", () => {
+check("★ P5-④ 参数化命令**恰 39 条**且后端带 scope（commands.rs 签名 + api.rs 读取）", () => {
   /* 变异④（落点 = commands.rs / check-api-contract.cjs）：删掉某参数化命令的 `scope` 参数
      ⇒ 本条变红（桌面端与 webui 行为分叉，而构建全绿）。 */
   const contract = stripComments(fs.readFileSync(path.join(ROOT, P5_API_CONTRACT_CJS), "utf8"));
@@ -4976,14 +4980,14 @@ check("★ P5-④ 参数化命令**恰 38 条**且后端带 scope（commands.rs 
     "get_trae_checkin_status_map", "open_data_dir",
     "preview_import_accounts", "probe_cancel", "probe_start", "probe_status",
     "qoder_checkin_claim", "qoder_checkin_status", "qoder_checkin_status_map", "qoder_credits",
-    "qoder_delete_account", "qoder_gateway_status", "qoder_import_local",
+    "qoder_delete_account", "qoder_gateway_quota", "qoder_gateway_status", "qoder_import_local",
     "qoder_import_pat", "qoder_oauth_start", "qoder_oauth_status",
     "qoder_program_status", "qoder_refresh_account", "qoder_set_account_group",
     "qoder_set_account_remark", "qoder_switch_account", "qoder_usage",
     "set_model_disabled",
   ];
   if (JSON.stringify([...names].sort()) !== JSON.stringify(EXPECTED)) {
-    throw new Error(`参数化命令集变了（应恰 38 条）：${JSON.stringify([...names].sort())}`);
+    throw new Error(`参数化命令集变了（应恰 39 条）：${JSON.stringify([...names].sort())}`);
   }
   const commands = readCode(COMMANDS_RS);
   const apiTs = readCode(P5_API_TS);

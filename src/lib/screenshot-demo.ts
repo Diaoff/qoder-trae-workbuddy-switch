@@ -34,7 +34,7 @@ import { demoModeEnabled } from "./demo-mode";
 import { t } from "./i18n";
 import type { TranslationKey } from "@/locales/zh";
 import type { CompanionSnapshot } from "./companion";
-import type { AgentHookStatus, CheckinStatusEntry } from "./api";
+import type { AgentHookStatus, CheckinStatusEntry, QoderGatewayQuotaView } from "./api";
 import type { QoderGatewayConfigRaw } from "./qoder-gateway";
 
 export const screenshotDemoEnabled = demoModeEnabled;
@@ -1896,6 +1896,71 @@ function demoQoderGatewayConfig(): QoderGatewayConfigRaw {
     max_rotate: 3,
     preferred_uid: "q1",
     sticky_ttl_ms: 30 * 60 * 1000,
+    // 护栏演示：开着「当日 token」这一条（截图里要能看到「已拦」与用量列，
+    // 全关的话面板只会显示「未启用」，等于没演示）。
+    reserve_credits: 200,
+    daily_token_limit: 500_000,
+    model_daily_token_limit: 0,
+  };
+}
+
+/**
+ * 限额护栏视图（演示）：一条已拦、一条正常、一条停放。
+ *
+ * 三个账号故意各占一种状态 —— 截图能同时看到「可用 / 触到日限 / 余额耗尽停放」，
+ * 也顺带证明表里没有「恒 0」的假指标（token 是实打实记出来的数）。
+ */
+function demoQoderGatewayQuota(): QoderGatewayQuotaView {
+  const date = new Date().toISOString().slice(0, 10);
+  return {
+    date,
+    limits: {
+      reserveCredits: 200,
+      dailyTokenLimit: 500_000,
+      modelDailyTokenLimit: 0,
+      enabled: true,
+    },
+    accounts: [
+      {
+        uid: "q1",
+        name: "演示账号 · 主",
+        tokens: 128_430,
+        perModel: [
+          { model: "qmodel_38max", tokens: 96_120 },
+          { model: "glm-5.1", tokens: 32_310 },
+        ],
+        blocked: null,
+        blockedReason: null,
+        parkedUntil: null,
+        parkedReason: null,
+        creditsRemaining: 4_820,
+        creditsAt: Date.now(),
+      },
+      {
+        uid: "q2",
+        name: "演示账号 · 备用",
+        tokens: 500_000,
+        perModel: [{ model: "qmodel_38max", tokens: 500_000 }],
+        blocked: "daily_tokens",
+        blockedReason: "已达当日 token 上限（500000 / 500000）",
+        parkedUntil: null,
+        parkedReason: null,
+        creditsRemaining: 1_950,
+        creditsAt: Date.now(),
+      },
+      {
+        uid: "q3",
+        name: "演示账号 · 待重置",
+        tokens: 42_800,
+        perModel: [{ model: "qmodel_38max", tokens: 42_800 }],
+        blocked: "parked",
+        blockedReason: "余额耗尽停放中（明天 10:00 后自动恢复）",
+        parkedUntil: Date.now() + 12 * 3600 * 1000,
+        parkedReason: "HTTP 402：余额不足",
+        creditsRemaining: 0,
+        creditsAt: Date.now(),
+      },
+    ],
   };
 }
 
@@ -3045,6 +3110,9 @@ export function screenshotDemoResponse(command: string, args?: Record<string, un
     }
     /* issue #47：逐账号「今日签到状态」（只读；演示数据保留「缺席 / 未开放」两条边界）。 */
     case "qoder_checkin_status_map": return demoQoderCheckinStatusMap(demoAccountIds(args));
+    /* 限额护栏视图（只读）：演示里三条状态各占一个账号，截图能同时看到。 */
+    case "qoder_gateway_quota":
+      return demoQoderGatewayQuota();
     /* 一次性 Pro 升级包（+1800）：演示里**活动在线且可领**，截图才看得到入口。 */
     case "qoder_pro_pack_status":
       return { available: true, eligible: true, error: null };

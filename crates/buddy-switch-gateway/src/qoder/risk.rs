@@ -9,6 +9,7 @@
 //! | `queued` | 上游排队（`10605` / `isQueued`） | 换号，**不惩罚账号** |
 //! | `rateLimited` | 429 限流 | 按模型冷却 + 换号 |
 //! | `rejected` | 其它 4xx（参数错） | **不换号**，原样回给调用方 |
+//! | `exhausted` | 402 余额耗尽 | 停放至下一个额度重置窗口 + 换号 |
 //!
 //! 只看日志很难回答「今天到底是排队多还是限流多」。参考实现把它做成
 //! `/health` 上的遥测（`RISK_STATS`），运维据此判断该加号、该降速、还是该查客户端。
@@ -29,6 +30,8 @@ static QUEUED: AtomicU64 = AtomicU64::new(0);
 static RATE_LIMITED: AtomicU64 = AtomicU64::new(0);
 /// 其它 4xx（客户端参数错）：不换号。
 static REJECTED: AtomicU64 = AtomicU64::new(0);
+/// 402 余额耗尽：停放 + 换号（涨得快说明该充值 / 该减少账号复用）。
+static EXHAUSTED: AtomicU64 = AtomicU64::new(0);
 
 /// 记一次「上游排队」。
 pub fn note_queued() {
@@ -45,12 +48,18 @@ pub fn note_rejected() {
     REJECTED.fetch_add(1, Ordering::Relaxed);
 }
 
+/// 记一次「余额耗尽（402）」。
+pub fn note_exhausted() {
+    EXHAUSTED.fetch_add(1, Ordering::Relaxed);
+}
+
 /// 当前计数快照（`/health` 用）。
 pub fn snapshot() -> Value {
     json!({
         "queued": QUEUED.load(Ordering::Relaxed),
         "rateLimited": RATE_LIMITED.load(Ordering::Relaxed),
         "rejected": REJECTED.load(Ordering::Relaxed),
+        "exhausted": EXHAUSTED.load(Ordering::Relaxed),
     })
 }
 
@@ -60,6 +69,7 @@ pub fn reset_for_test() {
     QUEUED.store(0, Ordering::Relaxed);
     RATE_LIMITED.store(0, Ordering::Relaxed);
     REJECTED.store(0, Ordering::Relaxed);
+    EXHAUSTED.store(0, Ordering::Relaxed);
 }
 
 #[cfg(test)]
@@ -83,9 +93,12 @@ mod tests {
         assert_eq!(after["queued"], 2);
         assert_eq!(after["rateLimited"], 1);
         assert_eq!(after["rejected"], 0, "没记的信号不能跟着涨");
+        assert_eq!(after["exhausted"], 0);
 
         note_rejected();
         assert_eq!(snapshot()["rejected"], 1);
+        note_exhausted();
+        assert_eq!(snapshot()["exhausted"], 1);
         reset_for_test();
     }
 }

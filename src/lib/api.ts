@@ -224,6 +224,8 @@ const DEMO_READ_COMMANDS = new Set([
   // issue #47：逐账号「今日签到状态」（**只读**）。
   "qoder_checkin_status_map",
   "get_qoder_gateway_config", "qoder_gateway_status", "get_qoder_gateway_models",
+  // 限额护栏视图（只读；逐账号当日用量 + 拦截原因）。
+  "qoder_gateway_quota",
   "list_qoder_api_keys", "get_qoder_gateway_logs",
 ]);
 
@@ -557,6 +559,8 @@ const ROUTES: Record<string, Route> = {
   save_qoder_gateway_config: { method: "POST", path: "/api/qoder/gateway/config" },
   qoder_gateway_status: { method: "GET", path: "/api/qoder/gateway/status" },
   get_qoder_gateway_models: { method: "GET", path: "/api/qoder/gateway/models" },
+  // 限额护栏视图：逐账号当日 token / 拦截原因 / 余额快照（按区域分家）。
+  qoder_gateway_quota: { method: "GET", path: "/api/qoder/gateway/quota" },
   // 多 Key 管理（含归属区域）：GET 列表 / POST 创建同一路径。
   list_qoder_api_keys: { method: "GET", path: "/api/qoder/gateway/keys" },
   create_qoder_api_key: { method: "POST", path: "/api/qoder/gateway/keys" },
@@ -3275,6 +3279,35 @@ export function qoderProPackClaim(
   return call<QoderProPackClaimResult>("qoder_pro_pack_claim", { scope, uid });
 }
 
+/** 限额护栏视图（`GET /api/qoder/gateway/quota`）。 */
+export interface QoderGatewayQuotaView {
+  /** 记账日期（CST，`YYYY-MM-DD`）。 */
+  date: string;
+  limits: {
+    reserveCredits: number;
+    dailyTokenLimit: number;
+    modelDailyTokenLimit: number;
+    /** 三条是否有任意一条开着（全关时界面要说明「护栏未启用」）。 */
+    enabled: boolean;
+  };
+  accounts: {
+    uid: string;
+    name: string;
+    /** 今日经网关转发的 token 总量（prompt + completion）。 */
+    tokens: number;
+    perModel: { model: string; tokens: number }[];
+    /** 被拦的原因代号（`null` = 放行）：`parked` / `reserve` / `daily_tokens` / `model_tokens`。 */
+    blocked: string | null;
+    blockedReason: string | null;
+    /** 402 停放解冻时刻（毫秒；`null` = 没停放）。 */
+    parkedUntil?: number | null;
+    parkedReason?: string | null;
+    /** 最近一次余额读数（未知 = `null`，不是 0）。 */
+    creditsRemaining?: number | null;
+    creditsAt?: number | null;
+  }[];
+}
+
 /** 一条账号的额度行（`ok=false` 时带 `error`；部分失败不被伪装成全额）。 */
 export interface QoderCreditsRow {
   uid: string;
@@ -3450,6 +3483,15 @@ export function saveQoderGatewayConfig(config: QoderGatewayConfigRaw): Promise<u
 /** 网关运行状态 + 该区域账号池（`scope` 决定看哪本账号库）。 */
 export function qoderGatewayStatus(scope: Scope): Promise<unknown> {
   return call("qoder_gateway_status", { scope });
+}
+
+/**
+ * 限额护栏视图（逐账号当日用量 + 拦截原因 + 余额快照）。
+ *
+ * 与 `/gateway/status` 同一条纪律：`scope` 必填（两区两本计数文件，缺 scope 不该读任何一本）。
+ */
+export function qoderGatewayQuota(scope: Scope): Promise<QoderGatewayQuotaView> {
+  return call<QoderGatewayQuotaView>("qoder_gateway_quota", { scope });
 }
 
 /** 对外暴露的模型清单（**未过滤**禁用 + 来源 / 原因）。`refresh` ⇒ 绕过 10 分钟缓存。 */

@@ -369,6 +369,9 @@ pub fn probe_state_of_qoder(status: u16) -> ProbeState {
         // 探测只看状态码、拿不到 body ⇒ 认不出 401/403 里的排队信号；
         // 真到了这一档（`classify_http` 不会返回它）也按上游错误处理，不算账号死。
         QoderErrKind::Queued => ProbeState::UpstreamError,
+        // 402：账号级余额耗尽。探测的「一格」是**模型**维度，这里如实报上游错误
+        // （把账号标成「凭据死」是错的 —— 凭据好着，只是没钱了）。
+        QoderErrKind::BalanceExhausted => ProbeState::UpstreamError,
     }
 }
 

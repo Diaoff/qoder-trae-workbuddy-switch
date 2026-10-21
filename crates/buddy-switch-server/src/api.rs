@@ -485,6 +485,8 @@ fn api_routes() -> Router {
             get(api_qoder_gateway_config).post(api_save_qoder_gateway_config),
         )
         .route("/api/qoder/gateway/status", get(api_qoder_gateway_status))
+        // 限额护栏：逐账号当日用量 / 拦截原因 / 余额快照（只读）。
+        .route("/api/qoder/gateway/quota", get(api_qoder_gateway_quota))
         .route(
             "/api/qoder/gateway/pool/exclusions",
             post(api_set_qoder_pool_exclusion),
@@ -6881,7 +6883,14 @@ async fn api_qoder_pro_pack_claim(Json(body): Json<Value>) -> Response {
 /// GET /api/qoder/credits —— 区域额度 / 套餐视图（逐账号 + 汇总；部分失败如实报）。
 async fn api_qoder_credits(RawQuery(query): RawQuery) -> Response {
     match qoder_region_from_query(query.as_deref()) {
-        Ok(region) => json_ok(qoder::credits::region_view(region).await),
+        Ok(region) => {
+            let view = qoder::credits::region_view(region).await;
+            // ★ 顺手喂**限额护栏**的余额快照（G1 的唯一数据来源）：
+            //   余额是慢变数据，只有这里真的查过一次才有值；没查过 ⇒ G1 恒不触发。
+            //   「余额 > 0」也是解除 402 停放的唯一路径（见 `quota::note_credits_view`）。
+            buddy_switch_gateway::qoder::quota::note_credits_view(region, &view);
+            json_ok(view)
+        }
         Err(error) => json_err(error, StatusCode::BAD_REQUEST),
     }
 }
@@ -7148,6 +7157,23 @@ async fn api_qoder_gateway_status(RawQuery(query): RawQuery) -> Response {
         )
         .await,
     )
+}
+
+/// GET /api/qoder/gateway/quota —— **限额护栏**视图（逐账号当日用量 + 拦截原因）。
+///
+/// `scope` 必填且 fail-closed（与 `/status` 同一条纪律）：两个区域的计数是**两份文件**，
+/// 缺 scope 就无从判断该看哪一份。
+///
+/// 表里的 `blocked` / `blockedReason` 由**选号用的同一个函数**产出
+/// （`quota::blocked`）⇒ 面板说「已拦」就是真的会拦，不会两处口径。
+async fn api_qoder_gateway_quota(RawQuery(query): RawQuery) -> Response {
+    match qoder_region_from_query(query.as_deref()) {
+        Ok(region) => {
+            let state = crate::qoder_gateway_host::shared_state();
+            json_ok(state.quota_view(region).await)
+        }
+        Err(error) => json_err(error, StatusCode::BAD_REQUEST),
+    }
 }
 
 /// GET /api/qoder/gateway/models —— 对外暴露的模型清单（**随上游刷新**）。

@@ -39,6 +39,10 @@ export const DEFAULT_QODER_GATEWAY_CONFIG: QoderGatewayConfig = {
   preferredUid: "",
   stickyTtlMs: 30 * 60 * 1000,
   maxContext: true,
+  // 护栏默认全关（与 Rust `QoderGatewayConfig::default` 同口径）。
+  reserveCredits: 0,
+  dailyTokenLimit: 0,
+  modelDailyTokenLimit: 0,
 };
 
 /** 网关配置（前端形状）。 */
@@ -56,6 +60,12 @@ export interface QoderGatewayConfig {
   stickyTtlMs: number;
   /** 上下文上限策略（默认 true）。 */
   maxContext: boolean;
+  /** G1 余额地板（`<=` 即停；`0` = 关闭）。 */
+  reserveCredits: number;
+  /** G2 当日 token 上限（逐账号；`0` = 关闭）。 */
+  dailyTokenLimit: number;
+  /** G4 单模型当日 token 上限（`0` = 关闭）。 */
+  modelDailyTokenLimit: number;
 }
 
 /** 配置的线上形状（snake_case；写回时用）。 */
@@ -73,6 +83,12 @@ export interface QoderGatewayConfigRaw {
   sticky_ttl_ms: number;
   /** 上下文上限策略（默认 true）：清单声明最大窗口，false ⇒ 默认窗口。 */
   max_context?: boolean;
+  /** G1 余额地板（`0` = 关闭）。 */
+  reserve_credits: number;
+  /** G2 当日 token 上限（`0` = 关闭）。 */
+  daily_token_limit: number;
+  /** G4 单模型当日 token 上限（`0` = 关闭）。 */
+  model_daily_token_limit: number;
 }
 
 /**
@@ -260,6 +276,21 @@ export function normalizeQoderGatewayConfig(raw: unknown): QoderGatewayConfig {
       asNumber(read("stickyTtlMs", "sticky_ttl_ms")) ?? DEFAULT_QODER_GATEWAY_CONFIG.stickyTtlMs,
     maxContext:
       asBoolean(read("maxContext", "max_context")) ?? DEFAULT_QODER_GATEWAY_CONFIG.maxContext,
+    // 阈值：负数 / 非数字一律归一为 0（= 关闭）—— 负阈值会让**所有**账号被拦。
+    reserveCredits: Math.max(
+      0,
+      asNumber(read("reserveCredits", "reserve_credits")) ?? DEFAULT_QODER_GATEWAY_CONFIG.reserveCredits,
+    ),
+    dailyTokenLimit: Math.max(
+      0,
+      asNumber(read("dailyTokenLimit", "daily_token_limit")) ??
+        DEFAULT_QODER_GATEWAY_CONFIG.dailyTokenLimit,
+    ),
+    modelDailyTokenLimit: Math.max(
+      0,
+      asNumber(read("modelDailyTokenLimit", "model_daily_token_limit")) ??
+        DEFAULT_QODER_GATEWAY_CONFIG.modelDailyTokenLimit,
+    ),
   };
 }
 
@@ -283,6 +314,9 @@ export function toQoderGatewayConfigRaw(config: QoderGatewayConfig): QoderGatewa
     preferred_uid: config.preferredUid,
     sticky_ttl_ms: config.stickyTtlMs,
     max_context: config.maxContext,
+    reserve_credits: config.reserveCredits,
+    daily_token_limit: config.dailyTokenLimit,
+    model_daily_token_limit: config.modelDailyTokenLimit,
   };
 }
 

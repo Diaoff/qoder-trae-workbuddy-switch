@@ -25,6 +25,7 @@ import {
 } from "@/components/gateway/gateway-subnav";
 import { QoderApiKeyTable } from "@/components/gateway/qoder-api-key-table";
 import { QoderModelList } from "@/components/gateway/qoder-model-list";
+import { QoderQuotaGuard } from "@/components/gateway/qoder-quota-guard";
 import { ModelProbeCard } from "@/components/gateway/model-probe-card";
 import { TraeIntegrationGuide } from "@/components/gateway/trae-integration-guide";
 import { TraeRequestLog } from "@/components/gateway/trae-request-log";
@@ -86,6 +87,13 @@ interface ApiServiceSnapshot {
   status: QoderGatewayStatus | null;
   catalog: QoderGatewayCatalog;
   logs: QoderGatewayLogEntry[];
+  /**
+   * 限额护栏视图（逐账号当日用量 + 拦截原因）。
+   *
+   * 与其余四项**一起取**：护栏阈值存在配置里、用量存在网关里，分开取会出现
+   * 「阈值已改、读数还是旧的」这种自相矛盾的中间态（与本快照存在的理由同一条）。
+   */
+  quota: api.QoderGatewayQuotaView | null;
 }
 
 /**
@@ -149,17 +157,21 @@ export default function QoderApiServicePage() {
   }
 
   const loadSnapshot = useCallback(async (): Promise<ApiServiceSnapshot> => {
-    const [configRaw, statusRaw, catalogRaw, logsRaw] = await Promise.all([
+    const [configRaw, statusRaw, catalogRaw, logsRaw, quota] = await Promise.all([
       api.getQoderGatewayConfig(),
       api.qoderGatewayStatus(scope),
       api.getQoderGatewayModels(scope),
       api.getQoderGatewayLogs(),
+      // 护栏视图失败**不能拖垮整页**（配置 / 池 / 清单仍要能看）：失败即 `null`，
+      // 卡片会显示「还没读到」，而不是把整页打成错误态。
+      api.qoderGatewayQuota(scope).catch(() => null),
     ]);
     return {
       config: normalizeQoderGatewayConfig(configRaw),
       status: normalizeQoderGatewayStatus(statusRaw),
       catalog: normalizeQoderGatewayCatalog(catalogRaw),
       logs: normalizeQoderGatewayLogs(logsRaw),
+      quota,
     };
   }, [scope]);
 
@@ -272,6 +284,37 @@ export default function QoderApiServicePage() {
     }
     if (parsed === config.port) return;
     void persist({ port: parsed });
+  }
+
+  /** 正在重取护栏视图（只驱动按钮转圈）。 */
+  const [refreshingQuota, setRefreshingQuota] = useState(false);
+
+  /** 重取护栏视图（逐账号用量会随请求变化，值得一个显式刷新出口）。 */
+  async function onRefreshQuota() {
+    setRefreshingQuota(true);
+    try {
+      const quota = await api.qoderGatewayQuota(scope);
+      patchSnapshot({ quota });
+    } catch (e) {
+      toast.error(t("qoder.gateway.quota.refreshFailed"), { description: api.asError(e) });
+    } finally {
+      setRefreshingQuota(false);
+    }
+  }
+
+  /**
+   * 保存三条阈值。
+   *
+   * 走同一条 `persist`（保存 → 重启监听 → 重读状态），成功后**重取护栏视图** ——
+   * 阈值变了但表里的「已拦」还是按旧阈值算的，会让人以为保存没生效。
+   */
+  async function onSaveQuota(next: {
+    reserveCredits: number;
+    dailyTokenLimit: number;
+    modelDailyTokenLimit: number;
+  }) {
+    await persist(next);
+    void onRefreshQuota();
   }
 
   async function onClearLogs() {
@@ -630,6 +673,15 @@ export default function QoderApiServicePage() {
 
           {/* ---- 账号池（三平台共用同一张卡；tiles 与「恢复」动作走数据 / 插槽） ---- */}
           {section === "pool" && (
+            <>
+            {/* 限额护栏在池卡**之上**：它决定「谁能被选」，是池的上游条件。 */}
+            <QoderQuotaGuard
+              quota={snapshot?.quota ?? null}
+              refreshing={refreshingQuota}
+              saving={saving}
+              onRefresh={() => void onRefreshQuota()}
+              onSave={(next) => void onSaveQuota(next)}
+            />
             <AccountPoolCard
               pool={status?.pool ?? null}
               accounts={status?.accounts ?? []}
@@ -656,6 +708,7 @@ export default function QoderApiServicePage() {
                 { value: RANDOM_OPTION, label: t("shared.gateway.pool.strategyRandom") },
               ]}
             />
+            </>
           )}
 
           {/* ---- 请求日志 ---- */}

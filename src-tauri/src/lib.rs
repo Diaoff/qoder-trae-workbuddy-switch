@@ -611,6 +611,7 @@ pub fn run() {
             commands::save_qoder_gateway_config,
             commands::qoder_gateway_status,
             commands::get_qoder_gateway_models,
+            commands::qoder_gateway_quota,
             commands::list_qoder_api_keys,
             commands::create_qoder_api_key,
             commands::revoke_qoder_api_key,

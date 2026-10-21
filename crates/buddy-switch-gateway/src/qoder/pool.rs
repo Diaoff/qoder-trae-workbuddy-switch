@@ -61,6 +61,9 @@ pub enum QoderErrKind {
     /// ★ 上游**排队**（`10605` / `isQueued`，通常裹在 401/403 信封里）：
     /// 账号没问题、也不是凭据死 ⇒ **不冷却、不标 dead**，只轮换。
     Queued,
+    /// ★ 402：**余额耗尽**。额度按每日 10:00（UTC+8）重置 ⇒ 短冷却毫无意义
+    /// （几分钟后放出去只会再撞一次），要停到下一个重置窗口，见 `quota::park_exhausted`。
+    BalanceExhausted,
 }
 
 impl QoderErrKind {
@@ -71,6 +74,7 @@ impl QoderErrKind {
             QoderErrKind::Transient => "transient",
             QoderErrKind::ClientError => "client_error",
             QoderErrKind::Queued => "queued",
+            QoderErrKind::BalanceExhausted => "balance_exhausted",
         }
     }
 
@@ -84,6 +88,9 @@ impl QoderErrKind {
 pub fn classify_http(status: u16) -> QoderErrKind {
     match status {
         429 => QoderErrKind::RateLimited,
+        // ★ 402 = 余额耗尽（**不是**客户端参数错）：从前落到 `ClientError` ⇒ 不换号、
+        //   不冷却，每次请求都去撞同一个已经没钱的账号。
+        402 => QoderErrKind::BalanceExhausted,
         401 | 403 => QoderErrKind::AuthDead,
         500..=599 => QoderErrKind::Transient,
         400..=499 => QoderErrKind::ClientError,
@@ -367,12 +374,20 @@ pub struct InflightGuard {
 
 impl Drop for InflightGuard {
     fn drop(&mut self) {
-        // 防下溢：如果释放路径被意外走两次，也不能把计数减成天文数字。
-        let _ = self
-            .counter
-            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |current| {
-                Some(current.saturating_sub(1))
-            });
+        // 防下溢：如果释放路径被意外走两次，也不能把计数减成天文数字
+        // （手写 CAS 循环：`fetch_update` 已被标记 deprecated）。
+        let mut current = self.counter.load(Ordering::SeqCst);
+        while current > 0 {
+            match self.counter.compare_exchange(
+                current,
+                current - 1,
+                Ordering::SeqCst,
+                Ordering::SeqCst,
+            ) {
+                Ok(_) => break,
+                Err(actual) => current = actual,
+            }
+        }
     }
 }
 
@@ -525,6 +540,17 @@ impl QoderPool {
             QoderErrKind::Transient => {
                 entry.cooldown_until = now + 10_000;
                 entry.cooldown_reason = Some("上游暂时不可用".to_string());
+            }
+            QoderErrKind::BalanceExhausted => {
+                // 停到下一个额度重置窗口（10:00 UTC+8）；写进池条目的冷却轴让选号
+                // 立刻跳过，同时落进 `quota` 的停放账（跨重启有效）。
+                let until = crate::qoder::quota::park_exhausted(
+                    self.region.unwrap_or(QoderRegion::Cn),
+                    uid,
+                    reason,
+                );
+                entry.cooldown_until = until;
+                entry.cooldown_reason = Some("余额耗尽（等待额度重置）".to_string());
             }
             QoderErrKind::ClientError | QoderErrKind::Queued => {}
         }
@@ -1005,6 +1031,22 @@ mod tests {
         // 排队要换号（另一个号可能没排队），但**不是**客户端错。
         assert!(QoderErrKind::Queued.should_rotate());
         assert_eq!(QoderErrKind::Queued.as_str(), "queued");
+    }
+
+    /// ★ 402 = **余额耗尽**：不是「客户端参数错」，必须换号 + 停放（不是短冷却）。
+    ///
+    /// 可证伪：把 `classify_http` 的 `402 => BalanceExhausted` 删掉 ⇒ 402 落进
+    /// `ClientError`（`should_rotate() == false`）⇒ 每条请求都去撞同一个没钱的账号。
+    #[test]
+    fn classify_http_402_is_balance_exhausted() {
+        let kind = classify_http(402);
+        assert_eq!(kind, QoderErrKind::BalanceExhausted);
+        assert!(kind.should_rotate(), "余额耗尽要换号（别的号可能还有额度）");
+        assert_eq!(kind.as_str(), "balance_exhausted");
+        // 其余状态码不受影响。
+        assert_eq!(classify_http(400), QoderErrKind::ClientError);
+        assert_eq!(classify_http(401), QoderErrKind::AuthDead);
+        assert_eq!(classify_http(429), QoderErrKind::RateLimited);
     }
 
     /// `apply_error(Queued)` 不改 `auth_dead` / 冷却 / EMA —— 只留痕。
