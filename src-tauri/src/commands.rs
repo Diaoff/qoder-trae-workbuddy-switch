@@ -4446,6 +4446,22 @@ pub async fn qoder_checkin_claim(scope: String, uid: String) -> Result<Value, St
     qoder::checkin::claim_for(region, &uid).await
 }
 
+/// GET /api/qoder/pro-pack/status —— Pro 升级包资格（**只读**；`available=false` = 活动下线）。
+#[tauri::command(rename_all = "camelCase")]
+pub async fn qoder_pro_pack_status(scope: String, uid: String) -> Result<Value, String> {
+    let scope = resolve_scope_param(Some(&scope))?;
+    let region = require_qoder_region(scope)?;
+    qoder::checkin::pro_pack_status_for(region, &uid).await
+}
+
+/// POST /api/qoder/pro-pack/claim —— 领取 Pro 升级包（幂等；已领过 `already=true`）。
+#[tauri::command(rename_all = "camelCase")]
+pub async fn qoder_pro_pack_claim(scope: String, uid: String) -> Result<Value, String> {
+    let scope = resolve_scope_param(Some(&scope))?;
+    let region = require_qoder_region(scope)?;
+    qoder::checkin::pro_pack_claim_for(region, &uid).await
+}
+
 /// GET /api/qoder/checkin/status-map —— 逐账号「今日签到状态」（**只读**；issue #47）。
 ///
 /// `account_ids` 是**逗号分隔**的 uid 列表（与 HTTP 通道同一形状，见 server 侧

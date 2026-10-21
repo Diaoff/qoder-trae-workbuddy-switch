@@ -3045,6 +3045,16 @@ export function screenshotDemoResponse(command: string, args?: Record<string, un
     }
     /* issue #47：逐账号「今日签到状态」（只读；演示数据保留「缺席 / 未开放」两条边界）。 */
     case "qoder_checkin_status_map": return demoQoderCheckinStatusMap(demoAccountIds(args));
+    /* 一次性 Pro 升级包（+1800）：演示里**活动在线且可领**，截图才看得到入口。 */
+    case "qoder_pro_pack_status":
+      return { available: true, eligible: true, error: null };
+    case "qoder_pro_pack_claim":
+      return {
+        ok: true,
+        already: false,
+        available: true,
+        message: "已领取 Pro 升级包（+1800 积分）",
+      };
     /* Qoder 网关（只读五条）—— 形状与真机逐字段同构（snake_case / 未过滤清单 +
        逐条 `disabled` / 来源三级）。写操作（保存配置 / 建 Key / 吊销…）不进演示只读面。 */
     case "get_qoder_gateway_config": return demoQoderGatewayConfig();

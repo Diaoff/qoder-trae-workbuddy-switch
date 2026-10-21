@@ -541,6 +541,8 @@ const ROUTES: Record<string, Route> = {
   // issue #47 · 逐账号「今日签到状态」只读重取（`accountIds` 逗号分隔，见 Trae 侧同一注释）。
   qoder_checkin_status_map: { method: "GET", path: "/api/qoder/checkin/status-map" },
   qoder_checkin_claim: { method: "POST", path: "/api/qoder/checkin/claim" },
+  qoder_pro_pack_status: { method: "GET", path: "/api/qoder/pro-pack/status" },
+  qoder_pro_pack_claim: { method: "POST", path: "/api/qoder/pro-pack/claim" },
   qoder_credits: { method: "GET", path: "/api/qoder/credits" },
   qoder_oauth_start: { method: "POST", path: "/api/qoder/oauth/start" },
   qoder_oauth_status: { method: "POST", path: "/api/qoder/oauth/status" },
@@ -3241,6 +3243,36 @@ export interface QoderCheckinClaimResult {
 
 export function qoderCheckinClaim(scope: Scope, uid: string): Promise<QoderCheckinClaimResult> {
   return call<QoderCheckinClaimResult>("qoder_checkin_claim", { scope, uid });
+}
+
+/** Pro 升级包资格（**只读**；`available=false` = 活动已下线/本区域没有 ⇒ 不渲染入口）。 */
+export interface QoderProPackStatus {
+  available: boolean;
+  eligible: boolean;
+  /** 真正的失败（网络/5xx）；「不可领」不是错误。 */
+  error?: string | null;
+}
+
+export interface QoderProPackClaimResult {
+  ok: boolean;
+  /** 已领过（幂等成功）。 */
+  already: boolean;
+  /** 活动是否仍在线；`false` ⇒ 入口应当消失。 */
+  available: boolean;
+  message: string;
+}
+
+/** 查询 Pro 升级包资格（单账号）。 */
+export function qoderProPackStatus(scope: Scope, uid: string): Promise<QoderProPackStatus> {
+  return call<QoderProPackStatus>("qoder_pro_pack_status", { scope, uid });
+}
+
+/** 领取 Pro 升级包（幂等；已领过返回 `ok=true, already=true`）。 */
+export function qoderProPackClaim(
+  scope: Scope,
+  uid: string,
+): Promise<QoderProPackClaimResult> {
+  return call<QoderProPackClaimResult>("qoder_pro_pack_claim", { scope, uid });
 }
 
 /** 一条账号的额度行（`ok=false` 时带 `error`；部分失败不被伪装成全额）。 */

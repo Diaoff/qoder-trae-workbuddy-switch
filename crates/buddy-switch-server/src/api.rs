@@ -461,6 +461,9 @@ fn api_routes() -> Router {
             get(api_qoder_checkin_status_map),
         )
         .route("/api/qoder/checkin/claim", post(api_qoder_checkin_claim))
+        // 一次性 Pro 升级包（+1800）：资格查询（只读）/ 领取（幂等）。
+        .route("/api/qoder/pro-pack/status", get(api_qoder_pro_pack_status))
+        .route("/api/qoder/pro-pack/claim", post(api_qoder_pro_pack_claim))
         .route("/api/qoder/credits", get(api_qoder_credits))
         // OAuth 设备授权（PKCE S256）：发起 + 轮询。与 WB 的 `/api/oauth/*` 同形，
         // 但**按 scope 分家**（Qoder 的双区域各有自己的授权页与 client_id）。
@@ -6842,6 +6845,34 @@ async fn api_qoder_checkin_claim(Json(body): Json<Value>) -> Response {
         .unwrap_or("")
         .to_string();
     match qoder::checkin::claim_for(region, &uid).await {
+        Ok(value) => json_ok(value),
+        Err(error) => json_err(error, StatusCode::BAD_REQUEST),
+    }
+}
+
+/// GET /api/qoder/pro-pack/status —— Pro 升级包资格（**只读**）。
+///
+/// `available=false` ⇒ 活动已下线 / 本区域没有（真机 404 就是这一档）⇒ 前端**不渲染**入口。
+async fn api_qoder_pro_pack_status(RawQuery(query): RawQuery) -> Response {
+    let region = match qoder_region_from_query(query.as_deref()) {
+        Ok(region) => region,
+        Err(error) => return json_err(error, StatusCode::BAD_REQUEST),
+    };
+    let uid = query_value(query.as_deref(), "uid").unwrap_or_default();
+    match qoder::checkin::pro_pack_status_for(region, &uid).await {
+        Ok(value) => json_ok(value),
+        Err(error) => json_err(error, StatusCode::BAD_REQUEST),
+    }
+}
+
+/// POST /api/qoder/pro-pack/claim —— 领取 Pro 升级包（幂等；已领过 `already=true`）。
+async fn api_qoder_pro_pack_claim(Json(body): Json<Value>) -> Response {
+    let region = match qoder_region_from_body(&body) {
+        Ok(region) => region,
+        Err(error) => return json_err(error, StatusCode::BAD_REQUEST),
+    };
+    let uid = body.get("uid").and_then(Value::as_str).unwrap_or("");
+    match qoder::checkin::pro_pack_claim_for(region, uid).await {
         Ok(value) => json_ok(value),
         Err(error) => json_err(error, StatusCode::BAD_REQUEST),
     }

@@ -165,6 +165,14 @@ export default function QoderAccountsPage() {
   const [exportOpen, setExportOpen] = useState(false);
   const [exportTargets, setExportTargets] = useState<QoderAccountView[] | null>(null);
   const [detail, setDetail] = useState<QoderAccountView | null>(null);
+  /**
+   * Pro 升级包资格（按 uid 缓存）。
+   *
+   * ⚠️ `available=false`（活动下线，真机 404 就是这档）⇒ **不渲染入口**，不摆死按钮。
+   * 只在打开抽屉时查一次（单账号 1 个请求），不在列表首页批查（会翻 N 倍）。
+   */
+  const [proPack, setProPack] = useState<Record<string, api.QoderProPackStatus>>({});
+  const [proBusy, setProBusy] = useState<string | null>(null);
   const [detailAutoEditRemark, setDetailAutoEditRemark] = useState(false);
   const [detailAutoEditGroup, setDetailAutoEditGroup] = useState(false);
   /** 待确认的切换（账号 × 程序位）。 */
@@ -884,6 +892,67 @@ export default function QoderAccountsPage() {
     ];
   }, [detail, credits, t]);
 
+  /** 打开抽屉时查一次 Pro 升级包资格（活动下线/接口不可用 ⇒ 静默不渲染）。 */
+  useEffect(() => {
+    const uid = detail?.uid;
+    if (!uid) return;
+    let cancelled = false;
+    api
+      .qoderProPackStatus(scope, uid)
+      .then((status) => {
+        if (!cancelled) setProPack((prev) => ({ ...prev, [uid]: status }));
+      })
+      .catch(() => {
+        /* 资格查询失败**不打扰用户**：入口不渲染即可（真正失败会在领取时报）。 */
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [detail?.uid, scope]);
+
+  /**
+   * 领取 Pro 升级包。
+   *
+   * 成功/已领过都算成功（后端是幂等的）；领完把资格置为「已领」并**刷新额度**
+   * —— 否则用户看不到积分到账，会怀疑没领上。
+   */
+  const claimProPack = useCallback(
+    async (uid: string) => {
+      setProBusy(uid);
+      try {
+        const result = await api.qoderProPackClaim(scope, uid);
+        toast.success(result.message);
+        setProPack((prev) => ({
+          ...prev,
+          [uid]: { available: result.available, eligible: false, error: null },
+        }));
+        void loadEnrichment();
+      } catch (error) {
+        toast.error(api.asError(error));
+      } finally {
+        setProBusy(null);
+      }
+    },
+    [scope, loadEnrichment],
+  );
+
+  /** 抽屉里的福利包区块（活动在线才给）。 */
+  const detailProPack = useMemo(() => {
+    if (!detail) return null;
+    const status = proPack[detail.uid];
+    if (!status?.available) return null;
+    return {
+      title: t("qoder.page.accounts.pro.title"),
+      description: t("qoder.page.accounts.pro.desc"),
+      claimLabel: t("qoder.page.accounts.pro.claim"),
+      claimingLabel: t("qoder.page.accounts.pro.claiming"),
+      claimedLabel: t("qoder.page.accounts.pro.claimed"),
+      claimed: !status.eligible,
+      busy: proBusy === detail.uid,
+      onClaim: () => void claimProPack(detail.uid),
+    };
+  }, [detail, proPack, proBusy, t, claimProPack]);
+
   /**
    * 抽屉的签到区 —— 状态**明确可读**时给数值；读不到 / 无机器身份 / 本区域没活动时
    * 给一条**原因说明**（issue #66：从前这些情况整个 tab 直接消失，用户只看到「读不到」）。
@@ -1356,6 +1425,7 @@ export default function QoderAccountsPage() {
         refreshingKinds={detail ? refreshPartBusy.kindsOf(detail.uid) : []}
         onRefreshPart={detail ? (kind) => void onRefreshPart(detail, kind) : undefined}
         checkin={detailCheckin}
+        proPack={detailProPack}
         remark={detail?.remark ?? ""}
         onSaveRemark={detail ? (remark) => saveRemark(detail, remark) : undefined}
         autoEditRemark={detailAutoEditRemark}

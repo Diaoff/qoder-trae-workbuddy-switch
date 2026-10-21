@@ -291,6 +291,24 @@ export interface AccountDetailDrawerProps {
   actions?: DetailActions | null;
   /** 签到历史（近 7 天）；`null` / 空数组 = 不渲染该区块。 */
   checkinHistory?: DetailCheckinHistoryRow[] | null;
+  /**
+   * 一次性福利包（如 Qoder 的 Pro 升级包 +1800）。
+   *
+   * ⚠️ **只在活动确实在线时才传**（`available=false` ⇒ 传 `null`）：
+   * 摆一个点了必然失败的按钮，比没有这个功能坏得多。
+   */
+  proPack?: {
+    title: string;
+    description: string;
+    /** 三种按钮文案由**调用方**给（本抽屉是共用组件，不含任何平台专属词条）。 */
+    claimLabel: string;
+    claimingLabel: string;
+    claimedLabel: string;
+    /** 已领 / 不可领时按钮变徽章。 */
+    claimed: boolean;
+    busy: boolean;
+    onClaim: () => void;
+  } | null;
 }
 
 function packTone(pack: DetailPack): string {
@@ -341,6 +359,7 @@ export function AccountDetailDrawer({
   extClientLabel,
   actions = null,
   checkinHistory = null,
+  proPack = null,
 }: AccountDetailDrawerProps) {
   const t = useT();
   const [editing, setEditing] = useState(false);
@@ -847,6 +866,35 @@ export function AccountDetailDrawer({
 
               {(checkin || (checkinHistory && checkinHistory.length > 0)) && (
                 <TabsContent value="checkin" className="space-y-4 pt-1">
+              {/* ★ 一次性福利包（Pro 升级包）：活动在线时才渲染；已领则显示徽章。 */}
+              {proPack && (
+                <section
+                  className="flex items-center justify-between gap-3 rounded-md border border-border/60 bg-muted/30 px-3 py-2"
+                  data-act="pro-pack"
+                >
+                  <div className="min-w-0">
+                    <p className="text-[12.5px] font-medium">{proPack.title}</p>
+                    <p className="text-[11.5px] text-muted-foreground">{proPack.description}</p>
+                  </div>
+                  {proPack.claimed ? (
+                    <Badge variant="success" className="shrink-0">
+                      {proPack.claimedLabel}
+                    </Badge>
+                  ) : (
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      className="shrink-0"
+                      disabled={proPack.busy}
+                      onClick={proPack.onClaim}
+                    >
+                      {proPack.busy ? proPack.claimingLabel : proPack.claimLabel}
+                    </Button>
+                  )}
+                </section>
+              )}
+
               {/* ★ issue #66：状态说明 —— 「读不到」必须有原因，不能让签到 tab 静默消失。 */}
               {checkin?.notice && (
                 <p className="rounded-md border border-border/60 bg-muted/40 px-2.5 py-2 text-[11.5px] leading-relaxed text-muted-foreground">
