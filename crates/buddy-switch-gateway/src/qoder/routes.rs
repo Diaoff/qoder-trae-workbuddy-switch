@@ -96,7 +96,10 @@ pub enum Protocol {
 
 /// `GET /health`（免鉴权；`/healthz` 为兼容别名，见 [`crate::HEALTH_PATHS`]）。
 pub async fn health() -> Response {
-    axum::Json(json!({ "ok": true })).into_response()
+    /* 除 `ok` 外带一份**风控遥测**（排队 / 限流 / 客户端错，进程级累计）：
+    运维据此判断「该加号、该降速、还是该查客户端」，不必翻日志逐条数。
+    口径见 `qoder::risk`（只读、不落盘、重启清零）。 */
+    axum::Json(json!({ "ok": true, "risk": super::risk::snapshot() })).into_response()
 }
 
 /// 鉴权中间件：健康检查（[`crate::HEALTH_PATHS`]）免鉴权；其余端点校验 `Bearer <API Key>`。
@@ -447,6 +450,13 @@ pub async fn chat_for_region(
             .take(300)
             .collect();
         let kind = classify_http_with_detail(status_code, &detail);
+        // 遥测：与分类**同一处**记一次（别在别处重复计数，见 `qoder::risk`）。
+        match kind {
+            QoderErrKind::Queued => super::risk::note_queued(),
+            QoderErrKind::RateLimited => super::risk::note_rate_limited(),
+            QoderErrKind::ClientError => super::risk::note_rejected(),
+            QoderErrKind::AuthDead | QoderErrKind::Transient => {}
+        }
         {
             let mut pools = state.pools.lock().await;
             if let Some(pool) = pools.get_mut(&region) {
@@ -813,4 +823,28 @@ fn chat_completion_of(
             "total_tokens": 0
         })),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `/health` 的返回体带**风控遥测**（排队 / 限流 / 客户端错）。
+    ///
+    /// 键名是 wire 契约（运维 / 前端按它读）；缺了就等于把遥测藏起来。
+    #[tokio::test]
+    async fn health_reports_risk_telemetry() {
+        let response = health().await;
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("读得到 body");
+        let body: Value = serde_json::from_slice(&bytes).expect("必须是 JSON");
+        assert_eq!(body["ok"], true);
+        for key in ["queued", "rateLimited", "rejected"] {
+            assert!(
+                body["risk"][key].is_u64(),
+                "缺 `risk.{key}`（遥测契约）: {body}"
+            );
+        }
+    }
 }

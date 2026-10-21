@@ -31,6 +31,7 @@
 pub mod apikey;
 pub mod payload;
 pub mod pool;
+pub mod risk;
 pub mod routes;
 pub mod sse;
 
