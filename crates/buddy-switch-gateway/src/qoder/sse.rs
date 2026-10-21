@@ -942,7 +942,8 @@ impl<S> LeakGuardStream<S> {
             整帧透传 ⇒ 标记泄漏。 */
             let remainder = &text[split..];
             if split > 0 {
-                self.out.push_back(replace_content(&frame, &text[..split]));
+                self.out
+                    .push_back(head_content_frame(&frame, &text[..split]));
             }
             self.text.push_str(remainder);
             self.held_bytes += remainder.len();
@@ -1101,6 +1102,33 @@ fn replace_content(frame: &Bytes, content: &str) -> Bytes {
     Bytes::from(format!("data: {}\n\n", Value::Object(chunk)))
 }
 
+/// 把一帧改写成「只有这段正文」的中间帧：`content` 换成给定文本，`finish_reason` **强制为 null**。
+///
+/// ★ 为什么必须清 `finish_reason`：扣帧期可能是「散文 + 标记 + 收尾」同帧，散文先发出时
+/// 若把上游的 `finish_reason` 一起带走，收尾就**排在合成调用之前** —— Anthropic 侧靠
+/// 「见到 finish_reason 就补 usage」收尾，顺序一乱 usage 永远补不出来（同 #46-A 的约束）。
+/// 真正的收尾由扣住的那一帧负责（它保留上游原值）。
+fn head_content_frame(frame: &Bytes, content: &str) -> Bytes {
+    let rewritten = replace_content(frame, content);
+    let Some(text) = rewritten
+        .strip_prefix(b"data: ")
+        .and_then(|rest| std::str::from_utf8(rest).ok())
+    else {
+        return rewritten;
+    };
+    let Ok(Value::Object(mut chunk)) = serde_json::from_str::<Value>(text.trim()) else {
+        return rewritten;
+    };
+    if let Some(choices) = chunk.get_mut("choices").and_then(Value::as_array_mut) {
+        for choice in choices.iter_mut() {
+            if let Some(object) = choice.as_object_mut() {
+                object.insert("finish_reason".into(), Value::Null);
+            }
+        }
+    }
+    Bytes::from(format!("data: {}\n\n", Value::Object(chunk)))
+}
+
 /// 去掉 `content` 后 `delta` 是否已空（空帧不必发）。
 fn delta_is_empty(frame: &Bytes) -> bool {
     let Some(chunk) = parse_frame(frame) else {
@@ -1147,6 +1175,10 @@ pub struct DsmlGuardStream<S> {
     /// 被扣住的收尾帧（`finish_reason` 必须在合成调用**之后**发，否则 Anthropic 侧补不出 usage）。
     pending_finish: Option<Bytes>,
     saw_tool_calls: bool,
+    /// 本次是否**合成过**结构化调用（决定收尾要不要改写成 `tool_calls`）。
+    emitted_calls: bool,
+    /// 上游是否发过任何 `finish_reason`（没有 ⇒ 我们自己补一帧收尾）。
+    saw_finish: bool,
     meta: Map<String, Value>,
     index_base: i64,
     out: std::collections::VecDeque<Bytes>,
@@ -1161,6 +1193,8 @@ impl<S> DsmlGuardStream<S> {
             buffer: String::new(),
             pending_finish: None,
             saw_tool_calls: false,
+            emitted_calls: false,
+            saw_finish: false,
             meta: Map::new(),
             index_base: 0,
             out: std::collections::VecDeque::new(),
@@ -1217,6 +1251,7 @@ impl<S> DsmlGuardStream<S> {
             })
             .collect();
         self.index_base = base + tool_calls.len() as i64;
+        self.emitted_calls = true;
         self.out
             .push_back(self.frame(json!({ "tool_calls": tool_calls }), None));
     }
@@ -1263,10 +1298,26 @@ impl<S> DsmlGuardStream<S> {
             break;
         }
         if !self.buffering {
-            if let Some(frame) = self.pending_finish.take() {
-                self.out.push_back(frame);
-            }
+            self.emit_pending_finish();
         }
+    }
+
+    /// 发出被扣住的收尾帧。
+    ///
+    /// ★ 合成过调用时必须把 `finish_reason` 改写成 `tool_calls`（与 [`LeakGuardStream`]
+    /// 同一口径）：否则客户端收到「有 tool_calls 但 finish_reason=stop」，部分客户端
+    /// 会把它当普通回答、**不执行工具** —— 那正是 issue #66 的表症。
+    fn emit_pending_finish(&mut self) {
+        let Some(frame) = self.pending_finish.take() else {
+            return;
+        };
+        if !self.emitted_calls {
+            self.out.push_back(frame);
+            return;
+        }
+        let mut saw = false;
+        self.out
+            .push_back(strip_content(&frame, Some("tool_calls"), &mut saw));
     }
 
     /// 处理一帧。
@@ -1285,6 +1336,9 @@ impl<S> DsmlGuardStream<S> {
         }
         let content = delta_content(&chunk);
         let has_finish = chunk_finish_reason(&chunk).is_some();
+        if has_finish {
+            self.saw_finish = true;
+        }
 
         if self.buffering {
             if let Some(text) = &content {
@@ -1308,7 +1362,14 @@ impl<S> DsmlGuardStream<S> {
         }
 
         let Some(text) = content else {
-            self.out.push_back(frame);
+            // 收尾帧：合成过调用 ⇒ 必须改写成 `tool_calls`（否则客户端当普通回答、不执行工具）。
+            if has_finish && self.emitted_calls {
+                let mut saw = false;
+                self.out
+                    .push_back(strip_content(&frame, Some("tool_calls"), &mut saw));
+            } else {
+                self.out.push_back(frame);
+            }
             return;
         };
         match dsml_candidate_start(&text) {
@@ -1316,7 +1377,7 @@ impl<S> DsmlGuardStream<S> {
             Some(index) => {
                 let head = &text[..index];
                 if !head.is_empty() {
-                    self.out.push_back(replace_content(&frame, head));
+                    self.out.push_back(head_content_frame(&frame, head));
                 }
                 if has_finish {
                     // 收尾帧扣住：`finish_reason` 必须排在合成调用之后。
@@ -1345,8 +1406,12 @@ impl<S> DsmlGuardStream<S> {
                 self.flush_buffer();
             }
         }
-        if let Some(frame) = self.pending_finish.take() {
-            self.out.push_back(frame);
+        self.emit_pending_finish();
+        // 上游没给任何 `finish_reason`（罕见）但我们已经合成了调用 ⇒ 补一帧收尾，
+        // 否则客户端会一直等收尾（Anthropic 侧还会补不出 usage）。
+        if self.emitted_calls && !self.saw_finish {
+            self.out
+                .push_back(self.frame(json!({}), Some("tool_calls")));
         }
     }
 }
@@ -1948,10 +2013,32 @@ mod tests {
             text.contains("先探一下端口。"),
             "标签前的散文必须保留: {text}"
         );
-        // `finish_reason` 必须排在合成调用**之后**（Anthropic 侧靠它补 usage）。
+        // `finish_reason` 必须排在合成调用**之后**（Anthropic 侧靠它补 usage），
+        // 且必须改写成 `tool_calls`（写成 `stop` 会让部分客户端当普通回答、不执行工具）。
         let calls_at = text.find("\"tool_calls\":[").expect("有调用");
-        let finish_at = text.find("\"finish_reason\":\"stop\"").expect("有收尾");
+        let finish_at = text
+            .find("\"finish_reason\":\"tool_calls\"")
+            .unwrap_or_else(|| panic!("收尾必须是 tool_calls: {text}"));
         assert!(calls_at < finish_at, "收尾帧顺序错了: {text}");
+        assert!(
+            !text.contains("\"finish_reason\":\"stop\""),
+            "上游的 stop 必须被改写: {text}"
+        );
+    }
+
+    /// 上游没给任何 `finish_reason` 时，合成调用后必须**补一帧收尾**（否则客户端悬挂）。
+    #[tokio::test]
+    async fn dsml_guard_synthesizes_finish_when_upstream_omits_it() {
+        let frames = vec![
+            frame(
+                &json!({"id": "c1", "choices": [{"delta": {"content": "<｜｜DSML｜｜ calls><｜｜DSML｜｜ invoke name=\"ls\"><｜｜DSML｜｜ parameter name=\"path\">/tmp</｜｜DSML｜｜ parameter></｜｜DSML｜｜ invoke></｜｜DSML｜｜ calls>"}}]}),
+            ),
+            "data:{\"body\":\"[DONE]\"}\n".to_string(),
+        ];
+        let mut stream = DsmlGuardStream::new(QoderOpenAiStream::new(upstream_from(&frames)));
+        let text = collect(&mut stream).await;
+        assert!(text.contains("\"tool_calls\":["), "{text}");
+        assert!(text.contains("\"finish_reason\":\"tool_calls\""), "{text}");
     }
 
     /// P0：普通流（含数学 `<` 与 HTML 标签）经 DSML 守卫后**逐字不变**。
@@ -2056,6 +2143,40 @@ mod tests {
         assert_eq!(out.tool_calls[0]["function"]["name"], "ls");
         assert_eq!(out.content, "说明。");
         assert_eq!(out.finish_reason, "tool_calls");
+    }
+
+    /// 「散文 + 标记 + 收尾」同帧：收尾必须**排在合成调用之后**（否则 Anthropic 侧补不出 usage）。
+    #[tokio::test]
+    async fn head_frame_does_not_carry_the_upstream_finish_reason() {
+        let echo = format!(
+            "先看看。\n{}\n{}",
+            api::LEAK_MARKER,
+            json!([{ "name": "ls", "arguments": "{}" }])
+        );
+        let frames = vec![
+            frame(
+                &json!({"id": "c1", "choices": [{"delta": {"content": echo}, "finish_reason": "stop"}]}),
+            ),
+            "data:{\"body\":\"[DONE]\"}\n".to_string(),
+        ];
+        let mut stream = LeakGuardStream::new(
+            QoderOpenAiStream::new(upstream_from(&frames)),
+            Some(std::sync::Arc::new(std::collections::HashSet::from([
+                "ls".to_string()
+            ]))),
+        );
+        let text = collect(&mut stream).await;
+        let calls_at = text.find("\"tool_calls\":[").expect("有调用");
+        let finish_at = text
+            .find("\"finish_reason\":\"tool_calls\"")
+            .expect("有收尾");
+        assert!(calls_at < finish_at, "收尾必须排在调用之后: {text}");
+        assert_eq!(
+            text.matches("\"finish_reason\":\"").count(),
+            1,
+            "只允许一帧收尾: {text}"
+        );
+        assert!(text.contains("先看看。"), "{text}");
     }
 
     /// issue #66：**散文 + 标记落在同一帧**时，散文必须立刻发出、标记进扣帧流程。

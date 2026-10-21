@@ -1409,7 +1409,6 @@ pub fn parse_dsml_tool_calls(text: &str) -> (Option<Vec<Value>>, String) {
                     find_tag(text, end, DsmlTag::Calls { closing: true })
                 {
                     block = Some((start, close_end, end));
-                    cursor = close_end;
                     break;
                 }
             }
