@@ -3179,6 +3179,25 @@ export interface QoderCheckinRow {
   totalRewardCredits?: number;
   nextClaimAt?: number;
   lastClaimedAt?: number;
+  /**
+   * 状态来自哪条通道：`campaign`（活动平台，现行）/ `legacy`（旧签到通道兜底）。
+   *
+   * ⚠️ 只有 `campaign` 才能表达「本区域有活动但今天领不到」；`legacy` 只说明
+   * 「活动平台这一发没打上」，不能据此告诉用户「未开放」。
+   */
+  source?: string;
+  /** 风控身份来源：`runtime-info`（官方组件）/ `derived`（派生兜底）。 */
+  identity?: string;
+  /** 机器头状态：`native`（发了全套）/ `omitted`（一个都没发，见 `hint`）。 */
+  machineHeaders?: string;
+  /** 后端给出的可读说明（国际版无客户端时为什么会看不到活动）。 */
+  hint?: string;
+  /** 本地台账今天是否已盖章（只作提示，判据永远是 `todayCheckedIn`）。 */
+  stampedToday?: boolean;
+  /** 今日可得 / 今日已得 / 累计（活动平台口径）。 */
+  dailyCredit?: number;
+  todayCredit?: number | null;
+  totalCredits?: number;
 }
 
 /** 区域签到视图（国际版 `unavailable=true` + `reason`，不代表失败）。 */

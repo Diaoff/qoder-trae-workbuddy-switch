@@ -262,6 +262,14 @@ export interface AccountDetailDrawerProps {
     totalCredits?: number | null;
     streakDays?: number | null;
     checkinDates?: string[] | null;
+    /**
+     * 状态说明（读不到的原因 / 无机器身份 / 本区域没有活动）。
+     *
+     * ★ 为什么要有它：`checkin` 过去只承载「有数据」的那一半，于是**读不到**时整个
+     * 签到 tab 直接消失，用户只看到「读不到」三个字、没有任何可操作信息
+     * （issue #66 的「无法签到」就是这么被感知的）。
+     */
+    notice?: string | null;
   } | null;
   /** 头部是否展示「当前登录」徽章（原型 :3475）。缺省不展示。 */
   current?: boolean;
@@ -839,6 +847,12 @@ export function AccountDetailDrawer({
 
               {(checkin || (checkinHistory && checkinHistory.length > 0)) && (
                 <TabsContent value="checkin" className="space-y-4 pt-1">
+              {/* ★ issue #66：状态说明 —— 「读不到」必须有原因，不能让签到 tab 静默消失。 */}
+              {checkin?.notice && (
+                <p className="rounded-md border border-border/60 bg-muted/40 px-2.5 py-2 text-[11.5px] leading-relaxed text-muted-foreground">
+                  {checkin.notice}
+                </p>
+              )}
 {/* ★ B5：签到积分（**有数据才渲染** —— 不摆「+0」「0 天」这类无信息量的行）。 */}
               {checkin?.todayCheckedIn && (
                 <section>

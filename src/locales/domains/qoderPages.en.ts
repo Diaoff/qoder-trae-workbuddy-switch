@@ -184,6 +184,9 @@ export const en = {
   "qoder.page.accounts.checkin.batchPartial": "{ok} succeeded, {fail} failed",
   "qoder.page.accounts.checkin.resultOk": "{n} checked in",
   "qoder.page.accounts.checkin.resultFail": "{n} failed",
+  "qoder.page.accounts.checkin.noticeUnreadable": "Couldn't read check-in status: {error}",
+  "qoder.page.accounts.checkin.noticeNoMachine": "The official client's machine identity was not found, so check-in campaigns may be hidden in this region (check-in only — model relay is unaffected).",
+  "qoder.page.accounts.checkin.noticeNoCampaign": "No claimable check-in campaign right now (resets daily at 10:00).",
   "qoder.page.accounts.refresh.done": "Token refreshed for {name}",
   "qoder.page.accounts.refresh.batchDone": "Refreshed tokens for {n} accounts",
 

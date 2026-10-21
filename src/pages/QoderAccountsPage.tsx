@@ -884,17 +884,31 @@ export default function QoderAccountsPage() {
     ];
   }, [detail, credits, t]);
 
-  /** 抽屉的签到区 —— 只在签到状态**明确可读**时渲染（未知 = 不摆「+0」）。 */
+  /**
+   * 抽屉的签到区 —— 状态**明确可读**时给数值；读不到 / 无机器身份 / 本区域没活动时
+   * 给一条**原因说明**（issue #66：从前这些情况整个 tab 直接消失，用户只看到「读不到」）。
+   */
   const detailCheckin = useMemo(() => {
     if (!detail) return null;
     const row = checkinRows[detail.uid];
-    if (!row || !row.ok || row.todayCheckedIn === undefined) return null;
+    if (!row) return null;
+    const notice = !row.ok
+      ? t("qoder.page.accounts.checkin.noticeUnreadable", {
+          error: row.error ?? t("shared.stat.checkinUnreadable"),
+        })
+      : row.machineHeaders === "omitted"
+        ? t("qoder.page.accounts.checkin.noticeNoMachine")
+        : row.status === "NONE"
+          ? t("qoder.page.accounts.checkin.noticeNoCampaign")
+          : null;
+    if (row.todayCheckedIn === undefined && !notice) return null;
     return {
       todayCheckedIn: row.todayCheckedIn === true,
       rewardCredits: row.rewardCredits ?? null,
       streakDays: row.streakDays ?? null,
+      notice,
     };
-  }, [detail, checkinRows]);
+  }, [detail, checkinRows, t]);
 
   const detailActions = useMemo<DetailActions | null>(() => {
     if (!detail) return null;

@@ -1306,60 +1306,76 @@ fn classify_tag(inner: &str) -> (DsmlTag, Option<String>) {
     (kind, name)
 }
 
-/// 找下一个标签：`(起始字节, 结束字节, 标签内文)`。`<` 到 `>` 之间即内文。
+/// 找下一个**真正的标签**：`(起始字节, 结束字节, 标签内文)`。
+///
+/// 值里出现的裸 `<`（`if (a < b)`、`a<b>c`）会造出「假标签」：从 `<` 到最近的 `>`
+/// 之间若还有 `<`，说明这不是一个标签，跳过继续找。否则参数值会被**截断在假标签处**。
 fn next_tag(text: &str, from: usize) -> Option<(usize, usize, &str)> {
-    let start = from + text[from..].find('<')?;
-    let end = start + text[start..].find('>')? + 1;
-    Some((start, end, &text[start + 1..end - 1]))
+    let mut cursor = from;
+    loop {
+        let start = cursor + text[cursor..].find('<')?;
+        let rest = &text[start + 1..];
+        let Some(end_rel) = rest.find('>') else {
+            return None;
+        };
+        if rest[..end_rel].contains('<') {
+            cursor = start + 1;
+            continue;
+        }
+        let end = start + 1 + end_rel + 1;
+        return Some((start, end, &text[start + 1..end - 1]));
+    }
 }
 
-/// 解析一段 DSML 调用块内的 `invoke` 列表。
+/// 从 `from` 起找**指定种类**的标签（跳过其它标签与假标签）。
+fn find_tag(text: &str, from: usize, want: DsmlTag) -> Option<(usize, usize)> {
+    let mut cursor = from;
+    while let Some((start, end, inner)) = next_tag(text, cursor) {
+        if classify_tag(inner).0 == want {
+            return Some((start, end));
+        }
+        cursor = end;
+    }
+    None
+}
+
+/// 解析一段 DSML 调用块内的 `invoke` 列表（参数值里允许出现裸 `<`）。
 fn parse_dsml_invokes(block: &str) -> Vec<(String, Vec<(String, String)>)> {
     let mut out = Vec::new();
     let mut cursor = 0;
     while let Some((_start, end, inner)) = next_tag(block, cursor) {
         cursor = end;
         let (kind, name) = classify_tag(inner);
-        let DsmlTag::Invoke { closing: false } = kind else {
+        if kind != (DsmlTag::Invoke { closing: false }) {
             continue;
-        };
+        }
         let Some(name) = name else { continue };
-        // 收集本 invoke 内的参数，直到遇到 `</…invoke>`。
+        // 本 invoke 的边界：配对的 `</…invoke>`（缺失 ⇒ 剩余全部，截断形态也尽量取值）。
+        let (body_end, next_cursor) = match find_tag(block, end, DsmlTag::Invoke { closing: true })
+        {
+            Some((close_start, close_end)) => (close_start, close_end),
+            None => (block.len(), block.len()),
+        };
+        let body = &block[end..body_end];
         let mut params: Vec<(String, String)> = Vec::new();
-        let mut inner_cursor = end;
-        while let Some((_p_start, p_end, p_inner)) = next_tag(block, inner_cursor) {
+        let mut inner_cursor = 0;
+        while let Some((_p_start, p_end, p_inner)) = next_tag(body, inner_cursor) {
             inner_cursor = p_end;
             let (p_kind, p_name) = classify_tag(p_inner);
-            match p_kind {
-                DsmlTag::Invoke { closing: true } => break,
-                DsmlTag::Parameter { closing: false } => {
-                    let Some(p_name) = p_name else {
-                        continue;
-                    };
-                    // 参数值 = 本开标签之后 到 下一个标签（即 `</…parameter>`）之前。
-                    let value_end = match next_tag(block, p_end) {
-                        Some((next_start, next_end, next_inner)) => {
-                            let (next_kind, _) = classify_tag(next_inner);
-                            if next_kind == (DsmlTag::Parameter { closing: true }) {
-                                inner_cursor = next_end;
-                                next_start
-                            } else {
-                                // 没有闭标签：把剩余全部当值（截断形态，值仍可用）。
-                                block.len()
-                            }
-                        }
-                        None => block.len(),
-                    };
-                    params.push((p_name, block[p_end..value_end].trim().to_string()));
-                    if value_end == block.len() {
-                        break;
-                    }
-                }
-                _ => {}
+            if p_kind != (DsmlTag::Parameter { closing: false }) {
+                continue;
             }
+            let Some(p_name) = p_name else { continue };
+            let (value_end, after) =
+                match find_tag(body, p_end, DsmlTag::Parameter { closing: true }) {
+                    Some((value_end, close_end)) => (value_end, close_end),
+                    None => (body.len(), body.len()),
+                };
+            params.push((p_name, body[p_end..value_end].trim().to_string()));
+            inner_cursor = after;
         }
         out.push((name, params));
-        cursor = inner_cursor;
+        cursor = next_cursor;
     }
     out
 }
@@ -1389,16 +1405,11 @@ pub fn parse_dsml_tool_calls(text: &str) -> (Option<Vec<Value>>, String) {
         let (kind, _) = classify_tag(inner);
         match kind {
             DsmlTag::Calls { closing: false } => {
-                let mut inner_cursor = end;
-                while let Some((_c_start, c_end, c_inner)) = next_tag(text, inner_cursor) {
-                    inner_cursor = c_end;
-                    if classify_tag(c_inner).0 == (DsmlTag::Calls { closing: true }) {
-                        block = Some((start, c_end, end));
-                        cursor = c_end;
-                        break;
-                    }
-                }
-                if block.is_some() {
+                if let Some((_close_start, close_end)) =
+                    find_tag(text, end, DsmlTag::Calls { closing: true })
+                {
+                    block = Some((start, close_end, end));
+                    cursor = close_end;
                     break;
                 }
             }
@@ -2486,6 +2497,19 @@ mod tests {
         assert!(parse_dsml_tool_calls("<div class=\"x\">hi</div>")
             .0
             .is_none());
+
+        // 参数值里允许出现裸 `<`（含形如 `a<b>c` 的「假标签」）——不能被截断。
+        let tricky = "<｜｜DSML｜｜ calls><｜｜DSML｜｜ invoke name=\"shell\">\
+                      <｜｜DSML｜｜ parameter name=\"command\">if (a < b) { echo a<b>c }</｜｜DSML｜｜ parameter>\
+                      </｜｜DSML｜｜ invoke></｜｜DSML｜｜ calls>";
+        let (calls, _) = parse_dsml_tool_calls(tricky);
+        let arguments: Value = serde_json::from_str(
+            calls.expect("含裸 `<` 的参数仍应还原")[0]["function"]["arguments"]
+                .as_str()
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(arguments["command"], "if (a < b) { echo a<b>c }");
     }
 
     #[test]

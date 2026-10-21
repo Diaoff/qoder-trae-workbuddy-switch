@@ -192,6 +192,9 @@ export const zh = {
   "qoder.page.accounts.checkin.batchPartial": "成功 {ok} 个，失败 {fail} 个",
   "qoder.page.accounts.checkin.resultOk": "签到成功 {n} 个",
   "qoder.page.accounts.checkin.resultFail": "签到失败 {n} 个",
+  "qoder.page.accounts.checkin.noticeUnreadable": "读不到签到状态：{error}",
+  "qoder.page.accounts.checkin.noticeNoMachine": "未检测到官方客户端的机器身份，本区域的签到活动可能不可见（只影响签到，不影响模型中转）。",
+  "qoder.page.accounts.checkin.noticeNoCampaign": "当前没有可领取的签到活动（每日 10:00 刷新）。",
   "qoder.page.accounts.refresh.done": "{name} 的令牌已刷新",
   "qoder.page.accounts.refresh.batchDone": "已刷新 {n} 个账号的令牌",
 
