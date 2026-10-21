@@ -314,7 +314,7 @@ pub struct FlattenedMessages {
 /// - assistant 的 `tool_calls`：structured 原样透传（arguments 统一成 JSON 字符串）；
 ///   否则序列化为 `<LEAK_MARKER>\n<JSON 数组>` 塞进 content。
 /// - assistant 的 `reasoning_content` 仅在 `keep_reasoning=true`（DeepSeek 族）时保留。
-/// 历史工具结果**单侧**保留字符数（0 = 关闭削减）。
+///   历史工具结果**单侧**保留字符数（0 = 关闭削减）。
 ///
 /// 为什么要它：长历史里的工具输出（构建日志 / 文件内容 / 测试回显）占掉的 token
 /// 常常比正文还多；而且**文本化历史里的工具结果是回声的主要来源**（模型照着复述）。
@@ -1682,9 +1682,7 @@ fn next_tag(text: &str, from: usize) -> Option<(usize, usize, &str)> {
     loop {
         let start = cursor + text[cursor..].find('<')?;
         let rest = &text[start + 1..];
-        let Some(end_rel) = rest.find('>') else {
-            return None;
-        };
+        let end_rel = rest.find('>')?;
         if rest[..end_rel].contains('<') {
             cursor = start + 1;
             continue;
@@ -1770,16 +1768,15 @@ pub fn parse_dsml_tool_calls(text: &str) -> (Option<Vec<Value>>, String) {
     while let Some((start, end, inner)) = next_tag(text, cursor) {
         cursor = end;
         let (kind, _) = classify_tag(inner);
-        match kind {
-            DsmlTag::Calls { closing: false } => {
-                if let Some((_close_start, close_end)) =
-                    find_tag(text, end, DsmlTag::Calls { closing: true })
-                {
-                    block = Some((start, close_end, end));
-                    break;
-                }
+        // ⚠️ 只关心「calls 开标签」这一种，其余一律忽略 ⇒ `if let` 足够
+        // （`match` 单分支写法会被 clippy::single_match 拦下）。
+        if let DsmlTag::Calls { closing: false } = kind {
+            if let Some((_close_start, close_end)) =
+                find_tag(text, end, DsmlTag::Calls { closing: true })
+            {
+                block = Some((start, close_end, end));
+                break;
             }
-            _ => {}
         }
     }
     let Some((start, end, content_start)) = block else {

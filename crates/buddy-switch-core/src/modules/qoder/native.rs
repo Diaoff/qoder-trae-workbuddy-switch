@@ -64,11 +64,16 @@ const NEGATIVE_TTL: Duration = Duration::from_secs(300);
 /// 单次调用的超时（组件正常约 3.7s；给足余量，但仍必须有上界）。
 const RUN_TIMEOUT_SECS: u64 = 25;
 
-/// 进程内缓存：`区域 -> (取到时刻, 身份)`。身份是机器级的 ⇒ 键只到区域。
-static CACHE: OnceLock<Mutex<HashMap<QoderRegion, (Instant, Option<NativeIdentity>)>>> =
-    OnceLock::new();
+/// 缓存条目：`区域 -> (取到时刻, 身份)`。
+///
+/// ⚠️ 单独起个类型别名：直接内联 `HashMap<QoderRegion, (Instant, Option<NativeIdentity>)>`
+/// 会被 clippy::type_complexity 拦下（类型嵌套超过阈值）。
+type IdentityCache = HashMap<QoderRegion, (Instant, Option<NativeIdentity>)>;
 
-fn cache() -> &'static Mutex<HashMap<QoderRegion, (Instant, Option<NativeIdentity>)>> {
+/// 进程内缓存。身份是机器级的 ⇒ 键只到区域。
+static CACHE: OnceLock<Mutex<IdentityCache>> = OnceLock::new();
+
+fn cache() -> &'static Mutex<IdentityCache> {
     CACHE.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
@@ -161,7 +166,7 @@ fn desktop_install_dir(region: QoderRegion) -> Option<PathBuf> {
     let base = local_appdata()?;
     for name in launcher_dir_names(region) {
         for launcher in [format!("{name} Launcher"), "Launcher".to_string()] {
-            let ini = base.join(&name).join(&launcher).join("state.ini");
+            let ini = base.join(name).join(&launcher).join("state.ini");
             if let Ok(text) = std::fs::read(&ini) {
                 if let Some(dir) = parse_state_ini(&text) {
                     let path = PathBuf::from(dir);

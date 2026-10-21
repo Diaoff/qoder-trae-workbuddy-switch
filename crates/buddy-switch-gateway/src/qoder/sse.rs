@@ -1368,6 +1368,14 @@ impl<S> DsmlGuardStream<S> {
     }
 
     /// 结算缓冲：能还原就还原，能证伪就放行，否则继续等（跨帧）。
+    // ⚠️ `allow(clippy::never_loop)` 是**刻意**的：这个 `loop` 的每条分支都 `break`，
+    // 它确实不循环（clippy::never_loop 说得对）。
+    // 但**不能**把它改写成「顺序流程 + 提前 return」——
+    // 原 `loop` 里 `if !self.buffering { break; }` 会跳出后**继续**走函数末尾的
+    // `if !self.buffering { self.emit_pending_finish(); }`（收尾帧由此发出）；
+    // 改成 return 就会**漏掉收尾帧** ⇒ 客户端收不到 `finish_reason`。
+    // ⇒ 保留 `loop` + 显式 allow：语义零变化，且意图写在代码里。
+    #[allow(clippy::never_loop)]
     fn settle(&mut self) {
         loop {
             if !self.buffering {

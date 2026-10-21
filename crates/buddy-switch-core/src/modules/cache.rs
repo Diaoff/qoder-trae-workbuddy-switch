@@ -450,7 +450,7 @@ mod tests {
     /// ⚠️ 覆盖值必须是**已存在的绝对目录**（`home_dir_override` 的护栏）⇒ 先建目录
     /// 再拿 `HomeOverrideGuard` 钉住。返回的 guard 必须活到断言结束。
     fn fixture(tag: &str) -> (tempfile::TempDir, HomeOverrideGuard) {
-        let root = tempfile::TempDir::with_prefix(&format!("buddy-switch-cache-{tag}-"))
+        let root = tempfile::TempDir::with_prefix(format!("buddy-switch-cache-{tag}-"))
             .expect("建不了临时目录");
         let guard = config::HomeOverrideGuard::set(root.path());
         (root, guard)

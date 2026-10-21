@@ -404,7 +404,7 @@ fn with_store<R>(region: QoderRegion, action: impl FnOnce(&mut QuotaStore) -> R)
 /// `credits` 取自上游 `usage.credits`（真机确认每帧都有，浮点）；缺失按 0 记 ——
 /// 那是「少记」的方向，最坏结果是 G3 晚一点触发（fail-open），不会误拦。
 pub fn record_usage(region: QoderRegion, uid: &str, model: &str, tokens: u64, credits: f64) {
-    if uid.is_empty() || (tokens == 0 && !(credits > 0.0)) {
+    if uid.is_empty() || (tokens == 0 && credits <= 0.0) {
         return;
     }
     let now = now_ms();
@@ -1002,7 +1002,7 @@ mod tests {
         let mut store = QuotaStore::default();
         store.record(TODAY, "", "m1", 100, 0.0);
         store.record(TODAY, "u1", "m1", 0, 0.0);
-        assert!(store.days.get(TODAY).is_none());
+        assert!(!store.days.contains_key(TODAY));
     }
 
     /// 配置里的负数一律归一成 0（关闭）—— 负阈值会让**所有**账号被拦。

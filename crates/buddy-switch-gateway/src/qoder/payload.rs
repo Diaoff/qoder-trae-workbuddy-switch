@@ -340,7 +340,7 @@ mod tests {
     /// 没有 `context_config` 的老条目 ⇒ 用 `max_input_tokens` 单档，开关不改变结果。
     #[test]
     fn context_switch_handles_single_window_entries() {
-        let catalog = vec![json!({"key": "legacy", "max_input_tokens": 128_000})];
+        let catalog = [json!({"key": "legacy", "max_input_tokens": 128_000})];
         assert_eq!(selected_window(&catalog[0], true), Some(128_000));
         assert_eq!(selected_window(&catalog[0], false), Some(128_000));
     }
