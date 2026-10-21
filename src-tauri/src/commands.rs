@@ -4640,6 +4640,16 @@ pub async fn qoder_gateway_status(app: tauri::AppHandle, scope: String) -> Resul
     .await)
 }
 
+/// GET /api/qoder/gateway/quota —— **限额护栏**视图（逐账号当日用量 + 拦截原因）。
+///
+/// 与 `/gateway/status` 同一条纪律：`scope` 必填（两区两本计数文件）。
+#[tauri::command]
+pub async fn qoder_gateway_quota(scope: String) -> Result<Value, String> {
+    let scope = resolve_scope_param(Some(&scope))?;
+    let region = require_qoder_region(scope)?;
+    Ok(qoder_gateway::shared_state().quota_view(region).await)
+}
+
 /// GET /api/qoder/gateway/models —— 对外暴露的模型清单（**随上游刷新**）。
 ///
 /// 与 Trae 侧不同：Qoder **没有静态常量清单**，清单只能向官方拉（需账号凭据）。
@@ -4652,18 +4662,6 @@ pub async fn qoder_gateway_status(app: tauri::AppHandle, scope: String) -> Resul
 ///
 /// 响应形状由 gateway crate 的 `payload::admin_models_response` **唯一产出**
 /// （两宿主共用，本层不拼装）。`refresh = true` ⇒ 绕过 10 分钟缓存强制重拉。
-#[tauri::command]
-/// GET /api/qoder/gateway/quota —— **限额护栏**视图（逐账号当日用量 + 拦截原因）。
-///
-/// 与 `/gateway/status` 同一条纪律：`scope` 必填（两区两本计数文件）。
-#[tauri::command]
-pub async fn qoder_gateway_quota(scope: String) -> Result<Value, String> {
-    let scope = resolve_scope_param(Some(&scope))?;
-    let region = require_qoder_region(scope)?;
-    Ok(qoder_gateway::shared_state().quota_view(region).await)
-}
-
-/// GET /api/qoder/gateway/models —— 对外暴露的模型清单（**随上游刷新**）。
 #[tauri::command]
 pub async fn get_qoder_gateway_models(
     scope: String,
