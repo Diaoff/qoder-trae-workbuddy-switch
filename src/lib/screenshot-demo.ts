@@ -1900,6 +1900,7 @@ function demoQoderGatewayConfig(): QoderGatewayConfigRaw {
     // 全关的话面板只会显示「未启用」，等于没演示）。
     reserve_credits: 200,
     daily_token_limit: 500_000,
+    daily_credit_limit: 50,
     model_daily_token_limit: 0,
   };
 }
@@ -1917,6 +1918,7 @@ function demoQoderGatewayQuota(): QoderGatewayQuotaView {
     limits: {
       reserveCredits: 200,
       dailyTokenLimit: 500_000,
+      dailyCreditLimit: 50,
       modelDailyTokenLimit: 0,
       enabled: true,
     },
@@ -1925,6 +1927,7 @@ function demoQoderGatewayQuota(): QoderGatewayQuotaView {
         uid: "q1",
         name: "演示账号 · 主",
         tokens: 128_430,
+        credits: 18.42,
         perModel: [
           { model: "qmodel_38max", tokens: 96_120 },
           { model: "glm-5.1", tokens: 32_310 },
@@ -1940,6 +1943,7 @@ function demoQoderGatewayQuota(): QoderGatewayQuotaView {
         uid: "q2",
         name: "演示账号 · 备用",
         tokens: 500_000,
+        credits: 62.5,
         perModel: [{ model: "qmodel_38max", tokens: 500_000 }],
         blocked: "daily_tokens",
         blockedReason: "已达当日 token 上限（500000 / 500000）",
@@ -1952,6 +1956,7 @@ function demoQoderGatewayQuota(): QoderGatewayQuotaView {
         uid: "q3",
         name: "演示账号 · 待重置",
         tokens: 42_800,
+        credits: 7.15,
         perModel: [{ model: "qmodel_38max", tokens: 42_800 }],
         blocked: "parked",
         blockedReason: "余额耗尽停放中（明天 10:00 后自动恢复）",

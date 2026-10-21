@@ -522,6 +522,7 @@ pub async fn chat_for_region(
                     wants_stream,
                     0,
                     0,
+                    0.0,
                     Some(detail.clone()),
                 )
                 .await;
@@ -580,6 +581,7 @@ pub async fn chat_for_region(
             wants_stream,
             0,
             0,
+            0.0,
             Some(message.clone()),
         )
         .await;
@@ -655,6 +657,20 @@ fn usage_counts(usage: &Value) -> (u64, u64) {
         .and_then(Value::as_u64)
         .unwrap_or(0);
     (prompt, completion)
+}
+
+/// 本发消耗的 **credit**（上游 `usage.credits`，浮点；缺 `credits` 时回落
+/// `original_credits` —— 某些模型只给后者）。
+///
+/// ⚠️ 这是 **G3 的计数来源**，也是日志里的 `credits`：拿不到就记 0（少记 = 晚触发，
+/// 不会误拦）。
+fn usage_credits(usage: &Value) -> f64 {
+    usage
+        .get("credits")
+        .and_then(Value::as_f64)
+        .or_else(|| usage.get("original_credits").and_then(Value::as_f64))
+        .filter(|value| value.is_finite() && *value > 0.0)
+        .unwrap_or(0.0)
 }
 
 /// 流式中继：驱动转换流 → mpsc → 响应体；**流结束回调里**记账（绝不提前写日志）。
@@ -741,9 +757,12 @@ async fn stream_relay(
         }
         // ★ 账本在**流结束**之后落（usage 只在末帧到达；提前写会记成 0）。
         let usage = usage_slot.lock().ok().and_then(|guard| guard.clone());
-        let (prompt_tokens, completion_tokens) = match &usage {
-            Some(usage) => usage_counts(usage),
-            None => (0, 0),
+        let (prompt_tokens, completion_tokens, credits) = match &usage {
+            Some(usage) => {
+                let (prompt, completion) = usage_counts(usage);
+                (prompt, completion, usage_credits(usage))
+            }
+            None => (0, 0, 0.0),
         };
         // 上游中途发过错误帧 ⇒ 记 502 + 详情，别写成「200 / 0 token / 无错误」
         // （那正是 issue #46 里最难排查的形态）。
@@ -763,6 +782,7 @@ async fn stream_relay(
                 true,
                 prompt_tokens as i64,
                 completion_tokens as i64,
+                credits,
                 error,
             )
             .await;
@@ -789,9 +809,12 @@ async fn aggregate_relay(
 ) -> Response {
     let aggregated = sse::aggregate(response.bytes_stream(), allowed_tools.as_ref()).await;
     let usage = aggregated.usage.clone();
-    let (prompt_tokens, completion_tokens) = match &usage {
-        Some(usage) => usage_counts(usage),
-        None => (0, 0),
+    let (prompt_tokens, completion_tokens, credits) = match &usage {
+        Some(usage) => {
+            let (prompt, completion) = usage_counts(usage);
+            (prompt, completion, usage_credits(usage))
+        }
+        None => (0, 0, 0.0),
     };
     // ★ 账本先定「这一请求到底成没成」再落：上游只要给过错误帧就不是 200，
     //   否则日志会显示「200 + 0 token + error:null」（issue #46 的隐身故障）。
@@ -810,6 +833,7 @@ async fn aggregate_relay(
             false,
             prompt_tokens as i64,
             completion_tokens as i64,
+            credits,
             log_error,
         )
         .await;
@@ -897,6 +921,36 @@ fn chat_completion_of(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `usage_credits`：取 `credits`，缺失回落 `original_credits`；非法值一律 0。
+    ///
+    /// 可证伪：把 `.filter(|value| value.is_finite() && *value > 0.0)` 删掉 ⇒ NaN / 负数
+    /// 会进 G3 的累加，把「当日已用」算成负的（护栏永远不触发，而面板显示奇怪的小数）。
+    #[test]
+    fn usage_credits_reads_credits_with_fallback() {
+        assert_eq!(
+            usage_credits(&serde_json::json!({"credits": 0.3486})),
+            0.3486
+        );
+        assert_eq!(
+            usage_credits(&serde_json::json!({"original_credits": 1.5})),
+            1.5,
+            "只给 original_credits 的模型也要计"
+        );
+        // `credits` 优先于 `original_credits`（前者是实际计费值）。
+        assert_eq!(
+            usage_credits(&serde_json::json!({"credits": 0.5, "original_credits": 2.0})),
+            0.5
+        );
+        for bad in [
+            serde_json::json!({}),
+            serde_json::json!({"credits": 0}),
+            serde_json::json!({"credits": -1}),
+            serde_json::json!({"credits": "0.3"}),
+        ] {
+            assert_eq!(usage_credits(&bad), 0.0, "{bad}");
+        }
+    }
 
     /// `/health` 的返回体带**风控遥测**（排队 / 限流 / 客户端错）。
     ///

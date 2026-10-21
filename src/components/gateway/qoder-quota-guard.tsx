@@ -38,6 +38,7 @@ export interface QoderQuotaGuardProps {
   onSave: (limits: {
     reserveCredits: number;
     dailyTokenLimit: number;
+    dailyCreditLimit: number;
     modelDailyTokenLimit: number;
   }) => void;
 }
@@ -96,6 +97,15 @@ function parseLimit(raw: string): number | null {
   return Number.isFinite(value) ? value : null;
 }
 
+/** 解析 credit 阈值草稿：允许小数（上游按 0.0x 计价）；空串 = 0（关）。 */
+function parseCredit(raw: string): number | null {
+  const text = raw.trim();
+  if (text === "") return 0;
+  if (!/^\d+(\.\d+)?$/.test(text)) return null;
+  const value = Number.parseFloat(text);
+  return Number.isFinite(value) ? value : null;
+}
+
 export function QoderQuotaGuard({
   quota,
   refreshing,
@@ -109,32 +119,43 @@ export function QoderQuotaGuard({
   const limits = quota?.limits;
   const [reserve, setReserve] = useState(() => String(limits?.reserveCredits ?? 0));
   const [daily, setDaily] = useState(() => String(limits?.dailyTokenLimit ?? 0));
+  const [credit, setCredit] = useState(() => String(limits?.dailyCreditLimit ?? 0));
   const [perModel, setPerModel] = useState(() => String(limits?.modelDailyTokenLimit ?? 0));
 
   useEffect(() => {
     if (!limits) return;
     setReserve(String(limits.reserveCredits));
     setDaily(String(limits.dailyTokenLimit));
+    setCredit(String(limits.dailyCreditLimit));
     setPerModel(String(limits.modelDailyTokenLimit));
-  }, [limits?.reserveCredits, limits?.dailyTokenLimit, limits?.modelDailyTokenLimit]);
+  }, [
+    limits?.reserveCredits,
+    limits?.dailyTokenLimit,
+    limits?.dailyCreditLimit,
+    limits?.modelDailyTokenLimit,
+  ]);
 
   const parsed = useMemo(
     () => ({
       reserveCredits: parseLimit(reserve),
       dailyTokenLimit: parseLimit(daily),
+      // credit 阈值允许小数（上游按 0.0x 计价），单独一条校验：非负有限数。
+      dailyCreditLimit: parseCredit(credit),
       modelDailyTokenLimit: parseLimit(perModel),
     }),
-    [reserve, daily, perModel],
+    [reserve, daily, credit, perModel],
   );
   const invalid =
     parsed.reserveCredits === null ||
     parsed.dailyTokenLimit === null ||
+    parsed.dailyCreditLimit === null ||
     parsed.modelDailyTokenLimit === null;
   const dirty =
     !!limits &&
     !invalid &&
     (parsed.reserveCredits !== limits.reserveCredits ||
       parsed.dailyTokenLimit !== limits.dailyTokenLimit ||
+      parsed.dailyCreditLimit !== limits.dailyCreditLimit ||
       parsed.modelDailyTokenLimit !== limits.modelDailyTokenLimit);
 
   const accounts = quota?.accounts ?? [];
@@ -163,7 +184,7 @@ export function QoderQuotaGuard({
         }
       />
 
-      <div className="grid gap-3 px-4 py-4 sm:grid-cols-3">
+      <div className="grid gap-3 px-4 py-4 sm:grid-cols-2 lg:grid-cols-4">
         <LimitField
           testId="quota-reserve"
           label={t("qoder.gateway.quota.reserveLabel")}
@@ -179,6 +200,14 @@ export function QoderQuotaGuard({
           value={daily}
           invalid={parsed.dailyTokenLimit === null}
           onChange={setDaily}
+        />
+        <LimitField
+          testId="quota-credit"
+          label={t("qoder.gateway.quota.creditLabel")}
+          hint={t("qoder.gateway.quota.creditHint")}
+          value={credit}
+          invalid={parsed.dailyCreditLimit === null}
+          onChange={setCredit}
         />
         <LimitField
           testId="quota-model"
@@ -205,6 +234,7 @@ export function QoderQuotaGuard({
             onSave({
               reserveCredits: parsed.reserveCredits ?? 0,
               dailyTokenLimit: parsed.dailyTokenLimit ?? 0,
+              dailyCreditLimit: parsed.dailyCreditLimit ?? 0,
               modelDailyTokenLimit: parsed.modelDailyTokenLimit ?? 0,
             })
           }
@@ -252,6 +282,11 @@ export function QoderQuotaGuard({
                           .map((item) => `${item.model} ${item.tokens.toLocaleString()}`)
                           .join(" · ")
                       : t("qoder.gateway.quota.noModelUsage")}
+                    {row.credits > 0
+                      ? ` · ${t("qoder.gateway.quota.creditsUsed", {
+                          n: row.credits.toFixed(2),
+                        })}`
+                      : ""}
                     {row.creditsRemaining !== null && row.creditsRemaining !== undefined
                       ? ` · ${t("qoder.gateway.quota.credits", {
                           n: row.creditsRemaining.toLocaleString(),

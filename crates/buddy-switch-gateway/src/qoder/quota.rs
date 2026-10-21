@@ -58,12 +58,15 @@ fn now_ms() -> i64 {
 // ---------------------------------------------------------------------------
 
 /// 三条**可配**的限额（`0` = 关闭该条）。
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+// ⚠️ 只用 `PartialEq`：`daily_credit_limit` 是 `f64`（`Eq` 不适用）。
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct QuotaLimits {
     /// G1：余额地板 —— `remaining <= reserve` 即停（含等号）。
     pub reserve_credits: i64,
     /// G2：当日 token 总额（账号级）。
     pub daily_token_limit: i64,
+    /// G3：当日 **credit** 总额（账号级；上游 `usage.credits` 是浮点）。
+    pub daily_credit_limit: f64,
     /// G4：单模型当日 token 额。
     pub model_daily_token_limit: i64,
 }
@@ -74,18 +77,27 @@ impl QuotaLimits {
         Self {
             reserve_credits: config.reserve_credits.max(0),
             daily_token_limit: config.daily_token_limit.max(0),
+            // 浮点阈值：NaN / 负数一律按 0（关）处理，别把 NaN 带上判据（比较恒假）。
+            daily_credit_limit: if config.daily_credit_limit.is_finite() {
+                config.daily_credit_limit.max(0.0)
+            } else {
+                0.0
+            },
             model_daily_token_limit: config.model_daily_token_limit.max(0),
         }
     }
 
     /// 是否有任何一条真的开着。
     pub fn any(&self) -> bool {
-        self.reserve_credits > 0 || self.daily_token_limit > 0 || self.model_daily_token_limit > 0
+        self.reserve_credits > 0
+            || self.daily_token_limit > 0
+            || self.daily_credit_limit > 0.0
+            || self.model_daily_token_limit > 0
     }
 }
 
 /// 被护栏拦下的**原因**（每一种都能对用户说清，不留「莫名其妙不可用」）。
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum QuotaBlock {
     /// 402 余额停放中（等下一个额度重置窗口）。
     Parked { until_ms: i64, reason: String },
@@ -93,6 +105,8 @@ pub enum QuotaBlock {
     Reserve { reserve: i64, remaining: i64 },
     /// G2 当日 token 总额。
     DailyTokens { limit: i64, used: u64 },
+    /// G3 当日 credit 总额。
+    DailyCredits { limit: f64, used: f64 },
     /// G4 单模型当日 token。
     ModelTokens {
         model: String,
@@ -108,6 +122,7 @@ impl QuotaBlock {
             QuotaBlock::Parked { .. } => "parked",
             QuotaBlock::Reserve { .. } => "reserve",
             QuotaBlock::DailyTokens { .. } => "daily_tokens",
+            QuotaBlock::DailyCredits { .. } => "daily_credits",
             QuotaBlock::ModelTokens { .. } => "model_tokens",
         }
     }
@@ -129,6 +144,9 @@ impl QuotaBlock {
             }
             QuotaBlock::DailyTokens { limit, used } => {
                 format!("已达当日 token 上限（{used} / {limit}）")
+            }
+            QuotaBlock::DailyCredits { limit, used } => {
+                format!("已达当日 credit 上限（{used:.2} / {limit:.2}）")
             }
             QuotaBlock::ModelTokens { model, limit, used } => {
                 format!("模型 {model} 已达当日上限（{used} / {limit}）")
@@ -170,6 +188,9 @@ struct DayUsage {
     /// `uid -> model -> tokens`（G4 的计数）。
     #[serde(default, rename = "perModel")]
     per_model: BTreeMap<String, BTreeMap<String, u64>>,
+    /// `uid -> credits`（G3 的计数；上游 `usage.credits` 是**浮点**）。
+    #[serde(default)]
+    credits: BTreeMap<String, f64>,
 }
 
 /// 一次「余额耗尽停放」。
@@ -261,13 +282,18 @@ impl QuotaStore {
             .retain(|day, _| keep.iter().any(|kept| kept == day));
     }
 
-    fn record(&mut self, today: &str, uid: &str, model: &str, tokens: u64) {
+    fn record(&mut self, today: &str, uid: &str, model: &str, tokens: u64, credits: f64) {
         self.roll(today);
-        if uid.is_empty() || tokens == 0 {
+        if uid.is_empty() || (tokens == 0 && credits <= 0.0) {
             return;
         }
         let day = self.days.entry(today.to_string()).or_default();
-        *day.tokens.entry(uid.to_string()).or_insert(0) += tokens;
+        if tokens > 0 {
+            *day.tokens.entry(uid.to_string()).or_insert(0) += tokens;
+        }
+        if credits > 0.0 {
+            *day.credits.entry(uid.to_string()).or_insert(0.0) += credits;
+        }
         if !model.is_empty() {
             *day.per_model
                 .entry(uid.to_string())
@@ -280,6 +306,10 @@ impl QuotaStore {
 
     fn tokens_today(&self, today: &str, uid: &str) -> Option<u64> {
         self.days.get(today)?.tokens.get(uid).copied()
+    }
+
+    fn credits_today(&self, today: &str, uid: &str) -> Option<f64> {
+        self.days.get(today)?.credits.get(uid).copied()
     }
 
     fn model_tokens_today(&self, today: &str, uid: &str, model: &str) -> Option<u64> {
@@ -370,8 +400,11 @@ fn with_store<R>(region: QoderRegion, action: impl FnOnce(&mut QuotaStore) -> R)
 }
 
 /// 记一次转发用量（**唯一计数入口**：`record_request` 调用）。
-pub fn record_tokens(region: QoderRegion, uid: &str, model: &str, tokens: u64) {
-    if uid.is_empty() || tokens == 0 {
+///
+/// `credits` 取自上游 `usage.credits`（真机确认每帧都有，浮点）；缺失按 0 记 ——
+/// 那是「少记」的方向，最坏结果是 G3 晚一点触发（fail-open），不会误拦。
+pub fn record_usage(region: QoderRegion, uid: &str, model: &str, tokens: u64, credits: f64) {
+    if uid.is_empty() || (tokens == 0 && !(credits > 0.0)) {
         return;
     }
     let now = now_ms();
@@ -387,7 +420,7 @@ pub fn record_tokens(region: QoderRegion, uid: &str, model: &str, tokens: u64) {
             .stores
             .entry(region)
             .or_insert_with(|| QuotaStore::load(&path));
-        store.record(&today, uid, model, tokens);
+        store.record(&today, uid, model, tokens, credits);
         let last = guard.last_flush.get(&region).copied().unwrap_or(0);
         if now.saturating_sub(last) >= FLUSH_INTERVAL_MS {
             guard.last_flush.insert(region, now);
@@ -445,6 +478,17 @@ fn decide(
             if used as i64 >= limits.daily_token_limit {
                 return Some(QuotaBlock::DailyTokens {
                     limit: limits.daily_token_limit,
+                    used,
+                });
+            }
+        }
+    }
+    // ③-b G3 当日 credit（未知 ⇒ 放行）。
+    if limits.daily_credit_limit > 0.0 {
+        if let Some(used) = store.credits_today(today, uid) {
+            if used >= limits.daily_credit_limit {
+                return Some(QuotaBlock::DailyCredits {
+                    limit: limits.daily_credit_limit,
                     used,
                 });
             }
@@ -614,6 +658,8 @@ pub fn snapshot(
         uid: String,
         name: String,
         tokens: u64,
+        /// 今日已消耗 credits（G3 的读数；未知 = 0，与「今天还没转发过」同形）。
+        credits_today: f64,
         per_model: Vec<(String, u64)>,
         parked: Option<(i64, String)>,
         credits: Option<(i64, i64)>,
@@ -642,6 +688,10 @@ pub fn snapshot(
                         .and_then(|day| day.tokens.get(uid))
                         .copied()
                         .unwrap_or(0),
+                    credits_today: day
+                        .and_then(|day| day.credits.get(uid))
+                        .copied()
+                        .unwrap_or(0.0),
                     per_model: day
                         .and_then(|day| day.per_model.get(uid))
                         .map(|models| {
@@ -675,6 +725,8 @@ pub fn snapshot(
                 "uid": row.uid,
                 "name": row.name,
                 "tokens": row.tokens,
+                // 今日消耗 credits（浮点；与「余额」是两件事，字段名刻意不同）。
+                "credits": row.credits_today,
                 "perModel": row
                     .per_model
                     .iter()
@@ -695,6 +747,7 @@ pub fn snapshot(
         "limits": {
             "reserveCredits": limits.reserve_credits,
             "dailyTokenLimit": limits.daily_token_limit,
+            "dailyCreditLimit": limits.daily_credit_limit,
             "modelDailyTokenLimit": limits.model_daily_token_limit,
             "enabled": limits.any(),
         },
@@ -730,6 +783,7 @@ mod tests {
         QuotaLimits {
             reserve_credits: reserve,
             daily_token_limit: daily,
+            daily_credit_limit: 0.0,
             model_daily_token_limit: per_model,
         }
     }
@@ -762,7 +816,7 @@ mod tests {
     #[test]
     fn all_limits_off_never_blocks() {
         let mut store = QuotaStore::default();
-        store.record(TODAY, "u1", "m1", 10_000_000);
+        store.record(TODAY, "u1", "m1", 10_000_000, 0.0);
         assert_eq!(
             decide(
                 &mut store,
@@ -786,14 +840,14 @@ mod tests {
     #[test]
     fn daily_tokens_blocks_at_the_limit_inclusive() {
         let mut store = QuotaStore::default();
-        store.record(TODAY, "u1", "m1", 500);
+        store.record(TODAY, "u1", "m1", 500, 0.0);
         let l = limits(0, 1000, 0);
         assert_eq!(
             decide(&mut store, None, l, TODAY, "u1", "m1", 0),
             None,
             "500 < 1000 必须放行"
         );
-        store.record(TODAY, "u1", "m1", 500);
+        store.record(TODAY, "u1", "m1", 500, 0.0);
         assert_eq!(
             decide(&mut store, None, l, TODAY, "u1", "m1", 0),
             Some(QuotaBlock::DailyTokens {
@@ -810,7 +864,7 @@ mod tests {
     #[test]
     fn model_tokens_only_block_the_named_model() {
         let mut store = QuotaStore::default();
-        store.record(TODAY, "u1", "expensive", 900);
+        store.record(TODAY, "u1", "expensive", 900, 0.0);
         let l = limits(0, 0, 900);
         assert!(matches!(
             decide(&mut store, None, l, TODAY, "u1", "expensive", 0),
@@ -823,6 +877,40 @@ mod tests {
         );
         // 模型名为空（诊断 / 列表场景）⇒ 无从判 ⇒ 放行。
         assert_eq!(decide(&mut store, None, l, TODAY, "u1", "", 0), None);
+    }
+
+    /// G3 当日 credit：浮点累加（上游 `usage.credits` 是小数），达到即拦。
+    ///
+    /// 可证伪：把 `DayUsage.credits` 的累加删掉（只记 token）⇒ 第一条断言拿到 `None`。
+    #[test]
+    fn daily_credits_accumulate_as_floats() {
+        let mut store = QuotaStore::default();
+        // 三发、每发 0.35 credit（真机实测量级）。
+        for _ in 0..3 {
+            store.record(TODAY, "u1", "m1", 100, 0.35);
+        }
+        let mut l = limits(0, 0, 0);
+        l.daily_credit_limit = 1.0;
+        // 1.05 >= 1.0 ⇒ 拦。
+        match decide(&mut store, None, l, TODAY, "u1", "m1", 0) {
+            Some(QuotaBlock::DailyCredits { limit, used }) => {
+                assert_eq!(limit, 1.0);
+                assert!((used - 1.05).abs() < 1e-9, "浮点要累计: {used}");
+            }
+            other => panic!("应命中 G3: {other:?}"),
+        }
+        // 只记 credits、没 token 的报告也要入账（否则免费/极小请求永远不计）。
+        store.record(TODAY, "u2", "m1", 0, 0.8);
+        assert!((store.credits_today(TODAY, "u2").unwrap() - 0.8).abs() < 1e-9);
+        // 阈值关 ⇒ 不拦。
+        l.daily_credit_limit = 0.0;
+        assert_eq!(decide(&mut store, None, l, TODAY, "u1", "m1", 0), None);
+        // NaN 阈值按「关」处理（否则比较恒假，等于永远不拦，看起来像坏开关）。
+        let config = QoderGatewayConfig {
+            daily_credit_limit: f64::NAN,
+            ..QoderGatewayConfig::default()
+        };
+        assert_eq!(config.quota_limits().daily_credit_limit, 0.0);
     }
 
     /// G1 余额地板：`remaining <= reserve` 即拦；**余额未知 ⇒ 放行**（fail-open）。
@@ -880,8 +968,8 @@ mod tests {
     #[test]
     fn counting_rolls_over_days_and_prunes_old_buckets() {
         let mut store = QuotaStore::default();
-        store.record("2026-10-20", "u1", "m1", 100);
-        store.record(TODAY, "u1", "m1", 300);
+        store.record("2026-10-20", "u1", "m1", 100, 0.0);
+        store.record(TODAY, "u1", "m1", 300, 0.0);
         assert_eq!(store.tokens_today(TODAY, "u1"), Some(300));
         assert_eq!(
             store.tokens_today("2026-10-19", "u1"),
@@ -899,7 +987,7 @@ mod tests {
 
         // 超过保留天数 ⇒ 裁掉最旧的。
         for day in 1..=QUOTA_RETENTION_DAYS + 3 {
-            store.record(&format!("2026-11-{day:02}"), "u1", "m1", 1);
+            store.record(&format!("2026-11-{day:02}"), "u1", "m1", 1, 0.0);
         }
         assert!(
             store.days.len() <= QUOTA_RETENTION_DAYS,
@@ -912,8 +1000,8 @@ mod tests {
     #[test]
     fn counting_ignores_empty_uid_and_zero_tokens() {
         let mut store = QuotaStore::default();
-        store.record(TODAY, "", "m1", 100);
-        store.record(TODAY, "u1", "m1", 0);
+        store.record(TODAY, "", "m1", 100, 0.0);
+        store.record(TODAY, "u1", "m1", 0, 0.0);
         assert!(store.days.get(TODAY).is_none());
     }
 
@@ -957,7 +1045,7 @@ mod tests {
         let path = dir.join("gateway_usage.cn.json");
 
         let mut store = QuotaStore::default();
-        store.record(TODAY, "u1", "m1", 1200);
+        store.record(TODAY, "u1", "m1", 1200, 0.0);
         store.park("u1", 9_999, "余额耗尽");
         store.save(&path).expect("写盘");
 
@@ -990,7 +1078,7 @@ mod tests {
         let region = QoderRegion::Cn;
 
         // ① 记账 → 达阈值即拦（`today` 由系统时钟决定，这里只用相对量）。
-        record_tokens(region, "uid-global", "m1", 600);
+        record_usage(region, "uid-global", "m1", 600, 0.0);
         assert_eq!(
             blocked(limits(0, 10_000, 0), region, "uid-global", "m1"),
             None,

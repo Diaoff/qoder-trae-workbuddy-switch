@@ -144,6 +144,9 @@ pub struct QoderGatewayConfig {
     /// **G2 当日 token 上限**（逐账号，`0` = 关闭）。计数来自网关自己的记账漏斗。
     #[serde(default, alias = "dailyTokenLimit")]
     pub daily_token_limit: i64,
+    /// **G3 当日 credit 上限**（逐账号，`0` = 关闭；上游 `usage.credits` 是浮点）。
+    #[serde(default, alias = "dailyCreditLimit")]
+    pub daily_credit_limit: f64,
     /// **G4 单模型当日 token 上限**（`0` = 关闭）。用于「贵的模型单独限额」。
     #[serde(default, alias = "modelDailyTokenLimit")]
     pub model_daily_token_limit: i64,
@@ -171,6 +174,7 @@ impl Default for QoderGatewayConfig {
             // 莫名其妙被拦；需要时在网关页显式打开。
             reserve_credits: 0,
             daily_token_limit: 0,
+            daily_credit_limit: 0.0,
             model_daily_token_limit: 0,
         }
     }
@@ -487,6 +491,8 @@ impl QoderGatewayState {
         stream: bool,
         prompt_tokens: i64,
         completion_tokens: i64,
+        // 上游 `usage.credits`（浮点；`0` = 未取到）：G3 的计数来源，也进日志。
+        credits: f64,
         error: Option<String>,
     ) {
         self.total_requests.fetch_add(1, Ordering::Relaxed);
@@ -502,17 +508,20 @@ impl QoderGatewayState {
             "latencyMs": latency_ms,
             "promptTokens": prompt_tokens,
             "completionTokens": completion_tokens,
+            // credit 成本（上游按请求给；进日志后「这一发花了多少」不必再猜）。
+            "credits": credits,
             "stream": stream,
             "error": error,
         }));
         // ★ 限额护栏的唯一计数入口：**就在记账一处**累加，别在别处再记一次
         //   （记两次会把「当日已用」算成两倍，护栏提前触发）。
-        if prompt_tokens > 0 || completion_tokens > 0 {
-            quota::record_tokens(
+        if prompt_tokens > 0 || completion_tokens > 0 || credits > 0.0 {
+            quota::record_usage(
                 region,
                 uid,
                 model,
                 (prompt_tokens.max(0) + completion_tokens.max(0)) as u64,
+                credits,
             );
         }
         if let Some(message) = error {

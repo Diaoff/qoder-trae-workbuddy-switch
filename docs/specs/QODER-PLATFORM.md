@@ -237,7 +237,8 @@ Qoder 上游跑文本模式时模型会**照学**，把调用写成标签塞进�
 | 风控遥测 | `/health` 的 `risk.{queued,rateLimited,rejected}` | 进程级累计、只读、不落盘；只在分类处记一次 |
 | 历史工具结果削减 | `api::shrink_tool_result` + `flatten_messages` | 单侧默认 2000 字符（`BUDDY_SWITCH_QODER_TOOL_KEEP` 可调，`off` 关闭）；保护**最后 1 条**（`…_KEEP_TAIL`）；标记固定串 ⇒ 不打碎前缀缓存 |
 | 单号在途闸门 | `pool::acquire` + `InflightGuard` | **默认关**（`BUDDY_SWITCH_QODER_MAX_INFLIGHT`，0 = 关）；名额抢不到就**跳过该号**而不是排队等；`Arc<AtomicUsize>` + Drop 归还，客户端断开也不会泄漏 |
-| **限额护栏** | `qoder::quota` + 网关页「限额护栏」卡 | G1 余额地板 / G2 当日 token / G4 单模型当日 token；**默认全关**、**未知一律放行**；计数来自 `record_request` 单一漏斗（不从环形日志推导），落盘 `qoder/gateway_usage.{region}.json`，每天 10:00（UTC+8）重置 |
+| **限额护栏（四条）** | `qoder::quota` + 网关页「限额护栏」卡 | G1 余额地板 / G2 当日 token / **G3 当日 credit** / G4 单模型当日 token；**默认全关**、**未知一律放行**；计数来自 `record_request` 单一漏斗（不从环形日志推导），落盘 `qoder/gateway_usage.{region}.json`，每天 10:00（UTC+8）重置。G3 的 credit 取自上游 `usage.credits`（真机确认逐帧都给，浮点） |
+| 最小选号间隔（pacing） | `pool::parse_min_pick_gap` → `PickPolicy::min_pick_gap_ms` | **默认关**（`BUDDY_SWITCH_QODER_MIN_INTERVAL_MS`）；软约束：短名单剔除「刚用过」的号，全员都在间隔内则 LRU 兜底 —— **不会拒服务** |
 | **402 余额停放** | `classify_http(402)` + `quota::park_exhausted` | 402 ≠ 客户端参数错：换号 + 停到下一个重置窗口（**不是**几分钟的短冷却，那只会再撞一次）；余额视图看到 `remaining > 0` 才解封 |
 
 **刻意不做**（附理由，别当遗漏）：
@@ -245,16 +246,17 @@ Qoder 上游跑文本模式时模型会**照学**，把调用写成标签塞进�
 1. **Pro 升级包** 已实现（`campaign::pro_pack_status` / `claim_pro_pack` + 抽屉入口）：
    端点 404/403/410 ⇒ `available=false`，前端**不渲染入口**（真机本机 CN 账号就是 404，
    活动已下线），领取也拒绝并把原因说清 —— 不会出现「点了没反应」的死按钮。
-2. **G3 当日 credit 上限**：**只缺这一条，理由是口径不成立**。上游不按请求返回
-   credit 成本，账户级「今日 consumed credits」只有客户端日志那一路（量的是 IDE 自己的
-   用量，不是网关转发的量）。把两者混用 ⇒ 用户自己写代码时网关被莫名拦下。
-   要做就得先有「按请求的 credit 账」，那需要上游配合。
-3. **最小间隔（pacing）**：参考实现按账号 + 客户端 IP 统计请求节奏。我们没有真实节奏
-   样本，凭空定一个间隔只会拖慢所有人；单号在途闸门（上表）已覆盖「并发打爆」这一半。
+2. **G3 当日 credit 上限**：**已实现**。原先以为「上游不给按请求的 credit 成本」，
+   真机复验时发现 `usage.credits` 每帧都有（如 `0.348604025`）—— 于是计数直接取自
+   记账漏斗，与 token 同源，不需要客户端日志那一路（那是 IDE 自己的用量，口径不同）。
+3. **最小间隔（pacing）**：**已实现为可选**（默认关）。参考实现按账号 + 客户端 IP
+   统计节奏；我们只做「同账号两发之间的最小间隔」，且用选号内核现成的**软约束**
+   （`PickPolicy::min_pick_gap_ms`：剔除刚用过的，不够人就 LRU 兜底）—— 不引入
+   「等一会儿再发」的阻塞语义，也就不会把客户端超时拖成「上游很慢」。
 4. 历史工具结果削减**已实现**（上表）；需要「一条都不削」时设
    `BUDDY_SWITCH_QODER_TOOL_KEEP=off`。
-5. 限额护栏的三条**已实现**（上表）：阈值在网关页「账号池 → 限额护栏」里配，
-   逐账号当日用量与拦截原因同页可见（判据与选号**共用同一个函数**，
+5. 四条限额护栏**已实现**（上表）：阈值在网关页「账号池 → 限额护栏」里配，
+   逐账号当日用量（token / credit）与拦截原因同页可见（判据与选号**共用同一个函数**，
    面板说「已拦」就是真会拦）。
 
 ---

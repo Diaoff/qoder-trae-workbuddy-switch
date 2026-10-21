@@ -311,6 +311,7 @@ export default function QoderApiServicePage() {
   async function onSaveQuota(next: {
     reserveCredits: number;
     dailyTokenLimit: number;
+    dailyCreditLimit: number;
     modelDailyTokenLimit: number;
   }) {
     await persist(next);

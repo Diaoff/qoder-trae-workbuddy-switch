@@ -325,6 +325,26 @@ impl PoolEntryLike for QoderPoolEntry {
     }
 }
 
+/// 最小选号间隔（毫秒）：`BUDDY_SWITCH_QODER_MIN_INTERVAL_MS`，缺省 / `0` = 关闭。
+///
+/// 语义是**软约束**（`PickPolicy::min_pick_gap_ms`）：短名单里「刚用过、还没到间隔」的号
+/// 会被剔除；若全员都在间隔内，选号内核会按 LRU 兜底放行 —— **不会拒服务**。
+/// 参考实现只对团队共享账号启用这套节奏保护（issue #56），故本仓默认关。
+pub fn parse_min_pick_gap(raw: Option<&str>) -> i64 {
+    raw.and_then(|text| text.trim().parse::<i64>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(0)
+}
+
+/// 实际生效的最小选号间隔（每次选号都读环境变量 ⇒ 运行期可调）。
+fn min_pick_gap_ms() -> i64 {
+    parse_min_pick_gap(
+        std::env::var("BUDDY_SWITCH_QODER_MIN_INTERVAL_MS")
+            .ok()
+            .as_deref(),
+    )
+}
+
 /// Qoder 的选号策略（**独立函数**，别动 [`PickPolicy`] 的默认值 —— 那是 WB 的行为基线）。
 pub fn qoder_pick_policy() -> PickPolicy {
     PickPolicy {
@@ -332,7 +352,8 @@ pub fn qoder_pick_policy() -> PickPolicy {
         expiry_urgency_weight: 0.0,
         idle_weight_per_hour: 0.0,
         idle_weight_max: 0.0,
-        min_pick_gap_ms: 0,
+        // 防惊群间隔：默认 0（关），可用环境变量开（软约束，见 `parse_min_pick_gap`）。
+        min_pick_gap_ms: min_pick_gap_ms(),
         model_cost_ttl_ms: 0,
         max_in_flight: 0,
         max_in_flight_global: 0,
@@ -1031,6 +1052,21 @@ mod tests {
         // 排队要换号（另一个号可能没排队），但**不是**客户端错。
         assert!(QoderErrKind::Queued.should_rotate());
         assert_eq!(QoderErrKind::Queued.as_str(), "queued");
+    }
+
+    /// 最小间隔解析：只认正整数；`0` / 负数 / 乱码 / 缺省一律**关**（0）。
+    ///
+    /// 可证伪：把 `.filter(|value| *value > 0)` 删掉 ⇒ 负数会被当成间隔传进选号内核，
+    /// 每个号都被剔除（然后靠 LRU 兜底），行为变成「看起来没生效」。
+    #[test]
+    fn min_pick_gap_parsing_is_conservative() {
+        assert_eq!(parse_min_pick_gap(None), 0);
+        assert_eq!(parse_min_pick_gap(Some("")), 0);
+        assert_eq!(parse_min_pick_gap(Some("250")), 250);
+        assert_eq!(parse_min_pick_gap(Some(" 1000 ")), 1000);
+        assert_eq!(parse_min_pick_gap(Some("0")), 0, "0 = 关");
+        assert_eq!(parse_min_pick_gap(Some("-5")), 0, "负数不得当成间隔");
+        assert_eq!(parse_min_pick_gap(Some("abc")), 0, "乱码 = 关，不是崩");
     }
 
     /// ★ 402 = **余额耗尽**：不是「客户端参数错」，必须换号 + 停放（不是短冷却）。

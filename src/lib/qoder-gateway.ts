@@ -42,6 +42,7 @@ export const DEFAULT_QODER_GATEWAY_CONFIG: QoderGatewayConfig = {
   // 护栏默认全关（与 Rust `QoderGatewayConfig::default` 同口径）。
   reserveCredits: 0,
   dailyTokenLimit: 0,
+  dailyCreditLimit: 0,
   modelDailyTokenLimit: 0,
 };
 
@@ -64,6 +65,8 @@ export interface QoderGatewayConfig {
   reserveCredits: number;
   /** G2 当日 token 上限（逐账号；`0` = 关闭）。 */
   dailyTokenLimit: number;
+  /** G3 当日 credit 上限（浮点；`0` = 关闭）。 */
+  dailyCreditLimit: number;
   /** G4 单模型当日 token 上限（`0` = 关闭）。 */
   modelDailyTokenLimit: number;
 }
@@ -87,6 +90,8 @@ export interface QoderGatewayConfigRaw {
   reserve_credits: number;
   /** G2 当日 token 上限（`0` = 关闭）。 */
   daily_token_limit: number;
+  /** G3 当日 credit 上限（浮点；`0` = 关闭）。 */
+  daily_credit_limit: number;
   /** G4 单模型当日 token 上限（`0` = 关闭）。 */
   model_daily_token_limit: number;
 }
@@ -286,6 +291,12 @@ export function normalizeQoderGatewayConfig(raw: unknown): QoderGatewayConfig {
       asNumber(read("dailyTokenLimit", "daily_token_limit")) ??
         DEFAULT_QODER_GATEWAY_CONFIG.dailyTokenLimit,
     ),
+    // credit 阈值是**浮点**（上游按 0.0x 计价）；非有限数一律按 0（关）。
+    dailyCreditLimit: Math.max(
+      0,
+      asNumber(read("dailyCreditLimit", "daily_credit_limit")) ??
+        DEFAULT_QODER_GATEWAY_CONFIG.dailyCreditLimit,
+    ),
     modelDailyTokenLimit: Math.max(
       0,
       asNumber(read("modelDailyTokenLimit", "model_daily_token_limit")) ??
@@ -316,6 +327,7 @@ export function toQoderGatewayConfigRaw(config: QoderGatewayConfig): QoderGatewa
     max_context: config.maxContext,
     reserve_credits: config.reserveCredits,
     daily_token_limit: config.dailyTokenLimit,
+    daily_credit_limit: config.dailyCreditLimit,
     model_daily_token_limit: config.modelDailyTokenLimit,
   };
 }

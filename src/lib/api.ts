@@ -3286,6 +3286,8 @@ export interface QoderGatewayQuotaView {
   limits: {
     reserveCredits: number;
     dailyTokenLimit: number;
+    /** G3：当日 credit 上限（浮点；0 = 关）。 */
+    dailyCreditLimit: number;
     modelDailyTokenLimit: number;
     /** 三条是否有任意一条开着（全关时界面要说明「护栏未启用」）。 */
     enabled: boolean;
@@ -3295,6 +3297,8 @@ export interface QoderGatewayQuotaView {
     name: string;
     /** 今日经网关转发的 token 总量（prompt + completion）。 */
     tokens: number;
+    /** 今日经网关消耗的 credits（上游 `usage.credits` 累加；浮点）。 */
+    credits: number;
     perModel: { model: string; tokens: number }[];
     /** 被拦的原因代号（`null` = 放行）：`parked` / `reserve` / `daily_tokens` / `model_tokens`。 */
     blocked: string | null;
