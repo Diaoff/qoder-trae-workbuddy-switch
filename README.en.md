@@ -38,17 +38,15 @@ A **local-first** multi-account workbench: it gathers accounts from four product
 | 📊 **Usage and rate limits, visible** | Tokens, credits, per-account model limits, and which session replica lags or diverged — all on one screen. |
 | 🔌 **Feed the quota to your other tools** | Expose it as an OpenAI / Anthropic compatible endpoint and drop it into Cursor, Claude Code or OpenWebUI. |
 
-<p align="center">
-  <a href="https://github.com/NextAgentX/qoder-trae-workbuddy-switch/releases/latest"><img alt="Download" src="https://img.shields.io/badge/Download-Releases-2ea043?style=for-the-badge" /></a>
-  <a href="https://github.com/NextAgentX/qoder-trae-workbuddy-switch/stargazers"><img alt="Star the repo" src="https://img.shields.io/badge/Star_the_repo-Star-f5c542?style=for-the-badge" /></a>
-  <a href="CONTRIBUTING.en.md"><img alt="Contribute" src="https://img.shields.io/badge/Contribute-Pull_Request-4c8bf5?style=for-the-badge" /></a>
-</p>
+> **Scope and intended use**
+>
+> This project is the author's **personal, self-use and learning** work — written to solve their own multi-account switching friction. **You are welcome to read, fork and improve it, but it comes with no maintenance commitment**: no commercial support, no SLA, and no guarantee of compatibility with any specific client version.
+>
+> Licensed under **PolyForm Noncommercial 1.0.0**: **personal, noncommercial use only — any commercial use is prohibited** (including internal commercial projects, SaaS / hosted services, resale and bundled distribution). Commercial use requires prior written permission from the author.
 
-
-> ⚠️ **Unofficial third-party tool** (source-available, PolyForm Noncommercial). Not affiliated with, authorized or endorsed by those products or their rights holders. It reads and writes authentication data of local clients, sends automated requests on the schedule you configure, and can forward your quota through a local port. Read the **[Disclaimer](docs/policies/DISCLAIMER.en.md)** before use.
+> ⚠️ **Unofficial · Noncommercial**: not affiliated with, authorized, sponsored or endorsed by WorkBuddy, CodeBuddy, TraeWork, Qoder or their rights holders; **commercial use is not permitted**. It reads and writes local clients' authentication data, sends automated requests on the schedule you configure, and can forward your quota through a local port. Read the **[Disclaimer](docs/policies/DISCLAIMER.en.md)** before use.
 
 ## Screenshots
-
 
 <table>
   <thead>
@@ -431,9 +429,7 @@ Full guide (what to work on, PR checklist, code conventions): **[CONTRIBUTING.en
 
 ## Support the project
 
-- ⭐ **Star the repo** — the most direct help: it makes the tool easier to find and tells the author it is worth maintaining.
-- 🐞 **Describe problems precisely** — one reproducible issue beats ten “it doesn't work”, and it usually ships in the next version.
-- ☕ **Buy the author a drink** (entirely optional, no feature is gated behind it)
+- ☕ **Buy the author a drink** (entirely optional, no feature is gated behind it, and it grants no commercial licence)
 
 <table>
   <thead>
@@ -456,7 +452,7 @@ Each project follows its own license. This project is an independent implementat
 
 ## Disclaimer
 
-Full text in **[docs/policies/DISCLAIMER.en.md](docs/policies/DISCLAIMER.en.md)** ([简体中文](docs/policies/DISCLAIMER.md)), six sections: unofficial third-party tool; terms of service and compliance; data writes and backups; risks of automated behaviour; API gateway exposure; provided "as is". Using the project means you have read and agree to them; if not, stop using it and uninstall.
+Full text in **[docs/policies/DISCLAIMER.en.md](docs/policies/DISCLAIMER.en.md)** ([简体中文](docs/policies/DISCLAIMER.md)), seven sections: unofficial third-party tool; terms of service and compliance; data writes and backups; risks of automated behaviour; API gateway exposure; provided "as is"; restrictions on use (no commercial use, no circumventing billing). Using the project means you have read and agree to them; if not, stop using it and uninstall.
 
 ## License
 
@@ -465,6 +461,8 @@ Full text in **[docs/policies/DISCLAIMER.en.md](docs/policies/DISCLAIMER.en.md)*
 - Full text: [LICENSE](./LICENSE)
 - Plain-language summary and FAQ: [docs/policies/LICENSING.en.md](docs/policies/LICENSING.en.md) ([简体中文](docs/policies/LICENSING.md))
 - For commercial licensing, contact the author via this repository's Issues.
+- **Donations are unrelated to licensing**: they are voluntary gifts, not a purchase, a commercial licence, or any promise of service.
+- This is a **personal project**: no commercial support, no SLA, no maintenance commitment. Issues and PRs get a best-effort response, without any guaranteed turnaround.
 
 ## Star history
 
