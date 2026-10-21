@@ -1817,10 +1817,33 @@ function demoQoderUsage(scope: string): unknown {
     .reverse();
   const totalCredits = days.reduce((sum, day) => sum + day.credits, 0);
   const totalRequests = days.reduce((sum, day) => sum + day.requests, 0);
+  /* 会话排行：与 `days` 同源（拆成 3 个会话，credits 加起来等于总量）——
+     ⚠️ 演示数据也要守「分段和 = 总量」这条纪律，否则截图会自打嘴巴。
+     `title` 是真实会出现在 Qoder jsonl 里那种「用户第一句话」。 */
+  const sessions = days.length
+    ? (() => {
+        const titles = ["多账号轮询与冷却", "网关 429 定位", "签名链路排查"];
+        const shares = [0.5, 0.3, 0.2];
+        return titles.map((title, index) => {
+          const credits = Math.round(totalCredits * shares[index] * 1000) / 1000;
+          const requests = Math.max(1, Math.round(totalRequests * shares[index]));
+          return {
+            id: `demo-sess-${index + 1}`,
+            title,
+            credits,
+            requests,
+            models: index === 0 ? [model, model2] : [model],
+            firstDate: days[0].date,
+            lastDate: days[days.length - 1].date,
+          };
+        });
+      })()
+    : [];
   return {
     region: global ? "global" : "cn",
     unit: "credits",
     days,
+    sessions,
     totals: {
       credits: Math.round(totalCredits * 1000) / 1000,
       requests: totalRequests,
