@@ -182,6 +182,9 @@ const SCOPE_PARAMETERIZED = new Set([
   "qoder_gateway_status",
   "get_qoder_gateway_models",
   "create_qoder_api_key",
+  /* ✅ 2026-10-21：限额护栏视图 —— **生来参数化**。计数落盘是 `qoder/gateway_usage.{region}.json`
+     （两区两本文件），缺 scope 就无从判断该读哪一本（没有「默认区域」可回落）。 */
+  "qoder_gateway_quota",
   /* ✅ 2026-10-16：限流探测三条 —— **作用域参数化**。原签名收 `region`（`cn` / `global`），
      分不出 `wb-cn` 与 `qoder-cn` ⇒ 升级为 `scope`（`Scope::parse` fail-closed）。
      `probe_start` 的 scope 决定探测目标（WB / Qoder 的账号库与目录）；`probe_status` /
@@ -239,9 +242,17 @@ function read(file) {
  * 报出「未登记的命令 <cmd>」，而真正的调用点全都没问题——护栏于是从
  * 「保护构建」变成「制造噪声」，最后被开发者绕过。
  * 用 `(^|[^:])` 排除 `://`，避免把 URL 里的 `//` 当成行注释起点。
+ *
+ * ## 顺序：**先剥行注释，再剥块注释**（2026-10-21 修正）
+ *
+ * 反过来会出事：行注释里出现块注释的**起始标记**（本仓真实存在 ——
+ * `// 对齐 WB 的 /api/oauth/…` 后跟一个星号）时，块注释的正则从那里起吃到下一个
+ * 结束标记，一口气吞掉十几万字符 ⇒ 后面所有「handler 是否读到 scope」都变成假红
+ * （实测把 40 条断言全打成红）。行注释先剥，那类字样连同行一起消失，
+ * 块注释就只剩真正的注释块了。
  */
 function stripComments(text) {
-  return text.replace(/\/\*[\s\S]*?\*\//g, "").replace(/(^|[^:])\/\/[^\n]*/g, "$1");
+  return text.replace(/(^|[^:])\/\/[^\n]*/g, "$1").replace(/\/\*[\s\S]*?\*\//g, "");
 }
 
 /**
