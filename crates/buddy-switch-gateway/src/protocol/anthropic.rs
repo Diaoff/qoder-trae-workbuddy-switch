@@ -372,6 +372,27 @@ impl<S> AnthropicSseStream<S> {
     }
 
     fn handle_delta(&mut self, value: &Value) {
+        /* ★ 流内错误帧（上游错误 / 网关判失败，如「工具调用被截断」）必须转成
+        Anthropic 的 `error` 事件：从前这里直接落到「没有 choices ⇒ 丢弃」，
+        客户端只看到 `message_stop` + 空回答 = 把失败当完成（issue #66 的体感）。 */
+        if let Some(error) = value.get("error") {
+            let message = error
+                .get("message")
+                .and_then(Value::as_str)
+                .unwrap_or("上游错误")
+                .to_string();
+            self.ensure_started();
+            self.emit(
+                "error",
+                json!({
+                    "type": "error",
+                    "error": {"type": "api_error", "message": message},
+                }),
+            );
+            // 不再补 message_delta / message_stop：Anthropic 客户端见到 `error` 即终止本轮。
+            self.finished = true;
+            return;
+        }
         self.ensure_started();
         if let Some(model) = value.get("model").and_then(Value::as_str) {
             if !model.is_empty() {
@@ -777,6 +798,29 @@ mod tests {
         assert_eq!(message["content"][0]["type"], "tool_use");
         assert_eq!(message["content"][0]["name"], "f");
         assert_eq!(message["content"][0]["input"]["a"], 1);
+    }
+
+    /// 流内错误帧必须转成 Anthropic `error` 事件，且**不再**补 `message_stop` ——
+    /// 从前错误帧被「没有 choices ⇒ 丢弃」，客户端把失败当完成（issue #66 的体感）。
+    #[tokio::test]
+    async fn stream_forwards_upstream_error_frame_as_error_event() {
+        let chunks = vec![Ok::<Bytes, std::io::Error>(Bytes::from_static(
+            concat!(
+                "data: {\"error\":{\"message\":\"工具调用被截断\",\"type\":\"upstream_error\",\"code\":502}}\n\n",
+                "data: [DONE]\n\n",
+            )
+            .as_bytes(),
+        ))];
+        let stream = AnthropicSseStream::new(futures_util::stream::iter(chunks), "m".to_string());
+        let events: Vec<Bytes> = stream.map(|item| item.unwrap()).collect().await;
+        let text = collect_text(&events);
+        assert!(text.contains("event: error"), "必须发 error 事件: {text}");
+        assert!(text.contains("\"type\":\"error\""), "{text}");
+        assert!(text.contains("工具调用被截断"), "{text}");
+        assert!(
+            !text.contains("message_stop"),
+            "错误后不得再补 message_stop（否则客户端把失败当完成）: {text}"
+        );
     }
 
     #[tokio::test]

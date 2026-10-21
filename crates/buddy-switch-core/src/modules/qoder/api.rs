@@ -64,6 +64,9 @@ pub const TOOL_RESULT_MARKER: &str = "[工具结果";
 pub const TOOL_RESULT_CLOSE: &str = "[工具结果结束]";
 /// 助手工具调用的文本化标记（见 [`flatten_messages`] 的文本模式）。
 pub const LEAK_MARKER: &str = "[assistant 请求调用工具]";
+/// 同一个标记的**尖括号写法**：模型复述时会把 `[ ]` 改写成 `< >`（真机见过）。
+/// 两种都必须认，否则「换个括号」就绕过整条回声治理。
+pub const LEAK_MARKER_ALT: &str = "<assistant 请求调用工具>";
 /// 上游给 delta 填充的空噪声字段（值为空时剥掉，避免客户端读到空壳字段）。
 const NOISE_KEYS: [&str; 3] = ["extra_fields", "refusal", "reasoning_content"];
 /// 结构化工具有效历史的作用域白名单（只在 CN 出口、且模型 key 前缀命中时启用）。
@@ -995,6 +998,19 @@ fn error_code(object: &serde_json::Map<String, Value>, key: &str) -> Option<i64>
 // 泄漏回声还原（严格整段识别）
 // ---------------------------------------------------------------------------
 
+/// 去掉开头的回声标记（`[assistant 请求调用工具]` 或尖括号写法）。
+fn strip_leak_marker(text: &str) -> Option<&str> {
+    text.strip_prefix(LEAK_MARKER)
+        .or_else(|| text.strip_prefix(LEAK_MARKER_ALT))
+}
+
+/// 文本是否以**任一**回声标记开头（含只写了一半的前缀）。
+pub fn starts_with_leak_marker(text: &str) -> bool {
+    [LEAK_MARKER, LEAK_MARKER_ALT]
+        .iter()
+        .any(|marker| marker.starts_with(text) || text.starts_with(marker))
+}
+
 /// 把模型复述的「marker + JSON 数组」还原成结构化 `tool_calls`。
 ///
 /// **严格守卫**（避免把「讨论该标记的普通回复」误判为工具调用）：
@@ -1014,7 +1030,7 @@ pub fn parse_leaked_tool_calls(
         }
         t = inner.trim().to_string();
     }
-    let Some(rest) = t.strip_prefix(LEAK_MARKER) else {
+    let Some(rest) = strip_leak_marker(&t) else {
         return (None, text.to_string());
     };
     let rest = rest.trim();
@@ -1087,7 +1103,7 @@ pub fn parse_leaked_tool_calls_with_trailing(
     allowed_names: Option<&HashSet<String>>,
 ) -> (Option<Vec<Value>>, String) {
     let t = text.trim();
-    let Some(after_marker) = t.strip_prefix(LEAK_MARKER) else {
+    let Some(after_marker) = strip_leak_marker(t) else {
         return (None, text.to_string());
     };
     let Some(bracket) = after_marker.find('[') else {
@@ -1140,10 +1156,14 @@ pub enum LeakState {
 /// 而整段判定只关心 Body。两处若各写一套前缀规则，必然分裂成两种结论。
 pub fn leak_body_offset(text: &str) -> LeakState {
     let t = text.trim_start();
-    if t.is_empty() || LEAK_MARKER.starts_with(t) {
+    if t.is_empty()
+        || [LEAK_MARKER, LEAK_MARKER_ALT]
+            .iter()
+            .any(|m| m.starts_with(t))
+    {
         return LeakState::Prefix;
     }
-    if let Some(body) = t.strip_prefix(LEAK_MARKER) {
+    if let Some(body) = strip_leak_marker(t) {
         return LeakState::Body(body.to_string());
     }
     if !t.starts_with('`') {
@@ -1163,7 +1183,7 @@ pub fn leak_body_offset(text: &str) -> LeakState {
     let low = after_fence.to_ascii_lowercase();
     let after = if low.starts_with("json") {
         after_fence[4..].trim_start()
-    } else if LEAK_MARKER.starts_with(&low) || low.starts_with(LEAK_MARKER) {
+    } else if starts_with_leak_marker(&low) {
         // 无语言标记的 ``` 围栏
         after_fence
     } else if "json".starts_with(&low) {
@@ -1172,13 +1192,44 @@ pub fn leak_body_offset(text: &str) -> LeakState {
     } else {
         return LeakState::NotLeak;
     };
-    if LEAK_MARKER.starts_with(after) {
+    if [LEAK_MARKER, LEAK_MARKER_ALT]
+        .iter()
+        .any(|m| m.starts_with(after))
+    {
         return LeakState::Prefix;
     }
-    if let Some(body) = after.strip_prefix(LEAK_MARKER) {
+    if let Some(body) = strip_leak_marker(after) {
         return LeakState::Body(body.to_string());
     }
     LeakState::NotLeak
+}
+
+/// 回声里出现的工具名是否**全部**在本次声明集合里。
+///
+/// 判据收紧的原因（参考实现 #72）：只按「本次声明了 tools」就 fail-closed 太宽 ——
+/// 模型复述**未声明**的工具时我们本来也还原不了，把那种回合判失败会误伤正常回答。
+/// 返回 `false` 也用于「文本里没有名字」的情形，由调用方单独处理。
+pub fn echo_names_declared(text: &str, allowed: &HashSet<String>) -> bool {
+    let mut names: Vec<&str> = Vec::new();
+    let mut rest = text;
+    while let Some(position) = rest.find("\"name\"") {
+        let after = rest[position + 6..].trim_start();
+        let Some(after) = after.strip_prefix(':') else {
+            rest = after;
+            continue;
+        };
+        let after = after.trim_start();
+        let Some(after) = after.strip_prefix('"') else {
+            rest = after;
+            continue;
+        };
+        let Some(end) = after.find('"') else {
+            break;
+        };
+        names.push(&after[..end]);
+        rest = &after[end..];
+    }
+    !names.is_empty() && names.iter().all(|name| allowed.contains(*name))
 }
 
 /// 回声**被截断**（JSON 不完整 / 非法）时是否该整段吞掉。
@@ -1198,9 +1249,14 @@ pub fn leaked_partial_droppable(text: &str, allowed_names: Option<&HashSet<Strin
         return false;
     }
     let t = text.trim();
-    if t == LEAK_MARKER {
+    if t == LEAK_MARKER || t == LEAK_MARKER_ALT {
         // 只有标记、连数组都没开始写：判据 3 的退化情形，同样是回声。
         return true;
+    }
+    // 有工具名且含**未声明**的名字 ⇒ 这条判据认不了（保持透传，参考实现 #72）。
+    let allowed = allowed_names.expect("上面已过滤空集合");
+    if t.contains("\"name\"") && !echo_names_declared(t, allowed) {
+        return false;
     }
     let LeakState::Body(body) = leak_body_offset(t) else {
         return false;
@@ -2393,6 +2449,15 @@ mod tests {
         assert_eq!(calls[0]["function"]["name"], "search");
         assert_eq!(clean, "");
 
+        // 尖括号写法（模型复述时会把 `[ ]` 改成 `< >`）同样必须还原。
+        let alt = text.replace(LEAK_MARKER, LEAK_MARKER_ALT);
+        let (alt_calls, alt_clean) = parse_leaked_tool_calls(&alt, None);
+        assert_eq!(
+            alt_calls.expect("尖括号标记也要还原")[0]["function"]["name"],
+            "search"
+        );
+        assert_eq!(alt_clean, "");
+
         // 围栏包裹。
         let fenced = format!("```json\n{text}\n```");
         assert!(parse_leaked_tool_calls(&fenced, None).0.is_some());
@@ -2434,6 +2499,37 @@ mod tests {
         ));
         // 未声明 tools ⇒ 不吞（与回读同一前置：避免误杀「讨论该标记」的回复）。
         assert!(!leaked_partial_droppable(&truncated, None));
+
+        // ★ 回声里的名字有**未声明**的 ⇒ 不吞（参考实现 #72：只按「声明了 tools」太宽）。
+        let undeclared =
+            format!("{LEAK_MARKER}\n[{{\"name\":\"not_declared\",\"arguments\":\"{{\\\"p");
+        assert!(!leaked_partial_droppable(&undeclared, Some(&allowed)));
+        // 名字全在声明集合里、但数组截断 ⇒ 吞。
+        assert!(leaked_partial_droppable(
+            &format!("{LEAK_MARKER}\n[{{\"name\":\"pwsh\",\"arguments\":\"{{"),
+            Some(&allowed)
+        ));
+        // 尖括号写法同样认。
+        assert!(leaked_partial_droppable(
+            &format!("{LEAK_MARKER_ALT}\n[{{\"name\":\"pwsh\""),
+            Some(&allowed)
+        ));
+    }
+
+    /// `echo_names_declared`：全命中才 true；空名字 / 有未声明 / 无 allowed 都 false。
+    #[test]
+    fn echo_names_must_all_be_declared() {
+        let allowed: HashSet<String> = ["a".to_string(), "b".to_string()].into_iter().collect();
+        assert!(echo_names_declared(
+            r#"[{"name":"a"},{"name":"b"}]"#,
+            &allowed
+        ));
+        assert!(!echo_names_declared(
+            r#"[{"name":"a"},{"name":"c"}]"#,
+            &allowed
+        ));
+        assert!(!echo_names_declared("no names here", &allowed));
+        assert!(!echo_names_declared(r#"[{"name":"a"}]"#, &HashSet::new()));
     }
 
     /// issue #66：`[工具结果…]` 回声块同样不能交给用户。

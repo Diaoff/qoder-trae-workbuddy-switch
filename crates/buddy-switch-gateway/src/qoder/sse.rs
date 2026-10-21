@@ -389,9 +389,12 @@ where
     // 最后一道：还原不了的内部协议文本（截断回声 / 工具结果回声）**吞掉**，
     // 绝不把网关自己的标记交给终端用户（issue #66）。
     if out.tool_calls.is_empty() && !out.content.is_empty() {
-        if api::leaked_partial_droppable(&out.content, allowed_tool_names)
-            || api::tool_echo_droppable(&out.content, allowed_tool_names)
-        {
+        if api::leaked_partial_droppable(&out.content, allowed_tool_names) {
+            // 截断的调用回声：非流式也判失败（与流式同口径），否则调用方拿到
+            // 「200 + 空正文」，把没执行工具的一轮当成成功。
+            out.content.clear();
+            out.upstream_error = Some(TRUNCATED_TOOL_CALL_ERROR.to_string());
+        } else if api::tool_echo_droppable(&out.content, allowed_tool_names) {
             out.content.clear();
         }
     }
@@ -503,6 +506,17 @@ enum LeakGuardMode {
     Recovering,
 }
 
+/// 还原失败时对扣住正文的处置。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LeakResolution {
+    /// 截断的回声：判本轮失败（客户端重试）。
+    FailTurn,
+    /// 工具结果回声：吞掉正文，本轮继续。
+    Drop,
+    /// 正常散文 / 未声明工具：原样透传。
+    Passthrough,
+}
+
 /// 累计正文与「回声」的形状关系。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum LeakShape {
@@ -521,7 +535,11 @@ enum LeakShape {
 ///   切分不可控，标记很可能跨两帧）；
 /// - 无命中 ⇒ `None`（正常正文，逐字透传）。
 fn leak_marker_split(text: &str) -> Option<usize> {
-    let markers = [api::LEAK_MARKER, api::TOOL_RESULT_MARKER];
+    let markers = [
+        api::LEAK_MARKER,
+        api::LEAK_MARKER_ALT,
+        api::TOOL_RESULT_MARKER,
+    ];
     let mut best: Option<usize> = None;
     for marker in markers {
         if let Some(position) = text.find(marker) {
@@ -543,9 +561,41 @@ fn leak_marker_split(text: &str) -> Option<usize> {
     None
 }
 
+/// 截断回声 / 截断 DSML 的**失败文案**。
+///
+/// 为什么不「静默给空回答」：客户端会把空回答当**正常结束**，任务就停在
+/// 「工具没执行」的半路（issue #66 的体感正是「断好多次」）。判失败让客户端重试，
+/// 比伪装成完成诚实（参考实现 issue #72 的取舍）。
+pub const TRUNCATED_TOOL_CALL_ERROR: &str =
+    "上游返回的工具调用被截断（无法还原），本轮已判失败以便客户端重试；未执行任何工具。";
+
+/// 合成一帧 OpenAI 风格的流内错误（客户端据此失败/重试）。
+fn truncated_tool_call_frame() -> Bytes {
+    Bytes::from(format!(
+        "data: {}\n\n",
+        json!({
+            "error": {
+                "message": TRUNCATED_TOOL_CALL_ERROR,
+                "type": "upstream_error",
+                "code": 502,
+            }
+        })
+    ))
+}
+
+/// 去掉开头的**调用回声**标记（两种括号写法都认）。
+fn strip_call_marker(text: &str) -> Option<&str> {
+    text.strip_prefix(api::LEAK_MARKER)
+        .or_else(|| text.strip_prefix(api::LEAK_MARKER_ALT))
+}
+
 /// 累计正文处于哪种形状（判定与 [`api::parse_leaked_tool_calls`] 同源：标记 + `[` 开头）。
 fn classify(text: &str) -> LeakShape {
-    for marker in [api::LEAK_MARKER, api::TOOL_RESULT_MARKER] {
+    for marker in [
+        api::LEAK_MARKER,
+        api::LEAK_MARKER_ALT,
+        api::TOOL_RESULT_MARKER,
+    ] {
         if marker.starts_with(text) {
             return LeakShape::Prefix;
         }
@@ -554,11 +604,10 @@ fn classify(text: &str) -> LeakShape {
         // 工具结果回声：形状不是 JSON 数组，只能整段留到流末按判据吞掉 / 放行。
         return LeakShape::Echo;
     }
-    if !text.starts_with(api::LEAK_MARKER) {
+    let Some(rest) = strip_call_marker(text) else {
         return LeakShape::NotEcho;
-    }
-    let rest = api::LEAK_MARKER.len();
-    let rest = text[rest..].trim_start();
+    };
+    let rest = rest.trim_start();
     if rest.is_empty() || rest.starts_with('[') {
         LeakShape::Echo
     } else {
@@ -772,13 +821,11 @@ impl<S> LeakGuardStream<S> {
             LeakGuardMode::Passthrough => {}
             /* 标记只写了一半（上游断流 / 恰好停在前缀）⇒ 原样透传：
             宁可让用户看见半句标记，也不要凭空造出工具调用。 */
-            LeakGuardMode::Probing => {
-                if self.should_drop() {
-                    self.flush_held_without_leaking();
-                } else {
-                    self.flush_held();
-                }
-            }
+            LeakGuardMode::Probing => match self.resolution() {
+                LeakResolution::FailTurn => self.fail_turn(),
+                LeakResolution::Drop => self.flush_held_without_leaking(),
+                _ => self.flush_held(),
+            },
             LeakGuardMode::Recovering => {
                 if self.saw_tool_calls {
                     /* 上游已给结构化调用 ⇒ 绝不合成第二组（双发）。
@@ -797,12 +844,12 @@ impl<S> LeakGuardStream<S> {
                     cleaned = tail_cleaned;
                 }
                 let Some(calls) = calls.filter(|calls| !calls.is_empty()) else {
-                    // 还原不了：被截断的回声 / 工具结果回声 ⇒ 吞掉正文（issue #66），
+                    // 还原不了：截断回声 ⇒ 判失败（客户端重试）；工具结果回声 ⇒ 吞正文；
                     // 其余（正常散文、未声明工具）⇒ 原样透传。
-                    if self.should_drop() {
-                        self.flush_held_without_leaking();
-                    } else {
-                        self.flush_held();
+                    match self.resolution() {
+                        LeakResolution::FailTurn => self.fail_turn(),
+                        LeakResolution::Drop => self.flush_held_without_leaking(),
+                        _ => self.flush_held(),
                     }
                     return;
                 };
@@ -819,10 +866,27 @@ impl<S> LeakGuardStream<S> {
     ///
     /// 两者都以「本次请求声明了 tools」为前置 —— 未声明工具时模型不可能在调工具，
     /// 此时整段只可能是正常讨论，必须 fail-open 透传。
-    fn should_drop(&self) -> bool {
+    fn resolution(&self) -> LeakResolution {
         let allowed = self.allowed_tools.as_deref();
-        api::leaked_partial_droppable(&self.text, allowed)
-            || api::tool_echo_droppable(&self.text, allowed)
+        if api::leaked_partial_droppable(&self.text, allowed) {
+            // 截断的调用回声：还原不了 ⇒ **判失败**（让客户端重试，而不是当空回答结束）。
+            return LeakResolution::FailTurn;
+        }
+        if api::tool_echo_droppable(&self.text, allowed) {
+            // 工具结果回声：吞掉即可（本轮本来就该继续，不需要重试）。
+            return LeakResolution::Drop;
+        }
+        LeakResolution::Passthrough
+    }
+
+    /// 判本轮失败：丢掉扣住的帧，发一帧流内错误，并把模式复位。
+    fn fail_turn(&mut self) {
+        self.held.clear();
+        self.held_bytes = 0;
+        self.text.clear();
+        self.saw_tool_calls = false;
+        self.mode = LeakGuardMode::Passthrough;
+        self.out.push_back(truncated_tool_call_frame());
     }
 
     /// 还原成功：合成 `tool_calls` 帧 + 把扣住的帧去正文后按原顺序放回。
@@ -1423,9 +1487,11 @@ impl<S> DsmlGuardStream<S> {
         }
         if self.buffering {
             if self.buffer.to_ascii_uppercase().contains("DSML") {
-                // 截断的 DSML 块：还原不了，也绝不透传（与 issue #66 的截断回声同理）。
+                // 截断的 DSML 块：还原不了 ⇒ 绝不透传，并且**判失败**（客户端重试），
+                // 而不是给一个「空回答 + 正常结束」让任务停在半路。
                 self.buffer.clear();
                 self.buffering = false;
+                self.out.push_back(truncated_tool_call_frame());
             } else {
                 self.flush_buffer();
             }
@@ -2131,10 +2197,8 @@ mod tests {
             !text.to_ascii_uppercase().contains("DSML"),
             "截断块泄漏: {text}"
         );
-        assert!(
-            text.contains("\"finish_reason\":\"length\""),
-            "收尾仍要发: {text}"
-        );
+        // 截断的 DSML 同样**判失败**（客户端重试），不静默结束。
+        assert!(text.contains("\"code\":502"), "必须发流内错误: {text}");
     }
 
     /// issue #66：**截断的调用回声**不许透传（既还原不了，也不能把标记交给用户）。
@@ -2157,7 +2221,12 @@ mod tests {
         );
         let text = collect(&mut stream).await;
         assert!(!text.contains(api::LEAK_MARKER), "标记泄漏: {text}");
-        assert!(text.contains("\"finish_reason\":\"length\""), "{text}");
+        // 截断回声还原不了 ⇒ **判本轮失败**（客户端重试），而不是「空回答 + 正常结束」。
+        assert!(text.contains("\"code\":502"), "必须发流内错误: {text}");
+        assert!(
+            text.contains(TRUNCATED_TOOL_CALL_ERROR),
+            "错误文案要可读: {text}"
+        );
     }
 
     /// issue #66：`[工具结果…]` 回声块同样吞掉（不还原，只保证用户看不到）。
@@ -2207,6 +2276,54 @@ mod tests {
         let out = aggregate(upstream_from(&frames), None).await;
         assert!(out.tool_calls.is_empty(), "{out:?}");
         assert!(out.content.contains("DSML"), "{out:?}");
+    }
+
+    /// 尖括号标记（`<assistant 请求调用工具>`）也要能还原 —— 换个括号不能绕过治理。
+    #[tokio::test]
+    async fn leak_guard_recovers_angle_bracket_marker() {
+        let echo = format!(
+            "{}\n{}",
+            api::LEAK_MARKER_ALT,
+            json!([{ "name": "ls", "arguments": "{}" }])
+        );
+        let frames = vec![
+            frame(&json!({"id": "c1", "choices": [{"delta": {"content": echo}}]})),
+            frame(&json!({"choices": [{"delta": {}, "finish_reason": "stop"}]})),
+            "data:{\"body\":\"[DONE]\"}\n".to_string(),
+        ];
+        let mut stream = LeakGuardStream::new(
+            QoderOpenAiStream::new(upstream_from(&frames)),
+            Some(std::sync::Arc::new(std::collections::HashSet::from([
+                "ls".to_string()
+            ]))),
+        );
+        let text = collect(&mut stream).await;
+        assert!(!text.contains(api::LEAK_MARKER_ALT), "标记泄漏: {text}");
+        assert!(text.contains("\"tool_calls\":["), "必须还原: {text}");
+    }
+
+    /// 非流式：截断回声 ⇒ `upstream_error`（调用方据此回 502），不是「200 + 空正文」。
+    #[tokio::test]
+    async fn aggregate_fails_turn_on_truncated_echo() {
+        let truncated = format!(
+            "{}\n[{{\"name\":\"shell\",\"arguments\":\"{{\\\"comm",
+            api::LEAK_MARKER
+        );
+        let frames = vec![
+            frame(&json!({"id": "c1", "choices": [{"delta": {"content": truncated}}]})),
+            frame(&json!({"choices": [{"delta": {}, "finish_reason": "length"}]})),
+            "data:{\"body\":\"[DONE]\"}\n".to_string(),
+        ];
+        let allowed: std::collections::HashSet<String> =
+            ["shell".to_string()].into_iter().collect();
+        let out = aggregate(upstream_from(&frames), Some(&allowed)).await;
+        assert!(out.tool_calls.is_empty(), "{out:?}");
+        assert!(out.content.is_empty(), "不得把半截 JSON 当正文: {out:?}");
+        assert_eq!(
+            out.upstream_error.as_deref(),
+            Some(TRUNCATED_TOOL_CALL_ERROR),
+            "必须判失败"
+        );
     }
 
     /// 「散文 + 标记 + 收尾」同帧：收尾必须**排在合成调用之后**（否则 Anthropic 侧补不出 usage）。
