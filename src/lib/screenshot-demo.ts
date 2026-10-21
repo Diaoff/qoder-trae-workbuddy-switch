@@ -2008,7 +2008,15 @@ function demoQoderGatewayStatus(scope: string): unknown {
  */
 function demoQoderGatewayModels(scope: string): unknown {
   const global = scope.endsWith("global");
-  const model = (name: string, displayName: string, reasoning: boolean, disabled = false) => ({
+  /* `extra` 承载官方的计费与能力事实（价格倍率 / 免费 / 错峰徽标 / 思考档位），
+     与真机管理面同形；演示里不填 = 该字段官方没给（渲染「—」）。 */
+  const model = (
+    name: string,
+    displayName: string,
+    reasoning: boolean,
+    disabled = false,
+    extra: Record<string, unknown> = {},
+  ) => ({
     id: name,
     object: "model",
     owned_by: "qoder",
@@ -2016,6 +2024,7 @@ function demoQoderGatewayModels(scope: string): unknown {
     is_reasoning: reasoning,
     max_input_tokens: 180_000,
     disabled,
+    ...extra,
   });
   return global
     ? {
@@ -2024,7 +2033,13 @@ function demoQoderGatewayModels(scope: string): unknown {
         source: "cached",
         fetchedAt: Date.now() - 15 * 60 * 60 * 1000,
         note: t("shared.demo.qoder.gateway.catalogCached"),
-        data: [model("Ultimate", "Ultimate", true), model("Qwen3.8-Max", "Qwen3.8-Max", true)],
+        data: [
+          model("Ultimate", "Ultimate", true, false, { price_factor: 1, is_free: false }),
+          model("Qwen3.8-Max", "Qwen3.8-Max", true, false, {
+            price_factor: 0.5,
+            thinking_efforts: ["low", "medium", "xhigh"],
+          }),
+        ],
       }
     : {
         object: "list",
@@ -2033,11 +2048,23 @@ function demoQoderGatewayModels(scope: string): unknown {
         fetchedAt: Date.now() - 8 * 60 * 1000,
         note: null,
         data: [
-          model("Qwen3.8-Max", "Qwen3.8-Max", true),
-          model("GLM-5.1", "GLM-5.1", true),
+          model("Qwen3.8-Max", "Qwen3.8-Max", true, false, {
+            price_factor: 0.5,
+            is_free: true,
+            thinking_efforts: ["low", "medium", "xhigh"],
+          }),
+          model("GLM-5.1", "GLM-5.1", true, false, {
+            price_factor: 0.5,
+            promotion: {
+              badge: { zh: "错峰4折", en: "Off-peak 60% off" },
+              window_start: "22:00",
+              window_end: "08:00",
+            },
+            thinking_efforts: ["low", "medium"],
+          }),
           // 已禁用：**仍留在清单里**（标灰 + 「启用」出口），与真机同形。
-          model("Kimi-K3", "Kimi-K3", false, true),
-          model("MiniMax-M3", "MiniMax-M3", false),
+          model("Kimi-K3", "Kimi-K3", false, true, { price_factor: 0.1 }),
+          model("MiniMax-M3", "MiniMax-M3", false, false, { is_free: true }),
         ],
       };
 }

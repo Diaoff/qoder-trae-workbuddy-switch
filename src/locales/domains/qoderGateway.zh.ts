@@ -70,6 +70,11 @@ export const zh = {
 
   // ---- 模型清单（qoder-model-list.tsx）----
   "qoder.gateway.models.title": "模型清单",
+  "qoder.gateway.models.colPricing": "价格 / 思考",
+  "qoder.gateway.models.free": "免费",
+  "qoder.gateway.models.priceFactor": "×{n}",
+  "qoder.gateway.models.thinking": "思考 {list}",
+  "qoder.gateway.models.promotionWindow": "错峰时段 {range}（UTC+8）",
   "qoder.gateway.models.note":
     "清单直接来自 Qoder 官方（拉取需要账号凭据），10 分钟内不重复请求；「禁用」的模型不会出现在 /v1/models。",
   "qoder.gateway.models.refresh": "重新识别",

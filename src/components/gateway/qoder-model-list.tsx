@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Cpu, RefreshCw } from "lucide-react";
 import { toast } from "sonner";
 
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { EmptyState } from "@/components/ui/empty-state";
 import { CatalogSourceBar } from "@/components/gateway/catalog-source-bar";
@@ -99,6 +100,12 @@ export function QoderModelList({
     [catalog, disabledSet, scope, maxContext],
   );
   const { served, total } = servedCount(rows);
+
+  /** 行内要读「价格 / 思考档位」，按 id 回查官方清单（`GatewayModelRow` 不带这些字段）。 */
+  const catalogById = useMemo(
+    () => new Map(catalog.rows.map((model) => [model.id, model])),
+    [catalog.rows],
+  );
 
   const labels = {
     colModel: t("shared.gateway.models.colModel"),
@@ -207,6 +214,57 @@ export function QoderModelList({
             onToggleDisabled={(row, disabled) => void onToggleDisabled(row, disabled)}
             showUpstream={false}
             labels={labels}
+            /* ★ 官方清单里的计费与能力事实（峰谷价 / 免费 / 思考档位）。
+               参考实现的模型清单就带这三样；以前我们只显示名称与上下文，
+               用户查「这个模型多少钱、支不支持选档」得回官网。 */
+            extraColumn={{
+              header: t("qoder.gateway.models.colPricing"),
+              render: (row) => {
+                const model = catalogById.get(row.id);
+                if (!model) return <span className="text-muted-foreground">—</span>;
+                const pricing = model.isFree
+                  ? t("qoder.gateway.models.free")
+                  : model.priceFactor !== null
+                    ? t("qoder.gateway.models.priceFactor", { n: model.priceFactor })
+                    : null;
+                const empty = !pricing && !model.promotionBadge && model.efforts.length === 0;
+                return (
+                  <div className="flex flex-wrap items-center gap-1.5 text-[11.5px]">
+                    {empty && <span className="text-muted-foreground">—</span>}
+                    {pricing && (
+                      <span
+                        className={cn(
+                          "font-medium",
+                          model.isFree ? "text-success" : "text-muted-foreground",
+                        )}
+                      >
+                        {pricing}
+                      </span>
+                    )}
+                    {model.promotionBadge && (
+                      <Badge
+                        variant="warning"
+                        className="px-1.5 py-0 text-[10px] leading-4"
+                        title={
+                          model.promotionWindow
+                            ? t("qoder.gateway.models.promotionWindow", {
+                                range: model.promotionWindow,
+                              })
+                            : undefined
+                        }
+                      >
+                        {model.promotionBadge}
+                      </Badge>
+                    )}
+                    {model.efforts.length > 0 && (
+                      <span className="text-muted-foreground">
+                        {t("qoder.gateway.models.thinking", { list: model.efforts.join(" / ") })}
+                      </span>
+                    )}
+                  </div>
+                );
+              },
+            }}
           />
           {/* 计数 = available && !disabled，与出口 ① 同源。
               ★ 守卫是 `total > 0`（**有清单就显示**）—— `served === 0` 不是「无数据」，

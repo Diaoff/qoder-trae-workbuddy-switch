@@ -141,6 +141,18 @@ export interface QoderGatewayModelRow {
   contextMax: number | null;
   /** 后端现算的一份禁用标记（渲染以 store 为准；这里用于交叉校验与计数）。 */
   disabled: boolean;
+  /**
+   * 官方 `price_factor`（计价倍率，**不是**金额）；缺失 = 官方没给，不编。
+   */
+  priceFactor: number | null;
+  /** 官方标记的免费模型。 */
+  isFree: boolean;
+  /** 错峰活动徽标（中文优先、缺失回落英文）；无活动 = `null`。 */
+  promotionBadge: string | null;
+  /** 错峰时段（`"22:00-08:00"`）；无活动 = `null`。 */
+  promotionWindow: string | null;
+  /** 思考档位（官方词表顺序）；空数组 = 该模型不支持选档位。 */
+  efforts: string[];
 }
 
 /** 模型清单视图（含来源与原因）。 */
@@ -193,6 +205,33 @@ function asBoolean(value: unknown): boolean | undefined {
 /** 取 camelCase 优先、snake_case 兜底的字段。 */
 function pick<T>(record: Record<string, unknown>, camel: string, snake: string): T | undefined {
   return (record[camel] ?? record[snake]) as T | undefined;
+}
+
+/**
+ * 错峰活动徽标：**中文优先、英文兜底**（与后端 `placements` 取标题同一口径）。
+ *
+ * 只认官方给的 `badge`；没有就是 `null`（不编「原价」这种不存在的事实）。
+ */
+function promotionBadge(promotion: unknown): string | null {
+  const record = (promotion && typeof promotion === "object" ? promotion : {}) as Record<
+    string,
+    unknown
+  >;
+  const badge = (
+    record.badge && typeof record.badge === "object" ? record.badge : {}
+  ) as Record<string, unknown>;
+  return asString(badge.zh) ?? asString(badge.en) ?? null;
+}
+
+/** 错峰时段（`"22:00-08:00"`）；缺任一端 ⇒ `null`（不显示半截时段）。 */
+function promotionWindow(promotion: unknown): string | null {
+  const record = (promotion && typeof promotion === "object" ? promotion : {}) as Record<
+    string,
+    unknown
+  >;
+  const start = asString(pick(record, "windowStart", "window_start"));
+  const end = asString(pick(record, "windowEnd", "window_end"));
+  return start && end ? `${start}-${end}` : null;
 }
 
 /** 归一化 `get_qoder_gateway_config` 的返回。 */
@@ -332,6 +371,13 @@ export function normalizeQoderGatewayCatalog(raw: unknown): QoderGatewayCatalog 
               asNumber(pick(entry, "contextDefault", "context_length_default")) ?? null,
             contextMax: asNumber(pick(entry, "contextMax", "context_length_max")) ?? null,
             disabled: asBoolean(entry.disabled) ?? false,
+            priceFactor: asNumber(pick(entry, "priceFactor", "price_factor")) ?? null,
+            isFree: asBoolean(pick(entry, "isFree", "is_free")) ?? false,
+            promotionBadge: promotionBadge(entry.promotion),
+            promotionWindow: promotionWindow(entry.promotion),
+            efforts: Array.isArray(entry.thinking_efforts)
+              ? entry.thinking_efforts.filter((item): item is string => typeof item === "string")
+              : [],
           };
         })
         .filter((item): item is QoderGatewayModelRow => item !== null)

@@ -62,6 +62,11 @@ export const en = {
 
   // ---- Model list (qoder-model-list.tsx) ----
   "qoder.gateway.models.title": "Model list",
+  "qoder.gateway.models.colPricing": "Price / thinking",
+  "qoder.gateway.models.free": "Free",
+  "qoder.gateway.models.priceFactor": "×{n}",
+  "qoder.gateway.models.thinking": "Thinking {list}",
+  "qoder.gateway.models.promotionWindow": "Off-peak {range} (UTC+8)",
   "qoder.gateway.models.note":
     "This list comes straight from Qoder (fetching it needs account credentials) and is cached for 10 minutes; disabled models disappear from /v1/models.",
   "qoder.gateway.models.refresh": "Re-detect",
