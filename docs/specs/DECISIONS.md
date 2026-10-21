@@ -1,4 +1,4 @@
-# 决策清单（D1–D47）—— **✅ 全部已确认**
+# 决策清单（D1–D50）—— **✅ 全部已确认**
 
 > ⚠️ **另有一组决策只在 `UNIFIED-GATEWAY-ARCH.md` §10（P16 统一入口，8 条，AI 定稿）**，
 > 尚未并入本文件编号；索引见本文 **K 段**。
@@ -688,6 +688,64 @@ sessions-unify,vscode-sessions}` 加**自动保留**：每次复制 / 分歧处�
 
 ★ **唯一仍未核实**：`trae-global`（国际合并版）的凭据从未对真实上游跑通过 ——
 它可能「列得出来、调不动」。启用前先发一条真实请求验证。**这是本仓既有的诚实边界，不是本次引入。**
+
+---
+
+## L. 出站脱敏与降级门成因判定（issue #67，2026-10-21）
+
+### D48 `wb` 通道身份句拦截的修法 —— ✅ **已落地：专用正则，不进 `FEATURES` / `REWRITES` 表**
+
+**结论**：`crates/buddy-switch-gateway/src/outbound/sanitize.rs` 新增
+`harness_identity_re()`（`(?i)you are an ai agent powered by deepseek harness`），
+**预检 `has_fingerprint` 与净化 `sanitize_text` 共用**。改写只插冠词 → 
+`You are an AI agent powered by the DeepSeek Harness`（与 `for Claude` → `for Claude tool` 同构）。
+
+**理由**：上游对 system / developer 消息**偏移 0** 做逐字匹配，命中即 400 + `11-128`
+（`Illegal API invocation from an unapproved channel`），补 UA / 会话头全部无效。
+该匹配**忽略大小写**（全小写形态同样被拦），而 `FEATURES` / `REWRITES` 两张表都是
+大小写敏感的 `contains` / `replace` —— 进表只能覆盖列出的那一种大小写，
+「预检不中 ⇒ 改写不执行」，是典型的「改了却不生效」。
+
+- **定了会动什么**：`sanitize.rs` 一条正则 + 预检挂载；`outbound/mod.rs` 出站管线用例。
+  护栏 `every_rewrite_source_is_covered_by_feature_precheck` 拦住「只加 REWRITES 不加
+  FEATURES」的漏改（表内规则仍受此约束）。
+- **选反方案的代价**：按 issue §4.1 只加一对表项 ⇒ 全小写客户端继续 100% 失败；
+  改成「整表大小写不敏感」⇒ 动到既有四条规则的行为，收益不抵风险。
+
+### D49 降级门按「成因证据」判定 —— ✅ **已落地：方案 B2（改用写事实当证据）**
+
+**结论**：新增 `relay::should_degrade_retry(status, message, sanitized)`，三处端点
+（`/v1/chat/completions`、`/v1/messages`、`/v1/responses`）统一走它。判据：
+
+```
+is_content_blocked(...) || (status == 400 && sanitized && is_channel_invalid(...))
+```
+
+`sanitized` 由 `prepare_outbound_body_report` 回报 → `RelayRequest` → `RelayFailure` 透传，
+含义只有一句：**本轮出站改写确实动过黑名单指纹**。
+
+**理由**：同一个报错文案下有两种成因 —— 渠道校验（头族不齐，换提示词无用）与
+内容前缀拦截（成因在请求体，换提示词可自救）。靠文案分不开，靠**网关自知的请求体事实**可分。
+
+- **定了会动什么**：`relay.rs` 的 `PreparedBody` / `RelayRequest.sanitized` /
+  `RelayFailure.sanitized` / `should_degrade_retry`；三个端点的降级条件；
+  `biz.rs` 固定 `sanitized: false`（业务转发不走出站管线）。
+- **选反方案的代价**：方案 A（把 `11-128` 判定提到渠道校验之前）会回退
+  `content_blocked_detection_is_narrow` 已固化的四条正确判断，并把一次误判放大成
+  「当天所有 passthrough 请求都被换成中性提示词」；方案 B1 依赖上游文案细节，文案一改即失效。
+
+### D50 一切对外截断必须带标记 —— ✅ **已落地：`truncate_with_marker`**
+
+**结论**：`error::truncate_with_marker(text, limit)` 是唯一截断实现，超限保留
+`limit - 标记长度` 字符并追加 `…[truncated]`。已接入：上游错误消息（400）、
+信封嗅探消息（300）、模型探活 `reason`（400）。
+
+**理由**：无标记的截断会让客户端拿到**未闭合 JSON**（`json.loads` 报 `Unterminated string`），
+且无法分辨「上游只发了这么多」与「网关截掉了」—— issue #67 的上游原文因此无法核对。
+
+- **定了会动什么**：`error.rs` 新增公开辅助；`protocol/error_sniffer.rs`、
+  `model_probe.rs` 各截断点改用它。
+- **选反方案的代价**：继续各写各的 `.chars().take(N)` ⇒ 新增截断点时必然再漏标记。
 
 ---
 

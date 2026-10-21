@@ -54,9 +54,24 @@ pub struct OutboundMeta {
     pub conversation_id: Option<String>,
 }
 
-/// 按参考实现顺序执行完整出站改写。
+/// 出站改写结果。
+pub struct PreparedOutbound {
+    /// 发往上游的请求体（已按管线改写过）。
+    pub body: String,
+    /// 本轮是否**改写过已知黑名单指纹**（`sanitize_fingerprints` 开启且命中）。
+    ///
+    /// 唯一用途是降级门的**成因判定**：同一个 400 + `11-128` 文案下有两种成因
+    /// （渠道校验 / 内容前缀拦截），只有后者能靠换提示词自救。区分手段就是这一位 ——
+    /// 「网关确实改写过请求体、却仍被判渠道校验」⇒ 成因在请求体，降级重试有意义
+    /// （issue #67 方案 B2）。
+    ///
+    /// ⚠️ 它**不是**「上游认定内容有问题」的证据：只说明网关动过请求体。
+    pub sanitized: bool,
+}
+
+/// 按参考实现顺序执行完整出站改写（只返回请求体）。
 ///
-/// `degraded` 表示当前处于内容拦截降级期（决定 `passthrough` 模式是否改用降级提示词）。
+/// 需要「本轮是否改写过指纹」这一诊断位时用 [`prepare_outbound_body_report`]。
 pub fn prepare_outbound_body(
     region: Region,
     source: &str,
@@ -64,6 +79,19 @@ pub fn prepare_outbound_body(
     meta: &OutboundMeta,
     degraded: bool,
 ) -> String {
+    prepare_outbound_body_report(region, source, options, meta, degraded).body
+}
+
+/// 按参考实现顺序执行完整出站改写，并回报是否改写过指纹。
+///
+/// `degraded` 表示当前处于内容拦截降级期（决定 `passthrough` 模式是否改用降级提示词）。
+pub fn prepare_outbound_body_report(
+    region: Region,
+    source: &str,
+    options: &OutboundOptions,
+    meta: &OutboundMeta,
+    degraded: bool,
+) -> PreparedOutbound {
     // 步骤 0：提示词体系。
     let after_prompt = match options.prompt.active_text(degraded) {
         Some(text) => prompt::rewrite_system_prompt(source, text),
@@ -73,10 +101,16 @@ pub fn prepare_outbound_body(
     // 步骤 1：基础规范化（core 唯一实现）。
     let base = prepare_chat_body(&after_prompt);
     let Ok(mut body) = serde_json::from_str::<Value>(&base) else {
-        return base;
+        return PreparedOutbound {
+            body: base,
+            sanitized: false,
+        };
     };
     let Some(obj) = body.as_object_mut() else {
-        return base;
+        return PreparedOutbound {
+            body: base,
+            sanitized: false,
+        };
     };
 
     // 步骤 2：usage 上报（上游按流式返回，非流式聚合依赖末帧 usage）。
@@ -104,9 +138,10 @@ pub fn prepare_outbound_body(
     }
 
     // 步骤 5：指纹脱敏。
+    let mut sanitized = false;
     if options.sanitize_fingerprints {
         if let Some(Value::Array(messages)) = obj.get_mut("messages") {
-            sanitize::sanitize_messages(messages);
+            sanitized = sanitize::sanitize_messages(messages);
         }
     }
 
@@ -118,7 +153,10 @@ pub fn prepare_outbound_body(
         ensure_console_system(obj);
     }
 
-    serde_json::to_string(&body).unwrap_or(base)
+    PreparedOutbound {
+        body: serde_json::to_string(&body).unwrap_or(base),
+        sanitized,
+    }
 }
 
 /// 按模型支持档位归一 `reasoning_effort`（原地改写）。
@@ -497,6 +535,50 @@ mod tests {
             json!("You are an AI agent powered by the DeepSeek Harness."),
             "出站请求体里不得残留被上游拦截的身份句: {out}"
         );
+    }
+
+    /// issue #67 方案 B2：降级门要的是「本轮**确实**改写过指纹」这一事实，
+    /// 不是「上游说内容有问题」。三条断言分别对应：
+    /// 命中即 true / 干净即 false / 脱敏关闭时即使命中也是 false（否则降级门拿假证据触发）。
+    #[test]
+    fn report_flags_sanitized_only_when_a_fingerprint_was_rewritten() {
+        let dirty = r#"{"model":"glm-5.2","messages":[{"role":"system","content":"You are an AI agent powered by DeepSeek Harness."}]}"#;
+        let clean = r#"{"model":"glm-5.2","messages":[{"role":"system","content":"You are a helpful engineer."}]}"#;
+
+        let reported = prepare_outbound_body_report(
+            Region::Cn,
+            dirty,
+            &options(true, PromptSettings::default()),
+            &meta(),
+            false,
+        );
+        assert!(
+            reported.sanitized,
+            "命中指纹必须回报 true: {}",
+            reported.body
+        );
+        assert!(!reported
+            .body
+            .to_lowercase()
+            .contains("powered by deepseek harness"));
+
+        let reported = prepare_outbound_body_report(
+            Region::Cn,
+            clean,
+            &options(true, PromptSettings::default()),
+            &meta(),
+            false,
+        );
+        assert!(!reported.sanitized, "干净请求体不得回报 true");
+
+        let reported = prepare_outbound_body_report(
+            Region::Cn,
+            dirty,
+            &options(false, PromptSettings::default()),
+            &meta(),
+            false,
+        );
+        assert!(!reported.sanitized, "脱敏关闭时不得回报 true");
     }
 
     #[test]

@@ -72,6 +72,7 @@ use buddy_switch_core::modules::trae::region::TraeRegion;
 use buddy_switch_core::modules::trae::variant::TraeVariant;
 use buddy_switch_core::modules::upstream::UpstreamChatResult;
 
+use crate::error::truncate_with_marker;
 use crate::outbound::{self, OutboundMeta};
 use crate::pool::{classify_event, ProbeOutcome, RealmTag, UpstreamEvent};
 use crate::qoder::payload;
@@ -79,6 +80,12 @@ use crate::qoder::pool::{classify_http, QoderErrKind};
 use crate::qoder::routes::chat_once_for_account;
 use crate::qoder::{QoderGateway, QoderGatewayState};
 use crate::session_headers::{self, ConversationContext};
+
+/// 探活失败原因（`ProbeCell::reason`）的字符上限。
+///
+/// 超限必须补截断标记（[`truncate_with_marker`]）：前端把 `reason` 直接展示给用户，
+/// 没有标记时「上游只发了这么多」与「网关截掉了」看起来一模一样。
+const PROBE_REASON_LIMIT: usize = 400;
 use crate::state::GatewayState;
 use crate::timeutil;
 use crate::trae::payload as trae_payload;
@@ -1033,7 +1040,7 @@ async fn probe_cell_wb(state: &GatewayState, region: Region, uid: &str, model: &
                     state: ProbeState::TransportError,
                     http_status: 0,
                     reset_at_ms: None,
-                    reason: message.chars().take(400).collect(),
+                    reason: truncate_with_marker(&message, PROBE_REASON_LIMIT),
                     latency_ms,
                 };
             }
@@ -1050,7 +1057,7 @@ async fn probe_cell_wb(state: &GatewayState, region: Region, uid: &str, model: &
                 state: state_key,
                 http_status: status,
                 reset_at_ms,
-                reason: message.chars().take(400).collect(),
+                reason: truncate_with_marker(&message, PROBE_REASON_LIMIT),
                 latency_ms,
             }
         }
@@ -1155,7 +1162,7 @@ async fn probe_cell_qoder(
                 state: ProbeState::TransportError,
                 http_status: 0,
                 reset_at_ms: None,
-                reason: transport_error.chars().take(400).collect(),
+                reason: truncate_with_marker(&transport_error, PROBE_REASON_LIMIT),
                 latency_ms,
             };
         }
@@ -1187,14 +1194,11 @@ async fn probe_cell_qoder(
             latency_ms,
         };
     }
-    // 非 2xx：读**短错误体**作 `reason`（截断 400）—— 错误体不是 SSE 流，不会阻塞。
-    let detail: String = response
-        .text()
-        .await
-        .unwrap_or_default()
-        .chars()
-        .take(400)
-        .collect();
+    // 非 2xx：读**短错误体**作 `reason`（截断并补标记）—— 错误体不是 SSE 流，不会阻塞。
+    let detail: String = truncate_with_marker(
+        &response.text().await.unwrap_or_default(),
+        PROBE_REASON_LIMIT,
+    );
     ProbeCell {
         uid: uid.to_string(),
         nickname,
@@ -1310,7 +1314,7 @@ async fn probe_cell_trae(
                 state: state_key,
                 http_status: status,
                 reset_at_ms: None,
-                reason: detail.chars().take(400).collect(),
+                reason: truncate_with_marker(&detail, PROBE_REASON_LIMIT),
                 latency_ms,
             };
         }
@@ -1336,7 +1340,7 @@ async fn probe_cell_trae(
             state: probe_state_of_trae(trae_classify_solo(code, &message)),
             http_status: status,
             reset_at_ms: None,
-            reason: message.chars().take(400).collect(),
+            reason: truncate_with_marker(&message, PROBE_REASON_LIMIT),
             latency_ms,
         };
     }

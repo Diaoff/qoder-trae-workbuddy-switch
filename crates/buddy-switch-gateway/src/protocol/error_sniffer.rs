@@ -30,7 +30,12 @@
 
 use serde_json::Value;
 
+use crate::error::truncate_with_marker;
 use crate::pool::{classify_event, UpstreamEvent};
+
+/// 嗅探出的错误消息上限（字符）。超限时**必须补截断标记**，
+/// 否则调用方与排查者无法分辨「上游只发了这么多」与「被网关截掉了」。
+const SNIFF_MESSAGE_LIMIT: usize = 300;
 
 /// 识别出的信封错误。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -210,14 +215,14 @@ fn extract_message(body: &str) -> Option<String> {
         if let Some(Value::String(text)) = object.get(key) {
             let text = text.trim();
             if !text.is_empty() {
-                return Some(text.chars().take(300).collect());
+                return Some(truncate_with_marker(text, SNIFF_MESSAGE_LIMIT));
             }
         }
     }
     if let Some(Value::Object(error)) = object.get("error") {
         for key in ["message", "msg"] {
             if let Some(Value::String(text)) = error.get(key) {
-                return Some(text.chars().take(300).collect());
+                return Some(truncate_with_marker(text, SNIFF_MESSAGE_LIMIT));
             }
         }
     }
@@ -225,7 +230,7 @@ fn extract_message(body: &str) -> Option<String> {
 }
 
 fn truncate(body: &str) -> String {
-    body.trim().chars().take(300).collect()
+    truncate_with_marker(body.trim(), SNIFF_MESSAGE_LIMIT)
 }
 
 #[cfg(test)]
@@ -305,5 +310,19 @@ mod tests {
         let text = "data: {\"choices\":[{\"delta\":{\"content\":\"a\"}}]}\n\ndata: {\"code\":6004,\"msg\":\"limited\"}\n\n";
         let found = sniff_http_body(text).expect("必须识别");
         assert_eq!(found.status, 429);
+    }
+
+    /// issue #67 §3.4：截断必须带标记 —— 否则调用方无法分辨
+    /// 「上游只发了这么多」与「被网关截掉了」。
+    #[test]
+    fn oversized_message_carries_a_truncation_marker() {
+        let body = format!(r#"{{"code":12153,"msg":"{}"}}"#, "x".repeat(500));
+        let found = sniff_http_body(&body).expect("非零 code 必须识别为错误信封");
+        assert_eq!(found.message.chars().count(), SNIFF_MESSAGE_LIMIT);
+        assert!(
+            found.message.ends_with("…[truncated]"),
+            "截断必须带标记: {}",
+            found.message
+        );
     }
 }

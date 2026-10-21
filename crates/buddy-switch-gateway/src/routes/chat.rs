@@ -163,7 +163,7 @@ pub async fn chat_for_region(
         let already_degraded = state.degrade_active(timeutil::now_ms()).await;
         if !already_degraded
             && mode == PromptMode::Passthrough
-            && relay::is_content_blocked(status, &failure.upstream_message)
+            && relay::should_degrade_retry(status, &failure.upstream_message, failure.sanitized)
             && relay::trip_degrade(&state).await
         {
             attempt = run(
@@ -376,7 +376,7 @@ async fn run(
     inbound_request_id: Option<&str>,
     trace_id: Option<String>,
 ) -> Result<RelayOutcome, relay::RelayFailure> {
-    let (prepared_body, conversation_request_id) = relay::prepare_body(
+    let prepared = relay::prepare_body(
         state,
         region,
         raw,
@@ -393,8 +393,9 @@ async fn run(
             region,
             kind: RelayKind::Llm,
             model: model.to_string(),
-            prepared_body,
-            conversation_request_id,
+            prepared_body: prepared.body,
+            sanitized: prepared.sanitized,
+            conversation_request_id: prepared.conversation_request_id,
             conversation_id,
             trace_id,
         },

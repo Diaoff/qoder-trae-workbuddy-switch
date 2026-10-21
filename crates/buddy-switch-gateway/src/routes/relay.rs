@@ -90,6 +90,11 @@ pub struct RelayRequest {
     pub model: String,
     /// 已由 [`outbound::prepare_outbound_body`] 处理过的请求体。
     pub prepared_body: String,
+    /// 本轮出站改写是否动过黑名单指纹（决定「渠道校验文案」下的降级判定）。
+    ///
+    /// 由 [`prepare_body`] 从 [`outbound::PreparedOutbound::sanitized`] 透传，
+    /// 失败时随 [`RelayFailure`] 回到路由层 —— 见 [`should_degrade_retry`]。
+    pub sanitized: bool,
     /// 会话轮主键（轮内复用）。
     pub conversation_request_id: String,
     /// 客户端会话 id。
@@ -127,6 +132,8 @@ pub struct RelayFailure {
     pub uid: String,
     /// 上游返回体片段（可能为空）。
     pub upstream_message: String,
+    /// 本轮出站改写是否动过黑名单指纹（成因判定用，见 [`should_degrade_retry`]）。
+    pub sanitized: bool,
 }
 
 /// 等**首帧**再决定：先取一块字节，若它本身就是错误信封就判成失败（可换号）。
@@ -428,6 +435,7 @@ pub async fn relay(
                             account: account_name,
                             uid,
                             upstream_message: envelope.message,
+                            sanitized: request.sanitized,
                         });
                         if disabled || gate_opened || !should_rotate(&event, attempt) {
                             break;
@@ -504,6 +512,7 @@ pub async fn relay(
                     account: account_name,
                     uid,
                     upstream_message: message,
+                    sanitized: request.sanitized,
                 });
 
                 // 账号已禁用 → 重试无意义。
@@ -556,6 +565,7 @@ pub async fn relay(
                 account: String::new(),
                 uid: String::new(),
                 upstream_message: String::new(),
+                sanitized: request.sanitized,
             }
         }
     };
@@ -975,17 +985,32 @@ pub async fn prepare_body(
     conversation_id: Option<&str>,
     turn_key: Option<&str>,
     inbound_request_id: Option<&str>,
-) -> (String, String) {
+) -> PreparedBody {
     let now_ms = timeutil::now_ms();
     let degraded = state.degrade_active(now_ms).await;
     let options = state.outbound_options().await;
     let meta = outbound_meta(uid_hint, conversation_id);
 
-    let prepared = outbound::prepare_outbound_body(region, raw_body, &options, &meta, degraded);
+    let prepared =
+        outbound::prepare_outbound_body_report(region, raw_body, &options, &meta, degraded);
 
     let request_id =
         session_headers::resolve_conversation_request_id(inbound_request_id, None, turn_key);
-    (prepared, request_id)
+    PreparedBody {
+        body: prepared.body,
+        conversation_request_id: request_id,
+        sanitized: prepared.sanitized,
+    }
+}
+
+/// 出站改写结果：请求体 + 会话轮主键 + 脱敏诊断位。
+pub struct PreparedBody {
+    /// 发往上游的请求体。
+    pub body: String,
+    /// 会话轮主键（轮内复用）。
+    pub conversation_request_id: String,
+    /// 本轮是否改写过黑名单指纹（透传给 [`RelayRequest::sanitized`]）。
+    pub sanitized: bool,
 }
 
 /// 触发降级期（内容拦截时调用）。
@@ -1022,6 +1047,27 @@ pub fn is_content_blocked(status: u16, message: &str) -> bool {
         return true;
     }
     message.contains("content policy") || message.contains("内容审核")
+}
+
+/// 决定**是否启用降级重试**（换中性提示词自救一次）的唯一判据。
+///
+/// 上游对两类失败回**完全相同**的报错（400 + `11-128` + `unapproved channel`）：
+///
+/// | 成因 | 触发条件 | 换提示词是否有用 |
+/// |:--|:--|:--|
+/// | 渠道校验 | 请求头族不齐 / 渠道未认证 | 无用，只会白耗一次配额 |
+/// | 内容前缀拦截 | system 偏移 0 命中黑名单字面串 | **有用** |
+///
+/// 两者靠 `message` 分不开（字面一致），所以用网关自己掌握的事实来分：
+/// `sanitized` = 本轮出站改写**确实动过**黑名单指纹。动过却仍被判渠道校验
+/// ⇒ 成因在请求体而非请求头 ⇒ 降级重试有意义（issue #67 方案 B2）。
+///
+/// 为什么不把 `11-128` 判定提前（方案 A）：那会让真正的渠道校验也进降级链，
+/// 回退 [`is_content_blocked`] 已固化的正确判断，还会把一次误判放大成
+/// 「当天所有 passthrough 请求都被换成中性提示词」。
+pub fn should_degrade_retry(status: u16, message: &str, sanitized: bool) -> bool {
+    is_content_blocked(status, message)
+        || (status == 400 && sanitized && is_channel_invalid(message))
 }
 
 /// 账号池的用量回报接收方（流式路径专用）。
@@ -1259,6 +1305,36 @@ mod tests {
         assert!(is_channel_invalid("这次调用没通过渠道校验"));
     }
 
+    /// issue #67 方案 B2：降级门的**成因判定**。
+    ///
+    /// 两条边界都必须守住：
+    /// - 没改写过指纹的渠道校验 ⇒ **不**降级（既有正确行为，不许回退）；
+    /// - 改写过指纹却仍被判渠道校验 ⇒ 成因在请求体 ⇒ **才**降级（本案新增）。
+    ///
+    /// 可证伪：删掉 `sanitized &&`（等价 issue §4.2 方案 A）⇒ 第 1 条断言红。
+    #[test]
+    fn degrade_retry_needs_evidence_from_the_body() {
+        let channel =
+            r#"{"code":11-128,"msg":"Illegal API invocation from an unapproved channel"}"#;
+        assert!(
+            !should_degrade_retry(400, channel, false),
+            "纯渠道校验不得进降级链"
+        );
+        assert!(
+            should_degrade_retry(400, channel, true),
+            "改写过指纹却仍被拦 ⇒ 成因在请求体，降级重试才有意义"
+        );
+
+        // 非 400 一律不降级（不靠文案漂移兜底）。
+        assert!(!should_degrade_retry(429, channel, true));
+        assert!(!should_degrade_retry(500, channel, true));
+
+        // 既有内容拦截判定逐条不变。
+        assert!(should_degrade_retry(400, "code=11128 blocked", false));
+        assert!(should_degrade_retry(200, "内容审核未通过", false));
+        assert!(!should_degrade_retry(400, "invalid request", true));
+    }
+
     #[test]
     fn outbound_meta_carries_uid_and_conversation() {
         let meta = outbound_meta("u1", Some("c1"));
@@ -1278,6 +1354,7 @@ mod tests {
             kind: RelayKind::Llm,
             model: model.to_string(),
             prepared_body: String::new(),
+            sanitized: false,
             conversation_request_id: "turn-1".to_string(),
             conversation_id: conversation_id.map(str::to_string),
             trace_id: None,

@@ -124,6 +124,9 @@ pub async fn biz_for_region(
             // 业务请求没有「模型」概念：传空串 ⇒ 冷却/熔断按「无模型」维度记，**不与 LLM 混淆**。
             model: String::new(),
             prepared_body,
+            // 业务请求不走出站改写管线（body 原样透传）⇒ 脱敏位恒 false，
+            // 也就永远不会被降级门误判成「内容前缀拦截」。
+            sanitized: false,
             conversation_request_id: session_headers::new_hex_id(),
             conversation_id: None,
             trace_id: None,

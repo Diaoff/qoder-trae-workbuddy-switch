@@ -380,15 +380,27 @@ const TRUNCATION_MARKER: &str = "…[truncated]";
 
 /// 超限才截断：保留 `LIMIT - 标记长度` 个字符并追加 [`TRUNCATION_MARKER`]，
 /// 使总字符数仍等于 `UPSTREAM_MESSAGE_LIMIT`。
-fn truncate_upstream_message(message: &str) -> String {
-    if message.chars().count() <= UPSTREAM_MESSAGE_LIMIT {
-        return message.to_string();
+/// 通用截断：超限时保留 `limit - 标记长度` 个字符并追加 [`TRUNCATION_MARKER`]，
+/// 使总字符数恰好等于 `limit`，且下游一定能看出「这是网关截的」。
+///
+/// `limit` 必须不小于标记长度（调用方都是 300/400 量级）。
+pub fn truncate_with_marker(text: &str, limit: usize) -> String {
+    let marker_len = TRUNCATION_MARKER.chars().count();
+    debug_assert!(limit >= marker_len, "上限必须容得下截断标记");
+    if text.chars().count() <= limit {
+        return text.to_string();
     }
-    let head: String = message
+    let mut head: String = text
         .chars()
-        .take(UPSTREAM_MESSAGE_LIMIT - TRUNCATION_MARKER.chars().count())
+        .take(limit.saturating_sub(marker_len))
         .collect();
-    format!("{head}{TRUNCATION_MARKER}")
+    head.push_str(TRUNCATION_MARKER);
+    head
+}
+
+/// 上游错误消息：超限即截断并补标记。
+fn truncate_upstream_message(message: &str) -> String {
+    truncate_with_marker(message, UPSTREAM_MESSAGE_LIMIT)
 }
 
 #[cfg(test)]
