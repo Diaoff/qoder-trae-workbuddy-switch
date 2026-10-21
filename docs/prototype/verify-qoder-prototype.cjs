@@ -255,6 +255,14 @@ const flat = (s) => String(s || "").replace(/\s+/g, " ").trim();
     for (const k of ["趋势", "模型", "会话", "积分"]) if (!t.includes(k)) throw new Error("缺少子 Tab：" + k);
     return true;
   });
+  /* ★ Qoder 的单位是 credits（客户端 token 计数恒为 0）—— 原型必须如实标注，
+     否则评审会把「Token」当成 Qoder 的口径。 */
+  check("单文件：Qoder 用量页标注「按 credits 计费」（不把 Token 当口径）", () => {
+    const t = flat(dU.querySelector("#content").textContent);
+    if (!t.includes("按 credits 计费")) throw new Error("缺少单位说明：" + t.slice(0, 160));
+    if (!t.includes("余额快照")) throw new Error("「积分」视图没说清是余额快照");
+    return true;
+  });
   const domG = await boot("scope=qoder-cn&dest=gateway&gw=keys&hint=0");
   const dG = domG.window.document;
   check("单文件：Qoder 网关密钥表含「已吊销」行且同时给「恢复 + 删除」", () => {

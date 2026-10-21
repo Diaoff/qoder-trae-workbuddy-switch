@@ -508,6 +508,24 @@ function check(name, fn) {
       return "签到态：" + states[0];
     });
 
+    /* ── Qoder 用量：四个子 Tab + 单位说明（拆分形态） ── */
+    const domU = await JSDOM.fromFile(path.join(dir, "index.html"), {
+      runScripts: "dangerously", resources: "usable", pretendToBeVisual: true,
+      url: qUrl("scope=qoder-cn&dest=usage"),
+    });
+    await new Promise((r) => domU.window.addEventListener("load", r));
+    await sleep(80);
+    check("拆分形态：Qoder 用量页有四个子 Tab，并标注「按 credits 计费」", () => {
+      const t = String(domU.window.document.querySelector("#content").textContent || "")
+        .replace(/\s+/g, " ")
+        .trim();
+      for (const k of ["趋势", "模型", "会话", "积分"]) {
+        if (!t.includes(k)) throw new Error("缺少子 Tab：" + k);
+      }
+      if (!t.includes("按 credits 计费")) throw new Error("缺少单位说明：" + t.slice(0, 160));
+      return true;
+    });
+
     /* ⚠️ `check()` 只支持同步函数（返回值不是 `false` 即算通过）⇒ 异步部分必须
        **在 check 外面**先做完，否则断言里的异常会变成未处理的 rejection、静默假绿。 */
     const domW = await JSDOM.fromFile(path.join(dir, "index.html"), {

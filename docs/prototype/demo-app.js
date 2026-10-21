@@ -900,6 +900,16 @@ function rangePopover() {
   </div>`;
 }
 
+/* ★ Qoder 的用量口径与另两个平台不同：客户端按 **credits** 计费，token 计数恒为 0
+   （三处取证见实机 `QoderUsagePage` 文件头）。原型此前对 Qoder 也按 Token 画 —— 那是错的，
+   评审很容易把 Token 当成 Qoder 的口径。这里加一行如实标注（不改整套图表：原型是设计稿，
+   图表结构对三个平台是同一套）。
+   「积分」视图同理：实机是**实时余额快照**（`qoder_credits`），Qoder 侧没有收支账本数据源。 */
+function usageUnitNote() {
+  if (curPlatform().id !== "qoder") return "";
+  return `<p class="tiny muted" style="margin:-6px 2px 12px">Qoder 客户端按 <b>credits</b> 计费，token 计数恒为 0 —— 实机按 credits 出图；「积分」视图是<b>实时余额快照</b>（Qoder 侧没有收支账本数据源）。</p>`;
+}
+
 function viewUsage() {
   const u = usageFor();
   const e = u.ext;
@@ -1107,6 +1117,7 @@ function viewUsage() {
     </div>
     <div class="seg" style="margin-bottom:16px">${tabs.map(([v, l]) => `<button class="${tab === v ? "on" : ""}" data-act="usage-tab|${v}">${l}</button>`).join("")}</div>
     ${params}
+    ${usageUnitNote()}
     ${body}
   </div>`;
 }
