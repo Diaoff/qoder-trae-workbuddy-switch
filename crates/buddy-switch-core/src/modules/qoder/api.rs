@@ -63,6 +63,16 @@ pub const TOOL_RESULT_MARKER: &str = "[工具结果";
 /// 模型自造的「工具结果结束」闭标记（网关只写开标记；这个只用于判回声是否自洽）。
 pub const TOOL_RESULT_CLOSE: &str = "[工具结果结束]";
 /// 助手工具调用的文本化标记（见 [`flatten_messages`] 的文本模式）。
+/// 历史工具结果削减：单侧保留字符数的默认值（与参考实现一致）。
+pub const TOOL_RESULT_KEEP_DEFAULT: usize = 2000;
+/// 削完至少要省这么多字符才值得加省略标记（否则标记本身比省下的还长）。
+const TOOL_RESULT_SHRINK_MARGIN: usize = 200;
+/// 默认保护最后 1 条工具结果（当前轮那条）。
+const TOOL_RESULT_KEEP_TAIL_DEFAULT: usize = 1;
+/// 历史工具结果被省略时的标记（**固定串**：带字数会打断上游前缀缓存）。
+const TOOL_RESULT_OMITTED_MARKER: &str =
+    "\n[[buddy-switch: 已省略中间内容；需要完整内容请重新执行该命令]]\n";
+
 pub const LEAK_MARKER: &str = "[assistant 请求调用工具]";
 /// 同一个标记的**尖括号写法**：模型复述时会把 `[ ]` 改写成 `< >`（真机见过）。
 /// 两种都必须认，否则「换个括号」就绕过整条回声治理。
@@ -270,6 +280,107 @@ pub struct FlattenedMessages {
 /// - assistant 的 `tool_calls`：structured 原样透传（arguments 统一成 JSON 字符串）；
 ///   否则序列化为 `<LEAK_MARKER>\n<JSON 数组>` 塞进 content。
 /// - assistant 的 `reasoning_content` 仅在 `keep_reasoning=true`（DeepSeek 族）时保留。
+/// 历史工具结果**单侧**保留字符数（0 = 关闭削减）。
+///
+/// 为什么要它：长历史里的工具输出（构建日志 / 文件内容 / 测试回显）占掉的 token
+/// 常常比正文还多；而且**文本化历史里的工具结果是回声的主要来源**（模型照着复述）。
+/// 参考实现（qoder2api-hub `_shrink_tool_result`）默认单侧 2000 字符。
+///
+/// 环境变量 `BUDDY_SWITCH_QODER_TOOL_KEEP`：
+/// - 正整数 ⇒ 单侧保留字符数；
+/// - `0` / `off` / `none` / `false` / `no` / `disable` ⇒ **关闭**（回退全文回灌）；
+/// - 未设置或非法 ⇒ 默认 [`TOOL_RESULT_KEEP_DEFAULT`]。
+pub fn parse_tool_keep(raw: Option<&str>) -> usize {
+    match raw.map(|text| text.trim().to_ascii_lowercase()) {
+        None => TOOL_RESULT_KEEP_DEFAULT,
+        Some(text) if text.is_empty() => TOOL_RESULT_KEEP_DEFAULT,
+        Some(text) => {
+            if matches!(
+                text.as_str(),
+                "0" | "off" | "none" | "false" | "no" | "disable" | "disabled"
+            ) {
+                return 0;
+            }
+            text.parse::<usize>().unwrap_or(TOOL_RESULT_KEEP_DEFAULT)
+        }
+    }
+}
+
+/// 实际生效的单侧保留字符数（每次调用都读环境变量 ⇒ 运行期可调）。
+fn tool_result_keep() -> usize {
+    parse_tool_keep(
+        std::env::var("BUDDY_SWITCH_QODER_TOOL_KEEP")
+            .ok()
+            .as_deref(),
+    )
+}
+
+/// 保护**最后 N 条**工具结果不削减（默认 1 = 当前轮那条）。
+///
+/// ★ 为什么不用「当前轮」判据：那会随请求形态滑动 —— 用户再发一句话后，**所有**
+/// 历史工具结果会从「全文」变成「省略版」，同一条消息在不同轮次序列化成不同字节，
+/// 上游前缀缓存从第一条被削处整段失效（参考实现 issue #48 实测命中率 95%→8%）。
+/// 「只保护最后 N 条」时，被改写的永远是**同一条**（滑出保护窗的那条），中断点只有一处。
+fn tool_result_keep_tail() -> usize {
+    std::env::var("BUDDY_SWITCH_QODER_TOOL_KEEP_TAIL")
+        .ok()
+        .and_then(|raw| raw.trim().parse::<usize>().ok())
+        .unwrap_or(TOOL_RESULT_KEEP_TAIL_DEFAULT)
+}
+
+/// 历史工具结果：首尾各留 `keep` 字符，中间换成**固定串**省略标记。
+///
+/// - 本来就不长（`<= 2*keep + margin`）⇒ 原样；
+/// - **完整 JSON** 给双倍预算（截断 JSON 会失去可解析性）；
+/// - 切点尽量落在换行边界，避免切出半行；
+/// - 标记是**固定串**（不带省略字数）：字数会让同一条历史在不同轮次产生不同字节，
+///   打断上游前缀缓存。
+pub fn shrink_tool_result(text: &str, keep: usize) -> String {
+    if keep == 0 || text.len() <= keep * 2 + TOOL_RESULT_SHRINK_MARGIN {
+        return text.to_string();
+    }
+    if is_complete_json(text) && text.len() <= keep * 4 {
+        return text.to_string();
+    }
+    let head = &text[..floor_char_boundary(text, keep)];
+    let head = match head.rfind('\n') {
+        Some(at) if at > head.len() / 2 => &head[..at],
+        _ => head,
+    };
+    let tail_start = floor_char_boundary(text, text.len().saturating_sub(keep));
+    let tail = &text[tail_start..];
+    let tail = match tail.find('\n') {
+        Some(at) if at < tail.len() / 2 => &tail[at + 1..],
+        _ => tail,
+    };
+    format!("{head}{TOOL_RESULT_OMITTED_MARKER}{tail}")
+}
+
+/// 往下取到最近的 UTF-8 字符边界（`text[..limit]` 不能切半个汉字）。
+fn floor_char_boundary(text: &str, limit: usize) -> usize {
+    if limit >= text.len() {
+        return text.len();
+    }
+    let mut index = limit;
+    while index > 0 && !text.is_char_boundary(index) {
+        index -= 1;
+    }
+    index
+}
+
+/// `text` 是不是一个**完整可解析**的 JSON 对象 / 数组（决定给不给双倍预算）。
+fn is_complete_json(text: &str) -> bool {
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+    let first = trimmed.as_bytes()[0];
+    if first != b'{' && first != b'[' {
+        return false;
+    }
+    serde_json::from_str::<Value>(trimmed).is_ok()
+}
+
 pub fn flatten_messages(
     messages: &[Value],
     keep_reasoning: bool,
@@ -278,6 +389,17 @@ pub fn flatten_messages(
     let mut system_text: Option<String> = None;
     let mut flat: Vec<Value> = Vec::new();
     let mut images: Vec<String> = Vec::new();
+
+    /* 历史工具结果削减（见 [`shrink_tool_result`]）：**只削更早的**，最后
+    `keep_tail` 条原样保留（当前轮那条模型正在用）。 */
+    let keep = tool_result_keep();
+    let keep_tail = tool_result_keep_tail();
+    let tool_total = messages
+        .iter()
+        .filter(|message| message.get("role").and_then(Value::as_str) == Some("tool"))
+        .count();
+    let protected_from = tool_total.saturating_sub(keep_tail);
+    let mut tool_seen = 0usize;
 
     for message in messages {
         let Some(object) = message.as_object() else {
@@ -296,7 +418,12 @@ pub fn flatten_messages(
 
         if role == "tool" {
             let name = object.get("name").and_then(Value::as_str).unwrap_or("");
-            let body = text;
+            let body = if keep == 0 || tool_seen >= protected_from {
+                text
+            } else {
+                shrink_tool_result(&text, keep)
+            };
+            tool_seen += 1;
             if structured {
                 flat.push(serde_json::json!({
                     "role": "tool",
@@ -2905,5 +3032,75 @@ mod tests {
         let quota = quota_usage(QoderRegion::Cn, &uid, &token).await.unwrap();
         println!("remaining={} total={}", quota.remaining, quota.total);
         let _ = checkin_status(QoderRegion::Cn, &uid, &token).await;
+    }
+    // ---------------------------------------------------------------------
+    // 历史工具结果削减（参考实现 `_shrink_tool_result`）
+    // ---------------------------------------------------------------------
+
+    #[test]
+    fn tool_keep_parses_env_values() {
+        assert_eq!(parse_tool_keep(None), TOOL_RESULT_KEEP_DEFAULT);
+        assert_eq!(parse_tool_keep(Some("")), TOOL_RESULT_KEEP_DEFAULT);
+        assert_eq!(parse_tool_keep(Some(" 500 ")), 500);
+        assert_eq!(parse_tool_keep(Some("off")), 0);
+        assert_eq!(parse_tool_keep(Some("0")), 0);
+        assert_eq!(parse_tool_keep(Some("DISABLE")), 0);
+        assert_eq!(parse_tool_keep(Some("abc")), TOOL_RESULT_KEEP_DEFAULT);
+    }
+
+    #[test]
+    fn shrink_keeps_head_and_tail_with_a_fixed_marker() {
+        let body = "A".repeat(5000) + "\n" + &"B".repeat(5000);
+        let shrunk = shrink_tool_result(&body, 2000);
+        assert!(shrunk.len() < body.len(), "必须真的变短");
+        assert!(shrunk.starts_with("AAAA"), "头部要保留");
+        assert!(shrunk.ends_with("BBBB"), "尾部要保留");
+        assert!(shrunk.contains("已省略中间内容"), "必须有省略标记");
+        // 标记是固定串（不带字数）—— 同一份内容两次削出来必须逐字相同。
+        assert_eq!(shrunk, shrink_tool_result(&body, 2000));
+
+        // 本来就不长 ⇒ 原样。
+        let short = "x".repeat(100);
+        assert_eq!(shrink_tool_result(&short, 2000), short);
+        // keep=0 ⇒ 关闭。
+        assert_eq!(shrink_tool_result(&body, 0), body);
+    }
+
+    #[test]
+    fn shrink_spares_complete_json_within_double_budget() {
+        // 完整 JSON 在 4*keep 预算内不削（截断即失去可解析性）。
+        let payload = serde_json::json!({"log": "x".repeat(4000)});
+        let text = payload.to_string();
+        assert!(
+            text.len() > 2000 && text.len() < 8000,
+            "前置：长度落在双倍预算内"
+        );
+        assert_eq!(shrink_tool_result(&text, 2000), text);
+    }
+
+    /// 削减只作用于**更早的**工具结果：最后一条（当前轮那条）必须原样保留。
+    #[test]
+    fn flatten_protects_the_last_tool_result() {
+        let big = "L".repeat(6000);
+        let messages = vec![
+            serde_json::json!({"role": "user", "content": "开始"}),
+            serde_json::json!({"role": "assistant", "content": Value::Null, "tool_calls": []}),
+            serde_json::json!({"role": "tool", "tool_call_id": "t1", "content": big}),
+            serde_json::json!({"role": "assistant", "content": Value::Null, "tool_calls": []}),
+            serde_json::json!({"role": "tool", "tool_call_id": "t2", "content": big}),
+        ];
+        let flat = flatten_messages(&messages, false, true);
+        let tool_texts: Vec<&str> = flat
+            .messages
+            .iter()
+            .filter(|message| message["role"] == "tool")
+            .filter_map(|message| message["content"].as_str())
+            .collect();
+        assert_eq!(tool_texts.len(), 2);
+        assert!(
+            tool_texts[0].contains("已省略中间内容"),
+            "更早的工具结果应被削减"
+        );
+        assert_eq!(tool_texts[1], big, "最后一条（当前轮）必须原样保留");
     }
 }

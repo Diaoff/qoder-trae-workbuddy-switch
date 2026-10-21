@@ -235,6 +235,7 @@ Qoder 上游跑文本模式时模型会**照学**，把调用写成标签塞进�
 | 排队信号（HTTP 级） | `pool::classify_http_with_detail` | 401/403 里的 `10605` / `isQueued` ⇒ `Queued`：不冷却、不标 dead、不推 EMA；真失效词优先 |
 | 排队信号（信封级） | `sse::process_line` + `aggregate_relay` | 200 + `statusCodeValue:403` ⇒ 429 `upstream_queued`，文案说清「不是账号问题」 |
 | 风控遥测 | `/health` 的 `risk.{queued,rateLimited,rejected}` | 进程级累计、只读、不落盘；只在分类处记一次 |
+| 历史工具结果削减 | `api::shrink_tool_result` + `flatten_messages` | 单侧默认 2000 字符（`BUDDY_SWITCH_QODER_TOOL_KEEP` 可调，`off` 关闭）；保护**最后 1 条**（`…_KEEP_TAIL`）；标记固定串 ⇒ 不打碎前缀缓存 |
 
 **刻意不做**（附理由，别当遗漏）：
 
@@ -244,9 +245,8 @@ Qoder 上游跑文本模式时模型会**照学**，把调用写成标签塞进�
 2. **单号并发闸门 + 最小间隔**：参考实现只对**团队/企业账号**启用（issue #56 的自用保护）。
    本仓没有「团队账号」这一分类，硬加一套 lease 机制等于给所有个人账号降速；
    等有真实的团队账号需求再引入。
-3. **历史工具结果削减（首尾保留 + 中间省略）**：能省 token、也能降低回声概率，
-   但会**截断当前轮的工具证据**（模型据此改代码时可能缺关键行）。没有真机样本回归
-   前不默认开启；需要时按参考实现的 `QD_TOOL_RESULT_KEEP` 思路做成显式开关。
+（历史工具结果削减已实现，见上表；默认保护最后 1 条工具结果，
+需要「一条都不削」时设 `BUDDY_SWITCH_QODER_TOOL_KEEP=off`。）
 
 ---
 
