@@ -933,23 +933,32 @@ check("★ P3 用量页三平台共用同一组件（同概览页的模式；Qod
   if (!/platformOfPath\(/.test(page)) throw new Error("用量页没有从路由推平台");
   if (!/USAGE_PAGES/.test(page)) throw new Error("用量页没有按平台映射子页面");
 
-  /* 五个页面都要 **lazy**：都静态引入会让「用量」首次加载同时拉多页。 */
+  /* 六个页面都要 **lazy**：都静态引入会让「用量」首次加载同时拉多页。 */
   for (const c of [
     "TokenStatsPage",
     "CreditStatsPage",
     "TraeTokenStatsPage",
     "TraeCreditsPage",
     "QoderUsagePage",
+    "QoderCreditsPage",
   ]) {
     if (!new RegExp(`lazy\\(\\(\\) => import\\("@/pages/${c}"\\)\\)`).test(page)) {
       throw new Error(`用量页没有 lazy 加载 \`${c}\``);
     }
   }
-  /* Qoder 只有 credits 视图（tokens 数据源不存在）⇒ 必须显式关掉 token 视图与子 Tab。 */
-  if (!/qoder:\s*\{[^}]*tokenViews: false/.test(page)) {
-    throw new Error("`USAGE_PAGES.qoder` 没有关掉 token 视图（Qoder 无 token 台账）");
+  /* ★ 2026-10-21：Qoder 四个视图齐了（原先只有趋势）。
+     守三件事：① 四个子 Tab 都在；② `tokenViews: true`（否则趋势/模型/会话传不进 `view`）；
+     ③ credits 指向**独立**的余额页（指回 QoderUsagePage 就退回「积分页显示趋势图」那个错）。 */
+  if (!/qoder:\s*\[[^\]]*"trend"[^\]]*"models"[^\]]*"sessions"[^\]]*"credits"/.test(page)) {
+    throw new Error("`PLATFORM_TABS.qoder` 没有四个视图（趋势 / 模型 / 会话 / 积分）");
   }
-  return "三平台共用 · 从路由推平台 · 5 个子页面均 lazy · Qoder 仅 credits 视图";
+  if (!/qoder:\s*\{[^}]*tokenViews: true/.test(page)) {
+    throw new Error("`USAGE_PAGES.qoder` 没开 token 视图 —— 趋势/模型/会话三视图传不进 `view`");
+  }
+  if (!/qoder:\s*\{[^}]*credits: QoderCreditsPage/.test(page)) {
+    throw new Error("`USAGE_PAGES.qoder.credits` 没有指向 `QoderCreditsPage`（余额是另一个口径）");
+  }
+  return "三平台共用 · 从路由推平台 · 6 个子页面均 lazy · Qoder 四视图（余额独立成页）";
 });
 
 check("★ P2 顶栏作用域选择器：存在 ScopeSelector · 由 TopBar 渲染 · 覆盖全部作用域 · 不在页面内", () => {

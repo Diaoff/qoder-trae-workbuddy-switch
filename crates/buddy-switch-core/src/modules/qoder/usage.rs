@@ -92,6 +92,12 @@ pub struct UsageEvent {
 /// 模型名缺失时的回落标签（不凭空捏造模型名）。
 pub const UNKNOWN_MODEL: &str = "unknown";
 
+/// 会话标题的最大字符数（再长就把列表挤爆了）。
+pub const TITLE_MAX_CHARS: usize = 80;
+
+/// 会话视图最多下发多少行（按 credits 降序取前 N；`totals.sessions` 仍是全量去重数）。
+pub const SESSION_ROWS_LIMIT: usize = 200;
+
 /// `source.kind` 的固定值：数据来自客户端本地会话文件。
 pub const SOURCE_KIND: &str = "client-sessions";
 
@@ -153,6 +159,50 @@ pub fn parse_line(line: &str) -> Option<UsageEvent> {
         model,
         session_id,
     })
+}
+
+/// 取一行里的**会话标题候选**：首个 `type=user` 消息的正文（截断到 [`TITLE_MAX_CHARS`]）。
+///
+/// 为什么要它：会话视图只有 `sessionId` 时，用户看到的是 `019efd…` 这种串 ——
+/// 「哪个会话烧得多」这个唯一有用的判断就没法做了。标题就在同一个 jsonl 里，
+/// 不需要额外 IO。
+///
+/// 返回 `None` 的情形（都不编造）：不是 user 行 / 正文为空 / 结构不认识。
+pub fn session_title_of(line: &str) -> Option<String> {
+    let value: Value = serde_json::from_str(line.trim()).ok()?;
+    if value.get("type").and_then(Value::as_str) != Some("user") {
+        return None;
+    }
+    let content = value
+        .get("message")
+        .and_then(|message| message.get("content"))?;
+    let text = match content {
+        Value::String(text) => text.clone(),
+        // 数组形态：取第一段 `type: "text"`（图片 / 工具结果段跳过）。
+        Value::Array(items) => items.iter().find_map(|item| {
+            if item.get("type").and_then(Value::as_str) == Some("text") {
+                item.get("text").and_then(Value::as_str).map(str::to_string)
+            } else {
+                None
+            }
+        })?,
+        _ => return None,
+    };
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    Some(truncate_chars(trimmed, TITLE_MAX_CHARS))
+}
+
+/// 按**字符**截断（不是字节）—— 切半个汉字会得到非法 UTF-8。
+fn truncate_chars(text: &str, max: usize) -> String {
+    if text.chars().count() <= max {
+        return text.to_string();
+    }
+    let mut out: String = text.chars().take(max).collect();
+    out.push('…');
+    out
 }
 
 /// ISO-8601 时间串 → 本地日期 `YYYY-MM-DD`（分桶用本地时区）。
@@ -241,6 +291,80 @@ fn sort_models_desc(models: BTreeMap<String, f64>) -> Vec<(String, f64)> {
     rows
 }
 
+/// 事件 → **会话排行**（窗口内按 credits 降序，最多 [`SESSION_ROWS_LIMIT`] 行）。
+///
+/// 纯函数（`today` / 标题表都由调用方注入）⇒ 单测能钉死「跨天合并 / 排序 / 截断 / 标题回落」。
+///
+/// - `title` 取不到时下发**空串**，由前端回落成短 id（不编一个「未命名会话」当标题）；
+/// - `models` 只给模型名（按 credits 降序），不重复下发数字 —— 行里已有总额；
+/// - 没有 `session_id` 的事件**不进排行**（它们已计入 `totals` / `days`，但无法归属会话）。
+fn summarize_sessions(
+    events: &[UsageEvent],
+    titles: &BTreeMap<&str, &str>,
+    today: NaiveDate,
+    days: Option<u32>,
+) -> Vec<Value> {
+    struct Acc {
+        credits: f64,
+        requests: u64,
+        models: BTreeMap<String, f64>,
+        first: String,
+        last: String,
+    }
+    let mut per_session: BTreeMap<&str, Acc> = BTreeMap::new();
+    for event in events {
+        if event.session_id.is_empty() || !in_window(&event.date, today, days) {
+            continue;
+        }
+        let acc = per_session
+            .entry(event.session_id.as_str())
+            .or_insert_with(|| Acc {
+                credits: 0.0,
+                requests: 0,
+                models: BTreeMap::new(),
+                first: event.date.clone(),
+                last: event.date.clone(),
+            });
+        acc.credits += event.credits;
+        acc.requests += 1;
+        *acc.models.entry(event.model.clone()).or_insert(0.0) += event.credits;
+        if event.date < acc.first {
+            acc.first = event.date.clone();
+        }
+        if event.date > acc.last {
+            acc.last = event.date.clone();
+        }
+    }
+
+    let mut rows: Vec<(&str, Acc)> = per_session.into_iter().collect();
+    rows.sort_by(|left, right| {
+        right
+            .1
+            .credits
+            .partial_cmp(&left.1.credits)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| left.0.cmp(right.0))
+    });
+    rows.truncate(SESSION_ROWS_LIMIT);
+
+    rows.into_iter()
+        .map(|(id, acc)| {
+            json!({
+                "id": id,
+                "title": titles.get(id).copied().unwrap_or(""),
+                "credits": acc.credits,
+                "requests": acc.requests,
+                "models": sort_models_desc(acc.models)
+                    .into_iter()
+                    .map(|(model, _)| model)
+                    .collect::<Vec<String>>(),
+                "firstDate": acc.first,
+                "lastDate": acc.last,
+            })
+        })
+        .collect()
+}
+
 // ---------------------------------------------------------------------------
 // IO（外层；只读客户端目录）
 // ---------------------------------------------------------------------------
@@ -248,6 +372,8 @@ fn sort_models_desc(models: BTreeMap<String, f64>) -> Vec<(String, f64)> {
 /// 一次扫描的结果（含聚合所需的原始事件与来源元信息）。
 struct Scan {
     events: Vec<UsageEvent>,
+    /// `session_id -> 标题`（来自各 jsonl 的首个 user 消息；拿不到就是空串）。
+    sessions: Vec<(String, String)>,
     /// 扫到的 `.jsonl` 文件数（≈ 会话数）。
     files: usize,
     /// 被扫描的 `projects/` 目录。
@@ -271,21 +397,29 @@ fn collect_jsonl(dir: &Path, out: &mut Vec<PathBuf>) {
     }
 }
 
-/// 流式逐行读取单个文件，把能解析出的计费事件追加到 `out`。
+/// 流式逐行读取单个文件，把能解析出的计费事件追加到 `out`，并返回**会话标题**。
 ///
 /// **逐行容错**：单行读取失败或解析失败只跳过该行，不影响文件其余内容。
-fn read_events_from_file(path: &Path, out: &mut Vec<UsageEvent>) {
+///
+/// 标题只取**第一条** user 消息（`title.is_none()` 时才尝试解析）—— 一上来就解析每一行
+/// 会让扫描慢一倍，而标题本来就只有第一条有用。
+fn read_events_from_file(path: &Path, out: &mut Vec<UsageEvent>) -> Option<String> {
     let Ok(file) = File::open(path) else {
-        return;
+        return None;
     };
+    let mut title: Option<String> = None;
     for line in BufReader::new(file).lines() {
         let Ok(line) = line else {
             continue;
         };
         if let Some(event) = parse_line(&line) {
             out.push(event);
+        } else if title.is_none() && line.contains("\"user\"") {
+            // 便宜的前置过滤：非 user 行连 JSON 都不解析。
+            title = session_title_of(&line);
         }
     }
+    title
 }
 
 /// 扫描某区域的本地会话文件。
@@ -296,11 +430,23 @@ fn scan_for(region: QoderRegion) -> Scan {
         collect_jsonl(&projects_dir, &mut files);
     }
     let mut events = Vec::new();
+    let mut sessions: Vec<(String, String)> = Vec::new();
     for file in &files {
-        read_events_from_file(file, &mut events);
+        // 先读到局部：拿到这个文件的 session id 才能把标题挂对（一个文件 = 一个会话）。
+        let mut local = Vec::new();
+        let title = read_events_from_file(file, &mut local);
+        if let Some(id) = local
+            .iter()
+            .map(|event| event.session_id.clone())
+            .find(|id| !id.is_empty())
+        {
+            sessions.push((id, title.unwrap_or_default()));
+        }
+        events.extend(local);
     }
     Scan {
         events,
+        sessions,
         files: files.len(),
         exists: projects_dir.exists(),
         projects_dir,
@@ -350,6 +496,15 @@ pub fn usage_view_for(region: QoderRegion, days: Option<u32>) -> Value {
         *models.entry(event.model.clone()).or_insert(0.0) += event.credits;
     }
 
+    // 会话标题表（同一会话可能出现在多个文件里 ⇒ 取第一个非空标题）。
+    let mut titles: BTreeMap<&str, &str> = BTreeMap::new();
+    for (id, title) in &scan.sessions {
+        if !title.is_empty() {
+            titles.entry(id.as_str()).or_insert(title.as_str());
+        }
+    }
+    let session_rows = summarize_sessions(&scan.events, &titles, today, days);
+
     let model_rows = sort_models_desc(models);
     let by_model: Vec<Value> = model_rows
         .iter()
@@ -383,6 +538,9 @@ pub fn usage_view_for(region: QoderRegion, days: Option<u32>) -> Value {
             "models": model_rows.len() as u64,
         },
         "byModel": by_model,
+        // ★ 会话排行（credits 降序，最多 `SESSION_ROWS_LIMIT` 行）。
+        //   `totals.sessions` 仍是**全量去重数**，两者口径不同：这里是前 N 行明细。
+        "sessions": session_rows,
         "source": {
             "kind": SOURCE_KIND,
             "paths": [scan.projects_dir.to_string_lossy().to_string()],
@@ -792,5 +950,132 @@ mod tests {
         assert_eq!(view["totals"]["requests"], json!(0));
         // source 仍如实反映扫到的文件数（不是 0 —— 文件确实在）。
         assert_eq!(view["source"]["sessions"], json!(1));
+    }
+    // -- 会话标题 -----------------------------------------------------------
+
+    /// 标题取首个 user 消息正文：字符串正文与分段数组两种形态都要认。
+    ///
+    /// 反例（改坏会红）：只认 `Value::String` ⇒ 数组形态返回 `None`，第二条断言失败
+    /// （实测客户端两种形态都有）。
+    #[test]
+    fn session_title_reads_both_content_shapes() {
+        let plain = json!({
+            "type": "user",
+            "message": { "role": "user", "content": "  修一下网关的 429  " },
+        })
+        .to_string();
+        assert_eq!(
+            session_title_of(&plain).unwrap(),
+            "修一下网关的 429",
+            "要 trim"
+        );
+
+        let parts = json!({
+            "type": "user",
+            "message": { "role": "user", "content": [
+                { "type": "image", "source": {} },
+                { "type": "text", "text": "多账号轮询" },
+            ] },
+        })
+        .to_string();
+        assert_eq!(
+            session_title_of(&parts).unwrap(),
+            "多账号轮询",
+            "跳过非 text 段"
+        );
+    }
+
+    /// 非 user 行 / 空正文 / 坏结构 ⇒ `None`（不编标题）。
+    #[test]
+    fn session_title_rejects_non_user_and_empty() {
+        assert!(session_title_of(r#"{"type":"assistant","message":{"content":"x"}}"#).is_none());
+        assert!(session_title_of(r#"{"type":"user","message":{"content":"   "}}"#).is_none());
+        assert!(session_title_of(r#"{"type":"user","message":{}}"#).is_none());
+        assert!(session_title_of("{ not json").is_none());
+    }
+
+    /// 超长标题按**字符**截断到 80 + 省略号（不能切半个汉字）。
+    #[test]
+    fn session_title_truncates_by_chars() {
+        let long = "汉".repeat(TITLE_MAX_CHARS + 20);
+        let line = json!({ "type": "user", "message": { "content": long } }).to_string();
+        let title = session_title_of(&line).unwrap();
+        assert_eq!(title.chars().count(), TITLE_MAX_CHARS + 1, "80 字 + …");
+        assert!(title.ends_with('…'));
+        // 边界：恰好 80 字不截断、也不加省略号。
+        let exact = "汉".repeat(TITLE_MAX_CHARS);
+        let line = json!({ "type": "user", "message": { "content": exact } }).to_string();
+        assert_eq!(
+            session_title_of(&line).unwrap().chars().count(),
+            TITLE_MAX_CHARS
+        );
+    }
+
+    // -- 会话排行 -----------------------------------------------------------
+
+    fn session_event(date: &str, credits: f64, model: &str, session: &str) -> UsageEvent {
+        UsageEvent {
+            date: date.to_string(),
+            credits,
+            model: model.to_string(),
+            session_id: session.to_string(),
+        }
+    }
+
+    /// 会话排行：跨天合并、按 credits 降序、日期区间正确、标题回落空串。
+    ///
+    /// 反例（改坏会红）：把 `first`/`last` 的更新删掉 ⇒ 第二条断言的日期区间变错；
+    /// 排序改成升序 ⇒ 首行变成 s2。
+    #[test]
+    fn sessions_merge_across_days_and_sort_desc() {
+        let today = NaiveDate::parse_from_str("2026-10-21", "%Y-%m-%d").unwrap();
+        let events = vec![
+            session_event("2026-10-19", 2.0, "a", "s1"),
+            session_event("2026-10-21", 5.0, "b", "s1"),
+            session_event("2026-10-20", 3.0, "a", "s2"),
+            // 无 session id ⇒ 不进排行。
+            session_event("2026-10-21", 99.0, "a", ""),
+            // 窗口外（days=7 时不会到这么早）。
+            session_event("2026-09-01", 50.0, "a", "s3"),
+        ];
+        let mut titles = BTreeMap::new();
+        titles.insert("s1", "多账号轮询");
+        let rows = summarize_sessions(&events, &titles, today, Some(7));
+
+        assert_eq!(rows.len(), 2, "空 session / 窗口外都要排除: {rows:?}");
+        assert_eq!(rows[0]["id"], "s1");
+        assert_eq!(rows[0]["title"], "多账号轮询");
+        assert_eq!(rows[0]["requests"], 2);
+        assert_eq!(rows[0]["firstDate"], "2026-10-19");
+        assert_eq!(rows[0]["lastDate"], "2026-10-21");
+        assert!((rows[0]["credits"].as_f64().unwrap() - 7.0).abs() < 1e-9);
+        // 模型按 credits 降序：b(5) 在 a(2) 前。
+        assert_eq!(rows[0]["models"][0], "b");
+        assert_eq!(rows[1]["id"], "s2");
+        assert_eq!(rows[1]["title"], "", "没有标题时下发空串，由前端回落短 id");
+    }
+
+    /// 行数上限：超过 [`SESSION_ROWS_LIMIT`] 只下发前 N（按 credits 降序）。
+    #[test]
+    fn sessions_are_capped_but_sorted_before_truncation() {
+        let today = NaiveDate::parse_from_str("2026-10-21", "%Y-%m-%d").unwrap();
+        let events: Vec<UsageEvent> = (0..SESSION_ROWS_LIMIT + 5)
+            .map(|index| {
+                session_event(
+                    "2026-10-21",
+                    index as f64, // credits 随 index 增长 ⇒ 最后那条最大
+                    "a",
+                    &format!("s{index}"),
+                )
+            })
+            .collect();
+        let rows = summarize_sessions(&events, &BTreeMap::new(), today, Some(7));
+        assert_eq!(rows.len(), SESSION_ROWS_LIMIT);
+        // 截断后仍保住最高分的那些：首行是最大的 index。
+        assert_eq!(
+            rows[0]["id"],
+            format!("s{}", SESSION_ROWS_LIMIT + 4),
+            "截断前必须先排序（否则会把最高的截掉）"
+        );
     }
 }

@@ -3441,6 +3441,13 @@ export interface QoderUsageView {
   days: QoderUsageDay[];
   totals: { credits: number; requests: number; sessions: number; models: number };
   byModel: Array<{ model: string; credits: number }>;
+  /**
+   * 会话排行（credits 降序，最多 200 行）。
+   *
+   * ⚠️ `title` 可能是**空串**（客户端那条会话没有 user 消息 / 结构不认识）——
+   * 前端回落成短 id，不编「未命名会话」。
+   */
+  sessions: QoderUsageSession[];
   source: {
     kind: string;
     paths: string[];
@@ -3449,6 +3456,19 @@ export interface QoderUsageView {
     tokenCountsAvailable: boolean;
     note: string;
   };
+}
+
+/** 一条会话的用量（会话视图的行；来自本机客户端 jsonl，按 sessionId 聚合）。 */
+export interface QoderUsageSession {
+  id: string;
+  /** 首个 user 消息正文（截断 80 字）；空串 ⇒ 前端回落短 id。 */
+  title: string;
+  credits: number;
+  requests: number;
+  /** 该会话用过的模型（credits 降序）；空数组 = 全是没有模型名的行。 */
+  models: string[];
+  firstDate: string;
+  lastDate: string;
 }
 
 /**

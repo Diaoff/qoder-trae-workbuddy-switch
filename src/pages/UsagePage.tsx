@@ -57,6 +57,7 @@ const CreditStatsPage = lazy(() => import("@/pages/CreditStatsPage"));
 const TraeTokenStatsPage = lazy(() => import("@/pages/TraeTokenStatsPage"));
 const TraeCreditsPage = lazy(() => import("@/pages/TraeCreditsPage"));
 const QoderUsagePage = lazy(() => import("@/pages/QoderUsagePage"));
+const QoderCreditsPage = lazy(() => import("@/pages/QoderCreditsPage"));
 
 /** 一级四视图（与原型 `tabs` 一一对应）。 */
 export type UsageTab = "trend" | "models" | "sessions" | "credits";
@@ -84,10 +85,13 @@ const TAB_LABEL: Record<UsageTab, TranslationKey> = {
 const PLATFORM_TABS: Record<Product, UsageTab[]> = {
   workbuddy: ["trend", "models", "sessions", "credits"],
   trae: ["trend", "models", "credits"],
-  /* ⚠️ Qoder **只开「趋势」**：模型 / 积分两个视图的数据源是网关日志与本地积分缓存，
-     两者都还没落地 ⇒ 缺数据源就**不画空壳**（同 Trae 不渲染「会话」的判据）。
-     等网关把请求日志与额度缓存落盘后，这里按**数据**补齐（不是按习惯）。 */
-  qoder: ["trend"],
+  /* ★ 2026-10-21：Qoder **四个视图齐了**（原先是「只开趋势」）。
+     判据是**数据**而不是习惯 —— 这一次真的是数据补齐了：
+       · 模型：`qoder_usage.byModel` + 逐日 `days[].byModel`（一直是有的，只是没做视图）；
+       · 会话：`qoder_usage.sessions`（按 sessionId 聚合 credits；标题取首个 user 消息）；
+       · 积分：`qoder_credits`（上游额度接口的**实时余额**，与「趋势」是两个口径）。
+     ⚠️ 会话视图是**只读排行**：Qoder 没有会话复制能力，不摆「打开 / 复制」按钮。 */
+  qoder: ["trend", "models", "sessions", "credits"],
 };
 
 /** 平台 → 子页面（Token 页 / 积分页）。 */
@@ -114,15 +118,15 @@ const USAGE_PAGES: Record<
     mergeScopes: true,
   },
   /* Qoder：**单位是 credits，不是 Token**（客户端按 credits 计费、token 计数恒为 0，
-     三处取证见 `QoderUsagePage` 文件头）⇒ 只有一张 credits 视图。
-     「积分」页也指向同一张：quota 是**余额快照**（实时查询），与「逐日用量」是两个口径。
-     `tokenViews: false` 因为它不消费 `view` 参数（没有视图可切）。
+     三处取证见 `QoderUsagePage` 文件头）。
+     · tokens 页 = 趋势 / 模型 / 会话三视图（消费 `view`，故 `tokenViews: true`）；
+     · credits 页 = **实时余额快照**（`qoder_credits`），与逐日用量是两个口径。
      ⚠️ `mergeScopes: false`（2026-10-18）：Qoder 用量来自**本机客户端会话记录**，
         只扫当前区域的目录 ⇒ 合并两个区域没有可合并的数据，参数条那枚控件是死的。 */
   qoder: {
     tokens: QoderUsagePage,
-    credits: QoderUsagePage,
-    tokenViews: false,
+    credits: QoderCreditsPage,
+    tokenViews: true,
     mergeScopes: false,
   },
 };
