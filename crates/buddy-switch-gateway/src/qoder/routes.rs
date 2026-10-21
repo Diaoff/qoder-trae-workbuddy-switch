@@ -304,6 +304,11 @@ pub async fn chat_for_region(
 
     let meta = payload::meta_for(&catalog.models, &model, state.max_context_now());
     let allowed_tools = payload::allowed_tool_names(&openai_payload);
+    /* Responses 的 **custom（freeform）工具**名只从**原始**请求体取：转换（`to_upstream_request`）
+    之后它们已被降级成普通 function，名字还在，但 `type` 已经没了。 */
+    let responses_custom = std::sync::Arc::new(
+        crate::protocol::responses::custom_tool_names(&parsed),
+    );
     let sticky_key = payload::sticky_key_of(&parsed);
     let preferred = {
         let configured = config.preferred_uid.trim();
@@ -412,6 +417,7 @@ pub async fn chat_for_region(
                     &uid,
                     started,
                     allowed_tools,
+                    responses_custom.clone(),
                 )
                 .await
             } else {
@@ -425,6 +431,7 @@ pub async fn chat_for_region(
                     &uid,
                     started,
                     allowed_tools,
+                    responses_custom.clone(),
                 )
                 .await
             };
@@ -582,6 +589,7 @@ async fn stream_relay(
     uid: &str,
     started: Instant,
     allowed_tools: Option<HashSet<String>>,
+    responses_custom: std::sync::Arc<HashSet<String>>,
 ) -> Response {
     let upstream = response.bytes_stream();
     let stream_model = model.to_string();
@@ -630,6 +638,7 @@ async fn stream_relay(
         Protocol::Responses => Box::pin(crate::protocol::responses::ResponsesSseStream::new(
             tapped,
             stream_model.clone(),
+            responses_custom,
         )),
     };
 
@@ -690,6 +699,7 @@ async fn aggregate_relay(
     uid: &str,
     started: Instant,
     allowed_tools: Option<HashSet<String>>,
+    responses_custom: std::sync::Arc<HashSet<String>>,
 ) -> Response {
     let aggregated = sse::aggregate(response.bytes_stream(), allowed_tools.as_ref()).await;
     let usage = aggregated.usage.clone();
@@ -735,6 +745,7 @@ async fn aggregate_relay(
                 created_at: aggregated.created,
                 input_tokens: prompt_tokens,
                 output_tokens: completion_tokens,
+                custom: &responses_custom,
             },
             model,
         ))

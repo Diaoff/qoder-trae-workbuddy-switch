@@ -108,6 +108,10 @@ pub async fn responses_for_region(
         }
     }
 
+    /* freeform（custom）工具名：从**原始**请求体取（转换后已降级成 function，`type` 丢了）。 */
+    let responses_custom =
+        std::sync::Arc::new(crate::protocol::responses::custom_tool_names(&parsed));
+
     // Responses 请求 → 上游（chat.completions 形态）。
     let upstream_body = to_upstream_request(&parsed);
     let upstream_raw = serde_json::to_string(&upstream_body).unwrap_or_else(|_| "{}".to_string());
@@ -223,6 +227,7 @@ pub async fn responses_for_region(
                     // ★ 流内信封错误：与 chat / messages 同一判据。
                     .with_error_sink(relay::envelope_error_sink(&state, &uid, &model)),
                     model,
+                    responses_custom,
                 ))
             } else {
                 let text = relay::body_text_with_prefix(prefix, response).await;
@@ -261,7 +266,7 @@ pub async fn responses_for_region(
                         + accumulator.completion_tokens.unwrap_or(0) as i64;
                     relay::record_ledger(&state, &uid, &model, credit, tokens).await;
                 }
-                let object = to_response_object(&accumulator, &model);
+                let object = to_response_object(&accumulator, &model, &responses_custom);
                 state.log.record(
                     RequestMeta {
                         endpoint: "/v1/responses",
