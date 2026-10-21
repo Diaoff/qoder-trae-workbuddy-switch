@@ -333,6 +333,8 @@ pub async fn chat_for_region(
     let mut failures: Vec<String> = Vec::new();
     // 本轮有多少次失败是「上游排队」（不是账号问题）。
     let mut queued = 0usize;
+    // 每账号在途上限（0 = 关闭；见 `pool::max_inflight`）。
+    let inflight_limit = super::pool::max_inflight();
 
     for _ in 0..max_rotate {
         // 池随账号库同步（导入 / 刷新后即时生效），然后选号。
@@ -346,6 +348,19 @@ pub async fn chat_for_region(
             break;
         };
         tried.insert(uid.clone());
+
+        /* ★ 在途闸门（默认关）：名额抢不到就**跳过这个号**，不排队等 ——
+        网关在这里等会把客户端超时拖成「上游很慢」。 */
+        let inflight = {
+            let mut pools = state.pools.lock().await;
+            pools
+                .get_mut(&region)
+                .and_then(|pool| pool.acquire(&uid, inflight_limit))
+        };
+        let Some(inflight) = inflight else {
+            failures.push(format!("{uid}：该账号在途请求已满（{inflight_limit}）"));
+            continue;
+        };
 
         let entry = {
             let pools = state.pools.lock().await;
@@ -422,6 +437,7 @@ pub async fn chat_for_region(
                     started,
                     allowed_tools,
                     responses_custom.clone(),
+                    inflight,
                 )
                 .await
             } else {
@@ -436,6 +452,7 @@ pub async fn chat_for_region(
                     started,
                     allowed_tools,
                     responses_custom.clone(),
+                    inflight,
                 )
                 .await
             };
@@ -617,6 +634,8 @@ async fn stream_relay(
     started: Instant,
     allowed_tools: Option<HashSet<String>>,
     responses_custom: std::sync::Arc<HashSet<String>>,
+    // 在途名额：随流结束 / 客户端断开由 Drop 归还（见 `pool::InflightGuard`）。
+    inflight: super::pool::InflightGuard,
 ) -> Response {
     let upstream = response.bytes_stream();
     let stream_model = model.to_string();
@@ -671,6 +690,8 @@ async fn stream_relay(
 
     tokio::spawn(async move {
         use futures_util::StreamExt;
+        // 名额随本任务结束归还（流正常结束 / 客户端断开 / 转换器出错都会走到 Drop）。
+        let _inflight = inflight;
         let mut converter = converter;
         while let Some(item) = converter.next().await {
             match item {
@@ -727,6 +748,8 @@ async fn aggregate_relay(
     started: Instant,
     allowed_tools: Option<HashSet<String>>,
     responses_custom: std::sync::Arc<HashSet<String>>,
+    // 非流式：函数结束即释放（含所有早退分支）。
+    _inflight: super::pool::InflightGuard,
 ) -> Response {
     let aggregated = sse::aggregate(response.bytes_stream(), allowed_tools.as_ref()).await;
     let usage = aggregated.usage.clone();

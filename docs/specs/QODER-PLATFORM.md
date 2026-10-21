@@ -236,15 +236,16 @@ Qoder 上游跑文本模式时模型会**照学**，把调用写成标签塞进�
 | 排队信号（信封级） | `sse::process_line` + `aggregate_relay` | 200 + `statusCodeValue:403` ⇒ 429 `upstream_queued`，文案说清「不是账号问题」 |
 | 风控遥测 | `/health` 的 `risk.{queued,rateLimited,rejected}` | 进程级累计、只读、不落盘；只在分类处记一次 |
 | 历史工具结果削减 | `api::shrink_tool_result` + `flatten_messages` | 单侧默认 2000 字符（`BUDDY_SWITCH_QODER_TOOL_KEEP` 可调，`off` 关闭）；保护**最后 1 条**（`…_KEEP_TAIL`）；标记固定串 ⇒ 不打碎前缀缓存 |
+| 单号在途闸门 | `pool::acquire` + `InflightGuard` | **默认关**（`BUDDY_SWITCH_QODER_MAX_INFLIGHT`，0 = 关）；名额抢不到就**跳过该号**而不是排队等；`Arc<AtomicUsize>` + Drop 归还，客户端断开也不会泄漏 |
 
 **刻意不做**（附理由，别当遗漏）：
 
 1. **Pro 升级包领取**：真机（本机 CN 账号）请求 `/sash/api/v1/me/pro-upgrade/eligibility`
    返回 **HTTP 404**（活动已下线 / 该账号不适用）。参考实现把 404 当「不可领取」，
    我们若照做就是一个**点了没反应的按钮** —— 等官方活动重新上线再做。
-2. **单号并发闸门 + 最小间隔**：参考实现只对**团队/企业账号**启用（issue #56 的自用保护）。
-   本仓没有「团队账号」这一分类，硬加一套 lease 机制等于给所有个人账号降速；
-   等有真实的团队账号需求再引入。
+2. ~~单号并发闸门~~ **已实现为可选**（见上表）：默认关，参考实现只对团队账号启用，
+   本仓没有团队账号分类 ⇒ 不默认给个人账号降速；「最小间隔」仍未做（需要真实的
+   请求节奏样本，凭空定一个值只会拖慢所有人）。
 （历史工具结果削减已实现，见上表；默认保护最后 1 条工具结果，
 需要「一条都不削」时设 `BUDDY_SWITCH_QODER_TOOL_KEEP=off`。）
 

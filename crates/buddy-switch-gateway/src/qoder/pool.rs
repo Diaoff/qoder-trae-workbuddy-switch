@@ -12,6 +12,8 @@
 //! - 池从账号库 `sync_for(region)` 重建（每次网关取号前同步，保证「导入即入池」）。
 
 use std::collections::{BTreeMap, HashMap, HashSet};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 
 use serde_json::{json, Value};
 
@@ -151,6 +153,11 @@ pub struct QoderPoolEntry {
     /// 模型级冷却：模型名 → 解冻时刻（毫秒）。
     pub model_cooldowns: HashMap<String, i64>,
     pub last_error: Option<String>,
+    /// 该账号**在途请求数**（进程级；`BUDDY_SWITCH_QODER_MAX_INFLIGHT` > 0 时才作为闸门）。
+    ///
+    /// 用 `Arc<AtomicUsize>` 而不是普通计数：release 发生在流结束 / 客户端断开的
+    /// **Drop** 里，那里不能 await 池锁；原子量让释放无需拿锁、也不会泄漏。
+    pub inflight: Arc<AtomicUsize>,
     success_ema: f64,
     error_ema: f64,
     last_used_ms: i64,
@@ -169,6 +176,7 @@ impl QoderPoolEntry {
             cooldown_reason: None,
             model_cooldowns: HashMap::new(),
             last_error: None,
+            inflight: Arc::new(AtomicUsize::new(0)),
             success_ema: 0.0,
             error_ema: 0.0,
             last_used_ms: 0,
@@ -340,7 +348,55 @@ pub struct QoderPool {
     region: Option<QoderRegion>,
 }
 
+/// 每账号在途请求上限（`BUDDY_SWITCH_QODER_MAX_INFLIGHT`；0 / 缺省 = 关闭）。
+///
+/// 为什么默认关：参考实现只对**团队 / 企业账号**启用这套自用保护（issue #56），
+/// 本仓没有团队账号这一分类 —— 默认给个人账号降速是错的。需要「多设备共用一个号 /
+/// 想更保守」的用户可以显式开。
+pub fn max_inflight() -> usize {
+    std::env::var("BUDDY_SWITCH_QODER_MAX_INFLIGHT")
+        .ok()
+        .and_then(|raw| raw.trim().parse::<usize>().ok())
+        .unwrap_or(0)
+}
+
+/// 在途计数的 RAII 守卫：**Drop 时自减**（流结束 / 客户端断开都会走到）。
+pub struct InflightGuard {
+    counter: Arc<AtomicUsize>,
+}
+
+impl Drop for InflightGuard {
+    fn drop(&mut self) {
+        // 防下溢：如果释放路径被意外走两次，也不能把计数减成天文数字。
+        let _ = self
+            .counter
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |current| {
+                Some(current.saturating_sub(1))
+            });
+    }
+}
+
 impl QoderPool {
+    /// 抢占一个在途名额；`limit == 0` ⇒ 不启用闸门（恒返回守卫，计数仍记）。
+    ///
+    /// 返回 `None` 表示**该账号已满**，调用方应当跳过它（换号或报忙），**不要排队等待**：
+    /// 网关卡在 `chat_for_region` 里等，会把客户端超时拖成「上游很慢」。
+    pub fn acquire(&mut self, uid: &str, limit: usize) -> Option<InflightGuard> {
+        let entry = self.entries.get(uid)?;
+        if limit > 0 && entry.inflight.load(Ordering::SeqCst) >= limit {
+            return None;
+        }
+        // 先加再核（并发下可能短暂超一）⇒ 超了就回滚，宁可这次跳过也不突破上限。
+        entry.inflight.fetch_add(1, Ordering::SeqCst);
+        if limit > 0 && entry.inflight.load(Ordering::SeqCst) > limit {
+            entry.inflight.fetch_sub(1, Ordering::SeqCst);
+            return None;
+        }
+        Some(InflightGuard {
+            counter: entry.inflight.clone(),
+        })
+    }
+
     pub fn new() -> Self {
         Self::default()
     }
@@ -358,6 +414,9 @@ impl QoderPool {
             if let Some(previous) = self.entries.get(&entry.uid) {
                 // 保留运行态；令牌与名字以库为准（刷新 / 改备注后即时生效）。
                 entry.auth_dead = previous.auth_dead && entry.access_token == previous.access_token;
+                // 在途计数是进程级事实：重建条目时按 uid 继承，否则「正在跑的请求」
+                // 会凭空消失（闸门失效 + 释放时少减一次）。
+                entry.inflight = previous.inflight.clone();
                 entry.cooldown_until = previous.cooldown_until;
                 entry.cooldown_reason = previous.cooldown_reason.clone();
                 entry.model_cooldowns = previous.model_cooldowns.clone();
@@ -701,6 +760,7 @@ mod tests {
             cooldown_reason: None,
             model_cooldowns: HashMap::new(),
             last_error: None,
+            inflight: Arc::new(AtomicUsize::new(0)),
             success_ema: 0.0,
             error_ema: 0.0,
             last_used_ms: 0,
@@ -968,5 +1028,36 @@ mod tests {
             "必须留痕: {:?}",
             after.last_error
         );
+    }
+    /// 在途闸门：默认关（limit=0 恒成功）；开启后按账号限流；**Drop 即归还**。
+    ///
+    /// 可证伪：把 `InflightGuard::drop` 的自减删掉 ⇒ 「释放后可再抢」永远失败。
+    #[test]
+    fn inflight_gate_limits_account_and_releases_on_drop() {
+        let mut pool = QoderPool::new();
+        pool.entries.insert("a".into(), entry("a", "t-a"));
+        let counter = pool.entries["a"].inflight.clone();
+
+        // limit = 0 ⇒ 不设闸门（但仍计数）。
+        let guard = pool.acquire("a", 0).expect("关闭闸门必须恒成功");
+        assert_eq!(counter.load(Ordering::SeqCst), 1);
+        drop(guard);
+        assert_eq!(counter.load(Ordering::SeqCst), 0, "Drop 必须归还名额");
+
+        // limit = 1 ⇒ 第二个并发必须被拒。
+        let guard = pool.acquire("a", 1).expect("空位应能抢");
+        assert!(
+            pool.acquire("a", 1).is_none(),
+            "满员必须返回 None（调用方据此跳过该号，而不是排队）"
+        );
+        drop(guard);
+        assert!(
+            pool.acquire("a", 1).is_some(),
+            "释放后必须能再抢（否则一次异常就永久占位）"
+        );
+
+        // 未知账号 / 上限为 0 的缺省语义。
+        assert!(pool.acquire("missing", 1).is_none());
+        assert_eq!(max_inflight(), 0, "缺省必须关闭（不能默认给个人账号降速）");
     }
 }
