@@ -2531,6 +2531,64 @@ check("★ P11「两个出口同时生效」说明必须出现（否则禁用是
   return `zh/en 同步 · 两平台均渲染（「${text.slice(0, 18)}…」）`;
 });
 
+check("★ issue #65 模型表「思考档位 / 积分倍率」三平台同构、渲染唯一、纯展示", () => {
+  /* 需求（issue #65）：模型池里每个模型要能看出「支持哪些思考档位」和「积分倍率」。
+     三平台的档位来自**三个不同数据源**（WB 目录 `reasoning` / Trae 客户端
+     `reasoning_effort_config` / Qoder 官方 `thinking_efforts`），最容易出的错是
+     「各写一份渲染」——那就是同一件事三种写法（P10 §1.2 早就收敛掉的分叉）。
+
+     可证伪：
+     ① 共用壳必须有两个**可选**列槽（不传 ⇒ 整列不渲染，避免「全 — 」的噪音列）；
+     ② 三个平台页**都**要传（少传一个 ⇒ 该平台看不到这两项，需求只做了一半）；
+     ③ 单元格渲染只允许来自 `model-ability.tsx`（页面自己 `join(" / ")` 就变红）；
+     ④ 那个文件里**不得**有 onClick（模型表每行恰好 2 处可点区，门禁在上一块）。
+     变异：删 `<EffortCell` 的调用 ⇒ ③ 红；给 `model-ability.tsx` 加 `onClick` ⇒ ④ 红。 */
+  const shell = readCode(MODEL_TABLE);
+  for (const prop of ["effortColumn", "creditsColumn"]) {
+    if (!new RegExp(`${prop}\\?:\\s*\\{`).test(shell)) {
+      throw new Error(`模型表格壳缺可选列槽 \`${prop}\`（不传就该整列不渲染）`);
+    }
+    // 表头 + 单元格各渲染一次才算「真的有这一列」。
+    const uses = (shell.match(new RegExp(`\\{${prop} &&`, "g")) || []).length;
+    if (uses !== 2) {
+      throw new Error(`\`${prop}\` 在壳里出现 ${uses} 次，应表头 + 单元格各一次`);
+    }
+  }
+
+  const ability = readCode("src/components/gateway/model-ability.tsx");
+  if ((ability.match(/onClick=/g) || []).length !== 0) {
+    throw new Error("model-ability.tsx 出现了 onClick —— 模型表每行只能有 2 处可点区");
+  }
+  // 「空档位」三种成因的文案必须都在：把 unknown 写成 unsupported 就是撒谎（TraeWork 侧
+  // 实测 22 条只有 1 条带档位，整列「—」不代表「都不支持」）。
+  for (const key of [
+    "shared.gateway.models.effortNoneUnknown",
+    "shared.gateway.models.effortNoneUnsupported",
+    "shared.gateway.models.effortNoneUndeclared",
+  ]) {
+    if (!ability.includes(key)) {
+      throw new Error(`model-ability.tsx 缺「${key}」的成因文案`);
+    }
+  }
+
+  const pages = { WB: WB_MODEL_LIST, Trae: TRAE_MODEL_LIST, Qoder: "src/components/gateway/qoder-model-list.tsx" };
+  for (const [label, rel] of Object.entries(pages)) {
+    const code = readCode(rel);
+    for (const prop of ["effortColumn", "creditsColumn"]) {
+      if (!new RegExp(`${prop}=\\{\\{`).test(code)) {
+        throw new Error(`${label} 没传 \`${prop}\` —— 该平台看不到这两项（issue #65 要求三平台一起加）`);
+      }
+    }
+    if (!/from "@\/components\/gateway\/model-ability"/.test(code)) {
+      throw new Error(`${label} 没有复用 model-ability 的单元格渲染（自己拼一份 = 又一处分叉）`);
+    }
+    if (!/\bEffortCell\b/.test(code)) {
+      throw new Error(`${label} 未使用 <EffortCell>（档位渲染必须走共用组件）`);
+    }
+  }
+  return "壳两个列槽 · 三平台都传 · 渲染只在 model-ability · 无 onClick";
+});
+
 check("★ P11 禁用错误可展示（后端 403 model_disabled 的文案经 api.asError 透出）", () => {
   /* T01 对硬调用返回 403 / `type_name="model_disabled"` / 文案说明「被禁用」。
      前端要**能展示它**：切换失败路径必须把错误经 `api.asError` 本地化后透出

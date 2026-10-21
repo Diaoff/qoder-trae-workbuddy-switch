@@ -57,7 +57,7 @@ pub const SOURCE_MISSING: &str = "missing";
 ///
 /// 序列化成 camelCase —— 与 Trae 分区既有的前端类型（`TraeEnvStatus` 等）同风格，
 /// 前端不需要为这一处单独做字段名转换。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ClientModel {
     /// 模型标识（上游 `name`，如 `deepseek-v4.1-flash`）。空名条目会被丢弃。
@@ -91,13 +91,47 @@ pub struct ClientModel {
     pub context_window_max: Option<i64>,
     /// 单次回复上限（`prompt_max_tokens`），取不到为 `None`。
     pub prompt_max_tokens: Option<i64>,
+    /// 积分倍率（`features.consumption_rate.data.rate`，如 `0.2` = 基准价的 0.2 倍）。
+    ///
+    /// ★ issue #65：上游一直下发这个字段，此前解析时被丢弃 ⇒ 界面查「这个模型多少积分」
+    /// 只能回客户端看。`None` = 该条目没下发（实测 `assistant` 分组整组都没有）。
+    pub credits_rate: Option<f64>,
+    /// 支持的思考档位（`reasoning_effort_config.options`，保序照抄上游词表）。
+    ///
+    /// ★ 空数组有**两种成因**，界面文案必须区分（见 `efforts_supported`）：
+    /// - `support_thinking == false`：该模型确实不支持选档；
+    /// - 整个 `reasoning_effort_config` 缺失：这条程序位**没下发**档位信息。
+    ///
+    /// 混为一谈会让 TraeWork 侧（实测 `solo_work_lite` 22 条里只有 1 条带档位）看着像
+    /// 「全都不支持思考」，而真相是「这个程序位的清单里没这项能力」。
+    pub efforts: Vec<String>,
+    /// 默认档位（`reasoning_effort_config.default_level`）；取不到为 `None`。
+    pub default_effort: Option<String>,
+    /// 上游对「思考档位」的声明状态（见 [`ThinkingSupport`]）。
+    ///
+    /// ★ 必须与 `efforts` 分开放：`efforts` 为空有**两种**成因（明确不支持 / 根本没下发），
+    /// 混为一谈会让 TraeWork 侧（实测 `solo_work_lite` 22 条只有 1 条带档位）看着像
+    /// 「全都不支持思考」，而真相是「这条程序位的清单里没这项能力」。
+    pub thinking: ThinkingSupport,
+}
+
+/// 思考档位的声明状态。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ThinkingSupport {
+    /// 上游声明支持，可选档位见 `efforts`（实测全非空）。
+    Supported,
+    /// 上游明确不支持（`support_thinking: false` 且没有 options）。
+    Unsupported,
+    /// 客户端清单里**没有**这项字段 —— 不是「不支持」，是「不知道」，界面必须显示未下发。
+    Unknown,
 }
 
 /// 一个 function 分组（`solo_work_lite` / `solo_coder` / `builder` …）。
 ///
 /// 分组名**按产品线不同**（Trae Work 与 TraeCode 的取值集合完全不同），
 /// 故本模块原样透出、不做映射 —— 由调用方决定展示哪几组。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ClientModelGroup {
     pub function: String,
@@ -411,6 +445,9 @@ fn parse_model(value: &Value) -> Option<ClientModel> {
         .map(str::to_string)
         .unwrap_or_else(|| name.clone());
 
+    let (efforts, default_effort, thinking) =
+        parse_thinking(value.get("reasoning_effort_config"));
+
     Some(ClientModel {
         name,
         display_name,
@@ -434,7 +471,60 @@ fn parse_model(value: &Value) -> Option<ClientModel> {
             .and_then(|size| size.get("max"))
             .and_then(as_i64),
         prompt_max_tokens: value.get("prompt_max_tokens").and_then(as_i64),
+        // ★ issue #65：这两项一直随清单下发，此前被丢弃 ⇒ 界面只能显示名字与窗口。
+        //   实测（2026-10-21 Trae CN `state.vscdb`）：
+        //   `features.consumption_rate.data.rate` = 0.06～1.83；`assistant` 分组整组没有。
+        credits_rate: value
+            .get("features")
+            .and_then(|features| features.get("consumption_rate"))
+            .and_then(|rate| rate.get("data"))
+            .and_then(|data| data.get("rate"))
+            .and_then(as_f64),
+        efforts,
+        default_effort,
+        thinking,
     })
+}
+
+/// 解析 `reasoning_effort_config` → `(可选档位, 默认档, 声明状态)`。
+///
+/// 三种实测形态（2026-10-21）：
+/// - `{"support_thinking": true, "options": ["light","high"], "default_level": "high"}`
+/// - `{"support_thinking": false}` —— 明确不支持
+/// - 整个字段缺失 —— **未下发**（不等于不支持，见 [`ThinkingSupport`]）
+fn parse_thinking(raw: Option<&Value>) -> (Vec<String>, Option<String>, ThinkingSupport) {
+    let Some(object) = raw.and_then(Value::as_object) else {
+        return (Vec::new(), None, ThinkingSupport::Unknown);
+    };
+    let efforts: Vec<String> = object
+        .get("options")
+        .and_then(Value::as_array)
+        .map(|list| {
+            list.iter()
+                .filter_map(Value::as_str)
+                .map(str::trim)
+                .filter(|effort| !effort.is_empty())
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default();
+    // 默认档必须在可选集里（上游若给出集外值，展示它就是误导）。
+    let default_effort = object
+        .get("default_level")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|effort| !effort.is_empty())
+        .map(str::to_string)
+        .filter(|effort| efforts.iter().any(|item| item == effort));
+    let thinking = if !efforts.is_empty() {
+        ThinkingSupport::Supported
+    } else if object.get("support_thinking").and_then(Value::as_bool) == Some(false) {
+        ThinkingSupport::Unsupported
+    } else {
+        // 声明了「支持」却没给选项 ⇒ 等于没下发，别编档位。
+        ThinkingSupport::Unknown
+    };
+    (efforts, default_effort, thinking)
 }
 
 /// 取字符串字段；类型不对或缺失一律回落空串（**绝不让脏值传到展示层**）。
@@ -457,6 +547,18 @@ fn as_i64(value: &Value) -> Option<i64> {
     match value {
         Value::Number(number) => number.as_i64(),
         Value::String(text) => text.trim().parse::<i64>().ok(),
+        _ => None,
+    }
+}
+
+/// 取浮点字段；接受数字与「数字字符串」（上游个别地方把数字塞进字符串），其余为 `None`。
+///
+/// ★ 用 `as_f64` 而不是 `as_i64`：`consumption_rate` 是 `0.06` / `1.83` 这类小数，
+/// 走整数解析会**静默变 None**（`as_i64` 只认整数），于是整列全是「—」。
+fn as_f64(value: &Value) -> Option<f64> {
+    match value {
+        Value::Number(number) => number.as_f64().filter(|rate| rate.is_finite()),
+        Value::String(text) => text.trim().parse::<f64>().ok().filter(|rate| rate.is_finite()),
         _ => None,
     }
 }
@@ -706,5 +808,63 @@ mod tests {
 
         assert!(parse_groups("not json").is_empty());
         assert!(parse_groups("[1,2,3]").is_empty(), "顶层不是对象 ⇒ 空结果");
+    }
+
+    /// ★ issue #65：思考档位 + 积分倍率必须从客户端清单里读出来。
+    ///
+    /// 三种「档位」形态要能区分（`supported` / `unsupported` / `unknown`）——
+    /// 把 `unknown` 混成 `unsupported` 会让 TraeWork 侧（实测 22 条只有 1 条带档位）
+    /// 看着像「全都不支持思考」，而真相是这条程序位没下发。
+    ///
+    /// 变异：`parse_thinking` 的缺失分支返回 `Unsupported` ⇒ 第一条断言红；
+    /// 用 `as_i64` 读 `rate` ⇒ `0.2` 变 `None` ⇒ 第二条红。
+    #[test]
+    fn parse_model_reads_thinking_and_consumption_rate() {
+        let raw = r#"{
+            "solo_agent": [
+                {"name":"with-thinking","reasoning_effort_config":
+                    {"support_thinking":true,"options":["light","high"],"default_level":"high"},
+                 "features":{"consumption_rate":{"enable":true,"data":{"rate":0.2}}}},
+                {"name":"no-thinking","reasoning_effort_config":{"support_thinking":false},
+                 "features":{"consumption_rate":{"enable":true,"data":{"rate":0.06}}}},
+                {"name":"no-config","features":{"consumption_rate":{"enable":true,"data":{"rate":"0.83"}}}},
+                {"name":"no-features"}
+            ]
+        }"#;
+        let groups = parse_groups(raw);
+        let models = &groups[0].models;
+
+        assert_eq!(models[0].efforts, vec!["light", "high"]);
+        assert_eq!(models[0].default_effort.as_deref(), Some("high"));
+        assert_eq!(models[0].thinking, ThinkingSupport::Supported);
+        assert_eq!(models[0].credits_rate, Some(0.2));
+
+        assert!(models[1].efforts.is_empty());
+        assert!(models[1].default_effort.is_none());
+        assert_eq!(
+            models[1].thinking,
+            ThinkingSupport::Unsupported,
+            "support_thinking:false ⇒ 明确不支持"
+        );
+        assert_eq!(models[1].credits_rate, Some(0.06));
+
+        assert_eq!(
+            models[2].thinking,
+            ThinkingSupport::Unknown,
+            "整块缺失 ⇒ 未下发（不是「不支持」）"
+        );
+        assert_eq!(models[2].credits_rate, Some(0.83), "数字字符串倍率也要认");
+
+        assert_eq!(models[3].thinking, ThinkingSupport::Unknown);
+        assert_eq!(models[3].credits_rate, None, "没下发就是 None，不编");
+    }
+
+    /// 默认档不在可选集里 ⇒ 丢弃（否则界面会显示一个传了就被降级的档位）。
+    #[test]
+    fn parse_model_drops_default_level_outside_options() {
+        let raw = r#"{"g":[{"name":"m","reasoning_effort_config":
+            {"support_thinking":true,"options":["low"],"default_level":"max"}}]}"#;
+        let groups = parse_groups(raw);
+        assert!(groups[0].models[0].default_effort.is_none());
     }
 }

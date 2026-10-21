@@ -1003,6 +1003,32 @@ export interface TraeClientModel {
   contextWindowMax?: number | null;
   /** 单次回复上限；取不到为 `null`。 */
   promptMaxTokens: number | null;
+  /**
+   * 积分倍率（`features.consumption_rate.data.rate`）；没下发为 `null`。
+   *
+   * 这是**倍率**不是金额：`0.2` = 基准价的 0.2 倍。实测取值 0.06～1.83。
+   */
+  creditsRate?: number | null;
+  /** 支持的思考档位（`reasoning_effort_config.options`，上游原词表，保序）。 */
+  efforts?: string[];
+  /** 默认档位（`reasoning_effort_config.default_level`）。 */
+  defaultEffort?: string | null;
+  /**
+   * 上游对「思考档位」的声明状态 —— 空 `efforts` 的两种成因必须分开：
+   * `"unsupported"` = 该模型确实不能选档；`"unknown"` = 这条**程序位没下发**。
+   *
+   * TraeWork（`solo_work_lite`）实测 22 条里只有 1 条带档位 ⇒ 该列大面积是「未下发」，
+   * 不是「都不支持思考」。
+   */
+  thinking?: "supported" | "unsupported" | "unknown";
+  /**
+   * 第三方 / 自定义路由条目（上游 `provider` 非空或带 `custom_model_id`）。
+   *
+   * 网关发的是 `config_name` / `model_name` 这套字段，对它们**无效**（实测
+   * `openrouter//stealth/ox-alpha` 一律 `4001`）⇒ 网关对外清单会剔除，
+   * 界面对比「服务组」时必须同样剔除，否则两边名字集合永远对不上。
+   */
+  isBypass?: boolean;
 }
 
 /**

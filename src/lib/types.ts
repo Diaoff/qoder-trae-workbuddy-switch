@@ -1675,9 +1675,25 @@ export interface CatalogModel {
   context_length_max?: number | null;
   max_tokens: number;
   supports_images: boolean;
+  /** 积分倍率**原文**（`x0.79` / `x0.34 credits` 三种写法并存）。 */
   credits?: string | null;
+  /** 积分倍率数字（后端已归一）；`null` = 上游没给。渲染一律用这个，别自己剥 `x`。 */
+  credits_rate?: number | null;
   badges: string[];
   free: boolean;
+  /**
+   * 支持的思考档位（后端已把「上游声明 > 内置静态表」合并好，保序）。
+   *
+   * 空数组 = 两边都没数据 ⇒ 界面对该模型显示 `—`，**不猜**。
+   */
+  reasoning_efforts?: string[];
+  /** 默认档位；不在 `reasoning_efforts` 里时后端已丢弃（不会出现「选了就被降级」的档）。 */
+  default_effort?: string | null;
+  /**
+   * 档位来源：`"upstream"` = 上游目录声明（权威）；`"static"` = 网关内置档位表
+   * （**可能落后于官方客户端**，必须在 tooltip 里写明）；`null` = 两处都没有。
+   */
+  efforts_source?: "upstream" | "static" | null;
 }
 
 export interface CatalogSnapshot {

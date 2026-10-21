@@ -1555,6 +1555,12 @@ mod tests {
             context_window,
             context_window_max: None,
             prompt_max_tokens: None,
+            // issue #65 的能力字段：网关对外清单暂不声明它们（管理面直接读客户端清单），
+            // 这里只需给夹具一个合法值。
+            credits_rate: None,
+            efforts: Vec::new(),
+            default_effort: None,
+            thinking: buddy_switch_core::modules::trae::model_list::ThinkingSupport::Unknown,
         }
     }
 }

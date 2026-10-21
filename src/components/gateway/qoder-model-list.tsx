@@ -8,6 +8,7 @@ import { EmptyState } from "@/components/ui/empty-state";
 import { CatalogSourceBar } from "@/components/gateway/catalog-source-bar";
 import { ContextSourceCard } from "@/components/gateway/context-source-card";
 import { ModelTable } from "@/components/gateway/model-table";
+import { CreditsCell, EffortCell } from "@/components/gateway/model-ability";
 import { DemoAction } from "@/components/demo-action";
 import * as api from "@/lib/api";
 import { formatAbsoluteTime, type CatalogSourceView } from "@/lib/catalog-source";
@@ -214,54 +215,50 @@ export function QoderModelList({
             onToggleDisabled={(row, disabled) => void onToggleDisabled(row, disabled)}
             showUpstream={false}
             labels={labels}
-            /* ★ 官方清单里的计费与能力事实（峰谷价 / 免费 / 思考档位）。
-               参考实现的模型清单就带这三样；以前我们只显示名称与上下文，
-               用户查「这个模型多少钱、支不支持选档」得回官网。 */
-            extraColumn={{
-              header: t("qoder.gateway.models.colPricing"),
+            /* ★ issue #65：官方清单里的计费与能力事实（免费 / 峰谷价 / 思考档位）。
+               与 WB / Trae **同一套两列**（`model-ability.tsx`），不再挤在一个「价格 / 思考」
+               单元格里 —— 倍率是单值、档位是集合，混排既扫不出来也没法各自说明来源。
+               错峰活动徽标仍挂在倍率格内（它是「这一刻多少钱」的一部分）。 */
+            effortColumn={{
+              header: t("shared.gateway.models.colEfforts"),
               render: (row) => {
                 const model = catalogById.get(row.id);
-                if (!model) return <span className="text-muted-foreground">—</span>;
-                const pricing = model.isFree
-                  ? t("qoder.gateway.models.free")
-                  : model.priceFactor !== null
-                    ? t("qoder.gateway.models.priceFactor", { n: model.priceFactor })
-                    : null;
-                const empty = !pricing && !model.promotionBadge && model.efforts.length === 0;
                 return (
-                  <div className="flex flex-wrap items-center gap-1.5 text-[11.5px]">
-                    {empty && <span className="text-muted-foreground">—</span>}
-                    {pricing && (
-                      <span
-                        className={cn(
-                          "font-medium",
-                          model.isFree ? "text-success" : "text-muted-foreground",
-                        )}
-                      >
-                        {pricing}
-                      </span>
-                    )}
-                    {model.promotionBadge && (
-                      <Badge
-                        variant="warning"
-                        className="px-1.5 py-0 text-[10px] leading-4"
-                        title={
-                          model.promotionWindow
-                            ? t("qoder.gateway.models.promotionWindow", {
-                                range: model.promotionWindow,
-                              })
-                            : undefined
-                        }
-                      >
-                        {model.promotionBadge}
-                      </Badge>
-                    )}
-                    {model.efforts.length > 0 && (
-                      <span className="text-muted-foreground">
-                        {t("qoder.gateway.models.thinking", { list: model.efforts.join(" / ") })}
-                      </span>
-                    )}
-                  </div>
+                  <EffortCell
+                    efforts={model?.efforts ?? []}
+                    // Qoder 官方只给「支持哪些档」，不给默认档 ⇒ 不编。
+                    defaultEffort={null}
+                    unavailable={model?.isReasoning ? "unknown" : "unsupported"}
+                  />
+                );
+              },
+            }}
+            creditsColumn={{
+              header: t("shared.gateway.models.colCredits"),
+              render: (row) => {
+                const model = catalogById.get(row.id);
+                return (
+                  <CreditsCell
+                    rate={model?.priceFactor ?? null}
+                    free={model?.isFree ?? false}
+                    extra={
+                      model?.promotionBadge ? (
+                        <Badge
+                          variant="warning"
+                          className="px-1.5 py-0 text-[10px] leading-4"
+                          title={
+                            model.promotionWindow
+                              ? t("qoder.gateway.models.promotionWindow", {
+                                  range: model.promotionWindow,
+                                })
+                              : undefined
+                          }
+                        >
+                          {model.promotionBadge}
+                        </Badge>
+                      ) : null
+                    }
+                  />
                 );
               },
             }}

@@ -34,9 +34,12 @@ pub fn model_entry(model: &CatalogModel, max_context: bool) -> serde_json::Value
         "context_window": window,
         "max_tokens": model.max_tokens,
         "supports_images": model.supports_images,
+        // 原文（上游怎么写就怎么给）+ 数字（同一份解析的唯一出口）。
         "credits": model.credits,
+        "credits_rate": model.credits_rate(),
         "badges": model.badges,
-        "free": model.free,
+        // 判零用 `is_free()`（认 `x0.00 credits`），不读落盘的 `free` 快照。
+        "free": model.is_free(),
     })
 }
 
@@ -44,22 +47,96 @@ pub fn model_entry(model: &CatalogModel, max_context: bool) -> serde_json::Value
 /// 并补上 `context_length`（与网关出口 ① 同源同值）。
 ///
 /// 没有这一步，管理面会一直显示目录原始字段（上限档），开关在界面上看起来「没反应」。
+///
+/// ## 思考档位：上游声明 > 内置静态表 > 无（issue #65）
+///
+/// 上游目录的 `reasoning.supportedEfforts` 只在**部分模型**上出现（实测同一份 CN 目录
+/// 里 `hy3` / `gpt-5.5` 有，`fast-model` / `kimi-k3` 只给了 `effort`）。缺声明时回落
+/// `outbound::effort::static_effort_cap` 的内置表 —— 但**必须标明来源**：
+/// 静态表与官方客户端不一致时，用户会以为是网关读错了。`efforts_source` 就是那条标签
+/// （`"upstream"` / `"static"` / `null`）。
+///
+/// ⚠️ 原始 `reasoning` 块**不从本视图下发**：同一个事实给两份表示（原文 + 解析结果）
+/// 迟早漂移，界面只认解析后的三个字段。
 pub fn snapshot_view(snapshot: &CatalogSnapshot, max_context: bool) -> serde_json::Value {
+    let table = crate::outbound::effort::static_effort_cap(snapshot.region);
     let mut snapshot = snapshot.clone();
     // 先记上限档，再把 `context_window` 换成生效档 —— 前端要两档原值才能本地即时切换。
     let maxes: Vec<u64> = snapshot.models.iter().map(|m| m.context_window).collect();
+    let abilities: Vec<ModelAbility> = snapshot
+        .models
+        .iter()
+        .map(|model| ModelAbility::resolve(model, table))
+        .collect();
     for model in &mut snapshot.models {
         model.context_window = model.effective_window(max_context);
+        // 老缓存可能带着按旧判据算的 `free`（`x0.00 credits` 判成收费）⇒ 出口重算一次。
+        model.refresh_derived();
     }
     let mut value = serde_json::to_value(&snapshot).unwrap_or(serde_json::Value::Null);
     if let Some(rows) = value.get_mut("models").and_then(|v| v.as_array_mut()) {
-        for (row, max) in rows.iter_mut().zip(maxes) {
+        for ((row, max), ability) in rows.iter_mut().zip(maxes).zip(abilities) {
             if let Some(object) = row.as_object_mut() {
                 object.insert("context_length_max".into(), serde_json::json!(max));
+                object.remove("reasoning");
+                object.insert(
+                    "credits_rate".into(),
+                    serde_json::json!(ability.credits_rate),
+                );
+                object.insert(
+                    "reasoning_efforts".into(),
+                    serde_json::json!(ability.efforts),
+                );
+                object.insert(
+                    "default_effort".into(),
+                    serde_json::json!(ability.default_effort),
+                );
+                object.insert(
+                    "efforts_source".into(),
+                    serde_json::json!(ability.source),
+                );
             }
         }
     }
     value
+}
+
+/// 一条模型的「能力面」（思考档位 + 积分倍率），供管理面渲染。
+struct ModelAbility {
+    efforts: Vec<String>,
+    default_effort: Option<String>,
+    /// `"upstream"`（上游目录声明）/ `"static"`（内置档位表）/ `None`（两边都没有）。
+    source: Option<&'static str>,
+    credits_rate: Option<f64>,
+}
+
+impl ModelAbility {
+    fn resolve(
+        model: &CatalogModel,
+        table: &std::collections::HashMap<&'static str, crate::outbound::effort::EffortSpec>,
+    ) -> Self {
+        let upstream = model.reasoning.as_ref().filter(|r| !r.efforts.is_empty());
+        let spec = table.get(model.id.trim()).filter(|s| !s.efforts.is_empty());
+        let (efforts, source) = match (upstream, spec) {
+            (Some(reasoning), _) => (reasoning.efforts.clone(), Some("upstream")),
+            (None, Some(spec)) => (spec.efforts.clone(), Some("static")),
+            (None, None) => (Vec::new(), None),
+        };
+        // 默认档只取「确实可选」的那一档：默认值不在可选集里就是上游自相矛盾，
+        // 展示它会直接误导（用户照着它传请求会被降级）。
+        let default_effort = model
+            .reasoning
+            .as_ref()
+            .and_then(|reasoning| reasoning.default_effort.clone())
+            .or_else(|| spec.and_then(|spec| spec.default_effort.clone()))
+            .filter(|effort| !efforts.is_empty() && efforts.contains(effort));
+        Self {
+            efforts,
+            default_effort,
+            source,
+            credits_rate: model.credits_rate(),
+        }
+    }
 }
 
 /// 模型列表处理器。
@@ -99,6 +176,7 @@ pub async fn handler(State(state): State<GatewayState>, headers: HeaderMap) -> R
 #[cfg(test)]
 mod tests {
     use super::*;
+    use buddy_switch_core::modules::catalog::CatalogReasoning;
 
     /// ★ 出口①必须同时给 `context_length`（OpenAI 客户端读）与 `context_window`（老字段）。
     #[test]
@@ -113,6 +191,7 @@ mod tests {
             credits: None,
             badges: vec![],
             free: false,
+            reasoning: None,
         };
         let max = model_entry(&model, true);
         assert_eq!(max["context_length"], 960_000, "默认用上限档");
@@ -137,7 +216,120 @@ mod tests {
             credits: None,
             badges: vec![],
             free: false,
+            reasoning: None,
         };
         assert_eq!(model_entry(&model, false)["context_length"], 1_000_000);
+    }
+
+    fn model(id: &str, credits: Option<&str>, reasoning: Option<CatalogReasoning>) -> CatalogModel {
+        let mut model = CatalogModel {
+            id: id.into(),
+            name: id.into(),
+            context_window: 200_000,
+            context_window_default: None,
+            max_tokens: 32_000,
+            supports_images: false,
+            credits: credits.map(str::to_string),
+            badges: vec![],
+            free: false,
+            reasoning,
+        };
+        model.refresh_derived();
+        model
+    }
+
+    fn snapshot(models: Vec<CatalogModel>) -> CatalogSnapshot {
+        CatalogSnapshot {
+            region: buddy_switch_core::modules::region::Region::Cn,
+            source: buddy_switch_core::modules::catalog::CatalogSource::Live,
+            fetched_at: Some(1),
+            models,
+            note: None,
+        }
+    }
+
+    /// ★ issue #65：思考档位三档来源必须能区分 —— 上游声明 / 内置静态表 / 都没有。
+    ///
+    /// 变异：把 `ModelAbility::resolve` 里的 `source` 一律写成 `"static"` ⇒ 第一条断言红；
+    /// 把静态表回落删掉 ⇒ 第二条红（`glm-5.3` 在 CN 表里，必须能显示 low/high/max）。
+    #[test]
+    fn snapshot_view_resolves_efforts_with_source() {
+        let view = snapshot_view(
+            &snapshot(vec![
+                // 上游声明（`kimi-k2.8-preview` 不在任何静态表里）
+                model(
+                    "kimi-k2.8-preview",
+                    Some("x1.65"),
+                    Some(CatalogReasoning {
+                        efforts: vec!["low".into(), "high".into(), "max".into()],
+                        default_effort: Some("high".into()),
+                        can_disable_thinking: Some(true),
+                    }),
+                ),
+                // 上游没声明、静态表有
+                model("glm-5.3", Some("x0.79"), None),
+                // 两边都没有
+                model("not-anywhere", None, None),
+            ]),
+            true,
+        );
+        let rows = view["models"].as_array().unwrap();
+
+        assert_eq!(rows[0]["efforts_source"], "upstream");
+        assert_eq!(
+            rows[0]["reasoning_efforts"],
+            serde_json::json!(["low", "high", "max"])
+        );
+        assert_eq!(rows[0]["default_effort"], "high");
+        assert_eq!(rows[0]["credits_rate"], 1.65);
+        // ★ 原始 reasoning 块不下发（同一事实只留一份表示）
+        assert!(rows[0].get("reasoning").is_none());
+
+        assert_eq!(rows[1]["efforts_source"], "static");
+        assert_eq!(
+            rows[1]["reasoning_efforts"],
+            serde_json::json!(["low", "high", "max"]),
+            "glm-5.3 的 CN 静态表是 low/high/max"
+        );
+        assert_eq!(rows[1]["default_effort"], "high");
+
+        assert!(rows[2]["efforts_source"].is_null());
+        assert_eq!(rows[2]["reasoning_efforts"], serde_json::json!([]));
+        assert!(rows[2]["default_effort"].is_null());
+        assert!(rows[2]["credits_rate"].is_null());
+    }
+
+    /// ★ issue #65 顺带修的缺陷：`x0.00 credits` 也是免费（旧判据只认 `x0.00`）。
+    #[test]
+    fn zero_credits_with_suffix_is_free() {
+        let with_suffix = model("hy3", Some("x0.00 credits"), None);
+        assert_eq!(with_suffix.credits_rate(), Some(0.0));
+        assert!(with_suffix.is_free(), "`x0.00 credits` 必须判免费");
+        assert_eq!(model_entry(&with_suffix, true)["free"], true);
+        assert_eq!(model_entry(&with_suffix, true)["credits_rate"], 0.0);
+
+        // 非零带后缀照常给数字（前端不必各自剥后缀）
+        let paid = model("fast-model", Some("x0.34 credits"), None);
+        assert_eq!(paid.credits_rate(), Some(0.34));
+        assert!(!paid.is_free());
+    }
+
+    /// 默认档不在可选集里 ⇒ 不展示（上游自相矛盾时宁可不显示，也别误导）。
+    #[test]
+    fn default_effort_outside_supported_set_is_dropped() {
+        let view = snapshot_view(
+            &snapshot(vec![model(
+                "weird",
+                None,
+                Some(CatalogReasoning {
+                    efforts: vec!["low".into()],
+                    default_effort: Some("max".into()),
+                    can_disable_thinking: None,
+                }),
+            )]),
+            true,
+        );
+        assert_eq!(view["models"][0]["reasoning_efforts"], serde_json::json!(["low"]));
+        assert!(view["models"][0]["default_effort"].is_null());
     }
 }

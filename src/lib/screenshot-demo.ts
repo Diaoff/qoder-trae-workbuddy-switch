@@ -834,20 +834,41 @@ function demoCatalog(region: Region): CatalogSnapshot {
   const models = region === "global"
     ? ["GPT-5.6", "Claude-Sonnet-4.5", "Gemini-3-Pro", "GLM-5.3", "DeepSeek-V4-Pro"]
     : ["GLM-5.3", "GLM-5.2", "DeepSeek-V4-Pro", "Kimi-K3", "hy3"];
+  /* 能力面（issue #65）：「思考档位 / 积分倍率」两列。演示站**必须有值** ——
+     否则新加的两列在截图里全是「—」，看起来像没做。数值取真机目录的典型值，
+     `hy3` 刻意给倍率 0（= 免费），让「免费」这一档也能在演示里看到。 */
+  const ability: Record<string, { rate: number; efforts: string[]; defaultEffort: string | null }> = {
+    "GPT-5.6": { rate: 3.31, efforts: ["low", "medium", "high", "xhigh", "max"], defaultEffort: "high" },
+    "Claude-Sonnet-4.5": { rate: 1.33, efforts: ["low", "high"], defaultEffort: "high" },
+    "Gemini-3-Pro": { rate: 0.99, efforts: ["low", "high", "max"], defaultEffort: "high" },
+    "GLM-5.3": { rate: 0.79, efforts: ["low", "high", "max"], defaultEffort: "high" },
+    "GLM-5.2": { rate: 0.11, efforts: ["high", "xhigh"], defaultEffort: "high" },
+    "DeepSeek-V4-Pro": { rate: 0.29, efforts: ["low", "high", "xhigh"], defaultEffort: "high" },
+    "Kimi-K3": { rate: 0.03, efforts: ["medium"], defaultEffort: null },
+    "hy3": { rate: 0, efforts: [], defaultEffort: null },
+  };
   return {
     region,
     source: region === "global" ? "cached" : "live",
     fetched_at: Date.now() - 3 * 60 * 1000,
-    models: models.map((name, index) => ({
-      id: name.toLowerCase(),
-      name,
-      context_window: 131072,
-      max_tokens: 8192,
-      supports_images: index % 3 === 0,
-      credits: index % 4 === 0 ? t("shared.demo.catalog.limitedFree") : null,
-      badges: index === 0 ? [t("shared.demo.catalog.promo")] : [],
-      free: index % 4 === 0,
-    })),
+    models: models.map((name, index) => {
+      const info = ability[name] ?? { rate: 0.2, efforts: [], defaultEffort: null };
+      return {
+        id: name.toLowerCase(),
+        name,
+        context_window: 131072,
+        max_tokens: 8192,
+        supports_images: index % 3 === 0,
+        credits: null,
+        credits_rate: info.rate,
+        badges: index === 0 ? [t("shared.demo.catalog.promo")] : [],
+        // 免费 = 倍率为 0（与后端 `is_free()` 同判据，别再各算一套）。
+        free: info.rate === 0,
+        reasoning_efforts: info.efforts,
+        default_effort: info.defaultEffort,
+        efforts_source: info.efforts.length > 0 ? "static" : null,
+      };
+    }),
     note: region === "global" ? t("shared.demo.catalog.globalStale") : null,
   };
 }
@@ -2538,6 +2559,8 @@ function demoTraeClientModels(args?: Record<string, unknown>): TraeClientModelLi
     // Max Mode 口径的上下文上限（`trae-types.ts` 的 `contextWindowMax`，必填）。
     // 默认 `null`（取不到）；旗舰模型给 1M，让演示站能看出这个新字段的差异。
     contextWindowMax: number | null = null,
+    // 能力面（issue #65）：档位 + 积分倍率。不传 = 该条目没下发（渲染「未下发」）。
+    ability: Partial<Pick<TraeClientModel, "efforts" | "defaultEffort" | "thinking" | "creditsRate">> = {},
   ): TraeClientModel => ({
     name,
     displayName,
@@ -2550,6 +2573,7 @@ function demoTraeClientModels(args?: Record<string, unknown>): TraeClientModelLi
     contextWindow: 256000,
     contextWindowMax,
     promptMaxTokens: 224000,
+    ...ability,
   });
 
   // 合并版与遗留 TraeCode 同属 IDE 家族 ⇒ 同一份客户端清单；
@@ -2579,10 +2603,28 @@ function demoTraeClientModels(args?: Record<string, unknown>): TraeClientModelLi
         {
           function: "chat_v3",
           models: [
-            model("Doubao-Seed-Evolving", "Seed-Evolving"),
-            model("glm-5.3-flash", "GLM-5.3-Flash"),
-            model("glm-5.3", "GLM-5.3", false, 1_000_000),
-            model("deepseek-v4.1-flash", "DeepSeek-V4.1-Flash"),
+            model("Doubao-Seed-Evolving", "Seed-Evolving", false, null, {
+              thinking: "unsupported",
+              creditsRate: 0.8,
+            }),
+            model("glm-5.3-flash", "GLM-5.3-Flash", false, null, {
+              efforts: ["light", "high"],
+              defaultEffort: "high",
+              thinking: "supported",
+              creditsRate: 0.2,
+            }),
+            model("glm-5.3", "GLM-5.3", false, 1_000_000, {
+              efforts: ["light", "high", "extra_high"],
+              defaultEffort: "high",
+              thinking: "supported",
+              creditsRate: 0.83,
+            }),
+            model("deepseek-v4.1-flash", "DeepSeek-V4.1-Flash", false, null, {
+              efforts: ["light", "high"],
+              defaultEffort: "high",
+              thinking: "supported",
+              creditsRate: 0.06,
+            }),
             model("openrouter//stealth/ox-alpha", "ox-alpha"),
           ],
         },
@@ -2606,11 +2648,19 @@ function demoTraeClientModels(args?: Record<string, unknown>): TraeClientModelLi
       {
         function: "solo_work_lite",
         models: [
-          model("Doubao-Seed-Evolving", "Seed-Evolving", false, 1_000_000),
-          model("Doubao-Seed-2.1-Pro", "Seed-2.1-Pro-0915"),
-          model("deepseek-v4.1-flash", "DeepSeek-V4.1-Flash"),
-          model("glm-5.3", "GLM-5.3"),
-          model("kimi-k3", "Kimi-K3"),
+          model("Doubao-Seed-Evolving", "Seed-Evolving", false, 1_000_000, { creditsRate: 0.8 }),
+          model("Doubao-Seed-2.1-Pro", "Seed-2.1-Pro-0915", false, null, { creditsRate: 0.8 }),
+          /* ★ 真机实测（2026-10-21）：`solo_work_lite` 22 条里**只有 1 条**带档位，
+             所以演示数据也只给这一条 —— 其余显示「该程序位未下发」，而不是假装
+             「都不支持思考」。这条差异正是 issue #65 要暴露的事实。 */
+          model("deepseek-v4.1-flash", "DeepSeek-V4.1-Flash", false, null, {
+            efforts: ["light", "high"],
+            defaultEffort: "high",
+            thinking: "supported",
+            creditsRate: 0.06,
+          }),
+          model("glm-5.3", "GLM-5.3", false, null, { creditsRate: 0.83 }),
+          model("kimi-k3", "Kimi-K3", false, null, { creditsRate: 0.06 }),
           // 真实客户端清单里每个分组都带这一条（`provider = "openrouter"`）——
           // 演示数据也要有，否则「第三方路由条目被标成网关不提供」这条断言在演示下无从验证。
           model("openrouter//stealth/ox-alpha", "ox-alpha"),

@@ -8,6 +8,7 @@ import { EmptyState } from "@/components/ui/empty-state";
 import { CatalogSourceBar } from "@/components/gateway/catalog-source-bar";
 import { ContextSourceCard } from "@/components/gateway/context-source-card";
 import { ModelTable } from "@/components/gateway/model-table";
+import { CreditsCell, EffortCell } from "@/components/gateway/model-ability";
 import { focusProbeModel, PROBE_LIMIT_STATES } from "@/components/gateway/model-probe-card";
 import * as api from "@/lib/api";
 import { describeCatalogSource, formatAbsoluteTime } from "@/lib/catalog-source";
@@ -108,6 +109,16 @@ export function ModelList({ region, className }: { region: Region; className?: s
     [snapshot, disabledSet, scope, config.max_context, maxContextDraft],
   );
   const { served, total } = servedCount(rows);
+
+  /**
+   * 行内要读「思考档位 / 积分倍率」，按 id 回查目录原始条目
+   * （`GatewayModelRow` 刻意不带这些字段：它是「上游事实 ∪ 用户偏好」的行模型，
+   * 能力面属于目录，不属于行 —— 与 Qoder 侧同一做法）。
+   */
+  const catalogById = useMemo(
+    () => new Map((snapshot?.models ?? []).map((model) => [model.id, model])),
+    [snapshot],
+  );
 
   /* 探测的账号轴（= 该 region 的池条目）与实测格索引（uid × 模型 id）。 */
   const accounts = useMemo(() => poolOf(status, region).accounts, [status, region]);
@@ -311,6 +322,29 @@ export function ModelList({ region, className }: { region: Region; className?: s
             onToggleDisabled={(row, disabled) => void onToggleDisabled(row, disabled)}
             showUpstream={false}
             labels={labels}
+            /* ★ issue #65：思考档位 / 积分倍率（三平台同构，渲染统一走
+               `model-ability.tsx`）。档位空数组在 WB 侧只有一种成因：上游没声明、
+               内置档位表也没条目 ⇒ `undeclared`。 */
+            effortColumn={{
+              header: t("shared.gateway.models.colEfforts"),
+              render: (row) => (
+                <EffortCell
+                  efforts={catalogById.get(row.id)?.reasoning_efforts ?? []}
+                  defaultEffort={catalogById.get(row.id)?.default_effort ?? null}
+                  source={catalogById.get(row.id)?.efforts_source ?? null}
+                  unavailable="undeclared"
+                />
+              ),
+            }}
+            creditsColumn={{
+              header: t("shared.gateway.models.colCredits"),
+              render: (row) => (
+                <CreditsCell
+                  rate={catalogById.get(row.id)?.credits_rate ?? null}
+                  free={catalogById.get(row.id)?.free ?? false}
+                />
+              ),
+            }}
             /* 「限流（探测）」列（P1 §5.4）：**仅 WB 传**；Trae / Qoder 不传 ⇒ 壳里不多出该列与
                任何 click handler（保持「每行 2 处可点区」的门禁断言）。 */
             extraColumn={{
