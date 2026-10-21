@@ -1296,6 +1296,45 @@ function fmtWindow(value) {
 
 /* 「上下文」单元格：开启时按目录里**这个模型自己的**上限声明；关闭时回到默认。
    上限不存在 / 与默认相同 / 模型不在目录里，都只显示默认值 —— 不虚报。 */
+/* 能力两列（issue #65）：思考档位 / 积分倍率 —— 三平台同构，与 App 的
+   `components/gateway/model-ability.tsx` 是同一套语义。
+
+   ★ 档位按平台**原词表**显示，**不做归一映射**：WB 用 low/medium/high/xhigh/max，
+   Trae 实测只有 light/high/extra_high，Qoder 是官方那套。把 xhigh 标成 extra_high
+   会造出一个实际不存在的等价关系。
+   ★ 空数组的成因三种，文案必须分开：
+     - unknown（该程序位没下发）—— TraeWork 实测 22 条只有 1 条带档位，
+       写成「都不支持思考」就是撒谎；
+     - unsupported（明确不支持选档）；
+     - undeclared（上游没声明、内置表也没有）。
+   ★ 倍率是**倍数**不是金额：`×0.79` = 基准价的 0.79 倍；`0` 显示「免费」。 */
+function effortCell(m) {
+  const list = Array.isArray(m.efforts) ? m.efforts : [];
+  if (!list.length) {
+    const platform = curScope().platform;
+    const why = platform === "trae"
+      ? "该程序位的清单未下发思考档位信息"
+      : platform === "qoder"
+        ? "该模型不支持选档"
+        : "上游未声明档位，内置档位表也没有对应条目";
+    return `<span class="tiny muted" title="${esc(why)}">—</span>`;
+  }
+  return list
+    .map((effort) => (effort === m.defaultEffort
+      ? `<b class="mono" title="默认档：${esc(effort)}">${esc(effort)}</b>`
+      : `<span class="mono muted">${esc(effort)}</span>`))
+    .join(`<span class="tiny muted"> · </span>`);
+}
+
+function creditsCell(m) {
+  const rate = typeof m.credits === "number" ? m.credits : null;
+  if (rate === null) {
+    return `<span class="tiny muted" title="上游未提供积分倍率">—</span>`;
+  }
+  if (rate === 0) return `<span class="badge ok">免费</span>`;
+  return `<span class="mono muted" title="倍率：按基准价的多少倍计费，不是金额">×${rate}</span>`;
+}
+
 function contextCell(model) {
   const def = fmtWindow(model.context) ?? "未知";
   // WB / Qoder：按「上限 / 默认」开关选；Trae：按 Max Mode 开关选。
@@ -1486,10 +1525,10 @@ function viewGateway() {
     const trae = curScope().platform === "trae";
     main = `${trae ? maxModePolicyCard() : contextFixedCard()}${catalogBar(g.catalog)}
     <div class="tbl-wrap"><table class="tbl">
-      <thead><tr><th>模型</th><th>协议</th><th>归属</th><th>上下文</th><th>上游状态</th><th style="width:124px">网关暴露</th></tr></thead>
+      <thead><tr><th>模型</th><th>协议</th><th>归属</th><th>上下文</th><th>思考档位</th><th>积分倍率</th><th>上游状态</th><th style="width:124px">网关暴露</th></tr></thead>
       <tbody>${g.models.map((m) => `<tr${m.disabled ? ' class="row-off"' : ""}>
         <td class="mono"><b>${esc(m.name)}</b></td><td>${esc(m.provider)}</td><td>${esc(m.scope)}</td>
-        <td>${contextCell(m)}</td>
+        <td>${contextCell(m)}</td><td>${effortCell(m)}</td><td>${creditsCell(m)}</td>
         <td>${m.available ? `<span class="badge ok">可用</span>` : `<span class="badge warn">不可用</span>`}</td>
         <td>${m.disabled
           ? `<span class="badge bad">已禁用</span> <button class="btn xs" data-act="model-enable|${esc(m.name)}|${esc(m.scope)}">启用</button>`

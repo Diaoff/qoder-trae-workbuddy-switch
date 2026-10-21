@@ -630,12 +630,12 @@ const GATEWAY = {
     /* available = 上游事实（能不能调）；disabled = 用户偏好（主动拿掉）。
        两者**正交**，四种组合都合法 —— UI 必须能区分「已禁用」与「上游不可用」。 */
     models: [
-      { name: "claude-sonnet-4.5", provider: "anthropic", scope: "国内版", available: true, context: 200000, maxWindow: 200000 },
-      { name: "claude-opus-4.1", provider: "anthropic", scope: "国内版", available: true, disabled: true, context: 200000, maxWindow: 200000 },
-      { name: "gpt-5-codex", provider: "openai", scope: "国内版", available: true, context: 400000, maxWindow: 1000000 },
-      { name: "gemini-2.5-pro", provider: "openai", scope: "国内版", available: true, context: 300000, maxWindow: 1000000 },
-      { name: "claude-sonnet-4.5", provider: "anthropic", scope: "国际版", available: true, context: 200000, maxWindow: 200000 },
-      { name: "gpt-5-codex", provider: "openai", scope: "国际版", available: false, disabled: true, context: 400000, maxWindow: 1000000 },
+      { name: "claude-sonnet-4.5", provider: "anthropic", scope: "国内版", available: true, context: 200000, maxWindow: 200000, efforts: ["low", "medium", "high", "xhigh", "max"], defaultEffort: "high", credits: 1.33 },
+      { name: "claude-opus-4.1", provider: "anthropic", scope: "国内版", available: true, disabled: true, context: 200000, maxWindow: 200000, efforts: ["low", "medium", "high"], defaultEffort: "high", credits: 3.31 },
+      { name: "gpt-5-codex", provider: "openai", scope: "国内版", available: true, context: 400000, maxWindow: 1000000, efforts: ["low", "medium", "high", "xhigh", "max"], defaultEffort: "high", credits: 0.79 },
+      { name: "gemini-2.5-pro", provider: "openai", scope: "国内版", available: true, context: 300000, maxWindow: 1000000, efforts: ["low", "medium", "high"], defaultEffort: "medium", credits: 0.34 },
+      { name: "claude-sonnet-4.5", provider: "anthropic", scope: "国际版", available: true, context: 200000, maxWindow: 200000, efforts: ["low", "medium", "high", "xhigh", "max"], defaultEffort: "high", credits: 1.33 },
+      { name: "gpt-5-codex", provider: "openai", scope: "国际版", available: false, disabled: true, context: 400000, maxWindow: 1000000, efforts: ["low", "medium", "high", "xhigh", "max"], defaultEffort: "high", credits: 0.79 },
     ],
     /* 模型清单的来源（§3.17）：实时 / 已保存 / 内置 —— 三级都必须显式标注，
        不许把「内置」伪装成「实时」（用户照着清单调用会扑空）。 */
@@ -658,7 +658,7 @@ const GATEWAY = {
   "wb-global": {
     enabled: false, port: 57891, baseUrl: "http://127.0.0.1:57891",
     keys: [{ id: "k4", name: "国际版 Key", masked: "bs_live_1a55••••••••••••88d0", scope: "国际版", created: "2026-09-25", lastUsed: "昨天", requests: 26 }],
-    models: [{ name: "claude-sonnet-4.5", provider: "anthropic", scope: "国际版", available: true }],
+    models: [{ name: "claude-sonnet-4.5", provider: "anthropic", scope: "国际版", available: true, efforts: ["low", "medium", "high", "xhigh", "max"], defaultEffort: "high", credits: 1.33 }],
     catalog: { source: "cached", fetchedAt: "昨天 21:04", fetchedAbs: "2026-10-02 21:04", note: "本次探测超时（8s），使用上次成功的结果" },
     pool: [{ account: "jackey-global", credits: 720, weight: 100, state: "可用", sticky: true }],
     logs: [{ time: "09:12:30", model: "claude-sonnet-4.5", account: "jackey-global", status: 200, ms: 1120, tokens: 640 }],
@@ -674,14 +674,14 @@ const GATEWAY = {
        `context` = `__dev` 通道实际窗口，`maxWindow` = Max Mode 上限（不存在为 null）。
        ★ 上限不是统一 1M：mimo 是 981504、Doubao-Turbo 与默认相同。 */
     models: [
-      { name: "glm-5.3", provider: "trae", scope: "TraeWork", available: true, context: 200000, maxWindow: 1000000 },
-      { name: "qwen3.8-max", provider: "trae", scope: "TraeWork", available: true, context: 200000, maxWindow: 1000000 },
-      { name: "Doubao-Seed-Evolving", provider: "trae", scope: "TraeWork", available: true, context: 256000, maxWindow: 1000000 },
-      { name: "Doubao-Seed-2.1-Turbo", provider: "trae", scope: "TraeWork", available: true, context: 256000, maxWindow: 256000 },
-      { name: "mimo-v2.6-pro", provider: "trae", scope: "TraeCode", available: true, context: 200000, maxWindow: 981504 },
-      { name: "kimi-k3", provider: "trae", scope: "TraeCode", available: true, context: 200000, maxWindow: 1000000 },
+      { name: "glm-5.3", provider: "trae", scope: "TraeWork", available: true, context: 200000, maxWindow: 1000000, efforts: ["light", "high", "extra_high"], defaultEffort: "high", credits: 0.83 },
+      { name: "qwen3.8-max", provider: "trae", scope: "TraeWork", available: true, context: 200000, maxWindow: 1000000, efforts: ["light", "high"], defaultEffort: "high", credits: 0.2 },
+      { name: "Doubao-Seed-Evolving", provider: "trae", scope: "TraeWork", available: true, context: 256000, maxWindow: 1000000, credits: 0.8 },
+      { name: "Doubao-Seed-2.1-Turbo", provider: "trae", scope: "TraeWork", available: true, context: 256000, maxWindow: 256000, efforts: ["light", "high"], defaultEffort: "high", credits: 0.2 },
+      { name: "mimo-v2.6-pro", provider: "trae", scope: "TraeCode", available: true, context: 200000, maxWindow: 981504, efforts: ["light", "high"], defaultEffort: "high", credits: 0.06 },
+      { name: "kimi-k3", provider: "trae", scope: "TraeCode", available: true, context: 200000, maxWindow: 1000000, credits: 0.06 },
       /* 目录里没有这个模型 ⇒ 数字未知，清单只按客户端默认窗口声明。 */
-      { name: "kimi-k2.6", provider: "trae", scope: "TraeCode", available: true, context: 200000, maxWindow: null },
+      { name: "kimi-k2.6", provider: "trae", scope: "TraeCode", available: true, context: 200000, maxWindow: null, credits: 0.06 },
     ],
     /* Trae 侧按**程序位**分家下发清单（TraeWork=solo_work_lite / TraeCode=chat_v3），
        所以识别也必须按 scope 分家，不能一份清单打天下。 */
@@ -712,13 +712,13 @@ const GATEWAY = {
       { id: "k8", name: "Qoder CLI", masked: "qd_live_9a07••••••••••••4e83", scope: "国内版", created: "2026-10-02", lastUsed: "2 小时前", requests: 214, revoked: true },
     ],
     models: [
-      { name: "Qwen3.8-Max", provider: "qoder", scope: "国内版", available: true, context: 200000, maxWindow: 1000000 },
-      { name: "GLM-5.1", provider: "qoder", scope: "国内版", available: true, context: 200000, maxWindow: 1000000 },
-      { name: "Kimi-K3", provider: "qoder", scope: "国内版", available: true, disabled: true, context: 200000, maxWindow: 1000000 },
-      { name: "MiniMax-M3", provider: "qoder", scope: "国内版", available: true, context: 200000, maxWindow: 400000 },
+      { name: "Qwen3.8-Max", provider: "qoder", scope: "国内版", available: true, context: 200000, maxWindow: 1000000, efforts: ["low", "medium", "xhigh"], credits: 0.5 },
+      { name: "GLM-5.1", provider: "qoder", scope: "国内版", available: true, context: 200000, maxWindow: 1000000, efforts: ["low", "medium"], credits: 0.3 },
+      { name: "Kimi-K3", provider: "qoder", scope: "国内版", available: true, disabled: true, context: 200000, maxWindow: 1000000, credits: 0.1 },
+      { name: "MiniMax-M3", provider: "qoder", scope: "国内版", available: true, context: 200000, maxWindow: 400000, credits: 0 },
       /* 区域独占模型（国际版独有）也列出来 —— 与 WB 网关页的跨区域清单同形，
          用来暴露「Key 出口与模型区域不匹配」这个真实存在的错配。 */
-      { name: "Ultimate", provider: "qoder", scope: "国际版", available: true },
+      { name: "Ultimate", provider: "qoder", scope: "国际版", available: true, efforts: ["low", "medium", "high"], defaultEffort: "high", credits: 0 },
     ],
     catalog: { source: "live", fetchedAt: "8 分钟前", fetchedAbs: "2026-10-14 16:35", note: null },
     pool: [
@@ -762,8 +762,8 @@ const GATEWAY = {
     enabled: false, port: 57895, baseUrl: "http://127.0.0.1:57895",
     keys: [{ id: "k9", name: "Qoder 国际版 Key", masked: "qd_live_3f61••••••••••••b7d2", scope: "国际版", created: "2026-09-30", lastUsed: "昨天", requests: 21 }],
     models: [
-      { name: "Ultimate", provider: "qoder", scope: "国际版", available: true },
-      { name: "Qwen3.8-Max", provider: "qoder", scope: "国际版", available: true },
+      { name: "Ultimate", provider: "qoder", scope: "国际版", available: true, efforts: ["low", "medium", "high"], defaultEffort: "high", credits: 0 },
+      { name: "Qwen3.8-Max", provider: "qoder", scope: "国际版", available: true, efforts: ["low", "medium", "xhigh"], credits: 0.5 },
     ],
     catalog: { source: "cached", fetchedAt: "昨天 22:10", fetchedAbs: "2026-10-13 22:10", note: "本次探测超时（8s），使用上次成功的结果" },
     pool: [
