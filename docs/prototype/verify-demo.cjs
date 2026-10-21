@@ -57,6 +57,18 @@ const MUTATIONS = {
       return src.replace(from, to);
     },
   },
+  /* ★ 限额护栏卡（2026-10-21）：池表直接顶上来、卡片不渲染。
+     期望「有护栏卡」「卡在池表之前」两条一起变红 —— 只删渲染、不动数据。 */
+  quotacard: {
+    desc: "限额护栏卡未渲染（账号池表直接顶到分区顶部）",
+    file: "demo-app.js",
+    apply: (src) => {
+      const from = "main = quotaCardHtml(g) + `";
+      const to = "main = `` + ` /* MUTATED: 护栏卡被移除 */";
+      if (!src.includes(from)) throw new Error("未匹配到 quotaCardHtml 渲染行");
+      return src.replace(from, to);
+    },
+  },
   /* ★ 顶栏刷新按钮的进行中反馈（2026-10-15）：去掉 doRefresh 的 spinning/禁用注入，
      期望「点击后进入进行中态」那条断言变红（只删注入、不碰 500ms 计时与 toast）。 */
   refresh: {
@@ -418,6 +430,67 @@ function check(name, fn) {
     return true;
   });
 
+    /* ── 限额护栏（Qoder 网关 · 账号池）────────────────────────────────
+       与 App 的 `QoderQuotaGuard` 同构：四阈值 + 逐账号用量 + 拦截原因。
+       单文件那一套由 `verify-qoder-prototype.cjs` 守；这里守**门禁跑的这一套**。
+       另起一个 JSDOM 深链到账号池分区（不干扰上面的交互序列）。 ── */
+    const qUrl = (q) => "file://" + path.join(dir, "index.html").replace(/\\/g, "/") + "?" + q;
+    const domQ = await JSDOM.fromFile(path.join(dir, "index.html"), {
+      runScripts: "dangerously", resources: "usable", pretendToBeVisual: true,
+      url: qUrl("scope=qoder-cn&dest=gateway&gw=pool"),
+    });
+    const dQ = domQ.window.document;
+    await new Promise((r) => domQ.window.addEventListener("load", r));
+    await sleep(80);
+    const card = dQ.querySelector("[data-quota-card]");
+    check("拆分形态：Qoder 账号池顶部有「限额护栏」卡，四个阈值输入齐全", () => {
+      if (!card) throw new Error("没有 [data-quota-card]");
+      const keys = [...card.querySelectorAll("[data-quota]")].map((i) => i.dataset.quota);
+      for (const k of ["reserve", "daily", "credit", "model"]) {
+        if (!keys.includes(k)) throw new Error("缺输入 " + k + "：" + keys.join("/"));
+      }
+      return keys.join(" / ");
+    });
+    check("拆分形态：护栏卡排在账号池表**之前**（它是池的上游条件）", () => {
+      const html = dQ.querySelector("#content").innerHTML;
+      const a = html.indexOf("data-quota-card");
+      const b = html.indexOf('data-act="pin|');
+      if (a < 0 || b < 0 || a > b) throw new Error(`顺序不对（卡 ${a} / 池表 ${b}）`);
+      return true;
+    });
+    check("拆分形态：每种拦截态都给**可读原因**（徽标 title 非空）", () => {
+      const blocked = [...dQ.querySelectorAll("[data-quota-card] .badge")].filter(
+        (b) => b.classList.contains("warn") || b.classList.contains("bad"),
+      );
+      if (blocked.length < 3) throw new Error("被拦徽标只有 " + blocked.length + " 个（夹具应有 3 态）");
+      for (const b of blocked) {
+        if (!(b.getAttribute("title") || "").trim()) throw new Error("徽标缺原因：" + b.textContent);
+      }
+      return blocked.length + " 个被拦徽标都有原因";
+    });
+    check("拆分形态：保存会**真的改数据**（不是只弹 toast）", () => {
+      const input = card.querySelector('[data-quota="daily"]');
+      input.value = "1234";
+      card.querySelector('[data-act="quota-save"]').click();
+      const again = dQ.querySelector('[data-quota="daily"]');
+      if (!again || again.value !== "1234") throw new Error("保存后回填值 = " + (again && again.value));
+      return true;
+    });
+    /* ⚠️ `check()` 只支持同步函数（返回值不是 `false` 即算通过）⇒ 异步部分必须
+       **在 check 外面**先做完，否则断言里的异常会变成未处理的 rejection、静默假绿。 */
+    const domW = await JSDOM.fromFile(path.join(dir, "index.html"), {
+      runScripts: "dangerously", resources: "usable", pretendToBeVisual: true,
+      url: qUrl("scope=wb-cn&dest=gateway&gw=pool"),
+    });
+    await new Promise((r) => domW.window.addEventListener("load", r));
+    await sleep(80);
+    check("拆分形态：WorkBuddy 作用域**不渲染**护栏卡（没这个能力就别画空壳）", () => {
+      if (domW.window.document.querySelector("[data-quota-card]")) {
+        throw new Error("WorkBuddy 页面出现了护栏卡");
+      }
+      domW.window.close();
+      return true;
+    });
   } catch (e) {
     /* 元素缺失/渲染中断也要落成一条失败，而不是让脚本崩掉——否则变异模式下
        只能看到「脚本异常」，读不出是哪条断言守住了。 */

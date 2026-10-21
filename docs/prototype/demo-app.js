@@ -1344,6 +1344,79 @@ function maxModePolicyCard() {
   </section>`;
 }
 
+/* ─────────── 限额护栏（Qoder 网关 · 账号池分区顶部）───────────
+ * 与 App 的 `QoderQuotaGuard` 同一张卡：四个阈值输入 + 逐账号今日用量与拦截原因。
+ *
+ * 三条要在这个原型里**看得见**的产品纪律：
+ *   1. `0` = 关闭该条（默认全关）—— 国际版作用域就是这一档，用来对照；
+ *   2. 未知一律放行 —— 所以文案写「余额未知时不拦」，而不是「精确到 token」；
+ *   3. 拦下必须给原因 —— 徽标 title 就是后端那句 `blockedReason`。
+ *
+ * `quota` 缺席（WorkBuddy / Trae）⇒ 卡片不渲染：这三个平台没有这套护栏，
+ * 画一个空壳等于告诉用户「有这个功能但坏了」。
+ */
+const QUOTA_BLOCK_LABEL = {
+  parked: "余额耗尽停放",
+  reserve: "触到余额地板",
+  daily_tokens: "当日 token 已满",
+  daily_credits: "当日 credit 已满",
+  model_tokens: "模型额度已满",
+};
+
+function quotaCardHtml(g) {
+  const q = g.quota;
+  if (!q) return "";
+  const L = q.limits;
+  const blocked = q.accounts.filter((a) => a.blocked).length;
+  const field = (key, label, value, hint) => `<label class="quota-field">
+      <span>${label}</span>
+      <input class="inp" type="text" inputmode="numeric" data-quota="${key}" value="${esc(value)}" aria-label="${label}">
+      <em>${hint}</em>
+    </label>`;
+  const rows = q.accounts.map((a) => {
+    const models = a.perModel && a.perModel.length
+      ? a.perModel.slice(0, 3).map((m) => `${esc(m.model)} ${fmt(m.tokens)}`).join(" · ")
+      : "今日暂无网关用量";
+    const tail = [
+      a.credits ? `已用 ${fmtQty(a.credits)} credit` : "",
+      a.creditsRemaining === null || a.creditsRemaining === undefined ? "" : `余额 ${fmt(a.creditsRemaining)}`,
+    ].filter(Boolean).join(" · ");
+    const badge = a.blocked
+      ? `<span class="badge ${a.blocked === "parked" ? "bad" : "warn"}" title="${esc(a.blockedReason || "")}">${QUOTA_BLOCK_LABEL[a.blocked] || "已拦下"}</span>`
+      : `<span class="badge ok">可用</span>`;
+    return `<div class="quota-row">
+        <div class="quota-who"><b>${esc(a.name)}</b><span>${models}${tail ? " · " + tail : ""}</span></div>
+        <div class="quota-right"><span class="quota-num">${fmt(a.tokens)}<span>token</span></span>${badge}</div>
+      </div>`;
+  }).join("");
+  return `<section class="card" data-quota-card style="margin-bottom:14px">
+    <div class="card-head">
+      <div><h3>限额护栏</h3><div class="sub">达到阈值即暂停使用该账号（0 = 关闭该条；未知一律放行）</div></div>
+      <div class="grow"></div>
+      <button class="btn sm" data-act="quota-refresh">刷新</button>
+    </div>
+    <div class="card-pad" style="padding-bottom:12px">
+      <div class="quota-grid">
+        ${field("reserve", "余额地板（credits）", L.reserveCredits, "剩余 ≤ 该值即停；余额未知时不拦")}
+        ${field("daily", "当日 token 上限", L.dailyTokenLimit, "单账号今天经网关转发的 token 总量")}
+        ${field("credit", "当日 credit 上限", L.dailyCreditLimit, "单账号今天消耗的 credits（可填小数）")}
+        ${field("model", "单模型当日 token", L.modelDailyTokenLimit, "只限该模型，不连坐同账号的其它模型")}
+      </div>
+    </div>
+    <div class="quota-foot">
+      <p class="tiny muted">${L.reserveCredits || L.dailyTokenLimit || L.dailyCreditLimit || L.modelDailyTokenLimit
+        ? "计数来自网关自己的记账；每天 10:00（UTC+8）重置"
+        : "四条都是 0 ⇒ 护栏未启用，不会拦任何请求"}</p>
+      <button class="btn sm" data-act="quota-save">保存</button>
+    </div>
+    <div class="quota-rows">
+      <div class="quota-rows-head"><span>今日（${esc(q.date)}）· ${q.accounts.length} 个账号</span>
+        <span>${blocked > 0 ? `${blocked} 个已被拦下` : "当前没有账号被拦"}</span></div>
+      ${rows}
+    </div>
+  </section>`;
+}
+
 function viewGateway() {
   const g = GATEWAY[state.scope], p = curPlatform();
   const subs = [["overview", "概览"], ["keys", "密钥"], ["models", "模型"], ["pool", "账号池"], ["proxy", "请求代理"], ["logs", "请求日志"]];
@@ -1415,7 +1488,8 @@ function viewGateway() {
     /* 「显式指定」是选号优先级的第一级；指定是排他的，被指定的行置顶。 */
     const pinned = state.pins[state.scope];
     const rows = g.pool.slice().sort((x, y) => (x.account === pinned ? -1 : y.account === pinned ? 1 : 0));
-    main = `<div class="tbl-wrap"><table class="tbl">
+    /* 护栏卡在池表**之上**：它决定「谁能被选」，是池的上游条件。 */
+    main = quotaCardHtml(g) + `<div class="tbl-wrap"><table class="tbl">
       <thead><tr><th>账号</th><th>积分</th><th>权重</th><th>状态</th><th>粘性</th><th style="width:96px">选号</th></tr></thead>
       <tbody>${rows.map((x) => `<tr>
         <td><b>${esc(x.account)}</b>${x.account === pinned ? ` <span class="badge info">已指定</span>` : ""}</td>
@@ -3575,6 +3649,38 @@ document.addEventListener("click", (e) => {
       }, 900);
       break;
     }
+    /* ── 限额护栏 ──
+       保存会**真的改数据并重绘**（不是只弹 toast）：原型里「点了没反应」的控件
+       正是我们要在评审时抓出来的东西，别自己再造一个。 */
+    case "quota-save": {
+      stop();
+      const g = curGateway();
+      if (!g.quota) break;
+      const read = (key) => {
+        const el = document.querySelector(`[data-quota="${key}"]`);
+        const raw = (el && el.value ? String(el.value) : "").trim();
+        if (raw === "") return 0;
+        const n = Number(raw);
+        return Number.isFinite(n) && n >= 0 ? n : null;
+      };
+      const next = {
+        reserveCredits: read("reserve"),
+        dailyTokenLimit: read("daily"),
+        dailyCreditLimit: read("credit"),
+        modelDailyTokenLimit: read("model"),
+      };
+      if (Object.values(next).some((v) => v === null)) {
+        toast("err", "只能填非负数字", "0 = 关闭该条");
+        break;
+      }
+      Object.assign(g.quota.limits, next);
+      renderContent();
+      toast("ok", "已保存限额", "四条阈值即时生效（0 = 关闭）");
+      break;
+    }
+    case "quota-refresh": stop();
+      toast("ok", "已刷新护栏状态", "逐账号用量来自网关自己的记账，每天 10:00 重置");
+      break;
     case "pin": stop();
       if (a1) {
         /* 已排除的账号不能成为上游（UI 已禁用按钮，这里再兜一层）。 */

@@ -40,6 +40,12 @@ const MUTATIONS = {
     from: "  label: scopeDisplayName(id),",
     to: "  label: SCOPES[id].label, /* MUTATED */",
   },
+  /* ★ 限额护栏卡（2026-10-21）：池区直接顶上来、卡片不渲染。 */
+  quotacard: {
+    desc: "限额护栏卡未渲染（账号池区直接顶到分区顶部）",
+    from: "  return quotaCardHtml(g) + `<div class=\"cat-bar\">",
+    to: "  return `` + `<div class=\"cat-bar\"> /* MUTATED */",
+  },
   /* ★ 顶栏刷新按钮的进行中反馈（2026-10-15）：去掉 doRefresh 的 spinning/禁用注入。 */
   refresh: {
     desc: "刷新按钮点击后无进行中反馈（去掉 spinning + 禁用）",
@@ -167,6 +173,60 @@ const flat = (s) => String(s || "").replace(/\s+/g, " ").trim();
       throw new Error("jackey 卡没有「使用中 2 个工具」：" + flat(jackey.textContent).slice(0, 140));
     }
     return "程序位 App / CLI · 带徽章 2 张（q1 双绑、q2 单绑）";
+  });
+
+  /* ── 3-b. Qoder 网关「限额护栏」（2026-10-21）：与 App 的 `QoderQuotaGuard` 同构 ── */
+  const domP = await boot("scope=qoder-cn&dest=gateway&gw=pool&hint=0");
+  const dP = domP.window.document;
+  const quotaCard = dP.querySelector("[data-quota-card]");
+  check("单文件：账号池顶部有「限额护栏」卡，四个阈值输入齐全", () => {
+    if (!quotaCard) throw new Error("没有 [data-quota-card]");
+    const keys = [...quotaCard.querySelectorAll("[data-quota]")].map((i) => i.dataset.quota);
+    for (const k of ["reserve", "daily", "credit", "model"]) {
+      if (!keys.includes(k)) throw new Error("缺输入 " + k + "：" + keys.join("/"));
+    }
+    return keys.join(" / ");
+  });
+  check("单文件：护栏卡排在账号池表**之前**（它是池的上游条件）", () => {
+    const html = dP.querySelector("#content").innerHTML;
+    const a = html.indexOf("data-quota-card");
+    const b = html.indexOf('data-act="pin|');
+    if (a < 0 || b < 0 || a > b) throw new Error(`顺序不对（卡 ${a} / 池表 ${b}）`);
+    return true;
+  });
+  check("单文件：四种拦截态各占一个账号，且都给了可读原因（title 非空）", () => {
+    const blocked = [...quotaCard.querySelectorAll(".badge")].filter(
+      (b) => b.classList.contains("warn") || b.classList.contains("bad"),
+    );
+    if (blocked.length !== 3) throw new Error("被拦徽标 " + blocked.length + " 个（夹具应有 3 态）");
+    for (const b of blocked) {
+      if (!(b.getAttribute("title") || "").trim()) throw new Error("徽标缺原因：" + b.textContent);
+    }
+    const labels = blocked.map((b) => b.textContent.trim()).sort().join(" / ");
+    return labels;
+  });
+  check("单文件：保存会**真的改数据**（不是只弹 toast）", () => {
+    const input = quotaCard.querySelector('[data-quota="daily"]');
+    input.value = "1234";
+    quotaCard.querySelector('[data-act="quota-save"]').click();
+    const again = dP.querySelector('[data-quota="daily"]');
+    if (!again || again.value !== "1234") throw new Error("保存后回填值 = " + (again && again.value));
+    return true;
+  });
+  /* 国际版夹具是「四条都 0」⇒ 文案必须变成「未启用」，不能还写「计数来自记账」。 */
+  const domP2 = await boot("scope=qoder-global&dest=gateway&gw=pool&hint=0");
+  check("单文件：国际版护栏默认关（四条 0）⇒ 文案说「未启用」", () => {
+    const card = domP2.window.document.querySelector("[data-quota-card]");
+    if (!card) throw new Error("国际版没有护栏卡（切区域后不该消失）");
+    const t = flat(card.textContent);
+    if (!t.includes("未启用")) throw new Error("四阈值全 0 却没提示「未启用」：" + t.slice(0, 120));
+    return true;
+  });
+  /* WorkBuddy 没有这套护栏 ⇒ 池区**不得**出现空壳卡。 */
+  const domW = await boot("scope=wb-cn&dest=gateway&gw=pool&hint=0");
+  check("单文件：WorkBuddy 账号池**不渲染**护栏卡（没这个能力就别画空壳）", () => {
+    if (domW.window.document.querySelector("[data-quota-card]")) throw new Error("WorkBuddy 出现了护栏卡");
+    return true;
   });
 
   /* ── 4. Qoder 国际版：用量 + 网关 ── */

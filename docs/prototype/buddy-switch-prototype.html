@@ -1415,6 +1415,40 @@ table.tbl tr.uni-grp td {
 .cap-note svg { width: 13px; height: 13px; flex-shrink: 0; margin-top: 2px; color: var(--warning); }
 .cap-note b { color: var(--foreground); font-weight: 600; }
 
+/* ─────────── 限额护栏（Qoder 网关 · 账号池分区顶部）───────────
+   与 App 的 `.quota-grid` 同构：4 列阈值输入 + 一行说明/保存 + 逐账号用量行。
+   窄屏退到 2 列（App 用 `sm:grid-cols-2 lg:grid-cols-4`，这里用媒体查询对齐）。 */
+.quota-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
+@media (max-width: 1100px) { .quota-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+.quota-field { display: block; min-width: 0; }
+.quota-field > span { font-size: 12.5px; font-weight: 550; }
+.quota-field > .inp { margin-top: 5px; width: 100%; box-sizing: border-box; }
+.quota-field > em {
+  display: block; margin-top: 5px; font-size: 11px; line-height: 1.45;
+  color: var(--muted-fg); font-style: normal;
+}
+.quota-foot {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  padding: 10px 16px; border-top: 1px solid var(--border);
+}
+.quota-foot > p { margin: 0; min-width: 0; }
+.quota-rows { border-top: 1px solid var(--border); }
+.quota-rows-head {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  padding: 10px 16px 2px; font-size: 11.5px; color: var(--muted-fg);
+}
+.quota-row {
+  display: flex; align-items: flex-start; justify-content: space-between; gap: 12px;
+  padding: 8px 16px; border-top: 1px solid var(--border);
+}
+.quota-row:last-child { padding-bottom: 12px; }
+.quota-who { min-width: 0; }
+.quota-who > b { display: block; font-size: 12.5px; }
+.quota-who > span { display: block; margin-top: 2px; font-size: 11px; color: var(--muted-fg); }
+.quota-right { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
+.quota-num { font-size: 12px; font-variant-numeric: tabular-nums; }
+.quota-num > span { margin-left: 3px; font-size: 10px; color: var(--muted-fg); }
+
 </style>
 </head>
 <body>
@@ -2250,6 +2284,29 @@ const GATEWAY = {
       { name: "Ultimate", provider: "qoder", scope: "国际版", available: true, context: 200000, maxWindow: 400000 },
     ],
     catalog: { source: "live", fetchedAt: "8 分钟前", fetchedAbs: "2026-10-14 16:35", note: null },
+    /* ★ 限额护栏（Qoder 独有；`quota` 缺席 = 该作用域没有护栏卡）。
+       四个账号**故意各占一态**：正常 / 当日 token 已满 / 触到余额地板 / 余额耗尽停放
+       —— 截图能同时看到四种徽标，也顺带证明「拦下必须给原因」这条不是空话。
+       数值口径与后端 `quota_view` 同形（`tokens` / `credits` / `blocked` …）。 */
+    quota: {
+      date: "2026-10-21",
+      limits: { reserveCredits: 200, dailyTokenLimit: 500000, dailyCreditLimit: 50, modelDailyTokenLimit: 0 },
+      accounts: [
+        { uid: "jackey", name: "jackey", tokens: 128430, credits: 18.42,
+          perModel: [{ model: "Qwen3.8-Max", tokens: 96120 }, { model: "GLM-5.1", tokens: 32310 }],
+          blocked: null, blockedReason: null, creditsRemaining: 1180 },
+        { uid: "team-qoder", name: "team-qoder", tokens: 500000, credits: 62.5,
+          perModel: [{ model: "Qwen3.8-Max", tokens: 500000 }],
+          blocked: "daily_tokens", blockedReason: "已达当日 token 上限（500000 / 500000）", creditsRemaining: 620 },
+        { uid: "trial-01", name: "trial-01", tokens: 42800, credits: 7.15,
+          perModel: [{ model: "Qwen3.8-Max", tokens: 42800 }],
+          blocked: "reserve", blockedReason: "已触发余额地板：剩余 80 ≤ 保留 200，本账号暂停使用", creditsRemaining: 80 },
+        { uid: "legacy-acc", name: "legacy-acc", tokens: 3260, credits: 0.62,
+          perModel: [{ model: "GLM-5.1", tokens: 3260 }],
+          blocked: "parked", blockedReason: "余额耗尽停放中（明天 10:00 后自动恢复）：HTTP 402 余额不足",
+          creditsRemaining: 0, parkedUntil: "明天 10:00" },
+      ],
+    },
     pool: [
       { account: "jackey", credits: 1180, weight: 100, state: "可用", sticky: true, tier: "free", inFlight: 2, maxInFlight: 3 },
       { account: "team-qoder", credits: 620, weight: 70, state: "可用", sticky: false, tier: "free", inFlight: 0, maxInFlight: 3 },
@@ -2274,6 +2331,18 @@ const GATEWAY = {
       { name: "Qwen3.8-Max", provider: "qoder", scope: "国际版", available: true },
     ],
     catalog: { source: "cached", fetchedAt: "昨天 22:10", fetchedAbs: "2026-10-13 22:10", note: "本次探测超时（8s），使用上次成功的结果" },
+    /* 国际版：护栏默认关（四条都是 0）—— 用来演示「未启用」这一档文案，
+       与国内版「已开启 + 有账号被拦」形成对照。 */
+    quota: {
+      date: "2026-10-21",
+      limits: { reserveCredits: 0, dailyTokenLimit: 0, dailyCreditLimit: 0, modelDailyTokenLimit: 0 },
+      accounts: [
+        { uid: "jackey-global", name: "jackey-global", tokens: 41200, credits: 6.8,
+          perModel: [{ model: "Ultimate", tokens: 41200 }], blocked: null, blockedReason: null, creditsRemaining: 900 },
+        { uid: "intl-spare", name: "intl-spare", tokens: 0, credits: 0,
+          perModel: [], blocked: null, blockedReason: null, creditsRemaining: 240 },
+      ],
+    },
     pool: [
       { account: "jackey-global", credits: 900, weight: 100, state: "可用", sticky: true, tier: "free", inFlight: 0, maxInFlight: 2 },
       { account: "intl-spare", credits: 240, weight: 30, state: "可用", low: true, sticky: false, tier: "paid", inFlight: 0, maxInFlight: 2 },
@@ -4210,6 +4279,79 @@ function poolChainHtml(steps) {
   </div>`;
 }
 
+/* ─────────── 限额护栏（Qoder 网关 · 账号池分区顶部）───────────
+ * 与 App 的 `QoderQuotaGuard` 同一张卡：四个阈值输入 + 逐账号今日用量与拦截原因。
+ *
+ * 三条要在这个原型里**看得见**的产品纪律：
+ *   1. `0` = 关闭该条（默认全关）—— 国际版作用域就是这一档，用来对照；
+ *   2. 未知一律放行 —— 所以文案写「余额未知时不拦」，而不是「精确到 token」；
+ *   3. 拦下必须给原因 —— 徽标 title 就是后端那句 `blockedReason`。
+ *
+ * `quota` 缺席（WorkBuddy / Trae）⇒ 卡片不渲染：这两个平台没有这套护栏，
+ * 画一个空壳等于告诉用户「有这个功能但坏了」。
+ */
+const QUOTA_BLOCK_LABEL = {
+  parked: "余额耗尽停放",
+  reserve: "触到余额地板",
+  daily_tokens: "当日 token 已满",
+  daily_credits: "当日 credit 已满",
+  model_tokens: "模型额度已满",
+};
+
+function quotaCardHtml(g) {
+  const q = g.quota;
+  if (!q) return "";
+  const L = q.limits;
+  const blocked = q.accounts.filter((a) => a.blocked).length;
+  const field = (key, label, value, hint) => `<label class="quota-field">
+      <span>${label}</span>
+      <input class="inp" type="text" inputmode="numeric" data-quota="${key}" value="${esc(value)}" aria-label="${label}">
+      <em>${hint}</em>
+    </label>`;
+  const rows = q.accounts.map((a) => {
+    const models = a.perModel && a.perModel.length
+      ? a.perModel.slice(0, 3).map((m) => `${esc(m.model)} ${fmt(m.tokens)}`).join(" · ")
+      : "今日暂无网关用量";
+    const tail = [
+      a.credits ? `已用 ${fmtQty(a.credits)} credit` : "",
+      a.creditsRemaining === null || a.creditsRemaining === undefined ? "" : `余额 ${fmt(a.creditsRemaining)}`,
+    ].filter(Boolean).join(" · ");
+    const badge = a.blocked
+      ? `<span class="badge ${a.blocked === "parked" ? "bad" : "warn"}" title="${esc(a.blockedReason || "")}">${QUOTA_BLOCK_LABEL[a.blocked] || "已拦下"}</span>`
+      : `<span class="badge ok">可用</span>`;
+    return `<div class="quota-row">
+        <div class="quota-who"><b>${esc(a.name)}</b><span>${models}${tail ? " · " + tail : ""}</span></div>
+        <div class="quota-right"><span class="quota-num">${fmt(a.tokens)}<span>token</span></span>${badge}</div>
+      </div>`;
+  }).join("");
+  return `<section class="card" data-quota-card style="margin-bottom:14px">
+    <div class="card-head">
+      <div><h3>限额护栏</h3><div class="sub">达到阈值即暂停使用该账号（0 = 关闭该条；未知一律放行）</div></div>
+      <div class="grow"></div>
+      <button class="btn sm" data-act="quota-refresh">刷新</button>
+    </div>
+    <div class="card-pad" style="padding-bottom:12px">
+      <div class="quota-grid">
+        ${field("reserve", "余额地板（credits）", L.reserveCredits, "剩余 ≤ 该值即停；余额未知时不拦")}
+        ${field("daily", "当日 token 上限", L.dailyTokenLimit, "单账号今天经网关转发的 token 总量")}
+        ${field("credit", "当日 credit 上限", L.dailyCreditLimit, "单账号今天消耗的 credits（可填小数）")}
+        ${field("model", "单模型当日 token", L.modelDailyTokenLimit, "只限该模型，不连坐同账号的其它模型")}
+      </div>
+    </div>
+    <div class="quota-foot">
+      <p class="tiny muted">${L.reserveCredits || L.dailyTokenLimit || L.dailyCreditLimit || L.modelDailyTokenLimit
+        ? "计数来自网关自己的记账；每天 10:00（UTC+8）重置"
+        : "四条都是 0 ⇒ 护栏未启用，不会拦任何请求"}</p>
+      <button class="btn sm" data-act="quota-save">保存</button>
+    </div>
+    <div class="quota-rows">
+      <div class="quota-rows-head"><span>今日（${esc(q.date)}）· ${q.accounts.length} 个账号</span>
+        <span>${blocked > 0 ? `${blocked} 个已被拦下` : "当前没有账号被拦"}</span></div>
+      ${rows}
+    </div>
+  </section>`;
+}
+
 /** 账号池分区（独立网关）。 */
 function poolSection(g) {
   const scope = state.scope;
@@ -4269,7 +4411,8 @@ function poolSection(g) {
     )
     .join("");
 
-  return `<div class="cat-bar">
+  /* 护栏卡在池区**之上**：它决定「谁能被选」，是池的上游条件。 */
+  return quotaCardHtml(g) + `<div class="cat-bar">
       <span class="tiny muted">指定账号</span>
       <select class="inp" data-gw-pin aria-label="指定账号">${pinOpts}</select>
       <div class="grow"></div>
@@ -7250,6 +7393,38 @@ document.addEventListener("click", (e) => {
       break;
     }
     case "uni-plaintext-ok": { stop(); drawerLock = false; closeDrawer(); break; }
+    /* ── 限额护栏 ──
+       保存会**真的改数据并重绘**（不是只弹 toast）：原型里「点了没反应」的控件
+       正是我们要在评审时抓出来的东西，别自己再造一个。 */
+    case "quota-save": {
+      stop();
+      const g = curGateway();
+      if (!g.quota) break;
+      const read = (key) => {
+        const el = document.querySelector(`[data-quota="${key}"]`);
+        const raw = (el && el.value ? String(el.value) : "").trim();
+        if (raw === "") return 0;
+        const n = Number(raw);
+        return Number.isFinite(n) && n >= 0 ? n : null;
+      };
+      const next = {
+        reserveCredits: read("reserve"),
+        dailyTokenLimit: read("daily"),
+        dailyCreditLimit: read("credit"),
+        modelDailyTokenLimit: read("model"),
+      };
+      if (Object.values(next).some((v) => v === null)) {
+        toast("err", "只能填非负数字", "0 = 关闭该条");
+        break;
+      }
+      Object.assign(g.quota.limits, next);
+      renderContent();
+      toast("ok", "已保存限额", "四条阈值即时生效（0 = 关闭）");
+      break;
+    }
+    case "quota-refresh": stop();
+      toast("ok", "已刷新护栏状态", "逐账号用量来自网关自己的记账，每天 10:00 重置");
+      break;
     case "pin": stop();
       if (a1) {
         /* 已排除的账号不能成为上游（UI 已禁用按钮，这里再兜一层）。

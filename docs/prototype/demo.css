@@ -1267,3 +1267,37 @@ tr.row-off td { opacity: .62; }
 /* 不可用的选项：**不禁用**（禁用既不给原因也不给替代），只弱化 + 右侧提示。 */
 .opt.is-off { opacity: .62; }
 .opt.is-off:hover { opacity: 1; }
+
+/* ─────────── 限额护栏（Qoder 网关 · 账号池分区顶部）───────────
+   与 App 的 `.quota-grid` 同构：4 列阈值输入 + 一行说明/保存 + 逐账号用量行。
+   窄屏退到 2 列（App 用 `sm:grid-cols-2 lg:grid-cols-4`，这里用媒体查询对齐）。 */
+.quota-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
+@media (max-width: 1100px) { .quota-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+.quota-field { display: block; min-width: 0; }
+.quota-field > span { font-size: 12.5px; font-weight: 550; }
+.quota-field > .inp { margin-top: 5px; width: 100%; box-sizing: border-box; }
+.quota-field > em {
+  display: block; margin-top: 5px; font-size: 11px; line-height: 1.45;
+  color: var(--muted-fg); font-style: normal;
+}
+.quota-foot {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  padding: 10px 16px; border-top: 1px solid var(--border);
+}
+.quota-foot > p { margin: 0; min-width: 0; }
+.quota-rows { border-top: 1px solid var(--border); }
+.quota-rows-head {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  padding: 10px 16px 2px; font-size: 11.5px; color: var(--muted-fg);
+}
+.quota-row {
+  display: flex; align-items: flex-start; justify-content: space-between; gap: 12px;
+  padding: 8px 16px; border-top: 1px solid var(--border);
+}
+.quota-row:last-child { padding-bottom: 12px; }
+.quota-who { min-width: 0; }
+.quota-who > b { display: block; font-size: 12.5px; }
+.quota-who > span { display: block; margin-top: 2px; font-size: 11px; color: var(--muted-fg); }
+.quota-right { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
+.quota-num { font-size: 12px; font-variant-numeric: tabular-nums; }
+.quota-num > span { margin-left: 3px; font-size: 10px; color: var(--muted-fg); }

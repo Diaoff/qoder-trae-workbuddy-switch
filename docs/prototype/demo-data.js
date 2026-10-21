@@ -727,6 +727,29 @@ const GATEWAY = {
       { account: "trial-01", credits: 80, weight: 15, state: "余额偏低", sticky: false },
       { account: "legacy-acc", credits: 0, weight: 0, state: "已排除", sticky: false },
     ],
+    /* ★ 限额护栏（Qoder 独有；`quota` 缺席 = 该作用域没有护栏卡）。
+       四个账号**故意各占一态**：正常 / 当日 token 已满 / 触到余额地板 / 余额耗尽停放
+       —— 截图能同时看到四种徽标，也顺带证明「拦下必须给原因」这条不是空话。
+       数值口径与后端 `quota_view` 同形（`tokens` / `credits` / `blocked` …）。 */
+    quota: {
+      date: "2026-10-21",
+      limits: { reserveCredits: 200, dailyTokenLimit: 500000, dailyCreditLimit: 50, modelDailyTokenLimit: 0 },
+      accounts: [
+        { uid: "jackey", name: "jackey", tokens: 128430, credits: 18.42,
+          perModel: [{ model: "Qwen3.8-Max", tokens: 96120 }, { model: "GLM-5.1", tokens: 32310 }],
+          blocked: null, blockedReason: null, creditsRemaining: 1180 },
+        { uid: "team-qoder", name: "team-qoder", tokens: 500000, credits: 62.5,
+          perModel: [{ model: "Qwen3.8-Max", tokens: 500000 }],
+          blocked: "daily_tokens", blockedReason: "已达当日 token 上限（500000 / 500000）", creditsRemaining: 620 },
+        { uid: "trial-01", name: "trial-01", tokens: 42800, credits: 7.15,
+          perModel: [{ model: "Qwen3.8-Max", tokens: 42800 }],
+          blocked: "reserve", blockedReason: "已触发余额地板：剩余 80 ≤ 保留 200，本账号暂停使用", creditsRemaining: 80 },
+        { uid: "legacy-acc", name: "legacy-acc", tokens: 3260, credits: 0.62,
+          perModel: [{ model: "GLM-5.1", tokens: 3260 }],
+          blocked: "parked", blockedReason: "余额耗尽停放中（明天 10:00 后自动恢复）：HTTP 402 余额不足",
+          creditsRemaining: 0, parkedUntil: "明天 10:00" },
+      ],
+    },
     logs: [
       { time: "10:41:07", model: "Qwen3.8-Max", account: "jackey", status: 200, ms: 764, tokens: 1120 },
       { time: "10:39:52", model: "GLM-5.1", account: "team-qoder", status: 200, ms: 588, tokens: 486 },
@@ -747,6 +770,18 @@ const GATEWAY = {
       { account: "jackey-global", credits: 900, weight: 100, state: "可用", sticky: true },
       { account: "intl-spare", credits: 240, weight: 30, state: "余额偏低", sticky: false },
     ],
+    /* 国际版：护栏默认关（三条都是 0）—— 用来演示「未启用」这一档文案，
+       与国内版「已开启 + 有账号被拦」形成对照。 */
+    quota: {
+      date: "2026-10-21",
+      limits: { reserveCredits: 0, dailyTokenLimit: 0, dailyCreditLimit: 0, modelDailyTokenLimit: 0 },
+      accounts: [
+        { uid: "jackey-global", name: "jackey-global", tokens: 41200, credits: 6.8,
+          perModel: [{ model: "Ultimate", tokens: 41200 }], blocked: null, blockedReason: null, creditsRemaining: 900 },
+        { uid: "intl-spare", name: "intl-spare", tokens: 0, credits: 0,
+          perModel: [], blocked: null, blockedReason: null, creditsRemaining: 240 },
+      ],
+    },
     logs: [
       { time: "11:05:33", model: "Ultimate", account: "jackey-global", status: 200, ms: 918, tokens: 1416 },
       { time: "11:02:07", model: "Qwen3.8-Max", account: "jackey-global", status: 200, ms: 655, tokens: 522 },
