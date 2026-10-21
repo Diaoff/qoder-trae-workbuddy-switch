@@ -88,7 +88,8 @@ const NOISE_KEYS: [&str; 3] = ["extra_fields", "refusal", "reasoning_content"];
 /// ★ 2026-10-18（issue #46 的 B 项）：旧名单只有 `qwen` / `glm` / `gm4` / `gm5`
 /// ⇒ **一个真实 key 都不命中** ⇒ CN 全量模型退化成文本模式，历史里的工具调用被序列化
 /// 成标记文本塞进正文，模型回声后直接泄漏到用户界面（即 A 项的诱因）。
-/// 刻意**不纳入** Kimi / MiniMax 族；DeepSeek 由 [`DEEPSEEK_MODEL_KEYS`] 单独处理。
+/// 刻意**不纳入** Kimi / MiniMax 族（本仓无 CN 清单依据，见
+/// [`DEEPSEEK_MODEL_KEYS`] 的对照说明）；DeepSeek 族由 [`is_deepseek_key`] 单独判定。
 const STRUCTURED_TOOL_HISTORY_WHITELIST: [&str; 9] = [
     "qmodel",  // qmodel / qmodel_38max …
     "qfmodel", // qfmodel / qfmodel_…
@@ -100,8 +101,41 @@ const STRUCTURED_TOOL_HISTORY_WHITELIST: [&str; 9] = [
     "gm4",     // gm4model
     "glm",     // 兼容以 `glm` 开头的 key
 ];
-/// DeepSeek 族的模型 key：历史多轮一致性与 `reasoning_content` 绑定。
-const DEEPSEEK_MODEL_KEYS: [&str; 2] = ["dmodel", "dfmodel"];
+/// DeepSeek 族的模型 key（CN 出口）。
+///
+/// 两处用途，**判定必须同源**（都走 [`is_deepseek_key`]）：
+///
+/// 1. **历史多轮一致性**：`reasoning_content` 要随历史回传（`build_chat_body` 的
+///    `keep_reasoning`）；
+/// 2. **结构化工具历史**：★ 2026-10-21（issue #72）真机取证 —— DeepSeek Flash 在**文本
+///    模式**下会把网关序列化的伪格式（`[assistant 请求调用工具]` + 紧凑 JSON、`[工具结果
+///    (name)]`）**照抄进正文**，再混上客户端 system 教的 `<｜｜DSML｜｜ calls>` 语法 ⇒
+///    客户端看到的「上下文乱码 / 特殊字符」正是这坨内部标记，且工具一次都没执行。
+///    报障者用 `QD_STRUCTURED_TOOL_HISTORY=on` 强制结构化后症状消失 ⇒ 上游**接受**
+///    结构化历史。旧代码把 `dmodel` / `dfmodel` 排除在白名单外（且用反向断言钉死），
+///    前提（「未验证，宁可不启用」）被真机推翻，故改为**默认启用**。
+///
+/// ⚠️ 前缀匹配而非整段相等：容忍 `_suffix` 变体（与白名单的族前缀同一口径），
+/// 免得「结构化开了、reasoning 没回传」这种半开状态把上游打成 400。
+///
+/// ★ `deepseek` 这一项来自**参考实现**（`reference/qoder2api-hub-main/qoder_proxy.py`
+/// 的 `STRUCTURED_TOOL_HISTORY_WHITELIST`）：它的白名单是
+/// `("qwen","glm","gm4","gm5","deepseek","dfmodel")`，注释写明
+/// 「DeepSeek 的**上游 key 是 `dfmodel`**（显示名 DeepSeek-V4-Flash），只写 "deepseek"
+/// 匹配不到 ⇒ auto 一直是文本化 ⇒ 模型照抄伪协议」—— 与 issue #72 是同一条病。
+/// 本仓保留 `deepseek` 这一项是为了覆盖「key 就叫 deepseek*」的其它形态；
+/// 展示名匹配仍**刻意不做**（本仓一律只认 key：Qwen 的 key 是 `q37fmodel`、
+/// 展示名是 `Qwen3.8-Flash`，混用两套判据迟早误伤）。
+const DEEPSEEK_MODEL_KEYS: [&str; 3] = ["dmodel", "dfmodel", "deepseek"];
+
+/// key 是否属于 DeepSeek 族（**唯一**判定入口）。
+fn is_deepseek_key(key: &str) -> bool {
+    let key = key.trim().to_ascii_lowercase();
+    !key.is_empty()
+        && DEEPSEEK_MODEL_KEYS
+            .iter()
+            .any(|prefix| key.starts_with(prefix))
+}
 /// 模型清单的**签名路径**（不含 query）。
 ///
 /// ⚠️ 签名只覆盖 `urlparse(raw_url).path` —— **query 不参与签名**。拿带
@@ -651,6 +685,11 @@ pub fn canonical_effort(effort: &str) -> Option<&'static str> {
 }
 
 /// 每条 `tool` 有 `tool_call_id`、每个 `assistant.tool_calls` 条目有 `id` —— 结构化的前提。
+///
+/// 只查 id 非空，**不查配对**：孤儿（assistant 声明了调用、却没有 tool 消息回答）由
+/// **出站清洗**处理（[`cleanup_orphan_tool_history`]，与 WB / Trae 侧同款），
+/// 文本模式则天然宽容。在这里提前判配对属于「猜哪些请求会 400」，
+/// 与降级机制的设计哲学冲突。
 fn tool_ids_ok(messages: &[Value]) -> bool {
     for message in messages {
         let Some(object) = message.as_object() else {
@@ -682,10 +721,109 @@ fn tool_ids_ok(messages: &[Value]) -> bool {
     true
 }
 
+/// 清理**孤儿**工具调用（与 WB / Trae 侧同款语义，issue #72）。
+///
+/// ## 为什么 Qoder 侧也需要
+///
+/// WB / Trae 的出站整形里一直有这一步（`buddy-switch-gateway::outbound` 的
+/// `cleanup_orphan_tool_calls`），Qoder 侧移植时**只搬了「id 是否齐备」的检查**，
+/// 没搬清洗 —— 于是 Qoder 的结构化请求可能带着「assistant 声明了调用、却没有 tool
+/// 消息回答」的畸形历史发出去（上游多半判 `tool_call_sequence_broken` → 400）。
+/// 清洗比「退化成文本模式」好：它**保住**了配对完整的那部分结构化历史，而退化会把
+/// 整段历史变成伪格式（模型照抄 ⇒ issue #72 的乱码）。
+///
+/// ## 规则（与 WB / Trae 侧**逐条一致**）
+///
+/// - 保留集 = `assistant.tool_calls[].id` ∩ `role=="tool"` 的 `tool_call_id`；
+/// - `assistant` 消息只要**批内任一** `id` 不在保留集 → **整批**删除 `tool_calls`
+///   （保留该消息的正文）；
+/// - `role=="tool"` 且 `tool_call_id` 不在**存活批次**集合内 → **整条消息删除**。
+///
+/// ★ 「存活批次」而非「保留集」是与参考实现的**刻意分歧**（勿按「对齐参考实现」改回）：
+/// 批次 `[A,B]` 只有 `A` 有结果时，保留集 = `{A}`，但该批次因 `B` 是孤儿而整批被删
+/// ——此时若按保留集放行，`A` 的 `role:"tool"` 结果就会悬空，上游照样判协议错误。
+/// 删除与放行必须以**同一套 id** 为准。
+///
+/// 无工具流量时不做任何改动。
+pub fn cleanup_orphan_tool_history(messages: &mut Vec<Value>) {
+    use std::collections::HashSet;
+
+    let mut call_ids: HashSet<String> = HashSet::new();
+    let mut result_ids: HashSet<String> = HashSet::new();
+    for message in messages.iter() {
+        let Some(wrapped) = message.as_object() else {
+            continue;
+        };
+        if wrapped.get("role").and_then(Value::as_str) == Some("tool") {
+            if let Some(id) = wrapped.get("tool_call_id").and_then(Value::as_str) {
+                result_ids.insert(id.to_string());
+            }
+        }
+        if let Some(calls) = wrapped.get("tool_calls").and_then(Value::as_array) {
+            for call in calls {
+                if let Some(id) = call.get("id").and_then(Value::as_str) {
+                    call_ids.insert(id.to_string());
+                }
+            }
+        }
+    }
+    if call_ids.is_empty() && result_ids.is_empty() {
+        return;
+    }
+
+    let keep: HashSet<String> = call_ids.intersection(&result_ids).cloned().collect();
+
+    // 第一趟：裁决每个 assistant 批次，并记录真正存活下来的 tool_call id。
+    let mut surviving: HashSet<String> = HashSet::new();
+    for message in messages.iter_mut() {
+        let Some(wrapped) = message.as_object_mut() else {
+            continue;
+        };
+        let batch: Vec<String> = wrapped
+            .get("tool_calls")
+            .and_then(Value::as_array)
+            .map(|calls| {
+                calls
+                    .iter()
+                    .map(|call| {
+                        call.get("id")
+                            .and_then(Value::as_str)
+                            .unwrap_or("")
+                            .to_string()
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        if batch.is_empty() {
+            continue;
+        }
+        if batch.iter().any(|id| !keep.contains(id)) {
+            wrapped.remove("tool_calls");
+        } else {
+            surviving.extend(batch);
+        }
+    }
+
+    // 第二趟：工具结果只认存活批次。
+    messages.retain(|message| {
+        let Some(wrapped) = message.as_object() else {
+            return true;
+        };
+        if wrapped.get("role").and_then(Value::as_str) != Some("tool") {
+            return true;
+        }
+        let id = wrapped
+            .get("tool_call_id")
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        surviving.contains(id)
+    });
+}
+
 /// 本次请求是否走结构化工具历史。
 ///
-/// 与官方客户端的调用姿势对齐：**CN 出口 + 白名单模型前缀 + id 齐备**才启用；
-/// 环境变量 `QD_STRUCTURED_TOOL_HISTORY=off/on` 可显式覆盖（`auto` 为默认）。
+/// 与官方客户端的调用姿势对齐：**CN 出口 + 白名单模型前缀（含 DeepSeek 族）+ id 齐备**
+/// 才启用；环境变量 `QD_STRUCTURED_TOOL_HISTORY=off/on` 可显式覆盖（`auto` 为默认）。
 /// 任何情况下 id 不齐备都回退文本化（fail-safe：宁可少用，不发畸形请求）。
 pub fn structured_tool_history_enabled(
     model_key: &str,
@@ -707,6 +845,12 @@ pub fn structured_tool_history_enabled(
     if region != QoderRegion::Cn {
         return false;
     }
+    /* ★ issue #72：DeepSeek 族默认启用（真机取证见 [`DEEPSEEK_MODEL_KEYS`]）。
+    判据放在白名单**之前**且只认 CN 出口 —— `dmodel` / `dfmodel` 是 CN key，
+    国际版（`smodel` / `cmodel`）不在本表，别顺手扩成「所有 key」。 */
+    if is_deepseek_key(model_key) {
+        return true;
+    }
     let key = model_key.trim().to_ascii_lowercase();
     !key.is_empty()
         && STRUCTURED_TOOL_HISTORY_WHITELIST
@@ -718,6 +862,17 @@ pub fn structured_tool_history_enabled(
 // 请求体构造（骨架 + 覆写）
 // ---------------------------------------------------------------------------
 
+/// 本次请求**会**不会走结构化工具历史（网关侧判定用的公开入口）。
+///
+/// 与 [`build_chat_body`] 内部走**同一个**判据（[`structured_tool_history_enabled`]），
+/// 不另写一套 —— 否则网关以为走了结构化、实际发的是文本，降级判定就会错位。
+/// 网关拿到这个值后可以：① 传给 [`build_chat_body_with_structured`]；
+/// ② 在结构化请求被 400 拒时决定要不要降级重试。
+pub fn structured_tool_history_for(payload: &Value, meta: &ModelMeta, region: QoderRegion) -> bool {
+    let messages = normalize_roles(payload.get("messages").and_then(Value::as_array));
+    structured_tool_history_enabled(&meta.key, region, &messages)
+}
+
 /// 由客户端请求构造 `agent_chat_generation` 上游请求体（随后过 [`cosy::qoder_encode`]）。
 ///
 /// `region` 参与「结构化工具历史」的 auto 判据（只在 CN 出口启用的白名单规则）。
@@ -727,12 +882,37 @@ pub fn build_chat_body(
     region: QoderRegion,
     user_type: &str,
 ) -> Result<Value, String> {
+    let structured = structured_tool_history_for(payload, meta, region);
+    build_chat_body_with_structured(payload, meta, user_type, structured)
+}
+
+/// 同上，但**显式指定**结构化 / 文本模式（自动降级用：重发时必须强制文本）。
+///
+/// 刻意**不收 `region`**：区域与环境变量的判据都在 [`structured_tool_history_for`] 里，
+/// 这里只执行调用方的决定。`structured == true` 仍要过 [`tool_ids_ok`] —— id 齐备是硬前提，
+/// 强制结构化也不能绕过它，否则「降级」会退化成「发畸形请求」。
+pub fn build_chat_body_with_structured(
+    payload: &Value,
+    meta: &ModelMeta,
+    user_type: &str,
+    structured: bool,
+) -> Result<Value, String> {
     let template = base_template()?;
     let mut body = template.clone();
 
-    let messages = normalize_roles(payload.get("messages").and_then(Value::as_array));
-    let keep_reasoning = DEEPSEEK_MODEL_KEYS.contains(&meta.key.as_str());
-    let structured = structured_tool_history_enabled(&meta.key, region, &messages);
+    let mut messages = normalize_roles(payload.get("messages").and_then(Value::as_array));
+    // ★ 与 `structured_tool_history_enabled` 同一个判据入口：DeepSeek 族「结构化开、
+    // reasoning 却没回传」是半开状态，上游可能直接 400（见 `DEEPSEEK_MODEL_KEYS`）。
+    let keep_reasoning = is_deepseek_key(&meta.key);
+    // 调用方给的选择只能**收窄**，不能放宽：id 不齐备时强制结构化也是畸形请求。
+    let structured = structured && tool_ids_ok(&messages);
+    /* ★ 出站清洗（与 WB / Trae 侧同款，issue #72）：结构化历史里的孤儿（assistant
+    声明了调用、却没有 tool 消息回答）会被上游判协议错误（400
+    `tool_call_sequence_broken`）。清洗比「退化成文本模式」好 —— 它保住配对完整的那
+    部分结构化历史；退化成文本模式会把整段历史变成伪格式，模型照抄就是乱码。 */
+    if structured {
+        cleanup_orphan_tool_history(&mut messages);
+    }
     let flattened = flatten_messages(&messages, keep_reasoning, structured);
 
     // system：客户端给了就用客户端的；没给就保留模板自带的官方系统提示词。
@@ -2402,6 +2582,216 @@ mod tests {
         assert_eq!(body["tools"], serde_json::json!([]));
     }
 
+    /// ★ issue #72 的**行为级**钉子：DeepSeek 族的工具历史必须进结构化字段，
+    /// 请求体里**不能**出现网关的文本化标记。
+    ///
+    /// 只钉谓词（[`structured_tool_history_enabled`]）不够 —— 那是判据，不是结果。
+    /// 这里直接看 [`build_chat_body`] 的产物：`tool_calls` / `role:"tool"` 在，
+    /// `[assistant 请求调用工具]` / `[工具结果` 不在。
+    ///
+    /// 可证伪：把 DeepSeek 分支从 `structured_tool_history_enabled` 删掉 ⇒ 本条红
+    /// （两条 `!contains` 会先炸）。
+    #[test]
+    fn deepseek_tool_history_is_structured_not_text() {
+        // 依赖「环境变量未设」的默认 auto 行为 ⇒ 与改环境变量的测试串行。
+        let _env = crate::modules::config::env_lock();
+        std::env::remove_var("QD_STRUCTURED_TOOL_HISTORY");
+        let payload = serde_json::json!({
+            "messages": [
+                {"role": "user", "content": "看下目录"},
+                {"role": "assistant", "content": "", "reasoning_content": "先读文件",
+                 "tool_calls": [{
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {"name": "read", "arguments": "{\"file_path\":\"a.txt\"}"}
+                 }]},
+                {"role": "tool", "tool_call_id": "call_1", "name": "read", "content": "hello"},
+            ],
+        });
+        let deepseek = ModelMeta {
+            key: "dfmodel".into(),
+            display_name: "DeepSeek Flash".into(),
+            is_vl: false,
+            is_reasoning: true,
+            max_input_tokens: 128_000,
+        };
+        let body = build_chat_body(&payload, &deepseek, QoderRegion::Cn, "").unwrap();
+        let messages = body["messages"].as_array().unwrap();
+        let raw = serde_json::to_string(messages).unwrap();
+        assert!(
+            messages
+                .iter()
+                .any(|message| message["role"] == "tool" && message["tool_call_id"] == "call_1"),
+            "工具结果必须保持 `role:\"tool\"` + `tool_call_id`：{raw}"
+        );
+        assert!(
+            messages.iter().any(|message| message["tool_calls"].is_array()),
+            "助手历史必须保持结构化 `tool_calls`：{raw}"
+        );
+        assert!(
+            !raw.contains(LEAK_MARKER),
+            "不得出现文本化调用标记（会诱导模型回声成乱码）：{raw}"
+        );
+        assert!(
+            !raw.contains(TOOL_RESULT_MARKER),
+            "工具结果不得退化成 `[工具结果 …]` 文本：{raw}"
+        );
+        // 同一个族判据的另一半：`reasoning_content` 必须随历史回传
+        // （「结构化开、reasoning 不回传」是半开状态，上游可能 400）。
+        assert!(
+            messages
+                .iter()
+                .any(|message| message["reasoning_content"] == "先读文件"),
+            "DeepSeek 的 reasoning_content 必须回传：{raw}"
+        );
+    }
+
+    /// ★ 出站清洗（与 WB / Trae 侧 `outbound::cleanup_orphan_tool_calls` **同款语义**）：
+    /// 孤儿的 `role:"tool"` 消息删除；含孤儿的 assistant 批次**整批**删 `tool_calls`；
+    /// 配对完整的**必须保留**。
+    ///
+    /// 可证伪：把 `cleanup_orphan_tool_history` 的两趟都注释掉 ⇒ 第二、三条断言红。
+    #[test]
+    fn orphan_tool_history_is_cleaned_before_sending() {
+        let mut messages = vec![
+            serde_json::json!({
+                "role": "assistant", "content": "第一问",
+                "tool_calls": [
+                    {"id": "ok", "type": "function", "function": {"name": "a", "arguments": "{}"}},
+                ],
+            }),
+            serde_json::json!({"role": "tool", "tool_call_id": "ok", "content": "结果"}),
+            serde_json::json!({
+                "role": "assistant", "content": "第二问",
+                "tool_calls": [
+                    {"id": "orphan", "type": "function", "function": {"name": "b", "arguments": "{}"}},
+                ],
+            }),
+            // 悬空结果：没有对应的 tool_call。
+            serde_json::json!({"role": "tool", "tool_call_id": "gone", "content": "残留"}),
+        ];
+        cleanup_orphan_tool_history(&mut messages);
+        let raw = serde_json::to_string(&messages).unwrap();
+        assert!(raw.contains("\"ok\""), "配对完整的必须保留：{raw}");
+        assert!(!raw.contains("orphan"), "孤儿调用必须被删：{raw}");
+        assert!(!raw.contains("\"gone\""), "悬空结果必须被删：{raw}");
+        // 批内任一 id 是孤儿 ⇒ 整批删（不是只删那一个）。
+        let mut batch = vec![serde_json::json!({
+            "role": "assistant", "content": "",
+            "tool_calls": [
+                {"id": "a1", "type": "function", "function": {"name": "a", "arguments": "{}"}},
+                {"id": "a2", "type": "function", "function": {"name": "b", "arguments": "{}"}},
+            ],
+        })];
+        batch.push(serde_json::json!({"role": "tool", "tool_call_id": "a1", "content": "x"}));
+        cleanup_orphan_tool_history(&mut batch);
+        let raw = serde_json::to_string(&batch).unwrap();
+        assert!(!raw.contains("\"a1\""), "含孤儿的批次要整批删：{raw}");
+        assert!(!raw.contains("\"a2\""), "含孤儿的批次要整批删：{raw}");
+        // 无工具流量 ⇒ 一行不动。
+        let mut plain = vec![serde_json::json!({"role": "user", "content": "hi"})];
+        let before = serde_json::to_string(&plain).unwrap();
+        cleanup_orphan_tool_history(&mut plain);
+        assert_eq!(serde_json::to_string(&plain).unwrap(), before);
+    }
+
+    /// ★ 结构化请求在**出站前**必须已清干净：孤儿历史不能变成畸形请求发出去。
+    ///
+    /// 这是「按 WB / Trae 来改」的那一步 —— 清洗，而不是退化成文本模式
+    /// （退化成文本模式会把整段历史变成伪格式，模型照抄就是 issue #72 的乱码）。
+    #[test]
+    fn structured_body_is_cleaned_but_text_mode_is_not() {
+        let _env = crate::modules::config::env_lock();
+        std::env::remove_var("QD_STRUCTURED_TOOL_HISTORY");
+        let payload = serde_json::json!({
+            "messages": [
+                {"role": "user", "content": "hi"},
+                {"role": "assistant", "content": "", "tool_calls": [{
+                    "id": "c1", "type": "function",
+                    "function": {"name": "read", "arguments": "{}"},
+                }]},
+                {"role": "tool", "tool_call_id": "c1", "name": "read", "content": "结果"},
+                {"role": "assistant", "content": "", "tool_calls": [{
+                    "id": "c2", "type": "function",
+                    "function": {"name": "read", "arguments": "{}"},
+                }]},
+                // 悬空结果：对应的 assistant 轮次被裁掉了。
+                {"role": "tool", "tool_call_id": "c9", "content": "残留"},
+            ],
+        });
+        let deepseek = ModelMeta {
+            key: "dfmodel".into(),
+            display_name: "DeepSeek Flash".into(),
+            is_vl: false,
+            is_reasoning: true,
+            max_input_tokens: 128_000,
+        };
+        // 结构化：清掉悬空结果与孤儿批次，保住配对完整的部分。
+        let body = build_chat_body(&payload, &deepseek, QoderRegion::Cn, "").unwrap();
+        let raw = serde_json::to_string(body["messages"].as_array().unwrap()).unwrap();
+        assert!(raw.contains("\"c1\""), "配对完整的调用必须保留：{raw}");
+        assert!(!raw.contains("\"c2\""), "没有回答的调用必须被清掉：{raw}");
+        assert!(!raw.contains("c9"), "悬空结果必须被清掉：{raw}");
+        // 文本模式：不做清洗（伪格式对畸形配对是宽容的，且保留信息量）。
+        // ⚠️ 文本化**不保留** `tool_call_id`（那正是它无法还原调用、只能靠标记回读的原因），
+        // 所以断言要看**正文**，不是 id。
+        let text = build_chat_body_with_structured(&payload, &deepseek, "", false).unwrap();
+        let raw = serde_json::to_string(text["messages"].as_array().unwrap()).unwrap();
+        assert!(raw.contains("残留"), "文本模式不做清洗（保留悬空结果）：{raw}");
+    }
+
+    /// 自动降级的**执行面**：显式 `structured = false` 必须真的退成文本模式，
+    /// 且 `structured_tool_history_for` 与 `build_chat_body` 同源
+    /// （网关拿前者判要不要降级、拿后者决定重发形状 —— 两处判据不同步就会「以为降级了、
+    /// 其实又发了一遍结构化」）。
+    ///
+    /// 可证伪：把 `build_chat_body_with_structured` 里的 `structured`
+    /// 改回 `structured_tool_history_enabled(...)` ⇒ 第一条断言红。
+    #[test]
+    fn explicit_text_override_wins_over_the_model_family() {
+        let _env = crate::modules::config::env_lock();
+        std::env::remove_var("QD_STRUCTURED_TOOL_HISTORY");
+        let payload = serde_json::json!({
+            "messages": [
+                {"role": "assistant", "content": "", "tool_calls": [{
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {"name": "read", "arguments": "{}"}
+                }]},
+                {"role": "tool", "tool_call_id": "call_1", "name": "read", "content": "hi"},
+            ],
+        });
+        let deepseek = ModelMeta {
+            key: "dfmodel".into(),
+            display_name: "DeepSeek Flash".into(),
+            is_vl: false,
+            is_reasoning: true,
+            max_input_tokens: 128_000,
+        };
+        // auto 判据说「结构化」…
+        assert!(structured_tool_history_for(
+            &payload,
+            &deepseek,
+            QoderRegion::Cn
+        ));
+        // …但显式 override 说了算（降级重发走这条）。
+        let text = build_chat_body_with_structured(&payload, &deepseek, "", false).unwrap();
+        let raw = serde_json::to_string(text["messages"].as_array().unwrap()).unwrap();
+        assert!(raw.contains(LEAK_MARKER), "override 后必须是文本模式：{raw}");
+        assert!(
+            !raw.contains("\"tool_calls\""),
+            "override 后不得再带结构化字段：{raw}"
+        );
+        // id 不齐备时，强行传 `true` 也不能绕过硬前提（否则「降级」会发畸形请求）。
+        let broken = serde_json::json!({"messages": [{"role": "tool", "content": "x"}]});
+        let forced = build_chat_body_with_structured(&broken, &deepseek, "", true).unwrap();
+        let raw = serde_json::to_string(forced["messages"].as_array().unwrap()).unwrap();
+        assert!(
+            raw.contains(TOOL_RESULT_MARKER),
+            "id 缺失必须回退文本模式：{raw}"
+        );
+    }
+
     #[test]
     fn build_chat_body_without_system_keeps_template_prompt() {
         let payload = serde_json::json!({
@@ -2909,6 +3299,9 @@ mod tests {
 
     #[test]
     fn structured_tool_history_rules() {
+        // 本测试会改进程级环境变量 ⇒ 必须与另一条同样读它的测试串行（同 crate 的
+        // `config::env_lock`，理由见那里的注释）。
+        let _env = crate::modules::config::env_lock();
         let good = vec![
             serde_json::json!({"role": "assistant", "tool_calls": [{"id": "c1"}]}),
             serde_json::json!({"role": "tool", "tool_call_id": "c1", "content": "x"}),
@@ -2925,6 +3318,31 @@ mod tests {
             QoderRegion::Cn,
             &bad_ids
         ));
+        /* ★ issue #72：DeepSeek 族在 CN 出口**默认走结构化**（auto 模式下，未设环境变量）。
+        文本模式下 DeepSeek Flash 会照抄 `[assistant 请求调用工具]` 伪格式 + 混进 DSML
+        语法 ⇒ 客户端看到「上下文乱码」、工具一次不执行。反向断言（旧行为）是缺陷。 */
+        for key in ["dmodel", "dfmodel"] {
+            assert!(
+                structured_tool_history_enabled(key, QoderRegion::Cn, &good),
+                "`{key}` 必须在 CN 出口启用结构化工具历史（issue #72）"
+            );
+            assert!(
+                !structured_tool_history_enabled(key, QoderRegion::Global, &good),
+                "`{key}` 是 CN key，国际版出口不得启用"
+            );
+        }
+        // 带后缀的变体同一判据（前缀匹配，见 `is_deepseek_key`）。
+        assert!(structured_tool_history_enabled(
+            "dfmodel_pro",
+            QoderRegion::Cn,
+            &good
+        ));
+        // id 不齐备时，DeepSeek 也照样回退文本化（fail-safe 优先于族判据）。
+        assert!(!structured_tool_history_enabled(
+            "dfmodel",
+            QoderRegion::Cn,
+            &bad_ids
+        ));
         std::env::set_var("QD_STRUCTURED_TOOL_HISTORY", "on");
         assert!(structured_tool_history_enabled(
             "whatever",
@@ -2934,6 +3352,12 @@ mod tests {
         std::env::set_var("QD_STRUCTURED_TOOL_HISTORY", "off");
         assert!(!structured_tool_history_enabled(
             "qwen-max",
+            QoderRegion::Cn,
+            &good
+        ));
+        // `off` 是逃生阀：DeepSeek 也必须被关掉（上游若改了契约，用户能自救）。
+        assert!(!structured_tool_history_enabled(
+            "dfmodel",
             QoderRegion::Cn,
             &good
         ));
@@ -2958,10 +3382,16 @@ mod tests {
     /// - `qfmodel` / `qmodel*` / `gmodel` / `gfmodel`：issue #46 作者在**真实账号**的 CN
     ///   模型清单里取到的 key 形态（作者 2026-10-18 实测）；本机无 Qoder 账号，
     ///   **未二次复核** —— 真账号复核前不要往这张表里加**没在任一来源出现过**的 key。
+    /// - `dmodel` / `dfmodel`：issue #72 报障者真机（DeepSeek Flash + dsh）取证，
+    ///   2026-10-21 由「反向排除」改成「默认启用」。
     ///
-    /// 可证伪：把常量改回旧名单（4 项）⇒ 第一条断言红。
+    /// 可证伪：把常量改回旧名单（4 项）⇒ 第一条断言红；把 DeepSeek 分支删掉 ⇒
+    /// ③ 那两条红。
     #[test]
     fn real_qoder_model_keys_hit_the_structured_tool_history_whitelist() {
+        // 与 `structured_tool_history_rules` 串行：那条会写进程级环境变量，
+        // 并发读到 `on` 会把下面的反向断言全部掩盖成假绿。
+        let _env = crate::modules::config::env_lock();
         let good = vec![
             serde_json::json!({"role": "assistant", "tool_calls": [{"id": "c1"}]}),
             serde_json::json!({"role": "tool", "tool_call_id": "c1", "content": "x"}),
@@ -2980,11 +3410,17 @@ mod tests {
                 "`{key}` 应命中（issue #46 真机清单）"
             );
         }
-        // 反向：刻意排除的族**不能**被捞进来（DeepSeek 走单独常量；Kimi / MiniMax 族
-        // 不在本仓 CN 清单；`smodel` / `cmodel` 是**国际版**的 key）。
-        for key in [
-            "dmodel", "dfmodel", "kimodel", "mmmodel", "smodel", "cmodel",
-        ] {
+        // ③ DeepSeek 族（issue #72）：必须启用，且只在 CN。
+        for key in ["dmodel", "dfmodel", "deepseek-v4"] {
+            assert!(
+                structured_tool_history_enabled(key, QoderRegion::Cn, &good),
+                "`{key}` 必须启用结构化工具历史（issue #72：文本模式会泄漏伪格式）"
+            );
+            assert!(!structured_tool_history_enabled(key, QoderRegion::Global, &good));
+        }
+        // 反向：无依据的族**不能**被捞进来（Kimi / MiniMax 不在本仓 CN 清单；
+        // `smodel` / `cmodel` 是**国际版**的 key）。
+        for key in ["kimodel", "mmmodel", "smodel", "cmodel"] {
             assert!(
                 !structured_tool_history_enabled(key, QoderRegion::Cn, &good),
                 "`{key}` 不该命中 CN 结构化工具历史白名单"

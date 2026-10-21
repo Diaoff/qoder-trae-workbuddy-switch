@@ -326,10 +326,24 @@ pub async fn chat_for_region(
     let chat_id = format!("chatcmpl-{}", uuid::Uuid::new_v4().simple());
 
     // 出站请求体（每轮换号都要重建：`aliyun_user_type` 属账号上下文）。
-    let build_encoded = |user_type: &str| -> Result<String, String> {
-        let body_value = api::build_chat_body(&openai_payload, &meta, region, user_type)?;
+    // `structured` 由网关显式决定（而不是在 `build_chat_body` 里再判一次）：
+    // 自动降级需要「强制文本模式」重发，判定必须只有一处。
+    let build_encoded = |user_type: &str, structured: bool| -> Result<String, String> {
+        let body_value = api::build_chat_body_with_structured(
+            &openai_payload,
+            &meta,
+            user_type,
+            structured,
+        )?;
         Ok(cosy::qoder_encode(body_value.to_string().as_bytes()))
     };
+
+    /* ★ issue #72：本次是否走结构化工具历史，以及「已知不被接受」的记忆。
+    记忆命中 ⇒ 直接文本模式，不再每次先撞一次 400（见 `qoder::degrade`）。 */
+    let mut structured = api::structured_tool_history_for(&openai_payload, &meta, region);
+    if structured && super::degrade::is_unsupported(region, &meta.key) {
+        structured = false;
+    }
 
     let mut tried: HashSet<String> = HashSet::new();
     let mut failures: Vec<String> = Vec::new();
@@ -394,144 +408,176 @@ pub async fn chat_for_region(
         };
         let Some(entry) = entry else { continue };
 
-        let encoded = match build_encoded("") {
-            Ok(encoded) => encoded,
-            Err(error) => {
-                return protocol_error(
-                    protocol,
-                    StatusCode::BAD_REQUEST,
-                    "invalid_request_error",
-                    &error,
-                )
-            }
-        };
-        let account = cosy::CosyAccountInput {
-            uid: &entry.uid,
-            nickname: &entry.name,
-            access_token: &entry.access_token,
-            refresh_token: &entry.refresh_token,
-            user_type: None,
-            org_id: None,
-            org_name: None,
-        };
-        let session = match cosy::shared_cache().get(&account) {
-            Ok(session) => session,
-            Err(error) => {
-                failures.push(format!("{}：{error}", entry.name));
-                continue;
-            }
-        };
-
-        // 官方候选主机（国际版 api1→api2→api3）：签名只覆盖 path，换主机不影响签名。
-        let headers = session.headers(&encoded, PATH_CHAT_SSE, Some(&meta.key), true);
-        // ★ 单账号、单次发送（含候选主机 failover）——**不含换号轮换**（那在 `for _ in 0..max_rotate`
-        //   外层）。抽成 [`chat_once_for_account`] 是为了让**限流探测**复用同一段发送逻辑而不误换号。
-        let response = match chat_once_for_account(&state, region, &encoded, &headers).await {
-            Ok(response) => response,
-            Err(transport_error) => {
-                failures.push(format!("{}：{transport_error}", entry.name));
-                let mut pools = state.pools.lock().await;
-                if let Some(pool) = pools.get_mut(&region) {
-                    pool.apply_error(&uid, QoderErrKind::Transient, &transport_error, &model);
+        /* 同一账号最多发两次：结构化一次，被参数类拒绝后**文本模式**重发一次
+        （`degrade::should_degrade` 只放行 attempt == 1）。换号不解决参数错。 */
+        let mut attempt: u32 = 1;
+        /* 「这次是降级重发」的标记：只有**重发成功**才把结论记进降级记忆 ——
+        文本模式也 400 ⇒ 说明 400 与结构化无关（上游坏了），此时记住「结构化不被接受」
+        就是**误判**，会让该模型 6 小时内都退回文本模式（正是 issue #72 要修的乱码）。 */
+        let mut degrade_pending = false;
+        'attempt: loop {
+            let encoded = match build_encoded("", structured) {
+                Ok(encoded) => encoded,
+                Err(error) => {
+                    return protocol_error(
+                        protocol,
+                        StatusCode::BAD_REQUEST,
+                        "invalid_request_error",
+                        &error,
+                    )
                 }
-                continue;
-            }
-        };
+            };
+            let account = cosy::CosyAccountInput {
+                uid: &entry.uid,
+                nickname: &entry.name,
+                access_token: &entry.access_token,
+                refresh_token: &entry.refresh_token,
+                user_type: None,
+                org_id: None,
+                org_name: None,
+            };
+            let session = match cosy::shared_cache().get(&account) {
+                Ok(session) => session,
+                Err(error) => {
+                    failures.push(format!("{}：{error}", entry.name));
+                    break 'attempt;
+                }
+            };
 
-        let status = response.status();
-        if status.is_success() {
+            // 官方候选主机（国际版 api1→api2→api3）：签名只覆盖 path，换主机不影响签名。
+            let headers = session.headers(&encoded, PATH_CHAT_SSE, Some(&meta.key), true);
+            // ★ 单账号、单次发送（含候选主机 failover）——**不含换号轮换**（那在 `for _ in 0..max_rotate`
+            //   外层）。抽成 [`chat_once_for_account`] 是为了让**限流探测**复用同一段发送逻辑而不误换号。
+            let response = match chat_once_for_account(&state, region, &encoded, &headers).await {
+                Ok(response) => response,
+                Err(transport_error) => {
+                    failures.push(format!("{}：{transport_error}", entry.name));
+                    let mut pools = state.pools.lock().await;
+                    if let Some(pool) = pools.get_mut(&region) {
+                        pool.apply_error(&uid, QoderErrKind::Transient, &transport_error, &model);
+                    }
+                    break 'attempt;
+                }
+            };
+
+            let status = response.status();
+            if status.is_success() {
+                if degrade_pending {
+                    // 文本模式重发成功 ⇒ 结论坐实：这个 (区域, 模型) 的结构化历史不被接受。
+                    super::degrade::note_rejected(region, &meta.key);
+                }
+                {
+                    let mut pools = state.pools.lock().await;
+                    if let Some(pool) = pools.get_mut(&region) {
+                        pool.note_success(&uid);
+                    }
+                }
+                state.bind_sticky(sticky_key.as_deref(), &uid).await;
+                return if wants_stream {
+                    // ★ `allowed_tools` 一并传进流式路径：泄漏回声守卫要按**声明过的工具名**
+                    //   校验才还原（未声明的工具名不合成），与非流式同判据。
+                    stream_relay(
+                        state,
+                        response,
+                        protocol,
+                        region,
+                        &model,
+                        &chat_id,
+                        &uid,
+                        started,
+                        allowed_tools,
+                        responses_custom.clone(),
+                        inflight,
+                    )
+                    .await
+                } else {
+                    aggregate_relay(
+                        state,
+                        response,
+                        protocol,
+                        region,
+                        &model,
+                        &chat_id,
+                        &uid,
+                        started,
+                        allowed_tools,
+                        responses_custom.clone(),
+                        inflight,
+                    )
+                    .await
+                };
+            }
+
+            let status_code = status.as_u16();
+            let detail: String = response
+                .text()
+                .await
+                .unwrap_or_default()
+                .chars()
+                .take(300)
+                .collect();
+
+            /* ★ 自动降级（issue #72）：结构化历史被上游按**参数错**拒 ⇒ 记下这条结论，
+            用同一账号、文本模式重发一次。
+            刻意**不在这里**做三件事：不记请求日志（只记最终结果，否则一次请求记两条）、
+            不调 `pool.apply_error`（不是账号的问题）、不计风控遥测（不是客户端参数的问题）。
+            「结论」本身也**不在这里**落记忆 —— 要等文本模式重发成功（见上面 `degrade_pending`）。 */
+            if super::degrade::should_degrade(status_code, structured, attempt) {
+                structured = false;
+                degrade_pending = true;
+                attempt += 1;
+                failures.push(format!(
+                    "{}：HTTP {status_code} {}",
+                    entry.name,
+                    super::degrade::DEGRADED_NOTE
+                ));
+                continue 'attempt;
+            }
+
+            let kind = classify_http_with_detail(status_code, &detail);
+            // 遥测：与分类**同一处**记一次（别在别处重复计数，见 `qoder::risk`）。
+            match kind {
+                QoderErrKind::Queued => super::risk::note_queued(),
+                QoderErrKind::RateLimited => super::risk::note_rate_limited(),
+                QoderErrKind::ClientError => super::risk::note_rejected(),
+                QoderErrKind::BalanceExhausted => super::risk::note_exhausted(),
+                QoderErrKind::AuthDead | QoderErrKind::Transient => {}
+            }
             {
                 let mut pools = state.pools.lock().await;
                 if let Some(pool) = pools.get_mut(&region) {
-                    pool.note_success(&uid);
+                    pool.apply_error(&uid, kind, &detail, &model);
                 }
             }
-            state.bind_sticky(sticky_key.as_deref(), &uid).await;
-            return if wants_stream {
-                // ★ `allowed_tools` 一并传进流式路径：泄漏回声守卫要按**声明过的工具名**
-                //   校验才还原（未声明的工具名不合成），与非流式同判据。
-                stream_relay(
-                    state,
-                    response,
-                    protocol,
-                    region,
-                    &model,
-                    &chat_id,
-                    &uid,
-                    started,
-                    allowed_tools,
-                    responses_custom.clone(),
-                    inflight,
-                )
-                .await
-            } else {
-                aggregate_relay(
-                    state,
-                    response,
-                    protocol,
-                    region,
-                    &model,
-                    &chat_id,
-                    &uid,
-                    started,
-                    allowed_tools,
-                    responses_custom.clone(),
-                    inflight,
-                )
-                .await
-            };
-        }
-
-        let status_code = status.as_u16();
-        let detail: String = response
-            .text()
-            .await
-            .unwrap_or_default()
-            .chars()
-            .take(300)
-            .collect();
-        let kind = classify_http_with_detail(status_code, &detail);
-        // 遥测：与分类**同一处**记一次（别在别处重复计数，见 `qoder::risk`）。
-        match kind {
-            QoderErrKind::Queued => super::risk::note_queued(),
-            QoderErrKind::RateLimited => super::risk::note_rate_limited(),
-            QoderErrKind::ClientError => super::risk::note_rejected(),
-            QoderErrKind::BalanceExhausted => super::risk::note_exhausted(),
-            QoderErrKind::AuthDead | QoderErrKind::Transient => {}
-        }
-        {
-            let mut pools = state.pools.lock().await;
-            if let Some(pool) = pools.get_mut(&region) {
-                pool.apply_error(&uid, kind, &detail, &model);
+            if kind == QoderErrKind::Queued {
+                queued += 1;
             }
-        }
-        if kind == QoderErrKind::Queued {
-            queued += 1;
-        }
-        failures.push(format!("{}：HTTP {status_code} {detail}", entry.name));
-        if !kind.should_rotate() {
-            // 客户端参数错 —— 换号重试只是把同一份坏参数再喂给下一个账号。
-            state
-                .record_request(
-                    "chat",
-                    region,
-                    &model,
-                    status_code,
-                    &uid,
-                    started.elapsed().as_millis() as i64,
-                    wants_stream,
-                    0,
-                    0,
-                    0.0,
-                    Some(detail.clone()),
-                )
-                .await;
-            return protocol_error(
-                protocol,
-                StatusCode::from_u16(status_code).unwrap_or(StatusCode::BAD_GATEWAY),
-                "upstream_error",
-                &format!("上游拒绝（HTTP {status_code}）：{detail}"),
-            );
+            failures.push(format!("{}：HTTP {status_code} {detail}", entry.name));
+            if !kind.should_rotate() {
+                // 客户端参数错 —— 换号重试只是把同一份坏参数再喂给下一个账号。
+                state
+                    .record_request(
+                        "chat",
+                        region,
+                        &model,
+                        status_code,
+                        &uid,
+                        started.elapsed().as_millis() as i64,
+                        wants_stream,
+                        0,
+                        0,
+                        0.0,
+                        Some(detail.clone()),
+                    )
+                    .await;
+                return protocol_error(
+                    protocol,
+                    StatusCode::from_u16(status_code).unwrap_or(StatusCode::BAD_GATEWAY),
+                    "upstream_error",
+                    &format!("上游拒绝（HTTP {status_code}）：{detail}"),
+                );
+            }
+            break 'attempt;
         }
     }
 

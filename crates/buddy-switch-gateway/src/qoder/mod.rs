@@ -29,6 +29,7 @@
 //! 首次真机跑通前，不要把「网关可用」当作已有事实。
 
 pub mod apikey;
+pub mod degrade;
 pub mod payload;
 pub mod pool;
 pub mod quota;
