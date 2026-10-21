@@ -100,3 +100,76 @@ export function summarizeExpiring(
   const latest = batches[batches.length - 1].expireAt;
   return { total, days: Math.max(1, Math.ceil((latest - now) / DAY_MS)), batches };
 }
+
+/* ══════════════════════ 「最近到期」（不限窗口）══════════════════════
+ *
+ * ## 为什么要有这一段（issue #69）
+ *
+ * `summarizeExpiring` 只看**后端 7 天临期窗口**内的批次 —— 那是对的，因为「7 天内过期」
+ * 是一句**警告**（「再不用就浪费了」）。但用户真正要回答的是另一个问题：
+ * **「我好几个账号，先用哪个？」** —— 这个问题需要「**每一笔未来到期**」的相对顺序，
+ * 而不是「7 天内的那批」。
+ *
+ * 8 天后到期、30 天后到期的积分，在 `summarizeExpiring` 里**根本不可见**
+ * （`expiringSoon !== true` 直接被跳过）⇒ 用户说「两周内到期的看不到」就是这个。
+ *
+ * ## 三条与 `summarizeExpiring` **刻意不同**的地方
+ *
+ * ① **不读 `expiringSoon`**：那个布尔由后端的 7 天窗口决定，**不能**表达「14 天后」。
+ * ② **不读 `credit.soonestExpireAt`**：它把**已过期**资源也算进最小值 ⇒ 拿它排序会
+ *    把「已过期」排到最前（那是「已经浪费了」，不该抢占「先消耗」的位）。
+ * ③ **不设天数上限**：「最近一批」是相对顺序，不是一个窗口。
+ *
+ * ⚠️ 仍然遵守「未知不推测」：没有 `expireAt` / `remaining <= 0` / 已过期的批次一律跳过。
+ */
+
+/** 一批「未来到期」：同一时刻到期的剩余积分之和。 */
+export interface UpcomingBatch {
+  /** 到期时刻（epoch 毫秒）。 */
+  expireAt: number;
+  /** 该批此刻的剩余积分之和。 */
+  amount: number;
+}
+
+/**
+ * 所有**未来**到期批次：过滤「已过期 / 剩余 ≤ 0 / 无到期时刻 / 已到时刻」，
+ * 按到期升序，**同一时刻合并**。
+ *
+ * @param options.now 判定基准时刻（毫秒），默认 `Date.now()`
+ * @param options.unit 入参 `expireAt` 的单位（WB 毫秒 / Trae 秒）—— 同 `summarizeExpiring`。
+ */
+export function upcomingExpiries(
+  items: readonly ExpiringItem[] | null | undefined,
+  options: { now?: number; unit?: "ms" | "s" } = {},
+): UpcomingBatch[] {
+  if (!items || items.length === 0) return [];
+  const now = options.now ?? Date.now();
+  const toMs = options.unit === "s" ? (value: number) => value * 1000 : (value: number) => value;
+
+  const merged = new Map<number, number>();
+  for (const item of items) {
+    if (item.expired) continue;
+    if (!Number.isFinite(item.remaining) || item.remaining <= 0) continue;
+    if (typeof item.expireAt !== "number" || !Number.isFinite(item.expireAt)) continue;
+    const expireAt = toMs(item.expireAt);
+    if (!Number.isFinite(expireAt) || expireAt <= now) continue;
+    merged.set(expireAt, (merged.get(expireAt) ?? 0) + item.remaining);
+  }
+
+  return [...merged.entries()]
+    .map(([expireAt, amount]) => ({ expireAt, amount }))
+    .sort((left, right) => left.expireAt - right.expireAt);
+}
+
+/** 最近一批未来到期；没有未来到期返回 `null`（调用方据此**整条不渲染**）。 */
+export function nearestExpiringBatch(
+  items: readonly ExpiringItem[] | null | undefined,
+  options: { now?: number; unit?: "ms" | "s" } = {},
+): UpcomingBatch | null {
+  return upcomingExpiries(items, options)[0] ?? null;
+}
+
+/** 距到期还有几天（向上取整，≥1）。 */
+export function daysUntil(expireAt: number, now: number = Date.now()): number {
+  return Math.max(1, Math.ceil((expireAt - now) / DAY_MS));
+}

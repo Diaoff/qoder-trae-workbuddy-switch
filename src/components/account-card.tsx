@@ -14,7 +14,7 @@ import { ENCRYPTED_CREDENTIAL_REASON } from "@/lib/api";
 import { compactTokens, exactTokens } from "@/components/usage/format";
 import { demoModeEnabled } from "@/lib/demo-mode";
 import { displayText } from "@/lib/display-text";
-import { summarizeExpiring } from "@/lib/credit-expiry";
+import { daysUntil, nearestExpiringBatch, summarizeExpiring, upcomingExpiries } from "@/lib/credit-expiry";
 import { formatAbsoluteTime, formatRelativeTime } from "@/lib/catalog-source";
 import { useT, type Translate } from "@/lib/i18n";
 import type { AccountMeta, AccountTokenTodayEntry, CreditExpiry, TravelStatus } from "@/lib/types";
@@ -683,6 +683,63 @@ const isCurrentAccount = programSlots.some((slot) => slot.active);
   ) : null;
 
   /**
+   * 「最近 N 积分 · X 天后过期」—— **中性**徽章（issue #69）。
+   *
+   * ## 它补的是什么
+   *
+   * `expiringChip`（黄色「N 积分 M 天内过期」）只覆盖**后端 7 天临期窗口**内的批次。
+   * 用户多账号时真正要答的是「**先用哪个**」—— 8 天 / 30 天后到期的那批在窗口外，
+   * **完全不可见** ⇒ 用户说「两周内到期的看不到」。
+   *
+   * ## 口径
+   *
+   * · `amount` = **最近一批**的剩余积分（同日多包合并）—— 不是总额、不是已用量；
+   * · `days`   = 最近一批距今天数（向上取整）；
+   * · 无未来到期 / 积分查询失败 / `resources` 为空 ⇒ **整条不渲染**（不写「0 天后」）。
+   *
+   * ## 为什么不并进黄色徽章
+   *
+   * 黄色那枚是**警告**（「再不用就浪费」），7 天口径**不变**（issue #69 明确要求）；
+   * 中性那枚是**信息**（「什么时候到期」）。合并会让「7 天内」的警告强度被稀释。
+   *
+   * ⚠️ 不新增块级元素：卡片结构必须保持 header → chips → metrics → actions
+   * （`scripts/check-scope-registry.cjs` 有反向门禁）。
+   */
+  const nearestBatch = credit?.ok ? nearestExpiringBatch(metricResources) : null;
+  const nearestChip = nearestBatch && !expiring ? (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <Badge
+          variant="secondary"
+          className={chipClass}
+          aria-label={t("wbAccounts.card.nearestExpiringChip", {
+            amount: formatCredits(nearestBatch.amount),
+            days: daysUntil(nearestBatch.expireAt),
+          })}
+        >
+          {t("wbAccounts.card.nearestExpiringChip", {
+            amount: formatCredits(nearestBatch.amount),
+            days: daysUntil(nearestBatch.expireAt),
+          })}
+        </Badge>
+      </TooltipTrigger>
+      <TooltipContent side="top">
+        <div className="whitespace-nowrap font-medium">
+          {t("wbAccounts.card.expiringTipTitle", { n: upcomingExpiries(metricResources).length })}
+        </div>
+        {upcomingExpiries(metricResources).map((batch) => (
+          <div key={batch.expireAt} className="whitespace-nowrap tabular-nums">
+            {t("wbAccounts.card.expiringTipLine", {
+              time: formatAbsoluteTime(batch.expireAt),
+              amount: formatCredits(batch.amount),
+            })}
+          </div>
+        ))}
+      </TooltipContent>
+    </Tooltip>
+  ) : null;
+
+  /**
    * 状态标签 —— 与原型 `accountStatus()`（`buddy-switch-prototype.html:2390-2395`）**同一口径**：
    *
    * ```
@@ -714,6 +771,7 @@ const isCurrentAccount = programSlots.some((slot) => slot.active);
       {statusChip}
       {travelChip(travelStatus)}
       {expiringChip}
+      {nearestChip}
       {creditPriority && (
         <Badge variant="info" className={chipClass} title={t("wbAccounts.card.priorityTip")}>
           {t("wbAccounts.card.priority")}
