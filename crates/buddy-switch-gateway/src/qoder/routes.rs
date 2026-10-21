@@ -29,7 +29,7 @@ use buddy_switch_core::modules::product::scope_of_qoder_region;
 use buddy_switch_core::modules::qoder::region::{self as qoder_region, QoderRegion};
 use buddy_switch_core::modules::qoder::{api, cosy, PATH_CHAT_SSE, PATH_CHAT_SSE_ENCODED};
 
-use super::pool::{classify_http, QoderErrKind};
+use super::pool::{classify_http_with_detail, QoderErrKind};
 use super::{payload, sse, QoderGatewayState};
 
 /// 鉴权通过后透传给 handler 的**归属区域**（决定用哪个账号池）。
@@ -306,9 +306,8 @@ pub async fn chat_for_region(
     let allowed_tools = payload::allowed_tool_names(&openai_payload);
     /* Responses 的 **custom（freeform）工具**名只从**原始**请求体取：转换（`to_upstream_request`）
     之后它们已被降级成普通 function，名字还在，但 `type` 已经没了。 */
-    let responses_custom = std::sync::Arc::new(
-        crate::protocol::responses::custom_tool_names(&parsed),
-    );
+    let responses_custom =
+        std::sync::Arc::new(crate::protocol::responses::custom_tool_names(&parsed));
     let sticky_key = payload::sticky_key_of(&parsed);
     let preferred = {
         let configured = config.preferred_uid.trim();
@@ -329,6 +328,8 @@ pub async fn chat_for_region(
 
     let mut tried: HashSet<String> = HashSet::new();
     let mut failures: Vec<String> = Vec::new();
+    // 本轮有多少次失败是「上游排队」（不是账号问题）。
+    let mut queued = 0usize;
 
     for _ in 0..max_rotate {
         // 池随账号库同步（导入 / 刷新后即时生效），然后选号。
@@ -445,12 +446,15 @@ pub async fn chat_for_region(
             .chars()
             .take(300)
             .collect();
-        let kind = classify_http(status_code);
+        let kind = classify_http_with_detail(status_code, &detail);
         {
             let mut pools = state.pools.lock().await;
             if let Some(pool) = pools.get_mut(&region) {
                 pool.apply_error(&uid, kind, &detail, &model);
             }
+        }
+        if kind == QoderErrKind::Queued {
+            queued += 1;
         }
         failures.push(format!("{}：HTTP {status_code} {detail}", entry.name));
         if !kind.should_rotate() {
@@ -479,10 +483,18 @@ pub async fn chat_for_region(
     }
 
     // 轮换耗尽 / 无可用账号。
+    // ★ 若「全部失败都是排队」⇒ 明确说是**上游排队**，别让用户去查账号/凭据。
+    let all_queued = queued > 0 && queued == failures.len();
     let message = if failures.is_empty() {
         format!(
             "{} 没有可用账号：请在「账号」页导入（账号需带可调用的访问令牌）",
             region.display_name()
+        )
+    } else if all_queued {
+        format!(
+            "上游排队中（{} 个账号都在排队）：这不是账号或凭据问题，稍后重试即可；详情：{}",
+            queued,
+            failures.join("；")
         )
     } else {
         format!(
@@ -491,12 +503,17 @@ pub async fn chat_for_region(
             failures.join("；")
         )
     };
+    let exhausted_status = if all_queued {
+        StatusCode::TOO_MANY_REQUESTS
+    } else {
+        StatusCode::SERVICE_UNAVAILABLE
+    };
     state
         .record_request(
             "chat",
             region,
             &model,
-            503,
+            exhausted_status.as_u16(),
             "",
             started.elapsed().as_millis() as i64,
             wants_stream,
@@ -505,12 +522,12 @@ pub async fn chat_for_region(
             Some(message.clone()),
         )
         .await;
-    protocol_error(
-        protocol,
-        StatusCode::SERVICE_UNAVAILABLE,
-        "no_available_account",
-        &message,
-    )
+    let code = if all_queued {
+        "upstream_queued"
+    } else {
+        "no_available_account"
+    };
+    protocol_error(protocol, exhausted_status, code, &message)
 }
 
 /// 对**单个账号**发**一次**上游 chat 请求（含候选主机 failover），**不换号、不重试**。
