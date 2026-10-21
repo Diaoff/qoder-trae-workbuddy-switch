@@ -1,4 +1,5 @@
-import { ChevronDown } from "lucide-react";
+import { ChevronDown, LayoutGrid } from "lucide-react";
+import { useState } from "react";
 
 import { ScopeMark, scopeLabel } from "@/components/scope-chip";
 import { RunPill } from "@/components/shell/run-pill";
@@ -10,9 +11,11 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { useT } from "@/lib/i18n";
 import { SCOPES, type Scope, scopeParts } from "@/lib/scope";
+import type { Product } from "@/lib/platforms/registry";
 import type { ScopeStatus, ScopeStatusMap } from "@/lib/use-scope-status";
 import { cn } from "@/lib/utils";
 import { useVisibleScopes } from "@/lib/scope-visibility";
+import { useAggregateAccountTotal } from "@/lib/use-aggregate-accounts";
 
 /**
  * **L1 作用域选择器** —— 顶栏左一（§3.1）。
@@ -39,14 +42,39 @@ export function ScopeSelector({
   statuses,
   shortcutBindings,
   onSelect,
+  aggregate = false,
+  onSelectAggregate,
 }: {
   scope: Scope;
   statuses: ScopeStatusMap;
   shortcutBindings: ReadonlyMap<Scope, number>;
   onSelect: (next: Scope) => void;
+  /** 是否处于聚合视图（issue #50）：为 true 时高亮「聚合」项，6 个作用域项都不高亮。 */
+  aggregate?: boolean;
+  /** 进入聚合视图。不传 ⇒ 不渲染「聚合」入口（例如未来某个只读场景）。 */
+  onSelectAggregate?: () => void;
 }) {
   const t = useT();
   const visibleScopes = useVisibleScopes((s) => s.visibleScopes);
+  /** 菜单是否展开（只在展开时才去取聚合总数）。 */
+  const [menuOpen, setMenuOpen] = useState(false);
+  /* 聚合账号总数：与聚合页**同一份快照**（见 use-aggregate-accounts.ts 的说明）。 */
+  const { total: aggregateTotal } = useAggregateAccountTotal(menuOpen);
+
+  /**
+   * 聚合项的副标题：**跨 6 个作用域**。
+   *
+   * ⚠️ **账号总数不在这儿算**：这里若用 `statuses` 求和，会与聚合页的数字对不上 ——
+   * `useScopeStatus` 的 WB 侧只读 store 的**当前区域切片**（没进过国际版账号页时
+   * 国际版是 0），而聚合页数的是自己拉的 6 个作用域。两个数据源 ⇒ 两个数。
+   * 所以总数由 `aggregateTotal`（**同一份快照**）提供，与聚合页逐字一致。
+   *
+   * ⚠️ `attentionCount` 任一为 `null`/缺失（未知）⇒ **不显示需处理数**，而不是当 0 求和。
+   * 拿未知冒充 0 会让「9 个需处理」在某些时刻**变小**，而用户无从知道原因。
+   */
+  const aggregateAttention = SCOPES.every((item) => statuses[item]?.attentionCount != null)
+    ? SCOPES.reduce((sum, item) => sum + (statuses[item]?.attentionCount ?? 0), 0)
+    : null;
 
   const nameOf = (s: Scope): string => scopeLabel(t, s);
 
@@ -66,11 +94,38 @@ export function ScopeSelector({
 
   const current = scopeParts(scope);
 
+  /**
+   * 聚合项的副标题：`N 个账号 · 跨 6 个作用域`（+ 需处理数，未知时不缀）。
+   *
+   * 与 6 个作用域项的 `subOf` **刻意分开**：那些说的是「这一套账号」的登录态，
+   * 这里说的是「全部账号」的规模 —— 混用一个函数会让聚合项显示「未登录 · 0 个账号」。
+   */
+  /**
+   * 聚合项的副标题。
+   *
+   * @param total 账号总数（`null` = 还没取到 ⇒ **不显示数字**，而不是显示 0）
+   */
+  function aggregateSub(total: number | null, attention: number | null): string {
+    const base = total === null
+      ? t("aggregate.scopeMenu.entrySubUnknown", { scopes: SCOPES.length })
+      : t("aggregate.scopeMenu.entrySub", { n: total, scopes: SCOPES.length });
+    return attention != null && attention > 0
+      ? `${base} · ${t("aggregate.scopeMenu.entryAttention", { n: attention })}`
+      : base;
+  }
+
   return (
-    <DropdownMenu>
+    <DropdownMenu
+      onOpenChange={(open) => {
+        /* 菜单打开时才去取聚合总数：菜单外那个数字没人看，
+           而 6 个作用域的账号列表是 6 次后端调用。 */
+        setMenuOpen(open);
+      }}
+    >
       <DropdownMenuTrigger asChild>
         <button
           type="button"
+          data-testid="scope-trigger"
           aria-label={t("topbar.scope.aria")}
           /* 与原型 `.scope-trigger`（`demo.css:91-97`）逐项对齐：
              `background: var(--card-2)`（凹陷面，**不是** muted/40 —— 深色下 muted 与 card 同值会隐形）、
@@ -81,15 +136,52 @@ export function ScopeSelector({
              `min-w-[132px]`；内部两行本就都有 `truncate` 兜底，宽屏仍是原型观感。 */
           className="flex h-10 min-w-[132px] max-w-[300px] shrink items-center gap-2.5 rounded-[12px] border border-border bg-card-2 pl-2 pr-2.5 text-left outline-none transition-colors hover:border-border-strong hover:bg-accent focus-visible:ring-[3px] focus-visible:ring-ring/40 data-[state=open]:border-ring data-[state=open]:ring-[3px] data-[state=open]:ring-ring/22"
         >
-          <ScopeMark product={current.product} size={26} />
+          <ScopeMarkOrAggregate aggregate={aggregate} product={current.product} />
           <span className="flex min-w-0 flex-col leading-tight">
-            <span className="truncate text-[12.5px] font-semibold">{nameOf(scope)}</span>
-            <span className="truncate text-[10.5px] text-muted-foreground">{subOf(scope)}</span>
-          </span>
-          <ChevronDown className="size-3.5 shrink-0 text-muted-foreground" aria-hidden />
+            <span className="truncate text-[12.5px] font-semibold">
+              {aggregate ? t("aggregate.scopeMenu.entryName") : nameOf(scope)}
+            </span>
+            <span className="truncate text-[10.5px] text-muted-foreground">
+              {aggregate ? aggregateSub(aggregateTotal, aggregateAttention) : subOf(scope)}
+            </span>
+          </span>          <ChevronDown className="size-3.5 shrink-0 text-muted-foreground" aria-hidden />
         </button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="start" className="w-[340px] rounded-[14px] p-1.5">
+        {/* ★「聚合」是**第一项**，并用分隔线 + 独立分组标题与 6 个作用域隔开（issue #50 D1）。
+            两个理由：
+              · 它是最高频入口（默认想看的就是全量），排在 6 个作用域之后意味着每次都要扫完菜单；
+              · 它**不是第 7 个作用域** —— 分隔线让「聚合 ≠ 作用域」在视觉上成立，
+                否则用户会以为多了一个能切的作用域（而 `Scope` 是封闭字面量，根本没有这一项）。 */}
+        {onSelectAggregate ? (
+          <>
+            <div className="px-2.5 pb-1 pt-2 text-[10.5px] font-medium tracking-[0.02em] text-muted-foreground">
+              {t("aggregate.scopeMenu.group")}
+            </div>
+            <DropdownMenuItem
+              /* `data-aggregate` 是门禁锚点：它证明「菜单第一项是聚合」且可与作用域项区分。 */
+              data-aggregate="true"
+              onSelect={() => onSelectAggregate()}
+              className={cn(
+                "gap-2.5 rounded-[10px] px-2.5 py-2",
+                aggregate && "bg-primary/[0.13]",
+              )}
+            >
+              <span className="grid size-7 shrink-0 place-items-center rounded-[9px] bg-primary/20 text-primary">
+                <LayoutGrid className="size-3.5" />
+              </span>
+              <span className="flex min-w-0 flex-1 flex-col leading-tight">
+                <span className="truncate text-[12.5px] font-medium">
+                  {t("aggregate.scopeMenu.entryName")}
+                </span>
+                <span className="truncate text-[11px] text-muted-foreground">
+                  {aggregateSub(aggregateTotal, aggregateAttention)}
+                </span>
+              </span>
+            </DropdownMenuItem>
+            <div className="my-1 h-px bg-border" />
+          </>
+        ) : null}
         {/* 分组标题逐值对齐原型 `.scope-menu .grp`（`:448`）：内边距 8/10/4、字号 10.5、字距 .02em。 */}
         <div className="px-2.5 pb-1 pt-2 text-[10.5px] font-medium tracking-[0.02em] text-muted-foreground">
           {t("topbar.scope.menuLabel")}
@@ -102,8 +194,11 @@ export function ScopeSelector({
               key={s}
               onSelect={() => onSelect(s)}
               /* 原型 `.scope-item`（`:449-460`）：内边距 8/10、圆角 10、gap 10；
-                 选中态 `primary 13%`（不是 10%）。 */
-              className={cn("gap-2.5 rounded-[10px] px-2.5 py-2", s === scope && "bg-primary/[0.13]")}
+                 选中态 `primary 13%`（不是 10%）。聚合态下 6 项都**不**高亮。 */
+              className={cn(
+                "gap-2.5 rounded-[10px] px-2.5 py-2",
+                !aggregate && s === scope && "bg-primary/[0.13]",
+              )}
             >
               <ScopeMark product={scopeParts(s).product} size={28} />
               <span className="flex min-w-0 flex-1 flex-col leading-tight">
@@ -124,5 +219,20 @@ export function ScopeSelector({
         </div>
       </DropdownMenuContent>
     </DropdownMenu>
+  );
+}
+
+/**
+ * 触发按钮左侧的图标：普通作用域用平台图标，聚合态用四宫格。
+ *
+ * ⚠️ 聚合**不能**复用某个平台图标 —— 那会让顶栏读起来像「当前在 WorkBuddy」，
+ * 而聚合横跨三个平台。四宫格在这里是唯一不撒谎的选择。
+ */
+function ScopeMarkOrAggregate({ aggregate, product }: { aggregate: boolean; product: Product }) {
+  if (!aggregate) return <ScopeMark product={product} size={26} />;
+  return (
+    <span className="grid size-[26px] shrink-0 place-items-center rounded-[8px] bg-primary/20 text-primary">
+      <LayoutGrid className="size-4" />
+    </span>
   );
 }

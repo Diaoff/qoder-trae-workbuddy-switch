@@ -9,10 +9,28 @@ const state = {
   scope: "wb-cn",
   dest: "overview",
   theme: "dark",
+  /* ★ 聚合视图（issue #50）：`true` 时**没有侧栏**、内容区直接铺 6 个作用域的全部账号卡。
+     它不是第 7 个作用域（`Scope` 是封闭字面量 `${平台}-${区域}`，塞进去会破坏类型与快捷键序号），
+     而是一个与「看某个作用域」并列的**视图模式** —— 所以用独立布尔量，不动 `state.scope`。 */
+  agg: false,
+  aggQ: "",
+  aggMode: "group",        // group = 按作用域分组（默认）/ flat = 按紧迫度混排
+  /* 可见性筛选集：存**账号键** `${scope}:${id}`；`null` = 无筛选（全量）。
+     ⚠️ 与 `selected`（批量动作对象）是两个互不写入的集合 —— 混成一个必然做歪。 */
+  aggVisible: null,
+  /* 筛选面板草稿（**应用后**才写进 aggVisible）：面板盖住了列表，live 改动用户看不见。 */
+  aggDraft: null,
+  aggExpanded: new Set(),
+  aggFilterOpen: false,
+  /* 取数失败的作用域（演示开关，验证「一组挂了其余照常」的形态）。 */
+  aggFailed: new Set(),
+  /* 演示：筛选生效期间新增了账号（验证 Q3 方案 C 的提示条）。 */
+  aggNewcomer: false,
   /* 账号工作台 */
   q: "", sort: "priority", group: "none", view: "card",
   selected: new Set(),
-  /* 卡片「更多」菜单：打开中的账号 id（`null` = 关着）。 */
+  /* 卡片「更多」菜单：打开中的账号键（`null` = 关着）。
+     账号页存裸 id；聚合页存 `${scope}:${id}`（跨作用域时裸 id 会串号）。 */
   acctMenu: null,
   /* 授权弹窗（issue #62）：`null` = 关着；打开后由 `openAuth()` 填。
      step ∈ waiting / expired / done —— 超时不自动重试，旧 state 已作废，必须重新生成。 */
@@ -118,6 +136,27 @@ const currentAccount = (id) => {
 };
 const expiredCount = (s) => s.accounts.filter((a) => a.expired || a.needsRelogin).length;
 
+/* ─────────── 账号键（`${scope}:${id}`）───────────
+   聚合页一张卡一个账号，6 个作用域共存 ⇒ **裸 id 会串号**（同一 `userId` 在国内 / 国际
+   是两个不同账号）。所有「指向某个账号」的引用统一走这套 ref：
+     · 账号页生成裸 id（`a1`）—— 既有 DOM 断言与行为完全不变；
+     · 聚合页生成 `${scope}:${a1}`。
+   `refScope()` 对裸 id 回落到 `state.scope`，因此两边共用同一套事件分支。 */
+const refOf = (scope, id) => `${scope}:${id}`;
+const refScope = (ref) => (String(ref).includes(":") ? String(ref).slice(0, String(ref).indexOf(":")) : state.scope);
+const refId = (ref) => (String(ref).includes(":") ? String(ref).slice(String(ref).indexOf(":") + 1) : String(ref));
+const refAccount = (ref) => SCOPES[refScope(ref)].accounts.find((x) => x.id === refId(ref)) || null;
+const refPlatform = (ref) => PLATFORMS[SCOPES[refScope(ref)].platform];
+
+/* 聚合页的账号全集（顺序 = SCOPES 声明顺序，因此分组视图的组序稳定）。 */
+const aggAll = () => Object.keys(SCOPES).flatMap((sid) => SCOPES[sid].accounts.map((a) => ({ scope: sid, a, ref: refOf(sid, a.id) })));
+const aggAllRefs = () => new Set(aggAll().map((x) => x.ref));
+/* 「需处理」= 过期 / 需重登 / 未签到。与账号页 `expiredCount` 的口径**不同**：
+   后者只数凭据问题（侧栏徽章说的是「凭据待处理」），聚合页顶部说的是「今天有事要做」。 */
+const aggNeedsAttention = (a) => Boolean(a.expired || a.needsRelogin || !a.checkedIn);
+/* 紧迫度：平铺视图的排序依据。若平铺只是「打散分组、顺序仍按作用域」，它没有任何新信息。 */
+const aggUrgency = (a) => (a.expired ? 0 : a.needsRelogin ? 1 : !a.checkedIn ? 2 : a.expiring ? 3 : 4);
+
 function avatarTone(name) {
   /* 亮度压到 L ≤ 0.5，压在上面的白字（oklch .99）才能过 AA 4.5:1。
      色相保持不变，只降亮度。 */
@@ -147,6 +186,26 @@ const pendingActions = {};
 
 /* ─────────── 骨架渲染 ─────────── */
 function renderTopbar() {
+  /* ★ 聚合态：顶栏是**唯一保留的公共外壳**。
+     因为「聚合」的入口就在这枚作用域菜单里（D1），聚合页若没有顶栏，用户进去就出不来。 */
+  if (state.agg) {
+    const all = aggAll();
+    const attention = all.filter((x) => aggNeedsAttention(x.a)).length;
+    /* 有作用域取数失败 ⇒ 不显示「需处理」合计：拿未知冒充 0 是撒谎。 */
+    const unknown = state.aggFailed.size > 0;
+    $("#scope-mark").innerHTML = ICON.grid;
+    $("#scope-mark").style.background = "color-mix(in oklab, var(--primary) 20%, transparent)";
+    $("#scope-mark").style.color = "var(--primary)";
+    $("#scope-name").textContent = "聚合 · 全部账号";
+    $("#scope-sub").textContent = `${all.length} 个账号` + (!unknown && attention ? ` · ${attention} 个需处理` : "");
+    /* 运行态胶囊在聚合态下**不表达任何单一客户端**（6 个作用域各有一套），
+       所以只说「网关在跑」，不说「运行中」——后者会被读成「当前客户端在跑」。 */
+    const pill = $("#run-pill");
+    pill.className = "run-pill";
+    pill.innerHTML = `<i class="dot"></i><span>${Object.keys(SCOPES).filter((id) => SCOPES[id].running).length} 个作用域运行中</span>`;
+    $("#foot-dot").style.color = "var(--success)";
+    return;
+  }
   const s = curScope(), p = curPlatform();
   $("#scope-mark").innerHTML = p.mark;
   $("#scope-mark").style.background = `color-mix(in oklab, ${p.accent} 20%, transparent)`;
@@ -183,6 +242,13 @@ function renderNav() {
 
 function renderContent() {
   if (state.loading) { $("#content").innerHTML = skeleton(); return; }
+  /* ★ 聚合是**独立界面**：没有左侧导航栏，顶栏下方直接就是卡片区。
+     侧栏由 `body.agg-mode` 隐藏（CSS），`state.dest` 保持原值 —— 退出聚合时回到原页面。 */
+  if (state.agg) {
+    $("#content").innerHTML = viewAggregate();
+    $("#content").scrollTop = 0;
+    return;
+  }
   const map = { overview: viewOverview, accounts: viewAccounts, usage: viewUsage, sessions: viewSessions, gateway: viewGateway, settings: viewSettings };
   $("#content").innerHTML = map[state.dest]();
   $("#content").scrollTop = 0;
@@ -205,7 +271,12 @@ function skeleton() {
   </div>`;
 }
 
-function renderAll() { renderTopbar(); renderNav(); renderContent(); renderCompanion(); }
+function renderAll() {
+  /* 聚合态没有侧栏：整块 `<aside>` 用 class 隐藏（而不是 `innerHTML = ""`）——
+     侧栏 DOM 保持存在，退出聚合时不必重建，`#foot-ver` 等一次性回填也不会丢。 */
+  document.body.classList.toggle("agg-mode", state.agg);
+  renderTopbar(); renderNav(); renderContent(); renderCompanion();
+}
 
 /* ══════════════════════ 桌面悬浮窗（§3.16 / D21 已拍板） ══════════════════════
    独立浮层，**只读** —— 不承载任何写操作（§3.16 明确「不做的」）。
@@ -220,7 +291,9 @@ const COMPANION_STATE = {
 function renderCompanion() {
   const slot = $("#companion-slot");
   if (!slot) return;
-  if (!state.companionOpen) { slot.innerHTML = ""; return; }
+  /* 聚合视图下不显示会话悬浮窗：它列的是**当前作用域**的会话（单作用域概念），
+     摆在聚合页上既不对应任何作用域，又会盖住右下角的卡片。 */
+  if (state.agg || !state.companionOpen) { slot.innerHTML = ""; return; }
   const rows = COMPANION_SOURCES.map((c) => {
     const m = COMPANION_STATE[c.state] || COMPANION_STATE.done;
     /* 标题默认模糊（防截图 / 投屏泄露），悬停才看清 —— 与 §3.3 的邮箱脱敏同一原则。 */
@@ -676,7 +749,7 @@ function accountListHtml() {
   return groupAccounts(list).map((g) => `
     ${g.key ? `<div class="row" style="margin:18px 0 10px"><span class="badge">${esc(g.key)}</span><span class="tiny muted">${g.items.length} 个</span></div>` : ""}
     ${state.view === "card"
-      ? `<div class="grid g3">${g.items.map(accountCard).join("")}</div>`
+      ? `<div class="grid g3">${g.items.map((a) => accountCard(a)).join("")}</div>`
       : tableView(g.items)}
   `).join("");
 }
@@ -695,21 +768,38 @@ function renderAccountList() {
   if (box) box.innerHTML = accountListHtml();
 }
 
-function accountCard(a) {
-  const p = curPlatform();
-  const sel = state.selected.has(a.id);
-  const menuOpen = state.acctMenu === a.id;
+/**
+ * 一张账号卡 —— **账号页与聚合页共用这一份**（issue #50 R2「同一个组件、同一套 props」）。
+ *
+ * @param a    账号
+ * @param opts 仅两个可选键，都有默认值 ⇒ 账号页调用方式（`accountCard(a)`）一字未变：
+ *   · `scope`      账号所属作用域。给了就生成 `${scope}:${id}` 形式的 **ref** —— 聚合页
+ *                  6 个作用域共存，裸 id 会串号（同一 userId 在国内 / 国际是两个账号）。
+ *   · `scopeLine`  卡片顶部加一行「归属说明」。只给**平铺视图**用：分组视图里组标题
+ *                  已经回答了「这是哪个渠道」，卡上再挂一枚 chip 会挤掉「当前登录」徽章。
+ *
+ * ⚠️ 卡片内**不新增任何控件**：聚合页与账号页的可点区必须逐项一致，
+ *    否则「一致」就只是口号（`check-scope-registry.cjs` 也钉了「卡片可点区 ≤ 4 组」）。
+ */
+function accountCard(a, opts) {
+  const o = opts || {};
+  const scopeId = o.scope || state.scope;
+  const p = PLATFORMS[SCOPES[scopeId].platform];
+  const ref = o.scope ? refOf(o.scope, a.id) : a.id;
+  const sel = state.selected.has(ref);
+  const menuOpen = state.acctMenu === ref;
   /* 一个账号可绑 0..N 个程序位 ⇒ 「当前登录」= 绑定了任一程序位（不只是第一个）。 */
   const activeN = p.programs.filter((pg) => a.programs[pg.id]).length;
   const isCur = activeN > 0;
   const st = accountStatus(a);
-  return `<div class="acct${isCur ? " is-current" : ""}${sel ? " is-selected" : ""}" data-act="acct-open|${a.id}" tabindex="0" role="button" aria-label="打开 ${esc(a.name)} 的详情">
+  return `<div class="acct${isCur ? " is-current" : ""}${sel ? " is-selected" : ""}" data-act="acct-open|${ref}" tabindex="0" role="button" aria-label="打开 ${esc(a.name)} 的详情">
     <div class="acct-top">
-      <button class="check${sel ? " on" : ""}" data-act="acct-select|${a.id}" aria-label="选择">${sel ? ICON.check : ""}</button>
+      <button class="check${sel ? " on" : ""}" data-act="acct-select|${ref}" aria-label="选择">${sel ? ICON.check : ""}</button>
       <span class="avatar" style="background:${avatarTone(a.name)}">${initials(a.name)}</span>
       <span class="acct-id"><b>${esc(a.name)}</b><span>${esc(maskEmail(a.email) || a.remark || "—")}</span></span>
       ${isCur ? `<span class="badge info">当前登录</span>` : ""}
     </div>
+    ${o.scopeLine ? `<div class="acct-scope-line"><span class="scope-mark" style="background:color-mix(in oklab, ${p.accent} 18%, transparent);color:${p.accent}">${p.mark}</span>${scopeLabel(scopeId)}</div>` : ""}
     <div class="acct-chips">
       ${activeN >= 2 ? `<span class="badge info">${ICON.check}使用中 ${activeN} 个工具</span>` : ""}
       ${st ? `<span class="badge ${st.tone}">${st.text}</span>` : `<span class="badge ok">${ICON.check}已签到</span>`}
@@ -736,10 +826,10 @@ function accountCard(a) {
               : pg.label + " 未检测到客户端，点击查看如何接入";
           return `<button class="prog${on ? " on" : ""}${pg.installed ? "" : " off"}${pg.planned ? " planned" : ""}"
             title="${title}"
-            data-act="acct-prog|${a.id}|${pg.id}">${on ? ICON.check : ""}${esc(pg.short)}</button>`;
+            data-act="acct-prog|${ref}|${pg.id}">${on ? ICON.check : ""}${esc(pg.short)}</button>`;
         }).join("")}
       </div>
-      <button class="btn ghost sm${menuOpen ? " is-open" : ""}" data-act="acct-more|${a.id}"
+      <button class="btn ghost sm${menuOpen ? " is-open" : ""}" data-act="acct-more|${ref}"
         title="更多操作：单项刷新 / 详情 / 删除" aria-haspopup="menu" aria-expanded="${menuOpen}">${ICON.more}</button>
     </div>
   </div>`;
@@ -778,6 +868,300 @@ function emptyBlock(icon, title, desc, action) {
   return `<div class="card"><div class="empty">
     <div class="ico">${icon}</div><b>${esc(title)}</b><p>${desc}</p>${action || ""}
   </div></div>`;
+}
+
+/* ══════════════════════ 聚合账号面板（issue #50）══════════════════════
+   一句话目标：**把 6 个作用域的全部账号铺在一屏，看状态和做操作都不必先切作用域。**
+   它不是第 7 个作用域（`Scope` 是封闭字面量），而是一个与「看某个作用域」并列的视图模式：
+     · 没有左侧导航栏（侧栏那 6 个目的地全是单作用域概念，留着只会点了落回某个作用域）；
+     · 顶栏保留 —— 作用域菜单是进出的**唯一**通道，没有它用户进去就出不来；
+     · 卡片就是账号页那张卡（`accountCard`），**不新增任何卡内控件**。
+
+   ## 两个选择集，互不写入
+   `aggVisible`（可见性筛选）决定**渲染哪些**，`selected`（批量选择）决定**动作作用于谁**。
+   两者共用 `${scope}:${id}` 键制，但永远不互相读写 —— 合成一个必然做歪。
+
+   ## 三种「空」必须彼此可辨
+   加载失败（组内整行虚线卡 + 重试）/ 未安装或无账号（一行虚线，不渲染组标题）/
+   被筛没（整页空态 + 显示全部）。三者混用会让用户以为账号被删了。 */
+
+const AGG_PREF_KEY = "buddy-switch:v1:aggregate-visible";
+
+/**
+ * 读可见性筛选。**只读纯函数 + 一律回退全量**：读取失败 / JSON 损坏 / 存储被禁用
+ * 都不能白屏（偏好坏了是小事，页面打不开是大事）。
+ *
+ * 规范化：**选满 == 无筛选**（直接删键）。否则会出现「存了 32 个键，新增第 33 个账号
+ * 之后看不见」的诡异态 —— 这也是 Q3 的一半答案。
+ */
+function readAggVisible() {
+  try {
+    const raw = localStorage.getItem(AGG_PREF_KEY);
+    if (!raw) return null;
+    const arr = JSON.parse(raw);
+    if (!Array.isArray(arr)) return null;
+    const all = aggAllRefs();
+    /* 失效键（账号已删 / 作用域不存在 / 格式不符）一律丢弃，否则会存下一堆幽灵键。 */
+    const keys = arr.filter((k) => typeof k === "string" && k.includes(":") && all.has(k));
+    if (!keys.length) return null;                 /* 全失效 ⇒ 回退全量（不显示空白页） */
+    if (keys.length === all.size) return null;     /* 选满 ⇒ 等于没筛 */
+    return new Set(keys);
+  } catch {
+    return null;
+  }
+}
+function writeAggVisible(set) {
+  try {
+    const all = aggAllRefs();
+    if (!set || !set.size || set.size === all.size) localStorage.removeItem(AGG_PREF_KEY);
+    else localStorage.setItem(AGG_PREF_KEY, JSON.stringify([...set].sort()));
+  } catch {
+    /* 写入失败静默：本次会话内仍按内存状态工作 */
+  }
+}
+
+/** 当前该渲染的账号（已叠加筛选 + 搜索，未排序）。 */
+function aggShown() {
+  const q = state.aggQ.trim().toLowerCase();
+  return aggAll().filter((x) => {
+    if (state.aggVisible !== null && !state.aggVisible.has(x.ref)) return false;
+    if (!q) return true;
+    return [x.a.name, x.a.email, x.a.remark, x.a.group, scopeLabel(x.scope)].some((v) => (v || "").toLowerCase().includes(q));
+  });
+}
+const aggFiltering = () => state.aggVisible !== null || Boolean(state.aggQ.trim());
+
+function viewAggregate() {
+  return `<div class="agg-page">
+    <div class="agg-bar">
+      <label class="field search agg-search">${ICON.search}
+        <input id="agg-q" type="text" placeholder="筛选账号（昵称 / 备注 / 邮箱）" value="${esc(state.aggQ)}" autocomplete="off" />
+      </label>
+      <div class="agg-filter-wrap">
+        <button class="btn${state.aggVisible ? " on-filter" : ""}" id="agg-filter-btn" data-act="agg-filter-toggle"
+          aria-haspopup="dialog" aria-expanded="${state.aggFilterOpen}">
+          ${ICON.list}<span>${state.aggVisible ? `筛选 · ${state.aggVisible.size}` : "筛选"}</span>
+        </button>
+        <div class="filter-pop" id="agg-filter-pop"${state.aggFilterOpen ? "" : " hidden"} role="dialog" aria-label="筛选显示范围">
+          ${state.aggFilterOpen ? aggFilterPanelHtml() : ""}
+        </div>
+      </div>
+      <div class="seg">
+        <button class="${state.aggMode === "group" ? "on" : ""}" data-act="agg-mode|group" title="按作用域分组：找某个渠道的号">按作用域分组</button>
+        <button class="${state.aggMode === "flat" ? "on" : ""}" data-act="agg-mode|flat" title="按紧迫度混排：扫全场的待处理项">平铺</button>
+      </div>
+      <div class="grow"></div>
+      <span class="agg-count${aggFiltering() ? " filtered" : ""}" id="agg-count">${aggCountInner()}</span>
+    </div>
+    <div id="agg-batch-slot">${aggNewcomerHtml()}${aggBatchHtml()}</div>
+    <div id="agg-list">${aggListHtml()}</div>
+  </div>`;
+}
+
+function aggCountInner() {
+  const total = aggAll().length;
+  if (!aggFiltering()) {
+    return `<b>${total}</b> 个账号 · ${state.aggMode === "flat" ? "按紧迫度排序" : `${Object.keys(SCOPES).length} 个作用域`}`;
+  }
+  return `筛选中 · 显示 <b>${aggShown().length}</b> / ${total}
+    <button class="btn ghost xs" data-act="agg-clear-filter">显示全部</button>`;
+}
+
+/**
+ * 组标题壳。`count === 0` 时**不渲染标题** —— 说明行里已经带了 scope-chip，
+ * 两处都写名字就是重复（未安装那组曾经在一屏里出现两次作用域名）。
+ */
+function aggGroupShell(sid, count, inner, att, failed) {
+  if (!count) return inner;
+  const p = PLATFORMS[SCOPES[sid].platform];
+  /* ⚠️ 取数失败时**不能**写「N 个账号」：那 N 个账号的数据根本没拿到，写数量等于拿旧值撒谎。 */
+  const meta = failed
+    ? `<span style="color:var(--destructive)">加载失败</span>`
+    : `<b>${count}</b> 个账号${att ? ` · <span style="color:var(--warning)">${att} 个需处理</span>` : ""}`;
+  return `<section class="agg-group">
+    <div class="agg-group-head">
+      <span class="scope-chip"><span class="scope-mark" style="background:color-mix(in oklab, ${p.accent} 18%, transparent);color:${p.accent}">${p.mark}</span>${scopeLabel(sid)}</span>
+      <span class="agg-gh-meta">${meta}</span>
+      <div class="grow"></div>
+      ${!failed && count > 1 ? `<button class="btn ghost xs agg-gh-btn" data-act="agg-group-sel|${sid}">全选本组</button>` : ""}
+    </div>
+    ${inner}
+  </section>`;
+}
+
+function aggNoteHtml(sid) {
+  const s = SCOPES[sid], p = PLATFORMS[s.platform];
+  const text = s.installed ? "该作用域还没有账号" : `这台机器没有检测到 ${esc(p.label)} 客户端，因此这里没有可管理的账号`;
+  return `<div class="agg-note">
+    <span class="scope-chip"><span class="scope-mark" style="background:color-mix(in oklab, ${p.accent} 18%, transparent);color:${p.accent}">${p.mark}</span>${scopeLabel(sid)}</span>
+    <span>${text}</span>
+  </div>`;
+}
+
+function aggFailHtml(sid) {
+  return `<div class="agg-grid"><div class="agg-fail">
+    <span class="ico">${ICON.warn}</span>
+    <span class="t"><b>账号列表加载失败</b><span>请求超时 · 其余作用域不受影响，可单独重试</span></span>
+    <button class="btn xs" data-act="agg-retry|${sid}">重试</button>
+  </div></div>`;
+}
+
+function aggEmptyHtml() {
+  const noneAtAll = aggShown().length === 0 && (state.aggVisible !== null || state.aggQ.trim());
+  if (noneAtAll) {
+    return `<div class="empty" style="margin-top:36px">
+      <div class="ico">${ICON.grid}</div>
+      <b>当前筛选下没有任何账号</b>
+      <p>筛选条件把 ${aggAll().length} 个账号全部排除了。清空筛选即可恢复全量。</p>
+      <button class="btn primary" data-act="agg-clear-filter">显示全部账号</button>
+    </div>`;
+  }
+  return emptyBlock(ICON.accounts, "还没有任何账号", "先在某个作用域里添加账号，聚合视图会把它们自动汇总到这里。",
+    `<button class="btn" data-act="scope-open">打开作用域菜单</button>`);
+}
+
+function aggListHtml() {
+  const shown = aggShown();
+  if (!shown.length) return aggEmptyHtml();
+
+  if (state.aggMode === "flat") {
+    /* ★ 平铺**不是**「打散分组」：顺序仍按作用域的话它没有任何新信息。
+       改为按紧迫度混排（过期 → 需重登 → 未签到 → 临期 → 其余），
+       于是两个模式各有明确用途：分组 = 找某个渠道；平铺 = 扫全场的待处理项。 */
+    const sorted = shown.slice().sort((x, y) => aggUrgency(x.a) - aggUrgency(y.a)
+      || (x.a.expireInDays == null ? 99 : x.a.expireInDays) - (y.a.expireInDays == null ? 99 : y.a.expireInDays));
+    return `<div class="agg-grid" style="margin-top:14px">${sorted.map((x) => accountCard(x.a, { scope: x.scope, scopeLine: true })).join("")}</div>`;
+  }
+
+  return Object.keys(SCOPES).map((sid) => {
+    const items = shown.filter((x) => x.scope === sid);
+    if (!items.length) {
+      /* 筛选 / 搜索生效时空组整组不出现：用户是在「已有账号」里缩小范围，
+         一个从未有过账号的作用域不属于这次筛选的范围，摆出来只会被误读成「被筛空了」。 */
+      if (!SCOPES[sid].accounts.length && !aggFiltering()) return aggNoteHtml(sid);
+      return "";
+    }
+    if (state.aggFailed.has(sid)) return aggGroupShell(sid, SCOPES[sid].accounts.length, aggFailHtml(sid), 0, true);
+    const att = items.filter((x) => aggNeedsAttention(x.a)).length;
+    return aggGroupShell(sid, items.length, `<div class="agg-grid">${items.map((x) => accountCard(x.a, { scope: sid })).join("")}</div>`, att, false);
+  }).join("");
+}
+
+/**
+ * Q3 方案 C：筛选生效期间新增的账号**不自动并入**（并入会静默改写用户的筛选集，
+ * 「上次的筛选」就不再可复现），但必须告知 —— 否则用户会以为账号丢了。
+ * 一条可关闭的细条 + 一个「加入筛选」出口，成本最低、语义不损。
+ */
+function aggNewcomerHtml() {
+  if (!state.aggNewcomer || state.aggVisible === null) return "";
+  return `<div class="agg-note agg-newcomer">
+    ${ICON.warn}
+    <span><b>2 个账号不在当前筛选中</b>（本次新增）</span>
+    <div class="grow"></div>
+    <button class="btn xs" data-act="agg-newcomer-add">加入筛选</button>
+    <button class="btn ghost xs" data-act="agg-newcomer-ignore">忽略</button>
+  </div>`;
+}
+
+function aggBatchHtml() {
+  if (!state.selected.size) return "";
+  const scopes = new Set([...state.selected].map((r) => refScope(r)));
+  /* 「跨 N 个作用域」不是装饰：批量删除会动到几个渠道，用户必须看得见。 */
+  return `<div class="batch-bar" style="margin-top:12px">
+    <span class="badge info">已选 ${state.selected.size} 个</span>
+    <span class="badge" title="批量动作会作用到这些作用域">跨 ${scopes.size} 个作用域</span>
+    <div class="grow"></div>
+    <button class="btn sm" data-act="agg-batch-refresh">${ICON.refresh}刷新</button>
+    <button class="btn sm" data-act="agg-batch-checkin">${ICON.spark}签到</button>
+    <button class="btn sm" data-act="agg-batch-export">${ICON.download}导出</button>
+    <button class="btn sm danger" data-act="agg-batch-delete">${ICON.trash}删除</button>
+    <button class="btn ghost sm" data-act="batch-clear">取消</button>
+  </div>`;
+}
+
+/** 只重绘聚合页的动态区（列表 / 批量条 / 计数 / 筛选按钮），不动搜索框（IME 约束）。 */
+function renderAggList() {
+  const list = $("#agg-list");
+  if (!list) return;
+  list.innerHTML = aggListHtml();
+  const slot = $("#agg-batch-slot");
+  if (slot) slot.innerHTML = aggNewcomerHtml() + aggBatchHtml();
+  const c = $("#agg-count");
+  if (c) { c.className = "agg-count" + (aggFiltering() ? " filtered" : ""); c.innerHTML = aggCountInner(); }
+  const btn = $("#agg-filter-btn");
+  if (btn) {
+    btn.classList.toggle("on-filter", state.aggVisible !== null);
+    const lab = btn.querySelector("span");
+    if (lab) lab.textContent = state.aggVisible ? `筛选 · ${state.aggVisible.size}` : "筛选";
+  }
+}
+
+/* ── 筛选面板 ──
+   三条硬规则：
+     ① **应用后生效**（不是 live）：面板盖住了列表，live 改动用户根本看不见；
+     ② 作用域行的**勾选区与展开区必须是两个命中区** —— 点整行就切换全选，会让
+        「想展开看看有哪些号」这个纯浏览动作顺手清空整组选择；
+     ③ 只有一种表示（账号键）：勾作用域 = 勾它名下全部账号键。 */
+function aggFilterPanelHtml() {
+  const draft = state.aggDraft || new Set();
+  const all = aggAllRefs();
+  const rows = Object.keys(SCOPES).map((sid) => {
+    const s = SCOPES[sid], p = PLATFORMS[s.platform];
+    const refs = s.accounts.map((a) => refOf(sid, a.id));
+    const on = refs.filter((r) => draft.has(r)).length;
+    const st = !refs.length || !on ? "" : on === refs.length ? "on" : "part";
+    const open = state.aggExpanded.has(sid);
+    const head = `<div class="fp-row" data-act="agg-fp-expand|${sid}">
+      <span class="fcheck ${st}" data-act="agg-fp-toggle|${sid}">${st === "on" ? ICON.check : st === "part" ? ICON.minus : ""}</span>
+      <span class="scope-mark" style="background:color-mix(in oklab, ${p.accent} 18%, transparent);color:${p.accent}">${p.mark}</span>
+      <span class="t"><b>${scopeLabel(sid)}</b><span>${refs.length ? `${on} / ${refs.length} 已选` : s.installed ? "没有账号" : "未安装客户端"}</span></span>
+      ${refs.length ? `<span class="n">${open ? "收起" : "展开"}</span>` : ""}
+    </div>`;
+    if (!open || !refs.length) return head;
+    return head + s.accounts.map((a) => {
+      const ref = refOf(sid, a.id);
+      const c = draft.has(ref);
+      return `<div class="fp-row fp-acc" data-act="agg-fp-acc|${ref}">
+        <span class="fcheck ${c ? "on" : ""}">${c ? ICON.check : ""}</span>
+        <span class="av" style="background:${avatarTone(a.name)}">${initials(a.name)}</span>
+        <span class="t"><b>${esc(a.name)}</b><span>${esc(maskEmail(a.email) || a.remark || "—")}</span></span>
+      </div>`;
+    }).join("");
+  }).join("");
+
+  const allOn = draft.size === all.size;
+  const part = draft.size > 0 && !allOn;
+  return `<div class="fp-head"><b>筛选显示范围</b><span>只改变这一屏显示哪些卡片，不删除、不修改任何账号。选满即等于「显示全部」。</span></div>
+    <div class="fp-list">
+      <div class="fp-row" data-act="agg-fp-all">
+        <span class="fcheck ${allOn ? "on" : part ? "part" : ""}">${allOn ? ICON.check : part ? ICON.minus : ""}</span>
+        <span class="t"><b>全部账号</b><span>${draft.size} / ${all.size} 已选</span></span>
+      </div>
+      <div class="fp-sep"></div>
+      ${rows}
+    </div>
+    <div class="fp-foot">
+      <span class="sum">已选 <b>${draft.size}</b> / ${all.size}${allOn ? " · 等于显示全部" : ""}</span>
+      <button class="btn sm ghost" data-act="agg-fp-cancel">取消</button>
+      <button class="btn sm primary" data-act="agg-fp-apply">应用</button>
+    </div>`;
+}
+
+/** 只重绘筛选面板本身：勾选 / 展开是面板内的动作，不该连带整页重绘（会丢滚动位置）。 */
+function renderAggFilterPop() {
+  const pop = $("#agg-filter-pop");
+  if (pop) pop.innerHTML = aggFilterPanelHtml();
+}
+
+function openAggFilter() {  state.aggDraft = new Set(state.aggVisible === null ? aggAllRefs() : state.aggVisible);
+  state.aggExpanded = new Set();
+  state.aggFilterOpen = true;
+  renderContent();
+}
+function closeAggFilter() {
+  state.aggFilterOpen = false;
+  state.aggDraft = null;
+  renderContent();
 }
 
 /* ══════════════════════ 用量 ══════════════════════ */
@@ -2750,16 +3134,42 @@ function accountDrawerFoot(a) {
   return `<button class="btn primary" data-act="wizard|${a.id}">${ICON.arrowRight}用向导切换（可选迁移内容）</button>`;
 }
 
-function drawerAccount(id, editing) {
+/**
+ * 打开账号详情抽屉。
+ *
+ * @param ref      裸 id（账号页）或 `${scope}:${id}`（聚合页）
+ * @param editing  是否直接进入「编辑备注」态
+ *
+ * ★ 为什么用「临时切 state.scope」而不是给 8 个装配函数各加一个 scope 参数：
+ *   抽屉内容由 `erStats` / `accountDrawerBody` / `accountDrawerFoot` / `drawerTabsNav`
+ *   等一串函数拼出来，它们**全部**按 `curScope()` 取数。逐个加参数只要漏一个，
+ *   聚合页打开别的作用域的账号时就会静默读到**错误作用域**的数据（页面有内容、数据全错，
+ *   最难发现的一类 bug）。而 `erAccount` 全程不触发主内容区重绘（`openDrawer` 只写抽屉 DOM），
+ *   所以在这一个入口上临时切换、`finally` 还原，是改动面最小且不会漏的写法。
+ */
+function drawerAccount(ref, editing) {
+  const scopeId = refScope(ref);
+  const prev = state.scope;
+  state.scope = scopeId;
+  try {
+    drawerAccountIn(refId(ref), ref, editing);
+  } finally {
+    state.scope = prev;
+  }
+}
+
+function drawerAccountIn(id, ref, editing) {
   const s = curScope(), p = curPlatform();
   const a = s.accounts.find((x) => x.id === id);
   if (!a) return;
   /* 保持当前 Tab：点「续期 JWT」这类动作后会重绘抽屉，跳回「概览」会让用户以为点错了。 */
   /* 换账号就别留在「新建分组」输入态（那只属于上一个账号）。 */
   if (state.groupNew && state.groupNew !== id) state.groupNew = null;
-  const keepTab = state.drawer && state.drawer.kind === "account" && state.drawer.id === id ? state.drawer.tab : "overview";
+  /* `state.drawer.id` 存 **ref**（而不是裸 id）：聚合页里同一 id 可能在两个区域各有一个账号，
+     抽屉重绘 / `syncOpenDrawer` 的比较必须用 ref 才分得清。 */
+  const keepTab = state.drawer && state.drawer.kind === "account" && state.drawer.id === ref ? state.drawer.tab : "overview";
   const tab = editing ? "overview" : (keepTab || "overview");
-  state.drawer = { kind: "account", id, tab, editingRemark: Boolean(editing) };
+  state.drawer = { kind: "account", id: ref, scope: refScope(ref), tab, editingRemark: Boolean(editing) };
   const isCur = p.programs.some((pg) => a.programs[pg.id]);
   openDrawer(`
     <div class="acct-hd">
@@ -3709,25 +4119,59 @@ function closePalette() {
 /* ══════════════════════ 作用域菜单 ══════════════════════ */
 function renderScopeMenu() {
   const ids = Object.keys(SCOPES);
-  $("#scope-menu").innerHTML = `<div class="grp">作用域（平台 × 区域）</div>` + ids.map((id, i) => {
+  const all = aggAll();
+  const attention = all.filter((x) => aggNeedsAttention(x.a)).length;
+  /* ★「聚合」放在**第一项**，并且用一条分隔线把它和「作用域（平台 × 区域）」分开。
+     两个理由：
+       · 它是最高频入口（默认想看的就是全量），排在 6 个作用域之后意味着每次都要扫完菜单；
+       · 它**不是第 7 个作用域** —— 分隔线 + 独立分组标题让「聚合 ≠ 作用域」在视觉上成立，
+         否则用户会以为多了一个能切的作用域（真实实现里这还关系到 `Scope` 是封闭字面量）。 */
+  const aggItem = `<div class="grp">全部</div>
+    <button class="scope-item agg-entry${state.agg ? " on" : ""}" data-act="scope|aggregate">
+      <span class="scope-mark" style="background:color-mix(in oklab, var(--primary) 20%, transparent);color:var(--primary)">${ICON.grid}</span>
+      <span class="t"><b>聚合 <span class="dim">· 全部账号</span></b>
+        <span>${all.length} 个账号${attention ? ` · ${attention} 个需处理` : ""} · 跨 ${ids.length} 个作用域</span></span>
+    </button>
+    <div class="sep"></div>`;
+  $("#scope-menu").innerHTML = aggItem + `<div class="grp">作用域（平台 × 区域）</div>` + ids.map((id, i) => {
     const s = SCOPES[id], p = PLATFORMS[s.platform], c = currentAccount(id);
-    return `<button class="scope-item${id === state.scope ? " on" : ""}" data-act="scope|${id}">
+    return `<button class="scope-item${!state.agg && id === state.scope ? " on" : ""}" data-act="scope|${id}">
       <span class="scope-mark" style="background:color-mix(in oklab, ${p.accent} 18%, transparent);color:${p.accent}">${p.mark}</span>
       <span class="t"><b>${scopeLabel(id)}</b>
         <span>${c ? "已登录 " + esc(c.name) : s.installed ? "未登录" : "未装客户端"} · ${s.accounts.length} 个账号${expiredCount(s) ? ` · ${expiredCount(s)} 个需处理` : ""}</span></span>
       <span class="run-pill${s.running ? "" : " off"}" style="height:18px;padding:0 7px"><i class="dot"></i></span>
       <span class="key">⌘${i + 1}</span>
     </button>`;
-  }).join("") + `<div class="hint-row">作用域决定「我现在管的是哪一套账号」。切换后，侧栏、内容区、统计口径全部跟随。</div>`;
+  }).join("") + `<div class="hint-row">作用域决定「我现在管的是哪一套账号」。选「聚合」看全部 6 个作用域的账号；选任一作用域回到它的账号页。</div>`;
 }
 
 /* ══════════════════════ 行为 ══════════════════════ */
-function switchScope(id, silent) {
-  if (id === state.scope) { closeScopeMenu(); return; }
+/** 进入聚合视图。**不改 `state.scope`** —— 退出时原样回到原来的作用域与页面。 */
+function enterAggregate() {
   closeScopeMenu();
+  if (state.agg) return;
+  state.agg = true;
+  state.selected.clear();     /* 选择集里是裸 id，跨到聚合页必须清（否则与 ref 混存） */
+  state.acctMenu = null;
+  state.q = "";
+  state.aggQ = "";
+  closeAcctMenu();
+  renderAll();
+  toast("ok", "已进入聚合视图", `${aggAll().length} 个账号 · 6 个作用域铺在一屏`);
+}
+
+function switchScope(id, silent) {
+  if (id === "aggregate") { enterAggregate(); return; }
+  /* 从聚合页选任一作用域 = 离开聚合，回到它的账号页（顶栏是唯一出口，必须通）。 */
+  const leavingAgg = state.agg;
+  if (!leavingAgg && id === state.scope) { closeScopeMenu(); return; }
+  closeScopeMenu();
+  state.agg = false;
   state.scope = id;
   state.selected.clear();
   state.q = "";
+  state.aggQ = "";
+  state.aggFilterOpen = false;
   /* 菜单跟着账号走：不清掉的话，切到另一个作用域时同 id 的账号会被误挂上菜单。 */
   closeAcctMenu();
   state.checkinResult = null;
@@ -3736,7 +4180,7 @@ function switchScope(id, silent) {
   setTimeout(() => {
     state.loading = false;
     renderAll();
-    if (!silent) toast("ok", "已切换到 " + scopeLabel(id), `${curScope().accounts.length} 个账号 · ${curScope().running ? "客户端运行中" : "客户端未运行"}`);
+    if (!silent) toast("ok", (leavingAgg ? "已离开聚合视图，进入 " : "已切换到 ") + scopeLabel(id), `${curScope().accounts.length} 个账号 · ${curScope().running ? "客户端运行中" : "客户端未运行"}`);
   }, 260);
 }
 function openScopeMenu() {
@@ -3810,15 +4254,22 @@ function refreshOutcome(a, kind) {
   return { ok: true, desc: a.checkedIn ? "今日已签到" : "今日未签到" };
 }
 
-function acctMenuInner(a) {
-  const keyOf = (kind) => `${a.id}:${kind}`;
-  return `<div class="am-head">${esc(a.name)}</div>
+function acctMenuInner(a, ref) {
+  /* `ref` = 裸 id（账号页）或 `${scope}:${id}`（聚合页）。
+     进行中态的键必须含 ref —— 否则同一 id 在两个区域会互相吞掉转圈（D4.1 的第二个实例）。 */
+  const r = ref || a.id;
+  const keyOf = (kind) => `${r}:${kind}`;
+  /* 聚合页里 6 个作用域共存，同名的号可能不止一个（`jackey` 在 3 个平台都有）
+     ⇒ 菜单头必须带作用域，否则用户不知道这一串动作作用在哪个渠道上。
+     账号页的 `ref` 是裸 id，头部保持原样（作用域已知，不必重复）。 */
+  const head = r.includes(":") ? `${esc(a.name)} · ${esc(scopeLabel(refScope(r)))}` : esc(a.name);
+  return `<div class="am-head">${head}</div>
     <div class="am-grp">刷新</div>
     ${REFRESH_KINDS.map((k) => {
       const busy = state.refreshing.has(keyOf(k.kind));
       const done = state.refreshDone.has(keyOf(k.kind));
       return `<button class="am-item${done ? " done" : ""}" role="menuitem"
-        data-act="acct-refresh|${a.id}|${k.kind}" title="${esc(k.hint)}"${busy ? " disabled" : ""}>
+        data-act="acct-refresh|${r}|${k.kind}" title="${esc(k.hint)}"${busy ? " disabled" : ""}>
         <span class="am-ico">${busy ? '<span class="spinner"></span>' : done ? ICON.check : ICON[k.icon]}</span>
         <span class="am-lab">${k.label}</span>
         <span class="am-state">${busy ? "刷新中…" : done ? "已更新" : ""}</span>
@@ -3830,10 +4281,10 @@ function acctMenuInner(a) {
       ? `<button class="am-item" disabled title="今天已经签过，无需重复"><span class="am-ico">${ICON.check}</span><span class="am-lab">今日已签到</span></button>`
       : (a.expired || a.needsRelogin)
         ? `<button class="am-item" disabled title="凭据已失效，先重新登录才能签到"><span class="am-ico">${ICON.spark}</span><span class="am-lab">手动签到</span><span class="am-state">需先登录</span></button>`
-        : `<button class="am-item" data-act="act|checkin|${a.id}"><span class="am-ico">${ICON.spark}</span><span class="am-lab">手动签到</span></button>`}
-    <button class="am-item" data-act="act|export|${a.id}"><span class="am-ico">${ICON.download}</span><span class="am-lab">导出账号</span></button>
+        : `<button class="am-item" data-act="act|checkin|${r}"><span class="am-ico">${ICON.spark}</span><span class="am-lab">手动签到</span></button>`}
+    <button class="am-item" data-act="act|export|${r}"><span class="am-ico">${ICON.download}</span><span class="am-lab">导出账号</span></button>
     <div class="am-sep"></div>
-    <button class="am-item danger" data-act="act|delete|${a.id}"><span class="am-ico">${ICON.trash}</span><span class="am-lab">删除账号</span></button>
+    <button class="am-item danger" data-act="act|delete|${r}"><span class="am-ico">${ICON.trash}</span><span class="am-lab">删除账号</span></button>
     <div class="am-note">备注与登录态在账号详情里（点卡片打开）</div>`;
 }
 
@@ -3842,7 +4293,9 @@ function acctMenuInner(a) {
    而 `#content` 是滚动容器，`overflow:auto` 会把溢出的菜单裁掉。
    真实实现里这就是 Radix `DropdownMenu` 的行为（Portal + 视口定位），原型照它来。 */
 function renderAcctMenu() {
-  const a = state.acctMenu ? curScope().accounts.find((x) => x.id === state.acctMenu) : null;
+  /* `state.acctMenu` 是 ref（裸 id 或 `scope:id`）⇒ 统一用 `refAccount` 解析，
+     聚合页因此能打开别的作用域的账号菜单。 */
+  const a = state.acctMenu ? refAccount(state.acctMenu) : null;
   let node = document.getElementById("acct-menu");
   if (!a) { if (node) node.remove(); return; }
   if (!node) {
@@ -3854,7 +4307,7 @@ function renderAcctMenu() {
     document.body.appendChild(node);
   }
   node.setAttribute("aria-label", `刷新 ${a.name} 的数据`);
-  node.innerHTML = acctMenuInner(a);
+  node.innerHTML = acctMenuInner(a, state.acctMenu);
 }
 
 /**
@@ -3877,14 +4330,20 @@ function toggleAcctMenu(id, btn) {
     node.style.left = `${Math.round(left)}px`;
     node.style.top = `${Math.round(top)}px`;
   }
-  renderAccountList();
+  renderCurrentList();
 }
 
 function closeAcctMenu() {
   if (!state.acctMenu) return;
   state.acctMenu = null;
   renderAcctMenu();     /* 传不了 id ⇒ 内部直接移除节点 */
-  renderAccountList();
+  renderCurrentList();
+}
+
+/** 「重绘当前列表」—— 账号页与聚合页共用一个入口，避免每个动作都写 if (state.agg)。 */
+function renderCurrentList() {
+  if (state.agg) renderAggList();
+  else renderAccountList();
 }
 
 /**
@@ -3935,14 +4394,15 @@ function syncOpenDrawer(id) {
  * 关掉菜单等于让用户重新点开一次；而且进行中/已更新这两个状态只有在菜单里才看得见。
  */
 function refreshAccountPart(id, kind) {
-  const a = curScope().accounts.find((x) => x.id === id);
+  /* `id` 可能是裸 id（账号页）或 `scope:id`（聚合页）—— `refAccount` 两种都认。 */
+  const a = refAccount(id);
   const conf = REFRESH_KINDS.find((k) => k.kind === kind);
   if (!a || !conf) return;
   const key = `${id}:${kind}`;
   if (state.refreshing.has(key)) return;
   state.refreshing.add(key);
   state.refreshDone.delete(key);
-  renderAccountList();
+  renderCurrentList();
   renderAcctMenu();
   /* 抽屉开着同一个账号时也要重绘：指标块上的 ⟳ 就在抽屉里，不重绘就没有「进行中」。 */
   syncOpenDrawer(id);
@@ -3952,13 +4412,13 @@ function refreshAccountPart(id, kind) {
     if (outcome.ok) {
       state.refreshDone.add(key);
       /* 「已更新」只停留 900ms：它是**刚刚发生了什么**的反馈，不是常驻状态。 */
-      setTimeout(() => { state.refreshDone.delete(key); renderAccountList(); renderAcctMenu(); }, 900);
+      setTimeout(() => { state.refreshDone.delete(key); renderCurrentList(); renderAcctMenu(); }, 900);
       toast("ok", `${a.name} · ${conf.label}完成`, outcome.desc);
     } else {
       toast("err", `${a.name} · ${conf.label}失败`, outcome.desc,
         { label: "打开账号", run: () => drawerAccount(id) });
     }
-    renderAccountList();
+    renderCurrentList();
     renderAcctMenu();
     syncOpenDrawer(id);
   }, conf.ms);
@@ -4000,6 +4460,9 @@ document.addEventListener("click", (e) => {
   /* 卡片「更多」菜单：点菜单外的地方收起（点菜单本身、或点另一张卡的「更多」不算外面 ——
      后者由 `acct-more` 分支接管，直接换到那张卡的菜单）。 */
   if (state.acctMenu && !e.target.closest(".acct-menu") && !e.target.closest('[data-act^="acct-more|"]')) closeAcctMenu();
+  /* 聚合页的筛选面板：点面板外收起（点面板本身、或点筛选按钮不算外面 —— 后者由
+     `agg-filter-toggle` 分支接管）。 */
+  if (state.aggFilterOpen && !e.target.closest("#agg-filter-pop") && !e.target.closest("#agg-filter-btn")) closeAggFilter();
 
   const node = e.target.closest("[data-act]");
   /* 自定义时间弹层：点弹层外部收起（触发器与弹层内部除外），与本次动作同帧生效。 */
@@ -4012,6 +4475,94 @@ document.addEventListener("click", (e) => {
   switch (act) {
     case "nav": stop(); state.dest = a1; state.selected.clear(); closeAcctMenu(); renderAll(); break;
     case "scope": stop(); switchScope(a1); break;
+    case "scope-open": stop(); openScopeMenu(); break;
+
+    /* ── 聚合账号面板（issue #50）────────────────────────────────────
+       注意这里的动作**全部原地完成**：不 navigate、不弹「请前往 XX 作用域操作」。
+       聚合页如果只能看、要操作还得切回去，那它就把切换成本原样保留了。 */
+    case "agg-mode": stop();
+      state.aggMode = a1 === "flat" ? "flat" : "group";
+      renderAggList();
+      break;
+    case "agg-filter-toggle": stop();
+      if (state.aggFilterOpen) closeAggFilter(); else openAggFilter();
+      break;
+    /* 勾选与展开是**两个**命中区（见 `aggFilterPanelHtml` 的注释）。 */
+    case "agg-fp-toggle": {
+      stop();
+      const refs = SCOPES[a1].accounts.map((x) => refOf(a1, x.id));
+      const allOn = refs.length > 0 && refs.every((r) => state.aggDraft.has(r));
+      refs.forEach((r) => (allOn ? state.aggDraft.delete(r) : state.aggDraft.add(r)));
+      renderAggFilterPop();
+      break;
+    }
+    case "agg-fp-expand": stop();
+      if (state.aggExpanded.has(a1)) state.aggExpanded.delete(a1); else state.aggExpanded.add(a1);
+      renderAggFilterPop();
+      break;
+    case "agg-fp-acc": stop();
+      if (state.aggDraft.has(a1)) state.aggDraft.delete(a1); else state.aggDraft.add(a1);
+      renderAggFilterPop();
+      break;
+    case "agg-fp-all": {
+      stop();
+      const all = aggAllRefs();
+      if (state.aggDraft.size === all.size) state.aggDraft.clear();
+      else state.aggDraft = new Set(all);
+      renderAggFilterPop();
+      break;
+    }
+    case "agg-fp-apply": {
+      stop();
+      const d = state.aggDraft;
+      const all = aggAllRefs();
+      /* 选满 / 全不选都规范化为「无筛选」：前者等于没筛，后者等于「什么都不想看」——
+         都不该被持久化成一份「上次的筛选」。 */
+      state.aggVisible = !d || !d.size || d.size === all.size ? null : new Set(d);
+      writeAggVisible(state.aggVisible);
+      state.aggFilterOpen = false;
+      state.aggDraft = null;
+      state.selected.clear();       /* 可见集变了，旧的批量选择可能已不在屏上 */
+      renderContent();
+      toast("ok", state.aggVisible ? `已筛选：显示 ${state.aggVisible.size} / ${all.size} 个账号` : "已显示全部账号",
+        state.aggVisible ? "关闭应用后仍会保留这次筛选" : "筛选偏好已清除");
+      break;
+    }
+    case "agg-fp-cancel": stop(); closeAggFilter(); break;
+    case "agg-clear-filter": stop();
+      state.aggVisible = null; writeAggVisible(null);
+      state.aggQ = ""; state.selected.clear();
+      renderContent();
+      toast("ok", "已显示全部账号");
+      break;
+    case "agg-clear-q": stop(); state.aggQ = ""; renderContent(); break;
+    case "agg-retry": stop();
+      state.aggFailed.delete(a1);
+      renderAggList();
+      toast("ok", `已重新加载 ${scopeLabel(a1)}`);
+      break;
+    case "agg-group-sel": {
+      stop();
+      aggShown().filter((x) => x.scope === a1).forEach((x) => state.selected.add(x.ref));
+      renderAggList();
+      break;
+    }
+    case "agg-newcomer-add": stop();
+      state.aggNewcomer = false; state.aggVisible = null; writeAggVisible(null);
+      renderContent();
+      toast("ok", "已加入并清除筛选", "现在显示全部账号");
+      break;
+    case "agg-newcomer-ignore": stop(); state.aggNewcomer = false; renderContent(); break;
+    case "agg-batch-refresh": stop();
+      toast("ok", `已提交批量刷新`, `${state.selected.size} 个账号 · 四项刷新按固定顺序执行`);
+      break;
+    case "agg-batch-checkin": stop();
+      toast("ok", `已提交批量签到`, `${state.selected.size} 个账号 · Qoder「通道未开放」会单独成档，不混进成功或失败`);
+      break;
+    case "agg-batch-export": stop(); toast("ok", `已导出 ${state.selected.size} 个账号`); break;
+    case "agg-batch-delete": stop();
+      toast("err", `已移入回收站`, `${state.selected.size} 个账号 · 可撤销`);
+      break;
     case "view": stop(); state.view = a1; renderAccountList(); break;
     case "range": stop();
       if (a1 === "today") { state.rangeMode = "today"; state.range = 1; }
@@ -4271,7 +4822,8 @@ document.addEventListener("click", (e) => {
       renderAccountList(); break;
     case "acct-select": stop();
       state.selected.has(a1) ? state.selected.delete(a1) : state.selected.add(a1);
-      renderAccountList(); break;
+      /* 用 `renderCurrentList`：聚合页里选择集也会变，但重绘的是聚合列表（没有 `#acct-list`）。 */
+      renderCurrentList(); break;
     case "acct-open": stop(); drawerAccount(a1); break;
     /* 抽屉 Tab：只切内容区，不动抽屉本身（保留滚动位置与底部动作）。 */
     case "group-create": stop(); createGroup(a1); break;
@@ -4292,8 +4844,11 @@ document.addEventListener("click", (e) => {
     case "acct-more": stop(); toggleAcctMenu(a1, node); break;
     case "acct-prog": {
       stop();
-      const acc = curScope().accounts.find((x) => x.id === a1);
-      const pg = curPlatform().programs.find((x) => x.id === a2);
+      /* a1 可能是裸 id（账号页）或 `scope:id`（聚合页）—— 两者都认。 */
+      const acc = refAccount(a1);
+      const sc = SCOPES[refScope(a1)];
+      const pg = refPlatform(a1).programs.find((x) => x.id === a2);
+      if (!acc || !pg) break;
       /* ⚠️ `planned`（本仓尚未支持）**必须排在 `installed` 之前**判断 ——
          否则会走「未检测到客户端 → 去设置接入」那条引导，而那条路**装好了也没用**。 */
       if (pg.planned) {
@@ -4302,10 +4857,14 @@ document.addEventListener("click", (e) => {
         break;
       }
       if (!pg.installed) {
-        /* 真能跳：toast 给一个可点按钮，点了就进「设置 → 权限与诊断」。 */
+        /* 真能跳：toast 给一个可点按钮，点了就进「设置 → 权限与诊断」。
+           ★ 这是聚合页上**唯一会离开聚合页**的卡片动作 —— 文案必须标明，
+             不能装作没这回事（issue #50 R3）。 */
         toast("err", `${pg.label} 未检测到客户端`, "需要先在「设置 → 权限与诊断」完成接入",
-          { label: "去设置", run: () => { state.dest = "settings"; state.setSub = "diagnostics"; state.selected.clear(); renderAll(); } },
-          "未检测到的程序位不置灰：可点 + 明确给出下一步，而不是一个点不动的灰按钮");
+          { label: "去设置", run: () => { state.agg = false; state.scope = refScope(a1); state.dest = "settings"; state.setSub = "diagnostics"; state.selected.clear(); renderAll(); } },
+          state.agg
+            ? "⚠️ 这一项会离开聚合页（诊断区是单作用域页面）"
+            : "未检测到的程序位不置灰：可点 + 明确给出下一步，而不是一个点不动的灰按钮");
         break;
       }
       const wasOn = Boolean(acc.programs[a2]);
@@ -4313,15 +4872,15 @@ document.addEventListener("click", (e) => {
       /* 模型：一个**程序位**同时只有一个账号；一个**账号**可绑 0..N 个程序位。
          所以只清「同一个程序位」在**其他账号**上的绑定，
          **不动本账号的其他程序位**（把 IDE 切到 X，不该让 X 从 WorkBuddy 登出）。 */
-      const before = curScope().accounts.map((o) => ({ id: o.id, on: Boolean(o.programs[a2]) }));
+      const before = sc.accounts.map((o) => ({ id: o.id, on: Boolean(o.programs[a2]) }));
       acc.programs[a2] = true;
-      curScope().accounts.forEach((o) => { if (o.id !== acc.id) o.programs[a2] = false; });
+      sc.accounts.forEach((o) => { if (o.id !== acc.id) o.programs[a2] = false; });
       renderAll();
       if (state.drawer && state.drawer.kind === "account") drawerAccount(a1);
       toast("ok", `已把 ${pg.label} 切到 ${acc.name}`, "客户端将自动重启以生效",
         { label: "撤销", run: () => {
           /* 撤销要回到操作前的**全部**绑定（含被清掉的其他账号）。 */
-          before.forEach(({ id, on }) => { const o = curScope().accounts.find((x) => x.id === id); if (o) o.programs[a2] = on; });
+          before.forEach(({ id, on }) => { const o = sc.accounts.find((x) => x.id === id); if (o) o.programs[a2] = on; });
           renderAll();
           if (state.drawer && state.drawer.kind === "account") drawerAccount(a1);
           toast("ok", "已撤销切换", "程序位已恢复");
@@ -4444,35 +5003,36 @@ document.addEventListener("click", (e) => {
       stop();
       /* 菜单里的动作点完就收起（刷新四项除外 —— 它们要在菜单里显示进行中/已更新）。 */
       closeAcctMenu();
+      /* a2 可能是裸 id 或 `scope:id`：统一解析成 (账号, 所属作用域)，
+         聚合页因此能在原地签到 / 删除别的作用域的账号，不需要先切过去。 */
+      const sc = SCOPES[refScope(a2)];
+      const acc = refAccount(a2);
       if (a1 === "delete") {
-        const a = curScope().accounts.find((x) => x.id === a2);
-        if (!a) break;
+        if (!acc) break;
         /* 不可逆操作：先弹确认 Dialog，确认后才删。 */
         openConfirm({
           title: "删除账号？",
-          body: `即将删除 <b>${esc(a.name)}</b>${a.email ? `（${esc(maskEmail(a.email))}）` : ""}。<br><span class="tiny muted">仅删除本地记录，不影响服务端账号。</span>`,
+          body: `即将删除 <b>${esc(acc.name)}</b>${acc.email ? `（${esc(maskEmail(acc.email))}）` : ""}。<br><span class="tiny muted">仅删除本地记录，不影响服务端账号。</span>`,
           okLabel: "删除",
           onOk: () => {
-            curScope().accounts = curScope().accounts.filter((x) => x.id !== a2);
+            sc.accounts = sc.accounts.filter((x) => x.id !== refId(a2));
             closeDrawer(); renderAll();
-            toast("ok", `已删除 ${a.name}`, "删除只影响本地记录", { label: "撤销", run: () => { curScope().accounts.push(a); renderAll(); toast("ok", "已恢复 " + a.name); } });
+            toast("ok", `已删除 ${acc.name}`, "删除只影响本地记录", { label: "撤销", run: () => { sc.accounts.push(acc); renderAll(); toast("ok", "已恢复 " + acc.name); } });
           },
         });
       } else if (a1 === "checkin") {
-        const a = curScope().accounts.find((x) => x.id === a2);
-        if (!a) break;
-        a.checkedIn = true; renderAll();
+        if (!acc) break;
+        acc.checkedIn = true; renderAll();
         /* 只有抽屉正开着这个账号时才重绘 —— 从卡片菜单签到时**不该**顺手打开抽屉。 */
         if (state.drawer && state.drawer.kind === "account" && state.drawer.id === a2) drawerAccount(a2);
-        toast("ok", `${a.name} 签到成功`, "获得 100 积分");
+        toast("ok", `${acc.name} 签到成功`, "获得 100 积分");
       } else if (a1 === "refresh-token") {
         toast("ok", "Token 已刷新", "凭据有效期已延长");
       } else if (a1 === "remark") {
         drawerAccount(a2, true); /* 真进编辑态：备注行变输入框 + 保存/取消 */
       } else if (a1 === "remark-save") {
-        const a = curScope().accounts.find((x) => x.id === a2);
         const inp = $("#remark-input");
-        if (a && inp) { a.remark = inp.value.trim(); renderAll(); drawerAccount(a2, false); toast("ok", "备注已保存", a.remark || "（已清空）"); }
+        if (acc && inp) { acc.remark = inp.value.trim(); renderAll(); drawerAccount(a2, false); toast("ok", "备注已保存", acc.remark || "（已清空）"); }
       } else if (a1 === "remark-cancel") {
         drawerAccount(a2, false);
       } else if (a1 === "export") {
@@ -4677,6 +5237,8 @@ document.addEventListener("click", (e) => {
 document.addEventListener("input", (e) => {
   const t = e.target;
   if (t.id === "acct-q") { state.q = t.value; renderAccountList(); return; }
+  /* 聚合页搜索：**只重绘列表区**，不重绘输入框（否则中文输入法连续组词会丢字）。 */
+  if (t.id === "agg-q") { state.aggQ = t.value; renderAggList(); return; }
   if (t.id === "palette-input") { state.palette.q = t.value; state.palette.cursor = 0; renderPalette(); return; }
   /* 回调链接要写回 state：倒计时每秒刷新时**不整块重绘**，但「解析」失败重绘时必须还在。 */
   if (t.id === "auth-cb" && state.auth) { state.auth.cb = t.value; return; }
@@ -4797,6 +5359,9 @@ $("#confirm-overlay").addEventListener("click", (e) => { if (e.target.id === "co
    这同时是「URL 是唯一真值」这条设计原则在原型里的体现。 */
 function bootFromUrl() {
   const p = new URLSearchParams(location.search);
+  /* 聚合页的可见性筛选**持久化**（R4 硬要求）：冷启动先读偏好，深链 `?aggvis=` 再覆盖。
+     读失败一律回退全量 —— 偏好坏了是小事，页面打不开是大事。 */
+  state.aggVisible = readAggVisible();
   if (p.get("scope") && SCOPES[p.get("scope")]) state.scope = p.get("scope");
   if (p.get("dest") && DESTINATIONS.some((d) => d.id === p.get("dest"))) state.dest = p.get("dest");
   if (p.get("gw")) state.gwSub = p.get("gw");
@@ -4817,6 +5382,17 @@ function bootFromUrl() {
     } else { state.rangeMode = "preset"; state.range = Number(r) || 30; }
   }
   if (p.get("q")) state.q = p.get("q");
+  /* 聚合视图（issue #50）也走深链，便于评审直接落到某个状态：
+     `?agg=1` / `?agg=1&aggmode=flat` / `?agg=1&aggfail=qoder-cn` / `?agg=1&aggnew=1`
+     / `?agg=1&aggvis=wb-cn:a1,trae-cn:t1`（可见性筛选集，逗号分隔的账号键）。 */
+  if (p.get("agg") === "1") state.agg = true;
+  if (p.get("aggmode") === "flat") state.aggMode = "flat";
+  if (p.get("aggfail")) p.get("aggfail").split(",").forEach((k) => { if (SCOPES[k]) state.aggFailed.add(k); });
+  if (p.get("aggnew") === "1") state.aggNewcomer = true;
+  if (p.get("aggvis")) {
+    const refs = p.get("aggvis").split(",").map((s) => s.trim()).filter((s) => aggAllRefs().has(s));
+    if (refs.length) state.aggVisible = new Set(refs);
+  }
   /* 错误态也走深链：?err=gateway / ?err=usage（可逗号分隔），便于直接复现。 */
   if (p.get("err")) p.get("err").split(",").forEach((k) => { if (k) state.errors[k] = true; });
   if (p.get("theme") === "light") { state.theme = "light"; document.documentElement.classList.remove("dark"); }

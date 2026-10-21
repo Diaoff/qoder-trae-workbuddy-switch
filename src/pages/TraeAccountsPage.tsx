@@ -83,6 +83,7 @@ import {
   SCHEDULE_CONFIG_KEY,
 } from "@/lib/schedule-config";
 import { traeVariantLabel, type TraeLogEntry } from "@/lib/trae-types";
+import { traeProgramsFor } from "@/lib/trae-programs";
 import {
   TRAE_VARIANT_FALLBACK,
   loadTraeVariantLogins,
@@ -1309,44 +1310,11 @@ export default function TraeAccountsPage() {
    * 迟早与状态条、详情弹窗的口径出现分歧。
    */
   function programsFor(account: TraeAccount): TraeProgram[] {
-    // ★ 2026-10-10（**用户要求，决策反转**）：**只取当前区域**的程序位。
-    //
-    //   原设计（P4 §1.4 / §5）是「跨区域常显 + 显示层消歧」：任意区域页面上都列出 4 个程序位，
-    //   跨区域那两枚可见但不可直接切（点了只是**引导切区域**）。实际效果是国内版页面上
-    //   一直挂着「TraeWork AI 国际版 / Trae AI 国际版」两枚按钮 —— 用户明确要求
-    //   **国内版不显示国际版的**。
-    //
-    //   改成本区域之后反而更自洽：账号库本就按区域分家（跨库切换会被后端守卫拒绝），
-    //   所以本区域页面只该谈本区域的客户端；要管另一条产品线，切作用域即可（顶栏 `ScopeSwitch`）。
-    //
-    //   ⚠️ **仍然禁止按 `program` 去重**：`TraeProgramStatus.program` 不含区域，
-    //      按它去重会把 `(cn, trae_work)` 与 `(global, trae_work)` 合并、丢掉「该写哪个客户端」。
-    //      `variant`（区域限定）才是切换目标、天然唯一。
-    return variantStatuses
-      .filter((status) => status.variant === variant)
-      .flatMap((status) =>
-      status.programs.map((program) => ({
-        // 来源区域（= 当前区域）。保留字段：抽屉徽标的 key 用它，且它标明「这个程序位属于哪条线」。
-        region: status.variant,
-        // 切换目标（区域限定）—— 真正喂给 `api.traeSwitchAccount` 的值。
-        variant: program.variant,
-        // 程序位标识（不含区域）：**只用于卡片按钮的可见短名**（`Work` / `Code`）。
-        // ⚠️ 绝不参与去重 —— 它不含区域，按它去重会丢掉「该写哪个客户端」。
-        program: program.program,
-        label: program.label,
-        installed: program.installed,
-        // ★ 「装了」不等于「能用」：客户端从未启动过时它的 userData 目录压根不存在
-        //   （本机：`Trae CN.exe` 装着、`%APPDATA%\Trae CN` 没有）⇒ 快照存不出也恢复不进，
-        //   这个程序位上的切换**永远不可能成功**。取**写侧**目录的存在性
-        //   （`writeDataDirExists`，与后端保存 / 恢复用的是同一个 `snapshot_data_dir_for`），
-        //   而不是读侧的 `dataDirExists` —— 后者在「一个变体多个候选目录」时会指向另一个目录。
-        hasDataDir: program.writeDataDirExists,
-        // 登录态是**客户端级**的：比的是 `userId`（身份）而不是 `name`（展示名）
-        // —— 后者改名即失配。`logins` 读不到时是 `null`，不能让 `null` 与空 userId 相互匹配。
-        current:
-          Boolean(account.userId) && logins[program.variant]?.userId === account.userId,
-      })),
-      );
+    /* ★ 实现已抽到 `lib/trae-programs.ts`（与聚合页**共用同一份**）。
+       留这个薄壳是为了本页内部 4 处调用点不用改签名。
+       判定要点（都在那份文件里）：只取当前区域、绝不按 `program` 去重、
+       `current` 比 `userId` 而不是展示名。 */
+    return traeProgramsFor(account, variant, variantStatuses, logins);
   }
   /**
    * **当前区域**的探测结果（含该区域的 `dataDir` / `dataDirExists`）。

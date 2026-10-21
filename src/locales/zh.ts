@@ -1,4 +1,5 @@
 import { zh as backup } from "./domains/backup.zh";
+import { zh as aggregate } from "./domains/aggregate.zh";
 import { zh as cache } from "./domains/cache.zh";
 import { zh as clientSettings } from "./domains/clientSettings.zh";
 import { zh as recycleBin } from "./domains/recycleBin.zh";
@@ -57,6 +58,7 @@ export const zh = {
   ...proxy,
   ...skillManager,
   ...clientSettings,
+  ...aggregate,
 } as const;
 
 /** 词表键。`en.ts` 以它为 `Partial` 的上界，故英文侧拼错键名会编译报错。 */

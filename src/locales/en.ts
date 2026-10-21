@@ -1,4 +1,5 @@
 import { en as backup } from "./domains/backup.en";
+import { en as aggregate } from "./domains/aggregate.en";
 import { en as cache } from "./domains/cache.en";
 import { en as clientSettings } from "./domains/clientSettings.en";
 import { en as recycleBin } from "./domains/recycleBin.en";
@@ -57,4 +58,5 @@ export const en: Partial<Record<TranslationKey, string>> = {
   ...proxy,
   ...skillManager,
   ...clientSettings,
+  ...aggregate,
 };

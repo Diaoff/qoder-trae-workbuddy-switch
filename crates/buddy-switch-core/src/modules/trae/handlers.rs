@@ -888,9 +888,14 @@ pub fn unsupported_note(capability: &str, label: &str, reason: &str) -> Value {
 ///
 /// ## 取哪个目录
 ///
-/// 走 [`crate::modules::trae::platform::select_data_dir_for`]（**读 / 展示侧**语义）：
+/// 走 [`resolve_open_dir`]（内部是 [`crate::modules::trae::platform::select_data_dir_for`]，
+/// **读 / 展示侧**语义）：
 /// 「该产品线最近被用过的那个 userData 目录」。找不到（该变体一个候选目录都不存在）时
 /// 返回**指向该变体**的错误，提示用户先启动一次对应客户端，而不是含糊的「未检测到」。
+///
+/// ⚠️ **测试不得调用本函数**：Windows 分支会真 `spawn explorer`，本机两个 TraeWork
+/// userData（`TRAE SOLO CN` / `TRAE SOLO`）都存在 ⇒ 每跑一次测试就在用户桌面弹一个
+/// 文件管理器窗口。要测定位与错误文案请用 [`resolve_open_dir`]（纯函数、零副作用）。
 pub fn open_data_dir(variant: TraeVariant) -> Result<Value, String> {
     if !cfg!(windows) {
         return Ok(crate::modules::trae::platform::Unsupported::new(
@@ -902,12 +907,7 @@ pub fn open_data_dir(variant: TraeVariant) -> Result<Value, String> {
         .to_json());
     }
 
-    let dir = crate::modules::trae::platform::select_data_dir_for(variant).ok_or_else(|| {
-        format!(
-            "未找到「{}」的 Trae 数据目录：请先启动一次该客户端，再打开目录。",
-            variant.display_name()
-        )
-    })?;
+    let dir = resolve_open_dir(variant)?;
 
     #[cfg(windows)]
     {
@@ -922,6 +922,27 @@ pub fn open_data_dir(variant: TraeVariant) -> Result<Value, String> {
         "path": dir.to_string_lossy(),
         "variant": variant.as_str(),
     }))
+}
+
+/// 定位「打开数据目录」要用的目录 —— **纯函数、零副作用**。
+///
+/// ## 为什么单独拆出来（2026-10-21 用户报障）
+///
+/// `open_data_dir` 的 Windows 分支会 `spawn explorer`，那是**真实副作用**：
+/// 本机 `%APPDATA%` 下 `TRAE SOLO` / `TRAE SOLO CN` 两个 userData 都真实存在
+/// （TraeWork 的候选表就含这两个名字），于是**每跑一次 `cargo test` 都会在用户
+/// 桌面上弹出一个「TRAE SOLO - 文件资源管理器」窗口**，看起来像「这个目录总是
+/// 莫名其妙被打开」。
+///
+/// 拆出本函数后，测试只调它（定位 + 错误文案），不触发 `explorer`；
+/// `open_data_dir` 仍是唯一「定位 + 打开」的实现，行为不变。
+pub fn resolve_open_dir(variant: TraeVariant) -> Result<std::path::PathBuf, String> {
+    platform::select_data_dir_for(variant).ok_or_else(|| {
+        format!(
+            "未找到「{}」的 Trae 数据目录：请先启动一次该客户端，再打开目录。",
+            variant.display_name()
+        )
+    })
 }
 
 /// 启动**指定变体**的 Trae 客户端。
@@ -1530,53 +1551,54 @@ mod tests {
     }
 
     /// `open_data_dir` 在非 Windows 上必须返回**结构化 Unsupported**（四个字段），
-    /// 而不是裸错误或假成功；Windows 上返回 `{ok,path,variant}`（路径可不存在但不得 panic）。
+    /// 而不是裸错误或假成功。
     ///
-    /// ## 为什么 Windows 分支容忍 Err（本用例曾经恒红）
+    /// ## ★ Windows 分支只测定位，绝不真打开（2026-10-21 用户报障）
     ///
-    /// 旧版无条件 `.expect("open_data_dir 不应 Err")`，于是**本机没装 Trae 时必然失败**，
-    /// 长期给整套 lib 测试挂一条假失败（真回归会被这条淹没）。而「该变体没有数据目录 ⇒ Err」
-    /// 其实是**正确行为**：
-    /// - `open_data_dir` 取 `select_data_dir_for(variant)`，后者是
-    ///   `data_dirs_by_activity_for(..).into_iter().next()`，而 `data_dirs_by_activity_for`
-    ///   里写着 `.filter(|dir| dir.is_dir())` —— **刻意只返回存在的目录**（与
-    ///   `detect_data_dir_for` 的「回落主候选名」相对，两者各有护栏用例）。
-    /// - 隔离用的 `HomeOverrideGuard` 改的是 `BUDDY_SWITCH_HOME`，**管不到** `data_dir_base()`
-    ///   （它读 `APPDATA`）⇒ 这个用例**根本没法**靠隔离 home 造出「有 Trae」的环境。
-    /// - 旧注释「隔离 home 下不一定真装了 Trae」本身就与无条件 `.expect` 自相矛盾。
+    /// `open_data_dir` 的 Windows 分支会 `spawn explorer`。本机 `%APPDATA%` 下
+    /// `TRAE SOLO` / `TRAE SOLO CN` 两个 userData 都真实存在（TraeWork 候选表就是
+    /// 这两个名字，按活跃度取首项 ⇒ 落到 `TRAE SOLO`），于是**旧用例每跑一次
+    /// `cargo test` 就在用户桌面弹一个「TRAE SOLO - 文件资源管理器」窗口** ——
+    /// 被当成「这个目录莫名其妙自己打开」。因此 Windows 分支改为只调纯函数
+    /// [`resolve_open_dir`]，不触发任何进程。
     ///
-    /// ⚠️ **刻意不去造一个假数据目录**：真拿到目录时 Windows 分支会 `spawn explorer`
-    /// ⇒ 每次跑测试都会在用户桌面上弹出文件管理器窗口。故这里只钉住「Err 必须可读且指名变体」。
+    /// ## 为什么隔离 home 造不出「没有 Trae」
+    ///
+    /// `HomeOverrideGuard` 改的是 `BUDDY_SWITCH_HOME`，**管不到** `data_dir_base()`
+    /// （它读 `APPDATA`）⇒ 本机永远能定位到真实目录。所以 Windows 分支只能二选一
+    /// 断言（Ok ⇒ 是已存在目录 / Err ⇒ 文案点名变体），不能假定走哪一支。
     #[test]
     fn open_data_dir_is_structured_unsupported_off_windows() {
-        let dir = std::env::temp_dir().join(format!("trae-opendir-{}", std::process::id()));
-        let _ = std::fs::create_dir_all(&dir);
-        let _guard = crate::modules::config::HomeOverrideGuard::set(&dir);
-
-        let value = match open_data_dir(TraeVariant::TraeWork) {
-            Ok(value) => value,
-            Err(error) => {
-                // 「没找到数据目录」是**合法结果**（本机没装 Trae 时必然走到这里）。
-                // 但必须响亮、可读、且点名是哪个变体，不能是空串或 panic。
-                assert!(
-                    error.contains("未找到"),
-                    "Err 必须说明是「没找到数据目录」，实际: {error}"
-                );
-                assert!(
-                    error.contains(TraeVariant::TraeWork.display_name()),
-                    "Err 必须点名变体，实际: {error}"
-                );
-                return;
-            }
-        };
+        // ★ Windows 上**不许**调 `open_data_dir`：它真的会 `spawn explorer`。本机
+        //   `%APPDATA%` 下 `TRAE SOLO` 与 `TRAE SOLO CN` 两个 userData 都存在
+        //   （TraeWork 候选表正是这两个名字）⇒ 旧用例每跑一次 `cargo test` 就在用户
+        //   桌面弹一个「TRAE SOLO - 文件资源管理器」窗口。这里只测**纯函数**
+        //   `resolve_open_dir`：Ok ⇒ 必须是已存在目录；Err ⇒ 文案可读且点名变体。
         if cfg!(windows) {
-            // 真装了 Trae 才可能走到这里；能拿到 ok+path 就够（实际打开是宿主副作用）。
-            assert!(value.get("ok").is_some() || value.get("capability").is_some());
-        } else {
-            assert_eq!(value["capability"], "open_data_dir");
-            assert_eq!(value["supportedOn"], "Windows");
-            assert!(value.get("reason").is_some());
-            assert!(value.get("ok").is_none(), "非 Windows 不得返回假成功");
+            match resolve_open_dir(TraeVariant::TraeWork) {
+                Ok(dir) => assert!(
+                    dir.is_dir(),
+                    "定位结果必须是已存在的目录（select_data_dir_for 只返回存在的候选）: {}",
+                    dir.display()
+                ),
+                Err(error) => {
+                    assert!(
+                        error.contains("未找到"),
+                        "Err 必须说明是「没找到数据目录」，实际: {error}"
+                    );
+                    assert!(
+                        error.contains(TraeVariant::TraeWork.display_name()),
+                        "Err 必须点名变体，实际: {error}"
+                    );
+                }
+            }
+            return;
         }
+
+        let value = open_data_dir(TraeVariant::TraeWork).expect("非 Windows 走 Unsupported 分支");
+        assert_eq!(value["capability"], "open_data_dir");
+        assert_eq!(value["supportedOn"], "Windows");
+        assert!(value.get("reason").is_some());
+        assert!(value.get("ok").is_none(), "非 Windows 不得返回假成功");
     }
 }

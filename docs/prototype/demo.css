@@ -1379,3 +1379,151 @@ tr.row-off td { opacity: .62; }
 .stat .d2 { font-size: 10.5px; color: var(--muted-fg); margin-top: 3px; font-variant-numeric: tabular-nums; }
 
 /* ══════════════════════════════════════════════════════════════════════════
+   聚合账号面板（issue #50）
+   一个与「看某个作用域」并列的**视图模式**：没有侧栏，顶栏下方直接铺 6 个作用域
+   的全部账号卡。卡片本身复用 `.acct`（一像素不改），这里只补外围。
+   ══════════════════════════════════════════════════════════════════════════ */
+
+/* 聚合态没有左侧导航栏。用 class 隐藏而不是清空 DOM：退出聚合时不必重建侧栏。 */
+body.agg-mode .sidebar { display: none; }
+
+/* 无侧栏 ⇒ 内容区更宽；上边距为 0（工具栏自己吸顶）。 */
+.agg-page { max-width: 1560px; margin: 0 auto; padding: 0 24px 64px; }
+
+/* ── 吸顶工具栏 ── */
+.agg-bar {
+  position: sticky; top: 0; z-index: 30;
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  padding: 13px 0 11px;
+  background: color-mix(in oklab, var(--background) 90%, transparent);
+  backdrop-filter: blur(12px);
+  border-bottom: 1px solid var(--border);
+}
+.agg-search { max-width: 320px; }
+.agg-filter-wrap { position: relative; }
+/* 筛选生效时按钮本身必须**持续可见地亮着**，否则用户想不起自己筛过。 */
+.btn.on-filter {
+  border-color: color-mix(in oklab, var(--primary) 55%, transparent);
+  background: color-mix(in oklab, var(--primary) 12%, transparent);
+  color: var(--primary);
+}
+
+/* 计数 / 筛选提示。生效时是一枚**带底色的常驻 pill** —— 持久化偏好最容易造成
+   「我的账号怎么少了」，提示弱一点就等于没提示（不是灰字、更不是一次性 toast）。 */
+.agg-count { font-size: 12px; color: var(--muted-fg); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.agg-count b { color: var(--foreground); font-weight: 600; }
+.agg-count.filtered {
+  display: inline-flex; align-items: center; gap: 2px; height: 30px; padding: 0 4px 0 10px;
+  border-radius: 9px; color: var(--primary);
+  background: color-mix(in oklab, var(--primary) 13%, transparent);
+  border: 1px solid color-mix(in oklab, var(--primary) 30%, transparent);
+}
+.agg-count.filtered b { color: var(--primary); }
+
+/* ── 作用域分组 ── */
+.agg-group { margin-top: 20px; }
+.agg-group:first-child { margin-top: 14px; }
+.agg-group-head { display: flex; align-items: center; gap: 8px; padding: 0 2px 10px; }
+.agg-gh-meta { font-size: 11.5px; color: var(--muted-fg); font-variant-numeric: tabular-nums; }
+.agg-gh-meta b { color: var(--foreground); font-weight: 550; }
+.agg-gh-btn { opacity: 0; transition: opacity .12s; }
+.agg-group:hover .agg-gh-btn, .agg-gh-btn:focus-visible { opacity: 1; }
+
+/* 网格：3 列为主，4 列只在超宽屏。
+   WB 卡页脚有 5 个程序位胶囊 + 更多按钮，单行不换行约需 256px；指标行约需 250px。
+   ⇒ ≥1600 才 4 列；1101–1599 三列（1280 笔记本就是这一档）；761–1100 两列。 */
+.agg-grid { display: grid; gap: 12px; grid-template-columns: minmax(0, 1fr); }
+@media (min-width: 761px)  { .agg-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (min-width: 1101px) { .agg-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+@media (min-width: 1600px) { .agg-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); } }
+
+/* 指标行撑开，让页脚（程序位 + 更多）落在卡片底部 —— 同行等高。
+   只作用于聚合页：账号页保持原样，避免把「聚合页的修正」变成全站视觉改动。 */
+.agg-grid .acct > .acct-metrics { flex: 1; align-items: flex-start; }
+
+/* 平铺视图的「归属说明」：一行极轻的小字，**不是第二枚 badge** ——
+   否则它和下面的状态 chips 会形成两行徽章，用户分不清哪个是状态。 */
+.acct-scope-line { display: flex; align-items: center; gap: 5px; margin-top: -3px; font-size: 10.5px; color: var(--muted-fg); }
+.acct-scope-line .scope-mark { width: 14px; height: 14px; border-radius: 4px; }
+.acct-scope-line .scope-mark svg { width: 9px; height: 9px; }
+
+/* ── 三种「空」必须彼此可辨 ──
+   ① 加载失败：组内一整行虚线红卡 + 重试（不是顶部 banner：6 个失败会堆 6 条） */
+.agg-fail {
+  grid-column: 1 / -1; display: flex; align-items: center; gap: 10px; padding: 13px 15px;
+  border-radius: var(--radius); font-size: 12.5px;
+  border: 1px dashed color-mix(in oklab, var(--destructive) 45%, var(--border));
+  background: color-mix(in oklab, var(--destructive) 6%, transparent);
+}
+.agg-fail .ico {
+  width: 26px; height: 26px; border-radius: 8px; display: grid; place-items: center; flex-shrink: 0;
+  background: color-mix(in oklab, var(--destructive) 16%, transparent); color: var(--destructive);
+}
+.agg-fail .ico svg { width: 14px; height: 14px; }
+.agg-fail .t { flex: 1; min-width: 0; }
+.agg-fail .t b { display: block; font-weight: 550; color: var(--foreground); }
+.agg-fail .t span { display: block; font-size: 11.5px; color: var(--muted-fg); margin-top: 1px; }
+
+/* ② 未安装 / 没有账号：一行虚线说明，不占卡片位，也不渲染组标题（说明行里已带 chip） */
+.agg-note {
+  display: flex; align-items: center; gap: 8px; padding: 11px 14px; border-radius: 10px;
+  border: 1px dashed var(--border-strong); color: var(--muted-fg); font-size: 12px;
+}
+.agg-note svg { width: 14px; height: 14px; flex-shrink: 0; }
+.agg-note b { color: var(--foreground); font-weight: 550; }
+/* Q3 方案 C 的新增账号提示：实线 + 警告色，与「未安装」那种灰虚线区分开 */
+.agg-newcomer {
+  margin-top: 12px; border-style: solid; color: var(--warning);
+  border-color: color-mix(in oklab, var(--warning) 40%, var(--border));
+  background: color-mix(in oklab, var(--warning) 7%, transparent);
+}
+
+/* ── 筛选面板 ──
+   应用后生效（不 live）：面板盖住了列表，live 改动用户根本看不见。 */
+.filter-pop {
+  position: absolute; top: calc(100% + 6px); left: 0; z-index: 50; width: 352px;
+  display: flex; flex-direction: column; max-height: min(66vh, 540px);
+  border-radius: 12px; background: var(--popover); border: 1px solid var(--border-strong);
+  box-shadow: var(--shadow-lg); overflow: hidden;
+}
+.fp-head { padding: 11px 12px 9px; border-bottom: 1px solid var(--border); }
+.fp-head b { display: block; font-size: 12.5px; font-weight: 600; }
+.fp-head span { display: block; font-size: 10.5px; color: var(--muted-fg); margin-top: 3px; line-height: 1.5; }
+.fp-list { flex: 1; overflow-y: auto; padding: 4px 6px 6px; }
+.fp-sep { height: 1px; margin: 5px 7px; background: var(--border); }
+.fp-row {
+  display: flex; align-items: center; gap: 9px; width: 100%; padding: 7px;
+  border-radius: 8px; text-align: left; transition: background .12s;
+}
+.fp-row:hover { background: var(--accent); }
+.fp-row .t { flex: 1; min-width: 0; display: flex; flex-direction: column; line-height: 1.3; }
+.fp-row .t b { font-size: 12.5px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.fp-row .t span { font-size: 10.5px; color: var(--muted-fg); }
+.fp-row .n { font-size: 10.5px; color: var(--muted-fg); font-variant-numeric: tabular-nums; }
+.fp-row .scope-mark { width: 22px; height: 22px; border-radius: 7px; }
+.fp-row .scope-mark svg { width: 12px; height: 12px; }
+.fp-acc { padding-left: 30px; }
+.fp-acc .av {
+  width: 20px; height: 20px; border-radius: 6px; display: grid; place-items: center;
+  font-size: 9.5px; font-weight: 640; color: oklch(0.99 0 0); flex-shrink: 0;
+}
+.fp-foot {
+  display: flex; align-items: center; gap: 8px; padding: 10px 12px;
+  border-top: 1px solid var(--border); background: var(--card);
+}
+.fp-foot .sum { flex: 1; font-size: 11.5px; color: var(--muted-fg); font-variant-numeric: tabular-nums; }
+.fp-foot .sum b { color: var(--foreground); font-weight: 600; }
+
+/* 三态勾选（全选 / 部分 / 未选）。**勾选区与展开区是两个命中区** ——
+   点整行就切换全选，会让「想展开看看有哪些号」这个纯浏览动作顺手清空整组选择。 */
+.fcheck {
+  width: 15px; height: 15px; border-radius: 4px; border: 1.5px solid var(--border-strong);
+  display: grid; place-items: center; flex-shrink: 0; transition: all .12s;
+}
+.fcheck svg { width: 10px; height: 10px; }
+.fcheck.on, .fcheck.part { background: var(--primary); border-color: var(--primary); color: var(--primary-fg); }
+
+/* ── 作用域菜单里的「聚合」分组 ──
+   分隔线 + 独立分组标题让「聚合 ≠ 第 7 个作用域」在视觉上成立。 */
+.scope-menu .sep { height: 1px; margin: 5px 8px; background: var(--border); }
+.scope-menu .scope-item .t b .dim { color: var(--muted-fg); font-weight: 400; }

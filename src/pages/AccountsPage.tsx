@@ -17,6 +17,7 @@ import {
 import { AccountMoreMenu } from "@/components/account-more-menu";
 import { AccountCard, accountIdentity, accountDisplayName, formatCredits, formatCreditExpiry, formatTodayTokens, todayTokensBreakdown, type GuideTarget } from "@/components/account-card";
 import { REFRESH_DONE_LABEL, useAccountRefreshBusy, type AccountRefreshKind } from "@/lib/account-refresh";
+import { isWorkbuddyCurrent } from "@/lib/account-current";
 import { AccountsTableAvatar } from "@/components/account-list-parts";
 import { AccountWorkbench } from "@/components/account-workbench";
 import { type AccountColumn } from "@/components/account-table";
@@ -134,13 +135,10 @@ function creditPriorityRank(credit?: CreditExpiry): number {
   return 2;
 }
 
-function isWorkbuddyCurrent(account: AccountMeta, current: AppStatus["current"] | undefined): boolean {
-  if (!current) return false;
-  return Boolean(
-    (current.uid && (account.uid === current.uid || account.id === current.uid)) ||
-      (current.email && account.email === current.email),
-  );
-}
+/**
+ * 「这个账号是不是客户端当前登录的那个」—— 判定已抽到 `lib/account-current.ts`，
+ * 与聚合页**共用同一份**（两处各写一份会出现「账号页有徽章、聚合页没有」）。
+ */
 
 /**
  * 并行查询今日签到；失败的账号不写入，由调用方保留原值。

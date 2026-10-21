@@ -1,5 +1,5 @@
 import { Suspense, lazy, useEffect, useMemo, useRef, useState, type ComponentType, type ElementType } from "react";
-import { BrowserRouter, HashRouter, Navigate, NavLink, Outlet, Route, Routes, useLocation, useNavigate, useParams } from "react-router-dom";
+import { BrowserRouter, HashRouter, Navigate, NavLink, Outlet, Route, Routes, useLocation, useMatch, useNavigate, useParams } from "react-router-dom";
 import { ArrowUp, Coffee, GitBranch, LayoutDashboard, MessagesSquare, Monitor, Server, Settings, User } from "lucide-react";
 import { toast } from "sonner";
 
@@ -49,6 +49,15 @@ import type { TraeVariantStatus } from "@/lib/trae-types";
 // `api::tests::embedded_index_html_references_only_embedded_assets` 会兜住产物一致性。
 // ---------------------------------------------------------------------------
 const AccountsPage = lazy(() => import("@/pages/AccountsPage"));
+/**
+ * 聚合账号面板（issue #50）。
+ *
+ * ⚠️ 它**不是第 7 个作用域**：`Scope` 是封闭字面量 `${平台}-${区域}`，而 `SCOPES`
+ * 的长度被三处门禁钉死为 6（作用域数量 / 注册表一致性 / 快捷键序号）。
+ * 塞一个 `aggregate` 进去会同时破坏这三处 —— 所以它走独立路由 `/aggregate`，
+ * 与 `/s/:scope/:dest` 并列，并且在 `Layout` 里**不渲染侧栏**（见 `bareShell`）。
+ */
+const AggregateAccountsPage = lazy(() => import("@/pages/AggregateAccountsPage"));
 const ApiServicePage = lazy(() => import("@/pages/ApiServicePage"));
 const SettingsPage = lazy(() => import("@/pages/SettingsPage"));
 const OverviewPage = lazy(() => import("@/pages/OverviewPage"));
@@ -584,6 +593,18 @@ function Layout() {
   const product: Product = productFromPath(location.pathname);
 
   /**
+   * ★ 聚合视图 = **裸壳路由**（issue #50 D5）。
+   *
+   * 它没有左侧导航栏：侧栏那 6 个目的地（概览 / 账号 / 用量 / 会话 / 网关 / 设置）
+   * **全部是单作用域概念**，聚合下没有「概览」「用量」—— 留着只会让人点了落回某个
+   * 作用域，制造「我明明在聚合页」的矛盾。
+   *
+   * ⚠️ `Layout` 只知道「这条路由不要侧栏」，**不知道「聚合」这件事** ——
+   * 判断放在路由形状上，外壳的职责仍然是纯外壳（不塞业务概念）。
+   */
+  const bareShell = Boolean(useMatch("/aggregate"));
+
+  /**
    * ★ 当前作用域（L1）= 平台 × 区域，顶栏与侧栏都读它。
    *
    * - **平台**来自路由；**区域**也来自 URL（`/s/{scope}/{dest}` 的路径段优先）。
@@ -743,6 +764,13 @@ function Layout() {
    * `/s/{scope}/{dest}`——**URL 仍是唯一真值**，记忆只决定下次冷启动落到哪。
    */
   function selectScope(next: Scope) {
+    /* 从聚合页选任一作用域 = 离开聚合。目的地固定为**账号页**：
+       聚合页的主任务就是账号，回到「你上次看的那个非账号页面」反而意外。 */
+    if (bareShell) {
+      writeLastScope(window.localStorage, next);
+      navigate(`/s/${next}/accounts`);
+      return;
+    }
     if (next === scope) return;
     writeLastScope(window.localStorage, next);
     navigate(scopeShortcutTarget(next, currentDest));
@@ -792,10 +820,14 @@ function Layout() {
         searchLabel={t("palette.entry")}
         onOpenSearch={() => setPaletteOpen(true)}
         onRefresh={refreshCurrentScope}
+        aggregateMode={bareShell}
+        onSelectAggregate={() => navigate("/aggregate")}
       />
 
       <div className="flex min-h-0 flex-1">
-        {/* ══ 侧栏（L2 目的地）：品牌 + 导航 + 版本行。不随产品换血（§3.2） ══ */}
+        {/* ══ 侧栏（L2 目的地）：品牌 + 导航 + 版本行。不随产品换血（§3.2） ══
+            ⚠️ 裸壳路由（聚合视图）下整块不渲染 —— 那 6 个目的地全是单作用域概念。 */}
+        {bareShell ? null : (
         <aside className="flex min-h-0 w-[240px] shrink-0 flex-col border-r border-sidebar-border bg-sidebar px-3 pb-3 pt-3.5">
           {/* 品牌块（原型 `.brand` / `.brand-mark`，`demo.css:136-141`）：32px 图标底 + 双行文案。
               ⚠️ 图标必须带 `primary 18%` 底色 —— 原型不是「裸图标」（此前写 15%，偏淡）。*/}
@@ -867,11 +899,14 @@ function Layout() {
             )}
           </section>
         </aside>
+        )}
 
         {/* ══ 内容区（L3 视图参数）：懒加载页面 ══ */}
         <main className="min-w-0 flex-1 overflow-y-auto bg-background overscroll-contain">
-          {/* P6：首次引导条（可关闭 + 持久化；内容由真实绑定派生，降级项不列）。 */}
-          <FirstRunHint />
+          {/* P6：首次引导条（可关闭 + 持久化；内容由真实绑定派生，降级项不列）。
+              ⚠️ 裸壳路由下不渲染：它的文案是「去账号页勾选多项 / 点卡片开抽屉」，
+              在聚合页上指错了地方。 */}
+          {bareShell ? null : <FirstRunHint />}
           {/* 懒加载页面在这里挂起。Suspense **必须留在路由层**：
               放在更外层会让侧栏一起被 fallback 替换（切页时整屏闪），
               放在页面内部则页面自己的 chunk 还没到、根本没人接住 Suspense。 */}
@@ -898,6 +933,10 @@ export default function App() {
             {/* P2：作用域路由 —— `/s/{scope}/{dest}`（如 `/s/wb-global/accounts`）。
                 ⚠️ 与下面的旧路由**并存**：旧路由不删 ⇒ 旧书签与外部链接继续可达（P2 验收项）。 */}
             <Route path="/s/:scope/:dest" element={<ScopedDestination />} />
+            {/* 聚合账号面板（issue #50）：独立路由、与 `/s/:scope/:dest` 并列。
+                ⚠️ **不进 `SCOPED_ROUTES`** —— 门禁断言「每个 dest 在作用域路由里恰好 3 次」，
+                把聚合塞进去会红；而它本来也不是一个 dest（dest 是单作用域内的页面）。 */}
+            <Route path="/aggregate" element={<AggregateAccountsPage />} />
             <Route path="/overview" element={<OverviewPage />} />
             <Route path="/" element={<AccountsPage />} />
             <Route path="/credit-stats" element={<UsagePage defaultTab="credits" />} />

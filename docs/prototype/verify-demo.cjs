@@ -277,14 +277,25 @@ function check(name, fn) {
      菜单本就是从 SCOPES 生成的，对拍恒真（永远绿）。写死才是对
      「3 平台 × 2 区域」这条**设计意图**的钉死。 */
   check("作用域菜单列出 6 个作用域（3 平台 × 2 区域）", () => {
-    const n = $$("#scope-menu .scope-item").length;
+    /* `:not(.agg-entry)` —— 菜单第一项是「聚合」入口（issue #50），它**不是作用域**
+       （`Scope` 是封闭字面量 `${平台}-${区域}`，塞进去会同时破坏类型、注册表一致性与
+       快捷键序号）。所以数作用域时要把它排除掉，而不是把 6 改成 7。 */
+    const n = $$("#scope-menu .scope-item:not(.agg-entry)").length;
     if (n !== 6) throw new Error("实际 " + n + " 个，期望 6 个");
     return true;
+  });
+  check("★ 作用域菜单第一项是「聚合」入口，且与 6 个作用域用分隔线隔开", () => {
+    const items = $$("#scope-menu .scope-item");
+    if (!items.length) throw new Error("菜单是空的");
+    if (!items[0].classList.contains("agg-entry")) throw new Error("第一项不是聚合入口");
+    if (items.filter((b) => b.classList.contains("agg-entry")).length !== 1) throw new Error("聚合入口应恰好一项");
+    if (!$("#scope-menu .sep")) throw new Error("聚合入口与作用域之间没有分隔线（视觉上会像第 7 个作用域）");
+    return "第一项 + 分隔线";
   });
   check("作用域菜单含 Qoder 的两个区域", () => {
     /* ⚠️ 按钮的 textContent 含换行（模板是多行的）⇒ 必须归一成单行再比对，
        否则失败信息会被换行撑成一大段，读不出到底缺哪个。 */
-    const labels = $$("#scope-menu .scope-item").map((b) => b.textContent.replace(/\s+/g, " ").trim());
+    const labels = $$("#scope-menu .scope-item:not(.agg-entry)").map((b) => b.textContent.replace(/\s+/g, " ").trim());
     for (const want of ["Qoder 国内版", "Qoder 国际版"]) {
       if (!labels.some((l) => l.includes(want))) throw new Error("缺少「" + want + "」：" + labels.join(" / "));
     }
