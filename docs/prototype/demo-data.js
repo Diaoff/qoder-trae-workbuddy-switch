@@ -258,6 +258,9 @@ const SCOPES = {
     id: "wb-cn", platform: "workbuddy", region: "cn",
     running: true, installed: true, version: "2.14.3",
     todayCredits: 46, gatewayRequests: 312, gatewayKeys: 3, checkinReward: 100,
+    /* ★ 客户端是否接入本机网关（P12 请求代理）。决定「账本」视图的对账结论：
+       true ⇒ 客户端 ⊆ 网关（合计 = 网关 + 直连客户端）；false ⇒ 两本账独立（合计 = 相加 − 重叠）。 */
+    proxy: true,
     accounts: [
       makeAccount("a1", "jackey", "jackey@example.com", {
         remark: "主号 · 长期", credits: 1240, creditsTotal: 2000,
@@ -305,6 +308,8 @@ const SCOPES = {
     id: "wb-global", platform: "workbuddy", region: "global",
     running: false, installed: true, version: "2.14.3",
     todayCredits: 7, gatewayRequests: 26, gatewayKeys: 1, checkinReward: 100,
+    /* 国际版这台没开请求代理 ⇒ 两本账独立（合计 = 相加 − 重叠），用来对照 wb-cn 的子集关系。 */
+    proxy: false,
     accounts: [
       makeAccount("g1", "jackey-global", "jackey@global.example.com", {
         remark: "国际版主号", credits: 720, creditsTotal: 1000,
@@ -441,6 +446,137 @@ function credit(when, minsAgo, account, delta, note) {
 
    一条硬约束：**堆叠柱各分段之和必须精确等于当日总量**（最后一段吃掉舍入余数），
    否则「堆叠柱总高」与「单色柱高度」会对不上，是能被一眼看穿的假数据。 */
+/* ─────────── 网关账本（issue #63）───────────
+   设计依据：`docs/specs/USAGE-GATEWAY-UI-REDESIGN.md`。
+   三条硬约束，改这里之前先读：
+   ① **按模型 / 按账号 / 按端点三者的合计必须都等于网关总量**（否则页面上的「按模型合计 = 网关卡」当场破功）；
+   ② **对账结果必须与 `proxy` 一致**：`proxy:true` ⇒ 客户端 ⊆ 网关（匹配率 ~92%，判 subset）；
+      `proxy:false` ⇒ 两本账独立（匹配率 ~6%，判 independent）。这是这个设计要证明的那件事；
+   ③ 积分同理：余额口径（consumed）**恒大于**请求口径（byRequest），差额是「未归因」，
+      绝不能被摊到任何来源上。 */
+function buildLedger(scopeId, u, modelDays) {
+  const scope = SCOPES[scopeId];
+  const proxied = Boolean(scope.proxy);
+
+  const clientDays = u.days.map((d) => d.value);
+  const clientTokens = clientDays.reduce((a, b) => a + b, 0);
+  const gwFactor = proxied ? 5.6 : 1.4;
+
+  /* 网关逐日：按客户端的形状放大，末位吃余数保证合计一致 */
+  const gwRaw = clientDays.map((v, i) => v * gwFactor * (0.82 + ((i * 31) % 40) / 100));
+  const gwRawSum = gwRaw.reduce((a, b) => a + b, 0) || 1;
+  const gatewayTokens = Math.round(clientTokens * gwFactor);
+  let accGw = 0;
+  const gatewayDays = gwRaw.map((v, i) => {
+    const out = i === gwRaw.length - 1 ? gatewayTokens - accGw : Math.round((v / gwRawSum) * gatewayTokens);
+    accGw += out;
+    return Math.max(0, out);
+  });
+
+  /* 网关模型：客户端模型放大 + 一个「仅网关」的 auto（真实网关里 auto 路由会出现） */
+  const rawModels = u.models.length
+    ? u.models.map((m, i) => ({ name: m.name, w: m.tokens * (i === 0 ? 1.3 : 0.62) }))
+    : [{ name: "claude-sonnet-4.5", w: 1 }];
+  rawModels.push({ name: "auto", w: gatewayTokens * 0.004 });
+  const modelW = rawModels.reduce((a, m) => a + m.w, 0) || 1;
+  let accM = 0;
+  const gatewayModels = rawModels.map((m, i) => {
+    const out = i === rawModels.length - 1
+      ? gatewayTokens - accM
+      : Math.round((m.w / modelW) * gatewayTokens);
+    accM += out;
+    const req = Math.max(1, Math.round(out / 148000));
+    return { name: m.name, tokens: Math.max(0, out), req };
+  });
+
+  /* 网关的**逐日 × 模型**拆分（「模型」tab 的每日按模型堆叠图要用）。
+     与 modelDays 同一手法：每天按权重摊，末位吃余数 ⇒ 每列之和 === 当日网关总量。 */
+  const gwModelDays = gatewayModels.map((m) => ({ name: m.name, values: [] }));
+  gatewayDays.forEach((dayTotal, i) => {
+    const w = gatewayModels.map((m, k) => m.tokens * (0.8 + ((i * 29 + k * 47) % 40) / 100));
+    const wsum = w.reduce((a, b) => a + b, 0) || 1;
+    let acc = 0;
+    gatewayModels.forEach((m, k) => {
+      const v = k === gatewayModels.length - 1 ? Math.max(0, dayTotal - acc) : Math.round((dayTotal * w[k]) / wsum);
+      acc += v;
+      gwModelDays[k].values.push(Math.max(0, v));
+    });
+  });
+
+  /* 网关账号：取本作用域前 3 个账号按 5:3:2 摊 */
+  const accNames = (scope.accounts || []).slice(0, 3).map((a) => a.name);
+  const shares = [0.52, 0.34, 0.14];
+  let accA = 0;
+  const gatewayAccounts = (accNames.length ? accNames : ["unknown"]).map((name, i, arr) => {
+    const out = i === arr.length - 1 ? gatewayTokens - accA : Math.round(gatewayTokens * (shares[i] ?? 0.1));
+    accA += out;
+    return { name, tokens: Math.max(0, out), req: Math.max(1, Math.round(out / 148000)) };
+  });
+
+  /* 端点：chat 96% / messages 2% / responses 2% */
+  const gatewayRows = Math.max(1, Math.round(gatewayTokens / 148000));
+  const epChat = Math.round(gatewayRows * 0.96);
+  const epMsg = Math.round(gatewayRows * 0.02);
+  const gatewayEndpoints = [
+    { name: "/v1/chat/completions", req: epChat },
+    { name: "/v1/messages", req: epMsg },
+    { name: "/v1/responses", req: Math.max(0, gatewayRows - epChat - epMsg) },
+  ];
+
+  /* 对账 */
+  const clientRows = Math.max(1, Math.round(clientTokens / 42000));
+  const matchedRatio = proxied ? 0.92 : 0.06;
+  const matched = Math.round(clientRows * matchedRatio);
+  const matchedTokens = Math.round(clientTokens * matchedRatio);
+  const verdict = proxied ? "subset" : "independent";
+  const failed = Math.max(1, Math.round(gatewayRows * 0.04));
+
+  /* 积分：两个口径（余额口径 = 请求口径 + 未归因） */
+  const creditOf = (tokens) => +(tokens / 34000).toFixed(1);
+  const clientCredit = creditOf(clientTokens);
+  const gatewayCredit = creditOf(gatewayTokens);
+  const overlapCredit = +(clientCredit * matchedRatio).toFixed(1);
+  const byRequest = +(clientCredit + gatewayCredit - overlapCredit).toFixed(1);
+  const gap = +(byRequest * 0.06).toFixed(1);
+  const consumed = +(byRequest + gap).toFixed(1);
+
+  /* 客户端模型用量**必须取 modelDays 的逐日合计**：`u.models[].tokens` 是示意量，
+     不等于 days 的合计 —— 拿它算占比会得出「五个模型加起来只有 34%」。 */
+  const clientModelTotals = (modelDays || []).map((m) => ({
+    name: m.name,
+    tokens: m.values.reduce((a, b) => a + b, 0),
+  }));
+  const creditShare = (list, total, totalCredit) =>
+    list.map((m) => ({
+      name: m.name,
+      v: +(totalCredit * (m.tokens / (total || 1))).toFixed(1),
+      /* 客户端模型没有请求数字段（modelDays 只存逐日 Token）⇒ 按均值折算，别写成 0。 */
+      req: m.req ?? Math.max(1, Math.round((m.tokens || 0) / 42000)),
+    }));
+  const dailyCredit = (values, totalTokens, totalCredit) =>
+    values.map((v) => +(totalCredit * (v / (totalTokens || 1))).toFixed(1));
+
+  return {
+    proxied, verdict,
+    client: { tokens: clientTokens, requests: clientRows, days: clientDays },
+    gateway: {
+      tokens: gatewayTokens, requests: gatewayRows, failed,
+      days: gatewayDays, models: gatewayModels, modelDays: gwModelDays,
+      accounts: gatewayAccounts, endpoints: gatewayEndpoints,
+      coverage: `${u.days.length}/${u.days.length} 天`,
+    },
+    recon: { clientRows, gatewayRows, matched, matchedTokens, ratio: matchedRatio },
+    credits: {
+      client: clientCredit, gateway: gatewayCredit, overlap: overlapCredit,
+      byRequest, consumed, gap,
+      clientModels: creditShare(clientModelTotals, clientTokens, clientCredit),
+      gatewayModels: creditShare(gatewayModels, gatewayTokens, gatewayCredit),
+      dailyClient: dailyCredit(clientDays, clientTokens, clientCredit),
+      dailyGateway: dailyCredit(gatewayDays, gatewayTokens, gatewayCredit),
+    },
+  };
+}
+
 function buildUsageExtras(scopeId) {
   const u = USAGE[scopeId];
   const scope = SCOPES[scopeId];
@@ -508,7 +644,25 @@ function buildUsageExtras(scopeId) {
   /* 8. 会话散点：x = 消息数，y = Token（气泡大小随 Token） */
   const scatter = u.sessions.map((s) => ({ x: s.msgs, y: s.tokens, label: s.title }));
 
-  return { modelDays, hourly, creditDaily, balance, expiry, accountShare, statusCodes, scatter, curTotal };
+  /* ★ 积分两个口径必须**同一个量级**：余额口径取 `creditDaily.outAmt` 的合计（权威），
+     请求口径按 token 折算出来，两者若各写一套数，差额会大到像 bug（实测 57%）。
+     ⇒ 按比例把请求口径缩放到「余额口径 / 1.06」，让差额稳定在 ~6%（= 未归因）。 */
+  const ledger = buildLedger(scopeId, u, modelDays);
+  const consumedOut = creditDaily.reduce((a, d) => a + d.outAmt, 0);
+  const target = consumedOut / 1.06;
+  const k = ledger.credits.byRequest ? target / ledger.credits.byRequest : 1;
+  for (const key of ["client", "gateway", "overlap", "byRequest"]) {
+    ledger.credits[key] = +(ledger.credits[key] * k).toFixed(1);
+  }
+  for (const list of [ledger.credits.clientModels, ledger.credits.gatewayModels]) {
+    for (const m of list) m.v = +(m.v * k).toFixed(1);
+  }
+  ledger.credits.dailyClient = ledger.credits.dailyClient.map((v) => +(v * k).toFixed(1));
+  ledger.credits.dailyGateway = ledger.credits.dailyGateway.map((v) => +(v * k).toFixed(1));
+  ledger.credits.consumed = +consumedOut.toFixed(1);
+  ledger.credits.gap = +Math.max(0, consumedOut - ledger.credits.byRequest).toFixed(1);
+
+  return { modelDays, hourly, creditDaily, balance, expiry, accountShare, statusCodes, scatter, curTotal, ledger };
 }
 
 const USAGE = {

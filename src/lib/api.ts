@@ -42,6 +42,8 @@ import type {
   GatewayLogEntry,
   GatewayStatus,
   GatewayTokenTrend,
+  GatewayUsageDim,
+  GatewayUsageRecon,
   AppPrefs,
   GithubConfig,
   ImportPreview,
@@ -185,6 +187,8 @@ const DEMO_READ_COMMANDS = new Set([
   "get_account_token_today",
   // 网关**逐日**趋势（只读 `token_daily` 历史）：趋势页的网关小图用，演示站同样要虚构数据。
   "get_gateway_token_trend",
+  // 账本视图（issue #63）：两个只读命令，演示站同样要虚构数据。
+  "get_gateway_usage_dim", "get_usage_reconcile",
   // Trae 分区只读命令（演示站需返回虚构数据，否则 build:demo 报错）。
   // 只登记**只读**命令：写操作（签到 / 增删账号 / 切换 / 重置设备…）一律不进这里，
   // 由 `DemoAction` 包裹后在演示模式下统一提示不可操作。
@@ -315,6 +319,10 @@ const ROUTES: Record<string, Route> = {
   // 网关**逐日**用量趋势（只读落库历史）：`region` 走 query ⇒ GET。
   // ⚠️ `days` 只含落库日 ⇒ 缺日 = 未记录（不是 0），前端按覆盖率披露。
   get_gateway_token_trend: { method: "GET", path: "/api/account/token-trend" },
+  // 网关三维度（模型 / 账号 / 端点）逐日历史：账本视图的数据源（issue #63）。
+  get_gateway_usage_dim: { method: "GET", path: "/api/account/usage-dim" },
+  // 今日客户端 ↔ 网关对账（只读、不落盘）：`region` 走 query。
+  get_usage_reconcile: { method: "GET", path: "/api/account/usage-reconcile" },
   oauth_start: { method: "POST", path: "/api/oauth/start" },
   oauth_status: { method: "POST", path: "/api/oauth/status" },
   import_local: { method: "POST", path: "/api/import-local" },
@@ -1191,6 +1199,36 @@ export function getGatewayTokenTrend(region?: Region): Promise<GatewayTokenTrend
   if (region) args.region = region;
   return call<GatewayTokenTrend>(
     "get_gateway_token_trend",
+    Object.keys(args).length > 0 ? args : undefined,
+  );
+}
+
+/**
+ * 网关**三维度**逐日历史（模型 / 账号 / 端点）—— 用量页「账本」视图的数据源。
+ *
+ * 三条维度由同一次聚合产出、共用同一水位线 ⇒「按模型合计 = 按账号合计 = 按端点合计 = 网关卡」。
+ * ⚠️ 只读：不扫盘、不触发记录；`days` 只含落库日（缺日 = 未记录，不是 0）。
+ */
+export function getGatewayUsageDim(region?: Region): Promise<GatewayUsageDim> {
+  const args: Record<string, unknown> = {};
+  if (region) args.region = region;
+  return call<GatewayUsageDim>(
+    "get_gateway_usage_dim",
+    Object.keys(args).length > 0 ? args : undefined,
+  );
+}
+
+/**
+ * 今日**客户端 ↔ 网关对账**（只读、不落盘）。
+ *
+ * 回答「两本账重叠多少」：`matched` 条能在两边对上，`estimate = 客户端 + 网关 − 重叠`。
+ * ⚠️ 只覆盖**今日**（网关日志是环形窗口，更早的请求已滚出去）。
+ */
+export function getUsageReconcile(region?: Region): Promise<GatewayUsageRecon> {
+  const args: Record<string, unknown> = {};
+  if (region) args.region = region;
+  return call<GatewayUsageRecon>(
+    "get_usage_reconcile",
     Object.keys(args).length > 0 ? args : undefined,
   );
 }

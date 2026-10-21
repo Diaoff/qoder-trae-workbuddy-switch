@@ -1896,6 +1896,31 @@ pub async fn get_gateway_token_trend(region: Option<String>) -> Result<Value, St
         .map_err(|error| format!("读取网关用量趋势失败: {error}"))
 }
 
+/// 网关**三维度**逐日历史（模型 / 账号 / 端点）—— 用量页「账本」视图的数据源。
+///
+/// 三条维度由同一次聚合产出、共用同一水位线 ⇒「按模型合计 = 按账号合计 = 按端点合计 = 网关卡」。
+/// ⚠️ 只读：不扫盘、不触发记录；`days` 只含落库日（缺日 = 未记录，不是 0）。
+#[tauri::command]
+pub async fn get_gateway_usage_dim(region: Option<String>) -> Result<Value, String> {
+    let region = parse_region(region.as_deref());
+    tauri::async_runtime::spawn_blocking(move || token_daily::gateway_usage_dim(region))
+        .await
+        .map_err(|error| format!("读取网关维度用量失败: {error}"))
+}
+
+/// 今日**客户端 ↔ 网关对账**（只读；匹配算法在 `modules::reconcile`）。
+///
+/// 返回 `{ clientRows, gatewayRows, matched, matchedTokens, verdict, bounds, estimate, ... }`。
+/// ⚠️ 只覆盖**今日**：网关日志是环形窗口（缺省 200 条），更早的请求已滚出去、无法逐条对账。
+/// ⚠️ **不落盘**：对账结果随日志窗口滚动而变，写进 `token_daily` 会让历史数字漂移。
+#[tauri::command]
+pub async fn get_usage_reconcile(region: Option<String>) -> Result<Value, String> {
+    let region = parse_region(region.as_deref());
+    tauri::async_runtime::spawn_blocking(move || token_daily::reconcile_today(region))
+        .await
+        .map_err(|error| format!("读取用量对账失败: {error}"))
+}
+
 /// 今日 Token：账号 × 来源（client / gateway）的当日累计。
 ///
 /// 返回 `{ date, accounts: [{ uid, clientIn, clientOut, gatewayIn, gatewayOut }],

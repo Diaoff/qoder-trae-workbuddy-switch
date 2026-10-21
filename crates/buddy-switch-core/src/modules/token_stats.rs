@@ -20,12 +20,22 @@ use std::time::UNIX_EPOCH;
 use crate::modules::config::{atomic_write, store_dir};
 use crate::modules::region::{Region, RegionFilter};
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+/* ⚠️ 不能 derive `Eq`：`credit` 是 f64（上游给的是小数）。
+   缓存比对走的是 `PersistedTotals`（把 credit 换成整数微积分），不依赖 `Usage: Eq`。 */
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
 struct Usage {
     input: u64,
     output: u64,
     read: u64,
     write: u64,
+    /// **上游上报的积分消耗**（`usage.credit`）。
+    ///
+    /// 为什么必须有：用量页的「积分」视图要按来源拆消耗（客户端 / 网关），
+    /// 而按 token 折算出来的是估算、不是账单（issue #63）。jsonl 里本来就带这个字段
+    /// （实测本机 1316 处，形如 `"credit":1.28`），只是此前没人解析。
+    ///
+    /// `0.0` = 该记录没带 credit（= 不知道），不是「免费」。
+    credit: f64,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -59,6 +69,7 @@ impl Totals {
         self.usage.output = self.usage.output.saturating_add(usage.output);
         self.usage.read = self.usage.read.saturating_add(usage.read);
         self.usage.write = self.usage.write.saturating_add(usage.write);
+        self.usage.credit += usage.credit;
         self.records = self.records.saturating_add(1);
     }
 
@@ -71,6 +82,7 @@ impl Totals {
         self.usage.output = self.usage.output.saturating_add(other.usage.output);
         self.usage.read = self.usage.read.saturating_add(other.usage.read);
         self.usage.write = self.usage.write.saturating_add(other.usage.write);
+        self.usage.credit += other.usage.credit;
         self.records = self.records.saturating_add(other.records);
     }
 
@@ -93,6 +105,9 @@ impl Totals {
             "uncachedInput": self.usage.input.saturating_sub(self.usage.read),
             "records": self.records,
             "cacheHitRate": cache_hit_rate,
+            /* 积分：保留 3 位（上游给的是 `1.28` 这种小数；四舍五入到 3 位足够，
+               且避免 f64 尾数把 `0.1+0.2` 那类噪声带到 UI）。 */
+            "credit": (self.usage.credit * 1000.0).round() / 1000.0,
         })
     }
 }
@@ -162,6 +177,20 @@ const CACHE_WRITE_KEYS: &[&str] = &[
     "prompt_cache_write_tokens",
 ];
 
+/// 读 `usage.credit`（上游积分消耗）。别名与 token 字段同一风格：
+/// 优先驼峰，其次蛇形；负数 / 非有限值一律当缺失（积分不会是负的）。
+fn credit_field(object: &Map<String, Value>) -> f64 {
+    ["credit", "credits", "creditUsed"]
+        .iter()
+        .find_map(|key| {
+            object
+                .get(*key)
+                .and_then(Value::as_f64)
+                .filter(|value| value.is_finite() && *value >= 0.0)
+        })
+        .unwrap_or(0.0)
+}
+
 fn usage_fields(object: &Map<String, Value>) -> Usage {
     Usage {
         input: field(object, &["input_tokens", "inputTokens", "prompt_tokens"]).unwrap_or(0),
@@ -172,6 +201,7 @@ fn usage_fields(object: &Map<String, Value>) -> Usage {
         .unwrap_or(0),
         read: cached_input_field(object),
         write: positive_field(object, CACHE_WRITE_KEYS).unwrap_or(0),
+        credit: credit_field(object),
     }
 }
 
@@ -677,16 +707,21 @@ fn clear_scan_cache_entry(path: &Path) {
 ///
 /// v2（2026-10-15）：`PersistedSession` 新增 `daily`（会话逐日拆分，供「会话」视图
 /// 按时间窗口切片）。旧 v1 缓存整体丢弃 ⇒ 首次全量重扫一次；这正是版本机制的目的。
-const SCAN_CACHE_VERSION: u32 = 2;
+///
+/// v3（2026-10-21，issue #63）：`PersistedTotals` 新增第 6 格 `credit`（微积分，见下）。
+const SCAN_CACHE_VERSION: u32 = 3;
 
-/// `Totals` 的紧凑表示：`[input, output, read, write, records]`。
+/// `Totals` 的紧凑表示：`[input, output, read, write, records, creditMicros]`。
+///
+/// ★ `credit` 存**微积分**（`credit × 1e6` 取整）而不是 f64：这个数组要能 `Eq`
+///   （缓存比对靠它），而 f64 没有 `Eq`。1e-6 的精度对积分足够（上游是 `1.28` 这种两位小数）。
 ///
 /// ## 为什么不直接 `derive(Serialize)` 到 `Totals`
 ///
 /// 一个文件里有几十个 `Totals`（models / projects / daily / hours / dailyByModel
 /// 各一份），12356 个文件 ⇒ 数百万个。若每个都带 `"input":`/`"output":`/… 键名，
 /// 光键名就要几百 MB。定长数组没有键名开销。
-type PersistedTotals = [u64; 5];
+type PersistedTotals = [u64; 6];
 
 fn totals_to_persisted(totals: &Totals) -> PersistedTotals {
     [
@@ -695,6 +730,7 @@ fn totals_to_persisted(totals: &Totals) -> PersistedTotals {
         totals.usage.read,
         totals.usage.write,
         totals.records,
+        (totals.usage.credit * 1_000_000.0).round() as u64,
     ]
 }
 
@@ -705,6 +741,7 @@ fn totals_from_persisted(value: PersistedTotals) -> Totals {
             output: value[1],
             read: value[2],
             write: value[3],
+            credit: value[5] as f64 / 1_000_000.0,
         },
         records: value[4],
     }
@@ -1263,6 +1300,7 @@ fn ide_request_usage(request: &Value) -> Option<Usage> {
     field(object, &["inputTokens", "input_tokens", "prompt_tokens"])?;
     Some(Usage {
         input: field(object, &["inputTokens", "input_tokens", "prompt_tokens"]).unwrap_or(0),
+        credit: credit_field(object),
         output: field(
             object,
             &["outputTokens", "output_tokens", "completion_tokens"],
@@ -1747,6 +1785,42 @@ mod tests {
     use super::*;
     use std::fs;
 
+    /// ★ 积分（issue #63）：jsonl 的 `message.usage.credit` 必须被解析出来。
+    ///
+    /// 缺陷现场：改造前 `usage_fields` 只认 input/output/cache 四个字段，
+    /// `credit` 被整条忽略 ⇒ 「积分」视图只能按 token 折算（估算，不是账单）。
+    ///
+    /// 可证伪：删掉 `credit: credit_field(object)` ⇒ 本用例在 `credit` 上变红。
+    #[test]
+    fn usage_credit_is_parsed_from_message_usage() {
+        let value = json!({
+            "message": { "usage": { "input_tokens": 44078, "output_tokens": 198, "credit": 1.28 } }
+        });
+        let usage = usage(&value).expect("有 usage");
+        assert!((usage.credit - 1.28).abs() < 1e-9, "credit 必须原样解析，实际 {}", usage.credit);
+    }
+
+    /// 没有 credit 字段 ⇒ 0.0（= 不知道），不是负数、不是 NaN。
+    #[test]
+    fn usage_credit_defaults_to_zero_when_absent() {
+        let value = json!({ "message": { "usage": { "input_tokens": 1, "output_tokens": 1 } } });
+        assert_eq!(usage(&value).expect("有 usage").credit, 0.0);
+    }
+
+    /// 缓存往返：`credit` 走「微积分」整数格，1e-6 精度内必须原样回来。
+    ///
+    /// 为什么要单独测：`PersistedTotals` 是定长 u64 数组（要能 `Eq`），
+    /// 换成 f64 会同时打断缓存比对与 Eq 推导。
+    #[test]
+    fn credit_survives_the_scan_cache_roundtrip() {
+        let mut totals = Totals::default();
+        totals.add(Usage { input: 10, output: 2, read: 0, write: 0, credit: 1.28 });
+        totals.add(Usage { input: 10, output: 2, read: 0, write: 0, credit: 0.06 });
+        let back = totals_from_persisted(totals_to_persisted(&totals));
+        assert!((back.usage.credit - 1.34).abs() < 1e-6, "实际 {}", back.usage.credit);
+        assert_eq!(back.usage.input, 20);
+    }
+
     #[test]
     fn usage_priority_aliases_and_raw_cache_write() {
         let value = json!({
@@ -1766,7 +1840,8 @@ mod tests {
                 input: 10,
                 output: 3,
                 read: 4,
-                write: 2
+                write: 2,
+                credit: 0.0,
             })
         );
     }
@@ -1799,6 +1874,7 @@ mod tests {
                 output: 3,
                 read: 4,
                 write: 7,
+                credit: 0.0,
             })
         );
 
@@ -1818,6 +1894,7 @@ mod tests {
                 output: 3,
                 read: 0,
                 write: 0,
+                credit: 0.0,
             })
         );
     }
@@ -1840,6 +1917,7 @@ mod tests {
                 output: 3,
                 read: 7,
                 write: 0,
+                credit: 0.0,
             })
         );
 
@@ -1858,6 +1936,7 @@ mod tests {
                 output: 2,
                 read: 12,
                 write: 0,
+                credit: 0.0,
             })
         );
     }

@@ -24,7 +24,7 @@
  */
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { CalendarDays, CircleAlert, Coins, Loader2, RefreshCw, TrendingDown, TrendingUp } from "lucide-react";
+import { CalendarDays, CircleAlert, Coins, Info, Loader2, RefreshCw, TrendingDown, TrendingUp } from "lucide-react";
 import { useShallow } from "zustand/react/shallow";
 
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
@@ -37,16 +37,40 @@ import { CreditBalanceArea } from "@/components/usage/credit-balance-area";
 import { CreditDivergingBar } from "@/components/usage/credit-diverging-bar";
 import { CreditExpiryBars } from "@/components/usage/credit-expiry-bars";
 import { formatCredits, signedCredits } from "@/components/usage/format";
+import { StackedDailyBar } from "@/components/usage/stacked-daily-bar";
 import { StatTiles, type StatTile } from "@/components/usage/stat-tiles";
+import { CreditGapNote, CreditLedgerTable, LEDGER_CLIENT_COLOR, LEDGER_GATEWAY_COLOR } from "@/components/usage/ledger-parts";
 import type { UsageViewProps } from "@/components/usage/view-param-bar";
 import * as api from "@/lib/api";
 import { balanceCaption, singleSideCaption } from "@/lib/chart-caption";
 import { displayText } from "@/lib/display-text";
 import { useT } from "@/lib/i18n";
-import type { CreditExpiry, CreditResource, CreditStatistics, RegionFilter } from "@/lib/types";
+import type {
+  CreditExpiry,
+  CreditResource,
+  CreditStatistics,
+  GatewayUsageDim,
+  Region,
+  RegionFilter,
+  TokenStatsSource,
+} from "@/lib/types";
 import { useRefreshAction } from "@/lib/use-refresh-action";
 import { useScope } from "@/lib/use-scope";
-import { balanceCurve, creditDailyBars, expiryBuckets } from "@/lib/usage-charts";
+import { balanceCurve, creditDailyBars, expiryBuckets, mergeSources, type DailyModelColumn } from "@/lib/usage-charts";
+import {
+  LEDGER_CLIENT_SEGMENT,
+  LEDGER_GATEWAY_SEGMENT,
+  clientCreditByModel,
+  clientCreditDaily,
+  creditDailySeries,
+  creditGap,
+  dimTotals,
+  mergeDims,
+  modelKey,
+  showsClient,
+  showsGateway,
+  type UsageLedger,
+} from "@/lib/usage-ledger";
 import { useAccountsStore } from "@/stores/accounts";
 
 /** 会话级缓存：切走再切回不重取。 */
@@ -67,7 +91,11 @@ function formatDateTime(timestamp: number | null | undefined): string {
   });
 }
 
-export default function CreditStatsPage({ viewWindow, combineAll }: UsageViewProps) {
+export default function CreditStatsPage({
+  viewWindow,
+  combineAll,
+  ledger = "all",
+}: UsageViewProps & { ledger?: UsageLedger }) {
   const t = useT();
   const [scopeRegion] = useScope("workbuddy");
   const region: RegionFilter = combineAll ? "all" : scopeRegion;
@@ -76,6 +104,12 @@ export default function CreditStatsPage({ viewWindow, combineAll }: UsageViewPro
   const [error, setError] = useState<string | null>(null);
   /* 三处「刷新积分」出口（错误重试 / 空态 / 顶部条）共用同一个 `load(region, true)`。 */
   const { busy, run } = useRefreshAction();
+
+  /* 账本（issue #63）：积分要按**来源**拆消耗，而来源只在请求口径里有
+     （客户端 jsonl 的 `usage.credit` / 网关日志的 `credit`）。
+     所以这里额外取两样东西：token 统计（客户端积分）与网关三维度（网关积分）。 */
+  const [tokenSource, setTokenSource] = useState<TokenStatsSource | null>(null);
+  const [dim, setDim] = useState<GatewayUsageDim | null>(null);
 
   /* ★ 必须带 selector（本页含图表，store 的高频刷新不该牵动整页重渲染）。 */
   const { creditMap, fetchAllRegions } = useAccountsStore(
@@ -110,6 +144,31 @@ export default function CreditStatsPage({ viewWindow, combineAll }: UsageViewPro
   useEffect(() => {
     void load(region);
   }, [load, region]);
+
+  /* 请求口径的两份素材（与余额口径**并行**取；任一失败只让该来源缺席，
+     不阻塞余额那一半 —— 余额是权威口径，不能因为附加维度取不到就整页报错）。 */
+  useEffect(() => {
+    let disposed = false;
+    const regions: Region[] = region === "all" ? ["cn", "global"] : [region];
+    api
+      .getTokenStatistics(undefined, region)
+      .then((result) => {
+        if (!disposed) setTokenSource(mergeSources(result.sources));
+      })
+      .catch(() => {
+        if (!disposed) setTokenSource(null);
+      });
+    Promise.all(regions.map((item) => api.getGatewayUsageDim(item).catch(() => null)))
+      .then((results) => {
+        if (!disposed) setDim(mergeDims(results));
+      })
+      .catch(() => {
+        if (!disposed) setDim(null);
+      });
+    return () => {
+      disposed = true;
+    };
+  }, [region]);
 
   /* ★ 窗口直接进 `creditDailyBars`（**按日历日对齐、缺失日补 0**）。
      改造前是 `bars.slice(-range)` —— 那是「最后 N 个**有数据的**日子」，不是
@@ -147,6 +206,43 @@ export default function CreditStatsPage({ viewWindow, combineAll }: UsageViewPro
   const hasAnyData =
     Boolean(stats) &&
     (bars.some((bar) => bar.outAmt > 0) || hasExpiry || (stats?.events.length ?? 0) > 0);
+
+  /* ── 请求口径（按来源拆消耗）──
+     客户端：`token_stats` 的 `credit`（逐日 / 逐模型）；网关：三维度桶的 `credit`。 */
+  const clientCreditMap = useMemo(
+    () => (tokenSource ? clientCreditDaily(tokenSource, viewWindow) : new Map<string, number>()),
+    [tokenSource, viewWindow],
+  );
+  const gatewayCreditMap = useMemo(
+    () => new Map(creditDailySeries(dim, viewWindow).map((day) => [day.key, day.credit])),
+    [dim, viewWindow],
+  );
+  const creditColumns = useMemo<DailyModelColumn[]>(
+    () =>
+      bars.map((bar) => {
+        const client = showsClient(ledger) ? (clientCreditMap.get(bar.date) ?? 0) : 0;
+        const gateway = showsGateway(ledger) ? (gatewayCreditMap.get(bar.date) ?? 0) : 0;
+        const segments: { name: string; value: number }[] = [];
+        if (client > 0) segments.push({ name: LEDGER_CLIENT_SEGMENT, value: client });
+        if (gateway > 0) segments.push({ name: LEDGER_GATEWAY_SEGMENT, value: gateway });
+        return { day: bar.date, label: bar.label, total: client + gateway, segments };
+      }),
+    [bars, clientCreditMap, gatewayCreditMap, ledger],
+  );
+  const clientCreditRows = useMemo(
+    () => (tokenSource ? clientCreditByModel(tokenSource, viewWindow) : []),
+    [tokenSource, viewWindow],
+  );
+  const gatewayCreditRows = useMemo(
+    () =>
+      dimTotals(dim, viewWindow, modelKey)
+        .filter((row) => row.credit > 0)
+        .map((row) => ({ name: row.key || t("wbStats.usage.models.unknown"), credit: row.credit, requests: row.requests })),
+    [dim, viewWindow, t],
+  );
+  const clientCreditTotal = clientCreditRows.reduce((sum, row) => sum + row.credit, 0);
+  const gatewayCreditTotal = gatewayCreditRows.reduce((sum, row) => sum + row.credit, 0);
+  const creditRequestTotal = clientCreditTotal + gatewayCreditTotal;
 
   const tiles: StatTile[] = [
     {
@@ -244,6 +340,46 @@ export default function CreditStatsPage({ viewWindow, combineAll }: UsageViewPro
           </div>
 
           <StatTiles tiles={tiles} ariaLabel={t("wbStats.credit.overviewAria")} />
+
+          {/* ── 请求口径：**按来源**拆积分消耗（余额口径拆不到来源，见下面这行说明）── */}
+          <div className="flex items-center gap-2.5 rounded-[10px] border border-[color:var(--data-series-indigo)]/25 bg-[color:var(--data-series-indigo)]/10 px-3.5 py-2.5 text-xs text-muted-foreground">
+            <Info className="size-3.5 shrink-0 text-[color:var(--data-series-indigo)]" />
+            <span>{t("wbStats.usage.credits.caliberNote")}</span>
+          </div>
+
+          {creditColumns.some((column) => column.total > 0) ? (
+            <ChartFrame
+              title={t("wbStats.usage.credits.requestCaliber")}
+              caption={t("wbStats.usage.credits.dailyHint")}
+              ariaLabel={t("wbStats.usage.credits.requestCaliber")}
+            >
+              <StackedDailyBar
+                columns={creditColumns}
+                palette={[LEDGER_CLIENT_COLOR, LEDGER_GATEWAY_COLOR]}
+                valueFormat={(value) => formatCredits(value)}
+              />
+            </ChartFrame>
+          ) : null}
+
+          <div className="grid min-w-0 gap-4 lg:grid-cols-2">
+            {ledger !== "gateway" ? (
+              <CreditLedgerTable book="client" rows={clientCreditRows} total={clientCreditTotal} />
+            ) : null}
+            {ledger !== "client" ? (
+              <CreditLedgerTable book="gateway" rows={gatewayCreditRows} total={gatewayCreditTotal} />
+            ) : null}
+          </div>
+
+          {ledger === "all" && creditRequestTotal > 0 ? (
+            <CreditGapNote
+              billed={totalOut}
+              byRequest={creditRequestTotal}
+              client={clientCreditTotal}
+              gateway={gatewayCreditTotal}
+              overlap={0}
+              gap={creditGap(totalOut, creditRequestTotal)}
+            />
+          ) : null}
 
           {bars.length > 0 ? (
             <ChartFrame

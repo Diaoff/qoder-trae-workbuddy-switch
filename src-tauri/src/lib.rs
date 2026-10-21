@@ -465,6 +465,8 @@ pub fn run() {
             commands::get_account_token_today,
             // 网关逐日用量趋势（只读 `token_daily` 90 天落库历史；两宿主同步）。
             commands::get_gateway_token_trend,
+            commands::get_gateway_usage_dim,
+            commands::get_usage_reconcile,
             commands::checkin,
             commands::checkin_all,
             commands::get_auto_checkin_config,

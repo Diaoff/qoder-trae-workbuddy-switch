@@ -25,7 +25,7 @@ const state = {
   /* 正在「新建分组」的账号 id（下拉里选「＋ 新建分组…」后就地变成输入框）。 */
   groupNew: null,
   /* 用量工作台 */
-  usageTab: "trend", range: 30, rangeMode: "preset", customFrom: "", customTo: "", rangeOpen: false, merge: false,
+  usageTab: "trend", range: 30, rangeMode: "preset", customFrom: "", customTo: "", rangeOpen: false, merge: false, usageBook: "all",
   /* 子导航 */
   gwSub: "overview",
   gwApi: "openai",      // 快速接入的协议 Tab：openai / anthropic
@@ -376,13 +376,13 @@ function barChart(days, h, step) {
 const SERIES_VAR = (k) => `var(--s${(k % 8) + 1})`;
 
 /** 通用图例。 */
-function legend(items) {
+function legend(items, colors) {
   return `<div class="legend">${items.map((it, k) =>
-    `<span><i style="background:${SERIES_VAR(k)}"></i>${esc(it.name)}</span>`).join("")}</div>`;
+    `<span><i style="background:${(colors && colors[k]) || SERIES_VAR(k)}"></i>${esc(it.name)}</span>`).join("")}</div>`;
 }
 
 /** 堆叠柱：各分段之和**精确等于**当日总量（由数据层保证，见 demo-data.js 的 buildUsageExtras）。 */
-function stackedBar(days, series, h, label) {
+function stackedBar(days, series, h, label, colors) {
   const max = Math.max(1, ...days.map((d) => d.value));
   const step = days.length > 14 ? 5 : 1;   // 天数多时隔几个才标一次日期，避免糊成一片
   return `<div class="chart cbar" style="height:${h}px" role="img" aria-label="${esc(label)}">
@@ -392,7 +392,7 @@ function stackedBar(days, series, h, label) {
         const v = s.values[i] || 0;
         const pct = (v / max) * 100, bottom = (acc / max) * 100;
         acc += v;
-        return `<i style="height:${pct.toFixed(3)}%;bottom:${bottom.toFixed(3)}%;background:${SERIES_VAR(k)}"></i>`;
+        return `<i style="height:${pct.toFixed(3)}%;bottom:${bottom.toFixed(3)}%;background:${(colors && colors[k]) || SERIES_VAR(k)}"></i>`;
       }).join("");
       const tip = `${d.label} · 合计 ${fmt(d.value)} ｜ ` + series.map((s) => `${s.name} ${fmt(s.values[i] || 0)}`).join(" / ");
       return `<span class="ccol" title="${esc(tip)}">${segs}<em class="${i % step ? "hide" : ""}">${shortLabel(d.label)}</em></span>`;
@@ -802,6 +802,64 @@ function usageFor() {
   return { days, models, sessions, credits, ext: mergeExt(ids) };
 }
 
+/** 合并态下的账本：逐项求和，再按求和后的总量重算派生值（与 mergeExt 同哲学）。 */
+function mergeLedger(list) {
+  const src = (list || []).filter(Boolean);
+  if (!src.length) return null;
+  if (src.length === 1) return src[0];
+  const sum = (f) => src.reduce((a, x) => a + f(x), 0);
+  const named = (pick, key) => {
+    const m = new Map();
+    src.forEach((x) => (pick(x) || []).forEach((it) => {
+      const cur = m.get(it.name) || { name: it.name, [key]: 0, req: 0 };
+      cur[key] += it[key] || 0;
+      cur.req += it.req || 0;
+      m.set(it.name, cur);
+    }));
+    return [...m.values()].sort((a, b) => b[key] - a[key]);
+  };
+  const addDays = (pick) => (pick(src[0]) || []).map((_, i) => sum((x) => (pick(x) || [])[i] || 0));
+  const proxied = src.filter((x) => x.proxied).length;
+  const verdict = proxied === src.length ? "subset" : proxied === 0 ? "independent" : "mixed";
+  const clientRows = sum((x) => x.recon.clientRows);
+  const matched = sum((x) => x.recon.matched);
+  const clientTokens = sum((x) => x.client.tokens);
+  const gatewayTokens = sum((x) => x.gateway.tokens);
+  const byRequest = +(sum((x) => x.credits.byRequest)).toFixed(1);
+  return {
+    proxied: proxied > 0, verdict,
+    client: { tokens: clientTokens, requests: clientRows, days: addDays((x) => x.client.days) },
+    gateway: {
+      tokens: gatewayTokens,
+      requests: sum((x) => x.gateway.requests),
+      failed: sum((x) => x.gateway.failed),
+      days: addDays((x) => x.gateway.days),
+      models: named((x) => x.gateway.models, "tokens"),
+      accounts: named((x) => x.gateway.accounts, "tokens"),
+      endpoints: named((x) => x.gateway.endpoints, "req"),
+      coverage: src[0].gateway.coverage,
+    },
+    recon: {
+      clientRows, matched,
+      gatewayRows: sum((x) => x.recon.gatewayRows),
+      matchedTokens: sum((x) => x.recon.matchedTokens),
+      ratio: clientRows ? matched / clientRows : 0,
+    },
+    credits: {
+      client: +(sum((x) => x.credits.client)).toFixed(1),
+      gateway: +(sum((x) => x.credits.gateway)).toFixed(1),
+      overlap: +(sum((x) => x.credits.overlap)).toFixed(1),
+      byRequest,
+      consumed: +(sum((x) => x.credits.consumed)).toFixed(1),
+      gap: +(sum((x) => x.credits.gap)).toFixed(1),
+      clientModels: named((x) => x.credits.clientModels, "v"),
+      gatewayModels: named((x) => x.credits.gatewayModels, "v"),
+      dailyClient: addDays((x) => x.credits.dailyClient),
+      dailyGateway: addDays((x) => x.credits.dailyGateway),
+    },
+  };
+}
+
 /** 合并态下的派生数据。**必须一起聚合**——否则「合并」只影响 days，
     而堆叠柱/环形/热力图仍显示单作用域，是典型的「切了开关只有一处变」的谎报。 */
 function mergeExt(ids) {
@@ -835,7 +893,7 @@ function mergeExt(ids) {
   const net = creditDaily.map((c) => c.inAmt - c.outAmt);
   let bal = curTotal - sum(net);
   const balance = net.map((v, i) => { bal += v; return { label: creditDaily[i].label, value: Math.max(0, bal) }; });
-  return { modelDays, hourly, creditDaily, balance, expiry, accountShare, statusCodes, scatter, curTotal };
+  return { modelDays, hourly, creditDaily, balance, expiry, accountShare, statusCodes, scatter, curTotal, ledger: mergeLedger(list.map((x) => x.ledger)) };
 }
 
 const WEEKDAYS = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"];
@@ -910,6 +968,364 @@ function usageUnitNote() {
   return `<p class="tiny muted" style="margin:-6px 2px 12px">Qoder 客户端按 <b>credits</b> 计费，token 计数恒为 0 —— 实机按 credits 出图；「积分」视图是<b>实时余额快照</b>（Qoder 侧没有收支账本数据源）。</p>`;
 }
 
+/* ══════════════════════ 账本（issue #63）══════════════════════
+   设计依据：`docs/specs/USAGE-GATEWAY-UI-REDESIGN.md`。
+   三条规则，改这里之前先读：
+     ① **一个数字只属于一本账**：占比 / 排行 / 峰值一律在单本账内算，绝不跨账本混算；
+     ② **跨账本合计只出现在「合计」卡**，且必须能展开成算式（点「对账」）；
+     ③ **账本是页面级视图参数**，与「范围」同级，切 tab 不重置。
+   为什么要有它：客户端与网关是两本独立记账的账，互相重叠、口径不同。
+   当成一个数据源画，用户一定会自己去加，加完对不上就再也不信这一页了。 */
+const LEDGER_CLIENT = "var(--s1)";
+const LEDGER_GATEWAY = "var(--s3)";
+
+function bookLabel(book) {
+  return { all: "全部", client: "客户端", gateway: "网关" }[book] || "客户端";
+}
+/** 积分保留一位小数 + 千分位（`4280.5` → `4,280.5`）。 */
+function fmtCredit(n) {
+  return Number(n || 0).toLocaleString("zh-CN", { minimumFractionDigits: 1, maximumFractionDigits: 1 });
+}
+const sumArr = (arr) => (arr || []).reduce((a, b) => a + b, 0);
+
+/** 当前视图的账本（只有 WorkBuddy 有；Trae / Qoder 各自的数据源形状不同，见 UsagePage 的平台映射）。 */
+function ledgerOf() {
+  const e = usageFor().ext;
+  return e && e.ledger ? e.ledger : null;
+}
+function currentBook(L) {
+  return L && state.usageBook ? state.usageBook : "client";
+}
+
+/** 窗口切片：与 `rangeWindow` 同口径（闭区间）。 */
+function ledgerWindow(L, win, days) {
+  const cut = (arr) => arr.slice(win.from, win.to + 1);
+  return {
+    labels: days.map((d) => d.label),
+    client: cut(L.client.days),
+    gateway: cut(L.gateway.days),
+    creditsClient: cut(L.credits.dailyClient),
+    creditsGateway: cut(L.credits.dailyGateway),
+  };
+}
+
+/**
+ * 合计的算式。**形态随拓扑变**：
+ * 客户端走网关时（subset）写「网关 + 直连客户端」；否则写「相加再扣」。
+ * 子集关系下若仍写相加再扣，式子会变成「扣掉客户端 95%」，读起来像哪里错了。
+ */
+function ledgerFormula(L, cT, gT, overlap) {
+  if (L.verdict === "subset") {
+    return `网关 ${fmtTok(gT)} + 直连客户端 ${fmtTok(Math.max(0, cT - overlap))}`;
+  }
+  return `客户端 ${fmtTok(cT)} + 网关 ${fmtTok(gT)} − 重叠 ${fmtTok(overlap)}`;
+}
+function ledgerEstimate(cT, gT, overlap) {
+  return Math.max(0, cT + gT - overlap);
+}
+/** 窗口内的重叠量：按客户端在窗口内的占比缩放（对账本身只覆盖日志窗口，见设计文档 §4.5）。 */
+function ledgerOverlap(L, cT) {
+  const share = L.client.tokens ? cT / L.client.tokens : 0;
+  return Math.round(L.recon.matchedTokens * share);
+}
+
+/** 覆盖条：数据现状（不随账本切换而变）。 */
+function ledgerCoverage(L, win, days) {
+  const w = ledgerWindow(L, win, days);
+  const cT = sumArr(w.client), gT = sumArr(w.gateway);
+  const ov = ledgerOverlap(L, cT);
+  return `<div class="covstrip">
+    <span class="cov"><i style="background:${LEDGER_CLIENT}"></i>客户端 <b>${fmtTok(cT)}</b> · ${fmt(L.recon.clientRows)} 请求</span>
+    <span class="cov"><i style="background:${LEDGER_GATEWAY}"></i>网关 <b>${fmtTok(gT)}</b> · ${fmt(L.recon.gatewayRows)} 请求
+      <span class="badge warn">失败 ${fmt(L.gateway.failed)}</span></span>
+    <span class="cov">网关记录覆盖 <b>${L.gateway.coverage}</b> · 未记录日不算 0</span>
+    <span class="cov">两本账重叠 <b>${fmt(L.recon.matched)} 条</b> · ${fmtTok(ov)}
+      <a class="link" data-act="recon-open">看对账</a></span>
+  </div>`;
+}
+
+/** 趋势视图的四张卡。合计卡带算式 + 对账入口。 */
+function ledgerTiles(L, book, w, rangeName) {
+  const cT = sumArr(w.client), gT = sumArr(w.gateway);
+  const ov = ledgerOverlap(L, cT);
+  const n = Math.max(1, w.labels.length);
+  const peakC = Math.max(0, ...w.client), peakG = Math.max(0, ...w.gateway);
+  const recon = `<a class="link" data-act="recon-open">对账</a>`;
+  if (book === "client") {
+    return [
+      statTile("客户端 Token", fmtTok(cT), rangeName),
+      statTile("日均", fmtTok(Math.round(cT / n)), "按自然日平均"),
+      statTile("峰值", fmtTok(peakC), "区间内最高一天"),
+      statTile("请求数", fmt(L.recon.clientRows), "会话日志条目"),
+    ].join("");
+  }
+  if (book === "gateway") {
+    return [
+      statTile("网关 Token", fmtTok(gT), rangeName),
+      statTile("日均", fmtTok(Math.round(gT / n)), "按自然日平均"),
+      statTile("峰值", fmtTok(peakG), "区间内最高一天"),
+      statTile("请求数", fmt(L.recon.gatewayRows), `含 ${fmt(L.gateway.failed)} 次失败`),
+    ].join("");
+  }
+  return [
+    `<div class="card stat"><div class="k">合计 Token<span class="grow"></span>${recon}</div>
+      <div class="v"><span class="approx" title="两本账存在重叠：同一请求可能被两处各记一次。点「对账」看扣减明细">≈</span>${fmtTok(ledgerEstimate(cT, gT, ov))}</div>
+      <div class="d">${rangeName}</div>
+      <div class="d2">${ledgerFormula(L, cT, gT, ov)}</div></div>`,
+    statTile("日均", fmtTok(Math.round(ledgerEstimate(cT, gT, ov) / n)), "按自然日平均"),
+    statTile("峰值", fmtTok(peakC + peakG), "区间内最高一天"),
+    statTile("请求数", fmt(L.recon.clientRows + L.recon.gatewayRows - L.recon.matched), `重叠已扣 ${fmt(L.recon.matched)} 条`),
+  ].join("");
+}
+
+/** 趋势 · 双色堆叠（两本账各自的值，柱高**不做扣减** —— 重叠只在合计里扣）。 */
+function ledgerStacked(w, book, h) {
+  const showC = book !== "gateway", showG = book !== "client";
+  const days = w.labels.map((label, i) => ({
+    label,
+    value: (showC ? w.client[i] : 0) + (showG ? w.gateway[i] : 0),
+  }));
+  const series = [];
+  const colors = [];
+  if (showC) { series.push({ name: "客户端", values: w.client }); colors.push(LEDGER_CLIENT); }
+  if (showG) { series.push({ name: "网关", values: w.gateway }); colors.push(LEDGER_GATEWAY); }
+  return stackedBar(days, series, h, `每日 Token，按账本分色堆叠，共 ${days.length} 天`, colors) + legend(series, colors);
+}
+
+/**
+ * 模型 · **每日按模型**堆叠（原趋势图的按模型拆分能力，挪到这里）。
+ *
+ * 为什么挪：趋势图的堆叠维度改成**账本**了（客户端/网关两色），再按模型拆会变成
+ * 两级堆叠 —— 深色小图里没人读得出来。拆成两处各答一个问题：
+ * 趋势图答「哪天花了多少、其中网关占多少」，这里答「这一天的钱花在哪个模型」。
+ */
+function ledgerModelDaily(u, L, win, book) {
+  const card = (title, sub, days, series, colors) => {
+    const rows = days.map((d, i) => ({
+      label: d.label,
+      value: series.reduce((a, s) => a + (s.values[i] || 0), 0),
+    }));
+    return `<section class="card">
+      <div class="card-head"><h3>${title}</h3><div class="grow"></div><span class="sub">${sub}</span></div>
+      <div class="card-pad">${stackedBar(rows, series, 180, `${title}，${rows.length} 天，按模型堆叠`, colors)}${legend(series)}</div>
+    </section>`;
+  };
+  const slice = (arr) => arr.map((m) => ({ name: m.name, values: m.values.slice(win.from, win.to + 1) }));
+  const days = u.days.slice(win.from, win.to + 1);
+  if (book === "gateway") {
+    return `<div style="margin-bottom:16px">${card("每日 Token · 按模型", "网关账本", days, slice(L.gateway.modelDays || []), [LEDGER_GATEWAY, "var(--s4)", "var(--s2)", "var(--s5)"])}</div>`;
+  }
+  if (book === "client") {
+    return `<div style="margin-bottom:16px">${card("每日 Token · 按模型", "客户端账本", days, slice(u.ext.modelDays || []), [LEDGER_CLIENT, "var(--s2)", "var(--s4)", "var(--s5)"])}</div>`;
+  }
+  return `<div class="grid g2" style="margin-bottom:16px;gap:16px">
+      ${card("每日 Token · 按模型", "客户端账本", days, slice(u.ext.modelDays || []), [LEDGER_CLIENT, "var(--s2)", "var(--s4)", "var(--s5)"])}
+      ${card("每日 Token · 按模型", "网关账本", days, slice(L.gateway.modelDays || []), [LEDGER_GATEWAY, "var(--s4)", "var(--s2)", "var(--s5)"])}
+    </div>`;
+}
+
+/** 模型 · 单本账一张表（**不合并**：分母不同，任何合并占比都是假的）。 */
+function ledgerModelTable(L, book, win) {
+  const client = book === "client";
+  const set = client ? L.client : L.gateway;
+  /* 客户端模型用量取 `modelDays` 的**窗口内合计**（它与每日总量严格同源）；
+     `models[].tokens` 是示意量，拿它算占比会得出「加起来只有 34%」。 */
+  const models = client
+    ? (usageFor().ext.modelDays || []).map((m) => {
+        const tokens = sumArr(m.values.slice(win.from, win.to + 1));
+        return { name: m.name, tokens, req: Math.max(1, Math.round(tokens / 42000)) };
+      })
+    : L.gateway.models;
+  const total = client ? sumArr(models.map((m) => m.tokens)) : L.gateway.tokens;
+  const max = Math.max(1, ...models.map((m) => m.tokens));
+  const head = `<div class="card">
+    <div class="card-head"><h3>${client ? "客户端账本" : "网关账本"}</h3><div class="grow"></div>
+      <span class="sub">${client ? "扫本机会话日志 · 不含网关转发" : `网关记账 · 覆盖 ${L.gateway.coverage}`}</span></div>
+    <div class="tbl-wrap"><table class="tbl">
+      <thead><tr><th>模型</th><th>分布</th><th>Token</th><th>占比</th><th>请求</th>${client ? "" : "<th>失败</th>"}</tr></thead>
+      <tbody>${models.map((m) => `<tr>
+        <td><b>${esc(m.name)}</b></td>
+        <td style="width:34%"><div class="lbar"><i style="width:${((m.tokens / max) * 100).toFixed(1)}%;background:${client ? LEDGER_CLIENT : LEDGER_GATEWAY}"></i></div></td>
+        <td class="num">${fmtTok(m.tokens)}</td>
+        <td class="num muted">${total ? Math.round((m.tokens / total) * 100) : 0}%</td>
+        <td class="num muted">${fmt(m.req)}</td>
+        ${client ? "" : `<td class="num" style="color:var(--warning)">${m.name === "auto" ? 0 : Math.round(L.gateway.failed * (m.tokens / (total || 1)))}</td>`}
+      </tr>`).join("")}</tbody>
+    </table></div>
+    <div class="tiny muted" style="padding:0 16px 12px">${client
+      ? "客户端账本不记请求失败 —— 会话日志只留成功落盘的条目；占比按客户端合计算"
+      : `${fmt(L.gateway.failed)} 次失败已计入请求数；占比按网关合计算`}</div>
+  </div>`;
+  return head;
+}
+
+/** 会话 · 网关账本下换维度（网关没有 sessionId，但有账号与端点）。 */
+function ledgerGatewaySources(L) {
+  const maxAcc = Math.max(1, ...L.gateway.accounts.map((a) => a.tokens));
+  return `<div class="note-strip">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8h.01"/></svg>
+      <span>网关是<b>逐请求转发</b>，日志里没有会话 ID —— 所以这个视图在网关账本下换成<b>按账号 / 按端点</b>。</span>
+    </div>
+    <div class="grid g2">
+      <section class="card">
+        <div class="card-head"><h3>按账号</h3><div class="grow"></div><span class="sub">区间内</span></div>
+        <div class="tbl-wrap"><table class="tbl">
+          <thead><tr><th>账号</th><th>分布</th><th>Token</th><th>请求</th><th>占比</th></tr></thead>
+          <tbody>${L.gateway.accounts.map((a) => `<tr>
+            <td><b>${esc(a.name)}</b></td>
+            <td style="width:32%"><div class="lbar"><i style="width:${((a.tokens / maxAcc) * 100).toFixed(1)}%;background:${LEDGER_GATEWAY}"></i></div></td>
+            <td class="num">${fmtTok(a.tokens)}</td>
+            <td class="num muted">${fmt(a.req)}</td>
+            <td class="num muted">${L.gateway.tokens ? Math.round((a.tokens / L.gateway.tokens) * 100) : 0}%</td>
+          </tr>`).join("")}</tbody>
+        </table></div>
+        <div class="tiny muted" style="padding:0 16px 12px">账号按日志里的精确 uid 归属，展示名仅作显示</div>
+      </section>
+      <section class="card">
+        <div class="card-head"><h3>按端点</h3><div class="grow"></div><span class="sub">区间内</span></div>
+        <div class="tbl-wrap"><table class="tbl">
+          <thead><tr><th>端点</th><th>请求</th><th>占比</th></tr></thead>
+          <tbody>${L.gateway.endpoints.map((e) => `<tr>
+            <td><code>${esc(e.name)}</code></td>
+            <td class="num">${fmt(e.req)}</td>
+            <td class="num muted">${L.gateway.requests ? Math.round((e.req / L.gateway.requests) * 100) : 0}%</td>
+          </tr>`).join("")}</tbody>
+        </table></div>
+        <div class="tiny muted" style="padding:0 16px 12px">同一份数据在「网关 → 请求日志」里逐条可查</div>
+      </section>
+    </div>`;
+}
+
+/** 积分 · 请求口径（可拆来源，会重复）。余额口径不在这里 —— 它拆不到来源。 */
+function ledgerCreditBars(L, w, book) {
+  const showC = book !== "gateway", showG = book !== "client";
+  const days = w.labels.map((label, i) => ({
+    label,
+    value: (showC ? w.creditsClient[i] : 0) + (showG ? w.creditsGateway[i] : 0),
+  }));
+  const series = [];
+  const colors = [];
+  if (showC) { series.push({ name: "客户端", values: w.creditsClient }); colors.push(LEDGER_CLIENT); }
+  if (showG) { series.push({ name: "网关", values: w.creditsGateway }); colors.push(LEDGER_GATEWAY); }
+  return stackedBar(days, series, 180, `每日积分消耗，按账本分色堆叠，共 ${days.length} 天`, colors) + legend(series, colors);
+}
+
+function ledgerCreditTable(L, book) {
+  const client = book === "client";
+  const models = client ? L.credits.clientModels : L.credits.gatewayModels;
+  const total = client ? L.credits.client : L.credits.gateway;
+  const max = Math.max(0.01, ...models.map((m) => m.v));
+  return `<section class="card">
+    <div class="card-head"><h3>${client ? "客户端账本" : "网关账本"}</h3><div class="grow"></div>
+      <span class="sub">按请求累加 · ${fmtCredit(total)}</span></div>
+    <div class="tbl-wrap"><table class="tbl">
+      <thead><tr><th>模型</th><th>分布</th><th>积分</th><th>占比</th><th>请求</th></tr></thead>
+      <tbody>${models.map((m) => `<tr>
+        <td><b>${esc(m.name)}</b></td>
+        <td style="width:34%"><div class="lbar"><i style="width:${((m.v / max) * 100).toFixed(1)}%;background:${client ? LEDGER_CLIENT : LEDGER_GATEWAY}"></i></div></td>
+        <td class="num">${fmtCredit(m.v)}</td>
+        <td class="num muted">${total ? Math.round((m.v / total) * 100) : 0}%</td>
+        <td class="num muted">${fmt(m.req)}</td>
+      </tr>`).join("")}</tbody>
+    </table></div>
+  </section>`;
+}
+
+/** 积分 · 两个口径的关系（差额 = 未归因，绝不摊到任何来源）。 */
+function ledgerCreditGap(L, consumed, gap) {
+  return `<section class="card">
+    <div class="card-head"><h3>两个口径的差额</h3></div>
+    <div class="card-pad">
+      <div class="gapbox">
+        余额口径 <b>${fmtCredit(consumed)}</b> − 请求口径 <b>${fmtCredit(L.credits.byRequest)}</b>
+        <span class="muted">（客户端 ${fmtCredit(L.credits.client)} + 网关 ${fmtCredit(L.credits.gateway)} − 重叠 ${fmtCredit(L.credits.overlap)}）</span>
+        ＝ 差额 <b class="warn">${fmtCredit(gap)}</b>
+      </div>
+      <p class="tiny muted" style="margin:10px 0 0">差额 = 未归因消耗：别的设备 / 没落本地日志的请求。它<b>不会</b>被摊到任何来源上 —— 摊了就是编数据。</p>
+    </div>
+  </section>`;
+}
+
+/** 对账抽屉：结论 → 算式 → 匹配结果 → 规则 → 覆盖 → 未匹配样本。 */
+function reconVerdict(L) {
+  const r = L.recon;
+  if (L.verdict === "subset") {
+    return { cls: "", title: "客户端走的正是网关",
+      body: `${fmt(r.clientRows)} 条客户端记录里有 <b>${fmt(r.matched)}</b> 条能在网关账本里对上（${Math.round(r.ratio * 100)}%）——
+        客户端用量<b>已包含在网关账本内</b>。合计 ≈ 网关，只补没对上的那几条。` };
+  }
+  if (L.verdict === "mixed") {
+    return { cls: "mixed", title: "两本账部分重叠",
+      body: `只有 <b>${fmt(r.matched)}/${fmt(r.clientRows)}</b> 条客户端记录能对上 —— 可能中途才开网关，也可能只有部分客户端走网关。` };
+  }
+  return { cls: "", title: "两本账基本独立",
+    body: `${fmt(r.clientRows)} 条客户端记录里只有 <b>${fmt(r.matched)}</b> 条能在网关账本里找到对应（${Math.round(r.ratio * 100)}%）——
+      说明大部分客户端请求是<b>直连上游</b>的。合计 = 相加，再扣掉这 ${fmt(r.matched)} 条重叠。` };
+}
+
+function reconBody(L) {
+  const r = L.recon;
+  const cT = L.client.tokens, gT = L.gateway.tokens;
+  const ov = r.matchedTokens;
+  const est = ledgerEstimate(cT, gT, ov);
+  const v = reconVerdict(L);
+  const samples = [
+    { ts: "18:04:12", model: "step-5-preview", tokens: 42100, why: "模型不在网关账本" },
+    { ts: "18:07:31", model: "hy3", tokens: 28600, why: "最近网关记录相差 214s" },
+    { ts: "18:09:02", model: "deepseek-v4.1-flash", tokens: 15400, why: "token 数不符" },
+  ];
+  return `<div class="recon-head">
+      <h2>对账 · 客户端 ↔ 网关</h2>
+      <button class="recon-x" data-act="recon-close" aria-label="关闭">×</button>
+      <p class="tiny muted">把两本账里「同一个请求」找出来，从合计里扣掉</p>
+    </div>
+    <div class="verdict ${v.cls}"><h3>${v.title}</h3><p>${v.body}</p></div>
+    <div class="dformula">
+      <div class="big">≈ ${fmtTok(est)}</div>
+      <div class="eq">${ledgerFormula(L, cT, gT, ov)}</div>
+    </div>
+    <h4 class="recon-h4">匹配结果</h4>
+    <div class="drow"><span class="k">客户端记录</span><span class="v">${fmt(r.clientRows)} 条</span></div>
+    <div class="drow"><span class="k">网关记录</span><span class="v">${fmt(r.gatewayRows)} 条</span></div>
+    <div class="drow"><span class="k">一对一匹配（重叠）</span><span class="v">${fmt(r.matched)} 条 · ${fmtTok(ov)}</span></div>
+    <div class="drow"><span class="k">客户端未匹配</span><span class="v">${fmt(r.clientRows - r.matched)} 条 · ${fmtTok(cT - ov)}</span></div>
+    <h4 class="recon-h4">匹配规则</h4>
+    <p class="tiny muted">同模型 · 时间差 ≤ 120 秒 · prompt 与 completion 相差 ≤ 1% · 一对一（一条网关记录最多抵一条客户端记录）。
+      三条同时满足才算重叠 —— 宁可少扣，也不多扣。</p>
+    <p class="tiny muted" style="margin-top:6px"><b>账号不参与匹配</b>：网关按请求选号（无缝切号），同一条请求在客户端账本里记的是登录账号、
+      在网关账本里记的是被选中的账号 —— 拿账号当匹配键会把该对上的全漏掉。</p>
+    <h4 class="recon-h4">这次覆盖了哪里</h4>
+    <div class="drow"><span class="k">网关日志窗口</span><span class="v">${fmt(r.gatewayRows)} 条可对账</span></div>
+    <p class="tiny muted">网关日志只留最近 N 条请求，更早的已滚出窗口，无法逐条对账。所以合计给的是区间
+      <b>${fmtTok(Math.max(cT, gT))} – ${fmtTok(cT + gT)}</b>：下限 = 两本账取大（全部重叠），上限 = 直接相加（完全无重叠）。
+      ${fmtTok(est)} 取「未匹配的客户端请求都是直连」这一侧。</p>
+    <h4 class="recon-h4">未匹配样本（前 3 条）</h4>
+    <div class="tbl-wrap"><table class="tbl">
+      <thead><tr><th>时间</th><th>模型</th><th>Token</th><th>为什么没对上</th></tr></thead>
+      <tbody>${samples.map((s) => `<tr><td class="muted">${s.ts}</td><td>${esc(s.model)}</td>
+        <td class="num">${fmtTok(s.tokens)}</td><td class="tiny muted">${esc(s.why)}</td></tr>`).join("")}</tbody>
+    </table></div>`;
+}
+
+function openRecon() {
+  let layer = document.getElementById("recon-layer");
+  if (!layer) {
+    layer = document.createElement("div");
+    layer.id = "recon-layer";
+    layer.className = "recon-layer";
+    layer.setAttribute("role", "dialog");
+    layer.setAttribute("aria-label", "对账明细");
+    document.body.appendChild(layer);
+  }
+  const L = ledgerOf();
+  layer.innerHTML = L ? `<div class="recon-mask" data-act="recon-close"></div><aside class="recon-panel">${reconBody(L)}</aside>` : "";
+  layer.classList.add("on");
+}
+function closeRecon() {
+  const layer = document.getElementById("recon-layer");
+  if (layer) { layer.classList.remove("on"); layer.innerHTML = ""; }
+}
+
 function viewUsage() {
   const u = usageFor();
   const e = u.ext;
@@ -919,6 +1335,10 @@ function viewUsage() {
   const tabs = [["trend", "趋势"], ["models", "模型"], ["sessions", "会话"], ["credits", "积分"]];
   const scopeName = state.merge ? "全部作用域" : scopeLabel(state.scope);
   const rangeName = rangeLabel();
+  const L = ledgerOf();
+  /* 账本只对 WorkBuddy 出现：Trae / Qoder 的数据源形状不同（见 UsagePage 的平台映射）。 */
+  const isWb = curPlatform().id === "workbuddy";
+  const book = isWb ? currentBook(L) : "client";
 
   const params = `<div class="toolbar">
     <span class="tiny muted">视图参数</span>
@@ -927,6 +1347,10 @@ function viewUsage() {
       ${[7, 14, 30].map((n) => `<button class="${state.rangeMode === "preset" && state.range === n ? "on" : ""}" data-act="range|${n}">近 ${n} 天</button>`).join("")}
       <button class="${state.rangeMode === "custom" ? "on" : ""}" data-act="range-custom-open" aria-haspopup="dialog" aria-expanded="${state.rangeOpen}">自定义时间</button>
     </div>
+    ${L && isWb ? `<div class="vsep"></div><span class="tiny muted">账本</span>
+    <div class="seg book">
+      ${["all", "client", "gateway"].map((b) => `<button class="${book === b ? "on" : ""}" data-act="usage-book|${b}">${bookLabel(b)}</button>`).join("")}
+    </div>` : ""}
     <div class="grow"></div>
     <div class="seg">
       <button class="${!state.merge ? "on" : ""}" data-act="merge|0">仅本作用域</button>
@@ -938,139 +1362,119 @@ function viewUsage() {
   let body = "";
 
   if (tab === "trend") {
-    const total = days.reduce((x, d) => x + d.value, 0);
-    const avg = Math.round(total / days.length);
-    const peak = days.reduce((m, d) => (d.value > m.value ? d : m), days[0]);
+    const w = ledgerWindow(L, win, days);
+    const cT = sumArr(w.client), gT = sumArr(w.gateway);
+    const total = book === "client" ? cT : book === "gateway" ? gT : ledgerEstimate(cT, gT, ledgerOverlap(L, cT));
     let run = 0;
     const cum = days.map((d) => ({ label: d.label, value: (run += d.value) }));
-    const modelSlices = e.modelDays.map((m) => ({ name: m.name, values: m.values.slice(win.from, win.to + 1) }));
-    const modelTotals = modelSlices.map((m) => ({ name: m.name, value: m.values.reduce((s, v) => s + v, 0) }));
+    /* 模型占比**按单本账画**：跨账本合并占比的分母是假的（两本账各记一次）。 */
+    const clientSlices = u.models.map((m) => ({ name: m.name, value: m.tokens }));
+    const gatewaySlices = L.gateway.models.map((m) => ({ name: m.name, value: m.tokens }));
+    const donutCards = book === "all"
+      ? `<div class="grid g2" style="gap:12px">
+           <div><div class="tiny muted" style="margin-bottom:6px">客户端 ${fmtTok(sumArr(w.client))}</div>
+             ${donut(clientSlices, 140, "客户端账本的模型 Token 占比环形图", " Token")}</div>
+           <div><div class="tiny muted" style="margin-bottom:6px">网关 ${fmtTok(sumArr(w.gateway))}</div>
+             ${donut(gatewaySlices, 140, "网关账本的模型 Token 占比环形图", " Token")}</div>
+         </div>`
+      : donut(book === "client" ? clientSlices : gatewaySlices, 150,
+          `${bookLabel(book)}账本的模型 Token 占比环形图`, " Token");
 
-    body = `
-    <div class="grid g4" style="margin-bottom:16px">
-      ${statTile("区间总 Token", fmtTok(total), rangeName)}
-      ${statTile("日均", fmtTok(avg), "按自然日平均")}
-      ${statTile("峰值", fmtTok(peak.value), peak.label)}
-      ${statTile("活跃账号", String(e.accountShare.length), scopeName)}
-    </div>
-
-    <section class="card" style="margin-bottom:16px">
-      <div class="card-head"><h3>每日 Token · 按模型拆分</h3><div class="grow"></div><span class="sub">${scopeName} · 悬停看当日各模型明细</span></div>
-      <div class="card-pad">
-        ${stackedBar(days, modelSlices, 210, `按模型拆分的每日 Token 堆叠柱状图，${scopeName}，${rangeName}`)}
-        <div style="margin-top:14px">${legend(modelTotals)}</div>
-      </div>
-    </section>
-
-    <div class="grid g2" style="margin-bottom:16px">
-      <section class="card">
-        <div class="card-head"><h3>累计消耗曲线</h3><div class="grow"></div><span class="sub">区间内累计</span></div>
-        <div class="card-pad">${areaChart(cum, 170, `累计 Token 曲线，${scopeName}，${rangeName}`, { caption: `区间累计 ${fmt(cum[cum.length - 1].value)}　（单日峰值 ${fmt(Math.max(...days.map((d, i) => (i ? d.value - days[i - 1].value : d.value))))}）` })}</div>
+    body = `<div class="grid g4" style="margin-bottom:16px">${ledgerTiles(L, book, w, rangeName)}</div>
+      ${isWb ? ledgerCoverage(L, win, days) : ""}
+      <section class="card" style="margin-bottom:16px">
+        <div class="card-head"><h3>每日 Token</h3><div class="grow"></div>
+          <span class="sub">${rangeName} · 悬停看当日各账本</span></div>
+        <div class="card-pad">${ledgerStacked(w, book, 210)}</div>
+        <div class="tiny muted" style="padding:0 16px 14px">柱高是两本账各自的值，<b>不做扣减</b> —— 重叠只在「合计」里扣（见对账）。</div>
       </section>
-      <section class="card">
-        <div class="card-head"><h3>模型占比</h3></div>
-        <div class="card-pad">${donut(modelTotals, 150, "各模型 Token 占比环形图", " Token")}</div>
-      </section>
-    </div>
-
-    <section class="card">
-      <div class="card-head"><h3>使用时段分布</h3><div class="grow"></div><span class="sub">越亮 = 该时段越忙（相对强度，非绝对量）</span></div>
-      <div class="card-pad">${heatmap(e.hourly, WEEKDAYS, "一周七天 × 24 小时的使用强度热力图")}</div>
-    </section>`;
-  } else if (tab === "models") {
-    const items = e.modelDays
-      .map((m) => ({ name: m.name, values: m.values.slice(win.from, win.to + 1) }))
-      .map((m) => ({ name: m.name, spark: m.values, value: m.values.reduce((s, v) => s + v, 0) }))
-      .sort((a, b) => b.value - a.value);
-    const totalM = items.reduce((s, i) => s + i.value, 0) || 1;
-    body = items.length
-      ? `<div class="grid g4" style="margin-bottom:16px">
-          ${statTile("模型数", String(items.length), "区间内被调用过")}
-          ${statTile("头部模型", items[0].name, `${Math.round((items[0].value / totalM) * 100)}% 占比`)}
-          ${statTile("模型总 Token", fmtTok(totalM), rangeName)}
-          ${statTile("单模型均值", fmtTok(Math.round(totalM / items.length)), "按模型数平均")}
-        </div>
-
-        <section class="card" style="margin-bottom:16px">
-          <div class="card-head"><h3>模型 Token 占比</h3><div class="grow"></div><span class="sub">${scopeName}</span></div>
-          <div class="card-pad">${donut(items.map((i) => ({ name: i.name, value: i.value })), 170, "各模型 Token 占比环形图", " Token")}</div>
-        </section>
-
+      <div class="grid g2" style="margin-bottom:16px">
         <section class="card">
-          <div class="card-head"><h3>模型用量排行</h3><div class="grow"></div><span class="sub">条形 = 占比　迷你线 = 区间内走势</span></div>
-          <div class="card-pad">${hbarList(items, {
-            spark: true, sparkW: 74, sparkH: 20,
-            fmt: (it) => `${fmtTok(it.value)} · ${Math.round((it.value / totalM) * 100)}%`,
-          })}</div>
-        </section>`
-      : emptyBlock(ICON.usage, "暂无模型用量", "该作用域还没有产生调用记录。");
+          <div class="card-head"><h3>累计消耗曲线</h3><div class="grow"></div><span class="sub">区间内累计</span></div>
+          <div class="card-pad">${areaChart(cum, 170, `累计 Token 曲线，${scopeName}，${rangeName}`)}</div>
+        </section>
+        <section class="card">
+          <div class="card-head"><h3>模型占比</h3><div class="grow"></div><span class="sub">${bookLabel(book)}</span></div>
+          <div class="card-pad">${donutCards}</div>
+        </section>
+      </div>
+      ${book === "gateway"
+        ? `<section class="card"><div class="card-head"><h3>使用时段分布</h3><div class="grow"></div><span class="badge warn">网关不记录</span></div>
+             <div class="card-pad"><p class="tiny muted" style="margin:8px 0">网关日志只记时间戳与耗时：能算逐日，不能算「一周七天 × 24 小时」。要按小时看，请切到客户端账本。</p></div>
+           </section>`
+        : `<section class="card"><div class="card-head"><h3>使用时段分布</h3><div class="grow"></div><span class="badge">仅客户端</span></div>
+             <div class="card-pad">${heatmap(e.hourly, WEEKDAYS, "一周七天 × 24 小时的使用强度热力图")}</div>
+           </section>`}`;
+  } else if (tab === "models") {
+    body = ledgerModelDaily(u, L, win, book) + (book === "all"
+      ? `<div class="note-strip"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8h.01"/></svg>
+          <span><b>两个账本各一张表，不相加。</b>同一请求可能客户端与网关各记一次 —— 所以这里没有「合并占比」，想对账请切到单一账本。</span></div>`
+      : "")
+      + (book === "gateway" ? "" : ledgerModelTable(L, "client", win))
+      + (book === "client" ? "" : ledgerModelTable(L, "gateway", win));
   } else if (tab === "sessions") {
-    const top = [...u.sessions].sort((a, b) => b.tokens - a.tokens);
-    const pts = top.map((s) => ({ x: s.msgs, y: s.tokens, label: s.title }));
-    const totalS = top.reduce((s, x) => s + x.tokens, 0) || 1;
-    body = top.length
-      ? `<div class="grid g4" style="margin-bottom:16px">
-          ${statTile("会话数", String(top.length), "区间内活跃")}
-          ${statTile("会话总 Token", fmtTok(totalS), rangeName)}
-          ${statTile("单会话均值", fmtTok(Math.round(totalS / top.length)), "按 Token")}
-          ${statTile("最高消耗", fmtTok(top[0].tokens), top[0].title)}
-        </div>
-
-        <div class="grid g2" style="margin-bottom:16px">
-          <section class="card">
-            <div class="card-head"><h3>会话 Token 排行</h3></div>
-            <div class="card-pad">${hbarList(top.map((s) => ({ name: s.title, value: s.tokens })), {
-              fmt: (it) => `${fmtTok(it.value)} · ${Math.round((it.value / totalS) * 100)}%`,
-            })}</div>
-          </section>
-          <section class="card">
-            <div class="card-head"><h3>消息数 × Token</h3><div class="grow"></div><span class="sub">气泡越大 = 单次消耗越高</span></div>
-            <div class="card-pad">${scatterChart(pts, 200, "会话的消息数与 Token 散点图", "消息数", "Token")}</div>
-          </section>
-        </div>
-
-        <div class="tbl-wrap"><table class="tbl">
-          <thead><tr><th>会话标题</th><th>账号</th><th>消息数</th><th>Token</th><th>占比</th><th>最后活动</th></tr></thead>
-          <tbody>${top.map((x) => `<tr>
-            <td><b>${esc(x.title)}</b></td><td>${esc(x.account)}</td>
-            <td class="num">${x.msgs}</td><td class="num">${fmt(x.tokens)}</td>
-            <td class="num muted">${Math.round((x.tokens / totalS) * 100)}%</td>
-            <td class="muted nowrap">${esc(x.when)}</td>
-          </tr>`).join("")}</tbody></table></div>`
-      : emptyBlock(ICON.accounts, "暂无会话记录", "该作用域还没有产生会话。");
-  } else {
-    if (state.errors.usage) {
-      /* 积分刷新失败：行内错误态 + 重试，而不是只弹一个 toast 就没了 */
-      body = errorState({
-        title: "积分刷新失败",
-        desc: "无法从上游读取积分余额，下面显示的可能不是最新数据。",
-        action: { label: "重试刷新", act: "retry|usage" },
-      });
+    if (book === "gateway") {
+      body = ledgerGatewaySources(L);
     } else {
-      /* 合并态下这些数字也要跟着变，不能只有趋势图变。 */
-      const statScopes = state.merge ? Object.keys(SCOPES) : [state.scope];
-      const allAcc = statScopes.flatMap((id) => SCOPES[id].accounts);
-      const daily = e.creditDaily.slice(win.from, win.to + 1);
-      const bal = e.balance.slice(win.from, win.to + 1);
-      const totalIn = daily.reduce((s, d) => s + d.inAmt, 0);
-      const totalOut = daily.reduce((s, d) => s + d.outAmt, 0);
-      const netAmt = totalIn - totalOut;
-      const exp = e.expiry.filter((x) => x.value > 0);
-      const expiring5 = allAcc.reduce((x, a) => x + a.expiring, 0);
+      const top = [...u.sessions].sort((a, b) => b.tokens - a.tokens);
+      const pts = top.map((s) => ({ x: s.msgs, y: s.tokens, label: s.title }));
+      const totalS = top.reduce((s, x) => s + x.tokens, 0) || 1;
+      const notice = book === "all"
+        ? `<div class="note-strip"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8h.01"/></svg>
+            <span>网关调用<b>没有会话 ID</b>，未计入本视图 · <a class="link" data-act="usage-book|gateway">按账号查看网关用量</a></span></div>`
+        : "";
+      body = notice + (top.length
+        ? `<div class="grid g4" style="margin-bottom:16px">
+            ${statTile("会话数", String(top.length), "区间内活跃")}
+            ${statTile("会话总 Token", fmtTok(totalS), rangeName)}
+            ${statTile("单会话均值", fmtTok(Math.round(totalS / top.length)), "按 Token")}
+            ${statTile("最高消耗", fmtTok(top[0].tokens), top[0].title)}
+          </div>
+          <div class="grid g2" style="margin-bottom:16px">
+            <section class="card"><div class="card-head"><h3>会话 Token 排行</h3></div>
+              <div class="card-pad">${hbarList(top.map((s) => ({ name: s.title, value: s.tokens })), {
+                fmt: (it) => `${fmtTok(it.value)} · ${Math.round((it.value / totalS) * 100)}%`,
+              })}</div></section>
+            <section class="card"><div class="card-head"><h3>消息数 × Token</h3><div class="grow"></div><span class="sub">气泡越大 = 单次消耗越高</span></div>
+              <div class="card-pad">${scatterChart(pts, 200, "会话的消息数与 Token 散点图", "消息数", "Token")}</div></section>
+          </div>`
+        : emptyBlock(ICON.accounts, "暂无会话记录", "该作用域还没有产生会话。"));
+    }
+  } else {
+    /* 积分：**两个口径**。余额口径权威、不重复、拆不到来源；请求口径可拆、会重复。 */
+    const w = ledgerWindow(L, win, days);
+    const statScopes = state.merge ? Object.keys(SCOPES) : [state.scope];
+    const allAcc = statScopes.flatMap((id) => SCOPES[id].accounts);
+    const daily = e.creditDaily.slice(win.from, win.to + 1);
+    const bal = e.balance.slice(win.from, win.to + 1);
+    const totalIn = daily.reduce((s, d) => s + d.inAmt, 0);
+    const totalOut = daily.reduce((s, d) => s + d.outAmt, 0);
+    const exp = e.expiry.filter((x) => x.value > 0);
+    const expiring5 = allAcc.reduce((x, a) => x + a.expiring, 0);
 
-      body = `${creditsHeadBar()}
+    body = `${creditsHeadBar()}
       <div class="grid g4" style="margin-bottom:16px">
         ${statTile("可用积分合计", fmt(e.curTotal), `${allAcc.length} 个账号`)}
+        ${statTile("区间消耗", fmtCredit(totalOut), "余额差值 · 权威口径")}
         ${statTile("区间入账", "+" + fmt(totalIn), "签到奖励")}
-        ${statTile("区间消耗", "-" + fmt(totalOut), `净 ${netAmt >= 0 ? "+" : ""}${fmt(netAmt)}`)}
         ${statTile("即将过期", fmt(expiring5), exp.length ? `最早 ${exp[0].day} 天后` : "5 天内无到期")}
       </div>
-
+      <div class="note-strip"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8h.01"/></svg>
+        <span>上面四张是<b>余额口径</b>：账号余额快照的差值，<b>天然不重复</b>，但拆不到来源。下面按请求累加，能拆来源，<b>会重复</b>。</span></div>
+      <section class="card" style="margin-bottom:16px">
+        <div class="card-head"><h3>每日积分消耗</h3><div class="grow"></div><span class="sub">请求口径 · ${rangeName}</span></div>
+        <div class="card-pad">${ledgerCreditBars(L, w, book)}</div>
+        <div class="tiny muted" style="padding:0 16px 14px">每条请求自带的 credit 累加（客户端 jsonl / 网关 usage.credit）。两本账分色，柱高不做扣减。</div>
+      </section>
+      <div class="grid g2" style="margin-bottom:16px">
+        ${book === "gateway" ? "" : ledgerCreditTable(L, "client")}
+        ${book === "client" ? "" : ledgerCreditTable(L, "gateway")}
+      </div>
+      ${book === "all" ? ledgerCreditGap(L, totalOut, Math.max(0, totalOut - L.credits.byRequest)) : ""}
       <section class="card" style="margin-bottom:16px">
         <div class="card-head"><h3>每日积分收支</h3><div class="grow"></div><span class="sub">上 = 签到入账　下 = 对话消耗</span></div>
         <div class="card-pad">${divergingBars(daily, 180, `每日积分收支双向柱状图，${scopeName}，${rangeName}`, "入账", "消耗")}</div>
       </section>
-
       <div class="grid g2" style="margin-bottom:16px">
         <section class="card">
           <div class="card-head"><h3>积分余额变化</h3><div class="grow"></div><span class="sub">末值 = 当前合计</span></div>
@@ -1083,22 +1487,6 @@ function viewUsage() {
             : `<p class="tiny muted" style="margin:8px 0">未来 30 天内没有积分到期。</p>`}</div>
         </section>
       </div>
-
-      <div class="grid g2" style="margin-bottom:16px">
-        <section class="card">
-          <div class="card-head"><h3>账号 Token 占比</h3><div class="grow"></div><span class="sub">累计</span></div>
-          <div class="card-pad">${e.accountShare.length
-            ? donut(e.accountShare.slice(0, 6), 150, "各账号累计 Token 占比环形图", " Token")
-            : `<p class="tiny muted" style="margin:8px 0">还没有账号产生用量。</p>`}</div>
-        </section>
-        <section class="card">
-          <div class="card-head"><h3>网关状态码分布</h3><div class="grow"></div><span class="sub">今日请求</span></div>
-          <div class="card-pad">${e.statusCodes.length
-            ? donut(e.statusCodes, 150, "网关请求状态码分布环形图", " 次")
-            : `<p class="tiny muted" style="margin:8px 0">本作用域没有网关请求。</p>`}</div>
-        </section>
-      </div>
-
       ${u.credits.length ? `<div class="tbl-wrap"><table class="tbl">
       <thead><tr><th>时间</th><th>账号</th><th>变动</th><th>说明</th></tr></thead>
       <tbody>${u.credits.map((c) => `<tr>
@@ -1106,7 +1494,6 @@ function viewUsage() {
         <td class="num" style="color:${c.delta > 0 ? "var(--success)" : "var(--warning)"}">${c.delta > 0 ? "+" : ""}${c.delta}</td>
         <td>${esc(c.note)}</td></tr>`).join("")}</tbody></table></div>`
         : emptyBlock(ICON.spark, "暂无积分流水", "该作用域还没有积分变动记录。")}`;
-    }
   }
 
   return `<div class="page">
@@ -1121,6 +1508,7 @@ function viewUsage() {
     ${body}
   </div>`;
 }
+
 
 /* 模型清单来源条（§3.17）：三级来源必须显式标注，非「实时」时给出原因 + 重试。
    绝不把「内置」伪装成「实时」—— 用户照着清单调用会扑空，是典型的静默错误。 */
@@ -3649,6 +4037,9 @@ document.addEventListener("click", (e) => {
     }
     case "merge": stop(); state.merge = a1 === "1"; renderContent(); break;
     case "usage-tab": stop(); state.usageTab = a1; renderContent(); break;
+    case "usage-book": stop(); state.usageBook = a1; closeRecon(); renderContent(); break;
+    case "recon-open": stop(); openRecon(); break;
+    case "recon-close": stop(); closeRecon(); break;
     case "gw-sub": stop(); state.gwSub = a1; renderContent(); break;
     case "max-context": {
       stop();
@@ -4415,6 +4806,7 @@ function bootFromUrl() {
   if (p.get("pin")) state.pins[state.scope] = p.get("pin");
   if (p.get("set")) state.setSub = p.get("set");
   if (p.get("usage")) state.usageTab = p.get("usage");
+  if (p.get("book")) state.usageBook = p.get("book");
   if (p.get("view")) state.view = p.get("view");
   if (p.get("group")) state.group = p.get("group");
   if (p.get("range")) {

@@ -187,6 +187,8 @@ fn api_routes() -> Router {
         .route("/api/account/group", post(api_set_account_group))
         .route("/api/account/token-today", get(api_account_token_today))
         .route("/api/account/token-trend", get(api_gateway_token_trend))
+        .route("/api/account/usage-dim", get(api_gateway_usage_dim))
+        .route("/api/account/usage-reconcile", get(api_usage_reconcile))
         .route(
             "/api/switch/config",
             get(api_switch_config).post(api_save_switch_config),
@@ -1656,6 +1658,23 @@ async fn api_account_token_today(RawQuery(query): RawQuery) -> Response {
 async fn api_gateway_token_trend(RawQuery(query): RawQuery) -> Response {
     let region = parse_region(query_value(query.as_deref(), "region").as_deref());
     json_ok(token_daily::gateway_token_trend(region))
+}
+
+/// GET /api/account/usage-dim —— 网关三维度（模型 / 账号 / 端点）逐日历史。
+///
+/// 与 `src-tauri/src/commands.rs` 的 `get_gateway_usage_dim` **一一对应**。
+async fn api_gateway_usage_dim(RawQuery(query): RawQuery) -> Response {
+    let region = parse_region(query_value(query.as_deref(), "region").as_deref());
+    json_ok(token_daily::gateway_usage_dim(region))
+}
+
+/// GET /api/account/usage-reconcile —— 今日客户端 ↔ 网关对账。
+///
+/// 与 `src-tauri/src/commands.rs` 的 `get_usage_reconcile` **一一对应**。
+/// ⚠️ 只读、**不落盘**（结果随网关日志窗口滚动而变）。
+async fn api_usage_reconcile(RawQuery(query): RawQuery) -> Response {
+    let region = parse_region(query_value(query.as_deref(), "region").as_deref());
+    json_ok(token_daily::reconcile_today(region))
 }
 
 /// GET /api/switch/config —— 账号切换与账号列表展示配置。

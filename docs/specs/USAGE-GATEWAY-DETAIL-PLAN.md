@@ -1,6 +1,7 @@
 # 用量页网关明细（issue #63）实施方案
 
 > 状态：**待拍板**（2026-10-21）。拍板后先改 `docs/prototype/`，原型复核通过才动代码。
+> ⚠️ **UI 口径已由 [`USAGE-GATEWAY-UI-REDESIGN.md`](USAGE-GATEWAY-UI-REDESIGN.md) 取代**：本文的「模型 tab 加含网关开关」作废（改为页面级「账本」参数 + 拆表）；数据契约、落盘位置、升级播种、验收用例仍然有效，并按新 UI 扩到 model / account / endpoint 三个维度。
 > 关联：issue #63、`docs/specs/P3-ARCH.md`（用量四视图）、`crates/buddy-switch-core/src/modules/token_daily.rs`、`crates/buddy-switch-gateway/src/logging.rs`。
 
 ## 结论
@@ -72,12 +73,15 @@ ts / endpoint / method / region / account / accountUid / model / status / latenc
     "deepseek-v4.1-flash": { "input": 18421567, "output": 0, "requests": 74, "failed": 0 },
     "__unknown__":          { "input": 0,        "output": 0, "requests": 3,  "failed": 3 }
   },
+  "gatewayAccounts": { "uid-a": { "input": 12186150, "output": 0, "requests": 43, "failed": 0 } },
+  "gatewayEndpoints": { "/v1/chat/completions": { "requests": 75, "failed": 5 } },
   "gatewayModelsPartial": false
 }
 ```
 
-- `gatewayModels`：键是模型名（`model` 为空 ⇒ 哨兵 `__unknown__`，渲染「未标注模型」）。**不按账号再拆**——按账号的小计走网关页（数据现成，见 §6.3）。
-- `requests` / `failed`（`status >= 400`）：同一次聚合顺手数出来，成本 0，让「429 × 5」能落到模型视图。
+- `gatewayModels`：键是模型名（`model` 为空 ⇒ 哨兵 `__unknown__`，渲染「未标注模型」）。
+- **`gatewayAccounts` / `gatewayEndpoints`**：UI 重设计（`USAGE-GATEWAY-UI-REDESIGN.md` §2.2）要求会话 tab 在网关账本下换成「按账号 / 按端点」，且跨 7 天 ⇒ 必须落盘，环形窗口撑不住。三者**在同一次聚合里顺手产出**，成本不变。
+- `requests` / `failed`（`status >= 400`）：成本 0，让「429 × 5」能落到模型视图。
 - `gatewayModelsPartial`：升级过渡标记。见 §5.2 的播种规则。
 - 版本号 3；旧文件缺字段 ⇒ `default` 空 ⇒ 走播种，不丢已有桶。
 
@@ -98,7 +102,30 @@ ts / endpoint / method / region / account / accountUid / model / status / latenc
 
 与 `get_gateway_token_trend` **同源同形状**（`days` + `truncated` + `retentionDays`），前端复用同一套覆盖率计算。
 
-### 4.3 前端类型
+### 4.3 命令 `get_usage_reconcile`（GET `/api/account/usage-reconcile?region=&days=`）
+
+回答「客户端与网关重叠多少」（`USAGE-GATEWAY-UI-REDESIGN.md` §4）。**只读、不落盘**。
+
+```jsonc
+{
+  "window": { "from": "2026-10-15", "to": "2026-10-21" },
+  "clientRows": 117, "gatewayRows": 126,
+  "matched": 9, "matchedTokens": 350000,
+  "bounds": { "lower": 28500000, "upper": 35010000 },   // max(C,G) .. C+G
+  "estimate": 34660000,                                 // C + G − matchedTokens
+  "logCoverage": { "from": "2026-10-21T17:01:00+08:00", "to": "…18:10:00+08:00",
+                   "covered": 126, "total": 126 },
+  "verdict": "independent",                             // independent | subset | mixed
+  "unmatchedSamples": [ { "ts": 1761031452000, "model": "step-5-preview", "tokens": 42100, "why": "model_missing" } ]
+}
+```
+
+- 入参 = 窗口（**外加一个配置信号**：网关代理是否开启，用于 `verdict` 的双信号判定，见 UI 文档 §4.4.1）；读 `gateway_logs.json`（≤ `log_keep` 条）+ **窗口内**客户端逐消息记录 `(ts, model, input, output)`（复用 `token_stats` 的解析，只保留窗口内的元组）。
+- 匹配：同模型 + `|Δt| ≤ 120s` + prompt/completion 各差 ≤ 1% + 一对一贪心（最近 Δt 优先）。**账号不参与匹配** —— 网关切号会让两端账号对不上（UI 文档 §4.4.1）。纯函数 `reconcile(client_rows, gateway_rows, proxy_enabled) -> ReconcileReport`，可单测。
+- `verdict` 双信号：匹配率 + `proxy_enabled`。`< 10%` ⇒ `independent`；`> 90%` **且** 代理开启 ⇒ `subset`；其余 `mixed`（匹配率高但代理没开 ⇒ 更可能是别的客户端在跑同样模型）。
+- **不落盘**：对账结果随日志窗口滚动而变，写进 `token_daily` 会让历史数字漂移（UI 文档 §4.7）。
+
+### 4.4 前端类型
 
 ```ts
 export interface GatewayModelUsage { model: string; input: number; output: number; total: number; requests: number; failed: number }
@@ -111,7 +138,7 @@ export interface GatewayUsageDim { date: string; retentionDays: number; partialD
 ### 5.1 `crates/buddy-switch-core/src/modules/token_daily.rs`
 
 1. `GatewayRow` 加 `model: String`、`status: u16`；`parse_gateway_rows` 填充（`model` 空 ⇒ `__unknown__`）。
-2. 新增 `struct ModelBucket { input, output, requests, failed }`、`fn bucket_gateway_models(rows, region, day, since) -> BTreeMap<String, ModelBucket>`（**过滤器与 `bucket_gateway` 逐字一致**：region + day + `ts > since`）。
+2. 新增 `struct ModelBucket { input, output, requests, failed }`、`fn bucket_gateway_models(rows, region, day, since) -> BTreeMap<String, ModelBucket>`（**过滤器与 `bucket_gateway` 逐字一致**：region + day + `ts > since`）；`bucket_gateway_accounts` / `bucket_gateway_endpoints` 同形（endpoint 桶只要 `requests` / `failed`）。
 3. `gateway_round` 的返回扩成：
 
 ```rust
@@ -225,10 +252,22 @@ export function gatewayDimCoverage(dim, window): GatewayCoverage   // 复用 gat
 - `legacy_v2_day_seeds_models_once_and_marks_partial`：真文件 + `HomeOverrideGuard`。
 - `unknown_model_falls_into_sentinel`：`model` 为空 ⇒ `__unknown__`，不丢量。
 
+**Rust（`reconcile.rs`，纯函数）**
+
+- `reconcile_matches_one_to_one`：一条网关记录**最多**抵一条客户端记录（重复 token 的两条客户端记录不会都算重叠）。
+- `reconcile_ignores_account`：同一条请求两端账号不同（网关切号）**仍必须匹配上** —— 拿账号当键会把 `subset` 误判成 `independent`。
+- `reconcile_leaves_retry_rows_unmatched`：1 条客户端 × 2 条网关（内部降级重试）⇒ 只匹配 1 条，另一条留在网关侧（通常 0 token）。
+- `verdict_requires_proxy_signal`：匹配率 95% 但 `proxy_enabled = false` ⇒ 不判 `subset`（那是别的客户端在跑同样模型）。
+- `reconcile_rejects_time_gap_over_120s` / `reconcile_rejects_token_drift_over_1pct`：边界两侧各一条用例。
+- `bounds_hold_for_any_overlap`：随机 overlap ∈ [0, min(C,G)] 下 `max(C,G) ≤ estimate ≤ C+G`。
+- `verdict_thresholds`：匹配率 0.05 / 0.5 / 0.95 分别产出 `independent` / `mixed` / `subset`。
+- `reconcile_is_read_only`：跑完 `token_daily.json` 与 `gateway_logs.json` 的 mtime / 内容不变。
+
 **TS**
 
-- `mergeModelSlices` 合并后 `value === client + gateway`；窗口外不计；`spark` 逐日相加。
+- `bookModelRows(book)`：只读单本账，`Σ rows.total === 该账本合计`（**不做跨账本合并** —— UI 文档 §4.7 第 2 条）。
 - `summarizeLogs` 的 `Σ byModel.tokens === Σ rows.tokens`（含 `null` 字段按 0）。
+- `combinedTile(recon)`：`value === recon.estimate`，`hint` 里的算式三项与 `recon` 字段逐项相等（防止卡片与抽屉说两套话）。
 
 **门禁**
 

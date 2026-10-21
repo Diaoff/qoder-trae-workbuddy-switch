@@ -174,6 +174,7 @@ pub async fn messages_for_region(
                     total_ms: elapsed_ms,
                     prompt_tokens: 0,
                     completion_tokens: 0,
+                    credit: 0.0,
                     stream: wants_stream,
                 }
                 .to_value(),
@@ -207,6 +208,7 @@ pub async fn messages_for_region(
                         total_ms: 0,
                         prompt_tokens: 0,
                         completion_tokens: 0,
+                        credit: 0.0,
                         stream: true,
                     },
                     started,
@@ -242,6 +244,7 @@ pub async fn messages_for_region(
                             total_ms: elapsed_ms,
                             prompt_tokens: 0,
                             completion_tokens: 0,
+                            credit: 0.0,
                             stream: false,
                         }
                         .to_value(),
@@ -264,6 +267,13 @@ pub async fn messages_for_region(
                     .and_then(|usage| usage.get("output_tokens"))
                     .and_then(serde_json::Value::as_u64)
                     .unwrap_or(0);
+                /* 积分：与 chat / responses 同一口径（上游 `usage.credit`）。
+                   缺字段记 0.0（= 不知道），不猜、不按 token 折算。 */
+                let credit = message
+                    .get("usage")
+                    .and_then(|usage| usage.get("credit"))
+                    .and_then(serde_json::Value::as_f64)
+                    .unwrap_or(0.0);
                 state.log.record(
                     RequestMeta {
                         endpoint: "/v1/messages",
@@ -277,6 +287,7 @@ pub async fn messages_for_region(
                         total_ms: started.elapsed().as_millis() as i64,
                         prompt_tokens,
                         completion_tokens,
+                        credit,
                         stream: false,
                     }
                     .to_value(),

@@ -32,6 +32,7 @@ import { Bar, BarChart, CartesianGrid, Rectangle, XAxis, YAxis } from "recharts"
 import { ChartContainer, ChartTooltip, ChartTooltipContent, type ChartConfig } from "@/components/ui/chart";
 import { useT } from "@/lib/i18n";
 import { GATEWAY_SEGMENT, TOTAL_SEGMENT, type DailyModelColumn } from "@/lib/usage-charts";
+import { LEDGER_CLIENT_SEGMENT, LEDGER_GATEWAY_SEGMENT } from "@/lib/usage-ledger";
 
 import { compactTokens } from "./format";
 import { seriesColor } from "./palette";
@@ -128,7 +129,30 @@ function barShape(seriesKey: string, topKeyByColumn: (string | null)[]) {
     visibleBar(props as BarShapeProps, seriesKey, topKeyByColumn)) as (props: unknown) => ReactElement;
 }
 
-export function StackedDailyBar({ columns }: { columns: DailyModelColumn[] }) {
+export function StackedDailyBar({
+  columns,
+  palette,
+  valueFormat,
+}: {
+  columns: DailyModelColumn[];
+  /**
+   * 指定每个分段名的颜色（**按出现顺序**）。
+   *
+   * ## 为什么需要
+   *
+   * 默认配色是「按出现顺序取 `--s1..s8`」—— 那对「按模型堆叠」没问题（模型之间没有
+   * 语义先后）。但「按账本堆叠」时**颜色本身是语义**：客户端必须青绿、网关必须靛蓝，
+   * 否则用户会把两本账读成「两个模型」，而这两个色相正是页面上唯一的账本标识。
+   */
+  palette?: string[];
+  /**
+   * 数值格式化（默认按 **token** 的 `1.2M` / `340K`）。
+   *
+   * 积分视图复用本组件画「每日积分消耗」，但积分是小数（`1.28`），
+   * 用 token 的 `K/M` 会把它显示成 `1.3K` —— 单位错了，图就撒了谎。
+   */
+  valueFormat?: (value: number) => string;
+}) {
   const t = useT();
 
   const { rows, series, config, topKeyByColumn } = useMemo(() => {
@@ -138,7 +162,11 @@ export function StackedDailyBar({ columns }: { columns: DailyModelColumn[] }) {
         if (!names.includes(segment.name)) names.push(segment.name);
       }
     }
-    const series = names.map((name, index) => ({ key: `m${index}`, name, color: seriesColor(index) }));
+    const series = names.map((name, index) => ({
+      key: `m${index}`,
+      name,
+      color: palette?.[index] ?? seriesColor(index),
+    }));
     const keyByName = new Map(series.map((item) => [item.name, item.key]));
 
     const rows = columns.map((column) => {
@@ -170,12 +198,16 @@ export function StackedDailyBar({ columns }: { columns: DailyModelColumn[] }) {
             ? t("wbStats.usage.trend.totalSegment")
             : item.name === GATEWAY_SEGMENT
               ? t("wbStats.usage.trend.gatewaySegment")
-              : item.name,
+              : item.name === LEDGER_CLIENT_SEGMENT
+                ? t("wbStats.usage.ledger.client")
+                : item.name === LEDGER_GATEWAY_SEGMENT
+                  ? t("wbStats.usage.ledger.gateway")
+                  : item.name,
         color: item.color,
       };
     }
     return { rows, series, config, topKeyByColumn };
-  }, [columns, t]);
+  }, [columns, t, palette]);
 
   if (columns.length === 0 || series.length === 0) return null;
 
@@ -185,7 +217,7 @@ export function StackedDailyBar({ columns }: { columns: DailyModelColumn[] }) {
         <BarChart data={rows} margin={{ top: 8, right: 8, left: 0, bottom: 0 }} barCategoryGap="18%">
           <CartesianGrid vertical={false} strokeDasharray="3 3" />
           <XAxis dataKey="label" tickLine={false} axisLine={false} tickMargin={8} minTickGap={24} />
-          <YAxis tickLine={false} axisLine={false} width={48} tickFormatter={(value) => compactTokens(Number(value))} />
+          <YAxis tickLine={false} axisLine={false} width={48} tickFormatter={(value) => (valueFormat ?? compactTokens)(Number(value))} />
           <ChartTooltip
             cursor={{ fill: "var(--muted)", opacity: 0.4 }}
             content={<ChartTooltipContent indicator="dot" />}

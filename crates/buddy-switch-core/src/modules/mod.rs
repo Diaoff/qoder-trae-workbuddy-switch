@@ -46,6 +46,7 @@ pub mod error_code;
 pub mod export_import;
 pub mod identity;
 pub mod proxy_kpi_view;
+pub mod reconcile;
 // JetBrains IDE（IDEA / PyCharm）内 CodeBuddy 插件账号切换（secret-storage.xml）。
 pub mod jetbrains;
 pub mod memory;

@@ -35,6 +35,7 @@ import { Input } from "@/components/ui/input";
 import { Popover, PopoverAnchor, PopoverContent } from "@/components/ui/popover";
 import { Seg } from "@/components/ui/seg";
 import { useT } from "@/lib/i18n";
+import { LEDGER_VALUES, type UsageLedger } from "@/lib/usage-ledger";
 import {
   shortDateLabel,
   usageCustomRangeLabel,
@@ -61,6 +62,13 @@ const MODE_LABEL: Record<UsageWindowMode, TranslationKey> = {
   custom: "wbStats.usage.param.custom",
 };
 
+/** 账本三态 → 词条（写死成表：拼出来的键 `tsc` 查不出）。 */
+const LEDGER_LABEL: Record<UsageLedger, TranslationKey> = {
+  all: "wbStats.usage.ledger.all",
+  client: "wbStats.usage.ledger.client",
+  gateway: "wbStats.usage.ledger.gateway",
+};
+
 export interface ViewParamBarProps {
   /**
    * ⚠️ 刻意**不叫 `window`**：那会在组件作用域里屏蔽全局 `window`
@@ -81,6 +89,15 @@ export interface ViewParamBarProps {
    *   的 `mergeScopes` 数据驱动隐藏，不在组件里判平台。
    */
   canMergeScopes?: boolean;
+  /**
+   * 账本（issue #63）：客户端 / 网关是两本独立记账的账，这个开关决定**看哪本**。
+   *
+   * 只在 WorkBuddy 出现（`canSwitchLedger`，由 `USAGE_PAGES[product].ledger` 给出）：
+   * Trae / Qoder 的「网关」不是同一个东西 —— 摆一个语义不同的同名控件比不摆更糟。
+   */
+  ledger?: UsageLedger;
+  onLedgerChange?: (next: UsageLedger) => void;
+  canSwitchLedger?: boolean;
   className?: string;
 }
 
@@ -121,6 +138,9 @@ export function ViewParamBar({
   combineAll,
   onCombineAllChange,
   canMergeScopes = true,
+  ledger = "all",
+  onLedgerChange,
+  canSwitchLedger = false,
   className,
 }: ViewParamBarProps) {
   const t = useT();
@@ -247,6 +267,17 @@ export function ViewParamBar({
           {usageCustomRangeLabel({ kind: "custom", from: bounds.from, to: bounds.to })}
         </span>
       )}
+      {canSwitchLedger && onLedgerChange ? (
+        <>
+          <span className="text-[11px] text-muted-foreground">{t("wbStats.usage.ledger")}</span>
+          <Seg
+            value={ledger}
+            onChange={onLedgerChange}
+            ariaLabel={t("wbStats.usage.ledger.aria")}
+            options={LEDGER_VALUES.map((value) => ({ value, label: t(LEDGER_LABEL[value]) }))}
+          />
+        </>
+      ) : null}
       <div className="grow" />
       {/* ⚠️ `canMergeScopes === false` 时**不渲染**：Qoder 只有一个区域的数据源，
           渲染那枚控件等于给用户一个点了没反应的开关。 */}

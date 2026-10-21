@@ -48,6 +48,7 @@ import { scopeOf } from "@/lib/scope";
 import { useRefreshAction } from "@/lib/use-refresh-action";
 import { useScope } from "@/lib/use-scope";
 import { readPreferredCombineAll } from "@/lib/usage-params";
+import { parseLedger, type UsageLedger } from "@/lib/usage-ledger";
 import { DEFAULT_USAGE_WINDOW, type UsageWindow } from "@/lib/usage-window";
 import type { TranslationKey } from "@/locales/zh";
 
@@ -103,6 +104,13 @@ const USAGE_PAGES: Record<
     tokenViews: boolean;
     /** 该平台的数据源能否**跨区域合并**（决定参数条要不要渲染合并态控件）。 */
     mergeScopes: boolean;
+    /**
+     * 该平台是否区分「客户端 / 网关」两本账（issue #63）。
+     *
+     * 只有 WorkBuddy：它的客户端日志与本地网关日志是**两本独立记账的账**，
+     * 互相重叠且各有维度。Trae / Qoder 的「网关」不是同一个东西。
+     */
+    ledger: boolean;
   }
 > = {
   workbuddy: {
@@ -110,12 +118,14 @@ const USAGE_PAGES: Record<
     credits: CreditStatsPage,
     tokenViews: true,
     mergeScopes: true,
+    ledger: true,
   },
   trae: {
     tokens: TraeTokenStatsPage,
     credits: TraeCreditsPage,
     tokenViews: true,
     mergeScopes: true,
+    ledger: false,
   },
   /* Qoder：**单位是 credits，不是 Token**（客户端按 credits 计费、token 计数恒为 0，
      三处取证见 `QoderUsagePage` 文件头）。
@@ -128,6 +138,7 @@ const USAGE_PAGES: Record<
     credits: QoderCreditsPage,
     tokenViews: true,
     mergeScopes: false,
+    ledger: false,
   },
 };
 
@@ -139,7 +150,16 @@ export default function UsagePage({ defaultTab = "trend" }: { defaultTab?: Usage
   const [region] = useScope(product);
   const scope = scopeOf(product, region);
   const tabs = PLATFORM_TABS[product];
-  const [tab, setTab] = useState<UsageTab>(defaultTab);
+  /* 子 Tab 也支持深链 `?usage=`（原型 `demo-app.js` 就是这么做的）：评审时能直接把
+     「模型 / 会话 / 积分」某一页发给别人，而不用先点一遍。
+     ⚠️ 只在**初值**读一次 —— 之后它由 Tabs 自己持有（写回 URL 会让浏览器后退键
+     在「切 tab」与「离开页面」之间来回跳，那比没有深链更烦）。 */
+  const [tab, setTab] = useState<UsageTab>(() => {
+    const deep = new URLSearchParams(location.search).get("usage");
+    return deep === "trend" || deep === "models" || deep === "sessions" || deep === "credits"
+      ? deep
+      : defaultTab;
+  });
   /* 平台切换后若旧 Tab 在新平台不可用（如从 WB 的「模型」切到 Trae），回落到首个可用视图。 */
   const active = tabs.includes(tab) ? tab : tabs[0];
 
@@ -157,8 +177,24 @@ export default function UsagePage({ defaultTab = "trend" }: { defaultTab?: Usage
    */
   const [viewWindow, setViewWindow] = useState<UsageWindow>(DEFAULT_USAGE_WINDOW);
   const [combineAll, setCombineAll] = useState(() => readPreferredCombineAll());
+  /**
+   * 账本（issue #63）：客户端 / 网关 / 全部。
+   *
+   * 初值读 URL 的 `?book=`（与 `?usage=` 同一套深链约定，便于评审对照）；
+   * 之后只在本页状态里变 —— **不写回 URL**：它不是「分享出去该带上的定位」，
+   * 而是「我现在想看哪本账」，与「范围」同一性质（范围也不写 URL）。
+   */
+  const [ledger, setLedger] = useState<UsageLedger>(() =>
+    parseLedger(new URLSearchParams(location.search).get("book")),
+  );
 
-  const { tokens: TokenPage, credits: CreditPage, tokenViews, mergeScopes } = USAGE_PAGES[product];
+  const {
+    tokens: TokenPage,
+    credits: CreditPage,
+    tokenViews,
+    mergeScopes,
+    ledger: canSwitchLedger,
+  } = USAGE_PAGES[product];
   /* 页头刷新：只重挂**当前视图**（`key` 变化 ⇒ 子页面重新取数）。
      ⚠️ 不做「全局刷新信号」：四个视图数据源不同，重挂当前视图是唯一不会
      让「另一个视图的空请求」也一起打的方案。 */
@@ -172,6 +208,10 @@ export default function UsagePage({ defaultTab = "trend" }: { defaultTab?: Usage
     viewWindow,
     combineAll,
     onViewWindowChange: setViewWindow,
+    /* 账本只对支持它的平台有意义；其余平台固定 `client`（页面也不声明这个 prop）。 */
+    ledger: canSwitchLedger ? ledger : ("client" as UsageLedger),
+    /* 视图内也能改账本（例：会话视图「按账号查看网关用量」跳转）。 */
+    onLedgerChange: canSwitchLedger ? setLedger : undefined,
   };
 
   return (
@@ -220,6 +260,9 @@ export default function UsagePage({ defaultTab = "trend" }: { defaultTab?: Usage
         combineAll={combineAll}
         onCombineAllChange={setCombineAll}
         canMergeScopes={mergeScopes}
+        ledger={ledger}
+        onLedgerChange={setLedger}
+        canSwitchLedger={canSwitchLedger}
       />
 
       {/* ⚠️ 不在这里加 `overflow-auto`：子页面**各自有滚动容器**，再套一层会出双滚动条。 */}

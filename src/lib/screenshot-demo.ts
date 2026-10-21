@@ -6,7 +6,8 @@ import type {
   ClientSettingsBackupsResponse, ClientSettingsDiffResponse, ClientSettingsFingerprint,
   ClientSettingsProxyGroup, ClientSettingsReadResponse, ClientSettingsSlot, ClientSettingsSlotsResponse,
   CreditOfficialUsageModel, CreditStatistics, GatewayConfig, GatewayLogEntry, GatewayPoolAccount,
-  GatewayStatus, GatewayTokenTrend, GithubConfig, Region, RotateLog, RotateStatus, ScheduleConfig, TokenStatistics,
+  GatewayStatus, GatewayTokenTrend, GatewayUsageDim, GatewayUsageRecon, GithubConfig, Region, RotateLog,
+  RotateStatus, ScheduleConfig, TokenStatistics,
   Session, SessionReplicaResponse,
   SkillListResponse,
   TokenStatsGroup, TokenStatsSource,
@@ -524,8 +525,27 @@ function rotateLogs(): RotateLog[] {
   ];
 }
 
+/**
+ * 演示分组的一行。
+ *
+ * `credit` 按**实测比例**从 token 折算（≈ 34K token / 1 积分，实测自本机 jsonl：
+ * `44,276 token → credit 1.28`）。演示站拿不到真实 `usage.credit`，但**不能留 0** ——
+ * 积分视图的「客户端账本」会整块显示 0，与真实后端（有值）的样子不一致，
+ * 评审就会以为「客户端没有积分」是真结论。
+ */
 function demoTokenTotals(input: number, output: number, cacheRead: number, cacheWrite: number, records: number): TokenStatsTotals {
-  return { total: input + output + cacheWrite, input, output, cacheRead, cacheWrite, uncachedInput: Math.max(0, input - cacheRead), records, cacheHitRate: input > 0 ? cacheRead / input : null };
+  const total = input + output + cacheWrite;
+  return {
+    total,
+    input,
+    output,
+    cacheRead,
+    cacheWrite,
+    uncachedInput: Math.max(0, input - cacheRead),
+    records,
+    cacheHitRate: input > 0 ? cacheRead / input : null,
+    credit: Math.round((total / 34_000) * 1000) / 1000,
+  };
 }
 
 function demoTokenGroup(key: string, input: number, output: number, cacheRead: number, cacheWrite: number, records: number): TokenStatsGroup {
@@ -1048,6 +1068,107 @@ function demoGatewayTokenTrend(): GatewayTokenTrend {
     retentionDays: 90,
     days,
     total: days.reduce((sum, point) => sum + point.total, 0),
+  };
+}
+
+/**
+ * 演示：网关三维度（模型 / 账号 / 端点）逐日历史。
+ *
+ * 与 `demoGatewayTokenTrend` **同一批日键**，且三条维度的合计**等于**该日网关总量
+ * （按权重摊、末位吃余数）—— 演示数据也必须守住「按模型合计 = 网关卡」这条自洽约束，
+ * 否则评审时会被当成真 bug。
+ */
+function demoGatewayUsageDim(): GatewayUsageDim {
+  const trend = demoGatewayTokenTrend();
+  const models = ["claude-sonnet-4.5", "gpt-5-codex", "deepseek-v4.1-flash"];
+  const weights = [0.56, 0.3, 0.14];
+  const accounts = ["uid-a1", "uid-a2", "uid-a3"];
+  const accountWeights = [0.52, 0.34, 0.14];
+  const endpoints = ["/v1/chat/completions", "/v1/messages", "/v1/responses"];
+  const endpointWeights = [0.92, 0.05, 0.03];
+
+  const spread = (total: number, share: number[]) => {
+    let acc = 0;
+    return share.map((weight, index) => {
+      const value = index === share.length - 1 ? Math.max(0, total - acc) : Math.round(total * weight);
+      acc += value;
+      return value;
+    });
+  };
+
+  return {
+    date: trend.date,
+    retentionDays: trend.retentionDays,
+    days: trend.days.map((day, index) => {
+      const modelTokens = spread(day.total, weights);
+      const accountTokens = spread(day.total, accountWeights);
+      const endpointRequests = spread(Math.max(1, Math.round(day.total / 148000)), endpointWeights);
+      const failed = index % 7 === 3 ? 5 : index % 5 === 0 ? 2 : 0;
+      return {
+        key: day.key,
+        truncated: day.truncated,
+        partial: index === 0,
+        models: modelTokens.map((total, i) => ({
+          model: models[i],
+          input: Math.round(total * 0.9),
+          output: total - Math.round(total * 0.9),
+          total,
+          requests: Math.max(1, Math.round(total / 148000)),
+          failed: i === 0 ? failed : 0,
+          credit: Math.round((total / 34000) * 1000) / 1000,
+        })),
+        accounts: accountTokens.map((total, i) => ({
+          account: accounts[i],
+          input: Math.round(total * 0.9),
+          output: total - Math.round(total * 0.9),
+          total,
+          requests: Math.max(1, Math.round(total / 148000)),
+          failed: i === 0 ? failed : 0,
+          credit: Math.round((total / 34000) * 1000) / 1000,
+        })),
+        endpoints: endpointRequests.map((requests, i) => ({
+          endpoint: endpoints[i],
+          input: 0,
+          output: 0,
+          total: 0,
+          requests,
+          failed: i === 0 ? failed : 0,
+          credit: 0,
+        })),
+      };
+    }),
+  };
+}
+
+/**
+ * 演示：今日客户端 ↔ 网关对账。
+ *
+ * 刻意演示 **`independent`（两本账独立）**：issue #63 作者那台机器就是这个形态，
+ * 也是「合计 = 相加」这一支。切到别的形态要看 `subset`，改 `matched` 即可。
+ */
+function demoUsageReconcile(): GatewayUsageRecon {
+  const clientTokens = 2_876_406;
+  const gatewayTokens = 18_500_000;
+  return {
+    clientRows: 117,
+    gatewayRows: 126,
+    matched: 9,
+    matchedTokens: 350_000,
+    matchedCredit: 10.3,
+    clientTokens,
+    clientCredit: 84.6,
+    gatewayTokens,
+    gatewayCredit: 544.1,
+    verdict: "independent",
+    proxySignal: null,
+    bounds: { lower: Math.max(clientTokens, gatewayTokens), upper: clientTokens + gatewayTokens },
+    estimate: clientTokens + gatewayTokens - 350_000,
+    unmatchedSamples: [
+      { ts: Date.now() - 1_200_000, model: "step-5-preview", tokens: 42_100, credit: 1.24 },
+      { ts: Date.now() - 900_000, model: "hy3", tokens: 28_600, credit: 0.84 },
+      { ts: Date.now() - 600_000, model: "deepseek-v4.1-flash", tokens: 15_400, credit: 0.45 },
+    ],
+    window: { date: new Date().toISOString().slice(0, 10), logRows: 126 },
   };
 }
 
@@ -3093,6 +3214,9 @@ export function screenshotDemoResponse(command: string, args?: Record<string, un
     case "get_account_token_today": return demoAccountTokenToday();
     /* 网关逐日趋势（只读）。演示数据覆盖「有量 / 缺日 / 下界」三条边界（见上）。 */
     case "get_gateway_token_trend": return demoGatewayTokenTrend();
+    /* 账本视图（issue #63）：三维度历史 + 今日对账。演示数据守住「三维度合计 = 网关卡」。 */
+    case "get_gateway_usage_dim": return demoGatewayUsageDim();
+    case "get_usage_reconcile": return demoUsageReconcile();
     /* Skill 管理清单（只读）。演示数据覆盖启用 / 停用 / 不一致 / 无 frontmatter 四种形态。 */
     case "list_skills": return demoSkills(args?.region === "global" ? "global" : "cn");
     /* 上游客户端 settings.json 托管（**只读** 4 条）。演示数据**虚构**，覆盖

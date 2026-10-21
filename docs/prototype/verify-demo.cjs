@@ -339,8 +339,13 @@ function check(name, fn) {
   });
   click('[data-act="usage-tab|models"]');
   await sleep(30);
-  check("模型用量分布有横向条", () => {
-    if (!$$("#content .hbar").length) throw new Error("没有 hbar");
+  /* ★ 2026-10-21 账本改版：模型 tab 的「横向排行条（.hbar + 迷你趋势线）」
+     换成了「每本账一张表 + 表内分布条（.lbar）」，并补了每日按模型堆叠图。
+     断言跟着改成新形态 —— 要的是「模型维度有可视化的量分布」，不是某个类名。 */
+  check("模型用量分布有横向条（账本表内的分布条）", () => {
+    const bars = $$("#content .lbar i").filter((i) => parseFloat(i.style.width) > 0);
+    if (!bars.length) throw new Error("没有 .lbar 分布条");
+    if (!$$("#content .cbar").length) throw new Error("缺少每日按模型堆叠图");
     return true;
   });
 

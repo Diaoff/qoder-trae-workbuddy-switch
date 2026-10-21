@@ -78,6 +78,39 @@ html,body{margin:0;background:var(--bg);color:var(--fg);
   font-variant-numeric:tabular-nums;display:flex;align-items:baseline;gap:5px}
 .stat-hint{font-size:11.5px;color:var(--faint);margin-top:3px}
 .approx{font-size:16px;color:var(--warning);border-bottom:1px dotted var(--warning);cursor:help;font-weight:400}
+.stat-label .grow{flex:1}
+.link{color:var(--g1);cursor:pointer;border-bottom:1px dotted var(--g1);font-size:11.5px;white-space:nowrap}
+.link:hover{color:var(--g2)}
+.badge{display:inline-flex;align-items:center;height:17px;padding:0 6px;border-radius:5px;font-size:10.5px;
+  background:oklch(0.696 0.17 162.48/.14);color:oklch(0.86 0.12 163);border:1px solid oklch(0.696 0.17 162.48/.32)}
+.badge.warn{background:oklch(0.79 0.14 78/.14);color:var(--warning);border-color:oklch(0.79 0.14 78/.32)}
+
+.drawer-mask{position:fixed;inset:0;background:oklch(0 0 0/.5);display:none;z-index:40}
+.drawer-mask.on{display:block}
+.drawer{position:absolute;top:0;right:0;bottom:0;width:452px;background:var(--card2);
+  border-left:1px solid var(--border);padding:18px 20px 28px;overflow-y:auto}
+.drawer h2{margin:0 0 2px;font-size:15px;font-weight:600}
+.drawer .dsub{font-size:12px;color:var(--faint);margin-bottom:16px}
+.drawer .x{position:absolute;top:14px;right:16px;width:26px;height:26px;border-radius:7px;border:1px solid var(--border);
+  background:transparent;color:var(--muted);cursor:pointer;font-size:15px;line-height:1}
+.dsec{margin-bottom:16px}
+.dsec h4{margin:0 0 7px;font-size:11px;color:var(--faint);font-weight:500;letter-spacing:.05em}
+.dformula{background:var(--card);border:1px solid var(--border);border-radius:10px;padding:13px 14px;font-size:12.5px}
+.dformula .big{font-size:26px;font-weight:500;letter-spacing:-.02em;font-variant-numeric:tabular-nums;margin-bottom:4px}
+.dformula .eq{color:var(--muted);font-variant-numeric:tabular-nums}
+.dformula .eq b{color:var(--fg);font-weight:500}
+.drow{display:flex;align-items:center;gap:8px;padding:6px 0;font-size:12.5px;border-bottom:1px solid oklch(1 0 0/5%)}
+.drow:last-child{border-bottom:0}
+.drow .k{flex:1;color:var(--muted)}
+.drow .v{font-variant-numeric:tabular-nums}
+.dnote{font-size:11.5px;color:var(--faint);line-height:1.6}
+.verdict{border-radius:10px;padding:12px 14px;margin-bottom:16px;font-size:12.5px;line-height:1.6;
+  background:oklch(0.696 0.17 162.48/.10);border:1px solid oklch(0.696 0.17 162.48/.26)}
+.verdict h3{margin:0 0 4px;font-size:12.5px;font-weight:600;color:oklch(0.88 0.10 163)}
+.verdict p{margin:0;color:var(--muted)}
+.verdict b{color:var(--fg);font-weight:500}
+.verdict.mixed{background:oklch(0.79 0.14 78/.10);border-color:oklch(0.79 0.14 78/.28)}
+.verdict.mixed h3{color:var(--warning)}
 
 .card{background:var(--card);border:1px solid var(--border);border-radius:var(--r);margin-bottom:16px}
 .card-head{display:flex;align-items:center;gap:10px;padding:12px 16px;border-bottom:1px solid var(--border)}
@@ -112,6 +145,7 @@ html,body{margin:0;background:var(--bg);color:var(--fg);
   gap:1px;font-size:10.5px;color:var(--faint);text-align:center}
 .donut-mid b{font-size:14px;font-weight:500;color:var(--fg);font-variant-numeric:tabular-nums}
 .dlegend{flex:1;min-width:0;font-size:12.5px}
+.dlegend.two{display:grid;grid-template-columns:1fr 1fr;gap:0 28px;align-items:start}
 .dlegend .row{display:flex;align-items:center;gap:8px;padding:4px 0;border-bottom:1px solid oklch(1 0 0/4%)}
 .dlegend .row:last-child{border-bottom:0}
 .dlegend .nm{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
@@ -196,7 +230,17 @@ html,body{margin:0;background:var(--bg);color:var(--fg);
 
   <main id="view"></main>
 
-  <div class="foot">设计稿 · 近 7 天样本，其中今天取 issue #63 实测值（客户端 47 请求 / 2.9M，网关 77 请求 / 18.5M，含 5 次 429）；其余日按同比例铺开。非真实运行界面。</div>
+  <div class="foot">设计稿 · 近 7 天样本，其中今天取 issue #63 实测值（客户端 47 请求 / 2.9M，网关 77 请求 / 18.5M，含 5 次 429）；其余日按同比例铺开。非真实运行界面。
+    <div style="margin-top:8px">演示拓扑（不属于 UI，仅用于评审三种对账结论）：
+      <a class="link" data-case="independent">两本账独立</a> ·
+      <a class="link" data-case="subset">客户端走的正是网关</a> ·
+      <a class="link" data-case="mixed">部分重叠</a>
+    </div>
+  </div>
+</div>
+
+<div class="drawer-mask" id="drawerMask">
+  <aside class="drawer" id="drawer"></aside>
 </div>
 
 <script>
@@ -247,7 +291,32 @@ const GATEWAY = {
 };
 
 const state = {range:"7", book:"all", tab:"trend"};
+
+/* ── 对账（客户端 ↔ 网关）──
+   规则：同模型 + 时间差 ≤ 120s + prompt/completion 相差 ≤1%，一对一贪心。
+   窗口内网关日志只有最近 200 条 ⇒ 只能对账「日志仍覆盖」的时段（今日）。
+   三种拓扑由匹配率决定，设计稿用 ?case=independent|subset|mixed 演示。 */
 const q = new URLSearchParams(location.search);
+const CASES = {
+  independent: { matched: 9,   matchedTokens: 350000  },
+  subset:      { matched: 108, matchedTokens: 6160000 },
+  mixed:       { matched: 55,  matchedTokens: 3100000 }
+};
+const caseKey = ["independent","subset","mixed"].includes(q.get("case")) ? q.get("case") : "independent";
+const RECON = {
+  clientRows: 117, gatewayRows: 126,
+  logWindow: "今日 17:01–18:10",
+  logCovered: 126, logTotal: 126,
+  uncoveredDays: 6,
+  ...CASES[caseKey]
+};
+RECON.unmatched = RECON.clientRows - RECON.matched;
+RECON.unmatchedTokens = CLIENT.tokens - RECON.matchedTokens;
+RECON.estimate = CLIENT.tokens + GATEWAY.tokens - RECON.matchedTokens;
+RECON.lower = Math.max(CLIENT.tokens, GATEWAY.tokens);
+RECON.upper = CLIENT.tokens + GATEWAY.tokens;
+RECON.ratio = RECON.matched / RECON.clientRows;
+
 if(["trend","models","sessions","credits"].includes(q.get("tab"))) state.tab = q.get("tab");
 if(["all","client","gateway"].includes(q.get("book"))) state.book = q.get("book");
 
@@ -257,7 +326,23 @@ function fmtTok(n){
   if(n>=M)     return (n/M).toFixed(2).replace(/0$/,"").replace(/\.$/,"")+"M";
   return Math.round(n/1e3)+"K";
 }
-function pct(a,b){ return Math.round(a/b*100)+"%"; }
+function pct(a,b){
+  const r = a/b;
+  if(r>0 && r<0.005) return "<1%";
+  return Math.round(r*100)+"%";
+}
+
+/* 合计的算式随拓扑换形态：子集关系下「相加再扣」会写出一个减掉自己大半的怪式子。 */
+function reconFormula(){
+  if(RECON.ratio > 0.9) return {
+    eq:`网关 <b>${fmtTok(GATEWAY.tokens)}</b> + 直连客户端 <b>${fmtTok(RECON.unmatchedTokens)}</b>`,
+    hint:`网关 ${fmtTok(GATEWAY.tokens)} + 直连客户端 ${fmtTok(RECON.unmatchedTokens)}`
+  };
+  return {
+    eq:`客户端 <b>${fmtTok(CLIENT.tokens)}</b> + 网关 <b>${fmtTok(GATEWAY.tokens)}</b> − 重叠 <b>${fmtTok(RECON.matchedTokens)}</b>`,
+    hint:`客户端 ${fmtTok(CLIENT.tokens)} + 网关 ${fmtTok(GATEWAY.tokens)} − 重叠 ${fmtTok(RECON.matchedTokens)}`
+  };
+}
 
 function renderCoverage(){
   document.getElementById("coverage").innerHTML = `
@@ -265,6 +350,8 @@ function renderCoverage(){
     <span class="cov"><span class="dot g"></span>网关 <b>${fmtTok(GATEWAY.tokens)}</b> · ${GATEWAY.requests} 请求
       <span class="chip warn">429 × ${GATEWAY.failed}</span></span>
     <span class="cov">网关记录覆盖 <b>${GATEWAY.coverage}</b> · 未记录日不算 0</span>
+    <span class="cov">两本账重叠 <b>${RECON.matched} 条</b> · ${fmtTok(RECON.matchedTokens)}
+      <span class="link" data-recon="1">看对账</span></span>
   `;
 }
 
@@ -278,8 +365,8 @@ const ICONS = {
 function tilesHtml(tiles){
   return `<div class="tiles">` + tiles.map(t=>`
     <div class="stat">
-      <div class="stat-label"><svg viewBox="0 0 24 24">${ICONS[t.i]}</svg>${t.l}</div>
-      <div class="stat-value">${t.approx?'<span class="approx" title="客户端与网关是两本独立账：同一请求可能两处各记一次，合计仅供看规模，不可对账">≈</span>':''}${t.v}</div>
+      <div class="stat-label"><svg viewBox="0 0 24 24">${ICONS[t.i]}</svg>${t.l}${t.action?'<span class="grow"></span>'+t.action:''}</div>
+      <div class="stat-value">${t.approx?'<span class="approx" title="两本账存在重叠：同一请求可能被两处各记一次。点「对账」看扣减明细">≈</span>':''}${t.v}</div>
       <div class="stat-hint">${t.h}</div>
     </div>`).join("") + `</div>`;
 }
@@ -300,10 +387,12 @@ function trendTiles(){
     {i:"req", l:"请求数", v:String(GATEWAY.requests), h:`含 ${GATEWAY.failed} 次失败`}
   ];
   return [
-    {i:"msg", l:"合计 Token", approx:true, v:fmtTok(cT+gT), h:`客户端 ${fmtTok(cT)} + 网关 ${fmtTok(gT)}`},
-    {i:"trend", l:"日均", v:fmtTok((cT+gT)/n), h:"按自然日平均"},
+    {i:"msg", l:"合计 Token", approx:true, v:fmtTok(RECON.estimate),
+      action:`<span class="link" data-recon="1">对账</span>`,
+      h:reconFormula().hint},
+    {i:"trend", l:"日均", v:fmtTok(RECON.estimate/n), h:"按自然日平均"},
     {i:"gauge", l:"峰值", v:fmtTok((2.876+18.5)*M), h:"10/21"},
-    {i:"req", l:"请求数", v:String(CLIENT.requests+GATEWAY.requests), h:"客户端 + 网关"}
+    {i:"req", l:"请求数", v:String(CLIENT.requests+GATEWAY.requests-RECON.matched), h:`重叠已扣 ${RECON.matched} 条`}
   ];
 }
 
@@ -331,7 +420,7 @@ function stackedChart(){
 function trendCaption(){
   if(state.book==="client") return "每日 Token · 仅客户端自记（扫本机会话日志）";
   if(state.book==="gateway") return `每日 Token · 仅网关记账 · 覆盖 ${GATEWAY.coverage}，未记录日不画柱（不是 0）`;
-  return "每日 Token · 客户端 + 网关分色堆叠。两本是独立账，同一请求可能两处各记一次 —— 柱高合计只用来判断规模";
+  return "每日 Token · 客户端 + 网关分色堆叠。柱高是两本账各自的值，不做扣减 —— 重叠只在「合计」里扣（见对账）";
 }
 
 function conic(items, key, colors){
@@ -346,7 +435,11 @@ function conic(items, key, colors){
   });
   return `conic-gradient(${stops.join(",")})`;
 }
-function donutHtml(){
+function drow(name, color, tokens, total){
+  return `<div class="row"><i class="sw" style="background:${color}"></i>
+    <span class="nm">${name}</span><span class="vv">${fmtTok(tokens)} · ${pct(tokens,total)}</span></div>`;
+}
+function donutHtml(wide){
   if(state.book==="all"){
     const inner = conic(CLIENT.models,"tokens",["var(--c1)","var(--c2)","var(--c3)"]);
     const outer = conic(GATEWAY.models,"tokens",["var(--g1)","var(--g2)"]);
@@ -354,29 +447,31 @@ function donutHtml(){
       <div class="donut">
         <div class="ring outer" style="background:${outer}"></div>
         <div class="ring inner" style="background:${inner}"></div>
-        <div class="donut-mid"><b>${fmtTok(CLIENT.tokens+GATEWAY.tokens)}</b><span>两本账合计</span></div>
+        <div class="donut-mid"><b>${fmtTok(RECON.estimate)}</b><span>≈ 合计</span></div>
       </div>
-      <div class="dlegend">
-        <div class="dgroup"><i class="sw" style="background:var(--c2)"></i>客户端 ${fmtTok(CLIENT.tokens)}</div>
-        ${CLIENT.models.map((m,i)=>`<div class="row"><i class="sw" style="background:var(--c${i+1})"></i>
-          <span class="nm">${m.name}</span><span class="vv">${fmtTok(m.tokens)} · ${pct(m.tokens,CLIENT.tokens)}</span></div>`).join("")}
-        <div class="dgroup"><i class="sw" style="background:var(--g2)"></i>网关 ${fmtTok(GATEWAY.tokens)}</div>
-        ${GATEWAY.models.map((m,i)=>`<div class="row"><i class="sw" style="background:var(--g${i+1})"></i>
-          <span class="nm">${m.name}</span><span class="vv">${fmtTok(m.tokens)} · ${pct(m.tokens,GATEWAY.tokens)}</span></div>`).join("")}
+      <div class="dlegend ${wide?"two":""}">
+        <div>
+          <div class="dgroup"><i class="sw" style="background:var(--c2)"></i>客户端 ${fmtTok(CLIENT.tokens)}</div>
+          ${CLIENT.models.map((m,i)=>drow(m.name,`var(--c${i+1})`,m.tokens,CLIENT.tokens)).join("")}
+        </div>
+        <div>
+          <div class="dgroup"><i class="sw" style="background:var(--g2)"></i>网关 ${fmtTok(GATEWAY.tokens)}</div>
+          ${GATEWAY.models.map((m,i)=>drow(m.name,`var(--g${i+1})`,m.tokens,GATEWAY.tokens)).join("")}
+        </div>
       </div>
     </div>`;
   }
-  const set = state.book==="client"?CLIENT.models:GATEWAY.models;
-  const total = state.book==="client"?CLIENT.tokens:GATEWAY.tokens;
-  const colors = state.book==="client"?["var(--c1)","var(--c2)","var(--c3)"]:["var(--g1)","var(--g2)"];
+  const client = state.book==="client";
+  const set = client?CLIENT.models:GATEWAY.models;
+  const total = client?CLIENT.tokens:GATEWAY.tokens;
+  const colors = client?["var(--c1)","var(--c2)","var(--c3)"]:["var(--g1)","var(--g2)"];
   return `<div class="donut-wrap">
     <div class="donut">
       <div class="ring outer" style="background:${conic(set,"tokens",colors)}"></div>
       <div class="donut-mid"><b>${fmtTok(total)}</b><span>${set.length} 个模型</span></div>
     </div>
     <div class="dlegend">
-      ${set.map((m,i)=>`<div class="row"><i class="sw" style="background:${colors[i]}"></i>
-        <span class="nm">${m.name}</span><span class="vv">${fmtTok(m.tokens)} · ${pct(m.tokens,total)}</span></div>`).join("")}
+      ${set.map((m,i)=>drow(m.name,colors[i],m.tokens,total)).join("")}
     </div>
   </div>`;
 }
@@ -394,7 +489,7 @@ function heatHtml(){
     for(let c=0;c<24;c++){
       const work = (c>=9 && c<=19) ? 1 : .16;
       const wknd = r>=5 ? .28 : 1;
-      const v = Math.max(0.03, work*wknd*(0.3+((r*7+c*13)%12)/17));
+      const v = Math.max(0.02, work*wknd*(0.12+((r*7+c*13)%12)/19));
       cells += `<div class="cell" style="opacity:${v.toFixed(2)}"></div>`;
     }
   }
@@ -423,58 +518,47 @@ function renderTrend(){
     </div>`;
 }
 
+function modelTable(book){
+  const client = book==="client";
+  const set = client?CLIENT.models:GATEWAY.models;
+  const total = client?CLIENT.tokens:GATEWAY.tokens;
+  const max = Math.max(...set.map(m=>m.tokens));
+  const rows = set.map(m=>`<tr>
+      <td><div class="mname"><span class="sw" style="background:var(--${client?"c":"g"}2)"></span>${m.name}</div></td>
+      <td class="bar-cell"><div class="bar"><i class="${client?"c":"g"}" style="width:${m.tokens/max*100}%"></i></div></td>
+      <td class="num">${fmtTok(m.tokens)}</td>
+      <td class="num num-muted">${pct(m.tokens,total)}</td>
+      <td class="num num-muted">${m.req}</td>
+      ${client?"":`<td class="num fail">${m.name==="deepseek-v4.1-flash"?GATEWAY.failed:0}</td>`}
+    </tr>`).join("");
+  return `<div class="card">
+      <div class="card-head"><h3>${client?"客户端账本":"网关账本"}</h3><div class="grow"></div>
+        <span class="sub">${client?"扫本机会话日志 · 不含网关转发":"网关记账 · 覆盖 "+GATEWAY.coverage}</span></div>
+      <table class="tbl">
+        <thead><tr><th>模型</th><th>分布</th><th class="num">合计</th><th class="num">占比</th><th class="num">请求</th>
+          ${client?"":'<th class="num">失败</th>'}</tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+      <div class="caption">${client
+        ? "客户端账本不记请求失败 —— 会话日志只留成功落盘的条目；占比按客户端合计算"
+        : `${GATEWAY.failed} 次 429 已计入请求数；占比按网关合计算`}</div>
+    </div>`;
+}
+
 function renderModels(){
-  const rows = [];
-  CLIENT.models.forEach(m=>rows.push({name:m.name, c:m.tokens, g:0, cr:m.req, gr:0}));
-  GATEWAY.models.forEach(m=>{
-    const hit = rows.find(r=>r.name===m.name);
-    if(hit){ hit.g = m.tokens; hit.gr = m.req; } else rows.push({name:m.name, c:0, g:m.tokens, cr:0, gr:m.req});
-  });
-  const max = Math.max(...rows.map(r=>r.c+r.g));
-  const totalC = rows.reduce((a,r)=>a+r.c,0), totalG = rows.reduce((a,r)=>a+r.g,0);
-  const head = state.book==="all"
+  const notice = state.book==="all"
     ? `<div class="notice">
          <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 11v5"/><path d="M12 8h.01"/></svg>
-         <span><b>两本账并排展示，不相加。</b>同一请求可能客户端与网关各记一次 —— 占比按各自账本算，想对账请切到单一账本。</span>
+         <span><b>两个账本各一张表，不相加。</b>同一请求可能客户端与网关各记一次 —— 所以这里没有「合并占比」，想对账请切到单一账本。</span>
        </div>` : "";
-  const body = rows.filter(r=> state.book==="client" ? r.c>0 : state.book==="gateway" ? r.g>0 : true).map(r=>{
-    const shown = state.book==="client"?r.c : state.book==="gateway"?r.g : r.c+r.g;
-    const base = state.book==="client"?totalC : state.book==="gateway"?totalG : totalC+totalG;
-    const reqs = state.book==="client"?r.cr : state.book==="gateway"?r.gr : r.cr+r.gr;
-    return `<tr>
-      <td><div class="mname"><span class="sw" style="background:${r.c>0?'var(--c2)':'var(--g2)'}"></span>${r.name}
-        ${r.c===0?'<span class="chip only">仅网关</span>':''}</div></td>
-      <td class="bar-cell"><div class="bar">
-        <i class="c" style="width:${r.c/max*100}%"></i><i class="g" style="width:${r.g/max*100}%"></i>
-      </div></td>
-      <td class="num">${fmtTok(shown)}</td>
-      <td class="num num-muted">${pct(shown,base)}</td>
-      <td class="num num-muted">${reqs}</td>
-      <td class="num ${state.book==="client"?'num-muted':'fail'}">${state.book==="client" ? "—" : (r.name==="deepseek-v4.1-flash" ? GATEWAY.failed : 0)}</td>
-    </tr>`;
-  }).join("");
-  return head + `
-    <div class="grid2" style="grid-template-columns:352px 1fr">
-      <div class="card" style="margin-bottom:0">
-        <div class="card-head"><h3>模型构成</h3></div>
-        <div class="card-pad">${donutHtml()}</div>
-      </div>
-      <div class="card" style="margin-bottom:0">
-        <div class="card-head"><h3>模型明细</h3><div class="grow"></div>
-          <span class="sub">条形 = 客户端 + 网关</span></div>
-        <table class="tbl">
-          <thead><tr><th>模型</th><th>Token</th><th class="num">合计</th><th class="num">占比</th><th class="num">请求</th><th class="num">失败</th></tr></thead>
-          <tbody>${body}</tbody>
-        </table>
-        <div class="caption">${
-          state.book==="all"
-            ? `占比在各自账本内计算：客户端合计 ${fmtTok(totalC)}，网关合计 ${fmtTok(totalG)}；「失败」只有网关记账`
-            : state.book==="client"
-              ? "客户端账本不记请求失败 —— 会话日志只留成功落盘的条目"
-              : `网关覆盖 ${GATEWAY.coverage} · ${GATEWAY.failed} 次 429 已计入请求数`
-        }</div>
-      </div>
+  const donut = `<div class="card">
+      <div class="card-head"><h3>模型构成</h3><div class="grow"></div>
+        <span class="sub">${state.book==="all"?"内环 客户端 · 外环 网关":state.book==="client"?"客户端账本":"网关账本"}</span></div>
+      <div class="card-pad">${donutHtml(true)}</div>
     </div>`;
+  return notice + donut
+    + (state.book==="gateway" ? "" : modelTable("client"))
+    + (state.book==="client" ? "" : modelTable("gateway"));
 }
 
 function renderSessions(){
@@ -531,11 +615,212 @@ function renderSessions(){
     </div>`;
 }
 
-function renderCredits(){
-  return `<div class="card"><div class="card-head"><h3>积分视图</h3></div>
-    <div class="empty"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/></svg>
-    <h4>本次设计不涉及</h4><p>积分与网关账本无关，保持现状。</p></div></div>`;
+/* ── 积分：两个口径 ──
+   ① 余额口径（权威）：账号积分余额快照的差值，**天然不重复**，但拆不到来源；
+   ② 请求口径（可拆）：每条请求自带的 credit（客户端 jsonl / 网关 usage.credit）累加，能拆来源，**会重复**。
+   两者不相等，差额 = 未归因消耗（其他设备 / 没落日志的请求）。页面必须同时给，并说明关系。 */
+const CREDITS = {
+  balance: 4280.5, earned: 120, consumed: 1006.3, expiring: 260,
+  client: 182.4, gateway: 815.6, overlap: 12.8,
+  clientModels: [
+    {name:"step-5-preview", v:96.2, req:68},
+    {name:"hy3", v:48.7, req:19},
+    {name:"deepseek-v4.1-flash", v:37.5, req:30}
+  ],
+  gatewayModels: [
+    {name:"deepseek-v4.1-flash", v:806.2, req:123},
+    {name:"auto", v:9.4, req:3}
+  ],
+  dailyClient:  [14.2, 11.6, 21.4, 7.8, 17.2, 12.9, 97.3],
+  dailyGateway: [54.3, 68.6, 34.3, 22.9, 60.1, 45.8, 529.6]
+};
+CREDITS.byRequest = CREDITS.client + CREDITS.gateway - CREDITS.overlap;
+CREDITS.gap = CREDITS.consumed - CREDITS.byRequest;
+
+function fmtCr(n){ return n.toLocaleString("zh-CN",{minimumFractionDigits:1,maximumFractionDigits:1}); }
+
+function creditBars(){
+  const showC = state.book!=="gateway", showG = state.book!=="client";
+  const max = Math.max(...DAYS.map((_,i)=> (showC?CREDITS.dailyClient[i]:0) + (showG?CREDITS.dailyGateway[i]:0)));
+  const cols = DAYS.map((d,i)=>{
+    const c = showC?CREDITS.dailyClient[i]:0, g = showG?CREDITS.dailyGateway[i]:0, tot = c+g;
+    return `<div class="col">
+      <div class="col-tip">${fmtCr(tot)}</div>
+      <div class="stack" style="height:${Math.max(2,tot/max*100)}%">
+        ${showC?`<div class="s-client" style="height:${c/tot*100}%"></div>`:''}
+        ${showG?`<div class="s-gw" style="height:${g/tot*100}%;border-radius:${showC?'0':'2px 2px 0 0'}"></div>`:''}
+      </div>
+      <div class="col-label">${d}</div>
+    </div>`;
+  }).join("");
+  return `<div class="chart">${[0,25,50,75,100].map(p=>`<div class="gl" style="bottom:${p}%;"></div>`).join("")}${cols}</div>
+    <div class="legend">
+      ${showC?`<span><i class="sw" style="background:var(--c2)"></i>客户端</span>`:''}
+      ${showG?`<span><i class="sw" style="background:var(--g2)"></i>网关</span>`:''}
+    </div>`;
 }
+
+function creditModelTable(book){
+  const client = book==="client";
+  const set = client?CREDITS.clientModels:CREDITS.gatewayModels;
+  const total = client?CREDITS.client:CREDITS.gateway;
+  const max = Math.max(...set.map(m=>m.v));
+  return `<table class="tbl">
+    <thead><tr><th>模型</th><th>分布</th><th class="num">积分</th><th class="num">占比</th><th class="num">请求</th></tr></thead>
+    <tbody>${set.map(m=>`<tr>
+      <td><div class="mname"><span class="sw" style="background:var(--${client?"c":"g"}2)"></span>${m.name}</div></td>
+      <td class="bar-cell"><div class="bar"><i class="${client?"c":"g"}" style="width:${m.v/max*100}%"></i></div></td>
+      <td class="num">${fmtCr(m.v)}</td>
+      <td class="num num-muted">${pct(m.v,total)}</td>
+      <td class="num num-muted">${m.req}</td></tr>`).join("")}</tbody>
+  </table>`;
+}
+
+function renderCredits(){
+  const balanceTiles = `<div class="tiles">
+    <div class="stat"><div class="stat-label"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><path d="M12 8v8M9 10h6"/></svg>可用积分合计</div>
+      <div class="stat-value">${fmtCr(CREDITS.balance)}</div><div class="stat-hint">12 个账号 · 余额快照</div></div>
+    <div class="stat"><div class="stat-label"><svg viewBox="0 0 24 24"><path d="M3 17l6-6 4 4 8-8"/></svg>区间消耗</div>
+      <div class="stat-value">${fmtCr(CREDITS.consumed)}</div><div class="stat-hint">余额差值 · 权威口径</div></div>
+    <div class="stat"><div class="stat-label"><svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>区间入账</div>
+      <div class="stat-value">+${fmtCr(CREDITS.earned)}</div><div class="stat-hint">签到奖励</div></div>
+    <div class="stat"><div class="stat-label"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><path d="M12 8v4l3 2"/></svg>即将过期</div>
+      <div class="stat-value">${fmtCr(CREDITS.expiring)}</div><div class="stat-hint">5 天内</div></div>
+  </div>`;
+
+  const balanceNote = `<div class="notice">
+    <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 11v5"/><path d="M12 8h.01"/></svg>
+    <span>上面四张是<b>余额口径</b>：账号余额快照的差值，<b>天然不重复</b>，但拆不到来源。下面按请求累加，能拆来源，<b>会重复</b>。</span>
+  </div>`;
+
+  const gapBox = `<div class="dformula" style="margin-top:16px">
+    <div class="eq" style="line-height:1.9">
+      余额口径 <b>${fmtCr(CREDITS.consumed)}</b>　−　请求口径 <b>${fmtCr(CREDITS.byRequest)}</b>
+      <span style="color:var(--faint)">（客户端 ${fmtCr(CREDITS.client)} + 网关 ${fmtCr(CREDITS.gateway)} − 重叠 ${fmtCr(CREDITS.overlap)}）</span>
+      ＝　差额 <b style="color:var(--warning)">${fmtCr(CREDITS.gap)}</b>
+    </div>
+    <div class="dnote" style="margin-top:6px">差额 = 未归因消耗：别的设备 / 没落本地日志的请求。它<b>不会</b>被摊到任何来源上 —— 摊了就是编数据。</div>
+  </div>`;
+
+  const book = state.book;
+  const modelCards = book==="all"
+    ? `<div class="grid2">
+        <div class="card" style="margin-bottom:0"><div class="card-head"><h3>客户端账本</h3><div class="grow"></div>
+          <span class="sub">按请求累加 · ${fmtCr(CREDITS.client)}</span></div>${creditModelTable("client")}</div>
+        <div class="card" style="margin-bottom:0"><div class="card-head"><h3>网关账本</h3><div class="grow"></div>
+          <span class="sub">按请求累加 · ${fmtCr(CREDITS.gateway)}</span></div>${creditModelTable("gateway")}</div>
+      </div>`
+    : `<div class="card" style="margin-bottom:0">
+        <div class="card-head"><h3>${book==="client"?"客户端账本":"网关账本"}</h3><div class="grow"></div>
+          <span class="sub">按请求累加 · ${fmtCr(book==="client"?CREDITS.client:CREDITS.gateway)}</span></div>
+        ${creditModelTable(book)}
+      </div>`;
+
+  return balanceTiles + balanceNote + `
+    <div class="card">
+      <div class="card-head"><h3>每日积分消耗</h3><div class="grow"></div>
+        <span class="sub">请求口径 · 近 7 天</span></div>
+      <div class="card-pad">${creditBars()}</div>
+      <div class="caption">每条请求自带的 credit 累加（客户端 jsonl / 网关 usage.credit）。两本账分色，柱高不做扣减。</div>
+    </div>
+    ${modelCards}
+    ${book==="all" ? gapBox : ""}
+  `;
+}
+
+const SAMPLE = [
+  {ts:"18:04:12", model:"step-5-preview", tok:42100, why:"模型不在网关账本"},
+  {ts:"18:07:31", model:"hy3", tok:28600, why:"最近网关记录相差 214s"},
+  {ts:"18:09:02", model:"deepseek-v4.1-flash", tok:15400, why:"token 数不符"}
+];
+
+function reconVerdict(){
+  const ratio = RECON.matched / RECON.clientRows;
+  if(ratio < 0.1) return { cls:"", title:"两本账基本独立",
+    body:`${RECON.clientRows} 条客户端记录里只有 <b>${RECON.matched}</b> 条能在网关账本里找到对应（${Math.round(ratio*100)}%）——
+      说明大部分客户端请求是<b>直连上游</b>的。合计 = 相加，再扣掉这 ${RECON.matched} 条重叠。` };
+  if(ratio > 0.9) return { cls:"", title:"客户端走的正是网关",
+    body:`${RECON.clientRows} 条客户端记录里有 <b>${RECON.matched}</b> 条能在网关账本里对上（${Math.round(ratio*100)}%）——
+      客户端用量<b>已包含在网关账本内</b>。合计 ≈ 网关，只补没对上的那几条。` };
+  return { cls:"mixed", title:"两本账部分重叠",
+    body:`只有 <b>${RECON.matched}/${RECON.clientRows}</b> 条客户端记录能对上（${Math.round(ratio*100)}%）——
+      可能今天中途才开网关，也可能只有部分客户端走网关。合计给区间，明细见下。` };
+}
+
+function renderRecon(){
+  const v = reconVerdict();
+  return `<button class="x" data-close="1">×</button>
+  <h2>对账 · 客户端 ↔ 网关</h2>
+  <div class="dsub">把两本账里「同一个请求」找出来，从合计里扣掉</div>
+
+  <div class="verdict ${v.cls}">
+    <h3>${v.title}</h3>
+    <p>${v.body}</p>
+  </div>
+
+  <div class="dsec">
+    <div class="dformula">
+      <div class="big">≈ ${fmtTok(RECON.estimate)}</div>
+      <div class="eq">${reconFormula().eq}</div>
+    </div>
+  </div>
+
+  <div class="dsec">
+    <h4>匹配结果</h4>
+    <div class="drow"><span class="k">客户端记录</span><span class="v">${RECON.clientRows} 条</span></div>
+    <div class="drow"><span class="k">网关记录</span><span class="v">${RECON.gatewayRows} 条</span></div>
+    <div class="drow"><span class="k">一对一匹配（重叠）</span><span class="v">${RECON.matched} 条 · ${fmtTok(RECON.matchedTokens)}</span></div>
+    <div class="drow"><span class="k">客户端未匹配</span><span class="v">${RECON.unmatched} 条 · ${fmtTok(RECON.unmatchedTokens)}</span></div>
+  </div>
+
+  <div class="dsec">
+    <h4>匹配规则</h4>
+    <p class="dnote">同模型 · 时间差 ≤ 120 秒 · prompt 与 completion 相差 ≤ 1% · 一对一（一条网关记录最多抵一条客户端记录）。三条同时满足才算重叠 —— 宁可少扣，也不多扣。</p>
+    <p class="dnote" style="margin-top:6px"><b>账号不参与匹配</b>：网关按请求选号（无缝切号），同一条请求在客户端账本里记的是登录账号、在网关账本里记的是被选中的账号 —— 拿账号当匹配键会把该对上的全漏掉。</p>
+  </div>
+
+  <div class="dsec">
+    <h4>这次覆盖了哪里</h4>
+    <div class="drow"><span class="k">${RECON.logWindow}</span><span class="v">${RECON.logCovered}/${RECON.logTotal} 条可对账</span></div>
+    <div class="drow"><span class="k">更早 ${RECON.uncoveredDays} 天</span><span class="v">只有日合计</span></div>
+    <p class="dnote">网关日志只留最近 200 条请求，更早的已滚出窗口，无法逐条对账。所以合计给的是区间
+      <b>${fmtTok(RECON.lower)} – ${fmtTok(RECON.upper)}</b>：下限 = 两本账取大（全部重叠），上限 = 直接相加（完全无重叠）。
+      ${fmtTok(RECON.estimate)} 取「未匹配的客户端请求都是直连」这一侧。</p>
+  </div>
+
+  <div class="dsec">
+    <h4>未匹配样本（前 3 条）</h4>
+    <table class="tbl">
+      <thead><tr><th>时间</th><th>模型</th><th class="num">Token</th><th>为什么没对上</th></tr></thead>
+      <tbody>${SAMPLE.map(s=>`<tr>
+        <td class="mono">${s.ts}</td>
+        <td>${s.model}</td>
+        <td class="num">${fmtTok(s.tok)}</td>
+        <td class="dnote" style="font-size:11px">${s.why}</td></tr>`).join("")}</tbody>
+    </table>
+    <p class="dnote" style="margin-top:8px">这三条按「直连上游」计入合计。如果它们其实走了网关、只是滑出了日志窗口，那合计会更低 —— 那就是区间下限 ${fmtTok(RECON.lower)}。</p>
+  </div>`;
+}
+
+function openDrawer(){
+  document.getElementById("drawer").innerHTML = renderRecon();
+  document.getElementById("drawerMask").classList.add("on");
+}
+function closeDrawer(){ document.getElementById("drawerMask").classList.remove("on"); }
+
+document.addEventListener("click", e=>{
+  if(e.target.closest("[data-recon]")){ openDrawer(); return; }
+  if(e.target.closest("[data-close]")){ closeDrawer(); return; }
+  const cs = e.target.closest("[data-case]");
+  if(cs){
+    const next = new URLSearchParams(location.search);
+    next.set("case", cs.dataset.case);
+    next.set("tab", state.tab); next.set("book", state.book);
+    location.search = next.toString();
+    return;
+  }
+  if(e.target.id==="drawerMask") closeDrawer();
+});
 
 function render(){
   renderCoverage();
@@ -568,6 +853,7 @@ document.getElementById("segRange").onclick = e => {
 render();
 syncSeg();
 document.querySelectorAll("#tabs button").forEach(x=>x.classList.toggle("on", x.dataset.tab===state.tab));
+if(q.get("drawer")==="1") openDrawer();
 </script>
 </body>
 </html>

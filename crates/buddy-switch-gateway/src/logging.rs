@@ -58,6 +58,14 @@ pub struct RequestMeta {
     pub total_ms: i64,
     pub prompt_tokens: u64,
     pub completion_tokens: u64,
+    /// **上游上报的积分消耗**（`usage.credit`，与客户端 jsonl 的 `usage.credit` 同单位）。
+    ///
+    /// 为什么进日志：用量页的「积分」视图要按**来源**拆消耗（客户端 / 网关），
+    /// 而 `token_daily` 的网关桶只有 token 没有 credit ⇒ 不落这一项，积分只能靠
+    /// token 折算，那是估算不是账单。issue #63。
+    ///
+    /// `0.0` = 上游没带 credit（不是「免费」，是「不知道」）—— 与 token 写 0 同一诚实口径。
+    pub credit: f64,
     pub stream: bool,
 }
 
@@ -77,6 +85,7 @@ impl RequestMeta {
             "totalMs": self.total_ms,
             "promptTokens": self.prompt_tokens,
             "completionTokens": self.completion_tokens,
+            "credit": self.credit,
             "stream": self.stream,
         })
     }
@@ -120,17 +129,19 @@ impl StreamingLogSink {
 impl UsageSink for StreamingLogSink {
     fn finish(&self, usage: Option<UsageReport>) {
         // 与 `PoolUsageSink` 相反：**没有用量也要落日志**（用量填 0）。
-        let (prompt_tokens, completion_tokens) = match usage {
+        let (prompt_tokens, completion_tokens, credit) = match usage {
             Some(usage) => (
                 u64::try_from(usage.prompt_tokens).unwrap_or(0),
                 u64::try_from(usage.completion_tokens).unwrap_or(0),
+                usage.credit,
             ),
-            None => (0, 0),
+            None => (0, 0, 0.0),
         };
         self.log.record(
             RequestMeta {
                 prompt_tokens,
                 completion_tokens,
+                credit,
                 // ★ 只补总耗时；`latency_ms` 保留 `template` 里的 TTFB —— 覆盖它正是
                 //   2026-10-15 那次「日志数字放大 10~100 倍」的事故来源。
                 total_ms: self.started.elapsed().as_millis() as i64,
@@ -242,6 +253,7 @@ mod tests {
             total_ms: 3456,
             prompt_tokens: 10,
             completion_tokens: 2,
+            credit: 0.0,
             stream: false,
         };
 
@@ -280,6 +292,7 @@ mod tests {
                 "totalMs",
                 "promptTokens",
                 "completionTokens",
+                "credit",
                 "stream",
             ]),
             "键集合变了就要同步前端 GatewayLogEntry 与 token_daily 的读法"
@@ -304,6 +317,7 @@ mod tests {
             total_ms: 0,
             prompt_tokens: 0,
             completion_tokens: 0,
+            credit: 0.0,
             stream: true,
         }
     }
@@ -352,6 +366,10 @@ mod tests {
             "流式路径必须写**真实** prompt token —— 写死 0 正是本次修的缺陷"
         );
         assert_eq!(entries[0]["completionTokens"], 5);
+        assert_eq!(
+            entries[0]["credit"], 1.5,
+            "流式路径必须写**上游上报的** credit —— 积分视图按来源拆消耗就靠它"
+        );
         assert_eq!(entries[0]["accountUid"], "uid-1", "静态字段不得丢");
         assert_eq!(entries[0]["stream"], true);
 
