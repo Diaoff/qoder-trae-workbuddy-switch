@@ -353,13 +353,41 @@ where
 
     // 泄漏回声回读：只在**没有**结构化调用、且正文非空时尝试（严格整段识别）。
     if out.tool_calls.is_empty() && !out.content.is_empty() {
-        let (recovered, cleaned) = api::parse_leaked_tool_calls(&out.content, allowed_tool_names);
+        let (mut recovered, mut cleaned) =
+            api::parse_leaked_tool_calls(&out.content, allowed_tool_names);
+        if recovered.is_none() {
+            // 收尾容错：数组后面跟着 DSML 闭标签残片（issue #66 的真机形态）。
+            let (tolerant, tail_cleaned) =
+                api::parse_leaked_tool_calls_with_trailing(&out.content, allowed_tool_names);
+            recovered = tolerant;
+            cleaned = tail_cleaned;
+        }
         if let Some(calls) = recovered {
             out.tool_calls = calls;
             out.content = cleaned;
             if out.finish_reason == "stop" {
                 out.finish_reason = "tool_calls".to_string();
             }
+        }
+    }
+    // DSML 回退：模型把调用写成 `<｜｜DSML｜｜ calls>` 标签时还原成结构化调用。
+    if out.tool_calls.is_empty() && !out.content.is_empty() {
+        let (recovered, cleaned) = api::parse_dsml_tool_calls(&out.content);
+        if let Some(calls) = recovered {
+            out.tool_calls = calls;
+            out.content = cleaned;
+            if out.finish_reason == "stop" {
+                out.finish_reason = "tool_calls".to_string();
+            }
+        }
+    }
+    // 最后一道：还原不了的内部协议文本（截断回声 / 工具结果回声）**吞掉**，
+    // 绝不把网关自己的标记交给终端用户（issue #66）。
+    if out.tool_calls.is_empty() && !out.content.is_empty() {
+        if api::leaked_partial_droppable(&out.content, allowed_tool_names)
+            || api::tool_echo_droppable(&out.content, allowed_tool_names)
+        {
+            out.content.clear();
         }
     }
     out
@@ -481,20 +509,51 @@ enum LeakShape {
     NotEcho,
 }
 
-/// 一帧是不是「正文可能是标记开头」。
-fn starts_leak(text: &str) -> bool {
-    api::LEAK_MARKER.starts_with(text) || text.starts_with(api::LEAK_MARKER)
+/// 在一帧正文里定位「标记起点」。
+///
+/// - 命中完整标记 ⇒ 返回该字节偏移（标记之前的散文立即发出）；
+/// - 帧尾是某个标记的**真前缀** ⇒ 返回该尾巴的偏移（跨帧补全窗口：服务端 delta
+///   切分不可控，标记很可能跨两帧）；
+/// - 无命中 ⇒ `None`（正常正文，逐字透传）。
+fn leak_marker_split(text: &str) -> Option<usize> {
+    let markers = [api::LEAK_MARKER, api::TOOL_RESULT_MARKER];
+    let mut best: Option<usize> = None;
+    for marker in markers {
+        if let Some(position) = text.find(marker) {
+            best = Some(best.map_or(position, |current| current.min(position)));
+        }
+    }
+    if best.is_some() {
+        return best;
+    }
+    for marker in markers {
+        let boundaries: Vec<usize> = marker.char_indices().map(|(index, _)| index).collect();
+        for index in boundaries.into_iter().rev().filter(|index| *index > 0) {
+            let prefix = &marker[..index];
+            if text.ends_with(prefix) {
+                return Some(text.len() - prefix.len());
+            }
+        }
+    }
+    None
 }
 
 /// 累计正文处于哪种形状（判定与 [`api::parse_leaked_tool_calls`] 同源：标记 + `[` 开头）。
 fn classify(text: &str) -> LeakShape {
-    if api::LEAK_MARKER.starts_with(text) {
-        return LeakShape::Prefix;
+    for marker in [api::LEAK_MARKER, api::TOOL_RESULT_MARKER] {
+        if marker.starts_with(text) {
+            return LeakShape::Prefix;
+        }
+    }
+    if text.starts_with(api::TOOL_RESULT_MARKER) {
+        // 工具结果回声：形状不是 JSON 数组，只能整段留到流末按判据吞掉 / 放行。
+        return LeakShape::Echo;
     }
     if !text.starts_with(api::LEAK_MARKER) {
         return LeakShape::NotEcho;
     }
-    let rest = text[api::LEAK_MARKER.len()..].trim_start();
+    let rest = api::LEAK_MARKER.len();
+    let rest = text[rest..].trim_start();
     if rest.is_empty() || rest.starts_with('[') {
         LeakShape::Echo
     } else {
@@ -708,7 +767,13 @@ impl<S> LeakGuardStream<S> {
             LeakGuardMode::Passthrough => {}
             /* 标记只写了一半（上游断流 / 恰好停在前缀）⇒ 原样透传：
             宁可让用户看见半句标记，也不要凭空造出工具调用。 */
-            LeakGuardMode::Probing => self.flush_held(),
+            LeakGuardMode::Probing => {
+                if self.should_drop() {
+                    self.flush_held_without_leaking();
+                } else {
+                    self.flush_held();
+                }
+            }
             LeakGuardMode::Recovering => {
                 if self.saw_tool_calls {
                     /* 上游已给结构化调用 ⇒ 绝不合成第二组（双发）。
@@ -717,15 +782,42 @@ impl<S> LeakGuardStream<S> {
                     self.flush_held_without_leaking();
                     return;
                 }
-                let (calls, cleaned) =
-                    api::parse_leaked_tool_calls(&self.text, self.allowed_tools.as_deref());
+                let allowed = self.allowed_tools.as_deref();
+                let (mut calls, mut cleaned) = api::parse_leaked_tool_calls(&self.text, allowed);
+                if calls.is_none() {
+                    // 收尾容错：`marker + JSON 数组 + DSML 闭标签残片`（issue #66 的真机形态）。
+                    let (tolerant, tail_cleaned) =
+                        api::parse_leaked_tool_calls_with_trailing(&self.text, allowed);
+                    calls = tolerant;
+                    cleaned = tail_cleaned;
+                }
                 let Some(calls) = calls.filter(|calls| !calls.is_empty()) else {
-                    self.flush_held();
+                    // 还原不了：被截断的回声 / 工具结果回声 ⇒ 吞掉正文（issue #66），
+                    // 其余（正常散文、未声明工具）⇒ 原样透传。
+                    if self.should_drop() {
+                        self.flush_held_without_leaking();
+                    } else {
+                        self.flush_held();
+                    }
                     return;
                 };
                 self.emit_recovered(calls, &cleaned);
             }
         }
+    }
+
+    /// 还原失败时，这段正文是否属于「绝对不能透传」的内部协议文本。
+    ///
+    /// 两条判据都在 core 里（与 `aggregate` 共用，不另写一套）：
+    /// - 截断的调用回声（JSON 数组没写完）；
+    /// - `[工具结果…]` 回声块。
+    ///
+    /// 两者都以「本次请求声明了 tools」为前置 —— 未声明工具时模型不可能在调工具，
+    /// 此时整段只可能是正常讨论，必须 fail-open 透传。
+    fn should_drop(&self) -> bool {
+        let allowed = self.allowed_tools.as_deref();
+        api::leaked_partial_droppable(&self.text, allowed)
+            || api::tool_echo_droppable(&self.text, allowed)
     }
 
     /// 还原成功：合成 `tool_calls` 帧 + 把扣住的帧去正文后按原顺序放回。
@@ -830,24 +922,31 @@ impl<S> LeakGuardStream<S> {
     /// 处理一帧。
     fn push_frame(&mut self, frame: Bytes) {
         if self.mode == LeakGuardMode::Passthrough {
-            let enter = parse_frame(&frame)
-                .and_then(|chunk| delta_content(&chunk))
-                .map(|text| starts_leak(&text))
-                .unwrap_or(false);
-            if !enter {
+            let Some(chunk) = parse_frame(&frame) else {
                 self.out.push_back(frame);
                 return;
+            };
+            if has_structured_tool_calls(&chunk) {
+                self.saw_tool_calls = true;
             }
-            let chunk = parse_frame(&frame);
-            let text = chunk.as_ref().and_then(delta_content).unwrap_or_default();
-            self.text.push_str(&text);
-            if let Some(chunk) = &chunk {
-                if has_structured_tool_calls(chunk) {
-                    self.saw_tool_calls = true;
-                }
+            let Some(text) = delta_content(&chunk) else {
+                self.out.push_back(frame);
+                return;
+            };
+            let Some(split) = leak_marker_split(&text) else {
+                self.out.push_back(frame);
+                return;
+            };
+            /* 散文与标记落在**同一帧**：标记之前的散文立即发出（不拖首字延迟），
+            标记及其后进扣帧流程。参考实现踩过这条：只判「整帧以标记开头」会漏，
+            整帧透传 ⇒ 标记泄漏。 */
+            let remainder = &text[split..];
+            if split > 0 {
+                self.out.push_back(replace_content(&frame, &text[..split]));
             }
-            self.held_bytes += frame.len();
-            self.held.push_back(frame);
+            self.text.push_str(remainder);
+            self.held_bytes += remainder.len();
+            self.held.push_back(replace_content(&frame, remainder));
             self.mode = match classify(&self.text) {
                 LeakShape::Prefix => LeakGuardMode::Probing,
                 _ => LeakGuardMode::Recovering,
@@ -916,6 +1015,366 @@ where
                 }
                 Poll::Ready(None) => {
                     this.finalize();
+                    this.finished = true;
+                }
+                Poll::Pending => return Poll::Pending,
+            }
+        }
+    }
+}
+
+/// DSML 守卫最多扣住多少字节（正常调用块远小于此；超限 fail-open，绝不无限压住客户端）。
+const DSML_GUARD_MAX_BUFFER: usize = 1024 * 1024;
+/// 还没见到 `>` 的标签尾巴最长多少字符仍算「可能是标签开头」。
+const DSML_TAG_TAIL_CHARS: usize = 40;
+
+/// 一帧 `delta.content` 里**可能**开始一个 DSML 标签的字节偏移。
+///
+/// 两级判据：
+/// 1. 帧里出现 `DSML` 字样 ⇒ 从该处向前回退到最近的 `<` 开始扣（一帧里可能已经是
+///    完整块，不能漏）；
+/// 2. 否则只认「帧尾是可能的标签开头」：`<` 之后没有 `>`，且短到还可能是标签名
+///    （无空白）。数学式 `a < b`、`<div>` 一律不扣帧 —— 误判的代价是首字延迟，
+///    所以要把误判压到最低。
+fn dsml_candidate_start(text: &str) -> Option<usize> {
+    let upper = text.to_ascii_uppercase();
+    if let Some(position) = upper.find("DSML") {
+        return Some(text[..position].rfind('<').unwrap_or(0));
+    }
+    let idx = text.rfind('<')?;
+    let tail = &text[idx..];
+    if tail.contains('>') {
+        return None;
+    }
+    if tail.chars().count() < 10 && !tail.chars().any(char::is_whitespace) {
+        return Some(idx);
+    }
+    None
+}
+
+/// 缓冲内容**是否仍是** DSML 块的候选（一旦证伪就立刻放行，不拖字）。
+fn still_dsml_candidate(text: &str) -> bool {
+    let t = text.trim_start();
+    if !t.starts_with('<') {
+        return false;
+    }
+    match t.find('>') {
+        // 第一个标签已闭合：只有含 DSML 才是我们的块。
+        Some(end) => t[..=end].to_ascii_uppercase().contains("DSML"),
+        // 还没闭合：短尾巴仍可能是「标签名写到一半」。
+        None => t.chars().count() < DSML_TAG_TAIL_CHARS,
+    }
+}
+
+/// 一帧的 `finish_reason`（任一 choice 非 null 即算）。
+fn chunk_finish_reason(chunk: &Value) -> Option<String> {
+    chunk
+        .get("choices")
+        .and_then(Value::as_array)?
+        .iter()
+        .find_map(|choice| {
+            choice
+                .get("finish_reason")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        })
+}
+
+/// 把一帧的 `delta.content` 换成给定文本（其余字段原样保留）。
+fn replace_content(frame: &Bytes, content: &str) -> Bytes {
+    let Some(text) = frame
+        .strip_prefix(b"data: ")
+        .and_then(|rest| std::str::from_utf8(rest).ok())
+    else {
+        return frame.clone();
+    };
+    let Ok(Value::Object(mut chunk)) = serde_json::from_str::<Value>(text.trim()) else {
+        return frame.clone();
+    };
+    if let Some(choices) = chunk.get_mut("choices").and_then(Value::as_array_mut) {
+        for choice in choices.iter_mut() {
+            if let Some(delta) = choice.get_mut("delta").and_then(Value::as_object_mut) {
+                delta.insert("content".into(), Value::String(content.to_string()));
+            }
+        }
+    }
+    Bytes::from(format!("data: {}\n\n", Value::Object(chunk)))
+}
+
+/// 去掉 `content` 后 `delta` 是否已空（空帧不必发）。
+fn delta_is_empty(frame: &Bytes) -> bool {
+    let Some(chunk) = parse_frame(frame) else {
+        return false;
+    };
+    chunk
+        .get("choices")
+        .and_then(Value::as_array)
+        .map(|choices| {
+            choices.iter().all(|choice| {
+                choice
+                    .get("delta")
+                    .and_then(Value::as_object)
+                    .map(|delta| delta.is_empty())
+                    .unwrap_or(true)
+            })
+        })
+        .unwrap_or(false)
+}
+
+/// 流式 **DSML 调用块守卫**：模型把工具调用写成 `<｜｜DSML｜｜ calls>` 标签时，
+/// 把整块扣住、还原成结构化 `tool_calls`，并把标签从正文里剥掉。
+///
+/// ## 为什么必须有这一层（issue #66）
+///
+/// 客户端（CodeBuddy / WorkBuddy 一系）在自己的 system 里教模型用 DSML 语法发起
+/// 工具调用；Qoder 上游跑在**文本模式**时模型会照学，把调用写成标签塞进正文。
+/// 网关若原样透传：① 客户端把标签当正文渲染出来（用户看到的正是
+/// `[assistant 请求调用工具] … </｜｜DSML｜｜ parameter>`）；② 真正的工具一次也没
+/// 执行 ⇒ 任务在该调工具的位置反复断掉。
+///
+/// ## 边界（与 [`LeakGuardStream`] 同一套纪律）
+///
+/// - **正常流逐字不变**：只有「正文里出现 `<` 且可能是 DSML 标签头」才扣帧；
+///   一帧内标签之前的散文**立即发出**，不拖首字延迟；
+/// - 证伪（`<div>` 之类）立刻放行；超 [`DSML_GUARD_MAX_BUFFER`] 放行；
+/// - 上游已给结构化 `tool_calls` 时**不再合成第二组**，但仍剥掉标签文本；
+/// - 流末仍是半截 DSML（含 `DSML` 字样）⇒ **整段吞掉**，绝不把内部标签交给用户；
+///   其余情况 fail-open 放行。
+pub struct DsmlGuardStream<S> {
+    inner: S,
+    buffering: bool,
+    buffer: String,
+    /// 被扣住的收尾帧（`finish_reason` 必须在合成调用**之后**发，否则 Anthropic 侧补不出 usage）。
+    pending_finish: Option<Bytes>,
+    saw_tool_calls: bool,
+    meta: Map<String, Value>,
+    index_base: i64,
+    out: std::collections::VecDeque<Bytes>,
+    finished: bool,
+}
+
+impl<S> DsmlGuardStream<S> {
+    pub fn new(inner: S) -> Self {
+        Self {
+            inner,
+            buffering: false,
+            buffer: String::new(),
+            pending_finish: None,
+            saw_tool_calls: false,
+            meta: Map::new(),
+            index_base: 0,
+            out: std::collections::VecDeque::new(),
+            finished: false,
+        }
+    }
+
+    /// 记住上游的 `id` / `model` / `created`（合成帧沿用）。
+    fn remember(&mut self, chunk: &Value) {
+        for key in ["id", "model", "created"] {
+            if let Some(value) = chunk.get(key) {
+                self.meta.insert(key.to_string(), value.clone());
+            }
+        }
+    }
+
+    /// 合成一帧（沿用上游 meta）。
+    fn frame(&self, delta: Value, finish: Option<&str>) -> Bytes {
+        let mut chunk = self.meta.clone();
+        chunk.insert(
+            "choices".into(),
+            json!([{ "index": 0, "delta": delta, "finish_reason": finish }]),
+        );
+        Bytes::from(format!("data: {}\n\n", Value::Object(chunk)))
+    }
+
+    /// 把合成的 `tool_calls` 帧塞进出队序列。
+    fn push_calls(&mut self, calls: Vec<Value>) {
+        let base = self.index_base;
+        let tool_calls: Vec<Value> = calls
+            .iter()
+            .enumerate()
+            .map(|(offset, call)| {
+                let index = base + offset as i64;
+                let mut entry = Map::new();
+                entry.insert("index".into(), Value::from(index));
+                entry.insert(
+                    "id".into(),
+                    call.get("id").cloned().unwrap_or_else(|| {
+                        Value::String(format!("call_{}", uuid::Uuid::new_v4().simple()))
+                    }),
+                );
+                entry.insert(
+                    "type".into(),
+                    call.get("type")
+                        .cloned()
+                        .unwrap_or_else(|| Value::String("function".into())),
+                );
+                entry.insert(
+                    "function".into(),
+                    call.get("function").cloned().unwrap_or_else(|| json!({})),
+                );
+                Value::Object(entry)
+            })
+            .collect();
+        self.index_base = base + tool_calls.len() as i64;
+        self.out
+            .push_back(self.frame(json!({ "tool_calls": tool_calls }), None));
+    }
+
+    /// 把缓冲当正文发出（fail-open 的唯一出口）。
+    fn flush_buffer(&mut self) {
+        if !self.buffer.is_empty() {
+            let text = std::mem::take(&mut self.buffer);
+            self.out
+                .push_back(self.frame(json!({ "content": text }), None));
+        }
+        self.buffer.clear();
+        self.buffering = false;
+    }
+
+    /// 结算缓冲：能还原就还原，能证伪就放行，否则继续等（跨帧）。
+    fn settle(&mut self) {
+        loop {
+            if !self.buffering {
+                break;
+            }
+            if self.buffer.is_empty() {
+                self.buffering = false;
+                break;
+            }
+            let (recovered, cleaned) = api::parse_dsml_tool_calls(&self.buffer);
+            if let Some(calls) = recovered.filter(|calls| !calls.is_empty()) {
+                if !self.saw_tool_calls {
+                    self.push_calls(calls);
+                }
+                if !cleaned.is_empty() {
+                    self.out
+                        .push_back(self.frame(json!({ "content": cleaned }), None));
+                }
+                self.buffer.clear();
+                self.buffering = false;
+                break;
+            }
+            if !still_dsml_candidate(&self.buffer) || self.buffer.len() > DSML_GUARD_MAX_BUFFER {
+                self.flush_buffer();
+                break;
+            }
+            // 仍可能是半截 DSML：等下一帧。
+            break;
+        }
+        if !self.buffering {
+            if let Some(frame) = self.pending_finish.take() {
+                self.out.push_back(frame);
+            }
+        }
+    }
+
+    /// 处理一帧。
+    fn push_frame(&mut self, frame: Bytes) {
+        let Some(chunk) = parse_frame(&frame) else {
+            if self.buffering {
+                // 不可解析的帧（错误帧 / 空行）：先结算，再原样放行。
+                self.finish_buffer();
+            }
+            self.out.push_back(frame);
+            return;
+        };
+        self.remember(&chunk);
+        if has_structured_tool_calls(&chunk) {
+            self.saw_tool_calls = true;
+        }
+        let content = delta_content(&chunk);
+        let has_finish = chunk_finish_reason(&chunk).is_some();
+
+        if self.buffering {
+            if let Some(text) = &content {
+                self.buffer.push_str(text);
+            }
+            if has_finish {
+                let mut saw = false;
+                self.pending_finish = Some(strip_content(&frame, None, &mut saw));
+            } else if content.is_some() {
+                // 非正文部分（role / reasoning / 结构化调用）不能丢。
+                let mut saw = false;
+                let stripped = strip_content(&frame, None, &mut saw);
+                if !delta_is_empty(&stripped) {
+                    self.out.push_back(stripped);
+                }
+            } else {
+                self.out.push_back(frame);
+            }
+            self.settle();
+            return;
+        }
+
+        let Some(text) = content else {
+            self.out.push_back(frame);
+            return;
+        };
+        match dsml_candidate_start(&text) {
+            None => self.out.push_back(frame),
+            Some(index) => {
+                let head = &text[..index];
+                if !head.is_empty() {
+                    self.out.push_back(replace_content(&frame, head));
+                }
+                if has_finish {
+                    // 收尾帧扣住：`finish_reason` 必须排在合成调用之后。
+                    let mut saw = false;
+                    self.pending_finish = Some(strip_content(&frame, None, &mut saw));
+                }
+                self.buffer.push_str(&text[index..]);
+                self.buffering = true;
+                self.settle();
+            }
+        }
+    }
+
+    /// 流末收尾：半截 DSML 吞掉（内部标签绝不交给用户），其余放行。
+    fn finish_buffer(&mut self) {
+        if self.buffering {
+            // 最后一段里可能刚好凑齐了块（`</…calls>` 落在末帧）。
+            self.settle();
+        }
+        if self.buffering {
+            if self.buffer.to_ascii_uppercase().contains("DSML") {
+                // 截断的 DSML 块：还原不了，也绝不透传（与 issue #66 的截断回声同理）。
+                self.buffer.clear();
+                self.buffering = false;
+            } else {
+                self.flush_buffer();
+            }
+        }
+        if let Some(frame) = self.pending_finish.take() {
+            self.out.push_back(frame);
+        }
+    }
+}
+
+impl<S, E> Stream for DsmlGuardStream<S>
+where
+    S: Stream<Item = Result<Bytes, E>> + Unpin,
+{
+    type Item = Result<Bytes, io::Error>;
+
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let this = self.get_mut();
+        loop {
+            if let Some(frame) = this.out.pop_front() {
+                return Poll::Ready(Some(Ok(frame)));
+            }
+            if this.finished {
+                return Poll::Ready(None);
+            }
+            match Pin::new(&mut this.inner).poll_next(cx) {
+                Poll::Ready(Some(Ok(frame))) => this.push_frame(frame),
+                Poll::Ready(Some(Err(_error))) => {
+                    // 传输错误：扣着的正文放行（不悬挂、不改写事实）。
+                    this.finish_buffer();
+                    this.finished = true;
+                }
+                Poll::Ready(None) => {
+                    this.finish_buffer();
                     this.finished = true;
                 }
                 Poll::Pending => return Poll::Pending,
@@ -1443,5 +1902,217 @@ mod tests {
         assert!(text.contains("\"index\":0"), "{text}");
         assert!(text.contains("\"index\":1"), "{text}");
         assert_eq!(text.matches("\"tool_calls\":[").count(), 1, "{text}");
+    }
+
+    /// issue #66：模型把调用写成 **DSML 标签**（跨多帧到达）⇒ 还原成结构化调用，
+    /// 且标签文本一个字符都不许出现在下游。
+    #[tokio::test]
+    async fn dsml_guard_recovers_streamed_calls_and_hides_tags() {
+        let pieces = [
+            "先探一下端口。\n<｜｜DSML｜｜ calls>\n<｜｜DSML｜｜ invoke name=\"pwsh\">\n",
+            "<｜｜DSML｜｜ parameter name=\"command\">Get-Process",
+            "</｜｜DSML｜｜ parameter>\n</｜｜DSML｜｜ invoke>\n",
+            "</｜｜DSML｜｜ calls>",
+        ];
+        let mut frames: Vec<String> = pieces
+            .iter()
+            .map(|piece| {
+                frame(
+                    &json!({"id": "c1", "model": "m", "choices": [{"delta": {"content": piece}}]}),
+                )
+            })
+            .collect();
+        frames.push(frame(
+            &json!({"choices": [{"delta": {}, "finish_reason": "stop"}], "usage": {"total_tokens": 9}}),
+        ));
+        frames.push("data:{\"body\":\"[DONE]\"}\n".to_string());
+
+        let mut stream = DsmlGuardStream::new(LeakGuardStream::new(
+            QoderOpenAiStream::new(upstream_from(&frames)),
+            Some(std::sync::Arc::new(std::collections::HashSet::from([
+                "pwsh".to_string(),
+            ]))),
+        ));
+        let text = collect(&mut stream).await;
+        assert!(
+            !text.to_ascii_uppercase().contains("DSML"),
+            "标签泄漏: {text}"
+        );
+        assert!(
+            text.contains("\"tool_calls\":["),
+            "必须合成结构化调用: {text}"
+        );
+        assert!(text.contains("\"name\":\"pwsh\""), "{text}");
+        assert!(text.contains("Get-Process"), "{text}");
+        assert!(
+            text.contains("先探一下端口。"),
+            "标签前的散文必须保留: {text}"
+        );
+        // `finish_reason` 必须排在合成调用**之后**（Anthropic 侧靠它补 usage）。
+        let calls_at = text.find("\"tool_calls\":[").expect("有调用");
+        let finish_at = text.find("\"finish_reason\":\"stop\"").expect("有收尾");
+        assert!(calls_at < finish_at, "收尾帧顺序错了: {text}");
+    }
+
+    /// P0：普通流（含数学 `<` 与 HTML 标签）经 DSML 守卫后**逐字不变**。
+    #[tokio::test]
+    async fn dsml_guard_is_transparent_for_ordinary_streams() {
+        let frames = vec![
+            frame(&json!({"id": "c1", "choices": [{"delta": {"content": "1 < 2 且"}}]})),
+            frame(&json!({"choices": [{"delta": {"content": " <div>是标签"}}]})),
+            frame(&json!({"choices": [{"delta": {}, "finish_reason": "stop"}]})),
+            "data:{\"body\":\"[DONE]\"}\n".to_string(),
+        ];
+        let mut guarded = DsmlGuardStream::new(QoderOpenAiStream::new(upstream_from(&frames)));
+        let guarded_text = collect(&mut guarded).await;
+        let mut bare = QoderOpenAiStream::new(upstream_from(&frames));
+        let bare_text = collect(&mut bare).await;
+        assert_eq!(guarded_text, bare_text, "普通流必须逐字不变");
+    }
+
+    /// 截断的 DSML 块：还原不了，也绝不把内部标签交给用户。
+    #[tokio::test]
+    async fn dsml_guard_drops_truncated_block() {
+        let frames = vec![
+            frame(
+                &json!({"choices": [{"delta": {"content": "<｜｜DSML｜｜ calls>\n<｜｜DSML｜｜ invoke name=\"pw"}}]}),
+            ),
+            frame(&json!({"choices": [{"delta": {}, "finish_reason": "length"}]})),
+            "data:{\"body\":\"[DONE]\"}\n".to_string(),
+        ];
+        let mut stream = DsmlGuardStream::new(QoderOpenAiStream::new(upstream_from(&frames)));
+        let text = collect(&mut stream).await;
+        assert!(
+            !text.to_ascii_uppercase().contains("DSML"),
+            "截断块泄漏: {text}"
+        );
+        assert!(
+            text.contains("\"finish_reason\":\"length\""),
+            "收尾仍要发: {text}"
+        );
+    }
+
+    /// issue #66：**截断的调用回声**不许透传（既还原不了，也不能把标记交给用户）。
+    #[tokio::test]
+    async fn leak_guard_drops_truncated_echo_instead_of_leaking_marker() {
+        let truncated = format!(
+            "{}\n[{{\"name\":\"pwsh\",\"arguments\":\"{{\\\"comm",
+            api::LEAK_MARKER
+        );
+        let frames = vec![
+            frame(&json!({"id": "c1", "choices": [{"delta": {"content": truncated}}]})),
+            frame(&json!({"choices": [{"delta": {}, "finish_reason": "length"}]})),
+            "data:{\"body\":\"[DONE]\"}\n".to_string(),
+        ];
+        let mut stream = LeakGuardStream::new(
+            QoderOpenAiStream::new(upstream_from(&frames)),
+            Some(std::sync::Arc::new(std::collections::HashSet::from([
+                "pwsh".to_string(),
+            ]))),
+        );
+        let text = collect(&mut stream).await;
+        assert!(!text.contains(api::LEAK_MARKER), "标记泄漏: {text}");
+        assert!(text.contains("\"finish_reason\":\"length\""), "{text}");
+    }
+
+    /// issue #66：`[工具结果…]` 回声块同样吞掉（不还原，只保证用户看不到）。
+    #[tokio::test]
+    async fn leak_guard_drops_tool_result_echo() {
+        let echo = format!(
+            "{} (pwsh)]\n{{\"ok\":true}}\n[工具结果结束]",
+            api::TOOL_RESULT_MARKER
+        );
+        let frames = vec![
+            frame(&json!({"choices": [{"delta": {"content": echo}}]})),
+            frame(&json!({"choices": [{"delta": {}, "finish_reason": "stop"}]})),
+            "data:{\"body\":\"[DONE]\"}\n".to_string(),
+        ];
+        let mut stream = LeakGuardStream::new(
+            QoderOpenAiStream::new(upstream_from(&frames)),
+            Some(std::sync::Arc::new(std::collections::HashSet::from([
+                "pwsh".to_string(),
+            ]))),
+        );
+        let text = collect(&mut stream).await;
+        assert!(
+            !text.contains(api::TOOL_RESULT_MARKER),
+            "工具结果回声泄漏: {text}"
+        );
+    }
+
+    /// 非流式：DSML 块折叠成 `tool_calls`，正文剥掉调用块。
+    #[tokio::test]
+    async fn aggregate_recovers_dsml_calls() {
+        let dsml = "说明。\n<｜｜DSML｜｜ calls><｜｜DSML｜｜ invoke name=\"ls\">\
+                    <｜｜DSML｜｜ parameter name=\"path\">/tmp</｜｜DSML｜｜ parameter>\
+                    </｜｜DSML｜｜ invoke></｜｜DSML｜｜ calls>";
+        let frames = vec![
+            frame(&json!({"id": "c1", "choices": [{"delta": {"content": dsml}}]})),
+            frame(&json!({"choices": [{"delta": {}, "finish_reason": "stop"}]})),
+            "data:{\"body\":\"[DONE]\"}\n".to_string(),
+        ];
+        let out = aggregate(upstream_from(&frames), None).await;
+        assert_eq!(out.tool_calls.len(), 1, "{out:?}");
+        assert_eq!(out.tool_calls[0]["function"]["name"], "ls");
+        assert_eq!(out.content, "说明。");
+        assert_eq!(out.finish_reason, "tool_calls");
+    }
+
+    /// issue #66：**散文 + 标记落在同一帧**时，散文必须立刻发出、标记进扣帧流程。
+    #[tokio::test]
+    async fn leak_guard_splits_prose_from_marker_in_one_frame() {
+        let echo = format!(
+            "先看看目录。\n{}\n{}",
+            api::LEAK_MARKER,
+            json!([{ "name": "ls", "arguments": "{}" }])
+        );
+        let frames = vec![
+            frame(&json!({"id": "c1", "choices": [{"delta": {"content": echo}}]})),
+            frame(&json!({"choices": [{"delta": {}, "finish_reason": "stop"}]})),
+            "data:{\"body\":\"[DONE]\"}\n".to_string(),
+        ];
+        let mut stream = LeakGuardStream::new(
+            QoderOpenAiStream::new(upstream_from(&frames)),
+            Some(std::sync::Arc::new(std::collections::HashSet::from([
+                "ls".to_string()
+            ]))),
+        );
+        let text = collect(&mut stream).await;
+        assert!(!text.contains(api::LEAK_MARKER), "标记泄漏: {text}");
+        assert!(text.contains("先看看目录。"), "散文必须保留: {text}");
+        assert!(
+            text.contains("\"tool_calls\":["),
+            "必须还原成结构化调用: {text}"
+        );
+    }
+
+    /// issue #66 真机形态：**数组后面跟 DSML 闭标签残片**（模型把两种格式混着复述）。
+    /// 严格整段识别失败 ⇒ 收尾容错必须救回来，否则用户看到一坨标记、工具一次都没执行。
+    #[tokio::test]
+    async fn leak_guard_recovers_echo_with_trailing_dsml_fragments() {
+        let echo = format!(
+            "{}\n{}\n</｜｜DSML｜｜ parameter> </｜｜DSML｜｜ invoke> </｜｜DSML｜｜ calls>",
+            api::LEAK_MARKER,
+            json!([{ "name": "pwsh", "arguments": json!({"command": "Get-Process"}).to_string() }])
+        );
+        let frames = vec![
+            frame(&json!({"id": "c1", "choices": [{"delta": {"content": echo}}]})),
+            frame(&json!({"choices": [{"delta": {}, "finish_reason": "stop"}]})),
+            "data:{\"body\":\"[DONE]\"}\n".to_string(),
+        ];
+        let mut stream = LeakGuardStream::new(
+            QoderOpenAiStream::new(upstream_from(&frames)),
+            Some(std::sync::Arc::new(std::collections::HashSet::from([
+                "pwsh".to_string(),
+            ]))),
+        );
+        let text = collect(&mut stream).await;
+        assert!(!text.contains(api::LEAK_MARKER), "标记泄漏: {text}");
+        assert!(
+            !text.to_ascii_uppercase().contains("DSML"),
+            "残片泄漏: {text}"
+        );
+        assert!(text.contains("\"name\":\"pwsh\""), "{text}");
+        assert!(text.contains("Get-Process"), "{text}");
     }
 }

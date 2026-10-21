@@ -163,6 +163,7 @@ URL query `Encode=1` 决定「先解码再按 JSON 解析」还是「直接按 J
    唯一例外是**剥正文**：`Recovering` 且上游已给结构化 `tool_calls` 时**不合成第二组**，
    但**仍必须剥掉回声正文** —— 「不双发」与「不泄漏」是两件事，合成不了就整帧放行
    等于把标记原样还给用户。
+   （2026-10-21 修正：**截断的回声**不再是 fail-open —— 见 §7.3。）
 3. **合成形状对齐 Anthropic 侧读法**（*实现时读 `anthropic::push_tool_call` 发现的协议约束，非评审要求*）：`[anthropic::push_tool_call]` 读
    `delta.tool_calls[i].index` 且 `unwrap_or(0)` ⇒ 合成帧必须逐个带 `index`；
    `finish_reason` 必须落在上游 usage 帧**之前**，否则 Anthropic 侧补不出 usage。
@@ -173,6 +174,39 @@ URL query `Encode=1` 决定「先解码再按 JSON 解析」还是「直接按 J
 > （`runCheckin` 的三档分流 + `skippedNames` 透传，改 `QoderAccountsPage.tsx`）
 > 与两条 i18n 词条落在并行会话的 `cdb54b2` —— 评审 D 时请连同该 commit 一起看，
 > 不要只翻 `de932d7`。
+
+### 7.3 回声治理的**四种形态**与 DSML 回退（issue #66，2026-10-21）
+
+`#46` 只覆盖「整段合法回声」这一种形态。真机样本（issue #66）里还有三种，任何一种
+落到客户端都是「任务在最该调工具的地方断掉、界面显示一坨内部标记」：
+
+| 形态 | 处理 | 唯一实现 |
+|:--|:--|:--|
+| `marker + 合法 JSON 数组` | 还原成结构化 `tool_calls` | `api::parse_leaked_tool_calls` |
+| `marker + 数组 + DSML 闭标签残片` | 同上（**收尾容错**：数组之后的尾巴只允许 `<` / ``` —— 也就是「不是人话」） | `api::parse_leaked_tool_calls_with_trailing` |
+| `marker + 截断/损坏的数组` | **吞掉正文**，只保留上游 `finish_reason` | `api::leaked_partial_droppable` |
+| `[工具结果…]` 回声块 | **吞掉正文**（文本化历史没有 `tool_call_id`，还原不了） | `api::tool_echo_droppable` |
+| `<｜｜DSML｜｜ calls>` 调用块 | 还原成结构化 `tool_calls`，标签从正文剥掉 | `api::parse_dsml_tool_calls` |
+
+★ **为什么客户端会看到 DSML**：客户端的 system 教模型用 DSML 语法发起工具调用；
+Qoder 上游跑文本模式时模型会**照学**，把调用写成标签塞进正文。这条与「回声」是
+**两个不同的问题**（一个是复述历史，一个是本轮真的在调工具），不能互相顶替。
+
+三条纪律：
+
+1. **散文与标记同帧时先切分**：`LeakGuardStream` 在帧内定位标记起点，标记之前的
+   散文**立即发出**（不拖首字延迟），标记及其后进扣帧流程。只判「整帧以标记开头」
+   会漏掉「散文 + 标记」这种最常见的形态。
+2. **DSML 守卫排在泄漏守卫之后**（`QoderOpenAiStream → LeakGuard → DsmlGuard → UsageTap`）：
+   前者合成的帧已是结构化 `tool_calls`，后者据此判定「不再合成第二组」；顺序反了会
+   各还原一遍，客户端会把同一组工具执行两次。
+3. **还原不了就吞掉，绝不透传内部标记**：这是 `#46` 那条「fail-open」的**唯一例外**，
+   前提是「本次请求声明了 tools」（未声明 tools 时整段只可能是正常讨论，必须透传）。
+
+签到侧的同类缺陷（同一 issue）：**一次 404 不足以断言「本区域没有活动平台」**。单次
+404 会让签到回落旧通道，旧通道对国内版恒返回 `DISABLED` ⇒ 界面「无法签到」，而真相
+往往只是这一发请求没打到接口。`campaign::fetch_campaigns_with_identity` 因此在
+判「整区不可用」之前**原样重发一次**（`transient_404_is_retried_before_concluding_the_region_is_unavailable`）。
 
 ---
 

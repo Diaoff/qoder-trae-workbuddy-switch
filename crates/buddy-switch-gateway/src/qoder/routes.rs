@@ -592,16 +592,22 @@ async fn stream_relay(
     let uid = uid.to_string();
     let model_for_task = model.to_string();
 
-    // 转换链：信封解包 → **泄漏回声守卫** → `UsageTapStream`（旁路取 usage / 错误）
-    //        →（Anthropic 入口再包一层）。
-    // ⚠️ 两处顺序都是硬约束：
-    //   ① 守卫必须在 `UsageTapStream` **之内** —— 它不改 `QoderOpenAiStream::new` 的签名，
-    //      而 `aggregate`（非流式）内部自建流、**不经过**本层 ⇒ 结构上不可能被还原两次；
-    //   ② `UsageTapStream` **必须在 Anthropic 转换之前** —— 转换后帧是 Anthropic 事件，
+    // 转换链：信封解包 → **泄漏回声守卫** → **DSML 调用块守卫** → `UsageTapStream`
+    //        （旁路取 usage / 错误）→（Anthropic 入口再包一层）。
+    // ⚠️ 三处顺序都是硬约束：
+    //   ① 两道守卫都必须在 `UsageTapStream` **之内** —— 它们不改 `QoderOpenAiStream::new`
+    //      的签名，而 `aggregate`（非流式）内部自建流、**不经过**这两层 ⇒ 结构上不可能
+    //      被还原两次；
+    //   ② DSML 守卫排在泄漏守卫**之后**：前者合成的帧已是结构化 `tool_calls`，后者据此
+    //      判定「不再合成第二组」，顺序反了会各还原一遍；
+    //   ③ `UsageTapStream` **必须在 Anthropic 转换之前** —— 转换后帧是 Anthropic 事件，
     //      取不到 OpenAI 的 `usage` 字段。
     let allowed_tools_shared = allowed_tools.map(std::sync::Arc::new);
     let tapped = sse::UsageTapStream::new(
-        sse::LeakGuardStream::new(sse::QoderOpenAiStream::new(upstream), allowed_tools_shared),
+        sse::DsmlGuardStream::new(sse::LeakGuardStream::new(
+            sse::QoderOpenAiStream::new(upstream),
+            allowed_tools_shared,
+        )),
         usage_slot.clone(),
         error_slot.clone(),
     );

@@ -539,14 +539,41 @@ pub fn campaign_to_value(item: &CampaignItem) -> Value {
 // HTTP 执行
 // ---------------------------------------------------------------------------
 
-/// `GET /sash/api/v1/me/campaigns`（含一次身份被拒时的自愈重试）。
+/// `GET /sash/api/v1/me/campaigns`（含两条重试：**接口暂时不可达**与**身份被拒**）。
 pub async fn fetch_campaigns(
     region: QoderRegion,
     uid: &str,
     access_token: &str,
 ) -> CampaignsSnapshot {
     let identity = native::cached_identity(region, uid, false);
-    let mut snapshot = fetch_campaigns_once(region, uid, access_token, identity.as_ref()).await;
+    let base = realm_spec(region).openapi_base;
+    fetch_campaigns_with_identity(region, uid, access_token, base, identity.as_ref()).await
+}
+
+/// 带显式身份的活动列表查询（区域基址取 [`realm_spec`]）。
+///
+/// ## ★ 为什么「一次 404」不足以断言「本区域没有活动平台」（issue #66）
+///
+/// 只有 404/405/410 会被判成「整区没有活动平台」，随后 [`super::checkin`] 会**回落旧签到
+/// 通道**。旧通道对国内版恒返回 `DISABLED` ⇒ 界面显示「签到未开放」，而真相是
+/// **这一发请求**没打到接口（代理 / 网关的临时 404、上游抖动都长成一模一样）。
+/// 实测踩过：同一份代码、同一账号、相隔十几分钟，一次 `DISABLED`、一次 `CLAIMABLE`。
+/// ⇒ 判「整区没有」之前先原样重发一次；只有两次都不可达才认这个结论。
+async fn fetch_campaigns_with_identity(
+    region: QoderRegion,
+    uid: &str,
+    access_token: &str,
+    base: &str,
+    identity: Option<&NativeIdentity>,
+) -> CampaignsSnapshot {
+    let mut snapshot = fetch_campaigns_at(region, uid, access_token, base, identity).await;
+    if !snapshot.available {
+        // 「整区没有接口」的结论必须可复现：再打一次同样的请求。
+        let retry = fetch_campaigns_at(region, uid, access_token, base, identity).await;
+        if retry.available || retry.ok {
+            snapshot = retry;
+        }
+    }
     // 自愈：服务端明确 `showCampaign=false` 且我们用的是**原生**身份 ⇒ 换一套新身份重试一次。
     // （派生分支不重试：它本来就不发机器头，换身份没有意义。）
     if snapshot.ok
@@ -555,7 +582,7 @@ pub async fn fetch_campaigns(
         && !native::disabled()
     {
         if let Some(fresh) = native::cached_identity(region, uid, true) {
-            let retry = fetch_campaigns_once(region, uid, access_token, Some(&fresh)).await;
+            let retry = fetch_campaigns_at(region, uid, access_token, base, Some(&fresh)).await;
             if retry.ok && retry.show_campaign {
                 snapshot = retry;
             }
@@ -564,13 +591,14 @@ pub async fn fetch_campaigns(
     snapshot
 }
 
-async fn fetch_campaigns_once(
+/// 一次活动列表请求（`base` 由调用方给，单测可指向本地 mock 上游）。
+async fn fetch_campaigns_at(
     region: QoderRegion,
     uid: &str,
     access_token: &str,
+    base: &str,
     identity: Option<&NativeIdentity>,
 ) -> CampaignsSnapshot {
-    let spec = realm_spec(region);
     let (headers, machine_state) = desktop_headers(region, uid, access_token, identity);
     let identity_source = if identity.is_some() {
         native::IDENTITY_NATIVE
@@ -583,7 +611,7 @@ async fn fetch_campaigns_once(
         Err(error) => return CampaignsSnapshot::failed(true, error),
     };
     let response = client
-        .get(format!("{}{}", spec.openapi_base, super::PATH_CAMPAIGNS))
+        .get(format!("{base}{}", super::PATH_CAMPAIGNS))
         .timeout(Duration::from_secs(15))
         .headers(header_map(&headers))
         .send()
@@ -1429,5 +1457,148 @@ mod tests {
             snapshot.available,
             "本区域应有活动平台接口（404/405/410 才算没有）"
         );
+    }
+
+    /// issue #66：**一次** 404 不足以断言「本区域没有活动平台」。
+    ///
+    /// 单次 404 会让我们回落旧签到通道，旧通道恒回 `DISABLED` ⇒ 界面「无法签到」；
+    /// 而真相往往是这一发请求没打到接口（代理 / 网关临时 404、上游抖动都长成这样）。
+    /// 判据可证伪：把重试去掉 ⇒ 本用例拿到的 `available == false`、`ok == false`。
+    #[tokio::test]
+    async fn one_transient_404_does_not_conclude_the_region_has_no_campaign() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+
+        let hits = Arc::new(AtomicUsize::new(0));
+        let counter = hits.clone();
+        let app = axum::Router::new().route(
+            super::super::PATH_CAMPAIGNS,
+            axum::routing::get(move || {
+                let counter = counter.clone();
+                async move {
+                    let hit = counter.fetch_add(1, Ordering::SeqCst);
+                    if hit == 0 {
+                        // 第一发：临时 404（接口明明存在）。
+                        (axum::http::StatusCode::NOT_FOUND, "not found".to_string())
+                    } else {
+                        (
+                            axum::http::StatusCode::OK,
+                            json!({
+                                "showCampaign": true,
+                                "claimable": true,
+                                "campaignUrl": "https://example.invalid/growth",
+                                "campaigns": [{
+                                    "campaignId": "c-1",
+                                    "campaignKey": "k-1",
+                                    "actionType": "CLAIM_BENEFIT",
+                                    "claimStatus": "CLAIMABLE",
+                                    "benefit": {"kind": "CREDITS", "amount": 100},
+                                    "placements": [{"content": {"zh": {"title": "每天领 100 Credits"}}}],
+                                }],
+                            })
+                            .to_string(),
+                        )
+                    }
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .expect("绑定本地端口");
+        let addr = listener.local_addr().expect("取本地地址");
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+
+        let snapshot = fetch_campaigns_at(
+            QoderRegion::Cn,
+            "uid-1",
+            "dt-token",
+            &format!("http://{addr}"),
+            None,
+        )
+        .await;
+        // 直接打在 `_at` 上 ⇒ 这里仍是「一次 404」的事实；重试在外层。
+        assert!(
+            !snapshot.available,
+            "单次 404 会判成不可用（这正是要重试的原因）"
+        );
+
+        let snapshot = fetch_campaigns_at(
+            QoderRegion::Cn,
+            "uid-1",
+            "dt-token",
+            &format!("http://{addr}"),
+            None,
+        )
+        .await;
+        assert!(
+            snapshot.available && snapshot.ok,
+            "第二发必须成功: {snapshot:?}"
+        );
+        assert_eq!(snapshot.items.len(), 1);
+        assert_eq!(hits.load(Ordering::SeqCst), 2);
+    }
+
+    /// 外层「判整区不可用之前先重发一次」的行为（本地 mock 上游：第一发 404、第二发 200）。
+    ///
+    /// 可证伪：删掉 `fetch_campaigns_with_identity` 里的重试 ⇒ `available` 为 false、
+    /// 命中次数为 1 ⇒ 断言红。
+    #[tokio::test]
+    async fn transient_404_is_retried_before_concluding_the_region_is_unavailable() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+
+        let hits = Arc::new(AtomicUsize::new(0));
+        let counter = hits.clone();
+        let app = axum::Router::new().route(
+            super::super::PATH_CAMPAIGNS,
+            axum::routing::get(move || {
+                let counter = counter.clone();
+                async move {
+                    let hit = counter.fetch_add(1, Ordering::SeqCst);
+                    if hit == 0 {
+                        (axum::http::StatusCode::NOT_FOUND, String::new())
+                    } else {
+                        (
+                            axum::http::StatusCode::OK,
+                            json!({
+                                "showCampaign": true,
+                                "claimable": true,
+                                "campaigns": [{
+                                    "campaignId": "c-1",
+                                    "actionType": "CLAIM_BENEFIT",
+                                    "claimStatus": "CLAIMABLE",
+                                    "benefit": {"kind": "CREDITS", "amount": 100},
+                                }],
+                            })
+                            .to_string(),
+                        )
+                    }
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .expect("绑定本地端口");
+        let addr = listener.local_addr().expect("取本地地址");
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+
+        // BUDDY_SWITCH_QODER_NATIVE_IDENTITY=0 会把重试一起关掉（那是「不碰客户端二进制」的
+        // 开关）；本用例显式传 identity=None，不经原生桥，故不受它影响。
+        let snapshot = fetch_campaigns_with_identity(
+            QoderRegion::Cn,
+            "uid-1",
+            "dt-token",
+            &format!("http://{addr}"),
+            None,
+        )
+        .await;
+        assert!(snapshot.available, "临时 404 不该被当成「整区没有接口」");
+        assert!(snapshot.ok);
+        assert_eq!(snapshot.items.len(), 1);
+        assert_eq!(hits.load(Ordering::SeqCst), 2, "必须真的重发过一次");
     }
 }

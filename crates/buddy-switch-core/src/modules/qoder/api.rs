@@ -22,15 +22,25 @@
 //!
 //! 1. **出站指纹清洗**（把客户端自称 "Claude Code"/"Codex CLI" 的提示词改写成中性文本）：
 //!    防御性脱敏，涉及多张正则表；未移植期间客户端自带的 system 会**原样上行**。
-//! 2. **泄漏回声的「散文切分 / 截断丢弃」**（正文里混着散文 + 工具调用回声时的高级处理）：
-//!    [`parse_leaked_tool_calls`] 移植了**严格整段识别**这一主路径；散文切分依赖参考实现的
-//!    逐字符状态机，无真机样本可回归，宁缺勿滥。
-//! 3. **历史工具结果的暴露面削减**（长历史首尾保留 + 中间省略）：缓解措施而非协议刚需。
-//! 4. **每模型思考档位支持表**（把不支持的档位映射到「最近的合法档位」）：
+//! 2. **历史工具结果的暴露面削减**（长历史首尾保留 + 中间省略）：缓解措施而非协议刚需。
+//! 3. **每模型思考档位支持表**（把不支持的档位映射到「最近的合法档位」）：
 //!    需要一手实测每款模型的档位集合；当前**只透传官方词表内的取值**（见 [`canonical_effort`]），
 //!    其余丢弃（上游对不认识的档位是「忽略」而非报错，丢弃不会形成错误请求）。
-//! 5. **`validate_public_http_url` 类 SSRF 守卫**：本模块的 URL 全部由区域常量拼出，
+//! 4. **`validate_public_http_url` 类 SSRF 守卫**：本模块的 URL 全部由区域常量拼出，
 //!    没有任何用户输入进 URL 的路径。
+//!
+//! ## 已移植的回声治理（issue #46 / #66，别当同一条）
+//!
+//! | 形态 | 处理 | 入口 |
+//! |:--|:--|:--|
+//! | `marker + 合法 JSON 数组` | 还原成结构化 `tool_calls` | [`parse_leaked_tool_calls`] |
+//! | `marker + 数组 + DSML 闭标签残片` | 同上（**收尾容错**） | [`parse_leaked_tool_calls_with_trailing`] |
+//! | `marker + 截断/损坏的数组` | **吞掉正文**（绝不把内部标记交给用户） | [`leaked_partial_droppable`] |
+//! | `[工具结果…]` 回声块 | **吞掉正文**（不还原：文本化历史没有 `tool_call_id` 可配对） | [`tool_echo_droppable`] |
+//! | `<｜｜DSML｜｜ calls>` 调用块 | 还原成结构化 `tool_calls`，标签从正文剥掉 | [`parse_dsml_tool_calls`] |
+//!
+//! 后两类回读的「散文切分」在流式层（`gateway::qoder::sse`）做 —— 单帧里散文与标记
+//! 可能同框，所以切分必须在**帧**这一层。
 //!
 //! ## 真机探针
 //!
@@ -50,6 +60,8 @@ use super::region::{self, QoderRegion};
 
 /// 工具结果在**文本化历史**里的前缀（逐字节对齐；削减/回读都锚在它上面）。
 pub const TOOL_RESULT_MARKER: &str = "[工具结果";
+/// 模型自造的「工具结果结束」闭标记（网关只写开标记；这个只用于判回声是否自洽）。
+pub const TOOL_RESULT_CLOSE: &str = "[工具结果结束]";
 /// 助手工具调用的文本化标记（见 [`flatten_messages`] 的文本模式）。
 pub const LEAK_MARKER: &str = "[assistant 请求调用工具]";
 /// 上游给 delta 填充的空噪声字段（值为空时剥掉，避免客户端读到空壳字段）。
@@ -1015,26 +1027,39 @@ pub fn parse_leaked_tool_calls(
     let Some(items) = array.as_array().filter(|items| !items.is_empty()) else {
         return (None, text.to_string());
     };
+    match calls_from_leak_array(items, allowed_names) {
+        Some(calls) => (Some(calls), String::new()),
+        None => (None, text.to_string()),
+    }
+}
+
+/// 把回声数组的每一项转成结构化调用（严格校验；任一项不合格 ⇒ `None`）。
+fn calls_from_leak_array(
+    items: &[Value],
+    allowed_names: Option<&HashSet<String>>,
+) -> Option<Vec<Value>> {
     let mut calls = Vec::new();
     for item in items {
-        let Some(object) = item.as_object() else {
-            return (None, text.to_string());
-        };
-        let Some(name) = object.get("name").and_then(Value::as_str) else {
-            return (None, text.to_string());
-        };
+        let object = item.as_object()?;
+        let name = object.get("name").and_then(Value::as_str)?;
         if name.trim().is_empty() {
-            return (None, text.to_string());
+            return None;
         }
         let arguments = match object.get("arguments") {
             Some(Value::String(text)) => text.clone(),
             Some(other @ (Value::Object(_) | Value::Array(_))) => {
                 serde_json::to_string(other).unwrap_or_default()
             }
-            _ => return (None, text.to_string()),
+            _ => return None,
         };
         if !arguments.trim().is_empty() && serde_json::from_str::<Value>(&arguments).is_err() {
-            return (None, text.to_string());
+            return None;
+        }
+        // 工具会按「声明集合」校验名字：未声明的名字**不认**（宁可不还原）。
+        if let Some(allowed) = allowed_names {
+            if !allowed.contains(name.trim()) {
+                return None;
+            }
         }
         calls.push(serde_json::json!({
             "id": format!("call_{}", Uuid::new_v4().simple()),
@@ -1042,19 +1067,374 @@ pub fn parse_leaked_tool_calls(
             "function": { "name": name.trim(), "arguments": arguments },
         }));
     }
-    if let Some(allowed) = allowed_names {
-        let all_allowed = calls.iter().all(|call| {
-            call.get("function")
-                .and_then(|function| function.get("name"))
-                .and_then(Value::as_str)
-                .map(|name| allowed.contains(name))
-                .unwrap_or(false)
-        });
-        if !all_allowed {
+    Some(calls)
+}
+
+/// 严格整段识别**失败**时的收尾容错：`marker + JSON 数组 + 非正文尾巴`。
+///
+/// 典型形态（issue #66 的真机样本）：模型把两种协议格式**混着**复述，正文先是
+/// 网关的调用回声 JSON，后面又跟了一串 DSML 闭标签。严格判据要求「整段恰好是
+/// 数组」，于是整段还原失败 ⇒ 正文原样透传 ⇒ 用户看到一坨标记，工具一次都没执行。
+///
+/// 判据（只放窄一点点，避免误伤散文）：
+/// - 必须以 [`LEAK_MARKER`] 开头；
+/// - 数组之后**只允许**以 `<`（标签残片）或 ``` 开头 —— 也就是「不是人话」；
+/// - 数组本身仍走 [`calls_from_leak_array`] 的严格校验（含声明集合）。
+///
+/// 返回 `(calls, clean_text)`；`clean_text` 是数组之前的散文（通常为空）。
+pub fn parse_leaked_tool_calls_with_trailing(
+    text: &str,
+    allowed_names: Option<&HashSet<String>>,
+) -> (Option<Vec<Value>>, String) {
+    let t = text.trim();
+    let Some(after_marker) = t.strip_prefix(LEAK_MARKER) else {
+        return (None, text.to_string());
+    };
+    let Some(bracket) = after_marker.find('[') else {
+        return (None, text.to_string());
+    };
+    let body = &after_marker[bracket..];
+    // 只从尾部往前试（数组一定在尾巴之前结束），最多试 64 个候选，避免病态输入打满 CPU。
+    let mut attempts = 0;
+    for (position, ch) in body.char_indices().rev() {
+        if ch != ']' {
+            continue;
+        }
+        attempts += 1;
+        if attempts > 64 {
+            break;
+        }
+        let candidate = &body[..=position];
+        let Ok(array) = serde_json::from_str::<Value>(candidate) else {
+            continue;
+        };
+        let Some(items) = array.as_array().filter(|items| !items.is_empty()) else {
+            continue;
+        };
+        let Some(calls) = calls_from_leak_array(items, allowed_names) else {
+            continue;
+        };
+        let tail = body[position + 1..].trim();
+        if !(tail.is_empty() || tail.starts_with('<') || tail.starts_with("```")) {
             return (None, text.to_string());
         }
+        return (Some(calls), String::new());
     }
-    (Some(calls), String::new())
+    (None, text.to_string())
+}
+
+/// 正文相对「泄漏回声」的位置（[`parse_leaked_tool_calls`] 与流式守卫共用同一套前缀规则）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LeakState {
+    /// 还处在围栏 / 标记前缀区（可能只写了一半）—— 仍可能是回声。
+    Prefix,
+    /// 已越过标记，携带其后的正文（可能带 ``` 收尾围栏）。
+    Body(String),
+    /// 显然不是回声。
+    NotLeak,
+}
+
+/// 把「标记之前的围栏前缀 / 标记之后的正文」解析出来。
+///
+/// 为什么单独抽一个：流式守卫要判断「这段缓冲**还可能**是回声吗」（Prefix 就得继续等），
+/// 而整段判定只关心 Body。两处若各写一套前缀规则，必然分裂成两种结论。
+pub fn leak_body_offset(text: &str) -> LeakState {
+    let t = text.trim_start();
+    if t.is_empty() || LEAK_MARKER.starts_with(t) {
+        return LeakState::Prefix;
+    }
+    if let Some(body) = t.strip_prefix(LEAK_MARKER) {
+        return LeakState::Body(body.to_string());
+    }
+    if !t.starts_with('`') {
+        return LeakState::NotLeak;
+    }
+    if t.len() < 3 {
+        return if "```".starts_with(t) {
+            LeakState::Prefix
+        } else {
+            LeakState::NotLeak
+        };
+    }
+    let Some(rest) = t.strip_prefix("```") else {
+        return LeakState::NotLeak;
+    };
+    let after_fence = rest.trim_start();
+    let low = after_fence.to_ascii_lowercase();
+    let after = if low.starts_with("json") {
+        after_fence[4..].trim_start()
+    } else if LEAK_MARKER.starts_with(&low) || low.starts_with(LEAK_MARKER) {
+        // 无语言标记的 ``` 围栏
+        after_fence
+    } else if "json".starts_with(&low) {
+        // 语言标记还没打完（j / js / json）
+        return LeakState::Prefix;
+    } else {
+        return LeakState::NotLeak;
+    };
+    if LEAK_MARKER.starts_with(after) {
+        return LeakState::Prefix;
+    }
+    if let Some(body) = after.strip_prefix(LEAK_MARKER) {
+        return LeakState::Body(body.to_string());
+    }
+    LeakState::NotLeak
+}
+
+/// 回声**被截断**（JSON 不完整 / 非法）时是否该整段吞掉。
+///
+/// 三个条件同时成立才吞（缺一不可）：
+/// 1. trim 后以 [`LEAK_MARKER`] 开头（正常散文几乎不会这样开头）；
+/// 2. 本次请求**声明了 tools**（与还原路径同一前置条件）；
+/// 3. 标记之后（剥掉围栏）仍是 JSON 数组字面量的**前缀** —— 即「本该是数组，只是没写完」。
+///
+/// 完整且合法的数组**不吞**：那种情况还原失败另有原因（工具名未声明 / arguments 非法），
+/// 保持既有 fail-open 语义。只有「数组本身没写完 / 非法」才吞。
+///
+/// ★ 这是 issue #66 的直接对策：模型把历史工具调用复述到正文、又被上游截断后，
+///   既还原不成结构化调用，也不能把网关内部协议文本（标记 + 半截 JSON）交给终端用户。
+pub fn leaked_partial_droppable(text: &str, allowed_names: Option<&HashSet<String>>) -> bool {
+    if text.trim().is_empty() || allowed_names.map(HashSet::is_empty).unwrap_or(true) {
+        return false;
+    }
+    let t = text.trim();
+    if t == LEAK_MARKER {
+        // 只有标记、连数组都没开始写：判据 3 的退化情形，同样是回声。
+        return true;
+    }
+    let LeakState::Body(body) = leak_body_offset(t) else {
+        return false;
+    };
+    let mut rest = body.trim();
+    if let Some(stripped) = rest.strip_suffix("```") {
+        rest = stripped.trim();
+    }
+    // 标记之后不是 JSON 数组 ⇒ 是散文（可能是正常讨论），不吞。
+    if !rest.starts_with('[') {
+        return false;
+    }
+    // 完整且合法的数组不吞：那种情况还原失败另有原因（工具名未声明 / arguments
+    // 非法），保持既有 fail-open 语义；只有「数组没写完 / 损坏」才吞。
+    serde_json::from_str::<Value>(rest).is_err()
+}
+
+/// 拆出「[工具结果<name>]」开标记行之后的部分；不是合法开标记 ⇒ `None`。
+fn tool_echo_body(text: &str) -> Option<&str> {
+    let t = text.trim();
+    let rest = t.strip_prefix(TOOL_RESULT_MARKER)?;
+    let close = rest.find(']')?;
+    if rest[..close].contains('\n') {
+        return None; // 标记行未闭合 / 换行后才有 `]`：非本网关形态
+    }
+    Some(&rest[close + 1..])
+}
+
+/// 正文是「[工具结果…]」回声块时是否该整段吞掉（与 [`leaked_partial_droppable`] 同形态）。
+///
+/// 同机纪律：只有**声明了 tools** 才吞（与回声回读同一前置，避免误杀正常讨论）；
+/// 形态自洽即可 —— 出现模型自造的闭标记，或标记之后（忽略空白）以 JSON / 标签起始
+/// 字符开头（含被截断、永不闭合的块）。
+///
+/// 不还原成 tool 消息：还原需要把回声与历史上的 `tool_call_id` 配对，而文本化历史
+/// 并未保留 call_id ⇒ 本轮只做「不把内部协议文本交给终端用户」。
+pub fn tool_echo_droppable(text: &str, allowed_names: Option<&HashSet<String>>) -> bool {
+    if allowed_names.map(HashSet::is_empty).unwrap_or(true) {
+        return false;
+    }
+    let Some(body) = tool_echo_body(text) else {
+        return false;
+    };
+    if body.contains(TOOL_RESULT_CLOSE) {
+        return true;
+    }
+    let rest = body.trim_start();
+    match rest.chars().next() {
+        None => true, // 只有开标记：退化为「纯标记」
+        Some(first) => matches!(first, '{' | '[' | '"' | '<'),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// DSML 工具调用回退解析
+// ---------------------------------------------------------------------------
+
+/// DSML 标签里唯一可辨的「名字」部分（`<｜｜DSML｜｜ calls>` / `invoke` / `parameter`）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DsmlTag {
+    Calls { closing: bool },
+    Invoke { closing: bool },
+    Parameter { closing: bool },
+    Other,
+}
+
+/// 解析一个 `<…>` 标签：`(标签内文, 种类, name 属性)`。
+fn classify_tag(inner: &str) -> (DsmlTag, Option<String>) {
+    let trimmed = inner.trim();
+    let closing = trimmed.starts_with('/');
+    let body = trimmed.trim_start_matches('/').trim();
+    let mut kind = DsmlTag::Other;
+    for token in body.split_whitespace() {
+        let word = token.trim_end_matches('>').to_ascii_lowercase();
+        match word.as_str() {
+            "calls" => {
+                kind = DsmlTag::Calls { closing };
+                break;
+            }
+            "invoke" => {
+                kind = DsmlTag::Invoke { closing };
+                break;
+            }
+            "parameter" => {
+                kind = DsmlTag::Parameter { closing };
+                break;
+            }
+            _ => {}
+        }
+    }
+    // `name="x"` / `name='x'`：只认引号包裹（无引号的值不是官方形态，不猜）。
+    let name = body.find("name=").and_then(|at| {
+        let rest = &body[at + "name=".len()..];
+        let mut chars = rest.chars();
+        let quote = chars.next()?;
+        if quote != '"' && quote != '\'' {
+            return None;
+        }
+        let rest = chars.as_str();
+        let end = rest.find(quote)?;
+        Some(rest[..end].to_string())
+    });
+    (kind, name)
+}
+
+/// 找下一个标签：`(起始字节, 结束字节, 标签内文)`。`<` 到 `>` 之间即内文。
+fn next_tag(text: &str, from: usize) -> Option<(usize, usize, &str)> {
+    let start = from + text[from..].find('<')?;
+    let end = start + text[start..].find('>')? + 1;
+    Some((start, end, &text[start + 1..end - 1]))
+}
+
+/// 解析一段 DSML 调用块内的 `invoke` 列表。
+fn parse_dsml_invokes(block: &str) -> Vec<(String, Vec<(String, String)>)> {
+    let mut out = Vec::new();
+    let mut cursor = 0;
+    while let Some((_start, end, inner)) = next_tag(block, cursor) {
+        cursor = end;
+        let (kind, name) = classify_tag(inner);
+        let DsmlTag::Invoke { closing: false } = kind else {
+            continue;
+        };
+        let Some(name) = name else { continue };
+        // 收集本 invoke 内的参数，直到遇到 `</…invoke>`。
+        let mut params: Vec<(String, String)> = Vec::new();
+        let mut inner_cursor = end;
+        while let Some((_p_start, p_end, p_inner)) = next_tag(block, inner_cursor) {
+            inner_cursor = p_end;
+            let (p_kind, p_name) = classify_tag(p_inner);
+            match p_kind {
+                DsmlTag::Invoke { closing: true } => break,
+                DsmlTag::Parameter { closing: false } => {
+                    let Some(p_name) = p_name else {
+                        continue;
+                    };
+                    // 参数值 = 本开标签之后 到 下一个标签（即 `</…parameter>`）之前。
+                    let value_end = match next_tag(block, p_end) {
+                        Some((next_start, next_end, next_inner)) => {
+                            let (next_kind, _) = classify_tag(next_inner);
+                            if next_kind == (DsmlTag::Parameter { closing: true }) {
+                                inner_cursor = next_end;
+                                next_start
+                            } else {
+                                // 没有闭标签：把剩余全部当值（截断形态，值仍可用）。
+                                block.len()
+                            }
+                        }
+                        None => block.len(),
+                    };
+                    params.push((p_name, block[p_end..value_end].trim().to_string()));
+                    if value_end == block.len() {
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        out.push((name, params));
+        cursor = inner_cursor;
+    }
+    out
+}
+
+/// 把模型写出的 **DSML 工具调用块**还原成结构化 `tool_calls`。
+///
+/// 为什么需要：客户端（CodeBuddy / WorkBuddy 等）在自己的 system 里教模型用
+/// `<｜｜DSML｜｜ calls>` 语法发起工具调用；Qoder 上游的文本模式下模型会**照学**，
+/// 把调用写成 DSML 标签塞进正文。网关若不还原，客户端收到的是一坨标签文本 ——
+/// 工具不会执行，任务在本该调工具的位置断掉（issue #66 的「一个任务能断好多次」）。
+///
+/// 判据：必须找到**成对**的 `calls` 标签块且块内至少一个 `invoke name=…`；
+/// 名字为空 ⇒ 不认（宁可透传也不造出一个空名字的调用）。
+/// `allowed_names` **刻意不参与**过滤：模型有时会调用客户端没声明但确实存在的工具名，
+/// 与参考实现一致——还原失败才回退透传。
+///
+/// 返回 `(tool_calls, clean_text)`；成功时 `clean_text` 是**剥掉调用块**后的正文。
+pub fn parse_dsml_tool_calls(text: &str) -> (Option<Vec<Value>>, String) {
+    if text.is_empty() || !text.contains("DSML") {
+        return (None, text.to_string());
+    }
+    // 找第一个 calls 开标签，再找其后第一个 calls 闭标签。
+    let mut cursor = 0;
+    let mut block: Option<(usize, usize, usize)> = None; // (开标签起点, 闭标签终点, 内容起点)
+    while let Some((start, end, inner)) = next_tag(text, cursor) {
+        cursor = end;
+        let (kind, _) = classify_tag(inner);
+        match kind {
+            DsmlTag::Calls { closing: false } => {
+                let mut inner_cursor = end;
+                while let Some((_c_start, c_end, c_inner)) = next_tag(text, inner_cursor) {
+                    inner_cursor = c_end;
+                    if classify_tag(c_inner).0 == (DsmlTag::Calls { closing: true }) {
+                        block = Some((start, c_end, end));
+                        cursor = c_end;
+                        break;
+                    }
+                }
+                if block.is_some() {
+                    break;
+                }
+            }
+            _ => {}
+        }
+    }
+    let Some((start, end, content_start)) = block else {
+        return (None, text.to_string());
+    };
+    let invokes = parse_dsml_invokes(&text[content_start..end]);
+    if invokes.is_empty() {
+        return (None, text.to_string());
+    }
+    let mut calls = Vec::new();
+    for (name, params) in invokes {
+        let mut arguments = Map::new();
+        for (key, value) in params {
+            arguments.insert(key, Value::String(value));
+        }
+        let arguments =
+            serde_json::to_string(&Value::Object(arguments)).unwrap_or_else(|_| "{}".into());
+        calls.push(serde_json::json!({
+            "id": format!("call_{}", Uuid::new_v4().simple()),
+            "type": "function",
+            "function": { "name": name.trim(), "arguments": arguments },
+        }));
+    }
+    let head = text[..start].trim();
+    let tail = text[end..].trim();
+    let clean = match (head.is_empty(), tail.is_empty()) {
+        (true, true) => String::new(),
+        (true, false) => tail.to_string(),
+        (false, true) => head.to_string(),
+        (false, false) => format!("{head} {tail}"),
+    };
+    (Some(calls), clean)
 }
 
 // ---------------------------------------------------------------------------
@@ -2012,6 +2392,100 @@ mod tests {
         assert!(parse_leaked_tool_calls(&prose, None).0.is_none());
         // 普通正文 ⇒ 不还原。
         assert!(parse_leaked_tool_calls("普通回答", None).0.is_none());
+    }
+
+    /// issue #66：截断的回声既还原不了，也**绝不能**透传给终端用户。
+    #[test]
+    fn truncated_leak_echo_is_droppable_but_valid_prose_is_not() {
+        let allowed: HashSet<String> = ["pwsh".to_string()].into_iter().collect();
+        // 半截 JSON（上游截断 / 客户端提前收尾）⇒ 吞。
+        let truncated = format!("{LEAK_MARKER}\n[{{\"name\":\"pwsh\",\"arguments\":\"{{\\\"comm");
+        assert!(leaked_partial_droppable(&truncated, Some(&allowed)));
+        assert!(parse_leaked_tool_calls(&truncated, Some(&allowed))
+            .0
+            .is_none());
+        // 只有标记 ⇒ 也是回声。
+        assert!(leaked_partial_droppable(LEAK_MARKER, Some(&allowed)));
+        // 围栏紧跟着被截断的数组 ⇒ 仍吞。
+        let fenced = format!("```json\n{LEAK_MARKER}\n[{{\"name\":\"pwsh\"");
+        assert!(leaked_partial_droppable(&fenced, Some(&allowed)));
+
+        // 完整且合法的数组**不吞**（还原失败另有原因，保持既有的 fail-open 透传语义）。
+        let valid = format!("{LEAK_MARKER}\n[{{\"name\":\"other\",\"arguments\":\"{{}}\"}}]");
+        assert!(!leaked_partial_droppable(&valid, Some(&allowed)));
+        // 散文（标记后面不是数组）⇒ 不吞。
+        assert!(!leaked_partial_droppable(
+            &format!("{LEAK_MARKER}\n下面说说为什么"),
+            Some(&allowed)
+        ));
+        // 未声明 tools ⇒ 不吞（与回读同一前置：避免误杀「讨论该标记」的回复）。
+        assert!(!leaked_partial_droppable(&truncated, None));
+    }
+
+    /// issue #66：`[工具结果…]` 回声块同样不能交给用户。
+    #[test]
+    fn tool_result_echo_is_droppable_only_with_declared_tools() {
+        let allowed: HashSet<String> = ["pwsh".to_string()].into_iter().collect();
+        let block = format!("{TOOL_RESULT_MARKER} (pwsh)]\n{{\"ok\":true}}");
+        assert!(tool_echo_droppable(&block, Some(&allowed)));
+        // 自造闭标记 + 散文尾巴 ⇒ 仍吞。
+        let closed = format!("{TOOL_RESULT_MARKER} (pwsh)]\n{TOOL_RESULT_CLOSE}\n结果如上");
+        assert!(tool_echo_droppable(&closed, Some(&allowed)));
+        // 标记后跟自然语言散文 ⇒ 不吞（可能是正常讨论）。
+        assert!(!tool_echo_droppable(
+            &format!("{TOOL_RESULT_MARKER} 这段是说明文字"),
+            Some(&allowed)
+        ));
+        // 未声明 tools ⇒ 不吞。
+        assert!(!tool_echo_droppable(&block, None));
+    }
+
+    /// issue #66：模型把调用写成 DSML 标签（客户端 system 教的语法）时必须还原。
+    #[test]
+    fn dsml_tool_calls_are_recovered_from_text() {
+        let text = "先探一下端口。\n<｜｜DSML｜｜ calls>\n<｜｜DSML｜｜ invoke name=\"pwsh\">\n\
+                    <｜｜DSML｜｜ parameter name=\"command\">Get-Process</｜｜DSML｜｜ parameter>\n\
+                    <｜｜DSML｜｜ parameter name=\"description\">查看进程</｜｜DSML｜｜ parameter>\n\
+                    </｜｜DSML｜｜ invoke>\n</｜｜DSML｜｜ calls>";
+        let (calls, clean) = parse_dsml_tool_calls(text);
+        let calls = calls.expect("完整 DSML 块必须还原");
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0]["function"]["name"], "pwsh");
+        let arguments: Value =
+            serde_json::from_str(calls[0]["function"]["arguments"].as_str().unwrap()).unwrap();
+        assert_eq!(arguments["command"], "Get-Process");
+        assert_eq!(arguments["description"], "查看进程");
+        assert_eq!(clean, "先探一下端口。", "调用块必须从正文里剥掉");
+
+        // 并行调用。
+        let two = "<｜｜DSML｜｜ calls>\
+                   <｜｜DSML｜｜ invoke name=\"a\"><｜｜DSML｜｜ parameter name=\"x\">1</｜｜DSML｜｜ parameter></｜｜DSML｜｜ invoke>\
+                   <｜｜DSML｜｜ invoke name=\"b\"><｜｜DSML｜｜ parameter name=\"y\">2</｜｜DSML｜｜ parameter></｜｜DSML｜｜ invoke>\
+                   </｜｜DSML｜｜ calls>";
+        let (calls, clean) = parse_dsml_tool_calls(two);
+        let calls = calls.expect("并行调用必须还原");
+        assert_eq!(calls.len(), 2);
+        assert_eq!(calls[1]["function"]["name"], "b");
+        assert_eq!(clean, "");
+
+        // 没有成对 calls 标签 / 没有 invoke / 没有名字 ⇒ 不认。
+        assert!(parse_dsml_tool_calls("<｜｜DSML｜｜ calls> 半截")
+            .0
+            .is_none());
+        assert!(
+            parse_dsml_tool_calls("<｜｜DSML｜｜ calls></｜｜DSML｜｜ calls>")
+                .0
+                .is_none()
+        );
+        assert!(parse_dsml_tool_calls(
+            "<｜｜DSML｜｜ calls><｜｜DSML｜｜ invoke></｜｜DSML｜｜ invoke></｜｜DSML｜｜ calls>"
+        )
+        .0
+        .is_none());
+        // 普通 HTML 标签不误判。
+        assert!(parse_dsml_tool_calls("<div class=\"x\">hi</div>")
+            .0
+            .is_none());
     }
 
     #[test]
