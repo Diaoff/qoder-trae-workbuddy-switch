@@ -12,6 +12,7 @@ import { en as traeGateway } from "./domains/traeGateway.en";
 import { en as traePages } from "./domains/traePages.en";
 import { en as qoderPages } from "./domains/qoderPages.en";
 import { en as loomyGateway } from "./domains/loomyGateway.en";
+import { en as loomyPages } from "./domains/loomyPages.en";
 import { en as qoderGateway } from "./domains/qoderGateway.en";
 import { en as traeStats } from "./domains/traeStats.en";
 import { en as wbAccounts } from "./domains/wbAccounts.en";
@@ -51,6 +52,7 @@ export const en: Partial<Record<TranslationKey, string>> = {
   ...qoderPages,
   ...qoderGateway,
   ...loomyGateway,
+  ...loomyPages,
   ...traeStats,
   ...traeComponents,
   ...traeGateway,
