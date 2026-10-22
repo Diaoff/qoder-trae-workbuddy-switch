@@ -36,6 +36,10 @@ use super::{payload, sse, QoderGatewayState};
 #[derive(Debug, Clone, Copy)]
 pub struct QoderKeyRegion(pub QoderRegion);
 
+/// ★ issue #76：本次请求的**整条 Key**（策略 + id）—— 配额判定 / 账号白名单 / 记账。
+#[derive(Clone)]
+pub struct QoderKeyContext(pub std::sync::Arc<crate::qoder::apikey::QoderApiKeyRecord>);
+
 fn now_ms() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -146,6 +150,10 @@ pub async fn bearer_auth(
             request
                 .extensions_mut()
                 .insert(QoderKeyRegion(record.region));
+            // ★ issue #76：整条 Key 也塞进扩展（配额 / 白名单 / 记账要用）。
+            request
+                .extensions_mut()
+                .insert(QoderKeyContext(std::sync::Arc::new(record.clone())));
             next.run(request).await
         }
         None => protocol_error(
@@ -213,18 +221,25 @@ pub async fn models(
 pub async fn chat_completions(
     State(state): State<QoderGatewayState>,
     Extension(key): Extension<QoderKeyRegion>,
+    // ★ issue #76：整条 Key（配额 / 白名单 / 记账）。
+    key_ctx: Option<Extension<QoderKeyContext>>,
     body: Bytes,
 ) -> Response {
-    chat_for_region(state, key.0, body, Protocol::OpenAi).await
+    // 变量名避开 `key`（那是 region 扩展）—— 两者是不同东西。
+    let key_record = key_ctx.map(|Extension(ctx)| ctx.0);
+    chat_for_region(state, key.0, body, Protocol::OpenAi, key_record).await
 }
 
 /// `POST /v1/messages`。
 pub async fn messages(
     State(state): State<QoderGatewayState>,
     Extension(key): Extension<QoderKeyRegion>,
+    // ★ issue #76：整条 Key（配额 / 白名单 / 记账）。
+    key_ctx: Option<Extension<QoderKeyContext>>,
     body: Bytes,
 ) -> Response {
-    chat_for_region(state, key.0, body, Protocol::Anthropic).await
+    let key_record = key_ctx.map(|Extension(ctx)| ctx.0);
+    chat_for_region(state, key.0, body, Protocol::Anthropic, key_record).await
 }
 
 /// `POST /v1/responses`（OpenAI Responses API）。
@@ -235,9 +250,40 @@ pub async fn messages(
 pub async fn responses(
     State(state): State<QoderGatewayState>,
     Extension(key): Extension<QoderKeyRegion>,
+    key_ctx: Option<Extension<QoderKeyContext>>,
     body: Bytes,
 ) -> Response {
-    chat_for_region(state, key.0, body, Protocol::Responses).await
+    let key_record = key_ctx.map(|Extension(ctx)| ctx.0);
+    chat_for_region(state, key.0, body, Protocol::Responses, key_record).await
+}
+
+/// 把 Key 策略的账号范围展开成 uid 集合（`None` = 全部账号，不过滤）。
+///
+/// ★ 与 WB / Trae 侧同构；Qoder 的分组是**自由文本** `group`（与 WB 同款，
+/// 不是 Trae 那种独立 membership 文件）。账号库按 region 分家。
+fn allowed_uids_for(
+    policy: &crate::apikey::KeyPolicy,
+    region: QoderRegion,
+) -> Option<HashSet<String>> {
+    use crate::apikey::ScopeMode;
+    if policy.scope_mode != ScopeMode::Selected {
+        return None;
+    }
+    let mut allowed: HashSet<String> = policy.scope_accounts.iter().cloned().collect();
+    if !policy.scope_groups.is_empty() {
+        let file = buddy_switch_core::modules::qoder::account::load_accounts_for(region);
+        for account in file.accounts.iter() {
+            let group = account.group.clone().unwrap_or_default();
+            if group.is_empty() {
+                continue;
+            }
+            if policy.scope_groups.iter().any(|wanted| wanted == &group) {
+                // `RawAccount.uid` 是 `String`（非 Option）—— 与 Trae 的 `userId` 不同。
+                allowed.insert(account.uid.clone());
+            }
+        }
+    }
+    Some(allowed)
 }
 
 /// 一趟 Qoder chat 中继（**认证之后的全部逻辑**）—— 产品线入口与统一网关**共用这一份**。
@@ -246,8 +292,46 @@ pub async fn chat_for_region(
     region: QoderRegion,
     body: Bytes,
     protocol: Protocol,
+    // ★ issue #76：调用方的 Key（`None` = 无 Key 的调用 ⇒ 不判配额、不过白名单、不记账）。
+    key: Option<std::sync::Arc<crate::qoder::apikey::QoderApiKeyRecord>>,
 ) -> Response {
     let started = Instant::now();
+    // ★ issue #76：配额判定（选号前）—— 超限直接 429，一步都不发。
+    //   与 WB / Trae 同位置、同文案（复用 `GatewayError::KeyQuotaExceeded`）。
+    if let Some(record) = key.as_deref() {
+        let now = buddy_switch_core::modules::config::now_ms();
+        let used = state.key_usage.used_for(
+            &record.id,
+            record.quota_unit,
+            record.quota_period,
+            now,
+        );
+        // 请求数在**进入网关后**记（与 WB / Trae 同口径）。
+        state
+            .key_usage
+            .record_request(&record.id, record.quota_period, now);
+        if let crate::apikey::QuotaVerdict::Exceeded {
+            used,
+            limit,
+            unit,
+            period,
+        } = crate::apikey::quota_verdict_for_policy(&record.policy(), used)
+        {
+            let message = crate::error::GatewayError::KeyQuotaExceeded {
+                used,
+                limit,
+                unit,
+                period,
+            }
+            .message();
+            return protocol_error(
+                protocol,
+                StatusCode::TOO_MANY_REQUESTS,
+                "key_quota_exceeded",
+                &message,
+            );
+        }
+    }
     let parsed: Value = match serde_json::from_slice(&body) {
         Ok(value) => value,
         Err(error) => {
@@ -360,11 +444,15 @@ pub async fn chat_for_region(
         // 池随账号库同步（导入 / 刷新后即时生效），然后选号。
         // 选号连同**展示名**一起取：失败原因要给用户看名字，不是一串 uid
         //（护栏 / 在途 / 上游错误的文案统一用名字，混用会让同一条报错里出现两种身份）。
+        // 白名单：每次选号前按当前策略展开（分组展开只在 `scope_groups` 非空时读文件）。
+        let allowed = key
+            .as_deref()
+            .and_then(|record| allowed_uids_for(&record.policy(), region));
         let picked = {
             let mut pools = state.pools.lock().await;
             let pool = pools.entry(region).or_default();
             pool.sync_for(region);
-            pool.pick(&model, &tried, preferred.as_deref()).map(|uid| {
+            pool.pick(&model, &tried, preferred.as_deref(), allowed.as_ref()).map(|uid| {
                 let name = pool
                     .entries()
                     .find(|entry| entry.uid == uid)
@@ -490,6 +578,7 @@ pub async fn chat_for_region(
                         allowed_tools,
                         responses_custom.clone(),
                         inflight,
+                        key.clone(),
                     )
                     .await
                 } else {
@@ -505,6 +594,7 @@ pub async fn chat_for_region(
                         allowed_tools,
                         responses_custom.clone(),
                         inflight,
+                        key.clone(),
                     )
                     .await
                 };
@@ -736,6 +826,8 @@ async fn stream_relay(
     responses_custom: std::sync::Arc<HashSet<String>>,
     // 在途名额：随流结束 / 客户端断开由 Drop 归还（见 `pool::InflightGuard`）。
     inflight: super::pool::InflightGuard,
+    // ★ issue #76：本密钥（流结束时按 token 记账）。
+    key: Option<std::sync::Arc<crate::qoder::apikey::QoderApiKeyRecord>>,
 ) -> Response {
     let upstream = response.bytes_stream();
     let stream_model = model.to_string();
@@ -745,6 +837,8 @@ async fn stream_relay(
     let state_for_task = state.clone();
     let uid = uid.to_string();
     let model_for_task = model.to_string();
+    // ★ issue #76：Key 要进 `tokio::spawn`（'static）⇒ clone 一份 Arc。
+    let key_for_task = key.clone();
 
     // 转换链：信封解包 → **泄漏回声守卫** → **DSML 调用块守卫** → `UsageTapStream`
     //        （旁路取 usage / 错误）→（Anthropic 入口再包一层）。
@@ -819,6 +913,19 @@ async fn stream_relay(
         //   （`sse::process_line` 对排队信号发 `code:429`），账本用它 ⇒ 日志与客户端
         //   永远一致。账本若写 502，日志就会把「上游在排队、稍后重试」说成
         //   「网关挂了」—— 2026-10-22 实测踩到（用户看到 502 以为服务坏了）。
+        // ★ issue #76：按密钥记 token（**流结束**才记 —— 提前记就是假账）。
+        //   拿不到用量（0）就不记：写 0 样本会把「本周期已用」压低，让配额晚触发。
+        if let Some(record) = key_for_task.as_ref() {
+            let total = prompt_tokens + completion_tokens;
+            if total > 0 {
+                state_for_task.key_usage.record_tokens(
+                    &record.id,
+                    total,
+                    record.quota_period,
+                    buddy_switch_core::modules::config::now_ms(),
+                );
+            }
+        }
         let upstream_error = error_slot.lock().ok().and_then(|guard| guard.clone());
         let (status, error) = match &upstream_error {
             Some(detail) => (
@@ -862,6 +969,8 @@ async fn aggregate_relay(
     responses_custom: std::sync::Arc<HashSet<String>>,
     // 非流式：函数结束即释放（含所有早退分支）。
     _inflight: super::pool::InflightGuard,
+    // ★ issue #76：本密钥（聚合完成后按 token 记账）。
+    key: Option<std::sync::Arc<crate::qoder::apikey::QoderApiKeyRecord>>,
 ) -> Response {
     let aggregated = sse::aggregate(response.bytes_stream(), allowed_tools.as_ref()).await;
     let usage = aggregated.usage.clone();
@@ -889,6 +998,18 @@ async fn aggregate_relay(
         ),
         None => (200u16, None),
     };
+    // ★ issue #76：非流式同样按密钥记 token（拿不到用量就不记）。
+    if let Some(record) = key.as_ref() {
+        let total = prompt_tokens + completion_tokens;
+        if total > 0 {
+            state.key_usage.record_tokens(
+                &record.id,
+                total,
+                record.quota_period,
+                buddy_switch_core::modules::config::now_ms(),
+            );
+        }
+    }
     state
         .record_request(
             "chat",

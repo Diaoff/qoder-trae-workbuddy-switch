@@ -277,6 +277,8 @@ async fn relay_llm(
                         region,
                         rewritten,
                         crate::qoder::routes::Protocol::OpenAi,
+                        // 统一网关的 Key 是另一套台账 ⇒ 本轮不过配额。
+                        None,
                     )
                     .await
                 }
@@ -286,6 +288,7 @@ async fn relay_llm(
                         region,
                         rewritten,
                         crate::qoder::routes::Protocol::Anthropic,
+                        None,
                     )
                     .await
                 }
@@ -297,6 +300,7 @@ async fn relay_llm(
                         region,
                         rewritten,
                         crate::qoder::routes::Protocol::Responses,
+                        None,
                     )
                     .await
                 }

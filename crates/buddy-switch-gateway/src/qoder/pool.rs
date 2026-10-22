@@ -493,6 +493,8 @@ impl QoderPool {
         model: &str,
         tried: &HashSet<String>,
         preferred_uid: Option<&str>,
+        // ★ issue #76：本密钥的允许名单（`None` = 全部账号）。
+        allowed: Option<&HashSet<String>>,
     ) -> Option<String> {
         let now = now_ms();
         let policy = qoder_pick_policy();
@@ -506,9 +508,7 @@ impl QoderPool {
             model,
             tried,
             excluded: &excluded,
-            // ★ issue #76：本产品线的 Key 白名单尚未接线 ⇒ `None`（全部账号，保持现状）。
-            //   WB 侧已在 `relay::select_account` 接通；这两侧同构接入见实施拆解步 6。
-            allowed: None,
+            allowed,
             mode,
             seed,
         };
@@ -853,14 +853,14 @@ mod tests {
         pool.entries.insert("b".into(), entry("b", "t-b"));
         let tried = HashSet::new();
         // 偏好命中。
-        assert_eq!(pool.pick("m", &tried, Some("b")), Some("b".to_string()));
+        assert_eq!(pool.pick("m", &tried, Some("b"), None), Some("b".to_string()));
         // 偏好被 tried 排除 ⇒ 回落自动择优。
         let mut tried = HashSet::new();
         tried.insert("b".to_string());
-        assert_eq!(pool.pick("m", &tried, Some("b")), Some("a".to_string()));
+        assert_eq!(pool.pick("m", &tried, Some("b"), None), Some("a".to_string()));
         // 全被排除 ⇒ None。
         tried.insert("a".to_string());
-        assert_eq!(pool.pick("m", &tried, None), None);
+        assert_eq!(pool.pick("m", &tried, None, None), None);
     }
 
     #[test]
