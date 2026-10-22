@@ -1124,7 +1124,13 @@ export function UnifiedGatewayView({
           )}
         </div>
         {/* ★ issue #76：权限抽屉（改用量配额 + 可访问账号的唯一入口）。
-            ⚠️ 命名空间授权**不在这里**（它是另一个维度，见台账注释）。 */}
+            ⚠️ 命名空间授权**不在这里**（它是另一个维度，见台账注释）。
+            ⚠️ 统一网关**只执行「请求数」口径**：它不读上游 usage（请求交给三条产品线的
+               中继，那边按各自的 Key 记账）。token 口径配了也不会生效 ⇒ 下方显式提示，
+               不给用户「配了就生效」的错误安全感。 */}
+        <p className="mb-2 text-[11.5px] leading-5 text-warning">
+          {t("wbStats.keyPerm.unifiedRequestOnly")}
+        </p>
         <KeyPermissionDrawer
           open={permTarget !== null}
           onOpenChange={(open) => {

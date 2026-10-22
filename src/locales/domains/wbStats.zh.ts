@@ -244,6 +244,7 @@ export const zh = {
   "wbStats.usage.view.trend": "趋势",
   "wbStats.usage.view.models": "模型",
   "wbStats.usage.view.sessions": "会话",
+  "wbStats.keyPerm.unifiedRequestOnly": "统一网关只按「请求数」执行配额：它不读上游用量（请求由三条产品线各自的中继记账）。选「token」口径不会生效，请改用「请求数」。",
   "wbStats.usage.view.keys": "密钥",
   "wbStats.usage.keys.title": "按密钥看用量",
   "wbStats.usage.keys.caption": "每条是一次网关请求：token 数 / 请求次数 / 占比。\n数据来自网关请求日志的 keyId —— 升级前的历史条目没有这个字段，单列在最后一行。",
