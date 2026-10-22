@@ -293,7 +293,7 @@ pub scope_groups: Vec<String>,    // 允许访问的**分组** id（与 scope_ac
 |:--|:--|:--|
 | 1 密钥记录扩字段 | ✅ | `apikey.rs`：四枚举 + 7 字段（全 `serde(default)`）+ `update_policy` + `normalized` |
 | 2 日志带 key id | ✅ | `RequestMeta.key_id` + 日志 `keyId` 键（三条 LLM 路由 12 个构造点）；前端类型区分 `null`（无 Key）与 `undefined`（老条目） |
-| 2' 用量页「按密钥」维度 | ✅ **WB + Trae** | `KeysView`（数据源注入，`key-ranking.tsx`）+ 两个页面的 tab。Qoder 的用量页是另一套组件（按 credits 计），keys 视图另排；统一网关日志无 keyId |
+| 2' 用量页「按密钥」维度 | ✅ **WB + Trae + Qoder** | `KeysView`（数据源注入，`key-ranking.tsx`）+ 三个页面的 tab。统一网关日志无 keyId ⇒ 它没有这个 tab（中继已接，但日志是它自己的转发日志，不含产品线的 keyId） |
 | 3 用量计数 | ✅ | `key_usage.rs`（**两口径各自一份计数**，见下方 ★） |
 | 4 配额 429 + 白名单 | ✅ | `relay.rs`（选号前判）+ `pool/pick.rs` 的 `allowed` 通道 |
 | 5 管理面命令 | ✅ | `set_key_policy` + `key_usage`（server / tauri / invoke 全同步） |
@@ -310,15 +310,20 @@ pub scope_groups: Vec<String>,    // 允许访问的**分组** id（与 scope_ac
    | WorkBuddy | ✅ | ✅ | ✅ | ✅ 请求数 + token |
    | Trae | ✅ | ✅ | ✅ | ✅ 请求数 + token |
    | Qoder | ✅ | ✅ | ✅ | ✅ 请求数 + token（`07d745c`） |
-   | 统一网关 | ✅ | ✅ | ✅ | ⚠️ **仅请求数口径**（token 与白名单语义上不成立，见下） |
+   | 统一网关 | ✅ | ✅ | ✅ | ✅ 请求数 + token + 白名单（`e0e9e3b` 的 `KeyActor`） |
 
-   **统一网关的两条能力边界（语义上不成立，不是没做完）**：
-   - `token` 口径：它不读上游 usage（请求交给三条产品线的中继，那边按各自的 Key 记账）
-     ⇒ 按 token 判会 `used` 恒 0、永不超限 = 假开关。代码里只在 `Request` 口径判定，
-     抽屉里显式提示。
-   - 账号白名单：`scope_accounts` 的 uid 空间属于**目标产品线**，而统一网关的 Key
-     靠 `namespaces` 授权、不绑定产品线。硬套会给出错误的安全感。
-   要支持得给它的 Key 加「按命名空间分段的账号范围」——另一个设计，不在 #76 范围内。
+   **统一网关的双口径是怎么成立的（`KeyActor`，`e0e9e3b`）**：
+   早先它只能做请求数，根因**不是语义**而是**参数类型**——中继层收的是各产品线的
+   Key 记录（`ApiKeyRecord` / `TraeApiKeyRecord` / `QoderApiKeyRecord`），
+   第四套台账的 Key 塞不进去。抽出
+
+   ```rust
+   pub struct KeyActor { key_id: String, policy: KeyPolicy, usage: Arc<KeyUsageStore> }
+   ```
+
+   之后，中继只认这三样；统一网关用**自己的** Key 构造它（`usage` 指向自己的账本）
+   传下去 ⇒ 配额（双口径）、白名单（按**目标产品线**账号库展开）、token 记账
+   **全部真生效**，且用量记在自己的账本上。
 
    Trae 侧逐项：
    - 台账 7 字段 + `masked` 七件套 + `update_policy`（复用 `KeyPolicy::normalized`）✅
