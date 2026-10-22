@@ -38,6 +38,11 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use buddy_switch_core::modules::config as core_config;
+
+/* ★ issue #76：策略类型**直接复用** WorkBuddy 侧那一套（`crate::apikey`）。
+   两条产品线的 Key 策略语义完全相同（配额单位/周期、账号白名单），各定义一份
+   必然漂移 —— 前端也只有一套 `KeyPolicy` 类型。 */
+use crate::apikey::{KeyPolicy, QuotaMode, QuotaPeriod, QuotaUnit, ScopeMode};
 use buddy_switch_core::modules::trae::{settings as trae_settings, variant::TraeVariant};
 
 use crate::apikey::{constant_time_eq, sha256_hex};
@@ -102,6 +107,24 @@ pub struct TraeApiKeyRecord {
     pub revoked_at: Option<i64>,
     #[serde(default)]
     pub last_used_at: Option<i64>,
+    /* ── 策略（issue #76）—— 与 WorkBuddy 侧**同一组枚举**（`crate::apikey`），
+       全 `#[serde(default)]` ⇒ 老台账零迁移（读出来 = 改造前行为：不限额 + 全部账号）。 ── */
+    #[serde(default)]
+    pub quota_mode: QuotaMode,
+    #[serde(default)]
+    pub quota_limit: u64,
+    #[serde(default)]
+    pub quota_unit: QuotaUnit,
+    #[serde(default)]
+    pub quota_period: QuotaPeriod,
+    #[serde(default)]
+    pub scope_mode: ScopeMode,
+    /// 允许访问的账号 uid（`scope_mode == Selected` 时有效）。
+    #[serde(default)]
+    pub scope_accounts: Vec<String>,
+    /// 允许访问的**分组** id（与 `scope_accounts` 取并集）。
+    #[serde(default)]
+    pub scope_groups: Vec<String>,
 }
 
 impl TraeApiKeyRecord {
@@ -117,12 +140,33 @@ impl TraeApiKeyRecord {
             "revokedAt": self.revoked_at,
             "revoked": self.revoked_at.is_some(),
             "lastUsedAt": self.last_used_at,
+            /* 策略七件套（issue #76）—— 与 WB 侧同形，前端共用一套构件。 */
+            "quotaMode": self.quota_mode,
+            "quotaLimit": self.quota_limit,
+            "quotaUnit": self.quota_unit,
+            "quotaPeriod": self.quota_period,
+            "scopeMode": self.scope_mode,
+            "scopeAccounts": self.scope_accounts,
+            "scopeGroups": self.scope_groups,
         })
     }
 
     /// 是否已吊销。
     pub fn is_revoked(&self) -> bool {
         self.revoked_at.is_some()
+    }
+
+    /// 取出策略部分（中继层只认策略，不认 hash / 明文）。
+    pub fn policy(&self) -> KeyPolicy {
+        KeyPolicy {
+            quota_mode: self.quota_mode,
+            quota_limit: self.quota_limit,
+            quota_unit: self.quota_unit,
+            quota_period: self.quota_period,
+            scope_mode: self.scope_mode,
+            scope_accounts: self.scope_accounts.clone(),
+            scope_groups: self.scope_groups.clone(),
+        }
     }
 }
 
@@ -192,6 +236,14 @@ impl TraeApiKeyStore {
             created_at: 0,
             revoked_at: None,
             last_used_at: None,
+            // legacy 合成的 Key 没有策略 ⇒ 默认「不限额 + 全部账号」（改造前行为）。
+            quota_mode: QuotaMode::Unlimited,
+            quota_limit: 0,
+            quota_unit: QuotaUnit::Token,
+            quota_period: QuotaPeriod::None,
+            scope_mode: ScopeMode::All,
+            scope_accounts: Vec::new(),
+            scope_groups: Vec::new(),
         })
     }
 
@@ -243,6 +295,14 @@ impl TraeApiKeyStore {
             created_at: core_config::now_ms(),
             revoked_at: None,
             last_used_at: None,
+            // 策略默认值：不限额 + 全部账号 = 改造前行为。
+            quota_mode: QuotaMode::Unlimited,
+            quota_limit: 0,
+            quota_unit: QuotaUnit::Token,
+            quota_period: QuotaPeriod::None,
+            scope_mode: ScopeMode::All,
+            scope_accounts: Vec::new(),
+            scope_groups: Vec::new(),
         };
         let mut records = self.load();
         records.push(record.clone());
@@ -294,6 +354,33 @@ impl TraeApiKeyStore {
     }
 
     /// 吊销（置 `revoked_at`，不物理删除）。首次写盘即把 legacy 一并物化。
+    /// 更新策略（配额 + 账号范围）。**不动** id / hash / 吊销态 / variant。
+    ///
+    /// 与 WB 侧 `ApiKeyStore::update_policy` **同一套规则**（含 `KeyPolicy::normalized`
+    /// 的矛盾收敛）—— 复用同一个归一函数，不各写一份。
+    pub fn update_policy(&self, id: &str, policy: KeyPolicy) -> Result<(), String> {
+        let policy = policy.normalized()?;
+        let mut records = self.load();
+        let mut found = false;
+        for record in records.iter_mut() {
+            if record.id == id {
+                record.quota_mode = policy.quota_mode;
+                record.quota_limit = policy.quota_limit;
+                record.quota_unit = policy.quota_unit;
+                record.quota_period = policy.quota_period;
+                record.scope_mode = policy.scope_mode;
+                record.scope_accounts = policy.scope_accounts;
+                record.scope_groups = policy.scope_groups;
+                found = true;
+                break;
+            }
+        }
+        if !found {
+            return Err("API Key 不存在".to_string());
+        }
+        self.save(&records)
+    }
+
     pub fn revoke(&self, id: &str) -> Result<(), String> {
         let mut records = self.load();
         let mut found = false;
@@ -769,6 +856,92 @@ mod tests {
     }
 
     #[test]
+    fn legacy_ledger_without_policy_fields_reads_as_before() {
+        // 老台账：无策略七件套 ⇒ 默认「不限额 + 全部账号」= 改造前行为。
+        // ★ Trae 台账落盘是 **camelCase**（struct 上有 `rename_all = "camelCase"`，
+        //   与 WB 侧相反 —— WB 落 snake_case、只在 masked 里转 camelCase）。
+        //   用错形态测的就不是真台账。
+        let legacy = serde_json::json!([{
+            "id": "old", "name": "old", "variant": "trae_work", "prefix": "sk-trae-a1b2",
+            "suffix": "9f3c", "hash": "h", "createdAt": 1, "revokedAt": null,
+            "lastUsedAt": null
+        }]);
+        let records: Vec<TraeApiKeyRecord> = serde_json::from_value(legacy).unwrap();
+        let record = &records[0];
+        assert_eq!(record.quota_mode, QuotaMode::Unlimited);
+        assert_eq!(record.scope_mode, ScopeMode::All);
+        assert!(record.scope_accounts.is_empty());
+        assert_eq!(
+            crate::apikey::quota_verdict_for_policy(&record.policy(), u64::MAX),
+            crate::apikey::QuotaVerdict::Ok,
+            "老 Key 不得被限额"
+        );
+    }
+
+    #[test]
+    fn update_policy_writes_and_normalizes_like_the_wb_side() {
+        let (_guard, store) = isolated("policy");
+        let (record, _) = store.create("p".to_string(), TraeVariant::default());
+
+        // 空白名单 ⇒ 拒绝（与 WB 侧同一规则）。
+        assert!(store
+            .update_policy(
+                &record.id,
+                KeyPolicy {
+                    quota_mode: QuotaMode::Limited,
+                    quota_limit: 10,
+                    quota_unit: QuotaUnit::Request,
+                    quota_period: QuotaPeriod::Daily,
+                    scope_mode: ScopeMode::Selected,
+                    scope_accounts: vec![],
+                    scope_groups: vec![],
+                }
+            )
+            .is_err());
+
+        store
+            .update_policy(
+                &record.id,
+                KeyPolicy {
+                    quota_mode: QuotaMode::Limited,
+                    quota_limit: 500,
+                    quota_unit: QuotaUnit::Token,
+                    quota_period: QuotaPeriod::Monthly,
+                    scope_mode: ScopeMode::Selected,
+                    scope_accounts: vec!["u1".into()],
+                    scope_groups: vec![],
+                },
+            )
+            .unwrap();
+        let after = store.list().into_iter().find(|r| r.id == record.id).unwrap();
+        assert_eq!(after.quota_limit, 500);
+        assert_eq!(after.quota_period, QuotaPeriod::Monthly);
+        assert_eq!(after.scope_accounts, vec!["u1".to_string()]);
+        // 不动身份字段。
+        assert_eq!(after.hash, record.hash);
+        assert_eq!(after.variant, record.variant);
+
+        // 矛盾归一：不限额 ⇒ 清上限。
+        store
+            .update_policy(
+                &record.id,
+                KeyPolicy {
+                    quota_mode: QuotaMode::Unlimited,
+                    quota_limit: 999,
+                    quota_unit: QuotaUnit::Token,
+                    quota_period: QuotaPeriod::None,
+                    scope_mode: ScopeMode::All,
+                    scope_accounts: vec!["u1".into()],
+                    scope_groups: vec![],
+                },
+            )
+            .unwrap();
+        let normalized = store.list().into_iter().find(|r| r.id == record.id).unwrap();
+        assert_eq!(normalized.quota_limit, 0);
+        assert!(normalized.scope_accounts.is_empty());
+    }
+
+    #[test]
     fn masked_is_explicit_non_secret_whitelist() {
         let (_guard, store) = isolated("masked");
         let (record, plaintext) = store.create("masked".to_string(), TraeVariant::Trae);
@@ -785,6 +958,15 @@ mod tests {
             "revokedAt",
             "revoked",
             "lastUsedAt",
+            // ★ issue #76：策略七件套也进掩码视图（与 WB 侧同款显式白名单）。
+            //   前端共用一套 `KeyPolicy` 类型 ⇒ 两边掩码形态必须一致。
+            "quotaMode",
+            "quotaLimit",
+            "quotaUnit",
+            "quotaPeriod",
+            "scopeMode",
+            "scopeAccounts",
+            "scopeGroups",
         ]
         .into_iter()
         .collect();
