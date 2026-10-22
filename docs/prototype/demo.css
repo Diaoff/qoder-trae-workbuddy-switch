@@ -1598,11 +1598,27 @@ table.tbl tr.uni-sub td { background: color-mix(in oklab, var(--muted) 45%, tran
 .kchip.danger { color: var(--danger); border-color: color-mix(in oklab, var(--danger) 45%, transparent); }
 .kchip .dot { width: 6px; height: 6px; border-radius: 3px; background: currentColor; opacity: .75; }
 
-/* 配额进度条：画的是**已用 / 上限**（用户在意的就是「还能用多少」）。 */
-.kbar { height: 4px; border-radius: 3px; background: var(--muted); overflow: hidden; margin-top: 4px; }
-.kbar > i { display: block; height: 100%; border-radius: 3px; background: var(--primary); }
+/* 配额进度条：画的是**已用 / 上限**（用户在意的就是「还能用多少」）。
+   ★ 2026-10-22 重新设计后列表里只留**一行**：`已用 / 上限` + 3px 迷你条
+   （四层文字全塞一列会把行高撑到 4 行，与权限列叠在一起整行密不透风）。 */
+.kusage { display: flex; align-items: center; gap: 5px; font-size: 12px; white-space: nowrap; }
+.kusage .kbar { flex: 1; min-width: 28px; height: 3px; border-radius: 2px; background: var(--muted); overflow: hidden; }
+.kbar > i { display: block; height: 100%; border-radius: 2px; background: var(--primary); }
 .kbar.warn > i { background: var(--warning); }
 .kbar.danger > i { background: var(--danger); }
+
+/* 行内展开（点行展开明细）：★ 一次只展开一行 —— 展开区是「低头看详情」，
+   同时展开三行就把一览表毁掉了。操作列用 `data-stop` 挡掉冒泡。 */
+tr.krow { cursor: pointer; }
+tr.krow:hover > td { background: color-mix(in oklab, var(--foreground) 3%, transparent); }
+tr.krow-open > td { background: color-mix(in oklab, var(--primary) 7%, transparent); }
+tr.krow-detail-row > td { padding: 0 !important; border-top: 0 !important; }
+.krow-detail { padding: 10px 12px 11px; background: var(--card-2); border-top: 1px dashed var(--border); }
+.krd-row { display: flex; align-items: baseline; gap: 10px; padding: 3px 0; }
+.krd-row + .krd-row { border-top: 1px solid var(--border); }
+.krd-k { flex-shrink: 0; width: 76px; font-size: 11.5px; color: var(--muted-fg); }
+.krd-v { flex: 1; min-width: 0; font-size: 12px; line-height: 1.7; }
+.krd-row .btn { flex-shrink: 0; }
 
 /* 抽屉里的账号勾选行与分组 chip。 */
 .kacct { display: flex; align-items: center; gap: 9px; padding: 7px 10px; border-top: 1px solid var(--border); cursor: pointer; }

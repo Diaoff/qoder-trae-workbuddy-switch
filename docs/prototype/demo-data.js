@@ -257,7 +257,7 @@ const SCOPES = {
   "wb-cn": {
     id: "wb-cn", platform: "workbuddy", region: "cn",
     running: true, installed: true, version: "2.14.3",
-    todayCredits: 46, gatewayRequests: 312, gatewayKeys: 4, checkinReward: 100,
+    todayCredits: 46, gatewayRequests: 312, gatewayKeys: 5, checkinReward: 100,
     /* ★ 客户端是否接入本机网关（P12 请求代理）。决定「账本」视图的对账结论：
        true ⇒ 客户端 ⊆ 网关（合计 = 网关 + 直连客户端）；false ⇒ 两本账独立（合计 = 相加 − 重叠）。 */
     proxy: true,
@@ -782,6 +782,8 @@ const GATEWAY = {
       { id: "k3", name: "临时调试", masked: "bs_live_c702••••••••••••31bf", scope: "国际版", created: "2026-09-28", lastUsed: "3 天前", requests: 47 },
       /* 「接近上限」那档（86%）：三档用量状态在默认视图里都能看到。 */
       { id: "k10", name: "外包同学", masked: "bs_live_d913••••••••••••52af", scope: "国内版", created: "2026-10-06", lastUsed: "18 分钟前", requests: 956 },
+      /* 「不限额」那档：与三档限额同在默认视图（不限 / 正常 / 接近 / 用尽 一览齐全）。 */
+      { id: "k11", name: "自用无限额", masked: "bs_live_f4a7••••••••••••6c03", scope: "国内版", created: "2026-10-11", lastUsed: "1 小时前", requests: 3120 },
     ],
     /* available = 上游事实（能不能调）；disabled = 用户偏好（主动拿掉）。
        两者**正交**，四种组合都合法 —— UI 必须能区分「已禁用」与「上游不可用」。 */
@@ -1346,6 +1348,8 @@ const KEY_POLICY = {
   k8: { quota: { mode: "unlimited" }, scope: { mode: "all" } },
   k9: { quota: { mode: "unlimited" }, scope: { mode: "all" } },
   k10: { quota: { mode: "limited", limit: 10000000, unit: "token", period: "monthly", used: 8600000 }, scope: { mode: "selected", accounts: ["a1", "a2", "a3"] } },
+  /* 不限额：与改造前行为一致（消耗多少都放行）。 */
+  k11: { quota: { mode: "unlimited" }, scope: { mode: "all" } },
 };
 const KEY_PERIOD_TEXT = { none: "不重置（累计）", daily: "每日 00:00 重置", weekly: "每周一 00:00 重置", monthly: "自然月结算" };
 const KEY_PERIOD_SHORT = { none: "累计", daily: "每日", weekly: "每周", monthly: "自然月" };

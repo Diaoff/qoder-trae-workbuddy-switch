@@ -36,10 +36,10 @@ const MUTATIONS = {
     expectRed: ["切到「指定账号」", "勾选一个账号"],
   },
   nochip: {
-    desc: "权限列不渲染 chip（只剩一列静态文字）",
-    from: "return `<div class=\"row\" style=\"gap:5px\">${quotaChip}${scopeChip}</div>`;",
-    to: 'return ""; /* MUTATED: 权限列不渲染 chip */',
-    expectRed: ["权限列有两枚可点 chip"],
+    desc: "权限列不渲染 chip（账号范围无从看起，也失去编辑入口）",
+    from: '  return p.scope.mode === "all"\n    ? `<button class="kchip" data-act="key-perm|${k.id}|scope"><i class="dot"></i>账号 全部</button>`\n    : `<button class="kchip ${n ? "on" : "danger"}" data-act="key-perm|${k.id}|scope"><i class="dot"></i>账号 ${n} 个</button>`;',
+    to: '  return ""; /* MUTATED: 权限列不渲染 chip */',
+    expectRed: ["权限列只一枚 chip"],
   },
 };
 
@@ -111,21 +111,26 @@ check("名称次行带了「创建于」与「最后使用」（原来那一列�
     `次行应同时有创建于与最后使用：${sub.textContent}`);
 });
 
-check("有限额的行有进度条与「已用 / 上限」", () => {
+check("用量列压成一行：已用/上限 + 3px 迷你条（四层文字不再塞一列）", () => {
   const rows = [...doc.querySelectorAll("#content table tbody tr")];
-  const bar = rows[0].querySelector(".kbar");
-  assert(bar, "第一行应有配额进度条");
+  const cell = rows[0].querySelector(".kusage");
+  assert(cell, "第一行应有 .kusage 一览单元");
+  const bar = cell.querySelector(".kbar");
+  assert(bar, "一览单元里应有迷你进度条");
   const fill = bar.querySelector("i");
   assert(fill && fill.style.width === "62%", `进度条应为 62%，实际 ${fill && fill.style.width}`);
-  assert(rows[0].textContent.includes("620万"), `应显示已用 620万：${rows[0].textContent}`);
-  assert(rows[0].textContent.includes("1000万"), `应显示上限 1000万：${rows[0].textContent}`);
-  assert(rows[0].textContent.includes("自然月"), `脚注应写明周期：${rows[0].textContent}`);
+  /* ★ 一览只承载「已用/上限」：单位、周期、剩余**不在这一列**（它们进行内展开区）。
+     断言写法是「列内不得出现」—— 否则「重新设计」会被悄悄改回去。 */
+  assert(cell.textContent.includes("620万"), `应显示已用 620万：${cell.textContent}`);
+  assert(cell.textContent.includes("1000万"), `应显示上限 1000万：${cell.textContent}`);
+  assert(!cell.textContent.includes("自然月"), "周期不该出现在一览列（应进行内展开区）");
+  assert(!cell.textContent.includes("按 token 计"), "单位不该出现在一览列");
 });
 
 check("「不限」的密钥不画进度条，但保留累计请求数", () => {
   const rows = [...doc.querySelectorAll("#content table tbody tr")];
-  const unlimited = rows.find((tr) => tr.textContent.includes("额度 不限"));
-  assert(unlimited, "应有「额度 不限」的行");
+  const unlimited = rows.find((tr) => tr.querySelector(".kusage") && tr.textContent.includes("不限"));
+  assert(unlimited, "应有「不限」的行");
   assert(!unlimited.querySelector(".kbar"), "不限额不应有进度条");
   assert(unlimited.textContent.includes("累计"), "不限额行仍应显示累计请求数");
 });
@@ -136,14 +141,36 @@ check("用尽与接近上限分别给出状态徽标", () => {
   assert(body.includes("接近上限"), "缺「接近上限」徽标");
 });
 
-check("权限列有两枚可点 chip（额度 / 账号）", () => {
+check("权限列只一枚 chip（账号范围）—— 额度已由用量列的上限体现，不重复占宽", () => {
   const row = doc.querySelector("#content table tbody tr");
   const chips = [...row.querySelectorAll(".kchip")];
-  assert(chips.length === 2, `权限列应有 2 枚 chip，实际 ${chips.length}`);
-  chips.forEach((c) => assert(c.dataset.act && c.dataset.act.startsWith("key-perm|"),
-    `chip 必须可点（带 data-act=key-perm|…），实际 ${c.dataset.act}`));
-  assert(chips[0].textContent.includes("额度"), `第一枚应是额度 chip：${chips[0].textContent}`);
-  assert(chips[1].textContent.includes("账号"), `第二枚应是账号 chip：${chips[1].textContent}`);
+  assert(chips.length === 1, `权限列应只有 1 枚 chip，实际 ${chips.length}`);
+  assert(chips[0].dataset.act.startsWith("key-perm|"), "chip 必须可点（带 data-act=key-perm|…）");
+  assert(chips[0].textContent.includes("账号"), `chip 应是账号范围：${chips[0].textContent}`);
+});
+
+check("点行展开明细：单位/周期/剩余都在展开区里（一览让出去的信息在这儿回收）", () => {
+  const row = doc.querySelector("#content table tbody tr");
+  row.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
+  const detail = doc.querySelector(".krow-detail");
+  assert(detail, "点行应展开明细区");
+  const body = detail.textContent;
+  assert(body.includes("用量配额"), "展开区应有「用量配额」行");
+  assert(body.includes("可访问账号"), "展开区应有「可访问账号」行");
+  assert(body.includes("自然月"), `展开区应写明周期：${body}`);
+  assert(body.includes("剩余"), `展开区应写明剩余：${body}`);
+  assert(body.includes("编辑配额") && body.includes("编辑范围"), "两行各应带编辑快捷钮");
+  /* 再点一次同一行 ⇒ 收起。 */
+  doc.querySelector("#content table tbody tr").dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
+  assert(!doc.querySelector(".krow-detail"), "再点一次应收起");
+});
+
+check("点操作列的按钮不展开行（点「吊销」不该顺手展开明细）", () => {
+  const revoke = doc.querySelector('#content table tbody tr [data-act^="revoke|"]');
+  assert(revoke, "应有吊销按钮");
+  revoke.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true }));
+  assert(!doc.querySelector(".krow-detail"), "点操作按钮不该展开明细");
+  assert(doc.querySelector('#content table tbody tr [data-act^="revoke|"]'), "页面结构应保持");
 });
 
 check("点 chip 打开权限抽屉：两个分区都在", () => {
@@ -227,15 +254,18 @@ check("清空后保存被禁用，并给出原因", () => {
 });
 
 check("保存后抽屉关闭、表格里的 chip 与用量同步更新", () => {
-  /* ★ 这一步**真的写策略表** ⇒ 用**最后一行**（外包同学）当靶子，
-     把第一行留给下一条「取消」用例 —— 免得两条用例互相污染状态。 */
-  const lastRow = doc.querySelector("#content table tbody tr:last-child");
-  clickEl(lastRow.querySelector('[data-act^="key-perm|"]'));
+  /* ★ 靶子**按名称定位**（不用 last-child）：新增钥匙会让末行漂移，
+     而上一条「取消」用例已经在改第一行的草稿了 —— 用「外包同学」这把互不干扰。 */
+  const target = () => [...doc.querySelectorAll("#content table tbody tr")]
+    .find((tr) => tr.textContent.includes("外包同学"));
+  const before = target();
+  assert(before, "应有「外包同学」这把密钥");
+  clickEl(before.querySelector('[data-act^="key-perm|"]'));
   click('[data-act="key-perm-scope|selected"]');
   click('[data-act="key-perm-acct|all"]');
   click('[data-act="key-perm-save"]');
   assert(!doc.querySelector("#drawer").classList.contains("open"), "保存后抽屉应关闭");
-  const row = doc.querySelector("#content table tbody tr:last-child");
+  const row = target();
   assert(row.textContent.includes("账号 8 个"), `行内账号 chip 应更新为 8 个：${row.textContent}`);
   assert(row.textContent.includes("1000万"), `行内额度 chip 应写 1000万：${row.textContent}`);
 });

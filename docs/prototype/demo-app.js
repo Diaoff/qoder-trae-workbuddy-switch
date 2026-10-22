@@ -85,6 +85,10 @@ const state = {
   gwChain: {},
   /* 「免费号不可用时允许用收费号」：**默认关**（与「不偷偷花积分」的安全默认同源）。{ [scope]: bool } */
   gwPayFallback: {},
+  /* 密钥表「行内展开」：当前展开了哪把密钥的明细（null = 都收起）。
+     ★ 一次只展开一行 —— 展开区是「低头看详情」，同时展开三行就把一览表毁掉了。
+     纯本地状态，不发请求；点同一行再点一次即收起。 */
+  keyExpand: null,
   /* 抽屉 */
   drawer: null,        // { kind, id, step, ... }
   /* 命令面板 */
@@ -2865,33 +2869,67 @@ const keyQuotaLevel = (q) => {
 };
 
 /* 列表里的「用量」列：进度条画的是**已用 / 上限**（用户在意「还能用多少」）。 */
+/* 列表里的「用量」列 —— **只做一览**（2026-10-22 重新设计）。
+ * ★ 此前这一列塞了四层文字（已用/上限、剩余、单位、周期），截图实测**四层全在换行**，
+ *   把行高撑到 4 行文字，与权限列叠在一起整行密不透风。
+ * ⇒ 现在只留一行：`已用 / 上限` + 3px 迷你条。水位状态由**条的颜色 + 后缀字**表达
+ *   （危险 = 红条 + 「已用尽」，接近 = 黄条）；单位、周期、剩余全部移进行内展开区
+ *   （点行展开）—— 那是「想看才看」的信息，不该占用每行的视线。 */
 function keyUsageHtml(k, p) {
   const q = p.quota;
   if (q.mode !== "limited") {
-    return `<span class="muted">不限</span><br><span class="tiny muted">累计 ${fmt(k.requests)} 次请求</span>`;
+    return `<div class="kusage"><span class="muted">不限</span><span class="tiny muted">累计 ${fmt(k.requests)} 次请求</span></div>`;
   }
   const lv = keyQuotaLevel(q);
   const pct = Math.min(100, Math.round((q.used / q.limit) * 100));
-  const left = Math.max(0, q.limit - q.used);
-  const unit = q.unit === "request" ? " 次" : "";
-  return `<div class="num" style="font-size:12px">${fmtQuota(q.used)} / ${fmtQuota(q.limit)}</div>
-    <div class="kbar ${lv}"><i style="width:${pct}%"></i></div>
-    <div class="tiny muted" style="margin-top:3px">${lv === "danger" ? "已用尽" : `剩余 ${fmtQuota(left)}${unit}`}</div>
-    <div class="tiny muted">${q.unit === "request" ? "按请求数计" : "按 token 计"} · ${KEY_PERIOD_TEXT[q.period]}</div>`;
+  return `<div class="kusage">
+    <span class="num">${fmtQuota(q.used)}</span><span class="muted"> / ${fmtQuota(q.limit)}</span>
+    ${lv === "danger" ? `<span class="tiny" style="color:var(--danger)">已用尽</span>` : ""}
+    <i class="kbar ${lv}"><i style="width:${pct}%"></i></i>
+  </div>`;
 }
 
-/* 列表里的「权限」列：两枚可点 chip，点哪枚就跳到抽屉的哪一段。 */
+/* 列表里的「权限」列 —— **一枚 chip**（2026-10-22 重新设计）。
+ * ★ 此前是两枚（额度 + 账号），实测两枚在 16% 宽的列里**各占一行**，整列三行高。
+ * ⇒ 砍掉额度 chip：上限值已经在用量列以 `/ 1000万` 体现，再写一遍「额度 1000万/自然月」
+ *   是同一信息的第二次展示，纯占宽度。账号范围无法从别处推知 ⇒ 保留，且**可点**
+ *   （点它直接开抽屉的账号段，是「改白名单」的快捷方式）。 */
 function keyPermChipsHtml(k, p) {
-  const q = p.quota;
-  const lv = keyQuotaLevel(q);
-  const quotaChip = q.mode === "limited"
-    ? `<button class="kchip ${lv}" data-act="key-perm|${k.id}|quota"><i class="dot"></i>${q.unit === "request" ? "请求" : "额度"} ${fmtQuota(q.limit)}${q.period === "none" ? "" : "/" + KEY_PERIOD_SHORT[q.period]}</button>`
-    : `<button class="kchip" data-act="key-perm|${k.id}|quota"><i class="dot"></i>额度 不限</button>`;
   const n = p.scope.mode === "all" ? 0 : p.scope.accounts.length;
-  const scopeChip = p.scope.mode === "all"
+  return p.scope.mode === "all"
     ? `<button class="kchip" data-act="key-perm|${k.id}|scope"><i class="dot"></i>账号 全部</button>`
     : `<button class="kchip ${n ? "on" : "danger"}" data-act="key-perm|${k.id}|scope"><i class="dot"></i>账号 ${n} 个</button>`;
-  return `<div class="row" style="gap:5px">${quotaChip}${scopeChip}</div>`;
+}
+
+/* ★ 行内展开区（点行展开）—— 把「一览」让出去的信息收在这里。
+   两行明细，各带一个「编辑」快捷钮（开抽屉对应段）。展开是**纯本地状态**
+ * （`state.keyExpand`），不发任何请求；再点一次行即收起。 */
+function keyRowDetailHtml(k, p) {
+  const q = p.quota;
+  const sc = p.scope;
+  const quotaLine = q.mode !== "limited"
+    ? `不限额 —— 这把密钥不设用量上限（与改造前行为一致）`
+    : `${fmtQuota(q.used)} / ${fmtQuota(q.limit)} ${q.unit === "request" ? "次请求" : "token"} · ${KEY_PERIOD_TEXT[q.period]} · 剩余 ${fmtQuota(Math.max(0, q.limit - q.used))}`;
+  const scopeLine = sc.mode === "all"
+    ? `全部账号（${keyPolicyAccounts().length} 个）—— 沿用网关当前的选号策略`
+    : sc.accounts.length
+      ? [...sc.accounts].map((id) => {
+          const a = keyPolicyOfAccount(id);
+          return `<span class="kp">${esc(a ? a.name : id)}</span>`;
+        }).join("")
+      : `<span class="tiny" style="color:var(--danger)">一个都没选 —— 这把密钥将永远选不到号，请至少选一个</span>`;
+  return `<div class="krow-detail">
+    <div class="krd-row">
+      <span class="krd-k">用量配额</span>
+      <span class="krd-v">${quotaLine}</span>
+      <button class="btn ghost xs" data-act="key-perm|${k.id}|quota">编辑配额</button>
+    </div>
+    <div class="krd-row">
+      <span class="krd-k">可访问账号</span>
+      <span class="krd-v kpicked">${scopeLine}</span>
+      <button class="btn ghost xs" data-act="key-perm|${k.id}|scope">编辑范围</button>
+    </div>
+  </div>`;
 }
 
 /* 抽屉状态：**打开时从策略表拷一份草稿**，取消即丢弃（与账号页「切换向导」同款）。 */
@@ -3501,7 +3539,10 @@ function viewGateway() {
       <tbody>${g.keys.map((k) => {
         const p = keyPolicyOf(k);
         const lv = keyQuotaLevel(p.quota);
-        return `<tr${k.revoked ? ' class="row-off"' : ""}>
+        const open = state.keyExpand === k.id;
+        /* ★ 行整体可点（展开明细）—— 但**操作列不展开**：那里是按钮，
+           点它们是动作，不是「想看详情」。用 `<td>` 上的 stop 传播实现。 */
+        return `<tr class="krow${open ? " krow-open" : ""}${k.revoked ? " row-off" : ""}" data-act="key-expand|${k.id}">
         <td><b>${esc(k.name)}</b><br><span class="tiny muted nowrap">创建于 ${k.created} · 最后使用 ${esc(k.lastUsed)}</span></td>
         <td class="mono">${esc(k.masked)}</td>
         <td><span class="badge">${esc(k.scope)}</span></td>
@@ -3511,12 +3552,13 @@ function viewGateway() {
             : lv === "danger" ? `<span class="badge" style="color:var(--danger)">已用尽</span>`
             : lv === "warn" ? `<span class="badge" style="color:var(--warning)">接近上限</span>`
             : `<span class="badge ok">启用</span>`}</td>
-        <td>${k.revoked
+        <td data-stop="1">${k.revoked
             ? `<button class="btn ghost xs" data-act="key-restore|${k.id}">恢复</button>
                <button class="btn ghost xs danger" data-act="key-delete|${k.id}">删除</button>`
             : `<button class="btn ghost xs" data-act="copy|${esc(k.masked)}">${ICON.copy}</button>
                <button class="btn ghost xs" data-act="revoke|${k.id}">${ICON.trash}</button>`}</td>
-      </tr>`; }).join("")}</tbody></table></div>
+      </tr>
+      ${open ? `<tr class="krow-detail-row"><td colspan="7">${keyRowDetailHtml(k, p)}</td></tr>` : ""}`; }).join("")}</tbody></table></div>
       <p class="tiny muted" style="margin:10px 2px 0">密钥明文只在创建时展示一次；此处永远只显示掩码。请求数为该密钥创建以来的<b>累计值</b>，与概览的「今日」口径不同。<b>吊销可逆</b>：已吊销的密钥仍留在表里，可「恢复」回启用态（库中存的是同一把 Key，明文未变，客户端无需改配置），也可「删除」清掉记录。<br>
       <b>用量配额</b>按这把密钥自己的消耗计（与账号积分无关）：单位可选 token 或请求数，周期可选不重置 / 每日 / 每周 / 自然月；<b>可访问账号</b>为「指定」时，这把密钥<b>不会</b>落到未勾选的账号上（白名单外不参与选号）。两枚 chip 可点，编辑在右侧抽屉里完成。</p>`
       : emptyBlock(ICON.key, "还没有密钥", "创建一个密钥后即可通过本地网关调用模型。",
@@ -5823,6 +5865,11 @@ document.addEventListener("click", (e) => {
   if (state.aggFilterOpen && !e.target.closest("#agg-filter-pop") && !e.target.closest("#agg-filter-btn")) closeAggFilter();
 
   const node = e.target.closest("[data-act]");
+  /* ★ `data-stop` 子树（如密钥表操作列的按钮区）：点它的**空白处**不冒泡成外层行的动作
+     —— 否则点「吊销」旁边的空白会把行展开，用户会以为「展开」是误触。
+     判定用 `contains`：点中的是子树内的按钮（node 在子树里）⇒ 照常执行按钮自己的动作。 */
+  const stopZone = e.target.closest("[data-stop]");
+  if (stopZone && !stopZone.contains(node)) return;
   /* 自定义时间弹层：点弹层外部收起（触发器与弹层内部除外），与本次动作同帧生效。 */
   const willCloseRange = state.rangeOpen && !e.target.closest(".range-pop") && !(node && node.dataset.act === "range-custom-open");
   if (willCloseRange) state.rangeOpen = false;
@@ -6684,6 +6731,12 @@ document.addEventListener("click", (e) => {
       break;
     }
     case "new-key": stop(); toast("ok", "已创建新密钥", "明文只显示这一次：bs_live_9f3a7d21c4e88b0f"); break;
+    case "key-expand": {
+      stop();
+      state.keyExpand = state.keyExpand === a1 ? null : a1;
+      renderContent();
+      break;
+    }
     /* ── 密钥权限（issue #76）──────────────────────────────────────────
        两项策略都**先改草稿、再整块重画抽屉**：草稿是打开时的副本，
        「取消」直接丢弃 ⇒ 不会留下半个改了一半的策略。 */
