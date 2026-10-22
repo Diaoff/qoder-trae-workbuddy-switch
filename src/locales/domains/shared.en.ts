@@ -125,6 +125,7 @@ export const en = {
   "shared.gateway.probe.summaryAvailable": "{accounts} accounts · {models} models probeable",
   "shared.gateway.probe.summaryLast": "Last {time} · adopted +{added}/-{cleared}",
   "shared.gateway.probe.summaryLastPlain": "Last {time}",
+  "shared.gateway.probe.summaryLastNoAdopt": "Last {time} · not adopted",
   "shared.gateway.probe.notice":
     "Sends one minimal request to each account — almost no credits, but it does leave a trace upstream and may trigger rate limiting.",
   "shared.gateway.probe.stepModels": "Which models to test",
@@ -176,6 +177,8 @@ export const en = {
   "shared.gateway.probe.exportDone": "Probe results exported",
   "shared.gateway.probe.exportRows": "{n} rows",
   "shared.gateway.probe.retry": "Re-probe",
+  "shared.gateway.probe.probeCell": "Probe this cell",
+  "shared.gateway.probe.reprobeCell": "Re-probe this cell",
   "shared.gateway.probe.probedAt": "Probed at {time}",
   "shared.gateway.probe.cellTitle": "{account} · {model}\nStatus: {state}\nSource: {source}\n{reason}",
   "shared.gateway.probe.sourceProbed": "This probe",

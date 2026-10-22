@@ -504,4 +504,26 @@ export const zh = {
   "wbAccounts.limits.queued": "排队中",
   "wbAccounts.limits.queuedHint": "上游排队类错误（6020 / 6022）：模型资源紧张或已达使用上限，等待恢复。精确文案待确认，暂按 code 原样标注。",
   "wbAccounts.limits.session": "会话 {id}",
+  /* ── 与网关「限流探测」的联动（2026-10-22） ─────────────────────────────
+     台账 = 日志反推、探测 = 真发一次请求。两侧读同一份实测结论（store `probeCells`），
+     所以这里的文案要**明确说「同一份数据」**，否则用户会以为账号页在编造。 */
+  "wbAccounts.limits.probeShared": "实测结论与网关「限流探测」是同一份数据。",
+  "wbAccounts.limits.openProbeMatrix": "查看探测矩阵 →",
+  "wbAccounts.limits.probeSummary": "实测 {cells} 格 · 限流 {limited} · 可用 {ok}（{time}）",
+  "wbAccounts.limits.probeAll": "实测 {cells} 格",
+  "wbAccounts.limits.probeAllHint": "{accounts} 个账号 × {models} 个模型 = {cells} 格（后端按账号为外层展开），每格一次最小请求，不回填池冷却。",
+  "wbAccounts.limits.probeAllEmpty": "没有可实测的条目（需要「仍受限 / 状态未知」且能关联到账号与模型）。",
+  "wbAccounts.limits.probeRow": "实测",
+  "wbAccounts.limits.probeRowHint": "只实测这一格：一次最小请求，不回填池冷却。",
+  "wbAccounts.limits.probeRowDisabled": "关联不到账号或模型（会话已删除 / playground），无法实测。",
+  "wbAccounts.limits.probing": "探测中",
+  "wbAccounts.limits.probeCancel": "取消",
+  "wbAccounts.limits.probeStartFail": "启动实测失败",
+  "wbAccounts.limits.probeVerdict": "实测 · {state}",
+  "wbAccounts.limits.probeVerdictHint": "实测结论：{state}（HTTP {http} · {ms} ms{reset}）",
+  "wbAccounts.limits.conflictRecovered": "实测可用，台账仍受限（历史证据，不改写）",
+  "wbAccounts.limits.conflictLimited": "台账已恢复，但此刻实测受限",
+  "wbAccounts.limits.probeNotCredit": "不是限流：额度用尽，等解锁没用。",
+  "wbAccounts.limits.probeOnlyTitle": "实测独有 {count} 格",
+  "wbAccounts.limits.probeOnlyHint": "实测查出限流、但台账没有记录的格。只在这里列出 —— 不写进台账（台账是「客户端日志里出现过」的事实）。",
 } as const;

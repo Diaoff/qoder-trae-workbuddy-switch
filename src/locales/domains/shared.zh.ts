@@ -154,6 +154,8 @@ export const zh = {
   "shared.gateway.probe.summaryLast": "上次 {time} · 回填 +{added}/-{cleared}",
   // 不支持回填的平台（Trae）：头部**不提回填**，避免「回填 +0/-0」被读成「回填跑了但没结果」。
   "shared.gateway.probe.summaryLastPlain": "上次 {time}",
+  // 本次**刻意没回填**（账号页发起的查证 / 用户关了开关）：显式说明，别让「置 0 / 清 0」被误读。
+  "shared.gateway.probe.summaryLastNoAdopt": "上次 {time} · 未回填",
   "shared.gateway.probe.notice":
     "将向每个账号各发一次最小请求，消耗极少积分、会在上游留痕，可能触发风控。",
   "shared.gateway.probe.stepModels": "要测哪些模型",
@@ -207,6 +209,9 @@ export const zh = {
   "shared.gateway.probe.exportDone": "已导出探测结果",
   "shared.gateway.probe.exportRows": "{n} 行",
   "shared.gateway.probe.retry": "重探",
+  /* 单元格详情里的单格入口：`uids:[uid] models:[model]`（恒 1 格）、`adopt:false`（查证不写池）。 */
+  "shared.gateway.probe.probeCell": "实测这一格",
+  "shared.gateway.probe.reprobeCell": "重测这一格",
   "shared.gateway.probe.probedAt": "探测于 {time}",
   "shared.gateway.probe.cellTitle": "{account} · {model}\n状态：{state}\n来源：{source}\n{reason}",
   "shared.gateway.probe.sourceProbed": "本次探测",

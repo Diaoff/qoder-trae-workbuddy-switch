@@ -9142,6 +9142,47 @@ check("★ 限流探测状态：后端枚举 / 前端类型 / zh·en 词条三�
   return `${backend.length} 档 · 后端=前端=zh=en`;
 });
 
+check("★ 客户端限流 × 限流探测：两侧读**同一份**实测结论（不是各拼一份）", () => {
+  /* 需求（2026-10-22）：「账号里的客户端限流要和网关里的模型限流探测关联起来，数据要同步；
+     账号里的客户端限流也可以加入限流探测的入口。」
+     判据：两处都读 store 的跨作业累积索引 `useProbeCells(scope)`，且账号页的入口恒 `adopt: false`。
+     变异（任一即红）：把任一侧改回读 `probe.cells` 自己拼（单格重测会把矩阵打塌 / 探第二行冲掉第一行）。 */
+  const ledger = readCode("src/components/client-limits-card.tsx");
+  for (const [marker, why] of [
+    ["useProbeCells(", "台账卡没有读共享的实测索引 ⇒ 看不到实测结论，也不跟网关同步"],
+    ["probeTargets(", "台账卡没有算实测目标（卡头入口空转）"],
+    ["probeOnlyLimits(", "台账卡没有「实测独有」的分流 ⇒ 实测结果无处落脚"],
+    ["limitConflict(", "台账卡没有做「台账 vs 实测」一致性判定"],
+    ["adopt: false", "★ 账号页的实测必须是「查证」而不是「治理」：不能回填池冷却"],
+  ]) {
+    if (!ledger.includes(marker)) throw new Error(`client-limits-card.tsx 缺 \`${marker}\`（${why}）`);
+  }
+
+  const probeCard = readCode("src/components/gateway/model-probe-card.tsx");
+  if (!probeCard.includes("useProbeCells(")) {
+    throw new Error("model-probe-card.tsx 没有读共享的实测索引 ⇒ 账号页的实测在这看不到");
+  }
+  if (/for \(const cell of probe\?\.cells/.test(probeCard)) {
+    throw new Error("model-probe-card.tsx 又在自己拼 `probe.cells` ⇒ 单格重测会把整张矩阵打塌");
+  }
+
+  const store = readCode("src/stores/gateway.ts");
+  for (const [marker, why] of [
+    ["mergeProbeCells(", "store 没有合并作业快照 ⇒ 逐行实测的结论会被下一次作业冲掉"],
+    ["raw.scope === scope", "★ `probe_status` 不按作用域过滤 ⇒ 不判 scope 会把别的平台的格画到本平台矩阵上"],
+  ]) {
+    if (!store.includes(marker)) throw new Error(`stores/gateway.ts 缺 \`${marker}\`（${why}）`);
+  }
+
+  const lib = readCode("src/lib/limit-link.ts");
+  const limitStates = lib.match(/export const LIMIT_STATES[\s\S]*?\];/);
+  if (!limitStates) throw new Error("limit-link.ts 找不到 `LIMIT_STATES`（断言失效：是否改名？）");
+  if (/no_credits|auth_dead/.test(limitStates[0])) {
+    throw new Error("★ `LIMIT_STATES` 里混进了 `no_credits` / `auth_dead` ⇒ 402 会被当成限流（用户去傻等解锁）");
+  }
+  return "台账卡/网关卡同源（useProbeCells）· 入口 adopt:false · store 按 scope 收窄并合并 · 三档限流";
+});
+
 console.log(`\n${passed} passed / ${failures.length} failed\n`);
 if (failures.length) {
   for (const f of failures) console.error(" - " + f);

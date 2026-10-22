@@ -457,4 +457,26 @@ export const en = {
   "wbAccounts.limits.queued": "Queued",
   "wbAccounts.limits.queuedHint": "Upstream queue-class error (6020 / 6022): the model is busy or your usage limit is reached. Exact wording is pending confirmation; shown as the raw code for now.",
   "wbAccounts.limits.session": "Session {id}",
+  /* ── Linked with the gateway "model limit probe" (2026-10-22) ──────────
+     Ledger = inferred from logs; probe = one real request. Both read the same
+     probe results (store `probeCells`), so the copy must say so explicitly. */
+  "wbAccounts.limits.probeShared": "Probe results are the same data as the gateway \"limit probe\".",
+  "wbAccounts.limits.openProbeMatrix": "Open probe matrix →",
+  "wbAccounts.limits.probeSummary": "Probed {cells} cells · limited {limited} · available {ok} ({time})",
+  "wbAccounts.limits.probeAll": "Probe {cells} cells",
+  "wbAccounts.limits.probeAllHint": "{accounts} accounts × {models} models = {cells} cells (the backend expands accounts as the outer axis); one minimal request per cell, pool cooldowns are not written back.",
+  "wbAccounts.limits.probeAllEmpty": "Nothing to probe (needs \"still limited / unknown\" rows that resolve to both an account and a model).",
+  "wbAccounts.limits.probeRow": "Probe",
+  "wbAccounts.limits.probeRowHint": "Probe just this cell: one minimal request, no pool cooldown is written back.",
+  "wbAccounts.limits.probeRowDisabled": "This row cannot be resolved to an account and model (deleted session / playground), so it cannot be probed.",
+  "wbAccounts.limits.probing": "Probing",
+  "wbAccounts.limits.probeCancel": "Cancel",
+  "wbAccounts.limits.probeStartFail": "Could not start the probe",
+  "wbAccounts.limits.probeVerdict": "Probe · {state}",
+  "wbAccounts.limits.probeVerdictHint": "Probe result: {state} (HTTP {http} · {ms} ms{reset})",
+  "wbAccounts.limits.conflictRecovered": "Probe says available, ledger still says limited (historical evidence, not rewritten)",
+  "wbAccounts.limits.conflictLimited": "Ledger says recovered, but the probe is limited right now",
+  "wbAccounts.limits.probeNotCredit": "Not rate limiting: out of credits — waiting for a reset will not help.",
+  "wbAccounts.limits.probeOnlyTitle": "{count} probe-only cells",
+  "wbAccounts.limits.probeOnlyHint": "Cells the probe found limited but the ledger has no record of. Listed here only — never written into the ledger (which records what the client logs actually saw).",
 };

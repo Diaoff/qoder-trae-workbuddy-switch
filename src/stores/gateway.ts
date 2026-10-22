@@ -17,11 +17,13 @@ import type {
   GatewayConfig,
   GatewayLogEntry,
   GatewayStatus,
+  ModelProbeCell,
   ModelProbeJob,
   ModelProbeState,
   Region,
 } from "@/lib/types";
 import { SCOPES, type Scope } from "@/lib/scope";
+import { mergeProbeCells, type ProbeCellIndex } from "@/lib/limit-link";
 
 /** 网关配置缺省值（与后端 GatewayConfig::default 对齐）。 */
 export { DEFAULT_GATEWAY_CONFIG };
@@ -104,6 +106,23 @@ interface GatewayState {
    */
   probe: ModelProbeJob | null;
   /**
+   * **实测结论的跨作业累积索引**（`scope → uid → model → 格`）——
+   * 账号页「客户端限流」与网关卡矩阵**读同一份**（口径见 `lib/limit-link.ts`）。
+   *
+   * ## 为什么不能只留 `probe`
+   *
+   * 后端作业是**单槽**：每次 `probe_start` 都新建一份从空 `cells` 开始的作业。
+   * 若两处都直接读 `probe.cells`：
+   * - 账号页「逐行实测」探第二行 ⇒ 第一行的结论**凭空消失**；
+   * - 网关卡在矩阵里「重测这一格」⇒ 整张矩阵塌成 1 格。
+   *
+   * 故读侧按 `(uid, model)` 合并历史快照（`mergeProbeCells`）。**只合并不擦除**：
+   * 某格探出 `ok` 就覆盖该格；某次作业没包含它**不会**被删掉。
+   *
+   * ⚠️ 进程内存储（与后端作业槽同生命周期）：重启即空，不假装是持久账本。
+   */
+  probeCells: ProbeCellIndex;
+  /**
    * **被动底色（来源之一）**：客户端限流台账（`client_limits`）里「仍受限」的 `uid × 模型`。
    *
    * ⚠️ 这只是被动底色的**一半**；另一半是**池的模型级冷却**（`GatewayPoolAccount.modelCoolings`，
@@ -168,6 +187,7 @@ export const useGatewayStore = create<GatewayState>((set, get) => ({
   logs: [],
   // 探测未跑过（后端 `{ phase: "idle" }` 归一为 `null`）；被动底色懒加载，默认空表。
   probe: null,
+  probeCells: {},
   probePassive: {},
   loading: false,
   saving: false,
@@ -321,11 +341,19 @@ export const useGatewayStore = create<GatewayState>((set, get) => ({
     try {
       const job = await api.probeStatus(scope);
       // 后端用 `{ phase: "idle" }` 表示「从未跑过」⇒ 归一成 `null`（其余档字段齐全）。
-      const next =
+      // ★ 还要按 **scope 收窄**：后端作业是**全局单槽**，`probe_status` 不按作用域过滤 ——
+      //   少了这一步，wb-cn 的探测结果会画到 qoder-cn 的矩阵上（同名模型、不同上游）。
+      const raw =
         job && (job as ModelProbeJob).phase && (job as ModelProbeJob).phase !== "idle"
           ? (job as ModelProbeJob)
           : null;
-      set({ probe: next });
+      const next = raw && raw.scope === scope ? raw : null;
+      /* ★ 读侧合并（见 `probeCells` 的注释）：账号页与网关卡矩阵都读这份。
+         只合并不擦除；没有新格时 `mergeProbeCells` 原样返回同一引用 ⇒ 不空转重渲染。 */
+      set((state) => ({
+        probe: next,
+        probeCells: next ? mergeProbeCells(state.probeCells, scope, next.cells) : state.probeCells,
+      }));
       if (next && next.phase === "running") {
         // `running` ⇒ 续轮询（`setInterval` 单实例；已在跑时先清再起，杜绝并发）。
         stopProbeTimer();
@@ -404,6 +432,9 @@ export const useGatewayStore = create<GatewayState>((set, get) => ({
  */
 export type ProbePassiveSource = "flow" | "ledger";
 
+/** 未拉取过的作用域回落的**稳定空表**（见 `useProbeCells`）。 */
+const EMPTY_PROBE_SCOPE: Record<string, Record<string, ModelProbeCell>> = {};
+
 /**
  * 被动底色的**一格**：状态 + **来源**。
  *
@@ -460,6 +491,20 @@ export function unionProbePassive(
     }
   }
   return out;
+}
+
+/**
+ * **实测结论**（`uid → model → 格`），只取当前作用域。
+ *
+ * 账号页「客户端限流」与网关卡矩阵**共用**这一份：任一侧发起探测，
+ * 另一侧下一次渲染读到的就是同一份（口径见 `lib/limit-link.ts`）。
+ *
+ * ⚠️ 返回**引用稳定**：未拉取过的 scope 回落到同一个空对象，否则每次渲染都换引用
+ * ⇒ `useMemo` 全部失效、组件空转。
+ */
+export function useProbeCells(scope: Scope): Record<string, Record<string, ModelProbeCell>> {
+  const index = useGatewayStore((s) => s.probeCells);
+  return index[scope] ?? EMPTY_PROBE_SCOPE;
 }
 
 /**
