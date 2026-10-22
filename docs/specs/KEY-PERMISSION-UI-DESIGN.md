@@ -351,6 +351,17 @@ pub scope_groups: Vec<String>,    // 允许访问的**分组** id（与 scope_ac
 （按请求数计的 Key 看到 `1 + N`）。现在 `KeyUsage { tokens: Counters, requests: Counters }`
 各记各的，并有 `token_and_request_counters_are_independent` 回归用例守着。
 
+## 7.2 已知限制的处理结果（2026-10-22 收口）
+
+| 原限制 | 处理 | 证据 |
+|:--|:--|:--|
+| 配额判定非原子（并发多放 + **丢计数**） | ✅ `KeyUsageStore` 加 `Mutex` + `check_and_record`（读-判-写同一把锁）；超限**不记账** | `concurrent_check_and_record_admits_exactly_the_limit`：32 线程抢 limit=10，断言恰好 10 通过、`used == 10` |
+| `aggregateByKey` 无测试 | ✅ 抽到 `src/lib/key-usage.ts`（零 import）+ `scripts/check-key-usage.mjs`（esbuild 现场转译，测**生产代码**）挂进 `check:scope` | 6 项断言；**变异测试**验证有效（改坏 ⇒ 红、退出码 1） |
+| 统一网关无「按密钥」展示 | ✅ 不需要新日志 —— 账本已有数；加 `unified_key_usage_all` **批量**命令，密钥表「配额」列对不限额 Key 也显示「不限 · 已用 N 次」 | `check:api` 239 路由 |
+
+★ 「丢计数」比「多放行」更危险：读改写竞争会让 `used` 变小，配额可能**永远不触发**。
+所以 ① 不只是「收紧一点」，是**修正一个会让功能失效的缺陷**。
+
 ## 8. 验收用例
 
 **原型侧**（`verify-key-permission.cjs`，21 条已全绿）：
