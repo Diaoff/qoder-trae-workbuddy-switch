@@ -2037,6 +2037,16 @@ export interface UnifiedApiKeyView {
   revokedAt: number | null;
   revoked: boolean;
   lastUsedAt: number | null;
+  /* ── 策略（issue #76）—— 与另三条产品线同形同义，前端共用一套构件。
+     ⚠️ 本视图另有 `namespaces` / `bizNamespace`（**最外层**授权：能访问哪些平台），
+     与这里的「账号范围 + 配额」是两个维度。 ── */
+  quotaMode?: "unlimited" | "limited";
+  quotaLimit?: number;
+  quotaUnit?: "token" | "request";
+  quotaPeriod?: "none" | "daily" | "weekly" | "monthly";
+  scopeMode?: "all" | "selected";
+  scopeAccounts?: string[];
+  scopeGroups?: string[];
 }
 
 export function getUnifiedGatewayConfig(): Promise<UnifiedGatewaySnapshot> {

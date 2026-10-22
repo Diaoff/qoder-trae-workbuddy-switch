@@ -49,6 +49,17 @@ import * as api from "@/lib/api";
 import { copyText } from "@/lib/clipboard";
 import { formatDate } from "@/lib/format";
 import { useT } from "@/lib/i18n";
+import {
+  KeyPermissionDrawer,
+  KeyRowDetail,
+  KeyScopeChip,
+  KeyUsageCell,
+  type KeyPermissionAccount,
+} from "@/components/gateway/key-permission";
+import type { KeyPolicy, KeyUsageSnapshot } from "@/lib/api";
+import type { QuotaMode, QuotaPeriod, QuotaUnit, ScopeMode } from "@/lib/types";
+import { accountDisplayName } from "@/components/account-card";
+import { useAccountsStore } from "@/stores/accounts";
 import { cn } from "@/lib/utils";
 
 /* ─────────── 命名空间镜像表 ───────────
@@ -145,6 +156,17 @@ const LOOPBACK = "127.0.0.1";
 const LAN = "0.0.0.0";
 
 /** 统一网关的分区（与 `GW_UNIFIED_SECTIONS` 一一对应）。 */
+/** 空策略（抽屉未选中任何 Key 时的占位；不会被保存）。 */
+const EMPTY_POLICY: KeyPolicy = {
+  quotaMode: "unlimited",
+  quotaLimit: 0,
+  quotaUnit: "token",
+  quotaPeriod: "none",
+  scopeMode: "all",
+  scopeAccounts: [],
+  scopeGroups: [],
+};
+
 export type UnifiedGatewaySection = "overview" | "namespaces" | "keys" | "pool";
 
 /**
@@ -177,6 +199,85 @@ export function UnifiedGatewayView({
   const [portDraft, setPortDraft] = useState("");
   const [createOpen, setCreateOpen] = useState(false);
   const [plaintext, setPlaintext] = useState<{ value: string; name: string } | null>(null);
+
+  /* ── issue #76：用量 / 权限两列 + 行内展开 + 权限抽屉（与另三条产品线同形） ── */
+  const [expandedKeyId, setExpandedKeyId] = useState<string | null>(null);
+  const [permTarget, setPermTarget] = useState<api.UnifiedApiKeyView | null>(null);
+  const [permSaving, setPermSaving] = useState(false);
+  const [usageMap, setUsageMap] = useState<Record<string, KeyUsageSnapshot>>({});
+
+  /** 旧台账的 Key 没有策略字段 ⇒ 归一化成完整策略（缺省 = 改造前行为）。 */
+  const policyOf = useCallback(
+    (key: api.UnifiedApiKeyView): KeyPolicy => ({
+      quotaMode: (key.quotaMode ?? "unlimited") as QuotaMode,
+      quotaLimit: key.quotaLimit ?? 0,
+      quotaUnit: (key.quotaUnit ?? "token") as QuotaUnit,
+      quotaPeriod: (key.quotaPeriod ?? "none") as QuotaPeriod,
+      scopeMode: (key.scopeMode ?? "all") as ScopeMode,
+      scopeAccounts: key.scopeAccounts ?? [],
+      scopeGroups: key.scopeGroups ?? [],
+    }),
+    [],
+  );
+
+  /* ★ 统一网关是**跨作用域**的：账号 uid 空间按**目标产品线**解读，
+     而这里只能给出「当前作用域」的账号库 —— 抽屉文案里如实说明这一点
+     （给一个空列表更糟：用户会以为「没有账号可选」）。 */
+  const unifiedAccounts: KeyPermissionAccount[] = useMemo(() => {
+    const rows = useAccountsStore.getState().accounts;
+    return rows
+      .map((account) => ({
+        id: account.id ?? account.uid ?? "",
+        name: accountDisplayName(account),
+        group: typeof account.groupName === "string" ? account.groupName : undefined,
+      }))
+      .filter((account) => account.id);
+  }, [permTarget]);
+
+  /* 用量：只拉「限额」的 Key。 */
+  useEffect(() => {
+    const limited = keys.filter((key) => (key.quotaMode ?? "unlimited") === "limited");
+    if (limited.length === 0) {
+      setUsageMap({});
+      return;
+    }
+    let cancelled = false;
+    void (async () => {
+      const pairs = await Promise.all(
+        limited.map(async (key) => {
+          try {
+            return [key.id, await api.unifiedKeyUsage(key.id)] as const;
+          } catch {
+            return null;
+          }
+        }),
+      );
+      if (cancelled) return;
+      const next: Record<string, KeyUsageSnapshot> = {};
+      for (const pair of pairs) {
+        if (pair) next[pair[0]] = pair[1];
+      }
+      setUsageMap(next);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [keys]);
+
+  async function onSavePolicy(next: KeyPolicy) {
+    if (!permTarget) return;
+    setPermSaving(true);
+    try {
+      await api.setUnifiedKeyPolicy(permTarget.id, next);
+      setPermTarget(null);
+      await load();
+      toast.success(t("wbStats.keyPerm.saved"), { description: permTarget.name });
+    } catch (error) {
+      toast.error(t("wbStats.keyPerm.saveFail"), { description: String(error) });
+    } finally {
+      setPermSaving(false);
+    }
+  }
   const [models, setModels] = useState<api.UnifiedModelsPreview | null>(null);
   /** 展开查看清单的命名空间（受控展开；不用 details/summary —— 本仓 AGENTS.md 禁止）。 */
   const [expandedNs, setExpandedNs] = useState<string[]>([]);
@@ -892,15 +993,32 @@ export function UnifiedGatewayView({
                     <th className="pb-2 pr-4 font-medium">{t("unifiedGateway.colMasked")}</th>
                     <th className="pb-2 pr-4 font-medium">{t("unifiedGateway.colCreated")}</th>
                     <th className="pb-2 pr-4 font-medium">{t("unifiedGateway.colLastUsed")}</th>
+                    {/* ★ issue #76：用量 / 权限两列（与另三条产品线同形，构件共用）。
+                        注意顺序：**命名空间在最左**（最外层授权）→ 账号范围 → 配额，
+                        与规范 §6.1 一致。 */}
+                    <th className="pb-2 pr-4 font-medium">{t("wbStats.keyPerm.quota")}</th>
+                    <th className="pb-2 pr-4 font-medium">{t("wbStats.keyPerm.scope")}</th>
                     <th className="pb-2 pr-4 font-medium">{t("unifiedGateway.colStatus")}</th>
                     <th className="pb-2 font-medium">{t("unifiedGateway.colActions")}</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {keys.map((key) => (
+                  {keys.map((key) => {
+                    const policy = policyOf(key);
+                    const expanded = expandedKeyId === key.id;
+                    const scopeNames = policy.scopeAccounts.map(
+                      (id) => unifiedAccounts.find((a) => a.id === id)?.name ?? id,
+                    );
+                    return (
+                    <>
                     <tr
                       key={key.id}
-                      className={cn("border-t border-border/60", key.revoked && "opacity-60")}
+                      className={cn(
+                        "border-t border-border/60",
+                        key.revoked && "opacity-60",
+                        expanded && "bg-primary/[0.07]",
+                      )}
+                      onClick={() => setExpandedKeyId(expanded ? null : key.id)}
                     >
                       <td className="py-2 pr-4 font-medium">{key.name}</td>
                       <td className="py-2 pr-4">
@@ -936,6 +1054,12 @@ export function UnifiedGatewayView({
                         {key.lastUsedAt ? formatDate(key.lastUsedAt) : t("unifiedGateway.neverUsed")}
                       </td>
                       <td className="py-2 pr-4">
+                        <KeyUsageCell policy={policy} usage={usageMap[key.id] ?? null} />
+                      </td>
+                      <td className="py-2 pr-4">
+                        <KeyScopeChip policy={policy} onOpenScope={() => setPermTarget(key)} />
+                      </td>
+                      <td className="py-2 pr-4">
                         <Badge
                           variant={key.revoked ? "secondary" : "success"}
                           className="rounded-md"
@@ -943,7 +1067,8 @@ export function UnifiedGatewayView({
                           {key.revoked ? t("unifiedGateway.revoked") : t("unifiedGateway.active")}
                         </Badge>
                       </td>
-                      <td className="py-2">
+                      {/* 操作列挡冒泡：点吊销/恢复不顺手展开明细。 */}
+                      <td className="py-2" onClick={(event) => event.stopPropagation()}>
                         {/* ★ 已吊销 ⇒ **两个出口都在**：恢复（可逆，同一把 Key）+ 删除（不可逆）。
                             只留删除 = 逼用户为一次误吊销删掉重建、再改所有客户端配置。恢复在前。 */}
                         {key.revoked ? (
@@ -977,12 +1102,42 @@ export function UnifiedGatewayView({
                         )}
                       </td>
                     </tr>
-                  ))}
+                    {expanded ? (
+                      <tr key={`${key.id}-detail`} className="border-t border-border/60">
+                        <td colSpan={9} className="p-0">
+                          <KeyRowDetail
+                            policy={policy}
+                            usage={usageMap[key.id] ?? null}
+                            accountNames={scopeNames}
+                            onEditQuota={() => setPermTarget(key)}
+                            onEditScope={() => setPermTarget(key)}
+                          />
+                        </td>
+                      </tr>
+                    ) : null}
+                    </>
+                    );
+                  })}
                 </tbody>
               </table>
             </div>
           )}
         </div>
+        {/* ★ issue #76：权限抽屉（改用量配额 + 可访问账号的唯一入口）。
+            ⚠️ 命名空间授权**不在这里**（它是另一个维度，见台账注释）。 */}
+        <KeyPermissionDrawer
+          open={permTarget !== null}
+          onOpenChange={(open) => {
+            if (!open) setPermTarget(null);
+          }}
+          keyName={permTarget?.name ?? ""}
+          policy={permTarget ? policyOf(permTarget) : EMPTY_POLICY}
+          usage={permTarget ? usageMap[permTarget.id] ?? null : null}
+          accounts={unifiedAccounts}
+          saving={permSaving}
+          onSave={(next) => void onSavePolicy(next)}
+        />
+
         {/* 说明段：与独立网关三张密钥表**同一段话**（抽到 `shared.gateway.keys.note`）。 */}
         <p className="mt-2.5 text-[11.5px] leading-5 text-muted-foreground">
           {t("shared.gateway.keys.note")}
