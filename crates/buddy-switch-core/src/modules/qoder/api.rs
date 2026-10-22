@@ -2170,8 +2170,18 @@ mod tests {
         assert!(lookup("Origin").unwrap().contains("qoder"));
     }
 
+    /// ★ 这两条用例都改 `QD_STRUCTURED_TOOL_HISTORY`（**进程级全局**），而 lib 单测
+    /// 全在同一进程里并行跑 ⇒ 必须取 [`config::env_lock`] 串行化。
+    ///
+    /// ## 为什么以前会**偶发**变红（真实踩过）
+    ///
+    /// 没有这把锁时，本用例 `set_var("on")` 之后，`real_qoder_model_keys_...` 那边
+    /// 可能在「`set_var("off")` 与 `remove_var`」之间读到 `on`，于是
+    /// `dfmodel` 从「不该命中」变成「命中」—— 断言自相矛盾，而代码毫无问题。
+    /// 症状是「同一份代码，跑三次红一次」，最难排查的那一类。
     #[test]
     fn structured_tool_history_rules() {
+        let _env = crate::modules::config::env_lock();
         let good = vec![
             serde_json::json!({"role": "assistant", "tool_calls": [{"id": "c1"}]}),
             serde_json::json!({"role": "tool", "tool_call_id": "c1", "content": "x"}),
@@ -2225,6 +2235,9 @@ mod tests {
     /// 可证伪：把常量改回旧名单（4 项）⇒ 第一条断言红。
     #[test]
     fn real_qoder_model_keys_hit_the_structured_tool_history_whitelist() {
+        // 断言依赖 `QD_STRUCTURED_TOOL_HISTORY` 的**默认值**（auto）⇒ 与那条会改它的
+        // 用例串行化，否则会被并发 `set_var` 干扰（见 `structured_tool_history_rules`）。
+        let _env = crate::modules::config::env_lock();
         let good = vec![
             serde_json::json!({"role": "assistant", "tool_calls": [{"id": "c1"}]}),
             serde_json::json!({"role": "tool", "tool_call_id": "c1", "content": "x"}),

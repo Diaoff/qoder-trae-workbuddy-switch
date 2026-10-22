@@ -11,7 +11,7 @@ Loomy = 1 个 `Product::Loomy` + 单作用域 `loomy-cn`，能力 `["checkin","c
 
 L0 core 平台基础（product.rs / gateway_namespace.rs / loomy::region）→ 命名空间 loomy-cn 自动派生
 L1 core 平台模块（modules/loomy/ 13 文件）→ 账号库 / 判别 / 签名 / 协议解析 / 积分逐日采样
-L2 gateway 产品线（gateway/src/loomy/ + unified 分派）→ 无独立端口（§11-D）
+L2 gateway 产品线（gateway/src/loomy/ + unified 分派）→ 统一入口 + 可选独立端口 57896
 L3 两处宿主（server api.rs + main.rs；tauri commands.rs + lib.rs）
 L4 前端（registry / scope / App.tsx / 5 页面 / api.ts / 词表）
 L5 门禁与文档
@@ -22,9 +22,9 @@ L5 门禁与文档
 |:--|:--|:--|
 | L0 | 完成 | 跨语言护栏绿；命名空间表 6→7 |
 | L1 | 完成 | 30 单测；IO 测试隔离 home + 串行（同文件并行写竞态） |
-| L2 | 完成 | gateway 623 测试全绿；RelayTarget::Loomy 中继 + 清单分支 + 管理面投影 + model_probe 真机位 |
-| L3 | 完成 | server 16 条 /api/loomy/* 端点（9 账号 + 6 微信 + 1 采样视图）；tauri 16 条 loomy_* 命令；check:api 通过 |
-| L4 | 完成 | 5 页面（含用量页趋势 + 设置页采样开关）+ 2 张 UsagePage 表 + overview-metrics 3 张表 + backup-section + use-scope-status + 词表 + demo case |
+| L2 | 完成 | gateway 全绿；RelayTarget::Loomy 中继 + 清单分支 + 管理面投影 + model_probe 真机位 + 独立端口（`impl GatewayProduct for LoomyGateway`）|
+| L3 | 完成 | server 21 条 /api/loomy/* 端点（9 账号 + 6 微信 + 1 采样视图 + 5 网关管理面中 10 个 path/方法组合）；tauri 29 条 loomy_* 命令（含网关 12 条）；两宿主各有独立网关监听；check:api 通过 |
+| L4 | 完成 | 6 页面（含 `LoomyApiServicePage`、用量页趋势、设置页采样开关）+ 2 张 UsagePage 表 + overview-metrics 3 张表 + backup-section + use-scope-status + `lib/loomy-gateway.ts` + 词表 + demo case |
 | L5 | 完成 | check-scope-registry 308 全绿；check-api-contract / check-store-selectors / check-agent-sources 绿；npm run build 成功 |
 
 ## 3. 硬约束（已全部落实）
