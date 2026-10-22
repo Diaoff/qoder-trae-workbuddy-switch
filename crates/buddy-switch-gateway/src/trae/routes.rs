@@ -928,42 +928,6 @@ fn record_key_tokens(
     actor.record_tokens(total, buddy_switch_core::modules::config::now_ms());
 }
 
-/// 配额判定 + 请求数记账（issue #76）。返回 `Some(文案)` = 已超限。
-///
-/// ★ 判定在**选号之前**（与 WB 侧 `relay` 同位置）：超限的请求一步都不发 ——
-///   不占在途、不触发换号、不写冷却。额度按密钥计，换号不会好。
-/// ★ 文案复用 WB 的 `GatewayError::KeyQuotaExceeded`（**唯一实现**）——
-///   两条产品线对同一个上限说同一句话，用户不用分辨自己走的是哪条网关。
-fn check_key_quota(
-    state: &TraeGatewayState,
-    record: &crate::trae::apikey::TraeApiKeyRecord,
-) -> Option<String> {
-    let now = buddy_switch_core::modules::config::now_ms();
-    let used = state
-        .key_usage
-        .used_for(&record.id, record.quota_unit, record.quota_period, now);
-    // 请求数在**进入网关后**记（业务代理没有 usage 回包，只有请求数可计）。
-    state
-        .key_usage
-        .record_request(&record.id, record.quota_period, now);
-    match crate::apikey::quota_verdict_for_policy(&record.policy(), used) {
-        crate::apikey::QuotaVerdict::Exceeded {
-            used,
-            limit,
-            unit,
-            period,
-        } => Some(
-            crate::error::GatewayError::KeyQuotaExceeded {
-                used,
-                limit,
-                unit,
-                period,
-            }
-            .message(),
-        ),
-        crate::apikey::QuotaVerdict::Ok => None,
-    }
-}
 
 /// 选号 + 出站一次。`tried` 在内部累加，调用方反复调用即可自动换号。
 ///
