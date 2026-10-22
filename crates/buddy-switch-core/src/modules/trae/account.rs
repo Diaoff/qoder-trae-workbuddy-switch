@@ -19,12 +19,13 @@ use serde_json::{json, Value};
 
 use crate::modules::product::{scope_of_trae_region, Scope as PlatformScope};
 use crate::modules::trae::credits::CooldownsFile;
-use crate::modules::trae::icube::{self, DeviceCredential, ProofSigFormat};
+use crate::modules::trae::icube::{self, ProofSigFormat};
 use crate::modules::trae::jwt;
+use crate::modules::trae::oauth;
 use crate::modules::trae::paths;
 use crate::modules::trae::region::TraeRegion;
 use crate::modules::trae::store;
-use crate::modules::trae::variant::TraeVariant;
+use crate::modules::trae::variant::{OAuthLine, TraeVariant};
 use crate::modules::trae::{
     device, TRAE_EXCHANGE_TOKEN_LEGACY_PATH, TRAE_EXCHANGE_TOKEN_PATH, TRAE_OAUTH_APP_ID,
     TRAE_PAGE_PLATFORM_CODE,
@@ -1121,10 +1122,14 @@ pub(crate) struct ExchangedToken {
 
 /// refresh 交换的失败详情。
 ///
+/// 三态（**三者不得混为一谈**，用户动作完全不同）：
 /// - `server_rejected = true`：服务端**明确拒绝**（旧形态数字 `code != 0`）
 ///   ⇒ refresh_token 已确定失效 ⇒ 文案「凭据已失效，请重新登录该账号」；
-/// - `server_rejected = false`：网络 / 解析 / 错误信封等本地与协议级失败
-///   ⇒ 文案「暂时失败，可稍后重试」。
+/// - `invalid_param = true`：上游判**请求参数无效**（火山 `10101/040004` 一类）
+///   ⇒ **请求形状**与上游协议不符，与凭据无关 ⇒ 文案必须指向「工具需要更新」，
+///   而不是「稍后重试」（后者会让死配置无限重试，正是 2026-10-22 的缺陷形态：
+///   refresh 体缺 `DeviceInfo`/`IDEVersion` 被拒，重试了 14 天没人知道）；
+/// - 两者皆假：网络 / 解析等**短暂**失败 ⇒ 文案「暂时失败，可稍后重试」。
 ///
 /// ★ **不得**把异构响应（无 `code`/`message` 的信封）误判为「凭据失效」——
 /// 参考 `oauth.rs:859` 记录了这正是旧实现的缺陷（`unwrap_or(-1)` 误判）。
@@ -1134,6 +1139,8 @@ pub(crate) struct RefreshExchangeError {
     pub(crate) message: String,
     /// 是否属于「服务端明确拒绝」。
     pub(crate) server_rejected: bool,
+    /// 是否属于「上游判定请求参数无效」（协议/形状问题，不是凭据问题）。
+    pub(crate) invalid_param: bool,
 }
 
 impl RefreshExchangeError {
@@ -1141,7 +1148,16 @@ impl RefreshExchangeError {
         Self {
             message: message.into(),
             server_rejected: false,
+            invalid_param: false,
         }
+    }
+
+    /// 火山信封里「参数无效」的两种码：`Code=10101` 与 `StandardCode=040004`。
+    ///
+    /// 实测真机响应：`code=10101/040004: 无效参数：{__Message.field}` —— 消息里的
+    /// 字段名还是**未替换的占位符**，所以只能靠码判定，不能靠文案。
+    fn params_invalid(code: &str, standard: &str) -> bool {
+        code == "10101" || standard == "040004"
     }
 }
 
@@ -1160,111 +1176,188 @@ pub(crate) struct RefreshVariant {
     pub(crate) with_cloudide_token: bool,
 }
 
-/// refresh 请求体（固化协议）：`{ClientID, RefreshToken, DeviceID, PlatformCode, DeviceProof}`。
+/// refresh 请求体（**逐字对齐客户端 1.107.1 的 `exchangeTokenByRefreshToken`**）：
+///
+/// ```text
+/// { ClientID, ClientSecret:"", RefreshToken, DeviceInfo, DeviceProof, IDEVersion }
+/// ```
+///
+/// ## 2026-10-22 真机缺陷（本次修复的对象）
+///
+/// 改造前的形状是 `{ClientID, RefreshToken, DeviceID, PlatformCode, DeviceProof}`
+/// —— 扁平设备字段、**没有 `DeviceInfo`/`IDEVersion`**。上游对它的回答是
+/// `10101/040004 无效参数`（四步变体全挂），于是：
+/// 账号 JWT 到期后自动续期 100% 失败，而错误被归成「暂时失败，可稍后重试」⇒
+/// 后台每 12 小时重试一次死配置，用户只看到卡片上「凭据已过期」，日志里零痕迹。
+///
+/// 客户端源码（`out/main.js`，`_buildDeviceInfo` + `exchangeTokenByRefreshToken`）
+/// 是本函数的唯一依据：AuthCode 与 refresh **发同一个 `DeviceInfo`**，字段一个不能少。
+///
+/// `ClientSecret` 是**空串**（不是 `oauth_client::DEFAULT_CLIENT_SECRET`）——
+/// 客户端原文 `ClientSecret:""`，旧协议里的 `"-"` 与之无关。
 pub(crate) fn build_refresh_payload(
     client_id: &str,
     refresh_token: &str,
-    device_id: &str,
-    proof: Value,
+    device_info: Value,
+    app_version: &str,
+    proof: Option<Value>,
 ) -> Value {
-    json!({
-        "ClientID": client_id,
-        "RefreshToken": refresh_token,
-        "DeviceID": device_id,
-        "PlatformCode": TRAE_PAGE_PLATFORM_CODE,
-        "DeviceProof": proof,
-    })
+    let mut payload = serde_json::Map::new();
+    payload.insert("ClientID".into(), json!(client_id));
+    payload.insert("ClientSecret".into(), json!(""));
+    payload.insert("RefreshToken".into(), json!(refresh_token));
+    payload.insert("DeviceInfo".into(), device_info);
+    // 无设备私钥时（导入/备份搬来的账号）**不发 proof**：签名原文必须用私钥，
+    // 编一个出来只会让上游回 20405。少一个字段是「诚实地说我没有私钥」。
+    if let Some(proof) = proof {
+        payload.insert("DeviceProof".into(), proof);
+    }
+    payload.insert("IDEVersion".into(), json!(app_version));
+    Value::Object(payload)
 }
 
-/// 旧协议兜底请求体：`{ClientID, RefreshToken, ClientSecret, UserID}`。
+/// 构造 refresh 的**变体链**（顺序即优先级，纯函数 ⇒ 可单测）。
 ///
-/// **逐字保留**（与改造前 `account.rs:769-774` 一致）：它是参考项目自己排在最后、
-/// 并标注「保留至固化协议验证期结束」的那条路径，改动它等于同时改掉唯一的历史退路。
-pub(crate) fn build_legacy_refresh_payload(client_id: &str, refresh_token: &str) -> Value {
-    json!({
-        "ClientID": client_id,
-        "RefreshToken": refresh_token,
-        "ClientSecret": crate::modules::trae::oauth_client::DEFAULT_CLIENT_SECRET,
-        "UserID": "",
-    })
-}
-
-/// 构造 refresh 的**四步变体链**（顺序即优先级，纯函数 ⇒ 可单测）。
+/// ## 变体维度（三条，与客户端 1.107.1 的失败面一一对应）
 ///
-/// | 步 | 端点 | 请求体 | DeviceProof | 需要私钥 |
+/// | 维度 | 取值 | 为什么 |
+/// |:--|:--|:--|
+/// | 端点 | 新路径 `account_base` / 旧端点 `icube_base` | 客户端 `this.apiHost` vs 旧 cloudide 路由 |
+/// | 签名 | P1363 / DER | 私钥编码形态 |
+/// | **产品线** | 变体自己的线 / **另一条线** | ★ refresh_token 绑的是**签发它的那把钥匙** |
+///
+/// ## ★ 为什么必须试「另一条线」（2026-10-22 真机根因）
+///
+/// 上游对「拿 A 线的 refresh_token 去换 B 线的 token」的回答是
+/// `10101/040004` + `Data.__Message.error = "refresh token is not matched to the client"`
+/// —— 而且**官方客户端自己也会撞上**（真机日志 2026-10-20 18:01，Trae CN 客户端
+/// 用自己的 storage 里的 refresh_token 连试 27 次，全是这个错）。
+///
+/// 也就是说：一个账号的 refresh_token 可能属于**另一条产品线的客户端**
+/// （同一台机器上装了 SOLO_CN 与 TRAE_CN 两个客户端时极常见），
+/// 而我们的账号库**按区域分家**（SOLO 与 TRAE 共用同一本 CN 库）⇒
+/// 库里的 token 与「本变体该用的钥匙」可能对不上。
+///
+/// 因此链的末尾追加「另一条线」的两个变体（带 proof / 不带 proof）：
+/// 本线的钥匙被拒时再试另一把，成功即写回。
+///
+/// 变体清单：
+/// | 步 | 端点 | 请求体 | DeviceProof | 产品线 |
 /// |:--|:---|:---|:---|:---|
-/// | 1 | `${icube_base}/trae/api/v3/oauth/ExchangeToken` | 固化体 | P1363 | 是 |
-/// | 2 | 同 1 | 同 1（仅签名编码不同） | DER | 是 |
-/// | 3 | `${icube_base}/cloudide/api/v3/trae/oauth/ExchangeToken`（旧端点） | 同 1 | P1363 | 是 |
-/// | 4 | 同 3（旧端点） | `{ClientID, RefreshToken, ClientSecret, UserID}` | 无 | 否 |
-///
-/// - 步 1–3 **仅在取到设备凭证**时进入（`credential` 为 `None` 时整段跳过）；
-/// - 步 4 **无条件**存在（无凭证时它是唯一路径）；
-/// - `sign_path` 按端点区分（步 1/2 用新路径、步 3 用旧路径），与参考
-///   `oauth.rs:882-897` 逐字一致 —— 签名原文里的路径与请求 URL 的路径必须匹配，
-///   否则服务端按另一条路径验签必然 20405。
+/// | 1 | `${account_base}/trae/api/v3/oauth/ExchangeToken` | 客户端体 | P1363 | 本线 |
+/// | 2 | 同 1 | 同 1 | DER | 本线 |
+/// | 3 | `${icube_base}/cloudide/api/v3/trae/oauth/ExchangeToken` | 同 1 | P1363 | 本线 |
+/// | 4 | `${account_base}/trae/api/v3/oauth/ExchangeToken` | 同 1 但**无** proof | 无 | 本线 |
+/// | 5 | 同 1 | 同 1 | P1363 | **另一条线** |
+/// | 6 | 同 1 | 同 1 但**无** proof | 无 | **另一条线** |
 fn build_refresh_variants(
     variant: TraeVariant,
-    client_id: &str,
     refresh_token: &str,
-    credential: Option<&DeviceCredential>,
+    secret: Option<&icube::DeviceSecret>,
 ) -> Vec<RefreshVariant> {
-    let icube_base = crate::modules::trae::endpoints_for(variant).icube_base;
-    let new_url = format!("{icube_base}{TRAE_EXCHANGE_TOKEN_PATH}");
-    let legacy_url = format!("{icube_base}{TRAE_EXCHANGE_TOKEN_LEGACY_PATH}");
+    let endpoints = crate::modules::trae::endpoints_for(variant);
+    let new_url = format!("{}{TRAE_EXCHANGE_TOKEN_PATH}", endpoints.account_base);
+    let legacy_url = format!(
+        "{}{TRAE_EXCHANGE_TOKEN_LEGACY_PATH}",
+        endpoints.icube_base
+    );
 
-    let mut variants = Vec::with_capacity(4);
-    if let Some(credential) = credential {
-        for (format, url, sign_path, tag) in [
-            (
-                ProofSigFormat::P1363,
-                new_url.as_str(),
-                TRAE_EXCHANGE_TOKEN_PATH,
-                "Refresh/Proof/P1363",
-            ),
-            (
-                ProofSigFormat::Der,
-                new_url.as_str(),
-                TRAE_EXCHANGE_TOKEN_PATH,
-                "Refresh/Proof/DER",
-            ),
-            (
-                ProofSigFormat::P1363,
-                legacy_url.as_str(),
-                TRAE_EXCHANGE_TOKEN_LEGACY_PATH,
-                "Refresh/LegacyEndpoint/Proof/P1363",
-            ),
-        ] {
+    // ★ 请求体骨架与 AuthCode 链**同源**：[`oauth::ClientFacts`] 是 `DeviceInfo`
+    //   与 `IDEVersion` 的唯一派生点。没有设备身份（客户端从没启动过）时这两项
+    //   没有可信取值 ⇒ 只能退化成「无 proof」形态，由上游判定。
+    let base_facts = secret.map(|secret| oauth::ClientFacts::from_identity(secret.identity.clone()));
+
+    let own_line = variant.oauth_line();
+    let other_line = match own_line {
+        OAuthLine::Solo => OAuthLine::Trae,
+        OAuthLine::Trae => OAuthLine::Solo,
+    };
+
+    let mut variants = Vec::with_capacity(6);
+    for (line, tag_prefix) in [(own_line, ""), (other_line, "OtherLine/")] {
+        let line_client_id = crate::modules::trae::oauth_client::oauth_client().client_id_for(line);
+        let Some(facts) = base_facts.as_ref().map(|facts| facts.with_line(line)) else {
+            // 没有设备身份 ⇒ 只能发「无 proof」形态（且只需要试一次）。
+            variants.push(RefreshVariant {
+                tag: format!("{tag_prefix}Refresh/NoProof"),
+                url: new_url.clone(),
+                sign_path: "",
+                payload: build_refresh_payload(
+                    line_client_id,
+                    refresh_token,
+                    Value::Null,
+                    "",
+                    None,
+                ),
+                with_cloudide_token: true,
+            });
+            continue;
+        };
+        let device_info = oauth::device_info_payload(&facts);
+        let app_version = facts.app_version();
+
+        // 本线：P1363 / DER（新端点）+ P1363（旧端点）+ 无 proof（新端点）。
+        // 另一条线：P1363（新端点）+ 无 proof（新端点）—— 线是兜底轴，不必铺满。
+        let plans: Vec<(&str, &str, Option<ProofSigFormat>)> = if tag_prefix.is_empty() {
+            vec![
+                (new_url.as_str(), TRAE_EXCHANGE_TOKEN_PATH, Some(ProofSigFormat::P1363)),
+                (new_url.as_str(), TRAE_EXCHANGE_TOKEN_PATH, Some(ProofSigFormat::Der)),
+                (
+                    legacy_url.as_str(),
+                    TRAE_EXCHANGE_TOKEN_LEGACY_PATH,
+                    Some(ProofSigFormat::P1363),
+                ),
+                (new_url.as_str(), TRAE_EXCHANGE_TOKEN_PATH, None),
+            ]
+        } else {
+            vec![
+                (new_url.as_str(), TRAE_EXCHANGE_TOKEN_PATH, Some(ProofSigFormat::P1363)),
+                (new_url.as_str(), TRAE_EXCHANGE_TOKEN_PATH, None),
+            ]
+        };
+
+        for (index, (url, sign_path, format)) in plans.into_iter().enumerate() {
             // 签名失败（私钥形态变化）时**跳过该变体**而不是整体失败：
-            // 后面还有 DER 与旧协议兜底，多一条路总比直接放弃好。
-            let Ok(proof) =
-                icube::device_proof(credential, sign_path, client_id, refresh_token, format)
-            else {
-                continue;
+            // 后面还有无 proof 的兜底，多一条路总比直接放弃好。
+            let proof = match format {
+                Some(format) => {
+                    let Some(secret) = secret else { continue };
+                    match icube::device_proof(
+                        &secret.credential,
+                        sign_path,
+                        line_client_id,
+                        refresh_token,
+                        format,
+                    ) {
+                        Ok(proof) => Some(proof),
+                        Err(_) => continue,
+                    }
+                }
+                None => None,
+            };
+            let tag = match (format, index) {
+                (Some(ProofSigFormat::P1363), 0) => format!("{tag_prefix}Refresh/Proof/P1363"),
+                (Some(ProofSigFormat::Der), 1) => format!("{tag_prefix}Refresh/Proof/DER"),
+                (Some(ProofSigFormat::P1363), 2) => {
+                    format!("{tag_prefix}Refresh/LegacyEndpoint/Proof/P1363")
+                }
+                _ => format!("{tag_prefix}Refresh/NoProof"),
             };
             variants.push(RefreshVariant {
-                tag: tag.to_string(),
+                tag,
                 url: url.to_string(),
-                sign_path,
+                sign_path: if proof.is_some() { sign_path } else { "" },
                 payload: build_refresh_payload(
-                    client_id,
+                    line_client_id,
                     refresh_token,
-                    &credential.device_id,
+                    device_info.clone(),
+                    &app_version,
                     proof,
                 ),
                 with_cloudide_token: true,
             });
         }
     }
-
-    // 旧协议兜底：无条件存在（无凭证时唯一路径）。
-    variants.push(RefreshVariant {
-        tag: "Refresh/Legacy".to_string(),
-        url: legacy_url,
-        sign_path: "",
-        payload: build_legacy_refresh_payload(client_id, refresh_token),
-        with_cloudide_token: false,
-    });
 
     variants
 }
@@ -1284,19 +1377,19 @@ fn bound_device_id(variant: TraeVariant, user_id: &str) -> Option<String> {
 
 /// 解析本次续期要用的**设备凭证**（**同源优先**，[`exchange_token_for`] 的唯一取值点）。
 ///
-/// - `Some(id)` ⇒ [`icube::device_credential_by_device_id`] **按 id 精确取**，不依赖活跃度；
-/// - `None`（旧账号 / 无绑定）⇒ [`icube::device_credential_for`] 回落「当前目录的那一条」，
+/// - `Some(id)` ⇒ [`icube::device_secret_by_device_id`] **按 id 精确取**，不依赖活跃度；
+/// - `None`（旧账号 / 无绑定）⇒ [`icube::device_secret_for`] 回落「当前目录的那一条」，
 ///   并**写一条留痕日志** —— 这条路径拿到的私钥可能与账号当初用的那台不一致，
 ///   出问题时必须能从日志里看出来「这次是猜的」。
 ///
 /// 抽出来是为了**可测**：`exchange_token_for` 的其余部分要发网络请求，
 /// 而「到底取了哪台设备的私钥」正是 T13-4 要钉住的那件事。
-fn resolve_refresh_credential(
+fn resolve_refresh_secret(
     variant: TraeVariant,
     device_id: Option<&str>,
-) -> Result<DeviceCredential, icube::IcubeError> {
+) -> Result<icube::DeviceSecret, icube::IcubeError> {
     match device_id.map(str::trim).filter(|value| !value.is_empty()) {
-        Some(device_id) => icube::device_credential_by_device_id(variant, device_id),
+        Some(device_id) => icube::device_secret_by_device_id(variant, device_id),
         None => {
             // 留痕：不阻塞流程，但必须留下「这次没有绑定、是猜的」这个事实。
             store::append_log(
@@ -1307,7 +1400,7 @@ fn resolve_refresh_credential(
                     variant.display_name()
                 ),
             );
-            icube::device_credential_for(variant)
+            icube::device_secret_for(variant)
         }
     }
 }
@@ -1327,10 +1420,10 @@ fn resolve_refresh_credential(
 /// ## 设备凭证的来源（**同源优先**）
 ///
 /// `device_id` = 该账号**绑定的**那台设备（[`AccountsFile::device_bindings`]，G-b）：
-/// - `Some(id)` ⇒ [`icube::device_credential_by_device_id`] **按 id 精确取**
+/// - `Some(id)` ⇒ [`icube::device_secret_by_device_id`] **按 id 精确取**
 ///   （不依赖活跃度）—— 客户端换过设备、或本变体有多个候选目录时，
 ///   「活跃目录里的那一条」未必是这台，用错私钥会被上游拒（20403/20405）；
-/// - `None`（旧账号 / 无绑定）⇒ [`icube::device_credential_for`] 回落「当前目录的那一条」，
+/// - `None`（旧账号 / 无绑定）⇒ [`icube::device_secret_for`] 回落「当前目录的那一条」，
 ///   并**写一条留痕日志**：这条路径拿到的私钥可能与账号当初用的那台不一致，
 ///   出问题时必须能从日志里看出来「这次是猜的」。
 pub(crate) async fn exchange_token_for(
@@ -1338,12 +1431,12 @@ pub(crate) async fn exchange_token_for(
     refresh_token: &str,
     device_id: Option<&str>,
 ) -> Result<ExchangedToken, RefreshExchangeError> {
-    let credential = resolve_refresh_credential(variant, device_id);
-    let credential_note = credential
+    let secret = resolve_refresh_secret(variant, device_id);
+    let secret_note = secret
         .as_ref()
         .err()
         .map(|error| format!("{}（kind={}）", error.user_message(variant), error.kind()));
-    let credential = credential.ok();
+    let secret = secret.ok();
 
     // `x-device-id`：有设备凭证时与 DeviceProof 的 DeviceID 同源（参考
     // `load_or_create_oauth_device` 正是把 oauth 设备 id 覆盖成 icube 的 deviceId）。
@@ -1351,16 +1444,19 @@ pub(crate) async fn exchange_token_for(
     // ★ 无凭证时**不发这个头**，绝不回落到任何「本机自造」的 device_id：
     // 自造值与签名私钥不匹配，上游只会回 20403/20405（参考自己的注释已经写明）。
     // 少一个头是「诚实地说我没有设备身份」，编一个出来是「撒谎」。
-    let header_device_id = credential
+    let header_device_id = secret
         .as_ref()
-        .map(|credential| credential.device_id.clone());
+        .map(|secret| secret.credential.device_id.clone());
 
     // ★ `ClientID` 按**产品线**取（SOLO 与 TRAE 各有独立的一把钥匙，见
     // `OAuthLine::default_client_id`）。它与授权 URL / AuthCode 交换用的是同一个
     // 取值函数 —— 三处必须同源，否则等于拿 A 线的钥匙兑 B 线的 token。
-    let client_id =
-        crate::modules::trae::oauth_client::oauth_client().client_id_for(variant.oauth_line());
-    let variants = build_refresh_variants(variant, client_id, refresh_token, credential.as_ref());
+    // ★ `ClientID` **按产品线**取（SOLO 与 TRAE 各有一把钥匙，见
+    // `OAuthLine::default_client_id`），且**每个变体各取各的** ——
+    // refresh_token 是「签发它的那把钥匙」的凭证，拿错钥匙上游会回
+    // `refresh token is not matched to the client`（2026-10-22 真机实测，
+    // 官方客户端自己也会撞）。取值函数由 `build_refresh_variants` 内部统一调用。
+    let variants = build_refresh_variants(variant, refresh_token, secret.as_ref());
 
     let mut errors: Vec<String> = Vec::new();
     let mut last_error: Option<RefreshExchangeError> = None;
@@ -1394,22 +1490,39 @@ pub(crate) async fn exchange_token_for(
 
     // 全部失败：**逐变体列出**（否则用户无从判断是协议问题还是凭据问题）。
     let mut message = format!("全部刷新变体失败 → {}", errors.join(" | "));
-    if let Some(note) = credential_note {
+    if let Some(note) = secret_note {
         message.push_str(&format!("；未取到设备凭证：{note}"));
     }
     Err(RefreshExchangeError {
         message,
-        server_rejected: last_error.map(|e| e.server_rejected).unwrap_or(false),
+        server_rejected: last_error
+            .as_ref()
+            .map(|error| error.server_rejected)
+            .unwrap_or(false),
+        invalid_param: last_error
+            .map(|error| error.invalid_param)
+            .unwrap_or(false),
     })
 }
 
 /// 把刷新失败映射成**可操作**的用户文案（纯函数，可单测）。
 ///
-/// 「凭据已失效」与「稍后重试」是两种完全不同的用户动作，混为一谈会让用户
-/// 反复重试一条已经失效的凭据，或者反过来把一次网络抖动当成账号失效而重新登录。
+/// 三态映射（与 [`RefreshExchangeError`] 的字段一一对应）：
+/// - 「凭据已失效」 ⇒ 重新登录（重试没有意义）；
+/// - 「上游判参数无效」 ⇒ **请求形状**不对（协议变更/字段缺失），重试同样没有意义，
+///   必须让用户看到「这不是等一下就好」；
+/// - 其余 ⇒ 网络/解析抖动，稍后重试有用。
+///
+/// 2026-10-22 的缺陷正是把第二种混进第三种：`10101/040004` 被当成「暂时失败」，
+/// 后台每轮重试同一条死配置、日志又不留痕，用户只看到卡片上「凭据已过期」。
 pub(crate) fn refresh_error_message(error: &RefreshExchangeError) -> String {
     if error.server_rejected {
         format!("凭据已失效，请重新登录该账号（{}）", error.message)
+    } else if error.invalid_param {
+        format!(
+            "上游拒绝续期请求的参数 —— 请求形状与上游协议不符，重试无用；请先手动重新登录/重新导入该账号，并反馈此问题（{}）",
+            error.message
+        )
     } else {
         format!("刷新暂时失败，可稍后重试（{}）", error.message)
     }
@@ -1464,9 +1577,13 @@ async fn try_refresh_variant(
                 .unwrap_or_else(|| "未知错误".into());
             let standard = dig_string(&body, &["ResponseMetadata", "Error", "StandardCode"])
                 .unwrap_or_default();
-            return Err(RefreshExchangeError::transport(format!(
-                "code={code}/{standard}: {message}"
-            )));
+            // ★ `10101/040004` = 「参数无效」⇒ 请求**形状**问题，不是凭据问题。
+            //   必须与网络抖动分开：它重试一万次也不会成功（2026-10-22 缺陷）。
+            return Err(RefreshExchangeError {
+                message: format!("code={code}/{standard}: {message}"),
+                server_rejected: false,
+                invalid_param: RefreshExchangeError::params_invalid(&code, &standard),
+            });
         }
     }
     // 旧形态数字 code：**唯一可信的**「服务端明确拒绝」信号。
@@ -1479,6 +1596,7 @@ async fn try_refresh_variant(
             return Err(RefreshExchangeError {
                 message: format!("code={code}: {message}"),
                 server_rejected: true,
+                invalid_param: false,
             });
         }
     }
@@ -2578,12 +2696,30 @@ hLkrYGiVNhsErnjKIgS7/EIHdsihRANCAARznG0WLhenNiMW5jA3SwFpTNyet2zw\n\
 1YDTNTiZI0L4egFQ0IzlUPgrZK/O5nwkmNJR0MukWZH7NgvdoDLsS0NB\n\
 -----END PRIVATE KEY-----";
 
-    fn test_credential() -> DeviceCredential {
-        DeviceCredential {
-            variant: TraeVariant::TraeWork,
-            device_id: "2292929806738024".into(),
-            private_key_pem: TEST_PRIVATE_KEY_PEM.to_string(),
-            source_app: "TRAE SOLO CN".into(),
+    /// 测试用公钥 PEM（内容不参与任何验签，只需非空、形态像 PEM）。
+    const TEST_PUBLIC_KEY_PEM: &str = "-----BEGIN PUBLIC KEY-----\nTESTTEST\n-----END PUBLIC KEY-----";
+
+    /// 一台设备的**身份 + 私钥**（refresh 请求体的完整输入）。
+    ///
+    /// `machine_id` / `app_version` 显式给值：留空会触发 `authorize_machine_id` 的
+    /// 「本机自造」回落，那会去读**真实 home** 下的 `oauth_device.json`（测试副作用）。
+    fn test_secret() -> icube::DeviceSecret {
+        let variant = TraeVariant::TraeWork;
+        icube::DeviceSecret {
+            identity: icube::DeviceIdentity {
+                variant,
+                device_id: "2292929806738024".into(),
+                machine_id: "machine-for-tests".into(),
+                app_version: "0.1.69".into(),
+                public_key_pem: TEST_PUBLIC_KEY_PEM.to_string(),
+                source_app: "TRAE SOLO CN".into(),
+            },
+            credential: icube::DeviceCredential {
+                variant,
+                device_id: "2292929806738024".into(),
+                private_key_pem: TEST_PRIVATE_KEY_PEM.to_string(),
+                source_app: "TRAE SOLO CN".into(),
+            },
         }
     }
 
@@ -2612,12 +2748,16 @@ hLkrYGiVNhsErnjKIgS7/EIHdsihRANCAARznG0WLhenNiMW5jA3SwFpTNyet2zw\n\
         out
     }
 
-    /// ★ 链的顺序与签名路径必须与参考 `oauth.rs:878-929` 逐字一致。
+    /// ★ 链的顺序、端点与签名路径 —— **依据是客户端 1.107.1 源码**，不是「固化协议」。
+    ///
+    /// 端点分两类（2026-10-22 缺陷的一半）：新路径打 `account_base`（CN =
+    /// `https://api.trae.cn`，客户端 `this.apiHost`），旧端点打 `icube_base`
+    /// （CN = `https://api.trae.com.cn`）。改造前两步都用 `icube_base`。
     #[test]
-    fn refresh_chain_order_is_new_p1363_then_new_der_then_old_p1363_then_legacy() {
-        let credential = test_credential();
+    fn refresh_chain_order_is_new_p1363_then_new_der_then_old_p1363_then_no_proof() {
+        let secret = test_secret();
         let variants =
-            build_refresh_variants(TraeVariant::TraeWork, "cid", "rt", Some(&credential));
+            build_refresh_variants(TraeVariant::TraeWork, "rt", Some(&secret));
 
         let tags: Vec<&str> = variants.iter().map(|v| v.tag.as_str()).collect();
         assert_eq!(
@@ -2626,20 +2766,20 @@ hLkrYGiVNhsErnjKIgS7/EIHdsihRANCAARznG0WLhenNiMW5jA3SwFpTNyet2zw\n\
                 "Refresh/Proof/P1363",
                 "Refresh/Proof/DER",
                 "Refresh/LegacyEndpoint/Proof/P1363",
-                "Refresh/Legacy",
+                "Refresh/NoProof",
+                // ★ 另一条产品线是**兜底轴**：本线钥匙被拒时再试它
+                // （上游错误原文 "refresh token is not matched to the client"）。
+                "OtherLine/Refresh/Proof/P1363",
+                "OtherLine/Refresh/NoProof",
             ],
-            "四步链的顺序漂了"
+            "变体链的顺序漂了"
         );
 
-        let new_url = format!(
-            "{}{}",
-            crate::modules::trae::TRAE_OAUTH_BASE_CN,
-            crate::modules::trae::TRAE_EXCHANGE_TOKEN_PATH
-        );
+        let endpoints = crate::modules::trae::endpoints_for(TraeVariant::TraeWork);
+        let new_url = format!("{}{}", endpoints.account_base, TRAE_EXCHANGE_TOKEN_PATH);
         let legacy_url = format!(
             "{}{}",
-            crate::modules::trae::TRAE_OAUTH_BASE_CN,
-            crate::modules::trae::TRAE_EXCHANGE_TOKEN_LEGACY_PATH
+            endpoints.icube_base, TRAE_EXCHANGE_TOKEN_LEGACY_PATH
         );
 
         // 步 1/2 用**新端点 + 新签名路径**。
@@ -2650,14 +2790,14 @@ hLkrYGiVNhsErnjKIgS7/EIHdsihRANCAARznG0WLhenNiMW5jA3SwFpTNyet2zw\n\
         // 步 3 用**旧端点 + 旧签名路径**（路径必须与 URL 匹配，否则验签必失败）。
         assert_eq!(variants[2].url, legacy_url);
         assert_eq!(variants[2].sign_path, TRAE_EXCHANGE_TOKEN_LEGACY_PATH);
-        // 步 4 是旧协议兜底。
-        assert_eq!(variants[3].url, legacy_url);
+        // 步 4 是无 proof 兜底，仍打新端点。
+        assert_eq!(variants[3].url, new_url);
+        // 步 5/6（另一条线）也打新端点。
+        assert_eq!(variants[4].url, new_url);
+        assert_eq!(variants[5].url, new_url);
 
-        // 步 1–3 带空 `x-cloudide-token`，步 4 不带（与参考一致）。
-        assert!(variants[0].with_cloudide_token);
-        assert!(variants[1].with_cloudide_token);
-        assert!(variants[2].with_cloudide_token);
-        assert!(!variants[3].with_cloudide_token);
+        // 六步都带空 `x-cloudide-token`（客户端 refresh 路径恒带该头）。
+        assert!(variants.iter().all(|variant| variant.with_cloudide_token));
 
         // 两个 P1363 步骤的签名必须**不同**（同一时间戳下也如此，因为有随机 nonce）。
         let sig = |index: usize| {
@@ -2671,46 +2811,137 @@ hLkrYGiVNhsErnjKIgS7/EIHdsihRANCAARznG0WLhenNiMW5jA3SwFpTNyet2zw\n\
         };
         assert!(!sig(0).is_empty());
         assert!(!sig(2).is_empty());
+        assert_ne!(sig(0), sig(2));
+        // 兜底步**没有** DeviceProof（没有私钥就不能编一个）。
+        assert!(variants[3].payload.get("DeviceProof").is_none());
+        assert!(variants[5].payload.get("DeviceProof").is_none());
+
+        // ★ 两条线必须用**各自的 ClientID**（refresh_token 绑的是签发它的那把钥匙）。
+        let own = crate::modules::trae::oauth_client::oauth_client()
+            .client_id_for(TraeVariant::TraeWork.oauth_line());
+        let other = crate::modules::trae::oauth_client::oauth_client()
+            .client_id_for(match TraeVariant::TraeWork.oauth_line() {
+                OAuthLine::Solo => OAuthLine::Trae,
+                OAuthLine::Trae => OAuthLine::Solo,
+            });
+        assert_ne!(own, other, "两条线的 ClientID 必须不同");
+        assert_eq!(
+            variants[0]
+                .payload
+                .get("ClientID")
+                .and_then(Value::as_str),
+            Some(own)
+        );
+        assert_eq!(
+            variants[4]
+                .payload
+                .get("ClientID")
+                .and_then(Value::as_str),
+            Some(other)
+        );
+        // `PlatformCode` 同样随线变（在 `DeviceInfo` 里面）。
+        let platform = |index: usize| {
+            variants[index]
+                .payload
+                .get("DeviceInfo")
+                .and_then(|info| info.get("PlatformCode"))
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string()
+        };
+        assert_eq!(platform(0), TraeVariant::TraeWork.oauth_line().platform_code());
+        assert_ne!(platform(0), platform(4));
     }
 
-    /// 固化 refresh 请求体：`{ClientID, RefreshToken, DeviceID, PlatformCode, DeviceProof}`。
+    /// ★ 请求体必须与客户端 `exchangeTokenByRefreshToken` 的字段集**逐字对齐**。
+    ///
+    /// 可证伪性：把 `DeviceInfo`/`IDEVersion` 去掉（回到 2026-10-22 之前的形状），
+    /// 本用例立刻变红 —— 那个形状被上游回 `10101/040004 无效参数`。
     #[test]
-    fn build_refresh_payload_has_deviceproof_and_platform_code() {
+    fn build_refresh_payload_matches_client_1071_body() {
+        let secret = test_secret();
+        let facts = oauth::ClientFacts::from_identity(secret.identity.clone());
         let proof = serde_json::json!({"Signature":"s","Timestamp":1,"Nonce":"n"});
-        let payload = build_refresh_payload("ono9krqynydwx5", "rt", "dev-1", proof);
-        let keys: Vec<&str> = payload
-            .as_object()
-            .unwrap()
-            .keys()
-            .map(String::as_str)
-            .collect();
+        let payload = build_refresh_payload(
+            "ono9krqynydwx5",
+            "rt",
+            oauth::device_info_payload(&facts),
+            &facts.app_version(),
+            Some(proof),
+        );
+
+        let object = payload.as_object().expect("请求体必须是对象");
+        let mut keys: Vec<&str> = object.keys().map(String::as_str).collect();
+        keys.sort_unstable();
+        assert_eq!(
+            keys,
+            vec![
+                "ClientID",
+                "ClientSecret",
+                "DeviceInfo",
+                "DeviceProof",
+                "IDEVersion",
+                "RefreshToken"
+            ],
+            "请求体字段集与客户端不一致: {keys:?}"
+        );
+
+        // 客户端原文是 `ClientSecret: ""`（不是旧协议的 `"-"`）。
+        assert_eq!(
+            object.get("ClientSecret").and_then(Value::as_str),
+            Some("")
+        );
+        // 旧的扁平字段**不得**再出现（它们属于被拒的那一版形状）。
+        assert!(object.get("DeviceID").is_none(), "{payload}");
+        assert!(object.get("PlatformCode").is_none(), "{payload}");
+
+        // DeviceInfo 的 12 个字段一个不能少 —— 上游按缺参拒。
+        let info = object
+            .get("DeviceInfo")
+            .and_then(Value::as_object)
+            .expect("必须有 DeviceInfo 对象");
         for expected in [
-            "ClientID",
-            "RefreshToken",
             "DeviceID",
+            "MachineID",
             "PlatformCode",
-            "DeviceProof",
+            "DeviceType",
+            "DeviceName",
+            "DeviceModel",
+            "ClientVersion",
+            "DevicePublicKey",
+            "DeviceBrand",
+            "DeviceCPU",
+            "OSInfo",
+            "OSVersion",
         ] {
-            assert!(keys.contains(&expected), "缺少字段 {expected}: {keys:?}");
+            assert!(info.contains_key(expected), "DeviceInfo 缺 {expected}: {info:?}");
         }
-        assert_eq!(keys.len(), 5, "请求体字段集漂了: {keys:?}");
+        assert_eq!(info.len(), 12, "DeviceInfo 字段集漂了: {info:?}");
         assert_eq!(
-            payload.get("PlatformCode").and_then(|v| v.as_str()),
-            Some("IDE_PC")
+            info.get("DeviceID").and_then(Value::as_str),
+            Some("2292929806738024")
         );
         assert_eq!(
-            payload.get("DeviceID").and_then(|v| v.as_str()),
-            Some("dev-1")
+            info.get("MachineID").and_then(Value::as_str),
+            Some("machine-for-tests")
         );
-        assert!(payload.get("DeviceProof").is_some());
+        assert_eq!(
+            info.get("DevicePublicKey").and_then(Value::as_str),
+            Some(TEST_PUBLIC_KEY_PEM)
+        );
+        // 两条链同源：`ClientVersion` 与顶层 `IDEVersion` 必须相等。
+        assert_eq!(
+            info.get("ClientVersion").and_then(Value::as_str),
+            object.get("IDEVersion").and_then(Value::as_str)
+        );
     }
 
     /// `DeviceProof.Timestamp` 必须是 **JSON int**（字符串会被服务端 schema 拒绝）。
     #[test]
     fn refresh_payload_timestamp_is_json_int() {
-        let credential = test_credential();
+        let secret = test_secret();
         let variants =
-            build_refresh_variants(TraeVariant::TraeWork, "cid", "rt", Some(&credential));
+            build_refresh_variants(TraeVariant::TraeWork, "rt", Some(&secret));
         for variant in variants.iter().take(3) {
             let timestamp = variant
                 .payload
@@ -2725,35 +2956,35 @@ hLkrYGiVNhsErnjKIgS7/EIHdsihRANCAARznG0WLhenNiMW5jA3SwFpTNyet2zw\n\
         }
     }
 
-    /// 旧协议兜底体必须与改造前**逐字一致**（`account.rs:769-774`），保证兜底不漂移。
+    /// ★ 取不到设备私钥时只剩**无 proof 兜底**，且它仍是客户端形状
+    /// （有 `DeviceInfo`、`ClientSecret: ""`），不是改造前那条已死的旧协议体。
     #[test]
-    fn build_legacy_refresh_payload_matches_old_contract() {
-        let payload = build_legacy_refresh_payload("ono9krqynydwx5", "rt");
-        assert_eq!(
-            payload,
-            serde_json::json!({
-                "ClientID": "ono9krqynydwx5",
-                "RefreshToken": "rt",
-                "ClientSecret": "-",
-                "UserID": "",
-            })
-        );
-    }
-
-    /// ★ 无设备凭证时**只**试旧协议兜底（并且调用方能从错误里看出是「没凭证」）。
-    #[test]
-    fn refresh_chain_uses_legacy_only_when_credential_missing() {
-        let variants = build_refresh_variants(TraeVariant::TraeMerged, "cid", "rt", None);
-        assert_eq!(variants.len(), 1, "无凭证时不该出现带 Proof 的变体");
-        assert_eq!(variants[0].tag, "Refresh/Legacy");
-        assert!(!variants[0].with_cloudide_token);
-        assert!(variants[0].payload.get("DeviceProof").is_none());
-        assert_eq!(
-            variants[0]
-                .payload
-                .get("ClientSecret")
-                .and_then(|v| v.as_str()),
-            Some("-")
+    fn refresh_chain_falls_back_to_no_proof_when_secret_missing() {
+        let variants = build_refresh_variants(TraeVariant::TraeMerged, "rt", None);
+        assert_eq!(variants.len(), 2, "无凭证时每条线各一个「无 proof」变体");
+        assert_eq!(variants[0].tag, "Refresh/NoProof");
+        assert_eq!(variants[1].tag, "OtherLine/Refresh/NoProof");
+        for variant in &variants {
+            assert!(variant.with_cloudide_token);
+            assert!(variant.payload.get("DeviceProof").is_none());
+            assert_eq!(
+                variant.payload.get("ClientSecret").and_then(|v| v.as_str()),
+                Some("")
+            );
+            assert_eq!(
+                variant.url,
+                format!(
+                    "{}{}",
+                    crate::modules::trae::endpoints_for(TraeVariant::TraeMerged).account_base,
+                    TRAE_EXCHANGE_TOKEN_PATH
+                ),
+                "兜底步也必须打 account_base（客户端 apiHost）"
+            );
+        }
+        // 两条线的 ClientID 必须不同。
+        assert_ne!(
+            variants[0].payload.get("ClientID").and_then(Value::as_str),
+            variants[1].payload.get("ClientID").and_then(Value::as_str)
         );
 
         // 错误消息必须能指出「没取到设备凭证」（否则用户无从判断是协议还是凭证问题）。
@@ -2798,33 +3029,58 @@ hLkrYGiVNhsErnjKIgS7/EIHdsihRANCAARznG0WLhenNiMW5jA3SwFpTNyet2zw\n\
         assert_eq!(credential_error.kind(), "dataDirMissing");
     }
 
-    /// ★ 服务端明确拒绝 vs 本地/协议级失败必须区分开。
+    /// ★ 三态必须分得开：服务端拒绝 / 参数无效 / 短暂失败，用户动作各不相同。
     #[test]
-    fn refresh_error_distinguishes_server_rejection_from_transport_failure() {
+    fn refresh_error_distinguishes_rejection_param_invalid_and_transport() {
         let rejected = RefreshExchangeError {
             message: "code=1001: invalid refresh token".into(),
             server_rejected: true,
+            invalid_param: false,
         };
         let transport = RefreshExchangeError::transport("请求失败: connection reset");
         assert!(rejected.server_rejected);
         assert!(!transport.server_rejected);
+        assert!(!transport.invalid_param);
 
         // 异构响应（无 code/message）不得被判为「凭据失效」——
         // 参考 `oauth.rs:859` 记录了旧实现 `unwrap_or(-1)` 正是这么误判的。
         let heterogeneous = RefreshExchangeError::transport("响应中未找到 AccessToken 字段");
         assert!(!heterogeneous.server_rejected);
+
+        // ★ 火山「参数无效」两个码都要认（真机实测 `code=10101/040004`）。
+        assert!(RefreshExchangeError::params_invalid("10101", "040004"));
+        assert!(RefreshExchangeError::params_invalid("10101", ""));
+        assert!(RefreshExchangeError::params_invalid("", "040004"));
+        // 20403/20405 是设备相关错误码，**不**归到「参数无效」。
+        assert!(!RefreshExchangeError::params_invalid("20403", ""));
+        assert!(!RefreshExchangeError::params_invalid("0", "0"));
     }
 
-    /// ★ 「凭据失效」与「稍后重试」必须是两种不同的用户动作。
+    /// ★ 三种失败 → 三种用户动作；尤其是「参数无效」**不得**说成「稍后重试」。
+    ///
+    /// 可证伪性：把 `invalid_param` 分支删掉（回到「非拒绝就是暂时失败」），
+    /// 第三条断言立刻变红 —— 那正是 2026-10-22「重试 14 天没人知道」的成因。
     #[test]
     fn refresh_jwt_for_maps_rejection_to_relogin_hint() {
         let rejected = RefreshExchangeError {
             message: "code=1001: invalid".into(),
             server_rejected: true,
+            invalid_param: false,
         };
         let message = refresh_error_message(&rejected);
         assert!(message.contains("凭据已失效"), "{message}");
         assert!(message.contains("重新登录"), "{message}");
+
+        let invalid = RefreshExchangeError {
+            message: "code=10101/040004: 无效参数".into(),
+            server_rejected: false,
+            invalid_param: true,
+        };
+        let message = refresh_error_message(&invalid);
+        assert!(message.contains("拒绝续期请求的参数"), "{message}");
+        assert!(message.contains("重试无用"), "{message}");
+        assert!(!message.contains("稍后重试"), "{message}");
+        assert!(!message.contains("凭据已失效"), "{message}");
 
         let transient = RefreshExchangeError::transport("请求失败: timeout");
         let message = refresh_error_message(&transient);
@@ -3081,22 +3337,29 @@ hLkrYGiVNhsErnjKIgS7/EIHdsihRANCAARznG0WLhenNiMW5jA3SwFpTNyet2zw\n\
         }
     }
 
-    /// ★ refresh 的 URL 必须由**该变体的 `icube_base`** 拼成，与回调 `host` 无关。
+    /// ★ refresh 的 URL 必须由**该变体的端点表**拼成，与回调 `host` 无关；
+    /// 且**新路径走 `account_base`**（客户端 `this.apiHost`），不是 `icube_base`。
     ///
     /// refresh 是**离线触发**（没有浏览器回调），根本没有 host 可传；
     /// `exchange_token_for(variant, refresh_token, device_id)` 的签名里也确实没有 host 形参
     /// （编译期护栏：多一个 `host` 参数本用例就编不过）。
     #[test]
-    fn refresh_url_is_built_from_variant_icube_base() {
-        let credential = test_credential();
+    fn refresh_url_is_built_from_variant_endpoints() {
+        let secret = test_secret();
         for variant in TraeVariant::all() {
-            let base = crate::modules::trae::endpoints_for(variant).icube_base;
-            let variants = build_refresh_variants(variant, "cid", "rt", Some(&credential));
-            assert_eq!(variants.len(), 4, "有凭证时必须是四步链");
+            let endpoints = crate::modules::trae::endpoints_for(variant);
+            let variants = build_refresh_variants(variant, "rt", Some(&secret));
+            assert_eq!(variants.len(), 6, "有凭证时必须是六步链（本线 4 + 另一条线 2）");
             for plan in &variants {
+                // 新端点（步 1/2/4）打 account_base；旧端点（步 3）打 icube_base。
+                let expected_base = if plan.sign_path == TRAE_EXCHANGE_TOKEN_LEGACY_PATH {
+                    endpoints.icube_base
+                } else {
+                    endpoints.account_base
+                };
                 assert!(
-                    plan.url.starts_with(base),
-                    "变体 {variant:?} 的 refresh URL 不是由 icube_base（{base}）拼成的: {}",
+                    plan.url.starts_with(expected_base),
+                    "变体 {variant:?} 的 refresh URL 不是由 {expected_base} 拼成的: {}",
                     plan.url
                 );
                 assert!(
@@ -3181,7 +3444,8 @@ hLkrYGiVNhsErnjKIgS7/EIHdsihRANCAARznG0WLhenNiMW5jA3SwFpTNyet2zw\n\
         let body = json!({"Result": {"AccessToken": "at-1", "RefreshToken": "rt-2"}}).to_string();
         let (port, captured) = mock_upstream_once(body).await;
 
-        let credential = test_credential();
+        let secret = test_secret();
+        let facts = oauth::ClientFacts::from_identity(secret.identity.clone());
         let plan = RefreshVariant {
             tag: "Refresh/Proof/P1363".into(),
             url: format!("http://127.0.0.1:{port}{TRAE_EXCHANGE_TOKEN_PATH}"),
@@ -3189,20 +3453,23 @@ hLkrYGiVNhsErnjKIgS7/EIHdsihRANCAARznG0WLhenNiMW5jA3SwFpTNyet2zw\n\
             payload: build_refresh_payload(
                 "cid",
                 "rt-1",
-                &credential.device_id,
-                icube::device_proof(
-                    &credential,
-                    TRAE_EXCHANGE_TOKEN_PATH,
-                    "cid",
-                    "rt-1",
-                    ProofSigFormat::P1363,
-                )
-                .expect("合成私钥应能签名"),
+                oauth::device_info_payload(&facts),
+                &facts.app_version(),
+                Some(
+                    icube::device_proof(
+                        &secret.credential,
+                        TRAE_EXCHANGE_TOKEN_PATH,
+                        "cid",
+                        "rt-1",
+                        ProofSigFormat::P1363,
+                    )
+                    .expect("合成私钥应能签名"),
+                ),
             ),
             with_cloudide_token: true,
         };
 
-        let (access, refresh, _) = try_refresh_variant(&plan, Some(&credential.device_id))
+        let (access, refresh, _) = try_refresh_variant(&plan, Some(&secret.credential.device_id))
             .await
             .expect("mock 上游应返回成功");
         assert_eq!(access, "at-1");
@@ -3226,12 +3493,25 @@ hLkrYGiVNhsErnjKIgS7/EIHdsihRANCAARznG0WLhenNiMW5jA3SwFpTNyet2zw\n\
             .expect("有设备凭证时必须发送 x-device-id");
         assert_eq!(
             device.split_once(':').unwrap().1.trim(),
-            credential.device_id
+            secret.credential.device_id
         );
         assert!(request.contains("\"DeviceProof\""), "{request}");
-        assert!(request.contains("\"PlatformCode\":\"IDE_PC\""), "{request}");
+        // ★ 设备信息现在在 `DeviceInfo` 对象里（客户端 1.107.1 形状），
+        //   `PlatformCode` 也在**里面**，不再是顶层扁平字段。
+        assert!(request.contains("\"DeviceInfo\""), "{request}");
         assert!(
-            request.contains(&format!("\"DeviceID\":\"{}\"", credential.device_id)),
+            request.contains(&format!(
+                "\"PlatformCode\":\"{}\"",
+                TraeVariant::TraeWork.oauth_line().platform_code()
+            )),
+            "{request}"
+        );
+        assert!(request.contains("\"IDEVersion\""), "{request}");
+        assert!(
+            request.contains(&format!(
+                "\"DeviceID\":\"{}\"",
+                secret.credential.device_id
+            )),
             "{request}"
         );
     }
@@ -3386,11 +3666,13 @@ hLkrYGiVNhsErnjKIgS7/EIHdsihRANCAARznG0WLhenNiMW5jA3SwFpTNyet2zw\n\
         let (other_id, other_name, other_dir) = &cells[0];
         assert_ne!(bound_id, other_id, "前置：两台设备必须是不同的 id");
 
-        let credential =
-            resolve_refresh_credential(variant, Some(bound_id)).expect("绑定的设备必须能找到");
-        assert_eq!(credential.device_id.as_str(), bound_id.as_str());
+        let secret =
+            resolve_refresh_secret(variant, Some(bound_id)).expect("绑定的设备必须能找到");
+        assert_eq!(secret.credential.device_id.as_str(), bound_id.as_str());
+        // ★ 身份与私钥必须来自**同一条条目**（DeviceInfo 与 DeviceProof 不能跨设备）。
+        assert_eq!(secret.identity.device_id.as_str(), bound_id.as_str());
         assert_eq!(
-            credential.source_app.as_str(),
+            secret.credential.source_app.as_str(),
             *bound_name,
             "必须取**绑定**那台设备的私钥"
         );
@@ -3403,20 +3685,23 @@ hLkrYGiVNhsErnjKIgS7/EIHdsihRANCAARznG0WLhenNiMW5jA3SwFpTNyet2zw\n\
 
         // 先证明翻转**真的生效**，否则下面那条断言是空的（「碰巧一致」= 假绿）。
         let fallback =
-            resolve_refresh_credential(variant, None).expect("无绑定回落时也应能取到凭证");
+            resolve_refresh_secret(variant, None).expect("无绑定回落时也应能取到凭证");
         assert_eq!(
-            fallback.source_app.as_str(),
+            fallback.credential.source_app.as_str(),
             *other_name,
             "前置：活跃度翻转未生效，下一条断言就没有意义"
         );
 
-        let still = resolve_refresh_credential(variant, Some(bound_id)).expect("仍应能找到");
+        let still = resolve_refresh_secret(variant, Some(bound_id)).expect("仍应能找到");
         assert_eq!(
-            still.source_app.as_str(),
+            still.credential.source_app.as_str(),
             *bound_name,
             "活跃目录翻转后，绑定仍必须指向**来源设备**"
         );
-        assert_ne!(still.source_app, fallback.source_app);
+        assert_ne!(
+            still.credential.source_app,
+            fallback.credential.source_app
+        );
     }
 
     /// ★【T13-4 ③ / ⑤】无绑定（旧账号）⇒ 回落「当前目录的那一条」，**且必须留痕**。
@@ -3436,9 +3721,9 @@ hLkrYGiVNhsErnjKIgS7/EIHdsihRANCAARznG0WLhenNiMW5jA3SwFpTNyet2zw\n\
         );
         let (_, active_name, _) = &cells[0];
 
-        let credential = resolve_refresh_credential(variant, None).expect("有设备身份，应能取到");
+        let secret = resolve_refresh_secret(variant, None).expect("有设备身份，应能取到");
         assert_eq!(
-            credential.source_app.as_str(),
+            secret.credential.source_app.as_str(),
             *active_name,
             "无绑定应回落**当前目录**那一条"
         );

@@ -80,7 +80,7 @@ use crate::modules::trae::oauth_client::oauth_client;
 use crate::modules::trae::oauth_result_page::{result_page, PageKind};
 use crate::modules::trae::platform::{self, ClientInstallMeta, SystemProfile};
 use crate::modules::trae::store;
-use crate::modules::trae::variant::TraeVariant;
+use crate::modules::trae::variant::{OAuthLine, TraeVariant};
 use crate::modules::trae::{
     account, device, endpoints_for, TRAE_EXCHANGE_TOKEN_LEGACY_PATH, TRAE_EXCHANGE_TOKEN_PATH,
     TRAE_OAUTH_APP_ID, TRAE_OAUTH_LOGIN_TIMEOUT_SECONDS, TRAE_PAGE_APP_VERSION,
@@ -533,13 +533,23 @@ fn pkce_pair() -> (String, String) {
 /// 把三者收进一个值、并让两个构造函数**只从这里取值**，就能让「两处各取一份」
 /// 在类型层面不成立 —— 与 `device_id` 那条红线同款思路。
 #[derive(Debug, Clone)]
-struct ClientFacts {
+pub(crate) struct ClientFacts {
     /// 设备身份（`device_id` 与 `publicKeyPEM` 的唯一来源）。
     identity: DeviceIdentity,
     /// 安装元数据（`manifest.json`）。取不到时为全空 ⇒ 各字段按 [`ClientInstallMeta`] 回落。
     meta: ClientInstallMeta,
     /// 系统信息。测试里可注入固定值。
     system: SystemProfile,
+    /// **产品线**（SOLO / TRAE）—— 与变体正交的一轴。
+    ///
+    /// ★ 为什么必须独立成字段（2026-10-22 真机缺陷）：
+    /// `ClientID` 与 `DeviceInfo.PlatformCode` 都随**产品线**变
+    /// （SOLO = `en1oxy7wnw8j9n` / `SOLO_PC`，TRAE = `ono9krqynydwx5` / `IDE_PC`），
+    /// 而 refresh_token 是**签发它的那把钥匙**的凭证。上游对「拿 A 线的 token 去换 B 线的
+    /// token」的回答是 `10101/040004` + `Data.__Message.error = "refresh token is not
+    /// matched to the client"` —— 连官方客户端自己也会撞上（真机日志 2026-10-20 实测）。
+    /// 因此「用哪条线」必须能被调用方显式改写，而不是只从变体推导。
+    line: OAuthLine,
 }
 
 impl ClientFacts {
@@ -553,8 +563,42 @@ impl ClientFacts {
             identity,
             meta: platform::client_install_meta_for(variant).unwrap_or_default(),
             system: platform::system_profile(),
+            line: variant.oauth_line(),
         })
     }
+
+    /// 从**已取到的**身份组装事实（`refresh` 路径用）。
+    ///
+    /// ## 为什么 refresh 需要它
+    ///
+    /// `ExchangeToken` 的两种用法（AuthCode / refreshToken）**共用同一个请求体骨架**：
+    /// `DeviceInfo` + `IDEVersion`。AuthCode 侧的取值全部经 [`ClientFacts`] 同源派生；
+    /// refresh 侧若另写一份 `DeviceInfo`，两条链就会各说一套机器标识与版本号 ——
+    /// 2026-10-22 的真机缺陷正是「refresh 只发了扁平的 `DeviceID`/`PlatformCode`、
+    /// 没有 `DeviceInfo`」，上游回 `10101/040004 无效参数`，自动续期整整失效 14 天。
+    ///
+    /// 因此 refresh 侧的身份**必须**来自账号绑定的那台设备（[`icube::DeviceSecret`]），
+    /// 而 `meta` / `system` 与本机其余状态一致即可。
+    pub(crate) fn from_identity(identity: DeviceIdentity) -> ClientFacts {
+        ClientFacts {
+            meta: platform::client_install_meta_for(identity.variant).unwrap_or_default(),
+            system: platform::system_profile(),
+            line: identity.variant.oauth_line(),
+            identity,
+        }
+    }
+
+    /// 改用**另一条产品线**（`ClientID` + `PlatformCode` 一起换）。
+    ///
+    /// 唯一用途：refresh 链在「本线的钥匙被上游判为不匹配」时再试另一条线
+    /// （真机实测：官方客户端自己也撞 `refresh token is not matched to the client`）。
+    pub(crate) fn with_line(&self, line: OAuthLine) -> ClientFacts {
+        ClientFacts {
+            line,
+            ..self.clone()
+        }
+    }
+
 
     /// `machine_id` / `x_machine_id` / `DeviceInfo.MachineID` 的**共同**取值。
     fn machine_id(&self) -> String {
@@ -567,7 +611,7 @@ impl ClientFacts {
     /// 不是 `resources/app/package.json` 的内核版本（本机 `1.107.1`）。
     /// 逐级回落：`manifest.json` → 安装目录版本 → 内置常量。**三条路都指向同一个值**，
     /// 因此不会出现「URL 与请求体各说一个数」。
-    fn app_version(&self) -> String {
+    pub(crate) fn app_version(&self) -> String {
         for candidate in [
             self.meta.app_version.as_str(),
             self.identity.app_version.as_str(),
@@ -757,56 +801,73 @@ fn resolve_exchange_host(callback_host: Option<&str>, variant: TraeVariant) -> (
     }
 }
 
+/// 构造 `ExchangeToken` 请求体里的 `DeviceInfo`（**AuthCode 与 refresh 共用的唯一派生点**）。
+///
+/// ★ 每个字段都从 [`ClientFacts`] 派生，调用方**没有**自由拼装的机会：
+/// `MachineID` ← [`ClientFacts::machine_id`]、`ClientVersion` / `IDEVersion`
+/// ← [`ClientFacts::app_version`]、`DeviceModel` / `OSInfo` / `OSVersion`
+/// ← `facts.system`、`PlatformCode` ← `identity.variant.oauth_line()`。
+///
+/// ## 为什么 refresh 也走这里（2026-10-22 真机缺陷）
+///
+/// 客户端 `out/main.js` 的 `exchangeTokenByRefreshToken` 与 `exchangeTokenByAuthCode`
+/// 发的是**同一个** `DeviceInfo`（同一个 `_buildDeviceInfo` 缓存对象）。改造前
+/// refresh 侧只发扁平 `{DeviceID, PlatformCode}`、完全没有 `DeviceInfo`，上游按
+/// 缺参拒掉（`10101/040004 无效参数`）⇒ 所有账号的自动续期静默失效，JWT 一到期
+/// 就只能重新登录。共用本函数后，两条链的 `DeviceInfo` 结构不可能再分叉。
+pub(crate) fn device_info_payload(facts: &ClientFacts) -> Value {
+    let identity = &facts.identity;
+    let system = &facts.system;
+    // ★ 与授权 URL 的 `x_app_version` 同源（客户端三处同值）。
+    let app_version = facts.app_version();
+    json!({
+        "DeviceID": identity.device_id,
+        // ★ 与授权 URL 的 `machine_id` / `x_machine_id` **同源**（唯一派生点）。
+        // 改造前这里取 `storage.json` 的 `telemetry.machineId`、URL 取自造值 ⇒
+        // 上游回 `20403/040036 Token device not match`。
+        "MachineID": facts.machine_id(),
+        // ★ 按**产品线**派生：SOLO 线 `SOLO_PC` / IDE 线 `IDE_PC`
+        // （客户端 `k(){ return gr(product) ? "SOLO_PC" : "IDE_PC" }`）。
+        // 改造前写死 `IDE_PC`（照抄参考实现的 IDE 线），SOLO 线上必然对不上。
+        // ★ 取自 `facts.line`（**不是** `identity.variant`）：refresh 链要能用
+        //   另一条线的钥匙去试（见 `ClientFacts::with_line`）。
+        "PlatformCode": facts.line.platform_code(),
+        "DeviceType": "PC",
+        // 真值是「Windows 账户全名 + 本地化后缀」（本机 `Jackey的电脑`）——
+        // 本实现留空，理由见 `platform::system_profile`（无稳定来源，且该字段
+        // **不在授权 URL 里**，不参与同源比对）。
+        "DeviceName": system.device_name,
+        // ★ 与授权 URL 的 `x_device_brand` 同源（客户端装的是 `deviceModel`）。
+        "DeviceModel": system.device_model,
+        "ClientVersion": app_version,
+        "DevicePublicKey": identity.public_key_pem,
+        "DeviceBrand": system.device_manufacturer,
+        "DeviceCPU": system.cpu_brand,
+        // ★ 与授权 URL 的 `x_device_type` / `x_os_version` 同源。
+        "OSInfo": system.os_name,
+        "OSVersion": system.os_version,
+    })
+}
+
 /// 构造 AuthCode 交换请求体（纯函数，可单测）。
 ///
 /// ⚠️ AuthCode 场景**不发 DeviceProof**（那是 refreshToken 刷新场景专属结构），
 /// 因此这里只收 [`ClientFacts`]（其 `identity` 字段**没有私钥字段**，见模块头）。
 /// `DevicePublicKey` 直接取信封里的 `publicKeyPEM`，**不推导**。
 ///
-/// ★ 请求体里**每一个**与授权 URL 重叠的字段都从 `facts` 派生（唯一来源）：
-/// `MachineID` ← [`ClientFacts::machine_id`]、`ClientVersion` / `IDEVersion`
-/// ← [`ClientFacts::app_version`]、`DeviceModel` / `OSInfo` / `OSVersion`
-/// ← `facts.system`。`PlatformCode` 由 `identity.variant.oauth_line()` 派生。
+/// `DeviceInfo` 由 [`device_info_payload`] 统一派生（与 refresh 同源）。
 fn build_exchange_payload(
     client_id: &str,
     auth_code: &str,
     code_verifier: &str,
     facts: &ClientFacts,
 ) -> Value {
-    let identity = &facts.identity;
-    let system = &facts.system;
-    // ★ 与授权 URL 的 `x_app_version` 同源（客户端三处同值）。
-    let app_version = facts.app_version();
     json!({
         "ClientID": client_id,
         "AuthCode": auth_code,
         "CodeVerifier": code_verifier,
-        "DeviceInfo": {
-            "DeviceID": identity.device_id,
-            // ★ 与授权 URL 的 `machine_id` / `x_machine_id` **同源**（唯一派生点）。
-            // 改造前这里取 `storage.json` 的 `telemetry.machineId`、URL 取自造值 ⇒
-            // 上游回 `20403/040036 Token device not match`。
-            "MachineID": facts.machine_id(),
-            // ★ 按**产品线**派生：SOLO 线 `SOLO_PC` / IDE 线 `IDE_PC`
-            // （客户端 `k(){ return gr(product) ? "SOLO_PC" : "IDE_PC" }`）。
-            // 改造前写死 `IDE_PC`（照抄参考实现的 IDE 线），SOLO 线上必然对不上。
-            "PlatformCode": identity.variant.oauth_line().platform_code(),
-            "DeviceType": "PC",
-            // 真值是「Windows 账户全名 + 本地化后缀」（本机 `Jackey的电脑`）——
-            // 本实现留空，理由见 `platform::system_profile`（无稳定来源，且该字段
-            // **不在授权 URL 里**，不参与同源比对）。
-            "DeviceName": system.device_name,
-            // ★ 与授权 URL 的 `x_device_brand` 同源（客户端装的是 `deviceModel`）。
-            "DeviceModel": system.device_model,
-            "ClientVersion": app_version,
-            "DevicePublicKey": identity.public_key_pem,
-            "DeviceBrand": system.device_manufacturer,
-            "DeviceCPU": system.cpu_brand,
-            // ★ 与授权 URL 的 `x_device_type` / `x_os_version` 同源。
-            "OSInfo": system.os_name,
-            "OSVersion": system.os_version,
-        },
-        "IDEVersion": app_version,
+        "DeviceInfo": device_info_payload(facts),
+        "IDEVersion": facts.app_version(),
     })
 }
 
@@ -1931,7 +1992,11 @@ mod tests {
     /// 而不是「本机现在是什么」。读本机会让用例随机器漂，也无法钉住取值来源。
     /// 固定值逐字取自 2026-09-24 真机抓到的客户端原文（`TRAE SOLO CN`）。
     fn synthetic_facts(identity: DeviceIdentity) -> ClientFacts {
+        // ★ 产品线由**变体**派生（与 `load_for` / `from_identity` 同一条规则），
+        //   写死会让「PlatformCode 与 client_id 配错线」这类缺陷测不出来。
+        let line = identity.variant.oauth_line();
         ClientFacts {
+            line,
             identity,
             meta: ClientInstallMeta {
                 app_version: "0.1.69".into(),

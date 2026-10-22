@@ -396,6 +396,35 @@ impl std::fmt::Debug for DeviceCredential {
     }
 }
 
+/// 同一台设备的**身份 + 凭证**（refresh 路径的完整输入）。
+///
+/// ## ★ 为什么必须成对取（2026-10-22 真机缺陷的结构性收口）
+///
+/// `ExchangeToken` 的请求体同时要两样东西：
+/// - `DeviceInfo.DevicePublicKey` / `DeviceInfo.MachineID` / `IDEVersion` ← **身份**；
+/// - `DeviceProof.Signature` ← **私钥**。
+///
+/// 两者**必须来自同一条 `icube-dc` 条目**：拿 A 设备的身份配 B 设备的私钥，
+/// 上游只会回 `20403 Device not match`。改造前 refresh 路径只取凭证、身份另外
+/// 从「当前活跃目录」猜，正是「两处各取一份」的旧形态（与 `ClientFacts` 修的是
+/// 同一类缺陷）⇒ 收进一个值后，类型层面不可能再配错。
+#[derive(Clone)]
+pub(crate) struct DeviceSecret {
+    /// 设备身份（公钥 / machineId / 版本）。
+    pub(crate) identity: DeviceIdentity,
+    /// 设备凭证（私钥）。
+    pub(crate) credential: DeviceCredential,
+}
+
+impl std::fmt::Debug for DeviceSecret {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DeviceSecret")
+            .field("identity", &self.identity)
+            .field("credential", &self.credential)
+            .finish()
+    }
+}
+
 /// `icube.cloudide` 键解出的用户级凭据。
 ///
 /// **本轮仅用于诊断 / 导入兜底，不承担登录职责**（架构 N-3）：
@@ -533,6 +562,28 @@ fn credential_from_plain(
     })
 }
 
+/// 明文 → [`DeviceSecret`]（身份 + 凭证，**同一条 `icube-dc` 条目**）。
+///
+/// 刻意调用既有的两个解析函数而不是合并成一份：它们各自有独立的失败语义
+/// （身份缺 `publicKeyPEM` ⇒ [`IcubeError::PublicKeyMissing`]；凭证缺
+/// `privateKeyPEM` ⇒ [`IcubeError::PrivateKeyMissing`]），合并会把这个区分抹掉。
+/// 代价只是把同一个小 JSON 解析两遍（refresh 每 12 小时才走一次）。
+fn secret_from_plain(
+    plain: &str,
+    variant: TraeVariant,
+    device_id: &str,
+    machine_id: &str,
+    app_version: &str,
+    source_app: &str,
+) -> Result<DeviceSecret, IcubeError> {
+    Ok(DeviceSecret {
+        identity: identity_from_plain(
+            plain, variant, device_id, machine_id, app_version, source_app,
+        )?,
+        credential: credential_from_plain(plain, variant, device_id, source_app)?,
+    })
+}
+
 /// 明文 → [`CloudideAuthInfo`]。
 fn cloudide_from_plain(plain: &str, variant: TraeVariant) -> Result<CloudideAuthInfo, IcubeError> {
     let parsed = parse_plain(plain)?;
@@ -650,7 +701,7 @@ pub fn device_identity_for(variant: TraeVariant) -> Result<DeviceIdentity, Icube
 /// 调用方需要让「校验的对象」与「操作的对象」落在同一目录时，先自己定目录再走这里。
 ///
 /// 目录里有**多个** `icube-dc` 条目时取第一个（[`find_icube_dc_entry`] 的既有语义）；
-/// 要按 `deviceId` **精确取某一条**用 [`device_credential_by_device_id`]。
+/// 要按 `deviceId` **精确取某一条**用 [`device_secret_by_device_id`]。
 pub(crate) fn device_identity_from_dir(
     dir: &std::path::Path,
     variant: TraeVariant,
@@ -727,10 +778,10 @@ pub(crate) fn cloudide_auth_info_from_dir(
 /// - 所有候选目录里**一条 `icube-dc` 都没有** ⇒ [`IcubeError::DeviceIdentityMissing`]；
 /// - 有若干条、但**没有一条**绑定请求的 `deviceId` ⇒ [`IcubeError::DeviceIdentityMismatch`]
 ///   （载荷列出本机有的那些 id 的**脱敏**值，便于用户判断是不是换过设备）。
-pub(crate) fn device_credential_by_device_id(
+pub(crate) fn device_secret_by_device_id(
     variant: TraeVariant,
     device_id: &str,
-) -> Result<DeviceCredential, IcubeError> {
+) -> Result<DeviceSecret, IcubeError> {
     let mut others: Vec<String> = Vec::new();
     for dir in platform::data_dirs_by_activity_for(variant) {
         let Ok(snapshot) = load_storage_from_dir(&dir, variant) else {
@@ -749,18 +800,24 @@ pub(crate) fn device_credential_by_device_id(
                 continue;
             };
             let plain = tc_decrypt(b64, TcMode::Aes)?;
-            let credential =
-                credential_from_plain(&plain, variant, found_id, &snapshot.source_app)?;
+            let secret = secret_from_plain(
+                &plain,
+                variant,
+                found_id,
+                &snapshot.machine_id,
+                &snapshot.app_version,
+                &snapshot.source_app,
+            )?;
             // ★ 断言：解出的凭证必须确实绑定请求的 deviceId。不匹配**不得**返回 ——
             //   否则「绑定错了设备」会静默用错私钥（见函数文档）。
-            if credential.device_id != device_id {
+            if secret.credential.device_id != device_id {
                 return Err(IcubeError::DeviceIdentityMismatch(format!(
                     "请求 {}，条目绑定 {}",
                     store::mask(device_id),
-                    store::mask(&credential.device_id)
+                    store::mask(&secret.credential.device_id)
                 )));
             }
-            return Ok(credential);
+            return Ok(secret);
         }
     }
     if others.is_empty() {
@@ -776,6 +833,21 @@ pub(crate) fn device_credential_by_device_id(
                 .join(" / ")
         )))
     }
+}
+
+/// 按**变体**取设备身份 + 凭证（refresh 的回落入参：无绑定时用「当前目录那一条」）。
+pub(crate) fn device_secret_for(variant: TraeVariant) -> Result<DeviceSecret, IcubeError> {
+    let snapshot = load_storage(variant)?;
+    let (device_id, b64) = find_icube_dc_entry(&snapshot.object)?;
+    let plain = tc_decrypt(&b64, TcMode::Aes)?;
+    secret_from_plain(
+        &plain,
+        variant,
+        &device_id,
+        &snapshot.machine_id,
+        &snapshot.app_version,
+        &snapshot.source_app,
+    )
 }
 
 /// 该变体**哪个候选目录装着登录态**（凭据副本，供导入侧定位来源）。
@@ -1238,7 +1310,7 @@ MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEc5xtFi4XpzYjFuYwN0sBaUzcnrds\n\
     ///
     /// 那个 helper 覆盖**全部变体**且**不钉活跃度** —— 候选目录的先后取决于**写入顺序**
     /// （后写的 mtime 更新、更活跃），而 Windows 时间粒度约 15.6ms，同刻度时会退回
-    /// 候选表原顺序。`device_credential_by_device_id` 的护栏要求「请求的 deviceId 落在
+    /// 候选表原顺序。`device_secret_by_device_id` 的护栏要求「请求的 deviceId 落在
     /// **非首个、且不活跃**的候选里」，靠写入顺序会**随机假绿**。
     ///
     /// 返回 `(deviceId, 目录名, 目录路径)`，按候选表顺序（不存在的格子不返回）。
@@ -1846,19 +1918,26 @@ mod tests {
     /// 活跃度由 `write_device_entries_grid` 显式钉死，**不依赖写入顺序**。
     #[cfg(windows)]
     #[test]
-    fn device_credential_by_device_id_finds_the_entry_in_a_non_first_candidate() {
+    fn device_secret_by_device_id_finds_the_entry_in_a_non_first_candidate() {
         let env = TempEnv::empty();
         let variant = TraeVariant::TraeWork;
         let cells =
             write_device_entries_grid(&env.appdata(), variant, &[(true, true), (true, false)]);
         let (requested, name, _) = &cells[1];
 
-        let credential = device_credential_by_device_id(variant, requested)
+        let secret = device_secret_by_device_id(variant, requested)
             .expect("请求的 deviceId 在**不活跃**的次位候选里，必须能找到");
-        assert_eq!(credential.device_id, *requested);
-        assert_eq!(credential.source_app, *name);
+        // ★ 身份与私钥必须来自**同一条条目**：refresh 请求体要用公钥/机器标识，
+        //   拿另一台设备的公钥配这台设备的私钥 ⇒ 上游 20403。
+        assert_eq!(secret.identity.device_id, *requested);
+        assert_eq!(secret.credential.device_id, *requested);
+        assert_eq!(secret.credential.source_app, *name);
         assert!(
-            credential.private_key_pem.contains("BEGIN"),
+            !secret.identity.public_key_pem.is_empty(),
+            "DeviceInfo.DevicePublicKey 不能为空"
+        );
+        assert!(
+            secret.credential.private_key_pem.contains("BEGIN"),
             "refresh 路径拿到的必须是可用私钥"
         );
     }
@@ -1869,7 +1948,7 @@ mod tests {
     /// 同时断言错误文案**不含** deviceId 原文（模块头的脱敏红线）。
     #[cfg(windows)]
     #[test]
-    fn device_credential_by_device_id_refuses_a_mismatch() {
+    fn device_secret_by_device_id_refuses_a_mismatch() {
         let env = TempEnv::empty();
         let variant = TraeVariant::TraeWork;
         write_device_entries_grid(&env.appdata(), variant, &[(true, true), (true, true)]);
@@ -1877,7 +1956,7 @@ mod tests {
         // 用与真机同形（17 位）的长 id：`store::mask` 只对 >8 字符生效，
         // 短串会被**原样返回**，那样「脱敏」这条断言就失去意义了。
         let requested = "99998888777766665";
-        let error = device_credential_by_device_id(variant, requested)
+        let error = device_secret_by_device_id(variant, requested)
             .expect_err("本机没有这个 deviceId，必须报错而不是返回别的设备的凭证");
         assert_eq!(error.kind(), "deviceIdentityMismatch");
 
@@ -1898,7 +1977,7 @@ mod tests {
     /// 混为一谈会让用户拿不到正确的下一步（前者要重新登录，后者要重新导入）。
     #[cfg(windows)]
     #[test]
-    fn device_credential_by_device_id_reports_missing_when_no_entry_exists() {
+    fn device_secret_by_device_id_reports_missing_when_no_entry_exists() {
         let env = TempEnv::empty();
         let variant = TraeVariant::TraeWork;
         // 只有 cloudide 信封，没有任何 `icube-dc` 条目。
@@ -1909,7 +1988,7 @@ mod tests {
             chrono::Utc::now().timestamp() + 3600,
         );
 
-        let error = device_credential_by_device_id(variant, "99998888777766665")
+        let error = device_secret_by_device_id(variant, "99998888777766665")
             .expect_err("没有任何 icube-dc 条目时必须报缺失");
         assert_eq!(error.kind(), "deviceIdentityMissing");
     }
