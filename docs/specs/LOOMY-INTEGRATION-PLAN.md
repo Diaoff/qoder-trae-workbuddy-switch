@@ -1,6 +1,6 @@
 # Loomy 集成 — 模块 / 接口 / 依赖梳理
 
-> 状态：**实施中**（一期 + 二期微信扫码 + 积分逐日趋势 + 独立端口已落地；model_probe 待做）。
+> 状态：**实施中**（一期 + 二期 9.1/9.2/9.3/9.4 已落地；仅 9.5 是条件项未触发）。
 > 事实依据：`docs/specs/LOOMY-PLATFORM.md`（平台事实与建模决策）。
 
 ## 0. 一句话方案
@@ -52,4 +52,8 @@ L5 门禁与文档
   `ScheduleTask::LoomyPointsSample`（默认开，09:00 / 21:00 两帧，登记进 `background::TASKS`）
   + `GET /api/loomy/credits/daily` / `loomy_credits_daily` + 用量页「每日积分」双柱图
   + 设置页「积分逐日采样」开关与时间表。手动「刷新积分」成功后也补记一帧。
-- model_probe 的 Loomy 探针真机位接线（账号就位后）。
+- ~~model_probe 的 Loomy 探针真机位接线~~ ✅ 2026-10-22（二期 9.4）
+  `gateway/src/model_probe.rs`：`probe_cell_loomy`（单账号单次、零重试、30s 硬超时、**不写池**）
+  + `probe_state_of_loomy` / `probe_state_of_loomy_code` 两层判据 + `loomy_envelope_code`
+  （SSE 首帧与裸 JSON 两种形态）。模型轴读网关**内存清单缓存**（不额外联网）；
+  `adopt` 保持显式空操作（池无模型级冷却轴，回填会过度冷却）。

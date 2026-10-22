@@ -76,6 +76,8 @@ use buddy_switch_core::modules::upstream::UpstreamChatResult;
 use crate::error::truncate_with_marker;
 use crate::outbound::{self, OutboundMeta};
 use crate::pool::{classify_event, ProbeOutcome, RealmTag, UpstreamEvent};
+use crate::loomy::pool::{classify_http as loomy_classify_http, LoomyErrKind};
+use crate::loomy::LoomyGatewayState;
 use crate::qoder::payload;
 use crate::qoder::pool::{classify_http, QoderErrKind};
 use crate::qoder::routes::chat_once_for_account;
@@ -370,6 +372,51 @@ pub fn probe_state_of_qoder(status: u16) -> ProbeState {
     }
 }
 
+/// ★ **唯一映射点（Loomy）**：Loomy 上游错误类别 → 单元格状态。纯函数，单测 + 变异覆盖。
+///
+/// ## 判据两层，都要用
+///
+/// - HTTP **非 2xx** ⇒ [`loomy_classify_http`]（`loomy/pool.rs` 的唯一分类入口）；
+/// - HTTP **2xx 但响应体是业务信封**（`code != "000000"`）⇒ 按业务码分类。
+///
+/// ⚠️ **不能只看状态码**：Loomy 的业务失败**恒 HTTP 200**（信封 `code` 才是判据），
+/// 只看状态码会把「登录已失效（`100002`）」误报成 `ok` —— 那正是本仓反复消灭的假绿。
+///
+/// ## `LoomyErrKind` 只有四档 ⇒ 在 `ClientError` 里单独把 404 判成 `ModelUnavailable`
+///
+/// 与 Qoder 侧同款处理。`RateLimited` ⇒ `RateLimitedModel`（Loomy 上游不区分模型级 /
+/// 账号级限流，而**探测不回填**，故这个近似不影响路由）。
+pub fn probe_state_of_loomy(status: u16) -> ProbeState {
+    match loomy_classify_http(status) {
+        LoomyErrKind::RateLimited => ProbeState::RateLimitedModel,
+        LoomyErrKind::AuthDead => ProbeState::AuthDead,
+        LoomyErrKind::Transient => ProbeState::UpstreamError,
+        LoomyErrKind::ClientError => {
+            if status == 404 {
+                ProbeState::ModelUnavailable
+            } else {
+                ProbeState::UpstreamError
+            }
+        }
+    }
+}
+
+/// 业务码 → 单元格状态（**恒 200 信封**那一层）。
+///
+/// - `100002`（登录失效）⇒ `AuthDead`（唯一出口是重新登录，Loomy 无续期端点）；
+/// - `100001`（参数错）⇒ `ModelUnavailable`（多半是模型 id 不存在 / 该账号不可见）；
+/// - 其它非 `000000` ⇒ `UpstreamError`。
+pub fn probe_state_of_loomy_code(code: &str) -> ProbeState {
+    let spec = buddy_switch_core::modules::loomy::region::realm_spec(LoomyRegion::Cn);
+    if code == spec.auth_error_code {
+        ProbeState::AuthDead
+    } else if code == spec.bad_request_code {
+        ProbeState::ModelUnavailable
+    } else {
+        ProbeState::UpstreamError
+    }
+}
+
 /// ★ **唯一映射点（Trae）**：Trae 上游错误类别 → 单元格状态。纯函数，单测 + 变异覆盖。
 ///
 /// ## Trae **无法细分**模型级 / 账号级 ⇒ 一律 `RateLimitedModel`
@@ -547,9 +594,22 @@ impl ProbeTarget {
                 .await
                 .unwrap_or_default()
             }
-            ProbeTarget::Loomy(_state, _region) => {
-                // Loomy 一期无清单缓存（管理面每次现拉）⇒ 探测的模型轴给空。
-                Vec::new()
+            ProbeTarget::Loomy(state, _region) => {
+                // ★ 二期 9.4：读网关的**内存清单缓存**（`catalog_for` 有 10 分钟 TTL，
+                // 且管理面「重新识别」时已填好）—— 与 Qoder 同一纪律：探测**不额外联网**
+                // 拉 `/models`（N 个账号各拉一次，收益不抵成本）。
+                // 缓存为空 ⇒ 空模型轴（作业层给可读提示「请先在模型页重新识别」）。
+                state
+                    .cached_catalog_models()
+                    .await
+                    .into_iter()
+                    .filter_map(|entry| {
+                        entry
+                            .get("id")
+                            .and_then(Value::as_str)
+                            .map(str::to_string)
+                    })
+                    .collect()
             }
         }
     }
@@ -560,31 +620,8 @@ impl ProbeTarget {
             ProbeTarget::Wb(state, region) => probe_cell_wb(state, *region, uid, model).await,
             ProbeTarget::Qoder(state, region) => probe_cell_qoder(state, *region, uid, model).await,
             ProbeTarget::Trae(state, variant) => probe_cell_trae(state, *variant, uid, model).await,
-            // Loomy 一期不接真机探针（本机无账号，链路未真机验证 ⇒ 探测会误报）。
-            // 真机位：账号就位后在此接 `core::loomy::api` 的单账号探针。
-            ProbeTarget::Loomy(_, _) => {
-                let nickname = buddy_switch_core::modules::loomy::account::find_account_for(
-                    buddy_switch_core::modules::loomy::region::LoomyRegion::Cn,
-                    uid,
-                )
-                .map(|account| {
-                    if !account.phone.is_empty() {
-                        format!("Loomy {}", account.phone)
-                    } else {
-                        format!("Loomy {}", account.uid)
-                    }
-                })
-                .unwrap_or_default();
-                ProbeCell {
-                    uid: uid.to_string(),
-                    nickname,
-                    model: model.to_string(),
-                    state: ProbeState::Skipped,
-                    http_status: 0,
-                    reset_at_ms: None,
-                    reason: "Loomy 探测暂未接线（等待真机验证）".to_string(),
-                    latency_ms: 0,
-                }
+            ProbeTarget::Loomy(state, region) => {
+                probe_cell_loomy(state, *region, uid, model).await
             }
         }
     }
@@ -1258,6 +1295,203 @@ async fn probe_cell_qoder(
     }
 }
 
+/// 探一格（Loomy）：**单账号、单次、零重试、有硬超时、不写池**。
+///
+/// ## 判据：**两层**，2xx 也要读一次
+///
+/// Loomy 的业务失败**恒 HTTP 200**（信封 `code` 才是判据，`100002` = 登录失效）⇒
+/// 「2xx 即丢响应体」会把死凭据报成 `ok`。故 2xx 时：
+/// - `content-type` 是 JSON ⇒ 读**短**体判业务码（`max_tokens: 1`，体积极小）；
+/// - 是 `text/event-stream` ⇒ 只读**首帧**就停（不聚合整条流），首帧含错误信封则分类。
+///
+/// ## 发请求：单账号、单次、零重试
+///
+/// 用 [`loomy_chat_once_for_account`]（从 `loomy::routes::chat_for_region` 的换号循环里
+/// 抽出的**单账号单次**入口）—— **绝不**用 `chat_for_region`（它带 `max_rotate` 换号，
+/// 且会把失败写回池冷却）。
+///
+/// ## 探测**不写池**
+///
+/// 只调 `chat_once_for_account`（纯出站）+ 读响应，**不**调 `LoomyPool::apply_error` /
+/// `note_success` —— 探测自己把号打成冷却 = 自我实现的限流（方案红线 2）。
+async fn probe_cell_loomy(
+    state: &LoomyGatewayState,
+    region: LoomyRegion,
+    uid: &str,
+    model: &str,
+) -> ProbeCell {
+    // 按 uid **直取**（不选号）：`pick` 在账号不可用时**会换一个号**，探测的一格必须只打这个 uid。
+    let entry = {
+        let mut pools = state.pools.lock().await;
+        let pool = pools.entry(region).or_default();
+        pool.sync_for(region);
+        let found = pool.entries().find(|entry| entry.uid == uid).cloned();
+        found
+    };
+    let nickname = entry
+        .as_ref()
+        .map(|entry| entry.name.clone())
+        .unwrap_or_default();
+    let skipped = |reason: &str| ProbeCell {
+        uid: uid.to_string(),
+        nickname: nickname.clone(),
+        model: model.to_string(),
+        state: ProbeState::Skipped,
+        http_status: 0,
+        reset_at_ms: None,
+        reason: reason.to_string(),
+        latency_ms: 0,
+    };
+    let Some(entry) = entry else {
+        return skipped("账号不在库里");
+    };
+    if !entry.has_access() {
+        return skipped("没有可调用的 session（Loomy 无续期端点，请重新登录）");
+    }
+
+    // 最小请求体：与本仓库中继同一套构造（`max_tokens: 1` + 探测文案，恒流式）。
+    let outbound = json!({
+        "model": model,
+        "stream": true,
+        "max_tokens": 1,
+        "messages": [{ "role": "user", "content": PROBE_TEXT }],
+    })
+    .to_string();
+
+    let started = Instant::now();
+    // ★ 单格硬超时（宿主客户端的总超时是 600s，对一格太长）。
+    let result = tokio::time::timeout(
+        Duration::from_secs(PROBE_CELL_TIMEOUT_SECS),
+        crate::loomy::routes::chat_once_for_account(
+            state,
+            region,
+            &entry.access_token,
+            &outbound,
+        ),
+    )
+    .await;
+    let latency_ms = started.elapsed().as_millis() as i64;
+    let cell = |state_of_cell: ProbeState, http_status: u16, reason: String| ProbeCell {
+        uid: uid.to_string(),
+        nickname: nickname.clone(),
+        model: model.to_string(),
+        state: state_of_cell,
+        http_status,
+        reset_at_ms: None,
+        reason,
+        latency_ms,
+    };
+
+    let response = match result {
+        Ok(Ok(response)) => response,
+        Ok(Err(transport_error)) => {
+            return cell(
+                ProbeState::TransportError,
+                0,
+                truncate_with_marker(&transport_error, PROBE_REASON_LIMIT),
+            )
+        }
+        Err(_elapsed) => {
+            return cell(
+                ProbeState::TransportError,
+                0,
+                format!("单格超时（{}s）", PROBE_CELL_TIMEOUT_SECS),
+            )
+        }
+    };
+
+    let status = response.status().as_u16();
+    if !response.status().is_success() {
+        // 非 2xx：读**短错误体**作 `reason`（错误体不是 SSE 流，不会阻塞）。
+        let detail = truncate_with_marker(
+            &response.text().await.unwrap_or_default(),
+            PROBE_REASON_LIMIT,
+        );
+        return cell(probe_state_of_loomy(status), status, detail);
+    }
+
+    // ★ 2xx 不等于成功：业务失败恒 200，必须看一次体（见函数头）。
+    let content_type = response
+        .headers()
+        .get(axum::http::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    if content_type.contains("application/json") {
+        let text = response.text().await.unwrap_or_default();
+        if let Some(code) = loomy_envelope_code(&text) {
+            let spec = buddy_switch_core::modules::loomy::region::realm_spec(region);
+            if code != spec.ok_code {
+                return cell(
+                    probe_state_of_loomy_code(&code),
+                    status,
+                    truncate_with_marker(&format!("业务码 {code}：{text}"), PROBE_REASON_LIMIT),
+                );
+            }
+        }
+        return cell(ProbeState::Ok, status, String::new());
+    }
+
+    // SSE：只读**首帧**（`max_tokens: 1` ⇒ 一两帧就结束），首帧含错误信封则分类。
+    // ⚠️ 不聚合整条流：探测只要「能不能调通」，不要正文。
+    use futures_util::StreamExt;
+    let mut stream = response.bytes_stream();
+    let head = tokio::time::timeout(
+        Duration::from_secs(PROBE_CELL_TIMEOUT_SECS),
+        stream.next(),
+    )
+    .await;
+    let frame = match head {
+        Ok(Some(Ok(bytes))) => String::from_utf8_lossy(&bytes).to_string(),
+        Ok(Some(Err(error))) => {
+            return cell(
+                ProbeState::TransportError,
+                status,
+                truncate_with_marker(&format!("读取响应流失败：{error}"), PROBE_REASON_LIMIT),
+            )
+        }
+        // 流立刻结束（空体）：2xx + 无错误信封 ⇒ 按可用处理（上游确实受理了）。
+        Ok(None) => return cell(ProbeState::Ok, status, String::new()),
+        Err(_elapsed) => {
+            return cell(
+                ProbeState::TransportError,
+                status,
+                format!("读取首帧超时（{}s）", PROBE_CELL_TIMEOUT_SECS),
+            )
+        }
+    };
+    // 首帧可能是 SSE `data:` 或直接一个业务信封 JSON：两种都试。
+    if let Some(code) = loomy_envelope_code(&frame) {
+        let spec = buddy_switch_core::modules::loomy::region::realm_spec(region);
+        if code != spec.ok_code {
+            return cell(
+                probe_state_of_loomy_code(&code),
+                status,
+                truncate_with_marker(&format!("业务码 {code}：{frame}"), PROBE_REASON_LIMIT),
+            );
+        }
+    }
+    cell(ProbeState::Ok, status, String::new())
+}
+
+/// 从响应文本里抽业务信封的 `code`（不是信封 ⇒ `None`）。
+///
+/// SSE 首帧形态是 `data: {...}` ⇒ 逐行剥 `data: ` 前缀再解析；纯 JSON 直接解析。
+fn loomy_envelope_code(text: &str) -> Option<String> {
+    for line in text.lines() {
+        let candidate = line.strip_prefix("data: ").unwrap_or(line).trim();
+        if candidate.is_empty() || candidate == "[DONE]" {
+            continue;
+        }
+        if let Ok(parsed) = serde_json::from_str::<Value>(candidate) {
+            if let Some(code) = parsed.get("code").and_then(Value::as_str) {
+                return Some(code.to_string());
+            }
+        }
+    }
+    None
+}
+
 /// 探一格（Trae）：**单账号、单次、零重试、有硬超时、不写池**。
 ///
 /// ## 判据：Trae 有**两套**分类入口，都要用（`probe_state_of_trae` 统一映射）
@@ -1532,6 +1766,53 @@ mod tests {
         assert_ne!(probe_state_of_qoder(429), probe_state_of_qoder(401));
         // 模型不可见与上游错误必须分列。
         assert_ne!(probe_state_of_qoder(404), probe_state_of_qoder(500));
+    }
+
+    /// ★ Loomy 判据映射（二期 9.4）：**两层**都要覆盖。
+    ///
+    /// 变异①：把 429 映射成 `RateLimitedAccount` ⇒ 第一条断言红。
+    /// 变异②：把 `100002` 归 `UpstreamError` ⇒ 业务码那条断言红（登录失效必须是 `AuthDead`，
+    /// 它的出口是「重新登录」而不是「等冷却」）。
+    #[test]
+    fn loomy_status_and_code_map_to_probe_state() {
+        assert_eq!(probe_state_of_loomy(429), ProbeState::RateLimitedModel);
+        assert_eq!(probe_state_of_loomy(401), ProbeState::AuthDead);
+        assert_eq!(probe_state_of_loomy(403), ProbeState::AuthDead);
+        assert_eq!(probe_state_of_loomy(404), ProbeState::ModelUnavailable);
+        assert_eq!(probe_state_of_loomy(400), ProbeState::UpstreamError);
+        assert_eq!(probe_state_of_loomy(500), ProbeState::UpstreamError);
+        assert_eq!(probe_state_of_loomy(503), ProbeState::UpstreamError);
+        assert_ne!(probe_state_of_loomy(429), probe_state_of_loomy(401));
+
+        // 业务码层（恒 200 信封）：这是 Loomy 与另三条**最不一样**的地方。
+        assert_eq!(probe_state_of_loomy_code("100002"), ProbeState::AuthDead);
+        assert_eq!(probe_state_of_loomy_code("100001"), ProbeState::ModelUnavailable);
+        assert_eq!(probe_state_of_loomy_code("999999"), ProbeState::UpstreamError);
+        // `000000` 是成功码 —— 它不该走到这里（调用方先判 equals ok_code），
+        // 但即便走到也只能是 `UpstreamError`（绝不是 `Ok`：那会造出假绿）。
+        assert_ne!(probe_state_of_loomy_code("000000"), ProbeState::Ok);
+    }
+
+    /// 信封解析：SSE `data:` 行与裸 JSON 两种形态都要认出来。
+    ///
+    /// 变异：把 `strip_prefix("data: ")` 去掉 ⇒ SSE 那条断言红（真实响应就是 SSE）。
+    #[test]
+    fn loomy_envelope_code_reads_both_sse_and_bare_json() {
+        assert_eq!(
+            loomy_envelope_code(r#"data: {"code":"100002","desc":"缺少 token"}"#).as_deref(),
+            Some("100002")
+        );
+        assert_eq!(
+            loomy_envelope_code(r#"{"code":"000000","data":{}}"#).as_deref(),
+            Some("000000")
+        );
+        // SSE 首帧是正常 chat chunk（无 `code` 字段）⇒ 不是信封。
+        assert_eq!(
+            loomy_envelope_code(r#"data: {"choices":[{"delta":{"content":"p"}}]}"#),
+            None
+        );
+        assert_eq!(loomy_envelope_code("data: [DONE]"), None);
+        assert_eq!(loomy_envelope_code("not json"), None);
     }
 
     /// `target_for_scope` **fail-closed**：未知 / 空 / 拼错一律 `Err`（可读文案，列出合法取值）。

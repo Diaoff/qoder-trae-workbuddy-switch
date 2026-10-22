@@ -23,6 +23,7 @@ import {
 } from "@/components/gateway/gateway-subnav";
 import { LoomyApiKeyTable } from "@/components/gateway/loomy-api-key-table";
 import { LoomyModelList } from "@/components/gateway/loomy-model-list";
+import { ModelProbeCard } from "@/components/gateway/model-probe-card";
 import { TraeIntegrationGuide } from "@/components/gateway/trae-integration-guide";
 import { TraeRequestLog } from "@/components/gateway/trae-request-log";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
@@ -287,6 +288,21 @@ export default function LoomyApiServicePage() {
   /* 与另三个分区**同源口径**：
      - 「可用模型」= 网关对外清单条数（全量 − 已禁用），不能直接用 `rows.length`；
      - 「账号池」= 池条目总数（缺数据时回落到账号数）。 */
+  /**
+   * 限流探测卡（与另四条网关页**同一个组件**）要的**账号轴 / 模型轴**。
+   *
+   * ⚠️ Loomy 的池 / 清单不在 WB 网关 store 里，故这里**显式注入**自己的轴 ——
+   * 「列集合 / 账号轴由作用域决定」由本页保证，组件本身**不按平台分叉**。
+   */
+  const probeAccounts = useMemo(
+    () => (status?.accounts ?? []).map((account) => ({ uid: account.uid, name: account.name })),
+    [status],
+  );
+  const probeModels = useMemo(
+    () => catalog.rows.map((row) => ({ id: row.id, name: row.name })),
+    [catalog],
+  );
+
   const disabledCount = catalog.rows.filter((row) => row.disabled).length;
   const modelCount = Math.max(0, catalog.rows.length - disabledCount);
   const poolCount = status?.pool?.total ?? status?.accounts?.length ?? 0;
@@ -513,11 +529,25 @@ export default function LoomyApiServicePage() {
 
         {/* ---- 模型清单（向上游实时拉取 + 禁用 / 启用） ---- */}
         {section === "models" && (
-          <LoomyModelList
-            catalog={catalog}
-            refreshing={refreshingModels}
-            onRefresh={() => void onRefreshModels()}
-          />
+          <>
+            {/* 限流探测卡**在表之上**（与另四页同一组件、同一位置）。
+                ★ `adoptSupported={false}`：Loomy 池**没有「模型级冷却」轴**（上游 429 是
+                账号级的），把「某模型被限」回填成账号级冷却会误伤同账号其它模型
+                （方案 §4.5.4 的 T1）⇒ 开关禁用并说明原因。后端 `ProbeTarget::Loomy::adopt`
+                也是显式空操作（双保险）。 */}
+            <ModelProbeCard
+              region="cn"
+              accounts={probeAccounts}
+              models={probeModels}
+              adoptSupported={false}
+              className="mb-6"
+            />
+            <LoomyModelList
+              catalog={catalog}
+              refreshing={refreshingModels}
+              onRefresh={() => void onRefreshModels()}
+            />
+          </>
         )}
 
         {/* ---- 账号池（与另三条共用同一张卡；tiles / 插槽走数据） ---- */}

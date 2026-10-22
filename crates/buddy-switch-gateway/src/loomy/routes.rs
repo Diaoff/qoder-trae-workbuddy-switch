@@ -196,21 +196,7 @@ pub async fn chat_for_region(
             continue;
         }
 
-        let spec = realm_spec(region);
-        let url = match &state.upstream_override {
-            Some(host) => format!("{host}/chat/completions"),
-            None => format!("{}/chat/completions", spec.api_base),
-        };
-        let mut request = state
-            .http
-            .post(&url)
-            .timeout(buddy_switch_core::modules::loomy::api::CHAT_TIMEOUT)
-            .body(outbound.clone());
-        // 两套认证头都发（chat 端点认 Bearer；照官方客户端两个都发）。
-        for (name, value) in buddy_switch_core::modules::loomy::chat::chat_headers(&access_token) {
-            request = request.header(name, value);
-        }
-        let response = match request.send().await {
+        let response = match chat_once_for_account(&state, region, &access_token, &outbound).await {
             Ok(response) => response,
             Err(transport_error) => {
                 failures.push(format!("{uid}：{transport_error}"));
@@ -373,6 +359,34 @@ pub async fn chat_for_region(
         "no_available_account",
         &message,
     )
+}
+
+/// **单账号、单次**发一次 chat（不选号、不换号、不写池）。
+///
+/// 从 [`chat_for_region`] 的换号循环里抽出来的最小发送入口 —— **限流探测**必须用它：
+/// 用 `chat_for_region` 会让探测自己触发换号轮换，并把失败**写进池冷却**
+/// （探测自己把号打成冷却 = 自我实现的限流，方案红线 2）。
+pub(crate) async fn chat_once_for_account(
+    state: &LoomyGatewayState,
+    region: LoomyRegion,
+    access_token: &str,
+    outbound: &str,
+) -> Result<reqwest::Response, String> {
+    let spec = realm_spec(region);
+    let url = match &state.upstream_override {
+        Some(host) => format!("{host}/chat/completions"),
+        None => format!("{}/chat/completions", spec.api_base),
+    };
+    let mut request = state
+        .http
+        .post(&url)
+        .timeout(buddy_switch_core::modules::loomy::api::CHAT_TIMEOUT)
+        .body(outbound.to_string());
+    // 两套认证头都发（chat 端点认 Bearer；照官方客户端两个都发）。
+    for (name, value) in buddy_switch_core::modules::loomy::chat::chat_headers(access_token) {
+        request = request.header(name, value);
+    }
+    request.send().await.map_err(|error| error.to_string())
 }
 
 /// 从非 SSE 的 JSON 响应体里抽业务错误：`(分类, 可读说明)`；不是错误时 `None`。
