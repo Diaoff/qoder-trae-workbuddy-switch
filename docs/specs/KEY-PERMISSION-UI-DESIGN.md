@@ -293,7 +293,7 @@ pub scope_groups: Vec<String>,    // 允许访问的**分组** id（与 scope_ac
 |:--|:--|:--|
 | 1 密钥记录扩字段 | ✅ | `apikey.rs`：四枚举 + 7 字段（全 `serde(default)`）+ `update_policy` + `normalized` |
 | 2 日志带 key id | ✅ | `RequestMeta.key_id` + 日志 `keyId` 键（三条 LLM 路由 12 个构造点）；前端类型区分 `null`（无 Key）与 `undefined`（老条目） |
-| 2' 用量页「按密钥」维度 | ⬜ 未做 | 数据前提已就绪（上面那行）；缺的是前端 `KeysView` 组件 + `UsagePage` 的 tab 项 —— 规范自己说「可单独排期」 |
+| 2' 用量页「按密钥」维度 | ✅ **仅 WB** | `key-ranking.tsx` + `UsagePage` tab（`e737b8b`）。Trae / Qoder **不出现该 tab** —— 判据是「日志里有没有 `keyId`」：WB 有（`8f1a1c4`），Trae / Qoder 的 `record_request` 还没有这个参数。缺数据源不画空壳 |
 | 3 用量计数 | ✅ | `key_usage.rs`（**两口径各自一份计数**，见下方 ★） |
 | 4 配额 429 + 白名单 | ✅ | `relay.rs`（选号前判）+ `pool/pick.rs` 的 `allowed` 通道 |
 | 5 管理面命令 | ✅ | `set_key_policy` + `key_usage`（server / tauri / invoke 全同步） |
@@ -309,8 +309,8 @@ pub scope_groups: Vec<String>,    // 允许访问的**分组** id（与 scope_ac
    |:--|:--|:--|:--|:--|
    | WorkBuddy | ✅ | ✅ | ✅ | ✅ 请求数 + token |
    | Trae | ✅ | ✅ | ✅ | ✅ 请求数 + token |
-   | Qoder | ✅ | ✅ | ✅ | ⬜ 待接（`qoder/routes.rs` 当时被占用） |
-   | 统一网关 | ✅ | ✅ | ⬜ 待接（keys 区非标准 table） | ⬜ 待接（需跨产品线签名重构） |
+   | Qoder | ✅ | ✅ | ✅ | ✅ 请求数 + token（`07d745c`） |
+   | 统一网关 | ✅ | ✅ | ✅ | ⬜ 待接（需跨产品线签名重构） |
 
    未接中继的侧：策略**只存不生效**（与改造前行为一致，不是假功能 —— 本来就没有配额能力）。
 
