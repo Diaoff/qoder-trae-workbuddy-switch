@@ -11,6 +11,12 @@
  * - 否则 ⇒ **只画消耗侧**（单向向下柱）+ 图注说明「入账明细不可得」。
  *
  * 这是「数据不支持就不画」的落地：**宁可少画一半，不要画错一半**。
+ *
+ * ## 柱间距与 `stacked-daily-bar.tsx` 同一套规则
+ *
+ * 固定像素缝、**不用 `maxBarSize`**（它把柱压窄并在带内居中 ⇒ 空隙全变成空白）。
+ * 原因与实测见 `stacked-daily-bar.tsx` 文件头「柱间距」一节 —— 两张图必须同缝，
+ * 否则同一个页面里切换「趋势 / 积分」时柱宽会跳。
  */
 
 import { Bar, BarChart, CartesianGrid, ReferenceLine, XAxis, YAxis } from "recharts";
@@ -25,6 +31,9 @@ const CONFIG = {
   up: { label: "in", color: "var(--data-series-emerald)" },
   down: { label: "out", color: "var(--data-series-amber)" },
 } satisfies ChartConfig;
+
+/** 柱间缝隙的一半（px）：recharts 在带两侧各扣一份 ⇒ 实际缝 4px。与每日堆叠柱同值。 */
+const BAR_CATEGORY_GAP_PX = 2;
 
 /**
  * 本图**喂给 recharts 的每一行**（`BarChart data` 的元素）。
@@ -90,7 +99,11 @@ export function CreditDivergingBar({ bars }: { bars: CreditDailyBar[] }) {
 
   return (
     <ChartContainer config={CONFIG} className="h-[180px] w-full">
-      <BarChart data={data} margin={{ top: 8, right: 8, left: 0, bottom: 0 }} barCategoryGap="18%">
+      <BarChart
+        data={data}
+        margin={{ top: 8, right: 8, left: 0, bottom: 0 }}
+        barCategoryGap={BAR_CATEGORY_GAP_PX}
+      >
         <CartesianGrid vertical={false} strokeDasharray="3 3" />
         <XAxis dataKey="label" tickLine={false} axisLine={false} tickMargin={8} minTickGap={24} />
         <YAxis
@@ -111,7 +124,6 @@ export function CreditDivergingBar({ bars }: { bars: CreditDailyBar[] }) {
             fill="var(--color-up)"
             stroke="var(--background)"
             strokeWidth={1}
-            maxBarSize={28}
             isAnimationActive={false}
           />
         ) : null}
@@ -121,7 +133,6 @@ export function CreditDivergingBar({ bars }: { bars: CreditDailyBar[] }) {
           fill="var(--color-down)"
           stroke="var(--background)"
           strokeWidth={1}
-          maxBarSize={28}
           radius={showInflow ? 0 : [0, 0, 4, 4]}
           isAnimationActive={false}
         />

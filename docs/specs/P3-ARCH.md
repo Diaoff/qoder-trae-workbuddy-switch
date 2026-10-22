@@ -48,7 +48,7 @@
 | **趋势** `trend` | 区间总 Token / 日均 / 峰值 / 活跃账号 | ① 每日按模型**堆叠柱**（`stackedBar`）② 累计消耗**面积曲线**（`areaChart`）③ 模型占比**环形**（`donut`）④ 7×24 **热力图**（`heatmap`） |
 | **模型** `models` | 模型数 / 头部模型 / 模型总 Token / 单模型均值 | ① 模型占比**环形** ② 模型用量**排行**（横向条 `hbarList` + 每行**迷你趋势线** `sparkline`） |
 | **会话** `sessions` | 会话数 / 会话总 Token / 单会话均值 / 最高消耗 | ① 会话 Token **排行** ② 消息数 × Token **散点气泡**（`scatterChart`）③ 会话明细**表** |
-| **积分** `credits` | 可用积分合计 / 区间入账 / 区间消耗 / 即将过期 | ① 每日积分收支**双向柱**（`divergingBars`，上=入账/下=消耗）② 积分余额**面积曲线**（`anchorZero:false`）③ 积分到期分布**柱**（30 天完整轴）④ 账号 Token 占比**环形** ⑤ 网关状态码分布**环形** ⑥ 积分流水表 |
+| **积分** `credits` | 可用积分合计 / 区间入账 / 区间消耗 / 即将过期 | ① 每日积分收支**双向柱**（`divergingBars`，上=入账/下=消耗）② 积分余额**面积曲线**（`anchorZero:false`）③ 积分到期分布**柱**（只画有到期的日子，每根带 `D+n`）④ 账号 Token 占比**环形** ⑤ 网关状态码分布**环形** ⑥ 积分流水表 |
 
 > **合并态（`merge`）**：`usageFor()` 返回 `{ days, models, sessions, credits, ext: mergeExt(ids) }` ——
 > **图表数据必须一起聚合**（`mergeExt` 聚合 `modelDays / hourly / creditDaily / balance / expiry / accountShare / statusCodes / scatter / curTotal`）。
@@ -78,7 +78,7 @@
    > 「排行与散点同源、同一批会话」**仍然成立** —— 两者吃同一个切片。
    > 门禁：`check-scope-registry.cjs` 的「★ 会话视图必须截断渲染」。
 9. **会话气泡不溢出绘图区**（半径留边）。
-10. **积分页：双向柱 + 余额曲线 + 到期时间轴（30 根）+ 两个环形**。
+10. **积分页：双向柱 + 余额曲线 + 到期时间轴（只画有到期的日子，每根柱带 `D+n` 刻度）+ 两个环形**。
 11. **积分余额曲线基线不锚 0**（`figcaption` 含「非 0」，PLAN §3.10 第 3 条）。
 12. **合并态模型扇区数真的变多**（`mergeExt` 聚合了图表数据）。
 
@@ -122,7 +122,8 @@ balanceCurve(bars, currentRemaining) -> { label, value, baseline }[]
   ★ 终值 = summary.currentRemaining，逐日回推；baseline = min - (max-min)*0.35（同原型），非 0
 
 expiryBuckets(expiry) -> { day: 1..30, value }[]
-  ★ 完整 30 天轴（无到期的天补 0，不跳格）—— 契约 10
+  ★ 输出仍是 30 项（适配层不裁剪，便于测试与对账）；
+    渲染层**只画 value > 0 的日子**，每根柱带 `D+n` 刻度 —— 契约 10（2026-10-22 修订）
 ```
 
 ### 1.5 图注生成器（统一出口，杜绝「写废话」）
@@ -170,7 +171,7 @@ expiryBuckets(expiry) -> { day: 1..30, value }[]
 | `src/components/usage/session-ranking.tsx` | 会话·Token 排行 + 明细表 |
 | `src/components/usage/credit-diverging-bar.tsx` | 积分·每日收支双向柱（入账上 / 消耗下，零线居中） |
 | `src/components/usage/credit-balance-area.tsx` | 积分·余额曲线（**非 0 基线**） |
-| `src/components/usage/credit-expiry-bars.tsx` | 积分·到期分布（完整 30 天轴） |
+| `src/components/usage/credit-expiry-bars.tsx` | 积分·到期分布（只画有值的日子） |
 | `src/components/usage/credit-donuts.tsx` | 积分·账号占比环形 + 状态码环形（数据不足时不渲染，见 §6） |
 | `src/components/overview/today-usage.tsx` | 概览·今日用量摘要块 |
 | `docs/specs/P3-ARCH.md` | 本文档 |
@@ -251,7 +252,7 @@ export interface BalancePoint {
   baseline: number;
 }
 
-/** 积分：到期分布（完整 30 天）。 */
+/** 积分：到期分布（30 项原始桶；渲染层只画有值的日子，见契约 10）。 */
 export interface ExpiryBucket {
   day: number;         // 1..30
   value: number;
@@ -449,7 +450,7 @@ sequenceDiagram
   - 新建 `src/components/usage/credit-diverging-bar.tsx`、`credit-balance-area.tsx`、`credit-expiry-bars.tsx`、`credit-donuts.tsx`
   - 修改 `src/locales/domains/*.zh.ts` / `.en.ts`
 - **依赖**：T01
-- **要点**：双向柱（入账上 / 消耗下，零线居中）+ 余额曲线（**非 0 基线**，图注写明）+ 到期 **30 天完整轴**；入账由 `checkin` 事件按日聚合（**无逐日入账字段**）；余额是**回推**值（图注注明）；**账号占比 / 状态码环形按 §6 #2 / #3 不渲染**（后端无数据源）。
+- **要点**：双向柱（入账上 / 消耗下，零线居中）+ 余额曲线（**非 0 基线**，图注写明）+ 到期图**只画有到期的日子**（每根柱带 `D+n` 刻度，理由见契约 10）；入账由 `checkin` 事件按日聚合（**无逐日入账字段**）；余额是**回推**值（图注注明）；**账号占比 / 状态码环形按 §6 #2 / #3 不渲染**（后端无数据源）。
 
 ### T04 · 页面接线（四 Tab + 收敛视图参数 + 概览今日摘要 + 待处理上移）｜ P0
 
