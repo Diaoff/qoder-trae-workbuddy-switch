@@ -49,6 +49,8 @@ import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { EmptyState } from "@/components/ui/empty-state";
 import { Skeleton } from "@/components/ui/skeleton";
+import { KeysView } from "@/components/usage/key-ranking";
+import { normalizeQoderGatewayLogs, type QoderApiKeyRecord } from "@/lib/qoder-gateway";
 import { ChartFrame } from "@/components/usage/chart-frame";
 import { StatTiles, type StatTile } from "@/components/usage/stat-tiles";
 import { seriesColor } from "@/components/usage/palette";
@@ -78,7 +80,27 @@ const OTHER_SERIES = "__other__";
 const SESSION_ROWS = 200;
 
 /** 三个子视图（`UsagePage` 的 `PLATFORM_TABS.qoder` 与之对应）。 */
-export type QoderUsageView = "trend" | "models" | "sessions";
+export type QoderUsageView = "trend" | "models" | "sessions" | "keys";
+
+/**
+ * 「按密钥」取数（Qoder：网关日志 + 密钥名）。模块级 ⇒ 引用稳定。
+ *
+ * ⚠️ Qoder 的**用量账本**按 credits 计（客户端会话），但「按密钥」看的是**网关请求日志**
+ * 的 `keyId` —— 与 WB / Trae 同一份 `KeysView`，只是数据源不同。
+ */
+async function loadQoderKeyUsage() {
+  const [raw, keys] = await Promise.all([
+    api.getQoderGatewayLogs(),
+    api.listQoderApiKeys().catch(() => ({ keys: [] as QoderApiKeyRecord[] })),
+  ]);
+  /* `list_qoder_api_keys` 的返回类型是 `unknown`（命令面参数化后未收窄）⇒ 就地断言。
+     取不到名字时 `aggregateByKey` 会用短 id 兜底，不会显示「未知」。 */
+  const rows = ((keys as { keys?: QoderApiKeyRecord[] }).keys ?? []) as QoderApiKeyRecord[];
+  return {
+    entries: normalizeQoderGatewayLogs(raw),
+    keyNames: new Map(rows.map((key) => [key.id, key.name] as const)),
+  };
+}
 
 interface Props extends UsageViewProps {
   /** 当前子视图；缺省 `trend`（老调用点不传也照常工作）。 */
@@ -453,6 +475,15 @@ export default function QoderUsagePage({ viewWindow, view = "trend" }: Props) {
             </div>
           </ChartFrame>
         </>
+      ) : view === "keys" ? (
+        <KeysView
+          window={viewWindow}
+          loader={loadQoderKeyUsage}
+          title={t("wbStats.usage.keys.title")}
+          caption={t("wbStats.usage.keys.caption")}
+          emptyTitle={t("wbStats.usage.keys.empty")}
+          emptyHint={t("wbStats.usage.keys.emptyHint")}
+        />
       ) : view === "sessions" ? (
         <ChartFrame
           title={t("qoder.page.usage.sessions.list")}

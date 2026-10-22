@@ -89,8 +89,8 @@ const PLATFORM_TABS: Record<Product, UsageTab[]> = {
   /* ★ issue #76 / U4：「按密钥」出现在 **WB 与 Trae** —— 判据是**日志里有没有 `keyId`**：
        · WB：`RequestMeta.key_id`（`8f1a1c4`）；
        · Trae：`record_request` 的 `key_id` 参数（本轮）；
-       · Qoder：`record_request` 的 `key_id` 参数（本轮）—— 但 Qoder 用量页是**另一套
-         组件**（`QoderUsagePage`，按 credits 计），它的 keys 视图另排；
+       · Qoder：`record_request` 的 `key_id` 参数（本轮）—— 用量页虽是另一套组件
+         （`QoderUsagePage`，按 credits 计），但它也接了同一个 `KeysView`；
        · 统一网关：中继未接，日志没有 keyId。
      缺数据源就**不画空壳**（§6 #5）—— 一张全是「无密钥调用」的表比没有这一页更糟。 */
   workbuddy: ["trend", "models", "sessions", "keys", "credits"],
@@ -101,7 +101,7 @@ const PLATFORM_TABS: Record<Product, UsageTab[]> = {
        · 会话：`qoder_usage.sessions`（按 sessionId 聚合 credits；标题取首个 user 消息）；
        · 积分：`qoder_credits`（上游额度接口的**实时余额**，与「趋势」是两个口径）。
      ⚠️ 会话视图是**只读排行**：Qoder 没有会话复制能力，不摆「打开 / 复制」按钮。 */
-  qoder: ["trend", "models", "sessions", "credits"],
+  qoder: ["trend", "models", "sessions", "keys", "credits"],
 };
 
 /** 平台 → 子页面（Token 页 / 积分页）。 */
