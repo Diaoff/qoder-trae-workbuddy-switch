@@ -116,7 +116,4 @@ export const zh = {
   "loomy.page.settings.schedule.sampleTimesDesc":
     "每天每个时点采一帧；同日重复采样保留最后一次读数（趋势按日一格）。",
   "loomy.page.settings.schedule.saveFailed": "保存计划任务失败",
-  "loomy.page.settings.checkinGroup": "自动签到",
-  "loomy.page.settings.checkinUnavailable":
-    "Loomy 的自动签到尚未提供：本仓排程里只登记了「积分逐日采样」，没有 Loomy 签到任务。需要签到时请在账号卡的「更多」菜单里手动触发（签到 = 触发每日赠送额度重置，不是加分，幂等）。",
 } as const;

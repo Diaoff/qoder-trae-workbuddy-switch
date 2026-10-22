@@ -136,23 +136,6 @@ export default function LoomySettingsPage() {
 
           {section === "schedule" && (
             <>
-              {/* ★ 自动签到：**本仓没有** Loomy 签到排程（只有积分采样）。
-                  这里不摆开关（摆了就是假控件），而是如实说明「没有」+ 给出真实出口。 */}
-              <SettingsGroup
-                id="loomy-settings-checkin"
-                title={t("loomy.page.settings.checkinGroup")}
-              >
-                <CardContent className="space-y-0 p-0">
-                  {/* 说明块而非开关：本仓没有 Loomy 签到排程 ⇒ 摆开关就是假控件。
-                      文案讲清「没有这个能力」+ 真正可走的出口（账号卡手动签到）。 */}
-                  <div className="px-4 py-3">
-                    <p className="text-[11.5px] leading-5 text-muted-foreground">
-                      {t("loomy.page.settings.checkinUnavailable")}
-                    </p>
-                  </div>
-                </CardContent>
-              </SettingsGroup>
-
               {/* 自动签到：**写**动作（触发每日额度重置）⇒ 默认关，与另三条签到同判据。
                   与采样分开摆：一个是替你领东西，一个只是读一眼。 */}
               <SettingsGroup

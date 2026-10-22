@@ -101,7 +101,4 @@ export const en = {
   "loomy.page.settings.schedule.sampleTimesDesc":
     "One sample per time per day; repeated samples on the same day keep the last reading (the trend is one cell per day).",
   "loomy.page.settings.schedule.saveFailed": "Failed to save schedule",
-  "loomy.page.settings.checkinGroup": "Automatic check-in",
-  "loomy.page.settings.checkinUnavailable":
-    "Loomy automatic check-in is not available: the scheduler only registers daily credit sampling, there is no Loomy check-in task. Trigger it manually from an account card's More menu (check-in resets the daily allowance — it does not add credits, and it is idempotent).",
 } as const;
