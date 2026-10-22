@@ -96,11 +96,28 @@ impl KeyUsage {
 /// 按 Key 的用量账本（每次操作读盘，与 [`super::ApiKeyStore`] 同一取舍）。
 pub struct KeyUsageStore {
     path: PathBuf,
+    /// ★ **进程内串行化**（2026-10-22）。
+    ///
+    /// 账本是「读盘 → 改 → 写盘」，两个并发请求会**读到同一份旧值**，各自 +1 后
+    /// 后写覆盖前写 ⇒ 计数丢失（比「超限一点」严重得多：配额可能永远不触发）。
+    /// 所有写路径（含 [`Self::check_and_record`] 的读-判-写）都必须持这把锁。
+    ///
+    /// 为什么不换成内存计数器 + 定时落盘：账本要跨进程可见（桌面端与网关进程各持
+    /// 一个实例读同一文件），内存态会分叉。锁只保护单次读改写，粒度足够细。
+    lock: std::sync::Mutex<()>,
 }
 
 impl KeyUsageStore {
     pub fn new(path: PathBuf) -> Self {
-        Self { path }
+        Self {
+            path,
+            lock: std::sync::Mutex::new(()),
+        }
+    }
+
+    /// 取锁（中毒也继续用：用量账本不该因为一次 panic 就永久不可写）。
+    fn guard(&self) -> std::sync::MutexGuard<'_, ()> {
+        self.lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
     fn load(&self) -> BTreeMap<String, KeyUsage> {
@@ -126,6 +143,19 @@ impl KeyUsageStore {
         if amount == 0 {
             return;
         }
+        let _guard = self.guard();
+        self.record_locked(key_id, unit, amount, period, now_ms);
+    }
+
+    /// [`Self::record`] 的**不持锁**版本（调用方必须已持 [`Self::guard`]）。
+    fn record_locked(
+        &self,
+        key_id: &str,
+        unit: QuotaUnit,
+        amount: u64,
+        period: QuotaPeriod,
+        now_ms: i64,
+    ) {
         let mut usage = self.load();
         let counters = usage.entry(key_id.to_string()).or_default().counters_mut(unit);
         counters.total = counters.total.saturating_add(amount);
@@ -152,6 +182,66 @@ impl KeyUsageStore {
     /// token 记账（流结束时；`tokens` = 该次请求的 prompt+completion）。
     pub fn record_tokens(&self, key_id: &str, tokens: u64, period: QuotaPeriod, now_ms: i64) {
         self.record(key_id, QuotaUnit::Token, tokens, period, now_ms);
+    }
+
+    /// ★ **原子**的「判定 + 计数」（2026-10-22）。
+    ///
+    /// ## 为什么必须是一个方法
+    ///
+    /// 原先是 `used_for()` 判、`record_request()` 记 —— 两个独立调用之间没有锁，
+    /// 并发请求会**同时读到旧值**、同时通过判定，然后各自 +1 ⇒ 上限被突破 N 倍。
+    /// 更糟的是两次读改写竞争还会**丢计数**（后写覆盖前写），配额可能永远不触发。
+    ///
+    /// 这里把「读 → 判 → 写」放在**同一把锁**内：
+    /// - 未超限 ⇒ 记一笔，返回 `None`；
+    /// - 已超限 ⇒ **不记这一笔**（请求被拒，不该计入），返回超限详情。
+    ///
+    /// 于是「恰好 limit 个请求通过」是**可保证**的（不是「大约」）。
+    pub fn check_and_record(
+        &self,
+        key_id: &str,
+        policy: &crate::apikey::KeyPolicy,
+        now_ms: i64,
+    ) -> Option<(u64, u64, crate::apikey::QuotaUnit, crate::apikey::QuotaPeriod)> {
+        let _guard = self.guard();
+        let mut usage = self.load();
+        {
+            let counters = usage
+                .entry(key_id.to_string())
+                .or_default()
+                .counters_mut(policy.quota_unit);
+            let used = counters.used_now(policy.quota_period, now_ms);
+            if let crate::apikey::QuotaVerdict::Exceeded {
+                used,
+                limit,
+                unit,
+                period,
+            } = crate::apikey::quota_verdict_for_policy(policy, used)
+            {
+                // 超限：**不记账**（被拒的请求不该消耗额度）。
+                return Some((used, limit, unit, period));
+            }
+        }
+        /* 未超限：**在同一份 `usage` 上**记账并落盘 —— 不重新 `load()`
+           （重新读会多一次 IO，也让「读到的就是刚判过的那个值」变得不显然）。 */
+        {
+            let counters = usage
+                .entry(key_id.to_string())
+                .or_default()
+                .counters_mut(crate::apikey::QuotaUnit::Request);
+            counters.total = counters.total.saturating_add(1);
+            if let Some(current) = policy.quota_period.period_key(now_ms) {
+                if counters.period_key.as_deref() != Some(current.as_str()) {
+                    counters.period_key = Some(current);
+                    counters.period_used = 0;
+                }
+                counters.period_used = counters.period_used.saturating_add(1);
+            }
+        }
+        if let Err(error) = self.save(&usage) {
+            eprintln!("[gateway] 保存密钥用量失败: {error}");
+        }
+        None
     }
 
     /// 查询某把 Key 在**指定口径**下的用量。
@@ -186,6 +276,59 @@ mod tests {
     /// 2026-10-22 12:00 UTC 的毫秒（固定值 ⇒ 周期键可预期）。
     const NOON: i64 = 1_781_388_000_000;
     const NEXT_DAY: i64 = NOON + 86_400_000;
+
+    /// ★ **并发下恰好放行 `limit` 个**（2026-10-22 加锁前这条会红）。
+    ///
+    /// 可证伪：
+    /// - 去掉 `KeyUsageStore::lock`（或改成「先 `used_for` 判、再 `record` 记」两步）
+    ///   ⇒ 多个线程同时读到同一个旧值，放行数 **大于** limit，且 `used` 可能小于 limit
+    ///   （读改写竞争丢计数）。
+    /// - 把「超限不记账」改回「超限也记」⇒ `used` 会大于 limit。
+    #[test]
+    fn concurrent_check_and_record_admits_exactly_the_limit() {
+        use crate::apikey::{KeyPolicy, QuotaMode, QuotaPeriod, QuotaUnit, ScopeMode};
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+
+        let store = Arc::new(temp_store());
+        let policy = KeyPolicy {
+            quota_mode: QuotaMode::Limited,
+            quota_limit: 10,
+            quota_unit: QuotaUnit::Request,
+            quota_period: QuotaPeriod::Daily,
+            scope_mode: ScopeMode::All,
+            scope_accounts: Vec::new(),
+            scope_groups: Vec::new(),
+        };
+        let admitted = Arc::new(AtomicUsize::new(0));
+
+        // 32 个线程各抢一次（远大于上限 10）。
+        let mut handles = Vec::new();
+        for _ in 0..32 {
+            let store = store.clone();
+            let policy = policy.clone();
+            let admitted = admitted.clone();
+            handles.push(std::thread::spawn(move || {
+                if store.check_and_record("k-concurrent", &policy, NOON).is_none() {
+                    admitted.fetch_add(1, Ordering::Relaxed);
+                }
+            }));
+        }
+        for handle in handles {
+            handle.join().expect("线程不应 panic");
+        }
+
+        assert_eq!(
+            admitted.load(Ordering::Relaxed),
+            10,
+            "并发下必须**恰好**放行 limit 个（多放 = 判定非原子；少放 = 丢计数）"
+        );
+        assert_eq!(
+            store.used_for("k-concurrent", QuotaUnit::Request, QuotaPeriod::Daily, NOON),
+            10,
+            "被拒的请求不该消耗额度（used 必须停在 limit）"
+        );
+    }
 
     #[test]
     fn request_counting_accumulates_within_a_period() {

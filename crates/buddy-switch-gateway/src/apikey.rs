@@ -349,33 +349,24 @@ impl KeyActor {
 
     /// 配额判定 + 记一笔请求数。返回 `Some(文案)` = 已超限。
     ///
-    /// ★ 位置与顺序对四条产品线**完全一致**：判定在**选号之前**、请求数在**进入网关后**。
+    /// ★ **原子**：走 `KeyUsageStore::check_and_record`（读-判-写同一把锁）。
+    ///   原先「`used_for` 判 + `record_request` 记」是两步，并发下会同时通过判定，
+    ///   还会因读改写竞争丢计数（详见该方法的文档）。
+    ///
+    /// ★ 超限时**不记这一笔**：配额是「允许多少次」，不是「尝试多少次」。
+    ///   否则用户会看到 101/100 这种越界数字，且被拒的请求会持续抬高分母。
     pub fn check_quota_and_count(&self, now: i64) -> Option<String> {
-        let used = self.usage.used_for(
-            &self.key_id,
-            self.policy.quota_unit,
-            self.policy.quota_period,
-            now,
-        );
-        self.usage
-            .record_request(&self.key_id, self.policy.quota_period, now);
-        match quota_verdict_for_policy(&self.policy, used) {
-            QuotaVerdict::Exceeded {
+        let (used, limit, unit, period) =
+            self.usage.check_and_record(&self.key_id, &self.policy, now)?;
+        Some(
+            crate::error::GatewayError::KeyQuotaExceeded {
                 used,
                 limit,
                 unit,
                 period,
-            } => Some(
-                crate::error::GatewayError::KeyQuotaExceeded {
-                    used,
-                    limit,
-                    unit,
-                    period,
-                }
-                .message(),
-            ),
-            QuotaVerdict::Ok => None,
-        }
+            }
+            .message(),
+        )
     }
 
     /// 记 token（**拿不到用量就不记** —— 写 0 样本会让配额晚触发）。
