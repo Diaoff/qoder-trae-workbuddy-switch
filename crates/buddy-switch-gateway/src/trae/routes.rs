@@ -504,10 +504,15 @@ pub async fn messages_for_variant(
         )
         .await
         {
-            Ok(payload) => json_response(
-                StatusCode::OK,
-                anthropic::message_from_response(&payload, &model),
-            ),
+            Ok(payload) => {
+                // ★ issue #76：Anthropic 端点同样按密钥记 token（payload 是上游 OpenAI 形状，
+                //   所以取 `usage.total_tokens` 与 chat 端点同源）。
+                record_key_tokens(&state, key.as_deref(), &payload);
+                json_response(
+                    StatusCode::OK,
+                    anthropic::message_from_response(&payload, &model),
+                )
+            }
             Err(failure) => anthropic_error(
                 StatusCode::from_u16(failure.status).unwrap_or(StatusCode::BAD_GATEWAY),
                 &failure.code,
@@ -571,6 +576,8 @@ async fn stream_chat(
                 let task_state = state.clone();
                 let task_model = model.to_string();
                 let task_chat_id = chat_id.to_string();
+                // ★ issue #76：Key 要进 `tokio::spawn`（'static）⇒ 先 clone 一份。
+                let task_key = key.cloned();
                 tokio::spawn(async move {
                     let outcome = sse::stream_convert(
                         response,
@@ -592,6 +599,20 @@ async fn stream_chat(
                         variant,
                     )
                     .await;
+                    /* ★ issue #76：按密钥 token 记账 —— 挂在**流结束**这个同一时点
+                       （与 `settle` 并列）：请求前不知道用量，记了就是假账。
+                       `is_meaningful()` = 上游没报用量（全 0）⇒ 不记，别写 0 样本
+                       （会把「本周期已用」压低，让配额晚触发）。 */
+                    if let Some(record) = task_key.as_ref() {
+                        if outcome.usage.is_meaningful() {
+                            task_state.key_usage.record_tokens(
+                                &record.id,
+                                outcome.usage.total,
+                                record.quota_period,
+                                buddy_switch_core::modules::config::now_ms(),
+                            );
+                        }
+                    }
                 });
                 return if is_anthropic_endpoint(endpoint) {
                     anthropic_sse_response(rx, model)
@@ -722,7 +743,11 @@ async fn aggregate_chat(
     )
     .await
     {
-        Ok(payload) => json_response(StatusCode::OK, payload),
+        Ok(payload) => {
+            // ★ issue #76：非流式同样按密钥记 token（payload 是 OpenAI 形状，usage 在内）。
+            record_key_tokens(state, key, &payload);
+            json_response(StatusCode::OK, payload)
+        }
         Err(failure) => openai_error(
             StatusCode::from_u16(failure.status).unwrap_or(StatusCode::BAD_GATEWAY),
             &failure.code,
@@ -826,6 +851,32 @@ fn allowed_uids_for(
         }
     }
     Some(allowed)
+}
+
+/// 非流式路径的按密钥 token 记账（issue #76）。
+///
+/// 从 OpenAI 形状的 `payload.usage.total_tokens` 取数；缺失 / 0 ⇒ **不记**
+/// （与流式 `is_meaningful()` 同一判据：写 0 样本会让配额晚触发）。
+fn record_key_tokens(
+    state: &TraeGatewayState,
+    key: Option<&crate::trae::apikey::TraeApiKeyRecord>,
+    payload: &Value,
+) {
+    let Some(record) = key else { return };
+    let total = payload
+        .get("usage")
+        .and_then(|usage| usage.get("total_tokens"))
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    if total == 0 {
+        return;
+    }
+    state.key_usage.record_tokens(
+        &record.id,
+        total,
+        record.quota_period,
+        buddy_switch_core::modules::config::now_ms(),
+    );
 }
 
 /// 配额判定 + 请求数记账（issue #76）。返回 `Some(文案)` = 已超限。
