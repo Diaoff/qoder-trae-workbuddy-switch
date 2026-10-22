@@ -11,10 +11,11 @@ import {
   type SettingsSubnavId,
 } from "@/components/settings/settings-subnav";
 import { SettingsFieldRow, SettingsGroup } from "@/components/settings-primitives";
-import { ScopeChip } from "@/components/scope-chip";
+import { ScopeChip, scopeLabel } from "@/components/scope-chip";
 import { CardContent } from "@/components/ui/card";
 import { Switch } from "@/components/ui/switch";
 import * as api from "@/lib/api";
+import { useT } from "@/lib/i18n";
 import { platformOfPath } from "@/lib/platforms/registry";
 import {
   loadScheduleConfig,
@@ -30,19 +31,33 @@ import { toast } from "sonner";
 /**
  * Loomy 设置页。
  *
- * 与 Qoder 设置页同款收敛：**应用级设置与备份是跨平台共享面**
- * （`AppSettingsGroups` / `BackupSection` 内部按 `Scope::all()` 自动覆盖 `loomy-cn`）。
+ * ## 版式与另三个设置页**同构**（2026-10-22 修正）
  *
- * ## 为什么这里只有「计划任务」一项是 Loomy 专属的
+ * 此前本页是个简易版：`<div className="p-6">` + 18px 标题 + 单列堆叠，没有两栏。
+ * 而 WB / Trae / Qoder 三页都是：28px 标题 + `pageHead.settings` 副标题 + ScopeChip
+ * 页头，外加 `data-split-layout` 两栏（左子导航 / 右主区）。同一个应用里两种设置页
+ * 版式，用户会以为 Loomy 这块「没做完」。
  *
- * 二期 9.3 给 Loomy 加了一类排程 —— **积分逐日采样**（`loomy_points_sample`）。
- * 它必须在这里有开关与时间表，否则「后台在采样、用户却看不到也关不掉」就是
- * 本仓反复消灭的**假控件**的反面（真动作没有控件）。
+ * ⇒ 现在四页共用同一套骨架：`data-split-layout` + `parseSettingsSubnav` 的 URL 承载
+ * + 主区 16px 间距 + 子导航取自共享表 `SETTINGS_SUBNAV`（只按内容收窄 `items`，
+ * 不复制表 —— 复制即漂移的种子）。
  *
- * ⚠️ 但它**不是** Loomy 独有的排程页：`schedule_config.json` 是**全局单份**，
- * 三类产品各占自己的任务字段。本页只呈现 Loomy 那一条，其余字段改由各自设置页负责。
+ * ## 内容上只有两项是 Loomy 专属的
+ *
+ * 1. **积分逐日采样**（二期 9.3 的 `loomy_points_sample`）：真动作必须有控件，
+ *    否则「后台在采样、用户看不到也关不掉」。
+ * 2. **自动签到 = 没有**：本仓排程里**没有** Loomy 签到任务（只有 WB / Trae / Qoder
+ *    三条 `*_checkin`）。这里因此**不摆开关**（摆了就是假控件），只如实说明
+ *    「没有这个能力」并给真实出口（账号卡「更多 → 签到」）。
+ *
+ * `schedule_config.json` 是**全局单份**，各产品线各占自己的任务字段；本页只呈现
+ * Loomy 那一条，其余字段由各自设置页负责。
  */
-const LOOMY_SECTION_IDS: readonly SettingsSubnavId[] = ["general", "schedule", "backup"];
+const LOOMY_SECTION_IDS: readonly SettingsSubnavId[] = [
+  "general",
+  "schedule",
+  "backup",
+];
 
 /** 收窄后的子导航项（顺序取自共享表，不另排）。 */
 const LOOMY_SETTINGS_SECTIONS = SETTINGS_SUBNAV.filter((item) =>
@@ -50,6 +65,7 @@ const LOOMY_SETTINGS_SECTIONS = SETTINGS_SUBNAV.filter((item) =>
 );
 
 export default function LoomySettingsPage() {
+  const t = useT();
   const location = useLocation();
   const [params] = useSearchParams();
   const product = platformOfPath(location.pathname);
@@ -82,7 +98,9 @@ export default function LoomySettingsPage() {
       patchSchedule(() => saved);
     } catch (error) {
       patchSchedule(() => previous);
-      toast.error("保存计划任务失败", { description: api.asError(error) });
+      toast.error(t("loomy.page.settings.schedule.saveFailed"), {
+        description: api.asError(error),
+      });
     } finally {
       setScheduleSaving(false);
     }
@@ -94,54 +112,92 @@ export default function LoomySettingsPage() {
   });
 
   return (
-    <div className="flex flex-col gap-4 p-6">
-      <header className="flex items-center gap-2">
-        <h1 className="text-lg font-semibold">Loomy 设置</h1>
+    <div className="mx-auto min-w-0 w-full max-w-[1240px] px-7 pt-[26px] pb-[60px]">
+      <header className="mb-5 flex items-start gap-4">
+        <div className="min-w-0">
+          <h1 className="text-[28px] font-[640] tracking-[-0.02em]">
+            {t("loomy.page.settings.title")}
+          </h1>
+          <p className="mt-1.5 text-[12.5px] text-muted-foreground">
+            {t("pageHead.settings", { scope: scopeLabel(t, scope) })}
+          </p>
+        </div>
+        <div className="grow" />
         <ScopeChip scope={scope} />
       </header>
-      <SettingsSubnav items={LOOMY_SETTINGS_SECTIONS} active={section} onSelect={setSection} />
 
-      {section === "general" && <AppSettingsGroups />}
+      {/* 两栏容器：方向 / 断点整组在 `index.css` 的 `[data-split-layout]` 里
+          （与 WB / Trae / Qoder 三个设置页**同一套骨架**）。 */}
+      <div data-split-layout className="min-w-0">
+        <SettingsSubnav items={LOOMY_SETTINGS_SECTIONS} active={section} onSelect={setSection} />
 
-      {/* 积分逐日采样：趋势图的数据来源（用量页「每日积分」那张图）。
-          与签到分开摆 —— 采样是**只读 GET**，不是替用户去领东西。 */}
-      {section === "schedule" && (
-        <SettingsGroup id="loomy-settings-sample" title="积分逐日采样">
-          <CardContent className="space-y-0 p-0">
-            <SettingsFieldRow
-              label="启用每日采样"
-              description="按下面的时点读取各账号的两池积分并记入本地台账（只读请求，不会签到或消耗积分）。关掉后用量页的趋势不再更新。"
-            >
-              <Switch
-                checked={schedule?.loomy_points_sample_enabled ?? false}
-                disabled={!schedule || scheduleSaving}
-                onCheckedChange={(checked) =>
-                  void saveSchedule({ loomy_points_sample_enabled: checked })
-                }
-                aria-label="启用每日采样"
-              />
-            </SettingsFieldRow>
-            <SettingsFieldRow
-              label="采样时点"
-              description="每天每个时点采一帧；同日重复采样保留最后一次读数（趋势按日一格）。"
-              htmlFor="loomy-sample-time"
-            >
-              <TimesEditor
-                id="loomy-sample-time"
-                times={schedule?.loomy_points_sample_times ?? []}
-                jitter={schedule?.loomy_points_sample_jitter_minutes ?? 0}
-                disabled={!schedule || scheduleSaving}
-                onChange={(times) => void saveSchedule({ loomy_points_sample_times: times })}
-                onJitterChange={(minutes) =>
-                  void saveSchedule({ loomy_points_sample_jitter_minutes: minutes })
-                }
-              />
-            </SettingsFieldRow>
-          </CardContent>
-        </SettingsGroup>
-      )}
+        {/* 主区 `.split-main`：分区之间 16px。 */}
+        <div className="min-w-0 flex-1 space-y-4">
+          {section === "general" && <AppSettingsGroups />}
 
-      {section === "backup" && <BackupSection />}
+          {section === "schedule" && (
+            <>
+              {/* ★ 自动签到：**本仓没有** Loomy 签到排程（只有积分采样）。
+                  这里不摆开关（摆了就是假控件），而是如实说明「没有」+ 给出真实出口。 */}
+              <SettingsGroup
+                id="loomy-settings-checkin"
+                title={t("loomy.page.settings.checkinGroup")}
+              >
+                <CardContent className="space-y-0 p-0">
+                  {/* 说明块而非开关：本仓没有 Loomy 签到排程 ⇒ 摆开关就是假控件。
+                      文案讲清「没有这个能力」+ 真正可走的出口（账号卡手动签到）。 */}
+                  <div className="px-4 py-3">
+                    <p className="text-[11.5px] leading-5 text-muted-foreground">
+                      {t("loomy.page.settings.checkinUnavailable")}
+                    </p>
+                  </div>
+                </CardContent>
+              </SettingsGroup>
+
+              {/* 积分逐日采样：趋势图的数据来源（用量页「每日积分」那张图）。
+                  与签到分开摆 —— 采样是**只读 GET**，不是替用户去领东西。 */}
+              <SettingsGroup
+                id="loomy-settings-sample"
+                title={t("loomy.page.settings.schedule.sampleGroup")}
+              >
+                <CardContent className="space-y-0 p-0">
+                  <SettingsFieldRow
+                    label={t("loomy.page.settings.schedule.sampleEnable")}
+                    description={t("loomy.page.settings.schedule.sampleDesc")}
+                  >
+                    <Switch
+                      checked={schedule?.loomy_points_sample_enabled ?? false}
+                      disabled={!schedule || scheduleSaving}
+                      onCheckedChange={(checked) =>
+                        void saveSchedule({ loomy_points_sample_enabled: checked })
+                      }
+                      aria-label={t("loomy.page.settings.schedule.sampleEnable")}
+                    />
+                  </SettingsFieldRow>
+                  <SettingsFieldRow
+                    label={t("loomy.page.settings.schedule.sampleTimesLabel")}
+                    description={t("loomy.page.settings.schedule.sampleTimesDesc")}
+                    htmlFor="loomy-sample-time"
+                  >
+                    <TimesEditor
+                      id="loomy-sample-time"
+                      times={schedule?.loomy_points_sample_times ?? []}
+                      jitter={schedule?.loomy_points_sample_jitter_minutes ?? 0}
+                      disabled={!schedule || scheduleSaving}
+                      onChange={(times) => void saveSchedule({ loomy_points_sample_times: times })}
+                      onJitterChange={(minutes) =>
+                        void saveSchedule({ loomy_points_sample_jitter_minutes: minutes })
+                      }
+                    />
+                  </SettingsFieldRow>
+                </CardContent>
+              </SettingsGroup>
+            </>
+          )}
+
+          {section === "backup" && <BackupSection />}
+        </div>
+      </div>
     </div>
   );
 }

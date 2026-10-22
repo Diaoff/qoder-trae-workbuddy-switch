@@ -75,4 +75,16 @@ export const en = {
   "loomy.page.accounts.import.description":
     "Paste the credential JSON from a Loomy login (access_token / userid / phone). It must contain a 32-hex iFlytek session or a valid userid.",
   "loomy.page.accounts.import.submit": "Import",
+  "loomy.page.settings.title": "Settings",
+  "loomy.page.settings.schedule.sampleGroup": "Daily credit sampling",
+  "loomy.page.settings.schedule.sampleEnable": "Enable daily sampling",
+  "loomy.page.settings.schedule.sampleDesc":
+    "Reads both credit pools for every account at the times below and records them in the local ledger (read-only — it never checks in or spends credits). Turning it off stops the usage page trend from updating.",
+  "loomy.page.settings.schedule.sampleTimesLabel": "Sampling times",
+  "loomy.page.settings.schedule.sampleTimesDesc":
+    "One sample per time per day; repeated samples on the same day keep the last reading (the trend is one cell per day).",
+  "loomy.page.settings.schedule.saveFailed": "Failed to save schedule",
+  "loomy.page.settings.checkinGroup": "Automatic check-in",
+  "loomy.page.settings.checkinUnavailable":
+    "Loomy automatic check-in is not available: the scheduler only registers daily credit sampling, there is no Loomy check-in task. Trigger it manually from an account card's More menu (check-in resets the daily allowance — it does not add credits, and it is idempotent).",
 } as const;

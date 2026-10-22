@@ -88,4 +88,17 @@ export const zh = {
   "loomy.page.accounts.import.description":
     "粘贴 Loomy 登录后的凭据 JSON（access_token / userid / phone）。需包含 32 位十六进制的讯飞 session 或有效 userid。",
   "loomy.page.accounts.import.submit": "导入",
+  // ---- 设置页 ----
+  "loomy.page.settings.title": "设置",
+  "loomy.page.settings.schedule.sampleGroup": "积分逐日采样",
+  "loomy.page.settings.schedule.sampleEnable": "启用每日采样",
+  "loomy.page.settings.schedule.sampleDesc":
+    "按下面的时点读取各账号的两池积分并记入本地台账（只读请求，不会签到、也不消耗积分）。关掉后用量页的趋势不再更新。",
+  "loomy.page.settings.schedule.sampleTimesLabel": "采样时点",
+  "loomy.page.settings.schedule.sampleTimesDesc":
+    "每天每个时点采一帧；同日重复采样保留最后一次读数（趋势按日一格）。",
+  "loomy.page.settings.schedule.saveFailed": "保存计划任务失败",
+  "loomy.page.settings.checkinGroup": "自动签到",
+  "loomy.page.settings.checkinUnavailable":
+    "Loomy 的自动签到尚未提供：本仓排程里只登记了「积分逐日采样」，没有 Loomy 签到任务。需要签到时请在账号卡的「更多」菜单里手动触发（签到 = 触发每日赠送额度重置，不是加分，幂等）。",
 } as const;
