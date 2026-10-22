@@ -8,9 +8,12 @@
  *   node docs/prototype/verify-key-permission.cjs
  *
  * 变异模式（证明断言不是恒真的空转）：
- *   node docs/prototype/verify-key-permission.cjs --mutate=nosaveguard|noscope
+ *   node docs/prototype/verify-key-permission.cjs --mutate=nosaveguard|noscope|nogroup|nolimit
  *   变异只写 os.tmpdir() 里的**副本**，交付目录下的原文件永不被写。
- *   变异模式下**全绿即为失败**（说明断言打不红）。
+ *
+ * ★ 判定口径：每个变异声明 `expectRed`（**它该打红哪几条断言**）——
+ *   期望变红却仍绿 ⇒ 失败；**全部**断言都红 ⇒ 也失败（说明变异把页面打瘫了，
+ *   测的不是目标行为）。
  */
 const fs = require("fs");
 const os = require("os");
@@ -24,10 +27,6 @@ let doc = null;
 
 const MUT = (process.argv.find((a) => a.startsWith("--mutate")) || "")
   .replace("--mutate", "").replace(/^=/, "");
-/* 每个变异都声明**它该打红哪几条断言**（`expectRed`）。
- * 判定口径：不是「全绿即失败」，而是「**该红的那几条真的红了**」——
- * 一个变异只坏一处行为，别的断言理应保持绿；全红反而说明变异把页面打瘫了
- * （那样测的就不是目标行为）。 */
 const MUTATIONS = {
   nosaveguard: {
     desc: "去掉「指定账号 0 个时禁止保存」的守卫",
@@ -40,6 +39,12 @@ const MUTATIONS = {
     from: "document.getElementById(\"acctList\").innerHTML = list.length ? list.map(a => {",
     to: "document.getElementById(\"acctList\").innerHTML = list.length ? [].map(a => { /* MUTATED */",
     expectRed: ["切到「指定账号」才出现账号列表", "勾选账号后", "取消勾选后计数回落"],
+  },
+  nogroup: {
+    desc: "不渲染分组 chip（整组选取入口消失）",
+    from: "document.getElementById(\"groupChips\").innerHTML = GROUPS.map(g => {",
+    to: "document.getElementById(\"groupChips\").innerHTML = [].map(g => { /* MUTATED */",
+    expectRed: ["分组 chip 能整组选取"],
   },
   nolimit: {
     desc: "配额上限写回时忽略输入值（保存后额度永远是旧值）",
@@ -101,13 +106,6 @@ function load(mutated) {
 /* ★ 必须在**断言之前**装载页面：断言是立即执行的（`check(...)` 收到函数就调用）。 */
 load(MUT || null);
 
-function rowIndexByName(name) {
-  const rows = [...doc.querySelectorAll("#rows tr")];
-  const index = rows.findIndex((tr) => tr.textContent.includes(name));
-  assert(index >= 0, `列表里没有密钥：${name}`);
-  return index;
-}
-
 /* ───────────────────────── 断言 ───────────────────────── */
 
 check("列表渲染出全部密钥行，且工具条计数与行数一致", () => {
@@ -138,7 +136,16 @@ check("「不限」的密钥不画进度条，用量列写「不限」", () => {
 check("配额用量按百分比渲染（62% / 86% / 100%）", () => {
   const pcts = [...doc.querySelectorAll("#rows .bar-fill")].map((el) => el.style.width);
   assert(pcts.includes("62%"), `应有 62% 的进度条，实际 ${JSON.stringify(pcts)}`);
+  assert(pcts.includes("86%"), `应有 86% 的进度条，实际 ${JSON.stringify(pcts)}`);
   assert(pcts.includes("100%"), `应有 100% 的进度条，实际 ${JSON.stringify(pcts)}`);
+});
+
+check("用量列写明计量单位与重置周期（按 token / 按请求数）", () => {
+  const body = doc.querySelector("#rows").textContent;
+  assert(body.includes("按 token 计"), "缺「按 token 计」");
+  assert(body.includes("按请求数计"), "缺「按请求数计」");
+  assert(body.includes("自然月结算"), "缺「自然月结算」");
+  assert(body.includes("每日 00:00 重置"), "缺「每日 00:00 重置」");
 });
 
 check("已用尽的密钥状态徽标是「已用尽」，接近上限是「接近上限」", () => {
@@ -153,7 +160,7 @@ check("点权限 chip 打开抽屉，并显示两个分区", () => {
   assert(text("#dwTitle").includes("我的笔记本"), `抽屉标题应是密钥名，实际 ${text("#dwTitle")}`);
   const heads = [...doc.querySelectorAll(".section-head h2")].map((h) => h.textContent);
   assert(heads.length === 2, `应有两个分区，实际 ${heads.length}`);
-  assert(heads[0].includes("Token 配额"), `第一段应是 Token 配额，实际 ${heads[0]}`);
+  assert(heads[0].includes("用量配额"), `第一段应是 用量配额，实际 ${heads[0]}`);
   assert(heads[1].includes("可访问账号"), `第二段应是 可访问账号，实际 ${heads[1]}`);
 });
 
@@ -178,9 +185,20 @@ check("取消勾选后计数回落", () => {
   assert(text("#scopeHint").includes("已选 0"), `取消后计数应归零：${text("#scopeHint")}`);
 });
 
+check("分组 chip 能整组选取，再点一次整组取消", () => {
+  const chips = doc.querySelectorAll("#groupChips .gchip");
+  assert(chips.length === 3, `应有 3 个分组 chip，实际 ${chips.length}`);
+  click('#groupChips .gchip[data-group="g1"]');
+  assert(text("#scopeHint").includes("已选 2"), `整组选取后应已选 2，实际 ${text("#scopeHint")}`);
+  assert(text("#picked").includes("JackDev") && text("#picked").includes("Jackey"),
+    `已选区应含组内两个账号：${text("#picked")}`);
+  click('#groupChips .gchip[data-group="g1"]');
+  assert(text("#scopeHint").includes("已选 0"), `再点一次应整组取消：${text("#scopeHint")}`);
+});
+
 check("「指定账号」但一个都没选 ⇒ 保存按钮禁用且给出原因", () => {
   assert(doc.querySelector("#dwSave").disabled === true, "0 选中时保存必须禁用");
-  assert(text("#scopeNoteText").includes("至少要选一个账号"), "缺「至少选一个账号」的提示");
+  assert(text("#scopeNoteText").includes("至少要选一个账号"), "缺「至少要选一个账号」的提示");
 });
 
 check("选回「全部账号」⇒ 账号列表收起、保存按钮恢复可用", () => {
@@ -189,21 +207,40 @@ check("选回「全部账号」⇒ 账号列表收起、保存按钮恢复可用
   assert(doc.querySelector("#dwSave").disabled === false, "保存应恢复可用");
 });
 
-check("切「累计上限」并改额度 ⇒ 预览写明新额度", () => {
-  click('[data-q="total"]');
-  type("#qTotal", 200);
-  assert(text("#preview").includes("200万"), `预览未反映新额度：${text("#preview")}`);
+check("切「限额」并改上限 ⇒ 预览写明新上限", () => {
+  click('[data-q="limited"]');
+  type("#qLimit", 200);
+  assert(text("#preview").includes("200万"), `预览未反映新上限：${text("#preview")}`);
 });
 
 check("把上限改到低于已用量 ⇒ 提示「保存后立即超限」", () => {
-  type("#qTotal", 10); // 10 万 < 已用 62 万
+  type("#qLimit", 10); // 10 万 < 已用 62 万
   assert(text("#quotaNoteText").includes("立即超限"), `缺立即超限提示：${text("#quotaNoteText")}`);
   assert(text("#preview").includes("立即超限"), `预览缺立即超限提示：${text("#preview")}`);
 });
 
+check("计量单位切「请求数」⇒ 单位下拉换成次/万次，预览写「请求数」", () => {
+  click('#segUnit button[data-unit="request"]');
+  const options = [...doc.querySelectorAll("#qLimitUnit option")].map((o) => o.textContent);
+  assert(options.includes("万次"), `单位下拉应出现「万次」，实际 ${JSON.stringify(options)}`);
+  assert(!options.includes("M tokens"), `切到请求数后不该再有 M tokens：${JSON.stringify(options)}`);
+  assert(text("#preview").includes("请求数"), `预览应写「请求数」：${text("#preview")}`);
+  assert(text("#unitHint").includes("业务代理"), "单位说明应解释何时用请求数");
+  click('#segUnit button[data-unit="token"]');
+});
+
+check("重置周期切「自然月」⇒ 预览与说明都跟着变", () => {
+  /* ★ 先把上限抬回已用量之上：否则说明条显示的是「立即超限」警告
+     （警告优先级高于周期说明），这条断言就测不到周期文案了。 */
+  type("#qLimit", 200);
+  click('#segPeriod button[data-period="monthly"]');
+  assert(text("#preview").includes("自然月"), `预览应写「自然月」：${text("#preview")}`);
+  assert(text("#quotaNoteText").includes("自然月"), `说明应写「自然月」：${text("#quotaNoteText")}`);
+});
+
 check("保存后表格行的权限 chip 与用量条同步更新", () => {
-  click('[data-q="total"]');
-  type("#qTotal", 100); // 100 万
+  click('[data-q="limited"]');
+  type("#qLimit", 100); // 100 万
   click('[data-s="selected"]');
   clickAll('#acctList .acct[data-uid="u-002"]');
   click("#dwSave");
@@ -237,9 +274,9 @@ check("创建对话框：可打开、可填名、可创建出新行", () => {
 check("创建对话框里也能选配额模式（默认不限）", () => {
   click("#btnCreate");
   const on = [...doc.querySelectorAll("[data-cq]")].find((b) => b.dataset.cq === "unlimited");
-  assert(on && on.style.background !== "transparent", "默认应选中「不限」");
-  click('[data-cq="daily"]');
-  assert(doc.querySelector("#cQuotaRow").style.display !== "none", "选每日上限后应出现数值行");
+  assert(on && on.classList.contains("on"), "默认应选中「不限」");
+  click('[data-cq="limited"]');
+  assert(doc.querySelector("#cQuotaRow").style.display !== "none", "选限额后应出现数值行");
 });
 
 /* ───────────────────────── 变异模式 ───────────────────────── */
