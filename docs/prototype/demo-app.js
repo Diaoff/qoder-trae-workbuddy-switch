@@ -9,6 +9,10 @@ const state = {
   scope: "wb-cn",
   dest: "overview",
   theme: "dark",
+  /* ★ 侧栏折叠（只显示图标）—— 2026-10-22 加。
+     侧栏固定 240px，1440 宽的窗口上占到 17%；内容区才是被看的对象，侧栏是导航。
+     真机同形：`src/App.tsx` 的 `sidebarCollapsed`（localStorage 持久化 + ⌘/Ctrl+B）。 */
+  sideCollapsed: false,
   /* ★ 聚合视图（issue #50）：`true` 时**没有侧栏**、内容区直接铺 6 个作用域的全部账号卡。
      它不是第 7 个作用域（`Scope` 是封闭字面量 `${平台}-${区域}`，塞进去会破坏类型与快捷键序号），
      而是一个与「看某个作用域」并列的**视图模式** —— 所以用独立布尔量，不动 `state.scope`。 */
@@ -255,11 +259,37 @@ function renderNav() {
   const dests = DESTINATIONS.filter((d) => !d.cap || p.capabilities.includes(d.cap));
   $("#nav").innerHTML = dests.map((d) => {
     const b = badges[d.id];
+    /* 徽章 HTML 两种位置共用（行尾 / 图标角标）—— 同一份 data-badge 供测试按属性找，
+       不靠「第几个 span」。 */
+    const badge = b && b.n ? `<span class="nav-badge${b.warn ? " warn" : ""}" data-badge="${d.id}">${b.n}</span>` : "";
+    /* ★ 折叠态：图标包一层 `nav-icon-wrap`（角标的定位锚）+ 右侧 tooltip；
+       文字干脆不渲染（与真机一致 —— CSS `display:none` 会让 innerHTML 断言读不到）。 */
+    if (state.sideCollapsed) {
+      return `<button class="nav-item${state.dest === d.id ? " active" : ""}" data-act="nav|${d.id}"
+        title="${d.label}" aria-label="${d.label}">
+        <span class="nav-icon-wrap">${d.icon}${badge}</span>
+        <span class="nav-tip" role="tooltip">${d.label}</span>
+      </button>`;
+    }
     return `<button class="nav-item${state.dest === d.id ? " active" : ""}" data-act="nav|${d.id}">
       ${d.icon}<span class="nav-label">${d.label}</span>
-      ${b && b.n ? `<span class="nav-badge${b.warn ? " warn" : ""}">${b.n}</span>` : ""}
+      ${badge}
     </button>`;
   }).join("");
+}
+
+/* 侧栏折叠：只切 class + 重渲染导航（徽章位置随形态变），不动内容区。 */
+function renderSidebar() {
+  const side = $(".sidebar");
+  if (!side) return;
+  side.classList.toggle("collapsed", state.sideCollapsed);
+  const toggle = $("#side-toggle");
+  if (toggle) {
+    toggle.setAttribute("aria-expanded", String(!state.sideCollapsed));
+    const label = toggle.querySelector(".nav-label");
+    if (label) label.textContent = state.sideCollapsed ? "展开侧栏" : "收起侧栏";
+  }
+  renderNav();
 }
 
 function renderContent() {
@@ -5879,6 +5909,8 @@ document.addEventListener("click", (e) => {
 
   switch (act) {
     case "nav": stop(); state.dest = a1; state.selected.clear(); closeAcctMenu(); renderAll(); break;
+    /* 侧栏折叠开关（⌘/Ctrl+B 同款，见下方快捷键）。 */
+    case "side-toggle": stop(); state.sideCollapsed = !state.sideCollapsed; renderSidebar(); break;
     case "scope": stop(); switchScope(a1); break;
     case "scope-open": stop(); openScopeMenu(); break;
 
@@ -6987,6 +7019,7 @@ document.addEventListener("change", (e) => {
 document.addEventListener("keydown", (e) => {
   const mod = e.metaKey || e.ctrlKey;
   if (mod && e.key.toLowerCase() === "k") { e.preventDefault(); state.palette.open ? closePalette() : openPalette(); return; }
+  if (mod && e.key.toLowerCase() === "b") { e.preventDefault(); state.sideCollapsed = !state.sideCollapsed; renderSidebar(); return; }
   if (mod && /^[1-9]$/.test(e.key)) {
     const ids = Object.keys(SCOPES); const id = ids[Number(e.key) - 1];
     if (id) { e.preventDefault(); switchScope(id); }

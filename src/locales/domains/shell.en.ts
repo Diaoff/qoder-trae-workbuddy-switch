@@ -36,6 +36,10 @@ export const en = {
   // Brand block tagline (prototype `.brand-text i`, `buddy-switch-prototype.html:163`).
   "sidebar.brand.tagline": "Multi-platform account manager",
   "sidebar.running": "{product} running",
+  "sidebar.collapse": "Collapse sidebar",
+  "sidebar.expand": "Expand sidebar",
+  "sidebar.collapseHint": "Collapse sidebar to icons only (⌘/Ctrl + B)",
+  "sidebar.expandHint": "Expand sidebar to full labels (⌘/Ctrl + B)",
   "sidebar.notRunning": "{product} not running",
   "sidebar.update": "Update",
 

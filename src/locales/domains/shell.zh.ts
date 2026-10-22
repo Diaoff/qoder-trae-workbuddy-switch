@@ -31,6 +31,13 @@ export const zh = {
   // 品牌块副标题（原型 `.brand-text i`，`buddy-switch-prototype.html:163`）。
   "sidebar.brand.tagline": "多平台账号管理",
   "sidebar.running": "{product} 运行中",
+  /* 侧栏折叠（只显示图标）—— 2026-10-22 加。
+     `collapseHint` / `expandHint` 是**带快捷键的提示**（tooltip 用），
+     与按钮上的短文案分开：按钮空间小放短文案，hover 才给完整说法。 */
+  "sidebar.collapse": "收起侧栏",
+  "sidebar.expand": "展开侧栏",
+  "sidebar.collapseHint": "收起侧栏，只显示图标（⌘/Ctrl + B）",
+  "sidebar.expandHint": "展开侧栏，显示全部文字（⌘/Ctrl + B）",
   "sidebar.notRunning": "{product} 未运行",
   "sidebar.update": "更新",
 

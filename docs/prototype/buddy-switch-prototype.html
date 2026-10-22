@@ -145,7 +145,57 @@ kbd {
 .sidebar {
   width: 240px; flex-shrink: 0; background: var(--sidebar); border-right: 1px solid var(--border);
   display: flex; flex-direction: column; padding: 14px 12px 12px;
+  /* ★ 只过渡 width 一项（2026-10-22 折叠态）：`all` 会让 border/padding 一起动，
+     视觉上整条侧栏在「抖」。 */
+  transition: width .2s ease-out; overflow: hidden;
 }
+/* ══════════════════════════════════════════════════════════════════════════
+   侧栏折叠（只显示图标）—— 2026-10-22 加
+   ══════════════════════════════════════════════════════════════════════════
+   两态宽度：展开 240px / 收起 64px。★ 只过渡 `width` 一项 —— `all` 会让
+   border、padding 一起动，视觉上整条侧栏在「抖」。
+   真机同形：`src/App.tsx` 的 `<aside>`（`transition-[width] duration-200`）。 */
+.sidebar.collapsed { width: 64px; padding: 14px 8px 12px; }
+/* 展开开关：侧栏最底部（版本行之下）—— 顶部品牌区不放控件（身份区）。 */
+.side-toggle {
+  display: flex; align-items: center; gap: 8px; height: 30px; margin-top: 10px;
+  border-radius: 9px; padding: 0 9px; color: var(--muted-fg); font-size: 12px;
+  border-top: 1px solid var(--border); width: 100%; padding-top: 10px;
+  background: none; cursor: pointer; transition: background .14s, color .14s;
+}
+.side-toggle:hover { background: color-mix(in oklab, var(--foreground) 6%, transparent); color: var(--foreground); }
+.side-toggle svg { width: 15px; height: 15px; flex-shrink: 0; }
+.sidebar.collapsed .side-toggle { justify-content: center; padding: 10px 0 0; }
+
+/* 折叠态：品牌只留图标（居中），文字进 tooltip。 */
+.sidebar.collapsed .brand { justify-content: center; padding: 0 0 16px; }
+.sidebar.collapsed .brand-text { display: none; }
+/* 折叠态：导航项图标居中（34px 方钮）—— 64px 里再留 px-2.5 会让图标偏左，
+   六枚图标排成一列歪的。 */
+.sidebar.collapsed .nav-item { width: 34px; justify-content: center; padding: 0; margin: 0 auto; }
+.sidebar.collapsed .nav-label, .sidebar.collapsed .nav-badge { display: none; }
+/* 徽章转**图标右上角标**：60px 里横排放不下，而角标是「有未读」的通用语言。 */
+.nav-icon-wrap { position: relative; display: grid; place-items: center; }
+.sidebar.collapsed .nav-badge {
+  display: grid; position: absolute; top: -6px; right: -7px; min-width: 14px; height: 14px;
+  padding: 0 4px; font-size: 9px; border-radius: 999px;
+  background: var(--card); box-shadow: 0 0 0 2px var(--sidebar, var(--card));
+}
+/* 折叠态底部：版本号文字隐藏（低频信息），**状态点与两个小钮保留** ——
+   「客户端在不在跑」是随时要瞟一眼的，不能因为折叠就看不见。 */
+.sidebar.collapsed .ver-row { justify-content: center; gap: 6px; }
+.sidebar.collapsed .ver-row #foot-ver { display: none; }
+/* 折叠态 tooltip（右侧弹出）。原型无真实 hover 层，用 title 属性兜底 +
+   一个显式的 `.nav-tip` 供截图与断言。 */
+.nav-tip {
+  position: absolute; left: calc(100% + 10px); top: 50%; transform: translateY(-50%);
+  white-space: nowrap; padding: 4px 9px; border-radius: 7px; font-size: 11.5px;
+  background: var(--foreground); color: var(--background); pointer-events: none;
+  opacity: 0; transition: opacity .12s; z-index: 5;
+}
+.sidebar.collapsed .nav-item { position: relative; }
+.sidebar.collapsed .nav-item:hover .nav-tip { opacity: 1; }
+
 .brand { display: flex; align-items: center; gap: 10px; padding: 0 6px 16px; }
 .brand-mark {
   width: 32px; height: 32px; border-radius: 10px; display: grid; place-items: center;
@@ -1753,6 +1803,12 @@ td.num.full { color: var(--destructive); font-weight: 600; }
           </button>
         </div>
       </div>
+      <!-- 侧栏折叠开关：**最底部**（版本行之下）—— 顶部品牌区不放控件（身份区），
+           底部边缘是「抽屉把手」的位置（VS Code 同款思路）。收起时它自己就是「展开」按钮。 -->
+      <button class="side-toggle" id="side-toggle" data-act="side-toggle" aria-expanded="true">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M9 4v16"/></svg>
+        <span class="nav-label">收起侧栏</span>
+      </button>
     </aside>
 
     <!-- ══════════════ 内容区：L3 视图参数 ══════════════ -->
@@ -3188,6 +3244,10 @@ const state = {
   scope: "wb-cn",
   dest: "overview",
   theme: "dark",
+  /* ★ 侧栏折叠（只显示图标）—— 2026-10-22 加。
+     侧栏固定 240px，1440 宽的窗口上占到 17%；内容区才是被看的对象，侧栏是导航。
+     真机同形：`src/App.tsx` 的 `sidebarCollapsed`（localStorage 持久化 + ⌘/Ctrl+B）。 */
+  sideCollapsed: false,
   /* ★ 聚合视图（issue #50）：`true` 时**没有侧栏**、内容区直接铺 6 个作用域的全部账号卡。
      它不是第 7 个作用域（`Scope` 是封闭字面量 `${平台}-${区域}`，塞进去会破坏类型与快捷键序号），
      而是一个与「看某个作用域」并列的**视图模式** —— 所以用独立布尔量，不动 `state.scope`。 */
@@ -3434,11 +3494,37 @@ function renderNav() {
   const dests = DESTINATIONS.filter((d) => !d.cap || p.capabilities.includes(d.cap));
   $("#nav").innerHTML = dests.map((d) => {
     const b = badges[d.id];
+    /* 徽章 HTML 两种位置共用（行尾 / 图标角标）—— 同一份 data-badge 供测试按属性找，
+       不靠「第几个 span」。 */
+    const badge = b && b.n ? `<span class="nav-badge${b.warn ? " warn" : ""}" data-badge="${d.id}">${b.n}</span>` : "";
+    /* ★ 折叠态：图标包一层 `nav-icon-wrap`（角标的定位锚）+ 右侧 tooltip；
+       文字干脆不渲染（与真机一致 —— CSS `display:none` 会让 innerHTML 断言读不到）。 */
+    if (state.sideCollapsed) {
+      return `<button class="nav-item${state.dest === d.id ? " active" : ""}" data-act="nav|${d.id}"
+        title="${d.label}" aria-label="${d.label}">
+        <span class="nav-icon-wrap">${d.icon}${badge}</span>
+        <span class="nav-tip" role="tooltip">${d.label}</span>
+      </button>`;
+    }
     return `<button class="nav-item${state.dest === d.id ? " active" : ""}" data-act="nav|${d.id}">
       ${d.icon}<span class="nav-label">${d.label}</span>
-      ${b && b.n ? `<span class="nav-badge${b.warn ? " warn" : ""}">${b.n}</span>` : ""}
+      ${badge}
     </button>`;
   }).join("");
+}
+
+/* 侧栏折叠：只切 class + 重渲染导航（徽章位置随形态变），不动内容区。 */
+function renderSidebar() {
+  const side = $(".sidebar");
+  if (!side) return;
+  side.classList.toggle("collapsed", state.sideCollapsed);
+  const toggle = $("#side-toggle");
+  if (toggle) {
+    toggle.setAttribute("aria-expanded", String(!state.sideCollapsed));
+    const label = toggle.querySelector(".nav-label");
+    if (label) label.textContent = state.sideCollapsed ? "展开侧栏" : "收起侧栏";
+  }
+  renderNav();
 }
 
 function renderContent() {
@@ -9058,6 +9144,8 @@ document.addEventListener("click", (e) => {
 
   switch (act) {
     case "nav": stop(); state.dest = a1; state.selected.clear(); closeAcctMenu(); renderAll(); break;
+    /* 侧栏折叠开关（⌘/Ctrl+B 同款，见下方快捷键）。 */
+    case "side-toggle": stop(); state.sideCollapsed = !state.sideCollapsed; renderSidebar(); break;
     case "scope": stop(); switchScope(a1); break;
     case "scope-open": stop(); openScopeMenu(); break;
 
@@ -10166,6 +10254,7 @@ document.addEventListener("change", (e) => {
 document.addEventListener("keydown", (e) => {
   const mod = e.metaKey || e.ctrlKey;
   if (mod && e.key.toLowerCase() === "k") { e.preventDefault(); state.palette.open ? closePalette() : openPalette(); return; }
+  if (mod && e.key.toLowerCase() === "b") { e.preventDefault(); state.sideCollapsed = !state.sideCollapsed; renderSidebar(); return; }
   if (mod && /^[1-9]$/.test(e.key)) {
     const ids = Object.keys(SCOPES); const id = ids[Number(e.key) - 1];
     if (id) { e.preventDefault(); switchScope(id); }

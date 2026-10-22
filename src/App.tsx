@@ -1,6 +1,6 @@
-import { Suspense, lazy, useEffect, useMemo, useRef, useState, type ComponentType, type ElementType } from "react";
+import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState, type ComponentType, type ElementType } from "react";
 import { BrowserRouter, HashRouter, Navigate, NavLink, Outlet, Route, Routes, useLocation, useMatch, useNavigate, useParams } from "react-router-dom";
-import { ArrowUp, Coffee, GitBranch, LayoutDashboard, MessagesSquare, Monitor, Server, Settings, User } from "lucide-react";
+import { ArrowUp, Coffee, GitBranch, LayoutDashboard, MessagesSquare, Monitor, PanelLeftClose, PanelLeftOpen, Server, Settings, User } from "lucide-react";
 import { toast } from "sonner";
 
 import { cn } from "@/lib/utils";
@@ -24,6 +24,7 @@ import type { TranslationKey } from "@/locales/zh";
 import { planScopeShortcuts, scopeShortcutTarget } from "@/lib/scope-shortcuts";
 import { useVisibleScopes } from "@/lib/scope-visibility";
 import { useShortcutsEnabled } from "@/lib/shortcut-preference";
+import { getSidebarCollapsed, setSidebarCollapsed } from "@/lib/sidebar";
 import { AUTO_CHECK_UPDATE_INTERVAL_MS, currentSeenUpdateVersion, shouldAutoShowNotes, useAutoCheckUpdate } from "@/lib/update-preference";
 import { normalizeReleaseNotes } from "@/lib/release-notes";
 import { useScopeStatus } from "@/lib/use-scope-status";
@@ -266,9 +267,12 @@ function ScopedDestination() {
  * ⚠️ 选中底色是**16%** 不是 15%（原型 `:155` 是 `color-mix(primary 16%, transparent)`），
  * 与 `.brand-mark` 的 18%、`.nav-badge.warn` 的 22% 各不相同 —— 三处别互抄。
  */
-function navLinkClass({ isActive }: { isActive: boolean }): string {
+function navLinkClass({ isActive, collapsed }: { isActive: boolean; collapsed?: boolean }): string {
   return cn(
-    "group flex h-[38px] items-center gap-2.5 rounded-[10px] px-2.5 text-[13px] outline-none transition-colors focus-visible:ring-2 focus-visible:ring-sidebar-ring/50",
+    "group flex h-[38px] items-center gap-2.5 rounded-[10px] text-[13px] outline-none transition-colors focus-visible:ring-2 focus-visible:ring-sidebar-ring/50",
+    /* 折叠态：图标居中（`justify-center` + 方形 34px）—— 宽度只有 60px，
+       再留 `px-2.5` 会让图标偏左，六枚图标排成一列歪的。 */
+    collapsed ? "w-[34px] justify-center px-0" : "w-full px-2.5",
     isActive
       ? "bg-primary/16 font-[550] text-foreground [&>svg]:text-primary"
       : "text-muted-foreground hover:bg-foreground/[0.06] hover:text-foreground",
@@ -394,24 +398,40 @@ function CompanionToggle() {
  * `DonateDialog` 自己不带触发按钮（与顶栏 ⚙ 菜单共用同一份实现），
  * 入口只负责持有 `open` 状态 —— 收款码只有一处实现。
  */
-function SidebarDonate() {
+function SidebarDonate({ collapsed }: { collapsed: boolean }) {
   const t = useT();
   const [open, setOpen] = useState(false);
 
+  /* ★ 折叠态收成 34px 图标钮（与导航项同尺寸）—— tooltip 顶上文字缺失。
+     ⚠️ 不要改成无文字图标：侧栏底部已有两枚图标入口，再加一枚只能靠猜。 */
+  const button = (
+    <Button
+      type="button"
+      variant="ghost"
+      size="sm"
+      /* 左内边距与 `navLinkClass` 同为 `px-2.5` ⇒ 图标与上面 5 个导航项对齐。 */
+      className={cn(
+        "h-8 rounded-[10px] text-[12.5px] font-normal text-sidebar-foreground/70 hover:bg-foreground/[0.06] hover:text-sidebar-foreground",
+        collapsed ? "w-[34px] justify-center px-0" : "w-full justify-start gap-2.5 px-2.5",
+      )}
+      onClick={() => setOpen(true)}
+      title={t("wbSettings.donate.trigger")}
+    >
+      <Coffee className="size-3.5" aria-hidden="true" />
+      {collapsed ? null : t("wbSettings.donate.trigger")}
+    </Button>
+  );
+
   return (
     <>
-      <Button
-        type="button"
-        variant="ghost"
-        size="sm"
-        /* 左内边距与 `navLinkClass` 同为 `px-2.5` ⇒ 图标与上面 5 个导航项对齐。
-           ⚠️ 不要改成无文字图标：侧栏底部已有两枚图标入口，再加一枚只能靠猜。 */
-        className="h-8 w-full justify-start gap-2.5 rounded-[10px] px-2.5 text-[12.5px] font-normal text-sidebar-foreground/70 hover:bg-foreground/[0.06] hover:text-sidebar-foreground"
-        onClick={() => setOpen(true)}
-      >
-        <Coffee className="size-3.5" aria-hidden="true" />
-        {t("wbSettings.donate.trigger")}
-      </Button>
+      {collapsed ? (
+        <Tooltip>
+          <TooltipTrigger asChild>{button}</TooltipTrigger>
+          <TooltipContent side="right">{t("wbSettings.donate.trigger")}</TooltipContent>
+        </Tooltip>
+      ) : (
+        button
+      )}
       <DonateDialog open={open} onOpenChange={setOpen} />
     </>
   );
@@ -622,6 +642,34 @@ function Layout() {
      状态放在 `Layout`（而非 `App`）里，是为了与顶栏入口共享、且都处于 Router 上下文内。 */
   const [paletteOpen, setPaletteOpen] = useState(false);
 
+  /* ★ 侧栏折叠（只显示图标）—— 2026-10-22 加。
+     为什么值得做：侧栏固定 240px，在 1440 宽的窗口上占到 17%；用户截图反馈
+     「集成到这个位置太拥挤」的同一类问题 —— 内容区才是被看的对象，侧栏是导航。
+     折叠是**纯渲染层偏好**（只有前端读）⇒ localStorage（`lib/sidebar.ts`），
+     不进 core `app_prefs.json`（那条路是给「宿主也读」的偏好留的）。 */
+  const [sidebarCollapsed, setSidebarCollapsedState] = useState(getSidebarCollapsed);
+  const toggleSidebar = useCallback(() => {
+    setSidebarCollapsedState((collapsed) => {
+      const next = !collapsed;
+      setSidebarCollapsed(next);
+      return next;
+    });
+  }, []);
+
+  /* ⌘B / Ctrl+B：开关侧栏折叠。与 ⌘K（命令面板）、⌘1..9（切作用域）同族同规则：
+     修饰键必须带、不能是组合（alt/shift 一律不接）、输入框内不接。 */
+  useEffect(() => {
+    function onKeyDown(event: KeyboardEvent) {
+      if (event.key.toLowerCase() !== "b") return;
+      if (!(event.metaKey || event.ctrlKey) || event.altKey || event.shiftKey) return;
+      if (isTypingTarget(event.target)) return;
+      event.preventDefault();
+      toggleSidebar();
+    }
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [toggleSidebar]);
+
   /* P6：作用域快捷键规划。降级（>9 个作用域或用户关闭）⇒ 空绑定 ⇒ 序号提示同步消失。
      P17：只用**可见**作用域 —— 隐藏的作用域不给 ⌘N（面板提示与全局键同源，不会漂移）。 */
   const [shortcutsEnabled] = useShortcutsEnabled();
@@ -828,76 +876,169 @@ function Layout() {
         {/* ══ 侧栏（L2 目的地）：品牌 + 导航 + 版本行。不随产品换血（§3.2） ══
             ⚠️ 裸壳路由（聚合视图）下整块不渲染 —— 那 6 个目的地全是单作用域概念。 */}
         {bareShell ? null : (
-        <aside className="flex min-h-0 w-[240px] shrink-0 flex-col border-r border-sidebar-border bg-sidebar px-3 pb-3 pt-3.5">
+        <aside
+          className={cn(
+            "flex min-h-0 shrink-0 flex-col border-r border-sidebar-border bg-sidebar pb-3 pt-3.5",
+            /* 两态宽度：展开 240px（原型 `.side`）/ 收起 60px（34px 图标 + 两侧 13px 内边距，
+               与顶栏 `.icon-btn` 的 34px 同源）。★ `transition-[width]` 只过渡宽度一项 ——
+               `all` 会让 `border`、`padding` 一起动，视觉上整条侧栏在「抖」。 */
+            "transition-[width] duration-200 ease-out",
+            sidebarCollapsed ? "w-[60px] px-2" : "w-[240px] px-3",
+          )}
+          /* 收起态给读屏器一个明确信号：这一块只有图标，名称在 tooltip 与 aria-label 里。 */
+          aria-label={t("product.navAria", { product: t(platformDescriptor(product).labelKey) })}
+        >
           {/* 品牌块（原型 `.brand` / `.brand-mark`，`demo.css:136-141`）：32px 图标底 + 双行文案。
-              ⚠️ 图标必须带 `primary 18%` 底色 —— 原型不是「裸图标」（此前写 15%，偏淡）。*/}
-          <div className="flex items-center gap-2.5 px-1.5 pb-4">
-            <span className="grid size-8 shrink-0 place-items-center rounded-[10px] bg-primary/18 text-primary">
-              <AppIconMark size={17} />
-            </span>
-            <div className="min-w-0">
-              {/* 字重 650 / 字距 -.01em 对齐原型 `.brand-text b`（`demo.css:143`）。
-                  字体走 body 继承 —— 原型全站统一 `ui-sans-serif`，不另设展示字体。 */}
-              <div className="truncate text-[13.5px] font-[650] leading-5 tracking-[-0.01em] text-sidebar-foreground">
-                Buddy Switch
-              </div>
-              {demoModeEnabled ? (
-                <Badge variant="secondary" className="mt-0.5 h-4 border-0 px-1.5 text-[10px] text-sidebar-foreground/60 shadow-none">
-                  {t("app.demoBadge")}
-                </Badge>
-              ) : (
-                <div className="truncate text-[10.5px] leading-4 text-muted-foreground">
-                  {t("sidebar.brand.tagline")}
+              ⚠️ 图标必须带 `primary 18%` 底色 —— 原型不是「裸图标」（此前写 15%，偏淡）。
+              ★ 折叠态**只留图标**（居中）：品牌名在 tooltip 里，不占宽度。 */}
+          <div className={cn("flex items-center gap-2.5 pb-4", sidebarCollapsed ? "justify-center px-0" : "px-1.5")}>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <span className="grid size-8 shrink-0 place-items-center rounded-[10px] bg-primary/18 text-primary">
+                  <AppIconMark size={17} />
+                </span>
+              </TooltipTrigger>
+              {sidebarCollapsed ? <TooltipContent side="right">Buddy Switch</TooltipContent> : null}
+            </Tooltip>
+            {sidebarCollapsed ? null : (
+              <div className="min-w-0">
+                {/* 字重 650 / 字距 -.01em 对齐原型 `.brand-text b`（`demo.css:143`）。
+                    字体走 body 继承 —— 原型全站统一 `ui-sans-serif`，不另设展示字体。 */}
+                <div className="truncate text-[13.5px] font-[650] leading-5 tracking-[-0.01em] text-sidebar-foreground">
+                  Buddy Switch
                 </div>
-              )}
-            </div>
+                {demoModeEnabled ? (
+                  <Badge variant="secondary" className="mt-0.5 h-4 border-0 px-1.5 text-[10px] text-sidebar-foreground/60 shadow-none">
+                    {t("app.demoBadge")}
+                  </Badge>
+                ) : (
+                  <div className="truncate text-[10.5px] leading-4 text-muted-foreground">
+                    {t("sidebar.brand.tagline")}
+                  </div>
+                )}
+              </div>
+            )}
           </div>
 
           <nav
-            className="flex min-h-0 flex-1 flex-col gap-[3px]"
+            className={cn("flex min-h-0 flex-1 flex-col gap-[3px]", sidebarCollapsed && "items-center")}
             aria-label={t("product.navAria", { product: t(platformDescriptor(product).labelKey) })}
           >
             {scopedNav.map((item) => (
-              <NavLink
-                key={item.to}
-                to={item.to}
-                className={navLinkClass}
-                /* 徽章底色要用选中态（原型 `.nav-item.active .nav-badge` = primary 25%），
-                   而 `className` 回调只收 `{isActive}`、children 回调也收同一个形状 ——
-                   两处同源，不会各说各话。children 用函数式才能拿到 `isActive`。 */
-                children={({ isActive }) => (
-                  <>
-                    <item.icon className="size-4" />
-                    {t(item.labelKey)}
-                    {item.badge !== null ? (
-                      <span
-                        data-badge={item.dest === "sessions" ? "pending-sync" : `count-${item.dest}`}
-                        className={cn(
-                          "ml-auto grid h-[18px] min-w-[20px] place-items-center rounded-full px-1.5 text-[10.5px] tabular-nums",
-                          item.badge.warn
-                            ? "bg-warning/22 text-warning"
-                            : "bg-muted text-muted-foreground",
-                          isActive && "bg-primary/25 text-foreground",
+              <Tooltip key={item.to}>
+                <TooltipTrigger asChild>
+                  <NavLink
+                    to={item.to}
+                    className={({ isActive }) => navLinkClass({ isActive, collapsed: sidebarCollapsed })}
+                    /* 折叠态：图标自身居中（`justify-center` 由 navLinkClass 的 collapsed 变体给出），
+                       文字不渲染；徽章从「行尾横排」改成**图标右上角标** —— 60px 里横排放不下，
+                       而角标是「有未读/有待处理」的通用语言，不依赖文字。 */
+                    children={({ isActive }) => (
+                      <>
+                        <span className="relative">
+                          <item.icon className="size-4" />
+                          {sidebarCollapsed && item.badge !== null ? (
+                            <span
+                              data-badge={item.dest === "sessions" ? "pending-sync" : `count-${item.dest}`}
+                              className={cn(
+                                "absolute -right-1.5 -top-1.5 grid h-[14px] min-w-[14px] place-items-center rounded-full px-1 text-[9px] tabular-nums ring-2 ring-sidebar",
+                                item.badge.warn
+                                  ? "bg-warning/22 text-warning"
+                                  : "bg-muted text-muted-foreground",
+                                isActive && "bg-primary/25 text-foreground",
+                              )}
+                            >
+                              {item.badge.n}
+                            </span>
+                          ) : null}
+                        </span>
+                        {sidebarCollapsed ? null : (
+                          <>
+                            {t(item.labelKey)}
+                            {item.badge !== null ? (
+                              <span
+                                data-badge={item.dest === "sessions" ? "pending-sync" : `count-${item.dest}`}
+                                className={cn(
+                                  "ml-auto grid h-[18px] min-w-[20px] place-items-center rounded-full px-1.5 text-[10.5px] tabular-nums",
+                                  item.badge.warn
+                                    ? "bg-warning/22 text-warning"
+                                    : "bg-muted text-muted-foreground",
+                                  isActive && "bg-primary/25 text-foreground",
+                                )}
+                              >
+                                {item.badge.n}
+                              </span>
+                            ) : null}
+                          </>
                         )}
-                      >
-                        {item.badge.n}
-                      </span>
-                    ) : null}
-                  </>
-                )}
-              />
+                      </>
+                    )}
+                  />
+                </TooltipTrigger>
+                {/* 折叠态才需要 tooltip（展开态文字就在旁边；双份显示反而冗余）。 */}
+                {sidebarCollapsed ? (
+                  <TooltipContent side="right">
+                    {t(item.labelKey)}
+                    {item.badge !== null ? ` · ${item.badge.n}` : ""}
+                  </TooltipContent>
+                ) : null}
+              </Tooltip>
             ))}
           </nav>
 
           {/* 侧栏底部区块：**打赏入口在版本号上方**。
               打赏在 webui 下**也显示**（版本行不显示），因此容器放在这里、
-              由两个子项共用边框与上间距，而不是塞进 `AppFooter`。 */}
-          <section className="mt-auto flex flex-col gap-2.5 border-t border-sidebar-border pt-3">
-            <SidebarDonate />
+              由两个子项共用边框与上间距，而不是塞进 `AppFooter`。
+              ★ 折叠态：打赏收成图标钮，版本行整行隐藏（低频信息），
+              但**运行状态点保留** —— 「客户端在不在跑」是随时要瞟一眼的。 */}
+          <section className={cn("mt-auto flex flex-col gap-2.5 border-t border-sidebar-border pt-3", sidebarCollapsed && "items-center gap-2")}>
+            <SidebarDonate collapsed={sidebarCollapsed} />
             {api.isWebui() && !demoModeEnabled ? null : (
-              <AppFooter product={product} running={running} version={appVersion} />
+              sidebarCollapsed ? (
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <span className="grid size-6 shrink-0 place-items-center rounded-lg text-muted-foreground/70">
+                      <StatusDot on={running} className="size-2" />
+                    </span>
+                  </TooltipTrigger>
+                  <TooltipContent side="right">
+                    {t(running ? "sidebar.running" : "sidebar.notRunning", {
+                      product: t(platformDescriptor(product).labelKey),
+                    })}
+                  </TooltipContent>
+                </Tooltip>
+              ) : (
+                <AppFooter product={product} running={running} version={appVersion} />
+              )
             )}
           </section>
+
+          {/* 折叠开关：放在侧栏**最底部**（设置项下方、版本行之下）——
+              顶部品牌区不放控件（身份区），底部边缘是「抽屉把手」的位置（VS Code 同款思路）。
+              收起时它自己就是「展开」按钮 ⇒ 图标随状态翻转，位置不动。 */}
+          <div className={cn("mt-2.5 flex border-t border-sidebar-border pt-2.5", sidebarCollapsed && "justify-center")}>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  onClick={toggleSidebar}
+                  aria-expanded={!sidebarCollapsed}
+                  aria-controls="sidebar-nav"
+                  title={t(sidebarCollapsed ? "sidebar.expand" : "sidebar.collapse")}
+                  className={cn(
+                    "h-8 gap-2 rounded-[10px] text-[12.5px] font-normal text-sidebar-foreground/70 hover:bg-foreground/[0.06] hover:text-sidebar-foreground",
+                    sidebarCollapsed ? "w-8 justify-center px-0" : "w-full justify-start px-2.5",
+                  )}
+                >
+                  {sidebarCollapsed ? <PanelLeftOpen className="size-3.5" /> : <PanelLeftClose className="size-3.5" />}
+                  {sidebarCollapsed ? null : t("sidebar.collapse")}
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent side="right">{t(sidebarCollapsed ? "sidebar.expandHint" : "sidebar.collapseHint")}</TooltipContent>
+            </Tooltip>
+          </div>
         </aside>
         )}
 
