@@ -1257,15 +1257,13 @@ fn build_refresh_variants(
 ) -> Vec<RefreshVariant> {
     let endpoints = crate::modules::trae::endpoints_for(variant);
     let new_url = format!("{}{TRAE_EXCHANGE_TOKEN_PATH}", endpoints.account_base);
-    let legacy_url = format!(
-        "{}{TRAE_EXCHANGE_TOKEN_LEGACY_PATH}",
-        endpoints.icube_base
-    );
+    let legacy_url = format!("{}{TRAE_EXCHANGE_TOKEN_LEGACY_PATH}", endpoints.icube_base);
 
     // ★ 请求体骨架与 AuthCode 链**同源**：[`oauth::ClientFacts`] 是 `DeviceInfo`
     //   与 `IDEVersion` 的唯一派生点。没有设备身份（客户端从没启动过）时这两项
     //   没有可信取值 ⇒ 只能退化成「无 proof」形态，由上游判定。
-    let base_facts = secret.map(|secret| oauth::ClientFacts::from_identity(secret.identity.clone()));
+    let base_facts =
+        secret.map(|secret| oauth::ClientFacts::from_identity(secret.identity.clone()));
 
     let own_line = variant.oauth_line();
     let other_line = match own_line {
@@ -1300,8 +1298,16 @@ fn build_refresh_variants(
         // 另一条线：P1363（新端点）+ 无 proof（新端点）—— 线是兜底轴，不必铺满。
         let plans: Vec<(&str, &str, Option<ProofSigFormat>)> = if tag_prefix.is_empty() {
             vec![
-                (new_url.as_str(), TRAE_EXCHANGE_TOKEN_PATH, Some(ProofSigFormat::P1363)),
-                (new_url.as_str(), TRAE_EXCHANGE_TOKEN_PATH, Some(ProofSigFormat::Der)),
+                (
+                    new_url.as_str(),
+                    TRAE_EXCHANGE_TOKEN_PATH,
+                    Some(ProofSigFormat::P1363),
+                ),
+                (
+                    new_url.as_str(),
+                    TRAE_EXCHANGE_TOKEN_PATH,
+                    Some(ProofSigFormat::Der),
+                ),
                 (
                     legacy_url.as_str(),
                     TRAE_EXCHANGE_TOKEN_LEGACY_PATH,
@@ -1311,7 +1317,11 @@ fn build_refresh_variants(
             ]
         } else {
             vec![
-                (new_url.as_str(), TRAE_EXCHANGE_TOKEN_PATH, Some(ProofSigFormat::P1363)),
+                (
+                    new_url.as_str(),
+                    TRAE_EXCHANGE_TOKEN_PATH,
+                    Some(ProofSigFormat::P1363),
+                ),
                 (new_url.as_str(), TRAE_EXCHANGE_TOKEN_PATH, None),
             ]
         };
@@ -1499,9 +1509,7 @@ pub(crate) async fn exchange_token_for(
             .as_ref()
             .map(|error| error.server_rejected)
             .unwrap_or(false),
-        invalid_param: last_error
-            .map(|error| error.invalid_param)
-            .unwrap_or(false),
+        invalid_param: last_error.map(|error| error.invalid_param).unwrap_or(false),
     })
 }
 
@@ -2697,7 +2705,8 @@ hLkrYGiVNhsErnjKIgS7/EIHdsihRANCAARznG0WLhenNiMW5jA3SwFpTNyet2zw\n\
 -----END PRIVATE KEY-----";
 
     /// 测试用公钥 PEM（内容不参与任何验签，只需非空、形态像 PEM）。
-    const TEST_PUBLIC_KEY_PEM: &str = "-----BEGIN PUBLIC KEY-----\nTESTTEST\n-----END PUBLIC KEY-----";
+    const TEST_PUBLIC_KEY_PEM: &str =
+        "-----BEGIN PUBLIC KEY-----\nTESTTEST\n-----END PUBLIC KEY-----";
 
     /// 一台设备的**身份 + 私钥**（refresh 请求体的完整输入）。
     ///
@@ -2756,8 +2765,7 @@ hLkrYGiVNhsErnjKIgS7/EIHdsihRANCAARznG0WLhenNiMW5jA3SwFpTNyet2zw\n\
     #[test]
     fn refresh_chain_order_is_new_p1363_then_new_der_then_old_p1363_then_no_proof() {
         let secret = test_secret();
-        let variants =
-            build_refresh_variants(TraeVariant::TraeWork, "rt", Some(&secret));
+        let variants = build_refresh_variants(TraeVariant::TraeWork, "rt", Some(&secret));
 
         let tags: Vec<&str> = variants.iter().map(|v| v.tag.as_str()).collect();
         assert_eq!(
@@ -2819,24 +2827,19 @@ hLkrYGiVNhsErnjKIgS7/EIHdsihRANCAARznG0WLhenNiMW5jA3SwFpTNyet2zw\n\
         // ★ 两条线必须用**各自的 ClientID**（refresh_token 绑的是签发它的那把钥匙）。
         let own = crate::modules::trae::oauth_client::oauth_client()
             .client_id_for(TraeVariant::TraeWork.oauth_line());
-        let other = crate::modules::trae::oauth_client::oauth_client()
-            .client_id_for(match TraeVariant::TraeWork.oauth_line() {
+        let other = crate::modules::trae::oauth_client::oauth_client().client_id_for(
+            match TraeVariant::TraeWork.oauth_line() {
                 OAuthLine::Solo => OAuthLine::Trae,
                 OAuthLine::Trae => OAuthLine::Solo,
-            });
+            },
+        );
         assert_ne!(own, other, "两条线的 ClientID 必须不同");
         assert_eq!(
-            variants[0]
-                .payload
-                .get("ClientID")
-                .and_then(Value::as_str),
+            variants[0].payload.get("ClientID").and_then(Value::as_str),
             Some(own)
         );
         assert_eq!(
-            variants[4]
-                .payload
-                .get("ClientID")
-                .and_then(Value::as_str),
+            variants[4].payload.get("ClientID").and_then(Value::as_str),
             Some(other)
         );
         // `PlatformCode` 同样随线变（在 `DeviceInfo` 里面）。
@@ -2849,7 +2852,10 @@ hLkrYGiVNhsErnjKIgS7/EIHdsihRANCAARznG0WLhenNiMW5jA3SwFpTNyet2zw\n\
                 .unwrap_or_default()
                 .to_string()
         };
-        assert_eq!(platform(0), TraeVariant::TraeWork.oauth_line().platform_code());
+        assert_eq!(
+            platform(0),
+            TraeVariant::TraeWork.oauth_line().platform_code()
+        );
         assert_ne!(platform(0), platform(4));
     }
 
@@ -2887,10 +2893,7 @@ hLkrYGiVNhsErnjKIgS7/EIHdsihRANCAARznG0WLhenNiMW5jA3SwFpTNyet2zw\n\
         );
 
         // 客户端原文是 `ClientSecret: ""`（不是旧协议的 `"-"`）。
-        assert_eq!(
-            object.get("ClientSecret").and_then(Value::as_str),
-            Some("")
-        );
+        assert_eq!(object.get("ClientSecret").and_then(Value::as_str), Some(""));
         // 旧的扁平字段**不得**再出现（它们属于被拒的那一版形状）。
         assert!(object.get("DeviceID").is_none(), "{payload}");
         assert!(object.get("PlatformCode").is_none(), "{payload}");
@@ -2914,7 +2917,10 @@ hLkrYGiVNhsErnjKIgS7/EIHdsihRANCAARznG0WLhenNiMW5jA3SwFpTNyet2zw\n\
             "OSInfo",
             "OSVersion",
         ] {
-            assert!(info.contains_key(expected), "DeviceInfo 缺 {expected}: {info:?}");
+            assert!(
+                info.contains_key(expected),
+                "DeviceInfo 缺 {expected}: {info:?}"
+            );
         }
         assert_eq!(info.len(), 12, "DeviceInfo 字段集漂了: {info:?}");
         assert_eq!(
@@ -2940,8 +2946,7 @@ hLkrYGiVNhsErnjKIgS7/EIHdsihRANCAARznG0WLhenNiMW5jA3SwFpTNyet2zw\n\
     #[test]
     fn refresh_payload_timestamp_is_json_int() {
         let secret = test_secret();
-        let variants =
-            build_refresh_variants(TraeVariant::TraeWork, "rt", Some(&secret));
+        let variants = build_refresh_variants(TraeVariant::TraeWork, "rt", Some(&secret));
         for variant in variants.iter().take(3) {
             let timestamp = variant
                 .payload
@@ -3349,7 +3354,11 @@ hLkrYGiVNhsErnjKIgS7/EIHdsihRANCAARznG0WLhenNiMW5jA3SwFpTNyet2zw\n\
         for variant in TraeVariant::all() {
             let endpoints = crate::modules::trae::endpoints_for(variant);
             let variants = build_refresh_variants(variant, "rt", Some(&secret));
-            assert_eq!(variants.len(), 6, "有凭证时必须是六步链（本线 4 + 另一条线 2）");
+            assert_eq!(
+                variants.len(),
+                6,
+                "有凭证时必须是六步链（本线 4 + 另一条线 2）"
+            );
             for plan in &variants {
                 // 新端点（步 1/2/4）打 account_base；旧端点（步 3）打 icube_base。
                 let expected_base = if plan.sign_path == TRAE_EXCHANGE_TOKEN_LEGACY_PATH {
@@ -3508,10 +3517,7 @@ hLkrYGiVNhsErnjKIgS7/EIHdsihRANCAARznG0WLhenNiMW5jA3SwFpTNyet2zw\n\
         );
         assert!(request.contains("\"IDEVersion\""), "{request}");
         assert!(
-            request.contains(&format!(
-                "\"DeviceID\":\"{}\"",
-                secret.credential.device_id
-            )),
+            request.contains(&format!("\"DeviceID\":\"{}\"", secret.credential.device_id)),
             "{request}"
         );
     }
@@ -3666,8 +3672,7 @@ hLkrYGiVNhsErnjKIgS7/EIHdsihRANCAARznG0WLhenNiMW5jA3SwFpTNyet2zw\n\
         let (other_id, other_name, other_dir) = &cells[0];
         assert_ne!(bound_id, other_id, "前置：两台设备必须是不同的 id");
 
-        let secret =
-            resolve_refresh_secret(variant, Some(bound_id)).expect("绑定的设备必须能找到");
+        let secret = resolve_refresh_secret(variant, Some(bound_id)).expect("绑定的设备必须能找到");
         assert_eq!(secret.credential.device_id.as_str(), bound_id.as_str());
         // ★ 身份与私钥必须来自**同一条条目**（DeviceInfo 与 DeviceProof 不能跨设备）。
         assert_eq!(secret.identity.device_id.as_str(), bound_id.as_str());
@@ -3684,8 +3689,7 @@ hLkrYGiVNhsErnjKIgS7/EIHdsihRANCAARznG0WLhenNiMW5jA3SwFpTNyet2zw\n\
         fixtures::pin_activity(&storage(bound_dir), 24);
 
         // 先证明翻转**真的生效**，否则下面那条断言是空的（「碰巧一致」= 假绿）。
-        let fallback =
-            resolve_refresh_secret(variant, None).expect("无绑定回落时也应能取到凭证");
+        let fallback = resolve_refresh_secret(variant, None).expect("无绑定回落时也应能取到凭证");
         assert_eq!(
             fallback.credential.source_app.as_str(),
             *other_name,
@@ -3698,10 +3702,7 @@ hLkrYGiVNhsErnjKIgS7/EIHdsihRANCAARznG0WLhenNiMW5jA3SwFpTNyet2zw\n\
             *bound_name,
             "活跃目录翻转后，绑定仍必须指向**来源设备**"
         );
-        assert_ne!(
-            still.credential.source_app,
-            fallback.credential.source_app
-        );
+        assert_ne!(still.credential.source_app, fallback.credential.source_app);
     }
 
     /// ★【T13-4 ③ / ⑤】无绑定（旧账号）⇒ 回落「当前目录的那一条」，**且必须留痕**。

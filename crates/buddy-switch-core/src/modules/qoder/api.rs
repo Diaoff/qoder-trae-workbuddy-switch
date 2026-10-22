@@ -2660,7 +2660,8 @@ mod tests {
                 ],
             }],
         });
-        let body = build_chat_body(&payload, &meta(), QoderRegion::Cn, "").expect("请求体必须能构造");
+        let body =
+            build_chat_body(&payload, &meta(), QoderRegion::Cn, "").expect("请求体必须能构造");
         assert_eq!(body["chat_context"]["text"]["text"], "这是什么颜色");
         // 图片进了 message content 的 parts。
         let messages = body["messages"].as_array().expect("messages 是数组");
@@ -2683,10 +2684,13 @@ mod tests {
                 ],
             }],
         });
-        let body = build_chat_body(&payload, &meta(), QoderRegion::Cn, "").expect("请求体必须能构造");
+        let body =
+            build_chat_body(&payload, &meta(), QoderRegion::Cn, "").expect("请求体必须能构造");
         // 骨架里本就有 `image_urls: null` 占位 ⇒ 判据是「没有被填成列表」。
         assert!(
-            body.get("image_urls").map(|value| value.is_null()).unwrap_or(true),
+            body.get("image_urls")
+                .map(|value| value.is_null())
+                .unwrap_or(true),
             "顶层 image_urls 默认不填：{:?}",
             body.get("image_urls")
         );
