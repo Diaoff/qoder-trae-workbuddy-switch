@@ -200,6 +200,9 @@ const SCOPE_PARAMETERIZED = new Set([
   "loomy_set_account_remark",
   "loomy_set_account_group",
   "loomy_credits",
+  /* ✅ 2026-10-22（二期 9.3）：积分逐日采样 —— **只读本地文件**，但仍按作用域
+     fail-closed（单作用域 `loomy-cn` 是唯一判据）。登记即防回退。 */
+  "loomy_credits_daily",
   "loomy_checkin_claim",
   "loomy_sms_send",
   "loomy_sms_verify",

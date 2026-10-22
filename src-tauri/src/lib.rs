@@ -593,6 +593,7 @@ pub fn run() {
             commands::loomy_set_account_remark,
             commands::loomy_set_account_group,
             commands::loomy_credits,
+            commands::loomy_credits_daily,
             commands::loomy_checkin_claim,
             commands::loomy_sms_send,
             commands::loomy_sms_verify,

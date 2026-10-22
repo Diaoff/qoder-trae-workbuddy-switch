@@ -480,18 +480,35 @@ fn api_routes() -> Router {
         .route("/api/loomy/accounts", get(api_loomy_accounts))
         .route("/api/loomy/accounts/import", post(api_loomy_import))
         .route("/api/loomy/accounts/delete", post(api_loomy_delete_account))
-        .route("/api/loomy/accounts/remark", post(api_loomy_set_account_remark))
-        .route("/api/loomy/accounts/group", post(api_loomy_set_account_group))
+        .route(
+            "/api/loomy/accounts/remark",
+            post(api_loomy_set_account_remark),
+        )
+        .route(
+            "/api/loomy/accounts/group",
+            post(api_loomy_set_account_group),
+        )
         .route("/api/loomy/credits", post(api_loomy_credits))
+        // 积分逐日采样（趋势图数据源，二期 9.3）：**只读**本地文件，不打上游。
+        .route("/api/loomy/credits/daily", get(api_loomy_credits_daily))
         .route("/api/loomy/checkin/claim", post(api_loomy_checkin_claim))
         .route("/api/loomy/sms/send", post(api_loomy_sms_send))
         .route("/api/loomy/sms/verify", post(api_loomy_sms_verify))
         // ---- Loomy 微信扫码（二期）：纯 HTTP 四步 + 长轮询，无本地监听 ----
         .route("/api/loomy/wechat/start", post(api_loomy_wechat_start))
         .route("/api/loomy/wechat/poll", post(api_loomy_wechat_poll))
-        .route("/api/loomy/wechat/bind-auth", post(api_loomy_wechat_bind_auth))
-        .route("/api/loomy/wechat/bind-send", post(api_loomy_wechat_bind_send))
-        .route("/api/loomy/wechat/bind-check", post(api_loomy_wechat_bind_check))
+        .route(
+            "/api/loomy/wechat/bind-auth",
+            post(api_loomy_wechat_bind_auth),
+        )
+        .route(
+            "/api/loomy/wechat/bind-send",
+            post(api_loomy_wechat_bind_send),
+        )
+        .route(
+            "/api/loomy/wechat/bind-check",
+            post(api_loomy_wechat_bind_check),
+        )
         .route("/api/loomy/wechat/skip", post(api_loomy_wechat_skip))
         // ---- Qoder API 网关（管理面；网关本体走独立端口 57895，**不** merge 进本 Router）----
         // ⚠️ 一个监听、两个区域：区域由请求所用 API Key 的归属决定（`QoderKeyRegion`），
@@ -1216,7 +1233,11 @@ async fn api_accounts_import(Json(body): Json<Value>) -> Response {
                             access_token: parsed.session,
                             userid: parsed.userid,
                             phone: parsed.phone,
-                            nickname: if parsed.nickname.is_empty() { None } else { Some(parsed.nickname) },
+                            nickname: if parsed.nickname.is_empty() {
+                                None
+                            } else {
+                                Some(parsed.nickname)
+                            },
                             expires_at: parsed.expires_at,
                             source: Some(loomy::account::SOURCE_IMPORT.to_string()),
                             remark: None,
@@ -1541,7 +1562,8 @@ async fn api_checkin_status_query(Json(body): Json<Value>) -> Response {
                 match loomy::api::checkin_for(region, &acc.access_token).await {
                     Ok(outcome) => {
                         let mut account = acc.clone();
-                        account.last_checkin = Some(buddy_switch_core::modules::qoder::store::timestamp());
+                        account.last_checkin =
+                            Some(buddy_switch_core::modules::qoder::store::timestamp());
                         let _ = loomy::account::upsert_account_for(region, account);
                         json_ok(json!({
                             "uid": acc.uid,
@@ -7423,7 +7445,9 @@ async fn api_qoder_clear_gateway_logs() -> Response {
 
 /// GET /api/loomy/accounts —— 账号视图列表（不含令牌明文）。
 async fn api_loomy_accounts(RawQuery(_query): RawQuery) -> Response {
-    json_ok(loomy::account::accounts_view_for(loomy::region::LoomyRegion::Cn))
+    json_ok(loomy::account::accounts_view_for(
+        loomy::region::LoomyRegion::Cn,
+    ))
 }
 
 /// POST /api/loomy/accounts/import —— 粘贴凭据导入（判别解析见 core credential.rs）。
@@ -7451,10 +7475,9 @@ async fn api_loomy_import(Json(body): Json<Value>) -> Response {
         let mut account = account;
         account.source = Some(loomy::account::SOURCE_IMPORT.to_string());
         account.expires_at = 0.max(account.expires_at);
-        loomy::account::upsert_account_for(loomy::region::LoomyRegion::Cn, account)
-            .map(|_| uid)
+        loomy::account::upsert_account_for(loomy::region::LoomyRegion::Cn, account).map(|_| uid)
     }) {
-    Ok(uid) => json_ok(json!({ "ok": true, "uid": uid })),
+        Ok(uid) => json_ok(json!({ "ok": true, "uid": uid })),
         Err(error) => json_err(error, StatusCode::BAD_REQUEST),
     }
 }
@@ -7479,7 +7502,11 @@ async fn api_loomy_set_account_remark(Json(body): Json<Value>) -> Response {
     if uid.trim().is_empty() {
         return json_err("缺少 uid".to_string(), StatusCode::BAD_REQUEST);
     }
-    match loomy::account::set_remark_for(loomy::region::LoomyRegion::Cn, uid, remark.map(str::to_string)) {
+    match loomy::account::set_remark_for(
+        loomy::region::LoomyRegion::Cn,
+        uid,
+        remark.map(str::to_string),
+    ) {
         Ok(true) => json_ok(json!({ "ok": true })),
         Ok(false) => json_err("账号不存在".to_string(), StatusCode::BAD_REQUEST),
         Err(error) => json_err(error, StatusCode::BAD_REQUEST),
@@ -7493,7 +7520,11 @@ async fn api_loomy_set_account_group(Json(body): Json<Value>) -> Response {
     if uid.trim().is_empty() {
         return json_err("缺少 uid".to_string(), StatusCode::BAD_REQUEST);
     }
-    match loomy::account::set_group_for(loomy::region::LoomyRegion::Cn, uid, group.map(str::to_string)) {
+    match loomy::account::set_group_for(
+        loomy::region::LoomyRegion::Cn,
+        uid,
+        group.map(str::to_string),
+    ) {
         Ok(true) => json_ok(json!({ "ok": true })),
         Ok(false) => json_err("账号不存在".to_string(), StatusCode::BAD_REQUEST),
         Err(error) => json_err(error, StatusCode::BAD_REQUEST),
@@ -7515,6 +7546,17 @@ async fn api_loomy_credits(Json(body): Json<Value>) -> Response {
             account.credits = snapshot.permanent;
             account.daily_credits = snapshot.daily;
             let _ = loomy::account::upsert_account_for(loomy::region::LoomyRegion::Cn, account);
+            // 顺带记一帧采样：趋势图不该只靠定时器（用户手动刷新时往往正是想看图变了）。
+            let _ = loomy::credits_daily::record_for(
+                loomy::region::LoomyRegion::Cn,
+                &[(
+                    acc.uid.clone(),
+                    loomy::credits_daily::DailySample {
+                        permanent: snapshot.permanent,
+                        daily: snapshot.daily,
+                    },
+                )],
+            );
             json_ok(json!({
                 "uid": acc.uid,
                 "permanent": snapshot.permanent,
@@ -7524,6 +7566,19 @@ async fn api_loomy_credits(Json(body): Json<Value>) -> Response {
         }
         Err(error) => json_err(error, StatusCode::BAD_REQUEST),
     }
+}
+
+/// GET /api/loomy/credits/daily —— 积分逐日采样（趋势图数据源，二期 9.3）。
+///
+/// **只读本地文件**（`loomy/credits_daily.cn.json`），不联网：趋势图可以随时重画，
+/// 不该因为「打开用量页」就替用户发一次上游请求。
+async fn api_loomy_credits_daily() -> Response {
+    if let Err(error) = require_capability(Product::Loomy, capability::Capability::Credits) {
+        return json_err(error, StatusCode::FORBIDDEN);
+    }
+    json_ok(loomy::credits_daily::view_for(
+        loomy::region::LoomyRegion::Cn,
+    ))
 }
 
 /// POST /api/loomy/checkin/claim —— 触发每日赠送额度（幂等）。
@@ -7538,8 +7593,7 @@ async fn api_loomy_checkin_claim(Json(body): Json<Value>) -> Response {
     match loomy::api::checkin_for(loomy::region::LoomyRegion::Cn, &acc.access_token).await {
         Ok(outcome) => {
             let mut account = acc.clone();
-            account.last_checkin =
-                Some(buddy_switch_core::modules::qoder::store::timestamp());
+            account.last_checkin = Some(buddy_switch_core::modules::qoder::store::timestamp());
             let _ = loomy::account::upsert_account_for(loomy::region::LoomyRegion::Cn, account);
             json_ok(json!({
                 "uid": acc.uid,
@@ -7559,7 +7613,10 @@ async fn api_loomy_sms_send(Json(body): Json<Value>) -> Response {
     }
     let phone = body.get("phone").and_then(Value::as_str).unwrap_or("");
     if !phone.chars().all(|c| c.is_ascii_digit()) || phone.len() != 11 {
-        return json_err("手机号必须是 11 位数字".to_string(), StatusCode::BAD_REQUEST);
+        return json_err(
+            "手机号必须是 11 位数字".to_string(),
+            StatusCode::BAD_REQUEST,
+        );
     }
     match loomy::api::send_sms_code(loomy::region::LoomyRegion::Cn, phone).await {
         Ok(msgid) => json_ok(json!({ "ok": true, "msgid": msgid })),
@@ -7576,7 +7633,10 @@ async fn api_loomy_sms_verify(Json(body): Json<Value>) -> Response {
     let code = body.get("code").and_then(Value::as_str).unwrap_or("");
     let msgid = body.get("msgid").and_then(Value::as_str).unwrap_or("");
     if phone.is_empty() || code.is_empty() || msgid.is_empty() {
-        return json_err("缺少 phone / code / msgid".to_string(), StatusCode::BAD_REQUEST);
+        return json_err(
+            "缺少 phone / code / msgid".to_string(),
+            StatusCode::BAD_REQUEST,
+        );
     }
     match loomy::api::check_sms_code(loomy::region::LoomyRegion::Cn, phone, code, msgid).await {
         Ok((session, userid, phone)) => {
@@ -7588,7 +7648,10 @@ async fn api_loomy_sms_verify(Json(body): Json<Value>) -> Response {
             ) {
                 Ok(account) => {
                     let uid = account.uid.clone();
-                    match loomy::account::upsert_account_for(loomy::region::LoomyRegion::Cn, account) {
+                    match loomy::account::upsert_account_for(
+                        loomy::region::LoomyRegion::Cn,
+                        account,
+                    ) {
                         Ok(_) => json_ok(json!({ "ok": true, "uid": uid, "phone": phone })),
                         Err(error) => json_err(error, StatusCode::BAD_REQUEST),
                     }
@@ -7719,7 +7782,10 @@ async fn api_loomy_wechat_bind_send(Json(body): Json<Value>) -> Response {
         return json_err("缺少 rcode".to_string(), StatusCode::BAD_REQUEST);
     }
     if !phone.chars().all(|c| c.is_ascii_digit()) || phone.len() != 11 {
-        return json_err("手机号必须是 11 位数字".to_string(), StatusCode::BAD_REQUEST);
+        return json_err(
+            "手机号必须是 11 位数字".to_string(),
+            StatusCode::BAD_REQUEST,
+        );
     }
     match loomy::api::wechat_bind_send_msg(loomy::region::LoomyRegion::Cn, rcode, phone).await {
         Ok(msgid) => json_ok(json!({ "ok": true, "msgid": msgid })),
@@ -7745,9 +7811,13 @@ async fn api_loomy_wechat_bind_check(Json(body): Json<Value>) -> Response {
         .filter(|value| !value.is_empty())
         .map(str::to_string);
     if rcode.is_empty() || code.is_empty() || msgid.is_empty() {
-        return json_err("缺少 rcode / code / msgid".to_string(), StatusCode::BAD_REQUEST);
+        return json_err(
+            "缺少 rcode / code / msgid".to_string(),
+            StatusCode::BAD_REQUEST,
+        );
     }
-    match loomy::api::wechat_bind_check_code(loomy::region::LoomyRegion::Cn, rcode, code, msgid).await
+    match loomy::api::wechat_bind_check_code(loomy::region::LoomyRegion::Cn, rcode, code, msgid)
+        .await
     {
         Ok((session, userid, phone)) => {
             match loomy_upsert_wechat_login(session, userid, phone, nickname) {

@@ -365,6 +365,15 @@ pub const TASKS: &[TaskSpec] = &[
         kind: TaskKind::Scheduled(ScheduleTask::QoderKeepalive),
         interval: Duration::ZERO,
     },
+    // Loomy（第四条产品线）的**积分逐日采样**（二期 9.3）。
+    // 只读 GET（非替用户领东西）⇒ 默认开，判据同保活。
+    // ⚠️ 同样**不登记 = 两宿主都不跑**：用量页的趋势图会永远空着，
+    //    而设置页那个开关看起来是能用的（Trae JWT 续期事故的同一形态）。
+    TaskSpec {
+        product: Product::Loomy,
+        kind: TaskKind::Scheduled(ScheduleTask::LoomyPointsSample),
+        interval: Duration::ZERO,
+    },
 ];
 
 /// 是否存在「该产品线的该种类」任务。

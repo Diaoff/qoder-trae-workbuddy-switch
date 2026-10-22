@@ -221,8 +221,9 @@ const DEMO_READ_COMMANDS = new Set([
   // 网关五条只读：config / status / models / keys / logs —— 同样不进写操作
   //（保存配置 / 建 Key / 吊销 / 恢复 / 删除 / 清日志）。
   "get_qoder_accounts", "get_qoder_local_sources", "qoder_program_status", "qoder_usage",
-  // Loomy 平台（**只读**）：账号列表；导入 / 登录 / 删除是写操作不进演示。
-  "loomy_accounts",
+  // Loomy 平台（**只读**）：账号列表 + 积分逐日采样（本地台账，不联网）；
+  // 导入 / 登录 / 删除 / 刷新积分是写操作不进演示。
+  "loomy_accounts", "loomy_credits_daily",
   // issue #47：逐账号「今日签到状态」（**只读**）。
   "qoder_checkin_status_map",
   "get_qoder_gateway_config", "qoder_gateway_status", "get_qoder_gateway_models",
@@ -562,6 +563,8 @@ const ROUTES: Record<string, Route> = {
   loomy_set_account_remark: { method: "POST", path: "/api/loomy/accounts/remark" },
   loomy_set_account_group: { method: "POST", path: "/api/loomy/accounts/group" },
   loomy_credits: { method: "POST", path: "/api/loomy/credits" },
+  // 积分逐日采样（趋势图数据源，二期 9.3）—— **只读本地文件**，不打上游。
+  loomy_credits_daily: { method: "GET", path: "/api/loomy/credits/daily" },
   loomy_checkin_claim: { method: "POST", path: "/api/loomy/checkin/claim" },
   loomy_sms_send: { method: "POST", path: "/api/loomy/sms/send" },
   loomy_sms_verify: { method: "POST", path: "/api/loomy/sms/verify" },
@@ -3728,6 +3731,36 @@ export interface LoomyCreditsView {
 /** Loomy 查询两池积分。 */
 export function loomyCredits(scope: Scope, uid: string): Promise<LoomyCreditsView> {
   return call<LoomyCreditsView>("loomy_credits", { scope, uid });
+}
+
+/** 某一天里单个账号的两池读数（趋势图的一行）。 */
+export interface LoomyCreditsDailyRow {
+  uid: string;
+  permanent: number;
+  daily: number;
+}
+
+/** 一天里的全部账号读数。 */
+export interface LoomyCreditsDailyDay {
+  date: string;
+  accounts: LoomyCreditsDailyRow[];
+}
+
+/** 积分逐日采样视图（按日期升序、账号按 uid 升序）。 */
+export interface LoomyCreditsDailyView {
+  region: string;
+  days: LoomyCreditsDailyDay[];
+}
+
+/**
+ * Loomy 积分逐日采样（趋势图数据源）。
+ *
+ * ⚠️ **只读本地文件**（`loomy/credits_daily.cn.json`），不联网 —— 打开用量页
+ * 不该替用户发一次上游请求。真数据由 `loomy_points_sample` 排程（每日两帧）
+ * 与「刷新积分」成功后回填。
+ */
+export function loomyCreditsDaily(scope: Scope): Promise<LoomyCreditsDailyView> {
+  return call<LoomyCreditsDailyView>("loomy_credits_daily", { scope });
 }
 
 /** Loomy 签到结果。 */

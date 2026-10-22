@@ -16,6 +16,7 @@
 //! | [`models`] | 模型目录解析（三形态）+ 倍率拆解 |
 //! | [`chat`] | 对话请求头与错误分类 |
 //! | [`credits`] | 两池积分解析 |
+//! | [`credits_daily`] | 积分逐日采样（趋势图数据源，二期 9.3） |
 //! | [`checkin`] |每日赠送额度签到（幂等） |
 //! | [`oauth`] | 短信验证码登录 |
 //! | [`wechat`] | 微信扫码登录（纯函数层：URL 拼接 / uuid 提取 / 长轮询帧解析） |
@@ -26,6 +27,7 @@ pub mod chat;
 pub mod checkin;
 pub mod credential;
 pub mod credits;
+pub mod credits_daily;
 pub mod models;
 pub mod oauth;
 pub mod paths;

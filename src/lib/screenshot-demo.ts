@@ -2862,6 +2862,7 @@ export function screenshotDemoResponse(command: string, args?: Record<string, un
       trae_jwt_refresh_times: ["09:00", "21:00"],
       qoder_checkin_times: ["09:00", "21:00"],
       qoder_keepalive_times: ["22:00"],
+      loomy_points_sample_times: ["09:00", "21:00"],
       // 签到开 ±15 分钟抖动：截图要能自证「这个能力存在且真的在界内」，
       // 全为 0 的话控件看起来就只是个永远不动的下拉框。
       checkin_jitter_minutes: 15,
@@ -2874,6 +2875,7 @@ export function screenshotDemoResponse(command: string, args?: Record<string, un
       trae_jwt_refresh_jitter_minutes: 0,
       qoder_checkin_jitter_minutes: 0,
       qoder_keepalive_jitter_minutes: 0,
+      loomy_points_sample_jitter_minutes: 0,
       checkin_enabled: true,
       travel_enabled: true,
       activity_enabled: true,
@@ -2888,6 +2890,8 @@ export function screenshotDemoResponse(command: string, args?: Record<string, un
       // Qoder 两条同样照后端默认值（签到关、保活开）。
       qoder_checkin_enabled: false,
       qoder_keepalive_enabled: true,
+      // Loomy 积分采样同样照后端默认值（只读 GET ⇒ 默认开启）。
+      loomy_points_sample_enabled: true,
       activity_report_count: 5,
     } satisfies ScheduleConfig;
     case "get_auto_rotate_config": return config;
@@ -3033,6 +3037,7 @@ export function screenshotDemoResponse(command: string, args?: Record<string, un
     case "get_qoder_gateway_logs": return demoQoderGatewayLogs();
     /* Loomy（只读一条）：账号列表；写操作不进演示只读面。 */
     case "loomy_accounts": return demoLoomyAccounts("loomy-cn");
+    case "loomy_credits_daily": return demoLoomyCreditsDaily();
     /* P7 全局备份：只登记**只读**命令（导出 / 预览 / 导入 / 恢复是动作，不进演示只读面 ——
        由页面侧的错误提示处理）。`get_auto_backup_config` **如实返回默认开**（§7 #7），
        否则截图会误导成「装上就是关着的」。 */
@@ -3046,6 +3051,31 @@ export function screenshotDemoResponse(command: string, args?: Record<string, un
 // ---------------------------------------------------------------------------
 // Loomy（第四个平台，单作用域）—— 演示只读数据（账号列表；写操作不进演示面）。
 // ---------------------------------------------------------------------------
+
+/**
+ * 积分逐日采样（演示数据）。
+ *
+ * 造**七天**的点而不是一两个：趋势图如果只有两个点，柱子会被拉成两根粗条，
+ * 截图看起来像「这里坏了」。日期从「今天」往回推，与参数条的窗口键同口径。
+ */
+function demoLoomyCreditsDaily(): unknown {
+  const pad = (value: number) => String(value).padStart(2, "0");
+  const days = Array.from({ length: 7 }, (_, index) => {
+    const date = new Date();
+    date.setDate(date.getDate() - (6 - index));
+    // 稳定但不平直：永久池缓慢增长，每日池当天被打满后逐日回落（真实形态）。
+    const permanent = 14500 + index * 90;
+    const daily = index === 6 ? 4992 : 3500 + index * 130;
+    return {
+      date: `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`,
+      accounts: [
+        { uid: "110000000000000000", permanent, daily },
+        { uid: "loomy-0a1b2c3d4e5f6071", permanent: 300, daily: index === 6 ? 0 : 20 * index },
+      ],
+    };
+  });
+  return { region: "cn", days };
+}
 
 function demoLoomyAccounts(_scope: string): unknown {
   return {

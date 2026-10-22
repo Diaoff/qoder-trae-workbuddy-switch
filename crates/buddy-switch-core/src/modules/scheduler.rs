@@ -22,7 +22,7 @@ use std::time::Duration;
 /// 「重试次数 / 跳过已签 / 跳过过期」对自动签到失效（本仓库已踩过三次的假控件）。
 use super::trae::handlers as trae_handlers;
 use super::{
-    activity, cat, checkin, config, qoder, refresh,
+    activity, cat, checkin, config, loomy, qoder, refresh,
     region::Region,
     schedule::{self, ScheduleConfig, ScheduleTask},
     school, travel,
@@ -36,7 +36,7 @@ const DISABLED_RECHECK_MS: u64 = 60_000;
 /// 哪些任务在**进程启动时补跑一轮**。
 ///
 /// 只补「今天该做但还没做」的几类：签到核验（WorkBuddy 与 Trae 各一）、Trae JWT 续期、
-/// 旅行派出+领取、保活。活跃上报 / 开学季 / 夜猫子不在其中——它们是「每天至多一次」的
+/// 旅行派出+领取、保活、Loomy 积分采样。活跃上报 / 开学季 / 夜猫子不在其中——它们是「每天至多一次」的
 /// 积分动作，交给排程小时表即可，启动就跑会让「我明明设了 10 点」的语义失效。
 ///
 /// Trae 签到**在其中**：排程定在 9 点、而用户 10 点才开这个应用是常态，
@@ -48,7 +48,7 @@ const DISABLED_RECHECK_MS: u64 = 60_000;
 /// 而到期时刻由**上游签发时决定**、与我们的小时表无关 —— 应用恰好没开在那两个整点是
 /// 常态，不补跑就等于「续期看运气」。它只对**真的快到期**的账号发请求
 /// （`account::needs_jwt_refresh`），没有到期账号时这一轮只是读一遍账号库。
-const STARTUP_TASKS: [ScheduleTask; 7] = [
+const STARTUP_TASKS: [ScheduleTask; 8] = [
     ScheduleTask::Checkin,
     ScheduleTask::TraeCheckin,
     ScheduleTask::TraeJwtRefresh,
@@ -57,6 +57,10 @@ const STARTUP_TASKS: [ScheduleTask; 7] = [
     // Qoder 两条与 Trae 两条**同判据**：签到默认关（opt-in）、保活默认开。
     ScheduleTask::QoderCheckin,
     ScheduleTask::QoderKeepalive,
+    // Loomy 积分采样（二期 9.3）：只读 GET、默认开，与保活同判据。
+    // 补跑它是因为趋势图按**日**记一格：应用 10 点才打开就等于当天那两帧全丢，
+    // 曲线会莫名断一天（而采样成本只是一次 GET）。
+    ScheduleTask::LoomyPointsSample,
 ];
 
 /// 启动补跑的任务清单（**纯函数**）：受各自排程开关约束，关掉的任务一次都不跑。
@@ -148,6 +152,17 @@ pub async fn run_scheduled_task(task: ScheduleTask) -> Value {
             }
             json!({ "task": task.as_str(), "regions": regions })
         }
+        // Loomy（第四条产品线）的积分逐日采样：**只读 GET**，把两池读数记进
+        // `loomy/credits_daily.cn.json`（趋势图数据源）。
+        // 与 Qoder 同款：遍历 `LoomyRegion::all()` 而不是 WB 的 `Region::all()` ——
+        // 一旦将来加了区域，这里不会静默少采一个。
+        ScheduleTask::LoomyPointsSample => {
+            let mut regions = Vec::new();
+            for region in loomy::region::LoomyRegion::all() {
+                regions.push(loomy::credits_daily::run_sample_cycle_for(region).await);
+            }
+            json!({ "task": task.as_str(), "regions": regions })
+        }
     }
 }
 
@@ -231,8 +246,9 @@ mod tests {
                 ScheduleTask::Travel,
                 ScheduleTask::Keepalive,
                 ScheduleTask::QoderKeepalive,
+                ScheduleTask::LoomyPointsSample,
             ],
-            "默认状态下（两条签到默认关闭、两条保活默认开启）启动补跑应恰好是这五类"
+            "默认状态下（两条签到默认关闭、两条保活与 Loomy 采样默认开启）启动补跑应恰好是这六类"
         );
 
         // 打开 Trae 签到后它**必须**进入补跑清单，否则「排程定在 9 点、10 点才开应用」
@@ -248,6 +264,7 @@ mod tests {
                 ScheduleTask::Travel,
                 ScheduleTask::Keepalive,
                 ScheduleTask::QoderKeepalive,
+                ScheduleTask::LoomyPointsSample,
             ],
             "Trae 签到开启后必须进入启动补跑"
         );
@@ -264,6 +281,7 @@ mod tests {
                 ScheduleTask::Keepalive,
                 ScheduleTask::QoderCheckin,
                 ScheduleTask::QoderKeepalive,
+                ScheduleTask::LoomyPointsSample,
             ],
             "Qoder 签到开启后必须进入启动补跑"
         );
@@ -278,6 +296,7 @@ mod tests {
                 ScheduleTask::Travel,
                 ScheduleTask::Keepalive,
                 ScheduleTask::QoderKeepalive,
+                ScheduleTask::LoomyPointsSample,
             ],
             "关掉 Trae JWT 续期后它不得再补跑（逐类 gating）"
         );
@@ -288,6 +307,7 @@ mod tests {
         all_off.keepalive_enabled = false;
         all_off.trae_jwt_refresh_enabled = false;
         all_off.qoder_keepalive_enabled = false;
+        all_off.loomy_points_sample_enabled = false;
         assert!(
             startup_tasks(&all_off).is_empty(),
             "全关时启动补跑必须为空（否则开关形同虚设）"
@@ -302,6 +322,7 @@ mod tests {
                 ScheduleTask::TraeJwtRefresh,
                 ScheduleTask::Keepalive,
                 ScheduleTask::QoderKeepalive,
+                ScheduleTask::LoomyPointsSample,
             ],
             "gating 必须是逐类的：关 travel 不影响另外几类"
         );
@@ -318,6 +339,7 @@ mod tests {
                 ScheduleTask::TraeJwtRefresh,
                 ScheduleTask::Travel,
                 ScheduleTask::QoderKeepalive,
+                ScheduleTask::LoomyPointsSample,
             ],
             "关 keepalive 不能带走 Trae 签到 / Trae JWT 续期"
         );
@@ -329,17 +351,18 @@ mod tests {
             keepalive_enabled: false,
             trae_jwt_refresh_enabled: false,
             qoder_keepalive_enabled: false,
+            loomy_points_sample_enabled: false,
             ..cfg.clone()
         };
         assert!(startup_tasks(&only_others).is_empty());
     }
 
-    /// 启动补跑的集合必须**恰好**是这七类；新增进来必须有意为之。
+    /// 启动补跑的集合必须**恰好**是这八类；新增进来必须有意为之。
     ///
     /// Trae 签到是 2026-09-22 有意加进来的第四类，Trae JWT 续期是 2026-10-14 有意加进来的
-    /// 第五类，Qoder 签到 / 保活是 2026-10-19 有意加进来的第六、七类（理由见
-    /// [`STARTUP_TASKS`] 的文档），都不是顺手带上的 ——
-    /// 这条断言的作用就是让下次有人想加第八类时被迫说明理由。
+    /// 第五类，Qoder 签到 / 保活是 2026-10-19 有意加进来的第六、七类，
+    /// Loomy 积分采样是 2026-10-22 有意加进来的第八类（趋势图按日一格，缺帧会断线）——
+    /// 都不是顺手带上的，这条断言的作用就是让下次有人想加第九类时被迫说明理由。
     #[test]
     fn startup_task_set_is_exactly_the_intended_families() {
         let labels: Vec<&str> = STARTUP_TASKS.iter().map(|t| t.as_str()).collect();
@@ -352,7 +375,8 @@ mod tests {
                 "travel",
                 "keepalive",
                 "qoder_checkin",
-                "qoder_keepalive"
+                "qoder_keepalive",
+                "loomy_points_sample"
             ]
         );
     }

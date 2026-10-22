@@ -970,6 +970,8 @@ export interface ScheduleConfig {
   qoder_checkin_times: string[];
   /** Qoder 账号令牌保活的时点（第三条产品线）。 */
   qoder_keepalive_times: string[];
+  /** Loomy 积分逐日采样的时点（第四条产品线，单区）。 */
+  loomy_points_sample_times: string[];
   /**
    * 抖动幅度（分钟，`0` = 关闭）。每次触发在时点前后**确定性**随机偏移至多这么多分钟。
    *
@@ -987,6 +989,7 @@ export interface ScheduleConfig {
   trae_jwt_refresh_jitter_minutes: number;
   qoder_checkin_jitter_minutes: number;
   qoder_keepalive_jitter_minutes: number;
+  loomy_points_sample_jitter_minutes: number;
   /** 自动签到开关（签 WorkBuddy 的账号）。 */
   checkin_enabled: boolean;
   /** 派猫猫旅行开关。 */
@@ -1031,6 +1034,13 @@ export interface ScheduleConfig {
    * 静默过期、网关调用突然 401。
    */
   qoder_keepalive_enabled: boolean;
+  /**
+   * Loomy 积分逐日采样开关（趋势图的数据来源）。
+   *
+   * ⚠️ **默认 `true`**，判据与保活同源：它只做**只读 GET**，把两池积分记进本地
+   * `credits_daily.cn.json`，不是替用户去领东西。关掉它 = 趋势图不再有新数据。
+   */
+  loomy_points_sample_enabled: boolean;
   /** 活跃上报每账号每天的对话次数（后端将 0 / 负数归一为 1）。 */
   activity_report_count: number;
 }

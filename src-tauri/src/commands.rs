@@ -18,8 +18,7 @@ use tauri::{Emitter, Manager};
 // ⚠️ 本文件在 `crates/buddy-switch-server/src/api.rs` 有**同款**接线（刻意不去重，见共享知识）。
 use buddy_switch_core::modules::product::{
     require_capability, require_loomy_region, require_qoder_region, require_trae_region,
-    require_wb_region,
-    resolve_scope_param, Product,
+    require_wb_region, resolve_scope_param, Product,
 };
 use buddy_switch_core::modules::trae::region::TraeRegion;
 // P9 · 悬浮窗**只读**数据模型 + provider（core）。⚠️ 与桌面窗口模块 `crate::companion`
@@ -428,9 +427,7 @@ pub fn account_trash_clear(scope: String) -> Result<Value, String> {
         // Loomy 无回收站：显式失败（不假装成功、也不返回 0 冒充）。
         Product::Loomy => {
             require_loomy_region(scope)?;
-            return Err(
-                "Loomy 一期无回收站（单作用域，误删可重新导入）".to_string(),
-            );
+            return Err("Loomy 一期无回收站（单作用域，误删可重新导入）".to_string());
         }
     };
     Ok(json!({ "ok": true, "removed": removed }))
@@ -661,9 +658,7 @@ pub async fn accounts_paste_credential(scope: String, text: String) -> Result<Va
             "Trae 请用「粘贴 JWT」或「浏览器授权」——换 token 需要客户端里的设备私钥".to_string(),
         ),
         Product::Qoder => Err("Qoder 请用「粘贴 PAT」".to_string()),
-        Product::Loomy => Err(
-            "Loomy 请用「导入凭据」（loomy_import）或「短信登录」".to_string(),
-        ),
+        Product::Loomy => Err("Loomy 请用「导入凭据」（loomy_import）或「短信登录」".to_string()),
     }
 }
 
@@ -4844,7 +4839,9 @@ pub fn loomy_accounts(scope: String) -> Result<Value, String> {
     require_capability(Product::Loomy, capability::Capability::Oauth)?;
     // 单作用域仍**校验**（fail-closed）：`loomy-global` 之类拼错不该静默读到 loomy-cn。
     require_loomy_region(resolve_scope_param(Some(&scope))?)?;
-    Ok(loomy::account::accounts_view_for(loomy::region::LoomyRegion::Cn))
+    Ok(loomy::account::accounts_view_for(
+        loomy::region::LoomyRegion::Cn,
+    ))
 }
 
 /// Loomy 粘贴凭据导入（判别解析见 core credential.rs）。
@@ -4932,17 +4929,39 @@ pub async fn loomy_credits(scope: String, uid: String) -> Result<Value, String> 
     let Some(acc) = loomy::account::find_account_for(loomy::region::LoomyRegion::Cn, &uid) else {
         return Err("账号不存在".to_string());
     };
-    let snapshot = loomy::api::points_for(loomy::region::LoomyRegion::Cn, &acc.access_token).await?;
+    let snapshot =
+        loomy::api::points_for(loomy::region::LoomyRegion::Cn, &acc.access_token).await?;
     let mut account = acc.clone();
     account.credits = snapshot.permanent;
     account.daily_credits = snapshot.daily;
     let _ = loomy::account::upsert_account_for(loomy::region::LoomyRegion::Cn, account);
+    // 顺带记一帧采样（与 server 侧同判据：手动刷新时用户往往正想看趋势变了）。
+    let _ = loomy::credits_daily::record_for(
+        loomy::region::LoomyRegion::Cn,
+        &[(
+            acc.uid.clone(),
+            loomy::credits_daily::DailySample {
+                permanent: snapshot.permanent,
+                daily: snapshot.daily,
+            },
+        )],
+    );
     Ok(json!({
         "uid": acc.uid,
         "permanent": snapshot.permanent,
         "daily": snapshot.daily,
         "total": snapshot.total,
     }))
+}
+
+/// Loomy 积分逐日采样（趋势图数据源，二期 9.3）—— **只读本地文件**，不联网。
+#[tauri::command(rename_all = "camelCase")]
+pub fn loomy_credits_daily(scope: String) -> Result<Value, String> {
+    require_capability(Product::Loomy, capability::Capability::Credits)?;
+    require_loomy_region(resolve_scope_param(Some(&scope))?)?;
+    Ok(loomy::credits_daily::view_for(
+        loomy::region::LoomyRegion::Cn,
+    ))
 }
 
 /// Loomy 触发每日赠送额度（幂等签到）。
@@ -4953,7 +4972,8 @@ pub async fn loomy_checkin_claim(scope: String, uid: String) -> Result<Value, St
     let Some(acc) = loomy::account::find_account_for(loomy::region::LoomyRegion::Cn, &uid) else {
         return Err("账号不存在".to_string());
     };
-    let outcome = loomy::api::checkin_for(loomy::region::LoomyRegion::Cn, &acc.access_token).await?;
+    let outcome =
+        loomy::api::checkin_for(loomy::region::LoomyRegion::Cn, &acc.access_token).await?;
     let mut account = acc.clone();
     account.last_checkin = Some(buddy_switch_core::modules::qoder::store::timestamp());
     let _ = loomy::account::upsert_account_for(loomy::region::LoomyRegion::Cn, account);
@@ -4992,8 +5012,12 @@ pub async fn loomy_sms_verify(
     }
     let (session, userid, phone) =
         loomy::api::check_sms_code(loomy::region::LoomyRegion::Cn, &phone, &code, &msgid).await?;
-    let account =
-        loomy::api::account_from_login_fields(loomy::region::LoomyRegion::Cn, session, userid, phone.clone())?;
+    let account = loomy::api::account_from_login_fields(
+        loomy::region::LoomyRegion::Cn,
+        session,
+        userid,
+        phone.clone(),
+    )?;
     let uid = account.uid.clone();
     loomy::account::upsert_account_for(loomy::region::LoomyRegion::Cn, account)?;
     Ok(json!({ "ok": true, "uid": uid, "phone": phone }))

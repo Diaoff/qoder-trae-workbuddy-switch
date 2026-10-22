@@ -4985,7 +4985,8 @@ check("★ P5-④ 参数化命令**恰 53 条**且后端带 scope（commands.rs 
     "create_qoder_api_key", "credits", "get_disabled_models", "get_qoder_accounts",
     "get_qoder_gateway_models", "get_qoder_local_sources", "get_trae_account_token_today",
     "get_trae_checkin_status_map",
-    "loomy_accounts", "loomy_checkin_claim", "loomy_credits", "loomy_delete_account",
+    "loomy_accounts", "loomy_checkin_claim", "loomy_credits", "loomy_credits_daily",
+    "loomy_delete_account",
     "loomy_import", "loomy_set_account_group", "loomy_set_account_remark",
     "loomy_sms_send", "loomy_sms_verify",
     "loomy_wechat_bind_auth", "loomy_wechat_bind_check", "loomy_wechat_bind_send",
@@ -5000,7 +5001,7 @@ check("★ P5-④ 参数化命令**恰 53 条**且后端带 scope（commands.rs 
     "set_model_disabled",
   ];
   if (JSON.stringify([...names].sort()) !== JSON.stringify(EXPECTED)) {
-    throw new Error(`参数化命令集变了（应恰 38 条）：${JSON.stringify([...names].sort())}`);
+    throw new Error(`参数化命令集变了（应恰 ${EXPECTED.length} 条）：${JSON.stringify([...names].sort())}`);
   }
   const commands = readCode(COMMANDS_RS);
   const apiTs = readCode(P5_API_TS);

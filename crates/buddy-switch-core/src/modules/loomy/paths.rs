@@ -10,13 +10,14 @@
 //! loomy/
 //! ├── settings.json          # 模块设置（单区不分家）
 //! ├── accounts.cn.json       # 账号库
-//! └── checkin_ledger.cn.json # 今日已签到台账（跨运行累积）
+//! ├── checkin_ledger.cn.json # 今日已签到台账（跨运行累积）
+//! └── credits_daily.cn.json  # 积分逐日采样（趋势图数据源）
 //! ```
 
 use std::path::PathBuf;
 
 use crate::modules::config::store_dir;
-use crate::modules::loomy::region::{LoomyRegion};
+use crate::modules::loomy::region::LoomyRegion;
 
 /// 本模块的数据目录：`<store_dir>/loomy/`。
 pub fn loomy_dir() -> PathBuf {
@@ -46,6 +47,14 @@ pub fn checkin_ledger_file_for(region: LoomyRegion) -> PathBuf {
     scoped_file_for("checkin_ledger.json", region)
 }
 
+/// 积分逐日采样（趋势图数据源；二期 9.3）。
+///
+/// 形态照 Qoder/Trae 的 `credits_daily.{region}.json`：Loomy 单区，文件名仍是
+/// `credits_daily.cn.json`（保持派生规则一致，将来出国际版零改动）。
+pub fn credits_daily_file_for(region: LoomyRegion) -> PathBuf {
+    scoped_file_for("credits_daily.json", region)
+}
+
 /// 模块设置（**不分家**：单区域平台没有区域差异可分）。
 pub fn settings_file() -> PathBuf {
     loomy_dir().join("settings.json")
@@ -70,6 +79,13 @@ mod tests {
             .to_string_lossy()
             .to_string();
         assert_eq!(ledger, "checkin_ledger.cn.json");
+
+        let daily = credits_daily_file_for(LoomyRegion::Cn)
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .to_string();
+        assert_eq!(daily, "credits_daily.cn.json");
     }
 
     #[test]

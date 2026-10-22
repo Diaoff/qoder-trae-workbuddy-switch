@@ -87,6 +87,21 @@ chat 路径只在 content-type 是 `application/json` 时 peek 响应体判业�
 
 ---
 
+### 2.7 积分逐日采样（二期 9.3）
+
+账号库里的 `credits` / `dailyCredits` 只是**最近一次**读数（覆盖写），拿它画逐日趋势
+只能得到一根贴地的假线。趋势的真实数据源是本地台账：
+
+| 项 | 事实 |
+|:--|:--|
+| 文件 | `~/.buddy-switch/loomy/credits_daily.cn.json`（按 `(日期, uid)` 存两池读数，**不做区域级聚合**） |
+| 为什么按 uid 分列 | 两池是**账号属性**且不可通约（每日池当天作废、永久池不清零）；跨账号求和会掩盖「某个账号的池已耗尽」。聚合留给展示层 |
+| 写入时机 | ① 排程 `loomy_points_sample`（默认开，09:00 / 21:00 两帧）；② 手动「刷新积分」成功后补一帧 |
+| 同日多次 | **覆盖写**（余额是状态量不是流量）；窗口 90 天，与 Trae 同名文件同口径 |
+| 读取 | `GET /api/loomy/credits/daily` / `loomy_credits_daily` —— **只读本地文件，不联网**（打开用量页不替用户发上游请求） |
+
+---
+
 ## 3. 建模决策
 
 | 决策 | 内容 | 理由 |
@@ -106,10 +121,10 @@ chat 路径只在 content-type 是 `application/json` 时 peek 响应体判业�
 | 层 | 文件 |
 |:--|:--|
 | core 区域与常量 | `crates/buddy-switch-core/src/modules/loomy/region.rs` |
-| core 协议 | `…/loomy/{chat,models,credits,checkin,oauth,signing,credential,api,account,paths}.rs` |
+| core 协议 | `…/loomy/{chat,models,credits,credits_daily,checkin,oauth,signing,credential,api,account,paths}.rs` |
 | gateway 中继 | `crates/buddy-switch-gateway/src/loomy/{mod,pool,routes}.rs` |
 | 统一网关分派 | `unified/routes.rs` 的 `RelayTarget::Loomy` 分支 + `collect_namespace_models` |
-| server 命令面 | `crates/buddy-switch-server/src/api.rs` 的 `/api/loomy/*` 段 + 15 处 `Product::Loomy` 分支 |
+| server 命令面 | `crates/buddy-switch-server/src/api.rs` 的 `/api/loomy/*` 段 + `Product::Loomy` 分支 |
 | 桌面命令 | `src-tauri/src/commands.rs` 的 `loomy_*` 段 + `generate_handler!` |
 | 前端 | `src/pages/Loomy*.tsx` × 5、`api.ts` 的 loomy 段、`use-scope-status.ts` 的 loomy 快照 |
 
