@@ -1881,6 +1881,8 @@ export type ModelProbeState =
   | "auth_dead"
   | "model_unavailable"
   | "upstream_error"
+  /** 上游排队（Qoder `10605`/`isQueued`）：等一下就好，**不是限流、不是凭据失效**。 */
+  | "upstream_queued"
   | "transport_error"
   | "skipped";
 
@@ -1983,6 +1985,15 @@ export interface GatewayLogEntry {
   endpoint: string;
   method: string;
   region: Region;
+  /**
+   * ★ issue #76：调用方的 API Key id。
+   *
+   * - `null` = 无 Key 的调用（本地直连 / 管理面探测）；
+   * - **`undefined` = 升级前写入的老条目**（那时还没有这个键）——
+   *   两者语义不同：前者「确实没有 Key」，后者「不知道」。统计时不要把 `undefined`
+   *   合并进「无 Key」，否则历史数据会凭空多出一批「匿名调用」。
+   */
+  keyId?: string | null;
   account: string | null;
   model: string | null;
   status: number;

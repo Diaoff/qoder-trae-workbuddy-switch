@@ -170,6 +170,7 @@ pub async fn messages_for_region(
             state.log.record(
                 RequestMeta {
                     endpoint: "/v1/messages",
+                    key_id: key.as_ref().map(|record| record.id.clone()),
                     method: "POST",
                     region,
                     account: failure.account,
@@ -203,6 +204,7 @@ pub async fn messages_for_region(
                     &state,
                     RequestMeta {
                         endpoint: "/v1/messages",
+                        key_id: key.as_ref().map(|record| record.id.clone()),
                         method: "POST",
                         region,
                         account,
@@ -243,6 +245,7 @@ pub async fn messages_for_region(
                     state.log.record(
                         RequestMeta {
                             endpoint: "/v1/messages",
+                            key_id: key.as_ref().map(|record| record.id.clone()),
                             method: "POST",
                             region,
                             account,
@@ -286,6 +289,7 @@ pub async fn messages_for_region(
                 state.log.record(
                     RequestMeta {
                         endpoint: "/v1/messages",
+                        key_id: key.as_ref().map(|record| record.id.clone()),
                         method: "POST",
                         region,
                         account,
@@ -346,7 +350,7 @@ async fn run(
             conversation_id,
             trace_id,
             key_policy: key.map(|record| record.policy()),
-            key_id: key.map(|record| record.id.clone()),
+            key_id: key.as_ref().map(|record| record.id.clone()),
         },
     )
     .await

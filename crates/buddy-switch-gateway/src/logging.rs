@@ -44,6 +44,11 @@ pub struct RequestMeta {
     pub account: String,
     /// 命中账号的 **uid**（写入时的**精确身份**，供 `token_daily` 精确 join）。
     pub account_uid: String,
+    /// ★ 调用方的 API Key id（issue #76；`None` = 无 Key 的调用 / 老日志条目）。
+    ///
+    /// 这是「出了问题能定位是谁用掉的」的**唯一凭据** —— issue #76 的原始动机就是
+    /// 「key 全是万能的，不知道谁用的」。同时是「按密钥看用量」的 join 键。
+    pub key_id: Option<String>,
     pub model: String,
     pub status: u16,
     /// **上游首字节延迟**（请求进入 → 上游响应头到达）。
@@ -87,6 +92,11 @@ impl RequestMeta {
             "completionTokens": self.completion_tokens,
             "credit": self.credit,
             "stream": self.stream,
+            // ★ issue #76：调用方的 Key id。**无 Key 时写 `null`**（不是省略这个键）——
+            //   键集合固定，前端只需判 `keyId == null`；省略会让「有没有 key 维度」
+            //   变成「键存不存在」+「值是不是空」两套判断。
+            //   老日志条目（升级前写入）确实没有这个键 ⇒ 前端两种都要容忍。
+            "keyId": self.key_id,
         })
     }
 }
@@ -247,6 +257,7 @@ mod tests {
             region: Region::Cn,
             account: "重名展示名".to_string(),
             account_uid: "uid-b".to_string(),
+            key_id: None,
             model: "hy4".to_string(),
             status: 200,
             latency_ms: 12,
@@ -294,6 +305,8 @@ mod tests {
                 "completionTokens",
                 "credit",
                 "stream",
+                // ★ issue #76：调用方 Key id（`null` = 无 Key / 老条目）。
+                "keyId",
             ]),
             "键集合变了就要同步前端 GatewayLogEntry 与 token_daily 的读法"
         );
@@ -311,6 +324,7 @@ mod tests {
             region: Region::Cn,
             account: "一号".to_string(),
             account_uid: "uid-1".to_string(),
+            key_id: None,
             model: "hy4".to_string(),
             status: 200,
             latency_ms: 37,

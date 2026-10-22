@@ -194,6 +194,7 @@ pub async fn chat_for_region(
             state.log.record(
                 RequestMeta {
                     endpoint: "/v1/chat/completions",
+                    key_id: key.as_ref().map(|record| record.id.clone()),
                     method: "POST",
                     region,
                     account: failure.account,
@@ -229,6 +230,7 @@ pub async fn chat_for_region(
                     &state,
                     RequestMeta {
                         endpoint: "/v1/chat/completions",
+                        key_id: key.as_ref().map(|record| record.id.clone()),
                         method: "POST",
                         region,
                         account,
@@ -296,6 +298,7 @@ pub async fn chat_for_region(
                 state.log.record(
                     RequestMeta {
                         endpoint: "/v1/chat/completions",
+                        key_id: key.as_ref().map(|record| record.id.clone()),
                         method: "POST",
                         region,
                         account,
@@ -349,6 +352,10 @@ async fn envelope_error_response(
     state.log.record(
         RequestMeta {
             endpoint: "/v1/chat/completions",
+            // 这条路径（200 信封错误）拿不到 Key（`envelope_error_response` 不是
+            // 认证之后的函数）⇒ 记 `None`。不影响「按密钥看用量」：这类请求本来
+            // 就没进过成功记账路径。
+            key_id: None,
             method: "POST",
             region,
             account: account.to_string(),
@@ -414,7 +421,7 @@ async fn run(
             conversation_id,
             trace_id,
             key_policy: key.map(|record| record.policy()),
-            key_id: key.map(|record| record.id.clone()),
+            key_id: key.as_ref().map(|record| record.id.clone()),
         },
     )
     .await
