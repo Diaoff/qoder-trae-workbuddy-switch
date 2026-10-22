@@ -1,67 +1,81 @@
 {
-  "version": "2026.10.212000",
-  "publishedAt": "2026-10-21T20:00:00+08:00",
+  "version": "2026.10.221931",
+  "publishedAt": "2026-10-22T19:31:00+08:00",
   "sections": [
     {
       "title": "其他维护",
       "items": [
-        "release：版本号 2026.10.211527 → 2026.10.212000",
-        "release：版本戳 2026.10.211527 与发布说明",
-        "demo：Qoder 用量演示数据补「会话排行」（3 条，credits 与总量同源）",
-        "scripts：契约门禁先剥行注释再剥块注释（否则一条行注释能吞掉半个文件）",
-        "gateway：串行化碰进程级静态的探测用例，修掉 1/8 概率的 flake",
-        "rust：cargo fmt（issue #62 与缓存模块收格式）"
+        "release：版本号 2026.10.212000 → 2026.10.221931",
+        "gate：加一条断言 —— 三平台账号池归一化都必须保留 `excluded`",
+        "deps：vite 7.3.6 → 7.3.7，修 launch-editor 三条 advisory"
+      ]
+    },
+    {
+      "title": "重构与内部调整",
+      "items": [
+        "trae：删掉 check_key_quota 死代码（KeyActor 接管后无人调用）",
+        "gateway：抽出 KeyActor，统一网关配额**双口径全生效**（issue #76）"
       ]
     },
     {
       "title": "文档",
       "items": [
-        "readme：补用量页 UI 重设计文档入口（issue #63）",
-        "usage：用量页网关明细方案与设计稿（issue #63，待拍板）",
-        "prototype：模型池补「思考档位 / 积分倍率」两列（issue #65）",
-        "prototype：Qoder 用量页如实标注单位（credits）与「积分=余额快照」",
-        "prototype：两形态同步「限额护栏」卡（与 App 的 QoderQuotaGuard 同构）",
-        "qoder：写明三条已知边界（团队共享池 / 探测绕过护栏 / 402 停放跨重启）",
-        "qoder：同步 Pro 包/闸门已落地，并把限额护栏与 pacing 的留空理由写明",
-        "qoder：记录与参考实现的功能对等清单与三条刻意不做（含 Pro 包 404 的真机证据）",
-        "明确非商业与个人项目定位，补充用途限制条款",
-        "qoder：记录 DSML 真机形态与「未声明 tools 不透传」纪律（issue #66）"
+        "design：§7.2 三条已知限制的处理结果与证据",
+        "readme：issue #76 状态从「待拍板」改为「已实现」",
+        "design：§7.1 补 keyScope（跨台账 Key 的区分）",
+        "design：§7.1 收口 —— 统一网关双口径经 KeyActor 成立；按密钥视图三线齐",
+        "design：§7.1 收口 —— 四产品线中继全接，统一网关的两条能力边界写明",
+        "design：§7.1 Qoder 中继标完成 + U4 已落地（仅 WB，判据是日志有无 keyId）",
+        "design：§7.1 步 2（日志 keyId）标完成，U4 前端维度单列",
+        "design：规范 §7.1 更新四产品线矩阵（配置面全通 / 中继面 WB+Trae 生效）",
+        "design：规范 §7.1 补 Trae 实现状态与 token 记账的遗留边界",
+        "design：补上 v3 规范改动（上个提交漏掉了）",
+        "design：补「这个 UI 放在哪儿」—— 网关 › 密钥，不新增导航项",
+        "design：密钥权限方案 v2 —— 推翻 v1 的两处模型，补三个真实缺口",
+        "design：密钥访问权限管理设计方案（issue #76）"
       ]
     },
     {
       "title": "新功能",
       "items": [
-        "aggregate：聚合账号面板 —— 6 个作用域铺一屏，卡片原地操作（issue #50）",
-        "usage：用量页账本化 —— 客户端/网关两本账 + 对账 + 积分双口径（issue #63）",
-        "gateway：模型池显示每个模型支持的思考档位与积分倍率（issue #65）",
-        "qoder：用量补齐「模型 / 会话 / 积分」三视图（原先前只有趋势）",
-        "qoder：补齐 G3 当日 credit 上限与可选的最小选号间隔（pacing）",
-        "qoder：账号级限额护栏（余额地板 / 当日 token / 单模型 token）+ 402 余额停放",
-        "qoder：单号在途闸门（默认关，env 可开），限并发但不给个人账号降速",
-        "qoder：历史工具结果削减（单侧 2000 字符，可关），降 token 也降回声概率",
-        "qoder：一次性 Pro 升级包（+1800）资格查询与领取，按参考实现补齐",
-        "qoder：/health 暴露风控遥测（排队 / 限流 / 客户端错）",
-        "qoder：模型页显示官方峰谷价 / 免费标记 / 思考档位（参考实现对等）",
-        "qoder：Responses 支持 freeform（custom）工具，Codex 的 apply_patch 不再被静默丢弃"
+        "usage：聚合逻辑可测 + 统一网关密钥表显示用量（issue #76 限制②③）",
+        "gateway：keyId 带归属台账（keyScope）—— 网关的 Key 不再冒充本地 Key",
+        "usage：Qoder 用量页接入「按密钥」视图（issue #76 / U4 收尾）",
+        "gateway：统一网关中继 —— 请求数配额生效（issue #76 收尾）",
+        "usage：Trae / Qoder 日志带 keyId + 「按密钥」三线通用（issue #76 / U4）",
+        "gateway：Qoder 中继接线 —— 配额 429 + 白名单 + 两种计量（issue #76）",
+        "qoder：多模态图片 + 探测「上游排队」档（前序会话遗留改动的收口）",
+        "usage：用量页「按密钥」维度（issue #76 / 规范 U4）",
+        "gateway：请求日志带 keyId —— 「谁用掉的」终于能定位（issue #76 步 2）",
+        "gateway：统一网关密钥表接入用量/权限两列 + 抽屉（issue #76）",
+        "gateway：统一网关密钥策略 —— 台账 + 命令（issue #76）",
+        "gateway：Qoder 密钥权限 —— 台账 + 命令 + 前端（issue #76）",
+        "gateway：Trae token 计量接上（issue #76 收尾遗留）",
+        "gateway：Trae 中继接线 —— 配额 429 + 账号白名单 + 按密钥记账（issue #76）",
+        "gateway：Trae 密钥权限可用 —— 命令 + 前端接入（issue #76）",
+        "gateway：Trae 密钥台账扩策略字段（issue #76 第一步：台账层）",
+        "gateway：token 计量接上 + 修掉两口径互相污染的 bug（issue #76）",
+        "gateway：密钥用量可见 —— 前端接 key_usage（issue #76 补第 1 条边界）",
+        "gateway：密钥权限接入 WB 密钥表 —— 共用构件 + 行内展开 + 抽屉（issue #76）",
+        "gateway：密钥策略落地后端 —— 每把 Key 的配额与账号白名单（issue #76）",
+        "ui：侧栏支持折叠（只显示图标）—— 内容区让出 176px",
+        "prototype：把密钥权限管理合并进主原型的「网关 › 密钥」分区"
       ]
     },
     {
       "title": "问题修复",
       "items": [
-        "qoder：结构化工具历史纳入 DeepSeek 族 + 出站清洗 + 自动降级（issue #72）",
-        "qoder：账号卡菜单补「签到」，并让表格视图共用同一个菜单",
-        "desktop：修 qoder_gateway_quota 的插入位置（models 命令一度丢属性 / 重复定义）",
-        "qoder：信封层排队（403 + 10605）报 429「排队中」，不再伪装成上游错误",
-        "qoder：截断的工具调用回声判失败（不再伪装成空回答），并补齐三种遗漏形态",
-        "qoder：上游排队（10605 / isQueued）不再被当成凭据失效把账号打死",
-        "qoder：DSML 只在本轮声明了工具时合成，且紧凑标签/空收尾帧都能还原（issue #66 真机复验）",
-        "qoder：DSML 守卫补收尾口径与参数解析边界（issue #66 自查）",
-        "qoder：签到抽屉不再静默消失，读不到就给出原因（issue #66 前端半边）",
-        "qoder：回声治理补齐四种形态 + DSML 回退，签到不再被单次 404 判成不可用（issue #66）",
-        "usage：积分日柱 tooltip 显示具体数值（issue #70）",
-        "qoder：/v1/responses 做协议翻译，不再 501（issue #64）",
-        "gateway：降级门按成因判定，截断统一补标记（issue #67 收尾）",
-        "gateway：脱敏层改写 DeepSeek Harness 身份句，错误消息截断补标记"
+        "gateway：配额判定原子化 —— 并发下恰好放行 limit 个（issue #76 限制①）",
+        "gateway：补齐两个配额绕过口 —— 统一网关的 Trae 分区 + 业务转发",
+        "build：补齐 KeyUsage 结构变更的字段访问（同上一提交的延续）",
+        "build：补上 used_for 三参数改动的两处调用点（上个提交漏了，HEAD 编不过）",
+        "design：密钥权限 v3 —— 一览压成一行，明细进行内展开区",
+        "prototype：恢复账号池分区 —— 同一根因（只写进产物）的第二个受害者",
+        "accounts：修「更多操作」每点一项都弹出详情抽屉",
+        "prototype：把密钥权限搬回源文件，并恢复被生成脚本清掉的统一网关",
+        "trae：修好 Trae JWT 自动续期 —— refresh_token 绑「签发它的那把 ClientID」",
+        "gateway：补齐 Trae / Qoder 侧的账号池「已排除」—— 归一化丢字段 + 状态被吞",
+        "gateway：修账号池排除后无法取消 —— 前端丢 excluded 字段 + 状态接口不同步排除表"
       ]
     }
   ],
