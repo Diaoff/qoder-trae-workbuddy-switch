@@ -269,8 +269,15 @@ export function ViewParamBar({
       )}
       {canSwitchLedger && onLedgerChange ? (
         <>
+          {/* 原型 `.vsep`（`demo.css:1363`：`width:1px; height:20px; background:var(--border)`）：
+              「时间范围」与「账本」中间那道竖线。两组控件语义不同 —— 前者选**看多长时间**，
+              后者选**看哪本账**；不隔开时它们在同一个胶囊条里连成一片，读起来像一个六档控件。 */}
+          <span className="h-5 w-px shrink-0 bg-border" aria-hidden="true" />
           <span className="text-[11px] text-muted-foreground">{t("wbStats.usage.ledger")}</span>
+          {/* `tone="book"` = 原型 `.seg.book`：选中态青绿 18% 底 + `primary` 文字。
+              账本切换改变整页数字的数据源，比「换一档时间范围」重 —— 必须一眼看得出。 */}
           <Seg
+            tone="book"
             value={ledger}
             onChange={onLedgerChange}
             ariaLabel={t("wbStats.usage.ledger.aria")}

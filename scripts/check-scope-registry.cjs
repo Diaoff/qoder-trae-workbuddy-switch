@@ -612,6 +612,18 @@ check("★ P3 用量页视图参数条**只有一条**：由 `UsagePage` 渲染�
   if (!/<RegionBar value=\{combineAll\}/.test(bar)) {
     throw new Error("视图参数条没有把合并态绑到 `combineAll`（`RegionBar`）");
   }
+  /* ★ 账本那一组是原型里**唯一**带色调的分段控件（`.seg.book`，`demo.css:1362`）：
+     选中 = `primary 18%` 底 + `primary` 文字；前面还有一道 `.vsep`（`:1363`）。
+     2026-10-22 实测漏了两处（截图报障）：账本被当成普通 `.seg` 渲染
+     ⇒ 深色下 `card` 与 `muted` 同值，选中项只剩字重差别；且没有竖线，
+     「时间范围」与「账本」在一个胶囊条里连成一片，读起来像一个六档控件。
+     提示词只写在注释里守不住（重构 `Seg` 时没人会回头翻原型）⇒ 落成断言。 */
+  if (!/<span className="h-5 w-px shrink-0 bg-border"/.test(bar)) {
+    throw new Error("参数条的「账本」前缺 `.vsep` 竖分隔线 —— 会与「时间范围」连成一个控件");
+  }
+  if (!/tone="book"/.test(bar)) {
+    throw new Error("账本 `Seg` 没有 `tone=\"book\"` —— 原型 `.seg.book` 的青色选中态丢了");
+  }
   /* ★ 时间窗口的两枚新出口必须都在参数条上：**今天**与**自定义时间**。
      少了任何一枚，UI 就退回「只有 7/14/30」——而原型已经不是那样了。 */
   for (const [label, pattern] of [
@@ -656,6 +668,11 @@ check("★ P3 用量页视图参数条**只有一条**：由 `UsagePage` 渲染�
   const seg = stripComments(fs.readFileSync(path.join(ROOT, "src/components/ui/seg.tsx"), "utf8"));
   if (!/isPopup/.test(seg) || !/aria-haspopup=\{isPopup \? "dialog" : undefined\}/.test(seg)) {
     throw new Error("`Seg` 没有 popup 档能力（aria-haspopup / aria-expanded 无处落地）");
+  }
+  /* 账本色调的实现侧（原型 `.seg.book`，`demo.css:1362`）：
+     `primary 18%` 底 + `primary` 文字，字重 550 与 `shadow-sm` 沿用默认选中态。 */
+  if (!/tone === "book"/.test(seg) || !/bg-primary\/18/.test(seg) || !/text-primary\b/.test(seg)) {
+    throw new Error("`Seg` 没有 `book` 色调（原型 `.seg.book`：`primary 18%` 底 + `primary` 文字）");
   }
   /* ★ 窗口的类型与纯函数只有一处定义：`lib/usage-window.ts`。
      `usage-charts.ts` 是消费方 —— 它自己再定义一次 `UsageWindow` 就是两份真值。 */
