@@ -257,6 +257,8 @@ pub struct QoderGatewayState {
     pub log: Arc<RequestLog>,
     /// 多 API Key 存储。
     pub key_store: Arc<apikey::QoderApiKeyStore>,
+    /// ★ 按密钥的用量账本（issue #76）—— 与 WB / Trae 侧**同一个实现**。
+    pub key_usage: Arc<crate::key_usage::KeyUsageStore>,
     /// 模型清单缓存（区域级）。
     catalogs: Arc<RwLock<HashMap<QoderRegion, CachedCatalog>>>,
     pub started_at: i64,
@@ -284,6 +286,9 @@ impl QoderGatewayState {
             sticky: Arc::new(Mutex::new(crate::StickyTable::new(config.sticky_ttl_ms))),
             log,
             key_store: Arc::new(apikey::QoderApiKeyStore::new(paths::gateway_keys_file())),
+            key_usage: Arc::new(crate::key_usage::KeyUsageStore::new(
+                paths::gateway_key_usage_file(),
+            )),
             catalogs: Arc::new(RwLock::new(HashMap::new())),
             started_at: core_config::now_ms(),
             total_requests: Arc::new(AtomicU64::new(0)),

@@ -4859,6 +4859,67 @@ pub fn revoke_qoder_api_key(id: String) -> Result<Value, String> {
     Ok(json!({ "ok": true }))
 }
 
+/// POST /api/qoder/gateway/keys/policy —— 更新某把 Qoder Key 的策略（issue #76）。
+#[tauri::command]
+pub fn set_qoder_key_policy(
+    id: String,
+    policy: buddy_switch_gateway::apikey::KeyPolicy,
+) -> Result<Value, String> {
+    let id = id.trim();
+    if id.is_empty() {
+        return Err("缺少 id".to_string());
+    }
+    let state = qoder_gateway::shared_state();
+    state.key_store.update_policy(id, policy)?;
+    Ok(json!({ "ok": true }))
+}
+
+/// GET /api/qoder/gateway/keys/usage —— 读某把 Qoder Key 的用量快照。
+///
+/// ⚠️ Qoder 的 `key_store.list()` 返回**掩码视图**（`Vec<Value>`）⇒ 策略从 JSON 键读。
+#[tauri::command]
+pub fn qoder_key_usage(id: String) -> Result<Value, String> {
+    use buddy_switch_gateway::apikey::QuotaVerdict;
+    let id = id.trim();
+    if id.is_empty() {
+        return Err("缺少 id".to_string());
+    }
+    let state = qoder_gateway::shared_state();
+    let Some(row) = state
+        .key_store
+        .list()
+        .into_iter()
+        .find(|row| row["id"] == json!(id))
+    else {
+        return Err("API Key 不存在".to_string());
+    };
+    let policy: buddy_switch_gateway::apikey::KeyPolicy =
+        serde_json::from_value(row).map_err(|error| format!("策略字段异常: {error}"))?;
+    let now = buddy_switch_core::modules::config::now_ms();
+    let used = state
+        .key_usage
+        .used_for(id, policy.quota_unit, policy.quota_period, now);
+    let total = state
+        .key_usage
+        .snapshot(id)
+        .map(|entry| entry.counters(policy.quota_unit).total)
+        .unwrap_or(0);
+    let exceeded = matches!(
+        buddy_switch_gateway::apikey::quota_verdict_for_policy(&policy, used),
+        QuotaVerdict::Exceeded { .. }
+    );
+    Ok(json!({
+        "ok": true,
+        "keyId": id,
+        "unit": policy.quota_unit,
+        "period": policy.quota_period,
+        "periodKey": policy.quota_period.period_key(now),
+        "used": used,
+        "total": total,
+        "exceeded": exceeded,
+    }))
+}
+
 /// POST /api/qoder/gateway/keys/restore —— 撤销吊销（Key 重新可用，`{id}`）。
 #[tauri::command]
 pub fn restore_qoder_api_key(id: String) -> Result<Value, String> {

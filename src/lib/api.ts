@@ -581,6 +581,9 @@ const ROUTES: Record<string, Route> = {
   list_qoder_api_keys: { method: "GET", path: "/api/qoder/gateway/keys" },
   create_qoder_api_key: { method: "POST", path: "/api/qoder/gateway/keys" },
   revoke_qoder_api_key: { method: "POST", path: "/api/qoder/gateway/keys/revoke" },
+  // ★ issue #76：Qoder 密钥策略（配额 + 账号范围）与按密钥用量。
+  set_qoder_key_policy: { method: "POST", path: "/api/qoder/gateway/keys/policy" },
+  qoder_key_usage: { method: "GET", path: "/api/qoder/gateway/keys/usage" },
   // 撤销吊销（恢复）：与另两条产品线同形同语义。
   restore_qoder_api_key: { method: "POST", path: "/api/qoder/gateway/keys/restore" },
   delete_qoder_api_key: { method: "POST", path: "/api/qoder/gateway/keys/delete" },
@@ -3646,6 +3649,16 @@ export function createQoderApiKey(scope: Scope, name: string): Promise<QoderCrea
 /** 吊销 Key（置 `revokedAt`；可逆）。 */
 export function revokeQoderApiKey(id: string): Promise<{ ok: boolean }> {
   return call<{ ok: boolean }>("revoke_qoder_api_key", { id });
+}
+
+/** ★ issue #76：更新某把 Qoder Key 的策略（完整策略，非补丁）。 */
+export function setQoderKeyPolicy(id: string, policy: KeyPolicy): Promise<{ ok: boolean }> {
+  return call("set_qoder_key_policy", { id, policy });
+}
+
+/** ★ issue #76：读某把 Qoder Key 的用量快照。 */
+export function qoderKeyUsage(id: string): Promise<KeyUsageSnapshot> {
+  return call("qoder_key_usage", { id });
 }
 
 /** 撤销吊销（Key 重新可用；明文未变，客户端无需改配置）。 */

@@ -623,6 +623,9 @@ pub fn run() {
             commands::list_qoder_api_keys,
             commands::create_qoder_api_key,
             commands::revoke_qoder_api_key,
+            // ★ issue #76：Qoder 密钥策略与按密钥用量（与 WB / Trae 侧同形）。
+            commands::set_qoder_key_policy,
+            commands::qoder_key_usage,
             commands::restore_qoder_api_key,
             commands::delete_qoder_api_key,
             commands::get_qoder_gateway_logs,

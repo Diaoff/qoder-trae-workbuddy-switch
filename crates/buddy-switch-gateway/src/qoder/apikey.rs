@@ -30,6 +30,10 @@ use sha2::{Digest, Sha256};
 
 use buddy_switch_core::modules::qoder::region::QoderRegion;
 
+/* ★ issue #76：策略类型**直接复用** WorkBuddy 侧那一套（`crate::apikey`）。
+   三条产品线的 Key 策略语义完全相同，各定义一份必然漂移。 */
+use crate::apikey::{KeyPolicy, QuotaMode, QuotaPeriod, QuotaUnit, ScopeMode};
+
 /// 新 Key 的前缀字面量（创建时 `sk-qoder-<secret 前 4 位>`）。
 ///
 /// 与 `sk-wb-` / `sk-trae-` / `sk-uni-` 同族；改这里只影响**新建**的 Key。
@@ -80,6 +84,22 @@ pub struct QoderApiKeyRecord {
     pub revoked_at: Option<i64>,
     #[serde(default)]
     pub last_used_at: Option<i64>,
+    /* ── 策略（issue #76）—— 与 WB / Trae 侧同形同义，全 `#[serde(default)]`
+       ⇒ 老台账零迁移（读出来 = 改造前行为：不限额 + 全部账号）。 ── */
+    #[serde(default)]
+    pub quota_mode: QuotaMode,
+    #[serde(default)]
+    pub quota_limit: u64,
+    #[serde(default)]
+    pub quota_unit: QuotaUnit,
+    #[serde(default)]
+    pub quota_period: QuotaPeriod,
+    #[serde(default)]
+    pub scope_mode: ScopeMode,
+    #[serde(default)]
+    pub scope_accounts: Vec<String>,
+    #[serde(default)]
+    pub scope_groups: Vec<String>,
 }
 
 impl QoderApiKeyRecord {
@@ -95,10 +115,31 @@ impl QoderApiKeyRecord {
             "revokedAt": self.revoked_at,
             "revoked": self.revoked_at.is_some(),
             "lastUsedAt": self.last_used_at,
+            /* 策略七件套（issue #76）—— 与 WB / Trae 侧同形，前端共用一套构件。 */
+            "quotaMode": self.quota_mode,
+            "quotaLimit": self.quota_limit,
+            "quotaUnit": self.quota_unit,
+            "quotaPeriod": self.quota_period,
+            "scopeMode": self.scope_mode,
+            "scopeAccounts": self.scope_accounts,
+            "scopeGroups": self.scope_groups,
         })
     }
 
     /// 是否已吊销。
+    /// 取出策略部分（中继层只认策略，不认 hash / 明文）。
+    pub fn policy(&self) -> KeyPolicy {
+        KeyPolicy {
+            quota_mode: self.quota_mode,
+            quota_limit: self.quota_limit,
+            quota_unit: self.quota_unit,
+            quota_period: self.quota_period,
+            scope_mode: self.scope_mode,
+            scope_accounts: self.scope_accounts.clone(),
+            scope_groups: self.scope_groups.clone(),
+        }
+    }
+
     pub fn is_revoked(&self) -> bool {
         self.revoked_at.is_some()
     }
@@ -184,6 +225,14 @@ impl QoderApiKeyStore {
             created_at: now_ms(),
             revoked_at: None,
             last_used_at: None,
+            // 策略默认值：不限额 + 全部账号 = 改造前行为。
+            quota_mode: QuotaMode::Unlimited,
+            quota_limit: 0,
+            quota_unit: QuotaUnit::Token,
+            quota_period: QuotaPeriod::None,
+            scope_mode: ScopeMode::All,
+            scope_accounts: Vec::new(),
+            scope_groups: Vec::new(),
         };
         let mut records = self.load();
         records.push(record.clone());
@@ -216,6 +265,32 @@ impl QoderApiKeyStore {
     }
 
     /// 吊销（置 `revoked_at`；已吊销 ⇒ 可读错误）。
+    /// 更新策略（配额 + 账号范围）。**不动** id / hash / 吊销态 / region。
+    ///
+    /// 与 WB / Trae 侧**同一套规则**（复用 `KeyPolicy::normalized`）。
+    pub fn update_policy(&self, id: &str, policy: KeyPolicy) -> Result<(), String> {
+        let policy = policy.normalized()?;
+        let mut records = self.load();
+        let mut found = false;
+        for record in records.iter_mut() {
+            if record.id == id {
+                record.quota_mode = policy.quota_mode;
+                record.quota_limit = policy.quota_limit;
+                record.quota_unit = policy.quota_unit;
+                record.quota_period = policy.quota_period;
+                record.scope_mode = policy.scope_mode;
+                record.scope_accounts = policy.scope_accounts;
+                record.scope_groups = policy.scope_groups;
+                found = true;
+                break;
+            }
+        }
+        if !found {
+            return Err("API Key 不存在".to_string());
+        }
+        self.save(&records)
+    }
+
     pub fn revoke(&self, id: &str) -> Result<(), String> {
         let mut records = self.load();
         let record = records
@@ -312,6 +387,97 @@ mod tests {
     }
 
     #[test]
+    fn legacy_ledger_without_policy_fields_reads_as_before() {
+        // Qoder 台账落盘是 camelCase（struct 上有 `rename_all`，与 WB 相反）。
+        let legacy = serde_json::json!([{
+            "id": "old", "name": "old", "region": "cn", "prefix": "sk-qoder-a1b2",
+            "suffix": "9f3c", "hash": "h", "createdAt": 1, "revokedAt": null,
+            "lastUsedAt": null
+        }]);
+        let records: Vec<QoderApiKeyRecord> = serde_json::from_value(legacy).unwrap();
+        let record = &records[0];
+        assert_eq!(record.quota_mode, QuotaMode::Unlimited);
+        assert_eq!(record.scope_mode, ScopeMode::All);
+        assert_eq!(
+            crate::apikey::quota_verdict_for_policy(&record.policy(), u64::MAX),
+            crate::apikey::QuotaVerdict::Ok,
+            "老 Key 不得被限额"
+        );
+    }
+
+    #[test]
+    fn update_policy_writes_and_normalizes_like_the_other_lines() {
+        let (store, path) = temp_store();
+        let (record, _) = store.create("p".into(), QoderRegion::Cn).unwrap();
+
+        // 空白名单 ⇒ 拒绝（三条产品线同一规则）。
+        assert!(store
+            .update_policy(
+                &record.id,
+                KeyPolicy {
+                    quota_mode: QuotaMode::Limited,
+                    quota_limit: 10,
+                    quota_unit: QuotaUnit::Request,
+                    quota_period: QuotaPeriod::Daily,
+                    scope_mode: ScopeMode::Selected,
+                    scope_accounts: vec![],
+                    scope_groups: vec![],
+                }
+            )
+            .is_err());
+
+        store
+            .update_policy(
+                &record.id,
+                KeyPolicy {
+                    quota_mode: QuotaMode::Limited,
+                    quota_limit: 300,
+                    quota_unit: QuotaUnit::Token,
+                    quota_period: QuotaPeriod::Weekly,
+                    scope_mode: ScopeMode::Selected,
+                    scope_accounts: vec!["u1".into()],
+                    scope_groups: vec!["g1".into()],
+                },
+            )
+            .unwrap();
+        // ★ Qoder 的 `list()` 返回的是**掩码视图**（`Vec<Value>`，camelCase），
+        //   不是记录本体 ⇒ 断言按 JSON 键读（与前端看到的形态一致，反而是更好的验收）。
+        let after = store
+            .list()
+            .into_iter()
+            .find(|row| row["id"] == serde_json::json!(record.id))
+            .unwrap();
+        assert_eq!(after["quotaLimit"], serde_json::json!(300));
+        assert_eq!(after["quotaPeriod"], serde_json::json!("weekly"));
+        assert_eq!(after["scopeGroups"], serde_json::json!(["g1"]));
+        assert!(after.get("hash").is_none(), "掩码视图不得带 hash");
+
+        // 矛盾归一：不限额 ⇒ 清上限。
+        store
+            .update_policy(
+                &record.id,
+                KeyPolicy {
+                    quota_mode: QuotaMode::Unlimited,
+                    quota_limit: 999,
+                    quota_unit: QuotaUnit::Token,
+                    quota_period: QuotaPeriod::None,
+                    scope_mode: ScopeMode::All,
+                    scope_accounts: vec!["u1".into()],
+                    scope_groups: vec![],
+                },
+            )
+            .unwrap();
+        let normalized = store
+            .list()
+            .into_iter()
+            .find(|row| row["id"] == serde_json::json!(record.id))
+            .unwrap();
+        assert_eq!(normalized["quotaLimit"], serde_json::json!(0));
+        assert_eq!(normalized["scopeAccounts"], serde_json::json!([]));
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
     fn masked_never_contains_hash_or_secret() {
         let (store, path) = temp_store();
         let (_record, secret) = store.create("m".into(), QoderRegion::Global).unwrap();
@@ -369,6 +535,14 @@ mod tests {
             created_at: 0,
             revoked_at: None,
             last_used_at: None,
+            // 策略默认值（测试构造点也要给全 —— 缺字段是编译错，不是运行期）。
+            quota_mode: QuotaMode::Unlimited,
+            quota_limit: 0,
+            quota_unit: QuotaUnit::Token,
+            quota_period: QuotaPeriod::None,
+            scope_mode: ScopeMode::All,
+            scope_accounts: Vec::new(),
+            scope_groups: Vec::new(),
         };
         let text = serde_json::to_string_pretty(&vec![record]).unwrap();
         std::fs::write(&path, text).unwrap();

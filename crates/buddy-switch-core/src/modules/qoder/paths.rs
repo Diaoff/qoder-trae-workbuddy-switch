@@ -100,6 +100,13 @@ pub fn gateway_keys_file() -> PathBuf {
     qoder_dir().join("gateway_keys.json")
 }
 
+/// 按密钥的用量账本（issue #76）：`~/.buddy-switch/qoder/gateway_key_usage.json`。
+///
+/// 与 Key 台账**分文件**（同 WB / Trae 侧取舍）：台账低频写、用量每请求写。
+pub fn gateway_key_usage_file() -> PathBuf {
+    qoder_dir().join("gateway_key_usage.json")
+}
+
 /// 日志目录（**不分家**，文件名里带区域）。
 pub fn logs_dir() -> PathBuf {
     qoder_dir().join("logs")

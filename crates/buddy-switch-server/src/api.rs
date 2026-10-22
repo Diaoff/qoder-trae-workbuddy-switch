@@ -505,6 +505,12 @@ fn api_routes() -> Router {
             "/api/qoder/gateway/keys/revoke",
             post(api_qoder_revoke_api_key),
         )
+        // ★ issue #76：策略更新 + 按密钥用量（与 WB / Trae 侧同形）。
+        .route(
+            "/api/qoder/gateway/keys/policy",
+            post(api_qoder_set_key_policy),
+        )
+        .route("/api/qoder/gateway/keys/usage", get(api_qoder_key_usage))
         .route(
             "/api/qoder/gateway/keys/restore",
             post(api_qoder_restore_api_key),
@@ -7416,6 +7422,78 @@ async fn api_qoder_revoke_api_key(Json(body): Json<Value>) -> Response {
         Ok(()) => json_ok(json!({ "ok": true })),
         Err(error) => json_err(error, StatusCode::BAD_REQUEST),
     }
+}
+
+/// POST /api/qoder/gateway/keys/policy —— 更新某把 Qoder Key 的策略（issue #76）。
+async fn api_qoder_set_key_policy(Json(body): Json<Value>) -> Response {
+    use buddy_switch_gateway::apikey::KeyPolicy;
+    let id = body.get("id").and_then(Value::as_str).unwrap_or("").trim();
+    if id.is_empty() {
+        return json_err("缺少 id".to_string(), StatusCode::BAD_REQUEST);
+    }
+    let policy: KeyPolicy = match serde_json::from_value(
+        body.get("policy").cloned().unwrap_or(Value::Null),
+    ) {
+        Ok(policy) => policy,
+        Err(error) => {
+            return json_err(format!("策略字段不合法: {error}"), StatusCode::BAD_REQUEST)
+        }
+    };
+    let state = crate::qoder_gateway_host::shared_state();
+    match state.key_store.update_policy(id, policy) {
+        Ok(()) => json_ok(json!({ "ok": true })),
+        Err(error) => json_err(error, StatusCode::BAD_REQUEST),
+    }
+}
+
+/// GET /api/qoder/gateway/keys/usage?id=… —— 读某把 Qoder Key 的用量快照。
+///
+/// ⚠️ Qoder 的 `key_store.list()` 返回**掩码视图**（`Vec<Value>`）——按 `id` 取出后
+/// 从 JSON 键读策略（`quotaUnit` / `quotaPeriod`），不是记录本体。
+async fn api_qoder_key_usage(RawQuery(query): RawQuery) -> Response {
+    let id = query_value(query.as_deref(), "id").unwrap_or_default();
+    if id.is_empty() {
+        return json_err("缺少 id".to_string(), StatusCode::BAD_REQUEST);
+    }
+    let state = crate::qoder_gateway_host::shared_state();
+    let now = buddy_switch_core::modules::config::now_ms();
+    let Some(row) = state
+        .key_store
+        .list()
+        .into_iter()
+        .find(|row| row["id"] == serde_json::json!(id))
+    else {
+        return json_err("API Key 不存在".to_string(), StatusCode::BAD_REQUEST);
+    };
+    // 掩码视图是 camelCase ⇒ 按字符串解析枚举（与前端同形态）。
+    let policy: buddy_switch_gateway::apikey::KeyPolicy =
+        match serde_json::from_value(row.clone()) {
+            Ok(policy) => policy,
+            Err(error) => {
+                return json_err(format!("策略字段异常: {error}"), StatusCode::INTERNAL_SERVER_ERROR)
+            }
+        };
+    let usage = state.key_usage.snapshot(&id);
+    let used = state
+        .key_usage
+        .used_for(&id, policy.quota_unit, policy.quota_period, now);
+    let exceeded = matches!(
+        buddy_switch_gateway::apikey::quota_verdict_for_policy(&policy, used),
+        buddy_switch_gateway::apikey::QuotaVerdict::Exceeded { .. }
+    );
+    json_ok(json!({
+        "ok": true,
+        "keyId": id,
+        "unit": policy.quota_unit,
+        "period": policy.quota_period,
+        "periodKey": policy.quota_period.period_key(now),
+        "used": used,
+        "total": usage
+            .as_ref()
+            .map(|entry| entry.counters(policy.quota_unit).total)
+            .unwrap_or(0),
+        "exceeded": exceeded,
+    }))
 }
 
 /// POST /api/qoder/gateway/keys/restore —— 撤销吊销（Key 重新可用，`{id}`）。
