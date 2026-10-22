@@ -263,6 +263,14 @@ define_schedule_tasks! {
     // 动作，而保活是**凭据维护** —— 合在一起会让「只想保活、不想签到」的用户被迫打开
     // 自动签到（本仓反复消灭的假控件形态）。
     QoderKeepalive => "qoder_keepalive", qoder_keepalive_enabled, qoder_keepalive_times, qoder_keepalive_hours, qoder_keepalive_jitter_minutes;
+    // Loomy（第四条产品线）的**自动签到**。**与采样是两件事**：
+    //
+    // 签到是**写**动作（替用户触发每日额度重置 ⇒ 去上游领东西），与 `qoder_checkin` /
+    // `trae_checkin` 同判据 ⇒ **默认关**（opt-in）。用户没打开时，账号页的手动签到照常可用。
+    //
+    // 与 `loomy_points_sample` 分开而不是合在一起，理由与另三条产品线**逐字相同**：
+    // 「只想采样看趋势、不想替你签到」和「只想签到、不想多打上游」都是合理诉求。
+    LoomyCheckin => "loomy_checkin", loomy_checkin_enabled, loomy_checkin_times, loomy_checkin_hours, loomy_checkin_jitter_minutes;
     // Loomy（第四条产品线）的**积分逐日采样**（二期 9.3）。
     //
     // 与签到分开：采样是**只读 GET**（把两池积分快照记进 `credits_daily.cn.json`），
@@ -288,6 +296,8 @@ pub struct ScheduleConfig {
     pub qoder_checkin_times: Vec<TimeOfDay>,
     /// Qoder 令牌保活的时点（第三条产品线，双区账号库）。
     pub qoder_keepalive_times: Vec<TimeOfDay>,
+    /// Loomy 自动签到的时点（第四条产品线，单区）。
+    pub loomy_checkin_times: Vec<TimeOfDay>,
     /// Loomy 积分采样的时点（第四条产品线，单区）。
     pub loomy_points_sample_times: Vec<TimeOfDay>,
     /// 抖动幅度（分钟，`0` = 关闭）。见 [`next_fire_with_jitter`]：每次触发在时点前后
@@ -302,6 +312,7 @@ pub struct ScheduleConfig {
     pub trae_jwt_refresh_jitter_minutes: u32,
     pub qoder_checkin_jitter_minutes: u32,
     pub qoder_keepalive_jitter_minutes: u32,
+    pub loomy_checkin_jitter_minutes: u32,
     pub loomy_points_sample_jitter_minutes: u32,
     pub checkin_enabled: bool,
     pub travel_enabled: bool,
@@ -317,6 +328,8 @@ pub struct ScheduleConfig {
     pub qoder_checkin_enabled: bool,
     /// Qoder 令牌保活开关。**默认开启**（判据与 Trae JWT 续期同源：维持用户已给出的登录态）。
     pub qoder_keepalive_enabled: bool,
+    /// Loomy 自动签到开关。**默认关闭**（替用户去上游领东西，判据同另三条签到）。
+    pub loomy_checkin_enabled: bool,
     /// Loomy 积分采样开关。**默认开启**（只读采样，非写操作；见宏声明处说明）。
     pub loomy_points_sample_enabled: bool,
     pub activity_report_count: u32,
@@ -365,6 +378,7 @@ pub fn default_schedule() -> ScheduleConfig {
         trae_jwt_refresh_times: vec![at(9), at(21)],
         qoder_checkin_times: vec![at(9), at(21)],
         qoder_keepalive_times: vec![at(22)],
+        loomy_checkin_times: vec![at(9), at(21)],
         loomy_points_sample_times: vec![at(9), at(21)],
         // 抖动**默认全关**：它改变「几点触发」这一既有行为，不能替老用户默认打开。
         checkin_jitter_minutes: 0,
@@ -377,6 +391,7 @@ pub fn default_schedule() -> ScheduleConfig {
         trae_jwt_refresh_jitter_minutes: 0,
         qoder_checkin_jitter_minutes: 0,
         qoder_keepalive_jitter_minutes: 0,
+        loomy_checkin_jitter_minutes: 0,
         loomy_points_sample_jitter_minutes: 0,
         checkin_enabled: true,
         travel_enabled: true,
@@ -391,6 +406,8 @@ pub fn default_schedule() -> ScheduleConfig {
         //   · `qoder_keepalive` 默认**开**（维持用户导入/登录时自己交出来的 refresh_token）。
         qoder_checkin_enabled: false,
         qoder_keepalive_enabled: true,
+        // Loomy 自动签到默认**关**：与另三条产品线的 `*_checkin` 同判据（替用户领东西 ⇒ opt-in）。
+        loomy_checkin_enabled: false,
         // Loomy 采样默认开：只读 GET，非写操作（同保活判据，见宏声明处说明）。
         loomy_points_sample_enabled: true,
         // 领猫前置需 5 次对话；5 连发把 chat_5 刷满。显式缺省 = 5，但 0/负数归一为 1（旧行为）。
@@ -570,6 +587,7 @@ pub fn schedule_to_value(cfg: &ScheduleConfig) -> Value {
         "trae_jwt_refresh_times": cfg.trae_jwt_refresh_times,
         "qoder_checkin_times": cfg.qoder_checkin_times,
         "qoder_keepalive_times": cfg.qoder_keepalive_times,
+        "loomy_checkin_times": cfg.loomy_checkin_times,
         "loomy_points_sample_times": cfg.loomy_points_sample_times,
         "checkin_jitter_minutes": cfg.checkin_jitter_minutes,
         "travel_jitter_minutes": cfg.travel_jitter_minutes,
@@ -581,6 +599,7 @@ pub fn schedule_to_value(cfg: &ScheduleConfig) -> Value {
         "trae_jwt_refresh_jitter_minutes": cfg.trae_jwt_refresh_jitter_minutes,
         "qoder_checkin_jitter_minutes": cfg.qoder_checkin_jitter_minutes,
         "qoder_keepalive_jitter_minutes": cfg.qoder_keepalive_jitter_minutes,
+        "loomy_checkin_jitter_minutes": cfg.loomy_checkin_jitter_minutes,
         "loomy_points_sample_jitter_minutes": cfg.loomy_points_sample_jitter_minutes,
         "checkin_enabled": cfg.checkin_enabled,
         "travel_enabled": cfg.travel_enabled,
@@ -592,6 +611,7 @@ pub fn schedule_to_value(cfg: &ScheduleConfig) -> Value {
         "trae_jwt_refresh_enabled": cfg.trae_jwt_refresh_enabled,
         "qoder_checkin_enabled": cfg.qoder_checkin_enabled,
         "qoder_keepalive_enabled": cfg.qoder_keepalive_enabled,
+        "loomy_checkin_enabled": cfg.loomy_checkin_enabled,
         "loomy_points_sample_enabled": cfg.loomy_points_sample_enabled,
         "activity_report_count": cfg.activity_report_count,
     })
@@ -758,7 +778,12 @@ mod tests {
         //   · `*_checkin` 默认**关**（替用户去领东西，他没要求过，故 opt-in）；
         //   · `*_keepalive` / `trae_jwt_refresh` 默认**开**（维持用户自己交出来的登录态）。
         for task in ScheduleTask::all() {
-            let expected = !matches!(task, ScheduleTask::TraeCheckin | ScheduleTask::QoderCheckin);
+            let expected = !matches!(
+                task,
+                ScheduleTask::TraeCheckin
+                    | ScheduleTask::QoderCheckin
+                    | ScheduleTask::LoomyCheckin
+            );
             assert_eq!(
                 task.enabled(&cfg),
                 expected,
@@ -848,6 +873,7 @@ mod tests {
             "trae_jwt_refresh_enabled": false,
             "qoder_checkin_enabled": false,
             "qoder_keepalive_enabled": false,
+            "loomy_checkin_enabled": false,
             "loomy_points_sample_enabled": false,
         }))
         .unwrap();
@@ -874,6 +900,7 @@ mod tests {
             "trae_jwt_refresh_enabled": true,
             "qoder_checkin_enabled": true,
             "qoder_keepalive_enabled": true,
+            "loomy_checkin_enabled": true,
             "loomy_points_sample_enabled": true,
         }))
         .unwrap();
@@ -1239,6 +1266,7 @@ mod tests {
             trae_jwt_refresh_times: vec![t(8, 0)],
             qoder_checkin_times: vec![t(9, 0)],
             qoder_keepalive_times: vec![t(10, 0)],
+            loomy_checkin_times: vec![t(12, 0)],
             loomy_points_sample_times: vec![t(11, 0)],
             // 抖动也取互异值：若某类任务读到了别人的抖动字段，下面的断言会立刻发现。
             checkin_jitter_minutes: 1,
@@ -1251,6 +1279,7 @@ mod tests {
             trae_jwt_refresh_jitter_minutes: 8,
             qoder_checkin_jitter_minutes: 9,
             qoder_keepalive_jitter_minutes: 10,
+            loomy_checkin_jitter_minutes: 12,
             loomy_points_sample_jitter_minutes: 11,
             checkin_enabled: false,
             travel_enabled: false,
@@ -1262,6 +1291,7 @@ mod tests {
             trae_jwt_refresh_enabled: false,
             qoder_checkin_enabled: false,
             qoder_keepalive_enabled: false,
+            loomy_checkin_enabled: false,
             loomy_points_sample_enabled: false,
             activity_report_count: 5,
         };
@@ -1276,7 +1306,7 @@ mod tests {
             &str,
             u32,
             &str,
-        ); 11] = [
+        ); 12] = [
             (
                 ScheduleTask::Checkin,
                 "checkin",
@@ -1378,6 +1408,16 @@ mod tests {
                 "qoder_keepalive_jitter_minutes",
             ),
             (
+                ScheduleTask::LoomyCheckin,
+                "loomy_checkin",
+                off.loomy_checkin_times.as_slice(),
+                "loomy_checkin_times",
+                "loomy_checkin_enabled",
+                "loomy_checkin_hours",
+                12,
+                "loomy_checkin_jitter_minutes",
+            ),
+            (
                 ScheduleTask::LoomyPointsSample,
                 "loomy_points_sample",
                 off.loomy_points_sample_times.as_slice(),
@@ -1400,6 +1440,7 @@ mod tests {
             trae_jwt_refresh_enabled: true,
             qoder_checkin_enabled: true,
             qoder_keepalive_enabled: true,
+            loomy_checkin_enabled: true,
             loomy_points_sample_enabled: true,
             ..off.clone()
         };
@@ -1454,7 +1495,7 @@ mod tests {
 
         // (2) enabled：布尔仅两态，一份配置区分不了 10 个字段；遍历「只开一个开关」的十份配置，
         //     断言「被启用的任务集合」恰为该开关的属主。
-        let only: [(&str, ScheduleConfig); 11] = [
+        let only: [(&str, ScheduleConfig); 12] = [
             (
                 "checkin",
                 ScheduleConfig {
@@ -1526,6 +1567,13 @@ mod tests {
                 },
             ),
             (
+                "loomy_checkin",
+                ScheduleConfig {
+                    loomy_checkin_enabled: true,
+                    ..off.clone()
+                },
+            ),
+            (
                 "loomy_points_sample",
                 ScheduleConfig {
                     loomy_points_sample_enabled: true,
@@ -1564,9 +1612,10 @@ mod tests {
                 "trae_jwt_refresh",
                 "qoder_checkin",
                 "qoder_keepalive",
+                "loomy_checkin",
                 "loomy_points_sample"
             ],
-            "all() 必须恰好包含全部十一类且顺序稳定"
+            "all() 必须恰好包含全部十二类且顺序稳定"
         );
     }
 

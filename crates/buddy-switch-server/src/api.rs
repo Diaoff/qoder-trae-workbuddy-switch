@@ -497,6 +497,8 @@ fn api_routes() -> Router {
         // 积分逐日采样（趋势图数据源，二期 9.3）：**只读**本地文件，不打上游。
         .route("/api/loomy/credits/daily", get(api_loomy_credits_daily))
         .route("/api/loomy/checkin/claim", post(api_loomy_checkin_claim))
+        // 批量签到（串行；返回 failedUids 供「只重试失败项」）。
+        .route("/api/loomy/checkin/all", post(api_loomy_checkin_all))
         .route("/api/loomy/sms/send", post(api_loomy_sms_send))
         .route("/api/loomy/sms/verify", post(api_loomy_sms_verify))
         // ---- Loomy 独立网关（二期 9.2；网关本体走独立端口 57896，**不** merge 进本 Router）----
@@ -7885,6 +7887,19 @@ async fn api_loomy_clear_gateway_logs() -> Response {
     let state = crate::loomy_gateway_host::shared_state();
     state.log.clear();
     json_ok(json!({ "ok": true }))
+}
+
+/// POST /api/loomy/checkin/all —— **批量**签到（串行遍历有 session 的账号）。
+///
+/// 与单账号端点走**同一条**上游路径（`loomy::api::checkin_for`）——
+/// 批量不是第二套实现，只是一个串行循环（并发打上游更容易触发风控）。
+async fn api_loomy_checkin_all() -> Response {
+    if let Err(error) = require_capability(Product::Loomy, capability::Capability::Checkin) {
+        return json_err(error, StatusCode::FORBIDDEN);
+    }
+    json_ok(
+        loomy::checkin::run_cycle_for(loomy::region::LoomyRegion::Cn).await,
+    )
 }
 
 /// POST /api/loomy/checkin/claim —— 触发每日赠送额度（幂等）。

@@ -12,6 +12,16 @@ export const en = {
   "loomy.page.accounts.add.sms": "SMS login",
   "loomy.page.accounts.add.import": "Import credential",
 
+  "loomy.page.accounts.batch.checkin": "Check in all",
+  "loomy.page.accounts.batch.busy": "Checking in…",
+  "loomy.page.accounts.batch.done": "Batch check-in finished",
+  "loomy.page.accounts.batch.partial": "Some accounts failed to check in",
+  "loomy.page.accounts.batch.failed": "Batch check-in failed",
+  "loomy.page.accounts.batch.summary": "{ok} reset · {already} already · {failed} failed",
+  "loomy.page.accounts.batch.summaryNoFailed": "{ok} reset · {already} already",
+  "loomy.page.accounts.batch.retryFailed": "Retry the {n} failed",
+  "loomy.page.accounts.batch.skippedNote": "{n} accounts skipped (no usable session)",
+
   "loomy.page.accounts.card.manageAria": "More actions for {name}",
   "loomy.page.accounts.card.moreActions": "More actions",
   "loomy.page.accounts.card.viewDetail": "View details",
@@ -76,6 +86,13 @@ export const en = {
     "Paste the credential JSON from a Loomy login (access_token / userid / phone). It must contain a 32-hex iFlytek session or a valid userid.",
   "loomy.page.accounts.import.submit": "Import",
   "loomy.page.settings.title": "Settings",
+  "loomy.page.settings.schedule.checkinGroup": "Automatic check-in",
+  "loomy.page.settings.schedule.checkinEnable": "Enable automatic check-in",
+  "loomy.page.settings.schedule.checkinDesc":
+    "Triggers the daily gift quota for every account at the times below (a write action — it calls upstream). Off by default; use the manual check-in on the account card if you prefer.",
+  "loomy.page.settings.schedule.checkinTimesLabel": "Check-in times",
+  "loomy.page.settings.schedule.checkinTimesDesc":
+    "One round per time each day; accounts already checked in today hit the idempotent path (no double grant).",
   "loomy.page.settings.schedule.sampleGroup": "Daily credit sampling",
   "loomy.page.settings.schedule.sampleEnable": "Enable daily sampling",
   "loomy.page.settings.schedule.sampleDesc":

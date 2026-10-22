@@ -48,7 +48,7 @@ const DISABLED_RECHECK_MS: u64 = 60_000;
 /// 而到期时刻由**上游签发时决定**、与我们的小时表无关 —— 应用恰好没开在那两个整点是
 /// 常态，不补跑就等于「续期看运气」。它只对**真的快到期**的账号发请求
 /// （`account::needs_jwt_refresh`），没有到期账号时这一轮只是读一遍账号库。
-const STARTUP_TASKS: [ScheduleTask; 8] = [
+const STARTUP_TASKS: [ScheduleTask; 9] = [
     ScheduleTask::Checkin,
     ScheduleTask::TraeCheckin,
     ScheduleTask::TraeJwtRefresh,
@@ -57,6 +57,10 @@ const STARTUP_TASKS: [ScheduleTask; 8] = [
     // Qoder 两条与 Trae 两条**同判据**：签到默认关（opt-in）、保活默认开。
     ScheduleTask::QoderCheckin,
     ScheduleTask::QoderKeepalive,
+    // Loomy 签到（默认关，opt-in）。补跑理由与另三条签到**逐字相同**：
+    // 排程定在 9 点、而用户 10 点才开应用是常态，不补跑就等于当天整天不签 ——
+    // 那等于「自动签到」对多数人不生效。默认关 ⇒ 补跑不会让任何人被突如其来的外部请求影响。
+    ScheduleTask::LoomyCheckin,
     // Loomy 积分采样（二期 9.3）：只读 GET、默认开，与保活同判据。
     // 补跑它是因为趋势图按**日**记一格：应用 10 点才打开就等于当天那两帧全丢，
     // 曲线会莫名断一天（而采样成本只是一次 GET）。
@@ -149,6 +153,15 @@ pub async fn run_scheduled_task(task: ScheduleTask) -> Value {
             let mut regions = Vec::new();
             for region in qoder::region::QoderRegion::all() {
                 regions.push(qoder::refresh::run_keepalive_cycle_for(region).await);
+            }
+            json!({ "task": task.as_str(), "regions": regions })
+        }
+        // Loomy（第四条产品线）的自动签到：**写**动作（触发每日额度重置）。
+        // 与 Qoder 同款：显式遍历 `LoomyRegion::all()`（单区，但将来加区域不会静默漏签）。
+        ScheduleTask::LoomyCheckin => {
+            let mut regions = Vec::new();
+            for region in loomy::region::LoomyRegion::all() {
+                regions.push(loomy::checkin::run_cycle_for(region).await);
             }
             json!({ "task": task.as_str(), "regions": regions })
         }
@@ -357,11 +370,12 @@ mod tests {
         assert!(startup_tasks(&only_others).is_empty());
     }
 
-    /// 启动补跑的集合必须**恰好**是这八类；新增进来必须有意为之。
+    /// 启动补跑的集合必须**恰好**是这九类；新增进来必须有意为之。
     ///
     /// Trae 签到是 2026-09-22 有意加进来的第四类，Trae JWT 续期是 2026-10-14 有意加进来的
     /// 第五类，Qoder 签到 / 保活是 2026-10-19 有意加进来的第六、七类，
-    /// Loomy 积分采样是 2026-10-22 有意加进来的第八类（趋势图按日一格，缺帧会断线）——
+    /// Loomy 积分采样是 2026-10-22 有意加进来的第八类（趋势图按日一格，缺帧会断线），
+    /// Loomy 签到是同日加进来的第九类（与另三条签到同判据：过点不补跑就等于当天不签）——
     /// 都不是顺手带上的，这条断言的作用就是让下次有人想加第九类时被迫说明理由。
     #[test]
     fn startup_task_set_is_exactly_the_intended_families() {
@@ -376,6 +390,7 @@ mod tests {
                 "keepalive",
                 "qoder_checkin",
                 "qoder_keepalive",
+                "loomy_checkin",
                 "loomy_points_sample"
             ]
         );

@@ -3312,6 +3312,7 @@ export function screenshotDemoResponse(command: string, args?: Record<string, un
       trae_jwt_refresh_times: ["09:00", "21:00"],
       qoder_checkin_times: ["09:00", "21:00"],
       qoder_keepalive_times: ["22:00"],
+      loomy_checkin_times: ["09:00", "21:00"],
       loomy_points_sample_times: ["09:00", "21:00"],
       // 签到开 ±15 分钟抖动：截图要能自证「这个能力存在且真的在界内」，
       // 全为 0 的话控件看起来就只是个永远不动的下拉框。
@@ -3325,6 +3326,7 @@ export function screenshotDemoResponse(command: string, args?: Record<string, un
       trae_jwt_refresh_jitter_minutes: 0,
       qoder_checkin_jitter_minutes: 0,
       qoder_keepalive_jitter_minutes: 0,
+      loomy_checkin_jitter_minutes: 0,
       loomy_points_sample_jitter_minutes: 0,
       checkin_enabled: true,
       travel_enabled: true,
@@ -3340,6 +3342,8 @@ export function screenshotDemoResponse(command: string, args?: Record<string, un
       // Qoder 两条同样照后端默认值（签到关、保活开）。
       qoder_checkin_enabled: false,
       qoder_keepalive_enabled: true,
+      // Loomy 自动签到照后端默认值（写动作 ⇒ 默认关闭，与另三条签到同判据）。
+      loomy_checkin_enabled: false,
       // Loomy 积分采样同样照后端默认值（只读 GET ⇒ 默认开启）。
       loomy_points_sample_enabled: true,
       activity_report_count: 5,

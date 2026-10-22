@@ -207,6 +207,8 @@ const SCOPE_PARAMETERIZED = new Set([
      fail-closed（单作用域 `loomy-cn` 是唯一判据）。登记即防回退。 */
   "loomy_credits_daily",
   "loomy_checkin_claim",
+  /* ✅ 批量签到（2026-10-22）：与单账号端点同一条上游路径，作用域仍 fail-closed。 */
+  "loomy_checkin_all",
   "loomy_sms_send",
   "loomy_sms_verify",
   "loomy_wechat_start",

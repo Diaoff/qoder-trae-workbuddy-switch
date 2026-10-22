@@ -221,7 +221,9 @@ pub fn delete_account_for(region: LoomyRegion, uid: &str) -> Result<bool, String
 }
 
 /// 展示名回落：昵称 > 手机号 > userid > uid。
-fn display_name(account: &RawAccount) -> String {
+///
+/// `pub`：批量任务（签到 / 采样）的结果里要带可读名字，否则前端只能显示裸 uid。
+pub fn display_name(account: &RawAccount) -> String {
     if let Some(nickname) = account.nickname.as_deref().filter(|s| !s.is_empty()) {
         return nickname.to_string();
     }

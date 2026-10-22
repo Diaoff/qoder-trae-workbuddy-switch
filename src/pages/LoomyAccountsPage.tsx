@@ -90,6 +90,8 @@ function LoomyAccountsInner({ scope }: { scope: LoomyScope }) {
   const [textSaving, setTextSaving] = useState(false);
   /** 删除确认（Loomy 无回收站 ⇒ 文案必须说清不可恢复）。 */
   const [pendingDelete, setPendingDelete] = useState<LoomyAccountView | null>(null);
+  /** 批量签到进行中（驱动按钮转圈 + 防连点）。 */
+  const [batchBusy, setBatchBusy] = useState(false);
 
   const reload = useCallback(async () => {
     setError(null);
@@ -193,6 +195,61 @@ function LoomyAccountsInner({ scope }: { scope: LoomyScope }) {
     }
   };
 
+  /**
+   * 批量签到：**串行**走上游（后端一次调用即完成整轮循环）。
+   *
+   * ★ 与 WorkBuddy 侧 `AccountsPage.batchCheckin` 同一条产品纪律：
+   *   部分失败时把失败项留在 toast 的 action 里 ⇒ 用户可「只重试失败项」，
+   *   不必把已成功的一起重跑（原型 P1-2：部分失败态不能只给一句 toast 就完事）。
+   *
+   * ⚠️ 不用前端 for 循环逐个调单账号端点：那会把「串行 + 部分失败不中断」这条
+   *   逻辑复制一份到前端，且每个账号一次 IPC 往返。后端 `run_cycle_for` 已经是
+   *   那个循环的唯一实现。
+   */
+  const doBatchCheckin = async () => {
+    if (batchBusy) return;
+    setBatchBusy(true);
+    try {
+      const result = await api.loomyCheckinAll(scope);
+      await reload();
+
+      const summary =
+        result.failed > 0
+          ? t("loomy.page.accounts.batch.summary", {
+              ok: result.ok,
+              already: result.already,
+              failed: result.failed,
+            })
+          : t("loomy.page.accounts.batch.summaryNoFailed", {
+              ok: result.ok,
+              already: result.already,
+            });
+      const description =
+        result.skipped > 0
+          ? `${summary} · ${t("loomy.page.accounts.batch.skippedNote", { n: result.skipped })}`
+          : summary;
+
+      if (result.failed > 0) {
+        toast.warning(t("loomy.page.accounts.batch.partial"), {
+          description,
+          action: {
+            label: t("loomy.page.accounts.batch.retryFailed", { n: result.failed }),
+            // 重试 = 再跑一轮整库。后端已对「今天签过」的账号幂等命中（alreadyProcessed），
+            // 所以重复跑不会重复发放额度 —— 这比在前端筛 uid 再调单账号端点更简单，
+            // 也不会漏掉「账号库刚变化」的情况。
+            onClick: () => void doBatchCheckin(),
+          },
+        });
+      } else {
+        toast.success(t("loomy.page.accounts.batch.done"), { description });
+      }
+    } catch (err) {
+      toast.error(t("loomy.page.accounts.batch.failed"), { description: api.asError(err) });
+    } finally {
+      setBatchBusy(false);
+    }
+  };
+
   const doRefreshCredits = async (account: LoomyAccountView) => {
     setBusyUid(account.uid);
     try {
@@ -260,9 +317,28 @@ function LoomyAccountsInner({ scope }: { scope: LoomyScope }) {
           <ScopeChip scope={scope} />
         </div>
         <div className="flex items-center gap-2">
-          <Button variant="outline" size="sm" onClick={() => void reload()}>
+          <Button variant="outline" size="sm" onClick={() => void reload()} disabled={batchBusy}>
             <RefreshCw className="size-4" />
           </Button>
+          {/* 批量签到：只在该平台声明了 checkin 能力、且有账号时才摆出来。
+              没有账号时摆一个「全部签到」按钮点了无事发生 = 假控件。 */}
+          {accounts !== null && accounts.length > 0 && (
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => void doBatchCheckin()}
+              disabled={batchBusy}
+            >
+              {batchBusy ? (
+                <Loader2 className="size-4 animate-spin" />
+              ) : (
+                <Gift className="size-4" />
+              )}
+              {batchBusy
+                ? t("loomy.page.accounts.batch.busy")
+                : t("loomy.page.accounts.batch.checkin")}
+            </Button>
+          )}
           <Button variant="outline" size="sm" onClick={() => setImportOpen(true)}>
             <Plus className="size-4" />
             {t("loomy.page.accounts.add.import")}

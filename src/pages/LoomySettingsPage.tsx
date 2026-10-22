@@ -42,13 +42,12 @@ import { toast } from "sonner";
  * + 主区 16px 间距 + 子导航取自共享表 `SETTINGS_SUBNAV`（只按内容收窄 `items`，
  * 不复制表 —— 复制即漂移的种子）。
  *
- * ## 内容上只有两项是 Loomy 专属的
+ * ## 内容上两项是 Loomy 专属的（两条排程任务）
  *
- * 1. **积分逐日采样**（二期 9.3 的 `loomy_points_sample`）：真动作必须有控件，
- *    否则「后台在采样、用户看不到也关不掉」。
- * 2. **自动签到 = 没有**：本仓排程里**没有** Loomy 签到任务（只有 WB / Trae / Qoder
- *    三条 `*_checkin`）。这里因此**不摆开关**（摆了就是假控件），只如实说明
- *    「没有这个能力」并给真实出口（账号卡「更多 → 签到」）。
+ * 1. **自动签到**（`loomy_checkin`）：**默认关**（写动作，替用户去上游领东西 ⇒ opt-in，
+ *    判据同另三条 `*_checkin`）。没有这个开关时它只是个永不执行的配置项。
+ * 2. **积分逐日采样**（二期 9.3 的 `loomy_points_sample`）：**默认开**（只读 GET）。
+ *    真动作必须有控件，否则「后台在采样、用户看不到也关不掉」。
  *
  * `schedule_config.json` 是**全局单份**，各产品线各占自己的任务字段；本页只呈现
  * Loomy 那一条，其余字段由各自设置页负责。
@@ -151,6 +150,45 @@ export default function LoomySettingsPage() {
                       {t("loomy.page.settings.checkinUnavailable")}
                     </p>
                   </div>
+                </CardContent>
+              </SettingsGroup>
+
+              {/* 自动签到：**写**动作（触发每日额度重置）⇒ 默认关，与另三条签到同判据。
+                  与采样分开摆：一个是替你领东西，一个只是读一眼。 */}
+              <SettingsGroup
+                id="loomy-settings-checkin"
+                title={t("loomy.page.settings.schedule.checkinGroup")}
+              >
+                <CardContent className="space-y-0 p-0">
+                  <SettingsFieldRow
+                    label={t("loomy.page.settings.schedule.checkinEnable")}
+                    description={t("loomy.page.settings.schedule.checkinDesc")}
+                  >
+                    <Switch
+                      checked={schedule?.loomy_checkin_enabled ?? false}
+                      disabled={!schedule || scheduleSaving}
+                      onCheckedChange={(checked) =>
+                        void saveSchedule({ loomy_checkin_enabled: checked })
+                      }
+                      aria-label={t("loomy.page.settings.schedule.checkinEnable")}
+                    />
+                  </SettingsFieldRow>
+                  <SettingsFieldRow
+                    label={t("loomy.page.settings.schedule.checkinTimesLabel")}
+                    description={t("loomy.page.settings.schedule.checkinTimesDesc")}
+                    htmlFor="loomy-checkin-time"
+                  >
+                    <TimesEditor
+                      id="loomy-checkin-time"
+                      times={schedule?.loomy_checkin_times ?? []}
+                      jitter={schedule?.loomy_checkin_jitter_minutes ?? 0}
+                      disabled={!schedule || scheduleSaving}
+                      onChange={(times) => void saveSchedule({ loomy_checkin_times: times })}
+                      onJitterChange={(minutes) =>
+                        void saveSchedule({ loomy_checkin_jitter_minutes: minutes })
+                      }
+                    />
+                  </SettingsFieldRow>
                 </CardContent>
               </SettingsGroup>
 

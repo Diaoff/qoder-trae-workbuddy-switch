@@ -625,6 +625,7 @@ pub fn run() {
             commands::get_loomy_gateway_logs,
             commands::clear_loomy_gateway_logs,
             commands::loomy_checkin_claim,
+            commands::loomy_checkin_all,
             commands::loomy_sms_send,
             commands::loomy_sms_verify,
             // Loomy 微信扫码（二期）

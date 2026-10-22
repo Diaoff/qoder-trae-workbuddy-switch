@@ -5212,6 +5212,20 @@ pub async fn loomy_checkin_claim(scope: String, uid: String) -> Result<Value, St
     }))
 }
 
+/// Loomy **批量签到**（串行遍历有 session 的账号）。
+///
+/// 与单账号 `loomy_checkin_claim` 走**同一条**上游路径（`api::checkin_for`）——
+/// 批量不是第二套实现，只是一个串行循环（并发打上游更容易触发风控，见
+/// `loomy::checkin::run_cycle_for` 的注释）。
+///
+/// 返回里带 `failedUids`，供前端「只重试失败项」。
+#[tauri::command(rename_all = "camelCase")]
+pub async fn loomy_checkin_all(scope: String) -> Result<Value, String> {
+    require_capability(Product::Loomy, capability::Capability::Checkin)?;
+    let region = require_loomy_region(resolve_scope_param(Some(&scope))?)?;
+    Ok(loomy::checkin::run_cycle_for(region).await)
+}
+
 /// Loomy 下发短信验证码；返回 `msgid`（校验时原样带回）。
 #[tauri::command(rename_all = "camelCase")]
 pub async fn loomy_sms_send(scope: String, phone: String) -> Result<Value, String> {

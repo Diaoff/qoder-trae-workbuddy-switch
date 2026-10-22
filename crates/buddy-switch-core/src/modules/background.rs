@@ -365,6 +365,13 @@ pub const TASKS: &[TaskSpec] = &[
         kind: TaskKind::Scheduled(ScheduleTask::QoderKeepalive),
         interval: Duration::ZERO,
     },
+    // Loomy（第四条产品线）的**自动签到**（默认关，opt-in —— 它替用户去上游领东西）。
+    // ⚠️ 不登记 = 两宿主都不跑 ⇒ 设置页那个开关是**假控件**（Trae JWT 续期事故的同一形态）。
+    TaskSpec {
+        product: Product::Loomy,
+        kind: TaskKind::Scheduled(ScheduleTask::LoomyCheckin),
+        interval: Duration::ZERO,
+    },
     // Loomy（第四条产品线）的**积分逐日采样**（二期 9.3）。
     // 只读 GET（非替用户领东西）⇒ 默认开，判据同保活。
     // ⚠️ 同样**不登记 = 两宿主都不跑**：用量页的趋势图会永远空着，

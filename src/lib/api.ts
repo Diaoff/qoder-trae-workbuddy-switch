@@ -584,6 +584,8 @@ const ROUTES: Record<string, Route> = {
   // 积分逐日采样（趋势图数据源，二期 9.3）—— **只读本地文件**，不打上游。
   loomy_credits_daily: { method: "GET", path: "/api/loomy/credits/daily" },
   loomy_checkin_claim: { method: "POST", path: "/api/loomy/checkin/claim" },
+  // 批量签到（串行；返回 failedUids 供「只重试失败项」）。
+  loomy_checkin_all: { method: "POST", path: "/api/loomy/checkin/all" },
   loomy_sms_send: { method: "POST", path: "/api/loomy/sms/send" },
   loomy_sms_verify: { method: "POST", path: "/api/loomy/sms/verify" },
   // Loomy 独立网关（二期 9.2；网关本体走独立端口 57896）—— 与 qoder gateway 那组平行。
@@ -4028,6 +4030,43 @@ export interface LoomyCheckinView {
   alreadyDone: boolean;
   gained: number;
   detail: string;
+}
+
+/**
+ * Loomy **批量**签到结果。
+ *
+ * 与单账号 `LoomyCheckinView` 分开：批量要回答「总共几个 / 成功几个 / 哪几个失败」，
+ * 逐条明细在 `results`（含跳过原因），失败 uid 在 `failedUids`。
+ */
+export interface LoomyCheckinAllView {
+  region: string;
+  total: number;
+  /** 本次真正触发了额度重置的账号数。 */
+  ok: number;
+  /** 幂等命中（今天已经签过）的账号数。 */
+  already: number;
+  /** 没有 session 而跳过的账号数（不算失败）。 */
+  skipped: number;
+  failed: number;
+  /** 本次触发的每日额度合计（上游未回报时为 0，**不是**「没签」）。 */
+  gained: number;
+  results: Array<{
+    uid: string;
+    name?: string;
+    ok?: boolean;
+    skipped?: boolean;
+    alreadyDone?: boolean;
+    gained?: number;
+    detail?: string;
+    error?: string;
+  }>;
+  /** 失败账号的 uid（前端「只重试失败项」用它）。 */
+  failedUids: string[];
+}
+
+/** Loomy **批量**签到（串行遍历有 session 的账号）。 */
+export function loomyCheckinAll(scope: Scope): Promise<LoomyCheckinAllView> {
+  return call<LoomyCheckinAllView>("loomy_checkin_all", { scope });
 }
 
 /** Loomy 触发每日签到（幂等）。 */

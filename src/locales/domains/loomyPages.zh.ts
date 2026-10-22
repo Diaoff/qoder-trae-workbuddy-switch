@@ -18,6 +18,17 @@ export const zh = {
   "loomy.page.accounts.add.sms": "短信登录",
   "loomy.page.accounts.add.import": "导入凭据",
 
+  // ---- 批量签到（与 WorkBuddy 侧同一条产品纪律：部分失败必须留重试出口）----
+  "loomy.page.accounts.batch.checkin": "全部签到",
+  "loomy.page.accounts.batch.busy": "签到中…",
+  "loomy.page.accounts.batch.done": "批量签到完成",
+  "loomy.page.accounts.batch.partial": "部分账号签到失败",
+  "loomy.page.accounts.batch.failed": "批量签到失败",
+  "loomy.page.accounts.batch.summary": "{ok} 个触发额度 · {already} 个今日已签 · {failed} 个失败",
+  "loomy.page.accounts.batch.summaryNoFailed": "{ok} 个触发额度 · {already} 个今日已签",
+  "loomy.page.accounts.batch.retryFailed": "只重试失败的 {n} 个",
+  "loomy.page.accounts.batch.skippedNote": "{n} 个账号没有可用 session，已跳过",
+
   // ---- 卡片 ----
   "loomy.page.accounts.card.manageAria": "{name} 的更多操作",
   "loomy.page.accounts.card.moreActions": "更多操作",
@@ -90,6 +101,13 @@ export const zh = {
   "loomy.page.accounts.import.submit": "导入",
   // ---- 设置页 ----
   "loomy.page.settings.title": "设置",
+  "loomy.page.settings.schedule.checkinGroup": "自动签到",
+  "loomy.page.settings.schedule.checkinEnable": "启用自动签到",
+  "loomy.page.settings.schedule.checkinDesc":
+    "按下面的时点替所有账号触发每日赠送额度（写操作，会向上游发请求）。默认关闭；不想自动签就用账号卡里的手动签到。",
+  "loomy.page.settings.schedule.checkinTimesLabel": "签到时点",
+  "loomy.page.settings.schedule.checkinTimesDesc":
+    "每天每个时点跑一轮；今天已签过的账号会幂等命中（不会重复发放额度）。",
   "loomy.page.settings.schedule.sampleGroup": "积分逐日采样",
   "loomy.page.settings.schedule.sampleEnable": "启用每日采样",
   "loomy.page.settings.schedule.sampleDesc":

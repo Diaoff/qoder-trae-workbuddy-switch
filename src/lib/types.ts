@@ -1048,6 +1048,8 @@ export interface ScheduleConfig {
   qoder_checkin_times: string[];
   /** Qoder 账号令牌保活的时点（第三条产品线）。 */
   qoder_keepalive_times: string[];
+  /** Loomy 自动签到的时点（第四条产品线，单区）。 */
+  loomy_checkin_times: string[];
   /** Loomy 积分逐日采样的时点（第四条产品线，单区）。 */
   loomy_points_sample_times: string[];
   /**
@@ -1067,6 +1069,7 @@ export interface ScheduleConfig {
   trae_jwt_refresh_jitter_minutes: number;
   qoder_checkin_jitter_minutes: number;
   qoder_keepalive_jitter_minutes: number;
+  loomy_checkin_jitter_minutes: number;
   loomy_points_sample_jitter_minutes: number;
   /** 自动签到开关（签 WorkBuddy 的账号）。 */
   checkin_enabled: boolean;
@@ -1112,6 +1115,13 @@ export interface ScheduleConfig {
    * 静默过期、网关调用突然 401。
    */
   qoder_keepalive_enabled: boolean;
+  /**
+   * Loomy 自动签到开关（替所有账号触发每日额度重置）。
+   *
+   * ⚠️ **默认 `false`**，判据与 `trae_checkin_enabled` / `qoder_checkin_enabled` 同源：
+   * 它是**写**动作（替用户去上游领东西），用户没要求过 ⇒ opt-in。
+   */
+  loomy_checkin_enabled: boolean;
   /**
    * Loomy 积分逐日采样开关（趋势图的数据来源）。
    *
