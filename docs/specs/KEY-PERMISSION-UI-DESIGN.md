@@ -287,6 +287,35 @@ pub scope_groups: Vec<String>,    // 允许访问的**分组** id（与 scope_ac
 | 7 | 文案：八语种（`src/locales/`） | 前端 |
 | 8 | 文档：`docs/README.md` 索引、`PLAN.md` 勾选 issue #76 | docs |
 
+### 7.1 实现状态（2026-10-22）
+
+| 步 | 状态 | 落点 |
+|:--|:--|:--|
+| 1 密钥记录扩字段 | ✅ | `apikey.rs`：四枚举 + 7 字段（全 `serde(default)`）+ `update_policy` + `normalized` |
+| 2 日志带 key id + 账本按 key | ⬜ 未做 | 用量页「按密钥」维度（U4），规范自己说可独立排期 |
+| 3 用量计数 | ✅ | `key_usage.rs`（**两口径各自一份计数**，见下方 ★） |
+| 4 配额 429 + 白名单 | ✅ | `relay.rs`（选号前判）+ `pool/pick.rs` 的 `allowed` 通道 |
+| 5 管理面命令 | ✅ | `set_key_policy` + `key_usage`（server / tauri / invoke 全同步） |
+| 6 前端两列 + 抽屉 | ✅ **仅 WB** | `key-permission.tsx` 共用构件 + `api-key-table.tsx` |
+| 7 文案 | ✅ zh / en | 其余语言由既有机制回落中文（与全站一致） |
+| 8 文档 | ✅ | 本文 + `docs/README.md` 索引 |
+
+**已知边界（如实记录，不是「已完成」的一部分）**：
+
+1. **Trae / Qoder / 统一网关三侧密钥表未接入** —— 它们的 Key 是各自独立的台账
+   （`trae/apikey.rs` / `qoder/apikey.rs` / `unified/apikey.rs`），扩字段是各一轮的活。
+   当前行为 = 改造前（不限额 + 全部账号），**不是假功能**（本来就没有配额能力）。
+   `PickInput.allowed` 在这两侧先传 `None`（代码里已标注）。
+2. **token 计量的配额判定**：记账已接（流式 `KeyUsageSink` + 非流式 `record_ledger`），
+   判定也在 `relay` 入口（按 `quota_unit` 取对应口径）⇒ **token 配额已生效**。
+3. **用量列只对「限额」的 Key 发请求**（不限额的显示「不限」，拉它没意义）——
+   默认全是老台账的不限额 Key ⇒ 零请求。
+
+★ **实现时修掉的一个真 bug**：`KeyUsageStore` 最初让两个口径共用一份计数
+（`let _ = unit;`），一次请求同时记「1 次请求」+「N 个 token」时会互相污染
+（按请求数计的 Key 看到 `1 + N`）。现在 `KeyUsage { tokens: Counters, requests: Counters }`
+各记各的，并有 `token_and_request_counters_are_independent` 回归用例守着。
+
 ## 8. 验收用例
 
 **原型侧**（`verify-key-permission.cjs`，21 条已全绿）：

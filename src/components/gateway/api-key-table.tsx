@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Check, Copy, KeyRound, Loader2, RotateCcw, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 
@@ -25,7 +25,7 @@ import { useT } from "@/lib/i18n";
 import { REGIONS, regionDescriptor } from "@/lib/region";
 import { cn } from "@/lib/utils";
 import type { ApiKeyRecord, QuotaMode, QuotaPeriod, QuotaUnit, Region, ScopeMode } from "@/lib/types";
-import type { KeyPolicy } from "@/lib/api";
+import type { KeyPolicy, KeyUsageSnapshot } from "@/lib/api";
 import {
   KeyPermissionDrawer,
   KeyRowDetail,
@@ -102,6 +102,45 @@ export function ApiKeyTable({ className }: { className?: string }) {
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [permTarget, setPermTarget] = useState<ApiKeyRecord | null>(null);
   const [permSaving, setPermSaving] = useState(false);
+  /**
+   * 按 Key 的用量快照（`key_usage` 命令）。
+   *
+   * ★ **只拉「限额」的 Key**：不限额的用量列显示「不限」，拉它没有意义 ——
+   *   默认（全是老台账的不限额 Key）**零请求**。
+   * ★ 失败**静默**：读不到用量不该让整张表报错 —— 配额判定在网关侧（后端）负责，
+   *   这里只是展示。缺快照时用量列按「已用 0」渲染，不伪造数字。
+   * ★ `keys` 引用变化即重拉（保存策略后 store 会 `loadKeys()` ⇒ 自然刷新）。
+   */
+  const [usageMap, setUsageMap] = useState<Record<string, KeyUsageSnapshot>>({});
+  useEffect(() => {
+    const limited = keys.filter((key) => (key.quotaMode ?? "unlimited") === "limited");
+    if (limited.length === 0) {
+      setUsageMap({});
+      return;
+    }
+    let cancelled = false;
+    void (async () => {
+      const pairs = await Promise.all(
+        limited.map(async (key) => {
+          try {
+            const snapshot = await api.keyUsage(key.id);
+            return [key.id, snapshot] as const;
+          } catch {
+            return null;
+          }
+        }),
+      );
+      if (cancelled) return;
+      const next: Record<string, KeyUsageSnapshot> = {};
+      for (const pair of pairs) {
+        if (pair) next[pair[0]] = pair[1];
+      }
+      setUsageMap(next);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [keys]);
 
   /**
    * 旧台账的 Key 没有策略字段 ⇒ **归一化**成完整策略（缺省 = 改造前行为：
@@ -307,7 +346,7 @@ export function ApiKeyTable({ className }: { className?: string }) {
                       {key.lastUsedAt ? formatDate(key.lastUsedAt) : t("wbStats.table.neverUsed")}
                     </td>
                     <td className="py-2 pr-4">
-                      <KeyUsageCell policy={policy} usage={null} />
+                      <KeyUsageCell policy={policy} usage={usageMap[key.id] ?? null} />
                     </td>
                     <td className="py-2 pr-4">
                       <KeyScopeChip
@@ -355,7 +394,7 @@ export function ApiKeyTable({ className }: { className?: string }) {
                       <td colSpan={9} className="p-0">
                         <KeyRowDetail
                           policy={policy}
-                          usage={null}
+                          usage={usageMap[key.id] ?? null}
                           accountNames={scopeNames}
                           onEditQuota={() => setPermTarget(key)}
                           onEditScope={() => setPermTarget(key)}
@@ -507,7 +546,7 @@ export function ApiKeyTable({ className }: { className?: string }) {
         onOpenChange={(open) => { if (!open) setPermTarget(null); }}
         keyName={permTarget?.name ?? ""}
         policy={permTarget ? policyOf(permTarget) : EMPTY_POLICY}
-        usage={null}
+        usage={permTarget ? usageMap[permTarget.id] ?? null : null}
         accounts={permAccounts}
         saving={permSaving}
         onSave={(next) => void onSavePolicy(next)}
