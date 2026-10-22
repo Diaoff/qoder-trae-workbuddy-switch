@@ -100,6 +100,20 @@ chat 路径只在 content-type 是 `application/json` 时 peek 响应体判业�
 | 同日多次 | **覆盖写**（余额是状态量不是流量）；窗口 90 天，与 Trae 同名文件同口径 |
 | 读取 | `GET /api/loomy/credits/daily` / `loomy_credits_daily` —— **只读本地文件，不联网**（打开用量页不替用户发上游请求） |
 
+### 2.8 独立端口（二期 9.2）
+
+默认端口 **57896**（`5789x` 一段的最后一位），默认**关**（与另四条同一口径：不声不响地
+默认监听是危险默认值）。
+
+| 项 | 事实 |
+|:--|:--|
+| 与统一入口的关系 | **并存，不是替代**。两者共用同一份 `LoomyGatewayState`（池 / 日志 / 禁用 / 粘性），关掉任一个不影响另一个 |
+| Key 库 | `loomy/gateway_keys.json`，前缀 `sk-loomy-`，**无归属轴**（单作用域；多一列恒 `cn` 的字段就是假字段） |
+| 鉴权 | `bearer_auth` 中间件（健康检查免鉴权）；错误体按端点分派 OpenAI / Anthropic 形状 |
+| 端点 | `/health`(+`/healthz`) / `/status` / `/v1/models` / `/v1/chat/completions` / `/v1/messages` / `/v1/responses` |
+| 认证之后 | 仍走**同一份** `chat_for_region`（与统一入口零分叉） |
+| 备份 | `gateway` 分区从空操作改为真实读写 config + keys（清单由网关现取 ⇒ 不入备份） |
+
 ---
 
 ## 3. 建模决策
@@ -107,7 +121,7 @@ chat 路径只在 content-type 是 `application/json` 时 peek 响应体判业�
 | 决策 | 内容 | 理由 |
 |:---|:---|:---|
 | 作用域 | 单作用域 `loomy-cn` | 只有一套账号体系；单段命名空间会破坏前端 `Scope` 模板字面量与门禁管线 |
-| 端口 | **不开独立端口**，只走统一入口 | `UNIFIED-GATEWAY-ARCH.md` §11-D 契约；无本地客户端、无路径重叠问题 |
+| 端口 | **统一入口 + 可选独立端口 57896**（二期 9.2 起并存） | 一期按 §11-D 只走统一入口；二期补独立端口是因为「只想接 Loomy、不想开统一入口」是真实诉求，而 `/v1/*` 路径与另四条逐字重叠 ⇒ 必须独立端口（不能 merge） |
 | 能力集 | `["checkin","credits","oauth","gateway"]`（与 Qoder 同集） | `oauth` = 面板内短信登录；`sessionCopy`/`travel`/`autoRotate` 无 Loomy 等价物 |
 | refresh | **刻意不实现** | Loomy 无续期端点（session 14 天，过期只能重登）；网关按 `SessionDead` 换号，面板提示重新登录（诚实标记） |
 | uid 口径 | userid 优先；无 userid 时派生 `loomy-<md5(phone\0token) 前16hex>` | 同一账号恒同 uid；**绝不用手机号**（同号多账号会合并）；token 不进存储 key |
@@ -124,9 +138,9 @@ chat 路径只在 content-type 是 `application/json` 时 peek 响应体判业�
 | core 协议 | `…/loomy/{chat,models,credits,credits_daily,checkin,oauth,signing,credential,api,account,paths}.rs` |
 | gateway 中继 | `crates/buddy-switch-gateway/src/loomy/{mod,pool,routes}.rs` |
 | 统一网关分派 | `unified/routes.rs` 的 `RelayTarget::Loomy` 分支 + `collect_namespace_models` |
-| server 命令面 | `crates/buddy-switch-server/src/api.rs` 的 `/api/loomy/*` 段 + `Product::Loomy` 分支 |
-| 桌面命令 | `src-tauri/src/commands.rs` 的 `loomy_*` 段 + `generate_handler!` |
-| 前端 | `src/pages/Loomy*.tsx` × 5、`api.ts` 的 loomy 段、`use-scope-status.ts` 的 loomy 快照 |
+| server 命令面 | `crates/buddy-switch-server/src/api.rs` 的 `/api/loomy/*` 段 + `Product::Loomy` 分支；独立网关的监听宿主在 `crates/buddy-switch-server/src/loomy_gateway_host.rs` |
+| 桌面命令 | `src-tauri/src/commands.rs` 的 `loomy_*` 段 + `generate_handler!`；独立网关句柄在 `src-tauri/src/loomy_gateway.rs` |
+| 前端 | `src/pages/Loomy*.tsx` × 6（含 `LoomyApiServicePage`）、`api.ts` 的 loomy 段、`lib/loomy-gateway.ts`、`use-scope-status.ts` 的 loomy 快照 |
 
-密钥前缀：Loomy 一期无独立 Key 库（走统一网关的 `sk-uni-`）；
-将来开独立端口时 Key 前缀取 **`sk-loomy-`**（与 sk-wb-/sk-trae-/sk-qoder- 同族）。
+密钥前缀：独立端口用 **`sk-loomy-`**（与 sk-wb-/sk-trae-/sk-qoder-/sk-uni- 同族）；
+走统一入口时仍是 `sk-uni-`（两条形态并存，各有自己的 Key 库）。

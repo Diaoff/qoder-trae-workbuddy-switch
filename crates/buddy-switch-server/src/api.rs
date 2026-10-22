@@ -494,6 +494,39 @@ fn api_routes() -> Router {
         .route("/api/loomy/checkin/claim", post(api_loomy_checkin_claim))
         .route("/api/loomy/sms/send", post(api_loomy_sms_send))
         .route("/api/loomy/sms/verify", post(api_loomy_sms_verify))
+        // ---- Loomy 独立网关（二期 9.2；网关本体走独立端口 57896，**不** merge 进本 Router）----
+        // ⚠️ 与统一入口并存：`loomy-cn:` 命名空间仍走 57892，本组是可选第二形态。
+        .route(
+            "/api/loomy/gateway/config",
+            get(api_loomy_gateway_config).post(api_save_loomy_gateway_config),
+        )
+        .route("/api/loomy/gateway/status", get(api_loomy_gateway_status))
+        .route("/api/loomy/gateway/models", get(api_loomy_gateway_models))
+        .route(
+            "/api/loomy/gateway/pool/exclusions",
+            post(api_set_loomy_pool_exclusion),
+        )
+        .route(
+            "/api/loomy/gateway/keys",
+            get(api_loomy_list_api_keys).post(api_loomy_create_api_key),
+        )
+        .route(
+            "/api/loomy/gateway/keys/revoke",
+            post(api_loomy_revoke_api_key),
+        )
+        .route(
+            "/api/loomy/gateway/keys/restore",
+            post(api_loomy_restore_api_key),
+        )
+        .route(
+            "/api/loomy/gateway/keys/delete",
+            post(api_loomy_delete_api_key),
+        )
+        .route("/api/loomy/gateway/logs", get(api_loomy_gateway_logs))
+        .route(
+            "/api/loomy/gateway/logs/clear",
+            post(api_loomy_clear_gateway_logs),
+        )
         // ---- Loomy 微信扫码（二期）：纯 HTTP 四步 + 长轮询，无本地监听 ----
         .route("/api/loomy/wechat/start", post(api_loomy_wechat_start))
         .route("/api/loomy/wechat/poll", post(api_loomy_wechat_poll))
@@ -7579,6 +7612,203 @@ async fn api_loomy_credits_daily() -> Response {
     json_ok(loomy::credits_daily::view_for(
         loomy::region::LoomyRegion::Cn,
     ))
+}
+
+// ---------------------------------------------------------------------------
+// Loomy 独立网关（管理面；网关本体走独立端口 57896，**不** merge 进本 Router）
+// ---------------------------------------------------------------------------
+//
+// 与 Qoder 侧**逐条同形**（config / status / models / exclusions / keys×5 / logs×2），
+// 差异只有一处：**没有归属轴** —— Loomy 单作用域，Key 与状态都不带 `scope`/`region`。
+// 形状唯一来源是 gateway crate（本层不拼装）。
+
+/// GET /api/loomy/gateway/config —— Loomy 网关配置（**全局唯一**）。
+async fn api_loomy_gateway_config() -> Response {
+    match serde_json::to_value(buddy_switch_gateway::loomy::LoomyGatewayConfig::load()) {
+        Ok(value) => json_ok(value),
+        Err(error) => json_err(error.to_string(), StatusCode::INTERNAL_SERVER_ERROR),
+    }
+}
+
+/// POST /api/loomy/gateway/config —— 保存配置并应用（启动 / 重启独立监听）。
+async fn api_save_loomy_gateway_config(Json(body): Json<Value>) -> Response {
+    if let Err(error) = require_capability(Product::Loomy, capability::Capability::Gateway) {
+        return json_err(error, StatusCode::FORBIDDEN);
+    }
+    let submitted = body.get("config").cloned().unwrap_or(body);
+    let config: buddy_switch_gateway::loomy::LoomyGatewayConfig =
+        match serde_json::from_value(submitted) {
+            Ok(config) => config,
+            Err(error) => {
+                return json_err(format!("配置格式错误: {error}"), StatusCode::BAD_REQUEST)
+            }
+        };
+    if let Err(error) = config.save() {
+        return json_err(error, StatusCode::BAD_REQUEST);
+    }
+    let state = crate::loomy_gateway_host::shared_state();
+    *state.config.write().await = config.clone();
+    state.log.set_keep(config.log_keep);
+    state.log.set_log_bodies(config.log_bodies);
+    let addr = match crate::loomy_gateway_host::apply().await {
+        Ok(addr) => addr,
+        Err(error) => return json_err(error, StatusCode::BAD_REQUEST),
+    };
+    json_ok(json!({
+        "ok": true,
+        "config": config,
+        "running": addr.is_some(),
+        "addr": addr,
+    }))
+}
+
+/// GET /api/loomy/gateway/status —— 运行状态 + 账号池 + 账号明细。
+async fn api_loomy_gateway_status() -> Response {
+    let (running, addr) = crate::loomy_gateway_host::status().await;
+    json_ok(
+        buddy_switch_gateway::loomy::status_view(
+            &crate::loomy_gateway_host::shared_state(),
+            running,
+            addr,
+            crate::update::APP_VERSION,
+        )
+        .await,
+    )
+}
+
+/// GET /api/loomy/gateway/models —— 对外暴露的模型清单（随上游刷新）。
+///
+/// 与 Qoder 侧同款：`refresh=true` 绕过 10 分钟缓存；返回**未过滤**全量 + 逐条 `disabled`。
+async fn api_loomy_gateway_models(RawQuery(query): RawQuery) -> Response {
+    let force = query_value(query.as_deref(), "refresh")
+        .map(|raw| raw == "1" || raw.eq_ignore_ascii_case("true"))
+        .unwrap_or(false);
+    let state = crate::loomy_gateway_host::shared_state();
+    let catalog = if force {
+        state.refresh_catalog().await
+    } else {
+        state.catalog_for().await
+    };
+    let disabled = {
+        let guard = state.disabled.lock().await;
+        guard
+            .get(buddy_switch_core::modules::product::scope_of_loomy_region(
+                buddy_switch_core::modules::loomy::region::LoomyRegion::Cn,
+            ))
+            .clone()
+    };
+    json_ok(buddy_switch_gateway::loomy::admin_models_response(
+        &catalog, &disabled,
+    ))
+}
+
+/// POST /api/loomy/gateway/pool/exclusions —— 设置 / 取消账号排除。
+async fn api_set_loomy_pool_exclusion(Json(body): Json<Value>) -> Response {
+    let uid = body.get("uid").and_then(Value::as_str).unwrap_or("").trim();
+    if uid.is_empty() {
+        return json_err("缺少 uid".to_string(), StatusCode::BAD_REQUEST);
+    }
+    let excluded = body
+        .get("excluded")
+        .and_then(Value::as_bool)
+        .unwrap_or(true);
+    let note = body.get("note").and_then(Value::as_str).unwrap_or("");
+    match buddy_switch_gateway::routes::pool_admin::persist(
+        "loomy:cn",
+        uid,
+        excluded,
+        note,
+    ) {
+        Ok(value) => {
+            if excluded {
+                crate::loomy_gateway_host::shared_state()
+                    .sticky
+                    .lock()
+                    .await
+                    .purge_uid(uid);
+            }
+            json_ok(value)
+        }
+        Err(error) => json_err(error, StatusCode::INTERNAL_SERVER_ERROR),
+    }
+}
+
+/// GET /api/loomy/gateway/keys —— 多 Key 列表（脱敏；Loomy 无归属轴）。
+async fn api_loomy_list_api_keys() -> Response {
+    let state = crate::loomy_gateway_host::shared_state();
+    json_ok(json!({ "keys": state.key_store.list() }))
+}
+
+/// POST /api/loomy/gateway/keys —— 新建 Key（`{name}`；明文仅此一次返回）。
+async fn api_loomy_create_api_key(Json(body): Json<Value>) -> Response {
+    let name = body
+        .get("name")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("未命名 Key")
+        .to_string();
+    let state = crate::loomy_gateway_host::shared_state();
+    match state.key_store.create(name) {
+        Ok((record, plaintext)) => json_ok(json!({
+            "ok": true,
+            "key": plaintext,
+            "record": record.masked(),
+        })),
+        Err(error) => json_err(error, StatusCode::BAD_REQUEST),
+    }
+}
+
+/// POST /api/loomy/gateway/keys/revoke —— 吊销 Key（`{id}`）。
+async fn api_loomy_revoke_api_key(Json(body): Json<Value>) -> Response {
+    let id = body.get("id").and_then(Value::as_str).unwrap_or("").trim();
+    if id.is_empty() {
+        return json_err("缺少 id".to_string(), StatusCode::BAD_REQUEST);
+    }
+    let state = crate::loomy_gateway_host::shared_state();
+    match state.key_store.revoke(id) {
+        Ok(()) => json_ok(json!({ "ok": true })),
+        Err(error) => json_err(error, StatusCode::BAD_REQUEST),
+    }
+}
+
+/// POST /api/loomy/gateway/keys/restore —— 撤销吊销（`{id}`）。
+async fn api_loomy_restore_api_key(Json(body): Json<Value>) -> Response {
+    let id = body.get("id").and_then(Value::as_str).unwrap_or("").trim();
+    if id.is_empty() {
+        return json_err("缺少 id".to_string(), StatusCode::BAD_REQUEST);
+    }
+    let state = crate::loomy_gateway_host::shared_state();
+    match state.key_store.restore(id) {
+        Ok(()) => json_ok(json!({ "ok": true })),
+        Err(error) => json_err(error, StatusCode::BAD_REQUEST),
+    }
+}
+
+/// POST /api/loomy/gateway/keys/delete —— 物理删除已吊销的 Key（`{id}`）。
+async fn api_loomy_delete_api_key(Json(body): Json<Value>) -> Response {
+    let id = body.get("id").and_then(Value::as_str).unwrap_or("").trim();
+    if id.is_empty() {
+        return json_err("缺少 id".to_string(), StatusCode::BAD_REQUEST);
+    }
+    let state = crate::loomy_gateway_host::shared_state();
+    match state.key_store.delete(id) {
+        Ok(()) => json_ok(json!({ "ok": true })),
+        Err(error) => json_err(error, StatusCode::BAD_REQUEST),
+    }
+}
+
+/// GET /api/loomy/gateway/logs —— 最近 N 条请求日志。
+async fn api_loomy_gateway_logs() -> Response {
+    let state = crate::loomy_gateway_host::shared_state();
+    json_ok(json!({ "logs": state.log.list() }))
+}
+
+/// POST /api/loomy/gateway/logs/clear —— 清空日志。
+async fn api_loomy_clear_gateway_logs() -> Response {
+    let state = crate::loomy_gateway_host::shared_state();
+    state.log.clear();
+    json_ok(json!({ "ok": true }))
 }
 
 /// POST /api/loomy/checkin/claim —— 触发每日赠送额度（幂等）。

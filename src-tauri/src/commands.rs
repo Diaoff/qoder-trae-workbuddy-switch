@@ -36,6 +36,7 @@ use buddy_switch_gateway::{AccountStrategy, GatewayConfig, GatewayStatusView};
 use buddy_switch_gateway::unified::UnifiedGatewayConfig;
 
 use crate::gateway;
+use crate::loomy_gateway;
 use crate::qoder_gateway;
 use crate::trae_gateway;
 use crate::unified_gateway;
@@ -4826,6 +4827,177 @@ pub fn get_qoder_gateway_logs() -> Value {
 pub fn clear_qoder_gateway_logs() -> Value {
     let state = qoder_gateway::shared_state();
     state.log.clear();
+    json!({ "ok": true })
+}
+
+// ---------------------------------------------------------------------------
+// Loomy 独立网关（二期 9.2；网关本体走独立端口 57896）—— 与 qoder_gateway 段平行。
+// ---------------------------------------------------------------------------
+//
+// 与 Qoder 侧**逐条同形**，差异只有「没有归属轴」：Loomy 单作用域 ⇒ 命令不带 scope
+// 参数也不该带（多一个恒为 `loomy-cn` 的参数就是假参数）。
+
+/// GET /api/loomy/gateway/config —— Loomy 网关配置（**全局唯一**）。
+#[tauri::command]
+pub fn get_loomy_gateway_config() -> Value {
+    serde_json::to_value(buddy_switch_gateway::loomy::LoomyGatewayConfig::load())
+        .unwrap_or(Value::Null)
+}
+
+/// POST /api/loomy/gateway/config —— 保存配置并应用（启动 / 重启独立监听）。
+#[tauri::command]
+pub async fn save_loomy_gateway_config(
+    app: tauri::AppHandle,
+    config: Value,
+) -> Result<Value, String> {
+    require_capability(Product::Loomy, capability::Capability::Gateway)?;
+    let submitted = config.get("config").cloned().unwrap_or(config);
+    let parsed: buddy_switch_gateway::loomy::LoomyGatewayConfig =
+        serde_json::from_value(submitted).map_err(|error| format!("配置格式错误: {error}"))?;
+    parsed.save()?;
+
+    let state = loomy_gateway::shared_state();
+    *state.config.write().await = parsed.clone();
+    state.log.set_keep(parsed.log_keep);
+    state.log.set_log_bodies(parsed.log_bodies);
+
+    let runtime = app.state::<loomy_gateway::LoomyGatewayRuntime>();
+    let addr = runtime.apply().await?;
+    Ok(json!({
+        "ok": true,
+        "config": parsed,
+        "running": addr.is_some(),
+        "addr": addr,
+    }))
+}
+
+/// GET /api/loomy/gateway/status —— 运行状态 + 账号池 + 账号明细。
+#[tauri::command]
+pub async fn loomy_gateway_status(app: tauri::AppHandle) -> Result<Value, String> {
+    let (running, addr) = {
+        let runtime = app.state::<loomy_gateway::LoomyGatewayRuntime>();
+        (runtime.is_running(), runtime.addr())
+    };
+    Ok(buddy_switch_gateway::loomy::status_view(
+        &loomy_gateway::shared_state(),
+        running,
+        addr,
+        update::APP_VERSION,
+    )
+    .await)
+}
+
+/// GET /api/loomy/gateway/models —— 对外暴露的模型清单（随上游刷新）。
+#[tauri::command]
+pub async fn get_loomy_gateway_models(refresh: Option<bool>) -> Result<Value, String> {
+    let state = loomy_gateway::shared_state();
+    let catalog = if refresh.unwrap_or(false) {
+        state.refresh_catalog().await
+    } else {
+        state.catalog_for().await
+    };
+    let disabled = {
+        let guard = state.disabled.lock().await;
+        guard
+            .get(buddy_switch_core::modules::product::scope_of_loomy_region(
+                buddy_switch_core::modules::loomy::region::LoomyRegion::Cn,
+            ))
+            .clone()
+    };
+    Ok(buddy_switch_gateway::loomy::admin_models_response(
+        &catalog, &disabled,
+    ))
+}
+
+/// POST /api/loomy/gateway/pool/exclusions —— 设置 / 取消账号排除。
+#[tauri::command]
+pub async fn set_loomy_gateway_pool_exclusion(
+    uid: String,
+    excluded: bool,
+    note: Option<String>,
+) -> Result<Value, String> {
+    let uid = uid.trim().to_string();
+    let value = buddy_switch_gateway::routes::pool_admin::persist(
+        "loomy:cn",
+        &uid,
+        excluded,
+        note.as_deref().unwrap_or(""),
+    )?;
+    if excluded {
+        loomy_gateway::shared_state()
+            .sticky
+            .lock()
+            .await
+            .purge_uid(&uid);
+    }
+    Ok(value)
+}
+
+/// GET /api/loomy/gateway/keys —— 多 Key 列表（脱敏）。
+#[tauri::command]
+pub fn list_loomy_api_keys() -> Value {
+    json!({ "keys": loomy_gateway::shared_state().key_store.list() })
+}
+
+/// POST /api/loomy/gateway/keys —— 新建 Key（明文仅此一次返回）。
+#[tauri::command]
+pub fn create_loomy_api_key(name: Option<String>) -> Result<Value, String> {
+    let name = name
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| "未命名 Key".to_string());
+    let state = loomy_gateway::shared_state();
+    let (record, plaintext) = state.key_store.create(name)?;
+    Ok(json!({
+        "ok": true,
+        "key": plaintext,
+        "record": record.masked(),
+    }))
+}
+
+/// POST /api/loomy/gateway/keys/revoke —— 吊销 Key。
+#[tauri::command]
+pub fn revoke_loomy_api_key(id: String) -> Result<Value, String> {
+    let id = id.trim();
+    if id.is_empty() {
+        return Err("缺少 id".to_string());
+    }
+    loomy_gateway::shared_state().key_store.revoke(id)?;
+    Ok(json!({ "ok": true }))
+}
+
+/// POST /api/loomy/gateway/keys/restore —— 撤销吊销。
+#[tauri::command]
+pub fn restore_loomy_api_key(id: String) -> Result<Value, String> {
+    let id = id.trim();
+    if id.is_empty() {
+        return Err("缺少 id".to_string());
+    }
+    loomy_gateway::shared_state().key_store.restore(id)?;
+    Ok(json!({ "ok": true }))
+}
+
+/// POST /api/loomy/gateway/keys/delete —— 物理删除**已吊销**的 Key。
+#[tauri::command]
+pub fn delete_loomy_api_key(id: String) -> Result<Value, String> {
+    let id = id.trim();
+    if id.is_empty() {
+        return Err("缺少 id".to_string());
+    }
+    loomy_gateway::shared_state().key_store.delete(id)?;
+    Ok(json!({ "ok": true }))
+}
+
+/// GET /api/loomy/gateway/logs —— 最近 N 条请求日志。
+#[tauri::command]
+pub fn get_loomy_gateway_logs() -> Value {
+    json!({ "logs": loomy_gateway::shared_state().log.list() })
+}
+
+/// POST /api/loomy/gateway/logs/clear —— 清空日志。
+#[tauri::command]
+pub fn clear_loomy_gateway_logs() -> Value {
+    loomy_gateway::shared_state().log.clear();
     json!({ "ok": true })
 }
 

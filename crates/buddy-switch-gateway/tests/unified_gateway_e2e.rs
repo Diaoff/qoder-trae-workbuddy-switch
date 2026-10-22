@@ -242,8 +242,9 @@ async fn health_paths_are_public_and_reflect_the_config() {
         assert_eq!(body["enabled"], true);
         assert_eq!(
             body["namespaces"].as_array().unwrap().len(),
-            6,
-            "默认启用集应是派生层 6 条（3 平台 × 2 区域；Qoder 于 2026-10-15 加入）"
+            7,
+            "默认启用集应是派生层 7 条（3 平台 × 2 区域 + Loomy 单作用域；\
+             Qoder 于 2026-10-15、Loomy 于 2026-10-21 加入）"
         );
         bodies.push(body);
     }

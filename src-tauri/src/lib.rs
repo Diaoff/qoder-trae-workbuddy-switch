@@ -2,6 +2,7 @@
 mod commands;
 mod gateway;
 // Qoder 网关（第三个平台，默认 57895）：独立端口，不与另三个 merge（axum 同路径 merge 会 panic）。
+mod loomy_gateway;
 mod qoder_gateway;
 mod trae_gateway;
 // 统一网关（第三个产品线，默认 57892）：跨产品线的单一入口 —— 独立端口，不与另三个 merge。
@@ -310,6 +311,7 @@ pub fn run() {
             app.manage(trae_gateway::TraeGatewayRuntime::new());
             // Qoder 网关运行时句柄（同样独立；**一个监听服务两个区域**）。
             app.manage(qoder_gateway::QoderGatewayRuntime::new());
+            app.manage(loomy_gateway::LoomyGatewayRuntime::new());
             app.manage(unified_gateway::UnifiedGatewayRuntime::new());
             // README 截图模式只渲染前端虚构数据，禁止读取账号后执行签到、轮换或保活。
             if !is_screenshot_demo() {
@@ -354,6 +356,17 @@ pub fn run() {
                         Ok(Some(addr)) => eprintln!("[qoder-gateway] 已启动: http://{addr}"),
                         Ok(None) => {}
                         Err(error) => eprintln!("[qoder-gateway] 启动失败: {error}"),
+                    }
+                });
+                // 按配置启动 Loomy 网关独立监听（默认关闭；默认 127.0.0.1:57896）。
+                // 与统一入口并存：两者共用同一份池 / 日志，关掉任一个不影响另一个。
+                let handle = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    let runtime = handle.state::<loomy_gateway::LoomyGatewayRuntime>();
+                    match runtime.apply().await {
+                        Ok(Some(addr)) => eprintln!("[loomy-gateway] 已启动: http://{addr}"),
+                        Ok(None) => {}
+                        Err(error) => eprintln!("[loomy-gateway] 启动失败: {error}"),
                     }
                 });
                 // 按配置启动**统一网关**独立监听（默认关闭；默认 127.0.0.1:57892）。
@@ -594,6 +607,19 @@ pub fn run() {
             commands::loomy_set_account_group,
             commands::loomy_credits,
             commands::loomy_credits_daily,
+            // Loomy 独立网关（二期 9.2）—— 与 qoder gateway 那组平行。
+            commands::get_loomy_gateway_config,
+            commands::save_loomy_gateway_config,
+            commands::loomy_gateway_status,
+            commands::get_loomy_gateway_models,
+            commands::set_loomy_gateway_pool_exclusion,
+            commands::list_loomy_api_keys,
+            commands::create_loomy_api_key,
+            commands::revoke_loomy_api_key,
+            commands::restore_loomy_api_key,
+            commands::delete_loomy_api_key,
+            commands::get_loomy_gateway_logs,
+            commands::clear_loomy_gateway_logs,
             commands::loomy_checkin_claim,
             commands::loomy_sms_send,
             commands::loomy_sms_verify,
@@ -736,7 +762,7 @@ mod tests {
         );
     }
 
-    /// ★★ 护栏：**四个**网关在 `setup` 里都必须被 `apply()` 拉起（issue #52）。
+    /// ★★ 护栏：**五个**网关在 `setup` 里都必须被 `apply()` 拉起（issue #52）。
     ///
     /// 回归背景：统一网关只 `app.manage(...)`、没有对应的 `spawn + apply()` ——
     /// 于是配置里 `enabled: true` 只在「保存配置」那一刻生效，重启应用后 57892
@@ -761,6 +787,7 @@ mod tests {
             ("WorkBuddy 57891", "gateway::GatewayRuntime"),
             ("Trae 57894", "trae_gateway::TraeGatewayRuntime"),
             ("Qoder 57895", "qoder_gateway::QoderGatewayRuntime"),
+            ("Loomy 57896", "loomy_gateway::LoomyGatewayRuntime"),
             ("统一网关 57892", "unified_gateway::UnifiedGatewayRuntime"),
         ] {
             let marker = format!("handle.state::<{runtime}>()");
@@ -777,7 +804,7 @@ mod tests {
             );
         }
 
-        // 另一侧宿主（`buddy-switch-server`）同样必须启动四个 —— 它与桌面端**各持一份**
+        // 另一侧宿主（`buddy-switch-server`）同样必须启动五个 —— 它与桌面端**各持一份**
         // 启动序列（刻意不去重），任何一侧漏一段都是同一个缺陷。
         let server_path = concat!(
             env!("CARGO_MANIFEST_DIR"),
@@ -793,6 +820,7 @@ mod tests {
             "gateway_host::apply()",
             "trae_gateway_host::apply()",
             "qoder_gateway_host::apply()",
+            "loomy_gateway_host::apply()",
             "unified_gateway_host::apply()",
         ] {
             assert!(

@@ -182,11 +182,12 @@ docs/
 | `57893` | 客户端会话监听的 hook 接收端 | 需在「设置 → 客户端」显式开启 |
 | `57894` | Trae 网关 | 默认关（原 `7864`） |
 | `57895` | Qoder 网关 | 默认关（原 `7865`） |
+| `57896` | Loomy 网关 | 默认关（二期 9.2；与统一入口并存） |
 | `8899` | Trae 本地 MITM 代理 | 登录态捕获依赖它（**不是网关**） |
 
-> ★ 2026-10-17 起四条网关统一落在 `5789x` 一段（57891 / 57892 / 57894 / 57895），不再出现「WB 是 5789x、Trae/Qoder 是 78xx」的混编。**只改默认值**：配置文件里写着旧端口的保持原端口。
+> ★ 2026-10-17 起网关统一落在 `5789x` 一段（57891 / 57892 / 57894 / 57895），2026-10-22 补上 Loomy 的 57896 —— 整段刚好用满，不再出现「WB 是 5789x、Trae/Qoder 是 78xx」的混编。**只改默认值**：配置文件里写着旧端口的保持原端口。
 
-四个网关的 `/v1/models` 与 `/v1/chat/completions` **逐字重叠** ⇒ 不能 merge 进同一个 Router（axum 同路径 merge 是**运行期 panic**，有护栏测试 `two_products_own_overlapping_paths` 钉住）。所以永远是四个端口、四套 Key 库、四份配置。
+五条网关的 `/v1/models` 与 `/v1/chat/completions` **逐字重叠** ⇒ 不能 merge 进同一个 Router（axum 同路径 merge 是**运行期 panic**，有护栏测试 `two_products_own_overlapping_paths` / `loomy_gateway_also_overlaps_the_other_products` 钉住）。所以永远是五个端口、五套 Key 库、五份配置。
 
 ## 门禁（改完必跑）
 

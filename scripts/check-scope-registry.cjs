@@ -4579,7 +4579,7 @@ check("★ P7 预估由实际勾选推导（全不勾 ⇒ 无可导出；勾选�
     "trae-global": { accounts: 1, config: 4, gateway: 0 },
     "qoder-cn": { accounts: 2, config: 4, gateway: 2 },
     "qoder-global": { accounts: 1, config: 4, gateway: 1 },
-    "loomy-cn": { accounts: 1, config: 1, gateway: 0 },
+    "loomy-cn": { accounts: 1, config: 1, gateway: 1 },
   };
   const all = lib.defaultBackupSelection();
   if (lib.selectedScopeCount(all) !== 7) throw new Error("默认应全选 7 个作用域（3 平台 × 2 区域 + Loomy 单作用域，D14）");
@@ -4662,7 +4662,7 @@ check("★ 网关页两个轴：类型表 + 分区表按类型分家 + 三页接
   }
   /* ★ 表里的每一项都必须在页面上**真的接线** —— 摆了入口没接实现比不摆更糟
      （本项目已出过同类事故）。统一网关的分区走同一个 \`<UnifiedGatewayView section=…>\`。 */
-  for (const page of ["src/pages/ApiServicePage.tsx", "src/pages/TraeApiServicePage.tsx", "src/pages/QoderApiServicePage.tsx"]) {
+  for (const page of ["src/pages/ApiServicePage.tsx", "src/pages/TraeApiServicePage.tsx", "src/pages/QoderApiServicePage.tsx", "src/pages/LoomyApiServicePage.tsx"]) {
     const code = readCode(page);
     if (!/<GatewayShell\b/.test(code)) throw new Error(`${page} 没有接网关外壳`);
     if (!/parseGatewayDeepLink/.test(code)) throw new Error(`${page} 未接线两个轴的深链解析`);
@@ -4679,13 +4679,13 @@ check("★ 网关页两个轴：类型表 + 分区表按类型分家 + 三页接
   const shell = readCode("src/components/gateway/gateway-shell.tsx");
   if (!/data-split-layout/.test(shell)) throw new Error("GatewayShell 缺 data-split-layout（900px 以下不转纵向）");
   if (!/data-gateway-sidebar/.test(shell)) throw new Error("GatewayShell 缺 data-gateway-sidebar（左栏容器）");
-  /* 变异②：Trae / Qoder 若把「请求代理」也渲染出来（P12 的 C 路只覆盖 WorkBuddy 网关端口）⇒ 变红。 */
-  for (const page of ["src/pages/TraeApiServicePage.tsx", "src/pages/QoderApiServicePage.tsx"]) {
+  /* 变异②：Trae / Qoder / Loomy 若把「请求代理」也渲染出来（P12 的 C 路只覆盖 WorkBuddy 网关端口）⇒ 变红。 */
+  for (const page of ["src/pages/TraeApiServicePage.tsx", "src/pages/QoderApiServicePage.tsx", "src/pages/LoomyApiServicePage.tsx"]) {
     if (!/GW_INDEPENDENT_SECTIONS_NO_PROXY/.test(readCode(page))) {
       throw new Error(`${page} 未去掉「请求代理」（该能力只覆盖 WorkBuddy）`);
     }
   }
-  return `类型 ${types.join("/")} · 独立 ${indep.length} 项 · 统一 ${uni.join("/")} · 三页接线 · Trae/Qoder 去 proxy`;
+  return `类型 ${types.join("/")} · 独立 ${indep.length} 项 · 统一 ${uni.join("/")} · 四页接线 · Trae/Qoder/Loomy 去 proxy`;
 });
 
 check("★ P7 冲突策略只有三种（不渲染「逐条询问」，§7 #5）", () => {

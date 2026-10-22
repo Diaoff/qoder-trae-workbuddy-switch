@@ -11,7 +11,9 @@ use std::collections::HashSet;
 use std::time::Instant;
 
 use axum::body::Bytes;
+use axum::extract::{Request, State};
 use axum::http::{header, StatusCode};
+use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use serde_json::{json, Value};
 use tokio::sync::mpsc;
@@ -417,6 +419,153 @@ fn usage_counts(usage: &Value) -> (u64, u64) {
         .and_then(Value::as_u64)
         .unwrap_or(0);
     (prompt, completion)
+}
+
+// ---------------------------------------------------------------------------
+// 独立端口（57896）的端点与鉴权 —— 认证之后的逻辑仍走 [`chat_for_region`]
+// ---------------------------------------------------------------------------
+//
+// ⚠️ **认证之后的逻辑只有一份**：统一网关（57892）与独立端口（57896）的区别只在于
+// 「谁做鉴权、模型名怎么解析」。路径与另三条产品线**逐字重叠** ⇒ 必须各自端口
+// （axum 同路径 merge 会运行期 panic）。
+
+/// `GET /health`（免鉴权；`/healthz` 为兼容别名，见 [`crate::HEALTH_PATHS`]）。
+pub async fn health() -> Response {
+    axum::Json(json!({ "ok": true })).into_response()
+}
+
+/// 鉴权中间件：健康检查免鉴权；其余端点校验 `Bearer <API Key>`。
+///
+/// 错误体形状按**端点**分派（`/v1/messages` 用 Anthropic 形状）—— 给 Anthropic 客户端
+/// OpenAI 形状的话，它报的是「响应格式错误」而不是「凭据无效」，排查方向被带偏。
+pub async fn bearer_auth(
+    State(state): State<LoomyGatewayState>,
+    request: Request,
+    next: Next,
+) -> Response {
+    if crate::HEALTH_PATHS.contains(&request.uri().path()) {
+        return next.run(request).await;
+    }
+    let protocol = if request.uri().path() == "/v1/messages" {
+        Protocol::Anthropic
+    } else {
+        Protocol::OpenAi
+    };
+
+    let presented = request
+        .headers()
+        .get(header::AUTHORIZATION)
+        .and_then(|value| value.to_str().ok())
+        .map(str::trim)
+        .and_then(|value| {
+            value
+                .strip_prefix("Bearer ")
+                .or_else(|| value.strip_prefix("bearer "))
+                .map(str::trim)
+        })
+        .filter(|value| !value.is_empty());
+
+    let Some(key) = presented else {
+        return protocol_error(
+            protocol,
+            StatusCode::UNAUTHORIZED,
+            "invalid_request_error",
+            "缺少凭据：请在 Authorization 头携带 `Bearer <API Key>`（在「网关 → 密钥」页创建）",
+        );
+    };
+    if state.key_store.verify(key).is_some() {
+        next.run(request).await
+    } else {
+        protocol_error(
+            protocol,
+            StatusCode::UNAUTHORIZED,
+            "authentication_error",
+            "凭据无效或已吊销：请在「网关 → 密钥」页确认 API Key",
+        )
+    }
+}
+
+/// `GET /status`（管理面；走同一套鉴权）。
+pub async fn status(State(state): State<LoomyGatewayState>) -> Response {
+    let config = state.config_snapshot().await;
+    let now = buddy_switch_core::modules::config::now_ms();
+    let entries = {
+        let mut pools = state.pools.lock().await;
+        let pool = pools.entry(LoomyRegion::Cn).or_default();
+        pool.sync_for(LoomyRegion::Cn);
+        pool.accounts_view(now)
+    };
+    axum::Json(json!({
+        "enabled": config.enabled,
+        "port": config.port,
+        "defaultModel": config.default_model,
+        "totalRequests": state.total_requests.load(std::sync::atomic::Ordering::Relaxed),
+        "lastError": state.last_error.read().await.clone(),
+        "startedAt": state.started_at,
+        "keyCount": state.key_store.load().iter().filter(|key| !key.is_revoked()).count(),
+        "accounts": entries,
+    }))
+    .into_response()
+}
+
+/// `GET /v1/models`：上游清单 + 禁用过滤（**唯一判断点**）。
+pub async fn models(State(state): State<LoomyGatewayState>) -> Response {
+    let catalog = state.catalog_for().await;
+    let scope = buddy_switch_core::modules::product::scope_of_loomy_region(LoomyRegion::Cn);
+    let disabled = state.disabled.lock().await;
+    let filtered = models_response(&catalog.models, disabled.get(scope));
+    drop(disabled);
+    let mut body = filtered;
+    if let Some(note) = catalog.note {
+        body["note"] = Value::String(note);
+    }
+    body["source"] = Value::String(catalog.source.to_string());
+    axum::Json(body).into_response()
+}
+
+/// 模型清单出口（OpenAI `{object:"list", data:[…]}`）。
+///
+/// Loomy 的清单条目已经是 core 归一后的形状（`id` / `display_name` / `context_length`），
+/// 这里只做**禁用过滤**与字段补齐 —— 不重新解释上游字段（那会与 `/models` 解析漂移）。
+fn models_response(catalog: &[Value], disabled: &std::collections::BTreeSet<String>) -> Value {
+    let data: Vec<Value> = catalog
+        .iter()
+        .filter(|entry| {
+            let id = entry.get("id").and_then(Value::as_str).unwrap_or("");
+            !crate::disabled_models::is_disabled_in(disabled, id)
+        })
+        .map(|entry| {
+            let id = entry.get("id").and_then(Value::as_str).unwrap_or("");
+            json!({
+                "id": id,
+                "object": "model",
+                "created": 0,
+                "owned_by": "loomy",
+                "display_name": entry
+                    .get("display_name")
+                    .cloned()
+                    .unwrap_or_else(|| Value::String(id.to_string())),
+                "context_length": entry.get("context_length").cloned(),
+                "supports_image": entry.get("supports_image").cloned(),
+            })
+        })
+        .collect();
+    json!({ "object": "list", "data": data })
+}
+
+/// `POST /v1/chat/completions`。
+pub async fn chat_completions(State(state): State<LoomyGatewayState>, body: Bytes) -> Response {
+    chat_for_region(state, LoomyRegion::Cn, body, Protocol::OpenAi).await
+}
+
+/// `POST /v1/messages`。
+pub async fn messages(State(state): State<LoomyGatewayState>, body: Bytes) -> Response {
+    chat_for_region(state, LoomyRegion::Cn, body, Protocol::Anthropic).await
+}
+
+/// `POST /v1/responses`（OpenAI Responses API；Codex CLI 的 `wire_api = "responses"`）。
+pub async fn responses(State(state): State<LoomyGatewayState>, body: Bytes) -> Response {
+    chat_for_region(state, LoomyRegion::Cn, body, Protocol::Responses).await
 }
 
 /// 流式中继：上游是标准 OpenAI SSE ⇒ 直接逐帧透传（含 usage 旁路记账）。

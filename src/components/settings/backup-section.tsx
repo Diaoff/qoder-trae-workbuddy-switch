@@ -254,9 +254,10 @@ export function BackupSection() {
              ⇒ 报 0 而不是编一个数。 */
           "qoder-cn": { accounts: qoderCn, config: 0, gateway: 0 },
           "qoder-global": { accounts: qoderGlobal, config: 0, gateway: 0 },
-          /* Loomy：账号数真实读取；config / gateway 分区一期为空（settings 备份分区
-             有内容但网关无独立文件）⇒ config 按真实分区数给 1（settings），gateway 0。 */
-          "loomy-cn": { accounts: loomyCn, config: 1, gateway: 0 },
+          /* Loomy：账号数真实读取；config = 1（settings.json）。
+             gateway 分区二期 9.2 起**有真实文件**（`loomy/gateway_config.json` +
+             `gateway_keys.json`）⇒ 报 1（与 Qoder 侧同一口径：清单不入备份）。 */
+          "loomy-cn": { accounts: loomyCn, config: 1, gateway: 1 },
           "loomy-global": { accounts: loomyGlobal, config: 0, gateway: 0 },
         });
         setStatsError("");

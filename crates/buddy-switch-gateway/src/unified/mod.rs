@@ -264,7 +264,9 @@ pub mod admin {
             RelayTarget::Wb(region) => wb_pool(region).await,
             RelayTarget::Trae(variant) => trae_pool(variant).await,
             RelayTarget::Qoder(region) => qoder_pool(region).await,
-            // Loomy 无独立端口 / Key 库，池视图由账号库直接投影（诚实空态：无账号即空表）。
+            // Loomy 池视图由账号库直接投影（诚实空态：无账号即空表）。
+            // ⚠️ 二期 9.2 起 Loomy **有**了自己的独立端口与 Key 库，但统一入口仍读**同一份**
+            //   池（`LoomyGatewayState::shared()`）⇒ 这条分派不用改。
             RelayTarget::Loomy(region) => loomy_pool(region).await,
         };
         pool_object(group.target, &group.namespaces, summary, accounts)
@@ -325,7 +327,7 @@ pub mod admin {
         (pool.summary(now), pool.accounts_view(now))
     }
 
-    /// Loomy：账号库直接投影（一期无独立端口 / Key 库，池即账号库的运行态视图）。
+    /// Loomy：账号库直接投影（池即账号库的运行态视图；与独立端口 57896 是**同一份** state）。
     async fn loomy_pool(region: LoomyRegion) -> (Value, Vec<Value>) {
         crate::loomy::pool_view_for(region).await
     }

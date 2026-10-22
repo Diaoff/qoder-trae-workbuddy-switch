@@ -519,6 +519,14 @@ export const zh = {
   "shared.demo.qoder.key.defaultCn": "Qoder 默认 Key",
   "shared.demo.qoder.key.cliCn": "Qoder CLI",
   "shared.demo.qoder.key.global": "Qoder 国际版 Key",
+  // ---- Loomy：网关演示（池状态原因 / 日志错误 / Key 名）----
+  "shared.demo.loomy.name.main": "loomy-main",
+  "shared.demo.loomy.name.trial": "loomy-trial",
+  "shared.demo.loomy.name.spare": "loomy-spare",
+  "shared.demo.loomy.gateway.reasonCooling": "上游暂时不可用（冷却中）",
+  "shared.demo.loomy.gateway.rateLimited": "上游限流（账号级，已切到其它账号）",
+  "shared.demo.loomy.key.default": "Loomy 默认 Key",
+  "shared.demo.loomy.key.old": "Loomy 旧 Key",
   // 凭据摘要的**格式**与 core `CredentialShape::describe` 逐字一致（演示站与真机同形）。
   "shared.demo.qoder.cred.device": "访问令牌(device_access) · 刷新令牌(device_refresh)",
   "shared.demo.qoder.cred.deviceOnly": "访问令牌(device_access) · 无刷新令牌",

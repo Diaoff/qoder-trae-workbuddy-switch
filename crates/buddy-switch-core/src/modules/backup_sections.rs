@@ -192,11 +192,10 @@ fn read_gateway(scope: Scope) -> Result<Value, String> {
             "keys": read_json_file(&qoder::paths::gateway_keys_file()),
             "models": Value::Null,
         })),
-        // Loomy 一期没有独立网关文件（无独立端口 / Key 库，走统一网关）⇒ 三个子项给 null。
-        // 将来开独立端口时在这里补 loomy 的 config/keys 文件路径。
+        // Loomy（二期 9.2 起有独立端口 / Key 库）：与 Qoder 同款 —— 清单由网关现取 ⇒ `null`。
         Product::Loomy => Ok(json!({
-            "config": Value::Null,
-            "keys": Value::Null,
+            "config": read_json_file(&loomy::paths::gateway_config_file()),
+            "keys": read_json_file(&loomy::paths::gateway_keys_file()),
             "models": Value::Null,
         })),
     }
@@ -383,8 +382,11 @@ fn write_gateway(scope: Scope, merged: &Value) -> Result<(), String> {
             write_json_section(merged.get("keys"), &qoder::paths::gateway_keys_file())?;
             Ok(())
         }
-        // Loomy 一期无独立网关文件 ⇒ 空操作（read_gateway 同款说明）。
-        Product::Loomy => Ok(()),
+        Product::Loomy => {
+            write_json_section(merged.get("config"), &loomy::paths::gateway_config_file())?;
+            write_json_section(merged.get("keys"), &loomy::paths::gateway_keys_file())?;
+            Ok(())
+        }
     }
 }
 

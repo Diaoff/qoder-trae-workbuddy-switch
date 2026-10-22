@@ -24,6 +24,7 @@
 mod api;
 mod gateway_host;
 // Qoder 网关（第三个平台，默认 57895）：独立端口，不与另三个 merge（axum 同路径 merge 会 panic）。
+mod loomy_gateway_host;
 mod qoder_gateway_host;
 mod trae_gateway_host;
 // 统一网关（第三个产品线，默认 57892）：跨产品线的单一入口 —— 独立端口，不与另两个 merge。
@@ -528,6 +529,14 @@ async fn serve(args: &[String]) {
         Ok(Some(addr)) => println!("Qoder API 网关: http://{addr}"),
         Ok(None) => {}
         Err(error) => eprintln!("[qoder-gateway] 启动失败: {error}"),
+    }
+
+    // 按配置启动 Loomy 网关独立监听（默认关闭；默认 127.0.0.1:57896）。
+    // 与统一入口并存：两者共用同一份池 / 日志，关掉任一个不影响另一个。
+    match loomy_gateway_host::apply().await {
+        Ok(Some(addr)) => println!("Loomy API 网关: http://{addr}"),
+        Ok(None) => {}
+        Err(error) => eprintln!("[loomy-gateway] 启动失败: {error}"),
     }
 
     // 按配置启动**统一网关**独立监听（默认关闭；默认 127.0.0.1:57892）。

@@ -506,6 +506,33 @@ mod tests {
         );
     }
 
+    /// ★★ 第四条产品线（Loomy，二期 9.2）**也**与其余产品线重叠 ⇒ 同样必须独立端口。
+    ///
+    /// 可证伪：把 Loomy 的 `/v1/models` 改挂到自己的前缀下 ⇒ 本条红 —— 那是提醒
+    /// 「可以复核是否还需要第四个端口」，不是缺陷。
+    #[test]
+    fn loomy_gateway_also_overlaps_the_other_products() {
+        let loomy: BTreeSet<&str> = crate::loomy::LoomyGateway::OWNED_PATHS
+            .iter()
+            .copied()
+            .collect();
+        let wb: BTreeSet<&str> = WbGateway::OWNED_PATHS.iter().copied().collect();
+        let qoder: BTreeSet<&str> = crate::qoder::QoderGateway::OWNED_PATHS
+            .iter()
+            .copied()
+            .collect();
+        for other in [&wb, &qoder] {
+            assert!(
+                !loomy.intersection(other).collect::<Vec<_>>().is_empty(),
+                "Loomy 与其余产品线必须存在路径重叠（独立端口的依据）"
+            );
+        }
+        assert!(loomy.contains(&"/v1/models"));
+        assert!(loomy.contains(&"/v1/chat/completions"));
+        assert!(loomy.contains(&"/v1/messages"));
+        assert!(loomy.contains(&"/v1/responses"));
+    }
+
     /// P12 T03：业务转发路由**必须**在册，且**真的挂在 `router()` 里**。
     ///
     /// 可证伪：删掉 `router()` 里的 `.route("/biz/*path", …)` ⇒ 本用例变红。

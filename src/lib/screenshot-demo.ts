@@ -1883,6 +1883,165 @@ function demoQoderLocalSources(scope: string): unknown {
  * `preferred_uid` 指向下方账号池里那个可用的主账号（uid 必须对得上，否则选择器会显示
  * 「已指定的账号（当前不在池中）」，看起来像 bug）。
  */
+function demoLoomyGatewayConfig(): unknown {
+  return {
+    enabled: true,
+    bind_addr: "127.0.0.1",
+    port: 57896,
+    allow_non_loopback: false,
+    log_keep: 200,
+    log_bodies: false,
+    max_body_mb: 0,
+    default_model: "",
+    max_rotate: 3,
+    preferred_uid: "110000000000000000",
+    sticky_ttl_ms: 30 * 60 * 1000,
+  };
+}
+
+/**
+ * Loomy 网关状态（**snake_case**；单作用域 ⇒ 无 `region` / 无 `diagnose`）。
+ *
+ * ★ 数字自洽（本仓红线）：`pool` 各格 = `accounts` 逐条状态数出来的；
+ * `api_key_prefix` = 下方 Key 列表里那把未吊销 Key 的前缀。
+ */
+function demoLoomyGatewayStatus(): unknown {
+  const coolingUntil = Math.floor(Date.now() / 1000) + 5400;
+  const accounts = [
+    {
+      uid: "110000000000000000",
+      name: t("shared.demo.loomy.name.main"),
+      status: "available",
+      credits: null,
+      cooling: false,
+      cooldownUntil: null,
+      cooldownReason: null,
+      disabled: false,
+    },
+    {
+      uid: "loomy-0a1b2c3d4e5f6071",
+      name: t("shared.demo.loomy.name.trial"),
+      status: "cooling",
+      credits: null,
+      cooling: true,
+      cooldownUntil: coolingUntil,
+      cooldownReason: t("shared.demo.loomy.gateway.reasonCooling"),
+      disabled: false,
+    },
+    {
+      // 已排除：**互斥第六态**（不计入 available），演示里要看得到这一格。
+      uid: "loomy-ffeeddccbbaa9988",
+      name: t("shared.demo.loomy.name.spare"),
+      status: "excluded",
+      credits: null,
+      cooling: false,
+      cooldownUntil: null,
+      cooldownReason: null,
+      disabled: false,
+    },
+  ];
+  const available = accounts.filter((item) => item.status === "available").length;
+  const cooling = accounts.filter((item) => item.status === "cooling").length;
+  const excluded = accounts.filter((item) => item.status === "excluded").length;
+  return {
+    enabled: true,
+    running: true,
+    addr: "127.0.0.1:57896",
+    base_url: "http://127.0.0.1:57896",
+    bind_addr: "127.0.0.1",
+    port: 57896,
+    allow_non_loopback: false,
+    version: "2026.9.17",
+    total_requests: 96,
+    last_error: null,
+    api_key_prefix: "sk-loomy-7c31",
+    pool: {
+      total: accounts.length,
+      available,
+      cooling,
+      disabled: 0,
+      expired: 0,
+      zero_credits: 0,
+      total_credits: 0,
+      excluded,
+    },
+    accounts,
+    // Loomy 池没有诊断串（无模型级冷却轴）⇒ 空数组（既有形状里的键必须存在）。
+    diagnose: [],
+    upstream: "https://loomyad.xunfei.cn/api/v1",
+  };
+}
+
+/**
+ * Loomy 对外模型清单（**未过滤** + 逐条 `disabled`）。
+ *
+ * 与真机同一条纪律：管理面给全量（禁用的也在），才能让「已禁用」的行可见。
+ */
+function demoLoomyGatewayModels(): unknown {
+  const model = (id: string, displayName: string, contextLength: number, disabled = false) => ({
+    id,
+    object: "model",
+    owned_by: "loomy",
+    display_name: displayName,
+    context_length: contextLength,
+    supports_image: false,
+    disabled,
+  });
+  return {
+    object: "list",
+    source: "live",
+    fetchedAt: Date.now() - 8 * 60 * 1000,
+    note: null,
+    data: [
+      model("xopglm5", "GLM 5.3 · x0.8", 128_000),
+      model("xopqwen36v35b", "Qwen 3.8 Max · x12.0", 256_000),
+      // 已禁用：**仍留在清单里**（标灰 + 「启用」出口），与真机同形。
+      model("xopminimaxm2", "MiniMax M3 · x4.0", 200_000, true),
+      model("xopdeepseekv32", "DeepSeek V3.2 · x1.5", 128_000),
+    ],
+  };
+}
+
+/** Loomy 多 Key（脱敏；无 `region` —— 单作用域平台不该多一列恒值）。 */
+function demoLoomyApiKeys(): { keys: unknown[] } {
+  return {
+    keys: [
+      {
+        id: "demo-loomy-key-1",
+        name: t("shared.demo.loomy.key.default"),
+        prefix: "sk-loomy-7c31",
+        suffix: "a9d4",
+        createdAt: atLocalTime(23, 10, 12),
+        revokedAt: null,
+        revoked: false,
+        lastUsedAt: atLocalTime(0, 17, 5),
+      },
+      {
+        // 已吊销：必须同时给「恢复 + 删除」两个出口（演示里要看得到）。
+        id: "demo-loomy-key-2",
+        name: t("shared.demo.loomy.key.old"),
+        prefix: "sk-loomy-2f80",
+        suffix: "6b1e",
+        createdAt: atLocalTime(13, 15, 40),
+        revokedAt: atLocalTime(1, 9, 20),
+        revoked: true,
+        lastUsedAt: atLocalTime(0, 15, 2),
+      },
+    ],
+  };
+}
+
+/** Loomy 请求日志（元数据；**无 `region`** —— 单作用域一个监听只服务一本账号库）。 */
+function demoLoomyGatewayLogs(): unknown {
+  const now = Math.floor(Date.now() / 1000);
+  const logs = [
+    { ts: (now - 70) * 1000, endpoint: "/v1/chat/completions", method: "POST", account: "110000000000000000", model: "xopglm5", status: 200, latencyMs: 704, promptTokens: 1320, completionTokens: 341, stream: true, error: null },
+    { ts: (now - 620) * 1000, endpoint: "/v1/messages", method: "POST", account: "110000000000000000", model: "xopqwen36v35b", status: 200, latencyMs: 612, promptTokens: 890, completionTokens: 240, stream: false, error: null },
+    { ts: (now - 1800) * 1000, endpoint: "/v1/chat/completions", method: "POST", account: "loomy-0a1b2c3d4e5f6071", model: "xopdeepseekv32", status: 429, latencyMs: 88, promptTokens: 0, completionTokens: 0, stream: true, error: t("shared.demo.loomy.gateway.rateLimited") },
+  ];
+  return { logs };
+}
+
 function demoQoderGatewayConfig(): QoderGatewayConfigRaw {
   return {
     enabled: true,
@@ -3035,9 +3194,15 @@ export function screenshotDemoResponse(command: string, args?: Record<string, un
     }
     case "list_qoder_api_keys": return demoQoderApiKeys();
     case "get_qoder_gateway_logs": return demoQoderGatewayLogs();
-    /* Loomy（只读一条）：账号列表；写操作不进演示只读面。 */
+    /* Loomy（只读四条）：账号列表 + 积分采样 + 独立网关的配置 / 状态 / 清单 / Key / 日志；
+       写操作（导入 / 登录 / 刷新积分 / 保存网关配置 / Key 三态）不进演示只读面。 */
     case "loomy_accounts": return demoLoomyAccounts("loomy-cn");
     case "loomy_credits_daily": return demoLoomyCreditsDaily();
+    case "get_loomy_gateway_config": return demoLoomyGatewayConfig();
+    case "loomy_gateway_status": return demoLoomyGatewayStatus();
+    case "get_loomy_gateway_models": return demoLoomyGatewayModels();
+    case "list_loomy_api_keys": return demoLoomyApiKeys();
+    case "get_loomy_gateway_logs": return demoLoomyGatewayLogs();
     /* P7 全局备份：只登记**只读**命令（导出 / 预览 / 导入 / 恢复是动作，不进演示只读面 ——
        由页面侧的错误提示处理）。`get_auto_backup_config` **如实返回默认开**（§7 #7），
        否则截图会误导成「装上就是关着的」。 */

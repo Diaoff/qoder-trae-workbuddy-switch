@@ -1,6 +1,6 @@
 # Loomy 集成 — 模块 / 接口 / 依赖梳理
 
-> 状态：**实施中**（一期 + 二期微信扫码 + 积分逐日趋势已落地；独立端口 / model_probe 待做）。
+> 状态：**实施中**（一期 + 二期微信扫码 + 积分逐日趋势 + 独立端口已落地；model_probe 待做）。
 > 事实依据：`docs/specs/LOOMY-PLATFORM.md`（平台事实与建模决策）。
 
 ## 0. 一句话方案
@@ -40,7 +40,13 @@ L5 门禁与文档
 ## 4. 二期清单
 
 - ~~微信扫码登录（纯 HTTP 长轮询，二维码由面板渲染）~~ ✅ 2026-10-22（`modules/loomy/wechat.rs` + 6 条宿主命令 + 登录 Dialog；协议事实见 `LOOMY-PLATFORM.md`）。
-- 独立端口 + impl GatewayProduct 监听（从 57896 起）+ sk-loomy- Key 库。
+- ~~独立端口 + impl GatewayProduct 监听（从 57896 起）+ sk-loomy- Key 库~~ ✅ 2026-10-22（二期 9.2）
+  `gateway/src/loomy/{apikey,mod}.rs`（`LoomyGatewayConfig` / `LoomyApiKeyStore` /
+  `impl GatewayProduct for LoomyGateway` / `status_view` / `admin_models_response`）+
+  `gateway/src/loomy/routes.rs` 的四条端点与 `bearer_auth` + 两宿主监听
+  （`{buddy-switch-server/src,src-tauri/src}/loomy_gateway*.rs`）+ 宿主的
+  `/api/loomy/gateway/*` 与 `loomy_*_api_key` 一族 + `LoomyApiServicePage`。
+  ★ 与统一入口**并存**（共用同一份 state），关掉任一个不影响另一个。
 - ~~定期采样积分 → 用量页「趋势」视图~~ ✅ 2026-10-22（二期 9.3）
   `modules/loomy/credits_daily.rs`（按 `(日期, uid)` 存两池读数，90 天窗口）+ 排程
   `ScheduleTask::LoomyPointsSample`（默认开，09:00 / 21:00 两帧，登记进 `background::TASKS`）

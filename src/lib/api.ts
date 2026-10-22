@@ -127,6 +127,8 @@ import type { CompanionSnapshot } from "./companion";
 // Qoder 网关配置的**写回形状**（snake_case）—— 同样是 type-only（`qoder-gateway.ts`
 // 不依赖本模块，这里只是复用它的形状定义，避免两处各写一份会漂移的接口）。
 import type { QoderGatewayConfigRaw } from "./qoder-gateway";
+/* Loomy 网关配置的写回形状同理（`loomy-gateway.ts` 的 `LoomyGatewayConfigRaw`）。 */
+import type { LoomyGatewayConfigRaw } from "./loomy-gateway";
 
 /**
  * 双通道适配层：
@@ -224,6 +226,10 @@ const DEMO_READ_COMMANDS = new Set([
   // Loomy 平台（**只读**）：账号列表 + 积分逐日采样（本地台账，不联网）；
   // 导入 / 登录 / 删除 / 刷新积分是写操作不进演示。
   "loomy_accounts", "loomy_credits_daily",
+  // Loomy 独立网关（二期 9.2）的**只读**面：配置 / 状态 / 清单 / Key 列表 / 日志。
+  // 保存配置 / Key 三态 / 排除账号都是**写**，一律不进这里（由页面侧处理）。
+  "get_loomy_gateway_config", "loomy_gateway_status", "get_loomy_gateway_models",
+  "list_loomy_api_keys", "get_loomy_gateway_logs",
   // issue #47：逐账号「今日签到状态」（**只读**）。
   "qoder_checkin_status_map",
   "get_qoder_gateway_config", "qoder_gateway_status", "get_qoder_gateway_models",
@@ -568,6 +574,20 @@ const ROUTES: Record<string, Route> = {
   loomy_checkin_claim: { method: "POST", path: "/api/loomy/checkin/claim" },
   loomy_sms_send: { method: "POST", path: "/api/loomy/sms/send" },
   loomy_sms_verify: { method: "POST", path: "/api/loomy/sms/verify" },
+  // Loomy 独立网关（二期 9.2；网关本体走独立端口 57896）—— 与 qoder gateway 那组平行。
+  // ⚠️ 无归属轴：Loomy 单作用域，命令不带 scope 参数（多一个恒值参数就是假参数）。
+  get_loomy_gateway_config: { method: "GET", path: "/api/loomy/gateway/config" },
+  save_loomy_gateway_config: { method: "POST", path: "/api/loomy/gateway/config" },
+  loomy_gateway_status: { method: "GET", path: "/api/loomy/gateway/status" },
+  get_loomy_gateway_models: { method: "GET", path: "/api/loomy/gateway/models" },
+  set_loomy_gateway_pool_exclusion: { method: "POST", path: "/api/loomy/gateway/pool/exclusions" },
+  list_loomy_api_keys: { method: "GET", path: "/api/loomy/gateway/keys" },
+  create_loomy_api_key: { method: "POST", path: "/api/loomy/gateway/keys" },
+  revoke_loomy_api_key: { method: "POST", path: "/api/loomy/gateway/keys/revoke" },
+  restore_loomy_api_key: { method: "POST", path: "/api/loomy/gateway/keys/restore" },
+  delete_loomy_api_key: { method: "POST", path: "/api/loomy/gateway/keys/delete" },
+  get_loomy_gateway_logs: { method: "GET", path: "/api/loomy/gateway/logs" },
+  clear_loomy_gateway_logs: { method: "POST", path: "/api/loomy/gateway/logs/clear" },
   // Loomy 微信扫码（二期）：纯 HTTP 四步 + 长轮询
   loomy_wechat_start: { method: "POST", path: "/api/loomy/wechat/start" },
   loomy_wechat_poll: { method: "POST", path: "/api/loomy/wechat/poll" },
@@ -3475,6 +3495,90 @@ export function getQoderGatewayLogs(): Promise<unknown> {
 /** 清空日志。 */
 export function clearQoderGatewayLogs(): Promise<{ ok: boolean }> {
   return call<{ ok: boolean }>("clear_qoder_gateway_logs");
+}
+
+// ---------------------------------------------------------------------------
+// Loomy API 网关管理面（二期 9.2；独立端口 57896，与统一入口并存）
+// ---------------------------------------------------------------------------
+//
+// 形状与另外三条网关线路**刻意对齐**（snake_case 状态视图 / 同一个脱敏
+// `{keys:[…]}` 列表 / 同一份日志字段）；差异只有一处：**没有归属轴**
+// —— Loomy 单作用域，任何 `scope` 参数都恒为 `loomy-cn`，写出来就是假参数。
+//
+// ⚠️ 这批命令**不进** `SCOPE_PARAMETERIZED`：它们根本没有 `scope` 参数
+//   （门禁第 8 条校验的是「参数化命令必须带 scope」，这里不是参数化命令）。
+
+/** Loomy 网关配置（snake_case 原始形状，交给 `normalizeLoomyGatewayConfig`）。 */
+export function getLoomyGatewayConfig(): Promise<unknown> {
+  return call("get_loomy_gateway_config");
+}
+
+/** 保存配置并应用（启动 / 重启独立监听）。 */
+export function saveLoomyGatewayConfig(config: LoomyGatewayConfigRaw): Promise<unknown> {
+  return call("save_loomy_gateway_config", { config });
+}
+
+/** 网关运行状态 + 账号池。 */
+export function loomyGatewayStatus(): Promise<unknown> {
+  return call("loomy_gateway_status");
+}
+
+/** 对外暴露的模型清单（**未过滤**禁用 + 来源 / 原因）。`refresh` ⇒ 绕过 10 分钟缓存。 */
+export function getLoomyGatewayModels(refresh = false): Promise<unknown> {
+  return refresh
+    ? call("get_loomy_gateway_models", { refresh: true })
+    : call("get_loomy_gateway_models");
+}
+
+/** 设置 / 取消某账号的池排除（硬约束：选号跳过该账号）。 */
+export function setLoomyGatewayPoolExclusion(
+  uid: string,
+  excluded: boolean,
+  note?: string,
+): Promise<unknown> {
+  return call("set_loomy_gateway_pool_exclusion", { uid, excluded, note });
+}
+
+/** 多 Key 列表（脱敏）。 */
+export function listLoomyApiKeys(): Promise<unknown> {
+  return call("list_loomy_api_keys");
+}
+
+/** 新建 Key —— **明文仅此一次返回**。 */
+export interface LoomyCreateApiKeyResult {
+  ok: boolean;
+  /** 一次性明文（`sk-loomy-` 前缀）。 */
+  key?: string;
+  record?: { id: string; name: string; prefix: string };
+}
+
+export function createLoomyApiKey(name: string): Promise<LoomyCreateApiKeyResult> {
+  return call<LoomyCreateApiKeyResult>("create_loomy_api_key", { name });
+}
+
+/** 吊销 Key（置 `revokedAt`；可逆）。 */
+export function revokeLoomyApiKey(id: string): Promise<{ ok: boolean }> {
+  return call<{ ok: boolean }>("revoke_loomy_api_key", { id });
+}
+
+/** 撤销吊销（Key 重新可用；明文未变，客户端无需改配置）。 */
+export function restoreLoomyApiKey(id: string): Promise<{ ok: boolean }> {
+  return call<{ ok: boolean }>("restore_loomy_api_key", { id });
+}
+
+/** 物理删除**已吊销**的 Key。 */
+export function deleteLoomyApiKey(id: string): Promise<{ ok: boolean }> {
+  return call<{ ok: boolean }>("delete_loomy_api_key", { id });
+}
+
+/** 请求日志（元数据）。 */
+export function getLoomyGatewayLogs(): Promise<unknown> {
+  return call("get_loomy_gateway_logs");
+}
+
+/** 清空日志。 */
+export function clearLoomyGatewayLogs(): Promise<{ ok: boolean }> {
+  return call<{ ok: boolean }>("clear_loomy_gateway_logs");
 }
 
 /** 一条 Qoder 账号的**下发形态**（**不含令牌明文**）。 */

@@ -11,7 +11,10 @@
 //! ├── settings.json          # 模块设置（单区不分家）
 //! ├── accounts.cn.json       # 账号库
 //! ├── checkin_ledger.cn.json # 今日已签到台账（跨运行累积）
-//! └── credits_daily.cn.json  # 积分逐日采样（趋势图数据源）
+//! ├── credits_daily.cn.json  # 积分逐日采样（趋势图数据源）
+//! ├── gateway_config.json    # 独立网关配置（端口 / 开关，不分家）
+//! ├── gateway_keys.json      # 独立网关 Key 库（只存 sha256 + 前缀）
+//! └── logs/                  # 网关请求日志
 //! ```
 
 use std::path::PathBuf;
@@ -60,6 +63,22 @@ pub fn settings_file() -> PathBuf {
     loomy_dir().join("settings.json")
 }
 
+/// 独立网关配置（**不分家**：端口与全局开关与区域无关；二期 9.2）。
+pub fn gateway_config_file() -> PathBuf {
+    loomy_dir().join("gateway_config.json")
+}
+
+/// 独立网关 Key 库（**只存 `sha256` 哈希 + 前缀，无明文** —— 与另三条产品线同款，
+/// 因此入备份不构成凭据泄露）。
+pub fn gateway_keys_file() -> PathBuf {
+    loomy_dir().join("gateway_keys.json")
+}
+
+/// 日志目录（**不分家**）。
+pub fn logs_dir() -> PathBuf {
+    loomy_dir().join("logs")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -94,5 +113,8 @@ mod tests {
         assert!(dir.ends_with("loomy"), "{}", dir.display());
         assert!(accounts_file_for(LoomyRegion::Cn).starts_with(&dir));
         assert!(settings_file().starts_with(&dir));
+        assert_eq!(gateway_config_file(), dir.join("gateway_config.json"));
+        assert_eq!(gateway_keys_file(), dir.join("gateway_keys.json"));
+        assert_eq!(logs_dir(), dir.join("logs"));
     }
 }

@@ -70,6 +70,14 @@ export const WB_POOL_TILES: PoolTileKey[] = [
  */
 export const QODER_POOL_TILES: PoolTileKey[] = ["available", "cooling", "disabled", "modelCooling"];
 
+/**
+ * Loomy 侧的四格 —— **没有积分两格**（池不建模积分）、**没有模型冷却**
+ * （上游 429 是账号级的），但**有「已排除」**（排除端点已接，互斥第六态）。
+ *
+ * 摆一格永远为 0 的数字就是假控件（与 WB 去掉「积分过期」同一判据）。
+ */
+export const LOOMY_POOL_TILES: PoolTileKey[] = ["available", "cooling", "disabled", "excluded"];
+
 const TILE_META: Record<PoolTileKey, { labelKey: TranslationKey; tone: "ok" | "warn" | "danger" | "muted" }> = {
   available: { labelKey: "shared.gateway.pool.tile.available", tone: "ok" },
   cooling: { labelKey: "shared.gateway.pool.tile.cooling", tone: "warn" },

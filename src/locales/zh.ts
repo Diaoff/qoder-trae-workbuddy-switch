@@ -11,6 +11,7 @@ import { zh as traeComponents } from "./domains/traeComponents.zh";
 import { zh as traeGateway } from "./domains/traeGateway.zh";
 import { zh as traePages } from "./domains/traePages.zh";
 import { zh as qoderPages } from "./domains/qoderPages.zh";
+import { zh as loomyGateway } from "./domains/loomyGateway.zh";
 import { zh as qoderGateway } from "./domains/qoderGateway.zh";
 import { zh as traeStats } from "./domains/traeStats.zh";
 import { zh as wbAccounts } from "./domains/wbAccounts.zh";
@@ -49,6 +50,7 @@ export const zh = {
   ...traePages,
   ...qoderPages,
   ...qoderGateway,
+  ...loomyGateway,
   ...traeStats,
   ...traeComponents,
   ...traeGateway,

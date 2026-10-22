@@ -107,6 +107,7 @@ runner，再由 merge job 拼 manifest）。手动触发该工作流只产出 `e
 | `57893` | Agent hook 接收端 | 固定绑回环，容器外无法访问 |
 | `57894` | Trae API 网关 | ❌ 同上 |
 | `57895` | Qoder API 网关 | ❌ 同上 |
+| `57896` | Loomy API 网关 | ❌ 同上 |
 
 `docker-compose.yml` 里几个网关的映射是**注释掉的**。要用它们，先做两件事：
 
