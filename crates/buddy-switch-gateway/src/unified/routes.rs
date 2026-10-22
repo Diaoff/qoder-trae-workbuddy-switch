@@ -216,6 +216,9 @@ async fn relay_llm(
                         headers,
                         rewritten,
                         AlreadyResolved,
+                        // 统一网关的 Key 是另一套台账（`UnifiedApiKeyRecord`）⇒ 本轮不过配额；
+                        // 同构接入见实施拆解步 6（`None` = 全部账号 + 不限额，保持现状）。
+                        None,
                     )
                     .await
                 }
@@ -226,6 +229,8 @@ async fn relay_llm(
                         headers,
                         rewritten,
                         AlreadyResolved,
+                        // 同上：统一网关的 Key 策略下一轮接。
+                        None,
                     )
                     .await
                 }
@@ -236,6 +241,8 @@ async fn relay_llm(
                         headers,
                         rewritten,
                         AlreadyResolved,
+                        // 统一网关的 Key 是另一套台账 ⇒ 本轮不过配额（同构接入见实施拆解步 6）。
+                        None,
                     )
                     .await
                 }
@@ -504,7 +511,8 @@ pub async fn biz(
 
     // ⑤ 分派（复用既有的白名单 + `relay` 治理层，**不另写轮换逻辑**）
     let wb = <crate::WbGateway as crate::GatewayProduct>::shared_state();
-    crate::routes::biz::biz_for_region(wb, region, path, body, biz_method).await
+    // 统一网关的 Key 是另一套台账 ⇒ 本轮不过配额（同构接入见实施拆解步 6）。
+    crate::routes::biz::biz_for_region(wb, region, path, body, biz_method, None).await
 }
 
 /// 按端点选**错误体形状**：`/v1/messages` 用 Anthropic 形状，其余用 OpenAI 形状。

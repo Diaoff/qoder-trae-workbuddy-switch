@@ -322,6 +322,8 @@ fn api_routes() -> Router {
             get(api_gateway_list_keys).post(api_gateway_create_key),
         )
         .route("/api/gateway/keys/revoke", post(api_gateway_revoke_key))
+        .route("/api/gateway/keys/policy", post(api_gateway_set_key_policy))
+        .route("/api/gateway/keys/usage", get(api_gateway_key_usage))
         .route("/api/gateway/keys/restore", post(api_gateway_restore_key))
         .route("/api/gateway/keys/delete", post(api_gateway_delete_key))
         .route("/api/gateway/models", get(api_gateway_models))
@@ -3129,6 +3131,52 @@ async fn api_gateway_delete_key(Json(body): Json<Value>) -> Response {
         Ok(()) => json_ok(json!({ "ok": true })),
         Err(error) => json_err(error, StatusCode::BAD_REQUEST),
     }
+}
+
+/// POST /api/gateway/keys/policy —— 更新某把 Key 的策略（配额 + 账号范围）。
+///
+/// ★ 入参是**完整策略**（不是补丁）：两个 radio 必选其一由前端抽屉保证，
+/// 后端不猜「用户是不是想只改一半」。矛盾值（不限额却带上限）由
+/// [`KeyPolicy::normalized`] 收敛到安全的一边，空白名单直接拒绝。
+async fn api_gateway_set_key_policy(Json(body): Json<Value>) -> Response {
+    use buddy_switch_gateway::apikey::KeyPolicy;
+    let state = crate::gateway_host::shared_state();
+    let id = body.get("id").and_then(Value::as_str).unwrap_or("");
+    let policy: KeyPolicy = match serde_json::from_value(body.get("policy").cloned().unwrap_or(Value::Null)) {
+        Ok(policy) => policy,
+        Err(error) => return json_err(format!("策略字段不合法: {error}"), StatusCode::BAD_REQUEST),
+    };
+    match state.keys.update_policy(id, policy) {
+        Ok(()) => json_ok(json!({ "ok": true })),
+        Err(error) => json_err(error, StatusCode::BAD_REQUEST),
+    }
+}
+
+/// GET /api/gateway/keys/usage?id=… —— 读某把 Key 的用量快照（累计 + 本周期）。
+///
+/// 与 `list` 分开的理由：用量是**每请求写**的账本，让列表命令每次多读一个文件
+/// 不划算；且用量只在打开抽屉/展开行时才需要。
+async fn api_gateway_key_usage(RawQuery(query): RawQuery) -> Response {
+    let state = crate::gateway_host::shared_state();
+    let id = query_value(query.as_deref(), "id").unwrap_or_default();
+    if id.is_empty() {
+        return json_err("缺少 id".to_string(), StatusCode::BAD_REQUEST);
+    }
+    let now = buddy_switch_core::modules::config::now_ms();
+    let Some(record) = state.keys.list().into_iter().find(|record| record.id == id) else {
+        return json_err("API Key 不存在".to_string(), StatusCode::BAD_REQUEST);
+    };
+    let usage = state.key_usage.snapshot(&id);
+    let used = state.key_usage.used_for(&id, record.quota_period, now);
+    json_ok(json!({
+        "ok": true,
+        "keyId": id,
+        "unit": record.quota_unit,
+        "period": record.quota_period,
+        "periodKey": record.quota_period.period_key(now),
+        "used": used,
+        "total": usage.as_ref().map(|entry| entry.total).unwrap_or(0),
+    }))
 }
 
 async fn api_gateway_models(RawQuery(query): RawQuery) -> Response {
@@ -6007,6 +6055,16 @@ mod tests {
                 "revokedAt",
                 "revoked",
                 "lastUsedAt",
+                // ★ issue #76：策略七件套（`apikey.rs` 同款白名单已同步）。
+                //   与 `suffix` 同一性质：**显式批准**才进掩敏视图；
+                //   真正的红线是下面三条（无 hash / 无明文 / 无摘要）。
+                "quotaMode",
+                "quotaLimit",
+                "quotaUnit",
+                "quotaPeriod",
+                "scopeMode",
+                "scopeAccounts",
+                "scopeGroups",
             ]),
             "masked record must be an explicit non-secret whitelist"
         );

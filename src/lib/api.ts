@@ -421,6 +421,11 @@ const ROUTES: Record<string, Route> = {
   // 撤销吊销（恢复）与吊销互逆：已吊销的 Key **两个出口都必须在**（恢复 / 删除）。
   restore_api_key: { method: "POST", path: "/api/gateway/keys/restore" },
   delete_api_key: { method: "POST", path: "/api/gateway/keys/delete" },
+  // ★ issue #76：密钥策略（用量配额 + 可访问账号）。入参是**完整策略**（非补丁）——
+  // 两个 radio 必选其一由抽屉保证，后端不猜「只想改一半」。
+  set_key_policy: { method: "POST", path: "/api/gateway/keys/policy" },
+  // 按密钥的用量快照（与 list 分开：用量每请求写，列表命令不该每次多读一个文件）。
+  key_usage: { method: "GET", path: "/api/gateway/keys/usage" },
   // 账号池：人工解除某账号的禁用。禁用是**终态且落盘**，此前没有任何出口
   // （余额刷新被 `disabled` 挡住、`revive` 在生产代码里零调用点）。
   revive_gateway_account: { method: "POST", path: "/api/gateway/pool/revive" },
@@ -2161,6 +2166,56 @@ export function restoreApiKey(id: string): Promise<{ ok: boolean }> {
 
 export function deleteApiKey(id: string): Promise<{ ok: boolean }> {
   return call("delete_api_key", { id });
+}
+
+/* ─────────── 密钥策略（issue #76）───────────
+   两项策略：**用量配额**（单位 token / 请求数 × 周期 不重置 / 每日 / 每周 / 自然月）
+   与**可访问账号**（全部 / 指定白名单，账号 uid 与分组 id 取并集）。
+   字段名与后端 `KeyPolicy` 的 camelCase 键一一对应。 */
+
+/** 配额模式：不限额 / 限额（默认不限额 = 改造前行为）。 */
+export type QuotaMode = "unlimited" | "limited";
+/** 计量单位：token（LLM）/ 请求数（业务代理没有 token 可计）。 */
+export type QuotaUnit = "token" | "request";
+/** 重置周期：不重置（累计）/ 每日 / 每周 / 自然月。 */
+export type QuotaPeriod = "none" | "daily" | "weekly" | "monthly";
+/** 账号范围：全部 / 指定白名单。 */
+export type ScopeMode = "all" | "selected";
+
+export interface KeyPolicy {
+  quotaMode: QuotaMode;
+  quotaLimit: number;
+  quotaUnit: QuotaUnit;
+  quotaPeriod: QuotaPeriod;
+  scopeMode: ScopeMode;
+  /** 允许访问的账号 uid（`scopeMode === "selected"` 时有效）。 */
+  scopeAccounts: string[];
+  /** 允许访问的**分组** id（与 `scopeAccounts` 取并集）—— 组内换号时策略不用改。 */
+  scopeGroups: string[];
+}
+
+/** 某把 Key 的用量快照（`key_usage` 命令的返回）。 */
+export interface KeyUsageSnapshot {
+  ok: boolean;
+  keyId: string;
+  unit: QuotaUnit;
+  period: QuotaPeriod;
+  /** 当前周期键（`daily:2026-10-22` 等）；累计口径为 `null`。 */
+  periodKey: string | null;
+  /** 当前口径下的已用量（周期切换时自动归零）。 */
+  used: number;
+  /** 累计用量（不随周期重置）。 */
+  total: number;
+}
+
+/** 更新某把 Key 的策略（完整策略，非补丁）。矛盾值由后端收敛到安全的一边。 */
+export function setKeyPolicy(id: string, policy: KeyPolicy): Promise<{ ok: boolean }> {
+  return call("set_key_policy", { id, policy });
+}
+
+/** 读某把 Key 的用量快照。 */
+export function keyUsage(id: string): Promise<KeyUsageSnapshot> {
+  return call("key_usage", { id });
 }
 
 /**

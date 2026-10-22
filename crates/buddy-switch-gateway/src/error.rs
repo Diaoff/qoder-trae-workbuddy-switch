@@ -70,6 +70,24 @@ pub enum GatewayError {
         /// 池内该域的账号总数（含被排除的：它只影响「能不能选」，不影响「号是好的」）。
         total: usize,
     },
+    /// ★ 这把 API Key 的用量配额已用尽 → **429**（issue #76）。
+    ///
+    /// 与 [`Self::Upstream`] 的账号级 429 是两件事：那个是「这个号被限流，换一个」，
+    /// 这个是「**这把 Key 到此为止**」—— 换号、重试、等冷却都不会好，
+    /// 因为额度是按 Key 计的。⇒ `attempts` 为空、不进换号循环。
+    ///
+    /// 文案必须带**单位与周期**（`1,000 万 token / 自然月`）：只说「配额已用尽」
+    /// 用户不知道该等多久、该改什么。
+    KeyQuotaExceeded {
+        /// 用量（当前口径）。
+        used: u64,
+        /// 上限。
+        limit: u64,
+        /// 计量单位（token / 请求数）。
+        unit: crate::apikey::QuotaUnit,
+        /// 重置周期（不重置 ⇒ 文案说「累计」）。
+        period: crate::apikey::QuotaPeriod,
+    },
     /// 网关自身错误（端口占用/目录失败/内部）→ 502（不返回裸堆栈）
     Internal(String),
 }
@@ -180,6 +198,8 @@ impl GatewayError {
             GatewayError::ModelDisabled { .. } => 403,
             // 503 = 并发占满。凭据正常、几秒内自愈 ⇒ 让客户端退避重试，别去改登录态。
             GatewayError::PoolBusy { .. } => 503,
+            // 配额用尽 ⇒ 429（Too Many Requests 的本义：这个调用方到此为止）。
+            GatewayError::KeyQuotaExceeded { .. } => 429,
             GatewayError::Internal(_) => 502,
         }
     }
@@ -217,6 +237,7 @@ impl GatewayError {
             GatewayError::BadRequest(_) => "bad_request",
             GatewayError::ModelDisabled { .. } => "model_disabled",
             GatewayError::PoolBusy { .. } => "pool_busy",
+            GatewayError::KeyQuotaExceeded { .. } => "key_quota_exceeded",
             GatewayError::Internal(_) => "internal",
         }
     }
@@ -248,6 +269,21 @@ impl GatewayError {
             //
             // ⚠️ 措辞不能写成「{total} 个可用账号」：`total` 含**被用户排除**的条目
             //    （它们不可选，但账号本身是好的），说成「可用」就是新的数字不自洽。
+            GatewayError::KeyQuotaExceeded { used, limit, unit, period } => {
+                let unit_text = match unit {
+                    crate::apikey::QuotaUnit::Token => "token",
+                    crate::apikey::QuotaUnit::Request => "次请求",
+                };
+                let period_text = match period {
+                    crate::apikey::QuotaPeriod::None => "累计".to_string(),
+                    crate::apikey::QuotaPeriod::Daily => "每日".to_string(),
+                    crate::apikey::QuotaPeriod::Weekly => "每周".to_string(),
+                    crate::apikey::QuotaPeriod::Monthly => "自然月".to_string(),
+                };
+                format!(
+                    "这把 API Key 的{period_text}用量已用尽（已用 {used} / 上限 {limit} {unit_text}）；                     换号与重试都不会好 —— 额度按密钥计。请调高上限、切换周期，或改用其它密钥"
+                )
+            }
             GatewayError::PoolBusy { region, total } => format!(
                 "本机{}账号库有 {total} 个账号，可用的那些此刻全被在途请求占满（凭据与余额都正常）：\
                  稍等几秒重试即可；若长期如此，请在「网关 → 账号池」调高每账号在途上限或增加账号",

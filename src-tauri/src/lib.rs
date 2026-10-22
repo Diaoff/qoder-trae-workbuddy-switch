@@ -504,6 +504,9 @@ pub fn run() {
             commands::revoke_api_key,
             commands::restore_api_key,
             commands::delete_api_key,
+            // ★ issue #76：密钥策略（用量配额 + 可访问账号）与按密钥用量。
+            commands::set_key_policy,
+            commands::key_usage,
             commands::revive_gateway_account,
             commands::get_unified_gateway_config,
             commands::save_unified_gateway_config,

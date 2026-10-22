@@ -506,6 +506,9 @@ impl QoderPool {
             model,
             tried,
             excluded: &excluded,
+            // ★ issue #76：本产品线的 Key 白名单尚未接线 ⇒ `None`（全部账号，保持现状）。
+            //   WB 侧已在 `relay::select_account` 接通；这两侧同构接入见实施拆解步 6。
+            allowed: None,
             mode,
             seed,
         };

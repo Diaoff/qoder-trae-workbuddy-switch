@@ -65,7 +65,16 @@ pub async fn handler(
     };
     // 归属域由 Key 决定 ⇒ 转成显式参数交给共用实现（统一网关从**统一 Key 的
     // `biz_namespace`** 取，见 `crate::unified::routes::biz`）。
-    biz_for_region(state, record.region, path, body, biz_method).await
+    biz_for_region(
+        state,
+        record.region,
+        path,
+        body,
+        biz_method,
+        // ★ issue #76：业务代理是「请求数」计量的主场景（没有 token 可计）。
+        Some(record),
+    )
+    .await
 }
 
 /// 客户端方法 → 出站方法（**只允许 GET / POST**，其余明确 405）。
@@ -91,6 +100,8 @@ pub async fn biz_for_region(
     path: String,
     body: Bytes,
     method: BizMethod,
+    // ★ issue #76：调用方的 API Key（`None` = 无 Key 的本地/测试调用 ⇒ 不判配额、不记账）。
+    key: Option<crate::apikey::ApiKeyRecord>,
 ) -> Response {
     // ★ E1：计一次「今日代理请求」。放在**鉴权之后、白名单校验之前** ——
     //   KPI 问的是「今天有多少请求走到本机网关」，含被白名单拒绝的（那是真实流量）。
@@ -130,6 +141,8 @@ pub async fn biz_for_region(
             conversation_request_id: session_headers::new_hex_id(),
             conversation_id: None,
             trace_id: None,
+            key_policy: key.as_ref().map(|record| record.policy()),
+            key_id: key.as_ref().map(|record| record.id.clone()),
         },
     )
     .await;

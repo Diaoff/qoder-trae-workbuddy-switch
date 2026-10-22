@@ -101,6 +101,23 @@ pub struct RelayRequest {
     pub conversation_id: Option<String>,
     /// 调用方 trace id。
     pub trace_id: Option<String>,
+    /// ★ 这把 API Key 的策略（issue #76；`None` = 无 Key 的调用，如本地直连）。
+    ///
+    /// 带它进来只为两件事：**配额判定**（超限 ⇒ 429，不进换号循环）与
+    /// **账号白名单**（选号候选过滤）。身份字段（hash / prefix）一概不带 ——
+    /// 中继层不需要知道 Key 长什么样。
+    pub key_policy: Option<crate::apikey::KeyPolicy>,
+    /// 用量账本的键（= Key id）。与 `key_policy` **同生同空**：
+    /// 没带 Key 的调用（本地直连）两个都是 `None` ⇒ 不记账、不判配额。
+    pub key_id: Option<String>,
+}
+
+impl RelayRequest {
+    /// 账本键：无 Key 的调用给一个**稳定的空键**（`""`）而不是 `Option` ——
+    /// 调用点（`record_request`）不想为「没有 Key」再分一支。
+    fn key_id_for_policy(&self) -> &str {
+        self.key_id.as_deref().unwrap_or("")
+    }
 }
 
 /// 中继结果。
@@ -229,6 +246,39 @@ pub async fn relay(
         pool.sync_exclusions(scope, &exclusions::load_for(scope));
     }
 
+    // ★ issue #76：**配额判定在选号之前**（规范 §6.2）——
+    //   超限的请求不占用在途额度、不触发换号，一步都不发。
+    //   放在这里（账号同步后、粘性前）是因为：判定要用 `state.key_usage`，
+    //   而记账口径（period）要跟账号库无关地按 Key 自己的策略走。
+    if let Some(policy) = request.key_policy.as_ref() {
+        let now = timeutil::now_ms();
+        let used = state
+            .key_usage
+            .used_for(&request.key_id_for_policy(), policy.quota_period, now);
+        // 请求数在**进入网关后**记（业务代理没有 usage 回包，只有请求数可计）；
+        // token 在流结束记（`UsageTap` 的 sink，见 `logging.rs` 同款接法）。
+        state
+            .key_usage
+            .record_request(&request.key_id_for_policy(), policy.quota_period, now);
+        if let crate::apikey::QuotaVerdict::Exceeded { used, limit, unit, period } =
+            crate::apikey::quota_verdict_for_policy(policy, used)
+        {
+            return Err(RelayFailure {
+                error: GatewayError::KeyQuotaExceeded {
+                    used,
+                    limit,
+                    unit,
+                    period,
+                },
+                // 配额拒绝发生在**选号之前** ⇒ 没有账号可报（与模型闸门短路同一形状）。
+                account: String::new(),
+                uid: String::new(),
+                upstream_message: String::new(),
+                sanitized: false,
+            });
+        }
+    }
+
     // 会话粘性键；客户端没给会话 id 时为 `None`（整段跳过粘性，保持原行为）。
     let sticky_key = sticky_key_of(&request);
 
@@ -288,6 +338,12 @@ pub async fn relay(
                 .map(str::to_string),
             None => None,
         };
+        // ★ issue #76：本密钥的允许名单（每轮重算很便宜：分组展开只在
+        //   `scope_groups` 非空时读一次账号库；无白名单的 Key 走 `None` 快路）。
+        let allowed = request
+            .key_policy
+            .as_ref()
+            .and_then(|policy| allowed_uids_for(policy, request.region));
         let selected = select_account(
             state,
             request.region,
@@ -297,6 +353,7 @@ pub async fn relay(
             now_ms,
             attempt,
             preferred_uid.as_deref(),
+            allowed.as_ref(),
         )
         .await;
 
@@ -766,6 +823,39 @@ async fn acquire_with_wait(
     None
 }
 
+/// 把 Key 策略的**账号范围**展开成 uid 集合（`None` = 全部账号，不过滤）。
+///
+/// 分组在这里展开成 uid：池条目不认识「分组」这个概念（`PoolEntryLike` 没有
+/// `group()`，为它加一个 trait 方法会波及三条产品线的实现方与全部测试 fake）。
+/// 账号库就在手边（`load_accounts_for`），展开一次的成本低于为分组改 trait。
+///
+/// ★ 展开**只增不删**：`scope_accounts` 里的 uid 即使账号库已删除也保留 ——
+///   那是用户显式写进去的，删掉会让「改完策略发现少一个号」无从解释。
+fn allowed_uids_for(
+    policy: &crate::apikey::KeyPolicy,
+    region: Region,
+) -> Option<HashSet<String>> {
+    use crate::apikey::ScopeMode;
+    if policy.scope_mode != ScopeMode::Selected {
+        return None;
+    }
+    let mut allowed: HashSet<String> = policy.scope_accounts.iter().cloned().collect();
+    if !policy.scope_groups.is_empty() {
+        for account in account::load_accounts_for(region) {
+            let group = account::get_str(&account, "groupName").unwrap_or_default();
+            if group.is_empty() {
+                continue;
+            }
+            if policy.scope_groups.iter().any(|wanted| wanted == &group) {
+                if let Some(uid) = account::get_str(&account, "uid") {
+                    allowed.insert(uid);
+                }
+            }
+        }
+    }
+    Some(allowed)
+}
+
 /// 选号：优先账号池（有治理状态），池给不出时回落既有策略。
 /// 由请求推导**会话粘性键**；客户端未给会话 id ⇒ `None`（整段跳过粘性）。
 ///
@@ -794,6 +884,7 @@ async fn select_account(
     now_ms: i64,
     attempt: usize,
     sticky_uid: Option<&str>,
+    allowed: Option<&HashSet<String>>,
 ) -> Option<Value> {
     // 偏好与策略**都来自同一个枚举** `AccountStrategy`，因此这里一次算清：
     // - `Pinned`    ⇒ 加权选号 + 偏好 uid（指定是偏好，不是约束）；
@@ -823,7 +914,16 @@ async fn select_account(
             // 偏好不可用时由 `pick_with_preference` 自行回落到自动择优；
             // 排除项由池自己持有（`sync_exclusions`），无需在这里传。
             (
-                pool.pick_account(now_ms, Some(realm), model, tried, mode, seed, preferred),
+                pool.pick_account(
+                    now_ms,
+                    Some(realm),
+                    model,
+                    tried,
+                    mode,
+                    seed,
+                    preferred,
+                    allowed,
+                ),
                 false,
             )
         }
@@ -1358,6 +1458,9 @@ mod tests {
             conversation_request_id: "turn-1".to_string(),
             conversation_id: conversation_id.map(str::to_string),
             trace_id: None,
+            // ★ issue #76：既有粘性测试都不带 Key ⇒ `None`（不判配额、不记账、不过滤）。
+            key_policy: None,
+            key_id: None,
         }
     }
 

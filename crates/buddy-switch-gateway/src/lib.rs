@@ -19,6 +19,7 @@
 
 pub mod account_strategy;
 pub mod apikey;
+pub mod key_usage;
 /// 「接入即识别」与「网关启动补识别」的**唯一探测出口**（P10 §1.6 / T03）。
 pub mod catalog_probe;
 pub mod credits_refresh;

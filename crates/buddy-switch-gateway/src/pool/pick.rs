@@ -108,6 +108,11 @@ pub struct PickInput<'a> {
     pub tried: &'a HashSet<String>,
     /// 用户显式排除的 uid（**硬约束**：自动选号、兜底、偏好一律跳过）。
     pub excluded: &'a HashSet<String>,
+    /// ★ 本密钥的**允许名单**（issue #76）：`None` = 全部账号（不过滤）；
+    /// `Some(set)` = 只有集合内的 uid 可被选中。与 `excluded` **同层**（都是硬约束），
+    /// 但来源不同：`excluded` 是用户对账号池的全局排除，`allowed` 是**这一把 Key**
+    /// 的授权范围。分组已在调用方展开成 uid（池条目不认识分组，见 `relay::select_account`）。
+    pub allowed: Option<&'a HashSet<String>>,
     /// 选号策略。
     pub mode: PickMode,
     /// 抽签种子（生产用时间戳+序号，测试用固定值以保证可复现）。
@@ -298,6 +303,8 @@ impl<'a> PickInput<'a> {
             model,
             tried,
             excluded: no_exclusions(),
+            // 便捷构造 = 「无排除、无白名单」的最小输入（测试与简单场景用）。
+            allowed: None,
             mode: PickMode::Weighted,
             seed,
         }
@@ -322,7 +329,19 @@ fn entry_usable<E: PoolEntryLike>(
     entry.healthy_for_request(now_ms, model) && !in_flight_full(entry, policy, now_ms)
 }
 
-/// 「此刻能不能被选中」= 健康 ∧ 未占满在途 ∧ **不在排除名单里**。
+/// 白名单判定（`None` = 全部账号 ⇒ 放行）。
+///
+/// ★ 与 [`selectable`] 的 `excluded` 判据**并排**：两条都是硬约束，
+///   任一不过就整体不可选 —— 否则「自动选号跳过了、偏好/兜底没跳过」这类缺陷
+///   一定会出现（且不报错）。
+fn in_allowed(input: &PickInput<'_>, uid: &str) -> bool {
+    match input.allowed {
+        None => true,
+        Some(allowed) => allowed.contains(uid),
+    }
+}
+
+/// 「此刻能不能被选中」= 健康 ∧ 未占满在途 ∧ **不在排除名单里** ∧ **在允许名单里**。
 ///
 /// 排除与「健康」正交：前者是**用户意图**（不想让网关用它），后者是账号状态。
 /// 但两者对选号的后果相同 —— 都不能选。因此必须收敛到**同一个谓词**上，
@@ -333,8 +352,11 @@ fn selectable<E: PoolEntryLike>(
     now_ms: i64,
     model: &str,
     excluded: &HashSet<String>,
+    allowed: Option<&HashSet<String>>,
 ) -> bool {
-    !excluded.contains(entry.uid()) && entry_usable(entry, policy, now_ms, model)
+    !excluded.contains(entry.uid())
+        && allowed.map(|set| set.contains(entry.uid())).unwrap_or(true)
+        && entry_usable(entry, policy, now_ms, model)
 }
 
 /// 指定 uid 此刻是否可用于该请求（**与 [`pick`] 同一套判据**，见 [`selectable`]）。
@@ -348,10 +370,11 @@ pub fn is_usable<E: PoolEntryLike>(
     now_ms: i64,
     model: &str,
     excluded: &HashSet<String>,
+    allowed: Option<&HashSet<String>>,
 ) -> bool {
     entries
         .get(uid)
-        .map(|entry| selectable(entry, policy, now_ms, model, excluded))
+        .map(|entry| selectable(entry, policy, now_ms, model, excluded, allowed))
         .unwrap_or(false)
 }
 
@@ -396,7 +419,7 @@ pub fn pick<E: PoolEntryLike>(
         .values()
         .filter(|entry| {
             !input.tried.contains(entry.uid())
-                && selectable(*entry, policy, now_ms, input.model, input.excluded)
+                && selectable(*entry, policy, now_ms, input.model, input.excluded, input.allowed)
                 && input
                     .realm
                     .map(|wanted| entry.realm() == Some(wanted))
@@ -580,7 +603,7 @@ pub fn pick_with_preference<E: PoolEntryLike>(
 ) -> Option<String> {
     if let Some(uid) = preferred_uid {
         let preferred_usable = !input.tried.contains(uid)
-            && is_usable(entries, policy, uid, now_ms, input.model, input.excluded)
+            && is_usable(entries, policy, uid, now_ms, input.model, input.excluded, input.allowed)
             && input
                 .realm
                 .map(|wanted| entries.get(uid).and_then(|entry| entry.realm()) == Some(wanted))
@@ -640,6 +663,7 @@ fn pick_earliest_expiry<E: PoolEntryLike>(
             if input.tried.contains(entry.uid())
                 || entry.is_disabled()
                 || input.excluded.contains(entry.uid())
+                || !in_allowed(input, entry.uid())
             {
                 return false;
             }
@@ -734,7 +758,7 @@ mod tests {
         now_ms: i64,
         model: &str,
     ) -> bool {
-        super::is_usable(entries, policy, uid, now_ms, model, no_exclusions())
+        super::is_usable(entries, policy, uid, now_ms, model, no_exclusions(), None)
     }
 
     /// ★ O6：**分模型** EMA —— 账号级 EMA 相同，但「在 A 模型上老失败」不能拖累

@@ -42,6 +42,8 @@ pub async fn handler(
         headers,
         body,
         crate::routes::chat::PrefixPolicy::RegionPrefix { allow_reroute },
+        // ★ issue #76：Key 策略随请求进中继层（配额判定 + 账号白名单）。
+        Some(record),
     )
     .await
 }
@@ -55,6 +57,8 @@ pub async fn responses_for_region(
     headers: HeaderMap,
     body: Bytes,
     policy: crate::routes::chat::PrefixPolicy,
+    // ★ issue #76：调用方的 API Key（`None` = 无 Key 的本地/测试调用 ⇒ 不判配额、不记账）。
+    key: Option<crate::apikey::ApiKeyRecord>,
 ) -> Response {
     let started = Instant::now();
     let mut region = region;
@@ -126,6 +130,7 @@ pub async fn responses_for_region(
     let inbound_request_id = header_of(&headers, "x-conversation-request-id");
     let trace_id = header_of(&headers, "x-trace-id");
 
+    let key_ref = key.as_ref();
     let mut attempt = run(
         &state,
         region,
@@ -135,6 +140,7 @@ pub async fn responses_for_region(
         turn_key.as_deref(),
         inbound_request_id.as_deref(),
         trace_id.clone(),
+        key_ref,
     )
     .await;
 
@@ -157,6 +163,7 @@ pub async fn responses_for_region(
                 turn_key.as_deref(),
                 inbound_request_id.as_deref(),
                 trace_id,
+                key_ref,
             )
             .await;
         }
@@ -307,6 +314,8 @@ async fn run(
     turn_key: Option<&str>,
     inbound_request_id: Option<&str>,
     trace_id: Option<String>,
+    // ★ issue #76：调用方的 API Key（`None` = 无 Key 的本地/测试调用 ⇒ 不判配额、不记账）。
+    key: Option<&crate::apikey::ApiKeyRecord>,
 ) -> Result<RelayOutcome, relay::RelayFailure> {
     let prepared = relay::prepare_body(
         state,
@@ -330,6 +339,8 @@ async fn run(
             conversation_request_id: prepared.conversation_request_id,
             conversation_id,
             trace_id,
+            key_policy: key.map(|record| record.policy()),
+            key_id: key.map(|record| record.id.clone()),
         },
     )
     .await
