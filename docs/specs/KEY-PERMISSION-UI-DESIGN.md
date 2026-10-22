@@ -213,7 +213,9 @@ shared.gateway.keys.saveOverLimit  = "保存后立即超限（已用 {used} ≥ 
 ```
 
 - `resetAt`：周期配额时给下一重置时刻（`null` = 不重置）。
-- 白名单内无可用账号 ⇒ 单独的错误码（如 `scope_no_account`）+ 文案「白名单内的账号都不可用」，**不回退全池**。
+- 白名单内无可用账号 ⇒ **不新增对外错误码**，仍是 `no_credential` / 401（`type_name` 是客户端分流依据，加类别等于改契约），
+  靠 `cause` 区分：`ScopeEmpty`（名单口径，带 `pool_total` / `allowed` 与分类计数）+ 文案「这把 API Key 的允许名单只覆盖 N 个…名单外的账号不会被使用」，**不回退全池**。
+  最初设想的独立码 `scope_no_account` **未采用**（2026-10-22 实现时定）。
 
 ## 5. 可访问性
 
@@ -358,6 +360,7 @@ pub scope_groups: Vec<String>,    // 允许访问的**分组** id（与 scope_ac
 | 配额判定非原子（并发多放 + **丢计数**） | ✅ `KeyUsageStore` 加 `Mutex` + `check_and_record`（读-判-写同一把锁）；超限**不记账** | `concurrent_check_and_record_admits_exactly_the_limit`：32 线程抢 limit=10，断言恰好 10 通过、`used == 10` |
 | `aggregateByKey` 无测试 | ✅ 抽到 `src/lib/key-usage.ts`（零 import）+ `scripts/check-key-usage.mjs`（esbuild 现场转译，测**生产代码**）挂进 `check:scope` | 6 项断言；**变异测试**验证有效（改坏 ⇒ 红、退出码 1） |
 | 统一网关无「按密钥」展示 | ✅ 不需要新日志 —— 账本已有数；加 `unified_key_usage_all` **批量**命令，密钥表「配额」列对不限额 Key 也显示「不限 · 已用 N 次」 | `check:api` 239 路由 |
+| 白名单内全不可用时**报全池数字**（2026-10-22 补） | ✅ 三处中继（WB/统一 · Trae · Qoder）改按**名单口径**：`Pool::summary_of` / `diagnose_for` 只数名单内账号；`cause` 新增 `ScopeEmpty{pool_total, allowed, …}`；名单内只是并发占满 ⇒ 503 `pool_busy`（不是 401） | `summary_of_counts_only_allowlisted_accounts`、`scoped_pool_reports_scope_empty_with_allowlist_counts`、`scope_empty_points_at_the_allowlist_not_the_pool`、Trae/Qoder `no_account_message` 名单提示断言 |
 
 ★ 「丢计数」比「多放行」更危险：读改写竞争会让 `used` 变小，配额可能**永远不触发**。
 所以 ① 不只是「收紧一点」，是**修正一个会让功能失效的缺陷**。
@@ -393,7 +396,7 @@ pub scope_groups: Vec<String>,    // 允许访问的**分组** id（与 scope_ac
 - 超额请求 ⇒ 429 + `quota_exceeded`，且**不**占用选号在途额度。
 - 周期配额跨周期归零（本地时区；daily / weekly / monthly 三种键都验）。
 - **流式请求中途超额 ⇒ 优雅收尾**（error 事件后断流），不是硬断连接。
-- 白名单外的账号**不会**被选中；白名单内全不可用 ⇒ `scope_no_account`，**不回退全池**。
+- 白名单外的账号**不会**被选中；白名单内全不可用 ⇒ `no_credential` + `cause = ScopeEmpty`（名单口径计数，**不回退全池**）；名单内只是并发占满 ⇒ 503 `pool_busy`（判定同样按名单口径）。
 - 分组白名单：组内换号后，这把 key 自动用上新账号（无需改策略）。
 - 请求数计量：业务代理路由（无 usage 回包）也能计数。
 - 策略变更**立即生效**（存储每次操作实时读盘，不缓存）。
