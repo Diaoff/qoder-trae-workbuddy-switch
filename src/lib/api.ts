@@ -529,6 +529,9 @@ const ROUTES: Record<string, Route> = {
   list_trae_api_keys: { method: "GET", path: "/api/trae/gateway/keys" },
   create_trae_api_key: { method: "POST", path: "/api/trae/gateway/keys" },
   revoke_trae_api_key: { method: "POST", path: "/api/trae/gateway/keys/revoke" },
+  // ★ issue #76：Trae 密钥策略（配额 + 账号范围）与按密钥用量（与 WB 侧同形）。
+  set_trae_key_policy: { method: "POST", path: "/api/trae/gateway/keys/policy" },
+  trae_key_usage: { method: "GET", path: "/api/trae/gateway/keys/usage" },
   // 撤销吊销（恢复）：与 WorkBuddy 侧同形同语义。
   restore_trae_api_key: { method: "POST", path: "/api/trae/gateway/keys/restore" },
   delete_trae_api_key: { method: "POST", path: "/api/trae/gateway/keys/delete" },
@@ -3144,6 +3147,16 @@ export function createTraeApiKey(
 /** 吊销 API Key（置 `revokedAt`，不物理删除）。 */
 export function revokeTraeApiKey(id: string): Promise<{ ok: boolean }> {
   return call("revoke_trae_api_key", { id });
+}
+
+/** ★ issue #76：更新某把 Trae Key 的策略（完整策略，非补丁）。 */
+export function setTraeKeyPolicy(id: string, policy: KeyPolicy): Promise<{ ok: boolean }> {
+  return call("set_trae_key_policy", { id, policy });
+}
+
+/** ★ issue #76：读某把 Trae Key 的用量快照。 */
+export function traeKeyUsage(id: string): Promise<KeyUsageSnapshot> {
+  return call("trae_key_usage", { id });
 }
 
 /** 撤销吊销（清 `revokedAt`，Key 重新可用；未吊销会被后端拒绝）。 */

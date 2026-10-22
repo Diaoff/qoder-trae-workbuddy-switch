@@ -605,6 +605,9 @@ pub fn run() {
             commands::list_trae_api_keys,
             commands::create_trae_api_key,
             commands::revoke_trae_api_key,
+            // ★ issue #76：Trae 密钥策略与按密钥用量（与 WB 侧同形）。
+            commands::set_trae_key_policy,
+            commands::trae_key_usage,
             commands::restore_trae_api_key,
             commands::delete_trae_api_key,
             commands::open_trae_data_dir,

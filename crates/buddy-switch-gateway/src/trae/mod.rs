@@ -373,6 +373,9 @@ pub struct TraeGatewayState {
     pub log: Arc<RequestLog>,
     /// 多 API Key 存储（哈希 + 前缀 + **归属产品线**；含旧 `settings.apiKey` 兼容读）。
     pub key_store: Arc<apikey::TraeApiKeyStore>,
+    /// ★ 按密钥的用量账本（issue #76）—— 与 WB 侧**同一个实现**
+    /// （`crate::key_usage::KeyUsageStore`），只是路径在 `trae/` 下。
+    pub key_usage: Arc<crate::key_usage::KeyUsageStore>,
     /// 进程启动时刻（毫秒）。
     pub started_at: i64,
     /// 累计请求数。
@@ -411,6 +414,9 @@ impl TraeGatewayState {
             sticky: Arc::new(Mutex::new(StickyTable::new(config.sticky_ttl_ms))),
             log,
             key_store: Arc::new(apikey::TraeApiKeyStore::new(paths::api_gateway_keys_file())),
+            key_usage: Arc::new(crate::key_usage::KeyUsageStore::new(
+                paths::api_gateway_key_usage_file(),
+            )),
             started_at: core_config::now_ms(),
             total_requests: Arc::new(AtomicU64::new(0)),
             last_error: Arc::new(RwLock::new(None)),

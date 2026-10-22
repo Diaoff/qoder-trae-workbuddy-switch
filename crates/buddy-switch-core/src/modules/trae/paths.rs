@@ -435,6 +435,13 @@ pub fn api_gateway_keys_file() -> PathBuf {
     trae_dir().join("api_gateway_keys.json")
 }
 
+/// 按密钥的用量账本（issue #76）：`~/.buddy-switch/trae/api_gateway_key_usage.json`。
+///
+/// 与 Key 台账**分文件**（同 WB 侧的取舍）：台账低频写、用量每请求写。
+pub fn api_gateway_key_usage_file() -> PathBuf {
+    trae_dir().join("api_gateway_key_usage.json")
+}
+
 /// 登录态快照根目录（默认变体，兼容壳）。
 pub fn profiles_dir() -> PathBuf {
     profiles_dir_for(TraeVariant::default())

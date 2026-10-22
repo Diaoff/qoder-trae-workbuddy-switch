@@ -3635,6 +3635,60 @@ pub fn revoke_trae_api_key(id: String) -> Result<Value, String> {
     Ok(json!({ "ok": true }))
 }
 
+/// POST /api/trae/gateway/keys/policy —— 更新某把 Trae Key 的策略（issue #76）。
+///
+/// 与 WB 侧同形：完整策略（非补丁）+ `KeyPolicy::normalized` 的矛盾收敛。
+#[tauri::command]
+pub fn set_trae_key_policy(
+    id: String,
+    policy: buddy_switch_gateway::apikey::KeyPolicy,
+) -> Result<Value, String> {
+    let id = id.trim();
+    if id.is_empty() {
+        return Err("缺少 id".to_string());
+    }
+    let state = trae_gateway::shared_state();
+    state.key_store.update_policy(id, policy)?;
+    Ok(json!({ "ok": true }))
+}
+
+/// GET /api/trae/gateway/keys/usage —— 读某把 Trae Key 的用量快照。
+#[tauri::command]
+pub fn trae_key_usage(id: String) -> Result<Value, String> {
+    use buddy_switch_gateway::apikey::QuotaVerdict;
+    let id = id.trim();
+    if id.is_empty() {
+        return Err("缺少 id".to_string());
+    }
+    let state = trae_gateway::shared_state();
+    let Some(record) = state.key_store.list().into_iter().find(|record| record.id == id) else {
+        return Err("API Key 不存在".to_string());
+    };
+    let now = buddy_switch_core::modules::config::now_ms();
+    let used = state
+        .key_usage
+        .used_for(id, record.quota_unit, record.quota_period, now);
+    let total = state
+        .key_usage
+        .snapshot(id)
+        .map(|entry| entry.counters(record.quota_unit).total)
+        .unwrap_or(0);
+    let exceeded = matches!(
+        buddy_switch_gateway::apikey::quota_verdict_for_policy(&record.policy(), used),
+        QuotaVerdict::Exceeded { .. }
+    );
+    Ok(json!({
+        "ok": true,
+        "keyId": id,
+        "unit": record.quota_unit,
+        "period": record.quota_period,
+        "periodKey": record.quota_period.period_key(now),
+        "used": used,
+        "total": total,
+        "exceeded": exceeded,
+    }))
+}
+
 /// POST /api/trae/gateway/keys/restore —— 撤销吊销（Key 重新可用，`{id}`）。
 #[tauri::command]
 pub fn restore_trae_api_key(id: String) -> Result<Value, String> {

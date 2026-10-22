@@ -26,6 +26,15 @@ import { useT } from "@/lib/i18n";
 import { traeRegionLabelOf, traeVariantLabel } from "@/lib/trae-types";
 import { allPrograms } from "@/lib/trae-variant-status";
 import type { TraeApiKeyRecord, TraeVariantId } from "@/lib/trae-types";
+import {
+  KeyPermissionDrawer,
+  KeyRowDetail,
+  KeyScopeChip,
+  KeyUsageCell,
+  type KeyPermissionAccount,
+} from "@/components/gateway/key-permission";
+import type { KeyPolicy, KeyUsageSnapshot } from "@/lib/api";
+import type { QuotaMode, QuotaPeriod, QuotaUnit, ScopeMode } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
 /**
@@ -119,6 +128,17 @@ function programLabelOf(variant: TraeVariantId): string {
  * 共用**的键 `shared.gateway.keys.note`（各侧差异只在表里的「归属程序位」列）；
  * 空态时不附说明段（原型如此：空态只给 `emptyBlock`）。
  */
+/** 空策略（抽屉未选中任何 Key 时的占位；不会被保存）。 */
+const EMPTY_POLICY: KeyPolicy = {
+  quotaMode: "unlimited",
+  quotaLimit: 0,
+  quotaUnit: "token",
+  quotaPeriod: "none",
+  scopeMode: "all",
+  scopeAccounts: [],
+  scopeGroups: [],
+};
+
 export function TraeApiKeyTable({
   className,
   /**
@@ -161,6 +181,105 @@ export function TraeApiKeyTable({
   const [restoreTarget, setRestoreTarget] = useState<TraeApiKeyRecord | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<TraeApiKeyRecord | null>(null);
   const [busy, setBusy] = useState(false);
+
+  /* ── issue #76：用量 / 权限两列 + 行内展开 + 权限抽屉（与 WB 侧同形） ── */
+  const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [permTarget, setPermTarget] = useState<TraeApiKeyRecord | null>(null);
+  const [permSaving, setPermSaving] = useState(false);
+  const [usageMap, setUsageMap] = useState<Record<string, KeyUsageSnapshot>>({});
+
+  /** 旧台账的 Key 没有策略字段 ⇒ 归一化成完整策略（缺省 = 改造前行为）。 */
+  const policyOf = useCallback(
+    (key: TraeApiKeyRecord): KeyPolicy => ({
+      quotaMode: (key.quotaMode ?? "unlimited") as QuotaMode,
+      quotaLimit: key.quotaLimit ?? 0,
+      quotaUnit: (key.quotaUnit ?? "token") as QuotaUnit,
+      quotaPeriod: (key.quotaPeriod ?? "none") as QuotaPeriod,
+      scopeMode: (key.scopeMode ?? "all") as ScopeMode,
+      scopeAccounts: key.scopeAccounts ?? [],
+      scopeGroups: key.scopeGroups ?? [],
+    }),
+    [],
+  );
+
+  /* 账号选择器数据源：**当前程序位**的账号库（Trae 两条产品线账号分家）。
+     ★ 展示名走 `accountDisplayName`（昵称 → 脱敏邮箱 → UID·x），不得裸回落 email。 */
+  const [traeAccounts, setTraeAccounts] = useState<KeyPermissionAccount[]>([]);
+  useEffect(() => {
+    if (!permTarget) return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        // `getTraeAccounts` 返回 `{ accounts, groups, ... }`（不是裸数组）——
+        // 它内部把 variant 折成区域（账号数据是区域纯的）。
+        const overview = await api.getTraeAccounts(permTarget.variant);
+        if (cancelled) return;
+        setTraeAccounts(
+          (overview.accounts ?? [])
+            .map((account) => ({
+              // ★ Trae 的账号标识是 `userId`（不是 uid/id）；`name` 已是展示名，
+              //   不含邮箱 ⇒ 无需再过 `accountDisplayName`（那是给 AccountMeta 用的）。
+              id: account.userId,
+              name: account.name,
+              // Trae 的分组是 **id**（`groupId`），WB 是自由文本 `groupName` ——
+              // 两者在 `scopeGroups` 里都只当「分组标识」用，语义一致。
+              group: account.groupId ?? undefined,
+            }))
+            .filter((account) => account.id),
+        );
+      } catch {
+        if (!cancelled) setTraeAccounts([]);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [permTarget]);
+
+  /* 用量：**只拉「限额」的 Key**（不限额显示「不限」，拉它没意义）。 */
+  useEffect(() => {
+    const limited = keys.filter((key) => (key.quotaMode ?? "unlimited") === "limited");
+    if (limited.length === 0) {
+      setUsageMap({});
+      return;
+    }
+    let cancelled = false;
+    void (async () => {
+      const pairs = await Promise.all(
+        limited.map(async (key) => {
+          try {
+            return [key.id, await api.traeKeyUsage(key.id)] as const;
+          } catch {
+            return null;
+          }
+        }),
+      );
+      if (cancelled) return;
+      const next: Record<string, KeyUsageSnapshot> = {};
+      for (const pair of pairs) {
+        if (pair) next[pair[0]] = pair[1];
+      }
+      setUsageMap(next);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [keys]);
+
+  async function onSavePolicy(next: KeyPolicy) {
+    if (!permTarget) return;
+    setPermSaving(true);
+    try {
+      await api.setTraeKeyPolicy(permTarget.id, next);
+      setPermTarget(null);
+      await load();
+      toast.success(t("wbStats.keyPerm.saved"), { description: permTarget.name });
+    } catch (e) {
+      toast.error(t("wbStats.keyPerm.saveFail"), { description: api.asError(e) });
+    } finally {
+      setPermSaving(false);
+    }
+  }
 
   /** 拉取列表。创建 / 吊销 / 删除后都重新拉，保证列表与后端一致。 */
   const load = useCallback(async () => {
@@ -311,6 +430,9 @@ export function TraeApiKeyTable({
                 <th className="pb-2 pr-4 font-medium">{t("trae.gateway.key.col.prefix")}</th>
                 <th className="pb-2 pr-4 font-medium">{t("trae.gateway.key.col.createdAt")}</th>
                 <th className="pb-2 pr-4 font-medium">{t("trae.gateway.key.col.lastUsed")}</th>
+                {/* ★ issue #76：用量 / 权限两列（与 WB 侧同形，构件共用）。 */}
+                <th className="pb-2 pr-4 font-medium">{t("wbStats.keyPerm.quota")}</th>
+                <th className="pb-2 pr-4 font-medium">{t("wbStats.keyPerm.scope")}</th>
                 <th className="pb-2 pr-4 font-medium">{t("trae.gateway.key.col.status")}</th>
                 <th className="pb-2 font-medium">{t("trae.gateway.key.col.actions")}</th>
               </tr>
@@ -318,8 +440,18 @@ export function TraeApiKeyTable({
             <tbody>
               {keys.map((key) => {
                 const revoked = key.revoked;
+                const policy = policyOf(key);
+                const expanded = expandedId === key.id;
+                const scopeNames = policy.scopeAccounts.map(
+                  (id) => traeAccounts.find((a) => a.id === id)?.name ?? id,
+                );
                 return (
-                  <tr key={key.id} className="border-t border-border/60">
+                  <>
+                  <tr
+                    key={key.id}
+                    className={cn("border-t border-border/60", expanded && "bg-primary/[0.07]")}
+                    onClick={() => setExpandedId(expanded ? null : key.id)}
+                  >
                     <td className="py-2 pr-4 font-medium">{key.name}</td>
                     <td className="py-2 pr-4">
                       <Badge
@@ -344,6 +476,12 @@ export function TraeApiKeyTable({
                       {key.lastUsedAt ? formatDate(key.lastUsedAt) : t("trae.gateway.key.neverUsed")}
                     </td>
                     <td className="py-2 pr-4">
+                      <KeyUsageCell policy={policy} usage={usageMap[key.id] ?? null} />
+                    </td>
+                    <td className="py-2 pr-4">
+                      <KeyScopeChip policy={policy} onOpenScope={() => setPermTarget(key)} />
+                    </td>
+                    <td className="py-2 pr-4">
                       {revoked ? (
                         <Badge variant="secondary" className="rounded-md text-muted-foreground">
                           {t("trae.gateway.key.statusRevoked")}
@@ -354,7 +492,8 @@ export function TraeApiKeyTable({
                         </Badge>
                       )}
                     </td>
-                    <td className="py-2">
+                    {/* 操作列挡冒泡：点吊销/恢复不顺手展开明细。 */}
+                    <td className="py-2" onClick={(event) => event.stopPropagation()}>
                       {/* ★ 已吊销 ⇒ **两个出口都在**：恢复（可逆）+ 删除（不可逆）。
                           与 WorkBuddy 侧同形同序（恢复在前、删除在后）。 */}
                       {revoked ? (
@@ -380,12 +519,40 @@ export function TraeApiKeyTable({
                       )}
                     </td>
                   </tr>
+                  {expanded ? (
+                    <tr key={`${key.id}-detail`} className="border-t border-border/60">
+                      <td colSpan={9} className="p-0">
+                        <KeyRowDetail
+                          policy={policy}
+                          usage={usageMap[key.id] ?? null}
+                          accountNames={scopeNames}
+                          onEditQuota={() => setPermTarget(key)}
+                          onEditScope={() => setPermTarget(key)}
+                        />
+                      </td>
+                    </tr>
+                  ) : null}
+                  </>
                 );
               })}
             </tbody>
           </table>
         </div>
       )}
+
+      {/* ★ issue #76：权限抽屉（改用量配额 + 可访问账号的唯一入口）。 */}
+      <KeyPermissionDrawer
+        open={permTarget !== null}
+        onOpenChange={(open) => {
+          if (!open) setPermTarget(null);
+        }}
+        keyName={permTarget?.name ?? ""}
+        policy={permTarget ? policyOf(permTarget) : EMPTY_POLICY}
+        usage={permTarget ? usageMap[permTarget.id] ?? null : null}
+        accounts={traeAccounts}
+        saving={permSaving}
+        onSave={(next) => void onSavePolicy(next)}
+      />
 
       {/* 说明段（原型 `<p class="tiny muted" style="margin:10px 2px 0">`）：掩码口径 /
           累计口径 / 吊销可逆。三条产品线共用一条键，差异只在表里的「归属程序位」列。 */}

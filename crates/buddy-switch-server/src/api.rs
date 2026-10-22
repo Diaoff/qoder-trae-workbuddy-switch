@@ -549,6 +549,12 @@ fn api_routes() -> Router {
             "/api/trae/gateway/keys/revoke",
             post(api_trae_revoke_api_key),
         )
+        // ★ issue #76：策略更新 + 按密钥用量（与 WB 侧同形）。
+        .route(
+            "/api/trae/gateway/keys/policy",
+            post(api_trae_set_key_policy),
+        )
+        .route("/api/trae/gateway/keys/usage", get(api_trae_key_usage))
         .route(
             "/api/trae/gateway/keys/restore",
             post(api_trae_restore_api_key),
@@ -4126,6 +4132,70 @@ async fn api_trae_revoke_api_key(Json(body): Json<Value>) -> Response {
         Ok(()) => json_ok(json!({ "ok": true })),
         Err(error) => json_err(error, StatusCode::BAD_REQUEST),
     }
+}
+
+/// POST /api/trae/gateway/keys/policy —— 更新某把 Trae Key 的策略（issue #76）。
+///
+/// 与 WB 侧同形：入参是**完整策略**（非补丁），矛盾值由 `KeyPolicy::normalized`
+/// 收敛到安全的一边，空白名单拒绝。
+async fn api_trae_set_key_policy(Json(body): Json<Value>) -> Response {
+    use buddy_switch_gateway::apikey::KeyPolicy;
+    let id = body.get("id").and_then(Value::as_str).unwrap_or("").trim();
+    if id.is_empty() {
+        return json_err("缺少 id".to_string(), StatusCode::BAD_REQUEST);
+    }
+    let policy: KeyPolicy = match serde_json::from_value(
+        body.get("policy").cloned().unwrap_or(Value::Null),
+    ) {
+        Ok(policy) => policy,
+        Err(error) => {
+            return json_err(format!("策略字段不合法: {error}"), StatusCode::BAD_REQUEST)
+        }
+    };
+    let state = crate::trae_gateway_host::shared_state();
+    match state.key_store.update_policy(id, policy) {
+        Ok(()) => json_ok(json!({ "ok": true })),
+        Err(error) => json_err(error, StatusCode::BAD_REQUEST),
+    }
+}
+
+/// GET /api/trae/gateway/keys/usage?id=… —— 读某把 Trae Key 的用量快照。
+async fn api_trae_key_usage(RawQuery(query): RawQuery) -> Response {
+    let id = query_value(query.as_deref(), "id").unwrap_or_default();
+    if id.is_empty() {
+        return json_err("缺少 id".to_string(), StatusCode::BAD_REQUEST);
+    }
+    let state = crate::trae_gateway_host::shared_state();
+    let now = buddy_switch_core::modules::config::now_ms();
+    let Some(record) = state
+        .key_store
+        .list()
+        .into_iter()
+        .find(|record| record.id == id)
+    else {
+        return json_err("API Key 不存在".to_string(), StatusCode::BAD_REQUEST);
+    };
+    let usage = state.key_usage.snapshot(&id);
+    let used = state
+        .key_usage
+        .used_for(&id, record.quota_unit, record.quota_period, now);
+    let exceeded = matches!(
+        buddy_switch_gateway::apikey::quota_verdict_for_policy(&record.policy(), used),
+        buddy_switch_gateway::apikey::QuotaVerdict::Exceeded { .. }
+    );
+    json_ok(json!({
+        "ok": true,
+        "keyId": id,
+        "unit": record.quota_unit,
+        "period": record.quota_period,
+        "periodKey": record.quota_period.period_key(now),
+        "used": used,
+        "total": usage
+            .as_ref()
+            .map(|entry| entry.counters(record.quota_unit).total)
+            .unwrap_or(0),
+        "exceeded": exceeded,
+    }))
 }
 
 /// POST /api/trae/gateway/keys/restore —— 撤销吊销（Key 重新可用，`{id}`）。
