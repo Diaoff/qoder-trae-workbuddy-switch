@@ -607,7 +607,9 @@ async fn orphan_tool_history_is_cleaned_before_reaching_upstream() {
     let body = &bodies[0];
     assert!(body.contains("\"c1\""), "配对完整的调用必须保留：{body}");
     assert!(!body.contains("\"c2\""), "没有回答的调用必须清掉：{body}");
-    assert!(!body.contains("c9"), "悬空结果必须清掉：{body}");
+    // ★ 必须带引号精确匹配：裸 `c9` 会撞上随机 `chat_record_id` 里的
+    // "c9" 子串（本用例因此偶发红，属测试自身的缺陷）。
+    assert!(!body.contains("\"c9\""), "悬空结果必须清掉：{body}");
 }
 
 /// 换号重试：第一个账号 429 ⇒ 自动换到下一个并成功。

@@ -163,6 +163,19 @@ where
     }
 }
 
+/// 上游中途报错的结构化摘要（供日志 / 探测读取）。
+///
+/// ★ 编译修复（2026-10-22）：本类型在并发编辑中丢失了定义，而引用处
+/// （`UsageTapStream` 的错误槽 + `qoder/routes.rs` 的探针）都按
+/// `{ message, code }` 构造 ⇒ 这里按**引用处的事实**补回，不新增语义。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UpstreamError {
+    /// 可读信息（已截断，与 `AggregatedChat::upstream_error` 同源）。
+    pub message: String,
+    /// 上游错误码（`statusCodeValue`，缺省 502）。
+    pub code: u16,
+}
+
 /// 非流式聚合结果。
 #[derive(Debug, Default, Clone)]
 pub struct AggregatedChat {
@@ -176,6 +189,75 @@ pub struct AggregatedChat {
     pub usage: Option<Value>,
     /// 上游中途报错时的可读信息（与 `content` 并存时以错误为准）。
     pub upstream_error: Option<String>,
+    /// 错误帧的 `code`（`Some(429)` = 上游排队，稍后重试）。
+    ///
+    /// ★ 编译修复（2026-10-22）：引用处已按此字段分流日志状态码
+    /// （排队记 429 / 其它记 502），但字段定义在并发编辑中丢失 ⇒ 按引用处补回。
+    pub upstream_error_code: Option<u16>,
+}
+
+/// 探测用：读一次上游流，取**第一帧上游错误**（`(status, detail)`）。
+///
+/// ## 为什么必须读流（探测的真机教训，2026-10-22）
+///
+/// Qoder 上游的失败**不一定**体现在 HTTP 状态码上 —— **排队**（`10605` / `isQueued`）
+/// 就是 **HTTP 200 + 信封 `statusCodeValue:403`**。只看 HTTP 状态会把「排队」判成
+/// 「可用」（假阴性）：实测同一账号同一模型，探测报「全部可用（上游 200）」，
+/// 而真实流量拿到的是排队错误帧。
+///
+/// 与 [`aggregate`] 的区别：它**只找错误**（不做正文聚合 / 不做回声还原）——
+/// 探测要的是「这一格能不能用」，不需要正文。
+///
+/// ## 字节上限
+///
+/// 探测请求是 `max_tokens:1` + 短文案，正常流极短；但为防上游不听话地狂吐正文，
+/// 读满 [`PROBE_ERROR_SCAN_MAX_BYTES`] 即停止（**错误帧总在最前面**，不影响判据）。
+///
+/// 无错误 ⇒ `None`（正常流，或流里只有正常 chunk）。
+pub async fn first_upstream_error<S, E>(upstream: S) -> Option<(u16, String)>
+where
+    S: Stream<Item = Result<Bytes, E>>,
+    E: std::fmt::Debug,
+{
+    /* ★ 编译修复（2026-10-22）：`upstream.next()` 要求 `Unpin`，而本函数对 `S` 只有
+       `Stream` 约束 ⇒ 加 `+ Unpin` 会把负担推给调用方（他们传的流未必 Unpin）。
+       与同文件 [`aggregate`] 一致：用 `pin_mut!` 就地钉住，**不额外要求 Unpin**。 */
+    futures_util::pin_mut!(upstream);
+    let mut buffer = String::new();
+    let mut read = 0usize;
+    while let Some(item) = upstream.next().await {
+        let Ok(chunk) = item else { break };
+        read += chunk.len();
+        buffer.push_str(&String::from_utf8_lossy(&chunk));
+        while let Some(position) = buffer.find('\n') {
+            // ★ 区间必须是**开区间** `..position + 1`（含换行）——
+            //   `..=position + 1`（闭区间）在 `\n` 位于**最后一个字节**时越界 panic
+            //   （`range end index N out of range for slice of length N`）。
+            let line: String = buffer.drain(..position + 1).collect();
+            if let Some(found) = error_in_line(&line) {
+                return Some(found);
+            }
+        }
+        if read >= PROBE_ERROR_SCAN_MAX_BYTES {
+            break;
+        }
+    }
+    // 末行可能没有换行结尾（上游偶尔如此）。
+    if !buffer.is_empty() {
+        return error_in_line(&buffer);
+    }
+    None
+}
+
+/// 探测读流的字节上限（见 [`first_upstream_error`]）。
+pub const PROBE_ERROR_SCAN_MAX_BYTES: usize = 64 * 1024;
+
+/// 一行里有没有上游错误帧？（复用 [`api::unwrap_envelope_line`] —— 判据零新造）
+fn error_in_line(line: &str) -> Option<(u16, String)> {
+    match api::unwrap_envelope_line(line.trim_end()) {
+        api::ChatFrame::UpstreamError { status, detail } => Some((status, detail)),
+        _ => None,
+    }
 }
 
 /// 把上游信封流折叠成一个 `chat.completion` 数据（与官方客户端语义对齐）。
@@ -217,13 +299,18 @@ where
             continue;
         };
         if let Some(error) = chunk.get("error") {
-            out.upstream_error = Some(
-                error
-                    .get("message")
-                    .and_then(Value::as_str)
-                    .unwrap_or("上游错误")
-                    .to_string(),
-            );
+            let message = error
+                .get("message")
+                .and_then(Value::as_str)
+                .unwrap_or("上游错误")
+                .to_string();
+            // ★ 一并记下错误帧的 `code`（排队 ⇒ 429）：账本据此区分
+            //   「上游排队（429，稍后重试）」与「上游其它错误（502）」。
+            out.upstream_error_code = error
+                .get("code")
+                .and_then(Value::as_u64)
+                .and_then(|code| u16::try_from(code).ok());
+            out.upstream_error = Some(message);
             continue;
         }
         if let Some(id) = chunk.get("id").and_then(Value::as_str) {
@@ -432,14 +519,14 @@ where
 pub struct UsageTapStream<S> {
     inner: S,
     slot: std::sync::Arc<std::sync::Mutex<Option<Value>>>,
-    error_slot: std::sync::Arc<std::sync::Mutex<Option<String>>>,
+    error_slot: std::sync::Arc<std::sync::Mutex<Option<UpstreamError>>>,
 }
 
 impl<S> UsageTapStream<S> {
     pub fn new(
         inner: S,
         slot: std::sync::Arc<std::sync::Mutex<Option<Value>>>,
-        error_slot: std::sync::Arc<std::sync::Mutex<Option<String>>>,
+        error_slot: std::sync::Arc<std::sync::Mutex<Option<UpstreamError>>>,
     ) -> Self {
         Self {
             inner,
@@ -453,7 +540,7 @@ impl<S> UsageTapStream<S> {
 fn tap_frame(
     frame: &Bytes,
     slot: &std::sync::Mutex<Option<Value>>,
-    error_slot: &std::sync::Mutex<Option<String>>,
+    error_slot: &std::sync::Mutex<Option<UpstreamError>>,
 ) {
     let Ok(text) = std::str::from_utf8(frame) else {
         return;
@@ -473,9 +560,18 @@ fn tap_frame(
                 .and_then(Value::as_str)
                 .map(str::to_string)
                 .unwrap_or_else(|| error.to_string());
+            // ★ 一并记下 `code`（排队 ⇒ 429）：账本据此区分「排队」与「上游其它错误」。
+            let code = error
+                .get("code")
+                .and_then(Value::as_u64)
+                .and_then(|code| u16::try_from(code).ok())
+                .unwrap_or(502);
             if let Ok(mut guard) = error_slot.lock() {
                 if guard.is_none() {
-                    *guard = Some(message.chars().take(400).collect());
+                    *guard = Some(UpstreamError {
+                        message: message.chars().take(400).collect(),
+                        code,
+                    });
                 }
             }
         }
@@ -1704,6 +1800,77 @@ mod tests {
         assert!(error.contains("quota exceeded"), "{error}");
     }
 
+    /// ★ 聚合结果要带**错误码**（`upstream_error_code`）—— 账本靠它把
+    /// 「排队（429，稍后重试）」与「上游其它错误（502）」分开（2026-10-22 实测踩到：
+    /// 日志把上游排队写成 502，用户以为服务坏了）。
+    ///
+    /// 可证伪：删掉 `aggregate` 里读 `error.code` 的那几行 ⇒ 断言红。
+    #[tokio::test]
+    async fn aggregate_carries_the_upstream_error_code() {
+        // 排队信号：上游 200 + 信封里 403（`sse::process_line` 对排队发 `code:429`）。
+        let queued_body = json!({
+            "code": "403",
+            "message": "{\"code\":\"10605\",\"isQueued\":true}",
+        })
+        .to_string();
+        let frames = vec![format!(
+            "data:{{\"body\":{},\"statusCodeValue\":403}}\n",
+            json!(queued_body)
+        )];
+        let out = aggregate(upstream_from(&frames), None).await;
+        assert!(out.upstream_error.is_some(), "必须带错误信息");
+        assert_eq!(
+            out.upstream_error_code,
+            Some(429),
+            "排队 ⇒ 客户端拿到 429 ⇒ 账本也必须记 429"
+        );
+    }
+
+    /// ★ 探测用：读一次流取**第一帧上游错误**。
+    ///
+    /// 覆盖三种形态：
+    /// - 信封错误（`statusCodeValue != 200`）⇒ 取出 `(状态码, 详情)`；
+    /// - 正常 chunk ⇒ `None`（**不能**把正文当错误）；
+    /// - 排队信号（`10605` / `isQueued`）⇒ 详情里带 `10605`（供 `queue_signal` 判定）。
+    ///
+    /// 这条是 2026-10-22 那个假阴性的钉子：探测只看 HTTP 状态 ⇒ 排队被报成「可用」。
+    #[tokio::test]
+    async fn first_upstream_error_finds_the_first_error_frame() {
+        // ① 信封错误：状态码与详情都要拿到。
+        let frames = vec![
+            "data:{\"body\":\"quota exceeded\",\"statusCodeValue\":429}\n".to_string(),
+        ];
+        let found = first_upstream_error(upstream_from(&frames)).await;
+        let (status, detail) = found.expect("必须找到错误帧");
+        assert_eq!(status, 429);
+        assert!(detail.contains("quota exceeded"), "{detail}");
+
+        // ② 正常流 ⇒ 无错误（**不能**把正文当错误报上去）。
+        let frames = vec![
+            frame(&json!({"choices": [{"delta": {"content": "好"}}]})),
+            "data:{\"body\":\"[DONE]\"}\n".to_string(),
+        ];
+        assert!(
+            first_upstream_error(upstream_from(&frames)).await.is_none(),
+            "正常流不得被报成错误"
+        );
+
+        // ③ 排队信号：详情里带 `10605` / `isQueued`（`pool::queue_signal` 据此判定）。
+        let queued_body = json!({"code": "10605", "isQueued": true}).to_string();
+        let frames = vec![format!(
+            "data:{{\"body\":{},\"statusCodeValue\":403}}\n",
+            json!(queued_body)
+        )];
+        let (status, detail) = first_upstream_error(upstream_from(&frames))
+            .await
+            .expect("排队也是一帧错误，必须被抓到");
+        assert_eq!(status, 403, "信封里的状态码");
+        assert!(
+            detail.contains("10605") && detail.contains("isQueued"),
+            "排队细节必须完整：{detail}"
+        );
+    }
+
     /// 错误帧必须被**旁路留痕**：流式账本在流结束才落，没有这一槽就只能记
     /// 「200 + 0 token + error:null」——正是 issue #46 里隐身的那条日志。
     ///
@@ -1714,7 +1881,7 @@ mod tests {
 
         let frames = vec!["data:{\"body\":\"boom\",\"statusCodeValue\":429}\n".to_string()];
         let usage = Arc::new(Mutex::new(None::<Value>));
-        let error = Arc::new(Mutex::new(None::<String>));
+        let error = Arc::new(Mutex::new(None::<UpstreamError>));
         let mut tap = UsageTapStream::new(
             QoderOpenAiStream::new(upstream_from(&frames)),
             usage.clone(),
@@ -1730,7 +1897,8 @@ mod tests {
             .expect("锁未中毒")
             .clone()
             .expect("错误必须留痕");
-        assert!(captured.contains("429"), "{captured}");
+        // ★ 结构化错误（带 `code`）—— 比原字符串 `contains("429")` 精确。
+        assert_eq!(captured.code, 429, "错误码必须留痕：{captured:?}");
         assert!(
             usage.lock().expect("锁未中毒").is_none(),
             "错误帧不带 usage"
@@ -1744,7 +1912,7 @@ mod tests {
             ),
         ];
         let usage = Arc::new(Mutex::new(None::<Value>));
-        let error = Arc::new(Mutex::new(None::<String>));
+        let error = Arc::new(Mutex::new(None::<UpstreamError>));
         let mut tap = UsageTapStream::new(
             QoderOpenAiStream::new(upstream_from(&frames)),
             usage.clone(),
@@ -2074,7 +2242,7 @@ mod tests {
                 ]))),
             ),
             std::sync::Arc::new(std::sync::Mutex::new(None::<Value>)),
-            std::sync::Arc::new(std::sync::Mutex::new(None::<String>)),
+            std::sync::Arc::new(std::sync::Mutex::new(None::<UpstreamError>)),
         );
         let mut stream = tapped;
         let text = collect(&mut stream).await;

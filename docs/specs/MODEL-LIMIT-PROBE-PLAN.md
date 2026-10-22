@@ -47,13 +47,31 @@
 | `auth_dead` | `SessionDead`（`12153`） | `AuthDead`（401/403） | `SessionDead`（401，永久禁用） |
 | `model_unavailable` | `NotFound`（404） | `ClientError` | `NotFound`（404） |
 | `upstream_error` | `Server` / `Client` | `Transient`（5xx） | `Server` / `Client`（5xx/4xx 区间） |
+| `upstream_queued`（**上游排队**，2026-10-22 新增） | —（WB 无此形态） | `QoderErrKind::Queued`（`10605` / `isQueued`，裹在 **403 信封**里） | —（Trae 侧并入 `rate_limited_model`） |
 | `transport_error` | `status == 0` | —（连接失败） | —（连接失败） |
 | `ok` | 2xx | 2xx | 2xx |
 | `skipped` | 信封凭据 / 未登录 / 不在库 | 无 access_token（PAT 不可推理） | 无 jwt / 无 device_id |
 
+> ★★ **Qoder 的 2xx ≠ 可用**（2026-10-22 真机取证）：上游的**排队**信号是
+> **HTTP 200 + SSE 信封里的错误帧**（`statusCodeValue:403` + `10605/isQueued`）。
+> 只看 HTTP 状态 ⇒ 排队被报成「全部可用（上游 200）」（假阴性），而真实流量拿到的是排队错误。
+> ⇒ Qoder 探测**必须读一次流**（`qoder::sse::first_upstream_error`）取第一帧错误，
+> 判档用**信封里的状态码 + 错误体**（`classify_http_with_detail`），不看 HTTP 状态。
+>
+> ★ `upstream_queued` **独立成档**（不并入限流三档，也不并入 `auth_dead`）：
+> 上游明说 `modelKey` + `serviceAvailable:false` + `retryAfterSeconds` ⇒ 等 30 秒就好，
+> 不是被限流、也不是凭据失效。回填语义 = `Other`（**不写冷却**），与中继侧
+> `pool::apply_error` 对 `Queued` 的处理一致（既不冷却也不标死）。
+>
+> ★ 账本状态码同步：客户端拿到的是排队错误帧（`code:429`）时，**账本也记 429**，
+> 不记 502 —— 否则日志把「上游在排队、稍后重试」说成「网关挂了」。
+
 > ★★ **红线**：只有前三行能叫「限流」。把 402（没积分）报成「限流」会让用户去傻等解锁 ——
 > `client_limits.rs` 已经踩过这个坑（「上游 6004 文案的 `reset at <T>` 是**配额窗口重置**，不是解锁时刻，实测 6/6 判错」）。
 > **主动探测的价值就是消除这个歧义：结果 = 此刻的实证。**
+>
+> ★ 同理：**排队**（`upstream_queued`）也不许并进「限流」—— 排队等 30 秒就好，
+> 报成限流会让用户去傻等解锁；也不许并进 `auth_dead` —— 账号好着。
 
 ### 1.3 与既有能力的边界（**不重造轮子**）
 

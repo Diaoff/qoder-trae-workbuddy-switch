@@ -62,6 +62,7 @@ const TALLY_ORDER: readonly ModelProbeState[] = [
   "rate_limited_model",
   "rate_limited_account",
   "model_blocked",
+  "upstream_queued",
   "no_credits",
   "auth_dead",
   "model_unavailable",
@@ -76,6 +77,7 @@ const LEGEND_ORDER: readonly ModelProbeState[] = [
   "ok",
   "rate_limited_model",
   "rate_limited_account",
+  "upstream_queued",
   "no_credits",
   "skipped",
 ];
@@ -102,6 +104,7 @@ function stateCellClass(state: ModelProbeState | "unknown", kind: "probed" | "pa
     model_unavailable: "border-destructive/58 bg-destructive/26",
     no_credits: "border-warning/40 bg-warning/16",
     upstream_error: "border-warning/40 bg-warning/16",
+    upstream_queued: "border-warning/40 bg-warning/16",
     transport_error: "border-warning/40 bg-warning/16",
     skipped: "border-border bg-muted",
     unknown: "border-border bg-muted",
@@ -128,6 +131,7 @@ function stateGlyph(state: ModelProbeState | "unknown"): string {
       return "✕";
     case "no_credits":
     case "upstream_error":
+    case "upstream_queued":
     case "transport_error":
       return "!";
     default:
@@ -143,6 +147,7 @@ export function probeStateVariant(state: ModelProbeState | "unknown"): "success"
     case "rate_limited_model":
     case "no_credits":
     case "upstream_error":
+    case "upstream_queued":
     case "transport_error":
       return "warning";
     case "rate_limited_account":
@@ -1159,6 +1164,7 @@ const STAT_DOT: Record<string, string> = {
   model_unavailable: "bg-destructive/55",
   no_credits: "bg-warning/35",
   upstream_error: "bg-warning/35",
+  upstream_queued: "bg-warning/35",
   transport_error: "bg-warning/35",
   skipped: "bg-muted",
   unknown: "bg-muted",

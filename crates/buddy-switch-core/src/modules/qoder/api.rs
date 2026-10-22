@@ -235,67 +235,159 @@ pub fn normalize_roles(messages: Option<&Vec<Value>>) -> Vec<Value> {
     out
 }
 
-/// 把 OpenAI content（字符串或 parts 列表）压成纯文本；图片单独收集。
-pub fn flatten_content_text(content: Option<&Value>) -> (String, Vec<String>) {
+/// content 拆解结果。
+pub struct FlattenedContent {
+    /// 纯文本（多段文本以 `\n` 连接；与旧行为一致）。
+    pub text: String,
+    /// 图片 URL（`data:` URL 原样保留）。
+    pub images: Vec<String>,
+    /// **有图时**才保留的多模态 parts（`[{type:"text"},{type:"image_url"}]`）；
+    /// 无图时为 `None`（此时上游收纯文本字符串即可）。
+    ///
+    /// ★ 为何必须保留：上游**只读** message content 里的结构化 `image_url` parts，
+    /// **不读**顶层 `image_urls` / `chat_context.imageUrls`（实测：填了顶层字段
+    /// 模型仍回「我没有收到图片」；改成 parts 后才正确识别图像内容）。
+    /// 所以带图消息的 content **不能**压成字符串。
+    pub parts: Option<Vec<Value>>,
+}
+
+impl FlattenedContent {
+    fn empty() -> Self {
+        Self {
+            text: String::new(),
+            images: Vec::new(),
+            parts: None,
+        }
+    }
+}
+
+/// 把 OpenAI content（字符串 / parts 列表 / 单个 part 对象）拆成
+/// 纯文本 + 图片 + **保留形态的 parts**。
+///
+/// ★ 单 part 形态（`content` 直接给一个 part 对象而非列表）按**单元素列表**处理，
+/// 绝不 `str()` —— 否则图像被字面量文本化（模型收到一段
+/// `{"type":"image_url",...}` 字符串），图像从未真正到达模型。
+pub fn flatten_content(content: Option<&Value>) -> FlattenedContent {
     match content {
-        None | Some(Value::Null) => (String::new(), Vec::new()),
-        Some(Value::String(text)) => (text.clone(), Vec::new()),
-        Some(Value::Array(parts)) => {
-            let mut texts = Vec::new();
-            let mut images = Vec::new();
-            for piece in parts {
-                match piece {
-                    Value::String(text) => texts.push(text.clone()),
-                    Value::Object(object) => {
-                        let piece_type = object.get("type").and_then(Value::as_str).unwrap_or("");
-                        if matches!(
-                            piece_type,
-                            "text" | "input_text" | "output_text" | "summary_text"
-                        ) {
-                            if let Some(text) = object.get("text").and_then(Value::as_str) {
-                                texts.push(text.to_string());
-                            }
-                        } else if matches!(piece_type, "image_url" | "image" | "input_image")
-                            || object.contains_key("image_url")
-                        {
-                            let mut url = object
-                                .get("image_url")
-                                .or_else(|| object.get("url"))
-                                .and_then(|value| {
-                                    if let Some(inner) = value.get("url") {
-                                        inner.as_str()
-                                    } else {
-                                        value.as_str()
-                                    }
-                                })
-                                .map(str::to_string);
-                            if url.is_none() {
-                                if let Some(data) = object.get("data").and_then(Value::as_str) {
-                                    let mime = object
-                                        .get("mimeType")
-                                        .or_else(|| object.get("mime_type"))
-                                        .and_then(Value::as_str)
-                                        .unwrap_or("image/png");
-                                    url = Some(format!("data:{mime};base64,{data}"));
-                                }
-                            }
-                            if let Some(url) = url {
-                                images.push(url);
-                            }
-                        }
+        None | Some(Value::Null) => FlattenedContent::empty(),
+        Some(Value::String(text)) => FlattenedContent {
+            text: text.clone(),
+            images: Vec::new(),
+            parts: None,
+        },
+        Some(Value::Array(parts)) => flatten_parts(parts),
+        Some(value @ Value::Object(_)) => flatten_parts(std::slice::from_ref(value)),
+        Some(other) => FlattenedContent {
+            text: other.to_string(),
+            images: Vec::new(),
+            parts: None,
+        },
+    }
+}
+
+/// 逐 part 拆解：文本进 `texts`，图片进 `images`；**有图时**同时保留 parts。
+fn flatten_parts(parts: &[Value]) -> FlattenedContent {
+    let mut texts: Vec<String> = Vec::new();
+    let mut images: Vec<String> = Vec::new();
+    let mut structured: Vec<Value> = Vec::new();
+    for piece in parts {
+        match piece {
+            Value::String(text) => {
+                texts.push(text.clone());
+                structured.push(serde_json::json!({ "type": "text", "text": text }));
+            }
+            Value::Object(object) => {
+                let piece_type = object.get("type").and_then(Value::as_str).unwrap_or("");
+                if matches!(
+                    piece_type,
+                    "text" | "input_text" | "output_text" | "summary_text"
+                ) {
+                    if let Some(text) = object.get("text").and_then(Value::as_str) {
+                        texts.push(text.to_string());
+                        structured.push(serde_json::json!({ "type": "text", "text": text }));
                     }
-                    _ => {}
+                } else if matches!(piece_type, "image_url" | "image" | "input_image")
+                    || object.contains_key("image_url")
+                {
+                    if let Some(url) = image_url_of(object) {
+                        images.push(url.clone());
+                        structured.push(
+                            serde_json::json!({ "type": "image_url", "image_url": { "url": url } }),
+                        );
+                    }
                 }
             }
-            let text = texts
-                .into_iter()
-                .filter(|text| !text.is_empty())
-                .collect::<Vec<_>>()
-                .join("\n");
-            (text, images)
+            _ => {}
         }
-        Some(other) => (other.to_string(), Vec::new()),
     }
+    let text = texts
+        .into_iter()
+        .filter(|text| !text.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n");
+    // 有图才保留 parts（无图时上游收纯文本，保留数组只是噪音）。
+    let parts = if images.is_empty() {
+        None
+    } else {
+        Some(structured)
+    };
+    FlattenedContent {
+        text,
+        images,
+        parts,
+    }
+}
+
+/// 从一个图片 part 里取出 URL（兼容 `image_url` 为字符串 / 对象两种写法、
+/// `data` + `mimeType` 的裸 base64 形态，以及 Anthropic 风格的 `source`）。
+fn image_url_of(object: &serde_json::Map<String, Value>) -> Option<String> {
+    let mut url = object
+        .get("image_url")
+        .or_else(|| object.get("url"))
+        .and_then(|value| {
+            if let Some(inner) = value.get("url") {
+                inner.as_str()
+            } else {
+                value.as_str()
+            }
+        })
+        .map(str::to_string);
+    if url.is_none() {
+        if let Some(data) = object.get("data").and_then(Value::as_str) {
+            let mime = object
+                .get("mimeType")
+                .or_else(|| object.get("mime_type"))
+                .and_then(Value::as_str)
+                .unwrap_or("image/png");
+            url = Some(format!("data:{mime};base64,{data}"));
+        }
+    }
+    // Anthropic 风格：`{"type":"image","source":{"type":"base64","media_type":…,"data":…}}`
+    // 或 `{"type":"image","source":{"type":"url","url":…}}`。
+    if url.is_none() {
+        if let Some(source) = object.get("source") {
+            if let Some(link) = source.get("url").and_then(Value::as_str) {
+                url = Some(link.to_string());
+            } else if let Some(data) = source.get("data").and_then(Value::as_str) {
+                let mime = source
+                    .get("media_type")
+                    .or_else(|| source.get("mediaType"))
+                    .and_then(Value::as_str)
+                    .unwrap_or("image/png");
+                url = Some(format!("data:{mime};base64,{data}"));
+            }
+        }
+    }
+    url
+}
+
+/// 把 OpenAI content（字符串或 parts 列表）压成纯文本；图片单独收集。
+///
+/// ★ 图片**同时**保留在 [`flatten_content`] 的 `parts` 里 —— 上游只读
+/// content 里的结构化 parts，见 [`FlattenedContent::parts`]。
+pub fn flatten_content_text(content: Option<&Value>) -> (String, Vec<String>) {
+    let flat = flatten_content(content);
+    (flat.text, flat.images)
 }
 
 /// 扁平化结果：`(首个 system 文本, 历史消息, 图片 URL 列表)`。
@@ -440,8 +532,15 @@ pub fn flatten_messages(
             continue;
         };
         let role = object.get("role").and_then(Value::as_str).unwrap_or("");
-        let (text, message_images) = flatten_content_text(object.get("content"));
-        images.extend(message_images);
+        let flat_content = flatten_content(object.get("content"));
+        let text = flat_content.text.clone();
+        images.extend(flat_content.images.iter().cloned());
+        // ★ 带图消息的 content **保留 parts 形态**（上游只读 content 里的
+        // 结构化 `image_url` parts）。无图时仍是纯文本字符串。
+        let mut content_value = serde_json::Value::String(text.clone());
+        if let Some(parts) = flat_content.parts.clone() {
+            content_value = serde_json::Value::Array(parts);
+        }
 
         if matches!(role, "system" | "developer") {
             if system_text.is_none() && !text.is_empty() {
@@ -554,7 +653,7 @@ pub fn flatten_messages(
 
             let mut item = Map::new();
             item.insert("role".into(), Value::String("assistant".into()));
-            item.insert("content".into(), Value::String(text));
+            item.insert("content".into(), content_value);
             if keep_reasoning {
                 if let Some(reasoning) = object.get("reasoning_content") {
                     item.insert(
@@ -567,14 +666,54 @@ pub fn flatten_messages(
             continue;
         }
 
-        // user 与其它角色原样保留（content 已压平成字符串）。
-        flat.push(serde_json::json!({ "role": role, "content": text }));
+        // user 与其它角色原样保留（★ 带图时 content 是 parts 数组）。
+        flat.push(serde_json::json!({ "role": role, "content": content_value }));
     }
 
     FlattenedMessages {
         system_text,
         messages: flat,
         images,
+    }
+}
+
+/// 是否保留顶层 `image_urls` / `chat_context.imageUrls`（**默认否**）。
+///
+/// 上游只读 message content 里的结构化 `image_url` parts；顶层两份是冗余，
+/// 且 base64 图片在两处各存一份会让出站体积翻倍（见 `build_chat_body` 注释）。
+/// 排查时置 `BUDDY_SWITCH_QODER_KEEP_TOPLEVEL_IMAGES=1` 恢复旧行为。
+fn keep_toplevel_images() -> bool {
+    std::env::var("BUDDY_SWITCH_QODER_KEEP_TOPLEVEL_IMAGES")
+        .ok()
+        .map(|raw| {
+            matches!(
+                raw.trim().to_ascii_lowercase().as_str(),
+                "1" | "on" | "true" | "yes"
+            )
+        })
+        .unwrap_or(false)
+}
+
+/// 从一个 message 的 `content` 里取**纯文本**（字符串直取；parts 数组取
+/// `text` part 拼接）。带图消息的 content 是 parts 数组 ⇒ 不能用 `as_str()`。
+pub fn content_text_of(content: &Value) -> Option<String> {
+    match content {
+        Value::String(text) => Some(text.clone()),
+        Value::Array(parts) => {
+            let text = parts
+                .iter()
+                .filter_map(|part| {
+                    if part.get("type").and_then(Value::as_str) == Some("text") {
+                        part.get("text").and_then(Value::as_str).map(str::to_string)
+                    } else {
+                        None
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            Some(text)
+        }
+        _ => None,
     }
 }
 
@@ -924,12 +1063,13 @@ pub fn build_chat_body_with_structured(
     }
 
     // 最新用户提示词（chat_context 高亮 + business 会话名）。
+    // ★ 带图消息的 content 是 parts 数组 ⇒ 文本要从 text part 里取。
     let mut prompt = String::new();
     for message in flattened.messages.iter().rev() {
         if message.get("role").and_then(Value::as_str) == Some("user") {
-            if let Some(content) = message.get("content").and_then(Value::as_str) {
+            if let Some(content) = message.get("content").and_then(content_text_of) {
                 if !content.is_empty() {
-                    prompt = content.to_string();
+                    prompt = content;
                     break;
                 }
             }
@@ -982,7 +1122,16 @@ pub fn build_chat_body_with_structured(
             }
             extra.insert("modelConfig".into(), model_config);
         }
-        if !flattened.images.is_empty() {
+        // ★ 顶层 `image_urls` / `chat_context.imageUrls` **默认不填**。
+        //
+        // 上游**只读** message content 里的结构化 `image_url` parts（实测：
+        // 填了顶层字段模型仍回「我没有收到图片」；改成 parts 后才正确识别
+        // 图像内容）。顶层两份是纯冗余 —— 而 base64 图片在两处各存一份会让
+        // 出站体积翻倍（10 张图 15MB → 48MB），撞上游 30MB 请求体上限被 RST，
+        // 还会把账号池打到熔断。
+        //
+        // 排查时可用 `BUDDY_SWITCH_QODER_KEEP_TOPLEVEL_IMAGES=1` 恢复旧行为。
+        if !flattened.images.is_empty() && keep_toplevel_images() {
             context.insert(
                 "imageUrls".into(),
                 serde_json::json!(flattened.images.clone()),
@@ -2446,6 +2595,108 @@ mod tests {
         assert_eq!(images.len(), 2);
         assert_eq!(images[0], "https://x/1.png");
         assert_eq!(images[1], "data:image/jpeg;base64,AAAA");
+    }
+
+    /// ★ 带图消息的 content 必须**保留 parts 数组**（上游只读 content 里的
+    /// 结构化 `image_url` parts；压成字符串 ⇒ 图像从未到达模型）。
+    #[test]
+    fn flatten_keeps_multimodal_parts_for_messages_with_images() {
+        let messages = vec![serde_json::json!({
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "看这张"},
+                {"type": "image_url", "image_url": {"url": "https://x/1.png"}},
+            ],
+        })];
+        let flat = flatten_messages(&messages, false, false);
+        let content = &flat.messages[0]["content"];
+        assert!(
+            content.is_array(),
+            "带图消息的 content 必须是 parts 数组，实际：{content}"
+        );
+        assert_eq!(content[0]["type"], "text");
+        assert_eq!(content[0]["text"], "看这张");
+        assert_eq!(content[1]["type"], "image_url");
+        assert_eq!(content[1]["image_url"]["url"], "https://x/1.png");
+        assert_eq!(flat.images, vec!["https://x/1.png".to_string()]);
+    }
+
+    /// 无图消息仍是纯文本（行为不变：上游对纯文本更宽容）。
+    #[test]
+    fn flatten_keeps_plain_text_for_messages_without_images() {
+        let messages = vec![serde_json::json!({
+            "role": "user",
+            "content": [{"type": "text", "text": "只有文字"}],
+        })];
+        let flat = flatten_messages(&messages, false, false);
+        assert_eq!(flat.messages[0]["content"], "只有文字");
+    }
+
+    /// 单 part 形态（content 直接给一个 part 对象而非列表）：图像必须被收集，
+    /// **绝不**被 `str()` 成字面量文本。
+    #[test]
+    fn flatten_handles_single_part_object_content() {
+        let messages = vec![serde_json::json!({
+            "role": "user",
+            "content": {"type": "image_url", "image_url": {"url": "https://x/2.png"}},
+        })];
+        let flat = flatten_messages(&messages, false, false);
+        assert_eq!(flat.images, vec!["https://x/2.png".to_string()]);
+        let content = &flat.messages[0]["content"];
+        assert!(content.is_array(), "单 part 形态也应保留 parts");
+        assert_eq!(content[0]["image_url"]["url"], "https://x/2.png");
+    }
+
+    /// ★ prompt 提取必须兼容 parts 数组（带图时 content 不再是字符串）。
+    #[test]
+    fn build_chat_body_prompt_survives_multimodal_content() {
+        let payload = serde_json::json!({
+            "model": "m",
+            "messages": [{
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "这是什么颜色"},
+                    {"type": "image_url", "image_url": {"url": "https://x/3.png"}},
+                ],
+            }],
+        });
+        let body = build_chat_body(&payload, &meta(), QoderRegion::Cn, "").expect("请求体必须能构造");
+        assert_eq!(body["chat_context"]["text"]["text"], "这是什么颜色");
+        // 图片进了 message content 的 parts。
+        let messages = body["messages"].as_array().expect("messages 是数组");
+        let last = messages.last().expect("至少一条消息");
+        assert!(last["content"].is_array());
+        assert_eq!(last["content"][1]["image_url"]["url"], "https://x/3.png");
+    }
+
+    /// 顶层 `image_urls` / `chat_context.imageUrls` 默认**不填**（上游不读，
+    /// 且 base64 双份会让出站体积翻倍）。
+    #[test]
+    fn build_chat_body_skips_toplevel_image_fields_by_default() {
+        let payload = serde_json::json!({
+            "model": "m",
+            "messages": [{
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "看"},
+                    {"type": "image_url", "image_url": {"url": "https://x/4.png"}},
+                ],
+            }],
+        });
+        let body = build_chat_body(&payload, &meta(), QoderRegion::Cn, "").expect("请求体必须能构造");
+        // 骨架里本就有 `image_urls: null` 占位 ⇒ 判据是「没有被填成列表」。
+        assert!(
+            body.get("image_urls").map(|value| value.is_null()).unwrap_or(true),
+            "顶层 image_urls 默认不填：{:?}",
+            body.get("image_urls")
+        );
+        assert!(
+            body["chat_context"]
+                .get("imageUrls")
+                .map(|value| value.is_null())
+                .unwrap_or(true),
+            "chat_context.imageUrls 默认不填"
+        );
     }
 
     #[test]

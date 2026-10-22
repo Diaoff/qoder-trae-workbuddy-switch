@@ -42,6 +42,29 @@ fn tool_result_to_text(content: Option<&Value>) -> String {
     }
 }
 
+/// Anthropic 的 `image` block → URL（`data:` URI 或 http(s) 链接）。
+///
+/// Anthropic 图片形态：
+/// ```json
+/// {"type":"image","source":{"type":"base64","media_type":"image/png","data":"…"}}
+/// {"type":"image","source":{"type":"url","url":"https://…"}}
+/// ```
+fn image_block_to_url(block: &Value) -> Option<String> {
+    let source = block.get("source")?;
+    match source.get("type").and_then(Value::as_str).unwrap_or("base64") {
+        "url" => source.get("url").and_then(Value::as_str).map(str::to_string),
+        _ => {
+            let data = source.get("data").and_then(Value::as_str)?;
+            let media = source
+                .get("media_type")
+                .or_else(|| source.get("mediaType"))
+                .and_then(Value::as_str)
+                .unwrap_or("image/png");
+            Some(format!("data:{media};base64,{data}"))
+        }
+    }
+}
+
 /// Anthropic 请求 → 上游（OpenAI 形态）请求体。
 ///
 /// 关键映射（A-5.2）：
@@ -53,7 +76,26 @@ fn tool_result_to_text(content: Option<&Value>) -> String {
 /// - `tools[{name,description,input_schema}]` → `tools[{type:"function",function:{...parameters}}]`
 /// - `tool_choice`（auto/any/tool）→ 上游字符串形态
 /// - `stop_sequences` → `stop`；强制 `stream:true`
+///
+/// ★ **不含图片**：Anthropic 的 `image` block 在这里被丢弃（只取 `text` 块）。
+/// 需要图片的上游走 [`to_upstream_request_with_images`]。
 pub fn to_upstream_request(body: &Value) -> Value {
+    to_upstream_request_impl(body, false)
+}
+
+/// Anthropic 请求 → 上游（OpenAI 形态）请求体，**保留图片**。
+///
+/// 与 [`to_upstream_request`] 的唯一差别：`image` block 转成 OpenAI 多模态
+/// `image_url` part，带图消息的 content 因此是 parts 数组而非纯文本。
+///
+/// ★ 谁该用：**只有确认上游接受 message content 里结构化 `image_url` parts
+/// 的产品线**。Qoder 上游实测只读 content 里的 parts（顶层 `image_urls` 不读），
+/// 故 Qoder 用本函数；Trae / WB 未验证 ⇒ 仍走 [`to_upstream_request`]。
+pub fn to_upstream_request_with_images(body: &Value) -> Value {
+    to_upstream_request_impl(body, true)
+}
+
+fn to_upstream_request_impl(body: &Value, allow_images: bool) -> Value {
     let mut out = Map::new();
 
     for key in ["model", "max_tokens", "temperature", "top_p"] {
@@ -141,6 +183,9 @@ pub fn to_upstream_request(body: &Value) -> Value {
                     let text = content_to_text(value);
                     let mut tool_calls: Vec<Value> = Vec::new();
                     let mut tool_results: Vec<Value> = Vec::new();
+                    // ★ 图片：仅 `allow_images=true` 时收集（见
+                    // [`to_upstream_request_with_images`] 的适用边界）。
+                    let mut images: Vec<String> = Vec::new();
                     for block in blocks {
                         match block.get("type").and_then(Value::as_str) {
                             Some("tool_use") => {
@@ -168,6 +213,11 @@ pub fn to_upstream_request(body: &Value) -> Value {
                                     "content": content,
                                 }));
                             }
+                            Some("image") if allow_images => {
+                                if let Some(url) = image_block_to_url(block) {
+                                    images.push(url);
+                                }
+                            }
                             _ => {}
                         }
                     }
@@ -194,7 +244,18 @@ pub fn to_upstream_request(body: &Value) -> Value {
                         // （Claude Code 的插话 / 中断说明）排在工具结果**之后**，
                         // 作为本轮结果之后的新用户发言。
                         messages.extend(tool_results);
-                        if !text.is_empty() {
+                        // ★ 带图 ⇒ content 用多模态 parts 数组（上游只读 content
+                        // 里的结构化 `image_url` parts）。
+                        if !images.is_empty() {
+                            let mut parts: Vec<Value> = Vec::new();
+                            if !text.is_empty() {
+                                parts.push(json!({"type": "text", "text": text}));
+                            }
+                            for url in images {
+                                parts.push(json!({"type": "image_url", "image_url": {"url": url}}));
+                            }
+                            messages.push(json!({"role": "user", "content": parts}));
+                        } else if !text.is_empty() {
                             messages.push(json!({"role": "user", "content": text}));
                         }
                     }
@@ -604,6 +665,75 @@ mod tests {
             .iter()
             .map(|chunk| String::from_utf8_lossy(chunk).to_string())
             .collect()
+    }
+
+    /// ★ 默认入口**丢弃**图片（Trae / WB 上游是否吃多模态 parts 未验证）。
+    #[test]
+    fn to_upstream_request_drops_images_by_default() {
+        let body = json!({
+            "model": "m",
+            "messages": [{
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "这是什么"},
+                    {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "AAA"}},
+                ],
+            }],
+        });
+        let out = to_upstream_request(&body);
+        let messages = out["messages"].as_array().unwrap();
+        assert_eq!(messages[0]["content"], "这是什么");
+    }
+
+    /// ★ 带图入口把 `image` block 转成 OpenAI 多模态 `image_url` part。
+    #[test]
+    fn to_upstream_request_with_images_keeps_multimodal_parts() {
+        let body = json!({
+            "model": "m",
+            "messages": [{
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "这是什么"},
+                    {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "AAA"}},
+                    {"type": "image", "source": {"type": "url", "url": "https://x/1.png"}},
+                ],
+            }],
+        });
+        let out = to_upstream_request_with_images(&body);
+        let messages = out["messages"].as_array().unwrap();
+        let content = messages[0]["content"].as_array().expect("带图 ⇒ parts 数组");
+        assert_eq!(content[0]["type"], "text");
+        assert_eq!(content[0]["text"], "这是什么");
+        assert_eq!(content[1]["type"], "image_url");
+        assert_eq!(
+            content[1]["image_url"]["url"],
+            "data:image/png;base64,AAA",
+            "base64 图片转 data URI"
+        );
+        assert_eq!(content[2]["image_url"]["url"], "https://x/1.png");
+    }
+
+    /// 带图 + 工具结果同处一条 user 消息：`role:"tool"` 仍必须紧邻 assistant。
+    #[test]
+    fn to_upstream_request_with_images_keeps_tool_result_order() {
+        let body = json!({
+            "model": "m",
+            "messages": [
+                {"role": "assistant", "content": [
+                    {"type": "tool_use", "id": "t1", "name": "look", "input": {}},
+                ]},
+                {"role": "user", "content": [
+                    {"type": "tool_result", "tool_use_id": "t1", "content": "结果"},
+                    {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "BBB"}},
+                ]},
+            ],
+        });
+        let out = to_upstream_request_with_images(&body);
+        let messages = out["messages"].as_array().unwrap();
+        assert_eq!(messages[0]["role"], "assistant");
+        assert_eq!(messages[1]["role"], "tool", "tool 必须紧邻 assistant");
+        assert_eq!(messages[2]["role"], "user");
+        assert!(messages[2]["content"].is_array(), "带图 ⇒ parts 数组");
     }
 
     /// ★★ 两条入口（流式聚合 / 一次性响应）必须产出**同一形状**的 `message`。

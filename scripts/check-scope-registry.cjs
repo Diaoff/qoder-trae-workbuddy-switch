@@ -9084,6 +9084,47 @@ check("★ 聚合词条 zh/en 键位一一对应，且两个汇总文件都组�
   return `${zhKeys.length} 键 zh=en · 两个汇总文件均已组合`;
 });
 
+check("★ 限流探测状态：后端枚举 / 前端类型 / zh·en 词条三方**逐字一致**", () => {
+  /* 三处必须同步（2026-10-22 踩过：后端加了一档 `upstream_queued`，
+     前端类型没加 ⇒ 前端整列落「未知」；词条没加 ⇒ 显示成原始 id）。 */
+  const rs = readCode("crates/buddy-switch-gateway/src/model_probe.rs");
+  const enumBlock = rs.match(/pub enum ProbeState \{([\s\S]*?)\n\}/);
+  if (!enumBlock) throw new Error("找不到 `ProbeState` 枚举（断言失效：是否改名/挪位置？）");
+  const backend = [...enumBlock[1].matchAll(/^\s{4}([A-Z][A-Za-z]*),/gm)]
+    .map((m) => m[1])
+    /* wire 名 = serde `rename_all = "snake_case"`（见 `ProbeState` 的 derive）*/
+    .map((name) => name.replace(/([a-z0-9])([A-Z])/g, "$1_$2").toLowerCase());
+  if (backend.length === 0) throw new Error("ProbeState 枚举解析出 0 项（断言失效）");
+
+  const ts = readCode("src/lib/types.ts");
+  const typeBlock = ts.match(/export type ModelProbeState =([\s\S]*?);/);
+  if (!typeBlock) throw new Error("找不到 `ModelProbeState`（前端类型）");
+  const frontend = [...typeBlock[1].matchAll(/"([a-z_]+)"/g)].map((m) => m[1]);
+  if (frontend.length === 0) throw new Error("ModelProbeState 解析出 0 项（断言失效）");
+
+  const missingInFrontend = backend.filter((s) => !frontend.includes(s));
+  const extraInFrontend = frontend.filter((s) => !backend.includes(s));
+  if (missingInFrontend.length || extraInFrontend.length) {
+    throw new Error(
+      `后端与前端状态集不一致：前端缺=${missingInFrontend.join(",") || "无"} / 前端多=${extraInFrontend.join(",") || "无"}`,
+    );
+  }
+
+  /* 词条：每个状态都要有 zh + en 的 label 与 reason（缺一个就显示成原始 id）。 */
+  const localeKeys = (rel) =>
+    new Set([...readCode(rel).matchAll(/"(shared\.gateway\.probe\.(?:state|reason)\.[^"]+)"/g)].map((m) => m[1]));
+  const zh = localeKeys("src/locales/domains/shared.zh.ts");
+  const en = localeKeys("src/locales/domains/shared.en.ts");
+  for (const state of backend) {
+    for (const kind of ["state", "reason"]) {
+      const key = `shared.gateway.probe.${kind}.${state}`;
+      if (!zh.has(key)) throw new Error(`shared.zh.ts 缺词条 ${key}`);
+      if (!en.has(key)) throw new Error(`shared.en.ts 缺词条 ${key}`);
+    }
+  }
+  return `${backend.length} 档 · 后端=前端=zh=en`;
+});
+
 console.log(`\n${passed} passed / ${failures.length} failed\n`);
 if (failures.length) {
   for (const f of failures) console.error(" - " + f);

@@ -345,8 +345,19 @@ fn parts_to_content(content: Option<&Value>) -> Value {
                         }
                     }
                     Some("input_image") => {
-                        has_image = true;
-                        if let Some(url) = part.get("image_url").and_then(Value::as_str) {
+                        // `image_url` 既可能是字符串，也可能是 `{url}` 对象；
+                        // 两种都要认，否则图片被整条丢弃。
+                        let url = part
+                            .get("image_url")
+                            .and_then(|value| {
+                                value
+                                    .get("url")
+                                    .and_then(Value::as_str)
+                                    .or_else(|| value.as_str())
+                            })
+                            .map(str::to_string);
+                        if let Some(url) = url {
+                            has_image = true;
                             multimodal
                                 .push(json!({"type": "image_url", "image_url": {"url": url}}));
                         }

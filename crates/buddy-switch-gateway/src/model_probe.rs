@@ -67,6 +67,11 @@ use buddy_switch_core::modules::product::{
 };
 use buddy_switch_core::modules::qoder::region::QoderRegion;
 use buddy_switch_core::modules::qoder::{api as qoder_api, cosy, PATH_CHAT_SSE};
+// ★ 编译修复（2026-10-22）：`classify_http_with_detail` 从本文件搬到了
+// `qoder::pool`（按产品线归位），调用点没跟着加 use ⇒ crate 编不过。
+use crate::qoder::pool::classify_http_with_detail;
+// 同一次归位：探测读首帧错误走 `qoder::sse::first_upstream_error`（此前直接写 `sse::`）。
+use crate::qoder::sse;
 use buddy_switch_core::modules::region::Region;
 use buddy_switch_core::modules::trae::region::TraeRegion;
 use buddy_switch_core::modules::trae::variant::TraeVariant;
@@ -76,7 +81,7 @@ use crate::error::truncate_with_marker;
 use crate::outbound::{self, OutboundMeta};
 use crate::pool::{classify_event, ProbeOutcome, RealmTag, UpstreamEvent};
 use crate::qoder::payload;
-use crate::qoder::pool::{classify_http, QoderErrKind};
+use crate::qoder::pool::QoderErrKind;
 use crate::qoder::routes::chat_once_for_account;
 use crate::qoder::{QoderGateway, QoderGatewayState};
 use crate::session_headers::{self, ConversationContext};
@@ -135,6 +140,20 @@ pub enum ProbeState {
     ModelUnavailable,
     /// 5xx / 其它 4xx。
     UpstreamError,
+    /// ★ **上游排队**（`10605` / `isQueued`，裹在 **403** 信封里）。
+    ///
+    /// ## 为什么必须**独立成档**（三个「都不是」）
+    ///
+    /// - 不是**限流**（上游明说 `serviceAvailable:false` + `retryAfterSeconds:30`
+    ///   ⇒ 等 30 秒就好，混进「限流」三档会让用户去傻等解锁）；
+    /// - 不是**凭据失效**（`403` 看着像 `auth_dead`，但账号好着 —— 中继侧
+    ///   `pool::queue_signal` 正是为此把排队与 `auth_dead` 分开）；
+    /// - 不是**上游异常**（它明说 `modelKey` + `queueType` ⇒ 是**可换模型绕开**的）。
+    ///
+    /// ★ **不算限流** ⇒ 不进「限流账号数」统计（前端 `PROBE_LIMIT_STATES` 不含本档）。
+    /// ★ **回填 = `Other`（不写冷却）**：与中继侧「排队不惩罚账号」一致
+    ///   （`pool::apply_error` 对 `Queued` 直接 return，既不冷却也不标死）。
+    UpstreamQueued,
     /// 传输层失败（`status == 0`）或单格超时。
     TransportError,
     /// 没探（无凭据 / 信封 / 账号不在库）。
@@ -341,21 +360,28 @@ fn realm_of(region: Region) -> RealmTag {
 // 探测目标（平台无关的探测循环的抽象）
 // ---------------------------------------------------------------------------
 
-/// ★ **唯一映射点（Qoder）**：Qoder 上游 HTTP 状态 → 单元格状态。纯函数，单测 + 变异覆盖。
+/// ★ **唯一映射点（Qoder）**：Qoder 上游错误 → 单元格状态。纯函数，单测 + 变异覆盖。
 ///
 /// ## 为什么不能复用 [`probe_state_of`]（WB 专属）
 ///
 /// WB 的判据来自**响应体**（[`classify_event`]：`6004` / `IsModelRateLimit` / `11102` / 余额文案…）。
-/// Qoder **没有 body 判据**，唯一判据是状态码 [`classify_http`]（`qoder/pool.rs`）。
+/// Qoder 的 HTTP 层判据是状态码（[`classify_http_with_detail`]），但**必须带 body** ——
+/// 上游把「排队」塞进 **403 信封**里（`10605` / `isQueued`），只看状态码会把它当成
+/// 「凭据失效」（`classify_http` 的老毛病），`pool::queue_signal` 正是为此存在。
 ///
-/// ## `QoderErrKind` 只有四档 ⇒ 在 `ClientError` 里单独把 404 判成 `ModelUnavailable`
+/// ## 档位对应
 ///
-/// [`classify_http`] 把「非 429 / 非 401·403 的 4xx」一律归为 `ClientError`，**不区分 404**。
-/// 故 404 在 `ClientError` 分支里单独识别（「该账号看不到这个模型」），其余 4xx 归 `UpstreamError`。
-/// 429 ⇒ `RateLimitedModel`（Qoder 上游本来就**按模型**报限流，故**没有账号级细分**）；
-/// 401/403 ⇒ `AuthDead`；5xx / 传输 ⇒ `UpstreamError`。
-pub fn probe_state_of_qoder(status: u16) -> ProbeState {
-    match classify_http(status) {
+/// | 上游 | 单元格 |
+/// |:--|:--|
+/// | 排队（`10605` / `isQueued`，403 信封） | `upstream_queued`（**独立成档**：等 30 秒就好，不是限流、不是凭据死） |
+/// | 429 | `rate_limited_model`（Qoder 上游本来就**按模型**报限流） |
+/// | 401 / 403（无排队信号） | `auth_dead` |
+/// | 404 | `model_unavailable` |
+/// | 402 | `upstream_error`（探测的「一格」是**模型**维度：凭据好着，只是没钱了） |
+/// | 5xx / 传输 | `upstream_error` |
+pub fn probe_state_of_qoder(status: u16, detail: &str) -> ProbeState {
+    match classify_http_with_detail(status, detail) {
+        QoderErrKind::Queued => ProbeState::UpstreamQueued,
         QoderErrKind::RateLimited => ProbeState::RateLimitedModel,
         QoderErrKind::AuthDead => ProbeState::AuthDead,
         QoderErrKind::Transient => ProbeState::UpstreamError,
@@ -366,9 +392,6 @@ pub fn probe_state_of_qoder(status: u16) -> ProbeState {
                 ProbeState::UpstreamError
             }
         }
-        // 探测只看状态码、拿不到 body ⇒ 认不出 401/403 里的排队信号；
-        // 真到了这一档（`classify_http` 不会返回它）也按上游错误处理，不算账号死。
-        QoderErrKind::Queued => ProbeState::UpstreamError,
         // 402：账号级余额耗尽。探测的「一格」是**模型**维度，这里如实报上游错误
         // （把账号标成「凭据死」是错的 —— 凭据好着，只是没钱了）。
         QoderErrKind::BalanceExhausted => ProbeState::UpstreamError,
@@ -1074,14 +1097,26 @@ async fn probe_cell_wb(state: &GatewayState, region: Region, uid: &str, model: &
 ///
 /// ## 判据零新造
 ///
-/// Qoder **没有 body 判据**，唯一判据是 HTTP 状态码（[`probe_state_of_qoder`]）。
+/// Qoder 的判据是 **HTTP 状态码 + body**（[`probe_state_of_qoder`]）：状态码给大类，
+/// body 区分「排队（`10605`）」与「凭据失效」—— 只看状态码会把 403 排队误判成
+/// 「登录失效」（`pool::classify_http_with_detail` 正是为此存在）。
 ///
 /// ## 发请求：单账号、单次、零重试（本轮最难的一处）
 ///
 /// 用 [`chat_once_for_account`]（从 `qoder::routes::chat_for_region` 抽出的**单账号单次**入口）——
 /// **绝不**用 `chat_for_region` 本身（它带 `max_rotate` 换号轮换，会把结果归因到别的账号）。
 /// 请求体走 Qoder 现成构造：`build_chat_body` + `qoder_encode` + `cosy::shared_cache`。
-/// 2xx ⇒ **立刻丢弃响应体**（不聚合、不解析 SSE），只留状态与耗时。
+///
+/// ## ★ 2xx **不等于**成功（2026-10-22 实测修掉的一个假阴性）
+///
+/// 上游的**排队**信号是 **HTTP 200 + SSE 信封里的错误帧**
+/// （`statusCodeValue:403` + `10605/isQueued`）⇒ 只看 HTTP 状态会把「排队」报成
+/// 「全部可用（上游 200）」，而真实流量拿到的是排队错误。
+/// 故 2xx 时**读一次流**（[`sse::first_upstream_error`]），只为取那**第一帧错误**：
+/// - 找到 ⇒ 按 `(状态码, 详情)` 判档（排队 ⇒ `upstream_queued`）；
+/// - 没找到 ⇒ 真的可用（流被读完即丢弃，不聚合、不落账本）。
+///
+/// 代价可控：探测请求是 `max_tokens:1` + 短文案，流极短。
 async fn probe_cell_qoder(
     state: &QoderGatewayState,
     region: QoderRegion,
@@ -1151,15 +1186,28 @@ async fn probe_cell_qoder(
 
     let started = Instant::now();
     // ★ 单格硬超时（宿主客户端的总超时是 600s，对一格太长）。
-    let result = tokio::time::timeout(
-        Duration::from_secs(PROBE_CELL_TIMEOUT_SECS),
-        chat_once_for_account(state, region, &encoded, &headers),
-    )
+    //   **超时必须罩住「发请求 + 读流」两段** —— 只罩发请求的话，读流卡住会拖死整轮。
+    let result = tokio::time::timeout(Duration::from_secs(PROBE_CELL_TIMEOUT_SECS), async {
+        let response = chat_once_for_account(state, region, &encoded, &headers).await?;
+        let http_status = response.status().as_u16();
+        if !response.status().is_success() {
+            // 非 2xx：错误体不是 SSE 流，读一次即可（判档用 HTTP 状态码 + 错误体）。
+            let detail = response.text().await.unwrap_or_default();
+            return Ok::<_, String>((http_status, Some((http_status, detail))));
+        }
+        // ★ 2xx **不等于**成功：上游的排队信号是「HTTP 200 + 信封里的错误帧」
+        //   （`statusCodeValue:403` + `10605/isQueued`）。
+        //   读一次流只为找那**第一帧错误**（`sse::first_upstream_error`）。
+        //   ⚠️ 判档用**信封里的状态码**（403/429…），不是 HTTP 的 200 ——
+        //   否则排队（403 信封）会落进「上游异常」而不是「上游排队」。
+        let found = sse::first_upstream_error(response.bytes_stream()).await;
+        Ok((http_status, found))
+    })
     .await;
     let latency_ms = started.elapsed().as_millis() as i64;
 
-    let response = match result {
-        Ok(Ok(response)) => response,
+    let (http_status, detail) = match result {
+        Ok(Ok(parts)) => parts,
         Ok(Err(transport_error)) => {
             return ProbeCell {
                 uid: uid.to_string(),
@@ -1186,34 +1234,32 @@ async fn probe_cell_qoder(
         }
     };
 
-    let status = response.status().as_u16();
-    if response.status().is_success() {
-        // ★ 2xx ⇒ **立刻丢弃响应体**（`return` 即 drop，不聚合、不解析 SSE），只留状态与耗时。
-        return ProbeCell {
+    match detail {
+        // 流里没有错误帧 ⇒ 真的可用（正文被丢弃，不聚合、不落账本）。
+        None => ProbeCell {
             uid: uid.to_string(),
             nickname,
             model: model.to_string(),
             state: ProbeState::Ok,
-            http_status: status,
+            http_status,
             reset_at_ms: None,
             reason: String::new(),
             latency_ms,
-        };
-    }
-    // 非 2xx：读**短错误体**作 `reason`（截断并补标记）—— 错误体不是 SSE 流，不会阻塞。
-    let detail: String = truncate_with_marker(
-        &response.text().await.unwrap_or_default(),
-        PROBE_REASON_LIMIT,
-    );
-    ProbeCell {
-        uid: uid.to_string(),
-        nickname,
-        model: model.to_string(),
-        state: probe_state_of_qoder(status),
-        http_status: status,
-        reset_at_ms: None,
-        reason: detail,
-        latency_ms,
+        },
+        // 有错误帧 ⇒ 按 `(状态码, 详情)` 判档（排队 ⇒ `upstream_queued`）。
+        Some((judge_status, detail)) => {
+            let detail = truncate_with_marker(&detail, PROBE_REASON_LIMIT);
+            ProbeCell {
+                uid: uid.to_string(),
+                nickname,
+                model: model.to_string(),
+                state: probe_state_of_qoder(judge_status, &detail),
+                http_status,
+                reset_at_ms: None,
+                reason: detail,
+                latency_ms,
+            }
+        }
     }
 }
 
@@ -1480,32 +1526,65 @@ mod tests {
             ProbeState::UpstreamError,
             ProbeState::TransportError,
             ProbeState::Skipped,
+            ProbeState::UpstreamQueued,
         ] {
             assert_eq!(
                 probe_outcome_of(state, None),
                 ProbeOutcome::Other,
-                "{state:?} 不得动冷却 —— 402/登录失效/网络错误都不是「限流」"
+                "{state:?} 不得动冷却 —— 402/登录失效/网络错误/排队都不是「限流」"
             );
         }
     }
 
-    /// ★ Qoder 判据映射：唯一判据是**状态码**（Qoder 没有 body 判据）。
+    /// ★ Qoder 判据映射：唯一判据是 **状态码 + body**（body 用来把「排队」与「凭据死」分开）。
     ///
     /// 变异①：把 429 映射成 `RateLimitedAccount` ⇒ 第一条断言红（Qoder 上游本来就按模型报，无账号级细分）。
     /// 变异②：把 404 也归 `UpstreamError` ⇒ 404 那条断言红（「该账号看不到这个模型」≠ 上游错误）。
+    /// 变异③：把「排队（403 + `10605`）」也映射成 `AuthDead` ⇒ 排队那两条断言红
+    ///   （2026-10-22 真机踩到：排队裹在 403 信封里，只看状态码会把好账号判成登录失效）。
     #[test]
     fn qoder_status_maps_to_probe_state() {
-        assert_eq!(probe_state_of_qoder(429), ProbeState::RateLimitedModel);
-        assert_eq!(probe_state_of_qoder(401), ProbeState::AuthDead);
-        assert_eq!(probe_state_of_qoder(403), ProbeState::AuthDead);
-        assert_eq!(probe_state_of_qoder(404), ProbeState::ModelUnavailable);
-        assert_eq!(probe_state_of_qoder(400), ProbeState::UpstreamError);
-        assert_eq!(probe_state_of_qoder(500), ProbeState::UpstreamError);
-        assert_eq!(probe_state_of_qoder(503), ProbeState::UpstreamError);
+        assert_eq!(probe_state_of_qoder(429, ""), ProbeState::RateLimitedModel);
+        assert_eq!(probe_state_of_qoder(401, ""), ProbeState::AuthDead);
+        assert_eq!(probe_state_of_qoder(403, ""), ProbeState::AuthDead);
+        assert_eq!(probe_state_of_qoder(404, ""), ProbeState::ModelUnavailable);
+        assert_eq!(probe_state_of_qoder(400, ""), ProbeState::UpstreamError);
+        assert_eq!(probe_state_of_qoder(500, ""), ProbeState::UpstreamError);
+        assert_eq!(probe_state_of_qoder(503, ""), ProbeState::UpstreamError);
         // 429 与 401/403 必须落在**不同**档（限流 ≠ 凭据死）。
-        assert_ne!(probe_state_of_qoder(429), probe_state_of_qoder(401));
+        assert_ne!(probe_state_of_qoder(429, ""), probe_state_of_qoder(401, ""));
         // 模型不可见与上游错误必须分列。
-        assert_ne!(probe_state_of_qoder(404), probe_state_of_qoder(500));
+        assert_ne!(probe_state_of_qoder(404, ""), probe_state_of_qoder(500, ""));
+        // ★ 2026-10-22：detail 参与判定 —— Qoder 的**排队**是「HTTP 200 + 信封 403」，
+        //   只看状态码会把它判成「可用」（假阴性，真机踩过）。空 detail 与排队 detail
+        //   在同一状态码下必须落在**不同**档。
+        assert_eq!(
+            probe_state_of_qoder(403, "{\"statusCodeValue\":403,\"isQueued\":true}"),
+            ProbeState::UpstreamQueued,
+            "排队 ⇒ 上游排队（独立成档：不是限流、不是凭据死）"
+        );
+        assert_eq!(
+            probe_state_of_qoder(403, "{\"code\":\"10605\",\"isQueued\":true}"),
+            ProbeState::UpstreamQueued,
+            "排队（10605）⇒ 上游排队"
+        );
+        assert_ne!(
+            probe_state_of_qoder(403, ""),
+            probe_state_of_qoder(403, "isQueued"),
+            "detail 必须真的参与判定"
+        );
+        // ★ 排队**不得**落「凭据失效」：账号好着，只是这个模型在排队。
+        assert_ne!(
+            probe_state_of_qoder(403, "isQueued"),
+            ProbeState::AuthDead,
+            "排队不是凭据失效（否则用户去傻等重新登录）"
+        );
+        // ★ 排队**不得**落「限流」三档：等 30 秒就好，不是被限流。
+        assert_ne!(
+            probe_state_of_qoder(403, "isQueued"),
+            ProbeState::RateLimitedModel,
+            "排队不是限流（否则用户去傻等解锁）"
+        );
     }
 
     /// `target_for_scope` **fail-closed**：未知 / 空 / 拼错一律 `Err`（可读文案，列出合法取值）。
@@ -1633,6 +1712,7 @@ mod tests {
             ProbeState::AuthDead,
             ProbeState::ModelUnavailable,
             ProbeState::UpstreamError,
+            ProbeState::UpstreamQueued,
             ProbeState::TransportError,
             ProbeState::Skipped,
         ]
@@ -1656,6 +1736,7 @@ mod tests {
                 "auth_dead",
                 "model_unavailable",
                 "upstream_error",
+                "upstream_queued",
                 "transport_error",
                 "skipped",
             ]

@@ -266,7 +266,13 @@ pub async fn chat_for_region(
     // 非 OpenAI 入口先转成 OpenAI chat 形态（中继内部只认一份形态）。
     let openai_payload = match protocol {
         Protocol::OpenAi => parsed.clone(),
-        Protocol::Anthropic => crate::protocol::anthropic::to_upstream_request(&parsed),
+        // ★ Qoder 上游只读 message content 里的结构化 `image_url` parts ⇒
+        // Anthropic 的 `image` block 必须转成多模态 part，不能只取文本
+        // （否则图片被整条丢弃）。Trae / WB 未验证上游是否吃 parts，仍走
+        // 不含图片的 `to_upstream_request`。
+        Protocol::Anthropic => {
+            crate::protocol::anthropic::to_upstream_request_with_images(&parsed)
+        }
         Protocol::Responses => payload::responses_to_chat(&parsed),
     };
     let wants_stream = payload::wants_stream(&parsed);
@@ -735,7 +741,7 @@ async fn stream_relay(
     let stream_model = model.to_string();
     let usage_slot = std::sync::Arc::new(std::sync::Mutex::new(None::<Value>));
     // 上游错误帧留痕：流式账本在流结束才落，没有它就只能记成「200 + 0 token」。
-    let error_slot = std::sync::Arc::new(std::sync::Mutex::new(None::<String>));
+    let error_slot = std::sync::Arc::new(std::sync::Mutex::new(None::<sse::UpstreamError>));
     let state_for_task = state.clone();
     let uid = uid.to_string();
     let model_for_task = model.to_string();
@@ -808,9 +814,17 @@ async fn stream_relay(
         };
         // 上游中途发过错误帧 ⇒ 记 502 + 详情，别写成「200 / 0 token / 无错误」
         // （那正是 issue #46 里最难排查的形态）。
+        //
+        // ★ **排队单列 429**：下游错误帧的 `code` 就是**客户端看到的那个码**
+        //   （`sse::process_line` 对排队信号发 `code:429`），账本用它 ⇒ 日志与客户端
+        //   永远一致。账本若写 502，日志就会把「上游在排队、稍后重试」说成
+        //   「网关挂了」—— 2026-10-22 实测踩到（用户看到 502 以为服务坏了）。
         let upstream_error = error_slot.lock().ok().and_then(|guard| guard.clone());
         let (status, error) = match &upstream_error {
-            Some(detail) => (502u16, Some(detail.clone())),
+            Some(detail) => (
+                if detail.code == 429 { 429u16 } else { 502u16 },
+                Some(detail.message.clone()),
+            ),
             None => (200u16, None),
         };
         state_for_task
@@ -860,8 +874,19 @@ async fn aggregate_relay(
     };
     // ★ 账本先定「这一请求到底成没成」再落：上游只要给过错误帧就不是 200，
     //   否则日志会显示「200 + 0 token + error:null」（issue #46 的隐身故障）。
+    //
+    //   **排队单列 429** —— 与客户端拿到的语义一致：下游错误帧的 `code` 就是
+    //   客户端看到的那个码（排队 ⇒ 429），账本用它 ⇒ 日志与客户端永远一致。
+    //   （上游**真**的 429 限流也是 429 —— 同样是「稍后重试」，归一没有歧义。）
     let (log_status, log_error) = match &aggregated.upstream_error {
-        Some(detail) => (502u16, Some(detail.clone())),
+        Some(detail) => (
+            if aggregated.upstream_error_code == Some(429) {
+                429u16
+            } else {
+                502u16
+            },
+            Some(detail.clone()),
+        ),
         None => (200u16, None),
     };
     state

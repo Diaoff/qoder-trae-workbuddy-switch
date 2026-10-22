@@ -28,6 +28,7 @@
 | 改前端某个页面 | [`specs/PLAN.md`](specs/PLAN.md) 对应 §3.x + 该期 `P*-ARCH.md` |
 | 给密钥设 token 配额 / 限制可访问账号（issue #76） | [`specs/KEY-PERMISSION-UI-DESIGN.md`](specs/KEY-PERMISSION-UI-DESIGN.md)（交互与视觉，待拍板）+ [`prototype/key-permission-design.html`](prototype/key-permission-design.html)（可点设计稿） |
 | 侧栏太占地方 / 想只看图标（折叠） | [`specs/SIDEBAR-COLLAPSE-DESIGN.md`](specs/SIDEBAR-COLLAPSE-DESIGN.md)（已落地）+ [`prototype/verify-sidebar-collapse.cjs`](prototype/verify-sidebar-collapse.cjs)（行为校验） |
+| 侧栏品牌块图标与顶栏平台图标看混了（issue #75） | [`prototype/sidebar-brand-design.html`](prototype/sidebar-brand-design.html)（可点设计稿，待评审） |
 | 用量页要显示网关调用的明细（按模型 / 按账号） | [`specs/USAGE-GATEWAY-UI-REDESIGN.md`](specs/USAGE-GATEWAY-UI-REDESIGN.md)（交互与视觉，待拍板）+ [`specs/USAGE-GATEWAY-DETAIL-PLAN.md`](specs/USAGE-GATEWAY-DETAIL-PLAN.md)（数据契约与验收） |
 | 新增一个平台 / 产品线 | [`specs/P5-ARCH.md`](specs/P5-ARCH.md) + [`specs/UNIFIED-GATEWAY-ARCH.md`](specs/UNIFIED-GATEWAY-ARCH.md) §11 |
 | 用词拿不准（region / scope / 作用域…） | [`specs/VOCABULARY.md`](specs/VOCABULARY.md)（**冻结，不许自创**） |
@@ -127,6 +128,7 @@
 | `buddy-switch-prototype.html` | 单文件原型（视觉基准，`check:scope` 会读它） |
 | `demo-app.js` `demo-data.js` `demo.css` | 原型的逻辑 / 演示数据 / 样式 |
 | `key-permission-design.html` | 密钥访问权限管理设计稿（issue #76）：列表两列 + 权限抽屉 + 创建对话框 |
+| `sidebar-brand-design.html` | 侧栏品牌块 × 顶栏平台图标去混淆设计稿（issue #75）：问题复现舞台 + 四方案对比 |
 | `verify-*.cjs` | JSDOM 驱动的原型行为校验（`verify-behaviors.cjs` 是 112 条断言那一套；`verify-key-permission-main.cjs` 是**主原型**里的密钥权限那一套，`verify-key-permission.cjs` 是独立设计稿那一套；`verify-sidebar-collapse.cjs` 是侧栏折叠那一套） |
 
 > ⚠️ **`scripts/check-scope-registry.cjs` 会直接读这里的文件**（不是注释引用）。改名或移动必须同步改脚本，否则门禁红。
