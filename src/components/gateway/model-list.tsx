@@ -16,9 +16,9 @@ import { poolOf } from "@/lib/gateway";
 import { useT } from "@/lib/i18n";
 import { scopeOf } from "@/lib/scope";
 import { servedCount } from "@/lib/types";
-import type { GatewayModelRow, ModelProbeCell, Region } from "@/lib/types";
+import type { GatewayModelRow, Region } from "@/lib/types";
 import { cn } from "@/lib/utils";
-import { EMPTY_DISABLED_SET, useGatewayStore, useProbePassive } from "@/stores/gateway";
+import { EMPTY_DISABLED_SET, useGatewayStore, useProbeCells, useProbePassive } from "@/stores/gateway";
 
 /**
  * 模型列表：来源条（实时 / 已保存 / 内置 + 上次识别 + 原因）+ 重新识别 + **模型表格**（P0-4 / P0-12 / P1-7 / P10 / P11）。
@@ -79,9 +79,10 @@ export function ModelList({ region, className }: { region: Region; className?: s
    * 保存或浅读结束后清空，之后以 store 配置为准。
    */
   const [maxContextDraft, setMaxContextDraft] = useState<boolean | null>(null);
-  /* 限流探测：与探测卡读**同一份**派生数据（`probe.cells` 实测 + `useProbePassive()` 被动底色）。 */
+  /* 限流探测：与探测卡/账号页台账读**同一份**派生数据
+     （`useProbeCells(scope)` 实测 + `useProbePassive()` 被动底色）。
+     ⚠️ 这里**不许**自己拼 `probe.cells`：后端作业单槽，单格重测会让那一列突然只剩 1 格。 */
   const status = useGatewayStore((s) => s.status);
-  const probe = useGatewayStore((s) => s.probe);
 
   /* 进入 / 切作用域时读一次该作用域的禁用偏好（页面级 `loadAll` 也会拉，幂等）。 */
   useEffect(() => {
@@ -122,11 +123,7 @@ export function ModelList({ region, className }: { region: Region; className?: s
 
   /* 探测的账号轴（= 该 region 的池条目）与实测格索引（uid × 模型 id）。 */
   const accounts = useMemo(() => poolOf(status, region).accounts, [status, region]);
-  const probedMap = useMemo(() => {
-    const map: Record<string, Record<string, ModelProbeCell>> = {};
-    for (const cell of probe?.cells ?? []) (map[cell.uid] ??= {})[cell.model] = cell;
-    return map;
-  }, [probe]);
+  const probedMap = useProbeCells(scope);
   /* 被动底色（与探测卡**同一份派生值**）：客户端台账 ∪ 池模型级冷却。 */
   const passiveMap = useProbePassive(region);
 

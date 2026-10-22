@@ -9166,6 +9166,15 @@ check("★ 客户端限流 × 限流探测：两侧读**同一份**实测结论�
     throw new Error("model-probe-card.tsx 又在自己拼 `probe.cells` ⇒ 单格重测会把整张矩阵打塌");
   }
 
+  /* 第三处消费者：模型表「限流（探测）」列（同一个坑：自己拼 `probe.cells` ⇒ 单格重测后该列只剩 1 格）。 */
+  const modelList = readCode("src/components/gateway/model-list.tsx");
+  if (!modelList.includes("useProbeCells(")) {
+    throw new Error("model-list.tsx 的「限流（探测）」列没有读共享实测索引 ⇒ 与卡片/台账不同源");
+  }
+  if (/probe\?\.cells/.test(modelList)) {
+    throw new Error("model-list.tsx 又在自己拼 `probe.cells` ⇒ 单格重测会让该列突然只剩 1 格");
+  }
+
   const store = readCode("src/stores/gateway.ts");
   for (const [marker, why] of [
     ["mergeProbeCells(", "store 没有合并作业快照 ⇒ 逐行实测的结论会被下一次作业冲掉"],
