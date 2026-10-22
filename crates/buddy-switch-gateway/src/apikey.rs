@@ -323,6 +323,13 @@ pub struct KeyActor {
     pub policy: KeyPolicy,
     /// 用量账本（**调用方所在产品线的**那份）。
     pub usage: std::sync::Arc<crate::key_usage::KeyUsageStore>,
+    /// ★ 这个 Key **属于哪套台账**（`"wb"` / `"trae"` / `"qoder"` / `"unified"`）。
+    ///
+    /// 为什么必须有：统一网关把请求转发给产品线中继时，产品线的请求日志记下的
+    /// `keyId` 是**网关那把 Key 的 id** —— 与产品线自己的 Key id 混在同一个字段里。
+    /// 没有这个标签，产品线的「按密钥看用量」会把网关的 Key 当成一把「已删除的本地 Key」
+    /// （显示成短 id），用户永远对不上。
+    pub scope: &'static str,
 }
 
 impl KeyActor {
@@ -330,11 +337,13 @@ impl KeyActor {
         key_id: impl Into<String>,
         policy: KeyPolicy,
         usage: std::sync::Arc<crate::key_usage::KeyUsageStore>,
+        scope: &'static str,
     ) -> Self {
         Self {
             key_id: key_id.into(),
             policy,
             usage,
+            scope,
         }
     }
 

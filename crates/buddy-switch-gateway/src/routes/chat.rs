@@ -52,6 +52,7 @@ pub async fn handler(
         record.id.clone(),
         record.policy(),
         state.key_usage.clone(),
+        "wb",
     ));
     // ★ 归属域由 API Key 决定（不接受客户端声明）；前缀策略走产品线那一套。
     let allow_reroute = state.config_snapshot().await.allow_model_region_prefix;
@@ -203,6 +204,7 @@ pub async fn chat_for_region(
                 RequestMeta {
                     endpoint: "/v1/chat/completions",
                     key_id: key.as_deref().map(|actor| actor.key_id.clone()),
+                    key_scope: key.as_deref().map(|actor| actor.scope),
                     method: "POST",
                     region,
                     account: failure.account,
@@ -239,6 +241,7 @@ pub async fn chat_for_region(
                     RequestMeta {
                         endpoint: "/v1/chat/completions",
                         key_id: key.as_deref().map(|actor| actor.key_id.clone()),
+                        key_scope: key.as_deref().map(|actor| actor.scope),
                         method: "POST",
                         region,
                         account,
@@ -307,6 +310,7 @@ pub async fn chat_for_region(
                     RequestMeta {
                         endpoint: "/v1/chat/completions",
                         key_id: key.as_deref().map(|actor| actor.key_id.clone()),
+                        key_scope: key.as_deref().map(|actor| actor.scope),
                         method: "POST",
                         region,
                         account,
@@ -364,6 +368,7 @@ async fn envelope_error_response(
             // 认证之后的函数）⇒ 记 `None`。不影响「按密钥看用量」：这类请求本来
             // 就没进过成功记账路径。
             key_id: None,
+            key_scope: None,
             method: "POST",
             region,
             account: account.to_string(),

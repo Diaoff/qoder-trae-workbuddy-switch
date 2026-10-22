@@ -501,6 +501,9 @@ impl TraeGatewayState {
         variant: TraeVariant,
         // ★ issue #76：调用方的 Key id（`None` = 无 Key 的调用 / 老条目）。
         key_id: Option<&str>,
+        // ★ 归属台账（`"trae"` / `"unified"` / `None`）—— 统一网关转发来的请求
+        //   带的是网关的 Key，没有这个标签会与本产品线的 Key 混淆。
+        key_scope: Option<&'static str>,
     ) {
         self.total_requests.fetch_add(1, Ordering::Relaxed);
         self.log.record(serde_json::json!({
@@ -522,6 +525,7 @@ impl TraeGatewayState {
             // ★ issue #76：调用方 Key id。**无 Key 写 `null`**（键固定，前端只判一个条件）；
             //   升级前写入的老条目确实没有这个键 ⇒ 前端两种都要容忍。
             "keyId": key_id,
+            "keyScope": key_scope,
         }));
         if let Some(message) = error {
             *self.last_error.write().await = Some(message);

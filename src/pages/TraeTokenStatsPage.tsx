@@ -223,6 +223,7 @@ export default function TraeTokenStatsPage({
       ) : view === "keys" ? (
         <KeysView
           window={viewWindow}
+          selfScope="trae"
           loader={loadTraeKeyUsage}
           title={t("wbStats.usage.keys.title")}
           caption={t("wbStats.usage.keys.caption")}

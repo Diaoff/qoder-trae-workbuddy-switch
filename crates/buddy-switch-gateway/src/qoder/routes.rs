@@ -233,6 +233,7 @@ pub async fn chat_completions(
             record.id.clone(),
             record.policy(),
             state.key_usage.clone(),
+            "qoder",
         ))
     });
     chat_for_region(state, key.0, body, Protocol::OpenAi, actor).await
@@ -253,6 +254,7 @@ pub async fn messages(
             record.id.clone(),
             record.policy(),
             state.key_usage.clone(),
+            "qoder",
         ))
     });
     chat_for_region(state, key.0, body, Protocol::Anthropic, actor).await
@@ -276,6 +278,7 @@ pub async fn responses(
             record.id.clone(),
             record.policy(),
             state.key_usage.clone(),
+            "qoder",
         ))
     });
     chat_for_region(state, key.0, body, Protocol::Responses, actor).await
@@ -664,6 +667,7 @@ pub async fn chat_for_region(
                         0.0,
                         Some(detail.clone()),
                         key.as_deref().map(|actor| actor.key_id.as_str()),
+                        key.as_deref().map(|actor| actor.scope),
                     )
                     .await;
                 return protocol_error(
@@ -726,6 +730,7 @@ pub async fn chat_for_region(
             0.0,
             Some(message.clone()),
             key.as_deref().map(|actor| actor.key_id.as_str()),
+            key.as_deref().map(|actor| actor.scope),
         )
         .await;
     let code = if all_queued {
@@ -949,6 +954,7 @@ async fn stream_relay(
                 credits,
                 error,
                 key_for_task.as_ref().map(|actor| actor.key_id.as_str()),
+                key_for_task.as_ref().map(|actor| actor.scope),
             )
             .await;
     });
@@ -1021,6 +1027,7 @@ async fn aggregate_relay(
             credits,
             log_error,
             key.as_ref().map(|actor| actor.key_id.as_str()),
+            key.as_ref().map(|actor| actor.scope),
         )
         .await;
 

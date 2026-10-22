@@ -215,6 +215,7 @@ async fn relay_llm(
         record.id.clone(),
         record.policy(),
         state.key_usage.clone(),
+        "unified",
     ));
 
     // ④ 把 body 里的 `model` 改写成**裸名**（中继与「模型禁用」判定都用裸名；

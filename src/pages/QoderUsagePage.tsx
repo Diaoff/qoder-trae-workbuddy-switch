@@ -478,6 +478,7 @@ export default function QoderUsagePage({ viewWindow, view = "trend" }: Props) {
       ) : view === "keys" ? (
         <KeysView
           window={viewWindow}
+          selfScope="qoder"
           loader={loadQoderKeyUsage}
           title={t("wbStats.usage.keys.title")}
           caption={t("wbStats.usage.keys.caption")}

@@ -285,6 +285,7 @@ pub async fn chat_completions(
             record.id.clone(),
             record.policy(),
             state.key_usage.clone(),
+            "trae",
         ))
     });
     chat_for_variant(state, key_variant.0, body, actor).await
@@ -414,6 +415,7 @@ pub async fn messages(
             record.id.clone(),
             record.policy(),
             state.key_usage.clone(),
+            "trae",
         ))
     });
     messages_for_variant(state, key_variant.0, body, actor).await
@@ -618,6 +620,7 @@ async fn stream_chat(
                         endpoint,
                         variant,
                         task_key.as_ref().map(|actor| actor.key_id.as_str()),
+                        task_key.as_ref().map(|actor| actor.scope),
                     )
                     .await;
                     /* ★ issue #76：按密钥 token 记账 —— 挂在**流结束**这个同一时点
@@ -654,6 +657,7 @@ async fn stream_chat(
         endpoint,
         variant,
         key.map(|actor| actor.key_id.as_str()),
+        key.map(|actor| actor.scope),
     )
     .await;
     openai_error(
@@ -728,6 +732,7 @@ async fn aggregate_payload(
                     endpoint,
                     variant,
                     key.map(|actor| actor.key_id.as_str()),
+        key.map(|actor| actor.scope),
                 )
                 .await;
                 return Ok(payload);
@@ -755,6 +760,7 @@ async fn aggregate_payload(
         endpoint,
         variant,
         key.map(|actor| actor.key_id.as_str()),
+        key.map(|actor| actor.scope),
     )
     .await;
     Err(failure)
@@ -1195,6 +1201,8 @@ async fn settle(
     variant: TraeVariant,
     // ★ issue #76：调用方 Key id（写进日志，供「按密钥看用量」与定位）。
     key_id: Option<&str>,
+    // ★ 归属台账（统一网关转发来的请求带的是网关的 Key）。
+    key_scope: Option<&'static str>,
 ) {
     let latency_ms = started.elapsed().as_millis() as i64;
 
@@ -1242,6 +1250,7 @@ async fn settle(
             message,
             variant,
             key_id,
+            key_scope,
         )
         .await;
 }
@@ -1287,6 +1296,7 @@ async fn settle_failure(
     endpoint: &'static str,
     variant: TraeVariant,
     key_id: Option<&str>,
+    key_scope: Option<&'static str>,
 ) {
     state
         .record_request(
@@ -1301,6 +1311,7 @@ async fn settle_failure(
             Some(failure.message.clone()),
             variant,
             key_id,
+            key_scope,
         )
         .await;
 }

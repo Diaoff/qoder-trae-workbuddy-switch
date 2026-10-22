@@ -239,6 +239,10 @@ export function normalizeTraeGatewayLogs(raw: unknown): TraeGatewayLogEntry[] {
         keyId: Object.prototype.hasOwnProperty.call(entry, "keyId")
           ? (asString(entry.keyId) ?? null)
           : undefined,
+        /* 归属台账：同 `keyId` 的两种「没有」语义（`null` vs `undefined`）。 */
+        keyScope: Object.prototype.hasOwnProperty.call(entry, "keyScope")
+          ? (asString(entry.keyScope) ?? null)
+          : undefined,
       };
     })
     .filter((item): item is TraeGatewayLogEntry => item !== null);

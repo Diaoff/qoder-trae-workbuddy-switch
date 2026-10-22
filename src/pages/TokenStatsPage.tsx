@@ -810,6 +810,7 @@ export default function TokenStatsPage({
       ) : view === "keys" ? (
         <KeysView
           window={viewWindow}
+          selfScope="wb"
           loader={loadWbKeyUsage}
           title={t("wbStats.usage.keys.title")}
           caption={t("wbStats.usage.keys.caption")}

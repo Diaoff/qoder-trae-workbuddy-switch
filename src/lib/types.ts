@@ -1994,6 +1994,13 @@ export interface GatewayLogEntry {
    *   合并进「无 Key」，否则历史数据会凭空多出一批「匿名调用」。
    */
   keyId?: string | null;
+  /**
+   * ★ `keyId` 属于哪套台账（`"wb"` / `"trae"` / `"qoder"` / `"unified"`）。
+   *
+   * 统一网关转发来的请求，日志里记的是**网关那把 Key** —— 与本产品线的 Key id
+   * 混在同一字段。`null` = 老条目 / 无 Key；`undefined` = 升级前的日志。
+   */
+  keyScope?: string | null;
   account: string | null;
   model: string | null;
   status: number;

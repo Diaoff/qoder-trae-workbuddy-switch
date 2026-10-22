@@ -44,6 +44,14 @@ export interface KeyUsageLogEntry {
   credit?: number | null;
   /** `null` = 无 Key；`undefined` = 升级前老条目（两种「没有」不合并）。 */
   keyId?: string | null;
+  /**
+   * ★ 这个 `keyId` 属于**哪套台账**（`"wb"` / `"trae"` / `"qoder"` / `"unified"`）。
+   *
+   * 统一网关把请求转发给产品线中继时，产品线日志记下的是**网关那把 Key 的 id** ——
+   * 与产品线自己的 Key id 混在同一个字段。靠这个标签区分，否则网关的 Key 会被
+   * 当成一把「已删除的本地 Key」（显示成短 id），用户永远对不上。
+   */
+  keyScope?: string | null;
 }
 
 /** 一行排行（按密钥聚合后）。 */
@@ -57,6 +65,14 @@ export interface KeyUsageSlice {
   credit: number;
 }
 
+/** 台账标签（跨台账的 Key 在「按密钥」里要标清来自哪里）。 */
+const SCOPE_LABELS: Record<string, string> = {
+  wb: "WorkBuddy",
+  trae: "Trae",
+  qoder: "Qoder",
+  unified: "统一网关",
+};
+
 /** 老条目（升级前写入、没有 `keyId` 键）单独一行展示的标识。 */
 export const LEGACY_KEY_LABEL = "（升级前的历史条目）";
 
@@ -69,6 +85,8 @@ export const LEGACY_KEY_LABEL = "（升级前的历史条目）";
 export function aggregateByKey(
   entries: readonly KeyUsageLogEntry[],
   keyNames: ReadonlyMap<string, string>,
+  /** 本页所属的台账（`"wb"` / `"trae"` / `"qoder"`）；跨台账的 Key 单独命名。 */
+  selfScope: string,
 ): KeyUsageSlice[] {
   const buckets = new Map<string, KeyUsageSlice>();
 
@@ -94,10 +112,20 @@ export function aggregateByKey(
       continue;
     }
     const id = entry.keyId ?? null;
-    const bucketKey = id ?? "__none__";
+    const scope = entry.keyScope ?? null;
+    /* ★ 分组键带 scope：同一个 id 字符串在**两套台账**里是两把不同的 Key
+       （网关的 Key 与本产品线的 Key 各自独立生成）。不带上 scope 会把它们并成一行。 */
+    const bucketKey = id === null ? "__none__" : `${scope ?? selfScope}:${id}`;
     const slice = buckets.get(bucketKey) ?? {
       keyId: id,
-      name: id ? (keyNames.get(id) ?? shortId(id)) : "无密钥调用",
+      name:
+        id === null
+          ? "无密钥调用"
+          : scope && scope !== selfScope
+            ? /* 跨台账：**明确标出**「这是网关（或另一条产品线）的 Key」，
+                 而不是拿短 id 冒充本地 Key。 */
+              `${SCOPE_LABELS[scope] ?? scope} 的密钥（${shortId(id)}）`
+            : (keyNames.get(id) ?? shortId(id)),
       tokens: 0,
       requests: 0,
       credit: 0,
@@ -188,6 +216,7 @@ export type KeyUsageLoader = () => Promise<{
 export function KeysView({
   loader,
   window,
+  selfScope,
   emptyTitle,
   emptyHint,
   title,
@@ -195,6 +224,8 @@ export function KeysView({
 }: {
   loader: KeyUsageLoader;
   window: UsageWindow;
+  /** 本页所属台账（跨台账的 Key 会标出归属）。 */
+  selfScope: string;
   emptyTitle: string;
   emptyHint: string;
   title: string;
@@ -229,8 +260,8 @@ export function KeysView({
        会按 UTC 切日，与另三个视图在时区边界上差一天。 */
     const inWindow = new Set(usageWindowKeys(window));
     const filtered = entries.filter((entry) => inWindow.has(dateKey(new Date(entry.ts))));
-    return aggregateByKey(filtered, keyNames);
-  }, [entries, keyNames, window]);
+    return aggregateByKey(filtered, keyNames, selfScope);
+  }, [entries, keyNames, window, selfScope]);
 
   const reloadAction = (
     <button
