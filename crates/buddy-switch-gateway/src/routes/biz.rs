@@ -65,14 +65,21 @@ pub async fn handler(
     };
     // 归属域由 Key 决定 ⇒ 转成显式参数交给共用实现（统一网关从**统一 Key 的
     // `biz_namespace`** 取，见 `crate::unified::routes::biz`）。
+    // ★ issue #76：收敛成 `KeyActor`（业务代理是「请求数」计量的主场景，没有 token 可计）。
+    //   必须在 `state` 被 move 之前构造。
+    let actor = std::sync::Arc::new(crate::apikey::KeyActor::new(
+        record.id.clone(),
+        record.policy(),
+        state.key_usage.clone(),
+        "wb",
+    ));
     biz_for_region(
         state,
         record.region,
         path,
         body,
         biz_method,
-        // ★ issue #76：业务代理是「请求数」计量的主场景（没有 token 可计）。
-        Some(record),
+        Some(actor),
     )
     .await
 }
@@ -100,9 +107,25 @@ pub async fn biz_for_region(
     path: String,
     body: Bytes,
     method: BizMethod,
-    // ★ issue #76：调用方的 API Key（`None` = 无 Key 的本地/测试调用 ⇒ 不判配额、不记账）。
-    key: Option<crate::apikey::ApiKeyRecord>,
+    // ★ issue #76：调用方的 `KeyActor`（`None` = 无 Key 的本地/测试调用 ⇒ 不判配额、不记账）。
+    key: Option<std::sync::Arc<crate::apikey::KeyActor>>,
 ) -> Response {
+    /* ★ issue #76：**业务转发也要判配额**（请求数口径）。
+       这条路径没有上游 usage（业务代理的响应不是 LLM 流）⇒ token 口径对它天然无意义；
+       但「这把 Key 被用了多少次」是事实，超限就该拒 —— 否则业务转发是配额的**绕过口**。 */
+    if let Some(actor) = key.as_deref() {
+        if let Some(message) =
+            actor.check_quota_and_count(buddy_switch_core::modules::config::now_ms())
+        {
+            return json_response(
+                StatusCode::TOO_MANY_REQUESTS,
+                serde_json::json!({
+                    "error": "key_quota_exceeded",
+                    "message": message,
+                }),
+            );
+        }
+    }
     // ★ E1：计一次「今日代理请求」。放在**鉴权之后、白名单校验之前** ——
     //   KPI 问的是「今天有多少请求走到本机网关」，含被白名单拒绝的（那是真实流量）。
     //   ⚠️ 这是**业务转发**路径；LLM 路由（chat / messages）另有各自行 为，不在此计。
@@ -141,8 +164,8 @@ pub async fn biz_for_region(
             conversation_request_id: session_headers::new_hex_id(),
             conversation_id: None,
             trace_id: None,
-            key_policy: key.as_ref().map(|record| record.policy()),
-            key_id: key.as_ref().map(|record| record.id.clone()),
+            key_policy: key.as_ref().map(|actor| actor.policy.clone()),
+            key_id: key.as_ref().map(|actor| actor.key_id.clone()),
         },
     )
     .await;
