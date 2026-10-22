@@ -70,6 +70,16 @@ pub const SOURCE_TRAE_GLOBAL: &str = "trae-global";
 pub const SOURCE_QODER_CN: &str = "qoder-cn";
 /// Qoder **国际版**来源 id。
 pub const SOURCE_QODER_GLOBAL: &str = "qoder-global";
+/// Loomy（讯飞办公助手）来源 id。
+///
+/// ⚠️ **本仓对 Loomy 客户端是否有 hooks 机制没有任何取证** ⇒ 与 Qoder 同款：只作来源，
+/// 不写它的配置（`agent_hook_install` 里没有它的安装档）。
+///
+/// ## 单区域 ⇒ 只有一个 source
+///
+/// 与 `qoder-cn` / `qoder-global` 的分家不同：Loomy 只有一套账号体系（`loomy-cn`），
+/// 因此来源 id 也只有一条 —— 拆成两条会造出一个永不到货的 `loomy-global`。
+pub const SOURCE_LOOMY_CN: &str = "loomy-cn";
 
 /// **全部可作为 hook 来源**的客户端 id —— **唯一事实来源**。
 ///
@@ -93,6 +103,7 @@ pub const HOOK_SOURCES: &[&str] = &[
     SOURCE_TRAE_GLOBAL,
     SOURCE_QODER_CN,
     SOURCE_QODER_GLOBAL,
+    SOURCE_LOOMY_CN,
 ];
 
 /// 把任意串**收敛成登记在册的来源 id**；不在表里 ⇒ `None`。
@@ -1282,6 +1293,7 @@ mod tests {
             SOURCE_TRAE_GLOBAL,
             SOURCE_QODER_CN,
             SOURCE_QODER_GLOBAL,
+            SOURCE_LOOMY_CN,
         ] {
             assert!(
                 HOOK_SOURCES.contains(&constant),

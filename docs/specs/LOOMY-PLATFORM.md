@@ -130,6 +130,7 @@ chat 路径只在 content-type 是 `application/json` 时 peek 响应体判业�
 | 决策 | 内容 | 理由 |
 |:---|:---|:---|
 | 作用域 | 单作用域 `loomy-cn` | 只有一套账号体系；单段命名空间会破坏前端 `Scope` 模板字面量与门禁管线 |
+| 客户端 | **有**官方 Electron 客户端（macOS / Windows），但本仓**不依赖**它 | 一期起就是「无客户端可用」形态（issue #62：账号与网关只依赖凭据）；能力集 `checkin/credits/oauth/gateway` 无一需要本地目录或程序位。`client_ua` 常量取自它的包内值，不等于「要用它的文件」 |
 | 端口 | **统一入口 + 可选独立端口 57896**（二期 9.2 起并存） | 一期按 §11-D 只走统一入口；二期补独立端口是因为「只想接 Loomy、不想开统一入口」是真实诉求，而 `/v1/*` 路径与另四条逐字重叠 ⇒ 必须独立端口（不能 merge） |
 | 能力集 | `["checkin","credits","oauth","gateway"]`（与 Qoder 同集） | `oauth` = 面板内短信登录；`sessionCopy`/`travel`/`autoRotate` 无 Loomy 等价物 |
 | refresh | **刻意不实现** | Loomy 无续期端点（session 14 天，过期只能重登）；网关按 `SessionDead` 换号，面板提示重新登录（诚实标记） |

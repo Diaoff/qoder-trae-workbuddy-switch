@@ -83,6 +83,7 @@ const SOURCE_LABEL_KEY: Record<string, TranslationKey> = {
   "trae-global": "shared.companion.source.traeGlobal",
   "qoder-cn": "shared.companion.source.qoderCn",
   "qoder-global": "shared.companion.source.qoderGlobal",
+  "loomy-cn": "shared.companion.source.loomyCn",
   // 本工具自己的操作（`agent_watch::SOURCE_THIS_TOOL`）—— 不是客户端 hook 来源。
   "buddy-switch": "shared.companion.source.thisTool",
 };

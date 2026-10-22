@@ -346,6 +346,7 @@ export const zh = {
   "shared.companion.source.traeGlobal": "Trae 国际版",
   "shared.companion.source.qoderCn": "Qoder 国内版",
   "shared.companion.source.qoderGlobal": "Qoder 国际版",
+  "shared.companion.source.loomyCn": "Loomy 国内版",
   // 本工具自己的长操作（签到等，`agent_watch::SOURCE_THIS_TOOL`）—— 与客户端来源分开。
   "shared.companion.source.thisTool": "本工具",
   // 会话没有标题时的兜底（客户端只在部分事件里带标题，空标题是常态）。

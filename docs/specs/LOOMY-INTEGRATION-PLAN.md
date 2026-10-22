@@ -1,6 +1,6 @@
 # Loomy 集成 — 模块 / 接口 / 依赖梳理
 
-> 状态：**实施中**（一期 + 二期 9.1/9.2/9.3/9.4 已落地；仅 9.5 是条件项未触发）。
+> 状态：**二期完成**（9.1–9.5 全部落地；9.5 的 hooks 机制取证仍在册未做，见下）。
 > 事实依据：`docs/specs/LOOMY-PLATFORM.md`（平台事实与建模决策）。
 
 ## 0. 一句话方案
@@ -57,3 +57,15 @@ L5 门禁与文档
   + `probe_state_of_loomy` / `probe_state_of_loomy_code` 两层判据 + `loomy_envelope_code`
   （SSE 首帧与裸 JSON 两种形态）。模型轴读网关**内存清单缓存**（不额外联网）；
   `adopt` 保持显式空操作（池无模型级冷却轴，回填会过度冷却）。
+- ~~agent_watch 源登记~~ ✅ 2026-10-22（二期 9.5）
+  `SOURCE_LOOMY_CN = "loomy-cn"` 进 `agent_watch::HOOK_SOURCES` +
+  `companion-row.tsx` 的 `SOURCE_LABEL_KEY` + `shared.{zh,en}` 词条
+  （`check-agent-sources.cjs` 已钉住三处一致，现 10 个来源）。
+  **只作来源、不代装**：`agent_hook_install` 里没有 Loomy 的安装档 —— 与
+  `codex` / `trae-*` / `qoder-*` 同一判据（本仓未取证它们的 hook 配置 schema）。
+
+  ⚠️ **在册的未取证项**：Loomy 客户端是否真有「执行外部命令 / hooks」机制，
+  本仓**零取证**。若有，用户可自行把 `buddy-switch hook --source loomy-cn`
+  配进客户端；若没有，本条登记就是一个永不触发事件的来源（不造成错误显示，
+  因为 `canonical_source` 只认显式传入的 id，不会把别的来源错标成它）。
+  取证后应回来更新本节结论。

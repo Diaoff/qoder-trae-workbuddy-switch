@@ -314,6 +314,7 @@ export const en = {
   "shared.companion.source.traeGlobal": "Trae (Global)",
   "shared.companion.source.qoderCn": "Qoder (CN)",
   "shared.companion.source.qoderGlobal": "Qoder (Global)",
+  "shared.companion.source.loomyCn": "Loomy (CN)",
   // This tool's own long-running operations (check-in etc., `agent_watch::SOURCE_THIS_TOOL`).
   "shared.companion.source.thisTool": "This tool",
   // Fallback when a session has no title (clients only send one on some events).
