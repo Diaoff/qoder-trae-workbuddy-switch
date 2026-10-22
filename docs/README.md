@@ -126,7 +126,7 @@
 | `buddy-switch-prototype.html` | 单文件原型（视觉基准，`check:scope` 会读它） |
 | `demo-app.js` `demo-data.js` `demo.css` | 原型的逻辑 / 演示数据 / 样式 |
 | `key-permission-design.html` | 密钥访问权限管理设计稿（issue #76）：列表两列 + 权限抽屉 + 创建对话框 |
-| `verify-*.cjs` | JSDOM 驱动的原型行为校验（`verify-behaviors.cjs` 是 112 条断言那一套；`verify-key-permission.cjs` 是密钥权限那一套） |
+| `verify-*.cjs` | JSDOM 驱动的原型行为校验（`verify-behaviors.cjs` 是 112 条断言那一套；`verify-key-permission-main.cjs` 是**主原型**里的密钥权限那一套，`verify-key-permission.cjs` 是独立设计稿那一套） |
 
 > ⚠️ **`scripts/check-scope-registry.cjs` 会直接读这里的文件**（不是注释引用）。改名或移动必须同步改脚本，否则门禁红。
 

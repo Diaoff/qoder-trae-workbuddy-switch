@@ -1,8 +1,11 @@
 # 密钥访问权限管理 · 界面与交互设计（issue #76）
 
 > 状态：**待拍板**（交互与视觉已成型，数据契约与实施拆解见 §6–§8）
-> 原型：[`../prototype/key-permission-design.html`](../prototype/key-permission-design.html)（可直接打开，点得动）
-> 校验套件：[`../prototype/verify-key-permission.cjs`](../prototype/verify-key-permission.cjs)（21 条行为断言 + 4 个变异）
+> **已合并进主原型**：[`../prototype/buddy-switch-prototype.html`](../prototype/buddy-switch-prototype.html)
+> 的「网关 › 密钥」分区（2026-10-22）—— 这是**视觉基准**，真机实现以它为准。
+> 校验套件：[`../prototype/verify-key-permission-main.cjs`](../prototype/verify-key-permission-main.cjs)（主原型 16 条 + 3 变异）
+> 独立设计稿（同一套方案的单页版，便于评审与对照）：[`../prototype/key-permission-design.html`](../prototype/key-permission-design.html)
+> + [`../prototype/verify-key-permission.cjs`](../prototype/verify-key-permission.cjs)（21 条 + 4 变异）
 
 ## 0. v2 相对 v1 的四处升级（都是**真实缺口**，不是审美偏好）
 
