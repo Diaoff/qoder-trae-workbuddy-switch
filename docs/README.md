@@ -26,6 +26,7 @@
 | 把 Codex / Claude Code / 其它客户端接到网关 | [`guides/GATEWAY-CLIENT-INTEGRATION.md`](guides/GATEWAY-CLIENT-INTEGRATION.md) |
 | 改网关（路由 / 换号 / 错误信封 / 命名空间） | [`specs/UNIFIED-GATEWAY-ARCH.md`](specs/UNIFIED-GATEWAY-ARCH.md) + [`specs/P11-ARCH.md`](specs/P11-ARCH.md) + [`specs/P12-ARCH.md`](specs/P12-ARCH.md) |
 | 改前端某个页面 | [`specs/PLAN.md`](specs/PLAN.md) 对应 §3.x + 该期 `P*-ARCH.md` |
+| 给密钥设 token 配额 / 限制可访问账号（issue #76） | [`specs/KEY-PERMISSION-UI-DESIGN.md`](specs/KEY-PERMISSION-UI-DESIGN.md)（交互与视觉，待拍板）+ [`prototype/key-permission-design.html`](prototype/key-permission-design.html)（可点设计稿） |
 | 用量页要显示网关调用的明细（按模型 / 按账号） | [`specs/USAGE-GATEWAY-UI-REDESIGN.md`](specs/USAGE-GATEWAY-UI-REDESIGN.md)（交互与视觉，待拍板）+ [`specs/USAGE-GATEWAY-DETAIL-PLAN.md`](specs/USAGE-GATEWAY-DETAIL-PLAN.md)（数据契约与验收） |
 | 新增一个平台 / 产品线 | [`specs/P5-ARCH.md`](specs/P5-ARCH.md) + [`specs/UNIFIED-GATEWAY-ARCH.md`](specs/UNIFIED-GATEWAY-ARCH.md) §11 |
 | 用词拿不准（region / scope / 作用域…） | [`specs/VOCABULARY.md`](specs/VOCABULARY.md)（**冻结，不许自创**） |
@@ -90,6 +91,7 @@
 | [`MODEL-LIMIT-PROBE-PLAN.md`](specs/MODEL-LIMIT-PROBE-PLAN.md) | 账号池 × 模型限流探测的完整方案 | 待确认 |
 | [`POOL-PICK-EXCLUDE-PLAN.md`](specs/POOL-PICK-EXCLUDE-PLAN.md) | 账号池选号 Bug + 「排除账号」方案 | 待拍板 |
 | [`CLIENTLESS-AUTH-PLAN.md`](specs/CLIENTLESS-AUTH-PLAN.md) | 无客户端部署（服务器 / 容器）的登录授权与网关可用性（issue #62） | 待拍板 · 原型已出 |
+| [`KEY-PERMISSION-UI-DESIGN.md`](specs/KEY-PERMISSION-UI-DESIGN.md) | 密钥访问权限管理：token 配额 + 可访问账号白名单（issue #76） | 待拍板 · 原型已出 |
 
 ---
 
@@ -123,7 +125,8 @@
 | `index.html` | 可直接双击打开的交互原型（多视图演示） |
 | `buddy-switch-prototype.html` | 单文件原型（视觉基准，`check:scope` 会读它） |
 | `demo-app.js` `demo-data.js` `demo.css` | 原型的逻辑 / 演示数据 / 样式 |
-| `verify-*.cjs` | JSDOM 驱动的原型行为校验（`verify-behaviors.cjs` 是 112 条断言那一套） |
+| `key-permission-design.html` | 密钥访问权限管理设计稿（issue #76）：列表两列 + 权限抽屉 + 创建对话框 |
+| `verify-*.cjs` | JSDOM 驱动的原型行为校验（`verify-behaviors.cjs` 是 112 条断言那一套；`verify-key-permission.cjs` 是密钥权限那一套） |
 
 > ⚠️ **`scripts/check-scope-registry.cjs` 会直接读这里的文件**（不是注释引用）。改名或移动必须同步改脚本，否则门禁红。
 
