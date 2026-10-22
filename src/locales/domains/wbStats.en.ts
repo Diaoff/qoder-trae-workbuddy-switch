@@ -218,7 +218,6 @@ export const en = {
   "wbStats.usage.view.trend": "Trend",
   "wbStats.usage.view.models": "Models",
   "wbStats.usage.view.sessions": "Sessions",
-  "wbStats.keyPerm.unifiedRequestOnly": "The unified gateway enforces quotas by requests only — it does not read upstream usage (each product line's relay does its own accounting). A token-based quota will not take effect; use requests instead.",
   "wbStats.usage.view.keys": "Keys",
   "wbStats.usage.keys.title": "Usage by key",
   "wbStats.usage.keys.caption": "Each row: tokens / requests / share.\nSource: the keyId field of gateway request logs — entries written before this feature have no such field and are listed last.",

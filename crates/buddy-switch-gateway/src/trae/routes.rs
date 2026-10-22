@@ -279,7 +279,15 @@ pub async fn chat_completions(
     // 归属产品线由鉴权中间件经请求扩展传入 ⇒ 这里只是把它转成**显式参数**交给共用实现，
     // 让统一网关（没有 Key 归属、只有命名空间）也能调用同一份中继。
     let key = key_ctx.map(|Extension(ctx)| ctx.0);
-    chat_for_variant(state, key_variant.0, body, key).await
+    // ★ issue #76：收敛成 `KeyActor`（id + 策略 + **本产品线的账本**）。
+    let actor = key.map(|record| {
+        std::sync::Arc::new(crate::apikey::KeyActor::new(
+            record.id.clone(),
+            record.policy(),
+            state.key_usage.clone(),
+        ))
+    });
+    chat_for_variant(state, key_variant.0, body, actor).await
 }
 
 /// 一趟 Trae chat 中继（**认证之后的全部逻辑**）—— 产品线入口与统一网关**共用**这一份实现。
@@ -298,12 +306,15 @@ pub async fn chat_for_variant(
     variant: TraeVariant,
     body: Bytes,
     // ★ issue #76：调用方的 Key（`None` = 无 Key 的调用 ⇒ 不判配额、不过白名单、不记账）。
-    key: Option<std::sync::Arc<crate::trae::apikey::TraeApiKeyRecord>>,
+    key: Option<std::sync::Arc<crate::apikey::KeyActor>>,
 ) -> Response {
     let started = Instant::now();
     // ★ issue #76：配额判定（选号前）—— 超限直接 429，一步都不发。
-    if let Some(record) = key.as_deref() {
-        if let Some(message) = check_key_quota(&state, record) {
+    if let Some(actor) = key.as_deref() {
+        // 判定 + 请求数记账都在 `KeyActor` 里（四条产品线同一份实现）。
+        if let Some(message) =
+            actor.check_quota_and_count(buddy_switch_core::modules::config::now_ms())
+        {
             return openai_error(StatusCode::TOO_MANY_REQUESTS, "key_quota_exceeded", &message);
         }
     }
@@ -398,7 +409,14 @@ pub async fn messages(
 ) -> Response {
     // 同 `/v1/chat/completions`：把扩展里的归属转成显式参数，交给共用实现。
     let key = key_ctx.map(|Extension(ctx)| ctx.0);
-    messages_for_variant(state, key_variant.0, body, key).await
+    let actor = key.map(|record| {
+        std::sync::Arc::new(crate::apikey::KeyActor::new(
+            record.id.clone(),
+            record.policy(),
+            state.key_usage.clone(),
+        ))
+    });
+    messages_for_variant(state, key_variant.0, body, actor).await
 }
 
 /// 一趟 Trae **Anthropic** 中继（认证之后的全部逻辑）—— 产品线入口与统一网关共用。
@@ -410,12 +428,14 @@ pub async fn messages_for_variant(
     variant: TraeVariant,
     body: Bytes,
     // ★ issue #76：同 `chat_for_variant`。
-    key: Option<std::sync::Arc<crate::trae::apikey::TraeApiKeyRecord>>,
+    key: Option<std::sync::Arc<crate::apikey::KeyActor>>,
 ) -> Response {
     let started = Instant::now();
     // ★ issue #76：配额判定（选号前）。
-    if let Some(record) = key.as_deref() {
-        if let Some(message) = check_key_quota(&state, record) {
+    if let Some(actor) = key.as_deref() {
+        if let Some(message) =
+            actor.check_quota_and_count(buddy_switch_core::modules::config::now_ms())
+        {
             return anthropic_error(
                 StatusCode::TOO_MANY_REQUESTS,
                 "key_quota_exceeded",
@@ -547,7 +567,7 @@ async fn stream_chat(
     started: Instant,
     variant: TraeVariant,
     // ★ issue #76：本密钥（白名单 / 配额 / 记账）。
-    key: Option<&crate::trae::apikey::TraeApiKeyRecord>,
+    key: Option<&crate::apikey::KeyActor>,
 ) -> Response {
     let mut tried: HashSet<String> = HashSet::new();
     let mut last: Option<UpstreamFailure> = None;
@@ -597,19 +617,18 @@ async fn stream_chat(
                         outcome.usage,
                         endpoint,
                         variant,
-                        task_key.as_ref().map(|record| record.id.as_str()),
+                        task_key.as_ref().map(|actor| actor.key_id.as_str()),
                     )
                     .await;
                     /* ★ issue #76：按密钥 token 记账 —— 挂在**流结束**这个同一时点
                        （与 `settle` 并列）：请求前不知道用量，记了就是假账。
                        `is_meaningful()` = 上游没报用量（全 0）⇒ 不记，别写 0 样本
                        （会把「本周期已用」压低，让配额晚触发）。 */
-                    if let Some(record) = task_key.as_ref() {
+                    if let Some(actor) = task_key.as_ref() {
                         if outcome.usage.is_meaningful() {
-                            task_state.key_usage.record_tokens(
-                                &record.id,
+                            // `record_tokens` 内部判 0 跳过。
+                            actor.record_tokens(
                                 outcome.usage.total,
-                                record.quota_period,
                                 buddy_switch_core::modules::config::now_ms(),
                             );
                         }
@@ -634,7 +653,7 @@ async fn stream_chat(
         &failure,
         endpoint,
         variant,
-        key.map(|record| record.id.as_str()),
+        key.map(|actor| actor.key_id.as_str()),
     )
     .await;
     openai_error(
@@ -663,7 +682,7 @@ async fn aggregate_payload(
     started: Instant,
     variant: TraeVariant,
     // ★ issue #76：本密钥（白名单 / 配额 / 记账）。
-    key: Option<&crate::trae::apikey::TraeApiKeyRecord>,
+    key: Option<&crate::apikey::KeyActor>,
 ) -> Result<Value, UpstreamFailure> {
     let mut tried: HashSet<String> = HashSet::new();
     let mut last: Option<UpstreamFailure> = None;
@@ -708,7 +727,7 @@ async fn aggregate_payload(
                     usage,
                     endpoint,
                     variant,
-                    key.map(|record| record.id.as_str()),
+                    key.map(|actor| actor.key_id.as_str()),
                 )
                 .await;
                 return Ok(payload);
@@ -735,7 +754,7 @@ async fn aggregate_payload(
         &failure,
         endpoint,
         variant,
-        key.map(|record| record.id.as_str()),
+        key.map(|actor| actor.key_id.as_str()),
     )
     .await;
     Err(failure)
@@ -755,7 +774,7 @@ async fn aggregate_chat(
     started: Instant,
     variant: TraeVariant,
     // ★ issue #76：本密钥（白名单 / 配额 / 记账）。
-    key: Option<&crate::trae::apikey::TraeApiKeyRecord>,
+    key: Option<&crate::apikey::KeyActor>,
 ) -> Response {
     match aggregate_payload(
         state,
@@ -888,25 +907,19 @@ fn allowed_uids_for(
 /// 从 OpenAI 形状的 `payload.usage.total_tokens` 取数；缺失 / 0 ⇒ **不记**
 /// （与流式 `is_meaningful()` 同一判据：写 0 样本会让配额晚触发）。
 fn record_key_tokens(
-    state: &TraeGatewayState,
-    key: Option<&crate::trae::apikey::TraeApiKeyRecord>,
+    // 不再需要 `state`：账本从 actor 取（`KeyActor` 自带 `usage`）。
+    _state: &TraeGatewayState,
+    key: Option<&crate::apikey::KeyActor>,
     payload: &Value,
 ) {
-    let Some(record) = key else { return };
+    let Some(actor) = key else { return };
     let total = payload
         .get("usage")
         .and_then(|usage| usage.get("total_tokens"))
         .and_then(Value::as_u64)
         .unwrap_or(0);
-    if total == 0 {
-        return;
-    }
-    state.key_usage.record_tokens(
-        &record.id,
-        total,
-        record.quota_period,
-        buddy_switch_core::modules::config::now_ms(),
-    );
+    // `record_tokens` 内部判 0 跳过（不写 0 样本）。
+    actor.record_tokens(total, buddy_switch_core::modules::config::now_ms());
 }
 
 /// 配额判定 + 请求数记账（issue #76）。返回 `Some(文案)` = 已超限。
@@ -959,7 +972,7 @@ async fn attempt_once(
     sticky_key: Option<&str>,
     variant: TraeVariant,
     // ★ issue #76：本密钥（`None` = 无 Key 的调用 ⇒ 不过白名单）。
-    key: Option<&crate::trae::apikey::TraeApiKeyRecord>,
+    key: Option<&crate::apikey::KeyActor>,
 ) -> Option<AttemptResult> {
     // 先读粘性（**不持 pools 锁**）：两把锁不嵌套 —— 既不延长池的持锁时间，
     // 也避免日后有人以相反顺序取锁造成死锁。
@@ -976,7 +989,7 @@ async fn attempt_once(
         // 两者都不可用时 `pick_with_preference` 会自行回落到自动择优，绝不拒绝服务。
         let preferred = resolve_preference(preferred_uid, sticky_uid.as_deref());
         // 白名单：每次选号前按当前策略展开（分组展开只在 `scope_groups` 非空时读一次文件）。
-        let allowed = key.and_then(|record| allowed_uids_for(&record.policy(), variant));
+        let allowed = key.and_then(|actor| allowed_uids_for(&actor.policy, variant));
         pool.pick(now_secs(), tried, preferred, allowed.as_ref())
     }?;
     tried.insert(picked.uid.clone());

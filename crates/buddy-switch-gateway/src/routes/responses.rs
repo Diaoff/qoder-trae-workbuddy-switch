@@ -34,6 +34,14 @@ pub async fn handler(
         Ok(record) => record,
         Err(error) => return openai_error(error),
     };
+    // ★ issue #76：把 Key 收敛成 `KeyActor`（id + 策略 + 账本）——
+    //   中继层只认这个抽象，四条产品线共用同一份判定与记账。
+    //   ★ 必须在 `state` 被 move 进 `*_for_region` **之前**构造。
+    let actor = std::sync::Arc::new(crate::apikey::KeyActor::new(
+        record.id.clone(),
+        record.policy(),
+        state.key_usage.clone(),
+    ));
     // ★ 归属域由 API Key 决定；前缀策略走产品线那一套（统一入口走 `AlreadyResolved`）。
     let allow_reroute = state.config_snapshot().await.allow_model_region_prefix;
     responses_for_region(
@@ -43,7 +51,7 @@ pub async fn handler(
         body,
         crate::routes::chat::PrefixPolicy::RegionPrefix { allow_reroute },
         // ★ issue #76：Key 策略随请求进中继层（配额判定 + 账号白名单）。
-        Some(record),
+        Some(actor),
     )
     .await
 }
@@ -58,7 +66,7 @@ pub async fn responses_for_region(
     body: Bytes,
     policy: crate::routes::chat::PrefixPolicy,
     // ★ issue #76：调用方的 API Key（`None` = 无 Key 的本地/测试调用 ⇒ 不判配额、不记账）。
-    key: Option<crate::apikey::ApiKeyRecord>,
+    key: Option<std::sync::Arc<crate::apikey::KeyActor>>,
 ) -> Response {
     let started = Instant::now();
     let mut region = region;
@@ -130,7 +138,7 @@ pub async fn responses_for_region(
     let inbound_request_id = header_of(&headers, "x-conversation-request-id");
     let trace_id = header_of(&headers, "x-trace-id");
 
-    let key_ref = key.as_ref();
+    let key_ref = key.as_deref();
     let mut attempt = run(
         &state,
         region,
@@ -176,7 +184,7 @@ pub async fn responses_for_region(
             state.log.record(
                 RequestMeta {
                     endpoint: "/v1/responses",
-                    key_id: key.as_ref().map(|record| record.id.clone()),
+                    key_id: key.as_deref().map(|actor| actor.key_id.clone()),
                     method: "POST",
                     region,
                     account: failure.account,
@@ -210,7 +218,7 @@ pub async fn responses_for_region(
                     &state,
                     RequestMeta {
                         endpoint: "/v1/responses",
-                        key_id: key.as_ref().map(|record| record.id.clone()),
+                        key_id: key.as_deref().map(|actor| actor.key_id.clone()),
                         method: "POST",
                         region,
                         account,
@@ -230,7 +238,7 @@ pub async fn responses_for_region(
                     &uid,
                     &model,
                     // ★ issue #76：按密钥的 token 记账（流结束才写）。
-                    key.as_ref(),
+                    key.as_deref(),
                 );
                 sse_response(ResponsesSseStream::new(
                     crate::protocol::usage_tap::UsageTap::new(
@@ -251,7 +259,7 @@ pub async fn responses_for_region(
                     state.log.record(
                         RequestMeta {
                             endpoint: "/v1/responses",
-                            key_id: key.as_ref().map(|record| record.id.clone()),
+                            key_id: key.as_deref().map(|actor| actor.key_id.clone()),
                             method: "POST",
                             region,
                             account,
@@ -279,13 +287,13 @@ pub async fn responses_for_region(
                 if let Some(credit) = accumulator.credit {
                     let tokens = accumulator.prompt_tokens.unwrap_or(0) as i64
                         + accumulator.completion_tokens.unwrap_or(0) as i64;
-                    relay::record_ledger(&state, &uid, &model, credit, tokens, key.as_ref()).await;
+                    relay::record_ledger(&state, &uid, &model, credit, tokens, key.as_deref()).await;
                 }
                 let object = to_response_object(&accumulator, &model, &responses_custom);
                 state.log.record(
                     RequestMeta {
                         endpoint: "/v1/responses",
-                        key_id: key.as_ref().map(|record| record.id.clone()),
+                        key_id: key.as_deref().map(|actor| actor.key_id.clone()),
                         method: "POST",
                         region,
                         account,
@@ -321,7 +329,7 @@ async fn run(
     inbound_request_id: Option<&str>,
     trace_id: Option<String>,
     // ★ issue #76：调用方的 API Key（`None` = 无 Key 的本地/测试调用 ⇒ 不判配额、不记账）。
-    key: Option<&crate::apikey::ApiKeyRecord>,
+    key: Option<&crate::apikey::KeyActor>,
 ) -> Result<RelayOutcome, relay::RelayFailure> {
     let prepared = relay::prepare_body(
         state,
@@ -345,8 +353,8 @@ async fn run(
             conversation_request_id: prepared.conversation_request_id,
             conversation_id,
             trace_id,
-            key_policy: key.map(|record| record.policy()),
-            key_id: key.as_ref().map(|record| record.id.clone()),
+            key_policy: key.map(|actor| actor.policy.clone()),
+            key_id: key.as_deref().map(|actor| actor.key_id.clone()),
         },
     )
     .await

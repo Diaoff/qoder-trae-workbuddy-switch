@@ -1045,17 +1045,13 @@ pub async fn record_ledger(
     credit: f64,
     tokens: i64,
     // ★ issue #76：非流式路径的按密钥 token 记账（流式走 `stream_sinks` 的 KeyUsageSink）。
-    key: Option<&crate::apikey::ApiKeyRecord>,
+    key: Option<&crate::apikey::KeyActor>,
 ) {
     let now_ms = timeutil::now_ms();
-    if let Some(record) = key {
+    if let Some(actor) = key {
+        // `record_tokens` 内部已判 `total == 0` 跳过（不写 0 样本）。
         if tokens > 0 {
-            state.key_usage.record_tokens(
-                &record.id,
-                tokens as u64,
-                record.quota_period,
-                now_ms,
-            );
+            actor.record_tokens(tokens as u64, now_ms);
         }
     }
     if uid.is_empty() {
@@ -1286,8 +1282,9 @@ pub fn stream_sinks(
     started: std::time::Instant,
     uid: &str,
     model: &str,
-    // ★ issue #76：调用方的 Key（`None` = 无 Key 的调用 ⇒ 不记按密钥用量）。
-    key: Option<&crate::apikey::ApiKeyRecord>,
+    // ★ issue #76：调用方的 `KeyActor`（`None` = 无 Key 的调用 ⇒ 不记按密钥用量）。
+    //   用 actor 而不是具体 Key 类型：统一网关的 Key 是第四套台账，也能带进来。
+    key: Option<&crate::apikey::KeyActor>,
 ) -> Vec<std::sync::Arc<dyn crate::protocol::usage_tap::UsageSink>> {
     let mut sinks: Vec<std::sync::Arc<dyn crate::protocol::usage_tap::UsageSink>> =
         vec![std::sync::Arc::new(crate::logging::StreamingLogSink::new(
@@ -1298,11 +1295,11 @@ pub fn stream_sinks(
     if let Some(ledger) = pool_usage_sink(state, uid, model) {
         sinks.push(ledger);
     }
-    if let Some(record) = key {
+    if let Some(actor) = key {
         sinks.push(std::sync::Arc::new(KeyUsageSink {
-            usage: state.key_usage.clone(),
-            key_id: record.id.clone(),
-            period: record.quota_period,
+            usage: actor.usage.clone(),
+            key_id: actor.key_id.clone(),
+            period: actor.policy.quota_period,
         }));
     }
     sinks

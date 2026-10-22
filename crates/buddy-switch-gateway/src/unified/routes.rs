@@ -200,56 +200,22 @@ async fn relay_llm(
         return endpoint_error(endpoint, endpoint_not_supported_for(spec.id));
     }
 
-    /* ③' ★ issue #76：**统一网关侧的配额判定**（一处覆盖三条产品线的转发）。
+    /* ③' ★ issue #76：把本网关的 Key 收敛成 `KeyActor`，**带进目标产品线的中继**。
 
-       ⚠️ 只对**请求数**口径生效。`token` 口径在这里**无法执行**：统一网关不读上游
-       usage —— 它把请求交给三条产品线各自的中继，那边按**它们自己的 Key** 记账
-       （本网关的 Key 到不了那一层）。若按 token 判，`used` 恒为 0 ⇒ 永不超限，
-       那是**假开关**，比明确「不支持」更糟。所以 token 口径时**跳过判定**，
-       并在抽屉/文档里写明这条边界。
+       这一步是「统一网关双口径」的关键：中继层（`chat_for_region` / `chat_for_variant`）
+       只认 `KeyActor`（id + 策略 + 账本），不认具体 Key 类型 ⇒ 第四套台账的 Key
+       也能享受与三条产品线**完全相同**的配额判定、账号白名单与 token 记账。
 
-       ★ 账号白名单同样不在这里：`scope_accounts` 的 uid 空间属于**目标产品线**，
-       而统一网关的 Key 不绑定产品线（它靠 `namespaces` 授权）。硬套会给出错误的安全感。
-
-       请求数**总是**记（口径无关：它是「这把 Key 被用了多少次」的事实）。 */
-    {
-        let now = buddy_switch_core::modules::config::now_ms();
-        state
-            .key_usage
-            .record_request(&record.id, record.quota_period, now);
-        if record.quota_unit == crate::apikey::QuotaUnit::Request {
-            let used = state.key_usage.used_for(
-                &record.id,
-                record.quota_unit,
-                record.quota_period,
-                now,
-            );
-            if let crate::apikey::QuotaVerdict::Exceeded {
-                used,
-                limit,
-                unit,
-                period,
-            } = crate::apikey::quota_verdict_for_policy(&record.policy(), used)
-            {
-                let message = crate::error::GatewayError::KeyQuotaExceeded {
-                    used,
-                    limit,
-                    unit,
-                    period,
-                }
-                .message();
-                return endpoint_error(
-                    endpoint,
-                    HttpError {
-                        status: StatusCode::TOO_MANY_REQUESTS,
-                        kind: "permission_error",
-                        code: "key_quota_exceeded",
-                        message,
-                    },
-                );
-            }
-        }
-    }
+       - 配额：`actor.policy` 是统一网关的 Key 的策略；`actor.usage` 是**统一网关的账本**
+         （`gateway_unified_key_usage.json`）⇒ 用量记在这里，不会被算到产品线的 Key 上。
+       - 白名单：`actor.policy.scope_accounts` 的 uid 按**目标产品线**的账号库展开 ——
+         中继层展开时读的就是它要转发到的那条产品线的账号库，uid 空间自然对齐。
+       - token：中继层的流式 / 非流式记账都会调 `actor.record_tokens` ⇒ **token 口径真生效**。 */
+    let actor = std::sync::Arc::new(crate::apikey::KeyActor::new(
+        record.id.clone(),
+        record.policy(),
+        state.key_usage.clone(),
+    ));
 
     // ④ 把 body 里的 `model` 改写成**裸名**（中继与「模型禁用」判定都用裸名；
     //    留着前缀会让上游看到 `wb-cn:deepseek-…` 这种它不认识的模型名）
@@ -267,9 +233,8 @@ async fn relay_llm(
                         headers,
                         rewritten,
                         AlreadyResolved,
-                        // 统一网关的 Key 是另一套台账（`UnifiedApiKeyRecord`）⇒ 本轮不过配额；
-                        // 同构接入见实施拆解步 6（`None` = 全部账号 + 不限额，保持现状）。
-                        None,
+                        // ★ 统一网关的 Key 带进去：配额 / 白名单 / 记账全生效。
+                        Some(actor.clone()),
                     )
                     .await
                 }
@@ -280,8 +245,7 @@ async fn relay_llm(
                         headers,
                         rewritten,
                         AlreadyResolved,
-                        // 同上：统一网关的 Key 策略下一轮接。
-                        None,
+                        Some(actor.clone()),
                     )
                     .await
                 }
@@ -292,8 +256,7 @@ async fn relay_llm(
                         headers,
                         rewritten,
                         AlreadyResolved,
-                        // 统一网关的 Key 是另一套台账 ⇒ 本轮不过配额（同构接入见实施拆解步 6）。
-                        None,
+                        Some(actor.clone()),
                     )
                     .await
                 }
@@ -328,8 +291,7 @@ async fn relay_llm(
                         region,
                         rewritten,
                         crate::qoder::routes::Protocol::OpenAi,
-                        // 统一网关的 Key 是另一套台账 ⇒ 本轮不过配额。
-                        None,
+                        Some(actor.clone()),
                     )
                     .await
                 }
@@ -339,7 +301,7 @@ async fn relay_llm(
                         region,
                         rewritten,
                         crate::qoder::routes::Protocol::Anthropic,
-                        None,
+                        Some(actor.clone()),
                     )
                     .await
                 }
@@ -351,7 +313,7 @@ async fn relay_llm(
                         region,
                         rewritten,
                         crate::qoder::routes::Protocol::Responses,
-                        None,
+                        Some(actor.clone()),
                     )
                     .await
                 }

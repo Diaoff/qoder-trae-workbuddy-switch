@@ -296,6 +296,89 @@ pub struct KeyPolicy {
     pub scope_groups: Vec<String>,
 }
 
+/// **跨产品线共享的「调用者」抽象**（issue #76）。
+///
+/// ## 为什么需要它
+///
+/// 四条产品线的 Key 台账是**四套类型**（`ApiKeyRecord` / `TraeApiKeyRecord` /
+/// `QoderApiKeyRecord` / `UnifiedApiKeyRecord`），但它们对中继的意义完全一样：
+/// 「谁在调用（`key_id`）+ 允许他做什么（`policy`）+ 用量记到哪个账本（`usage`）」。
+///
+/// 中继（`chat_for_region` / `chat_for_variant`）如果按具体 Key 类型收参，
+/// **统一网关就无法把请求带配额地转发下去** —— 它的 Key 是第四种类型。
+/// 这正是 issue #76 里「统一网关只能做请求数口径」那个伪边界的成因：
+/// 不是语义不成立，是**参数类型绑死了产品线**。
+///
+/// 有了 `KeyActor`：
+/// - 三条产品线的 handler 用各自 Key 构造它；
+/// - 统一网关用**自己的** Key 构造它，照样把配额 / 白名单 / 记账带进目标产品线的中继；
+/// - 白名单展开时用 `actor.policy`，账号库按**目标产品线**读 —— uid 空间问题自然消解。
+///
+/// `usage` 是 `Arc`：中继可能跨 `await` / 进 `tokio::spawn`，克隆指针即可。
+#[derive(Clone)]
+pub struct KeyActor {
+    /// 密钥 id（记账与日志的 join 键）。
+    pub key_id: String,
+    /// 策略（配额 + 账号范围）。**判定与展开都只看它**，不看 Key 台账。
+    pub policy: KeyPolicy,
+    /// 用量账本（**调用方所在产品线的**那份）。
+    pub usage: std::sync::Arc<crate::key_usage::KeyUsageStore>,
+}
+
+impl KeyActor {
+    pub fn new(
+        key_id: impl Into<String>,
+        policy: KeyPolicy,
+        usage: std::sync::Arc<crate::key_usage::KeyUsageStore>,
+    ) -> Self {
+        Self {
+            key_id: key_id.into(),
+            policy,
+            usage,
+        }
+    }
+
+    /// 配额判定 + 记一笔请求数。返回 `Some(文案)` = 已超限。
+    ///
+    /// ★ 位置与顺序对四条产品线**完全一致**：判定在**选号之前**、请求数在**进入网关后**。
+    pub fn check_quota_and_count(&self, now: i64) -> Option<String> {
+        let used = self.usage.used_for(
+            &self.key_id,
+            self.policy.quota_unit,
+            self.policy.quota_period,
+            now,
+        );
+        self.usage
+            .record_request(&self.key_id, self.policy.quota_period, now);
+        match quota_verdict_for_policy(&self.policy, used) {
+            QuotaVerdict::Exceeded {
+                used,
+                limit,
+                unit,
+                period,
+            } => Some(
+                crate::error::GatewayError::KeyQuotaExceeded {
+                    used,
+                    limit,
+                    unit,
+                    period,
+                }
+                .message(),
+            ),
+            QuotaVerdict::Ok => None,
+        }
+    }
+
+    /// 记 token（**拿不到用量就不记** —— 写 0 样本会让配额晚触发）。
+    pub fn record_tokens(&self, total: u64, now: i64) {
+        if total == 0 {
+            return;
+        }
+        self.usage
+            .record_tokens(&self.key_id, total, self.policy.quota_period, now);
+    }
+}
+
 impl KeyPolicy {
     /// 入库前的归一：**互相矛盾的下法治「更安全的一边」**。
     ///

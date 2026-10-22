@@ -227,7 +227,15 @@ pub async fn chat_completions(
 ) -> Response {
     // 变量名避开 `key`（那是 region 扩展）—— 两者是不同东西。
     let key_record = key_ctx.map(|Extension(ctx)| ctx.0);
-    chat_for_region(state, key.0, body, Protocol::OpenAi, key_record).await
+    // ★ issue #76：收敛成 `KeyActor`（id + 策略 + 本产品线的账本）。
+    let actor = key_record.map(|record| {
+        std::sync::Arc::new(crate::apikey::KeyActor::new(
+            record.id.clone(),
+            record.policy(),
+            state.key_usage.clone(),
+        ))
+    });
+    chat_for_region(state, key.0, body, Protocol::OpenAi, actor).await
 }
 
 /// `POST /v1/messages`。
@@ -239,7 +247,15 @@ pub async fn messages(
     body: Bytes,
 ) -> Response {
     let key_record = key_ctx.map(|Extension(ctx)| ctx.0);
-    chat_for_region(state, key.0, body, Protocol::Anthropic, key_record).await
+    // ★ issue #76：收敛成 `KeyActor`（id + 策略 + 本产品线的账本）。
+    let actor = key_record.map(|record| {
+        std::sync::Arc::new(crate::apikey::KeyActor::new(
+            record.id.clone(),
+            record.policy(),
+            state.key_usage.clone(),
+        ))
+    });
+    chat_for_region(state, key.0, body, Protocol::Anthropic, actor).await
 }
 
 /// `POST /v1/responses`（OpenAI Responses API）。
@@ -254,7 +270,15 @@ pub async fn responses(
     body: Bytes,
 ) -> Response {
     let key_record = key_ctx.map(|Extension(ctx)| ctx.0);
-    chat_for_region(state, key.0, body, Protocol::Responses, key_record).await
+    // ★ issue #76：收敛成 `KeyActor`（id + 策略 + 本产品线的账本）。
+    let actor = key_record.map(|record| {
+        std::sync::Arc::new(crate::apikey::KeyActor::new(
+            record.id.clone(),
+            record.policy(),
+            state.key_usage.clone(),
+        ))
+    });
+    chat_for_region(state, key.0, body, Protocol::Responses, actor).await
 }
 
 /// 把 Key 策略的账号范围展开成 uid 集合（`None` = 全部账号，不过滤）。
@@ -293,37 +317,16 @@ pub async fn chat_for_region(
     body: Bytes,
     protocol: Protocol,
     // ★ issue #76：调用方的 Key（`None` = 无 Key 的调用 ⇒ 不判配额、不过白名单、不记账）。
-    key: Option<std::sync::Arc<crate::qoder::apikey::QoderApiKeyRecord>>,
+    key: Option<std::sync::Arc<crate::apikey::KeyActor>>,
 ) -> Response {
     let started = Instant::now();
     // ★ issue #76：配额判定（选号前）—— 超限直接 429，一步都不发。
     //   与 WB / Trae 同位置、同文案（复用 `GatewayError::KeyQuotaExceeded`）。
-    if let Some(record) = key.as_deref() {
-        let now = buddy_switch_core::modules::config::now_ms();
-        let used = state.key_usage.used_for(
-            &record.id,
-            record.quota_unit,
-            record.quota_period,
-            now,
-        );
-        // 请求数在**进入网关后**记（与 WB / Trae 同口径）。
-        state
-            .key_usage
-            .record_request(&record.id, record.quota_period, now);
-        if let crate::apikey::QuotaVerdict::Exceeded {
-            used,
-            limit,
-            unit,
-            period,
-        } = crate::apikey::quota_verdict_for_policy(&record.policy(), used)
+    if let Some(actor) = key.as_deref() {
+        // 判定 + 请求数记账都在 `KeyActor` 里（四条产品线同一份实现）。
+        if let Some(message) =
+            actor.check_quota_and_count(buddy_switch_core::modules::config::now_ms())
         {
-            let message = crate::error::GatewayError::KeyQuotaExceeded {
-                used,
-                limit,
-                unit,
-                period,
-            }
-            .message();
             return protocol_error(
                 protocol,
                 StatusCode::TOO_MANY_REQUESTS,
@@ -447,7 +450,7 @@ pub async fn chat_for_region(
         // 白名单：每次选号前按当前策略展开（分组展开只在 `scope_groups` 非空时读文件）。
         let allowed = key
             .as_deref()
-            .and_then(|record| allowed_uids_for(&record.policy(), region));
+            .and_then(|actor| allowed_uids_for(&actor.policy, region));
         let picked = {
             let mut pools = state.pools.lock().await;
             let pool = pools.entry(region).or_default();
@@ -660,7 +663,7 @@ pub async fn chat_for_region(
                         0,
                         0.0,
                         Some(detail.clone()),
-                        key.as_deref().map(|record| record.id.as_str()),
+                        key.as_deref().map(|actor| actor.key_id.as_str()),
                     )
                     .await;
                 return protocol_error(
@@ -722,7 +725,7 @@ pub async fn chat_for_region(
             0,
             0.0,
             Some(message.clone()),
-            key.as_deref().map(|record| record.id.as_str()),
+            key.as_deref().map(|actor| actor.key_id.as_str()),
         )
         .await;
     let code = if all_queued {
@@ -829,7 +832,7 @@ async fn stream_relay(
     // 在途名额：随流结束 / 客户端断开由 Drop 归还（见 `pool::InflightGuard`）。
     inflight: super::pool::InflightGuard,
     // ★ issue #76：本密钥（流结束时按 token 记账）。
-    key: Option<std::sync::Arc<crate::qoder::apikey::QoderApiKeyRecord>>,
+    key: Option<std::sync::Arc<crate::apikey::KeyActor>>,
 ) -> Response {
     let upstream = response.bytes_stream();
     let stream_model = model.to_string();
@@ -917,16 +920,12 @@ async fn stream_relay(
         //   「网关挂了」—— 2026-10-22 实测踩到（用户看到 502 以为服务坏了）。
         // ★ issue #76：按密钥记 token（**流结束**才记 —— 提前记就是假账）。
         //   拿不到用量（0）就不记：写 0 样本会把「本周期已用」压低，让配额晚触发。
-        if let Some(record) = key_for_task.as_ref() {
-            let total = prompt_tokens + completion_tokens;
-            if total > 0 {
-                state_for_task.key_usage.record_tokens(
-                    &record.id,
-                    total,
-                    record.quota_period,
-                    buddy_switch_core::modules::config::now_ms(),
-                );
-            }
+        if let Some(actor) = key_for_task.as_ref() {
+            // `record_tokens` 内部判 0 跳过（不写 0 样本）。
+            actor.record_tokens(
+                (prompt_tokens + completion_tokens) as u64,
+                buddy_switch_core::modules::config::now_ms(),
+            );
         }
         let upstream_error = error_slot.lock().ok().and_then(|guard| guard.clone());
         let (status, error) = match &upstream_error {
@@ -949,7 +948,7 @@ async fn stream_relay(
                 completion_tokens as i64,
                 credits,
                 error,
-                key_for_task.as_ref().map(|record| record.id.as_str()),
+                key_for_task.as_ref().map(|actor| actor.key_id.as_str()),
             )
             .await;
     });
@@ -973,7 +972,7 @@ async fn aggregate_relay(
     // 非流式：函数结束即释放（含所有早退分支）。
     _inflight: super::pool::InflightGuard,
     // ★ issue #76：本密钥（聚合完成后按 token 记账）。
-    key: Option<std::sync::Arc<crate::qoder::apikey::QoderApiKeyRecord>>,
+    key: Option<std::sync::Arc<crate::apikey::KeyActor>>,
 ) -> Response {
     let aggregated = sse::aggregate(response.bytes_stream(), allowed_tools.as_ref()).await;
     let usage = aggregated.usage.clone();
@@ -1002,16 +1001,11 @@ async fn aggregate_relay(
         None => (200u16, None),
     };
     // ★ issue #76：非流式同样按密钥记 token（拿不到用量就不记）。
-    if let Some(record) = key.as_ref() {
-        let total = prompt_tokens + completion_tokens;
-        if total > 0 {
-            state.key_usage.record_tokens(
-                &record.id,
-                total,
-                record.quota_period,
-                buddy_switch_core::modules::config::now_ms(),
-            );
-        }
+    if let Some(actor) = key.as_ref() {
+        actor.record_tokens(
+            (prompt_tokens + completion_tokens) as u64,
+            buddy_switch_core::modules::config::now_ms(),
+        );
     }
     state
         .record_request(
@@ -1026,7 +1020,7 @@ async fn aggregate_relay(
             completion_tokens as i64,
             credits,
             log_error,
-            key.as_ref().map(|record| record.id.as_str()),
+            key.as_ref().map(|actor| actor.key_id.as_str()),
         )
         .await;
 
