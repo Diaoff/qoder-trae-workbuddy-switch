@@ -4435,6 +4435,54 @@ pub fn revoke_unified_api_key(id: String) -> Result<Value, String> {
     Ok(json!({ "ok": true }))
 }
 
+/// POST /api/unified-gateway/keys/policy —— 更新某把统一 Key 的策略（issue #76）。
+///
+/// ★ 不动命名空间授权（`namespaces` / `biz_namespace`）—— 与配额是两个维度。
+#[tauri::command]
+pub fn set_unified_key_policy(
+    id: String,
+    policy: buddy_switch_gateway::apikey::KeyPolicy,
+) -> Result<Value, String> {
+    unified_gateway::shared_state()
+        .keys
+        .update_policy(&id, policy)?;
+    Ok(json!({ "ok": true }))
+}
+
+/// GET /api/unified-gateway/keys/usage —— 读某把统一 Key 的用量快照。
+#[tauri::command]
+pub fn unified_key_usage(id: String) -> Result<Value, String> {
+    use buddy_switch_gateway::apikey::QuotaVerdict;
+    let state = unified_gateway::shared_state();
+    let now = buddy_switch_core::modules::config::now_ms();
+    let Some(record) = state.keys.list().into_iter().find(|record| record.id == id) else {
+        return Err("API Key 不存在".to_string());
+    };
+    let policy = record.policy();
+    let used = state
+        .key_usage
+        .used_for(&id, policy.quota_unit, policy.quota_period, now);
+    let total = state
+        .key_usage
+        .snapshot(&id)
+        .map(|entry| entry.counters(policy.quota_unit).total)
+        .unwrap_or(0);
+    let exceeded = matches!(
+        buddy_switch_gateway::apikey::quota_verdict_for_policy(&policy, used),
+        QuotaVerdict::Exceeded { .. }
+    );
+    Ok(json!({
+        "ok": true,
+        "keyId": id,
+        "unit": policy.quota_unit,
+        "period": policy.quota_period,
+        "periodKey": policy.quota_period.period_key(now),
+        "used": used,
+        "total": total,
+        "exceeded": exceeded,
+    }))
+}
+
 /// POST /api/unified-gateway/keys/restore —— 撤销吊销（**同一把 Key 重新可用**）。
 ///
 /// 与 `delete` 互逆：只接受**已吊销**的 Key。撤销一次误吊销不需要重建 Key、

@@ -370,6 +370,15 @@ fn api_routes() -> Router {
             "/api/unified-gateway/keys/revoke",
             post(api_unified_gateway_revoke_key),
         )
+        // ★ issue #76：策略更新 + 按密钥用量（与另三条产品线同形）。
+        .route(
+            "/api/unified-gateway/keys/policy",
+            post(api_unified_gateway_set_key_policy),
+        )
+        .route(
+            "/api/unified-gateway/keys/usage",
+            get(api_unified_gateway_key_usage),
+        )
         .route(
             "/api/unified-gateway/keys/restore",
             post(api_unified_gateway_restore_key),
@@ -6790,6 +6799,65 @@ async fn api_unified_gateway_revoke_key(Json(body): Json<Value>) -> Response {
         Ok(()) => json_ok(json!({ "ok": true })),
         Err(error) => json_err(error, StatusCode::BAD_REQUEST),
     }
+}
+
+/// POST /api/unified-gateway/keys/policy —— 更新某把统一 Key 的策略（issue #76）。
+///
+/// ★ **不动命名空间授权**（`namespaces` / `biz_namespace`）—— 那是「能访问哪些平台」，
+/// 与配额是两个维度，混进同一个入口会让「只改配额」意外清掉授权。
+async fn api_unified_gateway_set_key_policy(Json(body): Json<Value>) -> Response {
+    use buddy_switch_gateway::apikey::KeyPolicy;
+    let id = body.get("id").and_then(Value::as_str).unwrap_or("");
+    let policy: KeyPolicy = match serde_json::from_value(
+        body.get("policy").cloned().unwrap_or(Value::Null),
+    ) {
+        Ok(policy) => policy,
+        Err(error) => {
+            return json_err(format!("策略字段不合法: {error}"), StatusCode::BAD_REQUEST)
+        }
+    };
+    match crate::unified_gateway_host::shared_state()
+        .keys
+        .update_policy(id, policy)
+    {
+        Ok(()) => json_ok(json!({ "ok": true })),
+        Err(error) => json_err(error, StatusCode::BAD_REQUEST),
+    }
+}
+
+/// GET /api/unified-gateway/keys/usage?id=… —— 读某把统一 Key 的用量快照。
+async fn api_unified_gateway_key_usage(RawQuery(query): RawQuery) -> Response {
+    let id = query_value(query.as_deref(), "id").unwrap_or_default();
+    if id.is_empty() {
+        return json_err("缺少 id".to_string(), StatusCode::BAD_REQUEST);
+    }
+    let state = crate::unified_gateway_host::shared_state();
+    let now = buddy_switch_core::modules::config::now_ms();
+    let Some(record) = state.keys.list().into_iter().find(|record| record.id == id) else {
+        return json_err("API Key 不存在".to_string(), StatusCode::BAD_REQUEST);
+    };
+    let policy = record.policy();
+    let usage = state.key_usage.snapshot(&id);
+    let used = state
+        .key_usage
+        .used_for(&id, policy.quota_unit, policy.quota_period, now);
+    let exceeded = matches!(
+        buddy_switch_gateway::apikey::quota_verdict_for_policy(&policy, used),
+        buddy_switch_gateway::apikey::QuotaVerdict::Exceeded { .. }
+    );
+    json_ok(json!({
+        "ok": true,
+        "keyId": id,
+        "unit": policy.quota_unit,
+        "period": policy.quota_period,
+        "periodKey": policy.quota_period.period_key(now),
+        "used": used,
+        "total": usage
+            .as_ref()
+            .map(|entry| entry.counters(policy.quota_unit).total)
+            .unwrap_or(0),
+        "exceeded": exceeded,
+    }))
 }
 
 /// POST /api/unified-gateway/keys/restore —— 撤销吊销（同一把 Key 重新可用）。

@@ -28,6 +28,8 @@ pub struct UnifiedGatewayState {
     pub config: Arc<RwLock<UnifiedGatewayConfig>>,
     /// 统一密钥库（独立第三份，见 [`super::apikey`] 模块头）。
     pub keys: Arc<UnifiedApiKeyStore>,
+    /// ★ 按密钥的用量账本（issue #76）—— 与另三条产品线**同一个实现**。
+    pub key_usage: Arc<crate::key_usage::KeyUsageStore>,
     /// 进程启动时间（毫秒）。
     pub started_at: i64,
     /// 请求体上限（字节）。★ 在 **router 构建期**固化 § ⇒ 改配置需重启。
@@ -41,11 +43,27 @@ impl UnifiedGatewayState {
     }
 
     /// 用给定配置 + 指定密钥库构造（便于测试）。
+    ///
+    /// 用量账本走**默认路径**（测试不写它 —— 只读；要隔离请用 [`Self::with_parts`]）。
     pub fn with_keys(config: UnifiedGatewayConfig, keys: UnifiedApiKeyStore) -> Self {
+        Self::with_parts(
+            config,
+            keys,
+            crate::key_usage::KeyUsageStore::new(super::config::unified_key_usage_file()),
+        )
+    }
+
+    /// 用给定配置 + 密钥库 + 用量账本构造（**测试隔离用**：三个路径都能指到临时目录）。
+    pub fn with_parts(
+        config: UnifiedGatewayConfig,
+        keys: UnifiedApiKeyStore,
+        key_usage: crate::key_usage::KeyUsageStore,
+    ) -> Self {
         Self {
             body_limit_bytes: body_limit_bytes(config.max_body_mb),
             config: Arc::new(RwLock::new(config)),
             keys: Arc::new(keys),
+            key_usage: Arc::new(key_usage),
             started_at: buddy_switch_core::modules::config::now_ms(),
         }
     }

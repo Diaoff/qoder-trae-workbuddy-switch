@@ -199,6 +199,13 @@ pub fn unified_keys_file() -> PathBuf {
     core_config::store_dir().join("gateway_unified_keys.json")
 }
 
+/// 按密钥的用量账本（issue #76）：`~/.buddy-switch/gateway_unified_key_usage.json`。
+///
+/// 与 Key 台账**分文件**（同另三条产品线取舍）：台账低频写、用量每请求写。
+pub fn unified_key_usage_file() -> PathBuf {
+    core_config::store_dir().join("gateway_unified_key_usage.json")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

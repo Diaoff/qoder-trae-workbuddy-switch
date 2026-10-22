@@ -29,6 +29,10 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 
 use buddy_switch_core::modules::config as core_config;
+
+/* ★ issue #76：策略类型**直接复用** WorkBuddy 侧那一套（`crate::apikey`）。
+   四条产品线的 Key 策略语义完全相同，各定义一份必然漂移。 */
+use crate::apikey::{KeyPolicy, QuotaMode, QuotaPeriod, QuotaUnit, ScopeMode};
 use buddy_switch_core::modules::gateway_namespace;
 
 use super::config::unified_keys_file;
@@ -72,6 +76,25 @@ pub struct UnifiedApiKeyRecord {
     /// 最近使用时间（60 秒节流写盘）。
     #[serde(default)]
     pub last_used_at: Option<i64>,
+    /* ── 策略（issue #76）—— 与另三条产品线同形同义。
+       ⚠️ 本台账已有**一维授权**（`namespaces` / `biz_namespace`）：那是「能访问哪些平台」，
+       是**最外层**；这里是「账号范围 + 配额」，属于更内层。UI 顺序：
+       命名空间 → 账号范围 → 配额（规范 §6.1）。 ── */
+    #[serde(default)]
+    pub quota_mode: QuotaMode,
+    #[serde(default)]
+    pub quota_limit: u64,
+    #[serde(default)]
+    pub quota_unit: QuotaUnit,
+    #[serde(default)]
+    pub quota_period: QuotaPeriod,
+    #[serde(default)]
+    pub scope_mode: ScopeMode,
+    /// 允许访问的账号 uid（`scope_mode == Selected` 时有效；uid 空间按**目标产品线**解读）。
+    #[serde(default)]
+    pub scope_accounts: Vec<String>,
+    #[serde(default)]
+    pub scope_groups: Vec<String>,
 }
 
 impl UnifiedApiKeyRecord {
@@ -98,7 +121,28 @@ impl UnifiedApiKeyRecord {
             "revokedAt": self.revoked_at,
             "revoked": self.revoked_at.is_some(),
             "lastUsedAt": self.last_used_at,
+            /* 策略七件套（issue #76）—— 与另三条产品线同形，前端共用一套构件。 */
+            "quotaMode": self.quota_mode,
+            "quotaLimit": self.quota_limit,
+            "quotaUnit": self.quota_unit,
+            "quotaPeriod": self.quota_period,
+            "scopeMode": self.scope_mode,
+            "scopeAccounts": self.scope_accounts,
+            "scopeGroups": self.scope_groups,
         })
+    }
+
+    /// 取出策略部分（中继层只认策略，不认 hash / 明文 / 命名空间授权）。
+    pub fn policy(&self) -> KeyPolicy {
+        KeyPolicy {
+            quota_mode: self.quota_mode,
+            quota_limit: self.quota_limit,
+            quota_unit: self.quota_unit,
+            quota_period: self.quota_period,
+            scope_mode: self.scope_mode,
+            scope_accounts: self.scope_accounts.clone(),
+            scope_groups: self.scope_groups.clone(),
+        }
     }
 }
 
@@ -206,6 +250,14 @@ impl UnifiedApiKeyStore {
             created_at: core_config::now_ms(),
             revoked_at: None,
             last_used_at: None,
+            // 策略默认值：不限额 + 全部账号（= 改造前行为；命名空间授权仍在 namespaces 里）。
+            quota_mode: QuotaMode::Unlimited,
+            quota_limit: 0,
+            quota_unit: QuotaUnit::Token,
+            quota_period: QuotaPeriod::None,
+            scope_mode: ScopeMode::All,
+            scope_accounts: Vec::new(),
+            scope_groups: Vec::new(),
         };
         let mut records = self.load();
         records.push(record.clone());
@@ -255,6 +307,33 @@ impl UnifiedApiKeyStore {
     }
 
     /// 吊销（置 `revoked_at`，**不物理删除** —— 恢复是同一把 Key，客户端无需改配置）。
+    /// 更新策略（配额 + 账号范围）。**不动** id / hash / 吊销态 / **命名空间授权**。
+    ///
+    /// ★ 命名空间不在这里改：它是「能访问哪些平台」，与配额是**两个维度**，
+    /// 混进同一个更新入口会让「只改配额」的调用意外清掉授权。
+    pub fn update_policy(&self, id: &str, policy: KeyPolicy) -> Result<(), String> {
+        let policy = policy.normalized()?;
+        let mut records = self.load();
+        let mut found = false;
+        for record in records.iter_mut() {
+            if record.id == id {
+                record.quota_mode = policy.quota_mode;
+                record.quota_limit = policy.quota_limit;
+                record.quota_unit = policy.quota_unit;
+                record.quota_period = policy.quota_period;
+                record.scope_mode = policy.scope_mode;
+                record.scope_accounts = policy.scope_accounts;
+                record.scope_groups = policy.scope_groups;
+                found = true;
+                break;
+            }
+        }
+        if !found {
+            return Err("API Key 不存在".to_string());
+        }
+        self.save(&records)
+    }
+
     pub fn revoke(&self, id: &str) -> Result<(), String> {
         let mut records = self.load();
         if !records.iter().any(|record| record.id == id) {
@@ -339,6 +418,64 @@ mod tests {
     }
 
     /// ★ 一把 Key 可**同时**授权两个产品线的命名空间 —— 这是「合并入口」的全部意义。
+    #[test]
+    fn legacy_ledger_without_policy_fields_reads_as_before() {
+        // ★ 统一网关台账落盘是 **snake_case**（struct 上**没有** `rename_all`，
+        //   camelCase 只在 `masked()` 里出现）—— 与 Trae / Qoder 相反。
+        //   四条产品线两种落盘形态，写「零迁移」测试时必须对准真台账。
+        let legacy = serde_json::json!([{
+            "id": "old", "name": "old", "prefix": "sk-uni-a1b2", "suffix": "9f3c",
+            "hash": "h", "namespaces": ["wb-cn"], "biz_namespace": null,
+            "created_at": 1, "revoked_at": null, "last_used_at": null
+        }]);
+        let records: Vec<UnifiedApiKeyRecord> = serde_json::from_value(legacy).unwrap();
+        let record = &records[0];
+        assert_eq!(record.quota_mode, QuotaMode::Unlimited);
+        assert_eq!(record.scope_mode, ScopeMode::All);
+        assert_eq!(
+            crate::apikey::quota_verdict_for_policy(&record.policy(), u64::MAX),
+            crate::apikey::QuotaVerdict::Ok,
+            "老 Key 不得被限额"
+        );
+    }
+
+    /// ★ `update_policy` **不得**碰命名空间授权 —— 两者是两个维度。
+    ///
+    /// 可证伪：把 `namespaces` 也纳入「归一/清空」逻辑 ⇒ 本条红。
+    #[test]
+    fn update_policy_never_touches_namespace_authorization() {
+        let dir = std::env::temp_dir().join(format!(
+            "unified-key-policy-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let store = UnifiedApiKeyStore::new(dir.join("keys.json"));
+        let (record, _) = store
+            .create("k".to_string(), vec!["wb-cn".to_string()], Some("wb-cn".to_string()))
+            .unwrap();
+
+        store
+            .update_policy(
+                &record.id,
+                KeyPolicy {
+                    quota_mode: QuotaMode::Limited,
+                    quota_limit: 100,
+                    quota_unit: QuotaUnit::Token,
+                    quota_period: QuotaPeriod::Daily,
+                    scope_mode: ScopeMode::Selected,
+                    scope_accounts: vec!["u1".into()],
+                    scope_groups: vec![],
+                },
+            )
+            .unwrap();
+        let after = store.list().into_iter().find(|r| r.id == record.id).unwrap();
+        assert_eq!(after.quota_limit, 100);
+        assert_eq!(after.namespaces, vec!["wb-cn".to_string()], "命名空间授权不得被动");
+        assert_eq!(after.biz_namespace, Some("wb-cn".to_string()));
+        assert_eq!(after.hash, record.hash);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn one_key_can_authorize_both_products() {
         let (store, dir) = temp_store();

@@ -515,6 +515,9 @@ pub fn run() {
             commands::list_unified_api_keys,
             commands::create_unified_api_key,
             commands::revoke_unified_api_key,
+            // ★ issue #76：统一网关密钥策略与按密钥用量。
+            commands::set_unified_key_policy,
+            commands::unified_key_usage,
             commands::restore_unified_api_key,
             commands::delete_unified_api_key,
             commands::get_gateway_models,

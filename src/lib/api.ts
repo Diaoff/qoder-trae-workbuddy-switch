@@ -451,6 +451,9 @@ const ROUTES: Record<string, Route> = {
   list_unified_api_keys: { method: "GET", path: "/api/unified-gateway/keys" },
   create_unified_api_key: { method: "POST", path: "/api/unified-gateway/keys" },
   revoke_unified_api_key: { method: "POST", path: "/api/unified-gateway/keys/revoke" },
+  // ★ issue #76：统一网关密钥策略（配额 + 账号范围）与按密钥用量。
+  set_unified_key_policy: { method: "POST", path: "/api/unified-gateway/keys/policy" },
+  unified_key_usage: { method: "GET", path: "/api/unified-gateway/keys/usage" },
   restore_unified_api_key: { method: "POST", path: "/api/unified-gateway/keys/restore" },
   delete_unified_api_key: { method: "POST", path: "/api/unified-gateway/keys/delete" },
   get_gateway_models: { method: "GET", path: "/api/gateway/models" },
@@ -2153,6 +2156,16 @@ export function createUnifiedApiKey(
 
 export function revokeUnifiedApiKey(id: string): Promise<{ ok: boolean }> {
   return call("revoke_unified_api_key", { id });
+}
+
+/** ★ issue #76：更新某把统一 Key 的策略（完整策略，非补丁；**不动命名空间授权**）。 */
+export function setUnifiedKeyPolicy(id: string, policy: KeyPolicy): Promise<{ ok: boolean }> {
+  return call("set_unified_key_policy", { id, policy });
+}
+
+/** ★ issue #76：读某把统一 Key 的用量快照。 */
+export function unifiedKeyUsage(id: string): Promise<KeyUsageSnapshot> {
+  return call("unified_key_usage", { id });
 }
 
 /** 撤销吊销 —— **同一把 Key 重新可用**，客户端配置不用改。 */
