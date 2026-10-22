@@ -360,9 +360,7 @@ pub async fn chat_for_region(
         // Anthropic 的 `image` block 必须转成多模态 part，不能只取文本
         // （否则图片被整条丢弃）。Trae / WB 未验证上游是否吃 parts，仍走
         // 不含图片的 `to_upstream_request`。
-        Protocol::Anthropic => {
-            crate::protocol::anthropic::to_upstream_request_with_images(&parsed)
-        }
+        Protocol::Anthropic => crate::protocol::anthropic::to_upstream_request_with_images(&parsed),
         Protocol::Responses => payload::responses_to_chat(&parsed),
     };
     let wants_stream = payload::wants_stream(&parsed);
@@ -446,26 +444,29 @@ pub async fn chat_for_region(
     // 本轮有多少个号是被**限额护栏**拦下的（决定收尾文案与状态码）。
     let mut quota_blocked_count = 0usize;
 
+    // ★ issue #76：本密钥的允许名单，**整轮算一次** —— 选号与收尾文案都要用同一份
+    //   （收尾必须按名单口径说事实，否则用户会被指去修名单外的账号）。
+    let allowed = key
+        .as_deref()
+        .and_then(|actor| allowed_uids_for(&actor.policy, region));
+
     for _ in 0..max_rotate {
         // 池随账号库同步（导入 / 刷新后即时生效），然后选号。
         // 选号连同**展示名**一起取：失败原因要给用户看名字，不是一串 uid
         //（护栏 / 在途 / 上游错误的文案统一用名字，混用会让同一条报错里出现两种身份）。
-        // 白名单：每次选号前按当前策略展开（分组展开只在 `scope_groups` 非空时读文件）。
-        let allowed = key
-            .as_deref()
-            .and_then(|actor| allowed_uids_for(&actor.policy, region));
         let picked = {
             let mut pools = state.pools.lock().await;
             let pool = pools.entry(region).or_default();
             pool.sync_for(region);
-            pool.pick(&model, &tried, preferred.as_deref(), allowed.as_ref()).map(|uid| {
-                let name = pool
-                    .entries()
-                    .find(|entry| entry.uid == uid)
-                    .map(|entry| entry.name.clone())
-                    .unwrap_or_else(|| uid.clone());
-                (uid, name)
-            })
+            pool.pick(&model, &tried, preferred.as_deref(), allowed.as_ref())
+                .map(|uid| {
+                    let name = pool
+                        .entries()
+                        .find(|entry| entry.uid == uid)
+                        .map(|entry| entry.name.clone())
+                        .unwrap_or_else(|| uid.clone());
+                    (uid, name)
+                })
         };
         let Some((uid, display_name)) = picked else {
             break;
@@ -688,8 +689,30 @@ pub async fn chat_for_region(
     //   报 429 而不是 503 —— 503 会被读成「服务坏了」，这里是**预期行为**。
     let all_quota = quota_blocked_count > 0 && quota_blocked_count == failures.len();
     let message = if failures.is_empty() {
+        // ★ 白名单生效时点明「名单覆盖几个、名单外不会被使用」（issue #76）：
+        //   否则用户看到「没有可用账号」会去账号页反复导入，而问题在名单上。
+        let scope_hint = match allowed.as_ref() {
+            Some(only) => {
+                let covered = {
+                    let pools = state.pools.lock().await;
+                    pools
+                        .get(&region)
+                        .map(|pool| {
+                            pool.entries()
+                                .filter(|entry| only.contains(&entry.uid))
+                                .count()
+                        })
+                        .unwrap_or(0)
+                };
+                format!(
+                    "；这把 API Key 的允许名单只覆盖 {covered} 个账号，\
+                     名单外的账号不会被使用 —— 可在「网关 → 密钥 → 权限」放宽名单"
+                )
+            }
+            None => String::new(),
+        };
         format!(
-            "{} 没有可用账号：请在「账号」页导入（账号需带可调用的访问令牌）",
+            "{} 没有可用账号：请在「账号」页导入（账号需带可调用的访问令牌）{scope_hint}",
             region.display_name()
         )
     } else if all_quota {

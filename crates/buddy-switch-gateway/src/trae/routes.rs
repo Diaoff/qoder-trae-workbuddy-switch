@@ -316,7 +316,11 @@ pub async fn chat_for_variant(
         if let Some(message) =
             actor.check_quota_and_count(buddy_switch_core::modules::config::now_ms())
         {
-            return openai_error(StatusCode::TOO_MANY_REQUESTS, "key_quota_exceeded", &message);
+            return openai_error(
+                StatusCode::TOO_MANY_REQUESTS,
+                "key_quota_exceeded",
+                &message,
+            );
         }
     }
     let parsed: Value = match serde_json::from_slice(&body) {
@@ -571,6 +575,8 @@ async fn stream_chat(
     // ★ issue #76：本密钥（白名单 / 配额 / 记账）。
     key: Option<&crate::apikey::KeyActor>,
 ) -> Response {
+    // ★ issue #76：允许名单整轮算一次，选号与失败兜底共用（理由见 `attempt_once`）。
+    let allowed = key.and_then(|actor| allowed_uids_for(&actor.policy, variant));
     let mut tried: HashSet<String> = HashSet::new();
     let mut last: Option<UpstreamFailure> = None;
 
@@ -583,7 +589,7 @@ async fn stream_chat(
             preferred_uid,
             sticky_key,
             variant,
-            key,
+            allowed.as_ref(),
         )
         .await
         {
@@ -624,9 +630,9 @@ async fn stream_chat(
                     )
                     .await;
                     /* ★ issue #76：按密钥 token 记账 —— 挂在**流结束**这个同一时点
-                       （与 `settle` 并列）：请求前不知道用量，记了就是假账。
-                       `is_meaningful()` = 上游没报用量（全 0）⇒ 不记，别写 0 样本
-                       （会把「本周期已用」压低，让配额晚触发）。 */
+                    （与 `settle` 并列）：请求前不知道用量，记了就是假账。
+                    `is_meaningful()` = 上游没报用量（全 0）⇒ 不记，别写 0 样本
+                    （会把「本周期已用」压低，让配额晚触发）。 */
                     if let Some(actor) = task_key.as_ref() {
                         if outcome.usage.is_meaningful() {
                             // `record_tokens` 内部判 0 跳过。
@@ -647,7 +653,7 @@ async fn stream_chat(
     }
 
     // 没拿到任何可用上游：这里**还没发过响应头**，可以正常返回 JSON 错误。
-    let failure = last.unwrap_or_else(|| no_account_failure_sync(state, variant));
+    let failure = last.unwrap_or_else(|| no_account_failure_sync(state, variant, allowed.as_ref()));
     settle_failure(
         state,
         model,
@@ -688,6 +694,9 @@ async fn aggregate_payload(
     // ★ issue #76：本密钥（白名单 / 配额 / 记账）。
     key: Option<&crate::apikey::KeyActor>,
 ) -> Result<Value, UpstreamFailure> {
+    // ★ issue #76：本密钥的允许名单，**整轮算一次** —— 选号与失败兜底都要用同一份
+    //   （兜底文案必须按名单口径说事实，否则用户会被指去修名单外的账号）。
+    let allowed = key.and_then(|actor| allowed_uids_for(&actor.policy, variant));
     let mut tried: HashSet<String> = HashSet::new();
     let mut last: Option<UpstreamFailure> = None;
 
@@ -700,7 +709,7 @@ async fn aggregate_payload(
             preferred_uid,
             sticky_key,
             variant,
-            key,
+            allowed.as_ref(),
         )
         .await
         {
@@ -732,7 +741,7 @@ async fn aggregate_payload(
                     endpoint,
                     variant,
                     key.map(|actor| actor.key_id.as_str()),
-        key.map(|actor| actor.scope),
+                    key.map(|actor| actor.scope),
                 )
                 .await;
                 return Ok(payload);
@@ -750,7 +759,7 @@ async fn aggregate_payload(
         }
     }
 
-    let failure = last.unwrap_or_else(|| no_account_failure_sync(state, variant));
+    let failure = last.unwrap_or_else(|| no_account_failure_sync(state, variant, allowed.as_ref()));
     settle_failure(
         state,
         model,
@@ -896,8 +905,8 @@ fn allowed_uids_for(
     let mut allowed: HashSet<String> = policy.scope_accounts.iter().cloned().collect();
     if !policy.scope_groups.is_empty() {
         /* ★ Trae 的分组是**独立文件**（`user_id -> group_id` 的 `membership` 映射），
-           不像 WB 那样把 `groupName` 挂在账号记录上 ⇒ 读 `load_groups_for` 再反查。
-           这里**只增不删**：`scope_accounts` 里的 uid 即使不在任何分组也保留。 */
+        不像 WB 那样把 `groupName` 挂在账号记录上 ⇒ 读 `load_groups_for` 再反查。
+        这里**只增不删**：`scope_accounts` 里的 uid 即使不在任何分组也保留。 */
         let groups = buddy_switch_core::modules::trae::account::load_groups_for(variant);
         for (uid, group_id) in groups.membership.iter() {
             if policy.scope_groups.iter().any(|wanted| wanted == group_id) {
@@ -928,7 +937,6 @@ fn record_key_tokens(
     actor.record_tokens(total, buddy_switch_core::modules::config::now_ms());
 }
 
-
 /// 选号 + 出站一次。`tried` 在内部累加，调用方反复调用即可自动换号。
 ///
 /// 返回 `None` 表示**已经挑不出新账号**（不是失败，是没得试了）。
@@ -941,8 +949,9 @@ async fn attempt_once(
     preferred_uid: &str,
     sticky_key: Option<&str>,
     variant: TraeVariant,
-    // ★ issue #76：本密钥（`None` = 无 Key 的调用 ⇒ 不过白名单）。
-    key: Option<&crate::apikey::KeyActor>,
+    // ★ issue #76：本密钥的允许名单（`None` = 不过白名单）。由调用方算好传进来 ——
+    //   失败兜底（`no_account_failure_sync`）也要用它，两处必须同一份。
+    allowed: Option<&HashSet<String>>,
 ) -> Option<AttemptResult> {
     // 先读粘性（**不持 pools 锁**）：两把锁不嵌套 —— 既不延长池的持锁时间，
     // 也避免日后有人以相反顺序取锁造成死锁。
@@ -958,9 +967,8 @@ async fn attempt_once(
         // 偏好优先级：**显式指定 > 会话粘性 > 自动择优**（见 [`resolve_preference`]）。
         // 两者都不可用时 `pick_with_preference` 会自行回落到自动择优，绝不拒绝服务。
         let preferred = resolve_preference(preferred_uid, sticky_uid.as_deref());
-        // 白名单：每次选号前按当前策略展开（分组展开只在 `scope_groups` 非空时读一次文件）。
-        let allowed = key.and_then(|actor| allowed_uids_for(&actor.policy, variant));
-        pool.pick(now_secs(), tried, preferred, allowed.as_ref())
+        // 白名单：由调用方展开后传入（分组展开只在 `scope_groups` 非空时读一次文件）。
+        pool.pick(now_secs(), tried, preferred, allowed)
     }?;
     tried.insert(picked.uid.clone());
 
@@ -1288,13 +1296,18 @@ async fn settle_failure(
 /// 按区域取名的原因：Key 的**归属就是区域**（账号库、冷却、积分都按区域分家），
 /// 账号管理页的切换器也是「国内版 / 国际版」两个 Tab。文案若按程序位取名
 /// （`Trae Work` / `Trae`），用户会被指到界面上**根本不存在**的入口去加账号。
-fn no_account_failure_sync(state: &TraeGatewayState, variant: TraeVariant) -> UpstreamFailure {
+fn no_account_failure_sync(
+    state: &TraeGatewayState,
+    variant: TraeVariant,
+    // ★ issue #76：白名单生效时诊断与文案都按**名单口径**（`None` = 不过白名单）。
+    allowed: Option<&HashSet<String>>,
+) -> UpstreamFailure {
     // 这里不能 await（调用点在 `unwrap_or_else` 里），用阻塞锁读一次内存视图即可：
     // 池状态在 `attempt_once` 里刚同步过，读到的不会比磁盘旧。
     let diagnose = match state.pools.try_lock() {
         Ok(pools) => pools
             .get(&variant)
-            .map(|pool| pool.diagnose(now_secs()))
+            .map(|pool| pool.diagnose_for(now_secs(), allowed))
             .unwrap_or_default(),
         Err(_) => Vec::new(),
     };
@@ -1305,7 +1318,10 @@ fn no_account_failure_sync(state: &TraeGatewayState, variant: TraeVariant) -> Up
     // **国内**程序位，于是「国内 Key + 国内库为空 + 国际版库有账号」这一情形
     // 永远得不到提示 —— 真正可能有账号的那条线根本不在候选里。提示要双向覆盖，
     // 否则国际版接入后，只在「国际版 Key 配国内账号」这一个方向上给指引。
-    let other_region_with_accounts = if diagnose.is_empty() {
+    //
+    // ★ 白名单生效时**不给这条提示**：名单是用户自己划的，让他「换个区域的 Key」
+    //   等于绕开他自己的策略，反而添乱。
+    let other_region_with_accounts = if diagnose.is_empty() && allowed.is_none() {
         TraeRegion::all()
             .into_iter()
             .filter(|candidate| *candidate != variant.region())
@@ -1316,13 +1332,22 @@ fn no_account_failure_sync(state: &TraeGatewayState, variant: TraeVariant) -> Up
     UpstreamFailure {
         status: 503,
         code: "no_healthy_account".to_string(),
-        message: no_account_message(variant, &diagnose, other_region_with_accounts),
+        message: no_account_message(
+            variant,
+            &diagnose,
+            other_region_with_accounts,
+            // 名单生效时诊断里只剩名单内的账号 ⇒ 条数就是「名单覆盖了几个」。
+            allowed.map(|_| diagnose.len()),
+        ),
     }
 }
 
 /// 空池文案的唯一构造点（纯函数，便于单测钉住「区域名必须出现」）。
 ///
 /// `other_region_with_accounts` 为「另一个区域有账号」时的提示对象；`None` 表示不提。
+/// `scoped_allowed` 为 `Some(n)` 表示这把 Key 的白名单生效、名单覆盖 n 个账号
+/// （issue #76）—— 此时必须点明「名单外的账号不会被使用」，否则用户会以为
+/// 网关把池里其它号藏起来了。
 ///
 /// 取名一律走 [`TraeVariant::region`] + [`TraeRegion::display_name`]：
 /// `TraeWork` 与 `Trae` **同属国内区域**，因此两者产出的文案**逐字相同**。
@@ -1330,6 +1355,7 @@ fn no_account_message(
     variant: TraeVariant,
     diagnose: &[String],
     other_region_with_accounts: Option<TraeRegion>,
+    scoped_allowed: Option<usize>,
 ) -> String {
     let name = variant.region().display_name();
     let base = if diagnose.is_empty() {
@@ -1340,12 +1366,19 @@ fn no_account_message(
     } else {
         format!("「{name}」没有可用账号：{}", diagnose.join("、"))
     };
-    match other_region_with_accounts {
+    let with_region = match other_region_with_accounts {
         Some(other) => {
             let other_name = other.display_name();
             format!("{base}（检测到 {other_name} 有账号：请改用归属 {other_name} 的 API Key）")
         }
         None => base,
+    };
+    match scoped_allowed {
+        Some(count) => format!(
+            "{with_region}（这把 API Key 的允许名单只覆盖 {count} 个账号，\
+             名单外的账号不会被使用；可在「网关 → 密钥 → 权限」放宽名单）"
+        ),
+        None => with_region,
     }
 }
 
@@ -1632,7 +1665,7 @@ mod tests {
     #[test]
     fn no_account_failure_message_is_actionable_and_region_aware() {
         // 这条文案是用户唯一能看到的排障线索：必须包含「下一步做什么」且**点名区域**。
-        let cn = no_account_message(TraeVariant::TraeWork, &[], None);
+        let cn = no_account_message(TraeVariant::TraeWork, &[], None, None);
         assert!(cn.contains("账号管理"), "{cn}");
         assert!(cn.contains("一键签到"), "{cn}");
         // ⚠️ 区域名现在是**客户端产品名**（`Trae CN` / `Trae`，2026-10-13 用户定）。
@@ -1644,14 +1677,14 @@ mod tests {
         // 走 `entries_for_region`），Key 的归属也是区域，因此文案按区域取名。
         // `TraeWork` 与 `Trae` 是**程序位**、同属国内区域 ⇒ 两段文案必须**逐字相同**。
         // 若哪天又按程序位取名（用户会在账号管理页找不到那个入口），这条 `assert_eq!` 会红。
-        let trae = no_account_message(TraeVariant::Trae, &[], None);
+        let trae = no_account_message(TraeVariant::Trae, &[], None, None);
         assert_eq!(
             cn, trae,
             "国内两个程序位共用一本账号库，文案不得按程序位分叉"
         );
 
         // 国际版必须是另一个名字（否则用户分不清该去哪一版加账号）。
-        let global = no_account_message(TraeVariant::Global, &[], None);
+        let global = no_account_message(TraeVariant::Global, &[], None, None);
         assert!(global.contains("「Trae」"), "{global}");
         assert_ne!(cn, global, "两个区域的文案必须可区分: {cn} / {global}");
 
@@ -1660,13 +1693,15 @@ mod tests {
             TraeVariant::Trae,
             &["主号(7481920:冷却中,积分=0)".to_string()],
             None,
+            None,
         );
         assert!(with_reason.contains("「Trae CN」"), "{with_reason}");
         assert!(with_reason.contains("冷却中"), "{with_reason}");
 
         // 「另一个区域有账号」的提示必须**双向**都给。
         // 方向①：国际版 Key + 只有国内账号（R8①的原始场景）。
-        let hinted_global = no_account_message(TraeVariant::Global, &[], Some(TraeRegion::Cn));
+        let hinted_global =
+            no_account_message(TraeVariant::Global, &[], Some(TraeRegion::Cn), None);
         assert!(
             hinted_global.contains("「Trae」"),
             "选中的区域必须出现: {hinted_global}"
@@ -1677,12 +1712,26 @@ mod tests {
         );
         // 方向②：国内版 Key + 只有国际版账号。**这条在修复前做不到** ——
         // 旧实现遍历的是 `TraeVariant::all()`（两条国内程序位），候选里根本没有国际版。
-        let hinted_cn = no_account_message(TraeVariant::TraeWork, &[], Some(TraeRegion::Global));
+        let hinted_cn =
+            no_account_message(TraeVariant::TraeWork, &[], Some(TraeRegion::Global), None);
         assert!(hinted_cn.contains("「Trae CN」"), "{hinted_cn}");
         assert!(
             hinted_cn.contains("检测到 Trae 有账号"),
             "另一个有账号的区域必须出现: {hinted_cn}"
         );
+
+        // ★ issue #76：白名单生效时必须点明「名单外的账号不会被使用」——
+        //   否则用户看到「没有可用账号」会以为网关把池里其它号藏起来了。
+        let scoped = no_account_message(
+            TraeVariant::Trae,
+            &["主号(7481920:冷却中,积分=0)".to_string()],
+            None,
+            Some(1),
+        );
+        assert!(scoped.contains("允许名单只覆盖 1 个账号"), "{scoped}");
+        assert!(scoped.contains("名单外的账号不会被使用"), "{scoped}");
+        // 反向：没有白名单时**不得**出现名单提示（否则是在凭空编造策略）。
+        assert!(!cn.contains("允许名单"), "无白名单时不得出现名单提示: {cn}");
     }
 
     #[test]

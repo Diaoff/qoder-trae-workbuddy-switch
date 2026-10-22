@@ -175,6 +175,25 @@ pub enum NoCredentialCause {
         /// 0 被排除」与「0 个可用」就自相矛盾 —— 用户会以为网关在胡说。
         in_flight_full: usize,
     },
+    /// **密钥白名单内**一个号都不可用（issue #76）。
+    ///
+    /// 与 [`Self::PoolExhausted`] 的区别只在**口径**：那一条统计整个区域池，
+    /// 这一条只统计这把 Key 允许用的账号。白名单生效时必须走这条 —— 否则
+    /// 「有 12 个号但 0 个可用」会把用户推去恢复一堆**本来就不许用**的账号，
+    /// 而真正的解是「放宽名单」或「恢复名单里那几个」。
+    ///
+    /// 计数一律是**名单口径**，`pool_total` 单独给出来只用于说明「名单覆盖了其中几个」。
+    ScopeEmpty {
+        /// 该区域池内账号总数（与 `allowed` 对照，说明名单覆盖面）。
+        pool_total: usize,
+        /// 名单覆盖、且在该区域池内的账号数（`0` = 名单里没有一个号属于本区域）。
+        allowed: usize,
+        disabled: usize,
+        cooling: usize,
+        zero_credits: usize,
+        excluded: usize,
+        in_flight_full: usize,
+    },
 }
 
 impl GatewayError {
@@ -396,6 +415,49 @@ fn no_credential_message(region: Region, cause: NoCredentialCause) -> String {
                  {excluded_hint}{in_flight_hint}）"
             )
         }
+        // ★ 名单口径（issue #76）：白名单生效时**必须**走这条，否则用户会拿着
+        //   「12 个号都不可用」去修一堆他本来就不许用的账号。
+        NoCredentialCause::ScopeEmpty {
+            pool_total,
+            allowed,
+            disabled,
+            cooling,
+            zero_credits,
+            excluded,
+            in_flight_full,
+        } => {
+            let key_hint =
+                "请在「网关 → 密钥 → 权限」放宽这把 Key 的允许账号（或改成「全部账号」）";
+            if allowed == 0 {
+                format!(
+                    "本机{name}账号库有 {pool_total} 个账号，但这把 API Key 的允许名单里\
+                     没有一个属于{name}；{key_hint}"
+                )
+            } else {
+                let excluded_clause = if excluded > 0 {
+                    format!("、{excluded} 个被你排除")
+                } else {
+                    String::new()
+                };
+                let in_flight_clause = if in_flight_full > 0 {
+                    format!("、{in_flight_full} 个在途已满（并发占用中）")
+                } else {
+                    String::new()
+                };
+                let in_flight_hint = if in_flight_full > 0 {
+                    "；在途已满只是瞬时并发，几秒后自行恢复"
+                } else {
+                    ""
+                };
+                format!(
+                    "本机{name}账号库有 {pool_total} 个账号，这把 API Key 的允许名单只覆盖其中 \
+                     {allowed} 个，而这 {allowed} 个此刻都不可用：{disabled} 个已禁用、\
+                     {cooling} 个冷却中、{zero_credits} 个余额为 0\
+                     {excluded_clause}{in_flight_clause}。名单外的账号不会被使用 —— \
+                     {key_hint}，或在「网关 → 账号池」恢复这几个账号{in_flight_hint}"
+                )
+            }
+        }
     }
 }
 
@@ -536,7 +598,7 @@ mod tests {
         );
     }
 
-    /// 四类原因的文案必须**两两不同**，且都必须点名区域。
+    /// 每一类原因的文案必须**两两不同**，且都必须点名区域。
     ///
     /// 阳性对照：改造前四类共用一句（逐字相同）⇒ 本用例必红。
     #[test]
@@ -550,6 +612,25 @@ mod tests {
                 total: 12,
                 disabled: 9,
                 cooling: 3,
+                excluded: 0,
+                zero_credits: 0,
+                in_flight_full: 0,
+            },
+            // 名单口径两种分支（issue #76）：覆盖到几个 / 一个都没覆盖。
+            NoCredentialCause::ScopeEmpty {
+                pool_total: 12,
+                allowed: 2,
+                disabled: 1,
+                cooling: 1,
+                excluded: 0,
+                zero_credits: 0,
+                in_flight_full: 0,
+            },
+            NoCredentialCause::ScopeEmpty {
+                pool_total: 12,
+                allowed: 0,
+                disabled: 0,
+                cooling: 0,
                 excluded: 0,
                 zero_credits: 0,
                 in_flight_full: 0,
@@ -581,6 +662,70 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// issue #76：`ScopeEmpty` 与 `PoolExhausted` 共用 `type_name`（对外契约不变），
+    /// 但文案必须给出**名单口径**的事实与真正能解的那一步。
+    ///
+    /// 阳性对照：把文案换成 `PoolExhausted` 那句 ⇒ 第一条断言（必须出现「允许名单」）必红。
+    #[test]
+    fn scope_empty_points_at_the_allowlist_not_the_pool() {
+        let error = GatewayError::NoCredential {
+            region: Region::Cn,
+            cause: NoCredentialCause::ScopeEmpty {
+                pool_total: 12,
+                allowed: 2,
+                disabled: 1,
+                cooling: 1,
+                excluded: 0,
+                zero_credits: 0,
+                in_flight_full: 0,
+            },
+        };
+        // ★ 对外契约：仍是 `no_credential` / 401 —— 客户端按类别名分流，不能多一个类别。
+        assert_eq!(error.type_name(), "no_credential");
+        assert_eq!(error.status(), 401);
+
+        let message = error.message();
+        assert!(
+            message.contains("允许名单"),
+            "必须点出是名单导致的：{message}"
+        );
+        assert!(
+            message.contains("允许名单只覆盖其中 2 个"),
+            "必须说清名单覆盖面：{message}"
+        );
+        assert!(
+            message.contains("名单外的账号不会被使用"),
+            "必须消除「网关把号藏起来了」的误解：{message}"
+        );
+        assert!(
+            message.contains("密钥 → 权限"),
+            "必须指向真正能解的那一步（放宽名单）：{message}"
+        );
+        assert!(
+            !message.contains("重新登录"),
+            "名单问题是策略问题，让人去重新登录是无效指引：{message}"
+        );
+
+        // 名单一个都没覆盖到 ⇒ 不能说「2 个都不可用」，要说「名单里没有本区域的号」。
+        let uncovered = GatewayError::NoCredential {
+            region: Region::Cn,
+            cause: NoCredentialCause::ScopeEmpty {
+                pool_total: 12,
+                allowed: 0,
+                disabled: 0,
+                cooling: 0,
+                excluded: 0,
+                zero_credits: 0,
+                in_flight_full: 0,
+            },
+        }
+        .message();
+        assert!(
+            uncovered.contains("没有一个属于"),
+            "名单没覆盖本区域要明说：{uncovered}"
+        );
     }
 
     /// ★ issue #26 的核心护栏：**「池里有号但一个都不可用」不得再让人去重新登录**。

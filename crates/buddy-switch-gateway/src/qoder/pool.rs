@@ -769,8 +769,19 @@ impl QoderPool {
 
     /// 逐账号「为什么不能路由」（诊断区，形状与 Trae 侧同款：`名字(尾8位:原因)`）。
     pub fn diagnose(&self, now: i64) -> Vec<String> {
+        self.diagnose_for(now, None)
+    }
+
+    /// 逐账号诊断；`allowed` 生效时**只列这把 Key 允许用的账号**（issue #76）。
+    ///
+    /// 与 Trae 侧同款理由：白名单用户该看到的是「我允许用的那几个号」为什么不可用。
+    pub fn diagnose_for(&self, now: i64, allowed: Option<&HashSet<String>>) -> Vec<String> {
         self.entries
             .values()
+            .filter(|entry| match allowed {
+                Some(only) => only.contains(&entry.uid),
+                None => true,
+            })
             .map(|entry| {
                 let tail = entry
                     .uid
@@ -853,11 +864,17 @@ mod tests {
         pool.entries.insert("b".into(), entry("b", "t-b"));
         let tried = HashSet::new();
         // 偏好命中。
-        assert_eq!(pool.pick("m", &tried, Some("b"), None), Some("b".to_string()));
+        assert_eq!(
+            pool.pick("m", &tried, Some("b"), None),
+            Some("b".to_string())
+        );
         // 偏好被 tried 排除 ⇒ 回落自动择优。
         let mut tried = HashSet::new();
         tried.insert("b".to_string());
-        assert_eq!(pool.pick("m", &tried, Some("b"), None), Some("a".to_string()));
+        assert_eq!(
+            pool.pick("m", &tried, Some("b"), None),
+            Some("a".to_string())
+        );
         // 全被排除 ⇒ None。
         tried.insert("a".to_string());
         assert_eq!(pool.pick("m", &tried, None, None), None);
@@ -1015,6 +1032,18 @@ mod tests {
         assert_eq!(diagnose.len(), 5);
         assert!(diagnose.iter().any(|line| line.contains("PAT")));
         assert!(diagnose.iter().any(|line| line.contains("模型冷却")));
+
+        // ★ issue #76：名单口径只列这把 Key 允许用的账号 —— 全池数字对白名单用户是噪声，
+        //   还会把他推去修一堆本来就不许用的账号。
+        let only: std::collections::HashSet<String> = ["pat".to_string()].into_iter().collect();
+        let scoped = pool.diagnose_for(now, Some(&only));
+        assert_eq!(scoped.len(), 1, "名单外账号不得出现在诊断里: {scoped:?}");
+        assert!(scoped[0].contains("PAT"), "{scoped:?}");
+        let missing: std::collections::HashSet<String> = ["zzz".to_string()].into_iter().collect();
+        assert!(
+            pool.diagnose_for(now, Some(&missing)).is_empty(),
+            "名单没覆盖本池 ⇒ 空诊断（上层据此说「名单没覆盖本区域」）"
+        );
     }
     /// ★ 排队信号（`10605` / `isQueued`）藏在 401/403 里 ⇒ **不惩罚账号**。
     ///
