@@ -265,7 +265,7 @@ function ScopedDestination() {
  * **选中 `primary 16%` + 图标转primary + 字重 550**（原型还额外强调图标，不只是背景）。
  *
  * ⚠️ 选中底色是**16%** 不是 15%（原型 `:155` 是 `color-mix(primary 16%, transparent)`），
- * 与 `.brand-mark` 的 18%、`.nav-badge.warn` 的 22% 各不相同 —— 三处别互抄。
+ * 与 `.nav-badge.warn` 的 22% 各不相同 —— 两处别互抄（`.brand-mark` 的 18% 已随 issue #75 删掉）。
  */
 function navLinkClass({ isActive, collapsed }: { isActive: boolean; collapsed?: boolean }): string {
   return cn(
