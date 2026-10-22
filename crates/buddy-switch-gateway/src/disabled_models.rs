@@ -216,6 +216,7 @@ fn scope_display(scope: Scope) -> &'static str {
         Scope::TraeGlobal => "TraeWork 国际版",
         Scope::QoderCn => "Qoder 国内版",
         Scope::QoderGlobal => "Qoder 国际版",
+        Scope::LoomyCn => "Loomy 国内版",
     }
 }
 

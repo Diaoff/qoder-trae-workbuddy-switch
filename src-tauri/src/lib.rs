@@ -157,6 +157,14 @@ fn spawn_background_task(spec: TaskSpec) {
                      请补刷新循环，或从 core 的 TASKS 表里移除该条目。"
                 );
             }
+            // Loomy：core 的 TASKS 表当前没有 Loomy 任务 ⇒ 本分支当前不可达；
+            // 加了任务但没实现时日志会立刻点名。
+            Product::Loomy => {
+                eprintln!(
+                    "[background] Loomy 的 CreditsRefresh 已登记但**尚无实现** —— \
+                     请补刷新循环，或从 core 的 TASKS 表里移除该条目。"
+                );
+            }
         },
         // WorkBuddy 账号池治理状态落盘（只在有改动时真正写盘）。
         TaskKind::PoolPersist => {
@@ -578,6 +586,16 @@ pub fn run() {
             commands::qoder_credits,
             commands::qoder_oauth_start,
             commands::qoder_oauth_status,
+            // Loomy（第四个平台）
+            commands::loomy_accounts,
+            commands::loomy_import,
+            commands::loomy_delete_account,
+            commands::loomy_set_account_remark,
+            commands::loomy_set_account_group,
+            commands::loomy_credits,
+            commands::loomy_checkin_claim,
+            commands::loomy_sms_send,
+            commands::loomy_sms_verify,
             commands::qoder_program_status,
             commands::qoder_switch_account,
             commands::qoder_set_account_group,

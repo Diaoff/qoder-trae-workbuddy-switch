@@ -759,3 +759,12 @@ is_content_blocked(...) || (status == 400 && sanitized && is_channel_invalid(...
 
 **P0–P16 均已开工并落地**（2026-10-14 复核）；上面 34 条决策所对应的方案正文见 `PLAN.md`，
 其抬头已改为**落地进度表**。
+
+### D51 Loomy（第四平台）的建模决策 —— ✅ **已拍板（2026-10-21）**
+
+- **单作用域 `loomy-cn`**：Loomy 只有国内一套账号体系；单段命名空间会破坏前端
+  `Scope` 模板字面量类型与门禁管线，`loomy-cn` 语义成立且结构零破坏（不硬塞 `-global`）。
+- **不开独立端口**（§11-D）：只走统一网关 `loomy-cn:` 命名空间（57892）；将来开独立端口从 57896 起。
+- **刻意不实现 refresh**：Loomy 无续期端点（session 14 天，过期只能重登）；网关按 `SessionDead` 换号，面板提示重新登录（诚实标记）。
+- **uid 口径**：userid 优先，否则派生 `loomy-<md5(phone\0token) 前16hex>`；绝不用手机号（同号多账号会合并）。
+- 依据：`docs/specs/LOOMY-PLATFORM.md`。

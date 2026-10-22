@@ -101,6 +101,8 @@ const TOKEN_SERIES: Record<Product, (region: Region) => Promise<OverviewDay[]>> 
      这里返回**空序列**（不是一串 0）—— 0 会被读成「今天确实没用量」，
      而事实是「还没有这个数据源」。 */
   qoder: async () => [],
+  /* Loomy 一期没有本机 Token 台账（用量页只有积分快照）⇒ 空序列（同 Qoder 的诚实口径）。 */
+  loomy: async () => [],
 };
 
 /** 今日积分消耗 + 剩余合计；**无数据源可读时返回 `null`**（不回落 0）。 */
@@ -125,6 +127,8 @@ const CREDIT_SNAPSHOT: Record<
   /* ⚠️ Qoder 的额度要调上游才拿得到，而「概览」是**纯本地**视图（不联网）。
      没有本地缓存时返回 `null`（= 「无数据源」），**不回落 0** —— 0 是「确实没积分」。 */
   qoder: async () => null,
+  /* Loomy：积分要调上游 ⇒ 概览是纯本地视图，无数据源返回 `null`（不回落 0）。 */
+  loomy: async () => null,
 };
 
 /** 今日网关请求数（**仅本机请求日志**）。 */
@@ -150,6 +154,8 @@ const GATEWAY_TODAY: Record<Product, () => Promise<{ today: number; truncated: b
      `today: 0` 在这里是**真话**（确实一次请求都没有），不是「无数据源」的伪装 ——
      与上面两个表的处理不同，因为「请求数」的零值语义本就明确。 */
   qoder: async () => ({ today: 0, truncated: false }),
+  /* Loomy 无独立网关（走统一网关）⇒ 本机请求日志没有 Loomy 条目；0 是真话。 */
+  loomy: async () => ({ today: 0, truncated: false }),
 };
 
 /**

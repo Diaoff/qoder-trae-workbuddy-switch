@@ -89,3 +89,6 @@ pub mod vscode_cn_inject;
 pub mod vscode_ext;
 /// VS Code 插件 / CodeBuddy IDE 的**会话仓**（P14 S4a · 只读半）。
 pub mod vscode_session;
+// Loomy（讯飞办公助手，第四条产品线）：单作用域 `loomy-cn`。协议事实见
+// `docs/specs/LOOMY-PLATFORM.md`；适配器蓝本为 ../free-llm-router/src/providers/loomy.ts。
+pub mod loomy;

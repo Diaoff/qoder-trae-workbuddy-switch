@@ -26,7 +26,7 @@
  */
 
 /** 平台标识。**刻意保持 `trae` 而非 `traework`**：路由前缀 `/trae/...` 与既有键名都依赖它。 */
-export type Product = "workbuddy" | "trae" | "qoder";
+export type Product = "workbuddy" | "trae" | "qoder" | "loomy";
 
 /**
  * 平台能力（PLAN §2.7）—— **平台固有，用户不可改**。
@@ -194,10 +194,24 @@ export const PLATFORM_DESCRIPTORS: Record<Product, PlatformDescriptor> = {
     regions: ["cn", "global"],
     capabilities: ["checkin", "credits", "oauth", "gateway"],
   },
+  /**
+   * Loomy —— 讯飞办公助手，**单作用域** `loomy-cn`（只有国内一套账号体系）。
+   *
+   * 能力与 Qoder 同集：`sessionCopy` / `travel` / `autoRotate` / `snapshot` / `group`
+   * 均无 Loomy 等价物。`oauth` 的含义是「面板内短信验证码登录」（纯 HTTP 三步）。
+   * 不实现 refresh：Loomy 无续期端点（session 14 天，过期只能重登）。
+   */
+  loomy: {
+    id: "loomy",
+    labelKey: "product.loomy",
+    home: "/loomy/accounts",
+    regions: ["cn"],
+    capabilities: ["checkin", "credits", "oauth", "gateway"],
+  },
 };
 
 /** 全部平台，按 UI 展示顺序。 */
-export const PRODUCTS: readonly Product[] = ["workbuddy", "trae", "qoder"];
+export const PRODUCTS: readonly Product[] = ["workbuddy", "trae", "qoder", "loomy"];
 
 /**
  * 目的地（Destination）—— 侧栏的一级页面（VOCABULARY 第 1 节的 L4）。
@@ -319,18 +333,20 @@ export function destinationAvailable(product: Product, dest: Destination): boole
  * ⚠️ **映射只有这一处**（下面两张表）。别在别处再写一份 `"wb"` 字面量 ——
  * 那会让「改标识」变成全仓搜索。
  */
-export type PlatformSlug = "wb" | "trae" | "qoder";
+export type PlatformSlug = "wb" | "trae" | "qoder" | "loomy";
 
 export const PLATFORM_SLUG: Record<Product, PlatformSlug> = {
   workbuddy: "wb",
   trae: "trae",
   qoder: "qoder",
+  loomy: "loomy",
 };
 
 export const SLUG_TO_PRODUCT: Record<PlatformSlug, Product> = {
   wb: "workbuddy",
   trae: "trae",
   qoder: "qoder",
+  loomy: "loomy",
 };
 
 /**
@@ -362,6 +378,7 @@ export function platformOfPath(pathname: string): Product {
   /* 前缀必须带分隔符：`/traeish` / `/qoderish` 不是这两个分区（见门禁用例）。 */
   if (pathname === "/trae" || pathname.startsWith("/trae/")) return "trae";
   if (pathname === "/qoder" || pathname.startsWith("/qoder/")) return "qoder";
+  if (pathname === "/loomy" || pathname.startsWith("/loomy/")) return "loomy";
   return "workbuddy";
 }
 

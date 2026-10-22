@@ -1,6 +1,6 @@
 import type { ReactElement } from "react";
 
-import { QoderMark, TraeVariantMark, WorkBuddyMark } from "@/components/product-marks";
+import { LoomyMark, QoderMark, TraeVariantMark, WorkBuddyMark } from "@/components/product-marks";
 import { useT, type Translate } from "@/lib/i18n";
 import { platformDescriptor, type Product } from "@/lib/platforms/registry";
 import { regionLabel } from "@/lib/region";
@@ -34,6 +34,7 @@ const PRODUCT_MARKS: Record<
   workbuddy: (props) => <WorkBuddyMark {...props} />,
   trae: (props) => <TraeVariantMark variant="trae_merged" {...props} />,
   qoder: (props) => <QoderMark {...props} />,
+  loomy: (props) => <LoomyMark {...props} />,
 };
 
 /**

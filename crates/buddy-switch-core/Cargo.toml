@@ -26,6 +26,8 @@ aes = "0.8"
 cbc = { version = "0.1", features = ["alloc"] }
 pbkdf2 = "0.12"
 sha1 = "0.10"
+# Loomy 讯飞账号（CAccount）登录签名（`modules/loomy/signing.rs`）：HMAC-SHA1。
+hmac = "0.12"
 aes-gcm = "0.10"
 base64 = "0.22"
 

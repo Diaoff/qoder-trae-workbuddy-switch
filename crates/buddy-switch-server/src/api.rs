@@ -18,7 +18,7 @@ use serde_json::{json, Value};
 
 use buddy_switch_core::modules::{
     account, auth_file, backup, checkin, client_limits, client_settings, config, credit_usage,
-    credits, diagnostics, export_import, migrate, oauth, process, programs, qoder, refresh,
+    credits, diagnostics, export_import, loomy, migrate, oauth, process, programs, qoder, refresh,
     region::Region, region::RegionFilter, rotate, schedule, scheduler, session, skill, switch,
     token_daily, token_stats, trae, travel, update, vscode_session,
 };
@@ -39,8 +39,8 @@ use buddy_switch_core::modules::proxy;
 // ⚠️ 本文件在 `src-tauri/src/commands.rs` 有**同款**接线（刻意不去重，见共享知识）。
 use buddy_switch_core::modules::capability;
 use buddy_switch_core::modules::product::{
-    require_capability, require_qoder_region, require_trae_region, require_wb_region,
-    resolve_scope_param, Product,
+    require_capability, require_loomy_region, require_qoder_region, require_trae_region,
+    require_wb_region, resolve_scope_param, Product,
 };
 use buddy_switch_core::modules::qoder::region::QoderRegion;
 use buddy_switch_core::modules::trae::region::TraeRegion;
@@ -474,6 +474,18 @@ fn api_routes() -> Router {
             post(api_qoder_set_account_group),
         )
         .route("/api/qoder/usage", get(api_qoder_usage))
+        // ---- Loomy（第四个平台，单作用域 loomy-cn）----
+        // ⚠️ path + method 必须与 `src/lib/api.ts` 的 ROUTES、以及
+        // `src-tauri/src/lib.rs` 的 invoke_handler 三方一致（门禁 check-api-contract.cjs）。
+        .route("/api/loomy/accounts", get(api_loomy_accounts))
+        .route("/api/loomy/accounts/import", post(api_loomy_import))
+        .route("/api/loomy/accounts/delete", post(api_loomy_delete_account))
+        .route("/api/loomy/accounts/remark", post(api_loomy_set_account_remark))
+        .route("/api/loomy/accounts/group", post(api_loomy_set_account_group))
+        .route("/api/loomy/credits", post(api_loomy_credits))
+        .route("/api/loomy/checkin/claim", post(api_loomy_checkin_claim))
+        .route("/api/loomy/sms/send", post(api_loomy_sms_send))
+        .route("/api/loomy/sms/verify", post(api_loomy_sms_verify))
         // ---- Qoder API 网关（管理面；网关本体走独立端口 57895，**不** merge 进本 Router）----
         // ⚠️ 一个监听、两个区域：区域由请求所用 API Key 的归属决定（`QoderKeyRegion`），
         //   状态 / 模型两条按 `scope` 看对应的那本账号库（fail-closed）。
@@ -771,6 +783,8 @@ async fn api_accounts_list(RawQuery(query): RawQuery) -> Response {
             Err(error) => json_err(error, StatusCode::BAD_REQUEST),
         },
         Product::Qoder => qoder_scope_not_applicable(),
+        // Loomy 用自己的 /api/loomy/* 段（单作用域、无客户端、无本地目录）。
+        Product::Loomy => loomy_scope_not_applicable(),
     }
 }
 
@@ -808,6 +822,8 @@ async fn api_account_remark(Json(body): Json<Value>) -> Response {
             Err(error) => json_err(error, StatusCode::BAD_REQUEST),
         },
         Product::Qoder => qoder_scope_not_applicable(),
+        // Loomy 用自己的 /api/loomy/* 段（单作用域、无客户端、无本地目录）。
+        Product::Loomy => loomy_scope_not_applicable(),
     }
 }
 
@@ -853,6 +869,8 @@ async fn api_account_delete(Json(body): Json<Value>) -> Response {
             Err(error) => json_err(error, StatusCode::BAD_REQUEST),
         },
         Product::Qoder => qoder_scope_not_applicable(),
+        // Loomy 用自己的 /api/loomy/* 段（单作用域、无客户端、无本地目录）。
+        Product::Loomy => loomy_scope_not_applicable(),
     }
 }
 
@@ -881,6 +899,11 @@ async fn api_account_trash_list(RawQuery(query): RawQuery) -> Response {
         },
         Product::Qoder => match require_qoder_region(scope) {
             Ok(region) => json_ok(qoder::trash::trash_list_value(region)),
+            Err(error) => json_err(error, StatusCode::BAD_REQUEST),
+        },
+        // Loomy 一期不做软删除/回收站（单作用域，误删可重导）⇒ 诚实空态。
+        Product::Loomy => match require_loomy_region(scope) {
+            Ok(_) => json_ok(json!({ "entries": [] })),
             Err(error) => json_err(error, StatusCode::BAD_REQUEST),
         },
     }
@@ -918,6 +941,8 @@ async fn api_account_restore(Json(body): Json<Value>) -> Response {
             },
             Err(error) => json_err(error, StatusCode::BAD_REQUEST),
         },
+        // Loomy 无回收站：直接报「不支持」而不是假装成功。
+        Product::Loomy => loomy_scope_not_applicable(),
     }
 }
 
@@ -953,6 +978,8 @@ async fn api_account_purge(Json(body): Json<Value>) -> Response {
             },
             Err(error) => json_err(error, StatusCode::BAD_REQUEST),
         },
+        // Loomy 无回收站：直接报「不支持」而不是假装成功。
+        Product::Loomy => loomy_scope_not_applicable(),
     }
 }
 
@@ -973,6 +1000,16 @@ async fn api_account_trash_clear(Json(body): Json<Value>) -> Response {
         },
         Product::Qoder => match require_qoder_region(scope) {
             Ok(region) => qoder::trash::clear_trash_for(region),
+            Err(error) => return json_err(error, StatusCode::BAD_REQUEST),
+        },
+        // Loomy 无回收站：显式失败而不是 0 冒充（错误路径走 match 之后的统一出口）。
+        Product::Loomy => match require_loomy_region(scope) {
+            Ok(_) => {
+                return json_err(
+                    "Loomy 一期无回收站（单作用域，误删可重新导入）".to_string(),
+                    StatusCode::BAD_REQUEST,
+                )
+            }
             Err(error) => return json_err(error, StatusCode::BAD_REQUEST),
         },
     };
@@ -1032,6 +1069,18 @@ async fn api_accounts_export(Json(body): Json<Value>) -> Response {
             }
             Err(error) => json_err(error, StatusCode::BAD_REQUEST),
         },
+        Product::Loomy => match require_loomy_region(scope) {
+            Ok(region) => {
+                let records: Vec<Value> = loomy::account::load_accounts_for(region)
+                    .accounts
+                    .iter()
+                    .filter(|account| account_ids.is_empty() || account_ids.contains(&account.uid))
+                    .map(|account| serde_json::to_value(account).unwrap_or(Value::Null))
+                    .collect();
+                json_ok(json!({ "ok": true, "accounts": records }))
+            }
+            Err(error) => json_err(error, StatusCode::BAD_REQUEST),
+        },
     }
 }
 
@@ -1075,6 +1124,18 @@ async fn api_accounts_export_to_path(Json(body): Json<Value>) -> Response {
                     Ok(value) => json_ok(value),
                     Err(error) => json_err(error, StatusCode::BAD_REQUEST),
                 }
+            }
+            Err(error) => json_err(error, StatusCode::BAD_REQUEST),
+        },
+        Product::Loomy => match require_loomy_region(scope) {
+            Ok(region) => {
+                let records: Vec<Value> = loomy::account::load_accounts_for(region)
+                    .accounts
+                    .iter()
+                    .filter(|account| account_ids.is_empty() || account_ids.contains(&account.uid))
+                    .map(|account| serde_json::to_value(account).unwrap_or(Value::Null))
+                    .collect();
+                json_ok(json!({ "ok": true, "accounts": records }))
             }
             Err(error) => json_err(error, StatusCode::BAD_REQUEST),
         },
@@ -1133,6 +1194,42 @@ async fn api_accounts_import(Json(body): Json<Value>) -> Response {
             }
             Err(error) => json_err(error, StatusCode::BAD_REQUEST),
         },
+        // Loomy 粘贴凭据导入：走 credential.rs 的判别解析（宽容形状 + 严格判别）。
+        Product::Loomy => match require_loomy_region(scope) {
+            Ok(region) => {
+                let parsed_json: Result<Value, _> = serde_json::from_str(text);
+                let parsed = parsed_json
+                    .map_err(|error| format!("凭据不是合法 JSON：{error}"))
+                    .and_then(|value| loomy::credential::parse_credential(&value));
+                match parsed {
+                    Ok(parsed) => {
+                        let uid = parsed.uid.clone();
+                        let account = loomy::account::RawAccount {
+                            uid: parsed.uid,
+                            access_token: parsed.session,
+                            userid: parsed.userid,
+                            phone: parsed.phone,
+                            nickname: if parsed.nickname.is_empty() { None } else { Some(parsed.nickname) },
+                            expires_at: parsed.expires_at,
+                            source: Some(loomy::account::SOURCE_IMPORT.to_string()),
+                            remark: None,
+                            group: None,
+                            credits: 0,
+                            daily_credits: 0,
+                            last_checkin: None,
+                            added_at: None,
+                            updated_at: None,
+                        };
+                        match loomy::account::upsert_account_for(region, account) {
+                            Ok(_) => json_ok(json!({ "ok": true, "uid": uid })),
+                            Err(error) => json_err(error, StatusCode::BAD_REQUEST),
+                        }
+                    }
+                    Err(error) => json_err(error, StatusCode::BAD_REQUEST),
+                }
+            }
+            Err(error) => json_err(error, StatusCode::BAD_REQUEST),
+        },
     }
 }
 
@@ -1177,6 +1274,8 @@ async fn api_accounts_import_local(Json(body): Json<Value>) -> Response {
             }
         }
         Product::Qoder => qoder_scope_not_applicable(),
+        // Loomy 用自己的 /api/loomy/* 段（单作用域、无客户端、无本地目录）。
+        Product::Loomy => loomy_scope_not_applicable(),
     }
 }
 
@@ -1208,6 +1307,8 @@ async fn api_open_data_dir(Json(body): Json<Value>) -> Response {
             Err(error) => json_err(error, StatusCode::BAD_REQUEST),
         },
         Product::Qoder => qoder_scope_not_applicable(),
+        // Loomy 用自己的 /api/loomy/* 段（单作用域、无客户端、无本地目录）。
+        Product::Loomy => loomy_scope_not_applicable(),
     }
 }
 
@@ -1304,6 +1405,10 @@ async fn api_accounts_paste_credential(Json(body): Json<Value>) -> Response {
             "Qoder 请用「粘贴 PAT」".to_string(),
             StatusCode::BAD_REQUEST,
         ),
+        Product::Loomy => json_err(
+            "Loomy 请用「导入凭据」（/api/loomy/import 或账号页粘贴）或「短信登录」".to_string(),
+            StatusCode::BAD_REQUEST,
+        ),
     }
 }
 
@@ -1359,6 +1464,32 @@ async fn api_credits_query(Json(body): Json<Value>) -> Response {
             Err(error) => json_err(error, StatusCode::BAD_REQUEST),
         },
         Product::Qoder => qoder_scope_not_applicable(),
+        Product::Loomy => match require_loomy_region(scope) {
+            Ok(region) => {
+                let id = body.get("accountId").and_then(Value::as_str).unwrap_or("");
+                let Some(acc) = loomy::account::find_account_for(region, id) else {
+                    return json_err("账号不存在".to_string(), StatusCode::BAD_REQUEST);
+                };
+                let spec = loomy::region::realm_spec(region);
+                match loomy::api::points_for(region, &acc.access_token).await {
+                    Ok(snapshot) => {
+                        let mut account = acc.clone();
+                        account.credits = snapshot.permanent;
+                        account.daily_credits = snapshot.daily;
+                        let _ = loomy::account::upsert_account_for(region, account);
+                        json_ok(json!({
+                            "uid": acc.uid,
+                            "permanent": snapshot.permanent,
+                            "daily": snapshot.daily,
+                            "total": snapshot.total,
+                            "expiresAt": acc.expires_at,
+                        }))
+                    }
+                    Err(error) => json_err(error, StatusCode::BAD_REQUEST),
+                }
+            }
+            Err(error) => json_err(error, StatusCode::BAD_REQUEST),
+        },
     }
 }
 
@@ -1395,6 +1526,30 @@ async fn api_checkin_status_query(Json(body): Json<Value>) -> Response {
             Err(error) => json_err(error, StatusCode::BAD_REQUEST),
         },
         Product::Qoder => qoder_scope_not_applicable(),
+        Product::Loomy => match require_loomy_region(scope) {
+            Ok(region) => {
+                let id = body.get("accountId").and_then(Value::as_str).unwrap_or("");
+                let Some(acc) = loomy::account::find_account_for(region, id) else {
+                    return json_err("账号不存在".to_string(), StatusCode::BAD_REQUEST);
+                };
+                let spec = loomy::region::realm_spec(region);
+                match loomy::api::checkin_for(region, &acc.access_token).await {
+                    Ok(outcome) => {
+                        let mut account = acc.clone();
+                        account.last_checkin = Some(buddy_switch_core::modules::qoder::store::timestamp());
+                        let _ = loomy::account::upsert_account_for(region, account);
+                        json_ok(json!({
+                            "uid": acc.uid,
+                            "alreadyDone": outcome.already_done,
+                            "gained": outcome.gained,
+                            "detail": outcome.detail,
+                        }))
+                    }
+                    Err(error) => json_err(error, StatusCode::BAD_REQUEST),
+                }
+            }
+            Err(error) => json_err(error, StatusCode::BAD_REQUEST),
+        },
     }
 }
 
@@ -6670,6 +6825,14 @@ fn qoder_scope_not_applicable() -> Response {
     )
 }
 
+fn loomy_scope_not_applicable() -> Response {
+    json_err(
+        "该端点不服务 Loomy 作用域 —— Loomy 的账号管理请用 Loomy 分区自己的端点（/api/loomy/*）。"
+            .to_string(),
+        StatusCode::BAD_REQUEST,
+    )
+}
+
 /// 解析 `?scope=`（GET）—— 失败即 400，**不回落默认作用域**。
 fn qoder_region_from_query(query: Option<&str>) -> Result<QoderRegion, String> {
     let scope = resolve_scope_param(query_value(query, "scope").as_deref())?;
@@ -7244,4 +7407,190 @@ async fn api_qoder_clear_gateway_logs() -> Response {
     let state = crate::qoder_gateway_host::shared_state();
     state.log.clear();
     json_ok(json!({ "ok": true }))
+}
+
+// ---------------------------------------------------------------------------
+// Loomy（第四个平台，单作用域 `loomy-cn`）—— 与 Qoder 段平行。
+// ---------------------------------------------------------------------------
+//
+// ⚠️ path + method 必须与 `src/lib/api.ts` 的 ROUTES、以及 `src-tauri/src/lib.rs`
+// 的 invoke_handler 三方一致（门禁 check-api-contract.cjs）。
+
+/// GET /api/loomy/accounts —— 账号视图列表（不含令牌明文）。
+async fn api_loomy_accounts(RawQuery(_query): RawQuery) -> Response {
+    json_ok(loomy::account::accounts_view_for(loomy::region::LoomyRegion::Cn))
+}
+
+/// POST /api/loomy/accounts/import —— 粘贴凭据导入（判别解析见 core credential.rs）。
+async fn api_loomy_import(Json(body): Json<Value>) -> Response {
+    if let Err(error) = require_capability(Product::Loomy, capability::Capability::Oauth) {
+        return json_err(error, StatusCode::FORBIDDEN);
+    }
+    let text = match body.get("text").and_then(Value::as_str) {
+        Some(text) if !text.trim().is_empty() => text.to_string(),
+        _ => return json_err("缺少 text 参数".to_string(), StatusCode::BAD_REQUEST),
+    };
+    let parsed_json: Result<Value, _> = serde_json::from_str(&text);
+    let parsed = parsed_json
+        .map_err(|error| format!("凭据不是合法 JSON：{error}"))
+        .and_then(|value| loomy::credential::parse_credential(&value));
+    match parsed.and_then(|parsed| {
+        let uid = parsed.uid.clone();
+        let account = loomy::api::account_from_login_fields(
+            loomy::region::LoomyRegion::Cn,
+            parsed.session,
+            parsed.userid,
+            parsed.phone,
+        )?;
+        // 保留解析时的过期时刻与来源（import 而非 sms-login）。
+        let mut account = account;
+        account.source = Some(loomy::account::SOURCE_IMPORT.to_string());
+        account.expires_at = 0.max(account.expires_at);
+        loomy::account::upsert_account_for(loomy::region::LoomyRegion::Cn, account)
+            .map(|_| uid)
+    }) {
+    Ok(uid) => json_ok(json!({ "ok": true, "uid": uid })),
+        Err(error) => json_err(error, StatusCode::BAD_REQUEST),
+    }
+}
+
+/// POST /api/loomy/accounts/delete —— 删除账号（Loomy 一期无回收站，直接删）。
+async fn api_loomy_delete_account(Json(body): Json<Value>) -> Response {
+    let uid = body.get("uid").and_then(Value::as_str).unwrap_or("");
+    if uid.trim().is_empty() {
+        return json_err("缺少 uid".to_string(), StatusCode::BAD_REQUEST);
+    }
+    match loomy::account::delete_account_for(loomy::region::LoomyRegion::Cn, uid) {
+        Ok(true) => json_ok(json!({ "ok": true })),
+        Ok(false) => json_err("账号不存在".to_string(), StatusCode::BAD_REQUEST),
+        Err(error) => json_err(error, StatusCode::BAD_REQUEST),
+    }
+}
+
+/// POST /api/loomy/accounts/remark —— 设置备注（字段级更新）。
+async fn api_loomy_set_account_remark(Json(body): Json<Value>) -> Response {
+    let uid = body.get("uid").and_then(Value::as_str).unwrap_or("");
+    let remark = body.get("remark").and_then(Value::as_str);
+    if uid.trim().is_empty() {
+        return json_err("缺少 uid".to_string(), StatusCode::BAD_REQUEST);
+    }
+    match loomy::account::set_remark_for(loomy::region::LoomyRegion::Cn, uid, remark.map(str::to_string)) {
+        Ok(true) => json_ok(json!({ "ok": true })),
+        Ok(false) => json_err("账号不存在".to_string(), StatusCode::BAD_REQUEST),
+        Err(error) => json_err(error, StatusCode::BAD_REQUEST),
+    }
+}
+
+/// POST /api/loomy/accounts/group —— 设置分组（字段级更新）。
+async fn api_loomy_set_account_group(Json(body): Json<Value>) -> Response {
+    let uid = body.get("uid").and_then(Value::as_str).unwrap_or("");
+    let group = body.get("group").and_then(Value::as_str);
+    if uid.trim().is_empty() {
+        return json_err("缺少 uid".to_string(), StatusCode::BAD_REQUEST);
+    }
+    match loomy::account::set_group_for(loomy::region::LoomyRegion::Cn, uid, group.map(str::to_string)) {
+        Ok(true) => json_ok(json!({ "ok": true })),
+        Ok(false) => json_err("账号不存在".to_string(), StatusCode::BAD_REQUEST),
+        Err(error) => json_err(error, StatusCode::BAD_REQUEST),
+    }
+}
+
+/// POST /api/loomy/credits —— 查询两池积分并回填账号库快照。
+async fn api_loomy_credits(Json(body): Json<Value>) -> Response {
+    if let Err(error) = require_capability(Product::Loomy, capability::Capability::Credits) {
+        return json_err(error, StatusCode::FORBIDDEN);
+    }
+    let uid = body.get("uid").and_then(Value::as_str).unwrap_or("");
+    let Some(acc) = loomy::account::find_account_for(loomy::region::LoomyRegion::Cn, uid) else {
+        return json_err("账号不存在".to_string(), StatusCode::BAD_REQUEST);
+    };
+    match loomy::api::points_for(loomy::region::LoomyRegion::Cn, &acc.access_token).await {
+        Ok(snapshot) => {
+            let mut account = acc.clone();
+            account.credits = snapshot.permanent;
+            account.daily_credits = snapshot.daily;
+            let _ = loomy::account::upsert_account_for(loomy::region::LoomyRegion::Cn, account);
+            json_ok(json!({
+                "uid": acc.uid,
+                "permanent": snapshot.permanent,
+                "daily": snapshot.daily,
+                "total": snapshot.total,
+            }))
+        }
+        Err(error) => json_err(error, StatusCode::BAD_REQUEST),
+    }
+}
+
+/// POST /api/loomy/checkin/claim —— 触发每日赠送额度（幂等）。
+async fn api_loomy_checkin_claim(Json(body): Json<Value>) -> Response {
+    if let Err(error) = require_capability(Product::Loomy, capability::Capability::Checkin) {
+        return json_err(error, StatusCode::FORBIDDEN);
+    }
+    let uid = body.get("uid").and_then(Value::as_str).unwrap_or("");
+    let Some(acc) = loomy::account::find_account_for(loomy::region::LoomyRegion::Cn, uid) else {
+        return json_err("账号不存在".to_string(), StatusCode::BAD_REQUEST);
+    };
+    match loomy::api::checkin_for(loomy::region::LoomyRegion::Cn, &acc.access_token).await {
+        Ok(outcome) => {
+            let mut account = acc.clone();
+            account.last_checkin =
+                Some(buddy_switch_core::modules::qoder::store::timestamp());
+            let _ = loomy::account::upsert_account_for(loomy::region::LoomyRegion::Cn, account);
+            json_ok(json!({
+                "uid": acc.uid,
+                "alreadyDone": outcome.already_done,
+                "gained": outcome.gained,
+                "detail": outcome.detail,
+            }))
+        }
+        Err(error) => json_err(error, StatusCode::BAD_REQUEST),
+    }
+}
+
+/// POST /api/loomy/sms/send —— 下发短信验证码；返回 `msgid`（校验时原样带回）。
+async fn api_loomy_sms_send(Json(body): Json<Value>) -> Response {
+    if let Err(error) = require_capability(Product::Loomy, capability::Capability::Oauth) {
+        return json_err(error, StatusCode::FORBIDDEN);
+    }
+    let phone = body.get("phone").and_then(Value::as_str).unwrap_or("");
+    if !phone.chars().all(|c| c.is_ascii_digit()) || phone.len() != 11 {
+        return json_err("手机号必须是 11 位数字".to_string(), StatusCode::BAD_REQUEST);
+    }
+    match loomy::api::send_sms_code(loomy::region::LoomyRegion::Cn, phone).await {
+        Ok(msgid) => json_ok(json!({ "ok": true, "msgid": msgid })),
+        Err(error) => json_err(error, StatusCode::BAD_REQUEST),
+    }
+}
+
+/// POST /api/loomy/sms/verify —— 验证码登录并落库（来源 sms-login）。
+async fn api_loomy_sms_verify(Json(body): Json<Value>) -> Response {
+    if let Err(error) = require_capability(Product::Loomy, capability::Capability::Oauth) {
+        return json_err(error, StatusCode::FORBIDDEN);
+    }
+    let phone = body.get("phone").and_then(Value::as_str).unwrap_or("");
+    let code = body.get("code").and_then(Value::as_str).unwrap_or("");
+    let msgid = body.get("msgid").and_then(Value::as_str).unwrap_or("");
+    if phone.is_empty() || code.is_empty() || msgid.is_empty() {
+        return json_err("缺少 phone / code / msgid".to_string(), StatusCode::BAD_REQUEST);
+    }
+    match loomy::api::check_sms_code(loomy::region::LoomyRegion::Cn, phone, code, msgid).await {
+        Ok((session, userid, phone)) => {
+            match loomy::api::account_from_login_fields(
+                loomy::region::LoomyRegion::Cn,
+                session,
+                userid,
+                phone.clone(),
+            ) {
+                Ok(account) => {
+                    let uid = account.uid.clone();
+                    match loomy::account::upsert_account_for(loomy::region::LoomyRegion::Cn, account) {
+                        Ok(_) => json_ok(json!({ "ok": true, "uid": uid, "phone": phone })),
+                        Err(error) => json_err(error, StatusCode::BAD_REQUEST),
+                    }
+                }
+                Err(error) => json_err(error, StatusCode::BAD_REQUEST),
+            }
+        }
+        Err(error) => json_err(error, StatusCode::BAD_REQUEST),
+    }
 }

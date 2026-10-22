@@ -62,8 +62,9 @@ use serde::Serialize;
 use serde_json::{json, Value};
 
 use buddy_switch_core::modules::account;
+use buddy_switch_core::modules::loomy::region::LoomyRegion;
 use buddy_switch_core::modules::product::{
-    scope_of_qoder_region, scope_of_trae_region, scope_of_wb_region, Product, Scope,
+    scope_of_loomy_region, scope_of_qoder_region, scope_of_trae_region, scope_of_wb_region, Product, Scope,
 };
 use buddy_switch_core::modules::qoder::region::QoderRegion;
 use buddy_switch_core::modules::qoder::{api as qoder_api, cosy, PATH_CHAT_SSE};
@@ -422,6 +423,8 @@ pub enum ProbeTarget {
     Qoder(QoderGatewayState, QoderRegion),
     /// Trae（variant 决定账号池 / 客户端清单 / 判据；**只探测、不回填**）。
     Trae(TraeGatewayState, TraeVariant),
+    /// Loomy（region 决定账号库；**只探测、不回填** —— 池无模型级冷却轴）。
+    Loomy(crate::loomy::LoomyGatewayState, LoomyRegion),
 }
 
 /// 手写 `Debug`（**只打作用域**，不打印 state）。
@@ -444,6 +447,7 @@ impl ProbeTarget {
             ProbeTarget::Wb(_, region) => scope_of_wb_region(*region).as_str(),
             ProbeTarget::Qoder(_, region) => scope_of_qoder_region(*region).as_str(),
             ProbeTarget::Trae(_, variant) => scope_of_trae_region(variant.region()).as_str(),
+            ProbeTarget::Loomy(_, region) => scope_of_loomy_region(*region).as_str(),
         }
     }
 
@@ -480,6 +484,12 @@ impl ProbeTarget {
                     .iter()
                     .map(|entry| entry.uid.clone())
                     .collect()
+            }
+            ProbeTarget::Loomy(state, region) => {
+                let mut pools = state.pools.lock().await;
+                let pool = pools.entry(*region).or_default();
+                pool.sync_for(*region);
+                pool.entries().map(|entry| entry.uid.clone()).collect()
             }
         }
     }
@@ -537,6 +547,10 @@ impl ProbeTarget {
                 .await
                 .unwrap_or_default()
             }
+            ProbeTarget::Loomy(_state, _region) => {
+                // Loomy 一期无清单缓存（管理面每次现拉）⇒ 探测的模型轴给空。
+                Vec::new()
+            }
         }
     }
 
@@ -546,6 +560,32 @@ impl ProbeTarget {
             ProbeTarget::Wb(state, region) => probe_cell_wb(state, *region, uid, model).await,
             ProbeTarget::Qoder(state, region) => probe_cell_qoder(state, *region, uid, model).await,
             ProbeTarget::Trae(state, variant) => probe_cell_trae(state, *variant, uid, model).await,
+            // Loomy 一期不接真机探针（本机无账号，链路未真机验证 ⇒ 探测会误报）。
+            // 真机位：账号就位后在此接 `core::loomy::api` 的单账号探针。
+            ProbeTarget::Loomy(_, _) => {
+                let nickname = buddy_switch_core::modules::loomy::account::find_account_for(
+                    buddy_switch_core::modules::loomy::region::LoomyRegion::Cn,
+                    uid,
+                )
+                .map(|account| {
+                    if !account.phone.is_empty() {
+                        format!("Loomy {}", account.phone)
+                    } else {
+                        format!("Loomy {}", account.uid)
+                    }
+                })
+                .unwrap_or_default();
+                ProbeCell {
+                    uid: uid.to_string(),
+                    nickname,
+                    model: model.to_string(),
+                    state: ProbeState::Skipped,
+                    http_status: 0,
+                    reset_at_ms: None,
+                    reason: "Loomy 探测暂未接线（等待真机验证）".to_string(),
+                    latency_ms: 0,
+                }
+            }
         }
     }
 
@@ -571,6 +611,9 @@ impl ProbeTarget {
                 // 为空，与「Trae 卡片上隐藏/禁用回填开关」配套，**不让用户以为回填生效了**。
                 (0, 0, Vec::new())
             }
+            // Loomy：与 Trae 同款**显式空操作** —— 池没有模型级冷却轴，
+            // 把「模型被限流」回填成账号级冷却会过度冷却（方案 §4.5.4 不建议的 T3）。
+            ProbeTarget::Loomy(_, _) => (0, 0, Vec::new()),
         }
     }
 }
@@ -588,6 +631,10 @@ pub fn target_for_scope(raw: &str) -> Result<ProbeTarget, String> {
         Product::Qoder => Ok(ProbeTarget::Qoder(
             <QoderGateway as GatewayProduct>::shared_state(),
             scope.qoder_region().expect("Qoder 作用域必有 Qoder 区域"),
+        )),
+        Product::Loomy => Ok(ProbeTarget::Loomy(
+            crate::loomy::LoomyGatewayState::shared(),
+            scope.loomy_region().expect("Loomy 作用域必有 Loomy 区域"),
         )),
         Product::Trae => Ok(ProbeTarget::Trae(
             <TraeGateway as GatewayProduct>::shared_state(),

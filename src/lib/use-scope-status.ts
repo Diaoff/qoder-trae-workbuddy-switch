@@ -221,6 +221,39 @@ async function loadQoderScopeSnapshot(): Promise<QoderScopeSnapshot> {
   return { cn, global };
 }
 
+/**
+ * Loomy 聚合快照的缓存键与新鲜窗口（与 Trae / Qoder 侧同机制；单作用域 ⇒ 只有 cn）。
+ */
+const LOOMY_SCOPE_STATUS_KEY = "loomy:scope-status";
+const LOOMY_SCOPE_STATUS_FRESH_MS = TRAE_SCOPE_STATUS_FRESH_MS;
+
+interface LoomyScopeSnapshot {
+  cn: ScopeStatus;
+}
+
+/**
+ * Loomy 状态快照（单作用域）：账号数 / 凭据可用性。无客户端程序位 ⇒ `installed` 按账号库非空兜底。
+ */
+async function loadLoomyScopeSnapshot(): Promise<LoomyScopeSnapshot> {
+  const view = await api.getLoomyAccounts("loomy-cn").catch(() => null);
+  const accounts = view?.accounts ?? [];
+  const now = Date.now();
+  const status: ScopeStatus = {
+    installed: accounts.length > 0,
+    running: false,
+    loggedInName: accounts.find((account) => account.hasCredential)
+      ? (accounts.find((account) => account.hasCredential)?.name ?? null)
+      : null,
+    accountCount: accounts.length,
+    attentionCount: accounts.filter(
+      (account) =>
+        !account.hasCredential ||
+        (account.expiresAt != null && account.expiresAt > 0 && account.expiresAt <= now),
+    ).length,
+  };
+  return { cn: status };
+}
+
 /** WorkBuddy 一个区域的切片 → 状态（登录名优先昵称、其次邮箱）。 */
 function workbuddyStatus(status: AppStatus | null, accounts: AccountMeta[]): ScopeStatus {
   const now = Date.now();
@@ -275,7 +308,7 @@ export function useScopeStatus(): {
    * 后直接读 store 的**最新** entry（不受 React 渲染时序影响），把结果转成
    * 显式值给调用方。
    */
-  refreshProduct: (product: "trae" | "qoder") => Promise<string | null>;
+  refreshProduct: (product: "trae" | "qoder" | "loomy") => Promise<string | null>;
 } {
   const cnStatus = useAccountsStore((s) => s.status);
   const cnAccounts = useAccountsStore((s) => s.accounts);
@@ -294,20 +327,28 @@ export function useScopeStatus(): {
     { freshMs: QODER_SCOPE_STATUS_FRESH_MS },
   );
 
+  const loomy = useCachedResource<LoomyScopeSnapshot>(
+    LOOMY_SCOPE_STATUS_KEY,
+    loadLoomyScopeSnapshot,
+    { freshMs: LOOMY_SCOPE_STATUS_FRESH_MS },
+  );
+
   const visible = useDocumentVisible();
   // 取出函数本体再进依赖：`trae` 对象每次渲染都是新的，直接用它会每帧重建定时器。
   const revalidateTrae = trae.revalidate;
   const revalidateQoder = qoder.revalidate;
+  const revalidateLoomy = loomy.revalidate;
 
   useEffect(() => {
     if (!visible) return;
     const timer = window.setInterval(() => {
       void revalidateTrae();
-      // 两条快照同一个周期触发：分开起定时器只会在同一秒打两轮请求。
+      // 三条快照同一个周期触发：分开起定时器只会在同一秒打三轮请求。
       void revalidateQoder();
+      void revalidateLoomy();
     }, TRAE_SCOPE_STATUS_POLL_MS);
     return () => window.clearInterval(timer);
-  }, [visible, revalidateTrae, revalidateQoder]);
+  }, [visible, revalidateTrae, revalidateQoder, revalidateLoomy]);
 
   const statuses = useMemo<ScopeStatusMap>(
     () => ({
@@ -317,15 +358,28 @@ export function useScopeStatus(): {
       "trae-global": trae.data?.global ?? UNKNOWN_STATUS,
       "qoder-cn": qoder.data?.cn ?? UNKNOWN_STATUS,
       "qoder-global": qoder.data?.global ?? UNKNOWN_STATUS,
+      "loomy-cn": loomy.data?.cn ?? UNKNOWN_STATUS,
+      // ⚠️ `loomy-global` 在类型上存在（`Scope` 是模板字面量）但**不在** `SCOPES` 里
+      //（Loomy 无国际版，路由永远到不了）⇒ 恒给 UNKNOWN 占位（诚实：不是真数据）。
+      "loomy-global": UNKNOWN_STATUS,
     }),
-    [cnStatus, cnAccounts, globalStatus, globalAccounts, trae.data, qoder.data],
+    [cnStatus, cnAccounts, globalStatus, globalAccounts, trae.data, qoder.data, loomy.data],
   );
 
   // 见返回类型处的说明：refresh 不抛错 ⇒ 刷新完成后从 store 读最新 entry 判成败。
   const refreshProduct = useCallback(
-    async (product: "trae" | "qoder"): Promise<string | null> => {
-      const key = product === "trae" ? TRAE_SCOPE_STATUS_KEY : QODER_SCOPE_STATUS_KEY;
-      await (product === "trae" ? trae.refresh() : qoder.refresh());
+    async (product: "trae" | "qoder" | "loomy"): Promise<string | null> => {
+      const key =
+        product === "trae"
+          ? TRAE_SCOPE_STATUS_KEY
+          : product === "qoder"
+            ? QODER_SCOPE_STATUS_KEY
+            : LOOMY_SCOPE_STATUS_KEY;
+      await (product === "trae"
+        ? trae.refresh()
+        : product === "qoder"
+          ? qoder.refresh()
+          : loomy.refresh());
       const entry = useResourceStore.getState().entries[key];
       return entry?.error == null ? null : api.asError(entry.error);
     },

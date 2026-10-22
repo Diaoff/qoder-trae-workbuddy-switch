@@ -81,6 +81,8 @@ const NAMESPACE_META: readonly NamespaceMeta[] = [
      落到「其他」分组并显示原始 id（`metaOf` 的兜底），看起来像未知平台。 */
   { id: "qoder-cn", platform: "Qoder", client: "Qoder CN（桌面版）", defaultOn: true },
   { id: "qoder-global", platform: "Qoder", client: "Qoder（桌面版）", defaultOn: true },
+  /* Loomy（第四个平台）的命名空间 —— 派生层，进默认启用集。 */
+  { id: "loomy-cn", platform: "Loomy", client: "Loomy（讯飞办公助手，单作用域）", defaultOn: true },
 ];
 
 /** 一条展示记录：镜像表里有则用它的说明，没有（后端新增了平台而前端还没跟上）则**原样显示 id** —— 不隐藏。 */

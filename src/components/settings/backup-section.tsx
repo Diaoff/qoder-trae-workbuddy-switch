@@ -236,8 +236,14 @@ export function BackupSection() {
         .getQoderAccounts("qoder-global")
         .then((r) => r.accounts.length)
         .catch(() => 0),
+      // Loomy 单作用域（loomy-cn）；loomy-global 类型上存在但路由到不了，恒 0。
+      api
+        .getLoomyAccounts("loomy-cn")
+        .then((r) => r.accounts.length)
+        .catch(() => 0),
+      Promise.resolve(0),
     ])
-      .then(([wbCn, wbGlobal, traeCn, traeGlobal, qoderCn, qoderGlobal]) => {
+      .then(([wbCn, wbGlobal, traeCn, traeGlobal, qoderCn, qoderGlobal, loomyCn, loomyGlobal]) => {
         if (cancelled) return;
         setStats({
           "wb-cn": { accounts: wbCn, config: CONFIG_SECTIONS_PER_SCOPE, gateway: 0 },
@@ -248,6 +254,10 @@ export function BackupSection() {
              ⇒ 报 0 而不是编一个数。 */
           "qoder-cn": { accounts: qoderCn, config: 0, gateway: 0 },
           "qoder-global": { accounts: qoderGlobal, config: 0, gateway: 0 },
+          /* Loomy：账号数真实读取；config / gateway 分区一期为空（settings 备份分区
+             有内容但网关无独立文件）⇒ config 按真实分区数给 1（settings），gateway 0。 */
+          "loomy-cn": { accounts: loomyCn, config: 1, gateway: 0 },
+          "loomy-global": { accounts: loomyGlobal, config: 0, gateway: 0 },
         });
         setStatsError("");
         setStatsLoading(false);

@@ -125,10 +125,18 @@ function check(name, fn) {
 
 console.log("\n作用域与平台注册表门禁\n");
 
-check("注册表能列出 6 个作用域（3 平台 × 2 区域，P0 验收项）", () => {
+check("注册表能列出 7 个作用域（3 平台 × 2 区域 + Loomy 单作用域）", () => {
   const got = [...scope.SCOPES];
-  if (got.length !== 6) throw new Error(`实际 ${got.length} 个：${got.join(",")}`);
-  for (const s of ["wb-cn", "wb-global", "trae-cn", "trae-global", "qoder-cn", "qoder-global"]) {
+  if (got.length !== 7) throw new Error(`实际 ${got.length} 个：${got.join(",")}`);
+  for (const s of [
+    "wb-cn",
+    "wb-global",
+    "trae-cn",
+    "trae-global",
+    "qoder-cn",
+    "qoder-global",
+    "loomy-cn",
+  ]) {
     if (!got.includes(s)) throw new Error(`缺少 ${s}`);
   }
   return got.join(" / ");
@@ -339,16 +347,16 @@ check("★ P2 路由：`/s/:scope/:dest` 已注册，且旧路由**保留**（�
   return `新路由 1 条 + 旧路由 ${legacy.length} 条并存`;
 });
 
-check("★ P2 目的地映射覆盖 3 平台 × 6 目的地（侧栏固定 6 项的依据）", () => {
+check("★ P2 目的地映射覆盖 4 平台 × 6 目的地（侧栏固定 6 项的依据）", () => {
   const app = stripComments(fs.readFileSync(path.join(ROOT, "src/App.tsx"), "utf8"));
   const m = app.match(/const SCOPED_ROUTES[\s\S]*?\n\};/);
   if (!m) throw new Error("找不到 SCOPED_ROUTES");
   const block = m[0];
   const bad = [];
   for (const dest of registry.DESTINATIONS) {
-    // 每个 dest 应在表里出现三次（WorkBuddy / Trae / Qoder 各一次）
+    // 每个 dest 应在表里出现四次（WorkBuddy / Trae / Qoder / Loomy 各一次）
     const n = (block.match(new RegExp(`\\b${dest}:`, "g")) || []).length;
-    if (n !== 3) bad.push(`${dest}(${n} 次，期望 3)`);
+    if (n !== registry.PRODUCTS.length) bad.push(`${dest}(${n} 次，期望 ${registry.PRODUCTS.length})`);
   }
   if (bad.length) throw new Error(`映射不完整：${bad.join(", ")}`);
   return `${registry.PRODUCTS.length} 平台 × ${registry.DESTINATIONS.length} 目的地`;
@@ -917,8 +925,8 @@ check("★ P3 用量页三平台共用同一组件（同概览页的模式；Qod
        后端 `qoder_usage` 命令、`USAGE_PAGES.qoder`、`QoderUsagePage` 早已就位，
        入口停在占位页 = 有真实数据却显示「尚未接入」。期望值随之 2 → 3。 */
   const n = (block[0].match(/\busage: UsagePage,/g) || []).length;
-  if (n !== 3) {
-    throw new Error(`\`usage: UsagePage\` 在 SCOPED_ROUTES 里出现 ${n} 次，期望 3（三平台共用）`);
+  if (n !== 4) {
+    throw new Error(`\`usage: UsagePage\` 在 SCOPED_ROUTES 里出现 ${n} 次，期望 4（四平台共用）`);
   }
   /* 反向钉住「不要退回占位页」：Qoder 的 usage 入口一旦改回 `QoderPendingPage` 立即红。 */
   if (!/qoder:\s*\{[\s\S]*?usage: UsagePage,/.test(block[0])) {
@@ -2921,14 +2929,14 @@ check("★ P6 降级分支：作用域 >9 ⇒ 不绑定 + reason=too-many（真�
   if (on.bindings.get("wb-cn") !== 1 || on.bindings.get("trae-global") !== 4) throw new Error("序号不是 1..N");
   /* ★ 真实规模（6 个）必须**照常绑定** —— 加 Qoder 不能让既有用户的 1..4 一起消失
      （变异②：把上限改回 5 ⇒ 本条变红）。 */
-  if (REAL_SCOPES.length !== 6) throw new Error(`真实作用域应 6 个，实际 ${REAL_SCOPES.length}`);
+  if (REAL_SCOPES.length !== 7) throw new Error(`真实作用域应 7 个，实际 ${REAL_SCOPES.length}`);
   const real = scopeShortcutsLib.planScopeShortcuts({ scopes: REAL_SCOPES, enabled: true });
-  if (real.bindings.size !== 6 || real.degraded || real.reason !== null) {
-    throw new Error(`真实 6 个作用域应正常绑定，实际 ${real.bindings.size}/${real.degraded}/${real.reason}`);
+  if (real.bindings.size !== 7 || real.degraded || real.reason !== null) {
+    throw new Error(`真实 7 个作用域应正常绑定，实际 ${real.bindings.size}/${real.degraded}/${real.reason}`);
   }
-  if (real.bindings.get("qoder-global") !== 6) throw new Error("第 6 个作用域应绑到 ⌘6");
+  if (real.bindings.get("loomy-cn") !== 7) throw new Error("第 7 个作用域应绑到 ⌘7");
   if (scopeShortcutsLib.SCOPE_SHORTCUT_LIMIT !== 9) throw new Error("阈值应为 9（数字键天然上限）");
-  return "10 个→too-many / 关闭→user-disabled / 4 个→1..4 / 真实 6 个→1..6";
+  return "10 个→too-many / 关闭→user-disabled / 4 个→1..4 / 真实 7 个→1..7";
 });
 
 check("★ P6 绑定与序号提示同源：空 bindings ⇒ 作用域条目一律无 shortcutHint（假控件护栏）", () => {
@@ -4571,13 +4579,14 @@ check("★ P7 预估由实际勾选推导（全不勾 ⇒ 无可导出；勾选�
     "trae-global": { accounts: 1, config: 4, gateway: 0 },
     "qoder-cn": { accounts: 2, config: 4, gateway: 2 },
     "qoder-global": { accounts: 1, config: 4, gateway: 1 },
+    "loomy-cn": { accounts: 1, config: 1, gateway: 0 },
   };
   const all = lib.defaultBackupSelection();
-  if (lib.selectedScopeCount(all) !== 6) throw new Error("默认应全选 6 个作用域（3 平台 × 2 区域，D14）");
+  if (lib.selectedScopeCount(all) !== 7) throw new Error("默认应全选 7 个作用域（3 平台 × 2 区域 + Loomy 单作用域，D14）");
   if (!lib.hasAnySelection(all)) throw new Error("默认应可导出");
 
   const none = { ...all };
-  for (const scope of ["wb-cn", "wb-global", "trae-cn", "trae-global", "qoder-cn", "qoder-global"]) {
+  for (const scope of ["wb-cn", "wb-global", "trae-cn", "trae-global", "qoder-cn", "qoder-global", "loomy-cn"]) {
     none[scope] = { accounts: false, config: false, gateway: false };
   }
   if (lib.hasAnySelection(none)) throw new Error("全不勾仍判为可导出 —— R10（空备份）");
@@ -4587,16 +4596,16 @@ check("★ P7 预估由实际勾选推导（全不勾 ⇒ 无可导出；勾选�
   }
 
   const estAll = lib.estimateBackup(all, false, stats);
-  if (estAll.scopes !== 6 || estAll.parts !== 18) {
-    throw new Error(`全选应 6 作用域 × 3 分区，实际 ${estAll.scopes}/${estAll.parts}`);
+  if (estAll.scopes !== 7 || estAll.parts !== 21) {
+    throw new Error(`全选应 7 作用域 × 3 分区，实际 ${estAll.scopes}/${estAll.parts}`);
   }
-  if (estAll.accounts !== 14) throw new Error(`账号合计应 14，实际 ${estAll.accounts}`);
+  if (estAll.accounts !== 15) throw new Error(`账号合计应 15，实际 ${estAll.accounts}`);
 
   // 关掉 trae-cn 的「账号」分区 ⇒ 账号数 / 分区数必须变（写死数字即不通过）
   const tweaked = lib.toggleScopePart(all, "trae-cn", "accounts");
   const estTweak = lib.estimateBackup(tweaked, false, stats);
-  if (estTweak.accounts !== 9) throw new Error(`关掉 trae-cn 账号后应 9，实际 ${estTweak.accounts}`);
-  if (estTweak.parts !== 17) throw new Error(`分区数应 17，实际 ${estTweak.parts}`);
+  if (estTweak.accounts !== 10) throw new Error(`关掉 trae-cn 账号后应 10，实际 ${estTweak.accounts}`);
+  if (estTweak.parts !== 20) throw new Error(`分区数应 20，实际 ${estTweak.parts}`);
   if (lib.scopeCheckState(tweaked, "trae-cn") !== "mixed") throw new Error("半选应为 mixed");
   if (lib.scopeCheckState(all, "trae-cn") !== "all") throw new Error("全选应为 all");
   if (!(lib.estimateBackup(all, true, stats).bytes > estAll.bytes)) {
@@ -4908,7 +4917,7 @@ check("★ P5-① `Scope::parse` fail-closed：未知 / 空 / 拼错 ⇒ Err，�
   const m = product.match(/pub fn parse\(s: &str\) -> Result<Scope, ScopeError> \{([\s\S]*?)\n    \}/);
   if (!m) throw new Error("找不到 `Scope::parse -> Result<Scope, ScopeError>`（fail-closed 的前提）");
   const body = m[1];
-  for (const lit of ['"wb-cn"', '"wb-global"', '"trae-cn"', '"trae-global"', '"qoder-cn"', '"qoder-global"']) {
+  for (const lit of ['"wb-cn"', '"wb-global"', '"trae-cn"', '"trae-global"', '"qoder-cn"', '"qoder-global"', '"loomy-cn"']) {
     if (!body.includes(lit)) throw new Error(`Scope::parse 缺合法字面量 ${lit}`);
   }
   if (!/other\s*=>\s*Err\(ScopeError::new\(other\)\)/.test(body)) {

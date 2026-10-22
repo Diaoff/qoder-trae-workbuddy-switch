@@ -479,6 +479,7 @@ dependencies = [
  "cbc",
  "chrono",
  "dirs 5.0.1",
+ "hmac",
  "md-5",
  "p256",
  "pbkdf2",

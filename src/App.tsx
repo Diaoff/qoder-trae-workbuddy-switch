@@ -69,6 +69,10 @@ const QoderOverviewPage = lazy(() => import("@/pages/QoderOverviewPage"));
 const QoderSettingsPage = lazy(() => import("@/pages/QoderSettingsPage"));
 const QoderPendingPage = lazy(() => import("@/pages/QoderPendingPage"));
 const QoderApiServicePage = lazy(() => import("@/pages/QoderApiServicePage"));
+const LoomyAccountsPage = lazy(() => import("@/pages/LoomyAccountsPage"));
+const LoomyOverviewPage = lazy(() => import("@/pages/LoomyOverviewPage"));
+const LoomySettingsPage = lazy(() => import("@/pages/LoomySettingsPage"));
+const LoomyPendingPage = lazy(() => import("@/pages/LoomyPendingPage"));
 /* P0 收敛清单第 1 项：`Product` 的类型定义**已搬进注册表**，这里改为 import。
    （原来 App.tsx 里有一份局部 `type Product`，两处重复 —— 现在只剩一处。） */
 import { DESTINATION_CAPABILITY, type Destination, DESTINATIONS, destinationOfLegacyPath, hasCapability, platformDescriptor, type Product, platformOfPath } from "@/lib/platforms/registry";
@@ -195,6 +199,19 @@ const SCOPED_ROUTES: Record<Product, Record<Destination, ElementType>> = {
     sessions: QoderPendingPage,
     gateway: QoderApiServicePage,
     settings: QoderSettingsPage,
+  },
+  loomy: {
+    /* Loomy（第四个平台，单作用域）：账号 / 概览 / 设置是真实页面；
+       网关入口指向**统一网关**（loomy-cn 命名空间走 57892，无独立端口 —— §11-D 契约），
+       故 gateway 目的地给「统一网关指引」结构化空态（LoomyPendingPage 的变体）；
+       会话无数据源 ⇒ 空态。用量：Loomy 的数据源是积分快照（credits 视图）。
+       ⚠️ 与 Qoder 的处理同款纪律：缺数据源就**不画空壳**。 */
+    overview: LoomyOverviewPage,
+    accounts: LoomyAccountsPage,
+    usage: UsagePage,
+    sessions: LoomyPendingPage,
+    gateway: LoomyPendingPage,
+    settings: LoomySettingsPage,
   },
 };
 

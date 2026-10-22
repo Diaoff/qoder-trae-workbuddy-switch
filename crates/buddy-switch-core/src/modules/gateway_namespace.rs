@@ -45,6 +45,7 @@
 use std::sync::LazyLock;
 
 use crate::modules::client_settings::variant_for_program;
+use crate::modules::loomy::region::LoomyRegion;
 use crate::modules::product::{Product, Scope};
 use crate::modules::qoder::region::QoderRegion;
 use crate::modules::region::Region;
@@ -243,6 +244,8 @@ pub fn program_of(spec: &NamespaceSpec) -> Option<TraeProgram> {
             Product::Trae => Some(MAIN_TRAE_PROGRAM),
             // Qoder 没有 Trae 程序位这一维（它的程序位是「桌面版 / CLI」，见 `modules::qoder`）。
             Product::Qoder => None,
+            // Loomy 无程序位轴（单命名空间单入口）。
+            Product::Loomy => None,
         },
         NamespaceTarget::TraeProgram { program, .. } => Some(program),
     }
@@ -280,6 +283,8 @@ pub enum RelayTarget {
     Trae(TraeVariant),
     /// 交给 Qoder 中继（按区域选池）。
     Qoder(QoderRegion),
+    /// 交给 Loomy 中继（按区域选池；Loomy 单区）。
+    Loomy(LoomyRegion),
 }
 
 /// 命名空间 → 中继目标。
@@ -302,6 +307,10 @@ pub fn relay_target_of(spec: &NamespaceSpec) -> RelayTarget {
             Product::Qoder => {
                 RelayTarget::Qoder(scope.qoder_region().expect("Qoder 作用域恒有 Qoder 区域"))
             }
+            // Loomy 无 Trae 程序位这一维（它的对话入口只有一个 `loomy-cn` 命名空间）。
+            Product::Loomy => {
+                RelayTarget::Loomy(scope.loomy_region().expect("Loomy 作用域恒有 Loomy 区域"))
+            }
         },
         NamespaceTarget::TraeProgram { .. } => {
             RelayTarget::Trae(trae_variant_of(spec).expect("扩展层恒是 Trae 程序线"))
@@ -318,6 +327,7 @@ fn scope_label_key(scope: Scope) -> &'static str {
         Scope::TraeGlobal => "gateway.namespace.traeGlobal",
         Scope::QoderCn => "gateway.namespace.qoderCn",
         Scope::QoderGlobal => "gateway.namespace.qoderGlobal",
+        Scope::LoomyCn => "gateway.namespace.loomyCn",
     }
 }
 
@@ -332,13 +342,13 @@ mod tests {
         //   扩展层清空 ⇒ 全表 = 6 条派生层。
         assert_eq!(
             all_specs().len(),
-            6,
-            "命名空间总数应为 6（3 平台 × 2 区域的派生层；扩展层已清空）"
+            7,
+            "命名空间总数应为 7（3 平台 × 2 区域 + Loomy 单作用域；扩展层已清空）"
         );
         assert_eq!(
             default_specs().count(),
-            6,
-            "默认启用集应恰好是派生层那 6 条（新增平台后自动多出 2 条）"
+            7,
+            "默认启用集应恰好是派生层那 7 条（新增平台后自动多出）"
         );
         assert_eq!(
             all_specs().iter().map(|spec| spec.id).collect::<Vec<_>>(),
@@ -349,6 +359,7 @@ mod tests {
                 "trae-global",
                 "qoder-cn",
                 "qoder-global",
+                "loomy-cn",
             ],
             "命名空间 id 序列变更需同步更新本断言"
         );
@@ -389,6 +400,19 @@ mod tests {
             assert_eq!(trae_variant_of(spec), None);
             assert_eq!(wb_region_of(spec), None);
         }
+    }
+
+    /// ★ Loomy 的派生命名空间落到 Loomy 中继，且**不**被误判成别家。
+    #[test]
+    fn loomy_namespace_targets_the_loomy_relay() {
+        let spec = parse("loomy-cn").unwrap_or_else(|| panic!("loomy-cn 应在册"));
+        assert_eq!(relay_target_of(spec), RelayTarget::Loomy(LoomyRegion::Cn));
+        assert_eq!(spec.product, Product::Loomy);
+        assert!(spec.default_on, "派生层必须默认启用");
+        // Loomy 没有程序位轴 / Trae 变体 / WB 区域。
+        assert_eq!(program_of(spec), None);
+        assert_eq!(trae_variant_of(spec), None);
+        assert_eq!(wb_region_of(spec), None);
     }
 
     /// ★ 派生层：**每个 `Scope` 都必须能解析到命名空间**。
@@ -625,7 +649,7 @@ mod tests {
         ] {
             assert!(parse(bad).is_none(), "{bad:?} 不该被当作命名空间");
         }
-        for good in ["wb-cn", "wb-global", "trae-cn", "trae-global", "qoder-cn"] {
+        for good in ["wb-cn", "wb-global", "trae-cn", "trae-global", "qoder-cn", "loomy-cn"] {
             assert!(parse(good).is_some(), "{good:?} 应在册");
         }
     }

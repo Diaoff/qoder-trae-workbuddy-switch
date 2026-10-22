@@ -35,6 +35,7 @@ pub mod protocol;
 // E1 · 代理 KPI 的真实计数（今日代理请求 / 今日换号；落盘，跨重启不丢）。
 pub mod proxy_kpi;
 /// Qoder 的 OpenAI / Anthropic 兼容网关（**平行第三套实现**，独立端口 57895）。
+pub mod loomy;
 pub mod qoder;
 pub mod rng;
 pub mod routes;

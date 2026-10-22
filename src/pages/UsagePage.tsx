@@ -57,6 +57,7 @@ const CreditStatsPage = lazy(() => import("@/pages/CreditStatsPage"));
 const TraeTokenStatsPage = lazy(() => import("@/pages/TraeTokenStatsPage"));
 const TraeCreditsPage = lazy(() => import("@/pages/TraeCreditsPage"));
 const QoderUsagePage = lazy(() => import("@/pages/QoderUsagePage"));
+const LoomyUsagePage = lazy(() => import("@/pages/LoomyUsagePage"));
 
 /** 一级四视图（与原型 `tabs` 一一对应）。 */
 export type UsageTab = "trend" | "models" | "sessions" | "credits";
@@ -82,6 +83,9 @@ const TAB_LABEL: Record<UsageTab, TranslationKey> = {
  * 当时那条「Trae 没有与 WB 同形的数据源」的判断只对**趋势**视图的会话维度成立。
  */
 const PLATFORM_TABS: Record<Product, UsageTab[]> = {
+  /* Loomy：一期数据源只有积分快照（每日重置的赠送池）⇒ 只开「积分」一个视图。
+     「趋势 / 模型 / 会话」等网关日志落地后再按**数据**补齐（不画空壳）。 */
+  loomy: ["credits"],
   workbuddy: ["trend", "models", "sessions", "credits"],
   trae: ["trend", "models", "credits"],
   /* ⚠️ Qoder **只开「趋势」**：模型 / 积分两个视图的数据源是网关日志与本地积分缓存，
@@ -122,6 +126,14 @@ const USAGE_PAGES: Record<
   qoder: {
     tokens: QoderUsagePage,
     credits: QoderUsagePage,
+    tokenViews: false,
+    mergeScopes: false,
+  },
+  /* Loomy：单位是「积分」（永久 + 每日两池），没有 Token 口径 ⇒ 两视图都指向同一页。
+     `mergeScopes: false`：Loomy 单作用域，没有可合并的第二个区域。 */
+  loomy: {
+    tokens: LoomyUsagePage,
+    credits: LoomyUsagePage,
     tokenViews: false,
     mergeScopes: false,
   },

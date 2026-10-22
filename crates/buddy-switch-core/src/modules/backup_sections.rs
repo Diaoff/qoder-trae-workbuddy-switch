@@ -24,8 +24,10 @@ use crate::modules::export_import::{
     merge_import_record, ConflictPolicy, MergeOutcome, TokenPolicy,
 };
 use crate::modules::product::{
-    require_qoder_region, require_trae_region, require_wb_region, Product, Scope,
+    require_loomy_region, require_qoder_region, require_trae_region, require_wb_region,
+    Product, Scope,
 };
+use crate::modules::loomy;
 use crate::modules::qoder;
 use crate::modules::region::catalog_cache_file;
 use crate::modules::trae;
@@ -129,6 +131,11 @@ fn read_accounts(scope: Scope) -> Result<Value, String> {
             let accounts = qoder::account::load_accounts_for(region).accounts;
             Ok(serde_json::to_value(accounts).unwrap_or_else(|_| Value::Array(vec![])))
         }
+        Product::Loomy => {
+            let region = require_loomy_region(scope)?;
+            let accounts = loomy::account::load_accounts_for(region).accounts;
+            Ok(serde_json::to_value(accounts).unwrap_or_else(|_| Value::Array(vec![])))
+        }
     }
 }
 
@@ -150,6 +157,8 @@ fn read_config(scope: Scope) -> Result<Value, String> {
         Product::Trae => Ok(serde_json::to_value(trae::settings::load()).unwrap_or(Value::Null)),
         // Qoder 侧设置目前是**纯文件**（无强类型 struct），直接读回原样即可。
         Product::Qoder => Ok(read_json_file(&qoder::paths::settings_file())),
+        // Loomy 侧设置同为**纯文件**（单区不分家）。
+        Product::Loomy => Ok(read_json_file(&loomy::paths::settings_file())),
     }
 }
 
@@ -181,6 +190,13 @@ fn read_gateway(scope: Scope) -> Result<Value, String> {
         Product::Qoder => Ok(json!({
             "config": read_json_file(&qoder::paths::gateway_config_file()),
             "keys": read_json_file(&qoder::paths::gateway_keys_file()),
+            "models": Value::Null,
+        })),
+        // Loomy 一期没有独立网关文件（无独立端口 / Key 库，走统一网关）⇒ 三个子项给 null。
+        // 将来开独立端口时在这里补 loomy 的 config/keys 文件路径。
+        Product::Loomy => Ok(json!({
+            "config": Value::Null,
+            "keys": Value::Null,
             "models": Value::Null,
         })),
     }
@@ -292,6 +308,14 @@ fn write_accounts(scope: Scope, merged: &Value) -> Result<(), String> {
                 .map_err(|error| format!("导入的账号记录形状不合法：{error}"))?;
             qoder::account::save_accounts_for(region, &file)
         }
+        Product::Loomy => {
+            let region = require_loomy_region(scope)?;
+            // 与 Trae / Qoder 同款：先读回容器、只替换 `accounts` 字段。
+            let mut file = loomy::account::load_accounts_checked_for(region)?;
+            file.accounts = serde_json::from_value(Value::Array(items))
+                .map_err(|error| format!("导入的账号记录形状不合法：{error}"))?;
+            loomy::account::save_accounts_for(region, &file)
+        }
     }
 }
 
@@ -329,6 +353,7 @@ fn write_config(scope: Scope, merged: &Value) -> Result<(), String> {
             trae::settings::save(&settings)
         }
         Product::Qoder => write_json_section(Some(merged), &qoder::paths::settings_file()),
+        Product::Loomy => write_json_section(Some(merged), &loomy::paths::settings_file()),
     }
 }
 
@@ -358,6 +383,8 @@ fn write_gateway(scope: Scope, merged: &Value) -> Result<(), String> {
             write_json_section(merged.get("keys"), &qoder::paths::gateway_keys_file())?;
             Ok(())
         }
+        // Loomy 一期无独立网关文件 ⇒ 空操作（read_gateway 同款说明）。
+        Product::Loomy => Ok(()),
     }
 }
 

@@ -54,6 +54,7 @@ export const SCOPES: readonly Scope[] = [
   "trae-global",
   "qoder-cn",
   "qoder-global",
+  "loomy-cn",
 ];
 
 /**

@@ -294,6 +294,41 @@ async fn relay_llm(
                 }
             }
         }
+        /* ★ Loomy 产品线（2026-10-21 接入）：与 Qoder 同一条中继纪律 ——
+        复用 `loomy::routes::chat_for_region`（认证之后的逻辑只有一份）。
+        上游是标准 OpenAI 兼容 `/chat/completions`；三个端点全部经协议层转换。 */
+        RelayTarget::Loomy(region) => {
+            let loomy = crate::loomy::LoomyGatewayState::shared();
+            match endpoint {
+                LlmEndpoint::Chat => {
+                    crate::loomy::routes::chat_for_region(
+                        loomy,
+                        region,
+                        rewritten,
+                        crate::loomy::routes::Protocol::OpenAi,
+                    )
+                    .await
+                }
+                LlmEndpoint::Messages => {
+                    crate::loomy::routes::chat_for_region(
+                        loomy,
+                        region,
+                        rewritten,
+                        crate::loomy::routes::Protocol::Anthropic,
+                    )
+                    .await
+                }
+                LlmEndpoint::Responses => {
+                    crate::loomy::routes::chat_for_region(
+                        loomy,
+                        region,
+                        rewritten,
+                        crate::loomy::routes::Protocol::Responses,
+                    )
+                    .await
+                }
+            }
+        }
     }
 }
 
@@ -751,6 +786,57 @@ async fn collect_namespace_models(
                     },
                     fetched_at: Some(buddy_switch_core::modules::config::now_ms()),
                     note: catalog.note,
+                    models,
+                }
+            }
+            /* Loomy 产品线（2026-10-21 接入）：清单来自官方 `/models`（需账号凭据），
+            带缓存；无账号 / 拉不到时**空清单 + 可读 note**（契约：非 `live` ⇒ note 非空）。 */
+            RelayTarget::Loomy(region) => {
+                let loomy = crate::loomy::LoomyGatewayState::shared();
+                let spec_region =
+                    buddy_switch_core::modules::loomy::region::realm_spec(region);
+                // 找一个有 session 的账号拉清单（与 Qoder 的 fetch_catalog 同语义）。
+                let token = buddy_switch_core::modules::loomy::account::load_accounts_for(region)
+                    .accounts
+                    .into_iter()
+                    .find(|account| !account.access_token.is_empty())
+                    .map(|account| account.access_token);
+                let fetched = match token {
+                    Some(token) => {
+                        let base = match &loomy.upstream_override {
+                            Some(host) => host.clone(),
+                            None => spec_region.api_base.to_string(),
+                        };
+                        Some(
+                            buddy_switch_core::modules::loomy::api::fetch_models_at(&base, &token)
+                                .await,
+                        )
+                    }
+                    None => None,
+                };
+                let (models, note) = match fetched {
+                    Some(Ok(models)) => (models, None),
+                    Some(Err(error)) => (
+                        Vec::new(),
+                        Some(format!("模型清单拉取失败：{error}")),
+                    ),
+                    None => (
+                        Vec::new(),
+                        Some(
+                            "没有可用账号：模型清单需要账号凭据向官方拉取（去「账号」页导入）"
+                                .to_string(),
+                        ),
+                    ),
+                };
+                NamespaceModels {
+                    namespace: spec.id,
+                    source: if models.is_empty() {
+                        "unavailable"
+                    } else {
+                        "live"
+                    },
+                    fetched_at: Some(buddy_switch_core::modules::config::now_ms()),
+                    note,
                     models,
                 }
             }

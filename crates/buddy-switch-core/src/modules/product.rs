@@ -38,6 +38,7 @@
 //! 不误伤旧的 `region` 兼容解析。
 
 use crate::modules::capability::Capability;
+use crate::modules::loomy::region::LoomyRegion;
 use crate::modules::qoder::region::QoderRegion;
 use crate::modules::region::Region;
 use crate::modules::trae::region::TraeRegion;
@@ -55,11 +56,13 @@ pub enum Product {
     Trae,
     /// Qoder（国内版 / 国际版两套账号体系）。
     Qoder,
+    /// Loomy（讯飞办公助手；**单作用域** `loomy-cn` —— 只有国内一套账号体系）。
+    Loomy,
 }
 
 impl Product {
     /// scope 短标识 —— 与前端 `PLATFORM_SLUG`（`registry.ts`）**逐字对齐**：
-    /// `"wb"` / `"trae"` / `"qoder"`。
+    /// `"wb"` / `"trae"` / `"qoder"` / `"loomy"`。
     ///
     /// ⚠️ 改这里必须同步改前端注册表，否则 `/s/{scope}/...` 路由与后端作用域会漂移。
     pub fn slug(self) -> &'static str {
@@ -67,41 +70,49 @@ impl Product {
             Product::Workbuddy => "wb",
             Product::Trae => "trae",
             Product::Qoder => "qoder",
+            Product::Loomy => "loomy",
         }
     }
 
-    /// 稳定的完整标识：`"workbuddy"` / `"trae"` / `"qoder"`。
+    /// 稳定的完整标识：`"workbuddy"` / `"trae"` / `"qoder"` / `"loomy"`。
     pub fn as_str(self) -> &'static str {
         match self {
             Product::Workbuddy => "workbuddy",
             Product::Trae => "trae",
             Product::Qoder => "qoder",
+            Product::Loomy => "loomy",
         }
     }
 
     /// 从字符串解析平台（**宽容**，供诊断 / 旧值兼容用；`scope` 路径请用 [`Scope::parse`]）。
     ///
-    /// 接受完整标识与短标识（`workbuddy` / `wb` / `trae` / `qoder`），大小写不敏感。
+    /// 接受完整标识与短标识（`workbuddy` / `wb` / `trae` / `qoder` / `loomy`），大小写不敏感。
     pub fn parse(s: &str) -> Option<Product> {
         match s.trim().to_ascii_lowercase().as_str() {
             "workbuddy" | "wb" => Some(Product::Workbuddy),
             "trae" => Some(Product::Trae),
             "qoder" => Some(Product::Qoder),
+            "loomy" => Some(Product::Loomy),
             _ => None,
         }
     }
 
     /// 全部平台，供遍历用（顺序即 UI 展示顺序）。
-    pub fn all() -> [Product; 3] {
-        [Product::Workbuddy, Product::Trae, Product::Qoder]
+    pub fn all() -> [Product; 4] {
+        [
+            Product::Workbuddy,
+            Product::Trae,
+            Product::Qoder,
+            Product::Loomy,
+        ]
     }
 }
 
 /// 作用域 = **平台 × 区域**（L3）。**fail-closed** 的解析载体。
 ///
-/// 六个取值对应前端 `scope.ts` 的 `SCOPES`（`wb-cn` / `wb-global` / `trae-cn` /
-/// `trae-global` / `qoder-cn` / `qoder-global`），由 `scripts/check-scope-registry.cjs`
-/// 在前端侧、本模块在后端侧共同钉住。
+/// 七个取值对应前端 `scope.ts` 的 `SCOPES`（`wb-cn` / `wb-global` / `trae-cn` /
+/// `trae-global` / `qoder-cn` / `qoder-global` / `loomy-cn`），由
+/// `scripts/check-scope-registry.cjs` 在前端侧、本模块在后端侧共同钉住。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum Scope {
     /// WorkBuddy 国内版。
@@ -116,6 +127,8 @@ pub enum Scope {
     QoderCn,
     /// Qoder 国际版。
     QoderGlobal,
+    /// Loomy 国内版（唯一作用域；Loomy 没有国际版）。
+    LoomyCn,
 }
 
 impl Scope {
@@ -136,6 +149,7 @@ impl Scope {
             "trae-global" => Ok(Scope::TraeGlobal),
             "qoder-cn" => Ok(Scope::QoderCn),
             "qoder-global" => Ok(Scope::QoderGlobal),
+            "loomy-cn" => Ok(Scope::LoomyCn),
             other => Err(ScopeError::new(other)),
         }
     }
@@ -149,6 +163,7 @@ impl Scope {
             Scope::TraeGlobal => "trae-global",
             Scope::QoderCn => "qoder-cn",
             Scope::QoderGlobal => "qoder-global",
+            Scope::LoomyCn => "loomy-cn",
         }
     }
 
@@ -158,6 +173,7 @@ impl Scope {
             Scope::WbCn | Scope::WbGlobal => Product::Workbuddy,
             Scope::TraeCn | Scope::TraeGlobal => Product::Trae,
             Scope::QoderCn | Scope::QoderGlobal => Product::Qoder,
+            Scope::LoomyCn => Product::Loomy,
         }
     }
 
@@ -166,7 +182,8 @@ impl Scope {
         match self {
             Scope::WbCn => Some(Region::Cn),
             Scope::WbGlobal => Some(Region::Global),
-            Scope::TraeCn | Scope::TraeGlobal | Scope::QoderCn | Scope::QoderGlobal => None,
+            Scope::TraeCn | Scope::TraeGlobal | Scope::QoderCn | Scope::QoderGlobal
+            | Scope::LoomyCn => None,
         }
     }
 
@@ -175,7 +192,8 @@ impl Scope {
         match self {
             Scope::TraeCn => Some(TraeRegion::Cn),
             Scope::TraeGlobal => Some(TraeRegion::Global),
-            Scope::WbCn | Scope::WbGlobal | Scope::QoderCn | Scope::QoderGlobal => None,
+            Scope::WbCn | Scope::WbGlobal | Scope::QoderCn | Scope::QoderGlobal
+            | Scope::LoomyCn => None,
         }
     }
 
@@ -184,12 +202,22 @@ impl Scope {
         match self {
             Scope::QoderCn => Some(QoderRegion::Cn),
             Scope::QoderGlobal => Some(QoderRegion::Global),
-            Scope::WbCn | Scope::WbGlobal | Scope::TraeCn | Scope::TraeGlobal => None,
+            Scope::WbCn | Scope::WbGlobal | Scope::TraeCn | Scope::TraeGlobal
+            | Scope::LoomyCn => None,
+        }
+    }
+
+    /// Loomy 侧区域（其余平台的作用域调用它返回 `None`）。
+    pub fn loomy_region(self) -> Option<LoomyRegion> {
+        match self {
+            Scope::LoomyCn => Some(LoomyRegion::Cn),
+            Scope::WbCn | Scope::WbGlobal | Scope::TraeCn | Scope::TraeGlobal
+            | Scope::QoderCn | Scope::QoderGlobal => None,
         }
     }
 
     /// 全部作用域，供遍历用。
-    pub fn all() -> [Scope; 6] {
+    pub fn all() -> [Scope; 7] {
         [
             Scope::WbCn,
             Scope::WbGlobal,
@@ -197,6 +225,7 @@ impl Scope {
             Scope::TraeGlobal,
             Scope::QoderCn,
             Scope::QoderGlobal,
+            Scope::LoomyCn,
         ]
     }
 
@@ -248,7 +277,7 @@ impl ScopeError {
         };
         format!(
             "未知的作用域「{}」：合法取值为 wb-cn / wb-global / trae-cn / trae-global / \
-             qoder-cn / qoder-global。\
+             qoder-cn / qoder-global / loomy-cn。\
              作用域非法时**拒绝操作**（不会回落到任何默认作用域），以免读写错误的账号库。",
             shown
         )
@@ -335,6 +364,18 @@ pub fn require_qoder_region(scope: Scope) -> Result<QoderRegion, String> {
     })
 }
 
+/// 参数化命令的 **Loomy 分支**：取 Loomy 区域；非 Loomy 作用域 ⇒ 可读 `Err`。
+///
+/// 与 [`require_wb_region`] / [`require_trae_region`] / [`require_qoder_region`] 同款。
+pub fn require_loomy_region(scope: Scope) -> Result<LoomyRegion, String> {
+    scope.loomy_region().ok_or_else(|| {
+        format!(
+            "作用域「{}」不是 Loomy 作用域：该命令的 Loomy 分支只接受 loomy-cn。",
+            scope.as_str()
+        )
+    })
+}
+
 /// WorkBuddy 区域 → 作用域（穷举，**无回落**）。
 ///
 /// 回收站条目要冗余记 `origin_scope`（§2.7 的数据结构），而软删除只拿到 **region**；
@@ -360,6 +401,13 @@ pub fn scope_of_qoder_region(region: QoderRegion) -> Scope {
     match region {
         QoderRegion::Cn => Scope::QoderCn,
         QoderRegion::Global => Scope::QoderGlobal,
+    }
+}
+
+/// Loomy 区域 → 作用域（穷举，**无回落**）。理由同 [`scope_of_wb_region`]。
+pub fn scope_of_loomy_region(region: LoomyRegion) -> Scope {
+    match region {
+        LoomyRegion::Cn => Scope::LoomyCn,
     }
 }
 
@@ -468,12 +516,37 @@ const QODER_SPEC: ProductSpec = ProductSpec {
     capabilities: QODER_CAPABILITIES,
 };
 
+/// Loomy 的作用域（**单作用域**：Loomy 只有国内一套账号体系，不硬塞 global）。
+const LOOMY_SCOPES: &[Scope] = &[Scope::LoomyCn];
+
+/// Loomy 能力（与 `registry.ts` 的 `loomy.capabilities` 逐字对齐）。
+///
+/// 与 Qoder 同集：`sessionCopy`（会话复制依赖客户端自身的会话存储，当前只有 WorkBuddy
+/// 桌面具备）、`travel` / `autoRotate`（WorkBuddy 独有）、`snapshot` / `group`（Trae 有）
+/// 均无 Loomy 等价物。`oauth` 的含义是「面板内**短信验证码登录**」（纯 HTTP 三步）。
+const LOOMY_CAPABILITIES: &[Capability] = &[
+    Capability::Checkin,
+    Capability::Credits,
+    Capability::Oauth,
+    Capability::Gateway,
+];
+
+/// Loomy 描述符。
+const LOOMY_SPEC: ProductSpec = ProductSpec {
+    id: Product::Loomy,
+    slug: "loomy",
+    dir_name: "loomy",
+    regions: LOOMY_SCOPES,
+    capabilities: LOOMY_CAPABILITIES,
+};
+
 /// 取产品线的描述符（**两宿主的唯一查表入口**）。
 pub fn product_spec(product: Product) -> &'static ProductSpec {
     match product {
         Product::Workbuddy => &WB_SPEC,
         Product::Trae => &TRAE_SPEC,
         Product::Qoder => &QODER_SPEC,
+        Product::Loomy => &LOOMY_SPEC,
     }
 }
 
@@ -515,17 +588,20 @@ mod tests {
         assert_eq!(Product::Workbuddy.slug(), "wb");
         assert_eq!(Product::Trae.slug(), "trae");
         assert_eq!(Product::Qoder.slug(), "qoder");
+        assert_eq!(Product::Loomy.slug(), "loomy");
         assert_eq!(Product::Workbuddy.as_str(), "workbuddy");
         assert_eq!(Product::Trae.as_str(), "trae");
         assert_eq!(Product::Qoder.as_str(), "qoder");
-        assert_eq!(Product::all().len(), 3);
+        assert_eq!(Product::Loomy.as_str(), "loomy");
+        assert_eq!(Product::all().len(), 4);
         // 宽容解析接受完整标识与短标识。
         assert_eq!(Product::parse("qoder"), Some(Product::Qoder));
         assert_eq!(Product::parse("QODER"), Some(Product::Qoder));
+        assert_eq!(Product::parse("loomy"), Some(Product::Loomy));
         assert_eq!(
             Product::parse("qd"),
             None,
-            "短标识只有 wb，qoder 与 trae 都用全名"
+            "短标识只有 wb，qoder / loomy / trae 都用全名"
         );
     }
 
@@ -549,10 +625,11 @@ mod tests {
         assert_eq!(Scope::parse("trae-global"), Ok(Scope::TraeGlobal));
         assert_eq!(Scope::parse("qoder-cn"), Ok(Scope::QoderCn));
         assert_eq!(Scope::parse("qoder-global"), Ok(Scope::QoderGlobal));
+        assert_eq!(Scope::parse("loomy-cn"), Ok(Scope::LoomyCn));
         assert_eq!(
             Scope::all().len(),
-            6,
-            "作用域数量变更需显式确认（3 平台 × 2 区域）"
+            7,
+            "作用域数量变更需显式确认（3 平台 × 2 区域 + Loomy 单作用域）"
         );
     }
 
@@ -569,14 +646,19 @@ mod tests {
             "trae-glboal", // 真实拼错（本模块存在的理由）
             "wb-gloabl",
             "qoder-glboal",
+            "loomy-glboal",
+            "loomy-global",
             "trae",
             "wb",
             "qoder",
+            "loomy",
             "cn",
             "global",
             "workbuddy-cn",
             "trae_global",
             "qoder_global",
+            "loomy_global",
+            "loomy_cn",
             "",
             "   ",
             "wb-cn ",  // 尾随空白：不 trim ⇒ Err（与前端 parseScope 一致）
@@ -593,6 +675,7 @@ mod tests {
             "trae-cn-x",
             "qoder-cn-x",
             "qoder-global-x",
+            "loomy-cn-x",
             "wb-global-",
         ] {
             let got = Scope::parse(bad);
@@ -615,6 +698,7 @@ mod tests {
         // 新增平台必须出现在合法取值列表里，否则用户拼错时看不到正确写法。
         assert!(message.contains("qoder-cn"), "{message}");
         assert!(message.contains("qoder-global"), "{message}");
+        assert!(message.contains("loomy-cn"), "{message}");
 
         // 空输入在文案里要显式标出，而不是留一段空白。
         let empty = Scope::parse("").unwrap_err();
@@ -657,8 +741,8 @@ mod tests {
         }
     }
 
-    /// `require_wb_region` / `require_trae_region` / `require_qoder_region`
-    /// —— 平台分支取区域，跨平台作用域 ⇒ Err。
+    /// `require_wb_region` / `require_trae_region` / `require_qoder_region` /
+    /// `require_loomy_region` —— 平台分支取区域，跨平台作用域 ⇒ Err。
     ///
     /// 可证伪：若把 `require_wb_region` 改成「非 WB 就回落 `Region::Cn`」，
     /// 第二条断言立即变红 —— 那正是「用 A 平台的作用域去打 B 平台的库」的缺陷形态。
@@ -703,6 +787,16 @@ mod tests {
         ] {
             assert!(require_qoder_region(scope).is_err(), "{:?}", scope);
         }
+        for scope in [
+            Scope::WbCn,
+            Scope::WbGlobal,
+            Scope::TraeCn,
+            Scope::TraeGlobal,
+            Scope::QoderCn,
+            Scope::QoderGlobal,
+        ] {
+            assert!(require_loomy_region(scope).is_err(), "{:?}", scope);
+        }
         // 错误文案可读、且带上原始作用域。
         let error = require_wb_region(Scope::TraeCn).unwrap_err();
         assert!(error.contains("trae-cn"), "{error}");
@@ -740,6 +834,14 @@ mod tests {
             assert_eq!(scope.wb_region(), None);
             assert_eq!(scope.trae_region(), None);
         }
+        for region in LoomyRegion::all() {
+            let scope = scope_of_loomy_region(region);
+            assert_eq!(scope.product(), Product::Loomy);
+            assert_eq!(scope.loomy_region(), Some(region));
+            assert_eq!(scope.wb_region(), None);
+            assert_eq!(scope.trae_region(), None);
+            assert_eq!(scope.qoder_region(), None);
+        }
         assert_eq!(scope_of_wb_region(Region::Cn), Scope::WbCn);
         assert_eq!(scope_of_wb_region(Region::Global), Scope::WbGlobal);
         assert_eq!(scope_of_trae_region(TraeRegion::Cn), Scope::TraeCn);
@@ -749,6 +851,7 @@ mod tests {
             scope_of_qoder_region(QoderRegion::Global),
             Scope::QoderGlobal
         );
+        assert_eq!(scope_of_loomy_region(LoomyRegion::Cn), Scope::LoomyCn);
     }
 
     #[test]
@@ -759,6 +862,7 @@ mod tests {
         assert_eq!(Scope::TraeGlobal.product(), Product::Trae);
         assert_eq!(Scope::QoderCn.product(), Product::Qoder);
         assert_eq!(Scope::QoderGlobal.product(), Product::Qoder);
+        assert_eq!(Scope::LoomyCn.product(), Product::Loomy);
 
         // WB 轴：其余作用域取 WB 区域返回 None（正交）。
         for scope in [
@@ -766,6 +870,7 @@ mod tests {
             Scope::TraeGlobal,
             Scope::QoderCn,
             Scope::QoderGlobal,
+            Scope::LoomyCn,
         ] {
             assert_eq!(scope.wb_region(), None, "{scope:?}");
         }
@@ -775,6 +880,7 @@ mod tests {
             Scope::WbGlobal,
             Scope::QoderCn,
             Scope::QoderGlobal,
+            Scope::LoomyCn,
         ] {
             assert_eq!(scope.trae_region(), None, "{scope:?}");
         }
@@ -786,8 +892,21 @@ mod tests {
             Scope::WbGlobal,
             Scope::TraeCn,
             Scope::TraeGlobal,
+            Scope::LoomyCn,
         ] {
             assert_eq!(scope.qoder_region(), None, "{scope:?}");
+        }
+        // Loomy 轴。
+        assert_eq!(Scope::LoomyCn.loomy_region(), Some(LoomyRegion::Cn));
+        for scope in [
+            Scope::WbCn,
+            Scope::WbGlobal,
+            Scope::TraeCn,
+            Scope::TraeGlobal,
+            Scope::QoderCn,
+            Scope::QoderGlobal,
+        ] {
+            assert_eq!(scope.loomy_region(), None, "{scope:?}");
         }
     }
 
@@ -800,6 +919,7 @@ mod tests {
                 .map(|r| r.as_str())
                 .or_else(|| scope.trae_region().map(|r| r.as_str()))
                 .or_else(|| scope.qoder_region().map(|r| r.as_str()))
+                .or_else(|| scope.loomy_region().map(|r| r.as_str()))
                 .expect("每个作用域必有区域");
             assert_eq!(Scope::from_parts(product, region), Ok(scope));
         }
@@ -949,6 +1069,27 @@ mod tests {
         ] {
             assert!(require_capability(Product::Qoder, present).is_ok());
         }
+        // ★ Loomy：与 Qoder 同集 —— checkin / credits / oauth / gateway。
+        // 缺的能力必须默认拒绝（sessionCopy / travel / autoRotate 均无 Loomy 等价物）。
+        for missing in [
+            Capability::Travel,
+            Capability::AutoRotate,
+            Capability::SessionCopy,
+        ] {
+            assert!(
+                require_capability(Product::Loomy, missing).is_err(),
+                "Loomy 缺「{}」却放行了 —— 违反默认拒绝",
+                missing.as_str()
+            );
+        }
+        for present in [
+            Capability::Checkin,
+            Capability::Credits,
+            Capability::Oauth,
+            Capability::Gateway,
+        ] {
+            assert!(require_capability(Product::Loomy, present).is_ok());
+        }
         // 错误信息可读、且带上能力名（前端可直接渲染）。
         let error = require_capability(Product::Trae, Capability::Travel).unwrap_err();
         assert!(error.contains("travel"), "{error}");
@@ -964,6 +1105,8 @@ mod tests {
         // 目录名：WB 用根（"."），Trae 用 "trae"（见 core `trae::paths::trae_dir`）。
         assert_eq!(product_spec(Product::Workbuddy).dir_name, ".");
         assert_eq!(product_spec(Product::Trae).dir_name, "trae");
+        assert_eq!(product_spec(Product::Qoder).dir_name, "qoder");
+        assert_eq!(product_spec(Product::Loomy).dir_name, "loomy");
         // 区域表。
         assert_eq!(
             product_spec(Product::Workbuddy).regions,
@@ -973,6 +1116,12 @@ mod tests {
             product_spec(Product::Trae).regions,
             &[Scope::TraeCn, Scope::TraeGlobal]
         );
+        assert_eq!(
+            product_spec(Product::Qoder).regions,
+            &[Scope::QoderCn, Scope::QoderGlobal]
+        );
+        // Loomy 单作用域 —— 不硬塞 global。
+        assert_eq!(product_spec(Product::Loomy).regions, &[Scope::LoomyCn]);
         // 每个平台声明的作用域都能被 `Scope::parse` 往返（表与解析器不漂移）。
         for scope in Scope::all() {
             assert_eq!(Scope::parse(scope.as_str()), Ok(scope));

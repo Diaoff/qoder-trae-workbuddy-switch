@@ -79,6 +79,8 @@
 | [`UNIFIED-GATEWAY-UI.md`](specs/UNIFIED-GATEWAY-UI.md) | 统一入口的交互规格：三张卡 / 状态矩阵 / 危险动作分档 |
 | [`QODER-PLATFORM.md`](specs/QODER-PLATFORM.md) | Qoder 平台事实与建模决策 |
 | [`QODER-INTEGRATION-PLAN.md`](specs/QODER-INTEGRATION-PLAN.md) | Qoder 集成的模块 / 接口 / 依赖梳理 |
+| [`LOOMY-PLATFORM.md`](specs/LOOMY-PLATFORM.md) | Loomy（讯飞办公助手）平台事实与建模决策 |
+| [`LOOMY-INTEGRATION-PLAN.md`](specs/LOOMY-INTEGRATION-PLAN.md) | Loomy 集成的模块 / 接口 / 依赖梳理 |
 | [`trae-parity-design.md`](specs/trae-parity-design.md) | Trae 分区对齐 WorkBuddy 的增量架构与任务分解 |
 | [`trae-parity-matrix.md`](specs/trae-parity-matrix.md) | Trae 差距矩阵与需求池（带 `文件:行号` 证据） |
 

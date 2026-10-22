@@ -1,0 +1,108 @@
+# Loomy 平台 — 事实梳理与建模决策
+
+> 用途：把「Loomy 作为第四个平台接进 Buddy Switch」需要的事实与决策固定下来。
+> 状态：**现行**（一期已落地：账号管理 / 短信登录 / 签到 / 积分 / 统一网关中继）。
+> 协议事实来源：`../free-llm-router/src/providers/loomy.ts`（协议已实测摸透，非本仓文件）。
+
+---
+
+## 1. 这个平台是什么
+
+讯飞办公助手 **Loomy**，**只有国内一套账号体系**：
+
+| 项 | 值 |
+|:---|:---|
+| 业务基址（推理 / 模型 / 积分） | `https://loomyad.xunfei.cn/api/v1` |
+| 账号基址（仅登录） | `https://account.xfinfr.com` |
+| 业务成功码 | `000000` |
+| 登录失效码 | `100002`（收到**不得重试** —— 同一死凭据重试无意义） |
+| session 有效期 | 14 天（响应不带到期时间，本地按 TTL 推算） |
+| 计费单位 | 积分（永久池 + 每日赠送池） |
+
+**结论：单区域平台。**
+⇒ 建模为**一个 `Product::Loomy` + 单作用域 `loomy-cn`**。
+⚠️ 不硬塞 `loomy-global`（§11-A 的精神）；前端 `Scope` 模板字面量类型上存在
+`loomy-global`，但**不在** `SCOPES` 表里，路由永远到不了（状态恒 UNKNOWN 占位）。
+
+---
+
+## 2. 协议事实（全部实测，含坑位）
+
+### 2.1 两套认证头
+
+- chat 端点（`/chat/completions`）认 `Authorization: Bearer`；
+  官方客户端**两个头都发**（`Bearer` + 小写 `token`），照抄。
+- 业务端点（`/models`、`/points/*`）**只认小写 `token` 头**；
+  带错头得到 **HTTP 200** + `{"code":"100002"}`。
+
+### 2.2 业务失败恒 HTTP 200
+
+成败只能读 body 的 `code`。只看状态码会把「登录已失效」误判成成功。
+chat 路径只在 content-type 是 `application/json` 时 peek 响应体判业务错误，
+**绝不**对 SSE 流做整读。
+
+### 2.3 模型目录的三种响应形态
+
+`GET /models` 实测主形态是**裸对象 + `data[]`**（OpenAI 风格，**没有** `code` 字段）；
+另认业务信封与裸数组两种兜底。条目 `type === "chat"` 才可对话
+（**不要**用 `input_modalities` 判 —— 那是输入多模态，含 image）。
+倍率写在展示名末尾括号里，三种括号混用
+（`MiniMax M3 （x4.0）` / `Qwen 3.8 Max (x12.0)` / `GLM 5.3 Flash(x0.8)`）；
+展示名规范化为 `{name} · x{rate}`，拆解幂等。
+
+### 2.4 两池积分
+
+`GET /points/records`：永久积分（`balance`）+ 每日赠送池（`dailyBalance`，
+当天作废）。两池**分开报告**；缺 `balance` 字段显式报错（不返回 0 冒充「已用尽」）。
+
+### 2.5 签到 = 触发每日额度重置
+
+`POST /points/first-login` **不是**「+5000 积分」，而是触发每日池重置
+（`dailyBalance = dailyQuota - dailyConsumed`，消耗后不回补）。
+幂等判据是响应体 `alreadyProcessed`（**不是** HTTP 状态码）；
+`dailyQuota` 只在该响应里，**不硬编码 5000**。
+
+### 2.6 短信登录（HMAC-SHA1）
+
+纯 HTTP 三步（发码 → 用户输入 → 校验），无本地监听。
+讯飞账号（CAccount）端点用 **HMAC-SHA1** 签名：
+
+- 9 段签名字符串以**两个换行结尾**（后两段恒空串）——去掉尾随换行签名不匹配；
+- 空 body 的 `Content-MD5` 是**空串**（不是空串的 md5）；
+- **body 序列化一次、签名与发送共用**（二次序列化改字节序 ⇒ 签名失效）；
+- 认证头 `Authorization: account {ak}:{sig}`；
+- AK/SK 是客户端内置常量（`region.rs` 的 `CN_REALM`），只用于账号端点签名，
+  与业务凭据无关。
+
+微信扫码（纯 HTTP 长轮询）列为**二期**。
+
+---
+
+## 3. 建模决策
+
+| 决策 | 内容 | 理由 |
+|:---|:---|:---|
+| 作用域 | 单作用域 `loomy-cn` | 只有一套账号体系；单段命名空间会破坏前端 `Scope` 模板字面量与门禁管线 |
+| 端口 | **不开独立端口**，只走统一入口 | `UNIFIED-GATEWAY-ARCH.md` §11-D 契约；无本地客户端、无路径重叠问题 |
+| 能力集 | `["checkin","credits","oauth","gateway"]`（与 Qoder 同集） | `oauth` = 面板内短信登录；`sessionCopy`/`travel`/`autoRotate` 无 Loomy 等价物 |
+| refresh | **刻意不实现** | Loomy 无续期端点（session 14 天，过期只能重登）；网关按 `SessionDead` 换号，面板提示重新登录（诚实标记） |
+| uid 口径 | userid 优先；无 userid 时派生 `loomy-<md5(phone\0token) 前16hex>` | 同一账号恒同 uid；**绝不用手机号**（同号多账号会合并）；token 不进存储 key |
+| 回收站 | 一期不做 | 单作用域、误删可重导；Qoder 的回收站属多区客户端会话同步场景 |
+| 判别特征 | 32-hex session ∨ 15–20 位 userid ∨ 11 位手机号 | 防止把别家 JWT 凭据吞成 Loomy（宁要显式指定，不要存错家） |
+
+---
+
+## 4. 落点速查
+
+| 层 | 文件 |
+|:--|:--|
+| core 区域与常量 | `crates/buddy-switch-core/src/modules/loomy/region.rs` |
+| core 协议 | `…/loomy/{chat,models,credits,checkin,oauth,signing,credential,api,account,paths}.rs` |
+| gateway 中继 | `crates/buddy-switch-gateway/src/loomy/{mod,pool,routes}.rs` |
+| 统一网关分派 | `unified/routes.rs` 的 `RelayTarget::Loomy` 分支 + `collect_namespace_models` |
+| server 命令面 | `crates/buddy-switch-server/src/api.rs` 的 `/api/loomy/*` 段 + 15 处 `Product::Loomy` 分支 |
+| 桌面命令 | `src-tauri/src/commands.rs` 的 `loomy_*` 段 + `generate_handler!` |
+| 前端 | `src/pages/Loomy*.tsx` × 5、`api.ts` 的 loomy 段、`use-scope-status.ts` 的 loomy 快照 |
+
+密钥前缀：Loomy 一期无独立 Key 库（走统一网关的 `sk-uni-`）；
+将来开独立端口时 Key 前缀取 **`sk-loomy-`**（与 sk-wb-/sk-trae-/sk-qoder- 同族）。

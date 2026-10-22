@@ -109,8 +109,9 @@ pub mod admin {
 
     use buddy_switch_core::modules::gateway_namespace::{self, NamespaceSpec, RelayTarget};
     use buddy_switch_core::modules::product::{
-        scope_of_qoder_region, scope_of_trae_region, scope_of_wb_region,
+        scope_of_loomy_region, scope_of_qoder_region, scope_of_trae_region, scope_of_wb_region,
     };
+    use buddy_switch_core::modules::loomy::region::LoomyRegion;
     use buddy_switch_core::modules::qoder::region::QoderRegion;
     use buddy_switch_core::modules::region::Region;
     use buddy_switch_core::modules::trae::variant::TraeVariant;
@@ -184,6 +185,7 @@ pub mod admin {
             RelayTarget::Wb(region) => scope_of_wb_region(region).as_str(),
             RelayTarget::Trae(variant) => scope_of_trae_region(variant.region()).as_str(),
             RelayTarget::Qoder(region) => scope_of_qoder_region(region).as_str(),
+            RelayTarget::Loomy(region) => scope_of_loomy_region(region).as_str(),
         }
     }
 
@@ -262,6 +264,8 @@ pub mod admin {
             RelayTarget::Wb(region) => wb_pool(region).await,
             RelayTarget::Trae(variant) => trae_pool(variant).await,
             RelayTarget::Qoder(region) => qoder_pool(region).await,
+            // Loomy 无独立端口 / Key 库，池视图由账号库直接投影（诚实空态：无账号即空表）。
+            RelayTarget::Loomy(region) => loomy_pool(region).await,
         };
         pool_object(group.target, &group.namespaces, summary, accounts)
     }
@@ -319,6 +323,11 @@ pub mod admin {
         let pool = pools.entry(region).or_default();
         pool.sync_for(region);
         (pool.summary(now), pool.accounts_view(now))
+    }
+
+    /// Loomy：账号库直接投影（一期无独立端口 / Key 库，池即账号库的运行态视图）。
+    async fn loomy_pool(region: LoomyRegion) -> (Value, Vec<Value>) {
+        crate::loomy::pool_view_for(region).await
     }
 }
 
@@ -464,7 +473,7 @@ mod tests {
     fn pool_groups_merge_extension_namespaces_into_the_trae_region_pools() {
         use buddy_switch_core::modules::gateway_namespace;
 
-        // 默认启用集 = 派生层 6 条 ⇒ 6 个池，每条命名空间一个。
+        // 默认启用集 = 派生层 7 条 ⇒ 7 个池，每条命名空间一个。
         let defaults: Vec<&'static gateway_namespace::NamespaceSpec> =
             gateway_namespace::default_specs().collect();
         let groups = super::admin::group_pools(&defaults);
@@ -476,7 +485,8 @@ mod tests {
                 "trae-cn",
                 "trae-global",
                 "qoder-cn",
-                "qoder-global"
+                "qoder-global",
+                "loomy-cn"
             ],
             "池标识必须是作用域字面量（由 relay_target_of 折算，不另建映射表）"
         );
@@ -490,7 +500,7 @@ mod tests {
         //   共用一个池」这种归并关系可断言）。退役后仍留着它们 = 给已卸载的客户端开入口。
         let all: Vec<&'static gateway_namespace::NamespaceSpec> =
             gateway_namespace::all_specs().iter().collect();
-        assert_eq!(all.len(), 6, "全量命名空间应恰为 6 条派生层");
+        assert_eq!(all.len(), 7, "全量命名空间应恰为 7 条派生层");
         assert!(
             all.iter().all(|spec| spec.default_on),
             "全量表此时应只有派生层（扩展层已清空）"
@@ -498,7 +508,7 @@ mod tests {
         let groups = super::admin::group_pools(&all);
         assert_eq!(
             groups.len(),
-            6,
+            7,
             "收敛后每个作用域各成一个池：{:?}",
             groups.iter().map(|group| group.target).collect::<Vec<_>>()
         );
@@ -614,8 +624,8 @@ mod tests {
             assert_eq!(body["running"], true);
             assert_eq!(
                 body["namespaces"].as_array().unwrap().len(),
-                6,
-                "默认启用集应是派生层 6 条（3 平台 × 2 区域）"
+                7,
+                "默认启用集应是派生层 7 条（3 平台 × 2 区域 + Loomy 单作用域）"
             );
             bodies.push(bytes.to_vec());
         }

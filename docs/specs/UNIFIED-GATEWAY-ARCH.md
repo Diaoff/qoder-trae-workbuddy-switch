@@ -182,6 +182,8 @@ pub fn parse(id: &str) -> Option<NamespaceTarget> {
 加了 `qoderwork` 之后（见 §11 契约），下面全部**零改动**自动成立：
 
 - 命名空间 `qoderwork-cn` / `qoderwork-global` 合法（派生自 `Scope`）；
+  ★ 已实证两次：Qoder（2026-10-15，`qoder-cn`/`qoder-global`）与
+    Loomy（2026-10-21，单作用域 `loomy-cn` —— 单区域平台不硬塞 `-global`，见 §11-A）；
 - 统一 Key 的「授权命名空间」多选里出现这两项（表驱动）；
 - 卡 3「命名空间与清单预览」自动多两行（表驱动）；
 - `/v1/models` 自动聚合这两段的模型；

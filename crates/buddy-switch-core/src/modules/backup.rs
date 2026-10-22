@@ -1051,7 +1051,7 @@ mod tests {
         assert!(resolve_scope_key("foo-cn").is_err());
     }
 
-    /// 导出**必须覆盖全部作用域**（§1.11：加平台后自动 6/6）。
+    /// 导出**必须覆盖全部作用域**（§1.11：加平台后自动 7/7）。
     ///
     /// 可证伪：把导出改成「只导出当前 scope」，本用例立即变红。
     #[test]
@@ -1064,8 +1064,8 @@ mod tests {
         let scopes = envelope["scopes"].as_object().expect("scopes 应为对象");
         assert_eq!(
             scopes.len(),
-            6,
-            "必须 6/6 覆盖（3 平台 × 2 区域）：{envelope}"
+            7,
+            "必须 7/7 覆盖（3 平台 × 2 区域 + Loomy 单作用域）：{envelope}"
         );
         for scope in Scope::all() {
             assert!(

@@ -218,3 +218,24 @@ export function TraeVariantMark({
     </span>
   );
 }
+
+/**
+ * Loomy（讯飞办公助手）mark —— 无官方图标文件，用首字母几何形（Rhea 令牌配色）。
+ *
+ * ⚠️ 拿到官方图标后替换成 `<img src={loomyIcon}>`（与 WorkBuddy / Qoder 同形态）即可，
+ * 组件签名不变。
+ */
+export function LoomyMark({ size = 32, className }: MarkProps) {
+  return (
+    <span
+      aria-hidden
+      className={cn(
+        "inline-flex shrink-0 items-center justify-center rounded-[22%] bg-gradient-to-br from-[oklch(0.72_0.14_260)] to-[oklch(0.58_0.16_300)] font-semibold text-white",
+        className,
+      )}
+      style={{ width: size, height: size, fontSize: size * 0.55 }}
+    >
+      L
+    </span>
+  );
+}

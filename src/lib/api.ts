@@ -221,6 +221,8 @@ const DEMO_READ_COMMANDS = new Set([
   // 网关五条只读：config / status / models / keys / logs —— 同样不进写操作
   //（保存配置 / 建 Key / 吊销 / 恢复 / 删除 / 清日志）。
   "get_qoder_accounts", "get_qoder_local_sources", "qoder_program_status", "qoder_usage",
+  // Loomy 平台（**只读**）：账号列表；导入 / 登录 / 删除是写操作不进演示。
+  "loomy_accounts",
   // issue #47：逐账号「今日签到状态」（**只读**）。
   "qoder_checkin_status_map",
   "get_qoder_gateway_config", "qoder_gateway_status", "get_qoder_gateway_models",
@@ -551,6 +553,18 @@ const ROUTES: Record<string, Route> = {
   // Qoder API 网关管理面（网关本体走独立端口 57895，见 src/pages/QoderApiServicePage）。
   // ⚠️ **一个监听、两个区域**：状态 / 清单两条按 `scope` 看对应的那本账号库（fail-closed）；
   //   配置与监听是否起来是两区域共用的事实（故 config 不带 scope）。
+  // ---- Loomy 模块（第四个平台，单作用域 loomy-cn）----
+  // 键名必须与 src-tauri/src/lib.rs 的 invoke_handler 登记名、
+  // 以及 crates/buddy-switch-server/src/api.rs 的路由 path+method 三方一致。
+  loomy_accounts: { method: "GET", path: "/api/loomy/accounts" },
+  loomy_import: { method: "POST", path: "/api/loomy/accounts/import" },
+  loomy_delete_account: { method: "POST", path: "/api/loomy/accounts/delete" },
+  loomy_set_account_remark: { method: "POST", path: "/api/loomy/accounts/remark" },
+  loomy_set_account_group: { method: "POST", path: "/api/loomy/accounts/group" },
+  loomy_credits: { method: "POST", path: "/api/loomy/credits" },
+  loomy_checkin_claim: { method: "POST", path: "/api/loomy/checkin/claim" },
+  loomy_sms_send: { method: "POST", path: "/api/loomy/sms/send" },
+  loomy_sms_verify: { method: "POST", path: "/api/loomy/sms/verify" },
   get_qoder_gateway_config: { method: "GET", path: "/api/qoder/gateway/config" },
   save_qoder_gateway_config: { method: "POST", path: "/api/qoder/gateway/config" },
   qoder_gateway_status: { method: "GET", path: "/api/qoder/gateway/status" },
@@ -3628,3 +3642,111 @@ export function setAgentHookEnabled(enabled: boolean): Promise<AgentHookToggleRe
 }
 
 export type { TraeGatewayLogEntry, TraeGatewayStatus };
+
+// ---------------------------------------------------------------------------
+// Loomy（第四个平台，单作用域 loomy-cn）
+// ---------------------------------------------------------------------------
+//
+// ★ 与 Qoder 段同一纪律：命令参数化 `scope`（值恒为 `loomy-cn`），
+//   core 侧 `resolve_scope_param` fail-closed。
+
+/** Loomy 账号视图（不含令牌明文）。 */
+export interface LoomyAccountView {
+  uid: string;
+  name: string;
+  nickname: string;
+  region: string;
+  source: string;
+  remark: string;
+  group: string;
+  expiresAt: number;
+  hasCredential: boolean;
+  accessTokenMasked: string | null;
+  userid: string;
+  phone: string;
+  credits: number;
+  dailyCredits: number;
+  lastCheckin: string;
+  addedAt: string;
+  updatedAt: string;
+}
+
+/** Loomy 账号列表。 */
+export interface LoomyAccountsView {
+  region: string;
+  accounts: LoomyAccountView[];
+}
+
+/** Loomy 账号列表。 */
+export function getLoomyAccounts(scope: Scope): Promise<LoomyAccountsView> {
+  return call<LoomyAccountsView>("loomy_accounts", { scope });
+}
+
+/** Loomy 粘贴凭据导入。 */
+export function loomyImport(scope: Scope, text: string): Promise<{ ok: boolean; uid: string }> {
+  return call("loomy_import", { scope, text });
+}
+
+/** Loomy 删除账号。 */
+export function loomyDeleteAccount(scope: Scope, uid: string): Promise<{ ok: boolean }> {
+  return call("loomy_delete_account", { scope, uid });
+}
+
+/** Loomy 设置备注。 */
+export function loomySetAccountRemark(
+  scope: Scope,
+  uid: string,
+  remark: string | null,
+): Promise<{ ok: boolean }> {
+  return call("loomy_set_account_remark", { scope, uid, remark });
+}
+
+/** Loomy 设置分组。 */
+export function loomySetAccountGroup(
+  scope: Scope,
+  uid: string,
+  group: string | null,
+): Promise<{ ok: boolean }> {
+  return call("loomy_set_account_group", { scope, uid, group });
+}
+
+/** Loomy 积分查询结果（两池）。 */
+export interface LoomyCreditsView {
+  uid: string;
+  permanent: number;
+  daily: number;
+  total: number;
+}
+
+/** Loomy 查询两池积分。 */
+export function loomyCredits(scope: Scope, uid: string): Promise<LoomyCreditsView> {
+  return call<LoomyCreditsView>("loomy_credits", { scope, uid });
+}
+
+/** Loomy 签到结果。 */
+export interface LoomyCheckinView {
+  uid: string;
+  alreadyDone: boolean;
+  gained: number;
+  detail: string;
+}
+
+/** Loomy 触发每日签到（幂等）。 */
+export function loomyCheckinClaim(scope: Scope, uid: string): Promise<LoomyCheckinView> {
+  return call<LoomyCheckinView>("loomy_checkin_claim", { scope, uid });
+}
+
+/** Loomy 发送短信验证码。 */
+export function loomySmsSend(scope: Scope, phone: string): Promise<{ ok: boolean; msgid: string }> {
+  return call("loomy_sms_send", { scope, phone });
+}
+
+/** Loomy 验证码登录。 */
+export function loomySmsVerify(
+  scope: Scope,
+  phone: string,
+  code: string,
+  msgid: string,
+): Promise<{ ok: boolean; uid: string; phone: string }> {
+  return call("loomy_sms_verify", { scope, phone, code, msgid });
+}

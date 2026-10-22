@@ -3031,6 +3031,8 @@ export function screenshotDemoResponse(command: string, args?: Record<string, un
     }
     case "list_qoder_api_keys": return demoQoderApiKeys();
     case "get_qoder_gateway_logs": return demoQoderGatewayLogs();
+    /* Loomy（只读一条）：账号列表；写操作不进演示只读面。 */
+    case "loomy_accounts": return demoLoomyAccounts("loomy-cn");
     /* P7 全局备份：只登记**只读**命令（导出 / 预览 / 导入 / 恢复是动作，不进演示只读面 ——
        由页面侧的错误提示处理）。`get_auto_backup_config` **如实返回默认开**（§7 #7），
        否则截图会误导成「装上就是关着的」。 */
@@ -3039,4 +3041,54 @@ export function screenshotDemoResponse(command: string, args?: Record<string, un
     case "get_auto_backup_config": return { enabled: true } satisfies AutoBackupConfig;
     default: throw new Error(t("shared.demo.error.missingReadOnly", { command }));
   }
+}
+
+// ---------------------------------------------------------------------------
+// Loomy（第四个平台，单作用域）—— 演示只读数据（账号列表；写操作不进演示面）。
+// ---------------------------------------------------------------------------
+
+function demoLoomyAccounts(_scope: string): unknown {
+  return {
+    region: "cn",
+    accounts: [
+      {
+        uid: "110000000000000000",
+        name: "Loomy 13800001234",
+        nickname: "",
+        region: "cn",
+        source: "sms-login",
+        remark: "",
+        group: "",
+        expiresAt: Date.now() + 10 * 24 * 3600 * 1000,
+        hasCredential: true,
+        accessTokenMasked: "a1b2c3…d4e5",
+        userid: "110000000000000000",
+        phone: "13800001234",
+        credits: 15000,
+        dailyCredits: 4992,
+        lastCheckin: "2026-10-22 09:12:00",
+        addedAt: "2026-10-01 08:00:00",
+        updatedAt: "2026-10-22 09:12:00",
+      },
+      {
+        uid: "loomy-0a1b2c3d4e5f6071",
+        name: "Loomy 13800005678",
+        nickname: "演示小号",
+        region: "cn",
+        source: "import",
+        remark: "",
+        group: "演示",
+        expiresAt: 0,
+        hasCredential: false,
+        accessTokenMasked: null,
+        userid: "",
+        phone: "13800005678",
+        credits: 300,
+        dailyCredits: 0,
+        lastCheckin: "",
+        addedAt: "2026-10-12 21:30:00",
+        updatedAt: "2026-10-12 21:30:00",
+      },
+    ],
+  };
 }

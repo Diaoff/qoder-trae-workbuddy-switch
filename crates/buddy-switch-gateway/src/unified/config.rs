@@ -279,8 +279,8 @@ mod tests {
         assert_eq!(ids, expected);
         assert_eq!(
             ids.len(),
-            6,
-            "派生层 = 3 平台 × 2 区域（Qoder 于 2026-10-15 加入）"
+            7,
+            "派生层 = 3 平台 × 2 区域 + Loomy 单作用域（2026-10-21 加入）"
         );
         assert!(
             ids.contains(&"qoder-cn") && ids.contains(&"qoder-global"),
@@ -309,7 +309,7 @@ mod tests {
         let mut config = UnifiedGatewayConfig::default();
         config.namespaces.clear();
         let ids: Vec<&str> = config.enabled_namespaces().iter().map(|s| s.id).collect();
-        assert_eq!(ids.len(), 6, "空列表必须回落默认集，不能变成死入口");
+        assert_eq!(ids.len(), 7, "空列表必须回落默认集，不能变成死入口");
     }
 
     /// 未在册的 id **在保存时报错**，并给出在册清单（用户一次就能改对）。

@@ -246,6 +246,14 @@ fn spawn_background_task(spec: TaskSpec) {
                      请补刷新循环，或从 core 的 TASKS 表里移除该条目。"
                 );
             }
+            // Loomy：core 的 TASKS 表当前没有 Loomy 任务（签到走手动/参数化命令），
+            // 本分支当前不可达；加了任务但没实现时日志会立刻点名。
+            Product::Loomy => {
+                eprintln!(
+                    "[background] Loomy 的 CreditsRefresh 已登记但**尚无实现** —— \
+                     请补刷新循环，或从 core 的 TASKS 表里移除该条目。"
+                );
+            }
         },
         // 账号池治理状态落盘：**周期**刷新，且只在有改动时写（`flush_if_dirty`）。
         //
