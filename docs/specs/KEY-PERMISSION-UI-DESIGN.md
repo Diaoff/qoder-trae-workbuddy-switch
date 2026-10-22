@@ -293,7 +293,7 @@ pub scope_groups: Vec<String>,    // 允许访问的**分组** id（与 scope_ac
 |:--|:--|:--|
 | 1 密钥记录扩字段 | ✅ | `apikey.rs`：四枚举 + 7 字段（全 `serde(default)`）+ `update_policy` + `normalized` |
 | 2 日志带 key id | ✅ | `RequestMeta.key_id` + 日志 `keyId` 键（三条 LLM 路由 12 个构造点）；前端类型区分 `null`（无 Key）与 `undefined`（老条目） |
-| 2' 用量页「按密钥」维度 | ✅ **WB + Trae + Qoder** | `KeysView`（数据源注入，`key-ranking.tsx`）+ 三个页面的 tab。统一网关日志无 keyId ⇒ 它没有这个 tab（中继已接，但日志是它自己的转发日志，不含产品线的 keyId） |
+| 2' 用量页「按密钥」维度 | ✅ **WB + Trae + Qoder** | `KeysView`（数据源注入，`key-ranking.tsx`）+ 三个页面的 tab。统一网关没有自己的日志（全部转发给产品线），所以它不单独出这一页 —— 它的请求会出现在**目标产品线**的排行里，用 `keyScope: "unified"` 标出「这是统一网关的密钥」 |
 | 3 用量计数 | ✅ | `key_usage.rs`（**两口径各自一份计数**，见下方 ★） |
 | 4 配额 429 + 白名单 | ✅ | `relay.rs`（选号前判）+ `pool/pick.rs` 的 `allowed` 通道 |
 | 5 管理面命令 | ✅ | `set_key_policy` + `key_usage`（server / tauri / invoke 全同步） |
@@ -311,6 +311,11 @@ pub scope_groups: Vec<String>,    // 允许访问的**分组** id（与 scope_ac
    | Trae | ✅ | ✅ | ✅ | ✅ 请求数 + token |
    | Qoder | ✅ | ✅ | ✅ | ✅ 请求数 + token（`07d745c`） |
    | 统一网关 | ✅ | ✅ | ✅ | ✅ 请求数 + token + 白名单（`e0e9e3b` 的 `KeyActor`） |
+
+   **跨台账的 Key 怎么区分（`keyScope`，`49fdfa2`）**：统一网关转发时，产品线日志里
+   的 `keyId` 是**网关那把 Key 的 id**。日志因此带 `keyScope`（`wb`/`trae`/`qoder`/`unified`），
+   前端聚合键用 `${scope}:${id}`、跨台账的 Key 显示成「统一网关 的密钥（xxxx）」——
+   不加这个，网关的 Key 会被当成「已删除的本地 Key」，且同名字符串会与本地 Key 并成一行。
 
    **统一网关的双口径是怎么成立的（`KeyActor`，`e0e9e3b`）**：
    早先它只能做请求数，根因**不是语义**而是**参数类型**——中继层收的是各产品线的
