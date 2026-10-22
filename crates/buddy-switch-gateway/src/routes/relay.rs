@@ -254,7 +254,7 @@ pub async fn relay(
         let now = timeutil::now_ms();
         let used = state
             .key_usage
-            .used_for(&request.key_id_for_policy(), policy.quota_period, now);
+            .used_for(&request.key_id_for_policy(), policy.quota_unit, policy.quota_period, now);
         // 请求数在**进入网关后**记（业务代理没有 usage 回包，只有请求数可计）；
         // token 在流结束记（`UsageTap` 的 sink，见 `logging.rs` 同款接法）。
         state
@@ -1038,11 +1038,29 @@ pub fn realm_of(region: Region) -> RealmTag {
 ///
 /// 账本是「免费/便宜的账号优先」的依据，只在拿到真实 token 数时才写入——
 /// 宁可不写，也不要写 0 成本样本把好账号误标成免费。
-pub async fn record_ledger(state: &GatewayState, uid: &str, model: &str, credit: f64, tokens: i64) {
+pub async fn record_ledger(
+    state: &GatewayState,
+    uid: &str,
+    model: &str,
+    credit: f64,
+    tokens: i64,
+    // ★ issue #76：非流式路径的按密钥 token 记账（流式走 `stream_sinks` 的 KeyUsageSink）。
+    key: Option<&crate::apikey::ApiKeyRecord>,
+) {
+    let now_ms = timeutil::now_ms();
+    if let Some(record) = key {
+        if tokens > 0 {
+            state.key_usage.record_tokens(
+                &record.id,
+                tokens as u64,
+                record.quota_period,
+                now_ms,
+            );
+        }
+    }
     if uid.is_empty() {
         return;
     }
-    let now_ms = timeutil::now_ms();
     state
         .pool
         .write()
@@ -1219,7 +1237,38 @@ pub fn pool_usage_sink(
     }))
 }
 
-/// 流式路径的 sink 组合：**请求日志**（必写）+ **成本账本**（有真实用量才写）。
+/// 按密钥的 token 记账 sink（issue #76）。
+///
+/// 与 [`PoolUsageSink`] 同一性质：**账本类** ⇒ `usage == None` 时**跳过**
+/// （写一个 0 会污染「本周期已用」，让配额提前或延后触发，比不记更糟）。
+///
+/// ★ 只记 token 口径：请求数在 `relay` 入口（进入网关后）就记了 ——
+///   两条路径记两件事，互不重叠（账本里两个口径也各自独立，见 `key_usage`）。
+struct KeyUsageSink {
+    usage: std::sync::Arc<crate::key_usage::KeyUsageStore>,
+    key_id: String,
+    period: crate::apikey::QuotaPeriod,
+}
+
+impl crate::protocol::usage_tap::UsageSink for KeyUsageSink {
+    fn finish(&self, report: Option<crate::protocol::usage_tap::UsageReport>) {
+        // ★ 账本类 sink：拿不到用量就**跳过**（不写 0 样本）。
+        let Some(report) = report else { return };
+        let tokens = report.total_tokens();
+        if tokens <= 0 {
+            return;
+        }
+        self.usage.record_tokens(
+            &self.key_id,
+            tokens as u64,
+            self.period,
+            crate::timeutil::now_ms(),
+        );
+    }
+}
+
+/// 流式路径的 sink 组合：**请求日志**（必写）+ **成本账本**（有真实用量才写）
+/// + **按密钥用量**（issue #76；有真实用量才写）。
 ///
 /// ## 为什么日志也走 sink（而不是在路由里就地写）
 ///
@@ -1237,6 +1286,8 @@ pub fn stream_sinks(
     started: std::time::Instant,
     uid: &str,
     model: &str,
+    // ★ issue #76：调用方的 Key（`None` = 无 Key 的调用 ⇒ 不记按密钥用量）。
+    key: Option<&crate::apikey::ApiKeyRecord>,
 ) -> Vec<std::sync::Arc<dyn crate::protocol::usage_tap::UsageSink>> {
     let mut sinks: Vec<std::sync::Arc<dyn crate::protocol::usage_tap::UsageSink>> =
         vec![std::sync::Arc::new(crate::logging::StreamingLogSink::new(
@@ -1246,6 +1297,13 @@ pub fn stream_sinks(
         ))];
     if let Some(ledger) = pool_usage_sink(state, uid, model) {
         sinks.push(ledger);
+    }
+    if let Some(record) = key {
+        sinks.push(std::sync::Arc::new(KeyUsageSink {
+            usage: state.key_usage.clone(),
+            key_id: record.id.clone(),
+            period: record.quota_period,
+        }));
     }
     sinks
 }

@@ -227,6 +227,8 @@ pub async fn responses_for_region(
                     started,
                     &uid,
                     &model,
+                    // ★ issue #76：按密钥的 token 记账（流结束才写）。
+                    key.as_ref(),
                 );
                 sse_response(ResponsesSseStream::new(
                     crate::protocol::usage_tap::UsageTap::new(
@@ -274,7 +276,7 @@ pub async fn responses_for_region(
                 if let Some(credit) = accumulator.credit {
                     let tokens = accumulator.prompt_tokens.unwrap_or(0) as i64
                         + accumulator.completion_tokens.unwrap_or(0) as i64;
-                    relay::record_ledger(&state, &uid, &model, credit, tokens).await;
+                    relay::record_ledger(&state, &uid, &model, credit, tokens, key.as_ref()).await;
                 }
                 let object = to_response_object(&accumulator, &model, &responses_custom);
                 state.log.record(

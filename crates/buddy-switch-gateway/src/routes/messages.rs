@@ -221,6 +221,8 @@ pub async fn messages_for_region(
                     started,
                     &uid,
                     &model,
+                    // ★ issue #76：按密钥的 token 记账（流结束才写）。
+                    key.as_ref(),
                 );
                 sse_response(AnthropicSseStream::new(
                     crate::protocol::usage_tap::UsageTap::new(
