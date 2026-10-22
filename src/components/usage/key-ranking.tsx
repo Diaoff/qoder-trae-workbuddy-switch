@@ -23,10 +23,28 @@
  * 只在某个页面用得上的维度。
  */
 
-import type { GatewayLogEntry } from "@/lib/types";
+import { useEffect, useMemo, useState } from "react";
+
+import { dateKey, usageWindowKeys, type UsageWindow } from "@/lib/usage-window";
 
 import { compactTokens, sharePercent } from "./format";
 import { seriesColor } from "./palette";
+
+/**
+ * 聚合只依赖这几个字段（**结构最小接口**）。
+ *
+ * 为什么不直接用 `GatewayLogEntry`：WB / Trae / Qoder 是**三套日志类型**
+ * （`promptTokens` 有的可空有的不可空、Qoder 还多 `credits`），但它们都能
+ * 提供这五项。绑死某一个具体类型就得在三个页面各写一遍适配器。
+ */
+export interface KeyUsageLogEntry {
+  ts: number;
+  promptTokens?: number | null;
+  completionTokens?: number | null;
+  credit?: number | null;
+  /** `null` = 无 Key；`undefined` = 升级前老条目（两种「没有」不合并）。 */
+  keyId?: string | null;
+}
 
 /** 一行排行（按密钥聚合后）。 */
 export interface KeyUsageSlice {
@@ -49,12 +67,12 @@ export const LEGACY_KEY_LABEL = "（升级前的历史条目）";
  * @param keyNames `id → 展示名`（来自密钥列表；缺失的 id 用短 id 兜底）
  */
 export function aggregateByKey(
-  entries: readonly GatewayLogEntry[],
+  entries: readonly KeyUsageLogEntry[],
   keyNames: ReadonlyMap<string, string>,
 ): KeyUsageSlice[] {
   const buckets = new Map<string, KeyUsageSlice>();
 
-  const bump = (slice: KeyUsageSlice, entry: GatewayLogEntry) => {
+  const bump = (slice: KeyUsageSlice, entry: KeyUsageLogEntry) => {
     slice.tokens += (entry.promptTokens ?? 0) + (entry.completionTokens ?? 0);
     slice.requests += 1;
     slice.credit += entry.credit ?? 0;
@@ -146,6 +164,110 @@ export function KeyRanking({ slices }: { slices: KeyUsageSlice[] }) {
           </div>
         );
       })}
+    </div>
+  );
+}
+
+
+/** 视图取数：返回日志条目与 `id → Key 名` 映射。 */
+export type KeyUsageLoader = () => Promise<{
+  entries: readonly KeyUsageLogEntry[];
+  keyNames: ReadonlyMap<string, string>;
+}>;
+
+/**
+ * 「按密钥看用量」视图（**数据源注入**，WB / Trae 共用）。
+ *
+ * 为什么要注入而不是写死 `api.getGatewayLogs`：三条产品线的日志是**三套 API**
+ * （`get_gateway_logs` / `get_trae_gateway_logs` / Qoder 的），但聚合与呈现逻辑
+ * 完全一样 —— 写死一份就得复制三份，三份必然漂移。
+ *
+ * @param loader 取数函数（必须已含鉴权与错误处理语义）
+ * @param window 时间窗口（用 `usageWindowKeys` + `dateKey` 过滤，与另三个视图同口径）
+ */
+export function KeysView({
+  loader,
+  window,
+  emptyTitle,
+  emptyHint,
+  title,
+  caption,
+}: {
+  loader: KeyUsageLoader;
+  window: UsageWindow;
+  emptyTitle: string;
+  emptyHint: string;
+  title: string;
+  caption: string;
+}) {
+  const [entries, setEntries] = useState<readonly KeyUsageLogEntry[] | null>(null);
+  const [keyNames, setKeyNames] = useState<ReadonlyMap<string, string>>(new Map());
+  const [error, setError] = useState<string | null>(null);
+  const [reload, setReload] = useState(0);
+
+  useEffect(() => {
+    let cancelled = false;
+    setError(null);
+    void (async () => {
+      try {
+        const result = await loader();
+        if (cancelled) return;
+        setEntries(result.entries);
+        setKeyNames(result.keyNames);
+      } catch (e) {
+        if (!cancelled) setError(String(e));
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [loader, reload]);
+
+  const slices = useMemo(() => {
+    if (!entries) return [];
+    /* 窗口过滤复用**同一个**日期键算法 —— 自己写 `toISOString().slice(0,10)`
+       会按 UTC 切日，与另三个视图在时区边界上差一天。 */
+    const inWindow = new Set(usageWindowKeys(window));
+    const filtered = entries.filter((entry) => inWindow.has(dateKey(new Date(entry.ts))));
+    return aggregateByKey(filtered, keyNames);
+  }, [entries, keyNames, window]);
+
+  const reloadAction = (
+    <button
+      type="button"
+      className="rounded-md border border-border px-2.5 py-1 text-xs hover:bg-muted"
+      onClick={() => setReload((value) => value + 1)}
+    >
+      重新读取日志
+    </button>
+  );
+
+  if (error) {
+    return (
+      <div className="rounded-xl border border-border p-6 text-center">
+        <p className="text-sm font-medium">{emptyTitle}</p>
+        <p className="mt-1 text-xs text-muted-foreground">{error}</p>
+        <div className="mt-3">{reloadAction}</div>
+      </div>
+    );
+  }
+  if (!entries) {
+    return <div className="h-[180px] animate-pulse rounded-xl bg-muted" />;
+  }
+  if (slices.length === 0) {
+    return (
+      <div className="rounded-xl border border-border p-6 text-center">
+        <p className="text-sm font-medium">{emptyTitle}</p>
+        <p className="mt-1 text-xs text-muted-foreground">{emptyHint}</p>
+        <div className="mt-3">{reloadAction}</div>
+      </div>
+    );
+  }
+  return (
+    <div className="space-y-3">
+      <div className="text-xs font-medium">{title}</div>
+      <KeyRanking slices={slices} />
+      <p className="text-[11.5px] leading-5 text-muted-foreground">{caption}</p>
     </div>
   );
 }

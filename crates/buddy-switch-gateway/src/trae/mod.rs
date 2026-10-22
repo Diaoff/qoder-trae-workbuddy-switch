@@ -499,6 +499,8 @@ impl TraeGatewayState {
         completion_tokens: u64,
         error: Option<String>,
         variant: TraeVariant,
+        // ★ issue #76：调用方的 Key id（`None` = 无 Key 的调用 / 老条目）。
+        key_id: Option<&str>,
     ) {
         self.total_requests.fetch_add(1, Ordering::Relaxed);
         self.log.record(serde_json::json!({
@@ -517,6 +519,9 @@ impl TraeGatewayState {
             // 归属产品线：Token 统计页据此出「变体范围条」（筛选维度）。
             // 用 as_str() 的下划线形态，与 Key/查询参数口径一致（勿用派生 serde）。
             "variant": variant.as_str(),
+            // ★ issue #76：调用方 Key id。**无 Key 写 `null`**（键固定，前端只判一个条件）；
+            //   升级前写入的老条目确实没有这个键 ⇒ 前端两种都要容忍。
+            "keyId": key_id,
         }));
         if let Some(message) = error {
             *self.last_error.write().await = Some(message);

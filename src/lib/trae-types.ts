@@ -889,7 +889,8 @@ export interface TraeGatewayLogEntry {
   promptTokens?: number | null;
   completionTokens?: number | null;
   stream: boolean;
-  error?: string | null;
+  error?: string | null;  /** ★ issue #76：调用方 Key id（`null` = 无 Key；`undefined` = 升级前老条目）。 */
+  keyId?: string | null;
 }
 
 /** 对外暴露的模型条目（`get_trae_gateway_models`）。 */

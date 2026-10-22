@@ -597,6 +597,7 @@ async fn stream_chat(
                         outcome.usage,
                         endpoint,
                         variant,
+                        task_key.as_ref().map(|record| record.id.as_str()),
                     )
                     .await;
                     /* ★ issue #76：按密钥 token 记账 —— 挂在**流结束**这个同一时点
@@ -625,7 +626,17 @@ async fn stream_chat(
 
     // 没拿到任何可用上游：这里**还没发过响应头**，可以正常返回 JSON 错误。
     let failure = last.unwrap_or_else(|| no_account_failure_sync(state, variant));
-    settle_failure(state, model, true, started, &failure, endpoint, variant).await;
+    settle_failure(
+        state,
+        model,
+        true,
+        started,
+        &failure,
+        endpoint,
+        variant,
+        key.map(|record| record.id.as_str()),
+    )
+    .await;
     openai_error(
         StatusCode::from_u16(failure.status).unwrap_or(StatusCode::BAD_GATEWAY),
         &failure.code,
@@ -688,7 +699,16 @@ async fn aggregate_payload(
         match (payload, error) {
             (Some(payload), None) => {
                 settle(
-                    state, &account, model, false, started, None, usage, endpoint, variant,
+                    state,
+                    &account,
+                    model,
+                    false,
+                    started,
+                    None,
+                    usage,
+                    endpoint,
+                    variant,
+                    key.map(|record| record.id.as_str()),
                 )
                 .await;
                 return Ok(payload);
@@ -707,7 +727,17 @@ async fn aggregate_payload(
     }
 
     let failure = last.unwrap_or_else(|| no_account_failure_sync(state, variant));
-    settle_failure(state, model, false, started, &failure, endpoint, variant).await;
+    settle_failure(
+        state,
+        model,
+        false,
+        started,
+        &failure,
+        endpoint,
+        variant,
+        key.map(|record| record.id.as_str()),
+    )
+    .await;
     Err(failure)
 }
 
@@ -1150,6 +1180,8 @@ async fn settle(
     usage: TokenUsage,
     endpoint: &'static str,
     variant: TraeVariant,
+    // ★ issue #76：调用方 Key id（写进日志，供「按密钥看用量」与定位）。
+    key_id: Option<&str>,
 ) {
     let latency_ms = started.elapsed().as_millis() as i64;
 
@@ -1196,6 +1228,7 @@ async fn settle(
             usage.completion,
             message,
             variant,
+            key_id,
         )
         .await;
 }
@@ -1240,6 +1273,7 @@ async fn settle_failure(
     failure: &UpstreamFailure,
     endpoint: &'static str,
     variant: TraeVariant,
+    key_id: Option<&str>,
 ) {
     state
         .record_request(
@@ -1253,6 +1287,7 @@ async fn settle_failure(
             0,
             Some(failure.message.clone()),
             variant,
+            key_id,
         )
         .await;
 }

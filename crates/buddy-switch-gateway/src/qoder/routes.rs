@@ -660,6 +660,7 @@ pub async fn chat_for_region(
                         0,
                         0.0,
                         Some(detail.clone()),
+                        key.as_deref().map(|record| record.id.as_str()),
                     )
                     .await;
                 return protocol_error(
@@ -721,6 +722,7 @@ pub async fn chat_for_region(
             0,
             0.0,
             Some(message.clone()),
+            key.as_deref().map(|record| record.id.as_str()),
         )
         .await;
     let code = if all_queued {
@@ -947,6 +949,7 @@ async fn stream_relay(
                 completion_tokens as i64,
                 credits,
                 error,
+                key_for_task.as_ref().map(|record| record.id.as_str()),
             )
             .await;
     });
@@ -1023,6 +1026,7 @@ async fn aggregate_relay(
             completion_tokens as i64,
             credits,
             log_error,
+            key.as_ref().map(|record| record.id.as_str()),
         )
         .await;
 

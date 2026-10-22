@@ -86,14 +86,15 @@ const TAB_LABEL: Record<UsageTab, TranslationKey> = {
  * 当时那条「Trae 没有与 WB 同形的数据源」的判断只对**趋势**视图的会话维度成立。
  */
 const PLATFORM_TABS: Record<Product, UsageTab[]> = {
-  /* ★ issue #76 / U4：「按密钥」只在 **WB** 出现 —— 判据是**日志里有没有 `keyId`**：
-       · WB：`RequestMeta.key_id` 已接（`8f1a1c4`）⇒ 有维度，画排行；
-       · Trae：日志走 `TraeGatewayState::record_request`，**没有 key_id 参数** ⇒ 没有维度；
-       · Qoder：中继未接密钥策略 ⇒ 同样没有维度。
-     缺数据源就**不画空壳**（§6 #5）—— 一张全是「无密钥调用」的表比没有这一页更糟：
-     用户会以为「我的 key 都没在用」。Trae 补 keyId 与 Qoder 接中继后，这里各加一项即可。 */
+  /* ★ issue #76 / U4：「按密钥」出现在 **WB 与 Trae** —— 判据是**日志里有没有 `keyId`**：
+       · WB：`RequestMeta.key_id`（`8f1a1c4`）；
+       · Trae：`record_request` 的 `key_id` 参数（本轮）；
+       · Qoder：`record_request` 的 `key_id` 参数（本轮）—— 但 Qoder 用量页是**另一套
+         组件**（`QoderUsagePage`，按 credits 计），它的 keys 视图另排；
+       · 统一网关：中继未接，日志没有 keyId。
+     缺数据源就**不画空壳**（§6 #5）—— 一张全是「无密钥调用」的表比没有这一页更糟。 */
   workbuddy: ["trend", "models", "sessions", "keys", "credits"],
-  trae: ["trend", "models", "credits"],
+  trae: ["trend", "models", "keys", "credits"],
   /* ★ 2026-10-21：Qoder **四个视图齐了**（原先是「只开趋势」）。
      判据是**数据**而不是习惯 —— 这一次真的是数据补齐了：
        · 模型：`qoder_usage.byModel` + 逐日 `days[].byModel`（一直是有的，只是没做视图）；

@@ -59,6 +59,7 @@ import { CumulativeArea } from "@/components/usage/cumulative-area";
 import { compactTokens, exactTokens } from "@/components/usage/format";
 import { ModelDonut } from "@/components/usage/model-donut";
 import { ModelRanking } from "@/components/usage/model-ranking";
+import { KeysView } from "@/components/usage/key-ranking";
 import { StackedDailyBar } from "@/components/usage/stacked-daily-bar";
 import { StatTiles, type StatTile } from "@/components/usage/stat-tiles";
 import { UsageHeatmap } from "@/components/usage/usage-heatmap";
@@ -68,7 +69,13 @@ import { cumulativeCaption } from "@/lib/chart-caption";
 import { useT } from "@/lib/i18n";
 import { scopeOf } from "@/lib/scope";
 import { toTokenStatsSource } from "@/lib/trae-usage-charts";
-import type { TraeTokenScope, TraeTokenStatistics, TraeUnsupported } from "@/lib/trae-types";
+import type {
+  TraeApiKeyRecord,
+  TraeTokenScope,
+  TraeTokenStatistics,
+  TraeUnsupported,
+} from "@/lib/trae-types";
+import { normalizeTraeGatewayLogs } from "@/lib/trae-gateway";
 import { useCachedResource } from "@/lib/use-cached-resource";
 import { useRefreshAction } from "@/lib/use-refresh-action";
 import { useScope } from "@/lib/use-scope";
@@ -80,7 +87,19 @@ import {
 import { usageWindowDays, usageWindowSpanDays, type UsageWindow } from "@/lib/usage-window";
 
 /** 本页承载的视图（积分视图在 `TraeCreditsPage`）。与原型 `tabs` 的前两项同名。 */
-export type TraeUsageView = "trend" | "models";
+export type TraeUsageView = "trend" | "models" | "keys";
+
+/** 「按密钥」取数（Trae：网关日志 + 密钥名）。模块级 ⇒ 引用稳定。 */
+async function loadTraeKeyUsage() {
+  const [raw, keys] = await Promise.all([
+    api.getTraeGatewayLogs(),
+    api.listTraeApiKeys().catch(() => ({ keys: [] as TraeApiKeyRecord[] })),
+  ]);
+  return {
+    entries: normalizeTraeGatewayLogs(raw),
+    keyNames: new Map((keys.keys ?? []).map((key) => [key.id, key.name] as const)),
+  };
+}
 
 /**
  * 「用量 · Token」视图（Trae 分区）。
@@ -201,6 +220,15 @@ export default function TraeTokenStatsPage({
         />
       ) : view === "models" ? (
         <ModelsView slices={slices} onRefresh={() => void refresh()} />
+      ) : view === "keys" ? (
+        <KeysView
+          window={viewWindow}
+          loader={loadTraeKeyUsage}
+          title={t("wbStats.usage.keys.title")}
+          caption={t("wbStats.usage.keys.caption")}
+          emptyTitle={t("wbStats.usage.keys.empty")}
+          emptyHint={t("wbStats.usage.keys.emptyHint")}
+        />
       ) : (
         <TrendView
           columns={columns}

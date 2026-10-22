@@ -232,6 +232,13 @@ export function normalizeTraeGatewayLogs(raw: unknown): TraeGatewayLogEntry[] {
           asNumber(pick(entry, "completionTokens", "completion_tokens")) ?? null,
         stream: asBoolean(entry.stream) ?? false,
         error: asString(entry.error) ?? null,
+        /* ★ issue #76：**必须保留「键不存在」与「值为 null」的区别** ——
+           `null` = 确实没有 Key 的调用，`undefined` = 升级前写入的老条目。
+           用 `hasOwnProperty` 判断而不是 `asString(...) ?? null`（那会把两者都变 null，
+           让「按密钥看用量」凭空多出一批匿名调用）。 */
+        keyId: Object.prototype.hasOwnProperty.call(entry, "keyId")
+          ? (asString(entry.keyId) ?? null)
+          : undefined,
       };
     })
     .filter((item): item is TraeGatewayLogEntry => item !== null);

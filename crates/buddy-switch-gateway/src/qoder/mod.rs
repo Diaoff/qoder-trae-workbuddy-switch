@@ -500,6 +500,8 @@ impl QoderGatewayState {
         // 上游 `usage.credits`（浮点；`0` = 未取到）：G3 的计数来源，也进日志。
         credits: f64,
         error: Option<String>,
+        // ★ issue #76：调用方的 Key id（`None` = 无 Key / 老条目）。
+        key_id: Option<&str>,
     ) {
         self.total_requests.fetch_add(1, Ordering::Relaxed);
         self.log.record(serde_json::json!({
@@ -518,6 +520,8 @@ impl QoderGatewayState {
             "credits": credits,
             "stream": stream,
             "error": error,
+            // ★ issue #76：调用方 Key id（无 Key 写 `null`，键固定）。
+            "keyId": key_id,
         }));
         // ★ 限额护栏的唯一计数入口：**就在记账一处**累加，别在别处再记一次
         //   （记两次会把「当日已用」算成两倍，护栏提前触发）。
