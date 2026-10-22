@@ -292,7 +292,8 @@ pub scope_groups: Vec<String>,    // 允许访问的**分组** id（与 scope_ac
 | 步 | 状态 | 落点 |
 |:--|:--|:--|
 | 1 密钥记录扩字段 | ✅ | `apikey.rs`：四枚举 + 7 字段（全 `serde(default)`）+ `update_policy` + `normalized` |
-| 2 日志带 key id + 账本按 key | ⬜ 未做 | 用量页「按密钥」维度（U4），规范自己说可独立排期 |
+| 2 日志带 key id | ✅ | `RequestMeta.key_id` + 日志 `keyId` 键（三条 LLM 路由 12 个构造点）；前端类型区分 `null`（无 Key）与 `undefined`（老条目） |
+| 2' 用量页「按密钥」维度 | ⬜ 未做 | 数据前提已就绪（上面那行）；缺的是前端 `KeysView` 组件 + `UsagePage` 的 tab 项 —— 规范自己说「可单独排期」 |
 | 3 用量计数 | ✅ | `key_usage.rs`（**两口径各自一份计数**，见下方 ★） |
 | 4 配额 429 + 白名单 | ✅ | `relay.rs`（选号前判）+ `pool/pick.rs` 的 `allowed` 通道 |
 | 5 管理面命令 | ✅ | `set_key_policy` + `key_usage`（server / tauri / invoke 全同步） |
