@@ -3167,7 +3167,7 @@ async fn api_gateway_key_usage(RawQuery(query): RawQuery) -> Response {
         return json_err("API Key 不存在".to_string(), StatusCode::BAD_REQUEST);
     };
     let usage = state.key_usage.snapshot(&id);
-    let used = state.key_usage.used_for(&id, record.quota_period, now);
+    let used = state.key_usage.used_for(&id, record.quota_unit, record.quota_period, now);
     json_ok(json!({
         "ok": true,
         "keyId": id,

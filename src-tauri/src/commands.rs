@@ -2636,7 +2636,7 @@ pub fn key_usage(id: String) -> Result<Value, String> {
         return Err("API Key 不存在".to_string());
     };
     let now = buddy_switch_core::modules::config::now_ms();
-    let used = state.key_usage.used_for(&id, record.quota_period, now);
+    let used = state.key_usage.used_for(&id, record.quota_unit, record.quota_period, now);
     let total = state.key_usage.snapshot(&id).map(|entry| entry.total).unwrap_or(0);
     // 一并给出判定结论：前端不用再实现一遍「超没超限」（同一判据的唯一出口）。
     let exceeded = matches!(
