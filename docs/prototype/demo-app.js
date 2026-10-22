@@ -69,8 +69,22 @@ const state = {
   extVariant: "ok",
   extTarget: null,
   extPicked: new Set(),
-  /* 账号池「显式指定」：每个作用域最多一个（排他）。{ [scope]: accountName } */
+  /* 账号池「显式指定」：每个作用域最多一个（排他）。{ [scope]: accountName }
+     只在 `gwMode === "pinned"` 时有意义 —— 策略是**一个枚举**，不是一个开关集合。 */
   pins: {},
+  /* 选号策略（与后端 `AccountStrategy` 一一对应）：auto / max_credits / random / pinned。
+     ★ 四档**互斥**：它们是同一个枚举的四个取值，同时成立会让「指定」和「随机」互相打架。
+     ★ `max_credits` 是真实存在的策略，但**当前后端只在「池给不出账号」的兜底路径**里用它
+       （池非空时聊天选号走不到，见 `routes/relay.rs` 的 `select_account`）——
+       原型按「它应该有的样子」实现，偏差写进方案 D6 / 决策 10。
+     ★ `random` 用于「把额度平均分摊到多个号」：均匀抽签、不看权重。 */
+  gwMode: {},
+  /* 随机模式的抽签种子：每次「模拟请求」自增 ⇒ 同一 seed 同结果（可复现、可断言）。{ [scope]: int } */
+  gwRoll: {},
+  /* 「模拟请求」产出的换号链路（步骤数组）。任何池状态变更都会清空它，避免陈旧的假链路。{ [scope]: step[] } */
+  gwChain: {},
+  /* 「免费号不可用时允许用收费号」：**默认关**（与「不偷偷花积分」的安全默认同源）。{ [scope]: bool } */
+  gwPayFallback: {},
   /* 抽屉 */
   drawer: null,        // { kind, id, step, ... }
   /* 命令面板 */
@@ -3082,6 +3096,352 @@ function readKeyLimit() {
   q.limit = Math.max(0, Number(input.value || 0)) * Number(mul.value || 1);
 }
 
+/* ══════════════════════ 账号池：选号解释（2026-10-22 从 3ba8080^ 搬回源文件）══════════════════════
+   原型里没有真实选号器，但下面这几个函数**复刻了真实算法的判定顺序**
+   （已排除 > 禁用 > 账号级冷却 > 零积分 > 模型级冷却 > 在途占满 > 成本分层），
+   而且是**纯派生**的：排除一个号 / 翻一个开关，结论立刻跟着变。
+   ⇒ 「点一下就能看出网关会怎么选」在原型里是真的，不是写死的文案。 */
+
+/** 秒 → `3m12s` / `48s`。冷却靠**墙钟**到期 ⇒ 必须显示剩余，只说「冷却中」等于让用户去猜。 */
+function dur(sec) {
+  const s = Math.max(0, Math.round(sec));
+  return s >= 60 ? `${Math.floor(s / 60)}m${String(s % 60).padStart(2, "0")}s` : `${s}s`;
+}
+
+/** 互斥五态徽标（已排除 / 冷却 / 禁用 / 零积分 / 可用）。
+ *  ★ 五态**逐条相加 = 条目数**，所以「可用」里绝不能再混进已排除的号 ——
+ *  否则卡片说「4 可用」，用户却只能选中 3 个，数字与事实不符。 */
+function poolStateBadge(x) {
+  if (x.excluded) return `<span class="badge bad">已排除</span>`;
+  if (x.state === "冷却") return `<span class="badge warn">冷却</span>`;
+  if (x.state === "禁用") return `<span class="badge bad">禁用</span>`;
+  if (x.state === "零积分") return `<span class="badge warn">零积分</span>`;
+  return `<span class="badge ok">可用</span>`;
+}
+
+/** 本次「演示请求」用的模型：模型闸门的模型 > 第一个可用模型。
+ *  ★ 不再给下拉选择：模型是**请求**的属性，不是网关的配置项。
+ *  把它做成池卡上的选择器，会让人以为「网关有一个全局模型设置」—— 那是假控件。 */
+function gwModelOf(g) {
+  if (g.modelGate) return g.modelGate.model;
+  const first = (g.models || []).find((m) => m.available);
+  return first ? first.name : "";
+}
+
+/** 当前作用域的策略 —— 与后端 `AccountStrategy` 一一对应。 */
+function gwModeOf(scope) {
+  return state.gwMode[scope] || "auto";
+}
+
+/** 均匀抽签用的确定性 PRNG（xorshift32）。
+ *  ★ 不用 `Math.random()`：原型要**可复现**（同一 seed 同一结果），否则断言只能靠运气。 */
+function rollIndex(n, seed) {
+  if (n <= 1) return 0;
+  let x = (seed | 0) || 0x9e3779b9;
+  x ^= x << 13; x ^= x >>> 17; x ^= x << 5;
+  return Math.abs(x) % n;
+}
+
+/** 某账号对某模型的**跳过原因**（`null` = 可参与选号）。返回顺序即真实判据顺序。 */
+function poolSkipReason(x, model, tried) {
+  if (x.excluded) return { code: "excluded", text: "已排除（用户设置）" };
+  if (x.state === "禁用") return { code: "disabled", text: "已禁用" };
+  if (x.state === "冷却") return { code: "cooling", text: "账号级冷却" };
+  if (x.state === "零积分") return { code: "no_credits", text: "零积分" };
+  const mc = (x.modelCool || []).find((c) => c.model === model && c.remain > 0);
+  if (mc) return { code: "model_cool", text: `${model} 模型冷却 ${dur(mc.remain)}` };
+  if (x.inFlight >= x.maxInFlight) return { code: "in_flight", text: `在途 ${x.inFlight}/${x.maxInFlight} 已满` };
+  /* `tried` 放最后：本轮试过的号若同时还有硬状态，说硬状态更有信息量。 */
+  if (tried && tried.has(x.account)) return { code: "tried", text: "本轮已试过" };
+  return null;
+}
+
+/** 池计数：前五项**互斥且穷尽**（相加 = 条目数）；后两项正交（可与「可用」重叠）。 */
+function poolCounts(g) {
+  const rows = g.pool || [];
+  const c = { total: rows.length, available: 0, cooling: 0, disabled: 0, noCredits: 0, excluded: 0, modelCool: 0, inFlightFull: 0, low: 0 };
+  rows.forEach((x) => {
+    if (x.excluded) c.excluded += 1;
+    else if (x.state === "冷却") c.cooling += 1;
+    else if (x.state === "禁用") c.disabled += 1;
+    else if (x.state === "零积分") c.noCredits += 1;
+    else c.available += 1;
+    if (!x.excluded && x.low) c.low += 1;
+    if ((x.modelCool || []).some((m) => m.remain > 0)) c.modelCool += 1;
+    if (!x.excluded && x.inFlight >= x.maxInFlight) c.inFlightFull += 1;
+  });
+  return c;
+}
+
+/** 本次请求的选号结论。四档：命中 / 模型暂停 / 只剩收费号 / 一个都没有。
+ *
+ *  `mode` 四档与真实策略对齐（后端是同一个枚举 `AccountStrategy`）：
+ *  - `auto`        —— 自动择优（六因子权重 → 短名单 → 加权抽签）；
+ *  - `max_credits` —— 按实时积分择优（候选内积分最高者）；
+ *  - `random`      —— **均匀抽签**（不看权重，避免某个号被抽干）；
+ *  - `pinned`      —— 显式指定（偏好，不可用时回落 auto，见 `relay::pick_with_preference`）。
+ *  后三种**都不改变硬约束**：排除 / 禁用 / 冷却 / 模型冷却 / 在途满 / 成本分层照样生效。 */
+function poolVerdict(g, model, opts) {
+  const { payFallback, mode, tried, seed } = opts;
+  const gate = g.modelGate;
+  const rows = g.pool || [];
+  const skipped = rows
+    .map((x) => ({ account: x.account, reason: poolSkipReason(x, model, tried) }))
+    .filter((x) => x.reason);
+  const cands = rows.filter((x) => !poolSkipReason(x, model, tried));
+
+  /* 模型级暂停**发生在选号之前**（真实实现里这一档短路整段轮换）：
+     否则每个请求都要把每个账号各撞一遍 429，重试次数全耗在同一堵墙上。 */
+  if (gate && gate.model === model && gate.phase === "paused") {
+    return { blocked: "model_gate", skipped, cands, gate,
+      why: `${model} 已被 ${gate.accounts} 个账号限流，整体暂停 ${dur(gate.remain)}` };
+  }
+  if (!cands.length) return { blocked: "none", skipped, cands, why: "没有可用账号" };
+
+  /* 成本分层**硬过滤**（复刻真实算法：Free(0) > Unknown(1) > Paid(2)，只留最好的一层）。
+     ★ `unknown` 必须单独一层：把「没观测过成本」当成「收费」会让新号永远上不了场
+       —— 真实实现里 `CostTier::Unknown` 正是为了「保留被观测的机会」才存在的。 */
+  const tierOf = (x) => (x.tier === "free" ? 0 : x.tier === "paid" ? 2 : 1);
+  const bestTier = Math.min(...cands.map(tierOf));
+  const layer = cands.filter((x) => tierOf(x) === bestTier);
+  const layerName = ["免费层", "无观测层", "收费层"][bestTier];
+  if (bestTier === 2 && !payFallback) {
+    return { blocked: "paid_only", skipped, cands, why: "剩下的候选都是收费号，按设置拒绝（不会偷偷花积分）" };
+  }
+  /* 层内选择（**策略只影响这一层**，硬过滤在它之前）：
+     - `random`      ⇒ 均匀抽签（先按账号名排序，保证同 seed 同结果）；
+     - `max_credits` ⇒ 按积分降序；
+     - 其它          ⇒ 按权重降序（真实实现是 Top-5 短名单内加权抽签，原型取确定值只为让结论可读）。 */
+  if (mode === "random") {
+    const stable = layer.slice().sort((a, b) => a.account.localeCompare(b.account));
+    const hit = stable[rollIndex(stable.length, seed)];
+    return { hit, pool: stable, skipped, cands, tier: bestTier, mode,
+      why: `随机模式：${layerName} ${layer.length} 个候选均匀抽签（不看权重），这一跳抽到 ${hit.account}` };
+  }
+  const ordered = layer.slice().sort((a, b) => (mode === "max_credits" ? b.credits - a.credits : b.weight - a.weight));
+  const hit = ordered[0];
+  return {
+    hit, pool: layer, skipped, cands, tier: bestTier, mode,
+    why: bestTier === 2
+      ? `免费层已无可用号 ⇒ 用收费号兜底（已开启）${mode === "max_credits" ? " · 按积分择优" : ""}`
+      : mode === "max_credits"
+        ? `${layerName} ${layer.length} 个候选，按实时积分择优（${fmt(hit.credits)} 积分最高）`
+        : `${layerName} ${layer.length} 个候选，权重最高者命中`,
+  };
+}
+
+/** 换号重试的预算与闸门阈值（与方案 §9 的默认值一致）。 */
+const POOL_MAX_ROTATE = 3;
+const POOL_GATE_THRESHOLD = 2;
+
+/** 模拟**一轮完整请求**：选号 → 上游结果 → 失败写冷却 → 换号 → …（与真实 relay 同序）。
+ *
+ *  `willFail` 是演示用的失败注入：真实实现里「会不会 429」由上游决定，网关只能**事后**知道。
+ *  它把用户最关心的两件事一次演出来：
+ *    ① 失败后**确实会换到另一个符合条件的账号**（不是把同一堵墙撞 3 次）；
+ *    ② 当同模型在多个账号上都失败时**停止换号**（再换也不会好，只会烧配额）。
+ *
+ *  ★ 每次换号都**按当前策略重新选号**，并把已试过的号排除 —— 所以「随机」模式下每次重抽、
+ *    「积分择优」模式下取次高、「指定」模式下回落自动择优，三条路径在这里是同一段代码。 */
+function poolSimulate(g, model, opts) {
+  const steps = [];
+  const tried = new Set();
+  for (let attempt = 0; attempt < POOL_MAX_ROTATE; attempt++) {
+    const v = poolVerdict(g, model, { ...opts, tried, seed: (opts.seed || 1) + attempt });
+    if (!v.hit) { steps.push({ kind: "stop", text: v.why }); break; }
+    const acc = v.hit;
+    tried.add(acc.account);
+    if (acc.willFail === "429") {
+      acc.modelCool = (acc.modelCool || []).concat([{ model, remain: 60 }]);
+      steps.push({ kind: "fail", account: acc.account, text: `429 6004（${model} 模型限流）→ 写模型冷却 60s → 换号` });
+      const cooled = (g.pool || []).filter((x) => (x.modelCool || []).some((c) => c.model === model)).length;
+      if (cooled >= POOL_GATE_THRESHOLD) {
+        g.modelGate = { model, accounts: cooled, remain: 60, phase: "paused" };
+        steps.push({ kind: "stop", text: `同一模型已在 ${cooled} 个账号上被限流 ⇒ 触发模型闸门，停止换号（第 ${attempt + 2} 次重试也不会好）` });
+        break;
+      }
+      continue;
+    }
+    steps.push({ kind: "ok", account: acc.account, text: `200 OK（第 ${attempt + 1} 跳命中）` });
+    break;
+  }
+  return steps;
+}
+
+/** 演示快照：**第一次**改动池状态前深拷贝一份，供「重置」还原。
+ *  只拷池数据与闸门 —— 策略（指定 / 模式 / 兜底开关）属于用户设置，重置不该把它们也抹掉。 */
+function poolSnapshot(g) {
+  if (g.__snap) return;
+  g.__snap = {
+    pool: JSON.parse(JSON.stringify(g.pool || [])),
+    gate: g.modelGate ? { ...g.modelGate } : null,
+  };
+}
+
+/** 还原到快照。返回是否真的还原过（没改过就返回 false，由调用方给出不同提示）。 */
+function poolReset(g) {
+  if (!g.__snap) return false;
+  g.pool = JSON.parse(JSON.stringify(g.__snap.pool));
+  g.modelGate = g.__snap.gate ? { ...g.__snap.gate } : null;
+  delete g.__snap;
+  return true;
+}
+
+/** 跳过清单（每条都是「账号 + 一句人话」）。空表不渲染，避免出现一个空标题。 */
+function poolSkipListHtml(skipped) {
+  if (!skipped.length) return "";
+  return `<ul>${skipped
+    .map((s) => `<li>跳过 <code>${esc(s.account)}</code>：${esc(s.reason.text)}</li>`)
+    .join("")}</ul>`;
+}
+
+/** 模型级暂停条。`paused` = 还在暂停；`recovered` = 半开试探已成功（可重置）。 */
+function poolGateHtml(gate) {
+  const paused = gate.phase !== "recovered";
+  return `<div class="pool-gate${paused ? "" : " probe"}">
+    <b>${esc(gate.model)} ${paused ? `在 ${gate.accounts} 个账号上被限流` : "已恢复"}</b>
+    <span>${paused
+      ? `该模型整体暂停 ${dur(gate.remain)} —— 到期后只放一个请求做半开试探，而不是到期瞬间把所有请求一起放上去`
+      : "半开试探成功：只放了一个请求出去，成功后才放开全量（失败则退避加倍）"}</span>
+    <div class="grow"></div>
+    ${paused ? `<button class="btn xs" data-act="pool-probe|${esc(gate.model)}">立即试探</button>` : ""}
+  </div>`;
+}
+
+/** 换号链路（点「模拟请求」后出现）。空表不渲染。 */
+function poolChainHtml(steps) {
+  if (!steps || !steps.length) return "";
+  return `<div class="pool-explain" style="background:transparent;border:1px dashed var(--border)">
+    <b>这一轮请求的换号链路</b>
+    <ul>${steps
+      .map((s) => `<li>${
+        s.account
+          ? `<code>${esc(s.account)}</code> → ${esc(s.text)}`
+          : `<b>停</b>：${esc(s.text)}`
+      }</li>`)
+      .join("")}</ul>
+    <div class="tiny muted">
+      规则：每一跳都<b>按当前策略重新选号</b>，并把本轮试过的号排除（所以「随机」会重抽、「积分择优」取次高、「指定」会回落自动择优）。
+      同模型在 ${POOL_GATE_THRESHOLD} 个账号上失败即判定为<b>模型级问题</b>，停止换号并整体暂停 —— 继续把第 3 次重试撞上去只会烧配额。
+    </div>
+  </div>`;
+}
+
+/** 账号池分区（独立网关）。 */
+function poolSection(g) {
+  const scope = state.scope;
+  const model = gwModelOf(g);
+  const mode = gwModeOf(scope);
+  const pinned = mode === "pinned" ? state.pins[scope] || null : null;
+  const payFallback = !!state.gwPayFallback[scope];
+  const seed = state.gwRoll[scope] || 1;
+  const c = poolCounts(g);
+  const v = poolVerdict(g, model, { payFallback, mode, seed });
+
+  /* 排序：指定置顶（用户正在关注的那一行），排除沉底（不需要再操作）。 */
+  const rows = (g.pool || []).slice().sort((a, b) => {
+    const rank = (x) => (x.account === pinned ? 0 : x.excluded ? 2 : 1);
+    return rank(a) - rank(b) || b.weight - a.weight;
+  });
+
+  const tiles = [
+    { k: "可用", n: c.available, tone: c.available ? "t-ok" : "t-zero" },
+    { k: "冷却", n: c.cooling, tone: c.cooling ? "t-warn" : "t-zero" },
+    { k: "禁用", n: c.disabled, tone: c.disabled ? "t-bad" : "t-zero" },
+    { k: "零积分", n: c.noCredits, tone: c.noCredits ? "t-warn" : "t-zero" },
+    { k: "已排除", n: c.excluded, tone: c.excluded ? "t-bad" : "t-zero" },
+  ];
+
+  const gateBar = g.modelGate && g.modelGate.model === model ? poolGateHtml(g.modelGate) : "";
+
+  const explain = v.hit
+    ? `<div class="pool-explain">
+        <b>下一轮请求会选中 ${esc(v.hit.account)}</b>
+        <span class="tiny muted">（${esc(v.why)}）</span>
+        ${poolSkipListHtml(v.skipped)}
+      </div>`
+    : `<div class="pool-explain">
+        <span class="no">选不出账号：${esc(v.why)}</span>
+        <div class="tiny muted">→ ${esc(
+          v.blocked === "paid_only" ? "打开上面的「收费号兜底」，或等免费号冷却结束"
+          : v.blocked === "model_gate" ? "等暂停结束（或点「立即试探」）；请求仍会按重试策略换号"
+          : "去账号页补一个账号，或取消某些账号的排除")}</div>
+        ${poolSkipListHtml(v.skipped)}
+      </div>`;
+
+  /* 「指定账号」下拉：四档**策略**收在同一个下拉里（与真实池卡 `AccountPoolCard` 同形）——
+     不指定（自动择优）/ 按实时积分择优 / **随机** / 某个账号。四者在后端是同一个枚举
+     `AccountStrategy{Current, Pinned, MaxCredits, Random}`，所以必须互斥、不能并列成多个控件。
+     ★ 已排除的账号**置灰**：选它等于「指定一个永不使用的号」，两条规则直接打架。 */
+  const pinValue = mode === "pinned" ? pinned || "" : `__${mode}__`;
+  const pinOpts = [
+    `<option value="__auto__"${pinValue === "__auto__" ? " selected" : ""}>不指定（自动择优）</option>`,
+    `<option value="__max_credits__"${pinValue === "__max_credits__" ? " selected" : ""}>按实时积分择优（每次请求查询）</option>`,
+    `<option value="__random__"${pinValue === "__random__" ? " selected" : ""}>随机（每次请求随机选，不看权重）</option>`,
+  ]
+    .concat(
+      (g.pool || []).map(
+        (x) => `<option value="${esc(x.account)}"${pinValue === x.account ? " selected" : ""}${x.excluded ? " disabled" : ""}>${esc(x.account)}${x.excluded ? "（已排除）" : ""}</option>`
+      )
+    )
+    .join("");
+
+  /* 护栏卡在池区**之上**：它决定「谁能被选」，是池的上游条件。 */
+  return quotaCardHtml(g) + `<div class="cat-bar">
+      <span class="tiny muted">指定账号</span>
+      <select class="inp" data-gw-pin aria-label="指定账号">${pinOpts}</select>
+      <div class="grow"></div>
+      <button class="btn xs" data-act="pool-simulate" title="按当前策略跑一轮完整请求：选号 → 失败写冷却 → 换号 → …">模拟请求</button>
+      <button class="btn ghost xs" data-act="pool-reset" title="把演示数据复位（含冷却、模型闸门、排除）">重置</button>
+      <span class="tiny muted">收费号兜底</span>
+      <button class="switch${payFallback ? " on" : ""}" data-act="pool-payfallback"
+        role="switch" aria-checked="${payFallback}" aria-label="允许用收费号兜底"></button>
+    </div>
+    <div class="kpi-row">${tiles
+      .map((t) => `<div class="${t.tone}"><b>${t.n}</b><span>${t.k}</span></div>`)
+      .join("")}</div>
+    <p class="tiny muted" style="margin:0 2px 12px">
+      前五格<b>互斥且穷尽</b>（相加 = ${c.total} 个条目）。模型冷却 ${c.modelCool} 个、在途已满 ${c.inFlightFull} 个是<b>正交标记</b>
+      —— 一个号可以「可用，但只对这个模型限流」，也可以「可用，但此刻并发占满」，两者都不改变它的五态。
+      当前演示请求的模型：<span class="mono">${esc(model)}</span>（模型属于请求，不是网关设置，故不提供选择器）。
+    </p>
+    ${gateBar}
+    <div class="tbl-wrap"><table class="tbl">
+      <thead><tr><th>账号</th><th>积分</th><th>权重</th><th>状态</th><th>模型冷却</th><th>在途</th><th style="width:150px">选号</th></tr></thead>
+      <tbody>${rows.map((x) => {
+        const cool = (x.modelCool || []).filter((m) => m.remain > 0);
+        const full = x.inFlight >= x.maxInFlight;
+        return `<tr${x.excluded ? ' class="row-off"' : ""}>
+          <td><b>${esc(x.account)}</b>${x.account === pinned ? ` <span class="badge info">已指定</span>` : ""}
+            ${x.sticky ? ` <span class="badge info" title="该账号持有本会话的粘性绑定">粘性</span>` : ""}
+            ${x.excluded && x.excludedNote ? `<br><span class="tiny muted">${esc(x.excludedNote)}</span>` : ""}</td>
+          <td class="num">${fmt(x.credits)}${x.low ? ` <span class="badge warn">余额偏低</span>` : ""}</td>
+          <td class="num">${x.excluded ? "—" : x.weight}</td>
+          <td>${poolStateBadge(x)}</td>
+          <td>${cool.length
+            ? cool.map((m) => `<span class="badge warn" title="${esc(m.model)} 剩余 ${dur(m.remain)}">${esc(m.model)} · ${dur(m.remain)}</span>`).join(" ")
+            : `<span class="muted tiny">—</span>`}</td>
+          <td class="num${full ? " full" : ""}" title="${full ? "已满：先排队等一个租约释放（最多 2s），超时才换号 —— 别把「此刻忙」误报成「这个号不可用」" : `在途 ${x.inFlight}/${x.maxInFlight}`}">${x.inFlight}/${x.maxInFlight}</td>
+          <td>${x.excluded
+            ? `<button class="btn xs" disabled title="已排除的账号不能作为上游">指定</button>
+               <button class="btn ghost xs" data-act="pool-exclude|${esc(x.account)}">取消排除</button>`
+            : x.account === pinned
+              ? `<button class="btn xs" data-act="pin|">取消指定</button>
+                 <button class="btn ghost xs" data-act="pool-exclude|${esc(x.account)}">排除</button>`
+              : `<button class="btn xs" data-act="pin|${esc(x.account)}">指定</button>
+                 <button class="btn ghost xs" data-act="pool-exclude|${esc(x.account)}">排除</button>`}</td>
+        </tr>`;
+      }).join("")}</tbody></table></div>
+    ${explain}
+    ${poolChainHtml(state.gwChain[scope])}
+    <p class="tiny muted" style="margin:10px 2px 0">
+      选号顺序：<b>模型级暂停</b> &gt; 策略（指定 / 积分择优 / 随机 / 自动）&gt; 粘性会话
+      （硬过滤：排除 &gt; 禁用 &gt; 冷却 &gt; 模型冷却 &gt; 在途满 &gt; 成本分层）。
+      <b>排除</b>是硬约束：自动选号、全冷却兜底、粘性、指定都不会用它；它<b>不等于禁用账号</b> —— 桌面端照常能用。
+      <b>失败即换号</b>与策略无关：任何模式下失败都会写冷却、把该号加入本轮已试、再按同一策略重新选号。
+    </p>`;
+}
+
 function viewGateway() {
   const g = GATEWAY[state.scope], p = curPlatform();
   /* ★ 网关页有**两个类型**（见 `GW_SECTIONS`）：独立网关 / 统一网关。
@@ -3180,24 +3540,10 @@ function viewGateway() {
         —— 两个出口同时生效，否则禁用就是假开关。当前暴露 <b>${served}</b> / ${g.models.length} 个。
       </p>`;
   } else if (sub === "pool") {
-    /* 「显式指定」是选号优先级的第一级；指定是排他的，被指定的行置顶。 */
-    const pinned = state.pins[state.scope];
-    const rows = g.pool.slice().sort((x, y) => (x.account === pinned ? -1 : y.account === pinned ? 1 : 0));
-    /* 护栏卡在池表**之上**：它决定「谁能被选」，是池的上游条件。 */
-    main = quotaCardHtml(g) + `<div class="tbl-wrap"><table class="tbl">
-      <thead><tr><th>账号</th><th>积分</th><th>权重</th><th>状态</th><th>粘性</th><th style="width:96px">选号</th></tr></thead>
-      <tbody>${rows.map((x) => `<tr>
-        <td><b>${esc(x.account)}</b>${x.account === pinned ? ` <span class="badge info">已指定</span>` : ""}</td>
-        <td class="num">${fmt(x.credits)}</td><td class="num">${x.weight}</td>
-        <td>${x.state === "可用" ? `<span class="badge ok">${x.state}</span>` : x.state === "已排除" ? `<span class="badge bad">${x.state}</span>` : `<span class="badge warn">${x.state}</span>`}</td>
-        <td>${x.sticky ? `<span class="badge info">粘性</span>` : `<span class="muted tiny">—</span>`}</td>
-        <td>${x.state === "已排除"
-          ? `<button class="btn xs" disabled title="已排除的账号不能作为上游">指定</button>`
-          : x.account === pinned
-            ? `<button class="btn xs" data-act="pin|">取消指定</button>`
-            : `<button class="btn xs" data-act="pin|${esc(x.account)}">指定</button>`}</td>
-      </tr>`).join("")}</tbody></table></div>
-      <p class="tiny muted" style="margin:10px 2px 0">选号优先级：<b>显式指定</b> &gt; 粘性会话 &gt; 自动择优。指定是排他的——同一时刻只有一个账号被指定。</p>`;
+    /* 「显式指定」是选号优先级的第一级；指定是排他的，被指定的行置顶。
+       ★ 账号池分区的**全部内容**收在 `poolSection()`：计数格 / 模型暂停条 / 表 / 选号解释 /
+         失败明细，都在那儿按同一份池数据派生 —— 不在这里手写任何数字。 */
+    main = poolSection(g);
   } else if (sub === "proxy") {
     main = proxyPanelHtml();
   } else {
@@ -5807,13 +6153,103 @@ document.addEventListener("click", (e) => {
       break;
     case "pin": stop();
       if (a1) {
-        /* 已排除的账号不能成为上游（UI 已禁用按钮，这里再兜一层）。 */
+        /* 已排除的账号不能成为上游（UI 已禁用按钮，这里再兜一层）。
+           判据是 `excluded` 标记，不是 `state` —— 排除是**用户意图**，与账号健康正交。 */
         const row = (GATEWAY[state.scope].pool || []).find((x) => x.account === a1);
-        if (row && row.state === "已排除") { toast("err", `${a1} 已排除，不能指定`, "请先恢复该账号的积分与权重"); break; }
-        state.pins[state.scope] = a1; toast("ok", `已指定 ${a1}`, "该账号将优先承接网关请求");
+        if (row && row.excluded) { toast("err", `${a1} 已被排除，不能指定`, "先取消排除，再指定它"); break; }
+        /* 指定是**策略的第四个取值**（不是额外的开关）⇒ 切过去就把其它三档顶掉。 */
+        state.gwMode[state.scope] = "pinned";
+        state.pins[state.scope] = a1; toast("ok", `已指定 ${a1}`, "该账号优先承接；它不可用时会自动换号（偏好不是约束）");
       }
-      else { state.pins[state.scope] = null; toast("ok", "已取消指定", "恢复按权重自动择优"); }
+      else { state.gwMode[state.scope] = "auto"; state.pins[state.scope] = null; toast("ok", "已取消指定", "恢复按权重自动择优"); }
+      state.gwChain[state.scope] = null;
       renderContent(); break;
+    /* ── 账号池：排除 / 收费兜底 / 半开试探 / 模拟换号 / 重置 ──
+       ★ 排除是**硬约束**：自动选号、全冷却兜底、粘性、指定都不用它。
+       与「禁用」的区别必须讲清：禁用 = 这个号坏了（需人工恢复），排除 = 用户不想让网关用它。 */
+    case "pool-exclude": {
+      stop();
+      const g = GATEWAY[state.scope];
+      const row = (g.pool || []).find((x) => x.account === a1);
+      if (!row) break;
+      poolSnapshot(g);
+      row.excluded = !row.excluded;
+      if (row.excluded) {
+        row.excludedNote = row.excludedNote || "手动排除";
+        /* ① 排除与「指定」互斥：同一行既被指定又被排除，是两条规则在打架。 */
+        const wasPinned = state.gwMode[state.scope] === "pinned" && state.pins[state.scope] === row.account;
+        if (wasPinned) { state.pins[state.scope] = null; state.gwMode[state.scope] = "auto"; }
+        /* ② 排除时按 uid 清粘性：否则每个请求都要先查一次「它还能不能用」再解绑 ——
+              白跑一跳，而且「粘性」徽标会继续挂在已被排除的行上，自相矛盾。 */
+        const wasSticky = Boolean(row.sticky);
+        row.sticky = false;
+        toast("ok", `已排除 ${row.account}`,
+          `${wasPinned ? "已同时取消指定 · " : ""}${wasSticky ? "已解除 1 个会话绑定 · " : ""}网关不会再用它（含兜底与指定），账号本身仍可在客户端正常使用`);
+      } else {
+        delete row.excludedNote;
+        toast("ok", `已取消排除 ${row.account}`, "下一轮请求起重新参与选号");
+      }
+      state.gwChain[state.scope] = null;
+      renderContent();
+      break;
+    }
+    case "pool-payfallback": {
+      stop();
+      state.gwPayFallback[state.scope] = !state.gwPayFallback[state.scope];
+      const on = state.gwPayFallback[state.scope];
+      toast("ok", on ? "允许用收费号兜底" : "已关闭收费号兜底",
+        on ? "免费号全部不可用时切到收费号 —— 会真的消耗积分" : "免费号全部不可用时直接报错，不会偷偷花积分");
+      state.gwChain[state.scope] = null;
+      renderContent();
+      break;
+    }
+    case "pool-probe": {
+      stop();
+      const g = GATEWAY[state.scope];
+      const gate = g.modelGate;
+      if (!gate || gate.phase === "recovered") break;
+      poolSnapshot(g);
+      /* 半开：清掉该模型的全部冷却（试探成功的最强证据），闸门标记为已恢复。 */
+      (g.pool || []).forEach((x) => {
+        if (x.modelCool) x.modelCool = x.modelCool.filter((c) => c.model !== gate.model);
+      });
+      g.modelGate = { ...gate, phase: "recovered", remain: 0 };
+      state.gwChain[state.scope] = null;
+      toast("ok", "半开试探成功", `${gate.model} 已恢复：只放一个请求出去试，成功后才放开全量（失败则退避加倍）`);
+      renderContent();
+      break;
+    }
+    /* 模拟一轮完整请求（选号 → 429 → 写冷却 → 换号 → …）。演示用，真实实现里这条链在 relay 内。 */
+    case "pool-simulate": {
+      stop();
+      const g = GATEWAY[state.scope];
+      const model = gwModelOf(g);
+      const scope = state.scope;
+      poolSnapshot(g);
+      state.gwRoll[scope] = (state.gwRoll[scope] || 1) + 1;
+      const steps = poolSimulate(g, model, {
+        payFallback: !!state.gwPayFallback[scope],
+        mode: gwModeOf(scope),
+        seed: state.gwRoll[scope],
+      });
+      state.gwChain[scope] = steps;
+      const last = steps[steps.length - 1] || {};
+      if (last.kind === "ok") toast("ok", `命中 ${last.account}`, "失败的那一跳已写冷却，下一轮请求会跳过它");
+      else toast("err", "这一轮没成功", last.text || "没有可用账号");
+      renderContent();
+      break;
+    }
+    case "pool-reset": {
+      stop();
+      const g = GATEWAY[state.scope];
+      const ok = poolReset(g);
+      state.gwChain[state.scope] = null;
+      state.gwRoll[state.scope] = 1;
+      toast(ok ? "ok" : "err", ok ? "演示数据已复位" : "没有可复位的改动",
+        ok ? "冷却 / 模型闸门 / 排除都回到初始状态（策略与开关保持不变）" : "池还是初始状态");
+      renderContent();
+      break;
+    }
     case "set-sub": stop(); state.setSub = a1; renderContent(); break;
     /* ── 会话工作台（§3.15） ── */
     case "sess-client": stop(); state.sessionClient = a1; state.sessionFilter = "all"; renderContent(); break;
@@ -6466,6 +6902,21 @@ document.addEventListener("change", (e) => {
   const t = e.target;
   if (t.dataset && t.dataset.input === "sort") { state.sort = t.value; renderAccountList(); }
   if (t.dataset && t.dataset.input === "group") { state.group = t.value; renderAccountList(); }
+  /* 账号池的「指定账号」下拉：四档策略在同一个下拉里，边界处转成 `gwMode` + `pins` 两个状态位。
+     ★ 必须互斥 —— 它们是同一个枚举 `AccountStrategy` 的四个取值；
+       同时置位会让「指定」和「随机」互相打架（指定了却又在抽签）。
+     ★ 换策略 ⇒ 上一轮的换号链路不再代表当前策略，必须清掉（否则是陈旧假数据）。 */
+  if (t.hasAttribute && t.hasAttribute("data-gw-pin")) {
+    const v = t.value;
+    const mode = v === "__auto__" ? "auto"
+      : v === "__max_credits__" ? "max_credits"
+      : v === "__random__" ? "random"
+      : "pinned";
+    state.gwMode[state.scope] = mode;
+    state.pins[state.scope] = mode === "pinned" ? v : null;
+    state.gwChain[state.scope] = null;
+    renderContent();
+  }
   /* 抽屉里的分组选择器：改完即存（单值枚举，没有「保存」这一步的必要）。 */
   if (t.dataset && t.dataset.accountGroup) {
     if (t.value === "__new__") {

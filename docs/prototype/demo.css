@@ -1067,6 +1067,11 @@ tr.row-off td { opacity: .62; }
 .kpi-row > div { flex: 1; padding: 10px 12px; border-radius: 10px; background: var(--muted); }
 .kpi-row b { display: block; font-size: 18px; font-weight: 650; }
 .kpi-row span { font-size: 11px; color: var(--muted-fg); }
+/* 五态计数格：非 0 才上色（0 是正常态，染成警告色等于谎报军情）。 */
+.kpi-row > div.t-ok b { color: var(--success); }
+.kpi-row > div.t-warn b { color: var(--warning); }
+.kpi-row > div.t-bad b { color: var(--destructive); }
+.kpi-row > div.t-zero b { color: var(--muted-fg); }
 .sub-h { margin: 18px 0 8px; font-size: 12.5px; font-weight: 600; }
 .row-end { display: flex; justify-content: flex-end; margin-top: 12px; }
 
@@ -1619,3 +1624,38 @@ table.tbl tr.uni-sub td { background: color-mix(in oklab, var(--muted) 45%, tran
 }
 .kpicked .kp button { color: var(--muted-fg); }
 .kpicked .kp button:hover { color: var(--foreground); }
+
+/* ══════════════════════════════════════════════════════════════════════════
+   账号池：模型熔断条 / 选号说明（2026-10-22 从 3ba8080^ 搬回源文件）
+   ══════════════════════════════════════════════════════════════════════════
+   两条都是**解释性**构件：回答「为什么这个请求没落到那个号上」。
+   颜色沿用语义色（warning = 暂停、primary = 半开试探），不新造调色板。 */
+.pool-gate {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  padding: 9px 12px; margin-bottom: 12px; border-radius: 10px;
+  border: 1px solid color-mix(in oklab, var(--warning) 42%, transparent);
+  background: color-mix(in oklab, var(--warning) 10%, transparent);
+}
+/* 半开：已放行一次试探 ⇒ 换成 primary，与「还在暂停」视觉可分 */
+.pool-gate.probe {
+  border-color: color-mix(in oklab, var(--primary) 42%, transparent);
+  background: color-mix(in oklab, var(--primary) 9%, transparent);
+}
+.pool-gate b { font-size: 12.5px; }
+.pool-gate span { font-size: 11.5px; color: var(--muted-fg); }
+.pool-explain {
+  margin-top: 10px; padding: 10px 12px; border-radius: 10px;
+  background: var(--muted); font-size: 12px; line-height: 1.75;
+}
+.pool-explain b { font-weight: 600; }
+/* 「一个都选不出来」必须红字 + 给出口 —— 灰字会被读成「暂不可用」而不是「配置挡住了」 */
+.pool-explain .no { color: var(--destructive); font-weight: 600; }
+.pool-explain ul { margin: 4px 0 0; padding-left: 16px; }
+.pool-explain li { font-size: 11.5px; color: var(--muted-fg); }
+.pool-explain code {
+  font-family: ui-monospace, "SFMono-Regular", Consolas, monospace;
+  font-size: 11px; padding: 0 3px; border-radius: 4px;
+  background: color-mix(in oklab, var(--foreground) 7%, transparent);
+}
+/* 表格里的「在途」：达到上限时用红字（它是**临时**不可选，不是账号坏了） */
+td.num.full { color: var(--destructive); font-weight: 600; }

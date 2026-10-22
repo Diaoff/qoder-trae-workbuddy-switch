@@ -796,12 +796,23 @@ const GATEWAY = {
     /* 模型清单的来源（§3.17）：实时 / 已保存 / 内置 —— 三级都必须显式标注，
        不许把「内置」伪装成「实时」（用户照着清单调用会扑空）。 */
     catalog: { source: "live", fetchedAt: "12 分钟前", fetchedAbs: "2026-10-03 12:38", note: null },
+    /* ★ 五态互斥（可用 / 冷却 / 禁用 / 零积分 / **已排除**）—— 排除从 `state` 里**独立出来**
+       成为 `excluded` 标记：它是**用户意图**，与账号健康正交（被排除 ≠ 账号坏了）。
+       `tier` 成本分层（free 0 / unknown 1 / paid 2）、`inFlight/maxInFlight` 在途租约、
+       `modelCool` 模型级冷却、`willFail` 演示用的失败注入 —— 全部由 poolSection 派生。 */
     pool: [
-      { account: "jackey", credits: 1240, weight: 100, state: "可用", sticky: true },
-      { account: "team-shared", credits: 860, weight: 80, state: "可用", sticky: false },
-      { account: "qa-bot", credits: 120, weight: 20, state: "余额偏低", sticky: false },
-      { account: "design-lab", credits: 0, weight: 0, state: "已排除", sticky: false },
+      { account: "jackey", credits: 1240, weight: 100, state: "可用", sticky: true, tier: "free", inFlight: 1, maxInFlight: 3, willFail: "429" },
+      { account: "team-shared", credits: 860, weight: 80, state: "可用", sticky: false, tier: "free", inFlight: 0, maxInFlight: 3,
+        modelCool: [{ model: "gpt-5-codex", remain: 192 }] },
+      { account: "qa-bot", credits: 120, weight: 20, state: "可用", low: true, sticky: false, tier: "paid", inFlight: 0, maxInFlight: 3,
+        modelCool: [{ model: "gpt-5-codex", remain: 48 }] },
+      { account: "backup-01", credits: 480, weight: 30, state: "可用", sticky: false, tier: "paid", inFlight: 3, maxInFlight: 3 },
+      { account: "design-lab", credits: 320, weight: 0, state: "可用", sticky: false, tier: "free", inFlight: 0, maxInFlight: 3,
+        excluded: true, excludedNote: "留给客户端自己用" },
     ],
+    /* 模型级暂停：同一模型在 ≥2 个账号上先后被限流 ⇒ 该模型整体暂停，
+       到期后只放**一个**请求做半开试探 —— 否则每个请求都要把每个账号各撞一遍。 */
+    modelGate: { model: "gpt-5-codex", accounts: 2, remain: 42, phase: "paused" },
     logs: [
       { time: "10:38:12", model: "claude-sonnet-4.5", account: "jackey", status: 200, ms: 842, tokens: 1284 },
       { time: "10:37:44", model: "gpt-5-codex", account: "team-shared", status: 200, ms: 610, tokens: 402 },
@@ -816,7 +827,7 @@ const GATEWAY = {
     keys: [{ id: "k4", name: "国际版 Key", masked: "bs_live_1a55••••••••••••88d0", scope: "国际版", created: "2026-09-25", lastUsed: "昨天", requests: 26 }],
     models: [{ name: "claude-sonnet-4.5", provider: "anthropic", scope: "国际版", available: true, efforts: ["low", "medium", "high", "xhigh", "max"], defaultEffort: "high", credits: 1.33 }],
     catalog: { source: "cached", fetchedAt: "昨天 21:04", fetchedAbs: "2026-10-02 21:04", note: "本次探测超时（8s），使用上次成功的结果" },
-    pool: [{ account: "jackey-global", credits: 720, weight: 100, state: "可用", sticky: true }],
+    pool: [{ account: "jackey-global", credits: 720, weight: 100, state: "可用", sticky: true, tier: "free", inFlight: 0, maxInFlight: 2 }],
     logs: [{ time: "09:12:30", model: "claude-sonnet-4.5", account: "jackey-global", status: 200, ms: 1120, tokens: 640 }],
   },
   "trae-cn": {
