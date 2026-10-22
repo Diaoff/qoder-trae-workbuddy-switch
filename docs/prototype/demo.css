@@ -1527,3 +1527,95 @@ body.agg-mode .sidebar { display: none; }
    分隔线 + 独立分组标题让「聚合 ≠ 第 7 个作用域」在视觉上成立。 */
 .scope-menu .sep { height: 1px; margin: 5px 8px; background: var(--border); }
 .scope-menu .scope-item .t b .dim { color: var(--muted-fg); font-weight: 400; }
+
+/* ══════════════════════════════════════════════════════════════════════════
+   网关页的**两个类型**（issue #76 同期补回，2026-10-22）
+   ══════════════════════════════════════════════════════════════════════════
+   独立网关 / 统一网关是**同一页的两个类型**（见 `GW_SECTIONS`）：左栏顶部切类型，
+   下面切该类型的分区。三种放法都试过（塞进子导航第 7 项 / 升成侧栏独立目的地 /
+   当前方案），只有「类型 + 分区」两个轴各归其位这条不产生错位。
+
+   ⚠️ 这套东西此前**只存在于手改的单文件原型里**，而单文件自 2026-10-21 起是
+   `npm run proto:single` 的**产物** ⇒ 一次重新生成就全丢了（`verify-unified-pool`
+   因此长期是红的）。现在它在源文件里，生成不会再丢。 */
+.gw-type-label { font-size: 10.5px; font-weight: 600; letter-spacing: .02em; color: var(--muted-fg); padding: 0 2px 6px; }
+.gw-type-seg { display: grid; grid-template-columns: 1fr 1fr; gap: 2px; padding: 3px; border-radius: 10px; background: var(--muted); }
+.gw-type-seg button { height: 28px; border-radius: 8px; font-size: 12px; color: var(--muted-fg); border: 1px solid transparent; transition: background .14s, color .14s; }
+.gw-type-seg button:hover { color: var(--foreground); }
+.gw-type-seg button.on { background: var(--card); color: var(--foreground); font-weight: 550; border-color: var(--border); }
+@media (max-width: 900px) { .split { flex-direction: column; } .side-col { width: 100%; position: static; } .gw-type-seg { max-width: 320px; } .subnav { width: 100%; flex-direction: row; flex-wrap: wrap; position: static; } .subnav button.on::before { display: none; } }
+.uni-ns-groups { display: flex; flex-direction: column; gap: 12px; }
+/* ★ 无边框：卡片自身已有边框，再套一层会成三层嵌套边框。 */
+.uni-ns-plat { font-size: 11.5px; font-weight: 600; color: var(--muted-fg); margin-bottom: 6px; }
+/* ★ 网格而不是 flex-wrap：多行时列对齐，不再参差。 */
+.uni-ns-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(212px, 1fr)); gap: 4px 14px; }
+.uni-ns { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; cursor: pointer; padding: 2px 0; min-width: 0; }
+.uni-ns input { width: 14px; height: 14px; accent-color: var(--primary); cursor: pointer; margin: 0; }
+.uni-ns code { font-family: ui-monospace, "SFMono-Regular", Consolas, monospace; font-size: 11.5px; }
+/* 勾选项前的池状态点：绿 = 池里有可用账号，红 = 一个可用的都没有。
+   用点而不是徽标 —— 勾选区一行放不下第三个徽标，点不挤。 */
+.uni-ns-dot { width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; }
+/* ★ 客户端名**直接显示**，不再只进 title —— hover 才有人话 = 触屏 / 键盘用户拿不到。 */
+.uni-ns-name {
+  font-size: 11px; color: var(--muted-fg); min-width: 0;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+/* 账号池格：**可用数在前**（用户真正要的那个数），不可用项按原因跟在后面。 */
+.uni-pool { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; }
+.uni-pool-foot { display: flex; align-items: center; gap: 2px; margin-top: 3px; }
+.uni-more { margin-top: 9px; }
+/* 表格里的展开行（「看清单」/「看池」）共用底色。 */
+table.tbl tr.uni-sub td { background: color-mix(in oklab, var(--muted) 45%, transparent); }
+/* 就地展开的池明细：内嵌一张小表 —— 不跳页（跳走会丢掉本页唯一的价值：跨平台视野）。 */
+.uni-pool-detail { padding: 2px 0; }
+.uni-pool-tbl { width: auto; min-width: 340px; }
+.uni-pool-tbl th, .uni-pool-tbl td { padding: 4px 16px 4px 0; font-size: 12px; }
+
+/* ══════════════════════════════════════════════════════════════════════════
+   密钥权限（issue #76）：行内 chip + 右侧抽屉
+   ══════════════════════════════════════════════════════════════════════════
+   每把密钥两项策略：**用量配额**（计量单位 token / 请求数，重置周期 不重置 /
+   每日 / 每周 / 自然月）与 **可访问账号**（全部账号 / 指定账号白名单，
+   可按账号已有的**分组**整组选取）。
+
+   两项都挂在**现有密钥行**上（不新增导航项）—— 权限是密钥的属性，不是新资源。
+   真实组件同形：`src/components/gateway/api-key-table.tsx`（三个平台共用）。 */
+
+/* 行内可点 chip：两枚（额度 / 账号），点哪枚就跳到抽屉的哪一段。 */
+.kchip {
+  display: inline-flex; align-items: center; gap: 5px; height: 22px; padding: 0 8px;
+  border-radius: 7px; font-size: 11px; border: 1px solid var(--border);
+  background: var(--card-2); color: var(--muted-fg); white-space: nowrap; transition: all .14s;
+}
+.kchip:hover { border-color: var(--border-strong); color: var(--foreground); }
+.kchip.on { background: color-mix(in oklab, var(--primary) 16%, transparent); border-color: color-mix(in oklab, var(--primary) 38%, transparent); color: var(--primary); }
+.kchip.warn { color: var(--warning); border-color: color-mix(in oklab, var(--warning) 40%, transparent); }
+.kchip.danger { color: var(--danger); border-color: color-mix(in oklab, var(--danger) 45%, transparent); }
+.kchip .dot { width: 6px; height: 6px; border-radius: 3px; background: currentColor; opacity: .75; }
+
+/* 配额进度条：画的是**已用 / 上限**（用户在意的就是「还能用多少」）。 */
+.kbar { height: 4px; border-radius: 3px; background: var(--muted); overflow: hidden; margin-top: 4px; }
+.kbar > i { display: block; height: 100%; border-radius: 3px; background: var(--primary); }
+.kbar.warn > i { background: var(--warning); }
+.kbar.danger > i { background: var(--danger); }
+
+/* 抽屉里的账号勾选行与分组 chip。 */
+.kacct { display: flex; align-items: center; gap: 9px; padding: 7px 10px; border-top: 1px solid var(--border); cursor: pointer; }
+.kacct:first-child { border-top: 0; }
+.kacct:hover { background: var(--accent); }
+.kacct .nm { font-size: 12.5px; }
+.klist { border: 1px solid var(--border); border-radius: 10px; overflow: hidden; max-height: 188px; overflow-y: auto; }
+.kgrp {
+  display: inline-flex; align-items: center; gap: 6px; height: 24px; padding: 0 9px; border-radius: 8px;
+  border: 1px solid var(--border); background: var(--card-2); font-size: 11.5px; color: var(--muted-fg);
+  transition: all .14s;
+}
+.kgrp:hover { border-color: var(--border-strong); color: var(--foreground); }
+.kgrp.on { background: color-mix(in oklab, var(--primary) 16%, transparent); border-color: color-mix(in oklab, var(--primary) 38%, transparent); color: var(--primary); }
+.kpicked { display: flex; flex-wrap: wrap; gap: 5px; }
+.kpicked .kp {
+  display: inline-flex; align-items: center; gap: 5px; height: 22px; padding: 0 6px 0 8px;
+  border-radius: 6px; background: var(--muted); font-size: 11.5px;
+}
+.kpicked .kp button { color: var(--muted-fg); }
+.kpicked .kp button:hover { color: var(--foreground); }

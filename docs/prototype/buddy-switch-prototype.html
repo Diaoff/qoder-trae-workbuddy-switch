@@ -1536,6 +1536,48 @@ body.agg-mode .sidebar { display: none; }
 .scope-menu .sep { height: 1px; margin: 5px 8px; background: var(--border); }
 .scope-menu .scope-item .t b .dim { color: var(--muted-fg); font-weight: 400; }
 
+/* ══════════════════════════════════════════════════════════════════════════
+   网关页的**两个类型**（issue #76 同期补回，2026-10-22）
+   ══════════════════════════════════════════════════════════════════════════
+   独立网关 / 统一网关是**同一页的两个类型**（见 `GW_SECTIONS`）：左栏顶部切类型，
+   下面切该类型的分区。三种放法都试过（塞进子导航第 7 项 / 升成侧栏独立目的地 /
+   当前方案），只有「类型 + 分区」两个轴各归其位这条不产生错位。
+
+   ⚠️ 这套东西此前**只存在于手改的单文件原型里**，而单文件自 2026-10-21 起是
+   `npm run proto:single` 的**产物** ⇒ 一次重新生成就全丢了（`verify-unified-pool`
+   因此长期是红的）。现在它在源文件里，生成不会再丢。 */
+.gw-type-label { font-size: 10.5px; font-weight: 600; letter-spacing: .02em; color: var(--muted-fg); padding: 0 2px 6px; }
+.gw-type-seg { display: grid; grid-template-columns: 1fr 1fr; gap: 2px; padding: 3px; border-radius: 10px; background: var(--muted); }
+.gw-type-seg button { height: 28px; border-radius: 8px; font-size: 12px; color: var(--muted-fg); border: 1px solid transparent; transition: background .14s, color .14s; }
+.gw-type-seg button:hover { color: var(--foreground); }
+.gw-type-seg button.on { background: var(--card); color: var(--foreground); font-weight: 550; border-color: var(--border); }
+@media (max-width: 900px) { .split { flex-direction: column; } .side-col { width: 100%; position: static; } .gw-type-seg { max-width: 320px; } .subnav { width: 100%; flex-direction: row; flex-wrap: wrap; position: static; } .subnav button.on::before { display: none; } }
+.uni-ns-groups { display: flex; flex-direction: column; gap: 12px; }
+/* ★ 无边框：卡片自身已有边框，再套一层会成三层嵌套边框。 */
+.uni-ns-plat { font-size: 11.5px; font-weight: 600; color: var(--muted-fg); margin-bottom: 6px; }
+/* ★ 网格而不是 flex-wrap：多行时列对齐，不再参差。 */
+.uni-ns-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(212px, 1fr)); gap: 4px 14px; }
+.uni-ns { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; cursor: pointer; padding: 2px 0; min-width: 0; }
+.uni-ns input { width: 14px; height: 14px; accent-color: var(--primary); cursor: pointer; margin: 0; }
+.uni-ns code { font-family: ui-monospace, "SFMono-Regular", Consolas, monospace; font-size: 11.5px; }
+/* 勾选项前的池状态点：绿 = 池里有可用账号，红 = 一个可用的都没有。
+   用点而不是徽标 —— 勾选区一行放不下第三个徽标，点不挤。 */
+.uni-ns-dot { width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; }
+/* ★ 客户端名**直接显示**，不再只进 title —— hover 才有人话 = 触屏 / 键盘用户拿不到。 */
+.uni-ns-name {
+  font-size: 11px; color: var(--muted-fg); min-width: 0;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+/* 账号池格：**可用数在前**（用户真正要的那个数），不可用项按原因跟在后面。 */
+.uni-pool { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; }
+.uni-pool-foot { display: flex; align-items: center; gap: 2px; margin-top: 3px; }
+.uni-more { margin-top: 9px; }
+/* 表格里的展开行（「看清单」/「看池」）共用底色。 */
+table.tbl tr.uni-sub td { background: color-mix(in oklab, var(--muted) 45%, transparent); }
+/* 就地展开的池明细：内嵌一张小表 —— 不跳页（跳走会丢掉本页唯一的价值：跨平台视野）。 */
+.uni-pool-detail { padding: 2px 0; }
+.uni-pool-tbl { width: auto; min-width: 340px; }
+.uni-pool-tbl th, .uni-pool-tbl td { padding: 4px 16px 4px 0; font-size: 12px; }
 
 /* ══════════════════════════════════════════════════════════════════════════
    密钥权限（issue #76）：行内 chip + 右侧抽屉
@@ -1585,6 +1627,7 @@ body.agg-mode .sidebar { display: none; }
 }
 .kpicked .kp button { color: var(--muted-fg); }
 .kpicked .kp button:hover { color: var(--foreground); }
+
 </style>
 </head>
 <body>
@@ -2667,29 +2710,6 @@ const GATEWAY = {
   },
 };
 
-/* ─────────── 密钥策略（issue #76）───────────
-   **与 `GATEWAY[...].keys` 分开放**：策略是「另一张表」，不是密钥记录上的一堆字段。
-   真实实现里也是 `ApiKeyRecord` 旁边多一张策略/用量表（见 `specs/KEY-PERMISSION-UI-DESIGN.md`）。
-
-   `quota.mode` = unlimited | limited；`unit` = token | request（业务代理没有 token）；
-   `period` = none | daily | weekly | monthly（自然月对齐成本归属）。
-   `scope.mode` = all | selected；`scope.accounts` 是**账号 id**（可按账号自带的
-   `group` 整组选取 —— 分组是账号页已有的同一份数据，不另造）。 */
-const KEY_POLICY = {
-  k1: { quota: { mode: "limited", limit: 10000000, unit: "token", period: "monthly", used: 6200000 }, scope: { mode: "all" } },
-  k2: { quota: { mode: "unlimited" }, scope: { mode: "all" } },
-  k3: { quota: { mode: "limited", limit: 1000000, unit: "token", period: "none", used: 1000000 }, scope: { mode: "selected", accounts: ["a1"] } },
-  k4: { quota: { mode: "unlimited" }, scope: { mode: "all" } },
-  k5: { quota: { mode: "limited", limit: 50000, unit: "request", period: "daily", used: 43000 }, scope: { mode: "selected", accounts: ["t1", "t2"] } },
-  k6: { quota: { mode: "unlimited" }, scope: { mode: "all" } },
-  k7: { quota: { mode: "limited", limit: 20000000, unit: "token", period: "monthly", used: 2000000 }, scope: { mode: "all" } },
-  k8: { quota: { mode: "unlimited" }, scope: { mode: "all" } },
-  k9: { quota: { mode: "unlimited" }, scope: { mode: "all" } },
-  k10: { quota: { mode: "limited", limit: 10000000, unit: "token", period: "monthly", used: 8600000 }, scope: { mode: "selected", accounts: ["a1", "a2", "a3"] } },
-};
-const KEY_PERIOD_TEXT = { none: "不重置（累计）", daily: "每日 00:00 重置", weekly: "每周一 00:00 重置", monthly: "自然月结算" };
-const KEY_PERIOD_SHORT = { none: "累计", daily: "每日", weekly: "每周", monthly: "自然月" };
-
 /* ─────────── 关联会话（v2.3）───────────
    同一份会话被复制到多个账号后，各账号里的副本会各自演化
    ⇒ 需要回答「谁落后 / 谁分叉 / 同步给谁」。
@@ -3061,6 +3081,29 @@ const APP_UPDATE = {
    放在文件末尾：此时 USAGE / SCOPES / GATEWAY 全部已定义。 */
 for (const _id of Object.keys(USAGE)) USAGE[_id].ext = buildUsageExtras(_id);
 
+/* ─────────── 密钥策略（issue #76）───────────
+   **与 `GATEWAY[...].keys` 分开放**：策略是「另一张表」，不是密钥记录上的一堆字段。
+   真实实现里也是 `ApiKeyRecord` 旁边多一张策略/用量表（见 `specs/KEY-PERMISSION-UI-DESIGN.md`）。
+
+   `quota.mode` = unlimited | limited；`unit` = token | request（业务代理没有 token）；
+   `period` = none | daily | weekly | monthly（自然月对齐成本归属）。
+   `scope.mode` = all | selected；`scope.accounts` 是**账号 id**（可按账号自带的
+   `group` 整组选取 —— 分组是账号页已有的同一份数据，不另造）。 */
+const KEY_POLICY = {
+  k1: { quota: { mode: "limited", limit: 10000000, unit: "token", period: "monthly", used: 6200000 }, scope: { mode: "all" } },
+  k2: { quota: { mode: "unlimited" }, scope: { mode: "all" } },
+  k3: { quota: { mode: "limited", limit: 1000000, unit: "token", period: "none", used: 1000000 }, scope: { mode: "selected", accounts: ["a1"] } },
+  k4: { quota: { mode: "unlimited" }, scope: { mode: "all" } },
+  k5: { quota: { mode: "limited", limit: 50000, unit: "request", period: "daily", used: 43000 }, scope: { mode: "selected", accounts: ["t1", "t2"] } },
+  k6: { quota: { mode: "unlimited" }, scope: { mode: "all" } },
+  k7: { quota: { mode: "limited", limit: 20000000, unit: "token", period: "monthly", used: 2000000 }, scope: { mode: "all" } },
+  k8: { quota: { mode: "unlimited" }, scope: { mode: "all" } },
+  k9: { quota: { mode: "unlimited" }, scope: { mode: "all" } },
+  k10: { quota: { mode: "limited", limit: 10000000, unit: "token", period: "monthly", used: 8600000 }, scope: { mode: "selected", accounts: ["a1", "a2", "a3"] } },
+};
+const KEY_PERIOD_TEXT = { none: "不重置（累计）", daily: "每日 00:00 重置", weekly: "每周一 00:00 重置", monthly: "自然月结算" };
+const KEY_PERIOD_SHORT = { none: "累计", daily: "每日", weekly: "每周", monthly: "自然月" };
+
 </script>
 <script>
 /* ==========================================================================
@@ -3109,7 +3152,11 @@ const state = {
   groupNew: null,
   /* 用量工作台 */
   usageTab: "trend", range: 30, rangeMode: "preset", customFrom: "", customTo: "", rangeOpen: false, merge: false, usageBook: "all",
-  /* 子导航 */
+  /* 子导航
+     ★ 网关页有**两个类型**（`independent` 独立网关 / `unified` 统一网关）：
+     `gwType` 是类型轴（左栏顶部的分段控件），`gwSub` 是该类型下的**分区**轴。
+     两个轴各归其位 —— 挤在同一层会让「统一网关跨全部作用域」这件事必须靠一行说明去圆。 */
+  gwType: "independent",
   gwSub: "overview",
   gwApi: "openai",      // 快速接入的协议 Tab：openai / anthropic
   gwScanning: false,    // 模型清单「识别中」（§3.17）
@@ -5308,6 +5355,585 @@ function quotaCardHtml(g) {
   </section>`;
 }
 
+const UNI_NS = [
+  { id: "wb-cn",           plat: "WorkBuddy", program: "桌面端",         client: "WorkBuddy",    fn: "—",              tier: "core" },
+  { id: "wb-global",       plat: "WorkBuddy", program: "桌面端",         client: "WorkBuddy AI", fn: "—",              tier: "core" },
+  { id: "trae-cn",         plat: "Trae",      program: "Trae（合并版）", client: "Trae CN",      fn: "chat_v3",        tier: "core" },
+  { id: "trae-global",     plat: "Trae",      program: "Trae（合并版）", client: "Trae",         fn: "chat_v3",        tier: "core" },
+  { id: "traework-cn",     plat: "Trae",      program: "TraeWork",       client: "TraeWork CN",  fn: "solo_work_lite", tier: "extra" },
+  { id: "traework-global", plat: "Trae",      program: "TraeWork",       client: "TraeWork",     fn: "solo_work_lite", tier: "extra" },
+  { id: "traecode-cn",     plat: "Trae",      program: "TraeCode",       client: "TraeCode CN",  fn: "chat_v3",        tier: "extra" },
+  { id: "traecode-global", plat: "Trae",      program: "TraeCode",       client: "TraeCode",     fn: "chat_v3",        tier: "extra" },
+  /* ★ Qoder 是**派生层**（平台 × 区域），不是扩展层 —— 真实实现里由 `Scope::all()`
+     自动生成，所以「新增平台」只加声明、命名空间自动出现。 */
+  { id: "qoder-cn",       plat: "Qoder",     program: "Qoder 桌面版",   client: "Qoder CN",     fn: "—",              tier: "core" },
+  { id: "qoder-global",   plat: "Qoder",     program: "Qoder 桌面版",   client: "Qoder",        fn: "—",              tier: "core" },
+];
+
+/* 逐命名空间的清单来源。★ 非「实时」必须带原因 —— 一个总徽标糊过去不允许。 */
+const UNI_CATALOG = {
+  "wb-cn":           { source: "live",    fetchedAt: "刚刚",     count: 16, models: ["auto", "hy4-preview", "hy3", "hy3-x", "deepseek-v4.1-flash", "glm-5.3", "glm-5.3-flash", "glm-5.2"] },
+  "wb-global":       { source: "cached",  fetchedAt: "3 小时前", count: 20, note: "展示的是上次成功识别的缓存目录（本次未能连上上游）", models: ["default-model", "fast-model", "balanced-model", "deepseek-v4.1-flash", "gpt-5.6-sol", "glm-5.3"] },
+  "trae-cn":         { source: "live",    fetchedAt: "刚刚",     count: 19, models: ["deepseek-v4.1-flash", "Doubao-Seed-2.1-Pro", "glm-5.3", "glm-5.3-flash", "kimi-k3", "minimax-m3", "qwen3.8-max"] },
+  "trae-global":     { source: "live",    fetchedAt: "刚刚",     count: 18, models: ["deepseek-v4.1-flash", "glm-5.3", "kimi-k3", "qwen3.8-flash"] },
+  "traework-cn":     { source: "builtin", fetchedAt: null,       count: 26, note: "客户端未拉取过模型清单（Trae 需至少启动过一次），展示的是静态兜底清单", models: ["deepseek-v4.1-flash", "glm-5.3", "doubao-seed-2.1-pro"] },
+  "traework-global": { source: "builtin", fetchedAt: null,       count: 26, note: "客户端未拉取过模型清单（Trae 需至少启动过一次），展示的是静态兜底清单", models: ["deepseek-v4.1-flash", "glm-5.3"] },
+  "traecode-cn":     { source: "cached",  fetchedAt: "昨天",     count: 19, note: "展示的是上次成功识别的缓存目录（本次未能连上上游）", models: ["deepseek-v4.1-flash", "glm-5.3", "kimi-k3"] },
+  "traecode-global": { source: "builtin", fetchedAt: null,       count: 18, note: "客户端未拉取过模型清单（Trae 需至少启动过一次），展示的是静态兜底清单", models: ["deepseek-v4.1-flash"] },
+  "qoder-cn":       { source: "live",    fetchedAt: "刚刚",     count: 14, models: ["Qwen3.8-Max", "GLM-5.1", "Kimi-K3", "MiniMax-M3", "Qwen3.8-Flash"] },
+  "qoder-global":   { source: "live",    fetchedAt: "刚刚",     count: 17, models: ["Qwen3.8-Max", "Ultimate", "DeepSeek-V4-Pro", "Performance", "Efficient"] },
+};
+
+/* ── 命名空间 → 上游账号池（★ 本次新增）──
+   ★ 这是「不知道它的账号池」的直接修复：路由**本来就是按池分派的**
+     （真实实现 = `gateway_namespace::relay_target_of`），但界面上一个池的数字都没有。
+   ★ 计数**从 `GATEWAY[pool].pool` 逐条数出来**，绝不另写一套数字 ——
+     「同一个量显示成两个数」就是图在撒谎（本仓演示数据红线）。
+   四条扩展程序线（TraeWork / TraeCode）复用 Trae 的两个池。 */
+const UNI_POOL_TARGET = {
+  "wb-cn": "wb-cn", "wb-global": "wb-global",
+  "trae-cn": "trae-cn", "trae-global": "trae-global",
+  "traework-cn": "trae-cn", "traework-global": "trae-global",
+  "traecode-cn": "trae-cn", "traecode-global": "trae-global",
+  "qoder-cn": "qoder-cn", "qoder-global": "qoder-global",
+};
+
+/* 该命名空间背后的池健康。原型池条目：`state` = 互斥五态（可用 / 冷却 / 禁用 / 零积分 / 已排除），
+   `modelCool` / `inFlight` = 正交标记（真实实现同形，见 `pool::status_list`）。
+   ★ 「已排除」是**用户显式意图**，必须从「可用」里扣掉 —— 否则摘要条说「4 可用」，
+     而实际只有 3 个能被选中，数字与事实不符（本仓演示数据红线）。 */
+function uniPoolOf(nsId) {
+  const target = UNI_POOL_TARGET[nsId] || nsId;
+  const pool = (GATEWAY[target] || {}).pool || [];
+  const excluded = pool.filter((x) => x.excluded).length;
+  const count = (s) => pool.filter((x) => !x.excluded && x.state === s).length;
+  return { target, total: pool.length, available: count("可用"), low: pool.filter((x) => x.low && !x.excluded).length, excluded };
+}
+
+/* 摘要条的池数字：按**已启用命名空间**聚合，同一个池被多条命名空间引用只算一次。 */
+function uniPoolTotals() {
+  const seen = new Set();
+  let available = 0, total = 0;
+  UNI_NS.filter((x) => UNI.namespaces.has(x.id)).forEach((x) => {
+    const p = uniPoolOf(x.id);
+    if (seen.has(p.target)) return;
+    seen.add(p.target);
+    available += p.available; total += p.total;
+  });
+  return { available, total };
+}
+
+/* ★ 四态可用性判据 —— 顺序即优先级：先看「启用没」，再看「池里有没有号」，最后才看清单。
+   「已识别 ≠ 可用」必须落到一个**可判真假**的徽标上，否则用户只能靠猜。 */
+function uniNsHealth(x) {
+  if (!UNI.namespaces.has(x.id)) return { cls: "", label: "已停用", hint: "本网关未启用它，调用会返回 400" };
+  const p = uniPoolOf(x.id);
+  if (p.total === 0) return { cls: "bad", label: "无账号", hint: `上游池 ${p.target} 里一个账号都没有` };
+  if (p.available === 0) return { cls: "bad", label: "无可用账号", hint: `池里有 ${p.total} 个账号，但此刻没有一个可用（已排除 / 冷却 / 禁用 / 零积分）` };
+  const c = UNI_CATALOG[x.id] || { count: 0 };
+  if (!c.count) return { cls: "warn", label: "未识别模型", hint: "还没识别到模型清单，客户端从 /v1/models 拿不到东西" };
+  return { cls: "ok", label: "可调用", hint: `${p.available} 个账号可用 · ${c.count} 个模型已识别` };
+}
+
+/* 账号池格。★ 没有可用账号时给「0 可用」而不是留白 —— 留白会被读成「没这个功能」。 */
+function uniPoolCellHtml(nsId) {
+  const p = uniPoolOf(nsId);
+  if (p.total === 0) {
+    /* ★ 空池时**没有明细可展开**，但这正是最需要出口的时候 —— 直接给「去加账号」。 */
+    return `<span class="badge bad">0 可用</span>
+      <div class="uni-pool-foot">
+        <span class="tiny muted">池 <span class="mono">${esc(p.target)}</span> 里没有账号</span>
+        <button class="btn ghost xs" data-act="uni-pool-go|${esc(p.target)}">去加账号</button>
+      </div>`;
+  }
+  const parts = [`<span class="badge ${p.available ? "ok" : "bad"}">${p.available} 可用</span>`];
+  if (p.low) parts.push(`<span class="badge warn">${p.low} 余额偏低</span>`);
+  if (p.excluded) parts.push(`<span class="badge bad">${p.excluded} 已排除</span>`);
+  return `<div class="uni-pool">${parts.join("")}</div>
+    <div class="uni-pool-foot">
+      <span class="tiny muted">共 ${p.total} 个 · <span class="mono">${esc(p.target)}</span></span>
+      <button class="btn ghost xs" data-act="uni-pool-toggle|${esc(nsId)}"
+        aria-expanded="${UNI.poolOpen.has(nsId) ? "true" : "false"}"
+        title="就地展开该池的账号明细（不离开本页）">${UNI.poolOpen.has(nsId) ? "收起池" : "看池"}</button>
+    </div>`;
+}
+
+/* ★ 一句话结论（第二轮新增）。用户不该自己把「6 个命名空间 / 8 个可用账号 / 共 14」
+   翻译成「现在到底能不能用」。判据顺序 = 启用 → 池 → 清单，与「可用性」列同源。 */
+function uniVerdict() {
+  if (!UNI.enabled) {
+    return { cls: "", label: "未启用", hint: "统一网关已关闭，端口上没有监听。下面的配置会照常保存，启用后生效。" };
+  }
+  const on = UNI_NS.filter((x) => UNI.namespaces.has(x.id));
+  if (!on.length) return { cls: "warn", label: "没有启用任何命名空间", hint: "至少勾一个，否则所有调用都会返回 400。" };
+  const dead = on.filter((x) => uniPoolOf(x.id).available === 0);
+  if (dead.length === on.length) return { cls: "bad", label: "全部不可用", hint: "已启用的命名空间背后都没有可用账号。" };
+  if (dead.length) return { cls: "warn", label: `部分不可用 · ${dead.length} 段`, hint: `这些命名空间背后没有可用账号：${dead.map((x) => x.id).join("、")}` };
+  return { cls: "ok", label: "可用", hint: `${on.length} 个命名空间背后都有可用账号。` };
+}
+
+/* 行内展开的池明细（★ 第二轮：从「跳走」改成「就地展开」）。
+   为什么改：统一网关**唯一的价值就是跨平台视野** —— 一跳走就退化成普通网关卡，
+   想对比两个命名空间的池得来回切作用域。
+   ★ 深链（去该平台自己的页）保留为**次要出口**：选号 / 粘性 / 恢复等**操作**才需要走。 */
+function uniPoolDetailHtml(nsId) {
+  const p = uniPoolOf(nsId);
+  const pool = (GATEWAY[p.target] || {}).pool || [];
+  if (!pool.length) {
+    return `<div class="uni-pool-detail">
+      <span class="tiny muted">池 <span class="mono">${esc(p.target)}</span> 里一个账号都没有 —— 去该平台的账号页添加后才能调通。</span>
+      <div style="margin-top:6px"><button class="btn ghost xs" data-act="uni-pool-go|${esc(p.target)}">去 ${esc(p.target)} 的网关页</button></div>
+    </div>`;
+  }
+  return `<div class="uni-pool-detail">
+    <table class="tbl uni-pool-tbl">
+      <thead><tr><th scope="col">账号</th><th scope="col">积分</th><th scope="col">状态</th></tr></thead>
+      <tbody>${pool.map((x) => `<tr${x.excluded ? ' class="row-off"' : ""}>
+        <td>${esc(x.account)}${x.sticky ? ` <span class="badge info">粘性</span>` : ""}</td>
+        <td class="num">${fmt(x.credits)}</td>
+        <td>${poolStateBadge(x)}${(x.modelCool || []).length ? ` <span class="badge warn" title="${esc((x.modelCool || []).map((c) => `${c.model} 剩余 ${dur(c.remain)}`).join("；"))}">${(x.modelCool || []).length} 模型限流</span>` : ""}</td>
+      </tr>`).join("")}</tbody></table>
+    <div class="row" style="gap:8px;margin-top:6px;align-items:center;flex-wrap:wrap">
+      <span class="tiny muted">只读摘要 —— 选号 / 粘性 / 恢复等<b>操作</b>在该平台自己的网关页</span>
+      <div class="grow"></div>
+      <button class="btn ghost xs" data-act="uni-pool-go|${esc(p.target)}">去 ${esc(p.target)} 的网关页</button>
+    </div>
+  </div>`;
+}
+
+/* 统一网关状态：**独立于 state** —— 它是跨作用域的，不能被切作用域重置。 */
+const UNI = {
+  enabled: true,
+  bind: "127.0.0.1",
+  port: 57892,
+  scanning: false,
+  showMore: false,
+  expanded: new Set(),
+  /* 就地展开的池（键 = 命名空间 id，不是池名 —— 四条扩展程序线共用 Trae 的两个池，
+     按池名做键会让「展开 traework-cn」把 traecode-cn 一起展开，读起来莫名其妙）。 */
+  poolOpen: new Set(),
+  namespaces: new Set(["wb-cn", "wb-global", "trae-cn", "trae-global", "qoder-cn", "qoder-global"]),
+  keys: [
+    { id: "u1", name: "我的主力 Key", masked: "sk-uni-a1b2••••••••9f3c", ns: ["wb-cn", "wb-global", "trae-cn", "trae-global", "qoder-cn", "qoder-global"], biz: "wb-cn", created: "2026-10-14", lastUsed: "2 分钟前", revoked: false },
+    { id: "u2", name: "只给 Trae 用的 Key", masked: "sk-uni-c3d4••••••••0a1b", ns: ["trae-cn", "trae-global"], biz: null, created: "2026-10-14", lastUsed: "1 小时前", revoked: false },
+    { id: "u3", name: "临时调试（误建）", masked: "sk-uni-77e0••••••••41cd", ns: ["wb-cn"], biz: "wb-cn", created: "2026-10-13", lastUsed: "3 天前", revoked: true },
+  ],
+  form: { name: "", ns: new Set(["wb-cn"]), biz: "wb-cn" },
+};
+
+const uniNsById = (id) => UNI_NS.find((x) => x.id === id);
+const uniPlats = () => [...new Set(UNI_NS.map((x) => x.plat))];
+const uniKeysUsing = (ns) => UNI.keys.filter((k) => k.ns.includes(ns));
+
+/* 错误示例（§4.3 五条）—— 原型里可展开，让评审看到「每条都有出路」。 */
+const UNI_ERRORS = [
+  ["裸模型名被拒", "400 namespace_prefix_required",
+    "统一网关要求模型名带命名空间前缀。本网关启用的命名空间：wb-cn: / wb-global: / trae-cn: / trae-global: / qoder-cn: / qoder-global:。\n你填的是 `deepseek-v4.1-flash`，请改成 `wb-cn:deepseek-v4.1-flash` 这类形式。"],
+  ["命名空间未授权", "403 namespace_forbidden",
+    "该 API Key 未被授权使用命名空间 `trae-global`（它只授权了 wb-cn、wb-global）。\n请到「网关 → 统一网关 → 密钥」为该 Key 勾选，或另建一把。"],
+  ["Trae 命名空间 + /v1/responses", "501 endpoint_not_supported_for_namespace",
+    "Trae 分区没有 /v1/responses 端点。请改用 /v1/chat/completions，\n或把模型前缀换成 `wb-cn:` / `wb-global:`。"],
+  ["命名空间未启用", "400 namespace_not_enabled",
+    "命名空间 `traework-cn` 未在本网关启用（下方「启用的命名空间」里没有它）。"],
+  ["在旧端口填命名空间", "400 namespace_not_parsed_here",
+    "模型名 `wb-cn:deepseek-v4.1-flash` 看起来是统一网关的命名空间前缀，\n但本端口（57891）不解析命名空间。请改用统一网关 http://127.0.0.1:57892/v1，\n或去掉前缀、改用 `cn:` / `global:` 前缀。"],
+];
+
+/* ── 命名空间勾选（按平台分组 · 表驱动）──
+   ★ 三条修正（2026-10-14 第二轮优化）：
+   ① **不再给「最后一条」加 `disabled`** —— 它与守卫逻辑互相抵消：用户点不动、也看不到任何解释。
+      现在保留可点，点了给 toast 说明（守卫在 `onUniNsToggle` 里）。
+   ② **去掉外层分组框**：卡片自身已有边框，再套一层是三层嵌套边框。
+   ③ 客户端名从正文移到 `title`（`trae-cn` 已经说明了来源，正文再写一遍是冗余）。 */
+function uniNsPickerHtml() {
+  const ids = UNI.showMore ? UNI_NS : UNI_NS.filter((x) => x.tier === "core");
+  const plats = [...new Set(ids.map((x) => x.plat))];
+  const body = plats.map((plat) => `<div class="uni-ns-group">
+      <div class="uni-ns-plat">${esc(plat)}</div>
+      <div class="uni-ns-grid">${ids.filter((x) => x.plat === plat).map((x) => {
+        const on = UNI.namespaces.has(x.id);
+        const users = uniKeysUsing(x.id).length;
+        const warn = !on && users;
+        const p = uniPoolOf(x.id);
+        return `<label class="uni-ns" title="${esc(x.id)} · ${esc(x.client)} · ${esc(x.program)} · 池 ${p.target}：${p.available} 可用 / 共 ${p.total}">
+          <input type="checkbox" data-uni-ns="${x.id}"${on ? " checked" : ""}>
+          <span class="uni-ns-dot" style="background:${p.available ? "var(--success)" : "var(--destructive)"}"></span>
+          <code>${esc(x.id)}</code>
+          <span class="uni-ns-name">${esc(x.client)}</span>
+          ${warn ? `<span class="badge warn" title="${users} 把密钥仍授权它">${users}</span>` : ""}
+        </label>`;
+      }).join("")}</div>
+    </div>`).join("");
+  const hidden = UNI_NS.filter((x) => x.tier === "extra").length;
+  return `<div class="uni-ns-groups">${body}</div>
+    <button class="btn ghost xs uni-more" data-act="uni-more">${UNI.showMore ? "收起额外程序线" : `显示更多程序线（${hidden}）`}</button>`;
+}
+
+/* ── 卡 3 · 密钥 ── */
+function uniNsBadges(list) {
+  const shown = list.slice(0, 3);
+  const rest = list.length - shown.length;
+  const off = (id) => !UNI.namespaces.has(id);
+  return shown.map((id) => `<span class="badge${off(id) ? " bad" : " info"}"${off(id) ? ` title="本网关已停用该命名空间，调用会返回 400"` : ""}>${esc(id)}</span>`).join(" ")
+    + (rest > 0 ? ` <span class="badge" title="${esc(list.join(", "))}">+${rest}</span>` : "");
+}
+
+function uniKeyTableHtml() {
+  if (!UNI.keys.length) {
+    return emptyBlock(ICON.key, "还没有统一密钥", "统一网关的密钥可同时授权多个命名空间（如一把 Key 同时用 WorkBuddy 国内 + Trae 国内）。",
+      `<button class="btn primary" data-act="uni-key-new">${ICON.plus}创建密钥</button>`);
+  }
+  return `<div class="tbl-wrap"><table class="tbl">
+    <thead><tr><th>名称</th><th>授权命名空间</th><th>密钥</th><th>创建于</th><th>最后使用</th><th>状态</th><th style="width:150px"></th></tr></thead>
+    <tbody>${UNI.keys.map((k) => `<tr${k.revoked ? ' class="row-off"' : ""}>
+      <td><b>${esc(k.name)}</b>${k.biz ? `<br><span class="tiny muted">业务转发 → ${esc(k.biz)}</span>` : ""}</td>
+      <td>${uniNsBadges(k.ns)}</td>
+      <td class="mono">${esc(k.masked)}</td>
+      <td class="muted nowrap tiny">${esc(k.created)}</td>
+      <td class="muted nowrap tiny">${esc(k.lastUsed)}</td>
+      <td>${k.revoked ? `<span class="badge">已吊销</span>` : `<span class="badge ok">启用</span>`}</td>
+      <td>${k.revoked
+        /* ★ 已吊销 ⇒ **两个出口都在**：恢复（可逆，同一把 Key 明文未变）+ 删除（不可逆）。
+           只留删除 = 逼用户为一次误吊销删掉重建、再改所有客户端配置。恢复在前。 */
+        ? `<button class="btn ghost xs" data-act="uni-key-restore|${k.id}">恢复</button>
+           <button class="btn ghost xs danger" data-act="uni-key-delete|${k.id}">删除</button>`
+        : `<button class="btn ghost xs" data-act="uni-key-revoke|${k.id}">吊销</button>`}</td>
+    </tr>`).join("")}</tbody></table></div>
+    <p class="tiny muted" style="margin:10px 2px 0">
+      明文只在创建时展示一次（库中只存 sha256），此处永远只显示掩码。<b>吊销可逆</b>：已吊销的密钥仍留在表里，
+      可「恢复」回启用态 —— 库中存的是同一把 Key，客户端无需改配置。红色徽标 = 该命名空间已被<b>上方「启用哪些」</b>停用，调用会返回 400。
+    </p>`;
+}
+
+/* ── 卡 2 · 逐命名空间的清单来源与预览（只列已启用的，与上方勾选一一对应）── */
+function uniNsTableHtml() {
+  const on = UNI_NS.filter((x) => UNI.namespaces.has(x.id));
+  if (!on.length) {
+    return emptyBlock(ICON.list, "没有启用任何命名空间", "统一网关需要至少一个命名空间才有意义 —— 在上面「启用哪些」里勾一个。");
+  }
+  const rows = [];
+  [...new Set(on.map((x) => x.plat))].forEach((plat) => {
+    rows.push(`<tr class="uni-grp"><td colspan="7">${esc(plat)}</td></tr>`);
+    on.filter((x) => x.plat === plat).forEach((x) => {
+      const c = UNI_CATALOG[x.id] || { source: "builtin", fetchedAt: null, count: 0, note: "尚无清单" };
+      const m = CATALOG_META[c.source] || CATALOG_META.builtin;
+      const open = UNI.expanded.has(x.id);
+      const h = uniNsHealth(x);
+      rows.push(`<tr>
+        <td><div class="row" style="gap:4px"><code class="mono"><b>${esc(x.id)}</b></code>
+          <button class="btn ghost xs" data-act="copy|${esc(x.id)}" title="复制命名空间前缀">${ICON.copy}</button></div></td>
+        <td>${esc(x.client)}<br><span class="tiny muted">${esc(x.program)}</span></td>
+        <td><code class="mono">${esc(x.fn)}</code></td>
+        <td><span class="badge ${m.cls}">${m.label}</span><br><span class="tiny muted">${c.fetchedAt ? esc(c.fetchedAt) : "尚未识别过"}${c.count ? ` · ${c.count} 个` : ""}</span>
+          ${c.note ? `<div class="uni-clamp tiny cat-note" title="${esc(c.note)}">${esc(c.note)}</div>` : ""}</td>
+        <td>${uniPoolCellHtml(x.id)}</td>
+        <td><span class="badge ${h.cls}" title="${esc(h.hint)}">${h.label}</span></td>
+        <td style="width:78px"><button class="btn ghost xs" data-act="uni-expand|${x.id}">${open ? "收起" : "看清单"}</button></td>
+      </tr>`);
+      if (open) {
+        rows.push(`<tr class="uni-sub"><td colspan="7">
+          <div class="uni-models">${c.models.map((mm) => `<code>${esc(x.id)}:${esc(mm)}</code>`).join("")}</div>
+          <div class="tiny muted" style="margin-top:6px">以上为该段前 ${c.models.length} 条，共 ${c.count} 条 —— 客户端从 <span class="mono">/v1/models</span> 拿到的 id 就是这种带前缀的形式，<b>自动发现即可用</b>。</div>
+        </td></tr>`);
+      }
+      /* ★ 池明细**就地展开**（不跳走）—— 本轮把「查看池」从导航改成展开的落点。 */
+      if (UNI.poolOpen.has(x.id)) {
+        rows.push(`<tr class="uni-sub"><td colspan="7">${uniPoolDetailHtml(x.id)}</td></tr>`);
+      }
+    });
+  });
+  return `<div class="tbl-wrap"><table class="tbl">
+    <thead><tr>
+      <th scope="col">命名空间</th><th scope="col">客户端 · 程序位</th><th scope="col">上游 function</th>
+      <th scope="col">来源 · 已识别 · 原因</th><th scope="col">账号池</th><th scope="col">可用性</th><th scope="col"></th>
+    </tr></thead>
+    <tbody>${rows.join("")}</tbody></table></div>`;
+}
+
+/* ── 五条错误响应（抽屉，不撑开主区）── */
+function uniErrorsHtml() {
+  return `<div class="dsec">
+    <p class="tiny muted" style="margin:0 0 10px">统一网关下<b>每一条错误都带出路</b> —— 只说「不支持」会让人反复试错。</p>
+    <div class="uni-ns-groups">${UNI_ERRORS.map(([t, code, msg]) => `<div class="uni-err">
+      <div class="row" style="gap:8px;align-items:center"><b style="font-size:12.5px">${esc(t)}</b><span class="badge bad">${esc(code)}</span></div>
+      <pre>${esc(msg)}</pre></div>`).join("")}</div>
+  </div>`;
+}
+
+/* ══════════ 统一网关 = 网关页的**第二个类型**（2026-10-15 第四轮）══════════
+   原先它是「4 张卡纵向堆叠」的一个整页；现在拆成 **4 个分区**，与「独立网关」的 6 个分区**同形**：
+   左栏顶部切**类型**，下面切**该类型的分区** —— 两个类型共用同一套交互。
+   ⚠️ 分区 id 前缀 `u-`，与独立网关的 6 个**不相交** ⇒ 一个 `gwSub` state 就够，不必两个。 */
+
+function poolStateBadge(x) {
+  if (x.excluded) return `<span class="badge bad">已排除</span>`;
+  if (x.state === "冷却") return `<span class="badge warn">冷却</span>`;
+  if (x.state === "禁用") return `<span class="badge bad">禁用</span>`;
+  if (x.state === "零积分") return `<span class="badge warn">零积分</span>`;
+  return `<span class="badge ok">可用</span>`;
+}
+
+const GW_SECTIONS = {
+  independent: [["overview", "概览"], ["keys", "密钥"], ["models", "模型"], ["pool", "账号池"], ["proxy", "请求代理"], ["logs", "请求日志"]],
+  /* ★ 4 个分区 —— 「接入说明」**并回概览**，与独立网关一致（它的接入说明也在概览里）。
+     「账号池」与独立网关**同名同位**（都在配置之后），但语义不同：统一网关没有自己的池，
+     这一区是**跨平台的只读汇总**（见 `uniPoolSection` 的注释）。 */
+  unified: [["u-ov", "概览"], ["u-ns", "命名空间"], ["u-keys", "密钥"], ["u-pool", "账号池"]],
+};
+const GW_TYPES = [["independent", "独立网关"], ["unified", "统一网关"]];
+const gwSections = () => GW_SECTIONS[state.gwType];
+/** 当前分区 id：**按当前类型 fail-closed**（非法值回该类型第一项，不把任意串塞进渲染）。 */
+function gwSubId() {
+  const ids = gwSections().map(([id]) => id);
+  return ids.includes(state.gwSub) ? state.gwSub : ids[0];
+}
+
+/* ── 分区 ① · 概览 ──
+   ★ 骨架**逐块对齐「独立网关」的概览**：一张「服务状态」卡（**全是 `.srow` 行**）+ 一张「接入说明」卡。
+     不再用自造的 `.uni-sum` 摘要条 / `.uni-note` 提示条 —— 摘要就是 `.srow` 行，提示就是一条 `.tiny cat-note`。 */
+function uniOverviewSection() {
+  const running = UNI.enabled;
+  const onCount = UNI.namespaces.size;
+  const base = `http://127.0.0.1:${UNI.port}`;
+  const tot = uniPoolTotals();
+  const verdict = uniVerdict();
+  /* 失败态走深链（`?err=unified`），与既有 `?err=gateway` / `?err=usage` 同一口径。 */
+  const errBlock = state.errors.unified ? errorState({
+    title: "最近一次请求失败：命名空间背后没有可用账号",
+    desc: "请求 `trae-global:deepseek-v4.1-flash` 已按契约回落到自动择优，但 trae-global 的池里一个账号都没有。网关不会因此拒绝服务 —— 它返回一条可诊断的错误。",
+    action: { label: "重试校验", act: "retry|unified" },
+  }) : "";
+  return `${errBlock}
+  <p class="tiny cat-note" style="margin:0 2px 12px">
+    <b>本网关跨全部作用域</b>（wb-cn / wb-global / trae-cn / trae-global / qoder-cn / qoder-global）——
+    顶栏的作用域选择器<b>对它不生效</b>。只用一个平台请切「独立网关」。
+  </p>
+  ${running ? "" : `<p class="tiny cat-note" style="margin:0 2px 12px"><b>当前未启用</b>：下面的配置会照常保存，<b>启用后生效</b>；端口上现在没有监听，任何调用都会连接失败。</p>`}
+  <section class="card">
+    <div class="card-head"><h3>服务状态</h3><div class="grow"></div>
+      <span class="badge ${verdict.cls}" title="${esc(verdict.hint)}">${verdict.label}</span></div>
+    <div class="srow"><div class="lab"><b>启用统一网关</b><span>在 ${esc(UNI.bind)}:${UNI.port} 上提供带命名空间前缀的单一入口</span></div>
+      <button class="switch${running ? " on" : ""}" data-act="uni-toggle" aria-label="启用统一网关"></button></div>
+    <div class="srow"><div class="lab"><b>接入地址</b><span class="mono">${base}</span></div>
+      <button class="btn sm" data-act="copy|${base}">${ICON.copy}复制</button></div>
+    <div class="srow"><div class="lab"><b>监听地址</b><span class="mono">${esc(UNI.bind)}${UNI.bind === "0.0.0.0" ? " · 局域网内任何设备都能消耗你的额度" : ""}</span></div>
+      <select class="inp" data-uni-bind aria-label="监听地址">
+        <option value="127.0.0.1"${UNI.bind === "127.0.0.1" ? " selected" : ""}>仅本机 127.0.0.1</option>
+        <option value="0.0.0.0"${UNI.bind === "0.0.0.0" ? " selected" : ""}>局域网 0.0.0.0</option>
+      </select></div>
+    <div class="srow"><div class="lab"><b>端口</b><span>改端口需重启。别撞上既有端口：界面 57890 · WorkBuddy 57891 · 统一 57892 · hook 57893 · Trae 57894 · Qoder 57895</span></div>
+      <input class="uni-port" type="text" inputmode="numeric" data-uni-port value="${UNI.port}" aria-label="统一网关端口"></div>
+    <div class="srow"><div class="lab"><b>命名空间</b><span>已启用 ${onCount} / ${UNI_NS.length} 个</span></div>
+      <button class="btn sm" data-act="gw-sub|u-ns">查看</button></div>
+    <div class="srow"><div class="lab"><b>账号池</b><span>${tot.available} 个可用 / 共 ${tot.total} 个 —— 统一网关<b>没有自己的池</b>，按命名空间分派到各产品线的池</span></div>
+      <button class="btn sm" data-act="gw-sub|u-pool">查看</button></div>
+    <div class="srow"><div class="lab"><b>裸模型名</b><span>不带前缀的模型名会被<b>拒绝</b>，并给出可用前缀清单</span></div>
+      <button class="btn sm" data-act="uni-err">看错误响应</button></div>
+  </section>
+  ${uniGuideCard()}
+  <p class="proto-note">原型说明 · 2026-10-15 <b>第五轮：统一网关的交互逐块对齐「独立网关」</b>。概览 = 卡「服务状态」+ 卡「接入说明」（与独立网关同形，协议 Tab 还是<b>同一个</b> gwApi 状态）；命名空间 = cat-bar 工具条 + 勾选卡 + 裸表 + 说明段；密钥 = 工具条 + 裸表 + 说明段（同一条工具条也补给了独立网关）。自造的 uni-note / uni-sec / uni-sum 三个容器<b>已删除</b>。<br>可试：① 左栏切「统一网关」⇒ 子导航换成 概览 / 命名空间 / 密钥（接入说明已并回概览）；② 概览关掉开关 ⇒ 出现「启用后生效」、结论徽标变「未启用」；③ 监听地址选「局域网」⇒ 危险确认，取消会还原；④ 命名空间分区点「看池」就地展开（不跳走），空池行给「去加账号」；⑤ 概览与独立网关<b>共用</b>同一个协议 Tab。深链 <span class="mono">?dest=gateway&amp;type=unified&amp;err=unified</span>。</p>`;
+}
+
+/* ── 接入说明卡 ──
+   ★ 与「独立网关」的 `quickAccessHtml` **同形**：卡头放协议 seg，卡体放代码块 + 说明段落。
+   ★ 协议 Tab 复用 `state.gwApi` —— 与独立网关**是同一个状态**，来回切不会跳回默认值。 */
+function uniGuideCard() {
+  const base = `http://127.0.0.1:${UNI.port}`;
+  const api = state.gwApi || "openai";
+  const model = "wb-cn:deepseek-v4.1-flash";
+  const snippet = api === "anthropic"
+    ? `curl ${base}/v1/messages \\
+  -H "x-api-key: $BUDDY_SWITCH_KEY" \\
+  -H "anthropic-version: 2023-06-01" \\
+  -d '{"model":"${model}","max_tokens":256,"messages":[{"role":"user","content":"hi"}]}'`
+    : `curl ${base}/v1/chat/completions \\
+  -H "Authorization: Bearer $BUDDY_SWITCH_KEY" \\
+  -d '{"model":"${model}","messages":[{"role":"user","content":"hi"}]}'`;
+  return `<section class="card">
+    <div class="card-head"><h3>接入说明</h3><div class="grow"></div>
+      <div class="seg">
+        <button class="${api === "openai" ? "on" : ""}" data-act="gw-api|openai">OpenAI 兼容</button>
+        <button class="${api === "anthropic" ? "on" : ""}" data-act="gw-api|anthropic">Anthropic 兼容</button>
+      </div>
+    </div>
+    <div class="card-pad">
+      <pre class="mono" style="margin:0;padding:12px;background:var(--card-2);border-radius:10px;overflow-x:auto">${esc(snippet)}</pre>
+      <p class="tiny muted" style="margin:10px 2px 0">
+        Base URL：OpenAI 系 <span class="mono">${base}/v1</span> ·
+        Anthropic 系 <span class="mono">${base}</span>（<b>不带 /v1</b>，客户端会自己拼）。
+      </p>
+      <p class="tiny muted" style="margin:6px 2px 0">
+        <b>模型名必须带命名空间前缀</b>（如 <span class="mono">${model}</span>）——
+        从 <span class="mono">/v1/models</span> 自动发现拿到的就是这种形式。
+        <span class="mono">/v1/responses</span> 只有 WorkBuddy 命名空间有，Trae / Qoder 会返回 <span class="mono">501</span>。
+      </p>
+      <p class="tiny muted" style="margin:6px 2px 0">
+        一把统一密钥可同时授权多个命名空间 —— 见「密钥」分区。
+      </p>
+    </div>
+  </section>`;
+}
+
+/* ── 分区 ② · 命名空间 ──
+   ★ 骨架对齐「独立网关」的**模型**分区：`cat-bar` 工具条 + 裸表 + 说明段。
+     勾选区是统一网关**独有**的能力（独立网关没有对应物），用一张**无卡头卡**（`.card` + `.card-pad`）承载 ——
+     复用既有卡语言，不新造容器。 */
+function uniNsSection() {
+  const onCount = UNI.namespaces.size;
+  return `<div class="cat-bar">
+    <span class="badge info">已启用 ${onCount} / ${UNI_NS.length}</span>
+    <span class="tiny muted">逐段标注来源与原因；非实时必有原因</span>
+    <div class="grow"></div>
+    <button class="btn sm" data-act="uni-scan"${UNI.scanning ? " disabled" : ""}>${UNI.scanning ? `<span class="spinner"></span>识别中…` : `${ICON.refresh}重新识别全部`}</button>
+  </div>
+  <section class="card" style="margin-bottom:12px">
+    <div class="card-pad">
+      <div class="lab" style="margin-bottom:10px"><b>启用哪些</b><span>未启用的：不解析、不列清单、调用返回 400。<b>至少保留一个。</b></span></div>
+      ${uniNsPickerHtml()}
+    </div>
+  </section>
+  ${uniNsTableHtml()}
+  <p class="tiny muted" style="margin:10px 2px 0">
+    每段<b>单独标注来源与原因</b>（非实时必有原因）—— 一个总徽标糊过去不允许。来源徽标与模型页<b>同一套词</b>。
+    <b>「账号池」列</b>：每个命名空间背后<b>就是一个池</b>（路由按命名空间前缀分派到对应产品线的池），
+    <b>「看池」就地展开</b>账号明细 —— 不跳走，因为跳走会丢掉本页<b>唯一</b>的价值：跨平台视野。
+    <b>「可用性」列才是「能不能调通」的判据</b> —— 「已识别」只是清单识别过，不等于可用。
+  </p>`;
+}
+
+/* ── 分区 ③ · 密钥 ──
+   ★ 骨架对齐「独立网关」的**密钥**分区：工具条 + 裸表 + 说明段。
+     同一条工具条也补给了独立网关那边（`keysBar` 是**两个类型共用**的构件）。 */
+function uniKeysSection() {
+  return `${keysBar(UNI.keys.length, UNI.keys.filter((k) => !k.revoked).length, "uni-key-new")}
+  ${uniKeyTableHtml()}
+  <p class="tiny muted" style="margin:10px 2px 0">
+    一把密钥可同时授权多个命名空间。<b>吊销可逆</b>：已吊销的密钥仍留在表里，可「恢复」回启用态 ——
+    库中存的是同一把 Key，客户端无需改配置。红色徽标 = 该命名空间已被「命名空间」分区停用，调用会返回 400。
+  </p>`;
+}
+
+/* ── 分区 ④ · 账号池 ──
+   ★ 统一网关**没有自己的账号池** —— 它按模型名的命名空间前缀，把请求分派到三条产品线各自的池。
+     所以这一区是**跨平台的只读汇总**（独立网关那一区是「管理当前这一个池」）。
+     管理动作（选号 / 粘性 / 恢复）**按产品线**设，仍回各平台自己的网关页 —— 深链在每组的右侧。
+   ★ 计数一律从 `GATEWAY[target].pool` **逐条数出来**，绝不另写一套（演示数据红线）。
+   ★ 按**池**去重：多条命名空间共用一个池（`traework-cn` / `traecode-cn` 与 `trae-cn` 同池）。 */
+function uniPoolSection() {
+  const on = UNI_NS.filter((x) => UNI.namespaces.has(x.id));
+  if (!on.length) {
+    return emptyBlock(ICON.pool, "没有启用任何命名空间",
+      "池是按命名空间分派的 —— 先在「命名空间」分区里勾一个。",
+      `<button class="btn primary" data-act="gw-sub|u-ns">去启用命名空间</button>`);
+  }
+  const seen = new Set();
+  const groups = [];
+  on.forEach((x) => {
+    const p = uniPoolOf(x.id);
+    if (seen.has(p.target)) return;
+    seen.add(p.target);
+    groups.push({ ...p, namespaces: on.filter((y) => uniPoolOf(y.id).target === p.target).map((y) => y.id) });
+  });
+  const tot = uniPoolTotals();
+  const rows = [];
+  groups.forEach((g) => {
+    const pool = (GATEWAY[g.target] || {}).pool || [];
+    rows.push(`<tr class="uni-grp"><td colspan="3">
+      <div class="row" style="gap:8px;flex-wrap:wrap;align-items:center">
+        <code class="mono">${esc(g.target)}</code>
+        <span class="tiny muted">${g.namespaces.map(esc).join(" / ")}</span>
+        <span class="badge ${g.available ? "ok" : "bad"}">${g.available} 可用</span>
+        ${g.excluded ? `<span class="badge bad">${g.excluded} 已排除</span>` : ""}
+        <span class="tiny muted">共 ${g.total} 个</span>
+        <div class="grow"></div>
+        <button class="btn ghost xs" data-act="uni-pool-go|${esc(g.target)}">去该平台管理</button>
+      </div>
+    </td></tr>`);
+    if (!pool.length) {
+      rows.push(`<tr><td colspan="3"><span class="tiny muted">池里一个账号都没有 —— 去该平台的账号页添加后才能调通。</span></td></tr>`);
+      return;
+    }
+    pool.forEach((a) => {
+      rows.push(`<tr${a.excluded ? ' class="row-off"' : ""}>
+        <td><b>${esc(a.account)}</b>${a.sticky ? ` <span class="badge info">粘性</span>` : ""}</td>
+        <td class="num">${fmt(a.credits)}</td>
+        <td>${poolStateBadge(a)}${(a.modelCool || []).length ? ` <span class="badge warn">${(a.modelCool || []).length} 模型限流</span>` : ""}</td>
+      </tr>`);
+    });
+  });
+  return `<div class="cat-bar">
+    <span class="badge info">${groups.length} 个池</span>
+    <span class="tiny muted"><b>${tot.available}</b> 个可用账号 / 共 ${tot.total} 个</span>
+    <div class="grow"></div>
+    <span class="tiny muted">只读汇总 —— 选号 / 粘性 / 恢复在各自平台的网关页</span>
+  </div>
+  <div class="tbl-wrap"><table class="tbl">
+    <thead><tr><th scope="col">账号</th><th scope="col">积分</th><th scope="col">状态</th></tr></thead>
+    <tbody>${rows.join("")}</tbody>
+  </table></div>
+  <p class="tiny muted" style="margin:10px 2px 0">
+    统一网关<b>没有自己的账号池</b> —— 它按模型名的命名空间前缀分派到三条产品线各自的池：
+    <span class="mono">wb-*</span> → WorkBuddy · <span class="mono">trae-*</span> / <span class="mono">traework-*</span> / <span class="mono">traecode-*</span> → Trae ·
+    <span class="mono">qoder-*</span> → Qoder。所以这里给的是<b>跨平台的汇总视图</b>；
+    选号策略是<b>按产品线</b>设的，改它要回该平台自己的网关页（每组右侧的「去该平台管理」）。
+  </p>`;
+}
+
+/* 密钥工具条 —— **两个类型共用**（差异只走三个入参：总数 / 启用数 / 创建动作）。
+   形态与 `catalogBar` 同款（`.cat-bar`），不另造容器。 */
+function keysBar(total, live, act) {
+  return `<div class="cat-bar">
+    <span class="badge info">共 ${total} 把</span>
+    <span class="tiny muted">${live} 把启用 · 明文只在创建时展示一次</span>
+    <div class="grow"></div>
+    <button class="btn sm" data-act="${act}">${ICON.plus}创建密钥</button>
+  </div>`;
+}
+/* ── 创建密钥表单（抽屉）── */
+function uniKeyFormHtml() {
+  const f = UNI.form;
+  const groups = [...new Set(UNI_NS.map((x) => x.plat))];
+  const wbNs = [...f.ns].filter((id) => (uniNsById(id) || {}).plat === "WorkBuddy");
+  return `<div class="dsec">
+    <h4>名称</h4>
+    <input class="uni-port" style="width:100%" type="text" data-uni-name value="${esc(f.name)}" placeholder="例如：我的主力 Key" aria-label="密钥名称">
+  </div>
+  <div class="dsec">
+    <h4>授权命名空间（至少一个）</h4>
+    <div class="uni-ns-groups">${groups.map((plat) => {
+      const list = UNI_NS.filter((x) => x.plat === plat);
+      return `<div class="uni-ns-group"><div class="uni-ns-plat">${esc(plat)}</div><div class="uni-ns-row">${list.map((x) => `<label class="uni-ns">
+        <input type="checkbox" data-uni-ns="${x.id}" data-uni-form="1"${f.ns.has(x.id) ? " checked" : ""}>
+        <code>${esc(x.id)}</code><span class="uni-ns-desc">${esc(x.client)}</span></label>`).join("")}</div></div>`;
+    }).join("")}</div>
+    <p class="tiny muted" style="margin:8px 0 0">不勾任何一项 ⇒「创建」按钮禁用。已停用的命名空间也可以先授权（启用后自动生效）。</p>
+  </div>
+  <div class="dsec">
+    <h4>业务转发命名空间（/biz/*path）</h4>
+    <div class="uni-ns-row">${wbNs.length ? wbNs.map((id) => `<label class="uni-ns">
+        <input type="radio" name="uni-biz" data-uni-biz="${id}"${f.biz === id ? " checked" : ""}><code>${esc(id)}</code></label>`).join("")
+      : `<span class="tiny muted">该 Key 未授权任何 WorkBuddy 命名空间 ⇒ 业务转发不可用（仅 WorkBuddy 有这条通道）。</span>`}</div>
+    <p class="tiny muted" style="margin:8px 0 0">业务转发没有模型名可解析，所以命名空间只能来自 Key 本身；Trae 命名空间不合法（Trae 业务域不可配）。</p>
+  </div>
+  <div class="dsec">
+    <button class="btn primary" data-act="uni-key-create"${f.ns.size ? "" : " disabled"}>创建密钥</button>
+    <button class="btn ghost sm" data-act="close-drawer">取消</button>
+  </div>`;
+}
+
+/* ── 一次性明文（抽屉 · **锁定**：遮罩点击与 ESC 都不关）── */
+function uniPlaintextHtml(value, name) {
+  return `<div class="dsec">
+    <p class="tiny muted" style="margin:0 0 8px">密钥明文<b>只展示这一次</b>（库中只存 sha256）。关闭后无法再查看，只能吊销重建 —— 所以这里<b>点遮罩、按 ESC 都不会关</b>。</p>
+    <div class="row" style="gap:8px;align-items:center">
+      <code class="mono" style="flex:1;padding:8px 10px;border:1px solid var(--border);border-radius:8px;background:var(--muted);word-break:break-all;user-select:all">${esc(value)}</code>
+      <button class="btn sm" data-act="copy|${esc(value)}">${ICON.copy}复制</button>
+    </div>
+    <p class="tiny muted" style="margin:8px 0 0">名称：<b>${esc(name)}</b> · 复制按钮不禁用、可反复点（可能要粘到多个客户端，或先存进密码管理器）。</p>
+  </div>
+  <div class="dsec"><button class="btn primary" data-act="uni-plaintext-ok">我已保存，关闭</button></div>`;
+}
+
 /* ══════════════════════ 密钥权限（issue #76）══════════════════════
    行内两枚 chip + 右侧抽屉；两项策略：**用量配额** 与 **可访问账号**。
    依据：`docs/specs/KEY-PERMISSION-UI-DESIGN.md`（决策 D1–D17）。 */
@@ -5566,10 +6192,21 @@ function readKeyLimit() {
 
 function viewGateway() {
   const g = GATEWAY[state.scope], p = curPlatform();
-  const subs = [["overview", "概览"], ["keys", "密钥"], ["models", "模型"], ["pool", "账号池"], ["proxy", "请求代理"], ["logs", "请求日志"]];
+  /* ★ 网关页有**两个类型**（见 `GW_SECTIONS`）：独立网关 / 统一网关。
+     左栏顶部切**类型**，下面切**该类型的分区** —— 两个类型共用同一套交互。
+     `sub` 已按当前类型 fail-closed，下面所有分支都用它（不再直接用 `state.gwSub`）。
+     ★ 2026-10-22：这套东西此前只存在于**手改的单文件原型**里，而单文件是生成产物
+     ⇒ 一次 `npm run proto:single` 就全丢了。现已搬回本文件（源）。 */
+  const unified = state.gwType === "unified";
+  const sub = gwSubId();
 
   let main = "";
-  if (state.gwSub === "overview") {
+  if (unified) {
+    if (sub === "u-ns") main = uniNsSection();
+    else if (sub === "u-keys") main = uniKeysSection();
+    else if (sub === "u-pool") main = uniPoolSection();
+    else main = uniOverviewSection();
+  } else if (sub === "overview") {
     /* 上游凭据失效 → 行内错误态 + 重试（用「校验」按钮可复现）。 */
     const errBlock = state.errors.gateway ? errorState({
       title: "上游账号凭据已失效",
@@ -5591,7 +6228,7 @@ function viewGateway() {
         <button class="btn sm" data-act="gw-sub|pool">查看</button></div>
     </section>
     ${quickAccessHtml(g)}`;
-  } else if (state.gwSub === "keys") {
+  } else if (sub === "keys") {
     /* ★ 密钥三态动作：吊销（置标记）· 恢复（清标记 ⇒ **同一把 Key 重新可用**）· 删除（不可逆）。
        已吊销的行必须**同时**给出「恢复」与「删除」—— 只留删除，用户撤销一次误吊销就要
        删掉重建、再把所有客户端配置改一遍。真实组件 `gateway/api-key-table.tsx` 同形。
@@ -5599,8 +6236,16 @@ function viewGateway() {
        ★ issue #76：表里多了**用量**与**权限**两列（原「累计请求」升级成「用量」——
        配额才是用户真正要看的数；「最后使用」并进名称的次行，**总列数不变**，不产生横向滚动）。
        权限用两枚可点 chip 表达，编辑走右侧抽屉（见 `keyPolicyHtml`）。 */
-    main = g.keys.length ? `<div class="tbl-wrap"><table class="tbl">
-      <thead><tr><th style="width:20%">名称</th><th style="width:15%">密钥</th><th style="width:7%">归属</th><th style="width:21%">用量</th><th style="width:16%">权限</th><th style="width:7%">状态</th><th style="width:132px"></th></tr></thead>
+    main = g.keys.length ? `${keysBar(g.keys.length, g.keys.filter((k) => !k.revoked).length, "new-key")}
+      <div class="tbl-wrap"><table class="tbl">
+      <thead><tr>
+        <th style="width:20%">名称</th>
+        <th style="width:15%">密钥</th>
+        <th style="width:7%">归属</th>
+        <th style="width:21%">用量</th>
+        <th style="width:16%">权限</th>
+        <th style="width:7%">状态</th>
+        <th style="width:132px"></th></tr></thead>
       <tbody>${g.keys.map((k) => {
         const p = keyPolicyOf(k);
         const lv = keyQuotaLevel(p.quota);
@@ -5624,7 +6269,7 @@ function viewGateway() {
       <b>用量配额</b>按这把密钥自己的消耗计（与账号积分无关）：单位可选 token 或请求数，周期可选不重置 / 每日 / 每周 / 自然月；<b>可访问账号</b>为「指定」时，这把密钥<b>不会</b>落到未勾选的账号上（白名单外不参与选号）。两枚 chip 可点，编辑在右侧抽屉里完成。</p>`
       : emptyBlock(ICON.key, "还没有密钥", "创建一个密钥后即可通过本地网关调用模型。",
           `<button class="btn primary" data-act="new-key">${ICON.plus}创建密钥</button>`);
-  } else if (state.gwSub === "models") {
+  } else if (sub === "models") {
     const served = g.models.filter((m) => m.available && !m.disabled).length;
     const trae = curScope().platform === "trae";
     main = `${trae ? maxModePolicyCard() : contextFixedCard()}${catalogBar(g.catalog)}
@@ -5642,7 +6287,7 @@ function viewGateway() {
         禁用的模型<b>不会出现在 <span class="mono">/v1/models</span></b>，直接调用也会被拒绝并说明原因
         —— 两个出口同时生效，否则禁用就是假开关。当前暴露 <b>${served}</b> / ${g.models.length} 个。
       </p>`;
-  } else if (state.gwSub === "pool") {
+  } else if (sub === "pool") {
     /* 「显式指定」是选号优先级的第一级；指定是排他的，被指定的行置顶。 */
     const pinned = state.pins[state.scope];
     const rows = g.pool.slice().sort((x, y) => (x.account === pinned ? -1 : y.account === pinned ? 1 : 0));
@@ -5661,7 +6306,7 @@ function viewGateway() {
             : `<button class="btn xs" data-act="pin|${esc(x.account)}">指定</button>`}</td>
       </tr>`).join("")}</tbody></table></div>
       <p class="tiny muted" style="margin:10px 2px 0">选号优先级：<b>显式指定</b> &gt; 粘性会话 &gt; 自动择优。指定是排他的——同一时刻只有一个账号被指定。</p>`;
-  } else if (state.gwSub === "proxy") {
+  } else if (sub === "proxy") {
     main = proxyPanelHtml();
   } else {
     main = `<div class="tbl-wrap"><table class="tbl">
@@ -5675,13 +6320,25 @@ function viewGateway() {
 
   return `<div class="page">
     <div class="page-head">
-      <div><h1>网关</h1><p>${scopeLabel(state.scope)} · 把账号池暴露为 OpenAI / Anthropic 兼容接口</p></div>
+      <div><h1>网关</h1><p>${unified
+        ? "跨全部作用域 · 一个 provider 用遍全部平台与版本"
+        : `${scopeLabel(state.scope)} · 把账号池暴露成 OpenAI / Anthropic 兼容接口`}</p></div>
       <div class="grow"></div>
-      <span class="scope-chip">${p.mark}${scopeLabel(state.scope)}</span>
+      ${unified
+        ? `<span class="badge warn" title="本网关跨全部作用域 —— 顶栏的作用域选择器对它不生效">跨全部作用域</span>`
+        : `<span class="scope-chip">${p.mark}${scopeLabel(state.scope)}</span>`}
     </div>
-    ${isClientless(curScope()) ? srvStripHtml("gateway") : ""}
+    ${!unified && isClientless(curScope()) ? srvStripHtml("gateway") : ""}
     <div class="split">
-      <nav class="subnav">${subs.map(([v, l]) => `<button class="${state.gwSub === v ? "on" : ""}" data-act="gw-sub|${v}">${l}</button>`).join("")}</nav>
+      <div class="side-col">
+        <div>
+          <div class="gw-type-label" id="gw-type-label">网关类型</div>
+          <div class="gw-type-seg" role="tablist" aria-labelledby="gw-type-label">
+            ${GW_TYPES.map(([id, label]) => `<button role="tab" aria-selected="${state.gwType === id ? "true" : "false"}" class="${state.gwType === id ? "on" : ""}" data-act="gw-type|${id}">${label}</button>`).join("")}
+          </div>
+        </div>
+        <nav class="subnav" aria-label="网关分区">${gwSections().map(([v, l]) => `<button class="${sub === v ? "on" : ""}" data-act="gw-sub|${v}">${l}</button>`).join("")}</nav>
+      </div>
       <div class="split-main">${main}</div>
     </div>
   </div>`;
@@ -6198,6 +6855,9 @@ function backupResultHtml(r) {
  * @param foot 固定底栏的 HTML（只有**账号详情**用；向导 / 扫描这类流程不给底栏，
  *   它们的「上一步 / 下一步」在正文里，底栏再放一份就成了两套按钮）。
  */
+/* ★ 一次性明文抽屉的「锁」：置 true 时**遮罩点击与 ESC 都不关**。
+   明文不可复原（库中只存 sha256）⇒ 误关一次就得吊销重建 + 改所有客户端配置。 */
+let drawerLock = false;
 function openDrawer(html, title, foot) {
   clearInterval(permTimer); permTimer = null;
   $("#drawer-title").textContent = title;
@@ -6207,11 +6867,14 @@ function openDrawer(html, title, foot) {
     footEl.innerHTML = foot || "";
     footEl.classList.toggle("show", Boolean(foot));
   }
+  /* 每次打开都解锁：锁只属于「刚刚创建密钥」那一次。 */
+  drawerLock = false;
   $("#drawer").classList.add("open");
   $("#drawer").setAttribute("aria-hidden", "false");
   $("#drawer-overlay").classList.add("open");
 }
 function closeDrawer() {
+  if (drawerLock) return;
   clearInterval(permTimer); permTimer = null;
   $("#drawer").classList.remove("open");
   $("#drawer").setAttribute("aria-hidden", "true");
@@ -7139,6 +7802,8 @@ function drawerPaste() {
 
 /* ── 不可逆操作的确认 Dialog ── */
 let pendingConfirm = null;
+/* 与 `pendingConfirm` 成对：取消时要还原那个「已经显示新值」的控件。 */
+let pendingConfirmCancel = null;
 function openConfirm(o) {
   $("#confirm-title").textContent = o.title;
   $("#confirm-body").innerHTML = o.body;
@@ -7146,6 +7811,10 @@ function openConfirm(o) {
   ok.textContent = o.okLabel || "确认";
   ok.className = "btn " + (o.danger === false ? "primary" : "danger");
   pendingConfirm = o.onOk || null;
+  /* ★ `onCancel`：有些确认框的**控件已经显示新值**了（如监听地址下拉、开关），
+     取消时必须把它退回去 —— 否则用户看到「已开放局域网」而其实没有。
+     这一步只能由调用方做，因为只有它知道该还原哪个控件。 */
+  pendingConfirmCancel = o.onCancel || null;
   $("#confirm-overlay").classList.add("open");
   $("#confirm-overlay").setAttribute("aria-hidden", "false");
 }
@@ -7153,6 +7822,7 @@ function closeConfirm() {
   $("#confirm-overlay").classList.remove("open");
   $("#confirm-overlay").setAttribute("aria-hidden", "true");
   pendingConfirm = null;
+  pendingConfirmCancel = null;
 }
 
 /* ══════════════════════ 应用更新：升级前先讲清「这一版改了什么」══════════════════════
@@ -7785,6 +8455,105 @@ function batchCheckin() {
 }
 
 /* ══════════════════════ 事件 ══════════════════════ */
+document.addEventListener("input", (e) => {
+  const name = e.target.closest("[data-uni-name]");
+  if (name) { UNI.form.name = name.value; return; }
+  const port = e.target.closest("[data-uni-port]");
+  if (port) {
+    const digits = port.value.replace(/[^\d]/g, "");
+    if (digits !== port.value) port.value = digits;
+  }
+});
+
+document.addEventListener("change", (e) => {
+  const ns = e.target.closest("[data-uni-ns]");
+  if (ns) { onUniNsToggle(ns.dataset.uniNs, ns.checked, ns.dataset.uniForm === "1"); return; }
+  const biz = e.target.closest("[data-uni-biz]");
+  if (biz) { UNI.form.biz = biz.dataset.uniBiz; return; }
+  const port = e.target.closest("[data-uni-port]");
+  if (port) { onUniPortCommit(port); return; }
+  const bind = e.target.closest("[data-uni-bind]");
+  if (bind) onUniBindChange(bind.value);
+});
+
+/* 监听地址（下拉）：★ 开放局域网是**危险动作**，必须两步确认 ——
+   与三个既有网关页**同一文案、同一形态**（ShieldAlert + destructive）。
+   ⚠️ 取消时要把下拉的显示值还原：控件已经显示新值了，不还原会让人以为已经生效。 */
+function onUniBindChange(next) {
+  if (next === UNI.bind) return;
+  const toLan = next === "0.0.0.0";
+  openConfirm({
+    title: toLan ? "允许局域网访问？" : "改回仅本机？",
+    body: toLan
+      ? `<p>改为 <span class="mono">0.0.0.0</span> 后，<b>局域网内任何设备</b>都能通过你的机器调用模型，直接消耗你的账号额度。</p><p class="tiny muted">默认只监听 127.0.0.1。</p>`
+      : `<p>监听地址改回 <span class="mono">127.0.0.1</span>，仅本机可访问。</p>`,
+    okLabel: toLan ? "确认开放" : "确认",
+    danger: toLan,
+    onOk: () => {
+      UNI.bind = next;
+      toast("ok", `监听地址已改为 ${UNI.bind}`, toLan ? "局域网内任何设备都能消耗你的额度" : "仅本机可访问");
+      renderContent();
+    },
+    /* ★ 取消必须**还原下拉的显示值**：控件已经显示新值了，只重绘内容不会把它退回去
+       （下拉在概览卡里，`renderContent` 会重建它 —— 但为了不依赖重建时机，这里显式写回）。
+       不还原 = 用户以为「已经开放局域网」而其实没有，这是最坏的一种谎。 */
+    onCancel: () => {
+      const el = document.querySelector("[data-uni-bind]");
+      if (el) el.value = UNI.bind;
+      renderContent();
+    },
+  });
+}
+
+/* 命名空间勾选：卡 1 带「至少保留一个」守卫 + 跨卡联动；表单态只维护 form.ns。 */
+function onUniNsToggle(id, checked, formMode) {
+  if (formMode) {
+    if (checked) UNI.form.ns.add(id); else UNI.form.ns.delete(id);
+    /* 业务转发命名空间必须落在已授权的 WorkBuddy 命名空间里（Trae 无此通道）。 */
+    const wb = [...UNI.form.ns].filter((x) => (uniNsById(x) || {}).plat === "WorkBuddy");
+    if (!wb.includes(UNI.form.biz)) UNI.form.biz = wb.length ? wb[0] : null;
+    openDrawer(uniKeyFormHtml(), "创建统一密钥");
+    return;
+  }
+  if (!checked) {
+    if (UNI.namespaces.size === 1) {
+      toast("err", "至少保留一个命名空间", "统一网关需要至少一个命名空间才有意义");
+      renderContent();
+      return;
+    }
+    UNI.namespaces.delete(id);
+    const hit = uniKeysUsing(id);
+    /* ★ 跨卡联动：改的是卡 1 的配置，影响的是卡 2 里的数据 —— 不提示就会出现
+       「Key 上明明勾着、调用却 400」这种诡异体验。 */
+    if (hit.length) {
+      toast("warn", `已停用 ${id}`,
+        `${hit.length} 把 Key 仍授权它，它们对该命名空间的调用会返回 400（密钥表里已标红）`);
+    }
+  } else {
+    UNI.namespaces.add(id);
+  }
+  renderContent();
+}
+
+function onUniPortCommit(input) {
+  const v = Number.parseInt(input.value, 10);
+  if (!Number.isFinite(v) || v < 1 || v > 65535) {
+    toast("err", "端口不合法", "请输入 1 – 65535 之间的整数");
+    input.value = UNI.port;
+    return;
+  }
+  if (v === UNI.port) return;
+  if ([57890, 57891, 57893, 57894, 57895, 8899].includes(v)) {
+    toast("err", `端口 ${v} 已被占用`,
+      "57890 = 界面本体 · 57891 = WorkBuddy 网关 · 57893 = hook · 57894 = Trae 网关 · 57895 = Qoder 网关 · 8899 = Trae 登录代理");
+    input.value = UNI.port;
+    return;
+  }
+  UNI.port = v;
+  toast("ok", `端口已改为 ${v}`, "端口在路由构建期固化，需重启统一网关才生效");
+  renderContent();
+}
+
 /* 密钥权限抽屉的实时反馈：**只更新需要变的那一块** ——
    整块重画会把输入框的光标打掉（用户在数字框里改到一半就被重置，体验是坏的）。 */
 document.addEventListener("input", (e) => {
@@ -7803,6 +8572,7 @@ document.addEventListener("input", (e) => {
     if (list) list.innerHTML = keyAcctListHtml();
   }
 });
+
 document.addEventListener("click", (e) => {
   const trigger = e.target.closest("#scope-trigger");
   if (trigger) { $("#scope-menu").classList.contains("open") ? closeScopeMenu() : openScopeMenu(); return; }
@@ -7941,7 +8711,123 @@ document.addEventListener("click", (e) => {
     case "usage-book": stop(); state.usageBook = a1; closeRecon(); renderContent(); break;
     case "recon-open": stop(); openRecon(); break;
     case "recon-close": stop(); closeRecon(); break;
+    case "gw-type": {
+      stop();
+      if (!GW_SECTIONS[a1]) break;
+      state.gwType = a1;
+      state.gwSub = GW_SECTIONS[a1][0][0];
+      renderContent(); break;
+    }
     case "gw-sub": stop(); state.gwSub = a1; renderContent(); break;
+    case "uni-toggle": {
+      stop();
+      UNI.enabled = !UNI.enabled;
+      toast("ok", UNI.enabled ? "统一网关已启用" : "统一网关已停用",
+        UNI.enabled ? `监听 http://${UNI.bind}:${UNI.port}` : "端口上将不再有人监听；两个旧网关不受影响");
+      renderContent(); break;
+    }
+    /* 监听地址已改为**下拉**（与三个既有网关页同形）⇒ 不再是点击动作，
+       走 change 委托的 `onUniBindChange`（危险确认在那边）。 */
+    case "uni-more": stop(); UNI.showMore = !UNI.showMore; renderContent(); break;
+    /* ★ 池明细**就地展开**（第三轮：从「跳走」改成「展开」）。
+       理由：统一网关唯一的价值就是跨平台视野 —— 一跳走就退化成普通网关卡，
+       想对比两个命名空间的池得来回切作用域。键用**命名空间 id**（不是池名，
+       四条扩展程序线共用 Trae 的两个池，用池名会把它们一起展开）。 */
+    case "uni-pool-toggle": {
+      stop();
+      if (UNI.poolOpen.has(a1)) UNI.poolOpen.delete(a1); else UNI.poolOpen.add(a1);
+      renderContent(); break;
+    }
+    /* 次要出口：真要看选号 / 粘性 / 恢复这些**操作**，才去该平台自己的网关页。 */
+    case "uni-pool-go": {
+      stop();
+      if (!SCOPES[a1]) break;
+      state.scope = a1;
+      state.dest = "gateway";
+      /* ★ 切到**独立网关**类型 —— 账号池分区属于它。 */
+      state.gwType = "independent";
+      state.gwSub = "pool";
+      state.selected.clear();
+      renderAll();
+      toast("ok", `已切到 ${scopeLabel(a1)} 的账号池`, "汇总在统一网关；选号 / 粘性 / 恢复等操作在该平台自己的页");
+      break;
+    }
+    /* 五条错误响应改**抽屉**：它是参考资料，不该把主区撑长、更不该离触发点隔三行。 */
+    case "uni-err": stop(); openDrawer(uniErrorsHtml(), "统一网关的错误响应（5 条）"); break;
+    case "uni-expand": {
+      stop();
+      if (UNI.expanded.has(a1)) UNI.expanded.delete(a1); else UNI.expanded.add(a1);
+      renderContent(); break;
+    }
+    /* 重新识别全部：先「识别中」，再出结果 —— 演示非阻塞探测。 */
+    case "uni-scan": {
+      stop();
+      if (UNI.scanning) break;
+      UNI.scanning = true; renderContent();
+      setTimeout(() => {
+        UNI.scanning = false;
+        toast("ok", `已重新识别 ${UNI.namespaces.size} 个命名空间`,
+          "其中 1 段仍读不到客户端清单，已按来源标注 —— 非实时必有原因");
+        renderContent();
+      }, 900);
+      break;
+    }
+    case "uni-key-new": {
+      stop();
+      UNI.form = { name: "", ns: new Set(["wb-cn"]), biz: "wb-cn" };
+      openDrawer(uniKeyFormHtml(), "创建统一密钥");
+      break;
+    }
+    case "uni-key-revoke": {
+      stop();
+      const k = UNI.keys.find((x) => x.id === a1); if (!k) break;
+      openConfirm({
+        title: `吊销「${k.name}」？`, danger: true,
+        body: `<p>吊销后该 Key 立即失效（客户端会拿到 401）。</p><p class="tiny muted">这是<b>可逆</b>的：库中存的是同一把 Key（明文未变），随时可「恢复」，不需要改任何客户端配置。</p>`,
+        okLabel: "吊销",
+        onOk: () => { k.revoked = true; toast("ok", `已吊销「${k.name}」`, "仍留在表里，可随时「恢复」"); renderContent(); },
+      });
+      break;
+    }
+    /* ★ 恢复：清标记 ⇒ 同一把 Key 重新可用（不需要重建、不需要改客户端）。 */
+    case "uni-key-restore": {
+      stop();
+      const k = UNI.keys.find((x) => x.id === a1); if (!k) break;
+      k.revoked = false;
+      toast("ok", `已恢复「${k.name}」`, "库中存的是同一把 Key，客户端无需改配置");
+      renderContent(); break;
+    }
+    case "uni-key-delete": {
+      stop();
+      const k = UNI.keys.find((x) => x.id === a1); if (!k) break;
+      openConfirm({
+        title: `删除「${k.name}」？`, danger: true,
+        body: `<p><b>删除不可逆</b> —— 记录被清掉，明文也无法再取回。</p><p class="tiny muted">只是想让客户端暂时不可用的话，请用「吊销」（可恢复）。</p>`,
+        okLabel: "确认删除",
+        onOk: () => { UNI.keys = UNI.keys.filter((x) => x.id !== k.id); toast("ok", `已删除「${k.name}」`); renderContent(); },
+      });
+      break;
+    }
+    case "uni-key-create": {
+      stop();
+      if (!UNI.form.ns.size) break;
+      const name = (UNI.form.name || "").trim() || "未命名密钥";
+      const hex = () => Math.random().toString(16).slice(2, 10);
+      const secret = `sk-uni-${hex()}${hex()}`;
+      UNI.keys.unshift({
+        id: "u" + Date.now(), name, masked: secret.slice(0, 11) + "••••••••" + secret.slice(-4),
+        ns: [...UNI.form.ns], biz: UNI.form.biz, created: "2026-10-14", lastUsed: "从未使用", revoked: false,
+      });
+      closeDrawer();
+      UNI.form = { name: "", ns: new Set(["wb-cn"]), biz: "wb-cn" };
+      /* 一次性明文：**锁定抽屉** —— 之后点遮罩、按 ESC 都不关（明文不可复原）。 */
+      openDrawer(uniPlaintextHtml(secret, name), "密钥已创建");
+      drawerLock = true;
+      toast("ok", `已创建「${name}」`, "明文只展示这一次，请立刻复制");
+      renderContent();
+      break;
+    }
+    case "uni-plaintext-ok": { stop(); drawerLock = false; closeDrawer(); break; }
     case "max-context": {
       stop();
       state.maxContext = a1 !== "0";
@@ -8643,7 +9529,13 @@ document.addEventListener("click", (e) => {
       });
       break;
     }
-    case "confirm-cancel": stop(); closeConfirm(); break;
+    case "confirm-cancel": {
+      stop();
+      const undo = pendingConfirmCancel;
+      closeConfirm();          /* 先清状态，再执行还原（还原里可能又会 render） */
+      if (undo) undo();
+      break;
+    }
     case "confirm-ok": { stop(); const fn = pendingConfirm; closeConfirm(); if (fn) fn(); break; }
 
     /* ── 升级前说明弹窗（版本内容）──
@@ -8799,7 +9691,21 @@ function bootFromUrl() {
   state.aggVisible = readAggVisible();
   if (p.get("scope") && SCOPES[p.get("scope")]) state.scope = p.get("scope");
   if (p.get("dest") && DESTINATIONS.some((d) => d.id === p.get("dest"))) state.dest = p.get("dest");
-  if (p.get("gw")) state.gwSub = p.get("gw");
+  /* ★ 网关页的两个轴：`type` = 独立网关 / 统一网关；`gw` = 该类型下的分区。
+     ⚠️ 兼容**两代**旧深链 —— 统一网关先后放过「子导航第 7 项」与「侧栏独立目的地」，
+     两条链分别是 `?dest=gateway&gw=unified` 与 `?dest=unified`，一律等价于 `type=unified`。
+     **旧链接不许失效。** */
+  const wantsUnified = p.get("type") === "unified" || p.get("gw") === "unified" || p.get("dest") === "unified";
+  if (p.get("dest") === "unified") state.dest = "gateway";
+  if (wantsUnified) {
+    state.gwType = "unified";
+    /* ★ `?type=unified&gw=u-pool` 必须落到指定分区 —— 原先无条件写 `u-ov`，
+       把显式给的分区**静默吃掉**（深链失效，评审点开发现停在概览）。 */
+    const wantSub = p.get("gw");
+    state.gwSub = GW_SECTIONS.unified.some(([id]) => id === wantSub) ? wantSub : "u-ov";
+  } else if (p.get("gw") && GW_SECTIONS.independent.some(([id]) => id === p.get("gw"))) {
+    state.gwSub = p.get("gw");
+  }
   /* Trae 上下文策略也可深链：`?max=off` 直接看「关闭」态，便于评审对照。 */
   if (p.get("max") === "off") state.maxMode = "off";
   if (p.get("api")) state.gwApi = p.get("api");

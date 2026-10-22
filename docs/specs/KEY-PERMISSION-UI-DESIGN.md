@@ -1,8 +1,11 @@
 # 密钥访问权限管理 · 界面与交互设计（issue #76）
 
 > 状态：**待拍板**（交互与视觉已成型，数据契约与实施拆解见 §6–§8）
-> **已合并进主原型**：[`../prototype/buddy-switch-prototype.html`](../prototype/buddy-switch-prototype.html)
-> 的「网关 › 密钥」分区（2026-10-22）—— 这是**视觉基准**，真机实现以它为准。
+> **已合并进主原型**：改动落在**模块化源文件**（`demo-app.js` / `demo-data.js` / `demo.css`），
+> 由 `npm run proto:single` 生成单文件版（2026-10-22）—— 这是**视觉基准**，真机实现以它为准。
+> ⚠️ **单文件是产物，不许手改**：密钥权限第一版直接写进了单文件，一次重新生成就被清掉了
+> （同类事故：统一网关也曾只存在于手改的单文件里，被同一次生成清掉，`verify-unified-pool`
+> 因此长期是红的）。改原型一律改源文件那四份，再跑 `npm run proto:single`。
 > 校验套件：[`../prototype/verify-key-permission-main.cjs`](../prototype/verify-key-permission-main.cjs)（主原型 16 条 + 3 变异）
 > 独立设计稿（同一套方案的单页版，便于评审与对照）：[`../prototype/key-permission-design.html`](../prototype/key-permission-design.html)
 > + [`../prototype/verify-key-permission.cjs`](../prototype/verify-key-permission.cjs)（21 条 + 4 变异）

@@ -257,28 +257,28 @@ const SCOPES = {
   "wb-cn": {
     id: "wb-cn", platform: "workbuddy", region: "cn",
     running: true, installed: true, version: "2.14.3",
-    todayCredits: 46, gatewayRequests: 312, gatewayKeys: 3, checkinReward: 100,
+    todayCredits: 46, gatewayRequests: 312, gatewayKeys: 4, checkinReward: 100,
     /* ★ 客户端是否接入本机网关（P12 请求代理）。决定「账本」视图的对账结论：
        true ⇒ 客户端 ⊆ 网关（合计 = 网关 + 直连客户端）；false ⇒ 两本账独立（合计 = 相加 − 重叠）。 */
     proxy: true,
     accounts: [
       makeAccount("a1", "jackey", "jackey@example.com", {
-        remark: "主号 · 长期", credits: 1240, creditsTotal: 2000,
+        remark: "主号 · 长期", credits: 1240, creditsTotal: 2000, group: "主力",
         programs: { workbuddy: true, ide: true, cli: false }, priority: true,
         lastUsed: "2 分钟前", todayTokens: 42100, totalTokens: 862400,
       }),
       makeAccount("a2", "team-shared", "shared@example.com", {
-        remark: "团队共用", credits: 860, creditsTotal: 1000,
+        remark: "团队共用", credits: 860, creditsTotal: 1000, group: "主力",
         programs: { workbuddy: false, ide: true, cli: false },
         lastUsed: "1 小时前", todayTokens: 28400, totalTokens: 512000,
       }),
       makeAccount("a3", "backup-01", "backup01@example.com", {
-        remark: "备用", credits: 1580, creditsTotal: 2000, expireInDays: 44,
+        remark: "备用", credits: 1580, creditsTotal: 2000, expireInDays: 44, group: "备用",
         programs: { workbuddy: false, ide: false, cli: false },
         lastUsed: "3 天前", todayTokens: 0, totalTokens: 96400,
       }),
       makeAccount("a4", "qa-bot", "qa@example.com", {
-        remark: "自动化测试", credits: 120, creditsTotal: 2000,
+        remark: "自动化测试", credits: 120, creditsTotal: 2000, group: "自动化",
         checkedIn: false, programs: { workbuddy: false, ide: true, cli: false },
         lastUsed: "5 分钟前", todayTokens: 31200, totalTokens: 288100,
       }),
@@ -288,7 +288,7 @@ const SCOPES = {
         lastUsed: "8 天前", todayTokens: 0, totalTokens: 41200, status: "expired",
       }),
       makeAccount("a6", "ops-02", "ops02@example.com", {
-        remark: "运维", credits: 990, creditsTotal: 2000, expireInDays: 27,
+        remark: "运维", credits: 990, creditsTotal: 2000, expireInDays: 27, group: "备用",
         programs: { workbuddy: false, ide: true, cli: false },
         lastUsed: "昨天", todayTokens: 8700, totalTokens: 173000,
       }),
@@ -780,6 +780,8 @@ const GATEWAY = {
       { id: "k1", name: "默认 Key", masked: "bs_live_9f3a••••••••••••7c21", scope: "国内版", created: "2026-09-12", lastUsed: "2 分钟前", requests: 1842 },
       { id: "k2", name: "CI 自动化", masked: "bs_live_4d18••••••••••••a0e9", scope: "国内版", created: "2026-09-20", lastUsed: "1 小时前", requests: 613, revoked: true },
       { id: "k3", name: "临时调试", masked: "bs_live_c702••••••••••••31bf", scope: "国际版", created: "2026-09-28", lastUsed: "3 天前", requests: 47 },
+      /* 「接近上限」那档（86%）：三档用量状态在默认视图里都能看到。 */
+      { id: "k10", name: "外包同学", masked: "bs_live_d913••••••••••••52af", scope: "国内版", created: "2026-10-06", lastUsed: "18 分钟前", requests: 956 },
     ],
     /* available = 上游事实（能不能调）；disabled = 用户偏好（主动拿掉）。
        两者**正交**，四种组合都合法 —— UI 必须能区分「已禁用」与「上游不可用」。 */
@@ -1313,3 +1315,26 @@ const APP_UPDATE = {
 /* ─────────── 统一挂载派生用量数据 ───────────
    放在文件末尾：此时 USAGE / SCOPES / GATEWAY 全部已定义。 */
 for (const _id of Object.keys(USAGE)) USAGE[_id].ext = buildUsageExtras(_id);
+
+/* ─────────── 密钥策略（issue #76）───────────
+   **与 `GATEWAY[...].keys` 分开放**：策略是「另一张表」，不是密钥记录上的一堆字段。
+   真实实现里也是 `ApiKeyRecord` 旁边多一张策略/用量表（见 `specs/KEY-PERMISSION-UI-DESIGN.md`）。
+
+   `quota.mode` = unlimited | limited；`unit` = token | request（业务代理没有 token）；
+   `period` = none | daily | weekly | monthly（自然月对齐成本归属）。
+   `scope.mode` = all | selected；`scope.accounts` 是**账号 id**（可按账号自带的
+   `group` 整组选取 —— 分组是账号页已有的同一份数据，不另造）。 */
+const KEY_POLICY = {
+  k1: { quota: { mode: "limited", limit: 10000000, unit: "token", period: "monthly", used: 6200000 }, scope: { mode: "all" } },
+  k2: { quota: { mode: "unlimited" }, scope: { mode: "all" } },
+  k3: { quota: { mode: "limited", limit: 1000000, unit: "token", period: "none", used: 1000000 }, scope: { mode: "selected", accounts: ["a1"] } },
+  k4: { quota: { mode: "unlimited" }, scope: { mode: "all" } },
+  k5: { quota: { mode: "limited", limit: 50000, unit: "request", period: "daily", used: 43000 }, scope: { mode: "selected", accounts: ["t1", "t2"] } },
+  k6: { quota: { mode: "unlimited" }, scope: { mode: "all" } },
+  k7: { quota: { mode: "limited", limit: 20000000, unit: "token", period: "monthly", used: 2000000 }, scope: { mode: "all" } },
+  k8: { quota: { mode: "unlimited" }, scope: { mode: "all" } },
+  k9: { quota: { mode: "unlimited" }, scope: { mode: "all" } },
+  k10: { quota: { mode: "limited", limit: 10000000, unit: "token", period: "monthly", used: 8600000 }, scope: { mode: "selected", accounts: ["a1", "a2", "a3"] } },
+};
+const KEY_PERIOD_TEXT = { none: "不重置（累计）", daily: "每日 00:00 重置", weekly: "每周一 00:00 重置", monthly: "自然月结算" };
+const KEY_PERIOD_SHORT = { none: "累计", daily: "每日", weekly: "每周", monthly: "自然月" };
