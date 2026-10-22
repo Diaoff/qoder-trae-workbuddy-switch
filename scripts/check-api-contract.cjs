@@ -190,6 +190,25 @@ const SCOPE_PARAMETERIZED = new Set([
   "probe_start",
   "probe_status",
   "probe_cancel",
+  /* ✅ 2026-10-22：Loomy（第四个平台）账号族 + 短信 / 微信登录 —— **9 + 6 条生来参数化**。
+     判据同 Qoder：单作用域 `loomy-cn` 也是**唯一的作用域判据**（`require_loomy_region`
+     fail-closed），缺它不该读写任何一本账号库。登记的价值在**防回退**：任一侧漏改
+     （前端不传 scope / 后端签名丢 scope）都会红。二期新增 6 条微信扫码命令一并登记。 */
+  "loomy_accounts",
+  "loomy_import",
+  "loomy_delete_account",
+  "loomy_set_account_remark",
+  "loomy_set_account_group",
+  "loomy_credits",
+  "loomy_checkin_claim",
+  "loomy_sms_send",
+  "loomy_sms_verify",
+  "loomy_wechat_start",
+  "loomy_wechat_poll",
+  "loomy_wechat_bind_auth",
+  "loomy_wechat_bind_send",
+  "loomy_wechat_bind_check",
+  "loomy_wechat_skip",
 ]);
 
 /**

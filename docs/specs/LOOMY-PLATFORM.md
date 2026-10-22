@@ -74,7 +74,16 @@ chat 路径只在 content-type 是 `application/json` 时 peek 响应体判业�
 - AK/SK 是客户端内置常量（`region.rs` 的 `CN_REALM`），只用于账号端点签名，
   与业务凭据无关。
 
-微信扫码（纯 HTTP 长轮询）列为**二期**。
+微信扫码（纯 HTTP 长轮询，`modules/loomy/wechat.rs`）已落地（二期 2026-10-22）：
+
+| 项 | 事实 |
+|:--|:--|
+| 授权页 | `open.weixin.qq.com/connect/qrconnect`（HTML 内嵌 uuid，无需执行 JS）；AppID `wx18d60be432287cf8` |
+| 长轮询 | `long.open.weixin.qq.com/connect/l/qrconnect`（40s 超时；`last` 游标带上一帧 errcode） |
+| 二维码图 | `open.weixin.qq.com/connect/qrcode/<uuid>`（**纯字符串拼接** —— uuid 字符集含 `= + /`，转义反而坏） |
+| errcode 语义 | 408=待扫码 / **404=已扫码待确认** / **405=已确认（wx_code 在这一帧）** / 403=取消 / 402=失效。⚠️ 蓝本曾把 404/405 读反；405 但 wx_code 空时保守判已扫不判成功 |
+| 四步 bind | `bind/auth`（微信 code 换 rcode，**code 只用一次**）→ `bind===1` 走 `bind/skip` 直接换 session；`bind===0` 走 `bind/sendMsg` + `bind/checkCode` 绑定手机号后登录 |
+| bind 缺失语义 | `bind` 字段缺失归为未绑（保守）：误跳过会拿到无手机号账号，多填一次手机号无害 |
 
 ---
 

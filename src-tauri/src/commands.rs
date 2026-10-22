@@ -4840,8 +4840,10 @@ pub fn clear_qoder_gateway_logs() -> Value {
 
 /// Loomy 账号列表（**不含令牌明文**）。
 #[tauri::command(rename_all = "camelCase")]
-pub fn loomy_accounts(_scope: String) -> Result<Value, String> {
+pub fn loomy_accounts(scope: String) -> Result<Value, String> {
     require_capability(Product::Loomy, capability::Capability::Oauth)?;
+    // 单作用域仍**校验**（fail-closed）：`loomy-global` 之类拼错不该静默读到 loomy-cn。
+    require_loomy_region(resolve_scope_param(Some(&scope))?)?;
     Ok(loomy::account::accounts_view_for(loomy::region::LoomyRegion::Cn))
 }
 
@@ -4995,4 +4997,153 @@ pub async fn loomy_sms_verify(
     let uid = account.uid.clone();
     loomy::account::upsert_account_for(loomy::region::LoomyRegion::Cn, account)?;
     Ok(json!({ "ok": true, "uid": uid, "phone": phone }))
+}
+
+// ---- Loomy 微信扫码（二期）：纯 HTTP 四步 + 长轮询，无本地监听 ----------------
+//
+// 与 server 侧 /api/loomy/wechat/* 同构（两宿主刻意不去重，见共享知识）。
+// 每步失败显式报错；落库统一走 loomy_upsert_wechat_login。
+
+/// 微信扫码登录成功后的落库（来源 `wechat-login`）。
+fn loomy_upsert_wechat_login(
+    session: String,
+    userid: String,
+    phone: String,
+    nickname: Option<String>,
+) -> Result<Value, String> {
+    let mut account = loomy::api::account_from_login_fields(
+        loomy::region::LoomyRegion::Cn,
+        session,
+        userid,
+        phone,
+    )?;
+    account.source = Some(loomy::account::SOURCE_WECHAT_LOGIN.to_string());
+    if let Some(name) = nickname {
+        // 仅在账号还没有昵称时落微信侧的（导入 / 重登不覆盖用户看到的旧昵称）。
+        if account.nickname.is_none() {
+            account.nickname = Some(name);
+        }
+    }
+    let uid = account.uid.clone();
+    loomy::account::upsert_account_for(loomy::region::LoomyRegion::Cn, account)?;
+    Ok(json!({ "ok": true, "uid": uid }))
+}
+
+/// 拉微信授权页，返回二维码 uuid 与图片 URL。
+#[tauri::command(rename_all = "camelCase")]
+pub async fn loomy_wechat_start(scope: String) -> Result<Value, String> {
+    require_capability(Product::Loomy, capability::Capability::Oauth)?;
+    require_loomy_region(resolve_scope_param(Some(&scope))?)?;
+    let state = loomy::api::new_trace_id();
+    let (uuid, qr_url) =
+        loomy::api::fetch_wechat_uuid(loomy::region::LoomyRegion::Cn, &state).await?;
+    Ok(json!({ "ok": true, "uuid": uuid, "qrUrl": qr_url }))
+}
+
+/// 一次微信长轮询；返回状态帧（waiting / scanned / confirmed / …）。
+///
+/// ⚠️ confirmed 帧的 `code` 只用一次，拿到后立即调 `loomy_wechat_bind_auth`。
+/// 长轮询偶发网络失败返回 waiting（不终止登录流程）。
+#[tauri::command(rename_all = "camelCase")]
+pub async fn loomy_wechat_poll(scope: String, uuid: String, last: String) -> Result<Value, String> {
+    require_capability(Product::Loomy, capability::Capability::Oauth)?;
+    require_loomy_region(resolve_scope_param(Some(&scope))?)?;
+    if uuid.trim().is_empty() {
+        return Err("缺少 uuid".to_string());
+    }
+    match loomy::api::poll_wechat_once(loomy::region::LoomyRegion::Cn, &uuid, &last).await {
+        Ok(status) => {
+            let mut payload = json!({
+                "ok": true,
+                "status": status.as_str(),
+                "terminal": status.is_terminal(),
+            });
+            if let loomy::wechat::WechatPollStatus::Confirmed { code } = status {
+                payload["code"] = json!(code);
+            }
+            Ok(payload)
+        }
+        Err(error) => Ok(json!({
+            "ok": true,
+            "status": "waiting",
+            "terminal": false,
+            "note": error,
+        })),
+    }
+}
+
+/// 微信 code 换 rcode（code 只用一次）。
+#[tauri::command(rename_all = "camelCase")]
+pub async fn loomy_wechat_bind_auth(scope: String, code: String) -> Result<Value, String> {
+    require_capability(Product::Loomy, capability::Capability::Oauth)?;
+    require_loomy_region(resolve_scope_param(Some(&scope))?)?;
+    if code.trim().is_empty() {
+        return Err("缺少 code".to_string());
+    }
+    let bind = loomy::api::wechat_bind_auth(loomy::region::LoomyRegion::Cn, &code).await?;
+    Ok(json!({
+        "ok": true,
+        "bound": bind.bound,
+        "rcode": bind.rcode,
+        "nickname": bind.nickname,
+    }))
+}
+
+/// 向待绑定的手机号下发验证码。
+#[tauri::command(rename_all = "camelCase")]
+pub async fn loomy_wechat_bind_send(
+    scope: String,
+    rcode: String,
+    phone: String,
+) -> Result<Value, String> {
+    require_capability(Product::Loomy, capability::Capability::Oauth)?;
+    require_loomy_region(resolve_scope_param(Some(&scope))?)?;
+    if rcode.trim().is_empty() {
+        return Err("缺少 rcode".to_string());
+    }
+    if phone.len() != 11 || !phone.chars().all(|c| c.is_ascii_digit()) {
+        return Err("手机号必须是 11 位数字".to_string());
+    }
+    let msgid =
+        loomy::api::wechat_bind_send_msg(loomy::region::LoomyRegion::Cn, &rcode, &phone).await?;
+    Ok(json!({ "ok": true, "msgid": msgid }))
+}
+
+/// 验证短信验证码，完成绑定 + 登录并落库。
+#[tauri::command(rename_all = "camelCase")]
+pub async fn loomy_wechat_bind_check(
+    scope: String,
+    rcode: String,
+    code: String,
+    msgid: String,
+    nickname: Option<String>,
+) -> Result<Value, String> {
+    require_capability(Product::Loomy, capability::Capability::Oauth)?;
+    require_loomy_region(resolve_scope_param(Some(&scope))?)?;
+    if rcode.is_empty() || code.is_empty() || msgid.is_empty() {
+        return Err("缺少 rcode / code / msgid".to_string());
+    }
+    let (session, userid, phone) =
+        loomy::api::wechat_bind_check_code(loomy::region::LoomyRegion::Cn, &rcode, &code, &msgid)
+            .await?;
+    let nickname = nickname.filter(|value| !value.is_empty());
+    loomy_upsert_wechat_login(session, userid, phone, nickname)
+}
+
+/// 已绑手机号时跳过绑定，直接换 session 并落库。
+#[tauri::command(rename_all = "camelCase")]
+pub async fn loomy_wechat_skip(
+    scope: String,
+    rcode: String,
+    nickname: Option<String>,
+) -> Result<Value, String> {
+    require_capability(Product::Loomy, capability::Capability::Oauth)?;
+    require_loomy_region(resolve_scope_param(Some(&scope))?)?;
+    if rcode.trim().is_empty() {
+        return Err("缺少 rcode".to_string());
+    }
+    let (session, userid) =
+        loomy::api::wechat_bind_skip(loomy::region::LoomyRegion::Cn, &rcode).await?;
+    let nickname = nickname.filter(|value| !value.is_empty());
+    loomy_upsert_wechat_login(session, userid, String::new(), nickname)
 }

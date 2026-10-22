@@ -486,6 +486,13 @@ fn api_routes() -> Router {
         .route("/api/loomy/checkin/claim", post(api_loomy_checkin_claim))
         .route("/api/loomy/sms/send", post(api_loomy_sms_send))
         .route("/api/loomy/sms/verify", post(api_loomy_sms_verify))
+        // ---- Loomy 微信扫码（二期）：纯 HTTP 四步 + 长轮询，无本地监听 ----
+        .route("/api/loomy/wechat/start", post(api_loomy_wechat_start))
+        .route("/api/loomy/wechat/poll", post(api_loomy_wechat_poll))
+        .route("/api/loomy/wechat/bind-auth", post(api_loomy_wechat_bind_auth))
+        .route("/api/loomy/wechat/bind-send", post(api_loomy_wechat_bind_send))
+        .route("/api/loomy/wechat/bind-check", post(api_loomy_wechat_bind_check))
+        .route("/api/loomy/wechat/skip", post(api_loomy_wechat_skip))
         // ---- Qoder API 网关（管理面；网关本体走独立端口 57895，**不** merge 进本 Router）----
         // ⚠️ 一个监听、两个区域：区域由请求所用 API Key 的归属决定（`QoderKeyRegion`），
         //   状态 / 模型两条按 `scope` 看对应的那本账号库（fail-closed）。
@@ -1470,7 +1477,6 @@ async fn api_credits_query(Json(body): Json<Value>) -> Response {
                 let Some(acc) = loomy::account::find_account_for(region, id) else {
                     return json_err("账号不存在".to_string(), StatusCode::BAD_REQUEST);
                 };
-                let spec = loomy::region::realm_spec(region);
                 match loomy::api::points_for(region, &acc.access_token).await {
                     Ok(snapshot) => {
                         let mut account = acc.clone();
@@ -1532,7 +1538,6 @@ async fn api_checkin_status_query(Json(body): Json<Value>) -> Response {
                 let Some(acc) = loomy::account::find_account_for(region, id) else {
                     return json_err("账号不存在".to_string(), StatusCode::BAD_REQUEST);
                 };
-                let spec = loomy::region::realm_spec(region);
                 match loomy::api::checkin_for(region, &acc.access_token).await {
                     Ok(outcome) => {
                         let mut account = acc.clone();
@@ -7588,6 +7593,194 @@ async fn api_loomy_sms_verify(Json(body): Json<Value>) -> Response {
                         Err(error) => json_err(error, StatusCode::BAD_REQUEST),
                     }
                 }
+                Err(error) => json_err(error, StatusCode::BAD_REQUEST),
+            }
+        }
+        Err(error) => json_err(error, StatusCode::BAD_REQUEST),
+    }
+}
+
+/// 微信扫码登录成功后的落库（来源 `wechat-login`；昵称来自微信侧，可空）。
+fn loomy_upsert_wechat_login(
+    session: String,
+    userid: String,
+    phone: String,
+    nickname: Option<String>,
+) -> Result<Value, String> {
+    let mut account = loomy::api::account_from_login_fields(
+        loomy::region::LoomyRegion::Cn,
+        session,
+        userid,
+        phone,
+    )?;
+    account.source = Some(loomy::account::SOURCE_WECHAT_LOGIN.to_string());
+    if let Some(name) = nickname {
+        // 仅在账号还没有昵称时落微信侧的（导入 / 重登不覆盖用户看到的旧昵称）。
+        if account.nickname.is_none() {
+            account.nickname = Some(name);
+        }
+    }
+    let uid = account.uid.clone();
+    loomy::account::upsert_account_for(loomy::region::LoomyRegion::Cn, account)?;
+    Ok(json!({ "ok": true, "uid": uid }))
+}
+
+/// POST /api/loomy/wechat/start —— 拉微信授权页，返回二维码 uuid 与图片 URL。
+async fn api_loomy_wechat_start(Json(body): Json<Value>) -> Response {
+    if let Err(error) = require_capability(Product::Loomy, capability::Capability::Oauth) {
+        return json_err(error, StatusCode::FORBIDDEN);
+    }
+    let scope = body.get("scope").and_then(Value::as_str).unwrap_or("");
+    if let Err(error) = resolve_scope_param(Some(scope)) {
+        return json_err(error, StatusCode::BAD_REQUEST);
+    }
+    // state 供授权页追踪会话；面板侧不消费它，生成一个即可。
+    let state = loomy::api::new_trace_id();
+    match loomy::api::fetch_wechat_uuid(loomy::region::LoomyRegion::Cn, &state).await {
+        Ok((uuid, qr_url)) => json_ok(json!({ "ok": true, "uuid": uuid, "qrUrl": qr_url })),
+        Err(error) => json_err(error, StatusCode::BAD_REQUEST),
+    }
+}
+
+/// POST /api/loomy/wechat/poll —— 一次长轮询；返回状态帧（waiting / scanned / …）。
+///
+/// ⚠️ confirmed 帧的 `code` 下发给前端后，前端立即调 `bind-auth`（code 只用一次）。
+async fn api_loomy_wechat_poll(Json(body): Json<Value>) -> Response {
+    if let Err(error) = require_capability(Product::Loomy, capability::Capability::Oauth) {
+        return json_err(error, StatusCode::FORBIDDEN);
+    }
+    let scope = body.get("scope").and_then(Value::as_str).unwrap_or("");
+    if let Err(error) = resolve_scope_param(Some(scope)) {
+        return json_err(error, StatusCode::BAD_REQUEST);
+    }
+    let uuid = body.get("uuid").and_then(Value::as_str).unwrap_or("");
+    let last = body.get("last").and_then(Value::as_str).unwrap_or("");
+    if uuid.trim().is_empty() {
+        return json_err("缺少 uuid".to_string(), StatusCode::BAD_REQUEST);
+    }
+    match loomy::api::poll_wechat_once(loomy::region::LoomyRegion::Cn, uuid, last).await {
+        Ok(status) => {
+            let mut payload = json!({
+                "ok": true,
+                "status": status.as_str(),
+                "terminal": status.is_terminal(),
+            });
+            if let loomy::wechat::WechatPollStatus::Confirmed { code } = status {
+                payload["code"] = json!(code);
+            }
+            json_ok(payload)
+        }
+        // 长轮询偶发失败不终止登录流程：返回 waiting 让前端循环决定重试。
+        Err(error) => json_ok(json!({
+            "ok": true,
+            "status": "waiting",
+            "terminal": false,
+            "note": error,
+        })),
+    }
+}
+
+/// POST /api/loomy/wechat/bind-auth —— 微信 code 换 rcode（只用一次）。
+async fn api_loomy_wechat_bind_auth(Json(body): Json<Value>) -> Response {
+    if let Err(error) = require_capability(Product::Loomy, capability::Capability::Oauth) {
+        return json_err(error, StatusCode::FORBIDDEN);
+    }
+    let scope = body.get("scope").and_then(Value::as_str).unwrap_or("");
+    if let Err(error) = resolve_scope_param(Some(scope)) {
+        return json_err(error, StatusCode::BAD_REQUEST);
+    }
+    let code = body.get("code").and_then(Value::as_str).unwrap_or("");
+    if code.trim().is_empty() {
+        return json_err("缺少 code".to_string(), StatusCode::BAD_REQUEST);
+    }
+    match loomy::api::wechat_bind_auth(loomy::region::LoomyRegion::Cn, code).await {
+        Ok(bind) => json_ok(json!({
+            "ok": true,
+            "bound": bind.bound,
+            "rcode": bind.rcode,
+            "nickname": bind.nickname,
+        })),
+        Err(error) => json_err(error, StatusCode::BAD_REQUEST),
+    }
+}
+
+/// POST /api/loomy/wechat/bind-send —— 向待绑定的手机号下发验证码。
+async fn api_loomy_wechat_bind_send(Json(body): Json<Value>) -> Response {
+    if let Err(error) = require_capability(Product::Loomy, capability::Capability::Oauth) {
+        return json_err(error, StatusCode::FORBIDDEN);
+    }
+    let scope = body.get("scope").and_then(Value::as_str).unwrap_or("");
+    if let Err(error) = resolve_scope_param(Some(scope)) {
+        return json_err(error, StatusCode::BAD_REQUEST);
+    }
+    let rcode = body.get("rcode").and_then(Value::as_str).unwrap_or("");
+    let phone = body.get("phone").and_then(Value::as_str).unwrap_or("");
+    if rcode.trim().is_empty() {
+        return json_err("缺少 rcode".to_string(), StatusCode::BAD_REQUEST);
+    }
+    if !phone.chars().all(|c| c.is_ascii_digit()) || phone.len() != 11 {
+        return json_err("手机号必须是 11 位数字".to_string(), StatusCode::BAD_REQUEST);
+    }
+    match loomy::api::wechat_bind_send_msg(loomy::region::LoomyRegion::Cn, rcode, phone).await {
+        Ok(msgid) => json_ok(json!({ "ok": true, "msgid": msgid })),
+        Err(error) => json_err(error, StatusCode::BAD_REQUEST),
+    }
+}
+
+/// POST /api/loomy/wechat/bind-check —— 验证短信验证码，完成绑定 + 登录并落库。
+async fn api_loomy_wechat_bind_check(Json(body): Json<Value>) -> Response {
+    if let Err(error) = require_capability(Product::Loomy, capability::Capability::Oauth) {
+        return json_err(error, StatusCode::FORBIDDEN);
+    }
+    let scope = body.get("scope").and_then(Value::as_str).unwrap_or("");
+    if let Err(error) = resolve_scope_param(Some(scope)) {
+        return json_err(error, StatusCode::BAD_REQUEST);
+    }
+    let rcode = body.get("rcode").and_then(Value::as_str).unwrap_or("");
+    let code = body.get("code").and_then(Value::as_str).unwrap_or("");
+    let msgid = body.get("msgid").and_then(Value::as_str).unwrap_or("");
+    let nickname = body
+        .get("nickname")
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+    if rcode.is_empty() || code.is_empty() || msgid.is_empty() {
+        return json_err("缺少 rcode / code / msgid".to_string(), StatusCode::BAD_REQUEST);
+    }
+    match loomy::api::wechat_bind_check_code(loomy::region::LoomyRegion::Cn, rcode, code, msgid).await
+    {
+        Ok((session, userid, phone)) => {
+            match loomy_upsert_wechat_login(session, userid, phone, nickname) {
+                Ok(payload) => json_ok(payload),
+                Err(error) => json_err(error, StatusCode::BAD_REQUEST),
+            }
+        }
+        Err(error) => json_err(error, StatusCode::BAD_REQUEST),
+    }
+}
+
+/// POST /api/loomy/wechat/skip —— 已绑手机号时跳过绑定，直接换 session 并落库。
+async fn api_loomy_wechat_skip(Json(body): Json<Value>) -> Response {
+    if let Err(error) = require_capability(Product::Loomy, capability::Capability::Oauth) {
+        return json_err(error, StatusCode::FORBIDDEN);
+    }
+    let scope = body.get("scope").and_then(Value::as_str).unwrap_or("");
+    if let Err(error) = resolve_scope_param(Some(scope)) {
+        return json_err(error, StatusCode::BAD_REQUEST);
+    }
+    let rcode = body.get("rcode").and_then(Value::as_str).unwrap_or("");
+    let nickname = body
+        .get("nickname")
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+    if rcode.trim().is_empty() {
+        return json_err("缺少 rcode".to_string(), StatusCode::BAD_REQUEST);
+    }
+    match loomy::api::wechat_bind_skip(loomy::region::LoomyRegion::Cn, rcode).await {
+        Ok((session, userid)) => {
+            match loomy_upsert_wechat_login(session, userid, String::new(), nickname) {
+                Ok(payload) => json_ok(payload),
                 Err(error) => json_err(error, StatusCode::BAD_REQUEST),
             }
         }

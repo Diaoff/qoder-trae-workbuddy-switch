@@ -565,6 +565,13 @@ const ROUTES: Record<string, Route> = {
   loomy_checkin_claim: { method: "POST", path: "/api/loomy/checkin/claim" },
   loomy_sms_send: { method: "POST", path: "/api/loomy/sms/send" },
   loomy_sms_verify: { method: "POST", path: "/api/loomy/sms/verify" },
+  // Loomy 微信扫码（二期）：纯 HTTP 四步 + 长轮询
+  loomy_wechat_start: { method: "POST", path: "/api/loomy/wechat/start" },
+  loomy_wechat_poll: { method: "POST", path: "/api/loomy/wechat/poll" },
+  loomy_wechat_bind_auth: { method: "POST", path: "/api/loomy/wechat/bind-auth" },
+  loomy_wechat_bind_send: { method: "POST", path: "/api/loomy/wechat/bind-send" },
+  loomy_wechat_bind_check: { method: "POST", path: "/api/loomy/wechat/bind-check" },
+  loomy_wechat_skip: { method: "POST", path: "/api/loomy/wechat/skip" },
   get_qoder_gateway_config: { method: "GET", path: "/api/qoder/gateway/config" },
   save_qoder_gateway_config: { method: "POST", path: "/api/qoder/gateway/config" },
   qoder_gateway_status: { method: "GET", path: "/api/qoder/gateway/status" },
@@ -3749,4 +3756,94 @@ export function loomySmsVerify(
   msgid: string,
 ): Promise<{ ok: boolean; uid: string; phone: string }> {
   return call("loomy_sms_verify", { scope, phone, code, msgid });
+}
+
+// ---- Loomy 微信扫码登录（二期）：纯 HTTP 四步 + 长轮询，无本地监听 ----
+//
+// ⚠️ 与短信登录同款纪律：全部显式传 `scope`（恒 `loomy-cn`），后端 fail-closed。
+// 全部是**写操作**（会落库 / 打上游），不进 `DEMO_READ_COMMANDS`。
+
+/** 微信扫码启动结果：uuid（轮询游标）与二维码图片地址。 */
+export interface LoomyWechatStart {
+  ok: boolean;
+  uuid: string;
+  qrUrl: string;
+}
+
+/** 开始微信扫码：拉授权页取二维码。 */
+export function loomyWechatStart(scope: Scope): Promise<LoomyWechatStart> {
+  return call<LoomyWechatStart>("loomy_wechat_start", { scope });
+}
+
+/** 微信长轮询状态机的取值。 */
+export type LoomyWechatPollStatus =
+  | "waiting"
+  | "scanned"
+  | "confirmed"
+  | "cancelled"
+  | "expired";
+
+/** 一次长轮询的状态帧。`code` 仅在 `confirmed` 时存在（且只能用一次）。 */
+export interface LoomyWechatPoll {
+  ok: boolean;
+  status: LoomyWechatPollStatus;
+  terminal: boolean;
+  code?: string;
+  note?: string;
+}
+
+/**
+ * 一次微信长轮询。
+ *
+ * ⚠️ 网络失败时后端返回 `waiting`（不抛错）—— 由调用方的循环决定是否继续，
+ * 偶发失败不该终止整个登录流程。
+ */
+export function loomyWechatPoll(
+  scope: Scope,
+  uuid: string,
+  last: string,
+): Promise<LoomyWechatPoll> {
+  return call<LoomyWechatPoll>("loomy_wechat_poll", { scope, uuid, last });
+}
+
+/** 微信 code 换 rcode 的结果。`bound` 决定后续走 skip 还是绑定手机号。 */
+export interface LoomyWechatBindAuth {
+  ok: boolean;
+  bound: boolean;
+  rcode: string;
+  nickname: string | null;
+}
+
+/** 微信 code 换 rcode（code 只用一次）。 */
+export function loomyWechatBindAuth(scope: Scope, code: string): Promise<LoomyWechatBindAuth> {
+  return call<LoomyWechatBindAuth>("loomy_wechat_bind_auth", { scope, code });
+}
+
+/** 向待绑定的手机号下发验证码。 */
+export function loomyWechatBindSend(
+  scope: Scope,
+  rcode: string,
+  phone: string,
+): Promise<{ ok: boolean; msgid: string }> {
+  return call("loomy_wechat_bind_send", { scope, rcode, phone });
+}
+
+/** 验证短信验证码，完成绑定 + 登录并落库。 */
+export function loomyWechatBindCheck(
+  scope: Scope,
+  rcode: string,
+  code: string,
+  msgid: string,
+  nickname: string | null,
+): Promise<{ ok: boolean; uid: string }> {
+  return call("loomy_wechat_bind_check", { scope, rcode, code, msgid, nickname });
+}
+
+/** 已绑手机号时跳过绑定，直接换 session 并落库。 */
+export function loomyWechatSkip(
+  scope: Scope,
+  rcode: string,
+  nickname: string | null,
+): Promise<{ ok: boolean; uid: string }> {
+  return call("loomy_wechat_skip", { scope, rcode, nickname });
 }

@@ -18,6 +18,7 @@
 //! | [`credits`] | 两池积分解析 |
 //! | [`checkin`] |每日赠送额度签到（幂等） |
 //! | [`oauth`] | 短信验证码登录 |
+//! | [`wechat`] | 微信扫码登录（纯函数层：URL 拼接 / uuid 提取 / 长轮询帧解析） |
 //! | [`refresh`] | 刻意**不存在**：Loomy 无续期端点，过期只能重登 |
 pub mod account;
 pub mod api;
@@ -30,3 +31,4 @@ pub mod oauth;
 pub mod paths;
 pub mod region;
 pub mod signing;
+pub mod wechat;

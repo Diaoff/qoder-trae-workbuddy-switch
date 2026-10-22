@@ -596,6 +596,13 @@ pub fn run() {
             commands::loomy_checkin_claim,
             commands::loomy_sms_send,
             commands::loomy_sms_verify,
+            // Loomy 微信扫码（二期）
+            commands::loomy_wechat_start,
+            commands::loomy_wechat_poll,
+            commands::loomy_wechat_bind_auth,
+            commands::loomy_wechat_bind_send,
+            commands::loomy_wechat_bind_check,
+            commands::loomy_wechat_skip,
             commands::qoder_program_status,
             commands::qoder_switch_account,
             commands::qoder_set_account_group,

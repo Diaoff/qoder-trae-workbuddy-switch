@@ -85,6 +85,15 @@ pub struct RealmSpec {
     pub app_id: &'static str,
     /// 客户端 UA（账号请求体 `base.ua`；官方客户端在 Windows 上发的也是这个值，照抄）。
     pub client_ua: &'static str,
+    // ── 微信扫码登录（二期）── 与短信路径同表：端点常量只住这里。
+    /// 微信开放平台「网站应用」AppID（客户端 `.env.prod` 的 `LOOMY_WECHAT_APP_ID`）。
+    pub wechat_app_id: &'static str,
+    /// 微信授权回调地址。实测 404，但链路**不需要**它可达 —— code 从长轮询拿。
+    pub wechat_redirect_uri: &'static str,
+    /// 微信长轮询超时（毫秒）。微信侧约 25 秒无状态变化才返回，故给足余量。
+    pub wechat_poll_timeout_ms: u64,
+    /// 访问微信开放平台用的 UA（蓝本实测值；带默认 UA 会被微信风控拒绝）。
+    pub wechat_http_ua: &'static str,
 }
 
 /// 国内版。
@@ -103,6 +112,12 @@ pub const CN_REALM: RealmSpec = RealmSpec {
     access_key_secret: "zsak6eadrbawz683wf5r3m2snrwj868r",
     app_id: "GM3LOOMY",
     client_ua: "Loomy|Desktop|Electron|macOS",
+    // 微信扫码（二期）：蓝本 free-llm-router/loomy.ts 同值（客户端 `.env.prod`）。
+    wechat_app_id: "wx18d60be432287cf8",
+    wechat_redirect_uri: "https://loomy.xunfei.cn/oauth/wechat/callback",
+    wechat_poll_timeout_ms: 40_000,
+    wechat_http_ua:
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
 };
 
 /// 区域 → 上游差异表（**唯一查表入口**）。
@@ -141,5 +156,10 @@ mod tests {
         assert_eq!(spec.session_ttl_seconds, 1_209_600);
         assert_eq!(spec.sms_code_ttl_seconds, 300);
         assert_eq!(spec.app_id, "GM3LOOMY");
+        // 微信扫码常量与蓝本逐字对齐（free-llm-router/src/providers/loomy.ts）。
+        assert_eq!(spec.wechat_app_id, "wx18d60be432287cf8");
+        assert_eq!(spec.wechat_redirect_uri, "https://loomy.xunfei.cn/oauth/wechat/callback");
+        assert_eq!(spec.wechat_poll_timeout_ms, 40_000);
+        assert!(!spec.wechat_http_ua.is_empty());
     }
 }

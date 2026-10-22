@@ -1,9 +1,10 @@
 /**
  * Loomy 账号页（单作用域 `loomy-cn`）。
  *
- * ## 一期范围（诚实口径）
+ * ## 登录方式（诚实口径）
  *
- * - **短信登录**（两步：发码 → 验证码登录）与**粘贴凭据导入**；
+ * - **微信扫码**（二期：纯 HTTP 长轮询，无本地监听，容器形态同样可用）、
+ *   **短信登录**（两步：发码 → 验证码登录）与**粘贴凭据导入**；
  * - 账号卡片：积分快照（永久 / 每日两池）、备注 / 分组、删除；
  * - 签到 / 积分查询走**逐账号**动作（卡内按钮）。
  *
@@ -11,7 +12,7 @@
  * 切换登录态（无客户端可切）。缺的能力一律不渲染。
  */
 import { useCallback, useEffect, useState } from "react";
-import { Gift, Loader2, MessageSquare, Plus, RefreshCw, Trash2 } from "lucide-react";
+import { Gift, Loader2, MessageSquare, Plus, QrCode, RefreshCw, Trash2 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -25,6 +26,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { LoomyWechatLoginDialog } from "@/components/loomy/loomy-wechat-login-dialog";
 import * as api from "@/lib/api";
 import type { LoomyAccountView } from "@/lib/api";
 
@@ -43,7 +45,8 @@ function LoomyAccountsInner({ scope }: { scope: LoomyScope }) {
   const [error, setError] = useState<string | null>(null);
   const [busyUid, setBusyUid] = useState<string | null>(null);
 
-  // 登录对话框状态
+  // 登录对话框状态（微信扫码 + 短信两条路）
+  const [wechatOpen, setWechatOpen] = useState(false);
   const [addOpen, setAddOpen] = useState(false);
   const [phone, setPhone] = useState("");
   const [code, setCode] = useState("");
@@ -170,6 +173,10 @@ function LoomyAccountsInner({ scope }: { scope: LoomyScope }) {
             <Plus className="size-4" />
             导入凭据
           </Button>
+          <Button variant="outline" size="sm" onClick={() => setWechatOpen(true)}>
+            <QrCode className="size-4" />
+            微信扫码
+          </Button>
           <Button size="sm" onClick={() => setAddOpen(true)}>
             <MessageSquare className="size-4" />
             短信登录
@@ -187,7 +194,7 @@ function LoomyAccountsInner({ scope }: { scope: LoomyScope }) {
       {error && <p className="text-sm text-destructive">{error}</p>}
       {accounts !== null && accounts.length === 0 && (
         <p className="text-sm text-muted-foreground">
-          还没有 Loomy 账号：用「短信登录」或「导入凭据」添加。
+          还没有 Loomy 账号：用「微信扫码」「短信登录」或「导入凭据」添加。
         </p>
       )}
       <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
@@ -248,6 +255,14 @@ function LoomyAccountsInner({ scope }: { scope: LoomyScope }) {
           </div>
         ))}
       </div>
+
+      {/* 微信扫码登录（二期） */}
+      <LoomyWechatLoginDialog
+        scope={scope}
+        open={wechatOpen}
+        onOpenChange={setWechatOpen}
+        onLoggedIn={() => void reload()}
+      />
 
       {/* 短信登录 */}
       <Dialog open={addOpen} onOpenChange={setAddOpen}>

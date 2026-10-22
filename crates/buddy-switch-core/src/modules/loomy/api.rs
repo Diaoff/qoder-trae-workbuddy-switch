@@ -29,6 +29,14 @@ pub const PATH_CHECKIN: &str = "/points/first-login";
 pub const PATH_SEND_SMS: &str = "/login/phone/sendMsgCode";
 /// 验证码登录端点路径（账号基址）。
 pub const PATH_CHECK_SMS: &str = "/login/phone/checkCode";
+/// 微信授权第 1 步：用微信 code 换 rcode（账号基址）。
+pub const PATH_WECHAT_BIND_AUTH: &str = "/login/thirdAccount/bind/auth";
+/// 微信授权第 3a 步：向待绑定的手机号下发验证码（账号基址）。
+pub const PATH_WECHAT_BIND_SEND_MSG: &str = "/login/thirdAccount/bind/sendMsg";
+/// 微信授权第 3b 步：验证短信验证码，通过即完成绑定 + 登录（账号基址）。
+pub const PATH_WECHAT_BIND_CHECK_CODE: &str = "/login/thirdAccount/bind/checkCode";
+/// 微信授权第 4 步：已绑手机号时跳过绑定，直接换 session（账号基址）。
+pub const PATH_WECHAT_BIND_SKIP: &str = "/login/thirdAccount/bind/skip";
 
 /// 共享出站客户端（SSE 对话不设总超时 —— 时长由模型输出决定）。
 pub fn shared_client() -> Result<reqwest::Client, String> {
@@ -299,6 +307,139 @@ pub async fn fetch_models(region: LoomyRegion, token: &str) -> Result<Vec<Value>
     fetch_models_at(realm_spec(region).api_base, token).await
 }
 
+// ── 微信扫码（二期）：拉授权页 / 长轮询 / 四步 bind ──────────────────
+//
+// 纯函数部分在 [`super::wechat`]（可合成夹具单测）；本节只做网络发送。
+// 授权页与长轮询打微信开放平台（不是 account_base）；四步 bind 打账号基址、
+// 复用 [`post_caccount`] 的 HMAC-SHA1 签名通道（与短信登录同一份签名逻辑）。
+
+/// 拉取微信授权页并提取二维码 uuid。
+///
+/// 授权页直接内嵌 uuid（无需执行 JS），因此纯 GET 即可；提取不到时显式报错
+/// （绝不下发空 uuid —— 那会让前端轮询永远 waiting，用户看不到任何原因）。
+pub async fn fetch_wechat_uuid(region: LoomyRegion, state: &str) -> Result<(String, String), String> {
+    let spec = realm_spec(region);
+    let url = crate::modules::loomy::wechat::auth_url(region, state);
+    let client = shared_client()?;
+    let response = client
+        .get(&url)
+        .timeout(Duration::from_secs(30))
+        .header("User-Agent", spec.wechat_http_ua)
+        .header("Referer", "https://open.weixin.qq.com/")
+        .send()
+        .await
+        .map_err(|error| format!("微信授权页拉取失败：{error}"))?;
+    let status = response.status();
+    let html = response
+        .text()
+        .await
+        .map_err(|error| format!("读取微信授权页响应：{error}"))?;
+    if !status.is_success() {
+        return Err(format!("微信授权页 HTTP {}", status.as_u16()));
+    }
+    let uuid = crate::modules::loomy::wechat::extract_uuid(&html)
+        .ok_or_else(|| "微信授权页未包含二维码 uuid（页面结构可能已变化）".to_string())?;
+    let qr = crate::modules::loomy::wechat::qr_image_url(&uuid);
+    Ok((uuid, qr))
+}
+
+/// 一次微信长轮询（单帧）。
+///
+/// 网络异常**不抛错**（返回 `Err` 由调用方决定是否继续轮询 —— 长轮询偶发失败
+/// 不该终止整个登录流程）；协议层状态用 [`WechatPollStatus`] 表达。
+pub async fn poll_wechat_once(
+    region: LoomyRegion,
+    uuid: &str,
+    last_errcode: &str,
+) -> Result<crate::modules::loomy::wechat::WechatPollStatus, String> {
+    let spec = realm_spec(region);
+    let url = crate::modules::loomy::wechat::poll_url(uuid, last_errcode);
+    let client = shared_client()?;
+    let response = client
+        .get(&url)
+        .timeout(Duration::from_millis(spec.wechat_poll_timeout_ms))
+        .header("User-Agent", spec.wechat_http_ua)
+        .header("Referer", "https://open.weixin.qq.com/")
+        .send()
+        .await
+        .map_err(|error| format!("微信长轮询失败：{error}"))?;
+    let body = response
+        .text()
+        .await
+        .map_err(|error| format!("读取微信长轮询响应：{error}"))?;
+    Ok(crate::modules::loomy::wechat::parse_poll(&body))
+}
+
+/// 微信授权第 1 步：用微信 code 换 rcode，并得知是否已绑手机号。
+///
+/// ⚠️ 微信 code **只在这一步用一次**，后续三步只用 `rcode`。
+pub async fn wechat_bind_auth(
+    region: LoomyRegion,
+    code: &str,
+) -> Result<crate::modules::loomy::wechat::BindAuth, String> {
+    let param = serde_json::json!({ "tcode": { "code": code }, "type": "wx" });
+    let data = post_caccount(region, PATH_WECHAT_BIND_AUTH, param).await?;
+    crate::modules::loomy::wechat::parse_bind_auth(&data)
+}
+
+/// 微信授权第 3a 步：向待绑定的手机号下发验证码；返回 `msgid`。
+pub async fn wechat_bind_send_msg(
+    region: LoomyRegion,
+    rcode: &str,
+    phone: &str,
+) -> Result<String, String> {
+    let spec = realm_spec(region);
+    let param = serde_json::json!({
+        "rcode": rcode,
+        "phone": phone,
+        "ccode": "86",
+        "expire": spec.sms_code_ttl_seconds,
+    });
+    let data = post_caccount(region, PATH_WECHAT_BIND_SEND_MSG, param).await?;
+    let msgid = data
+        .get("msgid")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    if msgid.is_empty() {
+        // ⚠️ 不返回空串：上层会拿它去校验，服务端必然报「msgid 无效」。
+        return Err("绑定手机号响应缺少 msgid".to_string());
+    }
+    Ok(msgid)
+}
+
+/// 微信授权第 3b 步：验证短信验证码，通过即完成绑定 + 登录；返回 session / userid / phone。
+pub async fn wechat_bind_check_code(
+    region: LoomyRegion,
+    rcode: &str,
+    code: &str,
+    msgid: &str,
+) -> Result<(String, String, String), String> {
+    let spec = realm_spec(region);
+    let param = serde_json::json!({
+        "rcode": rcode,
+        "mcode": code,
+        "msgid": msgid,
+        "expire": spec.session_ttl_seconds,
+    });
+    let data = post_caccount(region, PATH_WECHAT_BIND_CHECK_CODE, param).await?;
+    crate::modules::loomy::oauth::parse_login_response(&data)
+}
+
+/// 微信授权第 4 步（已绑手机号时走）：跳过绑定，直接换 session。
+///
+/// ⚠️ 本路径**拿不到手机号** —— uid 优先用 userid（本路径一定有），凭据判据看 session，两不相干。
+pub async fn wechat_bind_skip(
+    region: LoomyRegion,
+    rcode: &str,
+) -> Result<(String, String), String> {
+    let spec = realm_spec(region);
+    let param = serde_json::json!({ "rcode": rcode, "expire": spec.session_ttl_seconds });
+    let data = post_caccount(region, PATH_WECHAT_BIND_SKIP, param).await?;
+    let (session, userid, _phone) = crate::modules::loomy::oauth::parse_login_response(&data)?;
+    Ok((session, userid))
+}
+
 /// 按官方基址查积分。
 pub async fn points_for(region: LoomyRegion, token: &str) -> Result<crate::modules::loomy::credits::CreditsSnapshot, String> {
     fetch_points(realm_spec(region).api_base, token).await
@@ -323,4 +464,11 @@ pub fn account_from_login_fields(
 /// 供日志 / 诊断：当前毫秒时间戳（避免各调用方重复 std::time 样板）。
 pub fn timestamp_ms() -> i64 {
     now_ms()
+}
+
+/// 生成一次性的 state / trace 标识（去连字符 uuid，32 位 hex）。
+///
+/// server 宿主不直接依赖 `uuid` crate；微信 `state` 等一次性标识统一从这里取。
+pub fn new_trace_id() -> String {
+    uuid::Uuid::new_v4().simple().to_string()
 }
