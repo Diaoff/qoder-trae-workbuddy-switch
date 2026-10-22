@@ -73,15 +73,7 @@ pub async fn handler(
         state.key_usage.clone(),
         "wb",
     ));
-    biz_for_region(
-        state,
-        record.region,
-        path,
-        body,
-        biz_method,
-        Some(actor),
-    )
-    .await
+    biz_for_region(state, record.region, path, body, biz_method, Some(actor)).await
 }
 
 /// 客户端方法 → 出站方法（**只允许 GET / POST**，其余明确 405）。
@@ -111,8 +103,8 @@ pub async fn biz_for_region(
     key: Option<std::sync::Arc<crate::apikey::KeyActor>>,
 ) -> Response {
     /* ★ issue #76：**业务转发也要判配额**（请求数口径）。
-       这条路径没有上游 usage（业务代理的响应不是 LLM 流）⇒ token 口径对它天然无意义；
-       但「这把 Key 被用了多少次」是事实，超限就该拒 —— 否则业务转发是配额的**绕过口**。 */
+    这条路径没有上游 usage（业务代理的响应不是 LLM 流）⇒ token 口径对它天然无意义；
+    但「这把 Key 被用了多少次」是事实，超限就该拒 —— 否则业务转发是配额的**绕过口**。 */
     if let Some(actor) = key.as_deref() {
         if let Some(message) =
             actor.check_quota_and_count(buddy_switch_core::modules::config::now_ms())

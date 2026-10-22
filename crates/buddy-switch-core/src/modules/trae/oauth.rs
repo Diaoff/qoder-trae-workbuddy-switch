@@ -599,7 +599,6 @@ impl ClientFacts {
         }
     }
 
-
     /// `machine_id` / `x_machine_id` / `DeviceInfo.MachineID` 的**共同**取值。
     fn machine_id(&self) -> String {
         authorize_machine_id(self.identity.variant, &self.identity)

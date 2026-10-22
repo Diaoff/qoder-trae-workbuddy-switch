@@ -578,7 +578,12 @@ fn secret_from_plain(
 ) -> Result<DeviceSecret, IcubeError> {
     Ok(DeviceSecret {
         identity: identity_from_plain(
-            plain, variant, device_id, machine_id, app_version, source_app,
+            plain,
+            variant,
+            device_id,
+            machine_id,
+            app_version,
+            source_app,
         )?,
         credential: credential_from_plain(plain, variant, device_id, source_app)?,
     })

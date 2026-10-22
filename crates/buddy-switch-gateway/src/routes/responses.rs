@@ -291,7 +291,8 @@ pub async fn responses_for_region(
                 if let Some(credit) = accumulator.credit {
                     let tokens = accumulator.prompt_tokens.unwrap_or(0) as i64
                         + accumulator.completion_tokens.unwrap_or(0) as i64;
-                    relay::record_ledger(&state, &uid, &model, credit, tokens, key.as_deref()).await;
+                    relay::record_ledger(&state, &uid, &model, credit, tokens, key.as_deref())
+                        .await;
                 }
                 let object = to_response_object(&accumulator, &model, &responses_custom);
                 state.log.record(

@@ -183,7 +183,11 @@ pub fn quota_verdict_for_policy(policy: &KeyPolicy, used: u64) -> QuotaVerdict {
 /// `All` ⇒ 放行（不改选号行为）。`Selected` ⇒ 账号 uid 或账号所属分组
 /// **任一命中**即放行（名单是并集）。账号/分组参数由调用方从账号库给出 ——
 /// 本函数不认识账号，只做集合判定（可单测、可在调用方复用）。
-pub fn account_allowed(record: &ApiKeyRecord, account_uid: &str, account_group: Option<&str>) -> bool {
+pub fn account_allowed(
+    record: &ApiKeyRecord,
+    account_uid: &str,
+    account_group: Option<&str>,
+) -> bool {
     if record.scope_mode != ScopeMode::Selected {
         return true;
     }
@@ -216,8 +220,8 @@ pub struct ApiKeyRecord {
     #[serde(default)]
     pub last_used_at: Option<i64>,
     /* ── 策略（issue #76）—— 全部 `#[serde(default)]` ⇒ **老台账零迁移**：
-       缺字段按各自 `Default`（不限额 / token / 不重置 / 全部账号）读入，
-       读出来就是「改造前的行为」，不会把老 Key 变成限额或空名单。 ── */
+    缺字段按各自 `Default`（不限额 / token / 不重置 / 全部账号）读入，
+    读出来就是「改造前的行为」，不会把老 Key 变成限额或空名单。 ── */
     #[serde(default)]
     pub quota_mode: QuotaMode,
     #[serde(default)]
@@ -357,7 +361,8 @@ impl KeyActor {
     ///   否则用户会看到 101/100 这种越界数字，且被拒的请求会持续抬高分母。
     pub fn check_quota_and_count(&self, now: i64) -> Option<String> {
         let (used, limit, unit, period) =
-            self.usage.check_and_record(&self.key_id, &self.policy, now)?;
+            self.usage
+                .check_and_record(&self.key_id, &self.policy, now)?;
         Some(
             crate::error::GatewayError::KeyQuotaExceeded {
                 used,
@@ -857,7 +862,6 @@ mod tests {
         assert!(b.verify(&plaintext).is_some(), "另一实例应能看到新建 Key");
     }
 
-
     /* ─────────── 策略（issue #76）─────────── */
 
     /// 构造一条带策略的记录（不落盘，直接测纯函数）。
@@ -899,8 +903,15 @@ mod tests {
         assert_eq!(record.quota_mode, QuotaMode::Unlimited);
         assert_eq!(record.scope_mode, ScopeMode::All);
         assert!(record.scope_accounts.is_empty());
-        assert_eq!(quota_verdict(record, u64::MAX), QuotaVerdict::Ok, "老 Key 不得被限额");
-        assert!(account_allowed(record, "anyone", None), "老 Key 不得被白名单挡住");
+        assert_eq!(
+            quota_verdict(record, u64::MAX),
+            QuotaVerdict::Ok,
+            "老 Key 不得被限额"
+        );
+        assert!(
+            account_allowed(record, "anyone", None),
+            "老 Key 不得被白名单挡住"
+        );
     }
 
     #[test]
@@ -910,13 +921,26 @@ mod tests {
         // 等于上限即超限（上限是「最多用到这么多」）。
         assert_eq!(
             quota_verdict(&record, 1000),
-            QuotaVerdict::Exceeded { used: 1000, limit: 1000, unit: QuotaUnit::Token, period: QuotaPeriod::None }
+            QuotaVerdict::Exceeded {
+                used: 1000,
+                limit: 1000,
+                unit: QuotaUnit::Token,
+                period: QuotaPeriod::None
+            }
         );
         record.quota_mode = QuotaMode::Unlimited;
-        assert_eq!(quota_verdict(&record, u64::MAX), QuotaVerdict::Ok, "不限额恒放行");
+        assert_eq!(
+            quota_verdict(&record, u64::MAX),
+            QuotaVerdict::Ok,
+            "不限额恒放行"
+        );
         record.quota_mode = QuotaMode::Limited;
         record.quota_limit = 0;
-        assert_eq!(quota_verdict(&record, u64::MAX), QuotaVerdict::Ok, "limit=0 = 关闭该条");
+        assert_eq!(
+            quota_verdict(&record, u64::MAX),
+            QuotaVerdict::Ok,
+            "limit=0 = 关闭该条"
+        );
     }
 
     #[test]
@@ -926,12 +950,24 @@ mod tests {
         record.scope_accounts = vec!["u1".into()];
         record.scope_groups = vec!["主力".into()];
         assert!(account_allowed(&record, "u1", None), "uid 命中即放行");
-        assert!(account_allowed(&record, "u2", Some("主力")), "分组命中即放行");
-        assert!(!account_allowed(&record, "u2", Some("备用")), "名单外不放行");
-        assert!(!account_allowed(&record, "u2", None), "无分组且 uid 不在名单 ⇒ 拒");
+        assert!(
+            account_allowed(&record, "u2", Some("主力")),
+            "分组命中即放行"
+        );
+        assert!(
+            !account_allowed(&record, "u2", Some("备用")),
+            "名单外不放行"
+        );
+        assert!(
+            !account_allowed(&record, "u2", None),
+            "无分组且 uid 不在名单 ⇒ 拒"
+        );
         assert!(!account_allowed(&record, "u2", Some("")), "空分组不算命中");
         record.scope_mode = ScopeMode::All;
-        assert!(account_allowed(&record, "u2", Some("备用")), "全部账号 ⇒ 人人放行");
+        assert!(
+            account_allowed(&record, "u2", Some("备用")),
+            "全部账号 ⇒ 人人放行"
+        );
     }
 
     #[test]
@@ -943,9 +979,15 @@ mod tests {
         let key = QuotaPeriod::Daily.period_key(noon).unwrap();
         assert!(key.starts_with("daily:20"), "日键形状：{key}");
         let weekly = QuotaPeriod::Weekly.period_key(noon).unwrap();
-        assert!(weekly.starts_with("weekly:20") && weekly.contains("-W"), "周键形状：{weekly}");
+        assert!(
+            weekly.starts_with("weekly:20") && weekly.contains("-W"),
+            "周键形状：{weekly}"
+        );
         let monthly = QuotaPeriod::Monthly.period_key(noon).unwrap();
-        assert!(monthly.starts_with("monthly:20") && monthly.len() == "monthly:2026-10".len(), "月键形状：{monthly}");
+        assert!(
+            monthly.starts_with("monthly:20") && monthly.len() == "monthly:2026-10".len(),
+            "月键形状：{monthly}"
+        );
     }
 
     #[test]
@@ -954,28 +996,40 @@ mod tests {
         let (record, _) = store.create("p".into(), Region::Cn);
 
         // 空白名单 ⇒ 拒绝（UI 已禁保存，后端再兜一层）。
-        let empty = store.update_policy(&record.id, KeyPolicy {
-            quota_mode: QuotaMode::Limited,
-            quota_limit: 10,
-            quota_unit: QuotaUnit::Token,
-            quota_period: QuotaPeriod::Daily,
-            scope_mode: ScopeMode::Selected,
-            scope_accounts: vec![],
-            scope_groups: vec![],
-        });
+        let empty = store.update_policy(
+            &record.id,
+            KeyPolicy {
+                quota_mode: QuotaMode::Limited,
+                quota_limit: 10,
+                quota_unit: QuotaUnit::Token,
+                quota_period: QuotaPeriod::Daily,
+                scope_mode: ScopeMode::Selected,
+                scope_accounts: vec![],
+                scope_groups: vec![],
+            },
+        );
         assert!(empty.is_err(), "空白名单必须拒绝");
 
         // 正常写入。
-        store.update_policy(&record.id, KeyPolicy {
-            quota_mode: QuotaMode::Limited,
-            quota_limit: 500,
-            quota_unit: QuotaUnit::Request,
-            quota_period: QuotaPeriod::Monthly,
-            scope_mode: ScopeMode::Selected,
-            scope_accounts: vec!["u1".into()],
-            scope_groups: vec!["主力".into()],
-        }).unwrap();
-        let after = store.list().into_iter().find(|r| r.id == record.id).unwrap();
+        store
+            .update_policy(
+                &record.id,
+                KeyPolicy {
+                    quota_mode: QuotaMode::Limited,
+                    quota_limit: 500,
+                    quota_unit: QuotaUnit::Request,
+                    quota_period: QuotaPeriod::Monthly,
+                    scope_mode: ScopeMode::Selected,
+                    scope_accounts: vec!["u1".into()],
+                    scope_groups: vec!["主力".into()],
+                },
+            )
+            .unwrap();
+        let after = store
+            .list()
+            .into_iter()
+            .find(|r| r.id == record.id)
+            .unwrap();
         assert_eq!(after.quota_limit, 500);
         assert_eq!(after.quota_unit, QuotaUnit::Request);
         assert_eq!(after.quota_period, QuotaPeriod::Monthly);
@@ -984,42 +1038,66 @@ mod tests {
 
         // ★ 矛盾归一：切回「不限额 / 全部账号」时，旧上限与旧名单必须被清掉
         //   （否则下次切回来会「突然」拿过时的数生效）。
-        store.update_policy(&record.id, KeyPolicy {
-            quota_mode: QuotaMode::Unlimited,
-            quota_limit: 999,           // 矛盾：不限额却带上限
-            quota_unit: QuotaUnit::Token,
-            quota_period: QuotaPeriod::None,
-            scope_mode: ScopeMode::All,
-            scope_accounts: vec!["u1".into()], // 矛盾：全部账号却带名单
-            scope_groups: vec![],
-        }).unwrap();
-        let normalized = store.list().into_iter().find(|r| r.id == record.id).unwrap();
+        store
+            .update_policy(
+                &record.id,
+                KeyPolicy {
+                    quota_mode: QuotaMode::Unlimited,
+                    quota_limit: 999, // 矛盾：不限额却带上限
+                    quota_unit: QuotaUnit::Token,
+                    quota_period: QuotaPeriod::None,
+                    scope_mode: ScopeMode::All,
+                    scope_accounts: vec!["u1".into()], // 矛盾：全部账号却带名单
+                    scope_groups: vec![],
+                },
+            )
+            .unwrap();
+        let normalized = store
+            .list()
+            .into_iter()
+            .find(|r| r.id == record.id)
+            .unwrap();
         assert_eq!(normalized.quota_limit, 0, "不限额 ⇒ 清空上限");
         assert!(normalized.scope_accounts.is_empty(), "全部账号 ⇒ 清白名单");
 
         // 不动身份字段。
         assert_eq!(normalized.hash, record.hash, "改策略不得动 hash");
-        assert_eq!(normalized.created_at, record.created_at, "改策略不得动创建时间");
+        assert_eq!(
+            normalized.created_at, record.created_at,
+            "改策略不得动创建时间"
+        );
         assert!(normalized.revoked_at.is_none());
 
         // 不存在的 id ⇒ 响亮失败。
-        assert!(store.update_policy("missing", KeyPolicy::default()).is_err());
+        assert!(store
+            .update_policy("missing", KeyPolicy::default())
+            .is_err());
     }
 
     #[test]
     fn masked_carries_policy_fields_and_still_no_hash() {
         let store = temp_store();
         let (record, plaintext) = store.create("m".into(), Region::Cn);
-        store.update_policy(&record.id, KeyPolicy {
-            quota_mode: QuotaMode::Limited,
-            quota_limit: 42,
-            quota_unit: QuotaUnit::Request,
-            quota_period: QuotaPeriod::Weekly,
-            scope_mode: ScopeMode::Selected,
-            scope_accounts: vec!["u1".into()],
-            scope_groups: vec![],
-        }).unwrap();
-        let masked = store.list().into_iter().find(|r| r.id == record.id).unwrap().masked();
+        store
+            .update_policy(
+                &record.id,
+                KeyPolicy {
+                    quota_mode: QuotaMode::Limited,
+                    quota_limit: 42,
+                    quota_unit: QuotaUnit::Request,
+                    quota_period: QuotaPeriod::Weekly,
+                    scope_mode: ScopeMode::Selected,
+                    scope_accounts: vec!["u1".into()],
+                    scope_groups: vec![],
+                },
+            )
+            .unwrap();
+        let masked = store
+            .list()
+            .into_iter()
+            .find(|r| r.id == record.id)
+            .unwrap()
+            .masked();
         assert_eq!(masked["quotaMode"], json!("limited"));
         assert_eq!(masked["quotaLimit"], json!(42));
         assert_eq!(masked["quotaUnit"], json!("request"));

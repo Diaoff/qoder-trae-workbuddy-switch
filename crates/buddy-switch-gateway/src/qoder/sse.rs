@@ -220,8 +220,8 @@ where
     E: std::fmt::Debug,
 {
     /* ★ 编译修复（2026-10-22）：`upstream.next()` 要求 `Unpin`，而本函数对 `S` 只有
-       `Stream` 约束 ⇒ 加 `+ Unpin` 会把负担推给调用方（他们传的流未必 Unpin）。
-       与同文件 [`aggregate`] 一致：用 `pin_mut!` 就地钉住，**不额外要求 Unpin**。 */
+    `Stream` 约束 ⇒ 加 `+ Unpin` 会把负担推给调用方（他们传的流未必 Unpin）。
+    与同文件 [`aggregate`] 一致：用 `pin_mut!` 就地钉住，**不额外要求 Unpin**。 */
     futures_util::pin_mut!(upstream);
     let mut buffer = String::new();
     let mut read = 0usize;
@@ -1837,9 +1837,8 @@ mod tests {
     #[tokio::test]
     async fn first_upstream_error_finds_the_first_error_frame() {
         // ① 信封错误：状态码与详情都要拿到。
-        let frames = vec![
-            "data:{\"body\":\"quota exceeded\",\"statusCodeValue\":429}\n".to_string(),
-        ];
+        let frames =
+            vec!["data:{\"body\":\"quota exceeded\",\"statusCodeValue\":429}\n".to_string()];
         let found = first_upstream_error(upstream_from(&frames)).await;
         let (status, detail) = found.expect("必须找到错误帧");
         assert_eq!(status, 429);

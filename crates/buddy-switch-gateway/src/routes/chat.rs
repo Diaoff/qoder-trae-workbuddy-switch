@@ -303,7 +303,8 @@ pub async fn chat_for_region(
                 if let Some(credit) = accumulator.credit {
                     let tokens = accumulator.prompt_tokens.unwrap_or(0) as i64
                         + accumulator.completion_tokens.unwrap_or(0) as i64;
-                    relay::record_ledger(&state, &uid, &model, credit, tokens, key.as_deref()).await;
+                    relay::record_ledger(&state, &uid, &model, credit, tokens, key.as_deref())
+                        .await;
                 }
                 let completion = accumulator.to_openai_completion(&model);
                 state.log.record(

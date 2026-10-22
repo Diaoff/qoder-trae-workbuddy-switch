@@ -31,7 +31,7 @@ use serde::{Deserialize, Serialize};
 use buddy_switch_core::modules::config as core_config;
 
 /* ★ issue #76：策略类型**直接复用** WorkBuddy 侧那一套（`crate::apikey`）。
-   四条产品线的 Key 策略语义完全相同，各定义一份必然漂移。 */
+四条产品线的 Key 策略语义完全相同，各定义一份必然漂移。 */
 use crate::apikey::{KeyPolicy, QuotaMode, QuotaPeriod, QuotaUnit, ScopeMode};
 use buddy_switch_core::modules::gateway_namespace;
 
@@ -77,9 +77,9 @@ pub struct UnifiedApiKeyRecord {
     #[serde(default)]
     pub last_used_at: Option<i64>,
     /* ── 策略（issue #76）—— 与另三条产品线同形同义。
-       ⚠️ 本台账已有**一维授权**（`namespaces` / `biz_namespace`）：那是「能访问哪些平台」，
-       是**最外层**；这里是「账号范围 + 配额」，属于更内层。UI 顺序：
-       命名空间 → 账号范围 → 配额（规范 §6.1）。 ── */
+    ⚠️ 本台账已有**一维授权**（`namespaces` / `biz_namespace`）：那是「能访问哪些平台」，
+    是**最外层**；这里是「账号范围 + 配额」，属于更内层。UI 顺序：
+    命名空间 → 账号范围 → 配额（规范 §6.1）。 ── */
     #[serde(default)]
     pub quota_mode: QuotaMode,
     #[serde(default)]
@@ -451,7 +451,11 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let store = UnifiedApiKeyStore::new(dir.join("keys.json"));
         let (record, _) = store
-            .create("k".to_string(), vec!["wb-cn".to_string()], Some("wb-cn".to_string()))
+            .create(
+                "k".to_string(),
+                vec!["wb-cn".to_string()],
+                Some("wb-cn".to_string()),
+            )
             .unwrap();
 
         store
@@ -468,9 +472,17 @@ mod tests {
                 },
             )
             .unwrap();
-        let after = store.list().into_iter().find(|r| r.id == record.id).unwrap();
+        let after = store
+            .list()
+            .into_iter()
+            .find(|r| r.id == record.id)
+            .unwrap();
         assert_eq!(after.quota_limit, 100);
-        assert_eq!(after.namespaces, vec!["wb-cn".to_string()], "命名空间授权不得被动");
+        assert_eq!(
+            after.namespaces,
+            vec!["wb-cn".to_string()],
+            "命名空间授权不得被动"
+        );
         assert_eq!(after.biz_namespace, Some("wb-cn".to_string()));
         assert_eq!(after.hash, record.hash);
         let _ = std::fs::remove_dir_all(&dir);

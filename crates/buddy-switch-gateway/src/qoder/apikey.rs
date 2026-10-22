@@ -31,7 +31,7 @@ use sha2::{Digest, Sha256};
 use buddy_switch_core::modules::qoder::region::QoderRegion;
 
 /* ★ issue #76：策略类型**直接复用** WorkBuddy 侧那一套（`crate::apikey`）。
-   三条产品线的 Key 策略语义完全相同，各定义一份必然漂移。 */
+三条产品线的 Key 策略语义完全相同，各定义一份必然漂移。 */
 use crate::apikey::{KeyPolicy, QuotaMode, QuotaPeriod, QuotaUnit, ScopeMode};
 
 /// 新 Key 的前缀字面量（创建时 `sk-qoder-<secret 前 4 位>`）。
@@ -85,7 +85,7 @@ pub struct QoderApiKeyRecord {
     #[serde(default)]
     pub last_used_at: Option<i64>,
     /* ── 策略（issue #76）—— 与 WB / Trae 侧同形同义，全 `#[serde(default)]`
-       ⇒ 老台账零迁移（读出来 = 改造前行为：不限额 + 全部账号）。 ── */
+    ⇒ 老台账零迁移（读出来 = 改造前行为：不限额 + 全部账号）。 ── */
     #[serde(default)]
     pub quota_mode: QuotaMode,
     #[serde(default)]

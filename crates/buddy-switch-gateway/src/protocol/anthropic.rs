@@ -51,8 +51,15 @@ fn tool_result_to_text(content: Option<&Value>) -> String {
 /// ```
 fn image_block_to_url(block: &Value) -> Option<String> {
     let source = block.get("source")?;
-    match source.get("type").and_then(Value::as_str).unwrap_or("base64") {
-        "url" => source.get("url").and_then(Value::as_str).map(str::to_string),
+    match source
+        .get("type")
+        .and_then(Value::as_str)
+        .unwrap_or("base64")
+    {
+        "url" => source
+            .get("url")
+            .and_then(Value::as_str)
+            .map(str::to_string),
         _ => {
             let data = source.get("data").and_then(Value::as_str)?;
             let media = source
@@ -701,13 +708,14 @@ mod tests {
         });
         let out = to_upstream_request_with_images(&body);
         let messages = out["messages"].as_array().unwrap();
-        let content = messages[0]["content"].as_array().expect("带图 ⇒ parts 数组");
+        let content = messages[0]["content"]
+            .as_array()
+            .expect("带图 ⇒ parts 数组");
         assert_eq!(content[0]["type"], "text");
         assert_eq!(content[0]["text"], "这是什么");
         assert_eq!(content[1]["type"], "image_url");
         assert_eq!(
-            content[1]["image_url"]["url"],
-            "data:image/png;base64,AAA",
+            content[1]["image_url"]["url"], "data:image/png;base64,AAA",
             "base64 图片转 data URI"
         );
         assert_eq!(content[2]["image_url"]["url"], "https://x/1.png");

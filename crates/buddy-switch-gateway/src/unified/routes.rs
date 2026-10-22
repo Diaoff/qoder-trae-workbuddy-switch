@@ -202,15 +202,15 @@ async fn relay_llm(
 
     /* ③' ★ issue #76：把本网关的 Key 收敛成 `KeyActor`，**带进目标产品线的中继**。
 
-       这一步是「统一网关双口径」的关键：中继层（`chat_for_region` / `chat_for_variant`）
-       只认 `KeyActor`（id + 策略 + 账本），不认具体 Key 类型 ⇒ 第四套台账的 Key
-       也能享受与三条产品线**完全相同**的配额判定、账号白名单与 token 记账。
+    这一步是「统一网关双口径」的关键：中继层（`chat_for_region` / `chat_for_variant`）
+    只认 `KeyActor`（id + 策略 + 账本），不认具体 Key 类型 ⇒ 第四套台账的 Key
+    也能享受与三条产品线**完全相同**的配额判定、账号白名单与 token 记账。
 
-       - 配额：`actor.policy` 是统一网关的 Key 的策略；`actor.usage` 是**统一网关的账本**
-         （`gateway_unified_key_usage.json`）⇒ 用量记在这里，不会被算到产品线的 Key 上。
-       - 白名单：`actor.policy.scope_accounts` 的 uid 按**目标产品线**的账号库展开 ——
-         中继层展开时读的就是它要转发到的那条产品线的账号库，uid 空间自然对齐。
-       - token：中继层的流式 / 非流式记账都会调 `actor.record_tokens` ⇒ **token 口径真生效**。 */
+    - 配额：`actor.policy` 是统一网关的 Key 的策略；`actor.usage` 是**统一网关的账本**
+      （`gateway_unified_key_usage.json`）⇒ 用量记在这里，不会被算到产品线的 Key 上。
+    - 白名单：`actor.policy.scope_accounts` 的 uid 按**目标产品线**的账号库展开 ——
+      中继层展开时读的就是它要转发到的那条产品线的账号库，uid 空间自然对齐。
+    - token：中继层的流式 / 非流式记账都会调 `actor.record_tokens` ⇒ **token 口径真生效**。 */
     let actor = std::sync::Arc::new(crate::apikey::KeyActor::new(
         record.id.clone(),
         record.policy(),

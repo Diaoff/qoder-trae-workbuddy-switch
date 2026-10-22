@@ -117,7 +117,9 @@ impl KeyUsageStore {
 
     /// 取锁（中毒也继续用：用量账本不该因为一次 panic 就永久不可写）。
     fn guard(&self) -> std::sync::MutexGuard<'_, ()> {
-        self.lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+        self.lock
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
     fn load(&self) -> BTreeMap<String, KeyUsage> {
@@ -139,7 +141,14 @@ impl KeyUsageStore {
     /// 由**查询方**按 Key 自己的 `quota_unit` 取 —— 账本不认识策略，只记数）。
     ///
     /// 周期切换时**当场归零再累加**（否则跨周期的那一笔会被算进新周期）。
-    pub fn record(&self, key_id: &str, unit: QuotaUnit, amount: u64, period: QuotaPeriod, now_ms: i64) {
+    pub fn record(
+        &self,
+        key_id: &str,
+        unit: QuotaUnit,
+        amount: u64,
+        period: QuotaPeriod,
+        now_ms: i64,
+    ) {
         if amount == 0 {
             return;
         }
@@ -157,7 +166,10 @@ impl KeyUsageStore {
         now_ms: i64,
     ) {
         let mut usage = self.load();
-        let counters = usage.entry(key_id.to_string()).or_default().counters_mut(unit);
+        let counters = usage
+            .entry(key_id.to_string())
+            .or_default()
+            .counters_mut(unit);
         counters.total = counters.total.saturating_add(amount);
         match period.period_key(now_ms) {
             None => {}
@@ -202,7 +214,12 @@ impl KeyUsageStore {
         key_id: &str,
         policy: &crate::apikey::KeyPolicy,
         now_ms: i64,
-    ) -> Option<(u64, u64, crate::apikey::QuotaUnit, crate::apikey::QuotaPeriod)> {
+    ) -> Option<(
+        u64,
+        u64,
+        crate::apikey::QuotaUnit,
+        crate::apikey::QuotaPeriod,
+    )> {
         let _guard = self.guard();
         let mut usage = self.load();
         {
@@ -223,7 +240,7 @@ impl KeyUsageStore {
             }
         }
         /* 未超限：**在同一份 `usage` 上**记账并落盘 —— 不重新 `load()`
-           （重新读会多一次 IO，也让「读到的就是刚判过的那个值」变得不显然）。 */
+        （重新读会多一次 IO，也让「读到的就是刚判过的那个值」变得不显然）。 */
         {
             let counters = usage
                 .entry(key_id.to_string())
@@ -309,7 +326,10 @@ mod tests {
             let policy = policy.clone();
             let admitted = admitted.clone();
             handles.push(std::thread::spawn(move || {
-                if store.check_and_record("k-concurrent", &policy, NOON).is_none() {
+                if store
+                    .check_and_record("k-concurrent", &policy, NOON)
+                    .is_none()
+                {
                     admitted.fetch_add(1, Ordering::Relaxed);
                 }
             }));
@@ -335,9 +355,15 @@ mod tests {
         let store = temp_store();
         store.record_request("k1", QuotaPeriod::Daily, NOON);
         store.record_request("k1", QuotaPeriod::Daily, NOON);
-        assert_eq!(store.used_for("k1", QuotaUnit::Request, QuotaPeriod::Daily, NOON), 2);
+        assert_eq!(
+            store.used_for("k1", QuotaUnit::Request, QuotaPeriod::Daily, NOON),
+            2
+        );
         // 累计口径看到的是同一个数（每日口径下 total 也在涨）。
-        assert_eq!(store.used_for("k1", QuotaUnit::Request, QuotaPeriod::None, NOON), 2);
+        assert_eq!(
+            store.used_for("k1", QuotaUnit::Request, QuotaPeriod::None, NOON),
+            2
+        );
     }
 
     /// ★ 回归：一次请求同时记「1 次请求」与「N 个 token」时，两个口径**不得互相污染**。
@@ -349,8 +375,16 @@ mod tests {
         let store = temp_store();
         store.record_request("k1", QuotaPeriod::None, NOON);
         store.record_tokens("k1", 1500, QuotaPeriod::None, NOON);
-        assert_eq!(store.used_for("k1", QuotaUnit::Request, QuotaPeriod::None, NOON), 1, "请求数只算请求");
-        assert_eq!(store.used_for("k1", QuotaUnit::Token, QuotaPeriod::None, NOON), 1500, "token 只算 token");
+        assert_eq!(
+            store.used_for("k1", QuotaUnit::Request, QuotaPeriod::None, NOON),
+            1,
+            "请求数只算请求"
+        );
+        assert_eq!(
+            store.used_for("k1", QuotaUnit::Token, QuotaPeriod::None, NOON),
+            1500,
+            "token 只算 token"
+        );
     }
 
     #[test]
@@ -359,9 +393,21 @@ mod tests {
         store.record_request("k1", QuotaPeriod::Daily, NOON);
         store.record_request("k1", QuotaPeriod::Daily, NOON);
         store.record_request("k1", QuotaPeriod::Daily, NEXT_DAY);
-        assert_eq!(store.used_for("k1", QuotaUnit::Request, QuotaPeriod::Daily, NEXT_DAY), 1, "新的一天从零开始");
-        assert_eq!(store.used_for("k1", QuotaUnit::Request, QuotaPeriod::Daily, NOON), 0, "昨天已是上一周期");
-        assert_eq!(store.used_for("k1", QuotaUnit::Request, QuotaPeriod::None, NEXT_DAY), 3, "累计口径不重置");
+        assert_eq!(
+            store.used_for("k1", QuotaUnit::Request, QuotaPeriod::Daily, NEXT_DAY),
+            1,
+            "新的一天从零开始"
+        );
+        assert_eq!(
+            store.used_for("k1", QuotaUnit::Request, QuotaPeriod::Daily, NOON),
+            0,
+            "昨天已是上一周期"
+        );
+        assert_eq!(
+            store.used_for("k1", QuotaUnit::Request, QuotaPeriod::None, NEXT_DAY),
+            3,
+            "累计口径不重置"
+        );
     }
 
     #[test]
@@ -369,7 +415,11 @@ mod tests {
         let store = temp_store();
         store.record_request("k1", QuotaPeriod::None, NOON);
         store.record_request("k1", QuotaPeriod::None, NEXT_DAY + 86_400_000 * 30);
-        assert_eq!(store.used_for("k1", QuotaUnit::Request, QuotaPeriod::None, NEXT_DAY), 2, "不重置 ⇒ 只累加");
+        assert_eq!(
+            store.used_for("k1", QuotaUnit::Request, QuotaPeriod::None, NEXT_DAY),
+            2,
+            "不重置 ⇒ 只累加"
+        );
     }
 
     #[test]
@@ -377,7 +427,10 @@ mod tests {
         let store = temp_store();
         store.record_tokens("k1", 1200, QuotaPeriod::Monthly, NOON);
         store.record_tokens("k1", 800, QuotaPeriod::Monthly, NOON);
-        assert_eq!(store.used_for("k1", QuotaUnit::Token, QuotaPeriod::Monthly, NOON), 2000);
+        assert_eq!(
+            store.used_for("k1", QuotaUnit::Token, QuotaPeriod::Monthly, NOON),
+            2000
+        );
         let snap = store.snapshot("k1").unwrap();
         assert_eq!(snap.tokens.total, 2000);
         assert_eq!(snap.tokens.period_used, 2000);
@@ -388,8 +441,14 @@ mod tests {
     fn zero_amount_is_a_noop_and_missing_key_reads_zero() {
         let store = temp_store();
         store.record_tokens("k1", 0, QuotaPeriod::None, NOON);
-        assert_eq!(store.used_for("k1", QuotaUnit::Token, QuotaPeriod::None, NOON), 0);
-        assert_eq!(store.used_for("absent", QuotaUnit::Request, QuotaPeriod::Daily, NOON), 0);
+        assert_eq!(
+            store.used_for("k1", QuotaUnit::Token, QuotaPeriod::None, NOON),
+            0
+        );
+        assert_eq!(
+            store.used_for("absent", QuotaUnit::Request, QuotaPeriod::Daily, NOON),
+            0
+        );
         assert!(store.snapshot("absent").is_none());
     }
 
@@ -402,6 +461,10 @@ mod tests {
         let a = KeyUsageStore::new(path.clone());
         let b = KeyUsageStore::new(path);
         a.record_request("k1", QuotaPeriod::None, NOON);
-        assert_eq!(b.used_for("k1", QuotaUnit::Request, QuotaPeriod::None, NOON), 1, "另一实例应看得到");
+        assert_eq!(
+            b.used_for("k1", QuotaUnit::Request, QuotaPeriod::None, NOON),
+            1,
+            "另一实例应看得到"
+        );
     }
 }

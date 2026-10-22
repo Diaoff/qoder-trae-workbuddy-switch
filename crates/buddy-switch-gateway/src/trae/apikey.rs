@@ -40,8 +40,8 @@ use serde_json::{json, Value};
 use buddy_switch_core::modules::config as core_config;
 
 /* ★ issue #76：策略类型**直接复用** WorkBuddy 侧那一套（`crate::apikey`）。
-   两条产品线的 Key 策略语义完全相同（配额单位/周期、账号白名单），各定义一份
-   必然漂移 —— 前端也只有一套 `KeyPolicy` 类型。 */
+两条产品线的 Key 策略语义完全相同（配额单位/周期、账号白名单），各定义一份
+必然漂移 —— 前端也只有一套 `KeyPolicy` 类型。 */
 use crate::apikey::{KeyPolicy, QuotaMode, QuotaPeriod, QuotaUnit, ScopeMode};
 use buddy_switch_core::modules::trae::{settings as trae_settings, variant::TraeVariant};
 
@@ -108,7 +108,7 @@ pub struct TraeApiKeyRecord {
     #[serde(default)]
     pub last_used_at: Option<i64>,
     /* ── 策略（issue #76）—— 与 WorkBuddy 侧**同一组枚举**（`crate::apikey`），
-       全 `#[serde(default)]` ⇒ 老台账零迁移（读出来 = 改造前行为：不限额 + 全部账号）。 ── */
+    全 `#[serde(default)]` ⇒ 老台账零迁移（读出来 = 改造前行为：不限额 + 全部账号）。 ── */
     #[serde(default)]
     pub quota_mode: QuotaMode,
     #[serde(default)]
@@ -913,7 +913,11 @@ mod tests {
                 },
             )
             .unwrap();
-        let after = store.list().into_iter().find(|r| r.id == record.id).unwrap();
+        let after = store
+            .list()
+            .into_iter()
+            .find(|r| r.id == record.id)
+            .unwrap();
         assert_eq!(after.quota_limit, 500);
         assert_eq!(after.quota_period, QuotaPeriod::Monthly);
         assert_eq!(after.scope_accounts, vec!["u1".to_string()]);
@@ -936,7 +940,11 @@ mod tests {
                 },
             )
             .unwrap();
-        let normalized = store.list().into_iter().find(|r| r.id == record.id).unwrap();
+        let normalized = store
+            .list()
+            .into_iter()
+            .find(|r| r.id == record.id)
+            .unwrap();
         assert_eq!(normalized.quota_limit, 0);
         assert!(normalized.scope_accounts.is_empty());
     }

@@ -2618,7 +2618,10 @@ pub fn delete_api_key(id: String) -> Result<Value, String> {
 /// 后端不猜「用户是不是想只改一半」。矛盾值由 `KeyPolicy::normalized`
 /// 收敛到安全的一边（不限额 ⇒ 清上限；全部账号 ⇒ 清白名单）。
 #[tauri::command]
-pub fn set_key_policy(id: String, policy: buddy_switch_gateway::apikey::KeyPolicy) -> Result<Value, String> {
+pub fn set_key_policy(
+    id: String,
+    policy: buddy_switch_gateway::apikey::KeyPolicy,
+) -> Result<Value, String> {
     let state = gateway::shared_state();
     state.keys.update_policy(&id, policy)?;
     Ok(json!({ "ok": true }))
@@ -2636,7 +2639,9 @@ pub fn key_usage(id: String) -> Result<Value, String> {
         return Err("API Key 不存在".to_string());
     };
     let now = buddy_switch_core::modules::config::now_ms();
-    let used = state.key_usage.used_for(&id, record.quota_unit, record.quota_period, now);
+    let used = state
+        .key_usage
+        .used_for(&id, record.quota_unit, record.quota_period, now);
     // 累计用量按同一口径取（`KeyUsage` 是两个口径各自一份计数，没有单一 `total`）。
     let total = state
         .key_usage
@@ -3661,7 +3666,12 @@ pub fn trae_key_usage(id: String) -> Result<Value, String> {
         return Err("缺少 id".to_string());
     }
     let state = trae_gateway::shared_state();
-    let Some(record) = state.key_store.list().into_iter().find(|record| record.id == id) else {
+    let Some(record) = state
+        .key_store
+        .list()
+        .into_iter()
+        .find(|record| record.id == id)
+    else {
         return Err("API Key 不存在".to_string());
     };
     let now = buddy_switch_core::modules::config::now_ms();
@@ -4457,9 +4467,10 @@ pub fn unified_key_usage_all() -> Result<Value, String> {
     let mut rows = serde_json::Map::new();
     for record in state.keys.list() {
         let policy = record.policy();
-        let used = state
-            .key_usage
-            .used_for(&record.id, policy.quota_unit, policy.quota_period, now);
+        let used =
+            state
+                .key_usage
+                .used_for(&record.id, policy.quota_unit, policy.quota_period, now);
         let exceeded = matches!(
             buddy_switch_gateway::apikey::quota_verdict_for_policy(&policy, used),
             buddy_switch_gateway::apikey::QuotaVerdict::Exceeded { .. }
