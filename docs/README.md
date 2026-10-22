@@ -26,7 +26,7 @@
 | 把 Codex / Claude Code / 其它客户端接到网关 | [`guides/GATEWAY-CLIENT-INTEGRATION.md`](guides/GATEWAY-CLIENT-INTEGRATION.md) |
 | 改网关（路由 / 换号 / 错误信封 / 命名空间） | [`specs/UNIFIED-GATEWAY-ARCH.md`](specs/UNIFIED-GATEWAY-ARCH.md) + [`specs/P11-ARCH.md`](specs/P11-ARCH.md) + [`specs/P12-ARCH.md`](specs/P12-ARCH.md) |
 | 改前端某个页面 | [`specs/PLAN.md`](specs/PLAN.md) 对应 §3.x + 该期 `P*-ARCH.md` |
-| 给密钥设 token 配额 / 限制可访问账号（issue #76） | [`specs/KEY-PERMISSION-UI-DESIGN.md`](specs/KEY-PERMISSION-UI-DESIGN.md)（交互与视觉，待拍板）+ [`prototype/key-permission-design.html`](prototype/key-permission-design.html)（可点设计稿） |
+| 给密钥设 token 配额 / 限制可访问账号（issue #76） | [`specs/KEY-PERMISSION-UI-DESIGN.md`](specs/KEY-PERMISSION-UI-DESIGN.md)（**已实现**：四条产品线的台账 / 命令 / 前端表 / 中继全部接通）+ [`prototype/key-permission-design.html`](prototype/key-permission-design.html)（可点设计稿） |
 | 侧栏太占地方 / 想只看图标（折叠） | [`specs/SIDEBAR-COLLAPSE-DESIGN.md`](specs/SIDEBAR-COLLAPSE-DESIGN.md)（已落地）+ [`prototype/verify-sidebar-collapse.cjs`](prototype/verify-sidebar-collapse.cjs)（行为校验） |
 | 侧栏品牌块图标与顶栏平台图标看混了（issue #75） | [`prototype/sidebar-brand-design.html`](prototype/sidebar-brand-design.html)（可点设计稿，待评审） |
 | 用量页要显示网关调用的明细（按模型 / 按账号） | [`specs/USAGE-GATEWAY-UI-REDESIGN.md`](specs/USAGE-GATEWAY-UI-REDESIGN.md)（交互与视觉，待拍板）+ [`specs/USAGE-GATEWAY-DETAIL-PLAN.md`](specs/USAGE-GATEWAY-DETAIL-PLAN.md)（数据契约与验收） |
@@ -93,7 +93,7 @@
 | [`MODEL-LIMIT-PROBE-PLAN.md`](specs/MODEL-LIMIT-PROBE-PLAN.md) | 账号池 × 模型限流探测的完整方案 | 待确认 |
 | [`POOL-PICK-EXCLUDE-PLAN.md`](specs/POOL-PICK-EXCLUDE-PLAN.md) | 账号池选号 Bug + 「排除账号」方案 | 待拍板 |
 | [`CLIENTLESS-AUTH-PLAN.md`](specs/CLIENTLESS-AUTH-PLAN.md) | 无客户端部署（服务器 / 容器）的登录授权与网关可用性（issue #62） | 待拍板 · 原型已出 |
-| [`KEY-PERMISSION-UI-DESIGN.md`](specs/KEY-PERMISSION-UI-DESIGN.md) | 密钥访问权限管理：token 配额 + 可访问账号白名单（issue #76） | 待拍板 · 原型已出 |
+| [`KEY-PERMISSION-UI-DESIGN.md`](specs/KEY-PERMISSION-UI-DESIGN.md) | 密钥访问权限管理：token 配额 + 可访问账号白名单（issue #76） | 已实现（`KeyActor` 统一四条产品线） |
 
 ---
 
