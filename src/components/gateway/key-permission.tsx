@@ -66,9 +66,16 @@ export function KeyUsageCell({
 }) {
   const t = useT();
   if (policy.quotaMode !== "limited" || policy.quotaLimit <= 0) {
+    /* 不限额时**仍显示已用次数**（当调用方给了 usage）——
+       「这把 key 被用了多少次」与「有没有上限」是两件事：分给同事的 key 即使不限额，
+       你也想知道它到底在不在被用。调用方没给 usage 时退回纯「不限」（另三条产品线
+       只拉限额 Key 的用量，行为不变）。 */
+    const total = usage?.total ?? 0;
     return (
       <span className={cn("text-sm text-muted-foreground", className)}>
-        {t("wbStats.keyPerm.unlimited")}
+        {usage && total > 0
+          ? t("wbStats.keyPerm.unlimitedWithUsage", { n: String(total) })
+          : t("wbStats.keyPerm.unlimited")}
       </span>
     );
   }

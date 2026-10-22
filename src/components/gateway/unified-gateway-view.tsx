@@ -234,30 +234,22 @@ export function UnifiedGatewayView({
       .filter((account) => account.id);
   }, [permTarget]);
 
-  /* 用量：只拉「限额」的 Key。 */
+  /* 用量：**批量拉全部**（含不限额的 Key —— 分给同事的 key 即使不限额，
+     你也想知道它被用了多少次）。一次请求而非 N 次往返。 */
   useEffect(() => {
-    const limited = keys.filter((key) => (key.quotaMode ?? "unlimited") === "limited");
-    if (limited.length === 0) {
+    if (keys.length === 0) {
       setUsageMap({});
       return;
     }
     let cancelled = false;
     void (async () => {
-      const pairs = await Promise.all(
-        limited.map(async (key) => {
-          try {
-            return [key.id, await api.unifiedKeyUsage(key.id)] as const;
-          } catch {
-            return null;
-          }
-        }),
-      );
-      if (cancelled) return;
-      const next: Record<string, KeyUsageSnapshot> = {};
-      for (const pair of pairs) {
-        if (pair) next[pair[0]] = pair[1];
+      try {
+        const all = await api.unifiedKeyUsageAll();
+        if (!cancelled) setUsageMap(all ?? {});
+      } catch {
+        // 账本读失败不该让密钥表整块不可用 —— 静默降级成「不限」。
+        if (!cancelled) setUsageMap({});
       }
-      setUsageMap(next);
     })();
     return () => {
       cancelled = true;

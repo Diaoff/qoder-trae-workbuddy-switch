@@ -4449,6 +4449,42 @@ pub fn set_unified_key_policy(
     Ok(json!({ "ok": true }))
 }
 
+/// GET /api/unified-gateway/keys/usage-all —— **批量**用量（密钥表每行一列）。
+#[tauri::command]
+pub fn unified_key_usage_all() -> Result<Value, String> {
+    let state = unified_gateway::shared_state();
+    let now = buddy_switch_core::modules::config::now_ms();
+    let mut rows = serde_json::Map::new();
+    for record in state.keys.list() {
+        let policy = record.policy();
+        let used = state
+            .key_usage
+            .used_for(&record.id, policy.quota_unit, policy.quota_period, now);
+        let exceeded = matches!(
+            buddy_switch_gateway::apikey::quota_verdict_for_policy(&policy, used),
+            buddy_switch_gateway::apikey::QuotaVerdict::Exceeded { .. }
+        );
+        rows.insert(
+            record.id.clone(),
+            json!({
+                "ok": true,
+                "keyId": record.id,
+                "unit": policy.quota_unit,
+                "period": policy.quota_period,
+                "periodKey": policy.quota_period.period_key(now),
+                "used": used,
+                "total": state
+                    .key_usage
+                    .snapshot(&record.id)
+                    .map(|entry| entry.counters(policy.quota_unit).total)
+                    .unwrap_or(0),
+                "exceeded": exceeded,
+            }),
+        );
+    }
+    Ok(Value::Object(rows))
+}
+
 /// GET /api/unified-gateway/keys/usage —— 读某把统一 Key 的用量快照。
 #[tauri::command]
 pub fn unified_key_usage(id: String) -> Result<Value, String> {

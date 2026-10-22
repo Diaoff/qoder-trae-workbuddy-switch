@@ -454,6 +454,7 @@ const ROUTES: Record<string, Route> = {
   // ★ issue #76：统一网关密钥策略（配额 + 账号范围）与按密钥用量。
   set_unified_key_policy: { method: "POST", path: "/api/unified-gateway/keys/policy" },
   unified_key_usage: { method: "GET", path: "/api/unified-gateway/keys/usage" },
+  unified_key_usage_all: { method: "GET", path: "/api/unified-gateway/keys/usage-all" },
   restore_unified_api_key: { method: "POST", path: "/api/unified-gateway/keys/restore" },
   delete_unified_api_key: { method: "POST", path: "/api/unified-gateway/keys/delete" },
   get_gateway_models: { method: "GET", path: "/api/gateway/models" },
@@ -2176,6 +2177,11 @@ export function setUnifiedKeyPolicy(id: string, policy: KeyPolicy): Promise<{ ok
 /** ★ issue #76：读某把统一 Key 的用量快照。 */
 export function unifiedKeyUsage(id: string): Promise<KeyUsageSnapshot> {
   return call("unified_key_usage", { id });
+}
+
+/** ★ issue #76：**批量**读统一网关所有 Key 的用量（密钥表每行一列）。 */
+export function unifiedKeyUsageAll(): Promise<Record<string, KeyUsageSnapshot>> {
+  return call("unified_key_usage_all");
 }
 
 /** 撤销吊销 —— **同一把 Key 重新可用**，客户端配置不用改。 */

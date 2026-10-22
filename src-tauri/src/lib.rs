@@ -518,6 +518,7 @@ pub fn run() {
             // ★ issue #76：统一网关密钥策略与按密钥用量。
             commands::set_unified_key_policy,
             commands::unified_key_usage,
+            commands::unified_key_usage_all,
             commands::restore_unified_api_key,
             commands::delete_unified_api_key,
             commands::get_gateway_models,

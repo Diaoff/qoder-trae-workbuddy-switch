@@ -115,6 +115,7 @@ export const zh = {
      三项策略的文案：用量配额（单位 × 周期）、可访问账号（白名单）。
      命名空间 `wbStats.keyPerm` —— 三个平台 + 统一网关共用（文案不绑平台）。 */
   "wbStats.keyPerm.unlimited": "不限",
+  "wbStats.keyPerm.unlimitedWithUsage": "不限 · 已用 {{n}} 次",
   "wbStats.keyPerm.limited": "限额",
   "wbStats.keyPerm.exhausted": "已用尽",
   "wbStats.keyPerm.tokens": "token",

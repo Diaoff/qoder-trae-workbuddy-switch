@@ -96,6 +96,7 @@ export const en = {
   "wbStats.gateway.enabled": "Enabled",
   "wbStats.gateway.delete": "Delete",
   "wbStats.keyPerm.unlimited": "Unlimited",
+  "wbStats.keyPerm.unlimitedWithUsage": "No limit · {{n}} used",
   "wbStats.keyPerm.limited": "Limited",
   "wbStats.keyPerm.exhausted": "Exhausted",
   "wbStats.keyPerm.tokens": "tokens",

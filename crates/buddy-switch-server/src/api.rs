@@ -379,6 +379,11 @@ fn api_routes() -> Router {
             "/api/unified-gateway/keys/usage",
             get(api_unified_gateway_key_usage),
         )
+        // ★ issue #76：**批量**用量（密钥表每行一列，避免 N 次往返）。
+        .route(
+            "/api/unified-gateway/keys/usage-all",
+            get(api_unified_gateway_key_usage_all),
+        )
         .route(
             "/api/unified-gateway/keys/restore",
             post(api_unified_gateway_restore_key),
@@ -6823,6 +6828,44 @@ async fn api_unified_gateway_set_key_policy(Json(body): Json<Value>) -> Response
         Ok(()) => json_ok(json!({ "ok": true })),
         Err(error) => json_err(error, StatusCode::BAD_REQUEST),
     }
+}
+
+/// GET /api/unified-gateway/keys/usage-all —— **批量**用量（密钥表每行一列）。
+///
+/// 为什么不复用单 Key 命令循环调用：密钥表一屏十几行，N 次往返会让打开分区明显变慢；
+/// 账本本来就是一次 `load()` 全量读，批量反而更省。
+async fn api_unified_gateway_key_usage_all() -> Response {
+    let state = crate::unified_gateway_host::shared_state();
+    let now = buddy_switch_core::modules::config::now_ms();
+    let mut rows = serde_json::Map::new();
+    for record in state.keys.list() {
+        let policy = record.policy();
+        let used = state
+            .key_usage
+            .used_for(&record.id, policy.quota_unit, policy.quota_period, now);
+        let exceeded = matches!(
+            buddy_switch_gateway::apikey::quota_verdict_for_policy(&policy, used),
+            buddy_switch_gateway::apikey::QuotaVerdict::Exceeded { .. }
+        );
+        rows.insert(
+            record.id.clone(),
+            json!({
+                "ok": true,
+                "keyId": record.id,
+                "unit": policy.quota_unit,
+                "period": policy.quota_period,
+                "periodKey": policy.quota_period.period_key(now),
+                "used": used,
+                "total": state
+                    .key_usage
+                    .snapshot(&record.id)
+                    .map(|entry| entry.counters(policy.quota_unit).total)
+                    .unwrap_or(0),
+                "exceeded": exceeded,
+            }),
+        );
+    }
+    json_ok(Value::Object(rows))
 }
 
 /// GET /api/unified-gateway/keys/usage?id=… —— 读某把统一 Key 的用量快照。
