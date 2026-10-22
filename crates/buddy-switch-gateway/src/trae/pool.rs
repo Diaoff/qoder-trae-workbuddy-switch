@@ -350,6 +350,9 @@ impl TraePool {
         now: i64,
         tried: &HashSet<String>,
         preferred_uid: Option<&str>,
+        // ★ issue #76：本密钥的允许名单（`None` = 全部账号）。
+        //   分组已由调用方展开成 uid（Trae 的分组是 `groupId`，池不认识分组概念）。
+        allowed: Option<&HashSet<String>>,
     ) -> Option<PickedTraeAccount> {
         // 共用内核按 `BTreeMap<uid, E>` 组织候选；池本身用 `Vec`（沿用账号库顺序，
         // 供展示层直接遍历），故这里临时构造一份候选表。
@@ -376,9 +379,7 @@ impl TraePool {
             model: "",
             tried,
             excluded: &excluded,
-            // ★ issue #76：本产品线的 Key 白名单尚未接线 ⇒ `None`（全部账号，保持现状）。
-            //   WB 侧已在 `relay::select_account` 接通；这两侧同构接入见实施拆解步 6。
-            allowed: None,
+            allowed,
             mode,
             seed,
         };
@@ -891,13 +892,13 @@ mod tests {
         let zero = entry("zero", Some(0.0), Some(now + 10));
 
         let mut pool = pool_with(vec![soon, later, cooling, zero]);
-        let picked = pool.pick(now, &HashSet::new(), None).expect("应选出账号");
+        let picked = pool.pick(now, &HashSet::new(), None, None).expect("应选出账号");
         assert_eq!(picked.uid, "soon", "到期最近的优先");
 
         // 已试过的账号不再选。
         let mut tried = HashSet::new();
         tried.insert("soon".to_string());
-        assert_eq!(pool.pick(now, &tried, None).unwrap().uid, "later");
+        assert_eq!(pool.pick(now, &tried, None, None).unwrap().uid, "later");
 
         // 全试过 → 不重复尝试已试账号，但会走**全冷却兜底**挑「最早解冻者」。
         // ★ 这是接入共用内核后新增的能力（旧实现此时直接返回 None）。
@@ -905,7 +906,7 @@ mod tests {
         // （`cool_expiry_ms() == 0`），不参与兜底。
         tried.insert("later".to_string());
         let fallback = pool
-            .pick(now, &tried, None)
+            .pick(now, &tried, None, None)
             .expect("全冷却兜底应挑出最早解冻者");
         assert_eq!(fallback.uid, "cooling");
     }
@@ -916,7 +917,7 @@ mod tests {
         let unknown = entry("unknown", Some(5000.0), None);
         let known = entry("known", Some(1.0), Some(now + 999));
         let mut pool = pool_with(vec![unknown, known]);
-        assert_eq!(pool.pick(now, &HashSet::new(), None).unwrap().uid, "known");
+        assert_eq!(pool.pick(now, &HashSet::new(), None, None).unwrap().uid, "known");
     }
 
     /// ★★ 护栏：旧实现的「**积分到期最近优先**」语义必须在新算法下继续成立。
@@ -934,7 +935,7 @@ mod tests {
         let far = entry("far", Some(999.0), Some(now + 365 * 24 * 3600));
         let mut pool = pool_with(vec![far, soon]);
 
-        let picked = pool.pick(now, &HashSet::new(), None).expect("应选出账号");
+        let picked = pool.pick(now, &HashSet::new(), None, None).expect("应选出账号");
         assert_eq!(picked.uid, "soon", "「先用掉快过期的额度」必须压过积分多寡");
     }
 
@@ -950,7 +951,7 @@ mod tests {
         let mut pool = pool_with(vec![rich, poor]);
 
         let picked = pool
-            .pick(now, &HashSet::new(), Some("__max_credits__"))
+            .pick(now, &HashSet::new(), Some("__max_credits__"), None)
             .expect("应选出账号");
         assert_eq!(picked.uid, "rich", "哨兵值必须按积分择优");
     }
@@ -964,7 +965,7 @@ mod tests {
         let mut pool = pool_with(vec![rich, poor]);
 
         let picked = pool
-            .pick(now, &HashSet::new(), Some("poor"))
+            .pick(now, &HashSet::new(), Some("poor"), None)
             .expect("应选出账号");
         assert_eq!(picked.uid, "poor", "指定账号可用时必须优先");
     }
@@ -985,14 +986,14 @@ mod tests {
 
         // 冷却中的偏好 → 回落
         assert_eq!(
-            pool.pick(now, &HashSet::new(), Some("cooling"))
+            pool.pick(now, &HashSet::new(), Some("cooling"), None)
                 .unwrap()
                 .uid,
             "healthy"
         );
         // 禁用的偏好 → 回落
         assert_eq!(
-            pool.pick(now, &HashSet::new(), Some("disabled"))
+            pool.pick(now, &HashSet::new(), Some("disabled"), None)
                 .unwrap()
                 .uid,
             "healthy"
@@ -1001,12 +1002,12 @@ mod tests {
         let mut tried = HashSet::new();
         tried.insert("healthy".to_string());
         let picked = pool
-            .pick(now, &tried, Some("healthy"))
+            .pick(now, &tried, Some("healthy"), None)
             .expect("应回落到其它账号");
         assert_ne!(picked.uid, "healthy", "已试过的偏好必须被跳过");
         // 不存在的 uid → 回落
         assert_eq!(
-            pool.pick(now, &HashSet::new(), Some("no-such-uid"))
+            pool.pick(now, &HashSet::new(), Some("no-such-uid"), None)
                 .unwrap()
                 .uid,
             "healthy"
@@ -1024,7 +1025,7 @@ mod tests {
         let mut pool = pool_with(vec![limited]);
 
         assert!(
-            pool.pick(now, &HashSet::new(), None).is_none(),
+            pool.pick(now, &HashSet::new(), None, None).is_none(),
             "硬冷却账号既不在候选里，也不该被兜底强试"
         );
     }

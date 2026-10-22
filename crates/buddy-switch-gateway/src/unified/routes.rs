@@ -252,10 +252,11 @@ async fn relay_llm(
             let trae = <crate::trae::TraeGateway as crate::GatewayProduct>::shared_state();
             match endpoint {
                 LlmEndpoint::Chat => {
-                    crate::trae::routes::chat_for_variant(trae, variant, rewritten).await
+                    // 统一网关的 Key 是另一套台账 ⇒ 本轮不过配额（同构接入见实施拆解步 6）。
+                    crate::trae::routes::chat_for_variant(trae, variant, rewritten, None).await
                 }
                 LlmEndpoint::Messages => {
-                    crate::trae::routes::messages_for_variant(trae, variant, rewritten).await
+                    crate::trae::routes::messages_for_variant(trae, variant, rewritten, None).await
                 }
                 // 防御性兜底（上面第 ③ 步已拦）：**穷举、无 `_ =>`** ⇒ 新增端点时编译失败，
                 // 而不是静默走到别的分派分支。这里返回同一份可诊断错误，不 panic。

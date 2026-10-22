@@ -76,6 +76,16 @@ use super::{
 #[derive(Clone, Copy, Debug)]
 pub struct TraeKeyVariant(pub TraeVariant);
 
+/// ★ issue #76：本次请求的**整条 Key**（策略 + id）—— 供配额判定、账号白名单、
+/// 按密钥记账三处使用。
+///
+/// 为什么单独一个 extension 而不是把字段摊进 [`TraeKeyVariant`]：
+/// 那个类型只承载「用哪个账号池」这一个用途，把它撑大成「Key 全量」会让
+/// 所有读它的地方都依赖 `TraeApiKeyRecord`（含 hash 字段的类型）。
+/// 这里用 `Arc` 持有，中间件每请求克隆一次指针即可。
+#[derive(Clone)]
+pub struct TraeKeyContext(pub std::sync::Arc<crate::trae::apikey::TraeApiKeyRecord>);
+
 /// 日志里的端点名（与 WorkBuddy 网关同名字符串，便于统一聚合）。
 ///
 /// ★ 两条入口各有一个常量，并且**同时**决定出站协议：`/v1/messages` 要额外做一次
@@ -175,6 +185,10 @@ pub async fn bearer_auth(
                 request
                     .extensions_mut()
                     .insert(TraeKeyVariant(record.variant));
+                // ★ issue #76：整条 Key 也塞进扩展（配额 / 白名单 / 记账要用）。
+                request
+                    .extensions_mut()
+                    .insert(TraeKeyContext(std::sync::Arc::new(record.clone())));
                 state.key_store.touch(&record.id);
                 next.run(request).await
             }
@@ -257,12 +271,15 @@ pub async fn models(
 pub async fn chat_completions(
     State(state): State<TraeGatewayState>,
     Extension(key_variant): Extension<TraeKeyVariant>,
+    // ★ issue #76：整条 Key（配额 / 白名单 / 记账）。缺这个扩展 = 老路由 / 测试调用。
+    key_ctx: Option<Extension<TraeKeyContext>>,
     _headers: HeaderMap,
     body: Bytes,
 ) -> Response {
     // 归属产品线由鉴权中间件经请求扩展传入 ⇒ 这里只是把它转成**显式参数**交给共用实现，
     // 让统一网关（没有 Key 归属、只有命名空间）也能调用同一份中继。
-    chat_for_variant(state, key_variant.0, body).await
+    let key = key_ctx.map(|Extension(ctx)| ctx.0);
+    chat_for_variant(state, key_variant.0, body, key).await
 }
 
 /// 一趟 Trae chat 中继（**认证之后的全部逻辑**）—— 产品线入口与统一网关**共用**这一份实现。
@@ -280,8 +297,16 @@ pub async fn chat_for_variant(
     state: TraeGatewayState,
     variant: TraeVariant,
     body: Bytes,
+    // ★ issue #76：调用方的 Key（`None` = 无 Key 的调用 ⇒ 不判配额、不过白名单、不记账）。
+    key: Option<std::sync::Arc<crate::trae::apikey::TraeApiKeyRecord>>,
 ) -> Response {
     let started = Instant::now();
+    // ★ issue #76：配额判定（选号前）—— 超限直接 429，一步都不发。
+    if let Some(record) = key.as_deref() {
+        if let Some(message) = check_key_quota(&state, record) {
+            return openai_error(StatusCode::TOO_MANY_REQUESTS, "key_quota_exceeded", &message);
+        }
+    }
     let parsed: Value = match serde_json::from_slice(&body) {
         Ok(value) => value,
         Err(error) => {
@@ -328,6 +353,7 @@ pub async fn chat_for_variant(
             ENDPOINT_CHAT,
             started,
             variant,
+            key.as_deref(),
         )
         .await
     } else {
@@ -342,6 +368,7 @@ pub async fn chat_for_variant(
             sticky_key.as_deref(),
             started,
             variant,
+            key.as_deref(),
         )
         .await
     }
@@ -366,10 +393,12 @@ pub async fn chat_for_variant(
 pub async fn messages(
     State(state): State<TraeGatewayState>,
     Extension(key_variant): Extension<TraeKeyVariant>,
+    key_ctx: Option<Extension<TraeKeyContext>>,
     body: Bytes,
 ) -> Response {
     // 同 `/v1/chat/completions`：把扩展里的归属转成显式参数，交给共用实现。
-    messages_for_variant(state, key_variant.0, body).await
+    let key = key_ctx.map(|Extension(ctx)| ctx.0);
+    messages_for_variant(state, key_variant.0, body, key).await
 }
 
 /// 一趟 Trae **Anthropic** 中继（认证之后的全部逻辑）—— 产品线入口与统一网关共用。
@@ -380,8 +409,20 @@ pub async fn messages_for_variant(
     state: TraeGatewayState,
     variant: TraeVariant,
     body: Bytes,
+    // ★ issue #76：同 `chat_for_variant`。
+    key: Option<std::sync::Arc<crate::trae::apikey::TraeApiKeyRecord>>,
 ) -> Response {
     let started = Instant::now();
+    // ★ issue #76：配额判定（选号前）。
+    if let Some(record) = key.as_deref() {
+        if let Some(message) = check_key_quota(&state, record) {
+            return anthropic_error(
+                StatusCode::TOO_MANY_REQUESTS,
+                "key_quota_exceeded",
+                &message,
+            );
+        }
+    }
 
     let config = state.config_snapshot().await;
     let Ok(parsed) = serde_json::from_slice::<Value>(&body) else {
@@ -443,6 +484,7 @@ pub async fn messages_for_variant(
             ENDPOINT_MESSAGES,
             started,
             variant,
+            key.as_deref(),
         )
         .await
     } else {
@@ -458,6 +500,7 @@ pub async fn messages_for_variant(
             ENDPOINT_MESSAGES,
             started,
             variant,
+            key.as_deref(),
         )
         .await
         {
@@ -498,6 +541,8 @@ async fn stream_chat(
     endpoint: &'static str,
     started: Instant,
     variant: TraeVariant,
+    // ★ issue #76：本密钥（白名单 / 配额 / 记账）。
+    key: Option<&crate::trae::apikey::TraeApiKeyRecord>,
 ) -> Response {
     let mut tried: HashSet<String> = HashSet::new();
     let mut last: Option<UpstreamFailure> = None;
@@ -511,6 +556,7 @@ async fn stream_chat(
             preferred_uid,
             sticky_key,
             variant,
+            key,
         )
         .await
         {
@@ -584,6 +630,8 @@ async fn aggregate_payload(
     endpoint: &'static str,
     started: Instant,
     variant: TraeVariant,
+    // ★ issue #76：本密钥（白名单 / 配额 / 记账）。
+    key: Option<&crate::trae::apikey::TraeApiKeyRecord>,
 ) -> Result<Value, UpstreamFailure> {
     let mut tried: HashSet<String> = HashSet::new();
     let mut last: Option<UpstreamFailure> = None;
@@ -597,6 +645,7 @@ async fn aggregate_payload(
             preferred_uid,
             sticky_key,
             variant,
+            key,
         )
         .await
         {
@@ -654,6 +703,8 @@ async fn aggregate_chat(
     sticky_key: Option<&str>,
     started: Instant,
     variant: TraeVariant,
+    // ★ issue #76：本密钥（白名单 / 配额 / 记账）。
+    key: Option<&crate::trae::apikey::TraeApiKeyRecord>,
 ) -> Response {
     match aggregate_payload(
         state,
@@ -667,6 +718,7 @@ async fn aggregate_chat(
         ENDPOINT_CHAT,
         started,
         variant,
+        key,
     )
     .await
     {
@@ -748,6 +800,71 @@ enum AttemptResult {
     },
 }
 
+/// 把 Key 策略的账号范围展开成 uid 集合（`None` = 全部账号，不过滤）。
+///
+/// ★ 与 WB 侧 `allowed_uids_for` 同构，但**分组字段不同**：
+/// Trae 的分组是 `groupId`（id），WB 是自由文本 `groupName`。账号库按 variant 分家
+/// （两条产品线的账号库本就独立），所以展开时按 `variant` 读。
+fn allowed_uids_for(
+    policy: &crate::apikey::KeyPolicy,
+    variant: TraeVariant,
+) -> Option<HashSet<String>> {
+    use crate::apikey::ScopeMode;
+    if policy.scope_mode != ScopeMode::Selected {
+        return None;
+    }
+    let mut allowed: HashSet<String> = policy.scope_accounts.iter().cloned().collect();
+    if !policy.scope_groups.is_empty() {
+        /* ★ Trae 的分组是**独立文件**（`user_id -> group_id` 的 `membership` 映射），
+           不像 WB 那样把 `groupName` 挂在账号记录上 ⇒ 读 `load_groups_for` 再反查。
+           这里**只增不删**：`scope_accounts` 里的 uid 即使不在任何分组也保留。 */
+        let groups = buddy_switch_core::modules::trae::account::load_groups_for(variant);
+        for (uid, group_id) in groups.membership.iter() {
+            if policy.scope_groups.iter().any(|wanted| wanted == group_id) {
+                allowed.insert(uid.clone());
+            }
+        }
+    }
+    Some(allowed)
+}
+
+/// 配额判定 + 请求数记账（issue #76）。返回 `Some(文案)` = 已超限。
+///
+/// ★ 判定在**选号之前**（与 WB 侧 `relay` 同位置）：超限的请求一步都不发 ——
+///   不占在途、不触发换号、不写冷却。额度按密钥计，换号不会好。
+/// ★ 文案复用 WB 的 `GatewayError::KeyQuotaExceeded`（**唯一实现**）——
+///   两条产品线对同一个上限说同一句话，用户不用分辨自己走的是哪条网关。
+fn check_key_quota(
+    state: &TraeGatewayState,
+    record: &crate::trae::apikey::TraeApiKeyRecord,
+) -> Option<String> {
+    let now = buddy_switch_core::modules::config::now_ms();
+    let used = state
+        .key_usage
+        .used_for(&record.id, record.quota_unit, record.quota_period, now);
+    // 请求数在**进入网关后**记（业务代理没有 usage 回包，只有请求数可计）。
+    state
+        .key_usage
+        .record_request(&record.id, record.quota_period, now);
+    match crate::apikey::quota_verdict_for_policy(&record.policy(), used) {
+        crate::apikey::QuotaVerdict::Exceeded {
+            used,
+            limit,
+            unit,
+            period,
+        } => Some(
+            crate::error::GatewayError::KeyQuotaExceeded {
+                used,
+                limit,
+                unit,
+                period,
+            }
+            .message(),
+        ),
+        crate::apikey::QuotaVerdict::Ok => None,
+    }
+}
+
 /// 选号 + 出站一次。`tried` 在内部累加，调用方反复调用即可自动换号。
 ///
 /// 返回 `None` 表示**已经挑不出新账号**（不是失败，是没得试了）。
@@ -760,6 +877,8 @@ async fn attempt_once(
     preferred_uid: &str,
     sticky_key: Option<&str>,
     variant: TraeVariant,
+    // ★ issue #76：本密钥（`None` = 无 Key 的调用 ⇒ 不过白名单）。
+    key: Option<&crate::trae::apikey::TraeApiKeyRecord>,
 ) -> Option<AttemptResult> {
     // 先读粘性（**不持 pools 锁**）：两把锁不嵌套 —— 既不延长池的持锁时间，
     // 也避免日后有人以相反顺序取锁造成死锁。
@@ -775,7 +894,9 @@ async fn attempt_once(
         // 偏好优先级：**显式指定 > 会话粘性 > 自动择优**（见 [`resolve_preference`]）。
         // 两者都不可用时 `pick_with_preference` 会自行回落到自动择优，绝不拒绝服务。
         let preferred = resolve_preference(preferred_uid, sticky_uid.as_deref());
-        pool.pick(now_secs(), tried, preferred)
+        // 白名单：每次选号前按当前策略展开（分组展开只在 `scope_groups` 非空时读一次文件）。
+        let allowed = key.and_then(|record| allowed_uids_for(&record.policy(), variant));
+        pool.pick(now_secs(), tried, preferred, allowed.as_ref())
     }?;
     tried.insert(picked.uid.clone());
 
@@ -1543,7 +1664,7 @@ mod tests {
         let picked = {
             let mut pool = TraePool::for_variant(TraeVariant::TraeWork);
             pool.sync_for(TraeVariant::TraeWork);
-            pool.pick(now_secs(), &HashSet::new(), None)
+            pool.pick(now_secs(), &HashSet::new(), None, None)
         };
         let Some(picked) = picked else {
             panic!("本机 CN 账号池没有可用账号，探针无法进行");
@@ -1716,7 +1837,7 @@ mod tests {
         let picked = {
             let mut pool = TraePool::for_variant(TraeVariant::TraeWork);
             pool.sync_for(TraeVariant::TraeWork);
-            pool.pick(now_secs(), &HashSet::new(), None)
+            pool.pick(now_secs(), &HashSet::new(), None, None)
         };
         let Some(picked) = picked else {
             panic!("本机 CN 账号池没有可用账号");
