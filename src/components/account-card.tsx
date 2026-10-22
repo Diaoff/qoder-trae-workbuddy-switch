@@ -10,6 +10,7 @@ import { AccountMoreMenu, AccountMoreMenuDemo } from "@/components/account-more-
 import type { AccountRefreshKind } from "@/lib/account-refresh";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
+import { shouldOpenAccountDetail } from "@/lib/account-open-guard";
 import { ENCRYPTED_CREDENTIAL_REASON } from "@/lib/api";
 import { compactTokens, exactTokens } from "@/components/usage/format";
 import { demoModeEnabled } from "@/lib/demo-mode";
@@ -1090,10 +1091,11 @@ const workbuddyControl = workbuddyActive ? (
         role="article"
         onClick={(e) => {
           if (!onOpenDetail) return;
-          const target = e.target;
-          if (target instanceof Element && target.closest("button, a, input, [role='checkbox'], [role='switch'], [data-no-account-open]")) {
-            return;
-          }
+          /* ★ 判据在 `lib/account-open-guard.ts`（三张卡 + 表格行共用）。
+             ⚠️ 此处**不能**手写 `closest("button, …")`：菜单经 Portal 挂到 body，
+             DOM 已不在卡片内，而菜单项是 `div[role="menuitem"]` 不是 button ——
+             旧判据一条也不命中 ⇒ 点任何菜单项都会顺带打开详情抽屉（2026-10-22 报障根因）。 */
+          if (!shouldOpenAccountDetail(e)) return;
           onOpenDetail(account);
         }}
         onKeyDown={(e) => {

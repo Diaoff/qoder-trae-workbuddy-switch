@@ -6659,6 +6659,55 @@ check("★ P1-5 账号卡可键盘聚焦（tabIndex + 语义 role + Enter/Space 
   return "tabIndex + role + Enter/Space 打开详情";
 });
 
+check("★★ 整卡/整行打开详情必须走共用守卫（Portal 菜单项不是 button）", () => {
+  /* 2026-10-22 用户报障：「账号卡片的更多操作中，每次点击上面的任何一个操作，侧拉抽屉都被打开」。
+     根因不是漏写守卫，而是**守卫判据选错了维度**：
+       · Radix `DropdownMenuContent` 经 Portal 挂到 `<body>` ⇒ DOM 上不在卡片内，
+         但 React 树里仍在卡片内 ⇒ 冒泡照样回到 `<article onClick>`；
+       · 菜单项是 `Primitive.div[role="menuitem"]`，**不是 `<button>`**（`@radix-ui/react-menu`）
+         ⇒ 旧的 `closest("button, a, input, …")` 一条也命中不了。
+     顺着旧判据打补丁（往选择器里塞 `[role='menuitem']`）治不了根：`select` / `popover` /
+     `dialog` 都是同一套 Portal 手法，每加一个控件要再补一次，且**漏了不报错**、只静默开抽屉。
+     ⇒ 本断言钉住两件事：
+       ① 四处「点整块开详情」都用共用判据 `shouldOpenAccountDetail`；
+       ② 不许再手写 `closest("button, …")` 那种判据（它已经错过一次）。 */
+  const targets = [
+    "src/components/account-card.tsx",
+    "src/components/trae-account-card.tsx",
+    "src/components/qoder/qoder-account-card.tsx",
+    "src/components/account-table.tsx",
+  ];
+  for (const rel of targets) {
+    const src = stripComments(fs.readFileSync(path.join(ROOT, rel), "utf8"));
+    if (!/shouldOpenAccountDetail\(/.test(src)) {
+      throw new Error(
+        `${rel} 打开详情前没过共用判据 \`shouldOpenAccountDetail\` —— Portal 里的菜单项（div[role=menuitem]）会被当成点整卡`,
+      );
+    }
+    if (/closest\(\s*["'`]button,/.test(src)) {
+      throw new Error(
+        `${rel} 又手写了 \`closest("button, …")\` 判据 —— 该判据拦不住 Portal 菜单项（2026-10-22 报障根因），请用 \`shouldOpenAccountDetail\``,
+      );
+    }
+  }
+  const guard = stripComments(
+    fs.readFileSync(path.join(ROOT, "src/lib/account-open-guard.ts"), "utf8"),
+  );
+  if (!/currentTarget\.contains\(target\)/.test(guard)) {
+    throw new Error(
+      "account-open-guard 缺 `currentTarget.contains(target)` —— 这是拦 Portal 内容的唯一稳定判据",
+    );
+  }
+  for (const role of ["menuitem", "button"]) {
+    if (!new RegExp(`role='${role}'`).test(guard)) {
+      throw new Error(
+        `account-open-guard 的豁免选择器缺 \`[role='${role}']\` —— ${role} 不是 <button> 标签，只列标签名会漏`,
+      );
+    }
+  }
+  return "四处同源 · 拦 Portal 弹层 + 非 button 控件";
+});
+
 check("★ P3 会话散点：四侧留边 + ZAxis range 存在（防气泡溢出绘图区）", () => {
   /* 审计 #12：原型要求「气泡不溢出绘图区」，真实由 recharts 布局保证 —— **此前无断言**。
      ⚠️ 本断言只锚**静态配置**（四侧 margin + ZAxis range 存在）；

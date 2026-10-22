@@ -7,6 +7,7 @@ import { DemoAction } from "@/components/demo-action";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { MenuGroupLabel, MenuHead, MenuNote, RefreshMenuGroup } from "@/components/account-menu-parts";
 import type { AccountRefreshKind } from "@/lib/account-refresh";
+import { shouldOpenAccountDetail } from "@/lib/account-open-guard";
 import type { AccountTokenTodayEntry } from "@/lib/types";
 import { compactTokens } from "@/components/usage/format";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
@@ -659,10 +660,10 @@ export function TraeAccountCard({
         role="article"
         onClick={(e) => {
           if (!onOpenDetail) return;
-          const target = e.target;
-          if (target instanceof Element && target.closest("button, a, input, [role='checkbox'], [role='switch'], [data-no-account-open]")) {
-            return;
-          }
+          /* ★ 判据在 `lib/account-open-guard.ts`（三张卡 + 表格行共用），
+             别再退回手写 `closest("button, …")` —— 菜单项是 Portal 里的
+             `div[role="menuitem"]`，手写判据拦不住（2026-10-22 报障根因）。 */
+          if (!shouldOpenAccountDetail(e)) return;
           onOpenDetail(account);
         }}
         onKeyDown={(e) => {
