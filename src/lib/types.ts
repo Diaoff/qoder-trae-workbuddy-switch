@@ -1719,10 +1719,34 @@ export interface GatewayPoolAccount {
 }
 
 /** API Key 记录（列表脱敏返回，绝不含明文）。字段名与后端 masked() 输出一致。 */
+/* ─────────── 密钥策略（issue #76）───────────
+   定义放在 `types.ts` 而非 `api.ts`：`api.ts` 已经 import 本文件（单向），
+   反向 import 会成环。两项策略：**用量配额**（单位 × 周期）与
+   **可访问账号**（全部 / 指定白名单，账号 uid 与分组 id 取并集）。 */
+
+/** 配额模式：不限额 / 限额（默认不限额 = 改造前行为）。 */
+export type QuotaMode = "unlimited" | "limited";
+/** 计量单位：token（LLM）/ 请求数（业务代理没有 token 可计）。 */
+export type QuotaUnit = "token" | "request";
+/** 重置周期：不重置（累计）/ 每日 / 每周 / 自然月。 */
+export type QuotaPeriod = "none" | "daily" | "weekly" | "monthly";
+/** 账号范围：全部 / 指定白名单。 */
+export type ScopeMode = "all" | "selected";
+
 export interface ApiKeyRecord {
   id: string;
   name: string;
   region: Region;
+  /* ── 策略（issue #76）—— 全部可选 ⇒ **旧台账零迁移**：
+       缺字段按「改造前的行为」解读（不限额 / 全部账号）。
+       前端不猜：调用方一律先过 `normalizeKeyPolicy` 补默认值。 ── */
+  quotaMode?: QuotaMode;
+  quotaLimit?: number;
+  quotaUnit?: QuotaUnit;
+  quotaPeriod?: QuotaPeriod;
+  scopeMode?: ScopeMode;
+  scopeAccounts?: string[];
+  scopeGroups?: string[];
   /** 可辨识前缀，如 "sk-wb-a1b2"。 */
   prefix: string;
   /**

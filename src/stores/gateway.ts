@@ -123,6 +123,8 @@ interface GatewayState {
   loadKeys: () => Promise<void>;
   createKey: (name: string, region: Region) => Promise<CreateApiKeyResult>;
   revokeKey: (id: string) => Promise<void>;
+  /** ★ issue #76：更新某把 Key 的策略（完整策略，非补丁）。 */
+  setKeyPolicy: (id: string, policy: api.KeyPolicy) => Promise<void>;
   /** 撤销吊销：清 `revokedAt`，Key 重新可用（后端拒绝「未吊销」的恢复）。 */
   restoreKey: (id: string) => Promise<void>;
   deleteKey: (id: string) => Promise<void>;
@@ -237,6 +239,12 @@ export const useGatewayStore = create<GatewayState>((set, get) => ({
 
   async deleteKey(id) {
     await api.deleteApiKey(id);
+    await get().loadKeys();
+  },
+
+  async setKeyPolicy(id, policy) {
+    await api.setKeyPolicy(id, policy);
+    // 保存后**重新拉列表**：策略写进台账，列表要反映新值（含掩码视图的七件套）。
     await get().loadKeys();
   },
 

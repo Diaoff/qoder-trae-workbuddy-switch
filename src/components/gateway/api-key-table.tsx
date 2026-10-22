@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { Check, Copy, KeyRound, Loader2, RotateCcw, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 
@@ -24,11 +24,32 @@ import { formatDate } from "@/lib/format";
 import { useT } from "@/lib/i18n";
 import { REGIONS, regionDescriptor } from "@/lib/region";
 import { cn } from "@/lib/utils";
-import type { ApiKeyRecord, Region } from "@/lib/types";
+import type { ApiKeyRecord, QuotaMode, QuotaPeriod, QuotaUnit, Region, ScopeMode } from "@/lib/types";
+import type { KeyPolicy } from "@/lib/api";
+import {
+  KeyPermissionDrawer,
+  KeyRowDetail,
+  KeyScopeChip,
+  KeyUsageCell,
+  type KeyPermissionAccount,
+} from "@/components/gateway/key-permission";
+import { accountDisplayName } from "@/components/account-card";
+import { useAccountsStore } from "@/stores/accounts";
 import { useGatewayStore } from "@/stores/gateway";
 
 /* P3：本地 `formatDate` 已移到 `@/lib/format` —— 它与 Trae 侧各写一份且**已经漂移**：
    本版把时间戳 `0` 渲染成 `01-01 08:00` 这种**假时间**，共享版会返回 `—`。 */
+
+/** 空策略（抽屉未选中任何 Key 时的占位；不会被保存）。 */
+const EMPTY_POLICY: KeyPolicy = {
+  quotaMode: "unlimited",
+  quotaLimit: 0,
+  quotaUnit: "token",
+  quotaPeriod: "none",
+  scopeMode: "all",
+  scopeAccounts: [],
+  scopeGroups: [],
+};
 
 /** API Key 列表 + 创建对话框 + 一次性明文展示 + 吊销 / 恢复 / 删除（P0-3）。
  *
@@ -50,6 +71,7 @@ export function ApiKeyTable({ className }: { className?: string }) {
   const revokeKey = useGatewayStore((s) => s.revokeKey);
   const restoreKey = useGatewayStore((s) => s.restoreKey);
   const deleteKey = useGatewayStore((s) => s.deleteKey);
+  const setKeyPolicy = useGatewayStore((s) => s.setKeyPolicy);
 
   const [createOpen, setCreateOpen] = useState(false);
   const [name, setName] = useState("");
@@ -74,6 +96,58 @@ export function ApiKeyTable({ className }: { className?: string }) {
   const [restoreTarget, setRestoreTarget] = useState<ApiKeyRecord | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<ApiKeyRecord | null>(null);
   const [busy, setBusy] = useState(false);
+  /* ── issue #76：用量 / 权限两列 + 行内展开 + 权限抽屉 ──
+     `expandedId` 一次只展开一行（展开区是「低头看详情」，同时展开三行就把一览表毁掉）；
+     `permTarget` 是当前抽屉编辑的那把 Key。 */
+  const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [permTarget, setPermTarget] = useState<ApiKeyRecord | null>(null);
+  const [permSaving, setPermSaving] = useState(false);
+
+  /**
+   * 旧台账的 Key 没有策略字段 ⇒ **归一化**成完整策略（缺省 = 改造前行为：
+   * 不限额 + 全部账号）。调用方一律先过这里，不让「字段可能缺失」渗到渲染层。
+   */
+  const policyOf = useMemo(
+    () => (key: ApiKeyRecord): KeyPolicy => ({
+      quotaMode: (key.quotaMode ?? "unlimited") as QuotaMode,
+      quotaLimit: key.quotaLimit ?? 0,
+      quotaUnit: (key.quotaUnit ?? "token") as QuotaUnit,
+      quotaPeriod: (key.quotaPeriod ?? "none") as QuotaPeriod,
+      scopeMode: (key.scopeMode ?? "all") as ScopeMode,
+      scopeAccounts: key.scopeAccounts ?? [],
+      scopeGroups: key.scopeGroups ?? [],
+    }),
+    [],
+  );
+
+  /* 账号选择器的数据源：本作用域账号库（`id` 优先、`uid` 兜底 —— 与账号页同口径）。
+     分组（`groupName`）用于「按分组整组选取」。 */
+  const permAccounts = useMemo<KeyPermissionAccount[]>(() => {
+    const accounts = useAccountsStore.getState().accounts;
+    return accounts
+      .map((account) => ({
+        id: account.id ?? account.uid ?? "",
+        // ★ B2：展示名**必须走 `accountDisplayName`**（昵称 → 脱敏邮箱 → UID ·x）。
+        //   裸回落 `nickname || email` 会在昵称为空时泄露完整邮箱 —— 门禁当场抓过。
+        name: accountDisplayName(account),
+        group: typeof account.groupName === "string" ? account.groupName : undefined,
+      }))
+      .filter((account) => account.id);
+  }, [permTarget]);
+
+  async function onSavePolicy(next: KeyPolicy) {
+    if (!permTarget) return;
+    setPermSaving(true);
+    try {
+      await setKeyPolicy(permTarget.id, next);
+      setPermTarget(null);
+      toast.success(t("wbStats.keyPerm.saved"), { description: permTarget.name });
+    } catch (e) {
+      toast.error(t("wbStats.keyPerm.saveFail"), { description: api.asError(e) });
+    } finally {
+      setPermSaving(false);
+    }
+  }
 
   function openCreate() {
     setName("");
@@ -191,6 +265,10 @@ export function ApiKeyTable({ className }: { className?: string }) {
                 <th className="pb-2 pr-4 font-medium">{t("wbStats.table.prefix")}</th>
                 <th className="pb-2 pr-4 font-medium">{t("wbStats.table.createdAt")}</th>
                 <th className="pb-2 pr-4 font-medium">{t("wbStats.table.lastUsed")}</th>
+                {/* ★ issue #76：新增两列。原「累计请求」并入名称次行后腾出的位置 ——
+                    一览只放「扫一眼就知道」的信息，完整口径进行内展开区（点行）。 */}
+                <th className="pb-2 pr-4 font-medium">{t("wbStats.keyPerm.quota")}</th>
+                <th className="pb-2 pr-4 font-medium">{t("wbStats.keyPerm.scope")}</th>
                 <th className="pb-2 pr-4 font-medium">{t("wbStats.table.status")}</th>
                 <th className="pb-2 font-medium">{t("wbStats.table.actions")}</th>
               </tr>
@@ -198,8 +276,17 @@ export function ApiKeyTable({ className }: { className?: string }) {
             <tbody>
               {keys.map((key) => {
                 const revoked = key.revoked;
+                const policy = policyOf(key);
+                const expanded = expandedId === key.id;
+                const scopeNames = policy.scopeAccounts
+                  .map((id) => permAccounts.find((a) => a.id === id)?.name ?? id);
                 return (
-                  <tr key={key.id} className="border-t border-border/60">
+                  <>
+                  <tr
+                    key={key.id}
+                    className={cn("border-t border-border/60", expanded && "bg-primary/[0.07]")}
+                    onClick={() => setExpandedId(expanded ? null : key.id)}
+                  >
                     <td className="py-2 pr-4 font-medium">{key.name}</td>
                     <td className="py-2 pr-4">
                       <Badge variant="secondary" className="rounded-md">
@@ -220,6 +307,15 @@ export function ApiKeyTable({ className }: { className?: string }) {
                       {key.lastUsedAt ? formatDate(key.lastUsedAt) : t("wbStats.table.neverUsed")}
                     </td>
                     <td className="py-2 pr-4">
+                      <KeyUsageCell policy={policy} usage={null} />
+                    </td>
+                    <td className="py-2 pr-4">
+                      <KeyScopeChip
+                        policy={policy}
+                        onOpenScope={() => setPermTarget(key)}
+                      />
+                    </td>
+                    <td className="py-2 pr-4">
                       {revoked ? (
                         <Badge variant="secondary" className="rounded-md text-muted-foreground">
                           {t("wbStats.gateway.revoked")}
@@ -230,7 +326,9 @@ export function ApiKeyTable({ className }: { className?: string }) {
                         </Badge>
                       )}
                     </td>
-                    <td className="py-2">
+                    {/* 操作列 `data-stop`：点按钮不冒泡成「展开行」（否则点吊销旁边
+                        空白会顺手展开明细，用户以为展开是误触）。 */}
+                    <td className="py-2" onClick={(event) => event.stopPropagation()}>
                       {/* ★ 已吊销 ⇒ **两个出口都在**：恢复（可逆，回到「启用」）+ 删除（不可逆，清记录）。
                           「吊销」与「启用」是同一把 Key 的两种状态，恢复不需要重建 Key、
                           也不需要改动任何客户端的配置。 */}
@@ -252,6 +350,20 @@ export function ApiKeyTable({ className }: { className?: string }) {
                       )}
                     </td>
                   </tr>
+                  {expanded ? (
+                    <tr key={`${key.id}-detail`} className="border-t border-border/60">
+                      <td colSpan={9} className="p-0">
+                        <KeyRowDetail
+                          policy={policy}
+                          usage={null}
+                          accountNames={scopeNames}
+                          onEditQuota={() => setPermTarget(key)}
+                          onEditScope={() => setPermTarget(key)}
+                        />
+                      </td>
+                    </tr>
+                  ) : null}
+                  </>
                 );
               })}
             </tbody>
@@ -388,6 +500,18 @@ export function ApiKeyTable({ className }: { className?: string }) {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {/* ★ issue #76：权限抽屉（改用量配额 + 可访问账号的唯一入口）。 */}
+      <KeyPermissionDrawer
+        open={permTarget !== null}
+        onOpenChange={(open) => { if (!open) setPermTarget(null); }}
+        keyName={permTarget?.name ?? ""}
+        policy={permTarget ? policyOf(permTarget) : EMPTY_POLICY}
+        usage={null}
+        accounts={permAccounts}
+        saving={permSaving}
+        onSave={(next) => void onSavePolicy(next)}
+      />
 
       {/* 删除确认 */}
       <Dialog open={deleteTarget !== null} onOpenChange={(open) => !open && setDeleteTarget(null)}>

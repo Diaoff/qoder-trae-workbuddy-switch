@@ -2169,18 +2169,10 @@ export function deleteApiKey(id: string): Promise<{ ok: boolean }> {
 }
 
 /* ─────────── 密钥策略（issue #76）───────────
-   两项策略：**用量配额**（单位 token / 请求数 × 周期 不重置 / 每日 / 每周 / 自然月）
-   与**可访问账号**（全部 / 指定白名单，账号 uid 与分组 id 取并集）。
-   字段名与后端 `KeyPolicy` 的 camelCase 键一一对应。 */
-
-/** 配额模式：不限额 / 限额（默认不限额 = 改造前行为）。 */
-export type QuotaMode = "unlimited" | "limited";
-/** 计量单位：token（LLM）/ 请求数（业务代理没有 token 可计）。 */
-export type QuotaUnit = "token" | "request";
-/** 重置周期：不重置（累计）/ 每日 / 每周 / 自然月。 */
-export type QuotaPeriod = "none" | "daily" | "weekly" | "monthly";
-/** 账号范围：全部 / 指定白名单。 */
-export type ScopeMode = "all" | "selected";
+   类型定义在 `./types`（本文件已单向依赖它，反向 import 会成环）——
+   这里只 re-export，历史 import 路径（`@/lib/api`）继续可用。 */
+import type { QuotaMode, QuotaUnit, QuotaPeriod, ScopeMode } from "./types";
+export type { QuotaMode, QuotaUnit, QuotaPeriod, ScopeMode };
 
 export interface KeyPolicy {
   quotaMode: QuotaMode;
