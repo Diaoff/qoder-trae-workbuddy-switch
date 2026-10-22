@@ -3175,7 +3175,12 @@ async fn api_gateway_key_usage(RawQuery(query): RawQuery) -> Response {
         "period": record.quota_period,
         "periodKey": record.quota_period.period_key(now),
         "used": used,
-        "total": usage.as_ref().map(|entry| entry.total).unwrap_or(0),
+        // 累计用量按**同一个口径**取（`KeyUsage` 现在是两个口径各自一份计数，
+        // 没有单一的 `total` —— 见 `key_usage::KeyUsage` 的文档）。
+        "total": usage
+            .as_ref()
+            .map(|entry| entry.counters(record.quota_unit).total)
+            .unwrap_or(0),
     }))
 }
 

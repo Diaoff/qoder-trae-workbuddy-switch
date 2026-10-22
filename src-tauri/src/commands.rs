@@ -2630,14 +2630,19 @@ pub fn set_key_policy(id: String, policy: buddy_switch_gateway::apikey::KeyPolic
 /// 让列表命令每次多读一个文件不划算；且用量只在打开抽屉 / 展开行时才需要。
 #[tauri::command]
 pub fn key_usage(id: String) -> Result<Value, String> {
-    use buddy_switch_gateway::apikey::{QuotaPeriod, QuotaVerdict};
+    use buddy_switch_gateway::apikey::QuotaVerdict;
     let state = gateway::shared_state();
     let Some(record) = state.keys.list().into_iter().find(|record| record.id == id) else {
         return Err("API Key 不存在".to_string());
     };
     let now = buddy_switch_core::modules::config::now_ms();
     let used = state.key_usage.used_for(&id, record.quota_unit, record.quota_period, now);
-    let total = state.key_usage.snapshot(&id).map(|entry| entry.total).unwrap_or(0);
+    // 累计用量按同一口径取（`KeyUsage` 是两个口径各自一份计数，没有单一 `total`）。
+    let total = state
+        .key_usage
+        .snapshot(&id)
+        .map(|entry| entry.counters(record.quota_unit).total)
+        .unwrap_or(0);
     // 一并给出判定结论：前端不用再实现一遍「超没超限」（同一判据的唯一出口）。
     let exceeded = matches!(
         buddy_switch_gateway::apikey::quota_verdict_for_policy(&record.policy(), used),
