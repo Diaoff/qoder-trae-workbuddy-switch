@@ -119,6 +119,13 @@ check("展开态：侧栏 240px、六项导航都带文字、徽章在行尾", (
   assert(!accounts.querySelector(".nav-icon-wrap"), "展开态不该有角标包装");
   const wrap = accounts.querySelector(".nav-icon-wrap");
   assert(!wrap, "展开态徽章不该在角标里");
+  /* 品牌块（issue #75 方案 1）：只有两行文字，**不再画应用图标** ——
+     那枚 32px 图标与顶栏 26px 的平台图标同族、同处左缘一条竖线，
+     是「找切换平台入口时点错」的主因。 */
+  const brand = doc.querySelector(".brand");
+  assert(brand, "应有品牌块");
+  assert(!brand.querySelector(".brand-mark"), "品牌块不该再有应用图标（issue #75）");
+  assert(brand.textContent.includes("Buddy Switch"), "品牌块要保留应用名");
 });
 
 check("折叠态：侧栏 64px、导航没有文字、每项带 tooltip", () => {
@@ -133,16 +140,17 @@ check("折叠态：侧栏 64px、导航没有文字、每项带 tooltip", () => 
     const tip = el.querySelector(".nav-tip");
     assert(tip && tip.textContent.trim().length > 0, "折叠态每项都要有可见 tooltip");
   });
-  /* 品牌块：只留图标。★ 断言用 **computed style**（`display:none`）而不是
-     「DOM 里找不到」—— 原型走 CSS 隐藏（真机走不渲染），两种都能让文字不可见；
-     用 `querySelector` 断言「不存在」在 CSS 方案下会恒真，那等于什么都没测。 */
-  const brandText = doc.querySelector(".brand-text");
-  assert(brandText, "品牌文字块应在 DOM 里（CSS 隐藏方案）");
+  /* 品牌块（issue #75 方案 1）：图标已按该 issue 移除 ⇒ 折叠态**整块隐藏**
+     （60px 里放不下双行文案，没有图标就无可承载的内容）。
+     ★ 断言用 **computed style**（`display:none`）而不是「DOM 里找不到」——
+     原型走 CSS 隐藏（真机走不渲染），用 `querySelector` 断言「不存在」
+     在 CSS 方案下会恒真，那等于什么都没测。 */
+  const brand = doc.querySelector(".brand");
+  assert(brand, "品牌块应在 DOM 里（CSS 隐藏方案）");
   assert(
-    dom.window.getComputedStyle(brandText).display === "none",
-    "折叠态品牌文字必须真的隐藏",
+    dom.window.getComputedStyle(brand).display === "none",
+    "折叠态品牌块必须整块隐藏",
   );
-  assert(doc.querySelector(".brand-mark"), "折叠态品牌图标要保留");
 });
 
 check("折叠态徽章转成图标右上角标（数字没丢）", () => {

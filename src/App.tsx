@@ -7,7 +7,7 @@ import { cn } from "@/lib/utils";
 import * as api from "@/lib/api";
 import type { UpdateInfo } from "@/lib/types";
 import { PageFallback } from "@/components/page-fallback";
-import { AppIconMark, StatusDot } from "@/components/product-marks";
+import { StatusDot } from "@/components/product-marks";
 import { DonateDialog } from "@/components/donate-dialog";
 import { TopBar } from "@/components/shell/top-bar";
 import { UpdateInstallDialog } from "@/components/update-install-dialog";
@@ -888,21 +888,18 @@ function Layout() {
           /* 收起态给读屏器一个明确信号：这一块只有图标，名称在 tooltip 与 aria-label 里。 */
           aria-label={t("product.navAria", { product: t(platformDescriptor(product).labelKey) })}
         >
-          {/* 品牌块（原型 `.brand` / `.brand-mark`，`demo.css:136-141`）：32px 图标底 + 双行文案。
-              ⚠️ 图标必须带 `primary 18%` 底色 —— 原型不是「裸图标」（此前写 15%，偏淡）。
-              ★ 折叠态**只留图标**（居中）：品牌名在 tooltip 里，不占宽度。 */}
-          <div className={cn("flex items-center gap-2.5 pb-4", sidebarCollapsed ? "justify-center px-0" : "px-1.5")}>
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <span className="grid size-8 shrink-0 place-items-center rounded-[10px] bg-primary/18 text-primary">
-                  <AppIconMark size={17} />
-                </span>
-              </TooltipTrigger>
-              {sidebarCollapsed ? <TooltipContent side="right">Buddy Switch</TooltipContent> : null}
-            </Tooltip>
-            {sidebarCollapsed ? null : (
+          {/* 品牌块（原型 `.brand` / `.brand-text`，`docs/prototype/demo.css`）：**只有双行文案，不画应用图标**。
+              issue #75：左缘原本纵向排着三枚同族圆角方块 —— Windows 原生标题栏应用图标（系统绘制）、
+              顶栏平台图标（26px，唯一可交互）、这里 32px 的应用图标（纯 div）。可交互的那个最小、
+              不可交互的两个更大 ⇒ 用户找「切换平台」入口时会点错。
+              去掉这枚图标后左缘只剩「平台图标 + 文字」，混淆源头消失（方案 1，
+              依据 `docs/prototype/sidebar-brand-design.html`）。
+              ★ 折叠态**整块不渲染**：删掉图标后 60px 里没有可承载的内容（应用名在折叠态本就不可见）。
+              ⚠️ 别再往这里加应用图标 —— 那正是本 issue 要根治的东西。 */}
+          {sidebarCollapsed ? null : (
+            <div className="flex items-center gap-2.5 px-2.5 pb-4">
               <div className="min-w-0">
-                {/* 字重 650 / 字距 -.01em 对齐原型 `.brand-text b`（`demo.css:143`）。
+                {/* 字重 650 / 字距 -.01em 对齐原型 `.brand-text b`（`docs/prototype/demo.css`）。
                     字体走 body 继承 —— 原型全站统一 `ui-sans-serif`，不另设展示字体。 */}
                 <div className="truncate text-[13.5px] font-[650] leading-5 tracking-[-0.01em] text-sidebar-foreground">
                   Buddy Switch
@@ -917,8 +914,8 @@ function Layout() {
                   </div>
                 )}
               </div>
-            )}
-          </div>
+            </div>
+          )}
 
           <nav
             className={cn("flex min-h-0 flex-1 flex-col gap-[3px]", sidebarCollapsed && "items-center")}

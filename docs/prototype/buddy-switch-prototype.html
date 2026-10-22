@@ -167,9 +167,10 @@ kbd {
 .side-toggle svg { width: 15px; height: 15px; flex-shrink: 0; }
 .sidebar.collapsed .side-toggle { justify-content: center; padding: 10px 0 0; }
 
-/* 折叠态：品牌只留图标（居中），文字进 tooltip。 */
-.sidebar.collapsed .brand { justify-content: center; padding: 0 0 16px; }
-.sidebar.collapsed .brand-text { display: none; }
+/* 折叠态：品牌块**整块隐藏**（issue #75 方案 1 —— 应用图标已移除，60px 里放不下双行文案）。
+   ⚠️ 别再给这里加图标：左缘那三枚同族圆角方块（原生标题栏 / 顶栏平台图标 / 品牌块）
+   正是 issue #75 的病灶，可交互的那个反而最小。 */
+.sidebar.collapsed .brand { display: none; }
 /* 折叠态：导航项图标居中（34px 方钮）—— 64px 里再留 px-2.5 会让图标偏左，
    六枚图标排成一列歪的。 */
 .sidebar.collapsed .nav-item { width: 34px; justify-content: center; padding: 0; margin: 0 auto; }
@@ -196,12 +197,9 @@ kbd {
 .sidebar.collapsed .nav-item { position: relative; }
 .sidebar.collapsed .nav-item:hover .nav-tip { opacity: 1; }
 
-.brand { display: flex; align-items: center; gap: 10px; padding: 0 6px 16px; }
-.brand-mark {
-  width: 32px; height: 32px; border-radius: 10px; display: grid; place-items: center;
-  background: color-mix(in oklab, var(--primary) 18%, transparent); color: var(--primary);
-}
-.brand-mark svg { width: 17px; height: 17px; }
+/* 品牌块：**只有双行文案**（issue #75 方案 1，删掉了 32px 应用图标）。
+   左内边距 10px 与导航项的 `px-2.5` 对齐。 */
+.brand { display: flex; align-items: center; padding: 0 10px 16px; }
 .brand-text { display: flex; flex-direction: column; line-height: 1.3; min-width: 0; }
 .brand-text b { font-size: 13.5px; font-weight: 650; letter-spacing: -.01em; }
 .brand-text i { font-size: 10.5px; font-style: normal; color: var(--muted-fg); }
@@ -1779,9 +1777,6 @@ td.num.full { color: var(--destructive); font-weight: 600; }
     <!-- ══════════════ 侧栏：L2 目的地（固定 5 项，不随平台换血） ══════════════ -->
     <aside class="sidebar">
       <div class="brand">
-        <span class="brand-mark">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h6l2 3 2-3h6"/><path d="M12 10v10"/><path d="m8 17 4 4 4-4"/></svg>
-        </span>
         <span class="brand-text">
           <b>Buddy Switch</b>
           <i>多平台账号管理</i>

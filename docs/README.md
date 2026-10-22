@@ -28,7 +28,7 @@
 | 改前端某个页面 | [`specs/PLAN.md`](specs/PLAN.md) 对应 §3.x + 该期 `P*-ARCH.md` |
 | 给密钥设 token 配额 / 限制可访问账号（issue #76） | [`specs/KEY-PERMISSION-UI-DESIGN.md`](specs/KEY-PERMISSION-UI-DESIGN.md)（**已实现**：四条产品线的台账 / 命令 / 前端表 / 中继全部接通）+ [`prototype/key-permission-design.html`](prototype/key-permission-design.html)（可点设计稿） |
 | 侧栏太占地方 / 想只看图标（折叠） | [`specs/SIDEBAR-COLLAPSE-DESIGN.md`](specs/SIDEBAR-COLLAPSE-DESIGN.md)（已落地）+ [`prototype/verify-sidebar-collapse.cjs`](prototype/verify-sidebar-collapse.cjs)（行为校验） |
-| 侧栏品牌块图标与顶栏平台图标看混了（issue #75） | [`prototype/sidebar-brand-design.html`](prototype/sidebar-brand-design.html)（可点设计稿，待评审） |
+| 侧栏品牌块图标与顶栏平台图标看混了（issue #75） | [`prototype/sidebar-brand-design.html`](prototype/sidebar-brand-design.html)（**已按方案 1 落地**：品牌块只留文字、折叠态整块隐藏，`AppIconMark` 已删） |
 | 用量页要显示网关调用的明细（按模型 / 按账号） | [`specs/USAGE-GATEWAY-UI-REDESIGN.md`](specs/USAGE-GATEWAY-UI-REDESIGN.md)（交互与视觉，待拍板）+ [`specs/USAGE-GATEWAY-DETAIL-PLAN.md`](specs/USAGE-GATEWAY-DETAIL-PLAN.md)（数据契约与验收） |
 | 新增一个平台 / 产品线 | [`specs/P5-ARCH.md`](specs/P5-ARCH.md) + [`specs/UNIFIED-GATEWAY-ARCH.md`](specs/UNIFIED-GATEWAY-ARCH.md) §11 |
 | 用词拿不准（region / scope / 作用域…） | [`specs/VOCABULARY.md`](specs/VOCABULARY.md)（**冻结，不许自创**） |
