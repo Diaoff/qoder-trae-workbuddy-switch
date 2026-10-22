@@ -135,6 +135,84 @@ export interface GatewayTokenTrend {
   total: number;
 }
 
+/** 网关维度桶的一条（模型 / 账号 / 端点共用形状，键名按维度不同）。 */
+export interface GatewayDimEntry {
+  /** `models[]` 的键（空模型落 `__unknown__` 哨兵）。 */
+  model?: string;
+  /** `accounts[]` 的键（精确 uid）。 */
+  account?: string;
+  /** `endpoints[]` 的键（空串 = 未记录端点）。 */
+  endpoint?: string;
+  input: number;
+  output: number;
+  total: number;
+  requests: number;
+  /** HTTP `>= 400` 的条数（429 也在内）。 */
+  failed: number;
+  /** 上游积分合计（保留 3 位小数）。 */
+  credit: number;
+}
+
+/** `get_gateway_usage_dim` 的一天。 */
+export interface GatewayUsageDimDay {
+  /** 本地日期键 `YYYY-MM-DD`。 */
+  key: string;
+  /** 当日网关日志可能被裁 ⇒ 该日各维度合计只是**下界**。 */
+  truncated: boolean;
+  /** 该日的维度拆分不完整（v2 → v3 升级播种，见设计文档 §5.2）。 */
+  partial: boolean;
+  models: GatewayDimEntry[];
+  accounts: GatewayDimEntry[];
+  endpoints: GatewayDimEntry[];
+}
+
+/**
+ * `get_gateway_usage_dim` 的返回 —— 网关三维度逐日历史。
+ *
+ * ⚠️ 与 `get_gateway_token_trend` **同源同形状**：`days` 只含落库日
+ * ⇒ **缺日 = 未记录，不是 0**；join 窗口后必须算覆盖率并披露。
+ * ⚠️ 三条维度的合计**都等于**当日的网关 token 总量（同一次聚合、同一水位线）。
+ */
+export interface GatewayUsageDim {
+  date: string;
+  retentionDays: number;
+  days: GatewayUsageDimDay[];
+}
+
+/** 对账的拓扑结论。 */
+export type ReconVerdict = "independent" | "subset" | "mixed";
+
+/**
+ * `get_usage_reconcile` 的返回 —— 今日客户端 ↔ 网关对账。
+ *
+ * ## 怎么读这些数
+ *
+ * - `bounds` 是**可证明**的区间：真值 = C + G − overlap，`0 ≤ overlap ≤ min(C,G)`
+ *   ⇒ `lower = max(C, G)`、`upper = C + G`；
+ * - `estimate = C + G − matchedTokens`：取「未匹配的客户端请求都是直连」这一侧；
+ * - `verdict` 由匹配率判（`< 10%` 独立 / `> 90%` 子集 / 其余混合）；
+ * - `proxySignal`：客户端是否配置为走网关。`null` = 未知（此时以匹配率为准）。
+ */
+export interface GatewayUsageRecon {
+  clientRows: number;
+  gatewayRows: number;
+  matched: number;
+  matchedTokens: number;
+  matchedCredit: number;
+  clientTokens: number;
+  clientCredit: number;
+  gatewayTokens: number;
+  gatewayCredit: number;
+  verdict: ReconVerdict;
+  proxySignal: boolean | null;
+  bounds: { lower: number; upper: number };
+  estimate: number;
+  /** 未匹配的客户端样本（≤3 条，供 UI 说明「为什么没对上」）。 */
+  unmatchedSamples: { ts: number; model: string; tokens: number; credit: number }[];
+  /** 对账覆盖的窗口（只含今日；`logRows` = 网关日志总条数）。 */
+  window: { date: string; logRows: number };
+}
+
 /** 认证文件 domain 与目标 region 不符时的结构化信息（安全红线 F）。 */
 export interface RegionMismatch {
   /** 实际读到的登录域，如 "www.workbuddy.ai"。 */
@@ -1269,7 +1347,13 @@ export interface CreditStatistics {
   officialUsage?: CreditOfficialUsage;
 }
 
-export interface TokenStatsTotals { total: number; input: number; output: number; cacheRead: number; cacheWrite: number; uncachedInput: number; records: number; cacheHitRate: number | null; }
+export interface TokenStatsTotals { total: number; input: number; output: number; cacheRead: number; cacheWrite: number; uncachedInput: number; records: number; cacheHitRate: number | null; /**
+ * 该组记录的**积分消耗合计**（`usage.credit` 之和，保留 3 位小数）。
+ *
+ * 为什么由后端算：积分是「按请求上报的小数」，前端拿不到逐条记录；而按 token 折算
+ * 是**估算**不是账单（issue #63）。旧后端缺这个字段 ⇒ `undefined`，UI 必须显示 `—`
+ * 而不是 0（0 = 真的没消耗，`—` = 不知道，两者不能混）。
+ */ credit?: number | null; }
 export interface TokenStatsGroup extends TokenStatsTotals { key: string; title?: string | null; project?: string; sessionId?: string; /** ★ 仅 `sessions[]` 携带：会话**逐日拆分**（窗口切片的素材，键 `YYYY-MM-DD`）。旧后端缺省 ⇒ 前端按全时口径回落（见 `sessionPoints`）。 */ daily?: TokenStatsGroup[]; }
 export interface TokenStatsSource { source: "workbuddy" | "codebuddy-cli" | "codebuddy-ide" | "workbuddy-ai" | "trae-gateway"; summary: TokenStatsTotals; models: TokenStatsGroup[]; projects: TokenStatsGroup[]; sessions: TokenStatsGroup[]; daily: TokenStatsGroup[]; /** Optional model-specific daily series for trend filtering. */ dailyByModel?: Record<string, TokenStatsGroup[]>; hours: TokenStatsGroup[]; filesScanned: number; parseErrors: number; coverageStartAt?: number | null; coverageEndAt?: number | null; }
 export interface TokenStatistics { /** 查询范围（后端返回：cn / global / all）；缺省兼容旧后端。 */ region?: RegionFilter; generatedAt: number; rangeDays?: number | null; sources: TokenStatsSource[]; }
@@ -1685,9 +1769,25 @@ export interface CatalogModel {
   context_length_max?: number | null;
   max_tokens: number;
   supports_images: boolean;
+  /** 积分倍率**原文**（`x0.79` / `x0.34 credits` 三种写法并存）。 */
   credits?: string | null;
+  /** 积分倍率数字（后端已归一）；`null` = 上游没给。渲染一律用这个，别自己剥 `x`。 */
+  credits_rate?: number | null;
   badges: string[];
   free: boolean;
+  /**
+   * 支持的思考档位（后端已把「上游声明 > 内置静态表」合并好，保序）。
+   *
+   * 空数组 = 两边都没数据 ⇒ 界面对该模型显示 `—`，**不猜**。
+   */
+  reasoning_efforts?: string[];
+  /** 默认档位；不在 `reasoning_efforts` 里时后端已丢弃（不会出现「选了就被降级」的档）。 */
+  default_effort?: string | null;
+  /**
+   * 档位来源：`"upstream"` = 上游目录声明（权威）；`"static"` = 网关内置档位表
+   * （**可能落后于官方客户端**，必须在 tooltip 里写明）；`null` = 两处都没有。
+   */
+  efforts_source?: "upstream" | "static" | null;
 }
 
 export interface CatalogSnapshot {
@@ -1888,6 +1988,13 @@ export interface GatewayLogEntry {
   totalMs?: number | null;
   promptTokens?: number | null;
   completionTokens?: number | null;
+  /**
+   * **上游上报的积分消耗**（`usage.credit`）。
+   *
+   * 改造前的旧日志没有这个字段（那时 `RequestMeta` 不记 credit）⇒ 可选。
+   * `0` = 上游没带（不是免费），`undefined` = 旧日志（不知道）。
+   */
+  credit?: number | null;
   stream: boolean;
 }
 

@@ -95,7 +95,10 @@ export function StatTiles({
               {tile.value}
             </div>
             {tile.hint ? (
-              <div className="mt-1 max-w-full truncate text-[11px] text-muted-foreground">
+              /* ⚠️ 刻意**不** `truncate`：账本的合计卡副标题是**算式**
+                 （`客户端 187.8M + 网关 655.7K − 重叠 350K`），单行截断会把
+                 「− 重叠」砍成「− 重…」，正好砍掉用户最需要核对的那一项 ⇒ 换行显示。 */
+              <div className="mt-1 max-w-full break-words text-[11px] leading-snug text-muted-foreground">
                 {tile.hint}
               </div>
             ) : null}

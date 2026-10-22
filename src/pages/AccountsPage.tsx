@@ -17,6 +17,7 @@ import {
 import { AccountMoreMenu } from "@/components/account-more-menu";
 import { AccountCard, accountIdentity, accountDisplayName, formatCredits, formatCreditExpiry, formatTodayTokens, todayTokensBreakdown, type GuideTarget } from "@/components/account-card";
 import { REFRESH_DONE_LABEL, useAccountRefreshBusy, type AccountRefreshKind } from "@/lib/account-refresh";
+import { isWorkbuddyCurrent } from "@/lib/account-current";
 import { AccountsTableAvatar } from "@/components/account-list-parts";
 import { AccountWorkbench } from "@/components/account-workbench";
 import { type AccountColumn } from "@/components/account-table";
@@ -94,7 +95,10 @@ import { useDocumentVisible } from "@/lib/use-document-visible";
 import { useMediaQuery } from "@/lib/use-media-query";
 import { useScope } from "@/lib/use-scope";
 import { useAccountsStore } from "@/stores/accounts";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { useT } from "@/lib/i18n";
+import { daysUntil, nearestExpiringBatch } from "@/lib/credit-expiry";
+import { formatAbsoluteTime } from "@/lib/catalog-source";
 import { showUndoToast } from "@/lib/undo-toast";
 
 function expiringSoonAmount(credit?: CreditExpiry): number {
@@ -117,30 +121,42 @@ function hasExpiringSoonCredits(credit?: CreditExpiry): boolean {
  */
 type SwitchClient = "cli" | "ide" | "vscode" | "jetbrains";
 
-function soonestRelevantExpiry(credit?: CreditExpiry): number {
-  const soonestExpiringCredit = (credit?.resources ?? [])
-    .filter((resource) => resource.remaining > 0 && resource.expiringSoon && resource.expireAt != null)
-    .map((resource) => resource.expireAt as number)
-    .reduce((soonest, expireAt) => Math.min(soonest, expireAt), Number.POSITIVE_INFINITY);
-  return Number.isFinite(soonestExpiringCredit)
-    ? soonestExpiringCredit
-    : credit?.soonestExpireAt ?? Number.POSITIVE_INFINITY;
+/**
+ * 「最近一批未来到期」的到期时刻（issue #69）。
+ *
+ * ⚠️ **不看 `expiringSoon`**（那是 7 天警告窗口），**不看 `credit.soonestExpireAt`**
+ * （它把已过期资源也算进最小值 ⇒ 「已经浪费的」会抢占「先消耗」的位）。
+ * 统一走 `nearestExpiringBatch` —— 它只认「未来 + 剩余 > 0 + 有到期时刻」。
+ */
+function nearestCreditExpiry(credit?: CreditExpiry): number {
+  const batch = credit?.ok ? nearestExpiringBatch(credit.resources) : null;
+  return batch ? batch.expireAt : Number.POSITIVE_INFINITY;
 }
 
+/**
+ * 「建议优先」的分档（issue #69）。
+ *
+ * | rank | 条件 | 含义 |
+ * |:--|:--|:--|
+ * | 0 | 7 天内有临期 | **再不用就浪费**（警告强度最高） |
+ * | 1 | 正常（有未来到期 / 无到期） | **先消耗快到期的**（用户真正要的顺序） |
+ * | 2 | 有**已过期**积分 | 已经浪费了 ⇒ 排到正常之后，别抢「先消耗」的位 |
+ * | 3 | 积分查询失败 | 未知排最后 |
+ *
+ * ⚠️ 2026-10-21 前 rank 1 = 已过期、rank 2 = 正常 ⇒ 「有过期积分」的账号排在
+ * 「14 天后到期」的账号**前面** —— 那正好把用户要的相对顺序倒过来了。
+ */
 function creditPriorityRank(credit?: CreditExpiry): number {
   if (!credit?.ok) return 3;
   if (hasExpiringSoonCredits(credit)) return 0;
-  if (credit.expired) return 1;
-  return 2;
+  if (credit.expired) return 2;
+  return 1;
 }
 
-function isWorkbuddyCurrent(account: AccountMeta, current: AppStatus["current"] | undefined): boolean {
-  if (!current) return false;
-  return Boolean(
-    (current.uid && (account.uid === current.uid || account.id === current.uid)) ||
-      (current.email && account.email === current.email),
-  );
-}
+/**
+ * 「这个账号是不是客户端当前登录的那个」—— 判定已抽到 `lib/account-current.ts`，
+ * 与聚合页**共用同一份**（两处各写一份会出现「账号页有徽章、聚合页没有」）。
+ */
 
 /**
  * 并行查询今日签到；失败的账号不写入，由调用方保留原值。
@@ -1492,15 +1508,32 @@ function RegionPanel({ region }: { region: Region }) {
       const rightCredit = creditMap[right.id];
       const rankDifference = creditPriorityRank(leftCredit) - creditPriorityRank(rightCredit);
       if (rankDifference !== 0) return rankDifference;
-      const leftExpiry = soonestRelevantExpiry(leftCredit);
-      const rightExpiry = soonestRelevantExpiry(rightCredit);
+      /* 组内：**最近到期升序** → 临期金额降序（issue #69）。
+         「最近到期」用 `nearestCreditExpiry`（只认未来批次），不再用
+         `soonestRelevantExpiry`（它只看 7 天窗口内的批次）。 */
+      const leftExpiry = nearestCreditExpiry(leftCredit);
+      const rightExpiry = nearestCreditExpiry(rightCredit);
       if (leftExpiry !== rightExpiry) return leftExpiry - rightExpiry;
       return expiringSoonAmount(rightCredit) - expiringSoonAmount(leftCredit);
     };
     const nameComparator: AccountComparator<AccountMeta> = (left, right) =>
       wbAccountName(left).localeCompare(wbAccountName(right), undefined, { numeric: true, sensitivity: "base" });
-    const expiryComparator: AccountComparator<AccountMeta> = (left, right) =>
-      (left.expiresAt ?? Number.POSITIVE_INFINITY) - (right.expiresAt ?? Number.POSITIVE_INFINITY);
+    /**
+     * 「到期时间」排序 = **积分最近到期**升序（issue #69，与原型 `expireInDays` 一致）。
+     *
+     * ⚠️ 此前这里读的是 `AccountMeta.expiresAt`（**Token** 到期）—— 那与用户想知道的
+     * 「哪笔积分先用完」是两件事，且 Token 到期对所有账号都差不多（同一批签发）⇒ 排序近乎随机。
+     * 无未来到期的账号排最后（`Infinity`），同刻按金额降序。
+     */
+    const expiryComparator: AccountComparator<AccountMeta> = (left, right) => {
+      const leftExpiry = nearestCreditExpiry(creditMap[left.id]);
+      const rightExpiry = nearestCreditExpiry(creditMap[right.id]);
+      if (leftExpiry !== rightExpiry) return leftExpiry - rightExpiry;
+      return (
+        (nearestExpiringBatch(creditMap[right.id]?.resources)?.amount ?? 0) -
+        (nearestExpiringBatch(creditMap[left.id]?.resources)?.amount ?? 0)
+      );
+    };
     /* 「最近使用」：按 `lastUsedAt` **倒序**（新的在前）；缺席（从未使用）用 `-Infinity`
        兜底 ⇒ 一律排到最后，而不是被当成「很久以前」（0 会混进中间去）。 */
     const recentComparator: AccountComparator<AccountMeta> = (left, right) =>
@@ -1736,8 +1769,36 @@ function RegionPanel({ region }: { region: Region }) {
       },
     },
     {
+      /**
+       * 「积分到期」列（issue #69）：**积分**最近到期（`{days} 天`），tooltip 给日期与金额。
+       *
+       * ⚠️ 与下一列「Token 到期」是**两件事**：那列是 Token 有效期（所有账号差不多），
+       * 这列才是用户要的「先用哪个账号」。同名会让用户以为看错了。
+       */
+      key: "creditExpiry",
+      header: t("wbAccounts.table.creditExpiry"),
+      render: (account) => {
+        const batch = nearestExpiringBatch(creditMap[account.id]?.resources);
+        if (!batch) return <span className="tabular-nums text-muted-foreground">—</span>;
+        return (
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <span className="tabular-nums text-muted-foreground">
+                {t("wbAccounts.table.creditExpiryDays", { days: daysUntil(batch.expireAt) })}
+              </span>
+            </TooltipTrigger>
+            <TooltipContent side="top">
+              <span className="whitespace-nowrap tabular-nums">
+                {formatAbsoluteTime(batch.expireAt)} · {formatCredits(batch.amount)}
+              </span>
+            </TooltipContent>
+          </Tooltip>
+        );
+      },
+    },
+    {
       key: "expiry",
-      header: t("wbAccounts.table.expiry"),
+      header: t("wbAccounts.table.tokenExpiry"),
       render: (account) => (
         <span className="tabular-nums text-muted-foreground">{formatAccountExpiry(account)}</span>
       ),

@@ -79,7 +79,11 @@ pub const TOKEN_DAILY_MAX_DAYS: usize = 400;
 /// 闸门语义从「当天扫过就不再扫」改为「距上次扫描不足 TTL 才跳过」（见
 /// [`CLIENT_SCAN_TTL_MS`]）。旧文件里那个字段反序列化时被忽略 ⇒ `None` ⇒ 重扫一次，
 /// 结果正确（只是多扫一轮）。
-pub const TOKEN_DAILY_VERSION: u32 = 2;
+/// 落盘版本。v3（2026-10-21，issue #63）：`DayRecord` 新增三个网关维度桶
+/// （`gatewayModels` / `gatewayAccounts` / `gatewayEndpoints`）+ `gatewayModelsPartial`。
+/// 旧文件缺这些字段 ⇒ `serde(default)` 读成空，由 `gateway_round` 的**播种轮**补齐，
+/// **不需要**整库丢弃。
+pub const TOKEN_DAILY_VERSION: u32 = 3;
 
 /// 网关日志条数上限的缺省值（与 `GatewayConfig::default().log_keep` 同值）。
 const DEFAULT_GATEWAY_LOG_KEEP: usize = 200;
@@ -128,6 +132,35 @@ struct Bucket {
     output: u64,
 }
 
+/// 网关的**维度桶**：模型 / 账号 / 端点共用一套形状。
+///
+/// 为什么把三者做成同一个结构：它们都由**同一次日志扫描、同一个水位线**产出，
+/// 只是分组键不同（`model` / `uid` / `endpoint`）。分开定义必然在「哪些字段要累加」
+/// 上漂移 —— 而这里一旦漂移，页面上「按模型合计 = 网关总量」这条自洽约束就破了。
+///
+/// `requests` / `failed` 让「429 × 5」这类事实能落到模型/端点维度上；
+/// `credit` 是上游积分（积分视图按来源拆消耗的唯一真实来源，见 issue #63）。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+struct DimBucket {
+    #[serde(default)]
+    input: u64,
+    #[serde(default)]
+    output: u64,
+    #[serde(default)]
+    requests: u64,
+    #[serde(default)]
+    failed: u64,
+    #[serde(default)]
+    credit: f64,
+}
+
+/// 维度桶的一轮写入意图（与 [`GatewayWrite`] 同构，只是值类型不同）。
+#[derive(Debug)]
+enum DimWrite {
+    Add(BTreeMap<String, DimBucket>),
+    Correct(BTreeMap<String, DimBucket>),
+}
+
 /// 某账号在当日的双来源桶。
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 struct AccountRecord {
@@ -156,7 +189,27 @@ struct DayRecord {
     /// 一次**校正轮**（逐账号取 `max(现有, 当前窗口)`，见 [`GatewayWrite::Correct`]）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     gateway_watermark_ts: Option<i64>,
+    /// 网关按**模型**的维度桶（键 = 模型名；`model` 为空落哨兵 [`UNKNOWN_MODEL`]）。
+    ///
+    /// 三条维度的合计**都必须等于**该日网关 token 总量 —— 它们与 `accounts[].gateway`
+    /// 由同一次扫描、同一水位线产出（护栏：`gateway_dims_sum_to_the_gateway_bucket`）。
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    gateway_models: BTreeMap<String, DimBucket>,
+    /// 网关按**账号 uid** 的维度桶（与 `accounts` 同一套 uid 解析，含旧行回落）。
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    gateway_accounts: BTreeMap<String, DimBucket>,
+    /// 网关按**端点**的维度桶（`/v1/chat/completions` 等）。
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    gateway_endpoints: BTreeMap<String, DimBucket>,
+    /// 该日维度桶是**升级播种**出来的（v2 → v3 过渡）⇒ 拆分不完整，UI 要披露。
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    gateway_models_partial: bool,
 }
+
+/// `model` 字段为空时的哨兵（渲染层翻成「未标注模型」）。
+///
+/// 不丢弃这类行：它们**确实消耗了 token**，丢掉会让「按模型合计」小于网关卡。
+pub const UNKNOWN_MODEL: &str = "__unknown__";
 
 /// 落盘存储：`{ version, days: { "YYYY-MM-DD": DayRecord }, clientScannedAtMs }`。
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -345,6 +398,14 @@ struct GatewayRow {
     day: String,
     input: u64,
     output: u64,
+    /// 模型名（空 ⇒ [`UNKNOWN_MODEL`]）。
+    model: String,
+    /// 端点（`/v1/chat/completions` 等）。
+    endpoint: String,
+    /// HTTP 状态码（`>= 400` 计入 `failed`）。
+    status: u16,
+    /// 上游积分（`usage.credit`；缺字段 = 0.0 = 不知道）。
+    credit: f64,
 }
 
 fn parse_gateway_rows(entries: &[Value]) -> Vec<GatewayRow> {
@@ -382,6 +443,28 @@ fn parse_gateway_rows(entries: &[Value]) -> Vec<GatewayRow> {
                     .get("completionTokens")
                     .and_then(number_u64)
                     .unwrap_or(0),
+                model: value
+                    .get("model")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|model| !model.is_empty())
+                    .unwrap_or(UNKNOWN_MODEL)
+                    .to_string(),
+                endpoint: value
+                    .get("endpoint")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string(),
+                status: value
+                    .get("status")
+                    .and_then(Value::as_u64)
+                    .and_then(|status| u16::try_from(status).ok())
+                    .unwrap_or(0),
+                credit: value
+                    .get("credit")
+                    .and_then(Value::as_f64)
+                    .filter(|credit| credit.is_finite() && *credit >= 0.0)
+                    .unwrap_or(0.0),
             })
         })
         .collect()
@@ -416,6 +499,37 @@ fn bucket_gateway(
         let bucket = out.entry(key).or_default();
         bucket.input = bucket.input.saturating_add(row.input);
         bucket.output = bucket.output.saturating_add(row.output);
+    }
+    out
+}
+
+/// 按**维度键**分桶：只保留「该 region + 该本地日 + `ts > since`」的行。
+///
+/// `key_of` 决定分组（模型 / uid / 端点）。与 [`bucket_gateway`] **共用同一套过滤**，
+/// 这是「按模型合计 = 网关卡」能成立的前提 —— 任何一边多算/少算一条，两个数字立刻分叉。
+fn bucket_dim(
+    rows: &[GatewayRow],
+    region: Region,
+    day: &str,
+    since: Option<i64>,
+    key_of: impl Fn(&GatewayRow) -> String,
+) -> BTreeMap<String, DimBucket> {
+    let mut out: BTreeMap<String, DimBucket> = BTreeMap::new();
+    for row in rows {
+        if row.region != region.as_str() || row.day != day {
+            continue;
+        }
+        if since.is_some_and(|watermark| row.ts <= watermark) {
+            continue;
+        }
+        let bucket = out.entry(key_of(row)).or_default();
+        bucket.input = bucket.input.saturating_add(row.input);
+        bucket.output = bucket.output.saturating_add(row.output);
+        bucket.requests = bucket.requests.saturating_add(1);
+        if row.status >= 400 {
+            bucket.failed = bucket.failed.saturating_add(1);
+        }
+        bucket.credit += row.credit;
     }
     out
 }
@@ -458,18 +572,19 @@ enum GatewayWrite {
 /// 边界条目**每轮重复计一次**（跨轮双计），更坏。
 fn gateway_round(
     watermark: Option<i64>,
+    dims_empty: bool,
     rows: &[GatewayRow],
     region: Region,
     day: &str,
     uids: &HashSet<String>,
     names: &HashMap<String, Option<String>>,
-) -> (GatewayWrite, Option<i64>) {
+) -> GatewayRound {
     let max_ts = rows
         .iter()
         .filter(|row| row.region == region.as_str() && row.day == day)
         .map(|row| row.ts)
         .max();
-    let write = match watermark {
+    let accounts = match watermark {
         Some(watermark) => GatewayWrite::Add(bucket_gateway(
             rows,
             region,
@@ -480,12 +595,53 @@ fn gateway_round(
         )),
         None => GatewayWrite::Correct(bucket_gateway(rows, region, day, uids, names, None)),
     };
+    /* 维度的水位线与账号桶**同源**，只多一条升级过渡：v2 → v3 时水位线存在、
+    但维度桶还是空的 ⇒ 维度单独做一次整窗播种，并标记「不完整」。 */
+    let dim_since = match (watermark, dims_empty) {
+        (None, _) => None,
+        (Some(_), false) => watermark,
+        (Some(_), true) => None,
+    };
+    let dims_partial = matches!((watermark, dims_empty), (Some(_), true));
+    let dim = |key_of: &dyn Fn(&GatewayRow) -> String| {
+        let map = bucket_dim(rows, region, day, dim_since, key_of);
+        match dim_since {
+            Some(_) => DimWrite::Add(map),
+            None => DimWrite::Correct(map),
+        }
+    };
+    /* 账号维度的键与 `bucket_gateway` 同一套解析（新行取 uid，旧行回落展示名）。
+    ⚠️ 不要在外面维护「第几条」的游标：`bucket_dim` 会先按 region/日/水位线过滤，
+    游标与实际计入的行数一旦错位，账号维度就会贴到别的账号上。 */
+    let by_account = dim(&|row| match row.account_uid.as_deref() {
+        Some(uid) => uid.to_string(),
+        None => resolve_account_key(&row.account, uids, names),
+    });
     let next_watermark = match (watermark, max_ts) {
         (Some(current), Some(max)) => Some(current.max(max)),
         (Some(current), None) => Some(current),
         (None, max) => max,
     };
-    (write, next_watermark)
+    GatewayRound {
+        accounts,
+        models: dim(&|row| row.model.clone()),
+        accounts_dim: by_account,
+        endpoints: dim(&|row| row.endpoint.clone()),
+        next_watermark,
+        dims_partial,
+    }
+}
+
+/// 一轮网关聚合的完整结果：账号 token 桶 + 三条维度桶 + 新水位线。
+#[derive(Debug)]
+struct GatewayRound {
+    accounts: GatewayWrite,
+    models: DimWrite,
+    accounts_dim: DimWrite,
+    endpoints: DimWrite,
+    next_watermark: Option<i64>,
+    /// 维度是升级播种出来的（该日原有账号桶非空时才真正标 partial）。
+    dims_partial: bool,
 }
 
 /// 网关日志的 `account` 是**展示名**（`account_display_name` 的回落链：email → nickname →
@@ -548,12 +704,20 @@ fn resolve_account_key(
 // 客户端 JSONL 聚合（只读）
 // ---------------------------------------------------------------------------
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+/* ⚠️ 不 derive `Eq`：`credit` 是 f64。去重 / 比对只需 `PartialEq`。 */
+#[derive(Clone, Debug, PartialEq)]
 struct ClientUsageRow {
     session_id: String,
     ts: i64,
     input: u64,
     output: u64,
+    /// 模型名（对账的匹配键之一；空 ⇒ 空串，**不参与**匹配）。
+    ///
+    /// 为什么扫描时就带上：对账（`modules::reconcile`）要用它做「同模型」判定，
+    /// 若事后另扫一遍 jsonl，同一天要读两遍盘 —— 而这两件事的素材是同一批行。
+    model: String,
+    /// 该条记录的积分（`usage.credit`）—— 对账的**次键**，也是积分视图的请求口径。
+    credit: f64,
 }
 
 /// 递归收集「**可能含今日记录**」的 `.jsonl` 路径。
@@ -621,6 +785,33 @@ fn usage_object(value: &Value) -> Option<&Map<String, Value>> {
 
 /// 提取 (input, output)：优先级 `message.usage` > `providerData.usage` > 顶层 `usage`
 /// （与 `token_stats` 的取值口径一致）。
+/// 模型名：`message.model` 优先，其次顶层 `model`（与 `token_stats::model` 同源）。
+///
+/// 空 ⇒ 空串。对账把空串当「不可匹配」（不知道模型就没法断言是同一条请求）。
+fn extract_model(value: &Value) -> String {
+    value
+        .get("message")
+        .and_then(|message| message.get("model"))
+        .or_else(|| value.get("model"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .unwrap_or_default()
+        .to_string()
+}
+
+/// 该条记录的积分：`message.usage.credit` 优先，其次顶层 `usage.credit`。
+/// 缺失 / 非法 ⇒ 0.0（= 不知道，不是免费）。
+fn extract_credit(value: &Value) -> f64 {
+    value
+        .get("message")
+        .and_then(|message| message.get("usage"))
+        .or_else(|| value.get("usage"))
+        .and_then(|usage| usage.get("credit"))
+        .and_then(Value::as_f64)
+        .filter(|credit| credit.is_finite() && *credit >= 0.0)
+        .unwrap_or(0.0)
+}
+
 fn extract_usage(value: &Value) -> Option<(u64, u64)> {
     let provider = value.get("providerData");
     let candidates = [
@@ -674,6 +865,8 @@ fn parse_client_line(line: &str) -> Option<ClientUsageRow> {
         ts,
         input,
         output,
+        model: extract_model(&value),
+        credit: extract_credit(&value),
     })
 }
 
@@ -919,15 +1112,16 @@ pub fn record_gateway_today(region: Region) -> Value {
     let mut store = load_store(region);
     {
         let record = store.days.entry(day.clone()).or_default();
-        let (write, next_watermark) = gateway_round(
+        let round = gateway_round(
             record.gateway_watermark_ts,
+            record.gateway_models.is_empty(),
             &rows,
             region,
             &day,
             &uids,
             &names,
         );
-        match write {
+        match round.accounts {
             GatewayWrite::Add(increments) => {
                 for (account, bucket) in increments {
                     let entry = record.accounts.entry(account).or_default();
@@ -944,12 +1138,56 @@ pub fn record_gateway_today(region: Region) -> Value {
                 }
             }
         }
-        record.gateway_watermark_ts = next_watermark;
+        /* 三条维度：与账号桶同轮同水位线。`Correct` = 逐键取大（不倒退、不双计）。 */
+        apply_dim_write(&mut record.gateway_models, round.models);
+        apply_dim_write(&mut record.gateway_accounts, round.accounts_dim);
+        apply_dim_write(&mut record.gateway_endpoints, round.endpoints);
+        /* 升级播种：只有该日**原本就有**账号桶时才标「不完整」——
+        新的一天整窗播种就是全量，不该挂污点。 */
+        let had_prior = record
+            .accounts
+            .values()
+            .any(|entry| entry.gateway.input > 0 || entry.gateway.output > 0);
+        if round.dims_partial && had_prior {
+            record.gateway_models_partial = true;
+        }
+        record.gateway_watermark_ts = round.next_watermark;
         record.gateway_truncated = truncated;
     }
     prune_store(&mut store, at);
     save_store(region, &store);
     build_response(&day, store.days.get(&day))
+}
+
+/// 把一轮维度写入意图落到桶上。
+///
+/// `Add` ⇒ 逐字段相加；`Correct` ⇒ 逐字段取大（两个读数都只是当日的**子集**，
+/// 相加会双计，取大既不倒退也不双计 —— 与 [`GatewayWrite::Correct`] 同一理由）。
+fn apply_dim_write(target: &mut BTreeMap<String, DimBucket>, write: DimWrite) {
+    match write {
+        DimWrite::Add(increments) => {
+            for (key, bucket) in increments {
+                let entry = target.entry(key).or_default();
+                entry.input = entry.input.saturating_add(bucket.input);
+                entry.output = entry.output.saturating_add(bucket.output);
+                entry.requests = entry.requests.saturating_add(bucket.requests);
+                entry.failed = entry.failed.saturating_add(bucket.failed);
+                entry.credit += bucket.credit;
+            }
+        }
+        DimWrite::Correct(snapshot) => {
+            for (key, bucket) in snapshot {
+                let entry = target.entry(key).or_default();
+                entry.input = entry.input.max(bucket.input);
+                entry.output = entry.output.max(bucket.output);
+                entry.requests = entry.requests.max(bucket.requests);
+                entry.failed = entry.failed.max(bucket.failed);
+                if bucket.credit > entry.credit {
+                    entry.credit = bucket.credit;
+                }
+            }
+        }
+    }
 }
 
 /// 客户端扫描闸门（**纯函数**，便于单测）。
@@ -1079,6 +1317,107 @@ pub fn gateway_token_trend(region: Region) -> Value {
     })
 }
 
+/// 今日的**客户端 ↔ 网关对账**（只读：扫一遍今日 jsonl + 读网关日志，不写任何文件）。
+///
+/// 只覆盖**今日**：网关日志是环形窗口（缺省 200 条），更早的请求已经滚出去、
+/// 无法逐条对账 —— 那部分只能靠 [`gateway_usage_dim`] 的日合计给区间（见设计文档 §4.5）。
+///
+/// 匹配算法在 `modules::reconcile`（纯函数、可单测）；这里只做素材装配：
+/// 两侧都换成 `(ts, model, tokens, credit)` 四元组，**账号刻意不带**（网关切号会让它对不上）。
+pub fn reconcile_today(region: Region) -> Value {
+    let day = local_date_string(now_ms()).unwrap_or_default();
+    let entries = load_gateway_log();
+    let gateway_rows: Vec<crate::modules::reconcile::ReconRow> = parse_gateway_rows(&entries)
+        .into_iter()
+        .filter(|row| row.region == region.as_str() && row.day == day)
+        .map(|row| crate::modules::reconcile::ReconRow {
+            ts: row.ts,
+            model: row.model,
+            tokens: row.input.saturating_add(row.output),
+            credit: row.credit,
+        })
+        .collect();
+    let client_rows: Vec<crate::modules::reconcile::ReconRow> =
+        scan_client_rows(&session_data_dir(region).join("projects"), &day)
+            .into_iter()
+            .map(|row| crate::modules::reconcile::ReconRow {
+                ts: row.ts,
+                model: row.model,
+                tokens: row.input.saturating_add(row.output),
+                credit: row.credit,
+            })
+            .collect();
+    /* `proxy_enabled = None`：当前没有可靠的「客户端是否走网关」配置读取点
+    （P12 的代理是改客户端 baseUrl / hosts 实现的，不在本应用配置里）。
+    未知时以**匹配率**为准 —— 逐条对上本身就是比配置更强的证据。 */
+    let report = crate::modules::reconcile::reconcile(&client_rows, &gateway_rows, None);
+    let mut value = report.to_value(None);
+    value["window"] = json!({ "date": day, "logRows": entries.len() });
+    value
+}
+
+/// 网关的**三维度**逐日历史（模型 / 账号 / 端点）—— 用量页「账本」视图的唯一数据源。
+///
+/// 与 [`gateway_token_trend`] **同源同形状**（`days` 只含落库日 + `truncated`），
+/// 前端复用同一套覆盖率计算。只读：不扫盘、不触发记录。
+///
+/// ## 为什么三个维度放一个命令
+///
+/// 它们由同一次聚合产出、共用同一个水位线，**必须一起读**才能保证
+/// 「按模型合计 = 按账号合计 = 按端点合计 = 网关卡」。分三条命令只会让前端
+/// 各取一次、在两次读取之间数据已经变了。
+pub fn gateway_usage_dim(region: Region) -> Value {
+    let store = load_store(region);
+    let days: Vec<Value> = store
+        .days
+        .iter()
+        .map(|(day, record)| {
+            json!({
+                "key": day,
+                "truncated": record.gateway_truncated,
+                "partial": record.gateway_models_partial,
+                "models": dim_groups(&record.gateway_models, "model"),
+                "accounts": dim_groups(&record.gateway_accounts, "account"),
+                "endpoints": dim_groups(&record.gateway_endpoints, "endpoint"),
+            })
+        })
+        .collect();
+    json!({
+        "date": local_date_string(now_ms()).unwrap_or_default(),
+        "retentionDays": TOKEN_DAILY_RETENTION_DAYS,
+        "days": days,
+    })
+}
+
+/// `BTreeMap<String, DimBucket>` → 数组（按总量降序；`key_name` 是键的字段名）。
+///
+/// 空键（端点缺失）保留为空串，由前端渲染成「未记录端点」—— **不丢量**：
+/// 丢掉它会让「按端点合计」小于网关总量。
+fn dim_groups(map: &BTreeMap<String, DimBucket>, key_name: &str) -> Vec<Value> {
+    let mut values: Vec<Value> = map
+        .iter()
+        .map(|(key, bucket)| {
+            let total = bucket.input.saturating_add(bucket.output);
+            let mut value = json!({
+                key_name: key,
+                "input": bucket.input,
+                "output": bucket.output,
+                "total": total,
+                "requests": bucket.requests,
+                "failed": bucket.failed,
+                "credit": (bucket.credit * 1000.0).round() / 1000.0,
+            });
+            value["_sort"] = json!(total);
+            value
+        })
+        .collect();
+    values.sort_by_key(|value| std::cmp::Reverse(value["_sort"].as_u64().unwrap_or(0)));
+    for value in &mut values {
+        value.as_object_mut().map(|object| object.remove("_sort"));
+    }
+    values
+}
+
 /// 落库 `days` → 逐日 gateway 汇总（**纯函数**，便于单测）。
 ///
 /// - 日期**升序**（`BTreeMap` 的键序，与前端窗口对齐直接可用）；
@@ -1127,6 +1466,8 @@ mod tests {
             ts,
             input,
             output,
+            model: "m".to_string(),
+            credit: 0.0,
         }
     }
 
@@ -1408,14 +1749,149 @@ mod tests {
 
     fn gw_round_cn(watermark: Option<i64>, entries: &[Value]) -> (GatewayWrite, Option<i64>) {
         let day = local_date_string(at_local_date(0, 12)).expect("today");
-        gateway_round(
+        /* `dims_empty = true`：这些用例只关心账号桶，维度走播种轮（不影响 accounts）。 */
+        let round = gateway_round(
             watermark,
+            true,
             &parse_gateway_rows(entries),
             Region::Cn,
             &day,
             &HashSet::new(),
             &HashMap::new(),
-        )
+        );
+        (round.accounts, round.next_watermark)
+    }
+
+    fn dim_map(write: DimWrite) -> BTreeMap<String, DimBucket> {
+        match write {
+            DimWrite::Add(map) | DimWrite::Correct(map) => map,
+        }
+    }
+
+    fn dim_total(map: &BTreeMap<String, DimBucket>) -> (u64, u64, u64, u64, f64) {
+        map.values().fold((0, 0, 0, 0, 0.0), |acc, bucket| {
+            (
+                acc.0 + bucket.input,
+                acc.1 + bucket.output,
+                acc.2 + bucket.requests,
+                acc.3 + bucket.failed,
+                acc.4 + bucket.credit,
+            )
+        })
+    }
+
+    /// ★★ **本改动的存在理由**：三个维度的合计必须都等于账号桶合计。
+    ///
+    /// 为什么这条最重要：页面上「按模型合计」与「网关 Token」卡并排显示，
+    /// 一旦两条口径分叉（多算/少算一条），用户会先怀疑软件坏了 —— 那正是 issue #63
+    /// 抱怨的那类不信任。三个维度与账号桶由**同一次扫描、同一水位线**产出，
+    /// 所以这里断言的是**恒等式**，不是「差不多」。
+    ///
+    /// 可证伪：让 `bucket_dim` 少一个过滤条件（比如不按 region 过滤），
+    /// 或让 `bucket_gateway` 多一个条件 ⇒ 本用例在等式上变红。
+    #[test]
+    fn gateway_dims_sum_to_the_gateway_bucket() {
+        let day = local_date_string(at_local_date(0, 12)).expect("today");
+        let base = at_local_date(0, 12);
+        let entries = vec![
+            json!({ "ts": base, "region": "cn", "account": "uid-a", "accountUid": "uid-a",
+                    "endpoint": "/v1/chat/completions", "model": "m-1", "status": 200,
+                    "promptTokens": 100, "completionTokens": 10, "credit": 1.25 }),
+            json!({ "ts": base + 1, "region": "cn", "account": "uid-a", "accountUid": "uid-a",
+                    "endpoint": "/v1/chat/completions", "model": "m-1", "status": 429,
+                    "promptTokens": 0, "completionTokens": 0, "credit": 0.0 }),
+            json!({ "ts": base + 2, "region": "cn", "account": "uid-b", "accountUid": "uid-b",
+                    "endpoint": "/v1/messages", "model": "", "status": 200,
+                    "promptTokens": 40, "completionTokens": 2, "credit": 0.5 }),
+            // 别的 region / 别的日：一律不得进任何桶
+            json!({ "ts": base + 3, "region": "global", "account": "uid-g", "accountUid": "uid-g",
+                    "endpoint": "/v1/messages", "model": "m-1", "status": 200,
+                    "promptTokens": 999, "completionTokens": 9, "credit": 9.0 }),
+        ];
+        let round = gateway_round(
+            None,
+            true,
+            &parse_gateway_rows(&entries),
+            Region::Cn,
+            &day,
+            &HashSet::new(),
+            &HashMap::new(),
+        );
+        let accounts = match round.accounts {
+            GatewayWrite::Add(map) | GatewayWrite::Correct(map) => map,
+        };
+        let account_total: (u64, u64) = accounts
+            .values()
+            .fold((0, 0), |acc, b| (acc.0 + b.input, acc.1 + b.output));
+
+        let models = dim_map(round.models);
+        let accounts_dim = dim_map(round.accounts_dim);
+        let endpoints = dim_map(round.endpoints);
+        for (label, map) in [
+            ("模型", &models),
+            ("账号", &accounts_dim),
+            ("端点", &endpoints),
+        ] {
+            let (input, output, requests, failed, credit) = dim_total(map);
+            assert_eq!(
+                (input, output),
+                account_total,
+                "{label}维度的 token 合计必须等于账号桶合计"
+            );
+            assert_eq!(
+                requests, 3,
+                "{label}维度必须计入 cn + 今日的 3 条（global 那条不算）"
+            );
+            assert_eq!(failed, 1, "{label}维度必须把 429 计成 failed");
+            assert!(
+                (credit - 1.75).abs() < 1e-9,
+                "{label}维度的积分合计应为 1.75，实际 {credit}"
+            );
+        }
+        assert!(
+            models.contains_key(UNKNOWN_MODEL),
+            "model 为空必须落哨兵，不能丢量（丢了「按模型合计」就小于网关卡）"
+        );
+        assert_eq!(endpoints.len(), 2, "两个端点各一桶");
+        assert_eq!(accounts_dim.len(), 2, "两个账号各一桶");
+    }
+
+    /// 升级过渡（v2 → v3）：水位线存在但维度桶为空 ⇒ 维度单独播种一次，并标 partial。
+    ///
+    /// 不做这一步，升级当天「按模型合计」会小于「网关 Token」—— 新功能上线第一天
+    /// 就被当成 bug。
+    #[test]
+    fn gateway_dims_seed_once_when_watermark_exists_but_dims_are_empty() {
+        let day = local_date_string(at_local_date(0, 12)).expect("today");
+        let base = at_local_date(0, 12);
+        let entries = vec![json!({
+            "ts": base, "region": "cn", "account": "uid-a", "accountUid": "uid-a",
+            "endpoint": "/v1/chat/completions", "model": "m-1", "status": 200,
+            "promptTokens": 10, "completionTokens": 1, "credit": 0.1
+        })];
+        let round = gateway_round(
+            Some(base - 1), // 水位线存在
+            true,           // 但维度桶是空的
+            &parse_gateway_rows(&entries),
+            Region::Cn,
+            &day,
+            &HashSet::new(),
+            &HashMap::new(),
+        );
+        assert!(
+            round.dims_partial,
+            "升级播种必须标 partial（UI 要披露拆分不完整）"
+        );
+        let models = dim_map(round.models);
+        assert_eq!(
+            dim_total(&models).0,
+            10,
+            "播种轮取整窗读数，不是「只加新条目」"
+        );
+        assert!(
+            matches!(round.accounts, GatewayWrite::Add(_)),
+            "账号桶仍走增量（它的水位线是有效的）"
+        );
     }
 
     /// 从写入意图里取出值表；变体不符合预期直接 panic（把「语义」也钉进断言）。

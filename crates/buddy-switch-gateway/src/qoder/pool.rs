@@ -12,6 +12,8 @@
 //! - 池从账号库 `sync_for(region)` 重建（每次网关取号前同步，保证「导入即入池」）。
 
 use std::collections::{BTreeMap, HashMap, HashSet};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 
 use serde_json::{json, Value};
 
@@ -56,6 +58,12 @@ pub enum QoderErrKind {
     Transient,
     /// 4xx（非上述）：客户端参数错 ⇒ **不换号**，原样回给调用方。
     ClientError,
+    /// ★ 上游**排队**（`10605` / `isQueued`，通常裹在 401/403 信封里）：
+    /// 账号没问题、也不是凭据死 ⇒ **不冷却、不标 dead**，只轮换。
+    Queued,
+    /// ★ 402：**余额耗尽**。额度按每日 10:00（UTC+8）重置 ⇒ 短冷却毫无意义
+    /// （几分钟后放出去只会再撞一次），要停到下一个重置窗口，见 `quota::park_exhausted`。
+    BalanceExhausted,
 }
 
 impl QoderErrKind {
@@ -65,6 +73,8 @@ impl QoderErrKind {
             QoderErrKind::AuthDead => "auth_dead",
             QoderErrKind::Transient => "transient",
             QoderErrKind::ClientError => "client_error",
+            QoderErrKind::Queued => "queued",
+            QoderErrKind::BalanceExhausted => "balance_exhausted",
         }
     }
 
@@ -74,15 +84,60 @@ impl QoderErrKind {
     }
 }
 
-/// HTTP 状态码分类。
+/// HTTP 状态码分类（**只看状态码**；探测路径没有 body 可用）。
 pub fn classify_http(status: u16) -> QoderErrKind {
     match status {
         429 => QoderErrKind::RateLimited,
+        // ★ 402 = 余额耗尽（**不是**客户端参数错）：从前落到 `ClientError` ⇒ 不换号、
+        //   不冷却，每次请求都去撞同一个已经没钱的账号。
+        402 => QoderErrKind::BalanceExhausted,
         401 | 403 => QoderErrKind::AuthDead,
         500..=599 => QoderErrKind::Transient,
         400..=499 => QoderErrKind::ClientError,
         _ => QoderErrKind::Transient,
     }
+}
+
+/// ★ 这条 detail 是不是「上游排队」信号（`10605` / `isQueued`）。
+///
+/// 为什么必须单独判：Qoder 把排队塞进 **401/403** 信封里，只看状态码会把它当成
+/// 「凭据失效」⇒ 账号被标 `auth_dead` + 30 分钟冷却 ⇒ 单号池直接变「无可用账号」，
+/// 面板看起来就是凭证坏了（参考实现 issue #71 的同一个坑）。
+///
+/// ⚠️ 必须排除**真正的**会话失效词：`401 token expired` 也带 401，不能被当成排队放过去。
+pub(crate) fn queue_signal(detail: &str) -> bool {
+    let low = detail.to_ascii_lowercase();
+    let queued = detail.contains("10605") || low.contains("isqueued");
+    if !queued {
+        return false;
+    }
+    const SESSION_DEAD_HINTS: [&str; 5] = [
+        "token_invalid",
+        "invalid token",
+        "token expired",
+        "session expired",
+        "login expired",
+    ];
+    !SESSION_DEAD_HINTS.iter().any(|hint| low.contains(hint))
+}
+
+/// 排队时给客户端看的文案（流式 / 非流式**同一句**，避免两处各拼一份）。
+///
+/// 入参可能已经是我们自己的措辞（信封错误帧先格式化过一次）⇒ 幂等，不重复前缀。
+pub(crate) fn queue_message(detail: &str) -> String {
+    if detail.contains("上游排队中") {
+        detail.to_string()
+    } else {
+        format!("上游排队中（不是账号或凭据问题，稍后重试即可）：{detail}")
+    }
+}
+
+/// 带 body 的分类：`401/403` 里若是排队信号 ⇒ [`QoderErrKind::Queued`]（不惩罚账号）。
+pub fn classify_http_with_detail(status: u16, detail: &str) -> QoderErrKind {
+    if matches!(status, 401 | 403) && queue_signal(detail) {
+        return QoderErrKind::Queued;
+    }
+    classify_http(status)
 }
 
 fn classify_err_kind_text(kind: QoderErrKind) -> &'static str {
@@ -105,6 +160,11 @@ pub struct QoderPoolEntry {
     /// 模型级冷却：模型名 → 解冻时刻（毫秒）。
     pub model_cooldowns: HashMap<String, i64>,
     pub last_error: Option<String>,
+    /// 该账号**在途请求数**（进程级；`BUDDY_SWITCH_QODER_MAX_INFLIGHT` > 0 时才作为闸门）。
+    ///
+    /// 用 `Arc<AtomicUsize>` 而不是普通计数：release 发生在流结束 / 客户端断开的
+    /// **Drop** 里，那里不能 await 池锁；原子量让释放无需拿锁、也不会泄漏。
+    pub inflight: Arc<AtomicUsize>,
     success_ema: f64,
     error_ema: f64,
     last_used_ms: i64,
@@ -123,6 +183,7 @@ impl QoderPoolEntry {
             cooldown_reason: None,
             model_cooldowns: HashMap::new(),
             last_error: None,
+            inflight: Arc::new(AtomicUsize::new(0)),
             success_ema: 0.0,
             error_ema: 0.0,
             last_used_ms: 0,
@@ -264,6 +325,26 @@ impl PoolEntryLike for QoderPoolEntry {
     }
 }
 
+/// 最小选号间隔（毫秒）：`BUDDY_SWITCH_QODER_MIN_INTERVAL_MS`，缺省 / `0` = 关闭。
+///
+/// 语义是**软约束**（`PickPolicy::min_pick_gap_ms`）：短名单里「刚用过、还没到间隔」的号
+/// 会被剔除；若全员都在间隔内，选号内核会按 LRU 兜底放行 —— **不会拒服务**。
+/// 参考实现只对团队共享账号启用这套节奏保护（issue #56），故本仓默认关。
+pub fn parse_min_pick_gap(raw: Option<&str>) -> i64 {
+    raw.and_then(|text| text.trim().parse::<i64>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(0)
+}
+
+/// 实际生效的最小选号间隔（每次选号都读环境变量 ⇒ 运行期可调）。
+fn min_pick_gap_ms() -> i64 {
+    parse_min_pick_gap(
+        std::env::var("BUDDY_SWITCH_QODER_MIN_INTERVAL_MS")
+            .ok()
+            .as_deref(),
+    )
+}
+
 /// Qoder 的选号策略（**独立函数**，别动 [`PickPolicy`] 的默认值 —— 那是 WB 的行为基线）。
 pub fn qoder_pick_policy() -> PickPolicy {
     PickPolicy {
@@ -271,7 +352,8 @@ pub fn qoder_pick_policy() -> PickPolicy {
         expiry_urgency_weight: 0.0,
         idle_weight_per_hour: 0.0,
         idle_weight_max: 0.0,
-        min_pick_gap_ms: 0,
+        // 防惊群间隔：默认 0（关），可用环境变量开（软约束，见 `parse_min_pick_gap`）。
+        min_pick_gap_ms: min_pick_gap_ms(),
         model_cost_ttl_ms: 0,
         max_in_flight: 0,
         max_in_flight_global: 0,
@@ -294,7 +376,63 @@ pub struct QoderPool {
     region: Option<QoderRegion>,
 }
 
+/// 每账号在途请求上限（`BUDDY_SWITCH_QODER_MAX_INFLIGHT`；0 / 缺省 = 关闭）。
+///
+/// 为什么默认关：参考实现只对**团队 / 企业账号**启用这套自用保护（issue #56），
+/// 本仓没有团队账号这一分类 —— 默认给个人账号降速是错的。需要「多设备共用一个号 /
+/// 想更保守」的用户可以显式开。
+pub fn max_inflight() -> usize {
+    std::env::var("BUDDY_SWITCH_QODER_MAX_INFLIGHT")
+        .ok()
+        .and_then(|raw| raw.trim().parse::<usize>().ok())
+        .unwrap_or(0)
+}
+
+/// 在途计数的 RAII 守卫：**Drop 时自减**（流结束 / 客户端断开都会走到）。
+pub struct InflightGuard {
+    counter: Arc<AtomicUsize>,
+}
+
+impl Drop for InflightGuard {
+    fn drop(&mut self) {
+        // 防下溢：如果释放路径被意外走两次，也不能把计数减成天文数字
+        // （手写 CAS 循环：`fetch_update` 已被标记 deprecated）。
+        let mut current = self.counter.load(Ordering::SeqCst);
+        while current > 0 {
+            match self.counter.compare_exchange(
+                current,
+                current - 1,
+                Ordering::SeqCst,
+                Ordering::SeqCst,
+            ) {
+                Ok(_) => break,
+                Err(actual) => current = actual,
+            }
+        }
+    }
+}
+
 impl QoderPool {
+    /// 抢占一个在途名额；`limit == 0` ⇒ 不启用闸门（恒返回守卫，计数仍记）。
+    ///
+    /// 返回 `None` 表示**该账号已满**，调用方应当跳过它（换号或报忙），**不要排队等待**：
+    /// 网关卡在 `chat_for_region` 里等，会把客户端超时拖成「上游很慢」。
+    pub fn acquire(&mut self, uid: &str, limit: usize) -> Option<InflightGuard> {
+        let entry = self.entries.get(uid)?;
+        if limit > 0 && entry.inflight.load(Ordering::SeqCst) >= limit {
+            return None;
+        }
+        // 先加再核（并发下可能短暂超一）⇒ 超了就回滚，宁可这次跳过也不突破上限。
+        entry.inflight.fetch_add(1, Ordering::SeqCst);
+        if limit > 0 && entry.inflight.load(Ordering::SeqCst) > limit {
+            entry.inflight.fetch_sub(1, Ordering::SeqCst);
+            return None;
+        }
+        Some(InflightGuard {
+            counter: entry.inflight.clone(),
+        })
+    }
+
     pub fn new() -> Self {
         Self::default()
     }
@@ -312,6 +450,9 @@ impl QoderPool {
             if let Some(previous) = self.entries.get(&entry.uid) {
                 // 保留运行态；令牌与名字以库为准（刷新 / 改备注后即时生效）。
                 entry.auth_dead = previous.auth_dead && entry.access_token == previous.access_token;
+                // 在途计数是进程级事实：重建条目时按 uid 继承，否则「正在跑的请求」
+                // 会凭空消失（闸门失效 + 释放时少减一次）。
+                entry.inflight = previous.inflight.clone();
                 entry.cooldown_until = previous.cooldown_until;
                 entry.cooldown_reason = previous.cooldown_reason.clone();
                 entry.model_cooldowns = previous.model_cooldowns.clone();
@@ -396,6 +537,12 @@ impl QoderPool {
         let Some(entry) = self.entries.get_mut(uid) else {
             return;
         };
+        /* ★ 排队**不是账号问题**：既不推 EMA、也不设冷却、更不标 `auth_dead`。
+        推 EMA 会让健康账号在池里排到后面，最终表现为「无可用账号」。 */
+        if kind == QoderErrKind::Queued {
+            entry.last_error = Some(format!("queued: {reason}"));
+            return;
+        }
         entry.success_ema *= 0.9;
         entry.error_ema = entry.error_ema * 0.9 + 0.1;
         entry.last_error = Some(format!("{}: {reason}", classify_err_kind_text(kind)));
@@ -415,7 +562,18 @@ impl QoderPool {
                 entry.cooldown_until = now + 10_000;
                 entry.cooldown_reason = Some("上游暂时不可用".to_string());
             }
-            QoderErrKind::ClientError => {}
+            QoderErrKind::BalanceExhausted => {
+                // 停到下一个额度重置窗口（10:00 UTC+8）；写进池条目的冷却轴让选号
+                // 立刻跳过，同时落进 `quota` 的停放账（跨重启有效）。
+                let until = crate::qoder::quota::park_exhausted(
+                    self.region.unwrap_or(QoderRegion::Cn),
+                    uid,
+                    reason,
+                );
+                entry.cooldown_until = until;
+                entry.cooldown_reason = Some("余额耗尽（等待额度重置）".to_string());
+            }
+            QoderErrKind::ClientError | QoderErrKind::Queued => {}
         }
     }
 
@@ -649,6 +807,7 @@ mod tests {
             cooldown_reason: None,
             model_cooldowns: HashMap::new(),
             last_error: None,
+            inflight: Arc::new(AtomicUsize::new(0)),
             success_ema: 0.0,
             error_ema: 0.0,
             last_used_ms: 0,
@@ -853,5 +1012,130 @@ mod tests {
         assert_eq!(diagnose.len(), 5);
         assert!(diagnose.iter().any(|line| line.contains("PAT")));
         assert!(diagnose.iter().any(|line| line.contains("模型冷却")));
+    }
+    /// ★ 排队信号（`10605` / `isQueued`）藏在 401/403 里 ⇒ **不惩罚账号**。
+    ///
+    /// 可证伪：删掉 `classify_http_with_detail` 的排队分支（退回只看状态码）⇒
+    /// 第一个断言拿到的就是 `AuthDead`，账号会被标死 + 冷却 30 分钟。
+    #[test]
+    fn queued_envelope_is_not_an_account_failure() {
+        assert_eq!(
+            classify_http_with_detail(403, "{\"code\":10605,\"msg\":\"isQueued\"}"),
+            QoderErrKind::Queued
+        );
+        assert_eq!(
+            classify_http_with_detail(401, "isQueued: true"),
+            QoderErrKind::Queued
+        );
+        // 真·凭据失效不能被当成排队吞掉（否则账号永远不刷新）。
+        assert_eq!(
+            classify_http_with_detail(401, "{\"code\":\"TOKEN_INVALID\"}"),
+            QoderErrKind::AuthDead
+        );
+        assert_eq!(
+            classify_http_with_detail(401, "token expired"),
+            QoderErrKind::AuthDead
+        );
+        // 其它状态码不受影响。
+        assert_eq!(
+            classify_http_with_detail(429, "10605"),
+            QoderErrKind::RateLimited
+        );
+        assert_eq!(
+            classify_http_with_detail(400, "isQueued"),
+            QoderErrKind::ClientError
+        );
+        assert_eq!(
+            classify_http_with_detail(500, "10605"),
+            QoderErrKind::Transient
+        );
+        // 排队要换号（另一个号可能没排队），但**不是**客户端错。
+        assert!(QoderErrKind::Queued.should_rotate());
+        assert_eq!(QoderErrKind::Queued.as_str(), "queued");
+    }
+
+    /// 最小间隔解析：只认正整数；`0` / 负数 / 乱码 / 缺省一律**关**（0）。
+    ///
+    /// 可证伪：把 `.filter(|value| *value > 0)` 删掉 ⇒ 负数会被当成间隔传进选号内核，
+    /// 每个号都被剔除（然后靠 LRU 兜底），行为变成「看起来没生效」。
+    #[test]
+    fn min_pick_gap_parsing_is_conservative() {
+        assert_eq!(parse_min_pick_gap(None), 0);
+        assert_eq!(parse_min_pick_gap(Some("")), 0);
+        assert_eq!(parse_min_pick_gap(Some("250")), 250);
+        assert_eq!(parse_min_pick_gap(Some(" 1000 ")), 1000);
+        assert_eq!(parse_min_pick_gap(Some("0")), 0, "0 = 关");
+        assert_eq!(parse_min_pick_gap(Some("-5")), 0, "负数不得当成间隔");
+        assert_eq!(parse_min_pick_gap(Some("abc")), 0, "乱码 = 关，不是崩");
+    }
+
+    /// ★ 402 = **余额耗尽**：不是「客户端参数错」，必须换号 + 停放（不是短冷却）。
+    ///
+    /// 可证伪：把 `classify_http` 的 `402 => BalanceExhausted` 删掉 ⇒ 402 落进
+    /// `ClientError`（`should_rotate() == false`）⇒ 每条请求都去撞同一个没钱的账号。
+    #[test]
+    fn classify_http_402_is_balance_exhausted() {
+        let kind = classify_http(402);
+        assert_eq!(kind, QoderErrKind::BalanceExhausted);
+        assert!(kind.should_rotate(), "余额耗尽要换号（别的号可能还有额度）");
+        assert_eq!(kind.as_str(), "balance_exhausted");
+        // 其余状态码不受影响。
+        assert_eq!(classify_http(400), QoderErrKind::ClientError);
+        assert_eq!(classify_http(401), QoderErrKind::AuthDead);
+        assert_eq!(classify_http(429), QoderErrKind::RateLimited);
+    }
+
+    /// `apply_error(Queued)` 不改 `auth_dead` / 冷却 / EMA —— 只留痕。
+    #[test]
+    fn queued_does_not_penalise_the_entry() {
+        let mut pool = QoderPool::new();
+        pool.entries.insert("a".into(), entry("a", "t-a"));
+        let before = pool.entries["a"].clone();
+        pool.apply_error("a", QoderErrKind::Queued, "isQueued", "m-a");
+        let after = &pool.entries["a"];
+        assert!(!after.auth_dead, "排队不是凭据死");
+        assert_eq!(after.cooldown_until, before.cooldown_until, "不得设冷却");
+        assert_eq!(after.success_ema, before.success_ema, "不得推 EMA");
+        assert_eq!(after.error_ema, before.error_ema, "不得推 EMA");
+        assert!(
+            after
+                .last_error
+                .as_deref()
+                .unwrap_or("")
+                .starts_with("queued"),
+            "必须留痕: {:?}",
+            after.last_error
+        );
+    }
+    /// 在途闸门：默认关（limit=0 恒成功）；开启后按账号限流；**Drop 即归还**。
+    ///
+    /// 可证伪：把 `InflightGuard::drop` 的自减删掉 ⇒ 「释放后可再抢」永远失败。
+    #[test]
+    fn inflight_gate_limits_account_and_releases_on_drop() {
+        let mut pool = QoderPool::new();
+        pool.entries.insert("a".into(), entry("a", "t-a"));
+        let counter = pool.entries["a"].inflight.clone();
+
+        // limit = 0 ⇒ 不设闸门（但仍计数）。
+        let guard = pool.acquire("a", 0).expect("关闭闸门必须恒成功");
+        assert_eq!(counter.load(Ordering::SeqCst), 1);
+        drop(guard);
+        assert_eq!(counter.load(Ordering::SeqCst), 0, "Drop 必须归还名额");
+
+        // limit = 1 ⇒ 第二个并发必须被拒。
+        let guard = pool.acquire("a", 1).expect("空位应能抢");
+        assert!(
+            pool.acquire("a", 1).is_none(),
+            "满员必须返回 None（调用方据此跳过该号，而不是排队）"
+        );
+        drop(guard);
+        assert!(
+            pool.acquire("a", 1).is_some(),
+            "释放后必须能再抢（否则一次异常就永久占位）"
+        );
+
+        // 未知账号 / 上限为 0 的缺省语义。
+        assert!(pool.acquire("missing", 1).is_none());
+        assert_eq!(max_inflight(), 0, "缺省必须关闭（不能默认给个人账号降速）");
     }
 }

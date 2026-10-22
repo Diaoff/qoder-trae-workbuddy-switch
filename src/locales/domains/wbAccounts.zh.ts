@@ -131,6 +131,8 @@ export const zh = {
   // ★ issue #44：金额是窗口内**全部**临期之和、天数取其中最晚那一刻 ⇒ 只能写「天内」。
   //   照原型写「天后」会把不同批次混成一句话（100 明天到期 + 200 后天到期 ⇒「300 积分 1 天后过期」）。
   "wbAccounts.card.expiringChip": "{amount} 积分 {days} 天内过期",
+  /* issue #69：7 天窗口外的那一批（中性徽章 —— 回答「先用哪个账号」）。 */
+  "wbAccounts.card.nearestExpiringChip": "最近 {amount} 积分 · {days} 天后过期",
   "wbAccounts.card.expiringTipTitle": "按到期时间分批（共 {n} 批）",
   "wbAccounts.card.expiringTipLine": "{time} · {amount} 积分",
   "wbAccounts.card.toolsInUse": "使用中 {n} 个工具",
@@ -457,6 +459,10 @@ export const zh = {
   "wbAccounts.table.credits": "积分",
   "wbAccounts.table.todayTokens": "今日 Token",
   "wbAccounts.table.expiry": "到期",
+  /* issue #69：积分到期与 Token 到期是**两件事**，列名必须区分。 */
+  "wbAccounts.table.creditExpiry": "积分到期",
+  "wbAccounts.table.creditExpiryDays": "{days} 天",
+  "wbAccounts.table.tokenExpiry": "Token 到期",
   "wbAccounts.table.programs": "程序位",
   "wbAccounts.table.current": "当前",
 

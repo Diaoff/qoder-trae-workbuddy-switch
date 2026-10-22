@@ -22,15 +22,25 @@
 //!
 //! 1. **出站指纹清洗**（把客户端自称 "Claude Code"/"Codex CLI" 的提示词改写成中性文本）：
 //!    防御性脱敏，涉及多张正则表；未移植期间客户端自带的 system 会**原样上行**。
-//! 2. **泄漏回声的「散文切分 / 截断丢弃」**（正文里混着散文 + 工具调用回声时的高级处理）：
-//!    [`parse_leaked_tool_calls`] 移植了**严格整段识别**这一主路径；散文切分依赖参考实现的
-//!    逐字符状态机，无真机样本可回归，宁缺勿滥。
-//! 3. **历史工具结果的暴露面削减**（长历史首尾保留 + 中间省略）：缓解措施而非协议刚需。
-//! 4. **每模型思考档位支持表**（把不支持的档位映射到「最近的合法档位」）：
+//! 2. **历史工具结果的暴露面削减**（长历史首尾保留 + 中间省略）：缓解措施而非协议刚需。
+//! 3. **每模型思考档位支持表**（把不支持的档位映射到「最近的合法档位」）：
 //!    需要一手实测每款模型的档位集合；当前**只透传官方词表内的取值**（见 [`canonical_effort`]），
 //!    其余丢弃（上游对不认识的档位是「忽略」而非报错，丢弃不会形成错误请求）。
-//! 5. **`validate_public_http_url` 类 SSRF 守卫**：本模块的 URL 全部由区域常量拼出，
+//! 4. **`validate_public_http_url` 类 SSRF 守卫**：本模块的 URL 全部由区域常量拼出，
 //!    没有任何用户输入进 URL 的路径。
+//!
+//! ## 已移植的回声治理（issue #46 / #66，别当同一条）
+//!
+//! | 形态 | 处理 | 入口 |
+//! |:--|:--|:--|
+//! | `marker + 合法 JSON 数组` | 还原成结构化 `tool_calls` | [`parse_leaked_tool_calls`] |
+//! | `marker + 数组 + DSML 闭标签残片` | 同上（**收尾容错**） | [`parse_leaked_tool_calls_with_trailing`] |
+//! | `marker + 截断/损坏的数组` | **吞掉正文**（绝不把内部标记交给用户） | [`leaked_partial_droppable`] |
+//! | `[工具结果…]` 回声块 | **吞掉正文**（不还原：文本化历史没有 `tool_call_id` 可配对） | [`tool_echo_droppable`] |
+//! | `<｜｜DSML｜｜ calls>` 调用块 | 还原成结构化 `tool_calls`，标签从正文剥掉 | [`parse_dsml_tool_calls`] |
+//!
+//! 后两类回读的「散文切分」在流式层（`gateway::qoder::sse`）做 —— 单帧里散文与标记
+//! 可能同框，所以切分必须在**帧**这一层。
 //!
 //! ## 真机探针
 //!
@@ -50,8 +60,23 @@ use super::region::{self, QoderRegion};
 
 /// 工具结果在**文本化历史**里的前缀（逐字节对齐；削减/回读都锚在它上面）。
 pub const TOOL_RESULT_MARKER: &str = "[工具结果";
+/// 模型自造的「工具结果结束」闭标记（网关只写开标记；这个只用于判回声是否自洽）。
+pub const TOOL_RESULT_CLOSE: &str = "[工具结果结束]";
 /// 助手工具调用的文本化标记（见 [`flatten_messages`] 的文本模式）。
+/// 历史工具结果削减：单侧保留字符数的默认值（与参考实现一致）。
+pub const TOOL_RESULT_KEEP_DEFAULT: usize = 2000;
+/// 削完至少要省这么多字符才值得加省略标记（否则标记本身比省下的还长）。
+const TOOL_RESULT_SHRINK_MARGIN: usize = 200;
+/// 默认保护最后 1 条工具结果（当前轮那条）。
+const TOOL_RESULT_KEEP_TAIL_DEFAULT: usize = 1;
+/// 历史工具结果被省略时的标记（**固定串**：带字数会打断上游前缀缓存）。
+const TOOL_RESULT_OMITTED_MARKER: &str =
+    "\n[[buddy-switch: 已省略中间内容；需要完整内容请重新执行该命令]]\n";
+
 pub const LEAK_MARKER: &str = "[assistant 请求调用工具]";
+/// 同一个标记的**尖括号写法**：模型复述时会把 `[ ]` 改写成 `< >`（真机见过）。
+/// 两种都必须认，否则「换个括号」就绕过整条回声治理。
+pub const LEAK_MARKER_ALT: &str = "<assistant 请求调用工具>";
 /// 上游给 delta 填充的空噪声字段（值为空时剥掉，避免客户端读到空壳字段）。
 const NOISE_KEYS: [&str; 3] = ["extra_fields", "refusal", "reasoning_content"];
 /// 结构化工具有效历史的作用域白名单（只在 CN 出口、且模型 key 前缀命中时启用）。
@@ -63,7 +88,8 @@ const NOISE_KEYS: [&str; 3] = ["extra_fields", "refusal", "reasoning_content"];
 /// ★ 2026-10-18（issue #46 的 B 项）：旧名单只有 `qwen` / `glm` / `gm4` / `gm5`
 /// ⇒ **一个真实 key 都不命中** ⇒ CN 全量模型退化成文本模式，历史里的工具调用被序列化
 /// 成标记文本塞进正文，模型回声后直接泄漏到用户界面（即 A 项的诱因）。
-/// 刻意**不纳入** Kimi / MiniMax 族；DeepSeek 由 [`DEEPSEEK_MODEL_KEYS`] 单独处理。
+/// 刻意**不纳入** Kimi / MiniMax 族（本仓无 CN 清单依据，见
+/// [`DEEPSEEK_MODEL_KEYS`] 的对照说明）；DeepSeek 族由 [`is_deepseek_key`] 单独判定。
 const STRUCTURED_TOOL_HISTORY_WHITELIST: [&str; 9] = [
     "qmodel",  // qmodel / qmodel_38max …
     "qfmodel", // qfmodel / qfmodel_…
@@ -75,8 +101,41 @@ const STRUCTURED_TOOL_HISTORY_WHITELIST: [&str; 9] = [
     "gm4",     // gm4model
     "glm",     // 兼容以 `glm` 开头的 key
 ];
-/// DeepSeek 族的模型 key：历史多轮一致性与 `reasoning_content` 绑定。
-const DEEPSEEK_MODEL_KEYS: [&str; 2] = ["dmodel", "dfmodel"];
+/// DeepSeek 族的模型 key（CN 出口）。
+///
+/// 两处用途，**判定必须同源**（都走 [`is_deepseek_key`]）：
+///
+/// 1. **历史多轮一致性**：`reasoning_content` 要随历史回传（`build_chat_body` 的
+///    `keep_reasoning`）；
+/// 2. **结构化工具历史**：★ 2026-10-21（issue #72）真机取证 —— DeepSeek Flash 在**文本
+///    模式**下会把网关序列化的伪格式（`[assistant 请求调用工具]` + 紧凑 JSON、`[工具结果
+///    (name)]`）**照抄进正文**，再混上客户端 system 教的 `<｜｜DSML｜｜ calls>` 语法 ⇒
+///    客户端看到的「上下文乱码 / 特殊字符」正是这坨内部标记，且工具一次都没执行。
+///    报障者用 `QD_STRUCTURED_TOOL_HISTORY=on` 强制结构化后症状消失 ⇒ 上游**接受**
+///    结构化历史。旧代码把 `dmodel` / `dfmodel` 排除在白名单外（且用反向断言钉死），
+///    前提（「未验证，宁可不启用」）被真机推翻，故改为**默认启用**。
+///
+/// ⚠️ 前缀匹配而非整段相等：容忍 `_suffix` 变体（与白名单的族前缀同一口径），
+/// 免得「结构化开了、reasoning 没回传」这种半开状态把上游打成 400。
+///
+/// ★ `deepseek` 这一项来自**参考实现**（`reference/qoder2api-hub-main/qoder_proxy.py`
+/// 的 `STRUCTURED_TOOL_HISTORY_WHITELIST`）：它的白名单是
+/// `("qwen","glm","gm4","gm5","deepseek","dfmodel")`，注释写明
+/// 「DeepSeek 的**上游 key 是 `dfmodel`**（显示名 DeepSeek-V4-Flash），只写 "deepseek"
+/// 匹配不到 ⇒ auto 一直是文本化 ⇒ 模型照抄伪协议」—— 与 issue #72 是同一条病。
+/// 本仓保留 `deepseek` 这一项是为了覆盖「key 就叫 deepseek*」的其它形态；
+/// 展示名匹配仍**刻意不做**（本仓一律只认 key：Qwen 的 key 是 `q37fmodel`、
+/// 展示名是 `Qwen3.8-Flash`，混用两套判据迟早误伤）。
+const DEEPSEEK_MODEL_KEYS: [&str; 3] = ["dmodel", "dfmodel", "deepseek"];
+
+/// key 是否属于 DeepSeek 族（**唯一**判定入口）。
+fn is_deepseek_key(key: &str) -> bool {
+    let key = key.trim().to_ascii_lowercase();
+    !key.is_empty()
+        && DEEPSEEK_MODEL_KEYS
+            .iter()
+            .any(|prefix| key.starts_with(prefix))
+}
 /// 模型清单的**签名路径**（不含 query）。
 ///
 /// ⚠️ 签名只覆盖 `urlparse(raw_url).path` —— **query 不参与签名**。拿带
@@ -255,6 +314,107 @@ pub struct FlattenedMessages {
 /// - assistant 的 `tool_calls`：structured 原样透传（arguments 统一成 JSON 字符串）；
 ///   否则序列化为 `<LEAK_MARKER>\n<JSON 数组>` 塞进 content。
 /// - assistant 的 `reasoning_content` 仅在 `keep_reasoning=true`（DeepSeek 族）时保留。
+///   历史工具结果**单侧**保留字符数（0 = 关闭削减）。
+///
+/// 为什么要它：长历史里的工具输出（构建日志 / 文件内容 / 测试回显）占掉的 token
+/// 常常比正文还多；而且**文本化历史里的工具结果是回声的主要来源**（模型照着复述）。
+/// 参考实现（qoder2api-hub `_shrink_tool_result`）默认单侧 2000 字符。
+///
+/// 环境变量 `BUDDY_SWITCH_QODER_TOOL_KEEP`：
+/// - 正整数 ⇒ 单侧保留字符数；
+/// - `0` / `off` / `none` / `false` / `no` / `disable` ⇒ **关闭**（回退全文回灌）；
+/// - 未设置或非法 ⇒ 默认 [`TOOL_RESULT_KEEP_DEFAULT`]。
+pub fn parse_tool_keep(raw: Option<&str>) -> usize {
+    match raw.map(|text| text.trim().to_ascii_lowercase()) {
+        None => TOOL_RESULT_KEEP_DEFAULT,
+        Some(text) if text.is_empty() => TOOL_RESULT_KEEP_DEFAULT,
+        Some(text) => {
+            if matches!(
+                text.as_str(),
+                "0" | "off" | "none" | "false" | "no" | "disable" | "disabled"
+            ) {
+                return 0;
+            }
+            text.parse::<usize>().unwrap_or(TOOL_RESULT_KEEP_DEFAULT)
+        }
+    }
+}
+
+/// 实际生效的单侧保留字符数（每次调用都读环境变量 ⇒ 运行期可调）。
+fn tool_result_keep() -> usize {
+    parse_tool_keep(
+        std::env::var("BUDDY_SWITCH_QODER_TOOL_KEEP")
+            .ok()
+            .as_deref(),
+    )
+}
+
+/// 保护**最后 N 条**工具结果不削减（默认 1 = 当前轮那条）。
+///
+/// ★ 为什么不用「当前轮」判据：那会随请求形态滑动 —— 用户再发一句话后，**所有**
+/// 历史工具结果会从「全文」变成「省略版」，同一条消息在不同轮次序列化成不同字节，
+/// 上游前缀缓存从第一条被削处整段失效（参考实现 issue #48 实测命中率 95%→8%）。
+/// 「只保护最后 N 条」时，被改写的永远是**同一条**（滑出保护窗的那条），中断点只有一处。
+fn tool_result_keep_tail() -> usize {
+    std::env::var("BUDDY_SWITCH_QODER_TOOL_KEEP_TAIL")
+        .ok()
+        .and_then(|raw| raw.trim().parse::<usize>().ok())
+        .unwrap_or(TOOL_RESULT_KEEP_TAIL_DEFAULT)
+}
+
+/// 历史工具结果：首尾各留 `keep` 字符，中间换成**固定串**省略标记。
+///
+/// - 本来就不长（`<= 2*keep + margin`）⇒ 原样；
+/// - **完整 JSON** 给双倍预算（截断 JSON 会失去可解析性）；
+/// - 切点尽量落在换行边界，避免切出半行；
+/// - 标记是**固定串**（不带省略字数）：字数会让同一条历史在不同轮次产生不同字节，
+///   打断上游前缀缓存。
+pub fn shrink_tool_result(text: &str, keep: usize) -> String {
+    if keep == 0 || text.len() <= keep * 2 + TOOL_RESULT_SHRINK_MARGIN {
+        return text.to_string();
+    }
+    if is_complete_json(text) && text.len() <= keep * 4 {
+        return text.to_string();
+    }
+    let head = &text[..floor_char_boundary(text, keep)];
+    let head = match head.rfind('\n') {
+        Some(at) if at > head.len() / 2 => &head[..at],
+        _ => head,
+    };
+    let tail_start = floor_char_boundary(text, text.len().saturating_sub(keep));
+    let tail = &text[tail_start..];
+    let tail = match tail.find('\n') {
+        Some(at) if at < tail.len() / 2 => &tail[at + 1..],
+        _ => tail,
+    };
+    format!("{head}{TOOL_RESULT_OMITTED_MARKER}{tail}")
+}
+
+/// 往下取到最近的 UTF-8 字符边界（`text[..limit]` 不能切半个汉字）。
+fn floor_char_boundary(text: &str, limit: usize) -> usize {
+    if limit >= text.len() {
+        return text.len();
+    }
+    let mut index = limit;
+    while index > 0 && !text.is_char_boundary(index) {
+        index -= 1;
+    }
+    index
+}
+
+/// `text` 是不是一个**完整可解析**的 JSON 对象 / 数组（决定给不给双倍预算）。
+fn is_complete_json(text: &str) -> bool {
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+    let first = trimmed.as_bytes()[0];
+    if first != b'{' && first != b'[' {
+        return false;
+    }
+    serde_json::from_str::<Value>(trimmed).is_ok()
+}
+
 pub fn flatten_messages(
     messages: &[Value],
     keep_reasoning: bool,
@@ -263,6 +423,17 @@ pub fn flatten_messages(
     let mut system_text: Option<String> = None;
     let mut flat: Vec<Value> = Vec::new();
     let mut images: Vec<String> = Vec::new();
+
+    /* 历史工具结果削减（见 [`shrink_tool_result`]）：**只削更早的**，最后
+    `keep_tail` 条原样保留（当前轮那条模型正在用）。 */
+    let keep = tool_result_keep();
+    let keep_tail = tool_result_keep_tail();
+    let tool_total = messages
+        .iter()
+        .filter(|message| message.get("role").and_then(Value::as_str) == Some("tool"))
+        .count();
+    let protected_from = tool_total.saturating_sub(keep_tail);
+    let mut tool_seen = 0usize;
 
     for message in messages {
         let Some(object) = message.as_object() else {
@@ -281,7 +452,12 @@ pub fn flatten_messages(
 
         if role == "tool" {
             let name = object.get("name").and_then(Value::as_str).unwrap_or("");
-            let body = text;
+            let body = if keep == 0 || tool_seen >= protected_from {
+                text
+            } else {
+                shrink_tool_result(&text, keep)
+            };
+            tool_seen += 1;
             if structured {
                 flat.push(serde_json::json!({
                     "role": "tool",
@@ -509,6 +685,11 @@ pub fn canonical_effort(effort: &str) -> Option<&'static str> {
 }
 
 /// 每条 `tool` 有 `tool_call_id`、每个 `assistant.tool_calls` 条目有 `id` —— 结构化的前提。
+///
+/// 只查 id 非空，**不查配对**：孤儿（assistant 声明了调用、却没有 tool 消息回答）由
+/// **出站清洗**处理（[`cleanup_orphan_tool_history`]，与 WB / Trae 侧同款），
+/// 文本模式则天然宽容。在这里提前判配对属于「猜哪些请求会 400」，
+/// 与降级机制的设计哲学冲突。
 fn tool_ids_ok(messages: &[Value]) -> bool {
     for message in messages {
         let Some(object) = message.as_object() else {
@@ -540,10 +721,109 @@ fn tool_ids_ok(messages: &[Value]) -> bool {
     true
 }
 
+/// 清理**孤儿**工具调用（与 WB / Trae 侧同款语义，issue #72）。
+///
+/// ## 为什么 Qoder 侧也需要
+///
+/// WB / Trae 的出站整形里一直有这一步（`buddy-switch-gateway::outbound` 的
+/// `cleanup_orphan_tool_calls`），Qoder 侧移植时**只搬了「id 是否齐备」的检查**，
+/// 没搬清洗 —— 于是 Qoder 的结构化请求可能带着「assistant 声明了调用、却没有 tool
+/// 消息回答」的畸形历史发出去（上游多半判 `tool_call_sequence_broken` → 400）。
+/// 清洗比「退化成文本模式」好：它**保住**了配对完整的那部分结构化历史，而退化会把
+/// 整段历史变成伪格式（模型照抄 ⇒ issue #72 的乱码）。
+///
+/// ## 规则（与 WB / Trae 侧**逐条一致**）
+///
+/// - 保留集 = `assistant.tool_calls[].id` ∩ `role=="tool"` 的 `tool_call_id`；
+/// - `assistant` 消息只要**批内任一** `id` 不在保留集 → **整批**删除 `tool_calls`
+///   （保留该消息的正文）；
+/// - `role=="tool"` 且 `tool_call_id` 不在**存活批次**集合内 → **整条消息删除**。
+///
+/// ★ 「存活批次」而非「保留集」是与参考实现的**刻意分歧**（勿按「对齐参考实现」改回）：
+/// 批次 `[A,B]` 只有 `A` 有结果时，保留集 = `{A}`，但该批次因 `B` 是孤儿而整批被删
+/// ——此时若按保留集放行，`A` 的 `role:"tool"` 结果就会悬空，上游照样判协议错误。
+/// 删除与放行必须以**同一套 id** 为准。
+///
+/// 无工具流量时不做任何改动。
+pub fn cleanup_orphan_tool_history(messages: &mut Vec<Value>) {
+    use std::collections::HashSet;
+
+    let mut call_ids: HashSet<String> = HashSet::new();
+    let mut result_ids: HashSet<String> = HashSet::new();
+    for message in messages.iter() {
+        let Some(wrapped) = message.as_object() else {
+            continue;
+        };
+        if wrapped.get("role").and_then(Value::as_str) == Some("tool") {
+            if let Some(id) = wrapped.get("tool_call_id").and_then(Value::as_str) {
+                result_ids.insert(id.to_string());
+            }
+        }
+        if let Some(calls) = wrapped.get("tool_calls").and_then(Value::as_array) {
+            for call in calls {
+                if let Some(id) = call.get("id").and_then(Value::as_str) {
+                    call_ids.insert(id.to_string());
+                }
+            }
+        }
+    }
+    if call_ids.is_empty() && result_ids.is_empty() {
+        return;
+    }
+
+    let keep: HashSet<String> = call_ids.intersection(&result_ids).cloned().collect();
+
+    // 第一趟：裁决每个 assistant 批次，并记录真正存活下来的 tool_call id。
+    let mut surviving: HashSet<String> = HashSet::new();
+    for message in messages.iter_mut() {
+        let Some(wrapped) = message.as_object_mut() else {
+            continue;
+        };
+        let batch: Vec<String> = wrapped
+            .get("tool_calls")
+            .and_then(Value::as_array)
+            .map(|calls| {
+                calls
+                    .iter()
+                    .map(|call| {
+                        call.get("id")
+                            .and_then(Value::as_str)
+                            .unwrap_or("")
+                            .to_string()
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        if batch.is_empty() {
+            continue;
+        }
+        if batch.iter().any(|id| !keep.contains(id)) {
+            wrapped.remove("tool_calls");
+        } else {
+            surviving.extend(batch);
+        }
+    }
+
+    // 第二趟：工具结果只认存活批次。
+    messages.retain(|message| {
+        let Some(wrapped) = message.as_object() else {
+            return true;
+        };
+        if wrapped.get("role").and_then(Value::as_str) != Some("tool") {
+            return true;
+        }
+        let id = wrapped
+            .get("tool_call_id")
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        surviving.contains(id)
+    });
+}
+
 /// 本次请求是否走结构化工具历史。
 ///
-/// 与官方客户端的调用姿势对齐：**CN 出口 + 白名单模型前缀 + id 齐备**才启用；
-/// 环境变量 `QD_STRUCTURED_TOOL_HISTORY=off/on` 可显式覆盖（`auto` 为默认）。
+/// 与官方客户端的调用姿势对齐：**CN 出口 + 白名单模型前缀（含 DeepSeek 族）+ id 齐备**
+/// 才启用；环境变量 `QD_STRUCTURED_TOOL_HISTORY=off/on` 可显式覆盖（`auto` 为默认）。
 /// 任何情况下 id 不齐备都回退文本化（fail-safe：宁可少用，不发畸形请求）。
 pub fn structured_tool_history_enabled(
     model_key: &str,
@@ -565,6 +845,12 @@ pub fn structured_tool_history_enabled(
     if region != QoderRegion::Cn {
         return false;
     }
+    /* ★ issue #72：DeepSeek 族默认启用（真机取证见 [`DEEPSEEK_MODEL_KEYS`]）。
+    判据放在白名单**之前**且只认 CN 出口 —— `dmodel` / `dfmodel` 是 CN key，
+    国际版（`smodel` / `cmodel`）不在本表，别顺手扩成「所有 key」。 */
+    if is_deepseek_key(model_key) {
+        return true;
+    }
     let key = model_key.trim().to_ascii_lowercase();
     !key.is_empty()
         && STRUCTURED_TOOL_HISTORY_WHITELIST
@@ -576,6 +862,17 @@ pub fn structured_tool_history_enabled(
 // 请求体构造（骨架 + 覆写）
 // ---------------------------------------------------------------------------
 
+/// 本次请求**会**不会走结构化工具历史（网关侧判定用的公开入口）。
+///
+/// 与 [`build_chat_body`] 内部走**同一个**判据（[`structured_tool_history_enabled`]），
+/// 不另写一套 —— 否则网关以为走了结构化、实际发的是文本，降级判定就会错位。
+/// 网关拿到这个值后可以：① 传给 [`build_chat_body_with_structured`]；
+/// ② 在结构化请求被 400 拒时决定要不要降级重试。
+pub fn structured_tool_history_for(payload: &Value, meta: &ModelMeta, region: QoderRegion) -> bool {
+    let messages = normalize_roles(payload.get("messages").and_then(Value::as_array));
+    structured_tool_history_enabled(&meta.key, region, &messages)
+}
+
 /// 由客户端请求构造 `agent_chat_generation` 上游请求体（随后过 [`cosy::qoder_encode`]）。
 ///
 /// `region` 参与「结构化工具历史」的 auto 判据（只在 CN 出口启用的白名单规则）。
@@ -585,12 +882,37 @@ pub fn build_chat_body(
     region: QoderRegion,
     user_type: &str,
 ) -> Result<Value, String> {
+    let structured = structured_tool_history_for(payload, meta, region);
+    build_chat_body_with_structured(payload, meta, user_type, structured)
+}
+
+/// 同上，但**显式指定**结构化 / 文本模式（自动降级用：重发时必须强制文本）。
+///
+/// 刻意**不收 `region`**：区域与环境变量的判据都在 [`structured_tool_history_for`] 里，
+/// 这里只执行调用方的决定。`structured == true` 仍要过 [`tool_ids_ok`] —— id 齐备是硬前提，
+/// 强制结构化也不能绕过它，否则「降级」会退化成「发畸形请求」。
+pub fn build_chat_body_with_structured(
+    payload: &Value,
+    meta: &ModelMeta,
+    user_type: &str,
+    structured: bool,
+) -> Result<Value, String> {
     let template = base_template()?;
     let mut body = template.clone();
 
-    let messages = normalize_roles(payload.get("messages").and_then(Value::as_array));
-    let keep_reasoning = DEEPSEEK_MODEL_KEYS.contains(&meta.key.as_str());
-    let structured = structured_tool_history_enabled(&meta.key, region, &messages);
+    let mut messages = normalize_roles(payload.get("messages").and_then(Value::as_array));
+    // ★ 与 `structured_tool_history_enabled` 同一个判据入口：DeepSeek 族「结构化开、
+    // reasoning 却没回传」是半开状态，上游可能直接 400（见 `DEEPSEEK_MODEL_KEYS`）。
+    let keep_reasoning = is_deepseek_key(&meta.key);
+    // 调用方给的选择只能**收窄**，不能放宽：id 不齐备时强制结构化也是畸形请求。
+    let structured = structured && tool_ids_ok(&messages);
+    /* ★ 出站清洗（与 WB / Trae 侧同款，issue #72）：结构化历史里的孤儿（assistant
+    声明了调用、却没有 tool 消息回答）会被上游判协议错误（400
+    `tool_call_sequence_broken`）。清洗比「退化成文本模式」好 —— 它保住配对完整的那
+    部分结构化历史；退化成文本模式会把整段历史变成伪格式，模型照抄就是乱码。 */
+    if structured {
+        cleanup_orphan_tool_history(&mut messages);
+    }
     let flattened = flatten_messages(&messages, keep_reasoning, structured);
 
     // system：客户端给了就用客户端的；没给就保留模板自带的官方系统提示词。
@@ -983,6 +1305,19 @@ fn error_code(object: &serde_json::Map<String, Value>, key: &str) -> Option<i64>
 // 泄漏回声还原（严格整段识别）
 // ---------------------------------------------------------------------------
 
+/// 去掉开头的回声标记（`[assistant 请求调用工具]` 或尖括号写法）。
+fn strip_leak_marker(text: &str) -> Option<&str> {
+    text.strip_prefix(LEAK_MARKER)
+        .or_else(|| text.strip_prefix(LEAK_MARKER_ALT))
+}
+
+/// 文本是否以**任一**回声标记开头（含只写了一半的前缀）。
+pub fn starts_with_leak_marker(text: &str) -> bool {
+    [LEAK_MARKER, LEAK_MARKER_ALT]
+        .iter()
+        .any(|marker| marker.starts_with(text) || text.starts_with(marker))
+}
+
 /// 把模型复述的「marker + JSON 数组」还原成结构化 `tool_calls`。
 ///
 /// **严格守卫**（避免把「讨论该标记的普通回复」误判为工具调用）：
@@ -1002,7 +1337,7 @@ pub fn parse_leaked_tool_calls(
         }
         t = inner.trim().to_string();
     }
-    let Some(rest) = t.strip_prefix(LEAK_MARKER) else {
+    let Some(rest) = strip_leak_marker(&t) else {
         return (None, text.to_string());
     };
     let rest = rest.trim();
@@ -1015,26 +1350,39 @@ pub fn parse_leaked_tool_calls(
     let Some(items) = array.as_array().filter(|items| !items.is_empty()) else {
         return (None, text.to_string());
     };
+    match calls_from_leak_array(items, allowed_names) {
+        Some(calls) => (Some(calls), String::new()),
+        None => (None, text.to_string()),
+    }
+}
+
+/// 把回声数组的每一项转成结构化调用（严格校验；任一项不合格 ⇒ `None`）。
+fn calls_from_leak_array(
+    items: &[Value],
+    allowed_names: Option<&HashSet<String>>,
+) -> Option<Vec<Value>> {
     let mut calls = Vec::new();
     for item in items {
-        let Some(object) = item.as_object() else {
-            return (None, text.to_string());
-        };
-        let Some(name) = object.get("name").and_then(Value::as_str) else {
-            return (None, text.to_string());
-        };
+        let object = item.as_object()?;
+        let name = object.get("name").and_then(Value::as_str)?;
         if name.trim().is_empty() {
-            return (None, text.to_string());
+            return None;
         }
         let arguments = match object.get("arguments") {
             Some(Value::String(text)) => text.clone(),
             Some(other @ (Value::Object(_) | Value::Array(_))) => {
                 serde_json::to_string(other).unwrap_or_default()
             }
-            _ => return (None, text.to_string()),
+            _ => return None,
         };
         if !arguments.trim().is_empty() && serde_json::from_str::<Value>(&arguments).is_err() {
-            return (None, text.to_string());
+            return None;
+        }
+        // 工具会按「声明集合」校验名字：未声明的名字**不认**（宁可不还原）。
+        if let Some(allowed) = allowed_names {
+            if !allowed.contains(name.trim()) {
+                return None;
+            }
         }
         calls.push(serde_json::json!({
             "id": format!("call_{}", Uuid::new_v4().simple()),
@@ -1042,19 +1390,425 @@ pub fn parse_leaked_tool_calls(
             "function": { "name": name.trim(), "arguments": arguments },
         }));
     }
-    if let Some(allowed) = allowed_names {
-        let all_allowed = calls.iter().all(|call| {
-            call.get("function")
-                .and_then(|function| function.get("name"))
-                .and_then(Value::as_str)
-                .map(|name| allowed.contains(name))
-                .unwrap_or(false)
-        });
-        if !all_allowed {
+    Some(calls)
+}
+
+/// 严格整段识别**失败**时的收尾容错：`marker + JSON 数组 + 非正文尾巴`。
+///
+/// 典型形态（issue #66 的真机样本）：模型把两种协议格式**混着**复述，正文先是
+/// 网关的调用回声 JSON，后面又跟了一串 DSML 闭标签。严格判据要求「整段恰好是
+/// 数组」，于是整段还原失败 ⇒ 正文原样透传 ⇒ 用户看到一坨标记，工具一次都没执行。
+///
+/// 判据（只放窄一点点，避免误伤散文）：
+/// - 必须以 [`LEAK_MARKER`] 开头；
+/// - 数组之后**只允许**以 `<`（标签残片）或 ``` 开头 —— 也就是「不是人话」；
+/// - 数组本身仍走 [`calls_from_leak_array`] 的严格校验（含声明集合）。
+///
+/// 返回 `(calls, clean_text)`；`clean_text` 是数组之前的散文（通常为空）。
+pub fn parse_leaked_tool_calls_with_trailing(
+    text: &str,
+    allowed_names: Option<&HashSet<String>>,
+) -> (Option<Vec<Value>>, String) {
+    let t = text.trim();
+    let Some(after_marker) = strip_leak_marker(t) else {
+        return (None, text.to_string());
+    };
+    let Some(bracket) = after_marker.find('[') else {
+        return (None, text.to_string());
+    };
+    let body = &after_marker[bracket..];
+    // 只从尾部往前试（数组一定在尾巴之前结束），最多试 64 个候选，避免病态输入打满 CPU。
+    let mut attempts = 0;
+    for (position, ch) in body.char_indices().rev() {
+        if ch != ']' {
+            continue;
+        }
+        attempts += 1;
+        if attempts > 64 {
+            break;
+        }
+        let candidate = &body[..=position];
+        let Ok(array) = serde_json::from_str::<Value>(candidate) else {
+            continue;
+        };
+        let Some(items) = array.as_array().filter(|items| !items.is_empty()) else {
+            continue;
+        };
+        let Some(calls) = calls_from_leak_array(items, allowed_names) else {
+            continue;
+        };
+        let tail = body[position + 1..].trim();
+        if !(tail.is_empty() || tail.starts_with('<') || tail.starts_with("```")) {
             return (None, text.to_string());
         }
+        return (Some(calls), String::new());
     }
-    (Some(calls), String::new())
+    (None, text.to_string())
+}
+
+/// 正文相对「泄漏回声」的位置（[`parse_leaked_tool_calls`] 与流式守卫共用同一套前缀规则）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LeakState {
+    /// 还处在围栏 / 标记前缀区（可能只写了一半）—— 仍可能是回声。
+    Prefix,
+    /// 已越过标记，携带其后的正文（可能带 ``` 收尾围栏）。
+    Body(String),
+    /// 显然不是回声。
+    NotLeak,
+}
+
+/// 把「标记之前的围栏前缀 / 标记之后的正文」解析出来。
+///
+/// 为什么单独抽一个：流式守卫要判断「这段缓冲**还可能**是回声吗」（Prefix 就得继续等），
+/// 而整段判定只关心 Body。两处若各写一套前缀规则，必然分裂成两种结论。
+pub fn leak_body_offset(text: &str) -> LeakState {
+    let t = text.trim_start();
+    if t.is_empty()
+        || [LEAK_MARKER, LEAK_MARKER_ALT]
+            .iter()
+            .any(|m| m.starts_with(t))
+    {
+        return LeakState::Prefix;
+    }
+    if let Some(body) = strip_leak_marker(t) {
+        return LeakState::Body(body.to_string());
+    }
+    if !t.starts_with('`') {
+        return LeakState::NotLeak;
+    }
+    if t.len() < 3 {
+        return if "```".starts_with(t) {
+            LeakState::Prefix
+        } else {
+            LeakState::NotLeak
+        };
+    }
+    let Some(rest) = t.strip_prefix("```") else {
+        return LeakState::NotLeak;
+    };
+    let after_fence = rest.trim_start();
+    let low = after_fence.to_ascii_lowercase();
+    let after = if low.starts_with("json") {
+        after_fence[4..].trim_start()
+    } else if starts_with_leak_marker(&low) {
+        // 无语言标记的 ``` 围栏
+        after_fence
+    } else if "json".starts_with(&low) {
+        // 语言标记还没打完（j / js / json）
+        return LeakState::Prefix;
+    } else {
+        return LeakState::NotLeak;
+    };
+    if [LEAK_MARKER, LEAK_MARKER_ALT]
+        .iter()
+        .any(|m| m.starts_with(after))
+    {
+        return LeakState::Prefix;
+    }
+    if let Some(body) = strip_leak_marker(after) {
+        return LeakState::Body(body.to_string());
+    }
+    LeakState::NotLeak
+}
+
+/// 回声里出现的工具名是否**全部**在本次声明集合里。
+///
+/// 判据收紧的原因（参考实现 #72）：只按「本次声明了 tools」就 fail-closed 太宽 ——
+/// 模型复述**未声明**的工具时我们本来也还原不了，把那种回合判失败会误伤正常回答。
+/// 返回 `false` 也用于「文本里没有名字」的情形，由调用方单独处理。
+pub fn echo_names_declared(text: &str, allowed: &HashSet<String>) -> bool {
+    let mut names: Vec<&str> = Vec::new();
+    let mut rest = text;
+    while let Some(position) = rest.find("\"name\"") {
+        let after = rest[position + 6..].trim_start();
+        let Some(after) = after.strip_prefix(':') else {
+            rest = after;
+            continue;
+        };
+        let after = after.trim_start();
+        let Some(after) = after.strip_prefix('"') else {
+            rest = after;
+            continue;
+        };
+        let Some(end) = after.find('"') else {
+            break;
+        };
+        names.push(&after[..end]);
+        rest = &after[end..];
+    }
+    !names.is_empty() && names.iter().all(|name| allowed.contains(*name))
+}
+
+/// 回声**被截断**（JSON 不完整 / 非法）时是否该整段吞掉。
+///
+/// 三个条件同时成立才吞（缺一不可）：
+/// 1. trim 后以 [`LEAK_MARKER`] 开头（正常散文几乎不会这样开头）；
+/// 2. 本次请求**声明了 tools**（与还原路径同一前置条件）；
+/// 3. 标记之后（剥掉围栏）仍是 JSON 数组字面量的**前缀** —— 即「本该是数组，只是没写完」。
+///
+/// 完整且合法的数组**不吞**：那种情况还原失败另有原因（工具名未声明 / arguments 非法），
+/// 保持既有 fail-open 语义。只有「数组本身没写完 / 非法」才吞。
+///
+/// ★ 这是 issue #66 的直接对策：模型把历史工具调用复述到正文、又被上游截断后，
+///   既还原不成结构化调用，也不能把网关内部协议文本（标记 + 半截 JSON）交给终端用户。
+pub fn leaked_partial_droppable(text: &str, allowed_names: Option<&HashSet<String>>) -> bool {
+    if text.trim().is_empty() || allowed_names.map(HashSet::is_empty).unwrap_or(true) {
+        return false;
+    }
+    let t = text.trim();
+    if t == LEAK_MARKER || t == LEAK_MARKER_ALT {
+        // 只有标记、连数组都没开始写：判据 3 的退化情形，同样是回声。
+        return true;
+    }
+    // 有工具名且含**未声明**的名字 ⇒ 这条判据认不了（保持透传，参考实现 #72）。
+    let allowed = allowed_names.expect("上面已过滤空集合");
+    if t.contains("\"name\"") && !echo_names_declared(t, allowed) {
+        return false;
+    }
+    let LeakState::Body(body) = leak_body_offset(t) else {
+        return false;
+    };
+    let mut rest = body.trim();
+    if let Some(stripped) = rest.strip_suffix("```") {
+        rest = stripped.trim();
+    }
+    // 标记之后不是 JSON 数组 ⇒ 是散文（可能是正常讨论），不吞。
+    if !rest.starts_with('[') {
+        return false;
+    }
+    // 完整且合法的数组不吞：那种情况还原失败另有原因（工具名未声明 / arguments
+    // 非法），保持既有 fail-open 语义；只有「数组没写完 / 损坏」才吞。
+    serde_json::from_str::<Value>(rest).is_err()
+}
+
+/// 拆出「[工具结果<name>]」开标记行之后的部分；不是合法开标记 ⇒ `None`。
+fn tool_echo_body(text: &str) -> Option<&str> {
+    let t = text.trim();
+    let rest = t.strip_prefix(TOOL_RESULT_MARKER)?;
+    let close = rest.find(']')?;
+    if rest[..close].contains('\n') {
+        return None; // 标记行未闭合 / 换行后才有 `]`：非本网关形态
+    }
+    Some(&rest[close + 1..])
+}
+
+/// 正文是「[工具结果…]」回声块时是否该整段吞掉（与 [`leaked_partial_droppable`] 同形态）。
+///
+/// 同机纪律：只有**声明了 tools** 才吞（与回声回读同一前置，避免误杀正常讨论）；
+/// 形态自洽即可 —— 出现模型自造的闭标记，或标记之后（忽略空白）以 JSON / 标签起始
+/// 字符开头（含被截断、永不闭合的块）。
+///
+/// 不还原成 tool 消息：还原需要把回声与历史上的 `tool_call_id` 配对，而文本化历史
+/// 并未保留 call_id ⇒ 本轮只做「不把内部协议文本交给终端用户」。
+pub fn tool_echo_droppable(text: &str, allowed_names: Option<&HashSet<String>>) -> bool {
+    if allowed_names.map(HashSet::is_empty).unwrap_or(true) {
+        return false;
+    }
+    let Some(body) = tool_echo_body(text) else {
+        return false;
+    };
+    if body.contains(TOOL_RESULT_CLOSE) {
+        return true;
+    }
+    let rest = body.trim_start();
+    match rest.chars().next() {
+        None => true, // 只有开标记：退化为「纯标记」
+        Some(first) => matches!(first, '{' | '[' | '"' | '<'),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// DSML 工具调用回退解析
+// ---------------------------------------------------------------------------
+
+/// DSML 标签里唯一可辨的「名字」部分（`<｜｜DSML｜｜ calls>` / `invoke` / `parameter`）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DsmlTag {
+    Calls { closing: bool },
+    Invoke { closing: bool },
+    Parameter { closing: bool },
+    Other,
+}
+
+/// 解析一个 `<…>` 标签：`(标签内文, 种类, name 属性)`。
+fn classify_tag(inner: &str) -> (DsmlTag, Option<String>) {
+    let trimmed = inner.trim();
+    let closing = trimmed.starts_with('/');
+    let body = trimmed.trim_start_matches('/').trim();
+    /* ★ 标签名可能**紧贴**哨兵：真机实测模型写成 `<｜｜DSML｜｜calls>`（中间没有空格），
+    按「整词等于 calls」判会全部落空 ⇒ 整块还原失败 ⇒ 正文被吞（用户看到空回答）。
+    因此按「词尾」匹配：`｜｜DSML｜｜calls` / `｜｜DSML｜｜ calls` / `calls` 都认。 */
+    let mut kind = DsmlTag::Other;
+    for token in body.split_whitespace() {
+        let word = token.trim_end_matches('>').to_ascii_lowercase();
+        // 属性 token（`name="calls"`）不带引号收尾时不该被当成标签名。
+        if word.contains('=') {
+            continue;
+        }
+        if word.ends_with("parameter") {
+            kind = DsmlTag::Parameter { closing };
+            break;
+        }
+        if word.ends_with("invoke") {
+            kind = DsmlTag::Invoke { closing };
+            break;
+        }
+        if word.ends_with("calls") {
+            kind = DsmlTag::Calls { closing };
+            break;
+        }
+    }
+    // `name="x"` / `name='x'`：只认引号包裹（无引号的值不是官方形态，不猜）。
+    let name = body.find("name=").and_then(|at| {
+        let rest = &body[at + "name=".len()..];
+        let mut chars = rest.chars();
+        let quote = chars.next()?;
+        if quote != '"' && quote != '\'' {
+            return None;
+        }
+        let rest = chars.as_str();
+        let end = rest.find(quote)?;
+        Some(rest[..end].to_string())
+    });
+    (kind, name)
+}
+
+/// 找下一个**真正的标签**：`(起始字节, 结束字节, 标签内文)`。
+///
+/// 值里出现的裸 `<`（`if (a < b)`、`a<b>c`）会造出「假标签」：从 `<` 到最近的 `>`
+/// 之间若还有 `<`，说明这不是一个标签，跳过继续找。否则参数值会被**截断在假标签处**。
+fn next_tag(text: &str, from: usize) -> Option<(usize, usize, &str)> {
+    let mut cursor = from;
+    loop {
+        let start = cursor + text[cursor..].find('<')?;
+        let rest = &text[start + 1..];
+        let end_rel = rest.find('>')?;
+        if rest[..end_rel].contains('<') {
+            cursor = start + 1;
+            continue;
+        }
+        let end = start + 1 + end_rel + 1;
+        return Some((start, end, &text[start + 1..end - 1]));
+    }
+}
+
+/// 从 `from` 起找**指定种类**的标签（跳过其它标签与假标签）。
+fn find_tag(text: &str, from: usize, want: DsmlTag) -> Option<(usize, usize)> {
+    let mut cursor = from;
+    while let Some((start, end, inner)) = next_tag(text, cursor) {
+        if classify_tag(inner).0 == want {
+            return Some((start, end));
+        }
+        cursor = end;
+    }
+    None
+}
+
+/// 解析一段 DSML 调用块内的 `invoke` 列表（参数值里允许出现裸 `<`）。
+fn parse_dsml_invokes(block: &str) -> Vec<(String, Vec<(String, String)>)> {
+    let mut out = Vec::new();
+    let mut cursor = 0;
+    while let Some((_start, end, inner)) = next_tag(block, cursor) {
+        cursor = end;
+        let (kind, name) = classify_tag(inner);
+        if kind != (DsmlTag::Invoke { closing: false }) {
+            continue;
+        }
+        let Some(name) = name else { continue };
+        // 本 invoke 的边界：配对的 `</…invoke>`（缺失 ⇒ 剩余全部，截断形态也尽量取值）。
+        let (body_end, next_cursor) = match find_tag(block, end, DsmlTag::Invoke { closing: true })
+        {
+            Some((close_start, close_end)) => (close_start, close_end),
+            None => (block.len(), block.len()),
+        };
+        let body = &block[end..body_end];
+        let mut params: Vec<(String, String)> = Vec::new();
+        let mut inner_cursor = 0;
+        while let Some((_p_start, p_end, p_inner)) = next_tag(body, inner_cursor) {
+            inner_cursor = p_end;
+            let (p_kind, p_name) = classify_tag(p_inner);
+            if p_kind != (DsmlTag::Parameter { closing: false }) {
+                continue;
+            }
+            let Some(p_name) = p_name else { continue };
+            let (value_end, after) =
+                match find_tag(body, p_end, DsmlTag::Parameter { closing: true }) {
+                    Some((value_end, close_end)) => (value_end, close_end),
+                    None => (body.len(), body.len()),
+                };
+            params.push((p_name, body[p_end..value_end].trim().to_string()));
+            inner_cursor = after;
+        }
+        out.push((name, params));
+        cursor = next_cursor;
+    }
+    out
+}
+
+/// 把模型写出的 **DSML 工具调用块**还原成结构化 `tool_calls`。
+///
+/// 为什么需要：客户端（CodeBuddy / WorkBuddy 等）在自己的 system 里教模型用
+/// `<｜｜DSML｜｜ calls>` 语法发起工具调用；Qoder 上游的文本模式下模型会**照学**，
+/// 把调用写成 DSML 标签塞进正文。网关若不还原，客户端收到的是一坨标签文本 ——
+/// 工具不会执行，任务在本该调工具的位置断掉（issue #66 的「一个任务能断好多次」）。
+///
+/// 判据：必须找到**成对**的 `calls` 标签块且块内至少一个 `invoke name=…`；
+/// 名字为空 ⇒ 不认（宁可透传也不造出一个空名字的调用）。
+/// `allowed_names` **刻意不参与**过滤：模型有时会调用客户端没声明但确实存在的工具名，
+/// 与参考实现一致——还原失败才回退透传。
+///
+/// 返回 `(tool_calls, clean_text)`；成功时 `clean_text` 是**剥掉调用块**后的正文。
+pub fn parse_dsml_tool_calls(text: &str) -> (Option<Vec<Value>>, String) {
+    if text.is_empty() || !text.contains("DSML") {
+        return (None, text.to_string());
+    }
+    // 找第一个 calls 开标签，再找其后第一个 calls 闭标签。
+    let mut cursor = 0;
+    let mut block: Option<(usize, usize, usize)> = None; // (开标签起点, 闭标签终点, 内容起点)
+    while let Some((start, end, inner)) = next_tag(text, cursor) {
+        cursor = end;
+        let (kind, _) = classify_tag(inner);
+        // ⚠️ 只关心「calls 开标签」这一种，其余一律忽略 ⇒ `if let` 足够
+        // （`match` 单分支写法会被 clippy::single_match 拦下）。
+        if let DsmlTag::Calls { closing: false } = kind {
+            if let Some((_close_start, close_end)) =
+                find_tag(text, end, DsmlTag::Calls { closing: true })
+            {
+                block = Some((start, close_end, end));
+                break;
+            }
+        }
+    }
+    let Some((start, end, content_start)) = block else {
+        return (None, text.to_string());
+    };
+    let invokes = parse_dsml_invokes(&text[content_start..end]);
+    if invokes.is_empty() {
+        return (None, text.to_string());
+    }
+    let mut calls = Vec::new();
+    for (name, params) in invokes {
+        let mut arguments = Map::new();
+        for (key, value) in params {
+            arguments.insert(key, Value::String(value));
+        }
+        let arguments =
+            serde_json::to_string(&Value::Object(arguments)).unwrap_or_else(|_| "{}".into());
+        calls.push(serde_json::json!({
+            "id": format!("call_{}", Uuid::new_v4().simple()),
+            "type": "function",
+            "function": { "name": name.trim(), "arguments": arguments },
+        }));
+    }
+    let head = text[..start].trim();
+    let tail = text[end..].trim();
+    let clean = match (head.is_empty(), tail.is_empty()) {
+        (true, true) => String::new(),
+        (true, false) => tail.to_string(),
+        (false, true) => head.to_string(),
+        (false, false) => format!("{head} {tail}"),
+    };
+    (Some(calls), clean)
 }
 
 // ---------------------------------------------------------------------------
@@ -1825,6 +2579,224 @@ mod tests {
         assert_eq!(body["tools"], serde_json::json!([]));
     }
 
+    /// ★ issue #72 的**行为级**钉子：DeepSeek 族的工具历史必须进结构化字段，
+    /// 请求体里**不能**出现网关的文本化标记。
+    ///
+    /// 只钉谓词（[`structured_tool_history_enabled`]）不够 —— 那是判据，不是结果。
+    /// 这里直接看 [`build_chat_body`] 的产物：`tool_calls` / `role:"tool"` 在，
+    /// `[assistant 请求调用工具]` / `[工具结果` 不在。
+    ///
+    /// 可证伪：把 DeepSeek 分支从 `structured_tool_history_enabled` 删掉 ⇒ 本条红
+    /// （两条 `!contains` 会先炸）。
+    #[test]
+    fn deepseek_tool_history_is_structured_not_text() {
+        // 依赖「环境变量未设」的默认 auto 行为 ⇒ 与改环境变量的测试串行。
+        let _env = crate::modules::config::env_lock();
+        std::env::remove_var("QD_STRUCTURED_TOOL_HISTORY");
+        let payload = serde_json::json!({
+            "messages": [
+                {"role": "user", "content": "看下目录"},
+                {"role": "assistant", "content": "", "reasoning_content": "先读文件",
+                 "tool_calls": [{
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {"name": "read", "arguments": "{\"file_path\":\"a.txt\"}"}
+                 }]},
+                {"role": "tool", "tool_call_id": "call_1", "name": "read", "content": "hello"},
+            ],
+        });
+        let deepseek = ModelMeta {
+            key: "dfmodel".into(),
+            display_name: "DeepSeek Flash".into(),
+            is_vl: false,
+            is_reasoning: true,
+            max_input_tokens: 128_000,
+        };
+        let body = build_chat_body(&payload, &deepseek, QoderRegion::Cn, "").unwrap();
+        let messages = body["messages"].as_array().unwrap();
+        let raw = serde_json::to_string(messages).unwrap();
+        assert!(
+            messages
+                .iter()
+                .any(|message| message["role"] == "tool" && message["tool_call_id"] == "call_1"),
+            "工具结果必须保持 `role:\"tool\"` + `tool_call_id`：{raw}"
+        );
+        assert!(
+            messages
+                .iter()
+                .any(|message| message["tool_calls"].is_array()),
+            "助手历史必须保持结构化 `tool_calls`：{raw}"
+        );
+        assert!(
+            !raw.contains(LEAK_MARKER),
+            "不得出现文本化调用标记（会诱导模型回声成乱码）：{raw}"
+        );
+        assert!(
+            !raw.contains(TOOL_RESULT_MARKER),
+            "工具结果不得退化成 `[工具结果 …]` 文本：{raw}"
+        );
+        // 同一个族判据的另一半：`reasoning_content` 必须随历史回传
+        // （「结构化开、reasoning 不回传」是半开状态，上游可能 400）。
+        assert!(
+            messages
+                .iter()
+                .any(|message| message["reasoning_content"] == "先读文件"),
+            "DeepSeek 的 reasoning_content 必须回传：{raw}"
+        );
+    }
+
+    /// ★ 出站清洗（与 WB / Trae 侧 `outbound::cleanup_orphan_tool_calls` **同款语义**）：
+    /// 孤儿的 `role:"tool"` 消息删除；含孤儿的 assistant 批次**整批**删 `tool_calls`；
+    /// 配对完整的**必须保留**。
+    ///
+    /// 可证伪：把 `cleanup_orphan_tool_history` 的两趟都注释掉 ⇒ 第二、三条断言红。
+    #[test]
+    fn orphan_tool_history_is_cleaned_before_sending() {
+        let mut messages = vec![
+            serde_json::json!({
+                "role": "assistant", "content": "第一问",
+                "tool_calls": [
+                    {"id": "ok", "type": "function", "function": {"name": "a", "arguments": "{}"}},
+                ],
+            }),
+            serde_json::json!({"role": "tool", "tool_call_id": "ok", "content": "结果"}),
+            serde_json::json!({
+                "role": "assistant", "content": "第二问",
+                "tool_calls": [
+                    {"id": "orphan", "type": "function", "function": {"name": "b", "arguments": "{}"}},
+                ],
+            }),
+            // 悬空结果：没有对应的 tool_call。
+            serde_json::json!({"role": "tool", "tool_call_id": "gone", "content": "残留"}),
+        ];
+        cleanup_orphan_tool_history(&mut messages);
+        let raw = serde_json::to_string(&messages).unwrap();
+        assert!(raw.contains("\"ok\""), "配对完整的必须保留：{raw}");
+        assert!(!raw.contains("orphan"), "孤儿调用必须被删：{raw}");
+        assert!(!raw.contains("\"gone\""), "悬空结果必须被删：{raw}");
+        // 批内任一 id 是孤儿 ⇒ 整批删（不是只删那一个）。
+        let mut batch = vec![serde_json::json!({
+            "role": "assistant", "content": "",
+            "tool_calls": [
+                {"id": "a1", "type": "function", "function": {"name": "a", "arguments": "{}"}},
+                {"id": "a2", "type": "function", "function": {"name": "b", "arguments": "{}"}},
+            ],
+        })];
+        batch.push(serde_json::json!({"role": "tool", "tool_call_id": "a1", "content": "x"}));
+        cleanup_orphan_tool_history(&mut batch);
+        let raw = serde_json::to_string(&batch).unwrap();
+        assert!(!raw.contains("\"a1\""), "含孤儿的批次要整批删：{raw}");
+        assert!(!raw.contains("\"a2\""), "含孤儿的批次要整批删：{raw}");
+        // 无工具流量 ⇒ 一行不动。
+        let mut plain = vec![serde_json::json!({"role": "user", "content": "hi"})];
+        let before = serde_json::to_string(&plain).unwrap();
+        cleanup_orphan_tool_history(&mut plain);
+        assert_eq!(serde_json::to_string(&plain).unwrap(), before);
+    }
+
+    /// ★ 结构化请求在**出站前**必须已清干净：孤儿历史不能变成畸形请求发出去。
+    ///
+    /// 这是「按 WB / Trae 来改」的那一步 —— 清洗，而不是退化成文本模式
+    /// （退化成文本模式会把整段历史变成伪格式，模型照抄就是 issue #72 的乱码）。
+    #[test]
+    fn structured_body_is_cleaned_but_text_mode_is_not() {
+        let _env = crate::modules::config::env_lock();
+        std::env::remove_var("QD_STRUCTURED_TOOL_HISTORY");
+        let payload = serde_json::json!({
+            "messages": [
+                {"role": "user", "content": "hi"},
+                {"role": "assistant", "content": "", "tool_calls": [{
+                    "id": "c1", "type": "function",
+                    "function": {"name": "read", "arguments": "{}"},
+                }]},
+                {"role": "tool", "tool_call_id": "c1", "name": "read", "content": "结果"},
+                {"role": "assistant", "content": "", "tool_calls": [{
+                    "id": "c2", "type": "function",
+                    "function": {"name": "read", "arguments": "{}"},
+                }]},
+                // 悬空结果：对应的 assistant 轮次被裁掉了。
+                {"role": "tool", "tool_call_id": "c9", "content": "残留"},
+            ],
+        });
+        let deepseek = ModelMeta {
+            key: "dfmodel".into(),
+            display_name: "DeepSeek Flash".into(),
+            is_vl: false,
+            is_reasoning: true,
+            max_input_tokens: 128_000,
+        };
+        // 结构化：清掉悬空结果与孤儿批次，保住配对完整的部分。
+        let body = build_chat_body(&payload, &deepseek, QoderRegion::Cn, "").unwrap();
+        let raw = serde_json::to_string(body["messages"].as_array().unwrap()).unwrap();
+        assert!(raw.contains("\"c1\""), "配对完整的调用必须保留：{raw}");
+        assert!(!raw.contains("\"c2\""), "没有回答的调用必须被清掉：{raw}");
+        assert!(!raw.contains("c9"), "悬空结果必须被清掉：{raw}");
+        // 文本模式：不做清洗（伪格式对畸形配对是宽容的，且保留信息量）。
+        // ⚠️ 文本化**不保留** `tool_call_id`（那正是它无法还原调用、只能靠标记回读的原因），
+        // 所以断言要看**正文**，不是 id。
+        let text = build_chat_body_with_structured(&payload, &deepseek, "", false).unwrap();
+        let raw = serde_json::to_string(text["messages"].as_array().unwrap()).unwrap();
+        assert!(
+            raw.contains("残留"),
+            "文本模式不做清洗（保留悬空结果）：{raw}"
+        );
+    }
+
+    /// 自动降级的**执行面**：显式 `structured = false` 必须真的退成文本模式，
+    /// 且 `structured_tool_history_for` 与 `build_chat_body` 同源
+    /// （网关拿前者判要不要降级、拿后者决定重发形状 —— 两处判据不同步就会「以为降级了、
+    /// 其实又发了一遍结构化」）。
+    ///
+    /// 可证伪：把 `build_chat_body_with_structured` 里的 `structured`
+    /// 改回 `structured_tool_history_enabled(...)` ⇒ 第一条断言红。
+    #[test]
+    fn explicit_text_override_wins_over_the_model_family() {
+        let _env = crate::modules::config::env_lock();
+        std::env::remove_var("QD_STRUCTURED_TOOL_HISTORY");
+        let payload = serde_json::json!({
+            "messages": [
+                {"role": "assistant", "content": "", "tool_calls": [{
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {"name": "read", "arguments": "{}"}
+                }]},
+                {"role": "tool", "tool_call_id": "call_1", "name": "read", "content": "hi"},
+            ],
+        });
+        let deepseek = ModelMeta {
+            key: "dfmodel".into(),
+            display_name: "DeepSeek Flash".into(),
+            is_vl: false,
+            is_reasoning: true,
+            max_input_tokens: 128_000,
+        };
+        // auto 判据说「结构化」…
+        assert!(structured_tool_history_for(
+            &payload,
+            &deepseek,
+            QoderRegion::Cn
+        ));
+        // …但显式 override 说了算（降级重发走这条）。
+        let text = build_chat_body_with_structured(&payload, &deepseek, "", false).unwrap();
+        let raw = serde_json::to_string(text["messages"].as_array().unwrap()).unwrap();
+        assert!(
+            raw.contains(LEAK_MARKER),
+            "override 后必须是文本模式：{raw}"
+        );
+        assert!(
+            !raw.contains("\"tool_calls\""),
+            "override 后不得再带结构化字段：{raw}"
+        );
+        // id 不齐备时，强行传 `true` 也不能绕过硬前提（否则「降级」会发畸形请求）。
+        let broken = serde_json::json!({"messages": [{"role": "tool", "content": "x"}]});
+        let forced = build_chat_body_with_structured(&broken, &deepseek, "", true).unwrap();
+        let raw = serde_json::to_string(forced["messages"].as_array().unwrap()).unwrap();
+        assert!(
+            raw.contains(TOOL_RESULT_MARKER),
+            "id 缺失必须回退文本模式：{raw}"
+        );
+    }
+
     #[test]
     fn build_chat_body_without_system_keeps_template_prompt() {
         let payload = serde_json::json!({
@@ -1999,6 +2971,15 @@ mod tests {
         assert_eq!(calls[0]["function"]["name"], "search");
         assert_eq!(clean, "");
 
+        // 尖括号写法（模型复述时会把 `[ ]` 改成 `< >`）同样必须还原。
+        let alt = text.replace(LEAK_MARKER, LEAK_MARKER_ALT);
+        let (alt_calls, alt_clean) = parse_leaked_tool_calls(&alt, None);
+        assert_eq!(
+            alt_calls.expect("尖括号标记也要还原")[0]["function"]["name"],
+            "search"
+        );
+        assert_eq!(alt_clean, "");
+
         // 围栏包裹。
         let fenced = format!("```json\n{text}\n```");
         assert!(parse_leaked_tool_calls(&fenced, None).0.is_some());
@@ -2012,6 +2993,157 @@ mod tests {
         assert!(parse_leaked_tool_calls(&prose, None).0.is_none());
         // 普通正文 ⇒ 不还原。
         assert!(parse_leaked_tool_calls("普通回答", None).0.is_none());
+    }
+
+    /// issue #66：截断的回声既还原不了，也**绝不能**透传给终端用户。
+    #[test]
+    fn truncated_leak_echo_is_droppable_but_valid_prose_is_not() {
+        let allowed: HashSet<String> = ["pwsh".to_string()].into_iter().collect();
+        // 半截 JSON（上游截断 / 客户端提前收尾）⇒ 吞。
+        let truncated = format!("{LEAK_MARKER}\n[{{\"name\":\"pwsh\",\"arguments\":\"{{\\\"comm");
+        assert!(leaked_partial_droppable(&truncated, Some(&allowed)));
+        assert!(parse_leaked_tool_calls(&truncated, Some(&allowed))
+            .0
+            .is_none());
+        // 只有标记 ⇒ 也是回声。
+        assert!(leaked_partial_droppable(LEAK_MARKER, Some(&allowed)));
+        // 围栏紧跟着被截断的数组 ⇒ 仍吞。
+        let fenced = format!("```json\n{LEAK_MARKER}\n[{{\"name\":\"pwsh\"");
+        assert!(leaked_partial_droppable(&fenced, Some(&allowed)));
+
+        // 完整且合法的数组**不吞**（还原失败另有原因，保持既有的 fail-open 透传语义）。
+        let valid = format!("{LEAK_MARKER}\n[{{\"name\":\"other\",\"arguments\":\"{{}}\"}}]");
+        assert!(!leaked_partial_droppable(&valid, Some(&allowed)));
+        // 散文（标记后面不是数组）⇒ 不吞。
+        assert!(!leaked_partial_droppable(
+            &format!("{LEAK_MARKER}\n下面说说为什么"),
+            Some(&allowed)
+        ));
+        // 未声明 tools ⇒ 不吞（与回读同一前置：避免误杀「讨论该标记」的回复）。
+        assert!(!leaked_partial_droppable(&truncated, None));
+
+        // ★ 回声里的名字有**未声明**的 ⇒ 不吞（参考实现 #72：只按「声明了 tools」太宽）。
+        let undeclared =
+            format!("{LEAK_MARKER}\n[{{\"name\":\"not_declared\",\"arguments\":\"{{\\\"p");
+        assert!(!leaked_partial_droppable(&undeclared, Some(&allowed)));
+        // 名字全在声明集合里、但数组截断 ⇒ 吞。
+        assert!(leaked_partial_droppable(
+            &format!("{LEAK_MARKER}\n[{{\"name\":\"pwsh\",\"arguments\":\"{{"),
+            Some(&allowed)
+        ));
+        // 尖括号写法同样认。
+        assert!(leaked_partial_droppable(
+            &format!("{LEAK_MARKER_ALT}\n[{{\"name\":\"pwsh\""),
+            Some(&allowed)
+        ));
+    }
+
+    /// `echo_names_declared`：全命中才 true；空名字 / 有未声明 / 无 allowed 都 false。
+    #[test]
+    fn echo_names_must_all_be_declared() {
+        let allowed: HashSet<String> = ["a".to_string(), "b".to_string()].into_iter().collect();
+        assert!(echo_names_declared(
+            r#"[{"name":"a"},{"name":"b"}]"#,
+            &allowed
+        ));
+        assert!(!echo_names_declared(
+            r#"[{"name":"a"},{"name":"c"}]"#,
+            &allowed
+        ));
+        assert!(!echo_names_declared("no names here", &allowed));
+        assert!(!echo_names_declared(r#"[{"name":"a"}]"#, &HashSet::new()));
+    }
+
+    /// issue #66：`[工具结果…]` 回声块同样不能交给用户。
+    #[test]
+    fn tool_result_echo_is_droppable_only_with_declared_tools() {
+        let allowed: HashSet<String> = ["pwsh".to_string()].into_iter().collect();
+        let block = format!("{TOOL_RESULT_MARKER} (pwsh)]\n{{\"ok\":true}}");
+        assert!(tool_echo_droppable(&block, Some(&allowed)));
+        // 自造闭标记 + 散文尾巴 ⇒ 仍吞。
+        let closed = format!("{TOOL_RESULT_MARKER} (pwsh)]\n{TOOL_RESULT_CLOSE}\n结果如上");
+        assert!(tool_echo_droppable(&closed, Some(&allowed)));
+        // 标记后跟自然语言散文 ⇒ 不吞（可能是正常讨论）。
+        assert!(!tool_echo_droppable(
+            &format!("{TOOL_RESULT_MARKER} 这段是说明文字"),
+            Some(&allowed)
+        ));
+        // 未声明 tools ⇒ 不吞。
+        assert!(!tool_echo_droppable(&block, None));
+    }
+
+    /// issue #66：模型把调用写成 DSML 标签（客户端 system 教的语法）时必须还原。
+    #[test]
+    fn dsml_tool_calls_are_recovered_from_text() {
+        let text = "先探一下端口。\n<｜｜DSML｜｜ calls>\n<｜｜DSML｜｜ invoke name=\"pwsh\">\n\
+                    <｜｜DSML｜｜ parameter name=\"command\">Get-Process</｜｜DSML｜｜ parameter>\n\
+                    <｜｜DSML｜｜ parameter name=\"description\">查看进程</｜｜DSML｜｜ parameter>\n\
+                    </｜｜DSML｜｜ invoke>\n</｜｜DSML｜｜ calls>";
+        let (calls, clean) = parse_dsml_tool_calls(text);
+        let calls = calls.expect("完整 DSML 块必须还原");
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0]["function"]["name"], "pwsh");
+        let arguments: Value =
+            serde_json::from_str(calls[0]["function"]["arguments"].as_str().unwrap()).unwrap();
+        assert_eq!(arguments["command"], "Get-Process");
+        assert_eq!(arguments["description"], "查看进程");
+        assert_eq!(clean, "先探一下端口。", "调用块必须从正文里剥掉");
+
+        // 并行调用。
+        let two = "<｜｜DSML｜｜ calls>\
+                   <｜｜DSML｜｜ invoke name=\"a\"><｜｜DSML｜｜ parameter name=\"x\">1</｜｜DSML｜｜ parameter></｜｜DSML｜｜ invoke>\
+                   <｜｜DSML｜｜ invoke name=\"b\"><｜｜DSML｜｜ parameter name=\"y\">2</｜｜DSML｜｜ parameter></｜｜DSML｜｜ invoke>\
+                   </｜｜DSML｜｜ calls>";
+        let (calls, clean) = parse_dsml_tool_calls(two);
+        let calls = calls.expect("并行调用必须还原");
+        assert_eq!(calls.len(), 2);
+        assert_eq!(calls[1]["function"]["name"], "b");
+        assert_eq!(clean, "");
+
+        // 没有成对 calls 标签 / 没有 invoke / 没有名字 ⇒ 不认。
+        assert!(parse_dsml_tool_calls("<｜｜DSML｜｜ calls> 半截")
+            .0
+            .is_none());
+        assert!(
+            parse_dsml_tool_calls("<｜｜DSML｜｜ calls></｜｜DSML｜｜ calls>")
+                .0
+                .is_none()
+        );
+        assert!(parse_dsml_tool_calls(
+            "<｜｜DSML｜｜ calls><｜｜DSML｜｜ invoke></｜｜DSML｜｜ invoke></｜｜DSML｜｜ calls>"
+        )
+        .0
+        .is_none());
+        // 真机形态：标签名**紧贴**哨兵（`<｜｜DSML｜｜calls>`、中间没有空格）。
+        // 可证伪：把 `classify_tag` 的「词尾匹配」改回「整词相等」⇒ 本段拿不到调用。
+        let compact = "<｜｜DSML｜｜calls>\n<｜｜DSML｜｜invoke name=\"shell\">\n\
+                       <｜｜DSML｜｜parameter name=\"command\">echo hello</｜｜DSML｜｜parameter>\n\
+                       </｜｜DSML｜｜invoke>\n</｜｜DSML｜｜calls>";
+        let (calls, clean) = parse_dsml_tool_calls(compact);
+        let calls = calls.expect("紧凑写法必须还原");
+        assert_eq!(calls[0]["function"]["name"], "shell");
+        let arguments: Value =
+            serde_json::from_str(calls[0]["function"]["arguments"].as_str().unwrap()).unwrap();
+        assert_eq!(arguments["command"], "echo hello");
+        assert_eq!(clean, "");
+
+        // 普通 HTML 标签不误判。
+        assert!(parse_dsml_tool_calls("<div class=\"x\">hi</div>")
+            .0
+            .is_none());
+
+        // 参数值里允许出现裸 `<`（含形如 `a<b>c` 的「假标签」）——不能被截断。
+        let tricky = "<｜｜DSML｜｜ calls><｜｜DSML｜｜ invoke name=\"shell\">\
+                      <｜｜DSML｜｜ parameter name=\"command\">if (a < b) { echo a<b>c }</｜｜DSML｜｜ parameter>\
+                      </｜｜DSML｜｜ invoke></｜｜DSML｜｜ calls>";
+        let (calls, _) = parse_dsml_tool_calls(tricky);
+        let arguments: Value = serde_json::from_str(
+            calls.expect("含裸 `<` 的参数仍应还原")[0]["function"]["arguments"]
+                .as_str()
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(arguments["command"], "if (a < b) { echo a<b>c }");
     }
 
     #[test]
@@ -2181,6 +3313,8 @@ mod tests {
     /// 症状是「同一份代码，跑三次红一次」，最难排查的那一类。
     #[test]
     fn structured_tool_history_rules() {
+        // 本测试会改进程级环境变量 ⇒ 必须与另一条同样读它的测试串行（同 crate 的
+        // `config::env_lock`，理由见那里的注释）。
         let _env = crate::modules::config::env_lock();
         let good = vec![
             serde_json::json!({"role": "assistant", "tool_calls": [{"id": "c1"}]}),
@@ -2198,6 +3332,31 @@ mod tests {
             QoderRegion::Cn,
             &bad_ids
         ));
+        /* ★ issue #72：DeepSeek 族在 CN 出口**默认走结构化**（auto 模式下，未设环境变量）。
+        文本模式下 DeepSeek Flash 会照抄 `[assistant 请求调用工具]` 伪格式 + 混进 DSML
+        语法 ⇒ 客户端看到「上下文乱码」、工具一次不执行。反向断言（旧行为）是缺陷。 */
+        for key in ["dmodel", "dfmodel"] {
+            assert!(
+                structured_tool_history_enabled(key, QoderRegion::Cn, &good),
+                "`{key}` 必须在 CN 出口启用结构化工具历史（issue #72）"
+            );
+            assert!(
+                !structured_tool_history_enabled(key, QoderRegion::Global, &good),
+                "`{key}` 是 CN key，国际版出口不得启用"
+            );
+        }
+        // 带后缀的变体同一判据（前缀匹配，见 `is_deepseek_key`）。
+        assert!(structured_tool_history_enabled(
+            "dfmodel_pro",
+            QoderRegion::Cn,
+            &good
+        ));
+        // id 不齐备时，DeepSeek 也照样回退文本化（fail-safe 优先于族判据）。
+        assert!(!structured_tool_history_enabled(
+            "dfmodel",
+            QoderRegion::Cn,
+            &bad_ids
+        ));
         std::env::set_var("QD_STRUCTURED_TOOL_HISTORY", "on");
         assert!(structured_tool_history_enabled(
             "whatever",
@@ -2207,6 +3366,12 @@ mod tests {
         std::env::set_var("QD_STRUCTURED_TOOL_HISTORY", "off");
         assert!(!structured_tool_history_enabled(
             "qwen-max",
+            QoderRegion::Cn,
+            &good
+        ));
+        // `off` 是逃生阀：DeepSeek 也必须被关掉（上游若改了契约，用户能自救）。
+        assert!(!structured_tool_history_enabled(
+            "dfmodel",
             QoderRegion::Cn,
             &good
         ));
@@ -2231,12 +3396,15 @@ mod tests {
     /// - `qfmodel` / `qmodel*` / `gmodel` / `gfmodel`：issue #46 作者在**真实账号**的 CN
     ///   模型清单里取到的 key 形态（作者 2026-10-18 实测）；本机无 Qoder 账号，
     ///   **未二次复核** —— 真账号复核前不要往这张表里加**没在任一来源出现过**的 key。
+    /// - `dmodel` / `dfmodel`：issue #72 报障者真机（DeepSeek Flash + dsh）取证，
+    ///   2026-10-21 由「反向排除」改成「默认启用」。
     ///
-    /// 可证伪：把常量改回旧名单（4 项）⇒ 第一条断言红。
+    /// 可证伪：把常量改回旧名单（4 项）⇒ 第一条断言红；把 DeepSeek 分支删掉 ⇒
+    /// ③ 那两条红。
     #[test]
     fn real_qoder_model_keys_hit_the_structured_tool_history_whitelist() {
-        // 断言依赖 `QD_STRUCTURED_TOOL_HISTORY` 的**默认值**（auto）⇒ 与那条会改它的
-        // 用例串行化，否则会被并发 `set_var` 干扰（见 `structured_tool_history_rules`）。
+        // 与 `structured_tool_history_rules` 串行：那条会写进程级环境变量，
+        // 并发读到 `on` 会把下面的反向断言全部掩盖成假绿。
         let _env = crate::modules::config::env_lock();
         let good = vec![
             serde_json::json!({"role": "assistant", "tool_calls": [{"id": "c1"}]}),
@@ -2256,11 +3424,21 @@ mod tests {
                 "`{key}` 应命中（issue #46 真机清单）"
             );
         }
-        // 反向：刻意排除的族**不能**被捞进来（DeepSeek 走单独常量；Kimi / MiniMax 族
-        // 不在本仓 CN 清单；`smodel` / `cmodel` 是**国际版**的 key）。
-        for key in [
-            "dmodel", "dfmodel", "kimodel", "mmmodel", "smodel", "cmodel",
-        ] {
+        // ③ DeepSeek 族（issue #72）：必须启用，且只在 CN。
+        for key in ["dmodel", "dfmodel", "deepseek-v4"] {
+            assert!(
+                structured_tool_history_enabled(key, QoderRegion::Cn, &good),
+                "`{key}` 必须启用结构化工具历史（issue #72：文本模式会泄漏伪格式）"
+            );
+            assert!(!structured_tool_history_enabled(
+                key,
+                QoderRegion::Global,
+                &good
+            ));
+        }
+        // 反向：无依据的族**不能**被捞进来（Kimi / MiniMax 不在本仓 CN 清单；
+        // `smodel` / `cmodel` 是**国际版**的 key）。
+        for key in ["kimodel", "mmmodel", "smodel", "cmodel"] {
             assert!(
                 !structured_tool_history_enabled(key, QoderRegion::Cn, &good),
                 "`{key}` 不该命中 CN 结构化工具历史白名单"
@@ -2308,5 +3486,75 @@ mod tests {
         let quota = quota_usage(QoderRegion::Cn, &uid, &token).await.unwrap();
         println!("remaining={} total={}", quota.remaining, quota.total);
         let _ = checkin_status(QoderRegion::Cn, &uid, &token).await;
+    }
+    // ---------------------------------------------------------------------
+    // 历史工具结果削减（参考实现 `_shrink_tool_result`）
+    // ---------------------------------------------------------------------
+
+    #[test]
+    fn tool_keep_parses_env_values() {
+        assert_eq!(parse_tool_keep(None), TOOL_RESULT_KEEP_DEFAULT);
+        assert_eq!(parse_tool_keep(Some("")), TOOL_RESULT_KEEP_DEFAULT);
+        assert_eq!(parse_tool_keep(Some(" 500 ")), 500);
+        assert_eq!(parse_tool_keep(Some("off")), 0);
+        assert_eq!(parse_tool_keep(Some("0")), 0);
+        assert_eq!(parse_tool_keep(Some("DISABLE")), 0);
+        assert_eq!(parse_tool_keep(Some("abc")), TOOL_RESULT_KEEP_DEFAULT);
+    }
+
+    #[test]
+    fn shrink_keeps_head_and_tail_with_a_fixed_marker() {
+        let body = "A".repeat(5000) + "\n" + &"B".repeat(5000);
+        let shrunk = shrink_tool_result(&body, 2000);
+        assert!(shrunk.len() < body.len(), "必须真的变短");
+        assert!(shrunk.starts_with("AAAA"), "头部要保留");
+        assert!(shrunk.ends_with("BBBB"), "尾部要保留");
+        assert!(shrunk.contains("已省略中间内容"), "必须有省略标记");
+        // 标记是固定串（不带字数）—— 同一份内容两次削出来必须逐字相同。
+        assert_eq!(shrunk, shrink_tool_result(&body, 2000));
+
+        // 本来就不长 ⇒ 原样。
+        let short = "x".repeat(100);
+        assert_eq!(shrink_tool_result(&short, 2000), short);
+        // keep=0 ⇒ 关闭。
+        assert_eq!(shrink_tool_result(&body, 0), body);
+    }
+
+    #[test]
+    fn shrink_spares_complete_json_within_double_budget() {
+        // 完整 JSON 在 4*keep 预算内不削（截断即失去可解析性）。
+        let payload = serde_json::json!({"log": "x".repeat(4000)});
+        let text = payload.to_string();
+        assert!(
+            text.len() > 2000 && text.len() < 8000,
+            "前置：长度落在双倍预算内"
+        );
+        assert_eq!(shrink_tool_result(&text, 2000), text);
+    }
+
+    /// 削减只作用于**更早的**工具结果：最后一条（当前轮那条）必须原样保留。
+    #[test]
+    fn flatten_protects_the_last_tool_result() {
+        let big = "L".repeat(6000);
+        let messages = vec![
+            serde_json::json!({"role": "user", "content": "开始"}),
+            serde_json::json!({"role": "assistant", "content": Value::Null, "tool_calls": []}),
+            serde_json::json!({"role": "tool", "tool_call_id": "t1", "content": big}),
+            serde_json::json!({"role": "assistant", "content": Value::Null, "tool_calls": []}),
+            serde_json::json!({"role": "tool", "tool_call_id": "t2", "content": big}),
+        ];
+        let flat = flatten_messages(&messages, false, true);
+        let tool_texts: Vec<&str> = flat
+            .messages
+            .iter()
+            .filter(|message| message["role"] == "tool")
+            .filter_map(|message| message["content"].as_str())
+            .collect();
+        assert_eq!(tool_texts.len(), 2);
+        assert!(
+            tool_texts[0].contains("已省略中间内容"),
+            "更早的工具结果应被削减"
+        );
+        assert_eq!(tool_texts[1], big, "最后一条（当前轮）必须原样保留");
     }
 }

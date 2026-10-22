@@ -39,6 +39,8 @@ export function TopBar({
   searchLabel,
   onOpenSearch,
   onRefresh,
+  aggregateMode = false,
+  onSelectAggregate,
 }: {
   scope: Scope;
   statuses: ScopeStatusMap;
@@ -52,6 +54,16 @@ export function TopBar({
    * 结果反馈（toast）由调用方在 Promise 内自行给出。
    */
   onRefresh: () => Promise<void>;
+  /**
+   * 是否处于聚合视图（issue #50）。为 true 时作用域按钮显示「聚合 · 全部账号」，
+   * 菜单里高亮聚合项、6 个作用域项都不高亮。
+   *
+   * ⚠️ 顶栏是聚合页**唯一保留的公共外壳**：聚合入口就在这枚菜单里，
+   * 聚合页若没有顶栏，用户进去就出不来。
+   */
+  aggregateMode?: boolean;
+  /** 进入聚合视图。不传 ⇒ 菜单里不渲染「聚合」项。 */
+  onSelectAggregate?: () => void;
 }) {
   const t = useT();
   const { busy: refreshing, run: runRefresh } = useRefreshAction();
@@ -69,6 +81,8 @@ export function TopBar({
         statuses={statuses}
         shortcutBindings={shortcutBindings}
         onSelect={onSelectScope}
+        aggregate={aggregateMode}
+        onSelectAggregate={onSelectAggregate}
       />
       <RunPill status={statuses[scope]} />
 

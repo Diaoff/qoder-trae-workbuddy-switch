@@ -316,6 +316,18 @@ pub async fn claim_for(region: QoderRegion, uid: &str) -> Result<Value, String> 
     legacy_claim_for(region, uid).await
 }
 
+/// Pro 升级包：**资格查询**（只读；`available=false` ⇒ 活动已下线/本区域没有）。
+pub async fn pro_pack_status_for(region: QoderRegion, uid: &str) -> Result<Value, String> {
+    let access = campaign::access_token_for(region, uid)?;
+    Ok(campaign::pro_pack_status(region, uid, &access).await)
+}
+
+/// Pro 升级包：**领取**（幂等；已领过返回 `ok=true, already=true`）。
+pub async fn pro_pack_claim_for(region: QoderRegion, uid: &str) -> Result<Value, String> {
+    let access = campaign::access_token_for(region, uid)?;
+    Ok(campaign::claim_pro_pack(region, uid, &access).await)
+}
+
 /// 把活动通道的响应补成「旧契约 + 新明细」。
 ///
 /// 只补**兼容键**，不改上游给的事实：

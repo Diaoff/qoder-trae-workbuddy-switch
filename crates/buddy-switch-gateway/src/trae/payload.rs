@@ -152,7 +152,7 @@ const DEFAULT_CONTEXT_LENGTH: i64 = 131_072;
 /// 目录里 `max > dev` ⇒ 该模型**支持** Max Mode：请求时注入 `is_max_mode`，
 /// `/v1/models` 声明 `max`；否则声明 `dev`（`__dev` 通道实际窗口）。
 /// 目录拉不到 ⇒ 回落到客户端清单的 `default`，**不猜数字**。
-
+///
 /// 该模型的 Max Mode 口径 `(dev, max)`；不支持 / 目录缺失 ⇒ `None`。
 fn max_mode_window(variant: Option<TraeVariant>, model: &str) -> Option<(i64, i64)> {
     let variant = variant?;
@@ -1555,6 +1555,12 @@ mod tests {
             context_window,
             context_window_max: None,
             prompt_max_tokens: None,
+            // issue #65 的能力字段：网关对外清单暂不声明它们（管理面直接读客户端清单），
+            // 这里只需给夹具一个合法值。
+            credits_rate: None,
+            efforts: Vec::new(),
+            default_effort: None,
+            thinking: buddy_switch_core::modules::trae::model_list::ThinkingSupport::Unknown,
         }
     }
 }

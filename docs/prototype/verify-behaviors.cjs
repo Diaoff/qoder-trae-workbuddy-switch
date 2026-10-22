@@ -409,14 +409,19 @@ async function boot(query) {
   });
 
   /* ── P0-1 merge 真实聚合 ── */
-  const dom1 = await boot("dest=usage&usage=trend&range=7&hint=0");
+  /* ★ 2026-10-21 账本改版：原来那张「区间总 Token」只算客户端，名字却像总量（issue #63 的
+     核心投诉）⇒ 改名「客户端 Token」。这条校验的本意是「merge 开关真的聚合了逐日数据」，
+     所以**锁到客户端账本**（`book=client`）：合计卡在「全部」账本下是
+     `客户端 + 网关 − 重叠`，不再等于 6 个作用域的逐日和。 */
+  const dom1 = await boot("dest=usage&usage=trend&range=7&book=client&hint=0");
   const w = dom1.window;
   const totalOf = (d) => {
-    const t = [...d.querySelectorAll(".stat")].find((n) => n.textContent.includes("区间总 Token"));
+    const t = [...d.querySelectorAll(".stat")].find((n) => n.textContent.includes("客户端 Token"));
     return t ? t.querySelector(".v").textContent.trim() : null;
   };
   const single = totalOf(w.document);
-  check("P0-1 合并前：区间总 Token 存在", () => single || (() => { throw new Error("读不到区间总 Token"); })());
+  check("P0-1 合并前：客户端 Token 存在（原「区间总 Token」已按 issue #63 改名）",
+    () => single || (() => { throw new Error("读不到客户端 Token"); })());
 
   w.document.querySelector('[data-act="merge|1"]').click();
   await sleep(60);
@@ -962,21 +967,32 @@ async function boot(query) {
     if (noLabel.length) throw new Error(noLabel.length + " 张图没有 aria-label（看不了图的人拿不到信息）");
     return imgs.length + " 张";
   });
-  check("用量·趋势：堆叠柱的列数 = 天数，且每列分段数 = 模型数", () => {
+  /* ★ 2026-10-21 账本改版：趋势图的堆叠维度从「模型」换成「账本」（客户端 / 网关）。
+     按模型拆的每日走势挪到「模型」tab（`ledgerModelDaily`）—— 两处各答一个问题，
+     否则两级堆叠在深色小图里读不出来。 */
+  check("用量·趋势：堆叠柱的列数 = 天数，且每列分段数 = 账本数（全部=2 / 单账本=1）", () => {
     const cols = q(dT, ".cbar .ccol");
     if (cols.length !== 30) throw new Error("列数 " + cols.length + "，期望 30");
-    const models = domT2.window.eval("USAGE[state.scope].ext.modelDays.length");
     const segsPerCol = cols.map((c) => c.querySelectorAll("i").length);
-    const bad = segsPerCol.filter((n) => n !== models);
-    if (bad.length) throw new Error(`每列分段数应为 ${models}，实际有 ${[...new Set(bad)].join("/")}`);
-    return `${cols.length} 列 × ${models} 段`;
+    const bad = segsPerCol.filter((n) => n !== 2);
+    if (bad.length) throw new Error(`「全部」账本下每列应为 2 段（客户端 + 网关），实际 ${[...new Set(bad)].join("/")}`);
+    dT.querySelector('[data-act="usage-book|client"]').click();
+    const one = q(dT, ".cbar .ccol").map((c) => c.querySelectorAll("i").length);
+    if (one.some((n) => n !== 1)) throw new Error("客户端账本下每列应只剩 1 段");
+    dT.querySelector('[data-act="usage-book|all"]').click();
+    return `${cols.length} 列 × 2 段（客户端账本 → 1 段）`;
   });
-  check("用量·趋势：堆叠柱各分段高度之和 ≈ 当日总量（图不能与数据打架）", () => {
+  check("用量·趋势：堆叠柱各分段高度之和 ≈ 当日两本账合计（图不能与数据打架）", () => {
     const cols = q(dT, ".cbar .ccol");
-    const maxDay = domT2.window.eval("Math.max(...USAGE[state.scope].days.slice(-30).map(d=>d.value))");
+    const info = domT2.window.eval(`(() => {
+      const L = USAGE[state.scope].ext.ledger;
+      const i = L.client.days.length - 1;
+      const max = Math.max(...L.client.days.map((v, k) => v + L.gateway.days[k]));
+      return { total: L.client.days[i] + L.gateway.days[i], max };
+    })()`);
     const sumLastCol = [...cols[cols.length - 1].querySelectorAll("i")]
       .reduce((s, i) => s + parseFloat(i.style.height || "0"), 0);
-    const expect = domT2.window.eval("USAGE[state.scope].days[USAGE[state.scope].days.length-1].value") / maxDay * 100;
+    const expect = (info.total / info.max) * 100;
     if (Math.abs(sumLastCol - expect) > 1.5) throw new Error(`末列分段和 ${sumLastCol.toFixed(1)}% vs 期望 ${expect.toFixed(1)}%`);
     return sumLastCol.toFixed(1) + "%";
   });
@@ -987,11 +1003,13 @@ async function boot(query) {
     if (bad.length) throw new Error("列数不是 24：" + [...new Set(bad)].join("/"));
     return "7×24";
   });
-  check("用量·趋势：环形图扇区数 = 模型数", () => {
-    const arcs = q(dT, ".cdonut circle").length;
+  check("用量·趋势：模型占比**按单本账**画（全部账本 = 两个环，各自扇区数 = 该账本模型数）", () => {
+    const all = q(dT, ".cdonut");
+    if (all.length !== 2) throw new Error(`「全部」账本下应有两个环（客户端 / 网关），实际 ${all.length}`);
     const models = domT2.window.eval("USAGE[state.scope].ext.modelDays.length");
-    if (arcs !== models) throw new Error(`扇区 ${arcs} ≠ 模型 ${models}`);
-    return arcs + " 段";
+    const clientArcs = all[0].querySelectorAll("circle").length;
+    if (clientArcs !== models) throw new Error(`客户端环扇区 ${clientArcs} ≠ 模型 ${models}`);
+    return `2 环 · 客户端 ${clientArcs} 段`;
   });
   check("用量·趋势：累计曲线图注不再写「峰值 = 末值」这种废话", () => {
     const cap = dT.querySelector(".carea figcaption").textContent;
@@ -1001,14 +1019,21 @@ async function boot(query) {
 
   const domM2 = await boot("dest=usage&usage=models&range=30&hint=0");
   const dM = domM2.window.document;
-  check("用量·模型：环形 + 每行一条迷你趋势线", () => {
+  /* ★ 2026-10-21：模型 tab 从「一个环形 + 一条排行」改成「每本账一张表 + 每日按模型图」。
+     理由（issue #63）：两本账的分母不同，合并排行/合并环形都会给出假占比；
+     而「按模型看每日走势」这个原趋势图的能力挪到这里，不能丢。 */
+  check("用量·模型：每日按模型堆叠（每列分段 = 模型数）+ 每本账一张表", () => {
+    const charts = q(dM, ".cbar");
+    if (charts.length !== 2) throw new Error(`「全部」账本下应有两张按模型图（客户端 / 网关），实际 ${charts.length}`);
     const models = domM2.window.eval("USAGE[state.scope].ext.modelDays.length");
-    const bars = q(dM, ".hbar").length;
-    if (bars !== models) throw new Error(`排行条 ${bars} ≠ 模型 ${models}`);
-    const sparks = q(dM, ".hbar .cspark").length;
-    if (sparks !== models) throw new Error(`迷你趋势线 ${sparks} ≠ 模型 ${models}`);
-    if (!q(dM, ".cdonut circle").length) throw new Error("没有环形图");
-    return `${bars} 行 · ${sparks} 条趋势线`;
+    const segs = [...charts[0].querySelectorAll(".ccol")].map((c) => c.querySelectorAll("i").length);
+    if (segs.some((n) => n !== models)) throw new Error(`客户端按模型图每列应为 ${models} 段，实际 ${[...new Set(segs)].join("/")}`);
+    const rows = q(dM, ".tbl tbody tr").length;
+    const gatewayModels = domM2.window.eval("USAGE[state.scope].ext.ledger.gateway.models.length");
+    if (rows !== models + gatewayModels) throw new Error(`表行 ${rows} ≠ 客户端 ${models} + 网关 ${gatewayModels}`);
+    const bars = q(dM, ".lbar i").filter((i) => parseFloat(i.style.width) > 0).length;
+    if (bars < rows) throw new Error(`分布条 ${bars} < 表行 ${rows}`);
+    return `${charts.length} 图 · ${rows} 行 · ${bars} 条分布`;
   });
 
   const domS2 = await boot("dest=usage&usage=sessions&range=30&hint=0");
@@ -1039,9 +1064,13 @@ async function boot(query) {
     if (areas < 1) throw new Error("没有余额曲线");
     const bars = q(dC, ".bars .bar").length;
     if (bars !== 30) throw new Error("到期分布应为完整 30 天时间轴，实际 " + bars + " 根");
-    const donuts = q(dC, ".cdonut").length;
-    if (donuts !== 2) throw new Error("环形图应有 2 个（账号占比 + 状态码），实际 " + donuts);
-    return `双向柱 30 · 曲线 ${areas} · 到期 ${bars} · 环形 ${donuts}`;
+    /* ★ 2026-10-21：删掉「账号 Token 占比 / 网关状态码分布」两个环 ——
+       前者已被「模型」tab 的账本表覆盖，后者已由覆盖条（失败数）+ 网关页覆盖；
+       换成「两张积分账本表 + 两个口径的差额」，这才是 issue #63 要回答的问题。 */
+    const tables = q(dC, ".tbl").length;
+    if (tables < 3) throw new Error(`应有积分账本表 ×2 + 流水表，实际 ${tables} 张表`);
+    if (!dC.querySelector(".gapbox")) throw new Error("缺少「两个口径的差额」块");
+    return `双向柱 30 · 曲线 ${areas} · 到期 ${bars} · 表 ${tables} · 差额 ✓`;
   });
   check("用量·积分：余额曲线基线不锚 0（否则高位小幅波动会被压成直线）", () => {
     const cap = dC.querySelector(".carea figcaption").textContent;
@@ -1050,12 +1079,16 @@ async function boot(query) {
   });
 
   /* 合并态必须把**图表数据**也一起聚合，不能只有 days 变 */
-  check("用量·合并：模型扇区数真的变多（mergeExt 聚合了图表数据）", () => {
-    const before = q(dT, ".cdonut circle").length;
+  check("用量·合并：合计数字真的变多（mergeExt 聚合了图表数据）", () => {
+    const read = () => {
+      const t = [...dT.querySelectorAll(".stat")].find((n) => n.textContent.includes("合计 Token"));
+      return t ? t.querySelector(".v").textContent.trim() : null;
+    };
+    const before = read();
     dT.querySelector('[data-act="merge|1"]').click();
-    const after = q(dT, ".cdonut circle").length;
-    if (after <= before) throw new Error(`合并前 ${before} 段 → 合并后 ${after} 段，图表数据没聚合`);
-    return `${before} → ${after} 段`;
+    const after = read();
+    if (!before || !after || after === before) throw new Error(`合并前 ${before} → 合并后 ${after}，图表数据没聚合`);
+    return `${before} → ${after}`;
   });
 
   /* ══════════ 全局备份与恢复（PLAN §3.14） ══════════ */

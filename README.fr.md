@@ -38,17 +38,15 @@ Un poste de travail multi-comptes **100 % local** : il rassemble les comptes de 
 | 📊 **Usage et limites visibles** | Jetons, crédits, limites « compte × modèle » et la copie de session qui retarde ou a divergé — sur un seul écran. |
 | 🔌 **Le quota profite aussi aux autres outils** | Exposé en endpoint compatible OpenAI / Anthropic : Cursor, Claude Code, OpenWebUI. |
 
-<p align="center">
-  <a href="https://github.com/NextAgentX/qoder-trae-workbuddy-switch/releases/latest"><img alt="Télécharger" src="https://img.shields.io/badge/T%C3%A9l%C3%A9charger-Releases-2ea043?style=for-the-badge" /></a>
-  <a href="https://github.com/NextAgentX/qoder-trae-workbuddy-switch/stargazers"><img alt="Mettre une étoile" src="https://img.shields.io/badge/Mettre_une_%C3%A9toile-Star-f5c542?style=for-the-badge" /></a>
-  <a href="CONTRIBUTING.en.md"><img alt="Contribuer" src="https://img.shields.io/badge/Contribuer-Pull_Request-4c8bf5?style=for-the-badge" /></a>
-</p>
+> **Nature et périmètre d'utilisation**
+>
+> Ce projet est le fruit d'un **usage personnel et d'un apprentissage** de son auteur : il a été écrit pour supprimer la corvée du changement de comptes. **Vous pouvez le lire, le forker et l'améliorer, mais aucune maintenance n'est promise** : pas de support commercial, pas de SLA, pas de garantie de compatibilité avec une version donnée du client.
+>
+> Licence **PolyForm Noncommercial 1.0.0** : **seul l'usage personnel non commercial est autorisé, tout usage commercial est interdit** (y compris les projets commerciaux internes à une entreprise, les services SaaS / hébergés, la revente et la distribution groupée). Tout usage commercial exige l'autorisation écrite préalable de l'auteur.
 
-
-> ⚠️ **Outil tiers non officiel** (source-available, licence PolyForm Noncommercial). Aucun lien d'affiliation, d'autorisation ou de parrainage avec ces produits ni leurs ayants droit. Il lit et écrit les données d'authentification des clients locaux, envoie des requêtes automatiques selon votre planification et peut relayer votre quota via un port local. Lisez l'**[avertissement](docs/policies/DISCLAIMER.en.md)** avant utilisation.
+> ⚠️ **Non officiel · non commercial** : aucun lien d'affiliation, d'autorisation, de parrainage ou d'approbation avec WorkBuddy, CodeBuddy, TraeWork, Qoder ni leurs ayants droit ; **l'usage commercial n'est pas permis**. Il lit et écrit les données d'authentification des clients locaux, envoie des requêtes automatiques selon votre planification et peut relayer votre quota via un port local. Lisez l'**[avertissement](docs/policies/DISCLAIMER.en.md)** avant utilisation.
 
 ## Captures d'écran
-
 
 <table>
   <thead>
@@ -431,9 +429,7 @@ Guide complet (quoi prendre, checklist de PR, conventions de code) : **[CONTRIBU
 
 ## Soutenir le projet
 
-- ⭐ **Mettre une étoile** — l'aide la plus directe : le projet se trouve plus facilement et l'auteur sait qu'il vaut la peine d'être maintenu.
-- 🐞 **Décrire précisément un problème** — une issue reproductible vaut dix « ça ne marche pas », et part souvent dans la version suivante.
-- ☕ **Offrir un verre à l'auteur** (entièrement facultatif, aucune fonctionnalité n'est conditionnée)
+- ☕ **Offrir un verre à l'auteur** (entièrement facultatif, aucune fonctionnalité n'est conditionnée, et cela ne constitue pas une licence commerciale)
 
 <table>
   <thead>
@@ -456,7 +452,7 @@ Chaque projet suit sa propre licence. Ce projet est une implémentation indépen
 
 ## Avertissement
 
-Texte complet : **[docs/policies/DISCLAIMER.en.md](docs/policies/DISCLAIMER.en.md)** ([简体中文](docs/policies/DISCLAIMER.md)), six sections : outil tiers non officiel ; conditions d'utilisation et conformité ; écritures de données et sauvegardes ; risques de l'automatisation ; risques d'exposition de la passerelle API ; fourni « en l'état ». Utiliser le projet vaut acceptation ; sinon, cessez l'usage et désinstallez.
+Texte complet : **[docs/policies/DISCLAIMER.en.md](docs/policies/DISCLAIMER.en.md)** ([简体中文](docs/policies/DISCLAIMER.md)), sept sections : outil tiers non officiel ; conditions d'utilisation et conformité ; écritures de données et sauvegardes ; risques de l'automatisation ; risques d'exposition de la passerelle API ; fourni « en l'état » ; restrictions d'usage (interdiction de l'usage commercial et du contournement de la facturation). Utiliser le projet vaut acceptation ; sinon, cessez l'usage et désinstallez.
 
 ## Licence
 
@@ -465,6 +461,8 @@ Texte complet : **[docs/policies/DISCLAIMER.en.md](docs/policies/DISCLAIMER.en.m
 - Texte intégral : [LICENSE](./LICENSE)
 - Explication en langage clair et FAQ : [docs/policies/LICENSING.en.md](docs/policies/LICENSING.en.md) ([简体中文](docs/policies/LICENSING.md))
 - Pour une licence commerciale, contactez l'auteur via les Issues du dépôt.
+- **Les dons sont sans rapport avec la licence** : il s'agit de cadeaux volontaires, non d'un achat, d'une licence commerciale ou d'une promesse de service.
+- Projet **personnel** : aucun support commercial, aucun SLA, aucun engagement de maintenance. Les Issues et PR reçoivent une réponse au mieux, sans délai garanti.
 
 ## Historique des stars
 

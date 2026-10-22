@@ -57,6 +57,18 @@ const MUTATIONS = {
       return src.replace(from, to);
     },
   },
+  /* ★ 限额护栏卡（2026-10-21）：池表直接顶上来、卡片不渲染。
+     期望「有护栏卡」「卡在池表之前」两条一起变红 —— 只删渲染、不动数据。 */
+  quotacard: {
+    desc: "限额护栏卡未渲染（账号池表直接顶到分区顶部）",
+    file: "demo-app.js",
+    apply: (src) => {
+      const from = "main = quotaCardHtml(g) + `";
+      const to = "main = `` + ` /* MUTATED: 护栏卡被移除 */";
+      if (!src.includes(from)) throw new Error("未匹配到 quotaCardHtml 渲染行");
+      return src.replace(from, to);
+    },
+  },
   /* ★ 顶栏刷新按钮的进行中反馈（2026-10-15）：去掉 doRefresh 的 spinning/禁用注入，
      期望「点击后进入进行中态」那条断言变红（只删注入、不碰 500ms 计时与 toast）。 */
   refresh: {
@@ -265,14 +277,25 @@ function check(name, fn) {
      菜单本就是从 SCOPES 生成的，对拍恒真（永远绿）。写死才是对
      「3 平台 × 2 区域」这条**设计意图**的钉死。 */
   check("作用域菜单列出 6 个作用域（3 平台 × 2 区域）", () => {
-    const n = $$("#scope-menu .scope-item").length;
+    /* `:not(.agg-entry)` —— 菜单第一项是「聚合」入口（issue #50），它**不是作用域**
+       （`Scope` 是封闭字面量 `${平台}-${区域}`，塞进去会同时破坏类型、注册表一致性与
+       快捷键序号）。所以数作用域时要把它排除掉，而不是把 6 改成 7。 */
+    const n = $$("#scope-menu .scope-item:not(.agg-entry)").length;
     if (n !== 6) throw new Error("实际 " + n + " 个，期望 6 个");
     return true;
+  });
+  check("★ 作用域菜单第一项是「聚合」入口，且与 6 个作用域用分隔线隔开", () => {
+    const items = $$("#scope-menu .scope-item");
+    if (!items.length) throw new Error("菜单是空的");
+    if (!items[0].classList.contains("agg-entry")) throw new Error("第一项不是聚合入口");
+    if (items.filter((b) => b.classList.contains("agg-entry")).length !== 1) throw new Error("聚合入口应恰好一项");
+    if (!$("#scope-menu .sep")) throw new Error("聚合入口与作用域之间没有分隔线（视觉上会像第 7 个作用域）");
+    return "第一项 + 分隔线";
   });
   check("作用域菜单含 Qoder 的两个区域", () => {
     /* ⚠️ 按钮的 textContent 含换行（模板是多行的）⇒ 必须归一成单行再比对，
        否则失败信息会被换行撑成一大段，读不出到底缺哪个。 */
-    const labels = $$("#scope-menu .scope-item").map((b) => b.textContent.replace(/\s+/g, " ").trim());
+    const labels = $$("#scope-menu .scope-item:not(.agg-entry)").map((b) => b.textContent.replace(/\s+/g, " ").trim());
     for (const want of ["Qoder 国内版", "Qoder 国际版"]) {
       if (!labels.some((l) => l.includes(want))) throw new Error("缺少「" + want + "」：" + labels.join(" / "));
     }
@@ -327,8 +350,13 @@ function check(name, fn) {
   });
   click('[data-act="usage-tab|models"]');
   await sleep(30);
-  check("模型用量分布有横向条", () => {
-    if (!$$("#content .hbar").length) throw new Error("没有 hbar");
+  /* ★ 2026-10-21 账本改版：模型 tab 的「横向排行条（.hbar + 迷你趋势线）」
+     换成了「每本账一张表 + 表内分布条（.lbar）」，并补了每日按模型堆叠图。
+     断言跟着改成新形态 —— 要的是「模型维度有可视化的量分布」，不是某个类名。 */
+  check("模型用量分布有横向条（账本表内的分布条）", () => {
+    const bars = $$("#content .lbar i").filter((i) => parseFloat(i.style.width) > 0);
+    if (!bars.length) throw new Error("没有 .lbar 分布条");
+    if (!$$("#content .cbar").length) throw new Error("缺少每日按模型堆叠图");
     return true;
   });
 
@@ -418,6 +446,117 @@ function check(name, fn) {
     return true;
   });
 
+    /* ── 限额护栏（Qoder 网关 · 账号池）────────────────────────────────
+       与 App 的 `QoderQuotaGuard` 同构：四阈值 + 逐账号用量 + 拦截原因。
+       单文件那一套由 `verify-qoder-prototype.cjs` 守；这里守**门禁跑的这一套**。
+       另起一个 JSDOM 深链到账号池分区（不干扰上面的交互序列）。 ── */
+    const qUrl = (q) => "file://" + path.join(dir, "index.html").replace(/\\/g, "/") + "?" + q;
+    const domQ = await JSDOM.fromFile(path.join(dir, "index.html"), {
+      runScripts: "dangerously", resources: "usable", pretendToBeVisual: true,
+      url: qUrl("scope=qoder-cn&dest=gateway&gw=pool"),
+    });
+    const dQ = domQ.window.document;
+    await new Promise((r) => domQ.window.addEventListener("load", r));
+    await sleep(80);
+    const card = dQ.querySelector("[data-quota-card]");
+    check("拆分形态：Qoder 账号池顶部有「限额护栏」卡，四个阈值输入齐全", () => {
+      if (!card) throw new Error("没有 [data-quota-card]");
+      const keys = [...card.querySelectorAll("[data-quota]")].map((i) => i.dataset.quota);
+      for (const k of ["reserve", "daily", "credit", "model"]) {
+        if (!keys.includes(k)) throw new Error("缺输入 " + k + "：" + keys.join("/"));
+      }
+      return keys.join(" / ");
+    });
+    check("拆分形态：护栏卡排在账号池表**之前**（它是池的上游条件）", () => {
+      const html = dQ.querySelector("#content").innerHTML;
+      const a = html.indexOf("data-quota-card");
+      const b = html.indexOf('data-act="pin|');
+      if (a < 0 || b < 0 || a > b) throw new Error(`顺序不对（卡 ${a} / 池表 ${b}）`);
+      return true;
+    });
+    check("拆分形态：每种拦截态都给**可读原因**（徽标 title 非空）", () => {
+      const blocked = [...dQ.querySelectorAll("[data-quota-card] .badge")].filter(
+        (b) => b.classList.contains("warn") || b.classList.contains("bad"),
+      );
+      if (blocked.length < 3) throw new Error("被拦徽标只有 " + blocked.length + " 个（夹具应有 3 态）");
+      for (const b of blocked) {
+        if (!(b.getAttribute("title") || "").trim()) throw new Error("徽标缺原因：" + b.textContent);
+      }
+      return blocked.length + " 个被拦徽标都有原因";
+    });
+    check("拆分形态：保存会**真的改数据**（不是只弹 toast）", () => {
+      const input = card.querySelector('[data-quota="daily"]');
+      input.value = "1234";
+      card.querySelector('[data-act="quota-save"]').click();
+      const again = dQ.querySelector('[data-quota="daily"]');
+      if (!again || again.value !== "1234") throw new Error("保存后回填值 = " + (again && again.value));
+      return true;
+    });
+    /* ── 表格视图的行尾「更多」：与卡片**同一个菜单**（含签到）──────────
+       App 侧对应 `renderActions` + `QoderAccountMenu`；原型此前表格没有任何行尾动作。 */
+    const domT = await JSDOM.fromFile(path.join(dir, "index.html"), {
+      runScripts: "dangerously", resources: "usable", pretendToBeVisual: true,
+      url: qUrl("scope=qoder-cn&dest=accounts&view=table"),
+    });
+    const dT = domT.window.document;
+    await new Promise((r) => domT.window.addEventListener("load", r));
+    await sleep(80);
+    const tableMore = dT.querySelector('tbody [data-act^="acct-more|"]');
+    check("拆分形态：表格视图每行都有行尾「更多」（不是只有卡片有）", () => {
+      const rows = dT.querySelectorAll("#content tbody tr").length;
+      const mores = dT.querySelectorAll('#content tbody [data-act^="acct-more|"]').length;
+      if (!rows || mores !== rows) throw new Error(`行 ${rows} 个、更多按钮 ${mores} 个`);
+      return `${mores} 行都有`;
+    });
+    check("拆分形态：表格行的「更多」打开的是同一个菜单（含「手动签到」）", () => {
+      if (!tableMore) throw new Error("找不到行尾更多按钮");
+      tableMore.click();
+      const menu = dT.getElementById("acct-menu");
+      if (!menu) throw new Error("菜单没打开");
+      const t = String(menu.textContent || "").replace(/\s+/g, " ").trim();
+      for (const want of ["导出账号", "刷新积分"]) {
+        if (!t.includes(want)) throw new Error("菜单缺「" + want + "」：" + t.slice(0, 140));
+      }
+      /* 签到是**三态**：已签到 / 可点 / 需先登录 —— 断言「命中且只命中一种」，
+         而不是钉死某一个词（夹具里那条账号恰好已签到，钉死就成了假红）。 */
+      const states = ["今日已签到", "手动签到", "需先登录"].filter((w) => t.includes(w));
+      if (states.length !== 1) throw new Error("签到三态命中 " + states.length + " 个：" + t.slice(0, 140));
+      return "签到态：" + states[0];
+    });
+
+    /* ── Qoder 用量：四个子 Tab + 单位说明（拆分形态） ── */
+    const domU = await JSDOM.fromFile(path.join(dir, "index.html"), {
+      runScripts: "dangerously", resources: "usable", pretendToBeVisual: true,
+      url: qUrl("scope=qoder-cn&dest=usage"),
+    });
+    await new Promise((r) => domU.window.addEventListener("load", r));
+    await sleep(80);
+    check("拆分形态：Qoder 用量页有四个子 Tab，并标注「按 credits 计费」", () => {
+      const t = String(domU.window.document.querySelector("#content").textContent || "")
+        .replace(/\s+/g, " ")
+        .trim();
+      for (const k of ["趋势", "模型", "会话", "积分"]) {
+        if (!t.includes(k)) throw new Error("缺少子 Tab：" + k);
+      }
+      if (!t.includes("按 credits 计费")) throw new Error("缺少单位说明：" + t.slice(0, 160));
+      return true;
+    });
+
+    /* ⚠️ `check()` 只支持同步函数（返回值不是 `false` 即算通过）⇒ 异步部分必须
+       **在 check 外面**先做完，否则断言里的异常会变成未处理的 rejection、静默假绿。 */
+    const domW = await JSDOM.fromFile(path.join(dir, "index.html"), {
+      runScripts: "dangerously", resources: "usable", pretendToBeVisual: true,
+      url: qUrl("scope=wb-cn&dest=gateway&gw=pool"),
+    });
+    await new Promise((r) => domW.window.addEventListener("load", r));
+    await sleep(80);
+    check("拆分形态：WorkBuddy 作用域**不渲染**护栏卡（没这个能力就别画空壳）", () => {
+      if (domW.window.document.querySelector("[data-quota-card]")) {
+        throw new Error("WorkBuddy 页面出现了护栏卡");
+      }
+      domW.window.close();
+      return true;
+    });
   } catch (e) {
     /* 元素缺失/渲染中断也要落成一条失败，而不是让脚本崩掉——否则变异模式下
        只能看到「脚本异常」，读不出是哪条断言守住了。 */

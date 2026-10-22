@@ -50,12 +50,40 @@ pub struct CatalogModel {
     pub max_tokens: u64,
     /// 是否支持图片输入。
     pub supports_images: bool,
-    /// 积分倍率字符串（如 `"x0.79"`），缺省为 None。
+    /// 积分倍率**原文**（上游 `credits`，形如 `"x0.79"` / `"x0.34 credits"`），缺省为 None。
+    ///
+    /// ★ 保留原文而不是解析成数字：同一份目录里三种写法并存（`x0.79`、`x0.11 credits`、
+    /// `x0.00 credits`），原文是「上游到底怎么写」的唯一证据。要数字请用
+    /// [`CatalogModel::credits_rate`]。
     pub credits: Option<String>,
     /// 促销徽标。
     pub badges: Vec<String>,
-    /// 当前是否免费。
+    /// 当前是否免费（倍率为 0）。
+    ///
+    /// ⚠️ 这是**落盘快照**，老缓存里可能是按旧判据（只认 `x0.00`、不认 `x0.00 credits`）
+    /// 算出来的 `false`。读缓存时由 [`CatalogModel::refresh_derived`] 重算，出口不再二次判断。
     pub free: bool,
+    /// 思考档位能力（上游 `reasoning`，issue #65）；旧缓存 / 内置兜底为 `None`。
+    ///
+    /// ★ 缺它不是「没有档位」，而是「这份目录没声明」—— 展示时由网关侧按
+    /// `buddy_switch_gateway::outbound::effort::static_effort_cap` 回落静态表，并把
+    /// 来源标成「内置档位表」。两者**不得混为一谈**（用户会以为它和官方客户端一致）。
+    #[serde(default)]
+    pub reasoning: Option<CatalogReasoning>,
+}
+
+/// 上游 `reasoning` 块：这个模型支持哪些思考档位、默认哪一档、能否关掉思考。
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct CatalogReasoning {
+    /// 可选档位（`supportedEfforts`，小写规范名，保序）；空 = 上游没声明。
+    #[serde(default)]
+    pub efforts: Vec<String>,
+    /// 默认档位（`defaultEffort`）。
+    #[serde(default)]
+    pub default_effort: Option<String>,
+    /// 是否允许关闭思考（`canDisableThinking`）；`None` = 上游没给。
+    #[serde(default)]
+    pub can_disable_thinking: Option<bool>,
 }
 
 impl CatalogModel {
@@ -67,6 +95,45 @@ impl CatalogModel {
             self.context_window_default.unwrap_or(self.context_window)
         }
     }
+
+    /// 积分倍率数字（`0.79`）。三种上游写法都认：`x0.79` / `0.79` / `x0.34 credits`。
+    ///
+    /// **唯一解析点** —— 界面与出口①都读它，别再各自 `strip_prefix('x')`。
+    pub fn credits_rate(&self) -> Option<f64> {
+        self.credits.as_deref().and_then(parse_credits_rate)
+    }
+
+    /// 是否免费：倍率为 0。
+    ///
+    /// ★ 判零必须走 [`Self::credits_rate`] —— 旧判据只认 `x0.00` 的「整数段全 0」形态，
+    /// 遇到上游真给的 `x0.00 credits` 会判成**收费**（issue #65 顺带发现的缺陷）。
+    pub fn is_free(&self) -> bool {
+        self.credits_rate() == Some(0.0)
+    }
+
+    /// 重算派生字段（`free`）。读缓存 / 解析上游后都该调一次。
+    pub fn refresh_derived(&mut self) {
+        self.free = self.is_free();
+    }
+}
+
+/// 解析积分倍率字符串。
+///
+/// 认的形态（实测于同一份上游目录）：`x0.79`、`x0.11 credits`、`x0.00 credits`，
+/// 另有不带 `x` 前缀的 `0.79`。**不认**的就返回 `None`（宁可显示「—」也不猜）。
+pub fn parse_credits_rate(raw: &str) -> Option<f64> {
+    let trimmed = raw.trim();
+    // 取第一个空白前的片段：`x0.34 credits` → `x0.34`。
+    let token = trimmed.split_whitespace().next().unwrap_or("");
+    let body = token
+        .strip_prefix('x')
+        .or_else(|| token.strip_prefix('X'))
+        .or_else(|| token.strip_prefix('×'))
+        .unwrap_or(token);
+    if body.is_empty() {
+        return None;
+    }
+    body.parse::<f64>().ok().filter(|value| value.is_finite())
 }
 
 /// 一次目录快照。
@@ -193,6 +260,7 @@ pub static FALLBACK_CN_MODELS: LazyLock<Vec<CatalogModel>> = LazyLock::new(|| {
             credits: None,
             badges: Vec::new(),
             free: false,
+            reasoning: None,
         },
         CatalogModel {
             id: "hy4-preview".into(),
@@ -204,6 +272,7 @@ pub static FALLBACK_CN_MODELS: LazyLock<Vec<CatalogModel>> = LazyLock::new(|| {
             credits: None,
             badges: Vec::new(),
             free: false,
+            reasoning: None,
         },
         CatalogModel {
             id: "hy3".into(),
@@ -215,6 +284,7 @@ pub static FALLBACK_CN_MODELS: LazyLock<Vec<CatalogModel>> = LazyLock::new(|| {
             credits: None,
             badges: Vec::new(),
             free: false,
+            reasoning: None,
         },
         CatalogModel {
             id: "hy3-x".into(),
@@ -226,6 +296,7 @@ pub static FALLBACK_CN_MODELS: LazyLock<Vec<CatalogModel>> = LazyLock::new(|| {
             credits: Some("x0.05".into()),
             badges: Vec::new(),
             free: false,
+            reasoning: None,
         },
         CatalogModel {
             id: "deepseek-v4.1-flash".into(),
@@ -237,6 +308,7 @@ pub static FALLBACK_CN_MODELS: LazyLock<Vec<CatalogModel>> = LazyLock::new(|| {
             credits: Some("x0.03 credits".into()),
             badges: vec!["独家优惠".into()],
             free: false,
+            reasoning: None,
         },
         CatalogModel {
             id: "glm-5.3".into(),
@@ -248,6 +320,7 @@ pub static FALLBACK_CN_MODELS: LazyLock<Vec<CatalogModel>> = LazyLock::new(|| {
             credits: Some("x0.79".into()),
             badges: Vec::new(),
             free: false,
+            reasoning: None,
         },
         CatalogModel {
             id: "glm-5.3-flash".into(),
@@ -259,6 +332,7 @@ pub static FALLBACK_CN_MODELS: LazyLock<Vec<CatalogModel>> = LazyLock::new(|| {
             credits: Some("x0.06".into()),
             badges: Vec::new(),
             free: false,
+            reasoning: None,
         },
         CatalogModel {
             id: "glm-5.2".into(),
@@ -270,6 +344,7 @@ pub static FALLBACK_CN_MODELS: LazyLock<Vec<CatalogModel>> = LazyLock::new(|| {
             credits: Some("x0.79 credits".into()),
             badges: vec!["夜间折扣".into()],
             free: false,
+            reasoning: None,
         },
         CatalogModel {
             id: "glm-5.1".into(),
@@ -281,6 +356,7 @@ pub static FALLBACK_CN_MODELS: LazyLock<Vec<CatalogModel>> = LazyLock::new(|| {
             credits: Some("x0.79 credits".into()),
             badges: Vec::new(),
             free: false,
+            reasoning: None,
         },
         CatalogModel {
             id: "glm-5v-turbo".into(),
@@ -292,6 +368,7 @@ pub static FALLBACK_CN_MODELS: LazyLock<Vec<CatalogModel>> = LazyLock::new(|| {
             credits: Some("x0.71 credits".into()),
             badges: Vec::new(),
             free: false,
+            reasoning: None,
         },
         CatalogModel {
             id: "kimi-k3-1".into(),
@@ -303,6 +380,7 @@ pub static FALLBACK_CN_MODELS: LazyLock<Vec<CatalogModel>> = LazyLock::new(|| {
             credits: Some("x1.62 credits".into()),
             badges: Vec::new(),
             free: false,
+            reasoning: None,
         },
         CatalogModel {
             id: "kimi-k2.8-preview".into(),
@@ -314,6 +392,7 @@ pub static FALLBACK_CN_MODELS: LazyLock<Vec<CatalogModel>> = LazyLock::new(|| {
             credits: Some("x0.77 credits".into()),
             badges: Vec::new(),
             free: false,
+            reasoning: None,
         },
         CatalogModel {
             id: "kimi-k2.7".into(),
@@ -325,6 +404,7 @@ pub static FALLBACK_CN_MODELS: LazyLock<Vec<CatalogModel>> = LazyLock::new(|| {
             credits: Some("x0.57 credits".into()),
             badges: Vec::new(),
             free: false,
+            reasoning: None,
         },
         CatalogModel {
             id: "kimi-k2.6".into(),
@@ -336,6 +416,7 @@ pub static FALLBACK_CN_MODELS: LazyLock<Vec<CatalogModel>> = LazyLock::new(|| {
             credits: Some("x0.52 credits".into()),
             badges: Vec::new(),
             free: false,
+            reasoning: None,
         },
         CatalogModel {
             id: "minimax-m3".into(),
@@ -347,6 +428,7 @@ pub static FALLBACK_CN_MODELS: LazyLock<Vec<CatalogModel>> = LazyLock::new(|| {
             credits: Some("x0.25 credits".into()),
             badges: Vec::new(),
             free: false,
+            reasoning: None,
         },
         CatalogModel {
             id: "deepseek-v4-pro".into(),
@@ -358,6 +440,7 @@ pub static FALLBACK_CN_MODELS: LazyLock<Vec<CatalogModel>> = LazyLock::new(|| {
             credits: Some("x0.51 credits".into()),
             badges: Vec::new(),
             free: false,
+            reasoning: None,
         },
     ]
 });
@@ -377,6 +460,7 @@ pub static FALLBACK_GLOBAL_MODELS: LazyLock<Vec<CatalogModel>> = LazyLock::new(|
             credits: None,
             badges: Vec::new(),
             free: false,
+            reasoning: None,
         },
         CatalogModel {
             id: "fast-model".into(),
@@ -388,6 +472,7 @@ pub static FALLBACK_GLOBAL_MODELS: LazyLock<Vec<CatalogModel>> = LazyLock::new(|
             credits: Some("x0.34 credits".into()),
             badges: Vec::new(),
             free: false,
+            reasoning: None,
         },
         CatalogModel {
             id: "balanced-model".into(),
@@ -399,6 +484,7 @@ pub static FALLBACK_GLOBAL_MODELS: LazyLock<Vec<CatalogModel>> = LazyLock::new(|
             credits: Some("x0.59 credits".into()),
             badges: Vec::new(),
             free: false,
+            reasoning: None,
         },
         CatalogModel {
             id: "primary-model".into(),
@@ -410,6 +496,7 @@ pub static FALLBACK_GLOBAL_MODELS: LazyLock<Vec<CatalogModel>> = LazyLock::new(|
             credits: Some("x3.31 credits".into()),
             badges: Vec::new(),
             free: false,
+            reasoning: None,
         },
         CatalogModel {
             id: "deepseek-v4.1-flash".into(),
@@ -421,6 +508,7 @@ pub static FALLBACK_GLOBAL_MODELS: LazyLock<Vec<CatalogModel>> = LazyLock::new(|
             credits: Some("x0.00".into()),
             badges: Vec::new(),
             free: true,
+            reasoning: None,
         },
         CatalogModel {
             id: "deepseek-v4.1-flash-sg".into(),
@@ -432,6 +520,7 @@ pub static FALLBACK_GLOBAL_MODELS: LazyLock<Vec<CatalogModel>> = LazyLock::new(|
             credits: Some("x0.03".into()),
             badges: Vec::new(),
             free: false,
+            reasoning: None,
         },
         CatalogModel {
             id: "hy4-preview".into(),
@@ -443,6 +532,7 @@ pub static FALLBACK_GLOBAL_MODELS: LazyLock<Vec<CatalogModel>> = LazyLock::new(|
             credits: Some("x0.29".into()),
             badges: Vec::new(),
             free: false,
+            reasoning: None,
         },
         CatalogModel {
             id: "hy3".into(),
@@ -454,6 +544,7 @@ pub static FALLBACK_GLOBAL_MODELS: LazyLock<Vec<CatalogModel>> = LazyLock::new(|
             credits: Some("x0.00".into()),
             badges: Vec::new(),
             free: true,
+            reasoning: None,
         },
         CatalogModel {
             id: "kimi-k2.8-preview".into(),
@@ -465,6 +556,7 @@ pub static FALLBACK_GLOBAL_MODELS: LazyLock<Vec<CatalogModel>> = LazyLock::new(|
             credits: Some("x0.77".into()),
             badges: Vec::new(),
             free: false,
+            reasoning: None,
         },
         CatalogModel {
             id: "gpt-5.6-sol".into(),
@@ -476,6 +568,7 @@ pub static FALLBACK_GLOBAL_MODELS: LazyLock<Vec<CatalogModel>> = LazyLock::new(|
             credits: Some("x3.47".into()),
             badges: Vec::new(),
             free: false,
+            reasoning: None,
         },
         CatalogModel {
             id: "gpt-5.6-terra".into(),
@@ -487,6 +580,7 @@ pub static FALLBACK_GLOBAL_MODELS: LazyLock<Vec<CatalogModel>> = LazyLock::new(|
             credits: Some("x1.39".into()),
             badges: Vec::new(),
             free: false,
+            reasoning: None,
         },
         CatalogModel {
             id: "gpt-5.6-luna".into(),
@@ -498,6 +592,7 @@ pub static FALLBACK_GLOBAL_MODELS: LazyLock<Vec<CatalogModel>> = LazyLock::new(|
             credits: Some("x0.14".into()),
             badges: Vec::new(),
             free: false,
+            reasoning: None,
         },
         CatalogModel {
             id: "gpt-5.5".into(),
@@ -509,6 +604,7 @@ pub static FALLBACK_GLOBAL_MODELS: LazyLock<Vec<CatalogModel>> = LazyLock::new(|
             credits: Some("x3.31".into()),
             badges: Vec::new(),
             free: false,
+            reasoning: None,
         },
         CatalogModel {
             id: "gpt-5.4".into(),
@@ -520,6 +616,7 @@ pub static FALLBACK_GLOBAL_MODELS: LazyLock<Vec<CatalogModel>> = LazyLock::new(|
             credits: Some("x1.65".into()),
             badges: Vec::new(),
             free: false,
+            reasoning: None,
         },
         CatalogModel {
             id: "gemini-3.5-flash".into(),
@@ -531,6 +628,7 @@ pub static FALLBACK_GLOBAL_MODELS: LazyLock<Vec<CatalogModel>> = LazyLock::new(|
             credits: Some("x0.99".into()),
             badges: Vec::new(),
             free: false,
+            reasoning: None,
         },
         CatalogModel {
             id: "gpt-6-astra".into(),
@@ -542,6 +640,7 @@ pub static FALLBACK_GLOBAL_MODELS: LazyLock<Vec<CatalogModel>> = LazyLock::new(|
             credits: Some("x6.67".into()),
             badges: Vec::new(),
             free: false,
+            reasoning: None,
         },
         CatalogModel {
             id: "glm-5.3-flash".into(),
@@ -553,6 +652,7 @@ pub static FALLBACK_GLOBAL_MODELS: LazyLock<Vec<CatalogModel>> = LazyLock::new(|
             credits: Some("x0.08".into()),
             badges: Vec::new(),
             free: false,
+            reasoning: None,
         },
         CatalogModel {
             id: "glm-5.3".into(),
@@ -564,6 +664,7 @@ pub static FALLBACK_GLOBAL_MODELS: LazyLock<Vec<CatalogModel>> = LazyLock::new(|
             credits: Some("x0.69".into()),
             badges: Vec::new(),
             free: false,
+            reasoning: None,
         },
         CatalogModel {
             id: "glm-5.2".into(),
@@ -575,6 +676,7 @@ pub static FALLBACK_GLOBAL_MODELS: LazyLock<Vec<CatalogModel>> = LazyLock::new(|
             credits: Some("x0.79".into()),
             badges: Vec::new(),
             free: false,
+            reasoning: None,
         },
         CatalogModel {
             id: "minimax-m3.1-flash".into(),
@@ -586,6 +688,7 @@ pub static FALLBACK_GLOBAL_MODELS: LazyLock<Vec<CatalogModel>> = LazyLock::new(|
             credits: Some("x0.08".into()),
             badges: Vec::new(),
             free: false,
+            reasoning: None,
         },
         CatalogModel {
             id: "kimi-k3".into(),
@@ -597,6 +700,7 @@ pub static FALLBACK_GLOBAL_MODELS: LazyLock<Vec<CatalogModel>> = LazyLock::new(|
             credits: Some("x1.62".into()),
             badges: Vec::new(),
             free: false,
+            reasoning: None,
         },
         CatalogModel {
             id: "kimi-k2.6".into(),
@@ -608,6 +712,7 @@ pub static FALLBACK_GLOBAL_MODELS: LazyLock<Vec<CatalogModel>> = LazyLock::new(|
             credits: Some("x0.52".into()),
             badges: Vec::new(),
             free: false,
+            reasoning: None,
         },
         CatalogModel {
             id: "grok-4.7".into(),
@@ -619,6 +724,7 @@ pub static FALLBACK_GLOBAL_MODELS: LazyLock<Vec<CatalogModel>> = LazyLock::new(|
             credits: Some("x1.90".into()),
             badges: Vec::new(),
             free: false,
+            reasoning: None,
         },
         CatalogModel {
             id: "gpt-6-sol".into(),
@@ -630,6 +736,7 @@ pub static FALLBACK_GLOBAL_MODELS: LazyLock<Vec<CatalogModel>> = LazyLock::new(|
             credits: Some("x1.33".into()),
             badges: Vec::new(),
             free: false,
+            reasoning: None,
         },
         CatalogModel {
             id: "gemini-3.8-flash".into(),
@@ -641,6 +748,7 @@ pub static FALLBACK_GLOBAL_MODELS: LazyLock<Vec<CatalogModel>> = LazyLock::new(|
             credits: Some("x0.95".into()),
             badges: Vec::new(),
             free: false,
+            reasoning: None,
         },
         CatalogModel {
             id: "gpt-6-luna".into(),
@@ -652,6 +760,7 @@ pub static FALLBACK_GLOBAL_MODELS: LazyLock<Vec<CatalogModel>> = LazyLock::new(|
             credits: Some("x0.07".into()),
             badges: Vec::new(),
             free: false,
+            reasoning: None,
         },
         CatalogModel {
             id: "gpt-6.1-sol".into(),
@@ -663,6 +772,7 @@ pub static FALLBACK_GLOBAL_MODELS: LazyLock<Vec<CatalogModel>> = LazyLock::new(|
             credits: Some("x1.33".into()),
             badges: Vec::new(),
             free: false,
+            reasoning: None,
         },
         CatalogModel {
             id: "step-5-preview".into(),
@@ -674,6 +784,7 @@ pub static FALLBACK_GLOBAL_MODELS: LazyLock<Vec<CatalogModel>> = LazyLock::new(|
             credits: Some("x0.00".into()),
             badges: Vec::new(),
             free: true,
+            reasoning: None,
         },
     ]
 });
@@ -830,12 +941,19 @@ impl CatalogStore {
         if cached.models.is_empty() || cached.version != CACHE_VERSION {
             return None;
         }
+        let mut models = cached.models;
+        /* ★ 老缓存里的 `free` 是按旧判据（只认 `x0.00`，不认 `x0.00 credits`）算出来的
+        —— 读盘时就地重算，否则上游给的 `x0.00 credits` 会一直显示「收费」，
+        直到下一次成功识别上游（最长 24h）。派生字段只有 `is_free()` 一个真值。 */
+        for model in &mut models {
+            model.refresh_derived();
+        }
         Some(with_reason(
             CatalogSnapshot {
                 region,
                 source: CatalogSource::Cached,
                 fetched_at: Some(cached.fetched_at),
-                models: cached.models,
+                models,
                 note: None,
             },
             CACHED_NOTE,
@@ -993,6 +1111,7 @@ mod tests {
             credits: None,
             badges: Vec::new(),
             free: false,
+            reasoning: None,
         }];
         let cached_doc = json!({
             "version": 2,
@@ -1024,6 +1143,7 @@ mod tests {
                 credits: Some("x0.10".into()),
                 badges: Vec::new(),
                 free: false,
+                reasoning: None,
             }],
         );
         let live = store2.current(Region::Cn);
@@ -1059,6 +1179,7 @@ mod tests {
             credits: None,
             badges: Vec::new(),
             free: false,
+            reasoning: None,
         }
     }
 

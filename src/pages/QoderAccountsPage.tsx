@@ -67,6 +67,7 @@ import { ImportAccountsDialog } from "@/components/import-accounts-dialog";
 import { RecycleBinSheet } from "@/components/recycle-bin-sheet";
 import {
   QoderAccountCard,
+  QoderAccountMenu,
   QoderForeignBadge,
   QoderStatusChips,
   qoderAccountName,
@@ -165,6 +166,14 @@ export default function QoderAccountsPage() {
   const [exportOpen, setExportOpen] = useState(false);
   const [exportTargets, setExportTargets] = useState<QoderAccountView[] | null>(null);
   const [detail, setDetail] = useState<QoderAccountView | null>(null);
+  /**
+   * Pro 升级包资格（按 uid 缓存）。
+   *
+   * ⚠️ `available=false`（活动下线，真机 404 就是这档）⇒ **不渲染入口**，不摆死按钮。
+   * 只在打开抽屉时查一次（单账号 1 个请求），不在列表首页批查（会翻 N 倍）。
+   */
+  const [proPack, setProPack] = useState<Record<string, api.QoderProPackStatus>>({});
+  const [proBusy, setProBusy] = useState<string | null>(null);
   const [detailAutoEditRemark, setDetailAutoEditRemark] = useState(false);
   const [detailAutoEditGroup, setDetailAutoEditGroup] = useState(false);
   /** 待确认的切换（账号 × 程序位）。 */
@@ -884,17 +893,92 @@ export default function QoderAccountsPage() {
     ];
   }, [detail, credits, t]);
 
-  /** 抽屉的签到区 —— 只在签到状态**明确可读**时渲染（未知 = 不摆「+0」）。 */
+  /** 打开抽屉时查一次 Pro 升级包资格（活动下线/接口不可用 ⇒ 静默不渲染）。 */
+  useEffect(() => {
+    const uid = detail?.uid;
+    if (!uid) return;
+    let cancelled = false;
+    api
+      .qoderProPackStatus(scope, uid)
+      .then((status) => {
+        if (!cancelled) setProPack((prev) => ({ ...prev, [uid]: status }));
+      })
+      .catch(() => {
+        /* 资格查询失败**不打扰用户**：入口不渲染即可（真正失败会在领取时报）。 */
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [detail?.uid, scope]);
+
+  /**
+   * 领取 Pro 升级包。
+   *
+   * 成功/已领过都算成功（后端是幂等的）；领完把资格置为「已领」并**刷新额度**
+   * —— 否则用户看不到积分到账，会怀疑没领上。
+   */
+  const claimProPack = useCallback(
+    async (uid: string) => {
+      setProBusy(uid);
+      try {
+        const result = await api.qoderProPackClaim(scope, uid);
+        toast.success(result.message);
+        setProPack((prev) => ({
+          ...prev,
+          [uid]: { available: result.available, eligible: false, error: null },
+        }));
+        void loadEnrichment();
+      } catch (error) {
+        toast.error(api.asError(error));
+      } finally {
+        setProBusy(null);
+      }
+    },
+    [scope, loadEnrichment],
+  );
+
+  /** 抽屉里的福利包区块（活动在线才给）。 */
+  const detailProPack = useMemo(() => {
+    if (!detail) return null;
+    const status = proPack[detail.uid];
+    if (!status?.available) return null;
+    return {
+      title: t("qoder.page.accounts.pro.title"),
+      description: t("qoder.page.accounts.pro.desc"),
+      claimLabel: t("qoder.page.accounts.pro.claim"),
+      claimingLabel: t("qoder.page.accounts.pro.claiming"),
+      claimedLabel: t("qoder.page.accounts.pro.claimed"),
+      claimed: !status.eligible,
+      busy: proBusy === detail.uid,
+      onClaim: () => void claimProPack(detail.uid),
+    };
+  }, [detail, proPack, proBusy, t, claimProPack]);
+
+  /**
+   * 抽屉的签到区 —— 状态**明确可读**时给数值；读不到 / 无机器身份 / 本区域没活动时
+   * 给一条**原因说明**（issue #66：从前这些情况整个 tab 直接消失，用户只看到「读不到」）。
+   */
   const detailCheckin = useMemo(() => {
     if (!detail) return null;
     const row = checkinRows[detail.uid];
-    if (!row || !row.ok || row.todayCheckedIn === undefined) return null;
+    if (!row) return null;
+    const notice = !row.ok
+      ? t("qoder.page.accounts.checkin.noticeUnreadable", {
+          error: row.error ?? t("shared.stat.checkinUnreadable"),
+        })
+      : row.machineHeaders === "omitted"
+        ? t("qoder.page.accounts.checkin.noticeNoMachine")
+        : row.status === "NONE"
+          ? t("qoder.page.accounts.checkin.noticeNoCampaign")
+          : null;
+    if (row.todayCheckedIn === undefined && !notice) return null;
     return {
       todayCheckedIn: row.todayCheckedIn === true,
       rewardCredits: row.rewardCredits ?? null,
       streakDays: row.streakDays ?? null,
+      notice,
     };
-  }, [detail, checkinRows]);
+  }, [detail, checkinRows, t]);
 
   const detailActions = useMemo<DetailActions | null>(() => {
     if (!detail) return null;
@@ -1160,6 +1244,29 @@ export default function QoderAccountsPage() {
         }
         rowSelectLabel={(account) => t("shared.table.selectRowAria", { name: qoderAccountName(account) })}
         rowOpenLabel={(account) => t("shared.table.openRowAria", { name: qoderAccountName(account) })}
+        /* ★ 表格视图的「更多」：与卡片**同一个菜单组件**（WB 的 `renderActions` 同形）。
+           此前 Qoder 表格没有任何行尾动作 ⇒ 表格里除了点行就没有别的出口。 */
+        renderActions={(account) => (
+          <QoderAccountMenu
+            compact
+            account={account}
+            name={qoderAccountName(account)}
+            checkinToday={checkinTodayOf(account)}
+            onOpenDetail={openDetail}
+            onEditRemark={openRemark}
+            onSetGroup={openGroup}
+            onCheckin={(target) => void runCheckin([target])}
+            onExport={(target) => {
+              setExportTargets([target]);
+              setExportOpen(true);
+            }}
+            onDelete={setPendingDelete}
+            onRefreshPart={(kind) => onRefreshPart(account, kind)}
+            refreshingKinds={refreshPartBusy.kindsOf(account.uid)}
+            doneKinds={refreshPartBusy.doneKindsOf(account.uid)}
+            refreshKinds={QODER_REFRESH_KINDS}
+          />
+        )}
         renderCard={(account) => {
           const row = credits[account.uid];
           return (
@@ -1176,6 +1283,12 @@ export default function QoderAccountsPage() {
               refreshKinds={QODER_REFRESH_KINDS}
               onDelete={setPendingDelete}
               onSetGroup={openGroup}
+              /* 签到 / 导出与批量操作**同一条路径**：菜单只是把目标缩到一个账号。 */
+              onCheckin={(account) => void runCheckin([account])}
+              onExport={(account) => {
+                setExportTargets([account]);
+                setExportOpen(true);
+              }}
               credits={
                 row && row.ok
                   ? { remaining: row.remaining ?? 0, total: row.total ?? 0, plan: row.plan ?? null }
@@ -1342,6 +1455,7 @@ export default function QoderAccountsPage() {
         refreshingKinds={detail ? refreshPartBusy.kindsOf(detail.uid) : []}
         onRefreshPart={detail ? (kind) => void onRefreshPart(detail, kind) : undefined}
         checkin={detailCheckin}
+        proPack={detailProPack}
         remark={detail?.remark ?? ""}
         onSaveRemark={detail ? (remark) => saveRemark(detail, remark) : undefined}
         autoEditRemark={detailAutoEditRemark}

@@ -85,6 +85,18 @@ export const en = {
   "shared.gateway.models.contextFromCatalog": "From catalog",
   "shared.gateway.models.colUpstream": "Upstream",
   "shared.gateway.models.colExposed": "Gateway exposure",
+  /* issue #65: thinking levels + credit multiplier columns. */
+  "shared.gateway.models.colEfforts": "Thinking",
+  "shared.gateway.models.colCredits": "Credits",
+  "shared.gateway.models.effortDefault": "Default: {effort}",
+  "shared.gateway.models.effortNoneUnknown": "This program's model list does not declare thinking levels",
+  "shared.gateway.models.effortNoneUnsupported": "This model has no selectable thinking level",
+  "shared.gateway.models.effortNoneUndeclared": "Not declared upstream, and the built-in table has no entry",
+  "shared.gateway.models.effortSourceUpstream": "Levels come from the upstream catalog",
+  "shared.gateway.models.effortSourceStatic": "Levels come from the gateway's built-in table (not declared upstream; may lag the official client)",
+  "shared.gateway.models.creditsFree": "Free",
+  "shared.gateway.models.creditsNone": "Upstream provides no credit multiplier",
+  "shared.gateway.models.creditsHint": "Multiplier of the base price, not an amount",
   "shared.gateway.models.upstreamAvailable": "Available",
   "shared.gateway.models.upstreamUnavailable": "Unavailable",
   "shared.gateway.models.exposed": "Exposed",
@@ -379,7 +391,6 @@ export const en = {
   "shared.demo.session.replicaAlpha": "Rework replica ownership computation",
   "shared.demo.session.replicaBeta": "Unify the cross-account session copy entry",
   // ---- Model catalog ----
-  "shared.demo.catalog.limitedFree": "Limited-time free",
   "shared.demo.catalog.promo": "Promo",
   "shared.demo.catalog.globalStale": "The upstream API may have changed; showing the last successful cache",
   // ---- Account strategy ----

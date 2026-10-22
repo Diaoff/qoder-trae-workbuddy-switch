@@ -6,7 +6,8 @@ import type {
   ClientSettingsBackupsResponse, ClientSettingsDiffResponse, ClientSettingsFingerprint,
   ClientSettingsProxyGroup, ClientSettingsReadResponse, ClientSettingsSlot, ClientSettingsSlotsResponse,
   CreditOfficialUsageModel, CreditStatistics, GatewayConfig, GatewayLogEntry, GatewayPoolAccount,
-  GatewayStatus, GatewayTokenTrend, GithubConfig, Region, RotateLog, RotateStatus, ScheduleConfig, TokenStatistics,
+  GatewayStatus, GatewayTokenTrend, GatewayUsageDim, GatewayUsageRecon, GithubConfig, Region, RotateLog,
+  RotateStatus, ScheduleConfig, TokenStatistics,
   Session, SessionReplicaResponse,
   SkillListResponse,
   TokenStatsGroup, TokenStatsSource,
@@ -34,7 +35,7 @@ import { demoModeEnabled } from "./demo-mode";
 import { t } from "./i18n";
 import type { TranslationKey } from "@/locales/zh";
 import type { CompanionSnapshot } from "./companion";
-import type { AgentHookStatus, CheckinStatusEntry } from "./api";
+import type { AgentHookStatus, CheckinStatusEntry, QoderGatewayQuotaView } from "./api";
 import type { QoderGatewayConfigRaw } from "./qoder-gateway";
 
 export const screenshotDemoEnabled = demoModeEnabled;
@@ -524,8 +525,27 @@ function rotateLogs(): RotateLog[] {
   ];
 }
 
+/**
+ * 演示分组的一行。
+ *
+ * `credit` 按**实测比例**从 token 折算（≈ 34K token / 1 积分，实测自本机 jsonl：
+ * `44,276 token → credit 1.28`）。演示站拿不到真实 `usage.credit`，但**不能留 0** ——
+ * 积分视图的「客户端账本」会整块显示 0，与真实后端（有值）的样子不一致，
+ * 评审就会以为「客户端没有积分」是真结论。
+ */
 function demoTokenTotals(input: number, output: number, cacheRead: number, cacheWrite: number, records: number): TokenStatsTotals {
-  return { total: input + output + cacheWrite, input, output, cacheRead, cacheWrite, uncachedInput: Math.max(0, input - cacheRead), records, cacheHitRate: input > 0 ? cacheRead / input : null };
+  const total = input + output + cacheWrite;
+  return {
+    total,
+    input,
+    output,
+    cacheRead,
+    cacheWrite,
+    uncachedInput: Math.max(0, input - cacheRead),
+    records,
+    cacheHitRate: input > 0 ? cacheRead / input : null,
+    credit: Math.round((total / 34_000) * 1000) / 1000,
+  };
 }
 
 function demoTokenGroup(key: string, input: number, output: number, cacheRead: number, cacheWrite: number, records: number): TokenStatsGroup {
@@ -834,20 +854,41 @@ function demoCatalog(region: Region): CatalogSnapshot {
   const models = region === "global"
     ? ["GPT-5.6", "Claude-Sonnet-4.5", "Gemini-3-Pro", "GLM-5.3", "DeepSeek-V4-Pro"]
     : ["GLM-5.3", "GLM-5.2", "DeepSeek-V4-Pro", "Kimi-K3", "hy3"];
+  /* 能力面（issue #65）：「思考档位 / 积分倍率」两列。演示站**必须有值** ——
+     否则新加的两列在截图里全是「—」，看起来像没做。数值取真机目录的典型值，
+     `hy3` 刻意给倍率 0（= 免费），让「免费」这一档也能在演示里看到。 */
+  const ability: Record<string, { rate: number; efforts: string[]; defaultEffort: string | null }> = {
+    "GPT-5.6": { rate: 3.31, efforts: ["low", "medium", "high", "xhigh", "max"], defaultEffort: "high" },
+    "Claude-Sonnet-4.5": { rate: 1.33, efforts: ["low", "high"], defaultEffort: "high" },
+    "Gemini-3-Pro": { rate: 0.99, efforts: ["low", "high", "max"], defaultEffort: "high" },
+    "GLM-5.3": { rate: 0.79, efforts: ["low", "high", "max"], defaultEffort: "high" },
+    "GLM-5.2": { rate: 0.11, efforts: ["high", "xhigh"], defaultEffort: "high" },
+    "DeepSeek-V4-Pro": { rate: 0.29, efforts: ["low", "high", "xhigh"], defaultEffort: "high" },
+    "Kimi-K3": { rate: 0.03, efforts: ["medium"], defaultEffort: null },
+    "hy3": { rate: 0, efforts: [], defaultEffort: null },
+  };
   return {
     region,
     source: region === "global" ? "cached" : "live",
     fetched_at: Date.now() - 3 * 60 * 1000,
-    models: models.map((name, index) => ({
-      id: name.toLowerCase(),
-      name,
-      context_window: 131072,
-      max_tokens: 8192,
-      supports_images: index % 3 === 0,
-      credits: index % 4 === 0 ? t("shared.demo.catalog.limitedFree") : null,
-      badges: index === 0 ? [t("shared.demo.catalog.promo")] : [],
-      free: index % 4 === 0,
-    })),
+    models: models.map((name, index) => {
+      const info = ability[name] ?? { rate: 0.2, efforts: [], defaultEffort: null };
+      return {
+        id: name.toLowerCase(),
+        name,
+        context_window: 131072,
+        max_tokens: 8192,
+        supports_images: index % 3 === 0,
+        credits: null,
+        credits_rate: info.rate,
+        badges: index === 0 ? [t("shared.demo.catalog.promo")] : [],
+        // 免费 = 倍率为 0（与后端 `is_free()` 同判据，别再各算一套）。
+        free: info.rate === 0,
+        reasoning_efforts: info.efforts,
+        default_effort: info.defaultEffort,
+        efforts_source: info.efforts.length > 0 ? "static" : null,
+      };
+    }),
     note: region === "global" ? t("shared.demo.catalog.globalStale") : null,
   };
 }
@@ -1027,6 +1068,107 @@ function demoGatewayTokenTrend(): GatewayTokenTrend {
     retentionDays: 90,
     days,
     total: days.reduce((sum, point) => sum + point.total, 0),
+  };
+}
+
+/**
+ * 演示：网关三维度（模型 / 账号 / 端点）逐日历史。
+ *
+ * 与 `demoGatewayTokenTrend` **同一批日键**，且三条维度的合计**等于**该日网关总量
+ * （按权重摊、末位吃余数）—— 演示数据也必须守住「按模型合计 = 网关卡」这条自洽约束，
+ * 否则评审时会被当成真 bug。
+ */
+function demoGatewayUsageDim(): GatewayUsageDim {
+  const trend = demoGatewayTokenTrend();
+  const models = ["claude-sonnet-4.5", "gpt-5-codex", "deepseek-v4.1-flash"];
+  const weights = [0.56, 0.3, 0.14];
+  const accounts = ["uid-a1", "uid-a2", "uid-a3"];
+  const accountWeights = [0.52, 0.34, 0.14];
+  const endpoints = ["/v1/chat/completions", "/v1/messages", "/v1/responses"];
+  const endpointWeights = [0.92, 0.05, 0.03];
+
+  const spread = (total: number, share: number[]) => {
+    let acc = 0;
+    return share.map((weight, index) => {
+      const value = index === share.length - 1 ? Math.max(0, total - acc) : Math.round(total * weight);
+      acc += value;
+      return value;
+    });
+  };
+
+  return {
+    date: trend.date,
+    retentionDays: trend.retentionDays,
+    days: trend.days.map((day, index) => {
+      const modelTokens = spread(day.total, weights);
+      const accountTokens = spread(day.total, accountWeights);
+      const endpointRequests = spread(Math.max(1, Math.round(day.total / 148000)), endpointWeights);
+      const failed = index % 7 === 3 ? 5 : index % 5 === 0 ? 2 : 0;
+      return {
+        key: day.key,
+        truncated: day.truncated,
+        partial: index === 0,
+        models: modelTokens.map((total, i) => ({
+          model: models[i],
+          input: Math.round(total * 0.9),
+          output: total - Math.round(total * 0.9),
+          total,
+          requests: Math.max(1, Math.round(total / 148000)),
+          failed: i === 0 ? failed : 0,
+          credit: Math.round((total / 34000) * 1000) / 1000,
+        })),
+        accounts: accountTokens.map((total, i) => ({
+          account: accounts[i],
+          input: Math.round(total * 0.9),
+          output: total - Math.round(total * 0.9),
+          total,
+          requests: Math.max(1, Math.round(total / 148000)),
+          failed: i === 0 ? failed : 0,
+          credit: Math.round((total / 34000) * 1000) / 1000,
+        })),
+        endpoints: endpointRequests.map((requests, i) => ({
+          endpoint: endpoints[i],
+          input: 0,
+          output: 0,
+          total: 0,
+          requests,
+          failed: i === 0 ? failed : 0,
+          credit: 0,
+        })),
+      };
+    }),
+  };
+}
+
+/**
+ * 演示：今日客户端 ↔ 网关对账。
+ *
+ * 刻意演示 **`independent`（两本账独立）**：issue #63 作者那台机器就是这个形态，
+ * 也是「合计 = 相加」这一支。切到别的形态要看 `subset`，改 `matched` 即可。
+ */
+function demoUsageReconcile(): GatewayUsageRecon {
+  const clientTokens = 2_876_406;
+  const gatewayTokens = 18_500_000;
+  return {
+    clientRows: 117,
+    gatewayRows: 126,
+    matched: 9,
+    matchedTokens: 350_000,
+    matchedCredit: 10.3,
+    clientTokens,
+    clientCredit: 84.6,
+    gatewayTokens,
+    gatewayCredit: 544.1,
+    verdict: "independent",
+    proxySignal: null,
+    bounds: { lower: Math.max(clientTokens, gatewayTokens), upper: clientTokens + gatewayTokens },
+    estimate: clientTokens + gatewayTokens - 350_000,
+    unmatchedSamples: [
+      { ts: Date.now() - 1_200_000, model: "step-5-preview", tokens: 42_100, credit: 1.24 },
+      { ts: Date.now() - 900_000, model: "hy3", tokens: 28_600, credit: 0.84 },
+      { ts: Date.now() - 600_000, model: "deepseek-v4.1-flash", tokens: 15_400, credit: 0.45 },
+    ],
+    window: { date: new Date().toISOString().slice(0, 10), logRows: 126 },
   };
 }
 
@@ -1817,10 +1959,33 @@ function demoQoderUsage(scope: string): unknown {
     .reverse();
   const totalCredits = days.reduce((sum, day) => sum + day.credits, 0);
   const totalRequests = days.reduce((sum, day) => sum + day.requests, 0);
+  /* 会话排行：与 `days` 同源（拆成 3 个会话，credits 加起来等于总量）——
+     ⚠️ 演示数据也要守「分段和 = 总量」这条纪律，否则截图会自打嘴巴。
+     `title` 是真实会出现在 Qoder jsonl 里那种「用户第一句话」。 */
+  const sessions = days.length
+    ? (() => {
+        const titles = ["多账号轮询与冷却", "网关 429 定位", "签名链路排查"];
+        const shares = [0.5, 0.3, 0.2];
+        return titles.map((title, index) => {
+          const credits = Math.round(totalCredits * shares[index] * 1000) / 1000;
+          const requests = Math.max(1, Math.round(totalRequests * shares[index]));
+          return {
+            id: `demo-sess-${index + 1}`,
+            title,
+            credits,
+            requests,
+            models: index === 0 ? [model, model2] : [model],
+            firstDate: days[0].date,
+            lastDate: days[days.length - 1].date,
+          };
+        });
+      })()
+    : [];
   return {
     region: global ? "global" : "cn",
     unit: "credits",
     days,
+    sessions,
     totals: {
       credits: Math.round(totalCredits * 1000) / 1000,
       requests: totalRequests,
@@ -2055,6 +2220,76 @@ function demoQoderGatewayConfig(): QoderGatewayConfigRaw {
     max_rotate: 3,
     preferred_uid: "q1",
     sticky_ttl_ms: 30 * 60 * 1000,
+    // 护栏演示：开着「当日 token」这一条（截图里要能看到「已拦」与用量列，
+    // 全关的话面板只会显示「未启用」，等于没演示）。
+    reserve_credits: 200,
+    daily_token_limit: 500_000,
+    daily_credit_limit: 50,
+    model_daily_token_limit: 0,
+  };
+}
+
+/**
+ * 限额护栏视图（演示）：一条已拦、一条正常、一条停放。
+ *
+ * 三个账号故意各占一种状态 —— 截图能同时看到「可用 / 触到日限 / 余额耗尽停放」，
+ * 也顺带证明表里没有「恒 0」的假指标（token 是实打实记出来的数）。
+ */
+function demoQoderGatewayQuota(): QoderGatewayQuotaView {
+  const date = new Date().toISOString().slice(0, 10);
+  return {
+    date,
+    limits: {
+      reserveCredits: 200,
+      dailyTokenLimit: 500_000,
+      dailyCreditLimit: 50,
+      modelDailyTokenLimit: 0,
+      enabled: true,
+    },
+    accounts: [
+      {
+        uid: "q1",
+        name: "演示账号 · 主",
+        tokens: 128_430,
+        credits: 18.42,
+        perModel: [
+          { model: "qmodel_38max", tokens: 96_120 },
+          { model: "glm-5.1", tokens: 32_310 },
+        ],
+        blocked: null,
+        blockedReason: null,
+        parkedUntil: null,
+        parkedReason: null,
+        creditsRemaining: 4_820,
+        creditsAt: Date.now(),
+      },
+      {
+        uid: "q2",
+        name: "演示账号 · 备用",
+        tokens: 500_000,
+        credits: 62.5,
+        perModel: [{ model: "qmodel_38max", tokens: 500_000 }],
+        blocked: "daily_tokens",
+        blockedReason: "已达当日 token 上限（500000 / 500000）",
+        parkedUntil: null,
+        parkedReason: null,
+        creditsRemaining: 1_950,
+        creditsAt: Date.now(),
+      },
+      {
+        uid: "q3",
+        name: "演示账号 · 待重置",
+        tokens: 42_800,
+        credits: 7.15,
+        perModel: [{ model: "qmodel_38max", tokens: 42_800 }],
+        blocked: "parked",
+        blockedReason: "余额耗尽停放中（明天 10:00 后自动恢复）",
+        parkedUntil: Date.now() + 12 * 3600 * 1000,
+        parkedReason: "HTTP 402：余额不足",
+        creditsRemaining: 0,
+        creditsAt: Date.now(),
+      },
+    ],
   };
 }
 
@@ -2167,7 +2402,15 @@ function demoQoderGatewayStatus(scope: string): unknown {
  */
 function demoQoderGatewayModels(scope: string): unknown {
   const global = scope.endsWith("global");
-  const model = (name: string, displayName: string, reasoning: boolean, disabled = false) => ({
+  /* `extra` 承载官方的计费与能力事实（价格倍率 / 免费 / 错峰徽标 / 思考档位），
+     与真机管理面同形；演示里不填 = 该字段官方没给（渲染「—」）。 */
+  const model = (
+    name: string,
+    displayName: string,
+    reasoning: boolean,
+    disabled = false,
+    extra: Record<string, unknown> = {},
+  ) => ({
     id: name,
     object: "model",
     owned_by: "qoder",
@@ -2175,6 +2418,7 @@ function demoQoderGatewayModels(scope: string): unknown {
     is_reasoning: reasoning,
     max_input_tokens: 180_000,
     disabled,
+    ...extra,
   });
   return global
     ? {
@@ -2183,7 +2427,13 @@ function demoQoderGatewayModels(scope: string): unknown {
         source: "cached",
         fetchedAt: Date.now() - 15 * 60 * 60 * 1000,
         note: t("shared.demo.qoder.gateway.catalogCached"),
-        data: [model("Ultimate", "Ultimate", true), model("Qwen3.8-Max", "Qwen3.8-Max", true)],
+        data: [
+          model("Ultimate", "Ultimate", true, false, { price_factor: 1, is_free: false }),
+          model("Qwen3.8-Max", "Qwen3.8-Max", true, false, {
+            price_factor: 0.5,
+            thinking_efforts: ["low", "medium", "xhigh"],
+          }),
+        ],
       }
     : {
         object: "list",
@@ -2192,11 +2442,23 @@ function demoQoderGatewayModels(scope: string): unknown {
         fetchedAt: Date.now() - 8 * 60 * 1000,
         note: null,
         data: [
-          model("Qwen3.8-Max", "Qwen3.8-Max", true),
-          model("GLM-5.1", "GLM-5.1", true),
+          model("Qwen3.8-Max", "Qwen3.8-Max", true, false, {
+            price_factor: 0.5,
+            is_free: true,
+            thinking_efforts: ["low", "medium", "xhigh"],
+          }),
+          model("GLM-5.1", "GLM-5.1", true, false, {
+            price_factor: 0.5,
+            promotion: {
+              badge: { zh: "错峰4折", en: "Off-peak 60% off" },
+              window_start: "22:00",
+              window_end: "08:00",
+            },
+            thinking_efforts: ["low", "medium"],
+          }),
           // 已禁用：**仍留在清单里**（标灰 + 「启用」出口），与真机同形。
-          model("Kimi-K3", "Kimi-K3", false, true),
-          model("MiniMax-M3", "MiniMax-M3", false),
+          model("Kimi-K3", "Kimi-K3", false, true, { price_factor: 0.1 }),
+          model("MiniMax-M3", "MiniMax-M3", false, false, { is_free: true }),
         ],
       };
 }
@@ -2577,6 +2839,8 @@ function demoTraeClientModels(args?: Record<string, unknown>): TraeClientModelLi
     // Max Mode 口径的上下文上限（`trae-types.ts` 的 `contextWindowMax`，必填）。
     // 默认 `null`（取不到）；旗舰模型给 1M，让演示站能看出这个新字段的差异。
     contextWindowMax: number | null = null,
+    // 能力面（issue #65）：档位 + 积分倍率。不传 = 该条目没下发（渲染「未下发」）。
+    ability: Partial<Pick<TraeClientModel, "efforts" | "defaultEffort" | "thinking" | "creditsRate">> = {},
   ): TraeClientModel => ({
     name,
     displayName,
@@ -2589,6 +2853,7 @@ function demoTraeClientModels(args?: Record<string, unknown>): TraeClientModelLi
     contextWindow: 256000,
     contextWindowMax,
     promptMaxTokens: 224000,
+    ...ability,
   });
 
   // 合并版与遗留 TraeCode 同属 IDE 家族 ⇒ 同一份客户端清单；
@@ -2618,10 +2883,28 @@ function demoTraeClientModels(args?: Record<string, unknown>): TraeClientModelLi
         {
           function: "chat_v3",
           models: [
-            model("Doubao-Seed-Evolving", "Seed-Evolving"),
-            model("glm-5.3-flash", "GLM-5.3-Flash"),
-            model("glm-5.3", "GLM-5.3", false, 1_000_000),
-            model("deepseek-v4.1-flash", "DeepSeek-V4.1-Flash"),
+            model("Doubao-Seed-Evolving", "Seed-Evolving", false, null, {
+              thinking: "unsupported",
+              creditsRate: 0.8,
+            }),
+            model("glm-5.3-flash", "GLM-5.3-Flash", false, null, {
+              efforts: ["light", "high"],
+              defaultEffort: "high",
+              thinking: "supported",
+              creditsRate: 0.2,
+            }),
+            model("glm-5.3", "GLM-5.3", false, 1_000_000, {
+              efforts: ["light", "high", "extra_high"],
+              defaultEffort: "high",
+              thinking: "supported",
+              creditsRate: 0.83,
+            }),
+            model("deepseek-v4.1-flash", "DeepSeek-V4.1-Flash", false, null, {
+              efforts: ["light", "high"],
+              defaultEffort: "high",
+              thinking: "supported",
+              creditsRate: 0.06,
+            }),
             model("openrouter//stealth/ox-alpha", "ox-alpha"),
           ],
         },
@@ -2645,11 +2928,19 @@ function demoTraeClientModels(args?: Record<string, unknown>): TraeClientModelLi
       {
         function: "solo_work_lite",
         models: [
-          model("Doubao-Seed-Evolving", "Seed-Evolving", false, 1_000_000),
-          model("Doubao-Seed-2.1-Pro", "Seed-2.1-Pro-0915"),
-          model("deepseek-v4.1-flash", "DeepSeek-V4.1-Flash"),
-          model("glm-5.3", "GLM-5.3"),
-          model("kimi-k3", "Kimi-K3"),
+          model("Doubao-Seed-Evolving", "Seed-Evolving", false, 1_000_000, { creditsRate: 0.8 }),
+          model("Doubao-Seed-2.1-Pro", "Seed-2.1-Pro-0915", false, null, { creditsRate: 0.8 }),
+          /* ★ 真机实测（2026-10-21）：`solo_work_lite` 22 条里**只有 1 条**带档位，
+             所以演示数据也只给这一条 —— 其余显示「该程序位未下发」，而不是假装
+             「都不支持思考」。这条差异正是 issue #65 要暴露的事实。 */
+          model("deepseek-v4.1-flash", "DeepSeek-V4.1-Flash", false, null, {
+            efforts: ["light", "high"],
+            defaultEffort: "high",
+            thinking: "supported",
+            creditsRate: 0.06,
+          }),
+          model("glm-5.3", "GLM-5.3", false, null, { creditsRate: 0.83 }),
+          model("kimi-k3", "Kimi-K3", false, null, { creditsRate: 0.06 }),
           // 真实客户端清单里每个分组都带这一条（`provider = "openrouter"`）——
           // 演示数据也要有，否则「第三方路由条目被标成网关不提供」这条断言在演示下无从验证。
           model("openrouter//stealth/ox-alpha", "ox-alpha"),
@@ -3086,6 +3377,9 @@ export function screenshotDemoResponse(command: string, args?: Record<string, un
     case "get_account_token_today": return demoAccountTokenToday();
     /* 网关逐日趋势（只读）。演示数据覆盖「有量 / 缺日 / 下界」三条边界（见上）。 */
     case "get_gateway_token_trend": return demoGatewayTokenTrend();
+    /* 账本视图（issue #63）：三维度历史 + 今日对账。演示数据守住「三维度合计 = 网关卡」。 */
+    case "get_gateway_usage_dim": return demoGatewayUsageDim();
+    case "get_usage_reconcile": return demoUsageReconcile();
     /* Skill 管理清单（只读）。演示数据覆盖启用 / 停用 / 不一致 / 无 frontmatter 四种形态。 */
     case "list_skills": return demoSkills(args?.region === "global" ? "global" : "cn");
     /* 上游客户端 settings.json 托管（**只读** 4 条）。演示数据**虚构**，覆盖
@@ -3181,6 +3475,19 @@ export function screenshotDemoResponse(command: string, args?: Record<string, un
     }
     /* issue #47：逐账号「今日签到状态」（只读；演示数据保留「缺席 / 未开放」两条边界）。 */
     case "qoder_checkin_status_map": return demoQoderCheckinStatusMap(demoAccountIds(args));
+    /* 限额护栏视图（只读）：演示里三条状态各占一个账号，截图能同时看到。 */
+    case "qoder_gateway_quota":
+      return demoQoderGatewayQuota();
+    /* 一次性 Pro 升级包（+1800）：演示里**活动在线且可领**，截图才看得到入口。 */
+    case "qoder_pro_pack_status":
+      return { available: true, eligible: true, error: null };
+    case "qoder_pro_pack_claim":
+      return {
+        ok: true,
+        already: false,
+        available: true,
+        message: "已领取 Pro 升级包（+1800 积分）",
+      };
     /* Qoder 网关（只读五条）—— 形状与真机逐字段同构（snake_case / 未过滤清单 +
        逐条 `disabled` / 来源三级）。写操作（保存配置 / 建 Key / 吊销…）不进演示只读面。 */
     case "get_qoder_gateway_config": return demoQoderGatewayConfig();

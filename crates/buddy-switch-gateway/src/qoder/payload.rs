@@ -169,6 +169,13 @@ pub fn admin_models_response(
                 "context_length_default": context_windows(entry).0,
                 "context_length_max": context_windows(entry).1,
                 "disabled": crate::disabled_models::is_disabled_in(disabled, id),
+                // ★ 官方清单里的**计费与能力事实**原样带上（2026-10-21 补）：
+                // 管理面要能显示「峰谷价 / 免费 / 思考档位」，否则用户只能去官网查。
+                // `price_factor` 是**倍率**（官方以它为计价系数），`promotion` 才是错峰活动。
+                "price_factor": entry.get("price_factor").cloned(),
+                "is_free": entry.get("is_free").cloned().unwrap_or(Value::Bool(false)),
+                "promotion": entry.get("promotion").cloned(),
+                "thinking_efforts": thinking_efforts(entry),
             })
         })
         .collect();
@@ -180,6 +187,31 @@ pub fn admin_models_response(
         "note": catalog.note,
         "data": data,
     })
+}
+
+/// 官方 `thinking_config.enabled.efforts` 的档位名（按官方顺序排好）。
+///
+/// 结构形如 `{"enabled":{"efforts":{"xhigh":{},"low":{},"medium":{"is_default":true}}}}`；
+/// 只有 `disabled` 时返回空数组（= 该模型不支持选档位，**不编**「默认档」）。
+fn thinking_efforts(entry: &Value) -> Value {
+    let Some(efforts) = entry
+        .get("thinking_config")
+        .and_then(|config| config.get("enabled"))
+        .and_then(|enabled| enabled.get("efforts"))
+        .and_then(Value::as_object)
+    else {
+        return json!([]);
+    };
+    // 官方词表的展示顺序（低 → 高）；未知档位按字母序接在后面，不丢。
+    const ORDER: [&str; 5] = ["minimal", "low", "medium", "high", "xhigh"];
+    let mut names: Vec<String> = efforts.keys().cloned().collect();
+    names.sort_by_key(|name| {
+        ORDER
+            .iter()
+            .position(|known| known == name)
+            .unwrap_or(ORDER.len())
+    });
+    json!(names)
 }
 
 /// 从 `context_config` 里取 (默认窗口, 最大窗口)。
@@ -308,7 +340,7 @@ mod tests {
     /// 没有 `context_config` 的老条目 ⇒ 用 `max_input_tokens` 单档，开关不改变结果。
     #[test]
     fn context_switch_handles_single_window_entries() {
-        let catalog = vec![json!({"key": "legacy", "max_input_tokens": 128_000})];
+        let catalog = [json!({"key": "legacy", "max_input_tokens": 128_000})];
         assert_eq!(selected_window(&catalog[0], true), Some(128_000));
         assert_eq!(selected_window(&catalog[0], false), Some(128_000));
     }
@@ -461,5 +493,53 @@ mod tests {
         assert_eq!(rows[0]["is_reasoning"], true);
         assert_eq!(rows[1]["id"], "glm-5.1", "无 `id` 时回落 `key`");
         assert_eq!(rows[1]["disabled"], false);
+    }
+
+    /// 管理面必须带上**计费与能力事实**：峰谷价（`promotion`）、免费、思考档位。
+    ///
+    /// 可证伪：把 `admin_models_response` 新增的四行删掉 ⇒ 本用例四条断言全红，
+    /// 界面只能显示「名称 / 上下文」，用户查价格得去官网（参考实现已展示这些）。
+    #[test]
+    fn admin_models_carry_price_promotion_and_thinking_efforts() {
+        let catalog = super::super::CatalogView {
+            models: vec![json!({
+                "key": "qmodel_latest",
+                "display_name": "Qwen3.7-Max",
+                "price_factor": 0.5,
+                "is_free": false,
+                "promotion": {
+                    "active": false,
+                    "badge": {"zh": "错峰2折", "en": "Off-Peak 80% off"},
+                    "window_start": "22:00",
+                    "window_end": "08:00",
+                },
+                "thinking_config": {"enabled": {"efforts": {"xhigh": {}, "low": {}, "medium": {"is_default": true}}}},
+            })],
+            source: "live",
+            fetched_at: Some(1),
+            note: None,
+        };
+        let body = admin_models_response(QoderRegion::Cn, &catalog, &BTreeSet::new(), false);
+        let row = &body["data"][0];
+        assert_eq!(row["price_factor"], 0.5);
+        assert_eq!(row["is_free"], false);
+        assert_eq!(row["promotion"]["badge"]["zh"], "错峰2折");
+        assert_eq!(row["promotion"]["window_start"], "22:00");
+        // 档位按官方词表顺序，不按 JSON 键序（`xhigh` 必须排在最后）。
+        assert_eq!(
+            row["thinking_efforts"],
+            json!(["low", "medium", "xhigh"]),
+            "{row}"
+        );
+
+        // 只有 `disabled`（不支持选档位）⇒ 空数组，不编默认档。
+        let bare = super::super::CatalogView {
+            models: vec![json!({"key": "m", "thinking_config": {"disabled": {}}})],
+            source: "live",
+            fetched_at: None,
+            note: None,
+        };
+        let body = admin_models_response(QoderRegion::Cn, &bare, &BTreeSet::new(), false);
+        assert_eq!(body["data"][0]["thinking_efforts"], json!([]));
     }
 }

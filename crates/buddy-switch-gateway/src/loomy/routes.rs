@@ -128,6 +128,14 @@ pub async fn chat_for_region(
         }
     };
 
+    /* Responses 的 **custom（freeform）工具**名只从**原始**请求体取：
+       Loomy 的 body 是直传上游的，但 `type: "custom"` 只有 Responses 入口才有 ——
+       不取这一份，出站后客户端会收到 `function_call` 而不是它声明的 `custom_tool_call`
+       （Codex 的 `apply_patch` 这类工具就会「静默不执行」）。
+       与 Qoder 侧同一处取法（`protocol::responses::custom_tool_names`）。 */
+    let responses_custom =
+        std::sync::Arc::new(crate::protocol::responses::custom_tool_names(&parsed));
+
     let model = model_of(&parsed);
     if model.is_empty() {
         return protocol_error(
@@ -287,9 +295,29 @@ pub async fn chat_for_region(
             }
             state.bind_sticky(sticky_key.as_deref(), &uid).await;
             return if wants_stream(&parsed) {
-                stream_relay(state, response, protocol, region, &model, &uid, started).await
+                stream_relay(
+                    state,
+                    response,
+                    protocol,
+                    region,
+                    &model,
+                    &uid,
+                    started,
+                    responses_custom.clone(),
+                )
+                .await
             } else {
-                aggregate_relay(state, response, protocol, region, &model, &uid, started).await
+                aggregate_relay(
+                    state,
+                    response,
+                    protocol,
+                    region,
+                    &model,
+                    &uid,
+                    started,
+                    responses_custom.clone(),
+                )
+                .await
             };
         }
 
@@ -591,6 +619,7 @@ async fn stream_relay(
     model: &str,
     uid: &str,
     started: Instant,
+    custom: std::sync::Arc<std::collections::HashSet<String>>,
 ) -> Response {
     let stream_model = model.to_string();
     let usage_slot = std::sync::Arc::new(std::sync::Mutex::new(None::<Value>));
@@ -612,6 +641,7 @@ async fn stream_relay(
         Protocol::Responses => Box::pin(crate::protocol::responses::ResponsesSseStream::new(
             tapped,
             stream_model.clone(),
+            custom.clone(),
         )),
     };
 
@@ -662,6 +692,7 @@ async fn aggregate_relay(
     model: &str,
     uid: &str,
     started: Instant,
+    custom: std::sync::Arc<std::collections::HashSet<String>>,
 ) -> Response {
     // 上游是标准 OpenAI SSE ⇒ 复用 Qoder 聚合器（无 leak-guard 的工具回声问题 ——
     // Loomy 上游本来就给结构化 tool_calls）。
@@ -734,6 +765,7 @@ async fn aggregate_relay(
                     created_at: aggregated.created,
                     input_tokens: prompt_tokens,
                     output_tokens: completion_tokens,
+                    custom: custom.as_ref(),
                 },
                 model,
             ))

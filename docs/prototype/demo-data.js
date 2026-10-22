@@ -258,6 +258,9 @@ const SCOPES = {
     id: "wb-cn", platform: "workbuddy", region: "cn",
     running: true, installed: true, version: "2.14.3",
     todayCredits: 46, gatewayRequests: 312, gatewayKeys: 3, checkinReward: 100,
+    /* ★ 客户端是否接入本机网关（P12 请求代理）。决定「账本」视图的对账结论：
+       true ⇒ 客户端 ⊆ 网关（合计 = 网关 + 直连客户端）；false ⇒ 两本账独立（合计 = 相加 − 重叠）。 */
+    proxy: true,
     accounts: [
       makeAccount("a1", "jackey", "jackey@example.com", {
         remark: "主号 · 长期", credits: 1240, creditsTotal: 2000,
@@ -305,6 +308,8 @@ const SCOPES = {
     id: "wb-global", platform: "workbuddy", region: "global",
     running: false, installed: true, version: "2.14.3",
     todayCredits: 7, gatewayRequests: 26, gatewayKeys: 1, checkinReward: 100,
+    /* 国际版这台没开请求代理 ⇒ 两本账独立（合计 = 相加 − 重叠），用来对照 wb-cn 的子集关系。 */
+    proxy: false,
     accounts: [
       makeAccount("g1", "jackey-global", "jackey@global.example.com", {
         remark: "国际版主号", credits: 720, creditsTotal: 1000,
@@ -441,6 +446,137 @@ function credit(when, minsAgo, account, delta, note) {
 
    一条硬约束：**堆叠柱各分段之和必须精确等于当日总量**（最后一段吃掉舍入余数），
    否则「堆叠柱总高」与「单色柱高度」会对不上，是能被一眼看穿的假数据。 */
+/* ─────────── 网关账本（issue #63）───────────
+   设计依据：`docs/specs/USAGE-GATEWAY-UI-REDESIGN.md`。
+   三条硬约束，改这里之前先读：
+   ① **按模型 / 按账号 / 按端点三者的合计必须都等于网关总量**（否则页面上的「按模型合计 = 网关卡」当场破功）；
+   ② **对账结果必须与 `proxy` 一致**：`proxy:true` ⇒ 客户端 ⊆ 网关（匹配率 ~92%，判 subset）；
+      `proxy:false` ⇒ 两本账独立（匹配率 ~6%，判 independent）。这是这个设计要证明的那件事；
+   ③ 积分同理：余额口径（consumed）**恒大于**请求口径（byRequest），差额是「未归因」，
+      绝不能被摊到任何来源上。 */
+function buildLedger(scopeId, u, modelDays) {
+  const scope = SCOPES[scopeId];
+  const proxied = Boolean(scope.proxy);
+
+  const clientDays = u.days.map((d) => d.value);
+  const clientTokens = clientDays.reduce((a, b) => a + b, 0);
+  const gwFactor = proxied ? 5.6 : 1.4;
+
+  /* 网关逐日：按客户端的形状放大，末位吃余数保证合计一致 */
+  const gwRaw = clientDays.map((v, i) => v * gwFactor * (0.82 + ((i * 31) % 40) / 100));
+  const gwRawSum = gwRaw.reduce((a, b) => a + b, 0) || 1;
+  const gatewayTokens = Math.round(clientTokens * gwFactor);
+  let accGw = 0;
+  const gatewayDays = gwRaw.map((v, i) => {
+    const out = i === gwRaw.length - 1 ? gatewayTokens - accGw : Math.round((v / gwRawSum) * gatewayTokens);
+    accGw += out;
+    return Math.max(0, out);
+  });
+
+  /* 网关模型：客户端模型放大 + 一个「仅网关」的 auto（真实网关里 auto 路由会出现） */
+  const rawModels = u.models.length
+    ? u.models.map((m, i) => ({ name: m.name, w: m.tokens * (i === 0 ? 1.3 : 0.62) }))
+    : [{ name: "claude-sonnet-4.5", w: 1 }];
+  rawModels.push({ name: "auto", w: gatewayTokens * 0.004 });
+  const modelW = rawModels.reduce((a, m) => a + m.w, 0) || 1;
+  let accM = 0;
+  const gatewayModels = rawModels.map((m, i) => {
+    const out = i === rawModels.length - 1
+      ? gatewayTokens - accM
+      : Math.round((m.w / modelW) * gatewayTokens);
+    accM += out;
+    const req = Math.max(1, Math.round(out / 148000));
+    return { name: m.name, tokens: Math.max(0, out), req };
+  });
+
+  /* 网关的**逐日 × 模型**拆分（「模型」tab 的每日按模型堆叠图要用）。
+     与 modelDays 同一手法：每天按权重摊，末位吃余数 ⇒ 每列之和 === 当日网关总量。 */
+  const gwModelDays = gatewayModels.map((m) => ({ name: m.name, values: [] }));
+  gatewayDays.forEach((dayTotal, i) => {
+    const w = gatewayModels.map((m, k) => m.tokens * (0.8 + ((i * 29 + k * 47) % 40) / 100));
+    const wsum = w.reduce((a, b) => a + b, 0) || 1;
+    let acc = 0;
+    gatewayModels.forEach((m, k) => {
+      const v = k === gatewayModels.length - 1 ? Math.max(0, dayTotal - acc) : Math.round((dayTotal * w[k]) / wsum);
+      acc += v;
+      gwModelDays[k].values.push(Math.max(0, v));
+    });
+  });
+
+  /* 网关账号：取本作用域前 3 个账号按 5:3:2 摊 */
+  const accNames = (scope.accounts || []).slice(0, 3).map((a) => a.name);
+  const shares = [0.52, 0.34, 0.14];
+  let accA = 0;
+  const gatewayAccounts = (accNames.length ? accNames : ["unknown"]).map((name, i, arr) => {
+    const out = i === arr.length - 1 ? gatewayTokens - accA : Math.round(gatewayTokens * (shares[i] ?? 0.1));
+    accA += out;
+    return { name, tokens: Math.max(0, out), req: Math.max(1, Math.round(out / 148000)) };
+  });
+
+  /* 端点：chat 96% / messages 2% / responses 2% */
+  const gatewayRows = Math.max(1, Math.round(gatewayTokens / 148000));
+  const epChat = Math.round(gatewayRows * 0.96);
+  const epMsg = Math.round(gatewayRows * 0.02);
+  const gatewayEndpoints = [
+    { name: "/v1/chat/completions", req: epChat },
+    { name: "/v1/messages", req: epMsg },
+    { name: "/v1/responses", req: Math.max(0, gatewayRows - epChat - epMsg) },
+  ];
+
+  /* 对账 */
+  const clientRows = Math.max(1, Math.round(clientTokens / 42000));
+  const matchedRatio = proxied ? 0.92 : 0.06;
+  const matched = Math.round(clientRows * matchedRatio);
+  const matchedTokens = Math.round(clientTokens * matchedRatio);
+  const verdict = proxied ? "subset" : "independent";
+  const failed = Math.max(1, Math.round(gatewayRows * 0.04));
+
+  /* 积分：两个口径（余额口径 = 请求口径 + 未归因） */
+  const creditOf = (tokens) => +(tokens / 34000).toFixed(1);
+  const clientCredit = creditOf(clientTokens);
+  const gatewayCredit = creditOf(gatewayTokens);
+  const overlapCredit = +(clientCredit * matchedRatio).toFixed(1);
+  const byRequest = +(clientCredit + gatewayCredit - overlapCredit).toFixed(1);
+  const gap = +(byRequest * 0.06).toFixed(1);
+  const consumed = +(byRequest + gap).toFixed(1);
+
+  /* 客户端模型用量**必须取 modelDays 的逐日合计**：`u.models[].tokens` 是示意量，
+     不等于 days 的合计 —— 拿它算占比会得出「五个模型加起来只有 34%」。 */
+  const clientModelTotals = (modelDays || []).map((m) => ({
+    name: m.name,
+    tokens: m.values.reduce((a, b) => a + b, 0),
+  }));
+  const creditShare = (list, total, totalCredit) =>
+    list.map((m) => ({
+      name: m.name,
+      v: +(totalCredit * (m.tokens / (total || 1))).toFixed(1),
+      /* 客户端模型没有请求数字段（modelDays 只存逐日 Token）⇒ 按均值折算，别写成 0。 */
+      req: m.req ?? Math.max(1, Math.round((m.tokens || 0) / 42000)),
+    }));
+  const dailyCredit = (values, totalTokens, totalCredit) =>
+    values.map((v) => +(totalCredit * (v / (totalTokens || 1))).toFixed(1));
+
+  return {
+    proxied, verdict,
+    client: { tokens: clientTokens, requests: clientRows, days: clientDays },
+    gateway: {
+      tokens: gatewayTokens, requests: gatewayRows, failed,
+      days: gatewayDays, models: gatewayModels, modelDays: gwModelDays,
+      accounts: gatewayAccounts, endpoints: gatewayEndpoints,
+      coverage: `${u.days.length}/${u.days.length} 天`,
+    },
+    recon: { clientRows, gatewayRows, matched, matchedTokens, ratio: matchedRatio },
+    credits: {
+      client: clientCredit, gateway: gatewayCredit, overlap: overlapCredit,
+      byRequest, consumed, gap,
+      clientModels: creditShare(clientModelTotals, clientTokens, clientCredit),
+      gatewayModels: creditShare(gatewayModels, gatewayTokens, gatewayCredit),
+      dailyClient: dailyCredit(clientDays, clientTokens, clientCredit),
+      dailyGateway: dailyCredit(gatewayDays, gatewayTokens, gatewayCredit),
+    },
+  };
+}
+
 function buildUsageExtras(scopeId) {
   const u = USAGE[scopeId];
   const scope = SCOPES[scopeId];
@@ -508,7 +644,25 @@ function buildUsageExtras(scopeId) {
   /* 8. 会话散点：x = 消息数，y = Token（气泡大小随 Token） */
   const scatter = u.sessions.map((s) => ({ x: s.msgs, y: s.tokens, label: s.title }));
 
-  return { modelDays, hourly, creditDaily, balance, expiry, accountShare, statusCodes, scatter, curTotal };
+  /* ★ 积分两个口径必须**同一个量级**：余额口径取 `creditDaily.outAmt` 的合计（权威），
+     请求口径按 token 折算出来，两者若各写一套数，差额会大到像 bug（实测 57%）。
+     ⇒ 按比例把请求口径缩放到「余额口径 / 1.06」，让差额稳定在 ~6%（= 未归因）。 */
+  const ledger = buildLedger(scopeId, u, modelDays);
+  const consumedOut = creditDaily.reduce((a, d) => a + d.outAmt, 0);
+  const target = consumedOut / 1.06;
+  const k = ledger.credits.byRequest ? target / ledger.credits.byRequest : 1;
+  for (const key of ["client", "gateway", "overlap", "byRequest"]) {
+    ledger.credits[key] = +(ledger.credits[key] * k).toFixed(1);
+  }
+  for (const list of [ledger.credits.clientModels, ledger.credits.gatewayModels]) {
+    for (const m of list) m.v = +(m.v * k).toFixed(1);
+  }
+  ledger.credits.dailyClient = ledger.credits.dailyClient.map((v) => +(v * k).toFixed(1));
+  ledger.credits.dailyGateway = ledger.credits.dailyGateway.map((v) => +(v * k).toFixed(1));
+  ledger.credits.consumed = +consumedOut.toFixed(1);
+  ledger.credits.gap = +Math.max(0, consumedOut - ledger.credits.byRequest).toFixed(1);
+
+  return { modelDays, hourly, creditDaily, balance, expiry, accountShare, statusCodes, scatter, curTotal, ledger };
 }
 
 const USAGE = {
@@ -630,12 +784,12 @@ const GATEWAY = {
     /* available = 上游事实（能不能调）；disabled = 用户偏好（主动拿掉）。
        两者**正交**，四种组合都合法 —— UI 必须能区分「已禁用」与「上游不可用」。 */
     models: [
-      { name: "claude-sonnet-4.5", provider: "anthropic", scope: "国内版", available: true, context: 200000, maxWindow: 200000 },
-      { name: "claude-opus-4.1", provider: "anthropic", scope: "国内版", available: true, disabled: true, context: 200000, maxWindow: 200000 },
-      { name: "gpt-5-codex", provider: "openai", scope: "国内版", available: true, context: 400000, maxWindow: 1000000 },
-      { name: "gemini-2.5-pro", provider: "openai", scope: "国内版", available: true, context: 300000, maxWindow: 1000000 },
-      { name: "claude-sonnet-4.5", provider: "anthropic", scope: "国际版", available: true, context: 200000, maxWindow: 200000 },
-      { name: "gpt-5-codex", provider: "openai", scope: "国际版", available: false, disabled: true, context: 400000, maxWindow: 1000000 },
+      { name: "claude-sonnet-4.5", provider: "anthropic", scope: "国内版", available: true, context: 200000, maxWindow: 200000, efforts: ["low", "medium", "high", "xhigh", "max"], defaultEffort: "high", credits: 1.33 },
+      { name: "claude-opus-4.1", provider: "anthropic", scope: "国内版", available: true, disabled: true, context: 200000, maxWindow: 200000, efforts: ["low", "medium", "high"], defaultEffort: "high", credits: 3.31 },
+      { name: "gpt-5-codex", provider: "openai", scope: "国内版", available: true, context: 400000, maxWindow: 1000000, efforts: ["low", "medium", "high", "xhigh", "max"], defaultEffort: "high", credits: 0.79 },
+      { name: "gemini-2.5-pro", provider: "openai", scope: "国内版", available: true, context: 300000, maxWindow: 1000000, efforts: ["low", "medium", "high"], defaultEffort: "medium", credits: 0.34 },
+      { name: "claude-sonnet-4.5", provider: "anthropic", scope: "国际版", available: true, context: 200000, maxWindow: 200000, efforts: ["low", "medium", "high", "xhigh", "max"], defaultEffort: "high", credits: 1.33 },
+      { name: "gpt-5-codex", provider: "openai", scope: "国际版", available: false, disabled: true, context: 400000, maxWindow: 1000000, efforts: ["low", "medium", "high", "xhigh", "max"], defaultEffort: "high", credits: 0.79 },
     ],
     /* 模型清单的来源（§3.17）：实时 / 已保存 / 内置 —— 三级都必须显式标注，
        不许把「内置」伪装成「实时」（用户照着清单调用会扑空）。 */
@@ -658,7 +812,7 @@ const GATEWAY = {
   "wb-global": {
     enabled: false, port: 57891, baseUrl: "http://127.0.0.1:57891",
     keys: [{ id: "k4", name: "国际版 Key", masked: "bs_live_1a55••••••••••••88d0", scope: "国际版", created: "2026-09-25", lastUsed: "昨天", requests: 26 }],
-    models: [{ name: "claude-sonnet-4.5", provider: "anthropic", scope: "国际版", available: true }],
+    models: [{ name: "claude-sonnet-4.5", provider: "anthropic", scope: "国际版", available: true, efforts: ["low", "medium", "high", "xhigh", "max"], defaultEffort: "high", credits: 1.33 }],
     catalog: { source: "cached", fetchedAt: "昨天 21:04", fetchedAbs: "2026-10-02 21:04", note: "本次探测超时（8s），使用上次成功的结果" },
     pool: [{ account: "jackey-global", credits: 720, weight: 100, state: "可用", sticky: true }],
     logs: [{ time: "09:12:30", model: "claude-sonnet-4.5", account: "jackey-global", status: 200, ms: 1120, tokens: 640 }],
@@ -674,14 +828,14 @@ const GATEWAY = {
        `context` = `__dev` 通道实际窗口，`maxWindow` = Max Mode 上限（不存在为 null）。
        ★ 上限不是统一 1M：mimo 是 981504、Doubao-Turbo 与默认相同。 */
     models: [
-      { name: "glm-5.3", provider: "trae", scope: "TraeWork", available: true, context: 200000, maxWindow: 1000000 },
-      { name: "qwen3.8-max", provider: "trae", scope: "TraeWork", available: true, context: 200000, maxWindow: 1000000 },
-      { name: "Doubao-Seed-Evolving", provider: "trae", scope: "TraeWork", available: true, context: 256000, maxWindow: 1000000 },
-      { name: "Doubao-Seed-2.1-Turbo", provider: "trae", scope: "TraeWork", available: true, context: 256000, maxWindow: 256000 },
-      { name: "mimo-v2.6-pro", provider: "trae", scope: "TraeCode", available: true, context: 200000, maxWindow: 981504 },
-      { name: "kimi-k3", provider: "trae", scope: "TraeCode", available: true, context: 200000, maxWindow: 1000000 },
+      { name: "glm-5.3", provider: "trae", scope: "TraeWork", available: true, context: 200000, maxWindow: 1000000, efforts: ["light", "high", "extra_high"], defaultEffort: "high", credits: 0.83 },
+      { name: "qwen3.8-max", provider: "trae", scope: "TraeWork", available: true, context: 200000, maxWindow: 1000000, efforts: ["light", "high"], defaultEffort: "high", credits: 0.2 },
+      { name: "Doubao-Seed-Evolving", provider: "trae", scope: "TraeWork", available: true, context: 256000, maxWindow: 1000000, credits: 0.8 },
+      { name: "Doubao-Seed-2.1-Turbo", provider: "trae", scope: "TraeWork", available: true, context: 256000, maxWindow: 256000, efforts: ["light", "high"], defaultEffort: "high", credits: 0.2 },
+      { name: "mimo-v2.6-pro", provider: "trae", scope: "TraeCode", available: true, context: 200000, maxWindow: 981504, efforts: ["light", "high"], defaultEffort: "high", credits: 0.06 },
+      { name: "kimi-k3", provider: "trae", scope: "TraeCode", available: true, context: 200000, maxWindow: 1000000, credits: 0.06 },
       /* 目录里没有这个模型 ⇒ 数字未知，清单只按客户端默认窗口声明。 */
-      { name: "kimi-k2.6", provider: "trae", scope: "TraeCode", available: true, context: 200000, maxWindow: null },
+      { name: "kimi-k2.6", provider: "trae", scope: "TraeCode", available: true, context: 200000, maxWindow: null, credits: 0.06 },
     ],
     /* Trae 侧按**程序位**分家下发清单（TraeWork=solo_work_lite / TraeCode=chat_v3），
        所以识别也必须按 scope 分家，不能一份清单打天下。 */
@@ -712,13 +866,13 @@ const GATEWAY = {
       { id: "k8", name: "Qoder CLI", masked: "qd_live_9a07••••••••••••4e83", scope: "国内版", created: "2026-10-02", lastUsed: "2 小时前", requests: 214, revoked: true },
     ],
     models: [
-      { name: "Qwen3.8-Max", provider: "qoder", scope: "国内版", available: true, context: 200000, maxWindow: 1000000 },
-      { name: "GLM-5.1", provider: "qoder", scope: "国内版", available: true, context: 200000, maxWindow: 1000000 },
-      { name: "Kimi-K3", provider: "qoder", scope: "国内版", available: true, disabled: true, context: 200000, maxWindow: 1000000 },
-      { name: "MiniMax-M3", provider: "qoder", scope: "国内版", available: true, context: 200000, maxWindow: 400000 },
+      { name: "Qwen3.8-Max", provider: "qoder", scope: "国内版", available: true, context: 200000, maxWindow: 1000000, efforts: ["low", "medium", "xhigh"], credits: 0.5 },
+      { name: "GLM-5.1", provider: "qoder", scope: "国内版", available: true, context: 200000, maxWindow: 1000000, efforts: ["low", "medium"], credits: 0.3 },
+      { name: "Kimi-K3", provider: "qoder", scope: "国内版", available: true, disabled: true, context: 200000, maxWindow: 1000000, credits: 0.1 },
+      { name: "MiniMax-M3", provider: "qoder", scope: "国内版", available: true, context: 200000, maxWindow: 400000, credits: 0 },
       /* 区域独占模型（国际版独有）也列出来 —— 与 WB 网关页的跨区域清单同形，
          用来暴露「Key 出口与模型区域不匹配」这个真实存在的错配。 */
-      { name: "Ultimate", provider: "qoder", scope: "国际版", available: true },
+      { name: "Ultimate", provider: "qoder", scope: "国际版", available: true, efforts: ["low", "medium", "high"], defaultEffort: "high", credits: 0 },
     ],
     catalog: { source: "live", fetchedAt: "8 分钟前", fetchedAbs: "2026-10-14 16:35", note: null },
     pool: [
@@ -727,6 +881,29 @@ const GATEWAY = {
       { account: "trial-01", credits: 80, weight: 15, state: "余额偏低", sticky: false },
       { account: "legacy-acc", credits: 0, weight: 0, state: "已排除", sticky: false },
     ],
+    /* ★ 限额护栏（Qoder 独有；`quota` 缺席 = 该作用域没有护栏卡）。
+       四个账号**故意各占一态**：正常 / 当日 token 已满 / 触到余额地板 / 余额耗尽停放
+       —— 截图能同时看到四种徽标，也顺带证明「拦下必须给原因」这条不是空话。
+       数值口径与后端 `quota_view` 同形（`tokens` / `credits` / `blocked` …）。 */
+    quota: {
+      date: "2026-10-21",
+      limits: { reserveCredits: 200, dailyTokenLimit: 500000, dailyCreditLimit: 50, modelDailyTokenLimit: 0 },
+      accounts: [
+        { uid: "jackey", name: "jackey", tokens: 128430, credits: 18.42,
+          perModel: [{ model: "Qwen3.8-Max", tokens: 96120 }, { model: "GLM-5.1", tokens: 32310 }],
+          blocked: null, blockedReason: null, creditsRemaining: 1180 },
+        { uid: "team-qoder", name: "team-qoder", tokens: 500000, credits: 62.5,
+          perModel: [{ model: "Qwen3.8-Max", tokens: 500000 }],
+          blocked: "daily_tokens", blockedReason: "已达当日 token 上限（500000 / 500000）", creditsRemaining: 620 },
+        { uid: "trial-01", name: "trial-01", tokens: 42800, credits: 7.15,
+          perModel: [{ model: "Qwen3.8-Max", tokens: 42800 }],
+          blocked: "reserve", blockedReason: "已触发余额地板：剩余 80 ≤ 保留 200，本账号暂停使用", creditsRemaining: 80 },
+        { uid: "legacy-acc", name: "legacy-acc", tokens: 3260, credits: 0.62,
+          perModel: [{ model: "GLM-5.1", tokens: 3260 }],
+          blocked: "parked", blockedReason: "余额耗尽停放中（明天 10:00 后自动恢复）：HTTP 402 余额不足",
+          creditsRemaining: 0, parkedUntil: "明天 10:00" },
+      ],
+    },
     logs: [
       { time: "10:41:07", model: "Qwen3.8-Max", account: "jackey", status: 200, ms: 764, tokens: 1120 },
       { time: "10:39:52", model: "GLM-5.1", account: "team-qoder", status: 200, ms: 588, tokens: 486 },
@@ -739,14 +916,26 @@ const GATEWAY = {
     enabled: false, port: 57895, baseUrl: "http://127.0.0.1:57895",
     keys: [{ id: "k9", name: "Qoder 国际版 Key", masked: "qd_live_3f61••••••••••••b7d2", scope: "国际版", created: "2026-09-30", lastUsed: "昨天", requests: 21 }],
     models: [
-      { name: "Ultimate", provider: "qoder", scope: "国际版", available: true },
-      { name: "Qwen3.8-Max", provider: "qoder", scope: "国际版", available: true },
+      { name: "Ultimate", provider: "qoder", scope: "国际版", available: true, efforts: ["low", "medium", "high"], defaultEffort: "high", credits: 0 },
+      { name: "Qwen3.8-Max", provider: "qoder", scope: "国际版", available: true, efforts: ["low", "medium", "xhigh"], credits: 0.5 },
     ],
     catalog: { source: "cached", fetchedAt: "昨天 22:10", fetchedAbs: "2026-10-13 22:10", note: "本次探测超时（8s），使用上次成功的结果" },
     pool: [
       { account: "jackey-global", credits: 900, weight: 100, state: "可用", sticky: true },
       { account: "intl-spare", credits: 240, weight: 30, state: "余额偏低", sticky: false },
     ],
+    /* 国际版：护栏默认关（三条都是 0）—— 用来演示「未启用」这一档文案，
+       与国内版「已开启 + 有账号被拦」形成对照。 */
+    quota: {
+      date: "2026-10-21",
+      limits: { reserveCredits: 0, dailyTokenLimit: 0, dailyCreditLimit: 0, modelDailyTokenLimit: 0 },
+      accounts: [
+        { uid: "jackey-global", name: "jackey-global", tokens: 41200, credits: 6.8,
+          perModel: [{ model: "Ultimate", tokens: 41200 }], blocked: null, blockedReason: null, creditsRemaining: 900 },
+        { uid: "intl-spare", name: "intl-spare", tokens: 0, credits: 0,
+          perModel: [], blocked: null, blockedReason: null, creditsRemaining: 240 },
+      ],
+    },
     logs: [
       { time: "11:05:33", model: "Ultimate", account: "jackey-global", status: 200, ms: 918, tokens: 1416 },
       { time: "11:02:07", model: "Qwen3.8-Max", account: "jackey-global", status: 200, ms: 655, tokens: 522 },

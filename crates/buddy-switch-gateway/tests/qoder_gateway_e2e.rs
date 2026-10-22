@@ -32,6 +32,7 @@ use serde_json::{json, Value};
 use tower::ServiceExt;
 
 use buddy_switch_core::modules::product::scope_of_qoder_region;
+use buddy_switch_core::modules::qoder::cosy;
 use buddy_switch_core::modules::qoder::region::QoderRegion;
 use buddy_switch_gateway::qoder::apikey::QoderApiKeyStore;
 use buddy_switch_gateway::qoder::{router, QoderGatewayConfig, QoderGatewayState};
@@ -107,6 +108,15 @@ enum Behavior {
     /// HTTP 200 + **非信封错误帧**（issue #46 的真机形态：`event:error` + Jackson
     /// 堆栈 + `{"success":false,"msgCode":500}`）——验证「不再静默成空补全」。
     NonEnvelopeError,
+    /// 第一次 POST 返回 **400（参数错）**，之后正常 —— 验证**自动降级**
+    /// （issue #72：结构化历史被拒 ⇒ 同账号用文本模式重发一次）。
+    /// 同时把每次的**解码后**请求体记下来，供断言「第二发确实是文本模式」。
+    RejectFirst(Arc<Mutex<Vec<String>>>),
+    /// 每次都返回 **400** —— 验证「降级结论**不**在第一次 400 就落记忆」
+    /// （文本模式也 400 ⇒ 400 与结构化无关，记了就是误判）。
+    Always400,
+    /// 正常响应，但把每次的**解码后**请求体记下来（验证出站清洗用）。
+    Record(Arc<Mutex<Vec<String>>>),
 }
 
 /// 真机取证（2026-10-17，Qoder CN）里「编码体 + 漏 `?Encode=1`」时上游回的三行。
@@ -131,6 +141,7 @@ async fn mock_chat(
     State(behavior): State<Behavior>,
     headers: HeaderMap,
     uri: axum::http::Uri,
+    body: axum::body::Bytes,
 ) -> Response {
     let request_count = match &behavior {
         Behavior::FailFirstTimes(counter) => counter.fetch_add(1, Ordering::SeqCst),
@@ -159,6 +170,36 @@ async fn mock_chat(
             .body(Body::from(NON_ENVELOPE_ERROR_FRAMES))
             .expect("构造 mock 响应");
     }
+    /* ★ 自动降级（issue #72）：第一次回 400（参数错），之后正常；并把解码后的
+    请求体记下来 —— 断言「第二发确实是文本模式」需要看到**请求体**，不是响应。 */
+    if let Behavior::RejectFirst(seen) = &behavior {
+        let plain = cosy::qoder_decode(&String::from_utf8_lossy(&body)).unwrap_or_default();
+        let text = String::from_utf8_lossy(&plain).to_string();
+        let mut recorded = seen.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        recorded.push(text);
+        let first = recorded.len() == 1;
+        drop(recorded);
+        if first {
+            return Response::builder()
+                .status(StatusCode::BAD_REQUEST)
+                .header("content-type", "text/plain")
+                .body(Body::from("tool_calls are not supported"))
+                .expect("构造 mock 响应");
+        }
+    }
+    if matches!(behavior, Behavior::Always400) {
+        return Response::builder()
+            .status(StatusCode::BAD_REQUEST)
+            .header("content-type", "text/plain")
+            .body(Body::from("always rejected"))
+            .expect("构造 mock 响应");
+    }
+    if let Behavior::Record(seen) = &behavior {
+        let plain = cosy::qoder_decode(&String::from_utf8_lossy(&body)).unwrap_or_default();
+        seen.lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .push(String::from_utf8_lossy(&plain).to_string());
+    }
     let should_fail = match &behavior {
         // `counter` 在上一段已经 `fetch_add` 过了，这里只需**匹配到变体**，
         // 不读它的值 ⇒ 用 `_` 占位。写成 `counter` 会触发
@@ -170,6 +211,8 @@ async fn mock_chat(
         }
         Behavior::Always429 => true,
         Behavior::Normal | Behavior::NonEnvelopeError => false,
+        // 已在上面单独处理（第一次回 400，之后放行 / 一直 400 / 只记录）。
+        Behavior::RejectFirst(_) | Behavior::Always400 | Behavior::Record(_) => false,
     };
     if should_fail {
         return Response::builder()
@@ -432,6 +475,142 @@ async fn chat_stream_surfaces_non_envelope_error_frame() {
     assert!(text.contains("\"error\""), "错误帧必须转发给客户端: {text}");
     assert!(text.contains("Internal Server Error"), "{text}");
     assert!(text.trim_end().ends_with("data: [DONE]"), "{text}");
+}
+
+/// issue #72：**自动降级**。结构化历史被上游按参数错（400）拒 ⇒ 网关用**同一账号**、
+/// 文本模式重发一次并成功 —— 用户拿到的是正常回答，而不是一轮 400。
+///
+/// 可证伪：把 `routes.rs` 里的 `degrade::should_degrade` 分支删掉 ⇒ 本用例收到 400。
+#[tokio::test]
+async fn structured_tool_history_degrades_to_text_after_a_400() {
+    let _guard = guard();
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let (state, key) = gateway_for(
+        "degrade",
+        &[("q1", "dt-1")],
+        Behavior::RejectFirst(seen.clone()),
+    )
+    .await;
+    // 白名单模型（`qwen` 前缀）+ 齐备的 tool_call id ⇒ 第一发必然走结构化。
+    let request = json!({
+        "model": "qwen3.8-max",
+        "messages": [
+            {"role": "user", "content": "看下目录"},
+            {"role": "assistant", "content": "", "tool_calls": [{
+                "id": "c1",
+                "type": "function",
+                "function": {"name": "read", "arguments": "{}"},
+            }]},
+            {"role": "tool", "tool_call_id": "c1", "name": "read", "content": "hi"},
+        ],
+    })
+    .to_string();
+    let response = router(state)
+        .oneshot(chat_request(Some(&key), &request))
+        .await
+        .expect("请求");
+    assert_eq!(response.status(), StatusCode::OK, "降级后应拿到正常回答");
+    let text = body_text(response).await;
+    assert!(text.contains("来自 q1 的回答"), "{text}");
+
+    let bodies = seen.lock().unwrap_or_else(|p| p.into_inner()).clone();
+    assert_eq!(bodies.len(), 2, "应发两次（结构化 + 文本模式重发）");
+    assert!(
+        bodies[0].contains("\"tool_calls\""),
+        "第一发应是结构化：{}",
+        bodies[0]
+    );
+    assert!(
+        bodies[1].contains("assistant 请求调用工具"),
+        "第二发应退成文本模式：{}",
+        bodies[1]
+    );
+    assert!(
+        !bodies[1].contains("\"tool_calls\""),
+        "第二发不得再带结构化字段：{}",
+        bodies[1]
+    );
+    // 结论坐实后才落记忆：这个 (区域, 模型) 之后直接走文本模式。
+    assert!(
+        buddy_switch_gateway::qoder::degrade::is_unsupported(QoderRegion::Cn, "qwen3.8-max"),
+        "降级成功后必须记住该模型不支持结构化"
+    );
+}
+
+/// 降级结论**不**在第一次 400 就落记忆：文本模式也 400 ⇒ 400 与结构化无关
+/// （上游整体坏了）。此时记住「结构化不被接受」是**误判** —— 会让该模型长时间
+/// 退回文本模式，正是 issue #72 要修的乱码。
+#[tokio::test]
+async fn degrade_memo_is_not_written_when_the_text_retry_also_fails() {
+    let _guard = guard();
+    let (state, key) = gateway_for("degrade-fail", &[("q1", "dt-1")], Behavior::Always400).await;
+    let request = json!({
+        "model": "qwen-always-400",
+        "messages": [
+            {"role": "user", "content": "hi"},
+            {"role": "assistant", "content": "", "tool_calls": [{
+                "id": "c1",
+                "type": "function",
+                "function": {"name": "read", "arguments": "{}"},
+            }]},
+            {"role": "tool", "tool_call_id": "c1", "name": "read", "content": "hi"},
+        ],
+    })
+    .to_string();
+    let response = router(state)
+        .oneshot(chat_request(Some(&key), &request))
+        .await
+        .expect("请求");
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert!(
+        !buddy_switch_gateway::qoder::degrade::is_unsupported(QoderRegion::Cn, "qwen-always-400"),
+        "重发也失败 ⇒ 400 与结构化无关，不该落降级记忆"
+    );
+}
+
+/// 出站清洗（与 WB / Trae 侧同款）：客户端历史里的**孤儿**（assistant 声明了调用、
+/// 没有 tool 消息回答；或 tool 消息没有对应的调用）必须在**发出去之前**清干净 ——
+/// 上游对这种请求判协议错误（400 `tool_call_sequence_broken`）。
+///
+/// 可证伪：把 core 里的 `cleanup_orphan_tool_history` 调用去掉 ⇒ 本用例的
+/// 「c2 / c9 不该出现」两条断言红。
+#[tokio::test]
+async fn orphan_tool_history_is_cleaned_before_reaching_upstream() {
+    let _guard = guard();
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let (state, key) =
+        gateway_for("clean", &[("q1", "dt-1")], Behavior::Record(seen.clone())).await;
+    let request = json!({
+        "model": "qwen3.8-max",
+        "messages": [
+            {"role": "user", "content": "hi"},
+            {"role": "assistant", "content": "", "tool_calls": [{
+                "id": "c1", "type": "function",
+                "function": {"name": "read", "arguments": "{}"},
+            }]},
+            {"role": "tool", "tool_call_id": "c1", "name": "read", "content": "结果"},
+            {"role": "assistant", "content": "", "tool_calls": [{
+                "id": "c2", "type": "function",
+                "function": {"name": "read", "arguments": "{}"},
+            }]},
+            {"role": "tool", "tool_call_id": "c9", "name": "read", "content": "悬空"},
+        ],
+    })
+    .to_string();
+    let response = router(state)
+        .oneshot(chat_request(Some(&key), &request))
+        .await
+        .expect("请求");
+    assert_eq!(response.status(), StatusCode::OK);
+    let bodies = seen.lock().unwrap_or_else(|p| p.into_inner()).clone();
+    assert_eq!(bodies.len(), 1, "应只发一次（没有降级）");
+    let body = &bodies[0];
+    assert!(body.contains("\"c1\""), "配对完整的调用必须保留：{body}");
+    assert!(!body.contains("\"c2\""), "没有回答的调用必须清掉：{body}");
+    /* ⚠️ 这里**必须**连引号一起比（`"c9"` 而不是裸 `c9`）：
+       裸子串会命中请求体里的随机 UUID（实测 `request_id` 里出现 `2c9b` 即误判），
+       于是本用例约 1/6 概率**假红** —— 与被测逻辑毫无关系。 */
+    assert!(!body.contains("\"c9\""), "悬空结果必须清掉：{body}");
 }
 
 /// 换号重试：第一个账号 429 ⇒ 自动换到下一个并成功。

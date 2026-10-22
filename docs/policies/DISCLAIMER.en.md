@@ -40,3 +40,12 @@ By using this project you acknowledge that you have read, understood and agreed 
 - This project is provided "as is" under the [PolyForm Noncommercial License 1.0.0](../../LICENSE), **without warranty of any kind, express or implied**, including but not limited to the implied warranties of merchantability, fitness for a particular purpose and non-infringement. For a plain-language summary of the license, see [Licensing](LICENSING.en.md).
 - This project depends on the internal data structures and endpoints of third-party clients, which may change in any release and render part or all of this tool non-functional. **No compatibility with any specific client version is guaranteed.**
 - Regardless of the theory of liability — contract, tort (including negligence) or otherwise — the author is not liable for any direct, indirect, incidental, special or punitive loss arising from the use of, or inability to use, this project.
+
+## 7. Restrictions on use
+
+- This project is the author's **personal, self-use and learning** work. It is not a commercial product, and it constitutes no adaptation, validation or promise for any commercial use.
+- **Any form of commercial use is prohibited**, including but not limited to: internal commercial projects at a company, paid products or paid services, offering it as a SaaS or hosted service, and selling or bundling this software or its modified/derivative versions. Commercial use requires prior written authorization from the author (see [Licensing](LICENSING.en.md)).
+- You must not use it to **circumvent the billing, quota limits, risk controls or identity verification of any upstream service**, and you must not resell, sublease, share or otherwise make available to third parties any quota, account or credential obtained through this tool.
+- Do not use this project for any unlawful purpose, or as infrastructure for a paid service offered to third parties.
+- You bear full responsibility for any consequence of violating these restrictions; the author is not involved. The author reserves the right to terminate the license and require that use stop.
+- This is a **personal project**: no commercial support, SLA or maintenance commitment is provided.

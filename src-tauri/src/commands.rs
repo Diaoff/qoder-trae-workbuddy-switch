@@ -1980,6 +1980,31 @@ pub async fn get_gateway_token_trend(region: Option<String>) -> Result<Value, St
         .map_err(|error| format!("读取网关用量趋势失败: {error}"))
 }
 
+/// 网关**三维度**逐日历史（模型 / 账号 / 端点）—— 用量页「账本」视图的数据源。
+///
+/// 三条维度由同一次聚合产出、共用同一水位线 ⇒「按模型合计 = 按账号合计 = 按端点合计 = 网关卡」。
+/// ⚠️ 只读：不扫盘、不触发记录；`days` 只含落库日（缺日 = 未记录，不是 0）。
+#[tauri::command]
+pub async fn get_gateway_usage_dim(region: Option<String>) -> Result<Value, String> {
+    let region = parse_region(region.as_deref());
+    tauri::async_runtime::spawn_blocking(move || token_daily::gateway_usage_dim(region))
+        .await
+        .map_err(|error| format!("读取网关维度用量失败: {error}"))
+}
+
+/// 今日**客户端 ↔ 网关对账**（只读；匹配算法在 `modules::reconcile`）。
+///
+/// 返回 `{ clientRows, gatewayRows, matched, matchedTokens, verdict, bounds, estimate, ... }`。
+/// ⚠️ 只覆盖**今日**：网关日志是环形窗口（缺省 200 条），更早的请求已滚出去、无法逐条对账。
+/// ⚠️ **不落盘**：对账结果随日志窗口滚动而变，写进 `token_daily` 会让历史数字漂移。
+#[tauri::command]
+pub async fn get_usage_reconcile(region: Option<String>) -> Result<Value, String> {
+    let region = parse_region(region.as_deref());
+    tauri::async_runtime::spawn_blocking(move || token_daily::reconcile_today(region))
+        .await
+        .map_err(|error| format!("读取用量对账失败: {error}"))
+}
+
 /// 今日 Token：账号 × 来源（client / gateway）的当日累计。
 ///
 /// 返回 `{ date, accounts: [{ uid, clientIn, clientOut, gatewayIn, gatewayOut }],
@@ -4535,6 +4560,22 @@ pub async fn qoder_checkin_claim(scope: String, uid: String) -> Result<Value, St
     qoder::checkin::claim_for(region, &uid).await
 }
 
+/// GET /api/qoder/pro-pack/status —— Pro 升级包资格（**只读**；`available=false` = 活动下线）。
+#[tauri::command(rename_all = "camelCase")]
+pub async fn qoder_pro_pack_status(scope: String, uid: String) -> Result<Value, String> {
+    let scope = resolve_scope_param(Some(&scope))?;
+    let region = require_qoder_region(scope)?;
+    qoder::checkin::pro_pack_status_for(region, &uid).await
+}
+
+/// POST /api/qoder/pro-pack/claim —— 领取 Pro 升级包（幂等；已领过 `already=true`）。
+#[tauri::command(rename_all = "camelCase")]
+pub async fn qoder_pro_pack_claim(scope: String, uid: String) -> Result<Value, String> {
+    let scope = resolve_scope_param(Some(&scope))?;
+    let region = require_qoder_region(scope)?;
+    qoder::checkin::pro_pack_claim_for(region, &uid).await
+}
+
 /// GET /api/qoder/checkin/status-map —— 逐账号「今日签到状态」（**只读**；issue #47）。
 ///
 /// `account_ids` 是**逗号分隔**的 uid 列表（与 HTTP 通道同一形状，见 server 侧
@@ -4554,7 +4595,11 @@ pub async fn qoder_checkin_status_map(
 pub async fn qoder_credits(scope: String) -> Result<Value, String> {
     let scope = resolve_scope_param(Some(&scope))?;
     let region = require_qoder_region(scope)?;
-    Ok(qoder::credits::region_view(region).await)
+    let view = qoder::credits::region_view(region).await;
+    // ★ 与 server 宿主同一条：额度视图写**限额护栏**的余额快照（G1 的唯一来源），
+    //   余额 > 0 时解除 402 停放。两宿主不许只改一边。
+    buddy_switch_gateway::qoder::quota::note_credits_view(region, &view);
+    Ok(view)
 }
 
 /// POST /api/qoder/oauth/start —— 发起设备授权，返回 `{ loginId, verificationUri, expiresIn }`。
@@ -4707,6 +4752,16 @@ pub async fn qoder_gateway_status(app: tauri::AppHandle, scope: String) -> Resul
         region,
     )
     .await)
+}
+
+/// GET /api/qoder/gateway/quota —— **限额护栏**视图（逐账号当日用量 + 拦截原因）。
+///
+/// 与 `/gateway/status` 同一条纪律：`scope` 必填（两区两本计数文件）。
+#[tauri::command]
+pub async fn qoder_gateway_quota(scope: String) -> Result<Value, String> {
+    let scope = resolve_scope_param(Some(&scope))?;
+    let region = require_qoder_region(scope)?;
+    Ok(qoder_gateway::shared_state().quota_view(region).await)
 }
 
 /// GET /api/qoder/gateway/models —— 对外暴露的模型清单（**随上游刷新**）。

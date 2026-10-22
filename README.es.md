@@ -38,17 +38,15 @@ Una estación de trabajo multicuenta **totalmente local**: reúne las cuentas de
 | 📊 **Uso y límites a la vista** | Tokens, créditos, límites «cuenta × modelo» y qué copia de sesión va atrás o divergió: todo en una pantalla. |
 | 🔌 **La cuota también alimenta otras herramientas** | Se expone como endpoint compatible con OpenAI / Anthropic: Cursor, Claude Code, OpenWebUI. |
 
-<p align="center">
-  <a href="https://github.com/NextAgentX/qoder-trae-workbuddy-switch/releases/latest"><img alt="Descargar" src="https://img.shields.io/badge/Descargar-Releases-2ea043?style=for-the-badge" /></a>
-  <a href="https://github.com/NextAgentX/qoder-trae-workbuddy-switch/stargazers"><img alt="Dar una estrella" src="https://img.shields.io/badge/Dar_una_estrella-Star-f5c542?style=for-the-badge" /></a>
-  <a href="CONTRIBUTING.en.md"><img alt="Contribuir" src="https://img.shields.io/badge/Contribuir-Pull_Request-4c8bf5?style=for-the-badge" /></a>
-</p>
+> **Naturaleza y alcance de uso**
+>
+> Este proyecto es fruto del **uso personal y el aprendizaje** de su autor: lo escribió para quitarse de encima la molestia de cambiar entre varias cuentas. **Puedes leerlo, hacer fork y mejorarlo, pero no se promete mantenimiento**: sin soporte comercial, sin SLA y sin garantía de compatibilidad con ninguna versión concreta del cliente.
+>
+> Licencia **PolyForm Noncommercial 1.0.0**: **solo se permite el uso personal no comercial; cualquier uso comercial está prohibido** (incluidos proyectos comerciales internos de una empresa, servicios SaaS o alojados, venta y distribución empaquetada). El uso comercial requiere autorización escrita previa del autor.
 
-
-> ⚠️ **Herramienta de terceros no oficial** (source-available, licencia PolyForm Noncommercial). Sin afiliación, autorización ni respaldo de esos productos ni de sus titulares. Lee y escribe los datos de autenticación de los clientes locales, envía peticiones automáticas según tu programación y puede reenviar tu cuota por un puerto local. Lee el **[aviso legal](docs/policies/DISCLAIMER.en.md)** antes de usarla.
+> ⚠️ **No oficial · no comercial**: sin afiliación, autorización, patrocinio ni respaldo de WorkBuddy, CodeBuddy, TraeWork, Qoder ni de sus titulares; **no se permite el uso comercial**. Lee y escribe los datos de autenticación de los clientes locales, envía peticiones automáticas según tu programación y puede reenviar tu cuota por un puerto local. Lee el **[aviso legal](docs/policies/DISCLAIMER.en.md)** antes de usarla.
 
 ## Capturas
-
 
 <table>
   <thead>
@@ -431,9 +429,7 @@ Guía completa (qué se puede hacer, checklist de PR, convenciones de código): 
 
 ## Apoyar el proyecto
 
-- ⭐ **Dar una estrella** — la ayuda más directa: el proyecto se encuentra antes y el autor sabe que merece la pena mantenerlo.
-- 🐞 **Describir bien un problema** — una issue reproducible vale por diez «no funciona» y suele entrar en la siguiente versión.
-- ☕ **Invitar un café al autor** (totalmente opcional, ninguna función queda bloqueada)
+- ☕ **Invitar un café al autor** (totalmente opcional, ninguna función queda bloqueada, y no constituye una licencia comercial)
 
 <table>
   <thead>
@@ -456,7 +452,7 @@ Cada proyecto sigue su propia licencia. Este proyecto es una implementación ind
 
 ## Aviso legal
 
-Texto completo en **[docs/policies/DISCLAIMER.en.md](docs/policies/DISCLAIMER.en.md)** ([简体中文](docs/policies/DISCLAIMER.md)), seis apartados: herramienta de terceros no oficial; términos de servicio y cumplimiento; escritura de datos y copias; riesgos de la automatización; riesgos de exponer la pasarela API; provista «tal cual». Usar el proyecto implica aceptarlos; si no, deja de usarlo y desinstálalo.
+Texto completo en **[docs/policies/DISCLAIMER.en.md](docs/policies/DISCLAIMER.en.md)** ([简体中文](docs/policies/DISCLAIMER.md)), siete apartados: herramienta de terceros no oficial; términos de servicio y cumplimiento; escritura de datos y copias; riesgos de la automatización; riesgos de exponer la pasarela API; provista «tal cual»; restricciones de uso (prohibición del uso comercial y de eludir la facturación). Usar el proyecto implica aceptarlos; si no, deja de usarlo y desinstálalo.
 
 ## Licencia
 
@@ -465,6 +461,8 @@ Texto completo en **[docs/policies/DISCLAIMER.en.md](docs/policies/DISCLAIMER.en
 - Texto completo: [LICENSE](./LICENSE)
 - Explicación sencilla y preguntas frecuentes: [docs/policies/LICENSING.en.md](docs/policies/LICENSING.en.md) ([简体中文](docs/policies/LICENSING.md))
 - Para licencia comercial, contacta al autor mediante los Issues del repositorio.
+- **Las donaciones no guardan relación con la licencia**: son regalos voluntarios, no una compra, una licencia comercial ni una promesa de servicio.
+- Es un **proyecto personal**: sin soporte comercial, sin SLA y sin compromiso de mantenimiento. Se responde a Issues y PR en la medida de lo posible, sin plazos garantizados.
 
 ## Historial de estrellas
 

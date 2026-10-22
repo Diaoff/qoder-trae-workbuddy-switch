@@ -142,6 +142,7 @@ function emptyTotals(): TokenStatsTotals {
     uncachedInput: 0,
     records: 0,
     cacheHitRate: null,
+    credit: 0,
   };
 }
 
@@ -155,6 +156,12 @@ function addTotals(a: TokenStatsTotals, b: TokenStatsTotals): TokenStatsTotals {
     uncachedInput: a.uncachedInput + b.uncachedInput,
     records: a.records + b.records,
     cacheHitRate: null,
+    /* ⚠️ 积分（issue #63）：这里**必须**带上 `credit`。
+       `addTotals` 是「逐字白名单」—— 漏一个字段，那个字段就在**合并多个来源**时
+       静默归零（`undefined ?? 0`）。实测：`dailyByModel` 的每一点都要过
+       `addGroup → addTotals`，漏掉它之后「客户端积分」整块变成 0，
+       而单来源的页面（无合并）却看起来正常 —— 极难发现。 */
+    credit: (a.credit ?? 0) + (b.credit ?? 0),
   };
 }
 

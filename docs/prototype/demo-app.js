@@ -9,10 +9,28 @@ const state = {
   scope: "wb-cn",
   dest: "overview",
   theme: "dark",
+  /* ★ 聚合视图（issue #50）：`true` 时**没有侧栏**、内容区直接铺 6 个作用域的全部账号卡。
+     它不是第 7 个作用域（`Scope` 是封闭字面量 `${平台}-${区域}`，塞进去会破坏类型与快捷键序号），
+     而是一个与「看某个作用域」并列的**视图模式** —— 所以用独立布尔量，不动 `state.scope`。 */
+  agg: false,
+  aggQ: "",
+  aggMode: "group",        // group = 按作用域分组（默认）/ flat = 按紧迫度混排
+  /* 可见性筛选集：存**账号键** `${scope}:${id}`；`null` = 无筛选（全量）。
+     ⚠️ 与 `selected`（批量动作对象）是两个互不写入的集合 —— 混成一个必然做歪。 */
+  aggVisible: null,
+  /* 筛选面板草稿（**应用后**才写进 aggVisible）：面板盖住了列表，live 改动用户看不见。 */
+  aggDraft: null,
+  aggExpanded: new Set(),
+  aggFilterOpen: false,
+  /* 取数失败的作用域（演示开关，验证「一组挂了其余照常」的形态）。 */
+  aggFailed: new Set(),
+  /* 演示：筛选生效期间新增了账号（验证 Q3 方案 C 的提示条）。 */
+  aggNewcomer: false,
   /* 账号工作台 */
   q: "", sort: "priority", group: "none", view: "card",
   selected: new Set(),
-  /* 卡片「更多」菜单：打开中的账号 id（`null` = 关着）。 */
+  /* 卡片「更多」菜单：打开中的账号键（`null` = 关着）。
+     账号页存裸 id；聚合页存 `${scope}:${id}`（跨作用域时裸 id 会串号）。 */
   acctMenu: null,
   /* 授权弹窗（issue #62）：`null` = 关着；打开后由 `openAuth()` 填。
      step ∈ waiting / expired / done —— 超时不自动重试，旧 state 已作废，必须重新生成。 */
@@ -25,7 +43,7 @@ const state = {
   /* 正在「新建分组」的账号 id（下拉里选「＋ 新建分组…」后就地变成输入框）。 */
   groupNew: null,
   /* 用量工作台 */
-  usageTab: "trend", range: 30, rangeMode: "preset", customFrom: "", customTo: "", rangeOpen: false, merge: false,
+  usageTab: "trend", range: 30, rangeMode: "preset", customFrom: "", customTo: "", rangeOpen: false, merge: false, usageBook: "all",
   /* 子导航 */
   gwSub: "overview",
   gwApi: "openai",      // 快速接入的协议 Tab：openai / anthropic
@@ -118,6 +136,27 @@ const currentAccount = (id) => {
 };
 const expiredCount = (s) => s.accounts.filter((a) => a.expired || a.needsRelogin).length;
 
+/* ─────────── 账号键（`${scope}:${id}`）───────────
+   聚合页一张卡一个账号，6 个作用域共存 ⇒ **裸 id 会串号**（同一 `userId` 在国内 / 国际
+   是两个不同账号）。所有「指向某个账号」的引用统一走这套 ref：
+     · 账号页生成裸 id（`a1`）—— 既有 DOM 断言与行为完全不变；
+     · 聚合页生成 `${scope}:${a1}`。
+   `refScope()` 对裸 id 回落到 `state.scope`，因此两边共用同一套事件分支。 */
+const refOf = (scope, id) => `${scope}:${id}`;
+const refScope = (ref) => (String(ref).includes(":") ? String(ref).slice(0, String(ref).indexOf(":")) : state.scope);
+const refId = (ref) => (String(ref).includes(":") ? String(ref).slice(String(ref).indexOf(":") + 1) : String(ref));
+const refAccount = (ref) => SCOPES[refScope(ref)].accounts.find((x) => x.id === refId(ref)) || null;
+const refPlatform = (ref) => PLATFORMS[SCOPES[refScope(ref)].platform];
+
+/* 聚合页的账号全集（顺序 = SCOPES 声明顺序，因此分组视图的组序稳定）。 */
+const aggAll = () => Object.keys(SCOPES).flatMap((sid) => SCOPES[sid].accounts.map((a) => ({ scope: sid, a, ref: refOf(sid, a.id) })));
+const aggAllRefs = () => new Set(aggAll().map((x) => x.ref));
+/* 「需处理」= 过期 / 需重登 / 未签到。与账号页 `expiredCount` 的口径**不同**：
+   后者只数凭据问题（侧栏徽章说的是「凭据待处理」），聚合页顶部说的是「今天有事要做」。 */
+const aggNeedsAttention = (a) => Boolean(a.expired || a.needsRelogin || !a.checkedIn);
+/* 紧迫度：平铺视图的排序依据。若平铺只是「打散分组、顺序仍按作用域」，它没有任何新信息。 */
+const aggUrgency = (a) => (a.expired ? 0 : a.needsRelogin ? 1 : !a.checkedIn ? 2 : a.expiring ? 3 : 4);
+
 function avatarTone(name) {
   /* 亮度压到 L ≤ 0.5，压在上面的白字（oklch .99）才能过 AA 4.5:1。
      色相保持不变，只降亮度。 */
@@ -147,6 +186,26 @@ const pendingActions = {};
 
 /* ─────────── 骨架渲染 ─────────── */
 function renderTopbar() {
+  /* ★ 聚合态：顶栏是**唯一保留的公共外壳**。
+     因为「聚合」的入口就在这枚作用域菜单里（D1），聚合页若没有顶栏，用户进去就出不来。 */
+  if (state.agg) {
+    const all = aggAll();
+    const attention = all.filter((x) => aggNeedsAttention(x.a)).length;
+    /* 有作用域取数失败 ⇒ 不显示「需处理」合计：拿未知冒充 0 是撒谎。 */
+    const unknown = state.aggFailed.size > 0;
+    $("#scope-mark").innerHTML = ICON.grid;
+    $("#scope-mark").style.background = "color-mix(in oklab, var(--primary) 20%, transparent)";
+    $("#scope-mark").style.color = "var(--primary)";
+    $("#scope-name").textContent = "聚合 · 全部账号";
+    $("#scope-sub").textContent = `${all.length} 个账号` + (!unknown && attention ? ` · ${attention} 个需处理` : "");
+    /* 运行态胶囊在聚合态下**不表达任何单一客户端**（6 个作用域各有一套），
+       所以只说「网关在跑」，不说「运行中」——后者会被读成「当前客户端在跑」。 */
+    const pill = $("#run-pill");
+    pill.className = "run-pill";
+    pill.innerHTML = `<i class="dot"></i><span>${Object.keys(SCOPES).filter((id) => SCOPES[id].running).length} 个作用域运行中</span>`;
+    $("#foot-dot").style.color = "var(--success)";
+    return;
+  }
   const s = curScope(), p = curPlatform();
   $("#scope-mark").innerHTML = p.mark;
   $("#scope-mark").style.background = `color-mix(in oklab, ${p.accent} 20%, transparent)`;
@@ -183,6 +242,13 @@ function renderNav() {
 
 function renderContent() {
   if (state.loading) { $("#content").innerHTML = skeleton(); return; }
+  /* ★ 聚合是**独立界面**：没有左侧导航栏，顶栏下方直接就是卡片区。
+     侧栏由 `body.agg-mode` 隐藏（CSS），`state.dest` 保持原值 —— 退出聚合时回到原页面。 */
+  if (state.agg) {
+    $("#content").innerHTML = viewAggregate();
+    $("#content").scrollTop = 0;
+    return;
+  }
   const map = { overview: viewOverview, accounts: viewAccounts, usage: viewUsage, sessions: viewSessions, gateway: viewGateway, settings: viewSettings };
   $("#content").innerHTML = map[state.dest]();
   $("#content").scrollTop = 0;
@@ -205,7 +271,12 @@ function skeleton() {
   </div>`;
 }
 
-function renderAll() { renderTopbar(); renderNav(); renderContent(); renderCompanion(); }
+function renderAll() {
+  /* 聚合态没有侧栏：整块 `<aside>` 用 class 隐藏（而不是 `innerHTML = ""`）——
+     侧栏 DOM 保持存在，退出聚合时不必重建，`#foot-ver` 等一次性回填也不会丢。 */
+  document.body.classList.toggle("agg-mode", state.agg);
+  renderTopbar(); renderNav(); renderContent(); renderCompanion();
+}
 
 /* ══════════════════════ 桌面悬浮窗（§3.16 / D21 已拍板） ══════════════════════
    独立浮层，**只读** —— 不承载任何写操作（§3.16 明确「不做的」）。
@@ -220,7 +291,9 @@ const COMPANION_STATE = {
 function renderCompanion() {
   const slot = $("#companion-slot");
   if (!slot) return;
-  if (!state.companionOpen) { slot.innerHTML = ""; return; }
+  /* 聚合视图下不显示会话悬浮窗：它列的是**当前作用域**的会话（单作用域概念），
+     摆在聚合页上既不对应任何作用域，又会盖住右下角的卡片。 */
+  if (state.agg || !state.companionOpen) { slot.innerHTML = ""; return; }
   const rows = COMPANION_SOURCES.map((c) => {
     const m = COMPANION_STATE[c.state] || COMPANION_STATE.done;
     /* 标题默认模糊（防截图 / 投屏泄露），悬停才看清 —— 与 §3.3 的邮箱脱敏同一原则。 */
@@ -376,13 +449,13 @@ function barChart(days, h, step) {
 const SERIES_VAR = (k) => `var(--s${(k % 8) + 1})`;
 
 /** 通用图例。 */
-function legend(items) {
+function legend(items, colors) {
   return `<div class="legend">${items.map((it, k) =>
-    `<span><i style="background:${SERIES_VAR(k)}"></i>${esc(it.name)}</span>`).join("")}</div>`;
+    `<span><i style="background:${(colors && colors[k]) || SERIES_VAR(k)}"></i>${esc(it.name)}</span>`).join("")}</div>`;
 }
 
 /** 堆叠柱：各分段之和**精确等于**当日总量（由数据层保证，见 demo-data.js 的 buildUsageExtras）。 */
-function stackedBar(days, series, h, label) {
+function stackedBar(days, series, h, label, colors) {
   const max = Math.max(1, ...days.map((d) => d.value));
   const step = days.length > 14 ? 5 : 1;   // 天数多时隔几个才标一次日期，避免糊成一片
   return `<div class="chart cbar" style="height:${h}px" role="img" aria-label="${esc(label)}">
@@ -392,7 +465,7 @@ function stackedBar(days, series, h, label) {
         const v = s.values[i] || 0;
         const pct = (v / max) * 100, bottom = (acc / max) * 100;
         acc += v;
-        return `<i style="height:${pct.toFixed(3)}%;bottom:${bottom.toFixed(3)}%;background:${SERIES_VAR(k)}"></i>`;
+        return `<i style="height:${pct.toFixed(3)}%;bottom:${bottom.toFixed(3)}%;background:${(colors && colors[k]) || SERIES_VAR(k)}"></i>`;
       }).join("");
       const tip = `${d.label} · 合计 ${fmt(d.value)} ｜ ` + series.map((s) => `${s.name} ${fmt(s.values[i] || 0)}`).join(" / ");
       return `<span class="ccol" title="${esc(tip)}">${segs}<em class="${i % step ? "hide" : ""}">${shortLabel(d.label)}</em></span>`;
@@ -676,7 +749,7 @@ function accountListHtml() {
   return groupAccounts(list).map((g) => `
     ${g.key ? `<div class="row" style="margin:18px 0 10px"><span class="badge">${esc(g.key)}</span><span class="tiny muted">${g.items.length} 个</span></div>` : ""}
     ${state.view === "card"
-      ? `<div class="grid g3">${g.items.map(accountCard).join("")}</div>`
+      ? `<div class="grid g3">${g.items.map((a) => accountCard(a)).join("")}</div>`
       : tableView(g.items)}
   `).join("");
 }
@@ -695,21 +768,38 @@ function renderAccountList() {
   if (box) box.innerHTML = accountListHtml();
 }
 
-function accountCard(a) {
-  const p = curPlatform();
-  const sel = state.selected.has(a.id);
-  const menuOpen = state.acctMenu === a.id;
+/**
+ * 一张账号卡 —— **账号页与聚合页共用这一份**（issue #50 R2「同一个组件、同一套 props」）。
+ *
+ * @param a    账号
+ * @param opts 仅两个可选键，都有默认值 ⇒ 账号页调用方式（`accountCard(a)`）一字未变：
+ *   · `scope`      账号所属作用域。给了就生成 `${scope}:${id}` 形式的 **ref** —— 聚合页
+ *                  6 个作用域共存，裸 id 会串号（同一 userId 在国内 / 国际是两个账号）。
+ *   · `scopeLine`  卡片顶部加一行「归属说明」。只给**平铺视图**用：分组视图里组标题
+ *                  已经回答了「这是哪个渠道」，卡上再挂一枚 chip 会挤掉「当前登录」徽章。
+ *
+ * ⚠️ 卡片内**不新增任何控件**：聚合页与账号页的可点区必须逐项一致，
+ *    否则「一致」就只是口号（`check-scope-registry.cjs` 也钉了「卡片可点区 ≤ 4 组」）。
+ */
+function accountCard(a, opts) {
+  const o = opts || {};
+  const scopeId = o.scope || state.scope;
+  const p = PLATFORMS[SCOPES[scopeId].platform];
+  const ref = o.scope ? refOf(o.scope, a.id) : a.id;
+  const sel = state.selected.has(ref);
+  const menuOpen = state.acctMenu === ref;
   /* 一个账号可绑 0..N 个程序位 ⇒ 「当前登录」= 绑定了任一程序位（不只是第一个）。 */
   const activeN = p.programs.filter((pg) => a.programs[pg.id]).length;
   const isCur = activeN > 0;
   const st = accountStatus(a);
-  return `<div class="acct${isCur ? " is-current" : ""}${sel ? " is-selected" : ""}" data-act="acct-open|${a.id}" tabindex="0" role="button" aria-label="打开 ${esc(a.name)} 的详情">
+  return `<div class="acct${isCur ? " is-current" : ""}${sel ? " is-selected" : ""}" data-act="acct-open|${ref}" tabindex="0" role="button" aria-label="打开 ${esc(a.name)} 的详情">
     <div class="acct-top">
-      <button class="check${sel ? " on" : ""}" data-act="acct-select|${a.id}" aria-label="选择">${sel ? ICON.check : ""}</button>
+      <button class="check${sel ? " on" : ""}" data-act="acct-select|${ref}" aria-label="选择">${sel ? ICON.check : ""}</button>
       <span class="avatar" style="background:${avatarTone(a.name)}">${initials(a.name)}</span>
       <span class="acct-id"><b>${esc(a.name)}</b><span>${esc(maskEmail(a.email) || a.remark || "—")}</span></span>
       ${isCur ? `<span class="badge info">当前登录</span>` : ""}
     </div>
+    ${o.scopeLine ? `<div class="acct-scope-line"><span class="scope-mark" style="background:color-mix(in oklab, ${p.accent} 18%, transparent);color:${p.accent}">${p.mark}</span>${scopeLabel(scopeId)}</div>` : ""}
     <div class="acct-chips">
       ${activeN >= 2 ? `<span class="badge info">${ICON.check}使用中 ${activeN} 个工具</span>` : ""}
       ${st ? `<span class="badge ${st.tone}">${st.text}</span>` : `<span class="badge ok">${ICON.check}已签到</span>`}
@@ -736,10 +826,10 @@ function accountCard(a) {
               : pg.label + " 未检测到客户端，点击查看如何接入";
           return `<button class="prog${on ? " on" : ""}${pg.installed ? "" : " off"}${pg.planned ? " planned" : ""}"
             title="${title}"
-            data-act="acct-prog|${a.id}|${pg.id}">${on ? ICON.check : ""}${esc(pg.short)}</button>`;
+            data-act="acct-prog|${ref}|${pg.id}">${on ? ICON.check : ""}${esc(pg.short)}</button>`;
         }).join("")}
       </div>
-      <button class="btn ghost sm${menuOpen ? " is-open" : ""}" data-act="acct-more|${a.id}"
+      <button class="btn ghost sm${menuOpen ? " is-open" : ""}" data-act="acct-more|${ref}"
         title="更多操作：单项刷新 / 详情 / 删除" aria-haspopup="menu" aria-expanded="${menuOpen}">${ICON.more}</button>
     </div>
   </div>`;
@@ -749,7 +839,7 @@ function tableView(list) {
   const p = curPlatform();
   return `<div class="tbl-wrap"><table class="tbl">
     <thead><tr>
-      <th style="width:34px"></th><th>账号</th><th>状态</th><th>积分</th><th>今日 Token</th><th>到期</th><th>程序位</th>
+      <th style="width:34px"></th><th>账号</th><th>状态</th><th>积分</th><th>今日 Token</th><th>到期</th><th>程序位</th><th style="width:40px"></th>
     </tr></thead>
     <tbody>${list.map((a) => {
       const sel = state.selected.has(a.id);
@@ -765,6 +855,10 @@ function tableView(list) {
         <td class="num">${fmtTok(a.todayTokens)}</td>
         <td class="num">${a.expireInDays == null ? `<span class="muted tiny">—</span>` : `${a.expireInDays} 天`}</td>
         <td>${p.programs.map((pg) => a.programs[pg.id] ? `<span class="badge info" style="margin-right:3px">${esc(pg.label)}</span>` : "").join("") || `<span class="muted tiny">未绑定</span>`}</td>
+        <!-- ★ 表格行也必须有「更多」：与卡片同一个菜单（App 的 renderActions 同形）。
+             此前表格没有行尾动作 ⇒ 用户在表格里除了点行就没别的出口 = 同一能力两种形态的分叉。 -->
+        <td><button class="btn ghost sm${state.acctMenu === a.id ? " is-open" : ""}" data-act="acct-more|${a.id}"
+          title="更多操作：单项刷新 / 签到 / 导出 / 删除" aria-haspopup="menu" aria-expanded="${state.acctMenu === a.id}">${ICON.more}</button></td>
       </tr>`;
     }).join("")}</tbody>
   </table></div>`;
@@ -774,6 +868,300 @@ function emptyBlock(icon, title, desc, action) {
   return `<div class="card"><div class="empty">
     <div class="ico">${icon}</div><b>${esc(title)}</b><p>${desc}</p>${action || ""}
   </div></div>`;
+}
+
+/* ══════════════════════ 聚合账号面板（issue #50）══════════════════════
+   一句话目标：**把 6 个作用域的全部账号铺在一屏，看状态和做操作都不必先切作用域。**
+   它不是第 7 个作用域（`Scope` 是封闭字面量），而是一个与「看某个作用域」并列的视图模式：
+     · 没有左侧导航栏（侧栏那 6 个目的地全是单作用域概念，留着只会点了落回某个作用域）；
+     · 顶栏保留 —— 作用域菜单是进出的**唯一**通道，没有它用户进去就出不来；
+     · 卡片就是账号页那张卡（`accountCard`），**不新增任何卡内控件**。
+
+   ## 两个选择集，互不写入
+   `aggVisible`（可见性筛选）决定**渲染哪些**，`selected`（批量选择）决定**动作作用于谁**。
+   两者共用 `${scope}:${id}` 键制，但永远不互相读写 —— 合成一个必然做歪。
+
+   ## 三种「空」必须彼此可辨
+   加载失败（组内整行虚线卡 + 重试）/ 未安装或无账号（一行虚线，不渲染组标题）/
+   被筛没（整页空态 + 显示全部）。三者混用会让用户以为账号被删了。 */
+
+const AGG_PREF_KEY = "buddy-switch:v1:aggregate-visible";
+
+/**
+ * 读可见性筛选。**只读纯函数 + 一律回退全量**：读取失败 / JSON 损坏 / 存储被禁用
+ * 都不能白屏（偏好坏了是小事，页面打不开是大事）。
+ *
+ * 规范化：**选满 == 无筛选**（直接删键）。否则会出现「存了 32 个键，新增第 33 个账号
+ * 之后看不见」的诡异态 —— 这也是 Q3 的一半答案。
+ */
+function readAggVisible() {
+  try {
+    const raw = localStorage.getItem(AGG_PREF_KEY);
+    if (!raw) return null;
+    const arr = JSON.parse(raw);
+    if (!Array.isArray(arr)) return null;
+    const all = aggAllRefs();
+    /* 失效键（账号已删 / 作用域不存在 / 格式不符）一律丢弃，否则会存下一堆幽灵键。 */
+    const keys = arr.filter((k) => typeof k === "string" && k.includes(":") && all.has(k));
+    if (!keys.length) return null;                 /* 全失效 ⇒ 回退全量（不显示空白页） */
+    if (keys.length === all.size) return null;     /* 选满 ⇒ 等于没筛 */
+    return new Set(keys);
+  } catch {
+    return null;
+  }
+}
+function writeAggVisible(set) {
+  try {
+    const all = aggAllRefs();
+    if (!set || !set.size || set.size === all.size) localStorage.removeItem(AGG_PREF_KEY);
+    else localStorage.setItem(AGG_PREF_KEY, JSON.stringify([...set].sort()));
+  } catch {
+    /* 写入失败静默：本次会话内仍按内存状态工作 */
+  }
+}
+
+/** 当前该渲染的账号（已叠加筛选 + 搜索，未排序）。 */
+function aggShown() {
+  const q = state.aggQ.trim().toLowerCase();
+  return aggAll().filter((x) => {
+    if (state.aggVisible !== null && !state.aggVisible.has(x.ref)) return false;
+    if (!q) return true;
+    return [x.a.name, x.a.email, x.a.remark, x.a.group, scopeLabel(x.scope)].some((v) => (v || "").toLowerCase().includes(q));
+  });
+}
+const aggFiltering = () => state.aggVisible !== null || Boolean(state.aggQ.trim());
+
+function viewAggregate() {
+  return `<div class="agg-page">
+    <div class="agg-bar">
+      <label class="field search agg-search">${ICON.search}
+        <input id="agg-q" type="text" placeholder="筛选账号（昵称 / 备注 / 邮箱）" value="${esc(state.aggQ)}" autocomplete="off" />
+      </label>
+      <div class="agg-filter-wrap">
+        <button class="btn${state.aggVisible ? " on-filter" : ""}" id="agg-filter-btn" data-act="agg-filter-toggle"
+          aria-haspopup="dialog" aria-expanded="${state.aggFilterOpen}">
+          ${ICON.list}<span>${state.aggVisible ? `筛选 · ${state.aggVisible.size}` : "筛选"}</span>
+        </button>
+        <div class="filter-pop" id="agg-filter-pop"${state.aggFilterOpen ? "" : " hidden"} role="dialog" aria-label="筛选显示范围">
+          ${state.aggFilterOpen ? aggFilterPanelHtml() : ""}
+        </div>
+      </div>
+      <div class="seg">
+        <button class="${state.aggMode === "group" ? "on" : ""}" data-act="agg-mode|group" title="按作用域分组：找某个渠道的号">按作用域分组</button>
+        <button class="${state.aggMode === "flat" ? "on" : ""}" data-act="agg-mode|flat" title="按紧迫度混排：扫全场的待处理项">平铺</button>
+      </div>
+      <div class="grow"></div>
+      <span class="agg-count${aggFiltering() ? " filtered" : ""}" id="agg-count">${aggCountInner()}</span>
+    </div>
+    <div id="agg-batch-slot">${aggNewcomerHtml()}${aggBatchHtml()}</div>
+    <div id="agg-list">${aggListHtml()}</div>
+  </div>`;
+}
+
+function aggCountInner() {
+  const total = aggAll().length;
+  if (!aggFiltering()) {
+    return `<b>${total}</b> 个账号 · ${state.aggMode === "flat" ? "按紧迫度排序" : `${Object.keys(SCOPES).length} 个作用域`}`;
+  }
+  return `筛选中 · 显示 <b>${aggShown().length}</b> / ${total}
+    <button class="btn ghost xs" data-act="agg-clear-filter">显示全部</button>`;
+}
+
+/**
+ * 组标题壳。`count === 0` 时**不渲染标题** —— 说明行里已经带了 scope-chip，
+ * 两处都写名字就是重复（未安装那组曾经在一屏里出现两次作用域名）。
+ */
+function aggGroupShell(sid, count, inner, att, failed) {
+  if (!count) return inner;
+  const p = PLATFORMS[SCOPES[sid].platform];
+  /* ⚠️ 取数失败时**不能**写「N 个账号」：那 N 个账号的数据根本没拿到，写数量等于拿旧值撒谎。 */
+  const meta = failed
+    ? `<span style="color:var(--destructive)">加载失败</span>`
+    : `<b>${count}</b> 个账号${att ? ` · <span style="color:var(--warning)">${att} 个需处理</span>` : ""}`;
+  return `<section class="agg-group">
+    <div class="agg-group-head">
+      <span class="scope-chip"><span class="scope-mark" style="background:color-mix(in oklab, ${p.accent} 18%, transparent);color:${p.accent}">${p.mark}</span>${scopeLabel(sid)}</span>
+      <span class="agg-gh-meta">${meta}</span>
+      <div class="grow"></div>
+      ${!failed && count > 1 ? `<button class="btn ghost xs agg-gh-btn" data-act="agg-group-sel|${sid}">全选本组</button>` : ""}
+    </div>
+    ${inner}
+  </section>`;
+}
+
+function aggNoteHtml(sid) {
+  const s = SCOPES[sid], p = PLATFORMS[s.platform];
+  const text = s.installed ? "该作用域还没有账号" : `这台机器没有检测到 ${esc(p.label)} 客户端，因此这里没有可管理的账号`;
+  return `<div class="agg-note">
+    <span class="scope-chip"><span class="scope-mark" style="background:color-mix(in oklab, ${p.accent} 18%, transparent);color:${p.accent}">${p.mark}</span>${scopeLabel(sid)}</span>
+    <span>${text}</span>
+  </div>`;
+}
+
+function aggFailHtml(sid) {
+  return `<div class="agg-grid"><div class="agg-fail">
+    <span class="ico">${ICON.warn}</span>
+    <span class="t"><b>账号列表加载失败</b><span>请求超时 · 其余作用域不受影响，可单独重试</span></span>
+    <button class="btn xs" data-act="agg-retry|${sid}">重试</button>
+  </div></div>`;
+}
+
+function aggEmptyHtml() {
+  const noneAtAll = aggShown().length === 0 && (state.aggVisible !== null || state.aggQ.trim());
+  if (noneAtAll) {
+    return `<div class="empty" style="margin-top:36px">
+      <div class="ico">${ICON.grid}</div>
+      <b>当前筛选下没有任何账号</b>
+      <p>筛选条件把 ${aggAll().length} 个账号全部排除了。清空筛选即可恢复全量。</p>
+      <button class="btn primary" data-act="agg-clear-filter">显示全部账号</button>
+    </div>`;
+  }
+  return emptyBlock(ICON.accounts, "还没有任何账号", "先在某个作用域里添加账号，聚合视图会把它们自动汇总到这里。",
+    `<button class="btn" data-act="scope-open">打开作用域菜单</button>`);
+}
+
+function aggListHtml() {
+  const shown = aggShown();
+  if (!shown.length) return aggEmptyHtml();
+
+  if (state.aggMode === "flat") {
+    /* ★ 平铺**不是**「打散分组」：顺序仍按作用域的话它没有任何新信息。
+       改为按紧迫度混排（过期 → 需重登 → 未签到 → 临期 → 其余），
+       于是两个模式各有明确用途：分组 = 找某个渠道；平铺 = 扫全场的待处理项。 */
+    const sorted = shown.slice().sort((x, y) => aggUrgency(x.a) - aggUrgency(y.a)
+      || (x.a.expireInDays == null ? 99 : x.a.expireInDays) - (y.a.expireInDays == null ? 99 : y.a.expireInDays));
+    return `<div class="agg-grid" style="margin-top:14px">${sorted.map((x) => accountCard(x.a, { scope: x.scope, scopeLine: true })).join("")}</div>`;
+  }
+
+  return Object.keys(SCOPES).map((sid) => {
+    const items = shown.filter((x) => x.scope === sid);
+    if (!items.length) {
+      /* 筛选 / 搜索生效时空组整组不出现：用户是在「已有账号」里缩小范围，
+         一个从未有过账号的作用域不属于这次筛选的范围，摆出来只会被误读成「被筛空了」。 */
+      if (!SCOPES[sid].accounts.length && !aggFiltering()) return aggNoteHtml(sid);
+      return "";
+    }
+    if (state.aggFailed.has(sid)) return aggGroupShell(sid, SCOPES[sid].accounts.length, aggFailHtml(sid), 0, true);
+    const att = items.filter((x) => aggNeedsAttention(x.a)).length;
+    return aggGroupShell(sid, items.length, `<div class="agg-grid">${items.map((x) => accountCard(x.a, { scope: sid })).join("")}</div>`, att, false);
+  }).join("");
+}
+
+/**
+ * Q3 方案 C：筛选生效期间新增的账号**不自动并入**（并入会静默改写用户的筛选集，
+ * 「上次的筛选」就不再可复现），但必须告知 —— 否则用户会以为账号丢了。
+ * 一条可关闭的细条 + 一个「加入筛选」出口，成本最低、语义不损。
+ */
+function aggNewcomerHtml() {
+  if (!state.aggNewcomer || state.aggVisible === null) return "";
+  return `<div class="agg-note agg-newcomer">
+    ${ICON.warn}
+    <span><b>2 个账号不在当前筛选中</b>（本次新增）</span>
+    <div class="grow"></div>
+    <button class="btn xs" data-act="agg-newcomer-add">加入筛选</button>
+    <button class="btn ghost xs" data-act="agg-newcomer-ignore">忽略</button>
+  </div>`;
+}
+
+function aggBatchHtml() {
+  if (!state.selected.size) return "";
+  const scopes = new Set([...state.selected].map((r) => refScope(r)));
+  /* 「跨 N 个作用域」不是装饰：批量删除会动到几个渠道，用户必须看得见。 */
+  return `<div class="batch-bar" style="margin-top:12px">
+    <span class="badge info">已选 ${state.selected.size} 个</span>
+    <span class="badge" title="批量动作会作用到这些作用域">跨 ${scopes.size} 个作用域</span>
+    <div class="grow"></div>
+    <button class="btn sm" data-act="agg-batch-refresh">${ICON.refresh}刷新</button>
+    <button class="btn sm" data-act="agg-batch-checkin">${ICON.spark}签到</button>
+    <button class="btn sm" data-act="agg-batch-export">${ICON.download}导出</button>
+    <button class="btn sm danger" data-act="agg-batch-delete">${ICON.trash}删除</button>
+    <button class="btn ghost sm" data-act="batch-clear">取消</button>
+  </div>`;
+}
+
+/** 只重绘聚合页的动态区（列表 / 批量条 / 计数 / 筛选按钮），不动搜索框（IME 约束）。 */
+function renderAggList() {
+  const list = $("#agg-list");
+  if (!list) return;
+  list.innerHTML = aggListHtml();
+  const slot = $("#agg-batch-slot");
+  if (slot) slot.innerHTML = aggNewcomerHtml() + aggBatchHtml();
+  const c = $("#agg-count");
+  if (c) { c.className = "agg-count" + (aggFiltering() ? " filtered" : ""); c.innerHTML = aggCountInner(); }
+  const btn = $("#agg-filter-btn");
+  if (btn) {
+    btn.classList.toggle("on-filter", state.aggVisible !== null);
+    const lab = btn.querySelector("span");
+    if (lab) lab.textContent = state.aggVisible ? `筛选 · ${state.aggVisible.size}` : "筛选";
+  }
+}
+
+/* ── 筛选面板 ──
+   三条硬规则：
+     ① **应用后生效**（不是 live）：面板盖住了列表，live 改动用户根本看不见；
+     ② 作用域行的**勾选区与展开区必须是两个命中区** —— 点整行就切换全选，会让
+        「想展开看看有哪些号」这个纯浏览动作顺手清空整组选择；
+     ③ 只有一种表示（账号键）：勾作用域 = 勾它名下全部账号键。 */
+function aggFilterPanelHtml() {
+  const draft = state.aggDraft || new Set();
+  const all = aggAllRefs();
+  const rows = Object.keys(SCOPES).map((sid) => {
+    const s = SCOPES[sid], p = PLATFORMS[s.platform];
+    const refs = s.accounts.map((a) => refOf(sid, a.id));
+    const on = refs.filter((r) => draft.has(r)).length;
+    const st = !refs.length || !on ? "" : on === refs.length ? "on" : "part";
+    const open = state.aggExpanded.has(sid);
+    const head = `<div class="fp-row" data-act="agg-fp-expand|${sid}">
+      <span class="fcheck ${st}" data-act="agg-fp-toggle|${sid}">${st === "on" ? ICON.check : st === "part" ? ICON.minus : ""}</span>
+      <span class="scope-mark" style="background:color-mix(in oklab, ${p.accent} 18%, transparent);color:${p.accent}">${p.mark}</span>
+      <span class="t"><b>${scopeLabel(sid)}</b><span>${refs.length ? `${on} / ${refs.length} 已选` : s.installed ? "没有账号" : "未安装客户端"}</span></span>
+      ${refs.length ? `<span class="n">${open ? "收起" : "展开"}</span>` : ""}
+    </div>`;
+    if (!open || !refs.length) return head;
+    return head + s.accounts.map((a) => {
+      const ref = refOf(sid, a.id);
+      const c = draft.has(ref);
+      return `<div class="fp-row fp-acc" data-act="agg-fp-acc|${ref}">
+        <span class="fcheck ${c ? "on" : ""}">${c ? ICON.check : ""}</span>
+        <span class="av" style="background:${avatarTone(a.name)}">${initials(a.name)}</span>
+        <span class="t"><b>${esc(a.name)}</b><span>${esc(maskEmail(a.email) || a.remark || "—")}</span></span>
+      </div>`;
+    }).join("");
+  }).join("");
+
+  const allOn = draft.size === all.size;
+  const part = draft.size > 0 && !allOn;
+  return `<div class="fp-head"><b>筛选显示范围</b><span>只改变这一屏显示哪些卡片，不删除、不修改任何账号。选满即等于「显示全部」。</span></div>
+    <div class="fp-list">
+      <div class="fp-row" data-act="agg-fp-all">
+        <span class="fcheck ${allOn ? "on" : part ? "part" : ""}">${allOn ? ICON.check : part ? ICON.minus : ""}</span>
+        <span class="t"><b>全部账号</b><span>${draft.size} / ${all.size} 已选</span></span>
+      </div>
+      <div class="fp-sep"></div>
+      ${rows}
+    </div>
+    <div class="fp-foot">
+      <span class="sum">已选 <b>${draft.size}</b> / ${all.size}${allOn ? " · 等于显示全部" : ""}</span>
+      <button class="btn sm ghost" data-act="agg-fp-cancel">取消</button>
+      <button class="btn sm primary" data-act="agg-fp-apply">应用</button>
+    </div>`;
+}
+
+/** 只重绘筛选面板本身：勾选 / 展开是面板内的动作，不该连带整页重绘（会丢滚动位置）。 */
+function renderAggFilterPop() {
+  const pop = $("#agg-filter-pop");
+  if (pop) pop.innerHTML = aggFilterPanelHtml();
+}
+
+function openAggFilter() {  state.aggDraft = new Set(state.aggVisible === null ? aggAllRefs() : state.aggVisible);
+  state.aggExpanded = new Set();
+  state.aggFilterOpen = true;
+  renderContent();
+}
+function closeAggFilter() {
+  state.aggFilterOpen = false;
+  state.aggDraft = null;
+  renderContent();
 }
 
 /* ══════════════════════ 用量 ══════════════════════ */
@@ -796,6 +1184,64 @@ function usageFor() {
   /* 按真实时间戳 ts 排序，而不是中文字符串 when（「昨天/今天」按字典序是乱的）。 */
   const credits = ids.flatMap((id) => USAGE[id].credits).sort((a, b) => (b.ts || 0) - (a.ts || 0));
   return { days, models, sessions, credits, ext: mergeExt(ids) };
+}
+
+/** 合并态下的账本：逐项求和，再按求和后的总量重算派生值（与 mergeExt 同哲学）。 */
+function mergeLedger(list) {
+  const src = (list || []).filter(Boolean);
+  if (!src.length) return null;
+  if (src.length === 1) return src[0];
+  const sum = (f) => src.reduce((a, x) => a + f(x), 0);
+  const named = (pick, key) => {
+    const m = new Map();
+    src.forEach((x) => (pick(x) || []).forEach((it) => {
+      const cur = m.get(it.name) || { name: it.name, [key]: 0, req: 0 };
+      cur[key] += it[key] || 0;
+      cur.req += it.req || 0;
+      m.set(it.name, cur);
+    }));
+    return [...m.values()].sort((a, b) => b[key] - a[key]);
+  };
+  const addDays = (pick) => (pick(src[0]) || []).map((_, i) => sum((x) => (pick(x) || [])[i] || 0));
+  const proxied = src.filter((x) => x.proxied).length;
+  const verdict = proxied === src.length ? "subset" : proxied === 0 ? "independent" : "mixed";
+  const clientRows = sum((x) => x.recon.clientRows);
+  const matched = sum((x) => x.recon.matched);
+  const clientTokens = sum((x) => x.client.tokens);
+  const gatewayTokens = sum((x) => x.gateway.tokens);
+  const byRequest = +(sum((x) => x.credits.byRequest)).toFixed(1);
+  return {
+    proxied: proxied > 0, verdict,
+    client: { tokens: clientTokens, requests: clientRows, days: addDays((x) => x.client.days) },
+    gateway: {
+      tokens: gatewayTokens,
+      requests: sum((x) => x.gateway.requests),
+      failed: sum((x) => x.gateway.failed),
+      days: addDays((x) => x.gateway.days),
+      models: named((x) => x.gateway.models, "tokens"),
+      accounts: named((x) => x.gateway.accounts, "tokens"),
+      endpoints: named((x) => x.gateway.endpoints, "req"),
+      coverage: src[0].gateway.coverage,
+    },
+    recon: {
+      clientRows, matched,
+      gatewayRows: sum((x) => x.recon.gatewayRows),
+      matchedTokens: sum((x) => x.recon.matchedTokens),
+      ratio: clientRows ? matched / clientRows : 0,
+    },
+    credits: {
+      client: +(sum((x) => x.credits.client)).toFixed(1),
+      gateway: +(sum((x) => x.credits.gateway)).toFixed(1),
+      overlap: +(sum((x) => x.credits.overlap)).toFixed(1),
+      byRequest,
+      consumed: +(sum((x) => x.credits.consumed)).toFixed(1),
+      gap: +(sum((x) => x.credits.gap)).toFixed(1),
+      clientModels: named((x) => x.credits.clientModels, "v"),
+      gatewayModels: named((x) => x.credits.gatewayModels, "v"),
+      dailyClient: addDays((x) => x.credits.dailyClient),
+      dailyGateway: addDays((x) => x.credits.dailyGateway),
+    },
+  };
 }
 
 /** 合并态下的派生数据。**必须一起聚合**——否则「合并」只影响 days，
@@ -831,7 +1277,7 @@ function mergeExt(ids) {
   const net = creditDaily.map((c) => c.inAmt - c.outAmt);
   let bal = curTotal - sum(net);
   const balance = net.map((v, i) => { bal += v; return { label: creditDaily[i].label, value: Math.max(0, bal) }; });
-  return { modelDays, hourly, creditDaily, balance, expiry, accountShare, statusCodes, scatter, curTotal };
+  return { modelDays, hourly, creditDaily, balance, expiry, accountShare, statusCodes, scatter, curTotal, ledger: mergeLedger(list.map((x) => x.ledger)) };
 }
 
 const WEEKDAYS = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"];
@@ -896,6 +1342,374 @@ function rangePopover() {
   </div>`;
 }
 
+/* ★ Qoder 的用量口径与另两个平台不同：客户端按 **credits** 计费，token 计数恒为 0
+   （三处取证见实机 `QoderUsagePage` 文件头）。原型此前对 Qoder 也按 Token 画 —— 那是错的，
+   评审很容易把 Token 当成 Qoder 的口径。这里加一行如实标注（不改整套图表：原型是设计稿，
+   图表结构对三个平台是同一套）。
+   「积分」视图同理：实机是**实时余额快照**（`qoder_credits`），Qoder 侧没有收支账本数据源。 */
+function usageUnitNote() {
+  if (curPlatform().id !== "qoder") return "";
+  return `<p class="tiny muted" style="margin:-6px 2px 12px">Qoder 客户端按 <b>credits</b> 计费，token 计数恒为 0 —— 实机按 credits 出图；「积分」视图是<b>实时余额快照</b>（Qoder 侧没有收支账本数据源）。</p>`;
+}
+
+/* ══════════════════════ 账本（issue #63）══════════════════════
+   设计依据：`docs/specs/USAGE-GATEWAY-UI-REDESIGN.md`。
+   三条规则，改这里之前先读：
+     ① **一个数字只属于一本账**：占比 / 排行 / 峰值一律在单本账内算，绝不跨账本混算；
+     ② **跨账本合计只出现在「合计」卡**，且必须能展开成算式（点「对账」）；
+     ③ **账本是页面级视图参数**，与「范围」同级，切 tab 不重置。
+   为什么要有它：客户端与网关是两本独立记账的账，互相重叠、口径不同。
+   当成一个数据源画，用户一定会自己去加，加完对不上就再也不信这一页了。 */
+const LEDGER_CLIENT = "var(--s1)";
+const LEDGER_GATEWAY = "var(--s3)";
+
+function bookLabel(book) {
+  return { all: "全部", client: "客户端", gateway: "网关" }[book] || "客户端";
+}
+/** 积分保留一位小数 + 千分位（`4280.5` → `4,280.5`）。 */
+function fmtCredit(n) {
+  return Number(n || 0).toLocaleString("zh-CN", { minimumFractionDigits: 1, maximumFractionDigits: 1 });
+}
+const sumArr = (arr) => (arr || []).reduce((a, b) => a + b, 0);
+
+/** 当前视图的账本（只有 WorkBuddy 有；Trae / Qoder 各自的数据源形状不同，见 UsagePage 的平台映射）。 */
+function ledgerOf() {
+  const e = usageFor().ext;
+  return e && e.ledger ? e.ledger : null;
+}
+function currentBook(L) {
+  return L && state.usageBook ? state.usageBook : "client";
+}
+
+/** 窗口切片：与 `rangeWindow` 同口径（闭区间）。 */
+function ledgerWindow(L, win, days) {
+  const cut = (arr) => arr.slice(win.from, win.to + 1);
+  return {
+    labels: days.map((d) => d.label),
+    client: cut(L.client.days),
+    gateway: cut(L.gateway.days),
+    creditsClient: cut(L.credits.dailyClient),
+    creditsGateway: cut(L.credits.dailyGateway),
+  };
+}
+
+/**
+ * 合计的算式。**形态随拓扑变**：
+ * 客户端走网关时（subset）写「网关 + 直连客户端」；否则写「相加再扣」。
+ * 子集关系下若仍写相加再扣，式子会变成「扣掉客户端 95%」，读起来像哪里错了。
+ */
+function ledgerFormula(L, cT, gT, overlap) {
+  if (L.verdict === "subset") {
+    return `网关 ${fmtTok(gT)} + 直连客户端 ${fmtTok(Math.max(0, cT - overlap))}`;
+  }
+  return `客户端 ${fmtTok(cT)} + 网关 ${fmtTok(gT)} − 重叠 ${fmtTok(overlap)}`;
+}
+function ledgerEstimate(cT, gT, overlap) {
+  return Math.max(0, cT + gT - overlap);
+}
+/** 窗口内的重叠量：按客户端在窗口内的占比缩放（对账本身只覆盖日志窗口，见设计文档 §4.5）。 */
+function ledgerOverlap(L, cT) {
+  const share = L.client.tokens ? cT / L.client.tokens : 0;
+  return Math.round(L.recon.matchedTokens * share);
+}
+
+/** 覆盖条：数据现状（不随账本切换而变）。 */
+function ledgerCoverage(L, win, days) {
+  const w = ledgerWindow(L, win, days);
+  const cT = sumArr(w.client), gT = sumArr(w.gateway);
+  const ov = ledgerOverlap(L, cT);
+  return `<div class="covstrip">
+    <span class="cov"><i style="background:${LEDGER_CLIENT}"></i>客户端 <b>${fmtTok(cT)}</b> · ${fmt(L.recon.clientRows)} 请求</span>
+    <span class="cov"><i style="background:${LEDGER_GATEWAY}"></i>网关 <b>${fmtTok(gT)}</b> · ${fmt(L.recon.gatewayRows)} 请求
+      <span class="badge warn">失败 ${fmt(L.gateway.failed)}</span></span>
+    <span class="cov">网关记录覆盖 <b>${L.gateway.coverage}</b> · 未记录日不算 0</span>
+    <span class="cov">两本账重叠 <b>${fmt(L.recon.matched)} 条</b> · ${fmtTok(ov)}
+      <a class="link" data-act="recon-open">看对账</a></span>
+  </div>`;
+}
+
+/** 趋势视图的四张卡。合计卡带算式 + 对账入口。 */
+function ledgerTiles(L, book, w, rangeName) {
+  const cT = sumArr(w.client), gT = sumArr(w.gateway);
+  const ov = ledgerOverlap(L, cT);
+  const n = Math.max(1, w.labels.length);
+  const peakC = Math.max(0, ...w.client), peakG = Math.max(0, ...w.gateway);
+  const recon = `<a class="link" data-act="recon-open">对账</a>`;
+  if (book === "client") {
+    return [
+      statTile("客户端 Token", fmtTok(cT), rangeName),
+      statTile("日均", fmtTok(Math.round(cT / n)), "按自然日平均"),
+      statTile("峰值", fmtTok(peakC), "区间内最高一天"),
+      statTile("请求数", fmt(L.recon.clientRows), "会话日志条目"),
+    ].join("");
+  }
+  if (book === "gateway") {
+    return [
+      statTile("网关 Token", fmtTok(gT), rangeName),
+      statTile("日均", fmtTok(Math.round(gT / n)), "按自然日平均"),
+      statTile("峰值", fmtTok(peakG), "区间内最高一天"),
+      statTile("请求数", fmt(L.recon.gatewayRows), `含 ${fmt(L.gateway.failed)} 次失败`),
+    ].join("");
+  }
+  return [
+    `<div class="card stat"><div class="k">合计 Token<span class="grow"></span>${recon}</div>
+      <div class="v"><span class="approx" title="两本账存在重叠：同一请求可能被两处各记一次。点「对账」看扣减明细">≈</span>${fmtTok(ledgerEstimate(cT, gT, ov))}</div>
+      <div class="d">${rangeName}</div>
+      <div class="d2">${ledgerFormula(L, cT, gT, ov)}</div></div>`,
+    statTile("日均", fmtTok(Math.round(ledgerEstimate(cT, gT, ov) / n)), "按自然日平均"),
+    statTile("峰值", fmtTok(peakC + peakG), "区间内最高一天"),
+    statTile("请求数", fmt(L.recon.clientRows + L.recon.gatewayRows - L.recon.matched), `重叠已扣 ${fmt(L.recon.matched)} 条`),
+  ].join("");
+}
+
+/** 趋势 · 双色堆叠（两本账各自的值，柱高**不做扣减** —— 重叠只在合计里扣）。 */
+function ledgerStacked(w, book, h) {
+  const showC = book !== "gateway", showG = book !== "client";
+  const days = w.labels.map((label, i) => ({
+    label,
+    value: (showC ? w.client[i] : 0) + (showG ? w.gateway[i] : 0),
+  }));
+  const series = [];
+  const colors = [];
+  if (showC) { series.push({ name: "客户端", values: w.client }); colors.push(LEDGER_CLIENT); }
+  if (showG) { series.push({ name: "网关", values: w.gateway }); colors.push(LEDGER_GATEWAY); }
+  return stackedBar(days, series, h, `每日 Token，按账本分色堆叠，共 ${days.length} 天`, colors) + legend(series, colors);
+}
+
+/**
+ * 模型 · **每日按模型**堆叠（原趋势图的按模型拆分能力，挪到这里）。
+ *
+ * 为什么挪：趋势图的堆叠维度改成**账本**了（客户端/网关两色），再按模型拆会变成
+ * 两级堆叠 —— 深色小图里没人读得出来。拆成两处各答一个问题：
+ * 趋势图答「哪天花了多少、其中网关占多少」，这里答「这一天的钱花在哪个模型」。
+ */
+function ledgerModelDaily(u, L, win, book) {
+  const card = (title, sub, days, series, colors) => {
+    const rows = days.map((d, i) => ({
+      label: d.label,
+      value: series.reduce((a, s) => a + (s.values[i] || 0), 0),
+    }));
+    return `<section class="card">
+      <div class="card-head"><h3>${title}</h3><div class="grow"></div><span class="sub">${sub}</span></div>
+      <div class="card-pad">${stackedBar(rows, series, 180, `${title}，${rows.length} 天，按模型堆叠`, colors)}${legend(series)}</div>
+    </section>`;
+  };
+  const slice = (arr) => arr.map((m) => ({ name: m.name, values: m.values.slice(win.from, win.to + 1) }));
+  const days = u.days.slice(win.from, win.to + 1);
+  if (book === "gateway") {
+    return `<div style="margin-bottom:16px">${card("每日 Token · 按模型", "网关账本", days, slice(L.gateway.modelDays || []), [LEDGER_GATEWAY, "var(--s4)", "var(--s2)", "var(--s5)"])}</div>`;
+  }
+  if (book === "client") {
+    return `<div style="margin-bottom:16px">${card("每日 Token · 按模型", "客户端账本", days, slice(u.ext.modelDays || []), [LEDGER_CLIENT, "var(--s2)", "var(--s4)", "var(--s5)"])}</div>`;
+  }
+  return `<div class="grid g2" style="margin-bottom:16px;gap:16px">
+      ${card("每日 Token · 按模型", "客户端账本", days, slice(u.ext.modelDays || []), [LEDGER_CLIENT, "var(--s2)", "var(--s4)", "var(--s5)"])}
+      ${card("每日 Token · 按模型", "网关账本", days, slice(L.gateway.modelDays || []), [LEDGER_GATEWAY, "var(--s4)", "var(--s2)", "var(--s5)"])}
+    </div>`;
+}
+
+/** 模型 · 单本账一张表（**不合并**：分母不同，任何合并占比都是假的）。 */
+function ledgerModelTable(L, book, win) {
+  const client = book === "client";
+  const set = client ? L.client : L.gateway;
+  /* 客户端模型用量取 `modelDays` 的**窗口内合计**（它与每日总量严格同源）；
+     `models[].tokens` 是示意量，拿它算占比会得出「加起来只有 34%」。 */
+  const models = client
+    ? (usageFor().ext.modelDays || []).map((m) => {
+        const tokens = sumArr(m.values.slice(win.from, win.to + 1));
+        return { name: m.name, tokens, req: Math.max(1, Math.round(tokens / 42000)) };
+      })
+    : L.gateway.models;
+  const total = client ? sumArr(models.map((m) => m.tokens)) : L.gateway.tokens;
+  const max = Math.max(1, ...models.map((m) => m.tokens));
+  const head = `<div class="card">
+    <div class="card-head"><h3>${client ? "客户端账本" : "网关账本"}</h3><div class="grow"></div>
+      <span class="sub">${client ? "扫本机会话日志 · 不含网关转发" : `网关记账 · 覆盖 ${L.gateway.coverage}`}</span></div>
+    <div class="tbl-wrap"><table class="tbl">
+      <thead><tr><th>模型</th><th>分布</th><th>Token</th><th>占比</th><th>请求</th>${client ? "" : "<th>失败</th>"}</tr></thead>
+      <tbody>${models.map((m) => `<tr>
+        <td><b>${esc(m.name)}</b></td>
+        <td style="width:34%"><div class="lbar"><i style="width:${((m.tokens / max) * 100).toFixed(1)}%;background:${client ? LEDGER_CLIENT : LEDGER_GATEWAY}"></i></div></td>
+        <td class="num">${fmtTok(m.tokens)}</td>
+        <td class="num muted">${total ? Math.round((m.tokens / total) * 100) : 0}%</td>
+        <td class="num muted">${fmt(m.req)}</td>
+        ${client ? "" : `<td class="num" style="color:var(--warning)">${m.name === "auto" ? 0 : Math.round(L.gateway.failed * (m.tokens / (total || 1)))}</td>`}
+      </tr>`).join("")}</tbody>
+    </table></div>
+    <div class="tiny muted" style="padding:0 16px 12px">${client
+      ? "客户端账本不记请求失败 —— 会话日志只留成功落盘的条目；占比按客户端合计算"
+      : `${fmt(L.gateway.failed)} 次失败已计入请求数；占比按网关合计算`}</div>
+  </div>`;
+  return head;
+}
+
+/** 会话 · 网关账本下换维度（网关没有 sessionId，但有账号与端点）。 */
+function ledgerGatewaySources(L) {
+  const maxAcc = Math.max(1, ...L.gateway.accounts.map((a) => a.tokens));
+  return `<div class="note-strip">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8h.01"/></svg>
+      <span>网关是<b>逐请求转发</b>，日志里没有会话 ID —— 所以这个视图在网关账本下换成<b>按账号 / 按端点</b>。</span>
+    </div>
+    <div class="grid g2">
+      <section class="card">
+        <div class="card-head"><h3>按账号</h3><div class="grow"></div><span class="sub">区间内</span></div>
+        <div class="tbl-wrap"><table class="tbl">
+          <thead><tr><th>账号</th><th>分布</th><th>Token</th><th>请求</th><th>占比</th></tr></thead>
+          <tbody>${L.gateway.accounts.map((a) => `<tr>
+            <td><b>${esc(a.name)}</b></td>
+            <td style="width:32%"><div class="lbar"><i style="width:${((a.tokens / maxAcc) * 100).toFixed(1)}%;background:${LEDGER_GATEWAY}"></i></div></td>
+            <td class="num">${fmtTok(a.tokens)}</td>
+            <td class="num muted">${fmt(a.req)}</td>
+            <td class="num muted">${L.gateway.tokens ? Math.round((a.tokens / L.gateway.tokens) * 100) : 0}%</td>
+          </tr>`).join("")}</tbody>
+        </table></div>
+        <div class="tiny muted" style="padding:0 16px 12px">账号按日志里的精确 uid 归属，展示名仅作显示</div>
+      </section>
+      <section class="card">
+        <div class="card-head"><h3>按端点</h3><div class="grow"></div><span class="sub">区间内</span></div>
+        <div class="tbl-wrap"><table class="tbl">
+          <thead><tr><th>端点</th><th>请求</th><th>占比</th></tr></thead>
+          <tbody>${L.gateway.endpoints.map((e) => `<tr>
+            <td><code>${esc(e.name)}</code></td>
+            <td class="num">${fmt(e.req)}</td>
+            <td class="num muted">${L.gateway.requests ? Math.round((e.req / L.gateway.requests) * 100) : 0}%</td>
+          </tr>`).join("")}</tbody>
+        </table></div>
+        <div class="tiny muted" style="padding:0 16px 12px">同一份数据在「网关 → 请求日志」里逐条可查</div>
+      </section>
+    </div>`;
+}
+
+/** 积分 · 请求口径（可拆来源，会重复）。余额口径不在这里 —— 它拆不到来源。 */
+function ledgerCreditBars(L, w, book) {
+  const showC = book !== "gateway", showG = book !== "client";
+  const days = w.labels.map((label, i) => ({
+    label,
+    value: (showC ? w.creditsClient[i] : 0) + (showG ? w.creditsGateway[i] : 0),
+  }));
+  const series = [];
+  const colors = [];
+  if (showC) { series.push({ name: "客户端", values: w.creditsClient }); colors.push(LEDGER_CLIENT); }
+  if (showG) { series.push({ name: "网关", values: w.creditsGateway }); colors.push(LEDGER_GATEWAY); }
+  return stackedBar(days, series, 180, `每日积分消耗，按账本分色堆叠，共 ${days.length} 天`, colors) + legend(series, colors);
+}
+
+function ledgerCreditTable(L, book) {
+  const client = book === "client";
+  const models = client ? L.credits.clientModels : L.credits.gatewayModels;
+  const total = client ? L.credits.client : L.credits.gateway;
+  const max = Math.max(0.01, ...models.map((m) => m.v));
+  return `<section class="card">
+    <div class="card-head"><h3>${client ? "客户端账本" : "网关账本"}</h3><div class="grow"></div>
+      <span class="sub">按请求累加 · ${fmtCredit(total)}</span></div>
+    <div class="tbl-wrap"><table class="tbl">
+      <thead><tr><th>模型</th><th>分布</th><th>积分</th><th>占比</th><th>请求</th></tr></thead>
+      <tbody>${models.map((m) => `<tr>
+        <td><b>${esc(m.name)}</b></td>
+        <td style="width:34%"><div class="lbar"><i style="width:${((m.v / max) * 100).toFixed(1)}%;background:${client ? LEDGER_CLIENT : LEDGER_GATEWAY}"></i></div></td>
+        <td class="num">${fmtCredit(m.v)}</td>
+        <td class="num muted">${total ? Math.round((m.v / total) * 100) : 0}%</td>
+        <td class="num muted">${fmt(m.req)}</td>
+      </tr>`).join("")}</tbody>
+    </table></div>
+  </section>`;
+}
+
+/** 积分 · 两个口径的关系（差额 = 未归因，绝不摊到任何来源）。 */
+function ledgerCreditGap(L, consumed, gap) {
+  return `<section class="card">
+    <div class="card-head"><h3>两个口径的差额</h3></div>
+    <div class="card-pad">
+      <div class="gapbox">
+        余额口径 <b>${fmtCredit(consumed)}</b> − 请求口径 <b>${fmtCredit(L.credits.byRequest)}</b>
+        <span class="muted">（客户端 ${fmtCredit(L.credits.client)} + 网关 ${fmtCredit(L.credits.gateway)} − 重叠 ${fmtCredit(L.credits.overlap)}）</span>
+        ＝ 差额 <b class="warn">${fmtCredit(gap)}</b>
+      </div>
+      <p class="tiny muted" style="margin:10px 0 0">差额 = 未归因消耗：别的设备 / 没落本地日志的请求。它<b>不会</b>被摊到任何来源上 —— 摊了就是编数据。</p>
+    </div>
+  </section>`;
+}
+
+/** 对账抽屉：结论 → 算式 → 匹配结果 → 规则 → 覆盖 → 未匹配样本。 */
+function reconVerdict(L) {
+  const r = L.recon;
+  if (L.verdict === "subset") {
+    return { cls: "", title: "客户端走的正是网关",
+      body: `${fmt(r.clientRows)} 条客户端记录里有 <b>${fmt(r.matched)}</b> 条能在网关账本里对上（${Math.round(r.ratio * 100)}%）——
+        客户端用量<b>已包含在网关账本内</b>。合计 ≈ 网关，只补没对上的那几条。` };
+  }
+  if (L.verdict === "mixed") {
+    return { cls: "mixed", title: "两本账部分重叠",
+      body: `只有 <b>${fmt(r.matched)}/${fmt(r.clientRows)}</b> 条客户端记录能对上 —— 可能中途才开网关，也可能只有部分客户端走网关。` };
+  }
+  return { cls: "", title: "两本账基本独立",
+    body: `${fmt(r.clientRows)} 条客户端记录里只有 <b>${fmt(r.matched)}</b> 条能在网关账本里找到对应（${Math.round(r.ratio * 100)}%）——
+      说明大部分客户端请求是<b>直连上游</b>的。合计 = 相加，再扣掉这 ${fmt(r.matched)} 条重叠。` };
+}
+
+function reconBody(L) {
+  const r = L.recon;
+  const cT = L.client.tokens, gT = L.gateway.tokens;
+  const ov = r.matchedTokens;
+  const est = ledgerEstimate(cT, gT, ov);
+  const v = reconVerdict(L);
+  const samples = [
+    { ts: "18:04:12", model: "step-5-preview", tokens: 42100, why: "模型不在网关账本" },
+    { ts: "18:07:31", model: "hy3", tokens: 28600, why: "最近网关记录相差 214s" },
+    { ts: "18:09:02", model: "deepseek-v4.1-flash", tokens: 15400, why: "token 数不符" },
+  ];
+  return `<div class="recon-head">
+      <h2>对账 · 客户端 ↔ 网关</h2>
+      <button class="recon-x" data-act="recon-close" aria-label="关闭">×</button>
+      <p class="tiny muted">把两本账里「同一个请求」找出来，从合计里扣掉</p>
+    </div>
+    <div class="verdict ${v.cls}"><h3>${v.title}</h3><p>${v.body}</p></div>
+    <div class="dformula">
+      <div class="big">≈ ${fmtTok(est)}</div>
+      <div class="eq">${ledgerFormula(L, cT, gT, ov)}</div>
+    </div>
+    <h4 class="recon-h4">匹配结果</h4>
+    <div class="drow"><span class="k">客户端记录</span><span class="v">${fmt(r.clientRows)} 条</span></div>
+    <div class="drow"><span class="k">网关记录</span><span class="v">${fmt(r.gatewayRows)} 条</span></div>
+    <div class="drow"><span class="k">一对一匹配（重叠）</span><span class="v">${fmt(r.matched)} 条 · ${fmtTok(ov)}</span></div>
+    <div class="drow"><span class="k">客户端未匹配</span><span class="v">${fmt(r.clientRows - r.matched)} 条 · ${fmtTok(cT - ov)}</span></div>
+    <h4 class="recon-h4">匹配规则</h4>
+    <p class="tiny muted">同模型 · 时间差 ≤ 120 秒 · prompt 与 completion 相差 ≤ 1% · 一对一（一条网关记录最多抵一条客户端记录）。
+      三条同时满足才算重叠 —— 宁可少扣，也不多扣。</p>
+    <p class="tiny muted" style="margin-top:6px"><b>账号不参与匹配</b>：网关按请求选号（无缝切号），同一条请求在客户端账本里记的是登录账号、
+      在网关账本里记的是被选中的账号 —— 拿账号当匹配键会把该对上的全漏掉。</p>
+    <h4 class="recon-h4">这次覆盖了哪里</h4>
+    <div class="drow"><span class="k">网关日志窗口</span><span class="v">${fmt(r.gatewayRows)} 条可对账</span></div>
+    <p class="tiny muted">网关日志只留最近 N 条请求，更早的已滚出窗口，无法逐条对账。所以合计给的是区间
+      <b>${fmtTok(Math.max(cT, gT))} – ${fmtTok(cT + gT)}</b>：下限 = 两本账取大（全部重叠），上限 = 直接相加（完全无重叠）。
+      ${fmtTok(est)} 取「未匹配的客户端请求都是直连」这一侧。</p>
+    <h4 class="recon-h4">未匹配样本（前 3 条）</h4>
+    <div class="tbl-wrap"><table class="tbl">
+      <thead><tr><th>时间</th><th>模型</th><th>Token</th><th>为什么没对上</th></tr></thead>
+      <tbody>${samples.map((s) => `<tr><td class="muted">${s.ts}</td><td>${esc(s.model)}</td>
+        <td class="num">${fmtTok(s.tokens)}</td><td class="tiny muted">${esc(s.why)}</td></tr>`).join("")}</tbody>
+    </table></div>`;
+}
+
+function openRecon() {
+  let layer = document.getElementById("recon-layer");
+  if (!layer) {
+    layer = document.createElement("div");
+    layer.id = "recon-layer";
+    layer.className = "recon-layer";
+    layer.setAttribute("role", "dialog");
+    layer.setAttribute("aria-label", "对账明细");
+    document.body.appendChild(layer);
+  }
+  const L = ledgerOf();
+  layer.innerHTML = L ? `<div class="recon-mask" data-act="recon-close"></div><aside class="recon-panel">${reconBody(L)}</aside>` : "";
+  layer.classList.add("on");
+}
+function closeRecon() {
+  const layer = document.getElementById("recon-layer");
+  if (layer) { layer.classList.remove("on"); layer.innerHTML = ""; }
+}
+
 function viewUsage() {
   const u = usageFor();
   const e = u.ext;
@@ -905,6 +1719,10 @@ function viewUsage() {
   const tabs = [["trend", "趋势"], ["models", "模型"], ["sessions", "会话"], ["credits", "积分"]];
   const scopeName = state.merge ? "全部作用域" : scopeLabel(state.scope);
   const rangeName = rangeLabel();
+  const L = ledgerOf();
+  /* 账本只对 WorkBuddy 出现：Trae / Qoder 的数据源形状不同（见 UsagePage 的平台映射）。 */
+  const isWb = curPlatform().id === "workbuddy";
+  const book = isWb ? currentBook(L) : "client";
 
   const params = `<div class="toolbar">
     <span class="tiny muted">视图参数</span>
@@ -913,6 +1731,10 @@ function viewUsage() {
       ${[7, 14, 30].map((n) => `<button class="${state.rangeMode === "preset" && state.range === n ? "on" : ""}" data-act="range|${n}">近 ${n} 天</button>`).join("")}
       <button class="${state.rangeMode === "custom" ? "on" : ""}" data-act="range-custom-open" aria-haspopup="dialog" aria-expanded="${state.rangeOpen}">自定义时间</button>
     </div>
+    ${L && isWb ? `<div class="vsep"></div><span class="tiny muted">账本</span>
+    <div class="seg book">
+      ${["all", "client", "gateway"].map((b) => `<button class="${book === b ? "on" : ""}" data-act="usage-book|${b}">${bookLabel(b)}</button>`).join("")}
+    </div>` : ""}
     <div class="grow"></div>
     <div class="seg">
       <button class="${!state.merge ? "on" : ""}" data-act="merge|0">仅本作用域</button>
@@ -924,139 +1746,119 @@ function viewUsage() {
   let body = "";
 
   if (tab === "trend") {
-    const total = days.reduce((x, d) => x + d.value, 0);
-    const avg = Math.round(total / days.length);
-    const peak = days.reduce((m, d) => (d.value > m.value ? d : m), days[0]);
+    const w = ledgerWindow(L, win, days);
+    const cT = sumArr(w.client), gT = sumArr(w.gateway);
+    const total = book === "client" ? cT : book === "gateway" ? gT : ledgerEstimate(cT, gT, ledgerOverlap(L, cT));
     let run = 0;
     const cum = days.map((d) => ({ label: d.label, value: (run += d.value) }));
-    const modelSlices = e.modelDays.map((m) => ({ name: m.name, values: m.values.slice(win.from, win.to + 1) }));
-    const modelTotals = modelSlices.map((m) => ({ name: m.name, value: m.values.reduce((s, v) => s + v, 0) }));
+    /* 模型占比**按单本账画**：跨账本合并占比的分母是假的（两本账各记一次）。 */
+    const clientSlices = u.models.map((m) => ({ name: m.name, value: m.tokens }));
+    const gatewaySlices = L.gateway.models.map((m) => ({ name: m.name, value: m.tokens }));
+    const donutCards = book === "all"
+      ? `<div class="grid g2" style="gap:12px">
+           <div><div class="tiny muted" style="margin-bottom:6px">客户端 ${fmtTok(sumArr(w.client))}</div>
+             ${donut(clientSlices, 140, "客户端账本的模型 Token 占比环形图", " Token")}</div>
+           <div><div class="tiny muted" style="margin-bottom:6px">网关 ${fmtTok(sumArr(w.gateway))}</div>
+             ${donut(gatewaySlices, 140, "网关账本的模型 Token 占比环形图", " Token")}</div>
+         </div>`
+      : donut(book === "client" ? clientSlices : gatewaySlices, 150,
+          `${bookLabel(book)}账本的模型 Token 占比环形图`, " Token");
 
-    body = `
-    <div class="grid g4" style="margin-bottom:16px">
-      ${statTile("区间总 Token", fmtTok(total), rangeName)}
-      ${statTile("日均", fmtTok(avg), "按自然日平均")}
-      ${statTile("峰值", fmtTok(peak.value), peak.label)}
-      ${statTile("活跃账号", String(e.accountShare.length), scopeName)}
-    </div>
-
-    <section class="card" style="margin-bottom:16px">
-      <div class="card-head"><h3>每日 Token · 按模型拆分</h3><div class="grow"></div><span class="sub">${scopeName} · 悬停看当日各模型明细</span></div>
-      <div class="card-pad">
-        ${stackedBar(days, modelSlices, 210, `按模型拆分的每日 Token 堆叠柱状图，${scopeName}，${rangeName}`)}
-        <div style="margin-top:14px">${legend(modelTotals)}</div>
-      </div>
-    </section>
-
-    <div class="grid g2" style="margin-bottom:16px">
-      <section class="card">
-        <div class="card-head"><h3>累计消耗曲线</h3><div class="grow"></div><span class="sub">区间内累计</span></div>
-        <div class="card-pad">${areaChart(cum, 170, `累计 Token 曲线，${scopeName}，${rangeName}`, { caption: `区间累计 ${fmt(cum[cum.length - 1].value)}　（单日峰值 ${fmt(Math.max(...days.map((d, i) => (i ? d.value - days[i - 1].value : d.value))))}）` })}</div>
+    body = `<div class="grid g4" style="margin-bottom:16px">${ledgerTiles(L, book, w, rangeName)}</div>
+      ${isWb ? ledgerCoverage(L, win, days) : ""}
+      <section class="card" style="margin-bottom:16px">
+        <div class="card-head"><h3>每日 Token</h3><div class="grow"></div>
+          <span class="sub">${rangeName} · 悬停看当日各账本</span></div>
+        <div class="card-pad">${ledgerStacked(w, book, 210)}</div>
+        <div class="tiny muted" style="padding:0 16px 14px">柱高是两本账各自的值，<b>不做扣减</b> —— 重叠只在「合计」里扣（见对账）。</div>
       </section>
-      <section class="card">
-        <div class="card-head"><h3>模型占比</h3></div>
-        <div class="card-pad">${donut(modelTotals, 150, "各模型 Token 占比环形图", " Token")}</div>
-      </section>
-    </div>
-
-    <section class="card">
-      <div class="card-head"><h3>使用时段分布</h3><div class="grow"></div><span class="sub">越亮 = 该时段越忙（相对强度，非绝对量）</span></div>
-      <div class="card-pad">${heatmap(e.hourly, WEEKDAYS, "一周七天 × 24 小时的使用强度热力图")}</div>
-    </section>`;
-  } else if (tab === "models") {
-    const items = e.modelDays
-      .map((m) => ({ name: m.name, values: m.values.slice(win.from, win.to + 1) }))
-      .map((m) => ({ name: m.name, spark: m.values, value: m.values.reduce((s, v) => s + v, 0) }))
-      .sort((a, b) => b.value - a.value);
-    const totalM = items.reduce((s, i) => s + i.value, 0) || 1;
-    body = items.length
-      ? `<div class="grid g4" style="margin-bottom:16px">
-          ${statTile("模型数", String(items.length), "区间内被调用过")}
-          ${statTile("头部模型", items[0].name, `${Math.round((items[0].value / totalM) * 100)}% 占比`)}
-          ${statTile("模型总 Token", fmtTok(totalM), rangeName)}
-          ${statTile("单模型均值", fmtTok(Math.round(totalM / items.length)), "按模型数平均")}
-        </div>
-
-        <section class="card" style="margin-bottom:16px">
-          <div class="card-head"><h3>模型 Token 占比</h3><div class="grow"></div><span class="sub">${scopeName}</span></div>
-          <div class="card-pad">${donut(items.map((i) => ({ name: i.name, value: i.value })), 170, "各模型 Token 占比环形图", " Token")}</div>
-        </section>
-
+      <div class="grid g2" style="margin-bottom:16px">
         <section class="card">
-          <div class="card-head"><h3>模型用量排行</h3><div class="grow"></div><span class="sub">条形 = 占比　迷你线 = 区间内走势</span></div>
-          <div class="card-pad">${hbarList(items, {
-            spark: true, sparkW: 74, sparkH: 20,
-            fmt: (it) => `${fmtTok(it.value)} · ${Math.round((it.value / totalM) * 100)}%`,
-          })}</div>
-        </section>`
-      : emptyBlock(ICON.usage, "暂无模型用量", "该作用域还没有产生调用记录。");
+          <div class="card-head"><h3>累计消耗曲线</h3><div class="grow"></div><span class="sub">区间内累计</span></div>
+          <div class="card-pad">${areaChart(cum, 170, `累计 Token 曲线，${scopeName}，${rangeName}`)}</div>
+        </section>
+        <section class="card">
+          <div class="card-head"><h3>模型占比</h3><div class="grow"></div><span class="sub">${bookLabel(book)}</span></div>
+          <div class="card-pad">${donutCards}</div>
+        </section>
+      </div>
+      ${book === "gateway"
+        ? `<section class="card"><div class="card-head"><h3>使用时段分布</h3><div class="grow"></div><span class="badge warn">网关不记录</span></div>
+             <div class="card-pad"><p class="tiny muted" style="margin:8px 0">网关日志只记时间戳与耗时：能算逐日，不能算「一周七天 × 24 小时」。要按小时看，请切到客户端账本。</p></div>
+           </section>`
+        : `<section class="card"><div class="card-head"><h3>使用时段分布</h3><div class="grow"></div><span class="badge">仅客户端</span></div>
+             <div class="card-pad">${heatmap(e.hourly, WEEKDAYS, "一周七天 × 24 小时的使用强度热力图")}</div>
+           </section>`}`;
+  } else if (tab === "models") {
+    body = ledgerModelDaily(u, L, win, book) + (book === "all"
+      ? `<div class="note-strip"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8h.01"/></svg>
+          <span><b>两个账本各一张表，不相加。</b>同一请求可能客户端与网关各记一次 —— 所以这里没有「合并占比」，想对账请切到单一账本。</span></div>`
+      : "")
+      + (book === "gateway" ? "" : ledgerModelTable(L, "client", win))
+      + (book === "client" ? "" : ledgerModelTable(L, "gateway", win));
   } else if (tab === "sessions") {
-    const top = [...u.sessions].sort((a, b) => b.tokens - a.tokens);
-    const pts = top.map((s) => ({ x: s.msgs, y: s.tokens, label: s.title }));
-    const totalS = top.reduce((s, x) => s + x.tokens, 0) || 1;
-    body = top.length
-      ? `<div class="grid g4" style="margin-bottom:16px">
-          ${statTile("会话数", String(top.length), "区间内活跃")}
-          ${statTile("会话总 Token", fmtTok(totalS), rangeName)}
-          ${statTile("单会话均值", fmtTok(Math.round(totalS / top.length)), "按 Token")}
-          ${statTile("最高消耗", fmtTok(top[0].tokens), top[0].title)}
-        </div>
-
-        <div class="grid g2" style="margin-bottom:16px">
-          <section class="card">
-            <div class="card-head"><h3>会话 Token 排行</h3></div>
-            <div class="card-pad">${hbarList(top.map((s) => ({ name: s.title, value: s.tokens })), {
-              fmt: (it) => `${fmtTok(it.value)} · ${Math.round((it.value / totalS) * 100)}%`,
-            })}</div>
-          </section>
-          <section class="card">
-            <div class="card-head"><h3>消息数 × Token</h3><div class="grow"></div><span class="sub">气泡越大 = 单次消耗越高</span></div>
-            <div class="card-pad">${scatterChart(pts, 200, "会话的消息数与 Token 散点图", "消息数", "Token")}</div>
-          </section>
-        </div>
-
-        <div class="tbl-wrap"><table class="tbl">
-          <thead><tr><th>会话标题</th><th>账号</th><th>消息数</th><th>Token</th><th>占比</th><th>最后活动</th></tr></thead>
-          <tbody>${top.map((x) => `<tr>
-            <td><b>${esc(x.title)}</b></td><td>${esc(x.account)}</td>
-            <td class="num">${x.msgs}</td><td class="num">${fmt(x.tokens)}</td>
-            <td class="num muted">${Math.round((x.tokens / totalS) * 100)}%</td>
-            <td class="muted nowrap">${esc(x.when)}</td>
-          </tr>`).join("")}</tbody></table></div>`
-      : emptyBlock(ICON.accounts, "暂无会话记录", "该作用域还没有产生会话。");
-  } else {
-    if (state.errors.usage) {
-      /* 积分刷新失败：行内错误态 + 重试，而不是只弹一个 toast 就没了 */
-      body = errorState({
-        title: "积分刷新失败",
-        desc: "无法从上游读取积分余额，下面显示的可能不是最新数据。",
-        action: { label: "重试刷新", act: "retry|usage" },
-      });
+    if (book === "gateway") {
+      body = ledgerGatewaySources(L);
     } else {
-      /* 合并态下这些数字也要跟着变，不能只有趋势图变。 */
-      const statScopes = state.merge ? Object.keys(SCOPES) : [state.scope];
-      const allAcc = statScopes.flatMap((id) => SCOPES[id].accounts);
-      const daily = e.creditDaily.slice(win.from, win.to + 1);
-      const bal = e.balance.slice(win.from, win.to + 1);
-      const totalIn = daily.reduce((s, d) => s + d.inAmt, 0);
-      const totalOut = daily.reduce((s, d) => s + d.outAmt, 0);
-      const netAmt = totalIn - totalOut;
-      const exp = e.expiry.filter((x) => x.value > 0);
-      const expiring5 = allAcc.reduce((x, a) => x + a.expiring, 0);
+      const top = [...u.sessions].sort((a, b) => b.tokens - a.tokens);
+      const pts = top.map((s) => ({ x: s.msgs, y: s.tokens, label: s.title }));
+      const totalS = top.reduce((s, x) => s + x.tokens, 0) || 1;
+      const notice = book === "all"
+        ? `<div class="note-strip"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8h.01"/></svg>
+            <span>网关调用<b>没有会话 ID</b>，未计入本视图 · <a class="link" data-act="usage-book|gateway">按账号查看网关用量</a></span></div>`
+        : "";
+      body = notice + (top.length
+        ? `<div class="grid g4" style="margin-bottom:16px">
+            ${statTile("会话数", String(top.length), "区间内活跃")}
+            ${statTile("会话总 Token", fmtTok(totalS), rangeName)}
+            ${statTile("单会话均值", fmtTok(Math.round(totalS / top.length)), "按 Token")}
+            ${statTile("最高消耗", fmtTok(top[0].tokens), top[0].title)}
+          </div>
+          <div class="grid g2" style="margin-bottom:16px">
+            <section class="card"><div class="card-head"><h3>会话 Token 排行</h3></div>
+              <div class="card-pad">${hbarList(top.map((s) => ({ name: s.title, value: s.tokens })), {
+                fmt: (it) => `${fmtTok(it.value)} · ${Math.round((it.value / totalS) * 100)}%`,
+              })}</div></section>
+            <section class="card"><div class="card-head"><h3>消息数 × Token</h3><div class="grow"></div><span class="sub">气泡越大 = 单次消耗越高</span></div>
+              <div class="card-pad">${scatterChart(pts, 200, "会话的消息数与 Token 散点图", "消息数", "Token")}</div></section>
+          </div>`
+        : emptyBlock(ICON.accounts, "暂无会话记录", "该作用域还没有产生会话。"));
+    }
+  } else {
+    /* 积分：**两个口径**。余额口径权威、不重复、拆不到来源；请求口径可拆、会重复。 */
+    const w = ledgerWindow(L, win, days);
+    const statScopes = state.merge ? Object.keys(SCOPES) : [state.scope];
+    const allAcc = statScopes.flatMap((id) => SCOPES[id].accounts);
+    const daily = e.creditDaily.slice(win.from, win.to + 1);
+    const bal = e.balance.slice(win.from, win.to + 1);
+    const totalIn = daily.reduce((s, d) => s + d.inAmt, 0);
+    const totalOut = daily.reduce((s, d) => s + d.outAmt, 0);
+    const exp = e.expiry.filter((x) => x.value > 0);
+    const expiring5 = allAcc.reduce((x, a) => x + a.expiring, 0);
 
-      body = `${creditsHeadBar()}
+    body = `${creditsHeadBar()}
       <div class="grid g4" style="margin-bottom:16px">
         ${statTile("可用积分合计", fmt(e.curTotal), `${allAcc.length} 个账号`)}
+        ${statTile("区间消耗", fmtCredit(totalOut), "余额差值 · 权威口径")}
         ${statTile("区间入账", "+" + fmt(totalIn), "签到奖励")}
-        ${statTile("区间消耗", "-" + fmt(totalOut), `净 ${netAmt >= 0 ? "+" : ""}${fmt(netAmt)}`)}
         ${statTile("即将过期", fmt(expiring5), exp.length ? `最早 ${exp[0].day} 天后` : "5 天内无到期")}
       </div>
-
+      <div class="note-strip"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8h.01"/></svg>
+        <span>上面四张是<b>余额口径</b>：账号余额快照的差值，<b>天然不重复</b>，但拆不到来源。下面按请求累加，能拆来源，<b>会重复</b>。</span></div>
+      <section class="card" style="margin-bottom:16px">
+        <div class="card-head"><h3>每日积分消耗</h3><div class="grow"></div><span class="sub">请求口径 · ${rangeName}</span></div>
+        <div class="card-pad">${ledgerCreditBars(L, w, book)}</div>
+        <div class="tiny muted" style="padding:0 16px 14px">每条请求自带的 credit 累加（客户端 jsonl / 网关 usage.credit）。两本账分色，柱高不做扣减。</div>
+      </section>
+      <div class="grid g2" style="margin-bottom:16px">
+        ${book === "gateway" ? "" : ledgerCreditTable(L, "client")}
+        ${book === "client" ? "" : ledgerCreditTable(L, "gateway")}
+      </div>
+      ${book === "all" ? ledgerCreditGap(L, totalOut, Math.max(0, totalOut - L.credits.byRequest)) : ""}
       <section class="card" style="margin-bottom:16px">
         <div class="card-head"><h3>每日积分收支</h3><div class="grow"></div><span class="sub">上 = 签到入账　下 = 对话消耗</span></div>
         <div class="card-pad">${divergingBars(daily, 180, `每日积分收支双向柱状图，${scopeName}，${rangeName}`, "入账", "消耗")}</div>
       </section>
-
       <div class="grid g2" style="margin-bottom:16px">
         <section class="card">
           <div class="card-head"><h3>积分余额变化</h3><div class="grow"></div><span class="sub">末值 = 当前合计</span></div>
@@ -1069,22 +1871,6 @@ function viewUsage() {
             : `<p class="tiny muted" style="margin:8px 0">未来 30 天内没有积分到期。</p>`}</div>
         </section>
       </div>
-
-      <div class="grid g2" style="margin-bottom:16px">
-        <section class="card">
-          <div class="card-head"><h3>账号 Token 占比</h3><div class="grow"></div><span class="sub">累计</span></div>
-          <div class="card-pad">${e.accountShare.length
-            ? donut(e.accountShare.slice(0, 6), 150, "各账号累计 Token 占比环形图", " Token")
-            : `<p class="tiny muted" style="margin:8px 0">还没有账号产生用量。</p>`}</div>
-        </section>
-        <section class="card">
-          <div class="card-head"><h3>网关状态码分布</h3><div class="grow"></div><span class="sub">今日请求</span></div>
-          <div class="card-pad">${e.statusCodes.length
-            ? donut(e.statusCodes, 150, "网关请求状态码分布环形图", " 次")
-            : `<p class="tiny muted" style="margin:8px 0">本作用域没有网关请求。</p>`}</div>
-        </section>
-      </div>
-
       ${u.credits.length ? `<div class="tbl-wrap"><table class="tbl">
       <thead><tr><th>时间</th><th>账号</th><th>变动</th><th>说明</th></tr></thead>
       <tbody>${u.credits.map((c) => `<tr>
@@ -1092,7 +1878,6 @@ function viewUsage() {
         <td class="num" style="color:${c.delta > 0 ? "var(--success)" : "var(--warning)"}">${c.delta > 0 ? "+" : ""}${c.delta}</td>
         <td>${esc(c.note)}</td></tr>`).join("")}</tbody></table></div>`
         : emptyBlock(ICON.spark, "暂无积分流水", "该作用域还没有积分变动记录。")}`;
-    }
   }
 
   return `<div class="page">
@@ -1103,9 +1888,11 @@ function viewUsage() {
     </div>
     <div class="seg" style="margin-bottom:16px">${tabs.map(([v, l]) => `<button class="${tab === v ? "on" : ""}" data-act="usage-tab|${v}">${l}</button>`).join("")}</div>
     ${params}
+    ${usageUnitNote()}
     ${body}
   </div>`;
 }
+
 
 /* 模型清单来源条（§3.17）：三级来源必须显式标注，非「实时」时给出原因 + 重试。
    绝不把「内置」伪装成「实时」—— 用户照着清单调用会扑空，是典型的静默错误。 */
@@ -1281,6 +2068,45 @@ function fmtWindow(value) {
 
 /* 「上下文」单元格：开启时按目录里**这个模型自己的**上限声明；关闭时回到默认。
    上限不存在 / 与默认相同 / 模型不在目录里，都只显示默认值 —— 不虚报。 */
+/* 能力两列（issue #65）：思考档位 / 积分倍率 —— 三平台同构，与 App 的
+   `components/gateway/model-ability.tsx` 是同一套语义。
+
+   ★ 档位按平台**原词表**显示，**不做归一映射**：WB 用 low/medium/high/xhigh/max，
+   Trae 实测只有 light/high/extra_high，Qoder 是官方那套。把 xhigh 标成 extra_high
+   会造出一个实际不存在的等价关系。
+   ★ 空数组的成因三种，文案必须分开：
+     - unknown（该程序位没下发）—— TraeWork 实测 22 条只有 1 条带档位，
+       写成「都不支持思考」就是撒谎；
+     - unsupported（明确不支持选档）；
+     - undeclared（上游没声明、内置表也没有）。
+   ★ 倍率是**倍数**不是金额：`×0.79` = 基准价的 0.79 倍；`0` 显示「免费」。 */
+function effortCell(m) {
+  const list = Array.isArray(m.efforts) ? m.efforts : [];
+  if (!list.length) {
+    const platform = curScope().platform;
+    const why = platform === "trae"
+      ? "该程序位的清单未下发思考档位信息"
+      : platform === "qoder"
+        ? "该模型不支持选档"
+        : "上游未声明档位，内置档位表也没有对应条目";
+    return `<span class="tiny muted" title="${esc(why)}">—</span>`;
+  }
+  return list
+    .map((effort) => (effort === m.defaultEffort
+      ? `<b class="mono" title="默认档：${esc(effort)}">${esc(effort)}</b>`
+      : `<span class="mono muted">${esc(effort)}</span>`))
+    .join(`<span class="tiny muted"> · </span>`);
+}
+
+function creditsCell(m) {
+  const rate = typeof m.credits === "number" ? m.credits : null;
+  if (rate === null) {
+    return `<span class="tiny muted" title="上游未提供积分倍率">—</span>`;
+  }
+  if (rate === 0) return `<span class="badge ok">免费</span>`;
+  return `<span class="mono muted" title="倍率：按基准价的多少倍计费，不是金额">×${rate}</span>`;
+}
+
 function contextCell(model) {
   const def = fmtWindow(model.context) ?? "未知";
   // WB / Qoder：按「上限 / 默认」开关选；Trae：按 Max Mode 开关选。
@@ -1344,6 +2170,79 @@ function maxModePolicyCard() {
   </section>`;
 }
 
+/* ─────────── 限额护栏（Qoder 网关 · 账号池分区顶部）───────────
+ * 与 App 的 `QoderQuotaGuard` 同一张卡：四个阈值输入 + 逐账号今日用量与拦截原因。
+ *
+ * 三条要在这个原型里**看得见**的产品纪律：
+ *   1. `0` = 关闭该条（默认全关）—— 国际版作用域就是这一档，用来对照；
+ *   2. 未知一律放行 —— 所以文案写「余额未知时不拦」，而不是「精确到 token」；
+ *   3. 拦下必须给原因 —— 徽标 title 就是后端那句 `blockedReason`。
+ *
+ * `quota` 缺席（WorkBuddy / Trae）⇒ 卡片不渲染：这三个平台没有这套护栏，
+ * 画一个空壳等于告诉用户「有这个功能但坏了」。
+ */
+const QUOTA_BLOCK_LABEL = {
+  parked: "余额耗尽停放",
+  reserve: "触到余额地板",
+  daily_tokens: "当日 token 已满",
+  daily_credits: "当日 credit 已满",
+  model_tokens: "模型额度已满",
+};
+
+function quotaCardHtml(g) {
+  const q = g.quota;
+  if (!q) return "";
+  const L = q.limits;
+  const blocked = q.accounts.filter((a) => a.blocked).length;
+  const field = (key, label, value, hint) => `<label class="quota-field">
+      <span>${label}</span>
+      <input class="inp" type="text" inputmode="numeric" data-quota="${key}" value="${esc(value)}" aria-label="${label}">
+      <em>${hint}</em>
+    </label>`;
+  const rows = q.accounts.map((a) => {
+    const models = a.perModel && a.perModel.length
+      ? a.perModel.slice(0, 3).map((m) => `${esc(m.model)} ${fmt(m.tokens)}`).join(" · ")
+      : "今日暂无网关用量";
+    const tail = [
+      a.credits ? `已用 ${fmtQty(a.credits)} credit` : "",
+      a.creditsRemaining === null || a.creditsRemaining === undefined ? "" : `余额 ${fmt(a.creditsRemaining)}`,
+    ].filter(Boolean).join(" · ");
+    const badge = a.blocked
+      ? `<span class="badge ${a.blocked === "parked" ? "bad" : "warn"}" title="${esc(a.blockedReason || "")}">${QUOTA_BLOCK_LABEL[a.blocked] || "已拦下"}</span>`
+      : `<span class="badge ok">可用</span>`;
+    return `<div class="quota-row">
+        <div class="quota-who"><b>${esc(a.name)}</b><span>${models}${tail ? " · " + tail : ""}</span></div>
+        <div class="quota-right"><span class="quota-num">${fmt(a.tokens)}<span>token</span></span>${badge}</div>
+      </div>`;
+  }).join("");
+  return `<section class="card" data-quota-card style="margin-bottom:14px">
+    <div class="card-head">
+      <div><h3>限额护栏</h3><div class="sub">达到阈值即暂停使用该账号（0 = 关闭该条；未知一律放行）</div></div>
+      <div class="grow"></div>
+      <button class="btn sm" data-act="quota-refresh">刷新</button>
+    </div>
+    <div class="card-pad" style="padding-bottom:12px">
+      <div class="quota-grid">
+        ${field("reserve", "余额地板（credits）", L.reserveCredits, "剩余 ≤ 该值即停；余额未知时不拦")}
+        ${field("daily", "当日 token 上限", L.dailyTokenLimit, "单账号今天经网关转发的 token 总量")}
+        ${field("credit", "当日 credit 上限", L.dailyCreditLimit, "单账号今天消耗的 credits（可填小数）")}
+        ${field("model", "单模型当日 token", L.modelDailyTokenLimit, "只限该模型，不连坐同账号的其它模型")}
+      </div>
+    </div>
+    <div class="quota-foot">
+      <p class="tiny muted">${L.reserveCredits || L.dailyTokenLimit || L.dailyCreditLimit || L.modelDailyTokenLimit
+        ? "计数来自网关自己的记账；每天 10:00（UTC+8）重置"
+        : "四条都是 0 ⇒ 护栏未启用，不会拦任何请求"}</p>
+      <button class="btn sm" data-act="quota-save">保存</button>
+    </div>
+    <div class="quota-rows">
+      <div class="quota-rows-head"><span>今日（${esc(q.date)}）· ${q.accounts.length} 个账号</span>
+        <span>${blocked > 0 ? `${blocked} 个已被拦下` : "当前没有账号被拦"}</span></div>
+      ${rows}
+    </div>
+  </section>`;
+}
+
 function viewGateway() {
   const g = GATEWAY[state.scope], p = curPlatform();
   const subs = [["overview", "概览"], ["keys", "密钥"], ["models", "模型"], ["pool", "账号池"], ["proxy", "请求代理"], ["logs", "请求日志"]];
@@ -1398,10 +2297,10 @@ function viewGateway() {
     const trae = curScope().platform === "trae";
     main = `${trae ? maxModePolicyCard() : contextFixedCard()}${catalogBar(g.catalog)}
     <div class="tbl-wrap"><table class="tbl">
-      <thead><tr><th>模型</th><th>协议</th><th>归属</th><th>上下文</th><th>上游状态</th><th style="width:124px">网关暴露</th></tr></thead>
+      <thead><tr><th>模型</th><th>协议</th><th>归属</th><th>上下文</th><th>思考档位</th><th>积分倍率</th><th>上游状态</th><th style="width:124px">网关暴露</th></tr></thead>
       <tbody>${g.models.map((m) => `<tr${m.disabled ? ' class="row-off"' : ""}>
         <td class="mono"><b>${esc(m.name)}</b></td><td>${esc(m.provider)}</td><td>${esc(m.scope)}</td>
-        <td>${contextCell(m)}</td>
+        <td>${contextCell(m)}</td><td>${effortCell(m)}</td><td>${creditsCell(m)}</td>
         <td>${m.available ? `<span class="badge ok">可用</span>` : `<span class="badge warn">不可用</span>`}</td>
         <td>${m.disabled
           ? `<span class="badge bad">已禁用</span> <button class="btn xs" data-act="model-enable|${esc(m.name)}|${esc(m.scope)}">启用</button>`
@@ -1415,7 +2314,8 @@ function viewGateway() {
     /* 「显式指定」是选号优先级的第一级；指定是排他的，被指定的行置顶。 */
     const pinned = state.pins[state.scope];
     const rows = g.pool.slice().sort((x, y) => (x.account === pinned ? -1 : y.account === pinned ? 1 : 0));
-    main = `<div class="tbl-wrap"><table class="tbl">
+    /* 护栏卡在池表**之上**：它决定「谁能被选」，是池的上游条件。 */
+    main = quotaCardHtml(g) + `<div class="tbl-wrap"><table class="tbl">
       <thead><tr><th>账号</th><th>积分</th><th>权重</th><th>状态</th><th>粘性</th><th style="width:96px">选号</th></tr></thead>
       <tbody>${rows.map((x) => `<tr>
         <td><b>${esc(x.account)}</b>${x.account === pinned ? ` <span class="badge info">已指定</span>` : ""}</td>
@@ -2234,16 +3134,42 @@ function accountDrawerFoot(a) {
   return `<button class="btn primary" data-act="wizard|${a.id}">${ICON.arrowRight}用向导切换（可选迁移内容）</button>`;
 }
 
-function drawerAccount(id, editing) {
+/**
+ * 打开账号详情抽屉。
+ *
+ * @param ref      裸 id（账号页）或 `${scope}:${id}`（聚合页）
+ * @param editing  是否直接进入「编辑备注」态
+ *
+ * ★ 为什么用「临时切 state.scope」而不是给 8 个装配函数各加一个 scope 参数：
+ *   抽屉内容由 `erStats` / `accountDrawerBody` / `accountDrawerFoot` / `drawerTabsNav`
+ *   等一串函数拼出来，它们**全部**按 `curScope()` 取数。逐个加参数只要漏一个，
+ *   聚合页打开别的作用域的账号时就会静默读到**错误作用域**的数据（页面有内容、数据全错，
+ *   最难发现的一类 bug）。而 `erAccount` 全程不触发主内容区重绘（`openDrawer` 只写抽屉 DOM），
+ *   所以在这一个入口上临时切换、`finally` 还原，是改动面最小且不会漏的写法。
+ */
+function drawerAccount(ref, editing) {
+  const scopeId = refScope(ref);
+  const prev = state.scope;
+  state.scope = scopeId;
+  try {
+    drawerAccountIn(refId(ref), ref, editing);
+  } finally {
+    state.scope = prev;
+  }
+}
+
+function drawerAccountIn(id, ref, editing) {
   const s = curScope(), p = curPlatform();
   const a = s.accounts.find((x) => x.id === id);
   if (!a) return;
   /* 保持当前 Tab：点「续期 JWT」这类动作后会重绘抽屉，跳回「概览」会让用户以为点错了。 */
   /* 换账号就别留在「新建分组」输入态（那只属于上一个账号）。 */
   if (state.groupNew && state.groupNew !== id) state.groupNew = null;
-  const keepTab = state.drawer && state.drawer.kind === "account" && state.drawer.id === id ? state.drawer.tab : "overview";
+  /* `state.drawer.id` 存 **ref**（而不是裸 id）：聚合页里同一 id 可能在两个区域各有一个账号，
+     抽屉重绘 / `syncOpenDrawer` 的比较必须用 ref 才分得清。 */
+  const keepTab = state.drawer && state.drawer.kind === "account" && state.drawer.id === ref ? state.drawer.tab : "overview";
   const tab = editing ? "overview" : (keepTab || "overview");
-  state.drawer = { kind: "account", id, tab, editingRemark: Boolean(editing) };
+  state.drawer = { kind: "account", id: ref, scope: refScope(ref), tab, editingRemark: Boolean(editing) };
   const isCur = p.programs.some((pg) => a.programs[pg.id]);
   openDrawer(`
     <div class="acct-hd">
@@ -3193,25 +4119,59 @@ function closePalette() {
 /* ══════════════════════ 作用域菜单 ══════════════════════ */
 function renderScopeMenu() {
   const ids = Object.keys(SCOPES);
-  $("#scope-menu").innerHTML = `<div class="grp">作用域（平台 × 区域）</div>` + ids.map((id, i) => {
+  const all = aggAll();
+  const attention = all.filter((x) => aggNeedsAttention(x.a)).length;
+  /* ★「聚合」放在**第一项**，并且用一条分隔线把它和「作用域（平台 × 区域）」分开。
+     两个理由：
+       · 它是最高频入口（默认想看的就是全量），排在 6 个作用域之后意味着每次都要扫完菜单；
+       · 它**不是第 7 个作用域** —— 分隔线 + 独立分组标题让「聚合 ≠ 作用域」在视觉上成立，
+         否则用户会以为多了一个能切的作用域（真实实现里这还关系到 `Scope` 是封闭字面量）。 */
+  const aggItem = `<div class="grp">全部</div>
+    <button class="scope-item agg-entry${state.agg ? " on" : ""}" data-act="scope|aggregate">
+      <span class="scope-mark" style="background:color-mix(in oklab, var(--primary) 20%, transparent);color:var(--primary)">${ICON.grid}</span>
+      <span class="t"><b>聚合 <span class="dim">· 全部账号</span></b>
+        <span>${all.length} 个账号${attention ? ` · ${attention} 个需处理` : ""} · 跨 ${ids.length} 个作用域</span></span>
+    </button>
+    <div class="sep"></div>`;
+  $("#scope-menu").innerHTML = aggItem + `<div class="grp">作用域（平台 × 区域）</div>` + ids.map((id, i) => {
     const s = SCOPES[id], p = PLATFORMS[s.platform], c = currentAccount(id);
-    return `<button class="scope-item${id === state.scope ? " on" : ""}" data-act="scope|${id}">
+    return `<button class="scope-item${!state.agg && id === state.scope ? " on" : ""}" data-act="scope|${id}">
       <span class="scope-mark" style="background:color-mix(in oklab, ${p.accent} 18%, transparent);color:${p.accent}">${p.mark}</span>
       <span class="t"><b>${scopeLabel(id)}</b>
         <span>${c ? "已登录 " + esc(c.name) : s.installed ? "未登录" : "未装客户端"} · ${s.accounts.length} 个账号${expiredCount(s) ? ` · ${expiredCount(s)} 个需处理` : ""}</span></span>
       <span class="run-pill${s.running ? "" : " off"}" style="height:18px;padding:0 7px"><i class="dot"></i></span>
       <span class="key">⌘${i + 1}</span>
     </button>`;
-  }).join("") + `<div class="hint-row">作用域决定「我现在管的是哪一套账号」。切换后，侧栏、内容区、统计口径全部跟随。</div>`;
+  }).join("") + `<div class="hint-row">作用域决定「我现在管的是哪一套账号」。选「聚合」看全部 6 个作用域的账号；选任一作用域回到它的账号页。</div>`;
 }
 
 /* ══════════════════════ 行为 ══════════════════════ */
-function switchScope(id, silent) {
-  if (id === state.scope) { closeScopeMenu(); return; }
+/** 进入聚合视图。**不改 `state.scope`** —— 退出时原样回到原来的作用域与页面。 */
+function enterAggregate() {
   closeScopeMenu();
+  if (state.agg) return;
+  state.agg = true;
+  state.selected.clear();     /* 选择集里是裸 id，跨到聚合页必须清（否则与 ref 混存） */
+  state.acctMenu = null;
+  state.q = "";
+  state.aggQ = "";
+  closeAcctMenu();
+  renderAll();
+  toast("ok", "已进入聚合视图", `${aggAll().length} 个账号 · 6 个作用域铺在一屏`);
+}
+
+function switchScope(id, silent) {
+  if (id === "aggregate") { enterAggregate(); return; }
+  /* 从聚合页选任一作用域 = 离开聚合，回到它的账号页（顶栏是唯一出口，必须通）。 */
+  const leavingAgg = state.agg;
+  if (!leavingAgg && id === state.scope) { closeScopeMenu(); return; }
+  closeScopeMenu();
+  state.agg = false;
   state.scope = id;
   state.selected.clear();
   state.q = "";
+  state.aggQ = "";
+  state.aggFilterOpen = false;
   /* 菜单跟着账号走：不清掉的话，切到另一个作用域时同 id 的账号会被误挂上菜单。 */
   closeAcctMenu();
   state.checkinResult = null;
@@ -3220,7 +4180,7 @@ function switchScope(id, silent) {
   setTimeout(() => {
     state.loading = false;
     renderAll();
-    if (!silent) toast("ok", "已切换到 " + scopeLabel(id), `${curScope().accounts.length} 个账号 · ${curScope().running ? "客户端运行中" : "客户端未运行"}`);
+    if (!silent) toast("ok", (leavingAgg ? "已离开聚合视图，进入 " : "已切换到 ") + scopeLabel(id), `${curScope().accounts.length} 个账号 · ${curScope().running ? "客户端运行中" : "客户端未运行"}`);
   }, 260);
 }
 function openScopeMenu() {
@@ -3294,15 +4254,22 @@ function refreshOutcome(a, kind) {
   return { ok: true, desc: a.checkedIn ? "今日已签到" : "今日未签到" };
 }
 
-function acctMenuInner(a) {
-  const keyOf = (kind) => `${a.id}:${kind}`;
-  return `<div class="am-head">${esc(a.name)}</div>
+function acctMenuInner(a, ref) {
+  /* `ref` = 裸 id（账号页）或 `${scope}:${id}`（聚合页）。
+     进行中态的键必须含 ref —— 否则同一 id 在两个区域会互相吞掉转圈（D4.1 的第二个实例）。 */
+  const r = ref || a.id;
+  const keyOf = (kind) => `${r}:${kind}`;
+  /* 聚合页里 6 个作用域共存，同名的号可能不止一个（`jackey` 在 3 个平台都有）
+     ⇒ 菜单头必须带作用域，否则用户不知道这一串动作作用在哪个渠道上。
+     账号页的 `ref` 是裸 id，头部保持原样（作用域已知，不必重复）。 */
+  const head = r.includes(":") ? `${esc(a.name)} · ${esc(scopeLabel(refScope(r)))}` : esc(a.name);
+  return `<div class="am-head">${head}</div>
     <div class="am-grp">刷新</div>
     ${REFRESH_KINDS.map((k) => {
       const busy = state.refreshing.has(keyOf(k.kind));
       const done = state.refreshDone.has(keyOf(k.kind));
       return `<button class="am-item${done ? " done" : ""}" role="menuitem"
-        data-act="acct-refresh|${a.id}|${k.kind}" title="${esc(k.hint)}"${busy ? " disabled" : ""}>
+        data-act="acct-refresh|${r}|${k.kind}" title="${esc(k.hint)}"${busy ? " disabled" : ""}>
         <span class="am-ico">${busy ? '<span class="spinner"></span>' : done ? ICON.check : ICON[k.icon]}</span>
         <span class="am-lab">${k.label}</span>
         <span class="am-state">${busy ? "刷新中…" : done ? "已更新" : ""}</span>
@@ -3314,10 +4281,10 @@ function acctMenuInner(a) {
       ? `<button class="am-item" disabled title="今天已经签过，无需重复"><span class="am-ico">${ICON.check}</span><span class="am-lab">今日已签到</span></button>`
       : (a.expired || a.needsRelogin)
         ? `<button class="am-item" disabled title="凭据已失效，先重新登录才能签到"><span class="am-ico">${ICON.spark}</span><span class="am-lab">手动签到</span><span class="am-state">需先登录</span></button>`
-        : `<button class="am-item" data-act="act|checkin|${a.id}"><span class="am-ico">${ICON.spark}</span><span class="am-lab">手动签到</span></button>`}
-    <button class="am-item" data-act="act|export|${a.id}"><span class="am-ico">${ICON.download}</span><span class="am-lab">导出账号</span></button>
+        : `<button class="am-item" data-act="act|checkin|${r}"><span class="am-ico">${ICON.spark}</span><span class="am-lab">手动签到</span></button>`}
+    <button class="am-item" data-act="act|export|${r}"><span class="am-ico">${ICON.download}</span><span class="am-lab">导出账号</span></button>
     <div class="am-sep"></div>
-    <button class="am-item danger" data-act="act|delete|${a.id}"><span class="am-ico">${ICON.trash}</span><span class="am-lab">删除账号</span></button>
+    <button class="am-item danger" data-act="act|delete|${r}"><span class="am-ico">${ICON.trash}</span><span class="am-lab">删除账号</span></button>
     <div class="am-note">备注与登录态在账号详情里（点卡片打开）</div>`;
 }
 
@@ -3326,7 +4293,9 @@ function acctMenuInner(a) {
    而 `#content` 是滚动容器，`overflow:auto` 会把溢出的菜单裁掉。
    真实实现里这就是 Radix `DropdownMenu` 的行为（Portal + 视口定位），原型照它来。 */
 function renderAcctMenu() {
-  const a = state.acctMenu ? curScope().accounts.find((x) => x.id === state.acctMenu) : null;
+  /* `state.acctMenu` 是 ref（裸 id 或 `scope:id`）⇒ 统一用 `refAccount` 解析，
+     聚合页因此能打开别的作用域的账号菜单。 */
+  const a = state.acctMenu ? refAccount(state.acctMenu) : null;
   let node = document.getElementById("acct-menu");
   if (!a) { if (node) node.remove(); return; }
   if (!node) {
@@ -3338,7 +4307,7 @@ function renderAcctMenu() {
     document.body.appendChild(node);
   }
   node.setAttribute("aria-label", `刷新 ${a.name} 的数据`);
-  node.innerHTML = acctMenuInner(a);
+  node.innerHTML = acctMenuInner(a, state.acctMenu);
 }
 
 /**
@@ -3361,14 +4330,20 @@ function toggleAcctMenu(id, btn) {
     node.style.left = `${Math.round(left)}px`;
     node.style.top = `${Math.round(top)}px`;
   }
-  renderAccountList();
+  renderCurrentList();
 }
 
 function closeAcctMenu() {
   if (!state.acctMenu) return;
   state.acctMenu = null;
   renderAcctMenu();     /* 传不了 id ⇒ 内部直接移除节点 */
-  renderAccountList();
+  renderCurrentList();
+}
+
+/** 「重绘当前列表」—— 账号页与聚合页共用一个入口，避免每个动作都写 if (state.agg)。 */
+function renderCurrentList() {
+  if (state.agg) renderAggList();
+  else renderAccountList();
 }
 
 /**
@@ -3419,14 +4394,15 @@ function syncOpenDrawer(id) {
  * 关掉菜单等于让用户重新点开一次；而且进行中/已更新这两个状态只有在菜单里才看得见。
  */
 function refreshAccountPart(id, kind) {
-  const a = curScope().accounts.find((x) => x.id === id);
+  /* `id` 可能是裸 id（账号页）或 `scope:id`（聚合页）—— `refAccount` 两种都认。 */
+  const a = refAccount(id);
   const conf = REFRESH_KINDS.find((k) => k.kind === kind);
   if (!a || !conf) return;
   const key = `${id}:${kind}`;
   if (state.refreshing.has(key)) return;
   state.refreshing.add(key);
   state.refreshDone.delete(key);
-  renderAccountList();
+  renderCurrentList();
   renderAcctMenu();
   /* 抽屉开着同一个账号时也要重绘：指标块上的 ⟳ 就在抽屉里，不重绘就没有「进行中」。 */
   syncOpenDrawer(id);
@@ -3436,13 +4412,13 @@ function refreshAccountPart(id, kind) {
     if (outcome.ok) {
       state.refreshDone.add(key);
       /* 「已更新」只停留 900ms：它是**刚刚发生了什么**的反馈，不是常驻状态。 */
-      setTimeout(() => { state.refreshDone.delete(key); renderAccountList(); renderAcctMenu(); }, 900);
+      setTimeout(() => { state.refreshDone.delete(key); renderCurrentList(); renderAcctMenu(); }, 900);
       toast("ok", `${a.name} · ${conf.label}完成`, outcome.desc);
     } else {
       toast("err", `${a.name} · ${conf.label}失败`, outcome.desc,
         { label: "打开账号", run: () => drawerAccount(id) });
     }
-    renderAccountList();
+    renderCurrentList();
     renderAcctMenu();
     syncOpenDrawer(id);
   }, conf.ms);
@@ -3484,6 +4460,9 @@ document.addEventListener("click", (e) => {
   /* 卡片「更多」菜单：点菜单外的地方收起（点菜单本身、或点另一张卡的「更多」不算外面 ——
      后者由 `acct-more` 分支接管，直接换到那张卡的菜单）。 */
   if (state.acctMenu && !e.target.closest(".acct-menu") && !e.target.closest('[data-act^="acct-more|"]')) closeAcctMenu();
+  /* 聚合页的筛选面板：点面板外收起（点面板本身、或点筛选按钮不算外面 —— 后者由
+     `agg-filter-toggle` 分支接管）。 */
+  if (state.aggFilterOpen && !e.target.closest("#agg-filter-pop") && !e.target.closest("#agg-filter-btn")) closeAggFilter();
 
   const node = e.target.closest("[data-act]");
   /* 自定义时间弹层：点弹层外部收起（触发器与弹层内部除外），与本次动作同帧生效。 */
@@ -3496,6 +4475,94 @@ document.addEventListener("click", (e) => {
   switch (act) {
     case "nav": stop(); state.dest = a1; state.selected.clear(); closeAcctMenu(); renderAll(); break;
     case "scope": stop(); switchScope(a1); break;
+    case "scope-open": stop(); openScopeMenu(); break;
+
+    /* ── 聚合账号面板（issue #50）────────────────────────────────────
+       注意这里的动作**全部原地完成**：不 navigate、不弹「请前往 XX 作用域操作」。
+       聚合页如果只能看、要操作还得切回去，那它就把切换成本原样保留了。 */
+    case "agg-mode": stop();
+      state.aggMode = a1 === "flat" ? "flat" : "group";
+      renderAggList();
+      break;
+    case "agg-filter-toggle": stop();
+      if (state.aggFilterOpen) closeAggFilter(); else openAggFilter();
+      break;
+    /* 勾选与展开是**两个**命中区（见 `aggFilterPanelHtml` 的注释）。 */
+    case "agg-fp-toggle": {
+      stop();
+      const refs = SCOPES[a1].accounts.map((x) => refOf(a1, x.id));
+      const allOn = refs.length > 0 && refs.every((r) => state.aggDraft.has(r));
+      refs.forEach((r) => (allOn ? state.aggDraft.delete(r) : state.aggDraft.add(r)));
+      renderAggFilterPop();
+      break;
+    }
+    case "agg-fp-expand": stop();
+      if (state.aggExpanded.has(a1)) state.aggExpanded.delete(a1); else state.aggExpanded.add(a1);
+      renderAggFilterPop();
+      break;
+    case "agg-fp-acc": stop();
+      if (state.aggDraft.has(a1)) state.aggDraft.delete(a1); else state.aggDraft.add(a1);
+      renderAggFilterPop();
+      break;
+    case "agg-fp-all": {
+      stop();
+      const all = aggAllRefs();
+      if (state.aggDraft.size === all.size) state.aggDraft.clear();
+      else state.aggDraft = new Set(all);
+      renderAggFilterPop();
+      break;
+    }
+    case "agg-fp-apply": {
+      stop();
+      const d = state.aggDraft;
+      const all = aggAllRefs();
+      /* 选满 / 全不选都规范化为「无筛选」：前者等于没筛，后者等于「什么都不想看」——
+         都不该被持久化成一份「上次的筛选」。 */
+      state.aggVisible = !d || !d.size || d.size === all.size ? null : new Set(d);
+      writeAggVisible(state.aggVisible);
+      state.aggFilterOpen = false;
+      state.aggDraft = null;
+      state.selected.clear();       /* 可见集变了，旧的批量选择可能已不在屏上 */
+      renderContent();
+      toast("ok", state.aggVisible ? `已筛选：显示 ${state.aggVisible.size} / ${all.size} 个账号` : "已显示全部账号",
+        state.aggVisible ? "关闭应用后仍会保留这次筛选" : "筛选偏好已清除");
+      break;
+    }
+    case "agg-fp-cancel": stop(); closeAggFilter(); break;
+    case "agg-clear-filter": stop();
+      state.aggVisible = null; writeAggVisible(null);
+      state.aggQ = ""; state.selected.clear();
+      renderContent();
+      toast("ok", "已显示全部账号");
+      break;
+    case "agg-clear-q": stop(); state.aggQ = ""; renderContent(); break;
+    case "agg-retry": stop();
+      state.aggFailed.delete(a1);
+      renderAggList();
+      toast("ok", `已重新加载 ${scopeLabel(a1)}`);
+      break;
+    case "agg-group-sel": {
+      stop();
+      aggShown().filter((x) => x.scope === a1).forEach((x) => state.selected.add(x.ref));
+      renderAggList();
+      break;
+    }
+    case "agg-newcomer-add": stop();
+      state.aggNewcomer = false; state.aggVisible = null; writeAggVisible(null);
+      renderContent();
+      toast("ok", "已加入并清除筛选", "现在显示全部账号");
+      break;
+    case "agg-newcomer-ignore": stop(); state.aggNewcomer = false; renderContent(); break;
+    case "agg-batch-refresh": stop();
+      toast("ok", `已提交批量刷新`, `${state.selected.size} 个账号 · 四项刷新按固定顺序执行`);
+      break;
+    case "agg-batch-checkin": stop();
+      toast("ok", `已提交批量签到`, `${state.selected.size} 个账号 · Qoder「通道未开放」会单独成档，不混进成功或失败`);
+      break;
+    case "agg-batch-export": stop(); toast("ok", `已导出 ${state.selected.size} 个账号`); break;
+    case "agg-batch-delete": stop();
+      toast("err", `已移入回收站`, `${state.selected.size} 个账号 · 可撤销`);
+      break;
     case "view": stop(); state.view = a1; renderAccountList(); break;
     case "range": stop();
       if (a1 === "today") { state.rangeMode = "today"; state.range = 1; }
@@ -3521,6 +4588,9 @@ document.addEventListener("click", (e) => {
     }
     case "merge": stop(); state.merge = a1 === "1"; renderContent(); break;
     case "usage-tab": stop(); state.usageTab = a1; renderContent(); break;
+    case "usage-book": stop(); state.usageBook = a1; closeRecon(); renderContent(); break;
+    case "recon-open": stop(); openRecon(); break;
+    case "recon-close": stop(); closeRecon(); break;
     case "gw-sub": stop(); state.gwSub = a1; renderContent(); break;
     case "max-context": {
       stop();
@@ -3575,6 +4645,38 @@ document.addEventListener("click", (e) => {
       }, 900);
       break;
     }
+    /* ── 限额护栏 ──
+       保存会**真的改数据并重绘**（不是只弹 toast）：原型里「点了没反应」的控件
+       正是我们要在评审时抓出来的东西，别自己再造一个。 */
+    case "quota-save": {
+      stop();
+      const g = curGateway();
+      if (!g.quota) break;
+      const read = (key) => {
+        const el = document.querySelector(`[data-quota="${key}"]`);
+        const raw = (el && el.value ? String(el.value) : "").trim();
+        if (raw === "") return 0;
+        const n = Number(raw);
+        return Number.isFinite(n) && n >= 0 ? n : null;
+      };
+      const next = {
+        reserveCredits: read("reserve"),
+        dailyTokenLimit: read("daily"),
+        dailyCreditLimit: read("credit"),
+        modelDailyTokenLimit: read("model"),
+      };
+      if (Object.values(next).some((v) => v === null)) {
+        toast("err", "只能填非负数字", "0 = 关闭该条");
+        break;
+      }
+      Object.assign(g.quota.limits, next);
+      renderContent();
+      toast("ok", "已保存限额", "四条阈值即时生效（0 = 关闭）");
+      break;
+    }
+    case "quota-refresh": stop();
+      toast("ok", "已刷新护栏状态", "逐账号用量来自网关自己的记账，每天 10:00 重置");
+      break;
     case "pin": stop();
       if (a1) {
         /* 已排除的账号不能成为上游（UI 已禁用按钮，这里再兜一层）。 */
@@ -3720,7 +4822,8 @@ document.addEventListener("click", (e) => {
       renderAccountList(); break;
     case "acct-select": stop();
       state.selected.has(a1) ? state.selected.delete(a1) : state.selected.add(a1);
-      renderAccountList(); break;
+      /* 用 `renderCurrentList`：聚合页里选择集也会变，但重绘的是聚合列表（没有 `#acct-list`）。 */
+      renderCurrentList(); break;
     case "acct-open": stop(); drawerAccount(a1); break;
     /* 抽屉 Tab：只切内容区，不动抽屉本身（保留滚动位置与底部动作）。 */
     case "group-create": stop(); createGroup(a1); break;
@@ -3741,8 +4844,11 @@ document.addEventListener("click", (e) => {
     case "acct-more": stop(); toggleAcctMenu(a1, node); break;
     case "acct-prog": {
       stop();
-      const acc = curScope().accounts.find((x) => x.id === a1);
-      const pg = curPlatform().programs.find((x) => x.id === a2);
+      /* a1 可能是裸 id（账号页）或 `scope:id`（聚合页）—— 两者都认。 */
+      const acc = refAccount(a1);
+      const sc = SCOPES[refScope(a1)];
+      const pg = refPlatform(a1).programs.find((x) => x.id === a2);
+      if (!acc || !pg) break;
       /* ⚠️ `planned`（本仓尚未支持）**必须排在 `installed` 之前**判断 ——
          否则会走「未检测到客户端 → 去设置接入」那条引导，而那条路**装好了也没用**。 */
       if (pg.planned) {
@@ -3751,10 +4857,14 @@ document.addEventListener("click", (e) => {
         break;
       }
       if (!pg.installed) {
-        /* 真能跳：toast 给一个可点按钮，点了就进「设置 → 权限与诊断」。 */
+        /* 真能跳：toast 给一个可点按钮，点了就进「设置 → 权限与诊断」。
+           ★ 这是聚合页上**唯一会离开聚合页**的卡片动作 —— 文案必须标明，
+             不能装作没这回事（issue #50 R3）。 */
         toast("err", `${pg.label} 未检测到客户端`, "需要先在「设置 → 权限与诊断」完成接入",
-          { label: "去设置", run: () => { state.dest = "settings"; state.setSub = "diagnostics"; state.selected.clear(); renderAll(); } },
-          "未检测到的程序位不置灰：可点 + 明确给出下一步，而不是一个点不动的灰按钮");
+          { label: "去设置", run: () => { state.agg = false; state.scope = refScope(a1); state.dest = "settings"; state.setSub = "diagnostics"; state.selected.clear(); renderAll(); } },
+          state.agg
+            ? "⚠️ 这一项会离开聚合页（诊断区是单作用域页面）"
+            : "未检测到的程序位不置灰：可点 + 明确给出下一步，而不是一个点不动的灰按钮");
         break;
       }
       const wasOn = Boolean(acc.programs[a2]);
@@ -3762,15 +4872,15 @@ document.addEventListener("click", (e) => {
       /* 模型：一个**程序位**同时只有一个账号；一个**账号**可绑 0..N 个程序位。
          所以只清「同一个程序位」在**其他账号**上的绑定，
          **不动本账号的其他程序位**（把 IDE 切到 X，不该让 X 从 WorkBuddy 登出）。 */
-      const before = curScope().accounts.map((o) => ({ id: o.id, on: Boolean(o.programs[a2]) }));
+      const before = sc.accounts.map((o) => ({ id: o.id, on: Boolean(o.programs[a2]) }));
       acc.programs[a2] = true;
-      curScope().accounts.forEach((o) => { if (o.id !== acc.id) o.programs[a2] = false; });
+      sc.accounts.forEach((o) => { if (o.id !== acc.id) o.programs[a2] = false; });
       renderAll();
       if (state.drawer && state.drawer.kind === "account") drawerAccount(a1);
       toast("ok", `已把 ${pg.label} 切到 ${acc.name}`, "客户端将自动重启以生效",
         { label: "撤销", run: () => {
           /* 撤销要回到操作前的**全部**绑定（含被清掉的其他账号）。 */
-          before.forEach(({ id, on }) => { const o = curScope().accounts.find((x) => x.id === id); if (o) o.programs[a2] = on; });
+          before.forEach(({ id, on }) => { const o = sc.accounts.find((x) => x.id === id); if (o) o.programs[a2] = on; });
           renderAll();
           if (state.drawer && state.drawer.kind === "account") drawerAccount(a1);
           toast("ok", "已撤销切换", "程序位已恢复");
@@ -3893,35 +5003,36 @@ document.addEventListener("click", (e) => {
       stop();
       /* 菜单里的动作点完就收起（刷新四项除外 —— 它们要在菜单里显示进行中/已更新）。 */
       closeAcctMenu();
+      /* a2 可能是裸 id 或 `scope:id`：统一解析成 (账号, 所属作用域)，
+         聚合页因此能在原地签到 / 删除别的作用域的账号，不需要先切过去。 */
+      const sc = SCOPES[refScope(a2)];
+      const acc = refAccount(a2);
       if (a1 === "delete") {
-        const a = curScope().accounts.find((x) => x.id === a2);
-        if (!a) break;
+        if (!acc) break;
         /* 不可逆操作：先弹确认 Dialog，确认后才删。 */
         openConfirm({
           title: "删除账号？",
-          body: `即将删除 <b>${esc(a.name)}</b>${a.email ? `（${esc(maskEmail(a.email))}）` : ""}。<br><span class="tiny muted">仅删除本地记录，不影响服务端账号。</span>`,
+          body: `即将删除 <b>${esc(acc.name)}</b>${acc.email ? `（${esc(maskEmail(acc.email))}）` : ""}。<br><span class="tiny muted">仅删除本地记录，不影响服务端账号。</span>`,
           okLabel: "删除",
           onOk: () => {
-            curScope().accounts = curScope().accounts.filter((x) => x.id !== a2);
+            sc.accounts = sc.accounts.filter((x) => x.id !== refId(a2));
             closeDrawer(); renderAll();
-            toast("ok", `已删除 ${a.name}`, "删除只影响本地记录", { label: "撤销", run: () => { curScope().accounts.push(a); renderAll(); toast("ok", "已恢复 " + a.name); } });
+            toast("ok", `已删除 ${acc.name}`, "删除只影响本地记录", { label: "撤销", run: () => { sc.accounts.push(acc); renderAll(); toast("ok", "已恢复 " + acc.name); } });
           },
         });
       } else if (a1 === "checkin") {
-        const a = curScope().accounts.find((x) => x.id === a2);
-        if (!a) break;
-        a.checkedIn = true; renderAll();
+        if (!acc) break;
+        acc.checkedIn = true; renderAll();
         /* 只有抽屉正开着这个账号时才重绘 —— 从卡片菜单签到时**不该**顺手打开抽屉。 */
         if (state.drawer && state.drawer.kind === "account" && state.drawer.id === a2) drawerAccount(a2);
-        toast("ok", `${a.name} 签到成功`, "获得 100 积分");
+        toast("ok", `${acc.name} 签到成功`, "获得 100 积分");
       } else if (a1 === "refresh-token") {
         toast("ok", "Token 已刷新", "凭据有效期已延长");
       } else if (a1 === "remark") {
         drawerAccount(a2, true); /* 真进编辑态：备注行变输入框 + 保存/取消 */
       } else if (a1 === "remark-save") {
-        const a = curScope().accounts.find((x) => x.id === a2);
         const inp = $("#remark-input");
-        if (a && inp) { a.remark = inp.value.trim(); renderAll(); drawerAccount(a2, false); toast("ok", "备注已保存", a.remark || "（已清空）"); }
+        if (acc && inp) { acc.remark = inp.value.trim(); renderAll(); drawerAccount(a2, false); toast("ok", "备注已保存", acc.remark || "（已清空）"); }
       } else if (a1 === "remark-cancel") {
         drawerAccount(a2, false);
       } else if (a1 === "export") {
@@ -4126,6 +5237,8 @@ document.addEventListener("click", (e) => {
 document.addEventListener("input", (e) => {
   const t = e.target;
   if (t.id === "acct-q") { state.q = t.value; renderAccountList(); return; }
+  /* 聚合页搜索：**只重绘列表区**，不重绘输入框（否则中文输入法连续组词会丢字）。 */
+  if (t.id === "agg-q") { state.aggQ = t.value; renderAggList(); return; }
   if (t.id === "palette-input") { state.palette.q = t.value; state.palette.cursor = 0; renderPalette(); return; }
   /* 回调链接要写回 state：倒计时每秒刷新时**不整块重绘**，但「解析」失败重绘时必须还在。 */
   if (t.id === "auth-cb" && state.auth) { state.auth.cb = t.value; return; }
@@ -4246,6 +5359,9 @@ $("#confirm-overlay").addEventListener("click", (e) => { if (e.target.id === "co
    这同时是「URL 是唯一真值」这条设计原则在原型里的体现。 */
 function bootFromUrl() {
   const p = new URLSearchParams(location.search);
+  /* 聚合页的可见性筛选**持久化**（R4 硬要求）：冷启动先读偏好，深链 `?aggvis=` 再覆盖。
+     读失败一律回退全量 —— 偏好坏了是小事，页面打不开是大事。 */
+  state.aggVisible = readAggVisible();
   if (p.get("scope") && SCOPES[p.get("scope")]) state.scope = p.get("scope");
   if (p.get("dest") && DESTINATIONS.some((d) => d.id === p.get("dest"))) state.dest = p.get("dest");
   if (p.get("gw")) state.gwSub = p.get("gw");
@@ -4255,6 +5371,7 @@ function bootFromUrl() {
   if (p.get("pin")) state.pins[state.scope] = p.get("pin");
   if (p.get("set")) state.setSub = p.get("set");
   if (p.get("usage")) state.usageTab = p.get("usage");
+  if (p.get("book")) state.usageBook = p.get("book");
   if (p.get("view")) state.view = p.get("view");
   if (p.get("group")) state.group = p.get("group");
   if (p.get("range")) {
@@ -4265,6 +5382,17 @@ function bootFromUrl() {
     } else { state.rangeMode = "preset"; state.range = Number(r) || 30; }
   }
   if (p.get("q")) state.q = p.get("q");
+  /* 聚合视图（issue #50）也走深链，便于评审直接落到某个状态：
+     `?agg=1` / `?agg=1&aggmode=flat` / `?agg=1&aggfail=qoder-cn` / `?agg=1&aggnew=1`
+     / `?agg=1&aggvis=wb-cn:a1,trae-cn:t1`（可见性筛选集，逗号分隔的账号键）。 */
+  if (p.get("agg") === "1") state.agg = true;
+  if (p.get("aggmode") === "flat") state.aggMode = "flat";
+  if (p.get("aggfail")) p.get("aggfail").split(",").forEach((k) => { if (SCOPES[k]) state.aggFailed.add(k); });
+  if (p.get("aggnew") === "1") state.aggNewcomer = true;
+  if (p.get("aggvis")) {
+    const refs = p.get("aggvis").split(",").map((s) => s.trim()).filter((s) => aggAllRefs().has(s));
+    if (refs.length) state.aggVisible = new Set(refs);
+  }
   /* 错误态也走深链：?err=gateway / ?err=usage（可逗号分隔），便于直接复现。 */
   if (p.get("err")) p.get("err").split(",").forEach((k) => { if (k) state.errors[k] = true; });
   if (p.get("theme") === "light") { state.theme = "light"; document.documentElement.classList.remove("dark"); }

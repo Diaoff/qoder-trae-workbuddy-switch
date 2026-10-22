@@ -106,6 +106,7 @@ mod tests {
             credits: None,
             badges: Vec::new(),
             free: false,
+            reasoning: None,
         }
     }
 

@@ -115,6 +115,8 @@ export const en = {
   "wbAccounts.card.priority": "Priority",
   "wbAccounts.card.priorityTip": "Recommended priority",
   "wbAccounts.card.expiringChip": "{amount} credits expire within {days} days",
+  /* issue #69: the batch outside the 7-day window (neutral chip — answers "which account first?"). */
+  "wbAccounts.card.nearestExpiringChip": "nearest {amount} credits · expire in {days} days",
   "wbAccounts.card.expiringTipTitle": "Expiring batches ({n})",
   "wbAccounts.card.expiringTipLine": "{time} · {amount} credits",
   "wbAccounts.card.toolsInUse": "{n} tools in use",
@@ -410,6 +412,10 @@ export const en = {
   "wbAccounts.table.credits": "Credits",
   "wbAccounts.table.todayTokens": "Today's tokens",
   "wbAccounts.table.expiry": "Expiry",
+  /* issue #69: credit expiry and token expiry are **different things** — the column names must differ. */
+  "wbAccounts.table.creditExpiry": "Credit expiry",
+  "wbAccounts.table.creditExpiryDays": "{days} days",
+  "wbAccounts.table.tokenExpiry": "Token expiry",
   "wbAccounts.table.programs": "Programs",
   "wbAccounts.table.current": "Current",
 

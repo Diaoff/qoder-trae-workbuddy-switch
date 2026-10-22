@@ -11,6 +11,8 @@ This project is licensed under the **[PolyForm Noncommercial License 1.0.0](../.
 
 Noncommercial use is permitted; **commercial use requires prior written authorization from the author**.
 
+This is the author's **personal, self-use and learning project**: reading, forking and improving it are welcome, but **no maintenance is promised** — no commercial support and no SLA.
+
 ## Explicitly permitted
 
 - Copying, downloading, reading and modifying the source
@@ -26,7 +28,7 @@ Noncommercial use is permitted; **commercial use requires prior written authoriz
 - Bundling it into a commercial product
 - Use in for-profit business activities (**including internal commercial projects**)
 
-For commercial licensing, contact the author via the [main repository's Issues](https://github.com/NextAgentX/qoder-trae-workbuddy-switch/issues).
+For commercial licensing, contact the author via the [main repository's Issues](https://github.com/NextAgentX/qoder-trae-workbuddy-switch/issues). **Donations are unrelated to licensing**: they are voluntary gifts, not a purchase, a commercial licence or any obligation to provide service.
 
 ## FAQ
 
@@ -37,6 +39,10 @@ Yes. Forking and modifying are both permitted; distribution, however, is still g
 **Does internal use at a company count as commercial?**
 
 Yes. An internal commercial project counts as "use in a for-profit business activity" and requires prior authorization.
+
+**Does the author provide commercial support or an SLA?**
+
+No. This is a personal, self-use and learning project: reading and forking are welcome, but there is no maintenance commitment, no guarantee of compatibility with any client version, and no service turnaround. For commercial scenarios, assess the risk yourself or make separate arrangements.
 
 **Is this "open source"?**
 

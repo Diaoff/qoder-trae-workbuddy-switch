@@ -42,6 +42,8 @@ import type {
   GatewayLogEntry,
   GatewayStatus,
   GatewayTokenTrend,
+  GatewayUsageDim,
+  GatewayUsageRecon,
   AppPrefs,
   GithubConfig,
   ImportPreview,
@@ -187,6 +189,8 @@ const DEMO_READ_COMMANDS = new Set([
   "get_account_token_today",
   // 网关**逐日**趋势（只读 `token_daily` 历史）：趋势页的网关小图用，演示站同样要虚构数据。
   "get_gateway_token_trend",
+  // 账本视图（issue #63）：两个只读命令，演示站同样要虚构数据。
+  "get_gateway_usage_dim", "get_usage_reconcile",
   // Trae 分区只读命令（演示站需返回虚构数据，否则 build:demo 报错）。
   // 只登记**只读**命令：写操作（签到 / 增删账号 / 切换 / 重置设备…）一律不进这里，
   // 由 `DemoAction` 包裹后在演示模式下统一提示不可操作。
@@ -233,6 +237,8 @@ const DEMO_READ_COMMANDS = new Set([
   // issue #47：逐账号「今日签到状态」（**只读**）。
   "qoder_checkin_status_map",
   "get_qoder_gateway_config", "qoder_gateway_status", "get_qoder_gateway_models",
+  // 限额护栏视图（只读；逐账号当日用量 + 拦截原因）。
+  "qoder_gateway_quota",
   "list_qoder_api_keys", "get_qoder_gateway_logs",
 ]);
 
@@ -322,6 +328,10 @@ const ROUTES: Record<string, Route> = {
   // 网关**逐日**用量趋势（只读落库历史）：`region` 走 query ⇒ GET。
   // ⚠️ `days` 只含落库日 ⇒ 缺日 = 未记录（不是 0），前端按覆盖率披露。
   get_gateway_token_trend: { method: "GET", path: "/api/account/token-trend" },
+  // 网关三维度（模型 / 账号 / 端点）逐日历史：账本视图的数据源（issue #63）。
+  get_gateway_usage_dim: { method: "GET", path: "/api/account/usage-dim" },
+  // 今日客户端 ↔ 网关对账（只读、不落盘）：`region` 走 query。
+  get_usage_reconcile: { method: "GET", path: "/api/account/usage-reconcile" },
   oauth_start: { method: "POST", path: "/api/oauth/start" },
   oauth_status: { method: "POST", path: "/api/oauth/status" },
   import_local: { method: "POST", path: "/api/import-local" },
@@ -550,6 +560,8 @@ const ROUTES: Record<string, Route> = {
   // issue #47 · 逐账号「今日签到状态」只读重取（`accountIds` 逗号分隔，见 Trae 侧同一注释）。
   qoder_checkin_status_map: { method: "GET", path: "/api/qoder/checkin/status-map" },
   qoder_checkin_claim: { method: "POST", path: "/api/qoder/checkin/claim" },
+  qoder_pro_pack_status: { method: "GET", path: "/api/qoder/pro-pack/status" },
+  qoder_pro_pack_claim: { method: "POST", path: "/api/qoder/pro-pack/claim" },
   qoder_credits: { method: "GET", path: "/api/qoder/credits" },
   qoder_oauth_start: { method: "POST", path: "/api/qoder/oauth/start" },
   qoder_oauth_status: { method: "POST", path: "/api/qoder/oauth/status" },
@@ -599,6 +611,8 @@ const ROUTES: Record<string, Route> = {
   save_qoder_gateway_config: { method: "POST", path: "/api/qoder/gateway/config" },
   qoder_gateway_status: { method: "GET", path: "/api/qoder/gateway/status" },
   get_qoder_gateway_models: { method: "GET", path: "/api/qoder/gateway/models" },
+  // 限额护栏视图：逐账号当日 token / 拦截原因 / 余额快照（按区域分家）。
+  qoder_gateway_quota: { method: "GET", path: "/api/qoder/gateway/quota" },
   // 多 Key 管理（含归属区域）：GET 列表 / POST 创建同一路径。
   list_qoder_api_keys: { method: "GET", path: "/api/qoder/gateway/keys" },
   create_qoder_api_key: { method: "POST", path: "/api/qoder/gateway/keys" },
@@ -1229,6 +1243,36 @@ export function getGatewayTokenTrend(region?: Region): Promise<GatewayTokenTrend
   if (region) args.region = region;
   return call<GatewayTokenTrend>(
     "get_gateway_token_trend",
+    Object.keys(args).length > 0 ? args : undefined,
+  );
+}
+
+/**
+ * 网关**三维度**逐日历史（模型 / 账号 / 端点）—— 用量页「账本」视图的数据源。
+ *
+ * 三条维度由同一次聚合产出、共用同一水位线 ⇒「按模型合计 = 按账号合计 = 按端点合计 = 网关卡」。
+ * ⚠️ 只读：不扫盘、不触发记录；`days` 只含落库日（缺日 = 未记录，不是 0）。
+ */
+export function getGatewayUsageDim(region?: Region): Promise<GatewayUsageDim> {
+  const args: Record<string, unknown> = {};
+  if (region) args.region = region;
+  return call<GatewayUsageDim>(
+    "get_gateway_usage_dim",
+    Object.keys(args).length > 0 ? args : undefined,
+  );
+}
+
+/**
+ * 今日**客户端 ↔ 网关对账**（只读、不落盘）。
+ *
+ * 回答「两本账重叠多少」：`matched` 条能在两边对上，`estimate = 客户端 + 网关 − 重叠`。
+ * ⚠️ 只覆盖**今日**（网关日志是环形窗口，更早的请求已滚出去）。
+ */
+export function getUsageReconcile(region?: Region): Promise<GatewayUsageRecon> {
+  const args: Record<string, unknown> = {};
+  if (region) args.region = region;
+  return call<GatewayUsageRecon>(
+    "get_usage_reconcile",
     Object.keys(args).length > 0 ? args : undefined,
   );
 }
@@ -3223,6 +3267,25 @@ export interface QoderCheckinRow {
   totalRewardCredits?: number;
   nextClaimAt?: number;
   lastClaimedAt?: number;
+  /**
+   * 状态来自哪条通道：`campaign`（活动平台，现行）/ `legacy`（旧签到通道兜底）。
+   *
+   * ⚠️ 只有 `campaign` 才能表达「本区域有活动但今天领不到」；`legacy` 只说明
+   * 「活动平台这一发没打上」，不能据此告诉用户「未开放」。
+   */
+  source?: string;
+  /** 风控身份来源：`runtime-info`（官方组件）/ `derived`（派生兜底）。 */
+  identity?: string;
+  /** 机器头状态：`native`（发了全套）/ `omitted`（一个都没发，见 `hint`）。 */
+  machineHeaders?: string;
+  /** 后端给出的可读说明（国际版无客户端时为什么会看不到活动）。 */
+  hint?: string;
+  /** 本地台账今天是否已盖章（只作提示，判据永远是 `todayCheckedIn`）。 */
+  stampedToday?: boolean;
+  /** 今日可得 / 今日已得 / 累计（活动平台口径）。 */
+  dailyCredit?: number;
+  todayCredit?: number | null;
+  totalCredits?: number;
 }
 
 /** 区域签到视图（国际版 `unavailable=true` + `reason`，不代表失败）。 */
@@ -3266,6 +3329,69 @@ export interface QoderCheckinClaimResult {
 
 export function qoderCheckinClaim(scope: Scope, uid: string): Promise<QoderCheckinClaimResult> {
   return call<QoderCheckinClaimResult>("qoder_checkin_claim", { scope, uid });
+}
+
+/** Pro 升级包资格（**只读**；`available=false` = 活动已下线/本区域没有 ⇒ 不渲染入口）。 */
+export interface QoderProPackStatus {
+  available: boolean;
+  eligible: boolean;
+  /** 真正的失败（网络/5xx）；「不可领」不是错误。 */
+  error?: string | null;
+}
+
+export interface QoderProPackClaimResult {
+  ok: boolean;
+  /** 已领过（幂等成功）。 */
+  already: boolean;
+  /** 活动是否仍在线；`false` ⇒ 入口应当消失。 */
+  available: boolean;
+  message: string;
+}
+
+/** 查询 Pro 升级包资格（单账号）。 */
+export function qoderProPackStatus(scope: Scope, uid: string): Promise<QoderProPackStatus> {
+  return call<QoderProPackStatus>("qoder_pro_pack_status", { scope, uid });
+}
+
+/** 领取 Pro 升级包（幂等；已领过返回 `ok=true, already=true`）。 */
+export function qoderProPackClaim(
+  scope: Scope,
+  uid: string,
+): Promise<QoderProPackClaimResult> {
+  return call<QoderProPackClaimResult>("qoder_pro_pack_claim", { scope, uid });
+}
+
+/** 限额护栏视图（`GET /api/qoder/gateway/quota`）。 */
+export interface QoderGatewayQuotaView {
+  /** 记账日期（CST，`YYYY-MM-DD`）。 */
+  date: string;
+  limits: {
+    reserveCredits: number;
+    dailyTokenLimit: number;
+    /** G3：当日 credit 上限（浮点；0 = 关）。 */
+    dailyCreditLimit: number;
+    modelDailyTokenLimit: number;
+    /** 三条是否有任意一条开着（全关时界面要说明「护栏未启用」）。 */
+    enabled: boolean;
+  };
+  accounts: {
+    uid: string;
+    name: string;
+    /** 今日经网关转发的 token 总量（prompt + completion）。 */
+    tokens: number;
+    /** 今日经网关消耗的 credits（上游 `usage.credits` 累加；浮点）。 */
+    credits: number;
+    perModel: { model: string; tokens: number }[];
+    /** 被拦的原因代号（`null` = 放行）：`parked` / `reserve` / `daily_tokens` / `model_tokens`。 */
+    blocked: string | null;
+    blockedReason: string | null;
+    /** 402 停放解冻时刻（毫秒；`null` = 没停放）。 */
+    parkedUntil?: number | null;
+    parkedReason?: string | null;
+    /** 最近一次余额读数（未知 = `null`，不是 0）。 */
+    creditsRemaining?: number | null;
+    creditsAt?: number | null;
+  }[];
 }
 
 /** 一条账号的额度行（`ok=false` 时带 `error`；部分失败不被伪装成全额）。 */
@@ -3397,6 +3523,13 @@ export interface QoderUsageView {
   days: QoderUsageDay[];
   totals: { credits: number; requests: number; sessions: number; models: number };
   byModel: Array<{ model: string; credits: number }>;
+  /**
+   * 会话排行（credits 降序，最多 200 行）。
+   *
+   * ⚠️ `title` 可能是**空串**（客户端那条会话没有 user 消息 / 结构不认识）——
+   * 前端回落成短 id，不编「未命名会话」。
+   */
+  sessions: QoderUsageSession[];
   source: {
     kind: string;
     paths: string[];
@@ -3405,6 +3538,19 @@ export interface QoderUsageView {
     tokenCountsAvailable: boolean;
     note: string;
   };
+}
+
+/** 一条会话的用量（会话视图的行；来自本机客户端 jsonl，按 sessionId 聚合）。 */
+export interface QoderUsageSession {
+  id: string;
+  /** 首个 user 消息正文（截断 80 字）；空串 ⇒ 前端回落短 id。 */
+  title: string;
+  credits: number;
+  requests: number;
+  /** 该会话用过的模型（credits 降序）；空数组 = 全是没有模型名的行。 */
+  models: string[];
+  firstDate: string;
+  lastDate: string;
 }
 
 /**
@@ -3443,6 +3589,15 @@ export function saveQoderGatewayConfig(config: QoderGatewayConfigRaw): Promise<u
 /** 网关运行状态 + 该区域账号池（`scope` 决定看哪本账号库）。 */
 export function qoderGatewayStatus(scope: Scope): Promise<unknown> {
   return call("qoder_gateway_status", { scope });
+}
+
+/**
+ * 限额护栏视图（逐账号当日用量 + 拦截原因 + 余额快照）。
+ *
+ * 与 `/gateway/status` 同一条纪律：`scope` 必填（两区两本计数文件，缺 scope 不该读任何一本）。
+ */
+export function qoderGatewayQuota(scope: Scope): Promise<QoderGatewayQuotaView> {
+  return call<QoderGatewayQuotaView>("qoder_gateway_quota", { scope });
 }
 
 /** 对外暴露的模型清单（**未过滤**禁用 + 来源 / 原因）。`refresh` ⇒ 绕过 10 分钟缓存。 */

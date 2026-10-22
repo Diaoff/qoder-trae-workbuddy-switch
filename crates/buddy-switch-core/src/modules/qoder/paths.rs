@@ -76,6 +76,14 @@ pub fn credits_daily_file_for(region: QoderRegion) -> PathBuf {
     scoped_file_for("credits_daily.json", region)
 }
 
+/// 网关**逐账号当日用量**（限额护栏 G2/G4 的计数来源；按区域分家）。
+///
+/// 归属网关（`buddy-switch-gateway::qoder::quota`）而不是账号库：它记的是**网关自己
+/// 转发了多少**，与账号库（凭据事实）是两件事，写进账号库会把「凭据文件」变成账本。
+pub fn gateway_usage_file_for(region: QoderRegion) -> PathBuf {
+    scoped_file_for("gateway_usage.json", region)
+}
+
 /// 模块设置（**不分家**：端口 / 客户端路径 / 全局开关与区域无关）。
 pub fn settings_file() -> PathBuf {
     qoder_dir().join("settings.json")
@@ -207,6 +215,11 @@ mod tests {
                 "积分快照",
                 credits_daily_file_for(QoderRegion::Cn),
                 credits_daily_file_for(QoderRegion::Global),
+            ),
+            (
+                "网关用量",
+                gateway_usage_file_for(QoderRegion::Cn),
+                gateway_usage_file_for(QoderRegion::Global),
             ),
         ] {
             assert_ne!(a, b, "{name} 在两区同路径 —— 会互相覆盖");

@@ -7,6 +7,7 @@ import { EmptyState } from "@/components/ui/empty-state";
 import { CatalogSourceBar } from "@/components/gateway/catalog-source-bar";
 import { ContextSourceCard } from "@/components/gateway/context-source-card";
 import { ModelTable } from "@/components/gateway/model-table";
+import { CreditsCell, EffortCell } from "@/components/gateway/model-ability";
 import { DemoAction } from "@/components/demo-action";
 import { TraeVariantMark } from "@/components/product-marks";
 import * as api from "@/lib/api";
@@ -17,7 +18,7 @@ import { scopeOf } from "@/lib/scope";
 import { servedCount } from "@/lib/types";
 import type { GatewayModelRow, Region } from "@/lib/types";
 import { cn } from "@/lib/utils";
-import type { TraeModelSource, TraeVariantId } from "@/lib/trae-types";
+import type { TraeClientModel, TraeModelSource, TraeVariantId } from "@/lib/trae-types";
 import { useRefreshAction } from "@/lib/use-refresh-action";
 import { EMPTY_DISABLED_SET, useGatewayStore } from "@/stores/gateway";
 
@@ -149,17 +150,39 @@ export function TraeModelList({
     [active],
   );
 
-  /* 行 = 客户端全分组清单（去重）+ 上游事实（available）+ 用户偏好（disabled）。 */
-  const rows = useMemo<GatewayModelRow[]>(() => {
+  /* 行 = 客户端全分组清单（去重）+ 上游事实（available）+ 用户偏好（disabled）。
+     顺带产出 `ability`：id → 该模型在**本程序位**那份条目里的能力字段（档位 / 倍率）。
+
+     ★ 为什么分组要**按「服务组优先」排序**：同一模型会在多个分组重复出现，而
+       `reasoning_effort_config` / `consumption_rate` 是**按 (function, 模型) 下发**的
+       —— 实测同一台机器上 `solo_work_lite` 22 条只有 1 条带档位，`chat_v3` 却有 15 条。
+       若按字典序去重（改造前），用户看到的档位可能来自**另一个程序位**的分组，显示出来
+       就是「看得见、用不了」—— 本仓最忌讳的那类假信息。服务组排最前 ⇒ 去重时它的数据胜出。 */
+  const { rows, ability } = useMemo(() => {
     const groups = data?.groups ?? [];
+    const isServed = (models: TraeClientModel[]): boolean => {
+      if (!servableNames) return false;
+      const names = new Set(models.filter((model) => !model.isBypass).map((model) => model.name));
+      if (names.size !== servableNames.size) return false;
+      for (const name of servableNames) if (!names.has(name)) return false;
+      return true;
+    };
+    // 稳定排序：服务组在前，其余保持后端给的顺序（不改展示序）。
+    const ordered = groups
+      .map((group, index) => ({ group, index, served: isServed(group.models) ? 0 : 1 }))
+      .sort((a, b) => a.served - b.served || a.index - b.index)
+      .map((item) => item.group);
+
     const seen = new Set<string>();
     const out: GatewayModelRow[] = [];
-    for (const group of groups) {
+    const byId = new Map<string, TraeClientModel>();
+    for (const group of ordered) {
       for (const model of group.models) {
         // 白屏防线：`name` / `displayName` 运行时可能是对象，过 `displayText` 收敛。
         const id = displayText(model.name) ?? "";
         if (!id || seen.has(id)) continue;
         seen.add(id);
+        byId.set(id, model);
         out.push({
           id,
           name: displayText(model.displayName) ?? id,
@@ -176,7 +199,7 @@ export function TraeModelList({
         });
       }
     }
-    return out;
+    return { rows: out, ability: byId };
   }, [data, servableNames, active, disabledSet, scope, maxMode]);
 
   const { served, total } = servedCount(rows);
@@ -343,6 +366,33 @@ export function TraeModelList({
             onToggleDisabled={(row, disabled) => void onToggleDisabled(row, disabled)}
             showUpstream={true}
             labels={labels}
+            /* ★ issue #65：档位 / 倍率都来自**客户端清单**（网关不参与解析）。
+               `thinking === "unknown"` 必须显示成「未下发」—— TraeWork 的
+               `solo_work_lite` 实测 22 条只有 1 条带档位，写成「不支持」就是撒谎。 */
+            effortColumn={{
+              header: t("shared.gateway.models.colEfforts"),
+              render: (row) => {
+                const model = ability.get(row.id);
+                const thinking = model?.thinking ?? "unknown";
+                return (
+                  <EffortCell
+                    efforts={model?.efforts ?? []}
+                    defaultEffort={model?.defaultEffort ?? null}
+                    unavailable={
+                      thinking === "unsupported"
+                        ? "unsupported"
+                        : thinking === "unknown"
+                          ? "unknown"
+                          : "undeclared"
+                    }
+                  />
+                );
+              },
+            }}
+            creditsColumn={{
+              header: t("shared.gateway.models.colCredits"),
+              render: (row) => <CreditsCell rate={ability.get(row.id)?.creditsRate ?? null} />,
+            }}
           />
           {/* 计数 = available && !disabled，与出口 ① 同源。
               ★ 守卫是 `total > 0`（**有清单就显示**），不是 `served > 0` ——

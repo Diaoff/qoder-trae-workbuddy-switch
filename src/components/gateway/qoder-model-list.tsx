@@ -2,11 +2,13 @@ import { useEffect, useMemo, useState } from "react";
 import { Cpu, RefreshCw } from "lucide-react";
 import { toast } from "sonner";
 
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { EmptyState } from "@/components/ui/empty-state";
 import { CatalogSourceBar } from "@/components/gateway/catalog-source-bar";
 import { ContextSourceCard } from "@/components/gateway/context-source-card";
 import { ModelTable } from "@/components/gateway/model-table";
+import { CreditsCell, EffortCell } from "@/components/gateway/model-ability";
 import { DemoAction } from "@/components/demo-action";
 import * as api from "@/lib/api";
 import { formatAbsoluteTime, type CatalogSourceView } from "@/lib/catalog-source";
@@ -99,6 +101,12 @@ export function QoderModelList({
     [catalog, disabledSet, scope, maxContext],
   );
   const { served, total } = servedCount(rows);
+
+  /** 行内要读「价格 / 思考档位」，按 id 回查官方清单（`GatewayModelRow` 不带这些字段）。 */
+  const catalogById = useMemo(
+    () => new Map(catalog.rows.map((model) => [model.id, model])),
+    [catalog.rows],
+  );
 
   const labels = {
     colModel: t("shared.gateway.models.colModel"),
@@ -207,6 +215,53 @@ export function QoderModelList({
             onToggleDisabled={(row, disabled) => void onToggleDisabled(row, disabled)}
             showUpstream={false}
             labels={labels}
+            /* ★ issue #65：官方清单里的计费与能力事实（免费 / 峰谷价 / 思考档位）。
+               与 WB / Trae **同一套两列**（`model-ability.tsx`），不再挤在一个「价格 / 思考」
+               单元格里 —— 倍率是单值、档位是集合，混排既扫不出来也没法各自说明来源。
+               错峰活动徽标仍挂在倍率格内（它是「这一刻多少钱」的一部分）。 */
+            effortColumn={{
+              header: t("shared.gateway.models.colEfforts"),
+              render: (row) => {
+                const model = catalogById.get(row.id);
+                return (
+                  <EffortCell
+                    efforts={model?.efforts ?? []}
+                    // Qoder 官方只给「支持哪些档」，不给默认档 ⇒ 不编。
+                    defaultEffort={null}
+                    unavailable={model?.isReasoning ? "unknown" : "unsupported"}
+                  />
+                );
+              },
+            }}
+            creditsColumn={{
+              header: t("shared.gateway.models.colCredits"),
+              render: (row) => {
+                const model = catalogById.get(row.id);
+                return (
+                  <CreditsCell
+                    rate={model?.priceFactor ?? null}
+                    free={model?.isFree ?? false}
+                    extra={
+                      model?.promotionBadge ? (
+                        <Badge
+                          variant="warning"
+                          className="px-1.5 py-0 text-[10px] leading-4"
+                          title={
+                            model.promotionWindow
+                              ? t("qoder.gateway.models.promotionWindow", {
+                                  range: model.promotionWindow,
+                                })
+                              : undefined
+                          }
+                        >
+                          {model.promotionBadge}
+                        </Badge>
+                      ) : null
+                    }
+                  />
+                );
+              },
+            }}
           />
           {/* 计数 = available && !disabled，与出口 ① 同源。
               ★ 守卫是 `total > 0`（**有清单就显示**）—— `served === 0` 不是「无数据」，

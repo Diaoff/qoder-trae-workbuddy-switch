@@ -486,6 +486,8 @@ pub fn run() {
             commands::get_account_token_today,
             // 网关逐日用量趋势（只读 `token_daily` 90 天落库历史；两宿主同步）。
             commands::get_gateway_token_trend,
+            commands::get_gateway_usage_dim,
+            commands::get_usage_reconcile,
             commands::checkin,
             commands::checkin_all,
             commands::get_auto_checkin_config,
@@ -596,6 +598,8 @@ pub fn run() {
             // issue #47：逐账号「今日签到状态」只读重取（与 server 的同名路由一一对应）。
             commands::qoder_checkin_status_map,
             commands::qoder_checkin_claim,
+            commands::qoder_pro_pack_status,
+            commands::qoder_pro_pack_claim,
             commands::qoder_credits,
             commands::qoder_oauth_start,
             commands::qoder_oauth_status,
@@ -661,6 +665,7 @@ pub fn run() {
             commands::save_qoder_gateway_config,
             commands::qoder_gateway_status,
             commands::get_qoder_gateway_models,
+            commands::qoder_gateway_quota,
             commands::list_qoder_api_keys,
             commands::create_qoder_api_key,
             commands::revoke_qoder_api_key,

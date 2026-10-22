@@ -32,7 +32,17 @@
  *    按毫秒渲染会把秒值显示成 1970 = 谎报。
  */
 
-import { Ellipsis, FolderTree, Info, StickyNote, Trash2 } from "lucide-react";
+import {
+  Check,
+  CircleCheck,
+  Download,
+  Ellipsis,
+  FolderTree,
+  Info,
+  Sparkles,
+  StickyNote,
+  Trash2,
+} from "lucide-react";
 
 import { AVATAR_TEXT_CLASS, accountInitials, avatarTone } from "@/components/account-card";
 import { Badge } from "@/components/ui/badge";
@@ -46,7 +56,13 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { MenuGroupLabel, MenuHead, MenuNote, RefreshMenuGroup } from "@/components/account-menu-parts";
+import {
+  MenuGroupLabel,
+  MenuHead,
+  MenuNote,
+  MenuStateItem,
+  RefreshMenuGroup,
+} from "@/components/account-menu-parts";
 import type { AccountRefreshKind } from "@/lib/account-refresh";
 import type { QoderAccountView, QoderProgramStatus } from "@/lib/api";
 import { demoModeEnabled } from "@/lib/demo-mode";
@@ -177,6 +193,154 @@ export interface QoderCardCredits {
   plan?: string | null;
 }
 
+/**
+ * 账号「更多」菜单（**卡片与表格共用同一份**）。
+ *
+ * ## 为什么抽出来
+ *
+ * 与 WB 的 `AccountMoreMenu` 同一条纪律：表格视图与卡片视图列的是同一批账号、同一批动作。
+ * 此前 Qoder 的表格**没有任何行尾动作**（`renderActions` 没接），用户在表格里只能点行进详情 ——
+ * 「同一能力两种形态」的典型分叉。抽成组件后，菜单结构与门控只有一处定义。
+ *
+ * ## 三态签到（F5，与 WB / Trae 同口径）
+ *
+ * 已签到 → 状态行；凭据不可用 → 「需先登录」状态行；其余 → 可点入口。
+ * ⚠️ Qoder 的签到态**经常是未知**（只有区域快照 + 手动刷新）—— 未知时**保留可点项**
+ * 并说明「点一下即向上游确认」，否则菜单里永远看不到签到入口（用户实际报障）。
+ */
+export interface QoderAccountMenuProps {
+  account: QoderAccountView;
+  /** 展示名（已过 `displayText`）。 */
+  name: string;
+  /** 今日签到三态：`true` 已签 / `false` 未签 / `null|undefined` 未知。 */
+  checkinToday?: boolean | null;
+  onOpenDetail?: (account: QoderAccountView) => void;
+  onEditRemark?: (account: QoderAccountView) => void;
+  onSetGroup?: (account: QoderAccountView) => void;
+  /** 手动签到（与批量 / 抽屉同一条路径）。 */
+  onCheckin?: (account: QoderAccountView) => void;
+  onExport?: (account: QoderAccountView) => void;
+  onDelete?: (account: QoderAccountView) => void;
+  onRefreshPart?: (kind: AccountRefreshKind) => void;
+  refreshingKinds?: readonly AccountRefreshKind[];
+  doneKinds?: readonly AccountRefreshKind[];
+  refreshKinds?: readonly AccountRefreshKind[];
+  /** 表格里用更紧凑的触发器（与 WB 的 `compact` 同形）。 */
+  compact?: boolean;
+}
+
+export function QoderAccountMenu({
+  account,
+  name,
+  checkinToday,
+  onOpenDetail,
+  onEditRemark,
+  onSetGroup,
+  onCheckin,
+  onExport,
+  onDelete,
+  onRefreshPart,
+  refreshingKinds,
+  doneKinds,
+  refreshKinds,
+  compact = false,
+}: QoderAccountMenuProps) {
+  const t = useT();
+  /* 凭据不可用（缺失 / 不认识）⇒ 签到项只能显示「需先登录」，不给可点入口。
+     与 `QoderStatusChips` 的优先级同源（凭据问题 > 签到态）。 */
+  const credentialDead = !account.hasCredential || account.credential.unrecognized;
+
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <Button
+          variant="ghost"
+          size="sm"
+          className={cn(
+            "text-muted-foreground hover:bg-accent hover:text-foreground",
+            compact ? "!size-7 !px-0" : "!px-[10px]",
+          )}
+          aria-label={t("qoder.page.accounts.card.manageAria", { name })}
+          title={t("qoder.page.accounts.card.moreActions")}
+        >
+          <Ellipsis className="size-4" />
+        </Button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end" className="w-56">
+        <MenuHead>{displayText(account.name) || account.uid}</MenuHead>
+        <DropdownMenuItem disabled={!onOpenDetail} onSelect={() => onOpenDetail?.(account)}>
+          <Info />
+          {t("qoder.page.accounts.card.viewDetail")}
+        </DropdownMenuItem>
+        <DropdownMenuSeparator />
+        {onRefreshPart && (
+          <>
+            <RefreshMenuGroup refreshingKinds={refreshingKinds} doneKinds={doneKinds} kinds={refreshKinds} onPick={onRefreshPart} />
+            <DropdownMenuSeparator />
+            <MenuGroupLabel>{t("shared.cardMenu.accountGroup")}</MenuGroupLabel>
+          </>
+        )}
+        {/* ★ 签到是**三态**（与 WB / Trae 卡同一规则，原型 `acctMenuInner` 同形）：
+            已签到 / 需先登录 / 可点。凭据坏了的账号不给可点项 —— 点了必然失败。
+            ⚠️ 与 WB 的差异：Qoder 的签到状态**常常是「未知」**（只有区域快照 + 手动刷新），
+            若照 WB「未知就不渲染」，菜单里就永远看不到签到入口（用户实际报障）。
+            因此未知时**保留可点项**，并在 title 里说清「点一下即向上游确认」。 */}
+        {checkinToday === true ? (
+          <MenuStateItem
+            icon={<Check className="size-4 text-primary" />}
+            hint={t("shared.cardMenu.checkedTodayHint")}
+          >
+            {t("shared.cardMenu.checkedToday")}
+          </MenuStateItem>
+        ) : credentialDead ? (
+          <MenuStateItem
+            icon={<Sparkles />}
+            hint={t("shared.cardMenu.needLoginHint")}
+            state={t("shared.cardMenu.needLogin")}
+          >
+            {t("qoder.page.accounts.card.checkin")}
+          </MenuStateItem>
+        ) : (
+          <DropdownMenuItem
+            disabled={!onCheckin}
+            title={
+              checkinToday === false
+                ? undefined
+                : t("qoder.page.accounts.card.checkinUnknownHint")
+            }
+            onSelect={() => onCheckin?.(account)}
+          >
+            <CircleCheck />
+            {t("qoder.page.accounts.card.checkin")}
+          </DropdownMenuItem>
+        )}
+        <DropdownMenuItem disabled={!onExport} onSelect={() => onExport?.(account)}>
+          <Download />
+          {t("shared.cardMenu.export")}
+        </DropdownMenuItem>
+        <DropdownMenuItem disabled={!onEditRemark} onSelect={() => onEditRemark?.(account)}>
+          <StickyNote />
+          {t("qoder.page.accounts.card.editRemark")}
+        </DropdownMenuItem>
+        <DropdownMenuItem disabled={!onSetGroup} onSelect={() => onSetGroup?.(account)}>
+          <FolderTree />
+          {t("qoder.page.accounts.card.setGroup")}
+        </DropdownMenuItem>
+        <DropdownMenuSeparator />
+        {/* 删除是**危险动作**（虽可恢复，但会移出账号库）⇒ 落到页面统一弹确认。 */}
+        <DropdownMenuItem
+          className="text-destructive focus:bg-destructive/5 focus:text-destructive"
+          onSelect={() => onDelete?.(account)}
+        >
+          <Trash2 />
+          {t("qoder.page.accounts.card.deleteAccount")}
+        </DropdownMenuItem>
+              <MenuNote>{t("shared.cardMenu.note")}</MenuNote>
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
+}
+
 export interface QoderAccountCardProps {
   account: QoderAccountView;
   /** 是否被勾选（批量操作）。 */
@@ -210,6 +374,13 @@ export interface QoderAccountCardProps {
   /** 「更多 → 设置分组」。 */
   onSetGroup?: (account: QoderAccountView) => void;
   /**
+   * 「更多 → 手动签到」：与批量签到 / 抽屉里的签到**同一条路径**
+   * （`runCheckin` → 单账号 `qoder_checkin_claim`），不另造一条。
+   */
+  onCheckin?: (account: QoderAccountView) => void;
+  /** 「更多 → 导出账号」：与批量导出共用同一个弹层（只把目标换成一个账号）。 */
+  onExport?: (account: QoderAccountView) => void;
+  /**
    * 单项刷新（积分 / 今日 Token / 签到状态 / 凭据状态）。
    * 传了 ⇒ 菜单出现「刷新」分组（四项各自独立）；不传 ⇒ 菜单与原来一致。
    */
@@ -234,6 +405,8 @@ export function QoderAccountCard({
   programs = null,
   onSwitch,
   onSetGroup,
+  onCheckin,
+  onExport,
   onRefreshPart,
   refreshingKinds,
   doneKinds,
@@ -263,52 +436,21 @@ export function QoderAccountCard({
       </Button>
     </DemoAction>
   ) : (
-    <DropdownMenu>
-      <DropdownMenuTrigger asChild>
-        <Button
-          variant="ghost"
-          size="sm"
-          className="!px-[10px] text-muted-foreground hover:bg-accent hover:text-foreground"
-          aria-label={t("qoder.page.accounts.card.manageAria", { name })}
-          title={t("qoder.page.accounts.card.moreActions")}
-        >
-          <Ellipsis className="size-4" />
-        </Button>
-      </DropdownMenuTrigger>
-      <DropdownMenuContent align="end" className="w-56">
-        <MenuHead>{displayText(account.name) || account.uid}</MenuHead>
-        <DropdownMenuItem disabled={!onOpenDetail} onSelect={() => onOpenDetail?.(account)}>
-          <Info />
-          {t("qoder.page.accounts.card.viewDetail")}
-        </DropdownMenuItem>
-        <DropdownMenuSeparator />
-        {onRefreshPart && (
-          <>
-            <RefreshMenuGroup refreshingKinds={refreshingKinds} doneKinds={doneKinds} kinds={refreshKinds} onPick={(kind) => onRefreshPart(account, kind)} />
-            <DropdownMenuSeparator />
-            <MenuGroupLabel>{t("shared.cardMenu.accountGroup")}</MenuGroupLabel>
-          </>
-        )}
-        <DropdownMenuItem disabled={!onEditRemark} onSelect={() => onEditRemark?.(account)}>
-          <StickyNote />
-          {t("qoder.page.accounts.card.editRemark")}
-        </DropdownMenuItem>
-        <DropdownMenuItem disabled={!onSetGroup} onSelect={() => onSetGroup?.(account)}>
-          <FolderTree />
-          {t("qoder.page.accounts.card.setGroup")}
-        </DropdownMenuItem>
-        <DropdownMenuSeparator />
-        {/* 删除是**危险动作**（虽可恢复，但会移出账号库）⇒ 落到页面统一弹确认。 */}
-        <DropdownMenuItem
-          className="text-destructive focus:bg-destructive/5 focus:text-destructive"
-          onSelect={() => onDelete?.(account)}
-        >
-          <Trash2 />
-          {t("qoder.page.accounts.card.deleteAccount")}
-        </DropdownMenuItem>
-              <MenuNote>{t("shared.cardMenu.note")}</MenuNote>
-      </DropdownMenuContent>
-    </DropdownMenu>
+    <QoderAccountMenu
+      account={account}
+      name={name}
+      checkinToday={checkinToday}
+      onOpenDetail={onOpenDetail}
+      onEditRemark={onEditRemark}
+      onSetGroup={onSetGroup}
+      onCheckin={onCheckin}
+      onExport={onExport}
+      onDelete={onDelete}
+      onRefreshPart={onRefreshPart ? (kind) => onRefreshPart(account, kind) : undefined}
+      refreshingKinds={refreshingKinds}
+      doneKinds={doneKinds}
+      refreshKinds={refreshKinds}
+    />
   );
 
   return (

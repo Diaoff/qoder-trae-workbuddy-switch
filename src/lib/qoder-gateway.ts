@@ -39,6 +39,11 @@ export const DEFAULT_QODER_GATEWAY_CONFIG: QoderGatewayConfig = {
   preferredUid: "",
   stickyTtlMs: 30 * 60 * 1000,
   maxContext: true,
+  // 护栏默认全关（与 Rust `QoderGatewayConfig::default` 同口径）。
+  reserveCredits: 0,
+  dailyTokenLimit: 0,
+  dailyCreditLimit: 0,
+  modelDailyTokenLimit: 0,
 };
 
 /** 网关配置（前端形状）。 */
@@ -56,6 +61,14 @@ export interface QoderGatewayConfig {
   stickyTtlMs: number;
   /** 上下文上限策略（默认 true）。 */
   maxContext: boolean;
+  /** G1 余额地板（`<=` 即停；`0` = 关闭）。 */
+  reserveCredits: number;
+  /** G2 当日 token 上限（逐账号；`0` = 关闭）。 */
+  dailyTokenLimit: number;
+  /** G3 当日 credit 上限（浮点；`0` = 关闭）。 */
+  dailyCreditLimit: number;
+  /** G4 单模型当日 token 上限（`0` = 关闭）。 */
+  modelDailyTokenLimit: number;
 }
 
 /** 配置的线上形状（snake_case；写回时用）。 */
@@ -73,6 +86,14 @@ export interface QoderGatewayConfigRaw {
   sticky_ttl_ms: number;
   /** 上下文上限策略（默认 true）：清单声明最大窗口，false ⇒ 默认窗口。 */
   max_context?: boolean;
+  /** G1 余额地板（`0` = 关闭）。 */
+  reserve_credits: number;
+  /** G2 当日 token 上限（`0` = 关闭）。 */
+  daily_token_limit: number;
+  /** G3 当日 credit 上限（浮点；`0` = 关闭）。 */
+  daily_credit_limit: number;
+  /** G4 单模型当日 token 上限（`0` = 关闭）。 */
+  model_daily_token_limit: number;
 }
 
 /**
@@ -96,7 +117,13 @@ export interface QoderGatewayPoolSummary extends GatewayPoolSummary {
 export interface QoderGatewayPoolAccount {
   uid: string;
   name: string;
-  status: "available" | "cooling" | "disabled";
+  /**
+   * 池内状态。**`"excluded"` 是互斥第六态** —— 用户显式排除后该号不再参与选号。
+   *
+   * ⚠️ 不可省略：归一化时若把 `"excluded"` 落回 `"available"`，界面会显示
+   * 「可用」而实际选号永远不选它（数字与事实不符）。
+   */
+  status: "available" | "cooling" | "disabled" | "excluded";
   /** Qoder 池不建模积分 ⇒ 恒 `null`（卡片显示「—」）。 */
   credits: number | null;
   cooling: boolean;
@@ -104,6 +131,16 @@ export interface QoderGatewayPoolAccount {
   cooldownReason: string | null;
   /** `true` = **需人工干预**（无凭据 / 凭据失效），「恢复」出口据此渲染。 */
   disabled: boolean;
+  /**
+   * **用户显式排除**（硬约束：选号 / 兜底 / 偏好全跳过）。
+   *
+   * 「排除 / 取消排除」按钮的文案与提交值都依赖它
+   * （`onExclude(uid, !account.excluded)`）—— 缺了它，按钮永远显示「排除」、
+   * 点下去永远传 `true` ⇒ 排除后再也取消不掉（2026-10-22 用户报障）。
+   */
+  excluded: boolean;
+  /** 排除备注（为什么排除）。 */
+  excludedNote: string | null;
 }
 
 /** 状态视图。 */
@@ -141,6 +178,18 @@ export interface QoderGatewayModelRow {
   contextMax: number | null;
   /** 后端现算的一份禁用标记（渲染以 store 为准；这里用于交叉校验与计数）。 */
   disabled: boolean;
+  /**
+   * 官方 `price_factor`（计价倍率，**不是**金额）；缺失 = 官方没给，不编。
+   */
+  priceFactor: number | null;
+  /** 官方标记的免费模型。 */
+  isFree: boolean;
+  /** 错峰活动徽标（中文优先、缺失回落英文）；无活动 = `null`。 */
+  promotionBadge: string | null;
+  /** 错峰时段（`"22:00-08:00"`）；无活动 = `null`。 */
+  promotionWindow: string | null;
+  /** 思考档位（官方词表顺序）；空数组 = 该模型不支持选档位。 */
+  efforts: string[];
 }
 
 /** 模型清单视图（含来源与原因）。 */
@@ -195,6 +244,33 @@ function pick<T>(record: Record<string, unknown>, camel: string, snake: string):
   return (record[camel] ?? record[snake]) as T | undefined;
 }
 
+/**
+ * 错峰活动徽标：**中文优先、英文兜底**（与后端 `placements` 取标题同一口径）。
+ *
+ * 只认官方给的 `badge`；没有就是 `null`（不编「原价」这种不存在的事实）。
+ */
+function promotionBadge(promotion: unknown): string | null {
+  const record = (promotion && typeof promotion === "object" ? promotion : {}) as Record<
+    string,
+    unknown
+  >;
+  const badge = (
+    record.badge && typeof record.badge === "object" ? record.badge : {}
+  ) as Record<string, unknown>;
+  return asString(badge.zh) ?? asString(badge.en) ?? null;
+}
+
+/** 错峰时段（`"22:00-08:00"`）；缺任一端 ⇒ `null`（不显示半截时段）。 */
+function promotionWindow(promotion: unknown): string | null {
+  const record = (promotion && typeof promotion === "object" ? promotion : {}) as Record<
+    string,
+    unknown
+  >;
+  const start = asString(pick(record, "windowStart", "window_start"));
+  const end = asString(pick(record, "windowEnd", "window_end"));
+  return start && end ? `${start}-${end}` : null;
+}
+
 /** 归一化 `get_qoder_gateway_config` 的返回。 */
 export function normalizeQoderGatewayConfig(raw: unknown): QoderGatewayConfig {
   const record = (raw && typeof raw === "object" ? raw : {}) as Record<string, unknown>;
@@ -221,6 +297,27 @@ export function normalizeQoderGatewayConfig(raw: unknown): QoderGatewayConfig {
       asNumber(read("stickyTtlMs", "sticky_ttl_ms")) ?? DEFAULT_QODER_GATEWAY_CONFIG.stickyTtlMs,
     maxContext:
       asBoolean(read("maxContext", "max_context")) ?? DEFAULT_QODER_GATEWAY_CONFIG.maxContext,
+    // 阈值：负数 / 非数字一律归一为 0（= 关闭）—— 负阈值会让**所有**账号被拦。
+    reserveCredits: Math.max(
+      0,
+      asNumber(read("reserveCredits", "reserve_credits")) ?? DEFAULT_QODER_GATEWAY_CONFIG.reserveCredits,
+    ),
+    dailyTokenLimit: Math.max(
+      0,
+      asNumber(read("dailyTokenLimit", "daily_token_limit")) ??
+        DEFAULT_QODER_GATEWAY_CONFIG.dailyTokenLimit,
+    ),
+    // credit 阈值是**浮点**（上游按 0.0x 计价）；非有限数一律按 0（关）。
+    dailyCreditLimit: Math.max(
+      0,
+      asNumber(read("dailyCreditLimit", "daily_credit_limit")) ??
+        DEFAULT_QODER_GATEWAY_CONFIG.dailyCreditLimit,
+    ),
+    modelDailyTokenLimit: Math.max(
+      0,
+      asNumber(read("modelDailyTokenLimit", "model_daily_token_limit")) ??
+        DEFAULT_QODER_GATEWAY_CONFIG.modelDailyTokenLimit,
+    ),
   };
 }
 
@@ -244,6 +341,10 @@ export function toQoderGatewayConfigRaw(config: QoderGatewayConfig): QoderGatewa
     preferred_uid: config.preferredUid,
     sticky_ttl_ms: config.stickyTtlMs,
     max_context: config.maxContext,
+    reserve_credits: config.reserveCredits,
+    daily_token_limit: config.dailyTokenLimit,
+    daily_credit_limit: config.dailyCreditLimit,
+    model_daily_token_limit: config.modelDailyTokenLimit,
   };
 }
 
@@ -267,7 +368,7 @@ export function normalizeQoderGatewayStatus(raw: unknown): QoderGatewayStatus | 
             uid,
             name: asString(entry.name) ?? uid,
             status:
-              status === "cooling" || status === "disabled"
+              status === "cooling" || status === "disabled" || status === "excluded"
                 ? (status as QoderGatewayPoolAccount["status"])
                 : "available",
             credits: asNumber(entry.credits) ?? null,
@@ -275,6 +376,14 @@ export function normalizeQoderGatewayStatus(raw: unknown): QoderGatewayStatus | 
             cooldownUntil: asNumber(pick(entry, "cooldownUntil", "cooldown_until")) ?? null,
             cooldownReason: asString(pick(entry, "cooldownReason", "cooldown_reason")) ?? null,
             disabled: asBoolean(entry.disabled) ?? false,
+            // ★ 用户显式排除（互斥第六态）。**必须显式归一化**：漏了它，
+            //   「排除 / 取消排除」按钮的文案恒为「排除」、提交值恒为 `true`
+            //   ⇒ 排除后再也取消不掉（与 WorkBuddy / Trae 同源，2026-10-22 用户报障）。
+            excluded: entry.excluded === true,
+            excludedNote:
+              typeof entry.excludedNote === "string" && entry.excludedNote
+                ? entry.excludedNote
+                : null,
           };
         })
         .filter((item): item is QoderGatewayPoolAccount => item !== null)
@@ -303,6 +412,9 @@ export function normalizeQoderGatewayStatus(raw: unknown): QoderGatewayStatus | 
       expired: asNumber(pool.expired) ?? 0,
       zeroCredits: asNumber(pick(pool, "zeroCredits", "zero_credits")) ?? 0,
       totalCredits: asNumber(pick(pool, "totalCredits", "total_credits")) ?? 0,
+      // 「用户显式排除」的账号数（互斥第六态）。后端 `QoderPool::summary` 已把它
+      // 从 `available` 里扣掉 ⇒ 缺这一格就会出现「3 可用」而实际只有 2 个能被选中。
+      excluded: asNumber(pool.excluded) ?? 0,
       modelCooling: asNumber(pick(pool, "modelCooling", "model_cooling")) ?? 0,
     },
     accounts,
@@ -332,6 +444,13 @@ export function normalizeQoderGatewayCatalog(raw: unknown): QoderGatewayCatalog 
               asNumber(pick(entry, "contextDefault", "context_length_default")) ?? null,
             contextMax: asNumber(pick(entry, "contextMax", "context_length_max")) ?? null,
             disabled: asBoolean(entry.disabled) ?? false,
+            priceFactor: asNumber(pick(entry, "priceFactor", "price_factor")) ?? null,
+            isFree: asBoolean(pick(entry, "isFree", "is_free")) ?? false,
+            promotionBadge: promotionBadge(entry.promotion),
+            promotionWindow: promotionWindow(entry.promotion),
+            efforts: Array.isArray(entry.thinking_efforts)
+              ? entry.thinking_efforts.filter((item): item is string => typeof item === "string")
+              : [],
           };
         })
         .filter((item): item is QoderGatewayModelRow => item !== null)

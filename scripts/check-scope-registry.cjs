@@ -319,7 +319,11 @@ check("P1 回滚开关默认开启（VITE_SCOPE_UNIFIED 未设时）", () => {
  * （简单正则对字符串里的 `//` 会误伤，但本断言只找 `useState` / 函数调用，风险可接受。）
  */
 function stripComments(source) {
-  return source.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/.*$/gm, "");
+  // ⚠️ 顺序：**先剥行注释再剥块注释**。反过来的话，行注释里出现块注释起始标记
+  //（本仓真实存在：`// … /api/oauth/…` 后跟一个星号）会被当成块注释起点，
+  // 一路吃到下一个结束标记，把成百上千行源码吞掉 ⇒ 后面所有“handler 是否存在”
+  // 的断言都变成假红（`check-api-contract.cjs` 踩过同一个坑）。
+  return source.replace(/\/\/.*$/gm, "").replace(/\/\*[\s\S]*?\*\//g, "");
 }
 
 check("★ P2 路由：`/s/:scope/:dest` 已注册，且旧路由**保留**（旧书签可达）", () => {
@@ -937,23 +941,32 @@ check("★ P3 用量页三平台共用同一组件（同概览页的模式；Qod
   if (!/platformOfPath\(/.test(page)) throw new Error("用量页没有从路由推平台");
   if (!/USAGE_PAGES/.test(page)) throw new Error("用量页没有按平台映射子页面");
 
-  /* 五个页面都要 **lazy**：都静态引入会让「用量」首次加载同时拉多页。 */
+  /* 六个页面都要 **lazy**：都静态引入会让「用量」首次加载同时拉多页。 */
   for (const c of [
     "TokenStatsPage",
     "CreditStatsPage",
     "TraeTokenStatsPage",
     "TraeCreditsPage",
     "QoderUsagePage",
+    "QoderCreditsPage",
   ]) {
     if (!new RegExp(`lazy\\(\\(\\) => import\\("@/pages/${c}"\\)\\)`).test(page)) {
       throw new Error(`用量页没有 lazy 加载 \`${c}\``);
     }
   }
-  /* Qoder 只有 credits 视图（tokens 数据源不存在）⇒ 必须显式关掉 token 视图与子 Tab。 */
-  if (!/qoder:\s*\{[^}]*tokenViews: false/.test(page)) {
-    throw new Error("`USAGE_PAGES.qoder` 没有关掉 token 视图（Qoder 无 token 台账）");
+  /* ★ 2026-10-21：Qoder 四个视图齐了（原先只有趋势）。
+     守三件事：① 四个子 Tab 都在；② `tokenViews: true`（否则趋势/模型/会话传不进 `view`）；
+     ③ credits 指向**独立**的余额页（指回 QoderUsagePage 就退回「积分页显示趋势图」那个错）。 */
+  if (!/qoder:\s*\[[^\]]*"trend"[^\]]*"models"[^\]]*"sessions"[^\]]*"credits"/.test(page)) {
+    throw new Error("`PLATFORM_TABS.qoder` 没有四个视图（趋势 / 模型 / 会话 / 积分）");
   }
-  return "三平台共用 · 从路由推平台 · 5 个子页面均 lazy · Qoder 仅 credits 视图";
+  if (!/qoder:\s*\{[^}]*tokenViews: true/.test(page)) {
+    throw new Error("`USAGE_PAGES.qoder` 没开 token 视图 —— 趋势/模型/会话三视图传不进 `view`");
+  }
+  if (!/qoder:\s*\{[^}]*credits: QoderCreditsPage/.test(page)) {
+    throw new Error("`USAGE_PAGES.qoder.credits` 没有指向 `QoderCreditsPage`（余额是另一个口径）");
+  }
+  return "三平台共用 · 从路由推平台 · 6 个子页面均 lazy · Qoder 四视图（余额独立成页）";
 });
 
 check("★ P2 顶栏作用域选择器：存在 ScopeSelector · 由 TopBar 渲染 · 覆盖全部作用域 · 不在页面内", () => {
@@ -1199,12 +1212,23 @@ check("★ 账号页只渲染**本区域**的程序位（国内版不得出现�
        ① `programsFor` 必须按 `variant` 过滤（删掉 `.filter(... status.variant === variant)` ⇒ 变红）；
        ② 卡片里**不得**再出现跨区域分支（`crossRegion` / `onSwitchRegion` 复活 ⇒ 变红）；
        ③ 切换目标仍必须是**区域限定**的 `program.variant`（改成 `program.program` 会丢客户端 ⇒ 变红）。 */
-  /* ⚠️ 用字面路径而不是 `TRAE_PAGE` 常量：本断言的位置在常量声明**之前**（TDZ）。 */
-  const page = readCode("src/pages/TraeAccountsPage.tsx");
-  const fn = /function programsFor\([\s\S]*?\n  \}/.exec(page);
-  if (!fn) throw new Error("找不到 `programsFor` —— 断言失效（是否改名？）");
+  /* ⚠️ 用字面路径而不是 `TRAE_PAGE` 常量：本断言的位置在常量声明**之前**（TDZ）。
+     ★ 2026-10-21：实现已抽到 `lib/trae-programs.ts`（与聚合页共用同一份判定），
+       所以这里读**新文件**，并额外断言账号页**确实调用它**——
+       否则「页面改回内联实现、两处各写一份」会静默发生，判定又开始漂。 */
+  const impl = readCode("src/lib/trae-programs.ts");
+  const fn = /export function traeProgramsFor\([\s\S]*?\n\}/.exec(impl);
+  if (!fn) throw new Error("找不到 `traeProgramsFor` —— 断言失效（是否改名？）");
   if (!/\.filter\(\(status\) => status\.variant === variant\)/.test(fn[0])) {
-    throw new Error("`programsFor` 未按当前区域过滤 —— 国内版会显示国际版的程序位");
+    throw new Error("`traeProgramsFor` 未按当前区域过滤 —— 国内版会显示国际版的程序位");
+  }
+  const page = readCode("src/pages/TraeAccountsPage.tsx");
+  if (!/traeProgramsFor\(account, variant, variantStatuses, logins\)/.test(page)) {
+    throw new Error("TraeAccountsPage 没有调用 `traeProgramsFor` —— 页面与聚合页会各写一份判定");
+  }
+  /* 绝不能按 `program` 去重（它不含区域，去重会丢掉「该写哪个客户端」）。 */
+  if (/new Set\([^)]*\.map\(\(?[a-z]+\)? => [a-z]+\.program\)/.test(fn[0])) {
+    throw new Error("`traeProgramsFor` 出现了按 `program` 去重/去查的构造 —— 只能按 `variant` 去重");
   }
   const card = readCode("src/components/trae-account-card.tsx");
   for (const gone of ["crossRegion", "onSwitchRegion", "regionLabelOf", "switch.regionHint"]) {
@@ -2524,6 +2548,64 @@ check("★ P11「两个出口同时生效」说明必须出现（否则禁用是
     }
   }
   return `zh/en 同步 · 两平台均渲染（「${text.slice(0, 18)}…」）`;
+});
+
+check("★ issue #65 模型表「思考档位 / 积分倍率」三平台同构、渲染唯一、纯展示", () => {
+  /* 需求（issue #65）：模型池里每个模型要能看出「支持哪些思考档位」和「积分倍率」。
+     三平台的档位来自**三个不同数据源**（WB 目录 `reasoning` / Trae 客户端
+     `reasoning_effort_config` / Qoder 官方 `thinking_efforts`），最容易出的错是
+     「各写一份渲染」——那就是同一件事三种写法（P10 §1.2 早就收敛掉的分叉）。
+
+     可证伪：
+     ① 共用壳必须有两个**可选**列槽（不传 ⇒ 整列不渲染，避免「全 — 」的噪音列）；
+     ② 三个平台页**都**要传（少传一个 ⇒ 该平台看不到这两项，需求只做了一半）；
+     ③ 单元格渲染只允许来自 `model-ability.tsx`（页面自己 `join(" / ")` 就变红）；
+     ④ 那个文件里**不得**有 onClick（模型表每行恰好 2 处可点区，门禁在上一块）。
+     变异：删 `<EffortCell` 的调用 ⇒ ③ 红；给 `model-ability.tsx` 加 `onClick` ⇒ ④ 红。 */
+  const shell = readCode(MODEL_TABLE);
+  for (const prop of ["effortColumn", "creditsColumn"]) {
+    if (!new RegExp(`${prop}\\?:\\s*\\{`).test(shell)) {
+      throw new Error(`模型表格壳缺可选列槽 \`${prop}\`（不传就该整列不渲染）`);
+    }
+    // 表头 + 单元格各渲染一次才算「真的有这一列」。
+    const uses = (shell.match(new RegExp(`\\{${prop} &&`, "g")) || []).length;
+    if (uses !== 2) {
+      throw new Error(`\`${prop}\` 在壳里出现 ${uses} 次，应表头 + 单元格各一次`);
+    }
+  }
+
+  const ability = readCode("src/components/gateway/model-ability.tsx");
+  if ((ability.match(/onClick=/g) || []).length !== 0) {
+    throw new Error("model-ability.tsx 出现了 onClick —— 模型表每行只能有 2 处可点区");
+  }
+  // 「空档位」三种成因的文案必须都在：把 unknown 写成 unsupported 就是撒谎（TraeWork 侧
+  // 实测 22 条只有 1 条带档位，整列「—」不代表「都不支持」）。
+  for (const key of [
+    "shared.gateway.models.effortNoneUnknown",
+    "shared.gateway.models.effortNoneUnsupported",
+    "shared.gateway.models.effortNoneUndeclared",
+  ]) {
+    if (!ability.includes(key)) {
+      throw new Error(`model-ability.tsx 缺「${key}」的成因文案`);
+    }
+  }
+
+  const pages = { WB: WB_MODEL_LIST, Trae: TRAE_MODEL_LIST, Qoder: "src/components/gateway/qoder-model-list.tsx" };
+  for (const [label, rel] of Object.entries(pages)) {
+    const code = readCode(rel);
+    for (const prop of ["effortColumn", "creditsColumn"]) {
+      if (!new RegExp(`${prop}=\\{\\{`).test(code)) {
+        throw new Error(`${label} 没传 \`${prop}\` —— 该平台看不到这两项（issue #65 要求三平台一起加）`);
+      }
+    }
+    if (!/from "@\/components\/gateway\/model-ability"/.test(code)) {
+      throw new Error(`${label} 没有复用 model-ability 的单元格渲染（自己拼一份 = 又一处分叉）`);
+    }
+    if (!/\bEffortCell\b/.test(code)) {
+      throw new Error(`${label} 未使用 <EffortCell>（档位渲染必须走共用组件）`);
+    }
+  }
+  return "壳两个列槽 · 三平台都传 · 渲染只在 model-ability · 无 onClick";
 });
 
 check("★ P11 禁用错误可展示（后端 403 model_disabled 的文案经 api.asError 透出）", () => {
@@ -4967,7 +5049,7 @@ check("★ P5-③ `id|uid` 统一谓词：软删除 / 查找 / 备注共用 `res
   return "谓词 = id||uid · 软删除走谓词 · 按 uid 删除单测在";
 });
 
-check("★ P5-④ 参数化命令**恰 53 条**且后端带 scope（commands.rs 签名 + api.rs 读取）", () => {
+check("★ P5-④ 参数化命令**恰 55 条**且后端带 scope（commands.rs 签名 + api.rs 读取）", () => {
   /* 变异④（落点 = commands.rs / check-api-contract.cjs）：删掉某参数化命令的 `scope` 参数
      ⇒ 本条变红（桌面端与 webui 行为分叉，而构建全绿）。 */
   const contract = stripComments(fs.readFileSync(path.join(ROOT, P5_API_CONTRACT_CJS), "utf8"));
@@ -4994,7 +5076,7 @@ check("★ P5-④ 参数化命令**恰 53 条**且后端带 scope（commands.rs 
     "open_data_dir",
     "preview_import_accounts", "probe_cancel", "probe_start", "probe_status",
     "qoder_checkin_claim", "qoder_checkin_status", "qoder_checkin_status_map", "qoder_credits",
-    "qoder_delete_account", "qoder_gateway_status", "qoder_import_local",
+    "qoder_delete_account", "qoder_gateway_quota", "qoder_gateway_status", "qoder_import_local",
     "qoder_import_pat", "qoder_oauth_start", "qoder_oauth_status",
     "qoder_program_status", "qoder_refresh_account", "qoder_set_account_group",
     "qoder_set_account_remark", "qoder_switch_account", "qoder_usage",
@@ -6536,6 +6618,46 @@ check("★ F5 过期 / 需重登账号不给「手动签到」（卡片菜单与
   return "expired + needsRelogin 双门控 · 三态顺序正确";
 });
 
+check("★ F5（Qoder）：卡片/表格**同一个菜单**，签到三态齐全，且「未知」时仍留入口", () => {
+  /* 2026-10-21 实测缺陷：Qoder 的卡片菜单里**没有签到项**（只有「刷新签到状态」），
+     用户只能先勾选账号走批量条、或打开抽屉才签得了。原型 `acctMenuInner` 一直是有的 ——
+     实现漏了，而没有任何门禁守它。
+     本断言守三件事（都是**行为**，不是字面量）：
+       ① 三态顺序：已签到 → 凭据不可用 → 可点（与 WB 同口径）；
+       ② **未知也必须留入口**：Qoder 的签到态常为「未知」，照搬 WB 的「未知不渲染」
+          会让入口时有时无 —— 所以要求有专门的未知态说明；
+       ③ 页面与表格**真的接上**了 `onCheckin` / `renderActions`（否则菜单项恒 disabled = 死入口）。 */
+  const menu = stripComments(
+    fs.readFileSync(path.join(ROOT, "src/components/qoder/qoder-account-card.tsx"), "utf8"),
+  );
+  const page = stripComments(
+    fs.readFileSync(path.join(ROOT, "src/pages/QoderAccountsPage.tsx"), "utf8"),
+  );
+  const checked = menu.indexOf("checkinToday === true ? (");
+  const dead = menu.indexOf("credentialDead ? (");
+  const live = menu.indexOf("onCheckin?.(account)", dead);
+  if (checked < 0 || dead < 0 || live < 0) {
+    throw new Error("Qoder 签到三态分支不完整（可能已重构，请更新本断言）");
+  }
+  if (!(checked < dead && dead < live)) {
+    throw new Error("Qoder 签到三态顺序不对 —— 先判已签到，再判凭据不可用，最后才给可点入口");
+  }
+  const deadSlice = menu.slice(dead, live);
+  if (!/MenuStateItem/.test(deadSlice) || !/needLogin/.test(deadSlice)) {
+    throw new Error("凭据不可用时要渲染「需先登录」状态行，而不是可点入口");
+  }
+  if (!/checkinUnknownHint/.test(menu)) {
+    throw new Error("签到态未知时没有说明 —— 照搬 WB「未知不渲染」会让入口时有时无");
+  }
+  if (!/onCheckin=\{\(account\) => void runCheckin\(\[account\]\)\}/.test(page)) {
+    throw new Error("Qoder 账号页没把 onCheckin 接给卡片 —— 菜单项会恒 disabled（死入口）");
+  }
+  if (!/renderActions=\{\(account\) => \(\s*<QoderAccountMenu/.test(page)) {
+    throw new Error("表格视图没有接同一个菜单（renderActions）—— 卡片有、表格没有 = 两形态分叉");
+  }
+  return "三态顺序 · 未知留入口 · 卡片与表格同源";
+});
+
 check("★ P1-5 账号卡可键盘聚焦（tabIndex + 语义 role + Enter/Space 有用途）", () => {
   /* 原型 P1-5（`verify-behaviors.cjs:452-457`）：卡片根元素须 `tabindex="0"` 且有 `role`。
      ⚠️ 只加 tabIndex 不加键盘处理 = 「**可聚焦但无操作**」（WCAG 2.4.3 反模式）⇒
@@ -7567,6 +7689,85 @@ check("★ Q2「指定」不得按账号状态禁用（偏好而非约束，D36�
     throw new Error("「指定」按钮必须在 `account.excluded` 时禁用（排除是硬约束，放行即假按钮）");
   }
   return "指定按钮只受 saving / excluded 控制（冷却等临时状态不禁用）";
+});
+
+check("★★ 三条产品线的账号池归一化都必须保留 `excluded`（否则排除后再也取消不掉）", () => {
+  /* 症状（2026-10-22 用户报障）：账号池里点了「排除」，按钮就再也变不回来 ——
+     文案恒为「排除」、点下去恒传 `excluded=true`（幂等）⇒ 账号被永久挡在选号外。
+     根因**不在按钮逻辑**，而在「字段看不见」：三条产品线各有各的归一化函数，
+     任何一处用白名单重建时漏掉 `excluded`，前端就永远看不到它。
+     —— PR #77 只补了 WorkBuddy 一侧（它当时以为「三平台共用同一个归一化」），
+     Trae / Qoder 侧照旧坏着 ⇒ 这条断言存在就是为了不让下一次再漏。 */
+  const wb = loadTs(path.join(ROOT, "src/lib/gateway.ts"));
+  const trae = loadTs(path.join(ROOT, "src/lib/trae-gateway.ts"));
+  const qoder = loadTs(path.join(ROOT, "src/lib/qoder-gateway.ts"));
+
+  /* 归一化后的账号：`excluded` 必须是**布尔真值**（漏字段 ⇒ undefined ⇒ 恒假）。 */
+  const row = { uid: "u1", name: "n1", status: "excluded", excluded: true, excludedNote: "手动" };
+  const wbOut = wb.normalizeGatewayPoolAccounts([row])[0];
+  const traeOut = trae.normalizeTraeGatewayStatus({ accounts: [row] }).accounts[0];
+  const qoderOut = qoder.normalizeQoderGatewayStatus({ accounts: [row] }).accounts[0];
+  for (const [name, account] of [
+    ["WorkBuddy", wbOut],
+    ["Trae", traeOut],
+    ["Qoder", qoderOut],
+  ]) {
+    if (!account) throw new Error(`${name} 侧归一化丢了整行账号`);
+    if (account.excluded !== true) {
+      throw new Error(
+        `${name} 侧归一化丢了 \`excluded\`（得到 ${JSON.stringify(account.excluded)}）`
+          + " —— 排除按钮会恒显示「排除」、恒传 true ⇒ 排除后再也取消不掉",
+      );
+    }
+    if (account.excludedNote !== "手动") {
+      throw new Error(`${name} 侧归一化丢了 \`excludedNote\`（得到 ${JSON.stringify(account.excludedNote)}）`);
+    }
+    /* ★ `status` 也必须保住 `"excluded"` —— 归一化若把它落回 `"available"`，
+       界面会显示「可用」而实际选号永远不选它（另一种形式的数字与事实不符）。
+       这一条是独立于 `excluded` 字段的：**字段在、状态被吞** 同样会误导人。 */
+    if (account.status !== "excluded") {
+      throw new Error(
+        `${name} 侧归一化把 status "excluded" 落成了 ${JSON.stringify(account.status)}`
+          + " —— 界面会显示「可用」，而实际选号永远不选它",
+      );
+    }
+  }
+
+  /* 「已排除」是**互斥第六态**：后端已把它从 `available` 里扣掉并单独计数，
+     卡片必须有这一格，否则「3 可用」而实际只有 2 个能被选中（数字与事实不符）。 */
+  const pool = { total: 3, available: 2, cooling: 0, disabled: 0, expired: 0, zeroCredits: 0, excluded: 1 };
+  if (wb.normalizeGatewayPoolSummary(pool).excluded !== 1) {
+    throw new Error("WorkBuddy 侧池摘要归一化丢了 `excluded` 计数");
+  }
+  const traePool = trae.normalizeTraeGatewayStatus({ pool }).pool;
+  if (traePool.excluded !== 1) {
+    throw new Error("Trae 侧池摘要归一化丢了 `excluded` 计数");
+  }
+  const qoderPool = qoder.normalizeQoderGatewayStatus({ pool }).pool;
+  if (qoderPool.excluded !== 1) {
+    throw new Error("Qoder 侧池摘要归一化丢了 `excluded` 计数");
+  }
+
+  /* 卡片的三套计数格都必须含「已排除」（Trae 走默认六格、Qoder 走 QODER_POOL_TILES）。
+     ⚠️ 这里用**文本扫描**而不是 `loadTs`：卡片是 `.tsx`，含 JSX ⇒ `loadTs` 的
+     `transpileModule`（未开 jsx 选项）会抛 `Unexpected token '>'`。
+     计数格是**字面量常量**，文本扫描足够硬 —— 真要防「有人把 excluded 从数组里删掉」，
+     正则匹配到的那段数组文本里就必须有它。 */
+  const cardSrc = stripComments(
+    fs.readFileSync(path.join(ROOT, "src/components/gateway/account-pool-card.tsx"), "utf8"),
+  );
+  for (const [name, constName] of [
+    ["Trae（默认格）", "DEFAULT_POOL_TILES"],
+    ["Qoder", "QODER_POOL_TILES"],
+    ["WorkBuddy", "WB_POOL_TILES"],
+  ]) {
+    const block = new RegExp(`export const ${constName}[^=]*=\\s*\\[([\\s\\S]*?)\\]`).exec(cardSrc);
+    if (!block) throw new Error(`找不到 ${constName} 的计数格定义`);
+    if (!/"excluded"/.test(block[1])) {
+      throw new Error(`${name} 的计数格缺「已排除」—— 排除是互斥第六态，必须有自己的一格`);
+    }
+  }
+  return "三平台归一化都带 excluded / excludedNote，摘要都有 excluded 计数，三套计数格都含「已排除」";
 });
 
 check("★ 策略哨兵值前后端逐字一致（否则下拉是假开关）", () => {
@@ -8619,6 +8820,253 @@ check("★ 自动检查更新：开关必须接到轮询（摆了开关不等于
     throw new Error("间隔常量不是 30 分钟 —— 与开关说明「每 30 分钟检查一次」不符");
   }
   return "开关 ↔ 轮询同源 · 关掉即短路 · 间隔 30 分钟 · 可见/聚焦补查（不传 force）";
+});
+
+/* ══════════════════════ 聚合账号面板（issue #50）══════════════════════
+ *
+ * 聚合页横跨 6 个作用域，是**唯一**一处「同一屏出现多个 scope」的界面。
+ * 下面锁住它最容易做歪的五件事：
+ *   ① 「聚合」不是第 7 个作用域（`Scope` 是封闭字面量，塞进去三处门禁一起红）；
+ *   ② 它**没有侧栏**（那 6 个目的地全是单作用域概念）；
+ *   ③ 卡片是**同一张三张卡**（不新建第四种，卡内不加控件）；
+ *   ④ 账号键**必须带作用域**（裸主键跨区域会串号）；
+ *   ⑤ 筛选偏好是**纯函数 + 规范化**（选满 ⇒ 删键，否则新增账号永远看不见）。
+ */
+
+check("★ 聚合不是作用域：SCOPES 恰为「注册表里每个平台的区域数」之和，且不含 aggregate", () => {
+  const scopeSrc = readCode("src/lib/scope.ts");
+  const block = scopeSrc.match(/export const SCOPES[^=]*=\s*\[([\s\S]*?)\]/);
+  if (!block) throw new Error("找不到 SCOPES 字面量（断言失效：是否改名？）");
+  const items = [...block[1].matchAll(/"([^"]+)"/g)].map((m) => m[1]);
+  /* ⚠️ 期望值**不写死**数字：那条断言的本意是「aggregate 不得混进 SCOPES」，
+     而 `6` 只是「3 平台 × 2 区域」当时的计算结果。Loomy 加入后它变成 7，
+     写死数字会让**正确的新增平台**被判红（本仓已踩过：2026-10-22 合并时红）。
+     真正的判据是：**每个注册表平台 × 它的区域数**，与 SCOPES 一一对应。 */
+  const registry = readCode("src/lib/platforms/registry.ts");
+  const descriptors = [...registry.matchAll(/regions:\s*\[([^\]]*)\]/g)].map((m) =>
+    [...m[1].matchAll(/"([^"]+)"/g)].map((x) => x[1]),
+  );
+  if (descriptors.length === 0) {
+    throw new Error("registry.ts 里解析不到任何 `regions: [...]` —— 断言失效（是否改名？）");
+  }
+  const expected = descriptors.flat().length;
+  if (items.length !== expected) {
+    throw new Error(
+      `SCOPES 是 ${items.length} 项，期望 ${expected} 项（注册表 ${descriptors.length} 个平台 × 各自区域数）`,
+    );
+  }
+  if (items.includes("aggregate")) {
+    throw new Error("aggregate 被塞进了 SCOPES —— 会同时破坏类型、注册表一致性与快捷键序号");
+  }
+  /* `Scope` 必须是 `${平台}-${区域}` 的模板字面量：出现一个非此形状的成员就说明有人在放宽它。 */
+  if (!/export type Scope = `\$\{PlatformSlug\}-\$\{Region\}`/.test(scopeSrc)) {
+    throw new Error("Scope 不再是封闭的 `${PlatformSlug}-${Region}` 模板字面量");
+  }
+  return `${items.length} 项 · 无 aggregate · 类型仍封闭`;
+});
+
+check("★ 聚合走独立路由 /aggregate，且**不在** SCOPED_ROUTES 里", () => {
+  const app = readCode("src/App.tsx");
+  if (!/path="\/aggregate"/.test(app)) throw new Error("App.tsx 里没有 /aggregate 路由");
+  const block = app.match(/const SCOPED_ROUTES[\s\S]*?\n\};/);
+  if (!block) throw new Error("找不到 SCOPED_ROUTES");
+  if (/Aggregate/i.test(block[0])) {
+    throw new Error("聚合被塞进了 SCOPED_ROUTES —— 它不是 dest（dest 是单作用域内的页面）");
+  }
+  return "/aggregate 独立路由 · SCOPED_ROUTES 未受污染";
+});
+
+check("★ 聚合页没有左侧导航栏：Layout 在裸壳路由下**不渲染** aside", () => {
+  const app = readCode("src/App.tsx");
+  if (!/useMatch\("\/aggregate"\)/.test(app)) throw new Error("Layout 没有识别裸壳路由");
+  if (!/\{bareShell \? null : \(\s*<aside/.test(app)) {
+    throw new Error("aside 没有按裸壳路由条件渲染 —— 聚合页会带着 6 个单作用域入口");
+  }
+  return "bareShell ⇒ 无 aside";
+});
+
+check("★★ 聚合页复用三张卡，**不新建第四种**（卡内也不加控件）", () => {
+  const page = readCode("src/pages/AggregateAccountsPage.tsx");
+  for (const card of ["AccountCard", "TraeAccountCard", "QoderAccountCard"]) {
+    if (!new RegExp(`\\b${card}\\b`).test(page)) throw new Error(`聚合页没有用 ${card}`);
+  }
+  /* 自己定义一个 `function XxxCard(` 就是「第四种卡」——那会让三处卡片的样式与动作开始分叉。 */
+  if (/function \w*Card\s*\(/.test(page)) {
+    throw new Error("聚合页自己定义了卡片组件 —— 卡片必须复用账号页那三张");
+  }
+  /* 页面内不得出现作用域选择器：切作用域的**唯一**入口是顶栏（与 `:991` 同一条纪律）。 */
+  if (/ScopeSelector/.test(page)) {
+    throw new Error("聚合页里出现了 ScopeSelector —— 页面内不得有第二个作用域入口");
+  }
+  return "三张卡按平台分派 · 无自建卡 · 无 ScopeSelector";
+});
+
+check("★★ 账号键带作用域（裸主键在 6 个作用域共存时必然串号）", () => {
+  const lib = readCode("src/lib/aggregate-accounts.ts");
+  if (!/export function aggregateRef\(scope: Scope, key: string\)/.test(lib)) {
+    throw new Error("aggregate-accounts.ts 没有 aggregateRef(scope, key)");
+  }
+  if (!/return `\$\{scope\}:\$\{key\}`/.test(lib)) {
+    throw new Error("aggregateRef 没有拼出 `${scope}:${key}` —— 键里必须带作用域");
+  }
+  if (!/export function parseAggregateRef/.test(lib)) throw new Error("没有 parseAggregateRef");
+  /* 解析必须 fail-closed：来路不明的 scope 不能冒充合法作用域。 */
+  if (!/SCOPES as readonly string\[\]\)\.includes\(scope\)/.test(lib)) {
+    throw new Error("parseAggregateRef 没有校验 scope 在 SCOPES 里（不是 fail-closed）");
+  }
+  return "`${scope}:${key}` · 解析 fail-closed";
+});
+
+check("★★ 筛选偏好：读写纯函数接收 storage + 选满规范化为「无筛选」", () => {
+  const pref = readCode("src/lib/aggregate-visibility-pref.ts");
+  if (!/readAggregateVisible\(\s*storage: Pick<Storage, "getItem">/.test(pref)) {
+    throw new Error("readAggregateVisible 没有接收 storage 入参（纯函数才能被门禁跑）");
+  }
+  if (!/writeAggregateVisible\(\s*storage: Pick<Storage, "setItem" \| "removeItem">/.test(pref)) {
+    throw new Error("writeAggregateVisible 没有接收 storage 入参");
+  }
+  /* 读失败一律回退 `null`（= 无筛选）：偏好坏了是小事，白屏是大事。 */
+  if (!/catch \{\s*return null;/.test(pref)) {
+    throw new Error("读取没有 try/catch 回退 null —— 损坏的 JSON 会让聚合页打不开");
+  }
+  /* ★ 规范化：选满 == 无筛选。少了这条，第 N+1 个账号入库后**永远看不见**，
+     而界面还写着「显示全部」。 */
+  const lib = readCode("src/lib/aggregate-accounts.ts");
+  if (!/kept\.size === live\.size\) return null/.test(lib)) {
+    throw new Error("pruneVisibleKeys 没有把「选满」规范化成 null");
+  }
+  if (!/visible\.size >= universe\.length\) return null/.test(lib)) {
+    throw new Error("visibleKeysToStore 没有把「选满」规范化成 null（写盘侧缺一半）");
+  }
+  return "纯函数 · 异常回退 null · 选满即删键（读写两侧各一条）";
+});
+
+check("★ 聚合页的「需处理」按平台分开判（一个字段套三处必有一处错）", () => {
+  const lib = readCode("src/lib/aggregate-accounts.ts");
+  if (!/a\.needsRelogin/.test(lib)) throw new Error("WorkBuddy 的需处理没看 needsRelogin");
+  if (!/jwtStatus/.test(lib)) throw new Error("Trae 的需处理没看 jwtStatus");
+  if (!/hasCredential/.test(lib)) throw new Error("Qoder 的需处理没看 hasCredential");
+  return "WB needsRelogin · Trae jwtStatus · Qoder hasCredential";
+});
+
+check("★ 聚合详情抽屉的装配按平台分开（一个字段套三处必有一处错）", () => {
+  const detail = readCode("src/lib/aggregate-detail.ts");
+  for (const marker of ['account.platform === "workbuddy"', 'account.platform === "trae"', "} else {"]) {
+    if (!detail.includes(marker)) throw new Error(`详情装配缺平台分支：${marker}`);
+  }
+  /* 三个平台的凭据字段**不同名**：WB `needsRelogin`、Trae `jwtStatus`、Qoder `hasCredential`。 */
+  if (!/jwtStatus/.test(detail)) throw new Error("Trae 的凭据区块没看 jwtStatus");
+  if (!/hasCredential/.test(detail)) throw new Error("Qoder 的凭据区块没看 hasCredential");
+  /* 「需处理」必须复用同一个判定，不许在抽屉里另写一套（否则卡片说需重登、抽屉说正常）。 */
+  if (!/aggregateNeedsAttention\(account\)/.test(detail)) {
+    throw new Error("详情抽屉没有复用 aggregateNeedsAttention —— 两处口径会分叉");
+  }  /* 程序位徽标：只能给**能判的那一条**（WorkBuddy 主位），其余不许画「未绑定」的假徽标。 */
+  const programs = detail.match(/export function aggregateDetailPrograms[\s\S]*?\n\}/);
+  if (!programs) throw new Error("找不到 aggregateDetailPrograms");
+  if (!/account\.platform !== "workbuddy"\) return \[\];/.test(programs[0])) {
+    throw new Error("aggregateDetailPrograms 不是「只给 WorkBuddy」—— 其余平台的程序位状态另有来源");
+  }
+  if (!/current: Boolean\(ctx\.currentProgram\)/.test(programs[0])) {
+    throw new Error("aggregateDetailPrograms 没有用 currentProgram 判「当前登录」");
+  }
+  return "三平台分开 · 复用同一判定 · 程序位只给能判的那一条";
+});
+
+check("★★ 顶栏「聚合」入口的账号数与聚合页**同源**（两个数据源必然对不上）", () => {
+  /* 曾出现过「顶栏 13 个 / 聚合页 29 个」：顶栏数的是 `useScopeStatus`（WB 侧只读 store
+     的**当前区域切片**，没进过国际版账号页时国际版是 0），聚合页数的是自己拉的 6 个作用域。
+     ⇒ 顶栏必须改读**同一份快照**（`useAggregateAccountTotal`）。 */
+  const selector = readCode("src/components/shell/scope-selector.tsx");
+  if (!/useAggregateAccountTotal\(/.test(selector)) {
+    throw new Error("顶栏没有用 useAggregateAccountTotal —— 聚合计数与聚合页不同源");
+  }
+  if (/statuses\[item\]\?\.accountCount/.test(selector)) {
+    throw new Error("顶栏又改回用 statuses 求和 —— 与聚合页的数字必然对不上");
+  }
+  const hook = readCode("src/lib/use-aggregate-accounts.ts");
+  if (!/export function useAggregateAccountTotal/.test(hook)) {
+    throw new Error("找不到 useAggregateAccountTotal");
+  }
+  /* 同一个资源键 ⇒ 同一份快照、同一个 in-flight 请求。 */
+  if (!/AGGREGATE_RESOURCE_KEY/.test(hook)) {
+    throw new Error("useAggregateAccountTotal 没有用聚合的资源键 —— 读的不是同一份快照");
+  }
+  return "顶栏与聚合页读同一份快照";
+});
+
+check("★★ 聚合页的写动作必须落到**真实命令**（不许摆假按钮）", () => {
+  const page = readCode("src/pages/AggregateAccountsPage.tsx");
+  /* 四项刷新：积分 / 今日 Token / 签到 / 凭据 —— 三平台各有各的命令。 */
+  for (const cmd of [
+    "getAccountTokenToday",
+    "getCheckinStatusMap",
+    "traeRefreshCredits",
+    "getTraeAccountTokenToday",
+    "getTraeCheckinStatusMap",
+    "qoderCredits",
+    "qoderCheckinStatusMap",
+  ]) {
+    if (!page.includes(cmd)) throw new Error(`聚合页没有调用 ${cmd} —— 那四项刷新/签到是假按钮`);
+  }
+  /* 批量动作：签到与删除。 */
+  if (!/batchCheckin/.test(page)) throw new Error("聚合页没有批量签到");
+  if (!/batchDelete/.test(page)) throw new Error("聚合页没有批量删除");
+  /* 批量删除必须带撤销（后端有 `account_restore` ⇒ 不给撤销就是「假承诺」）。 */
+  if (!/showUndoToast\(/.test(page)) throw new Error("批量删除没有撤销 —— 后端支持恢复却不给撤销");
+  if (!/accountRestore\(/.test(page)) throw new Error("批量删除的撤销没有调用 account_restore");
+  /* 切换：三个平台各一条。 */
+  for (const cmd of ["traeSwitchAccount", "qoderSwitchAccount"]) {
+    if (!page.includes(cmd)) throw new Error(`聚合页没有接 ${cmd}`);
+  }
+  return "四项刷新 · 批量签到/删除（带撤销）· 三平台切换";
+});
+
+check("★ 新增账号提示：筛选生效期间新出现的账号**要能一键加入**", () => {
+  const lib = readCode("src/lib/aggregate-accounts.ts");
+  if (!/export function newcomerAccounts/.test(lib)) throw new Error("缺少 newcomerAccounts");
+  /* 「加入筛选」是**并入**可见集，不是「清除整个筛选」—— 用户说「加入筛选」
+     不是「我不要之前的筛选」。 */
+  const page = readCode("src/pages/AggregateAccountsPage.tsx");
+  if (!/new Set\(visible \?\? universe\)/.test(page)) {
+    throw new Error("「加入筛选」没有并入现有可见集 —— 它把用户的筛选整个换了");
+  }
+  return "新人可一键并入筛选（保留原有筛选）";
+});
+
+check("★ 聚合页的账本与回执**：取数与写动作都不得静默", () => {
+  const signals = readCode("src/lib/use-aggregate-signals.ts");
+  /* 缺席 ≠ 0：Map 的 get 返回 undefined 即「未知」⇒ 卡片不渲染那一格。 */
+  if (!/todayTokens: new Map\(\)/.test(signals)) {
+    throw new Error("信号层没有用 Map 表达「缺席」");
+  }
+  /* Qoder 签到的第三档（通道未开放）必须归入「未知」，不能算成功或失败。 */
+  if (!/entry\.active === false/.test(signals)) {
+    throw new Error("信号层没有处理 Qoder 的「活动未开放」档");
+  }
+  const page = readCode("src/pages/AggregateAccountsPage.tsx");
+  /* 取数失败要有出口（单组重试），不能整页白屏。 */
+  if (!/aggregate\.fail\.retry/.test(page)) throw new Error("聚合页没有「单组重试」出口");
+  return "缺席 ≠ 0 · 三档签到 · 失败可单组重试";
+});
+
+check("★ 聚合词条 zh/en 键位一一对应，且两个汇总文件都组合了该域", () => {
+  const keys = (rel) =>
+    [...readCode(rel).matchAll(/"(aggregate\.[^"]+)"/g)].map((m) => m[1]).sort();
+  const zhKeys = keys("src/locales/domains/aggregate.zh.ts");
+  const enKeys = keys("src/locales/domains/aggregate.en.ts");
+  if (zhKeys.length === 0) throw new Error("aggregate.zh.ts 无词条（断言失效：是否改名？）");
+  if (JSON.stringify(zhKeys) !== JSON.stringify(enKeys)) {
+    const missing = zhKeys.filter((k) => !enKeys.includes(k));
+    const extra = enKeys.filter((k) => !zhKeys.includes(k));
+    throw new Error(`aggregate 词条 zh/en 不一致：缺 en=${missing.join(",") || "无"} / 多 en=${extra.join(",") || "无"}`);
+  }
+  if (!/domains\/aggregate\.zh/.test(readCode("src/locales/zh.ts"))) {
+    throw new Error("zh.ts 未组合 aggregate 域");
+  }
+  if (!/domains\/aggregate\.en/.test(readCode("src/locales/en.ts"))) {
+    throw new Error("en.ts 未组合 aggregate 域");
+  }
+  return `${zhKeys.length} 键 zh=en · 两个汇总文件均已组合`;
 });
 
 console.log(`\n${passed} passed / ${failures.length} failed\n`);

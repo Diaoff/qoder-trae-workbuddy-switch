@@ -107,10 +107,36 @@ pub fn is_disabled(store: &DisabledModels, region: Region, model_id: &str) -> bo
 | 列 | 内容 | 适用 |
 |:---|:---|:---|
 | **模型** | `model.name`（等宽；`model.id` 不同时补小字） | WB + Trae |
+| **上下文** | 生效窗口（按「上限 / 默认」开关选档） | 三平台 |
+| **思考档位** | 支持的可选档（默认档加粗）；空 → `—` + **成因** tooltip（见 §1.6.1） | 三平台（issue #65） |
+| **积分倍率** | `免费` / `×0.79`（**倍率不是金额**）；未下发 → `—` | 三平台（issue #65） |
 | **上游状态** | `available ? 可用 : 不可用`（徽标） | **仅 Trae**（WB 恒「可用」⇒ 不渲染，§3.4 规则 1 / **决策 #3**） |
 | **网关暴露** | `disabled ? 已禁用 + [启用] : 已暴露 + [禁用]`（徽标 + 按钮） | WB + Trae |
 
 > **无「归属」列**（**决策 #1**：UI 只渲染**当前 region** ⇒ 全表同一 scope，归属列冗余）；**无「协议」列**（**决策 #2**：协议是**端点属性**、不是模型属性，同一模型两种协议都支持 ⇒ 无数据支撑，§3.4 规则 1）。
+
+### 1.6.1 能力两列（issue #65，2026-10-21）
+
+三平台的档位数据源**各不相同**，所以渲染只允许有一份：`components/gateway/model-ability.tsx`
+（`<EffortCell>` / `<CreditsCell>`），页面只负责把数据传进去。壳里两个**可选**列槽
+（`effortColumn` / `creditsColumn`，不传 ⇒ 整列不渲染），门禁
+`★ issue #65 模型表「思考档位 / 积分倍率」三平台同构…` 钉住「三平台都传 + 渲染唯一 + 无 onClick」。
+
+| 平台 | 档位来源 | 倍率来源 | 空档位的成因 |
+|:--|:--|:--|:--|
+| WorkBuddy | 上游目录 `reasoning.supportedEfforts`；缺 → 网关静态表（`outbound::effort`） | 目录 `credits`（`x0.79` / `x0.34 credits` 三种写法，后端归一） | 「上游未声明 + 内置表无条目」 |
+| Trae | 客户端 `state.vscdb` 的 `reasoning_effort_config.options` | `features.consumption_rate.data.rate` | `support_thinking:false` → 不支持；整块缺失 → **该程序位未下发** |
+| Qoder | 官方 `thinking_efforts` | 官方 `price_factor` | `is_reasoning:false` → 不支持；否则未下发 |
+
+- ★ **词表不归一**：WB 是 `off/minimal/low/medium/high/xhigh/max`，Trae 实测只有
+  `light/high/extra_high`，Qoder 是官方那一套。强行映射（把 `xhigh` 标成 `extra_high`）
+  会造出一个**实际不存在**的等价关系 ⇒ 一律按平台原样显示。
+- ★ **空 `—` 有三种成因**，文案必须分开（`unsupported` / `unknown` / `undeclared`）：
+  TraeWork 的 `solo_work_lite` 实测 22 条只有 1 条带档位 —— 写成「都不支持思考」就是撒谎。
+- ★ **纯展示**：不加 onClick（模型表每行恰好 2 个可点区）。要按档位筛选 / 按倍率排序，
+  先改门禁并说明理由。
+- ★ 复用同一个来源判定：`free` 只能由 `credits_rate == 0` 推出（`is_free()` 是唯一实现），
+  前端与后端都不许各写一份「`x0.00` 才算免费」。
 
 - **标灰行**：`disabled` 的行加 `row-off` 等价样式（`opacity-60` + 虚边框，**仍可见**，D26）。
 - **计数行**：表格下方「**当前暴露 {served} / {total} 个**」+ **「两个出口」说明**（见 §1.7 文案）。
@@ -214,7 +240,8 @@ API Key  : <你的 Key>        （认证头：x-api-key）
 | 相对路径 | 作用 |
 |:---|:---|
 | `crates/buddy-switch-gateway/src/disabled_models.rs` | `disabled` 偏好存储：`DisabledModels`（`HashMap<Region, BTreeSet<String>>`）+ `is_disabled`（**唯一判断点**）+ 落盘 `gateway_disabled_models.json` |
-| `src/components/gateway/model-table.tsx` | 模型表格（列定义驱动：模型 / [仅 Trae] 上游状态 / 网关暴露 + 禁用·启用按钮 + 标灰行；**无归属列、无协议列**） |
+| `src/components/gateway/model-table.tsx` | 模型表格（列定义驱动：模型 / 上下文 / [可选] 思考档位 · 积分倍率 / [仅 Trae] 上游状态 / 网关暴露 + 禁用·启用按钮 + 标灰行；**无归属列、无协议列**） |
+| `src/components/gateway/model-ability.tsx` | 能力两列的**唯一**渲染点（`<EffortCell>` / `<CreditsCell>`，issue #65）：空档位的三种成因文案、`free` 只由倍率 0 推出、**无 onClick** |
 
 ### 修改
 
@@ -392,7 +419,8 @@ export interface ModelTableProps {
 
 **约束**：
 
-- **列集**：模型 / [仅 `showUpstream=true` 时] 上游状态 / 网关暴露。**无归属列**（决策 #1）、**无协议列**（决策 #2）。
+- **列集**：模型 / 上下文 / [传了 `effortColumn` 时] 思考档位 / [传了 `creditsColumn` 时] 积分倍率 / [仅 `showUpstream=true` 时] 上游状态 / 网关暴露。**无归属列**（决策 #1）、**无协议列**（决策 #2）。
+  能力两列（issue #65）的内容**只允许**来自 `model-ability.tsx`，壳内不认平台（见 §1.6.1）。
 - 单元格展示字段**一律过 `displayText`**（白屏防线）。
 - `disabled` 行加**标灰**样式（`opacity-60` + 虚边框），**仍渲染**（D26：可见但标灰）。
 - 每行**只一个**可点区（禁用/启用按钮）—— 无行点击、无勾选（与 `AccountTable` 不同，**不复用**它：后者强制勾选 + 打开详情）。

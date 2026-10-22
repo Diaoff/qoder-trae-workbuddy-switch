@@ -539,14 +539,212 @@ pub fn campaign_to_value(item: &CampaignItem) -> Value {
 // HTTP 执行
 // ---------------------------------------------------------------------------
 
-/// `GET /sash/api/v1/me/campaigns`（含一次身份被拒时的自愈重试）。
+// ---------------------------------------------------------------------------
+// Pro 升级包（一次性 +1800 积分；参考实现 `pro_eligibility` / `pro_claim`）
+// ---------------------------------------------------------------------------
+
+/// 一次性 Pro 升级包：资格查询。
+pub const PATH_PRO_ELIGIBILITY: &str = "/sash/api/v1/me/pro-upgrade/eligibility";
+/// 一次性 Pro 升级包：领取。
+pub const PATH_PRO_CLAIM: &str = "/sash/api/v1/me/pro-upgrade/claim";
+/// 官方文案里的一次性奖励（只用于展示；**不参与**任何判据）。
+pub const PRO_PACK_REWARD: i64 = 1800;
+
+/// 查询 Pro 升级包资格（**只读**）。
+///
+/// 返回 `{"available": bool, "eligible": bool, "error": Option<String>}`：
+/// - `available=false`：端点 404/403/410 ⇒ 活动已下线 / 本区域没有 ⇒ **UI 不渲染入口**
+///   （真机实测本机 CN 账号就是 404，所以「有入口但点了没用」在这里是必须避免的）；
+/// - `eligible=true`：现在可领；
+/// - `error`：真正的失败（网络 / 5xx），与「不可领」是两件事。
+pub async fn pro_pack_status(region: QoderRegion, uid: &str, access_token: &str) -> Value {
+    let identity = native::cached_identity(region, uid, false);
+    let base = realm_spec(region).openapi_base;
+    pro_pack_status_at(region, uid, access_token, base, identity.as_ref()).await
+}
+
+/// 带显式基址 / 身份的资格查询（单测指向本地 mock 上游）。
+async fn pro_pack_status_at(
+    region: QoderRegion,
+    uid: &str,
+    access_token: &str,
+    base: &str,
+    identity: Option<&NativeIdentity>,
+) -> Value {
+    let (headers, _machine) = desktop_headers(region, uid, access_token, identity);
+    let client = match api::shared_client() {
+        Ok(client) => client,
+        Err(error) => {
+            return json!({"available": false, "eligible": false, "error": error});
+        }
+    };
+    let response = client
+        .get(format!("{base}{PATH_PRO_ELIGIBILITY}"))
+        .timeout(Duration::from_secs(15))
+        .headers(header_map(&headers))
+        .send()
+        .await;
+    let response = match response {
+        Ok(response) => response,
+        Err(error) => {
+            return json!({
+                "available": false,
+                "eligible": false,
+                "error": format!("Pro 升级包资格查询失败: {error}"),
+            });
+        }
+    };
+    let status = response.status().as_u16();
+    let body = response.text().await.unwrap_or_default();
+    match status {
+        200..=299 => {
+            let payload: Value = serde_json::from_str(&body).unwrap_or(Value::Null);
+            json!({
+                "available": true,
+                "eligible": payload
+                    .get("eligible")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false),
+                "error": Value::Null,
+            })
+        }
+        // 端点不存在 / 活动下线：**查询成功**，只是不可领（参考实现同口径）。
+        403 | 404 | 410 => json!({"available": false, "eligible": false, "error": Value::Null}),
+        _ => json!({
+            "available": true,
+            "eligible": false,
+            "error": format!("Pro 升级包资格查询失败（HTTP {status}）"),
+        }),
+    }
+}
+
+/// 领取 Pro 升级包（**幂等**：已领过 ⇒ `ok=true, already=true`）。
+pub async fn claim_pro_pack(region: QoderRegion, uid: &str, access_token: &str) -> Value {
+    let identity = native::cached_identity(region, uid, false);
+    let base = realm_spec(region).openapi_base;
+    claim_pro_pack_at(region, uid, access_token, base, identity.as_ref()).await
+}
+
+/// 带显式基址 / 身份的领取（单测指向本地 mock 上游）。
+async fn claim_pro_pack_at(
+    region: QoderRegion,
+    uid: &str,
+    access_token: &str,
+    base: &str,
+    identity: Option<&NativeIdentity>,
+) -> Value {
+    let (headers, _machine) = desktop_headers(region, uid, access_token, identity);
+    let client = match api::shared_client() {
+        Ok(client) => client,
+        Err(error) => {
+            return json!({
+                "ok": false, "already": false, "available": false, "message": error
+            });
+        }
+    };
+    let response = client
+        .post(format!("{base}{PATH_PRO_CLAIM}"))
+        .timeout(Duration::from_secs(15))
+        .headers(header_map(&headers))
+        .body("{}")
+        .send()
+        .await;
+    let response = match response {
+        Ok(response) => response,
+        Err(error) => {
+            return json!({
+                "ok": false,
+                "already": false,
+                "available": true,
+                "message": format!("领取 Pro 升级包失败: {error}"),
+            });
+        }
+    };
+    let status = response.status().as_u16();
+    let body = response.text().await.unwrap_or_default();
+    let upper = body.to_ascii_uppercase();
+    // 409 / 响应体含 ALREADY ⇒ 已领过（幂等成功，不是错误）。
+    if status == 409 || upper.contains("ALREADY") {
+        return json!({
+            "ok": true,
+            "already": true,
+            "available": true,
+            "message": "Pro 升级包已领取过",
+        });
+    }
+    if matches!(status, 403 | 404 | 410) {
+        return json!({
+            "ok": false,
+            "already": false,
+            "available": false,
+            "message": "Pro 升级包活动已下线或本区域不可用",
+        });
+    }
+    if !(200..=299).contains(&status) {
+        return json!({
+            "ok": false,
+            "already": false,
+            "available": true,
+            "message": format!(
+                "领取 Pro 升级包失败（HTTP {status}）：{}",
+                truncate(&body, 160)
+            ),
+        });
+    }
+    let payload: Value = serde_json::from_str(&body).unwrap_or(Value::Null);
+    if payload.get("success").and_then(Value::as_bool) == Some(false) {
+        let message = payload
+            .get("message")
+            .and_then(Value::as_str)
+            .map(str::to_string)
+            .unwrap_or_else(|| truncate(&body, 160));
+        return json!({
+            "ok": false, "already": false, "available": true, "message": message
+        });
+    }
+    json!({
+        "ok": true,
+        "already": false,
+        "available": true,
+        "message": format!("已领取 Pro 升级包（+{PRO_PACK_REWARD} 积分）"),
+    })
+}
+
+/// `GET /sash/api/v1/me/campaigns`（含两条重试：**接口暂时不可达**与**身份被拒**）。
 pub async fn fetch_campaigns(
     region: QoderRegion,
     uid: &str,
     access_token: &str,
 ) -> CampaignsSnapshot {
     let identity = native::cached_identity(region, uid, false);
-    let mut snapshot = fetch_campaigns_once(region, uid, access_token, identity.as_ref()).await;
+    let base = realm_spec(region).openapi_base;
+    fetch_campaigns_with_identity(region, uid, access_token, base, identity.as_ref()).await
+}
+
+/// 带显式身份的活动列表查询（区域基址取 [`realm_spec`]）。
+///
+/// ## ★ 为什么「一次 404」不足以断言「本区域没有活动平台」（issue #66）
+///
+/// 只有 404/405/410 会被判成「整区没有活动平台」，随后 [`super::checkin`] 会**回落旧签到
+/// 通道**。旧通道对国内版恒返回 `DISABLED` ⇒ 界面显示「签到未开放」，而真相是
+/// **这一发请求**没打到接口（代理 / 网关的临时 404、上游抖动都长成一模一样）。
+/// 实测踩过：同一份代码、同一账号、相隔十几分钟，一次 `DISABLED`、一次 `CLAIMABLE`。
+/// ⇒ 判「整区没有」之前先原样重发一次；只有两次都不可达才认这个结论。
+async fn fetch_campaigns_with_identity(
+    region: QoderRegion,
+    uid: &str,
+    access_token: &str,
+    base: &str,
+    identity: Option<&NativeIdentity>,
+) -> CampaignsSnapshot {
+    let mut snapshot = fetch_campaigns_at(region, uid, access_token, base, identity).await;
+    if !snapshot.available {
+        // 「整区没有接口」的结论必须可复现：再打一次同样的请求。
+        let retry = fetch_campaigns_at(region, uid, access_token, base, identity).await;
+        if retry.available || retry.ok {
+            snapshot = retry;
+        }
+    }
     // 自愈：服务端明确 `showCampaign=false` 且我们用的是**原生**身份 ⇒ 换一套新身份重试一次。
     // （派生分支不重试：它本来就不发机器头，换身份没有意义。）
     if snapshot.ok
@@ -555,7 +753,7 @@ pub async fn fetch_campaigns(
         && !native::disabled()
     {
         if let Some(fresh) = native::cached_identity(region, uid, true) {
-            let retry = fetch_campaigns_once(region, uid, access_token, Some(&fresh)).await;
+            let retry = fetch_campaigns_at(region, uid, access_token, base, Some(&fresh)).await;
             if retry.ok && retry.show_campaign {
                 snapshot = retry;
             }
@@ -564,13 +762,14 @@ pub async fn fetch_campaigns(
     snapshot
 }
 
-async fn fetch_campaigns_once(
+/// 一次活动列表请求（`base` 由调用方给，单测可指向本地 mock 上游）。
+async fn fetch_campaigns_at(
     region: QoderRegion,
     uid: &str,
     access_token: &str,
+    base: &str,
     identity: Option<&NativeIdentity>,
 ) -> CampaignsSnapshot {
-    let spec = realm_spec(region);
     let (headers, machine_state) = desktop_headers(region, uid, access_token, identity);
     let identity_source = if identity.is_some() {
         native::IDENTITY_NATIVE
@@ -583,7 +782,7 @@ async fn fetch_campaigns_once(
         Err(error) => return CampaignsSnapshot::failed(true, error),
     };
     let response = client
-        .get(format!("{}{}", spec.openapi_base, super::PATH_CAMPAIGNS))
+        .get(format!("{base}{}", super::PATH_CAMPAIGNS))
         .timeout(Duration::from_secs(15))
         .headers(header_map(&headers))
         .send()
@@ -886,15 +1085,25 @@ pub fn checkin_ok(errors: &[String], has_benefit: bool) -> bool {
 /// 单账号签到：领取**所有可领的积分活动**（`CREDITS` / 空 kind），并落盘状态。
 ///
 /// 返回的 JSON 形状与前端「签到结果条」直接对应（见 `campaign_checkin` 的字段名）。
-pub async fn checkin_for(region: QoderRegion, uid: &str) -> Result<Value, String> {
+/// 取某账号的**活动通道** token（签到 / 福利 / Pro 包都用它）。
+///
+/// ⚠️ PAT（`pt-`）不能用于活动平台 —— 这是官方服务端的限制，不是我们的选择。
+pub fn access_token_for(region: QoderRegion, uid: &str) -> Result<String, String> {
     let account =
         account::find_account_for(region, uid).ok_or_else(|| format!("账号不存在: {uid}"))?;
-    let access = account
+    account
         .access_token
         .as_deref()
         .filter(|token| !token.is_empty())
-        .ok_or_else(|| "这条账号没有可调用的 access token（PAT 不能用于活动平台）".to_string())?
-        .to_string();
+        .map(str::to_string)
+        .ok_or_else(|| "这条账号没有可调用的 access token（PAT 不能用于活动平台）".to_string())
+}
+
+pub async fn checkin_for(region: QoderRegion, uid: &str) -> Result<Value, String> {
+    let access = access_token_for(region, uid)?;
+    // 后面还要读本账号的「已领兑换码 / 同人冷却」台账 ⇒ 账号本体再取一次（内存读，很轻）。
+    let account =
+        account::find_account_for(region, uid).ok_or_else(|| format!("账号不存在: {uid}"))?;
 
     let snapshot = fetch_campaigns(region, uid, &access).await;
     if !snapshot.ok {
@@ -1429,5 +1638,254 @@ mod tests {
             snapshot.available,
             "本区域应有活动平台接口（404/405/410 才算没有）"
         );
+    }
+
+    /// issue #66：**一次** 404 不足以断言「本区域没有活动平台」。
+    ///
+    /// 单次 404 会让我们回落旧签到通道，旧通道恒回 `DISABLED` ⇒ 界面「无法签到」；
+    /// 而真相往往是这一发请求没打到接口（代理 / 网关临时 404、上游抖动都长成这样）。
+    /// 判据可证伪：把重试去掉 ⇒ 本用例拿到的 `available == false`、`ok == false`。
+    #[tokio::test]
+    async fn one_transient_404_does_not_conclude_the_region_has_no_campaign() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+
+        let hits = Arc::new(AtomicUsize::new(0));
+        let counter = hits.clone();
+        let app = axum::Router::new().route(
+            super::super::PATH_CAMPAIGNS,
+            axum::routing::get(move || {
+                let counter = counter.clone();
+                async move {
+                    let hit = counter.fetch_add(1, Ordering::SeqCst);
+                    if hit == 0 {
+                        // 第一发：临时 404（接口明明存在）。
+                        (axum::http::StatusCode::NOT_FOUND, "not found".to_string())
+                    } else {
+                        (
+                            axum::http::StatusCode::OK,
+                            json!({
+                                "showCampaign": true,
+                                "claimable": true,
+                                "campaignUrl": "https://example.invalid/growth",
+                                "campaigns": [{
+                                    "campaignId": "c-1",
+                                    "campaignKey": "k-1",
+                                    "actionType": "CLAIM_BENEFIT",
+                                    "claimStatus": "CLAIMABLE",
+                                    "benefit": {"kind": "CREDITS", "amount": 100},
+                                    "placements": [{"content": {"zh": {"title": "每天领 100 Credits"}}}],
+                                }],
+                            })
+                            .to_string(),
+                        )
+                    }
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .expect("绑定本地端口");
+        let addr = listener.local_addr().expect("取本地地址");
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+
+        let snapshot = fetch_campaigns_at(
+            QoderRegion::Cn,
+            "uid-1",
+            "dt-token",
+            &format!("http://{addr}"),
+            None,
+        )
+        .await;
+        // 直接打在 `_at` 上 ⇒ 这里仍是「一次 404」的事实；重试在外层。
+        assert!(
+            !snapshot.available,
+            "单次 404 会判成不可用（这正是要重试的原因）"
+        );
+
+        let snapshot = fetch_campaigns_at(
+            QoderRegion::Cn,
+            "uid-1",
+            "dt-token",
+            &format!("http://{addr}"),
+            None,
+        )
+        .await;
+        assert!(
+            snapshot.available && snapshot.ok,
+            "第二发必须成功: {snapshot:?}"
+        );
+        assert_eq!(snapshot.items.len(), 1);
+        assert_eq!(hits.load(Ordering::SeqCst), 2);
+    }
+
+    /// 外层「判整区不可用之前先重发一次」的行为（本地 mock 上游：第一发 404、第二发 200）。
+    ///
+    /// 可证伪：删掉 `fetch_campaigns_with_identity` 里的重试 ⇒ `available` 为 false、
+    /// 命中次数为 1 ⇒ 断言红。
+    #[tokio::test]
+    async fn transient_404_is_retried_before_concluding_the_region_is_unavailable() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+
+        let hits = Arc::new(AtomicUsize::new(0));
+        let counter = hits.clone();
+        let app = axum::Router::new().route(
+            super::super::PATH_CAMPAIGNS,
+            axum::routing::get(move || {
+                let counter = counter.clone();
+                async move {
+                    let hit = counter.fetch_add(1, Ordering::SeqCst);
+                    if hit == 0 {
+                        (axum::http::StatusCode::NOT_FOUND, String::new())
+                    } else {
+                        (
+                            axum::http::StatusCode::OK,
+                            json!({
+                                "showCampaign": true,
+                                "claimable": true,
+                                "campaigns": [{
+                                    "campaignId": "c-1",
+                                    "actionType": "CLAIM_BENEFIT",
+                                    "claimStatus": "CLAIMABLE",
+                                    "benefit": {"kind": "CREDITS", "amount": 100},
+                                }],
+                            })
+                            .to_string(),
+                        )
+                    }
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .expect("绑定本地端口");
+        let addr = listener.local_addr().expect("取本地地址");
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+
+        // BUDDY_SWITCH_QODER_NATIVE_IDENTITY=0 会把重试一起关掉（那是「不碰客户端二进制」的
+        // 开关）；本用例显式传 identity=None，不经原生桥，故不受它影响。
+        let snapshot = fetch_campaigns_with_identity(
+            QoderRegion::Cn,
+            "uid-1",
+            "dt-token",
+            &format!("http://{addr}"),
+            None,
+        )
+        .await;
+        assert!(snapshot.available, "临时 404 不该被当成「整区没有接口」");
+        assert!(snapshot.ok);
+        assert_eq!(snapshot.items.len(), 1);
+        assert_eq!(hits.load(Ordering::SeqCst), 2, "必须真的重发过一次");
+    }
+    /// Pro 升级包（参考实现 `pro_eligibility` / `pro_claim`）：
+    /// 404 = 活动下线（**查询成功、不可领**），不能报成错误；409 = 已领过（幂等成功）。
+    #[tokio::test]
+    async fn pro_pack_status_and_claim_follow_reference_semantics() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+
+        let hits = Arc::new(AtomicUsize::new(0));
+        let counter = hits.clone();
+        let app = axum::Router::new()
+            .route(
+                PATH_PRO_ELIGIBILITY,
+                axum::routing::get(move || {
+                    let counter = counter.clone();
+                    async move {
+                        let hit = counter.fetch_add(1, Ordering::SeqCst);
+                        if hit == 0 {
+                            // 第一次：活动下线 ⇒ 404
+                            (axum::http::StatusCode::NOT_FOUND, String::new())
+                        } else {
+                            (
+                                axum::http::StatusCode::OK,
+                                json!({"eligible": true}).to_string(),
+                            )
+                        }
+                    }
+                }),
+            )
+            .route(
+                PATH_PRO_CLAIM,
+                axum::routing::post(|| async {
+                    (
+                        axum::http::StatusCode::CONFLICT,
+                        json!({"code": "ALREADY_CLAIMED"}).to_string(),
+                    )
+                }),
+            );
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .expect("绑定本地端口");
+        let addr = listener.local_addr().expect("取本地地址");
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+        let base = format!("http://{addr}");
+
+        // ① 404 ⇒ 查询成功但不可领（UI 据此**不渲染**入口，而不是摆一个死按钮）。
+        let status = pro_pack_status_at(QoderRegion::Cn, "uid-1", "dt", &base, None).await;
+        assert_eq!(status["available"], false);
+        assert_eq!(status["eligible"], false);
+        assert!(status["error"].is_null());
+
+        // ② 200 + eligible ⇒ 可领。
+        let status = pro_pack_status_at(QoderRegion::Cn, "uid-1", "dt", &base, None).await;
+        assert_eq!(status["available"], true);
+        assert_eq!(status["eligible"], true);
+
+        // ③ 领取遇 409 ⇒ 幂等成功（不是错误）。
+        let claim = claim_pro_pack_at(QoderRegion::Cn, "uid-1", "dt", &base, None).await;
+        assert_eq!(claim["ok"], true);
+        assert_eq!(claim["already"], true);
+    }
+
+    /// 领取失败的两种形态：`success:false`（业务失败）与 5xx（传输/上游失败）。
+    #[tokio::test]
+    async fn pro_pack_claim_reports_business_failure() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+
+        let hits = Arc::new(AtomicUsize::new(0));
+        let counter = hits.clone();
+        let app = axum::Router::new().route(
+            PATH_PRO_CLAIM,
+            axum::routing::post(move || {
+                let counter = counter.clone();
+                async move {
+                    let hit = counter.fetch_add(1, Ordering::SeqCst);
+                    if hit == 0 {
+                        (
+                            axum::http::StatusCode::OK,
+                            json!({"success": false, "message": "库存不足"}).to_string(),
+                        )
+                    } else {
+                        (axum::http::StatusCode::BAD_GATEWAY, String::new())
+                    }
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .expect("绑定本地端口");
+        let addr = listener.local_addr().expect("取本地地址");
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+        let base = format!("http://{addr}");
+
+        let claim = claim_pro_pack_at(QoderRegion::Cn, "uid-1", "dt", &base, None).await;
+        assert_eq!(claim["ok"], false);
+        assert_eq!(claim["already"], false);
+        assert!(claim["message"].as_str().unwrap().contains("库存不足"));
+
+        let claim = claim_pro_pack_at(QoderRegion::Cn, "uid-1", "dt", &base, None).await;
+        assert_eq!(claim["ok"], false);
+        assert!(claim["message"].as_str().unwrap().contains("502"));
     }
 }

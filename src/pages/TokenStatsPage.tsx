@@ -46,7 +46,7 @@
  */
 
 import { useEffect, useMemo, useState } from "react";
-import { CircleAlert, Coins, Gauge, Loader2, MessagesSquare, RefreshCw, Server, Sparkles, TrendingUp, Users } from "lucide-react";
+import { CircleAlert, Gauge, Info, Loader2, MessagesSquare, RefreshCw, Server, TrendingUp, Users } from "lucide-react";
 
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
@@ -55,8 +55,10 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { ChartFrame } from "@/components/usage/chart-frame";
 import { CumulativeArea } from "@/components/usage/cumulative-area";
 import { compactTokens, exactTokens } from "@/components/usage/format";
+import { CoverageStrip, GatewaySourceTables, LEDGER_CLIENT_COLOR, LEDGER_GATEWAY_COLOR, LedgerModelTable } from "@/components/usage/ledger-parts";
 import { ModelDonut } from "@/components/usage/model-donut";
 import { ModelRanking } from "@/components/usage/model-ranking";
+import { ReconcileSheet } from "@/components/usage/reconcile-sheet";
 import { SessionRanking } from "@/components/usage/session-ranking";
 import { SessionScatter } from "@/components/usage/session-scatter";
 import { StackedDailyBar } from "@/components/usage/stacked-daily-bar";
@@ -64,23 +66,45 @@ import { StatTiles, type StatTile } from "@/components/usage/stat-tiles";
 import { UsageHeatmap } from "@/components/usage/usage-heatmap";
 import { useUsageWindowLabel, type UsageViewProps } from "@/components/usage/view-param-bar";
 import * as api from "@/lib/api";
-import { cumulativeCaption, gatewayTrendCaption, scatterAxisCaption } from "@/lib/chart-caption";
+import { cumulativeCaption, scatterAxisCaption } from "@/lib/chart-caption";
 import { useT } from "@/lib/i18n";
-import type { GatewayTokenTrend, Region, RegionFilter, TokenStatistics, TokenStatsSource } from "@/lib/types";
+import type {
+  GatewayTokenTrend,
+  GatewayUsageDim,
+  GatewayUsageRecon,
+  Region,
+  RegionFilter,
+  TokenStatistics,
+  TokenStatsSource,
+} from "@/lib/types";
 import { useRefreshAction } from "@/lib/use-refresh-action";
 import { useScope } from "@/lib/use-scope";
 import {
   SESSION_RENDER_LIMIT,
   calendarWindowKeys,
-  dailyModelSeries,
-  gatewayCoverage,
-  gatewayDailyColumns,
   heatmapMatrix,
   mergeGatewayTrends,
   mergeSources,
   modelSlices,
   sessionPoints,
 } from "@/lib/usage-charts";
+import {
+  accountKey,
+  clientModelTotals,
+  combinedFormula,
+  combinedTotal,
+  dailyTotalsMap,
+  dimCoverage,
+  dimTotals,
+  endpointKey,
+  gatewayDailyInWindow,
+  ledgerDailySeries,
+  mergeDims,
+  mergeRecons,
+  modelKey,
+  overlapInWindow,
+  type UsageLedger,
+} from "@/lib/usage-ledger";
 import { usageWindowDays, type UsageWindow } from "@/lib/usage-window";
 
 /** 本页承载的视图（积分视图在 `CreditStatsPage`）。 */
@@ -132,87 +156,101 @@ function TrendView({
   viewWindow,
   onViewWindowChange,
   gatewayTrend,
+  dim,
+  recon,
+  ledger,
+  onReconcile,
 }: {
   source: TokenStatsSource;
   viewWindow: UsageWindow;
   onViewWindowChange: (next: UsageWindow) => void;
   gatewayTrend: GatewayTokenTrend | null;
+  dim: GatewayUsageDim | null;
+  recon: GatewayUsageRecon | null;
+  ledger: UsageLedger;
+  onReconcile: () => void;
 }) {
   const t = useT();
   const windowLabel = useUsageWindowLabel();
-  const columns = useMemo(() => dailyModelSeries(source, viewWindow), [source, viewWindow]);
+  const keys = useMemo(() => calendarWindowKeys(viewWindow), [viewWindow]);
   const matrix = useMemo(() => heatmapMatrix(source.hours), [source]);
-  const slices = useMemo(() => modelSlices(source, viewWindow), [source, viewWindow]);
-  /**
-   * 网关逐日图（**独立小图**，刻意不并进上面的主堆叠柱）：
-   *
-   * ① 主柱的「末柱 = 概览统计块 = 账号卡今日合计」是跨视图一致性契约，并进去会静默改口径；
-   * ② 客户端与网关是**两条独立记录**（配置重叠时同一请求两处各记一次），求和会把重复
-   *    计数藏起来 —— 分开画 + 图注披露覆盖率，比一个「加起来正好」的数字诚实。
-   */
-  const gatewayColumns = useMemo(
-    () => gatewayDailyColumns(gatewayTrend, viewWindow),
+
+  /* 两本账的逐日值：客户端来自 `source.daily`，网关来自 `get_gateway_token_trend`。 */
+  const clientDaily = useMemo(() => dailyTotalsMap(source.daily), [source.daily]);
+  const gatewayDaily = useMemo(
+    () => new Map(gatewayDailyInWindow(gatewayTrend, viewWindow).map((day) => [day.key, day.total])),
     [gatewayTrend, viewWindow],
   );
-  const gatewayCoverageInfo = useMemo(
-    () => gatewayCoverage(gatewayTrend, viewWindow),
-    [gatewayTrend, viewWindow],
-  );
-  /** 窗口内**一天有网关用量**才出图（全 0 / 全未记录 ⇒ 没有可画的值）。 */
-  const gatewayHasBars = gatewayColumns.some((column) => column.segments.length > 0);
-  const heatmapHasData = useMemo(
-    () => matrix.cells.some((row) => row.some((value) => value > 0)),
-    [matrix],
+  const columns = useMemo(
+    () =>
+      ledgerDailySeries({
+        days: keys.map((key) => ({ key, total: 0 })),
+        clientTotals: clientDaily,
+        gatewayTotals: gatewayDaily,
+        ledger,
+        labelOf: (key) => key.slice(5).replace("-", "/"),
+      }),
+    [keys, clientDaily, gatewayDaily, ledger],
   );
 
-  const rangeRecords = useMemo(
-    () => {
-      // ★ A1：窗口按**日历日**取（与 `dailyModelSeries` 同源），不再 `slice(-range)`
-      //   —— 稀疏数组下那会取到窗口外的历史天。
-      const inWindow = new Set(calendarWindowKeys(viewWindow));
-      return source.daily.reduce(
-        (sum, point) => (inWindow.has(point.key) ? sum + point.records : sum),
-        0,
-      );
-    },
-    [source.daily, viewWindow],
-  );
-  /** 「被视图参数筛没」：全时段有记录，但当前范围窗口内为 0。 */
-  const filtered = source.summary.records > 0 && rangeRecords === 0;
-
-  const total = columns.reduce((sum, column) => sum + column.total, 0);
-  /* ★ A1-3：日均的分母是**窗口天数**，不是「有数据的天数」。
-     旧实现除以 `columns.length`（补 0 前 = 有数据的天数）⇒ 实测 1500 Token / 5 天
-     显示「日均 300」，而真实 30 天日均应为 50 —— 与 `wbStats.zh.ts` 里
-     「按自然日平均」的说明**互相矛盾**。
-     ★ 换成「今天」时窗口就是 1 天 ⇒ 日均 == 当日总量，这是**对的**：
-     一天的日均就是它自己。 */
-  const average = Math.round(total / usageWindowDays(viewWindow));
-  const peak = columns.reduce(
-    (best, column) => (column.total > best.total ? column : best),
-    columns[0] ?? { day: "", label: "", total: 0, segments: [] },
-  );
-  const cumulative = useMemo(() => {
-    let running = 0;
-    return columns.map((column) => {
-      running += column.total;
-      return { label: column.label, value: running };
+  const sumOf = (map: Map<string, number>) => keys.reduce((sum, key) => sum + (map.get(key) ?? 0), 0);
+  const clientTokens = sumOf(clientDaily);
+  const gatewayTokens = sumOf(gatewayDaily);
+  const overlap = useMemo(() => overlapInWindow(recon, clientTokens), [recon, clientTokens]);
+  const combined = combinedTotal(clientTokens, gatewayTokens, overlap);
+  const formula = useMemo(() => {
+    const parts = combinedFormula({
+      clientTokens,
+      gatewayTokens,
+      overlapTokens: overlap,
+      verdict: recon?.verdict ?? null,
     });
-  }, [columns]);
-  const peakDelta = columns.reduce((max, column) => Math.max(max, column.total), 0);
+    return parts.kind === "subset"
+      ? t("wbStats.usage.trend.formulaSubset", {
+          gateway: compactTokens(gatewayTokens),
+          direct: compactTokens(parts.directClientTokens),
+        })
+      : t("wbStats.usage.trend.formulaAdditive", {
+          client: compactTokens(clientTokens),
+          gateway: compactTokens(gatewayTokens),
+          overlap: compactTokens(parts.overlapTokens),
+        });
+  }, [clientTokens, gatewayTokens, overlap, recon?.verdict, t]);
 
-  /**
-   * 窗口内网关用量（与下面那张网关小图**同源同窗**，两处必须对齐）。
-   *
-   * ⚠️ **必须在 `filtered` 早退之前**（issue #45）：hook 放在条件 `return` 之后，
-   * 「今天无请求 ⇒ filtered=true」时这一轮少调一个 hook、恢复时又多调一个 ⇒
-   * React #300（rendered more hooks than during the previous render），整个
-   * Token 统计页被错误边界接住。**任何新增 hook 都放这个位置以上。**
-   */
-  const gatewayTotal = useMemo(
-    () => gatewayColumns.reduce((sum, column) => sum + column.total, 0),
-    [gatewayColumns],
+  const visibleTotal = ledger === "client" ? clientTokens : ledger === "gateway" ? gatewayTokens : combined;
+  const total = visibleTotal;
+  const dailyTotals = columns.map((column) => column.total);
+  const peak = Math.max(0, ...dailyTotals);
+  /* ★ A1-3：日均的分母是**窗口天数**，不是「有数据的天数」——
+     后者在稀疏数据下会把 5 天用量显示成「日均 300」，而真实 30 天日均是 50。 */
+  const average = Math.round(total / usageWindowDays(viewWindow));
+
+  const rangeRecords = useMemo(() => {
+    const inWindow = new Set(keys);
+    return source.daily.reduce((sum, point) => (inWindow.has(point.key) ? sum + point.records : sum), 0);
+  }, [source.daily, keys]);
+  const filtered = source.summary.records > 0 && rangeRecords === 0 && gatewayTokens === 0;
+
+  /* 模型占比：**按单本账各画一个环**（跨账本合并占比的分母含重复计数，是假的）。 */
+  const clientSlices = useMemo(
+    () =>
+      clientModelTotals(source, viewWindow).map((model) => ({
+        name: model.name,
+        value: model.tokens,
+        spark: [],
+      })),
+    [source, viewWindow],
   );
+  const gatewaySlices = useMemo(
+    () =>
+      dimTotals(dim, viewWindow, modelKey)
+        .filter((model) => model.tokens > 0)
+        .map((model) => ({ name: model.key || t("wbStats.usage.models.unknown"), value: model.tokens, spark: [] })),
+    [dim, viewWindow, t],
+  );
+
+  const coverage = useMemo(() => dimCoverage(dim, viewWindow), [dim, viewWindow]);
+  const heatmapHasData = useMemo(() => matrix.cells.some((row) => row.some((value) => value > 0)), [matrix]);
 
   if (filtered) {
     return (
@@ -226,63 +264,116 @@ function TrendView({
     );
   }
 
+  const totalTile: StatTile =
+    ledger === "gateway"
+      ? {
+          icon: Server,
+          label: t("wbStats.usage.trend.totalGateway"),
+          value: compactTokens(gatewayTokens),
+          hint: windowLabel(viewWindow),
+          title: t("wbStats.usage.trend.totalGatewayTitle"),
+        }
+      : ledger === "client"
+        ? {
+            icon: MessagesSquare,
+            label: t("wbStats.usage.trend.totalClient"),
+            value: compactTokens(clientTokens),
+            hint: windowLabel(viewWindow),
+            title: t("wbStats.usage.trend.totalClientTitle"),
+          }
+        : {
+            icon: MessagesSquare,
+            label: t("wbStats.usage.trend.totalCombined"),
+            value: `≈ ${compactTokens(combined)}`,
+            hint: formula,
+            title: t("wbStats.usage.trend.totalCombinedTitle"),
+          };
+
+  const modelCount =
+    ledger === "gateway" ? gatewaySlices.length : ledger === "client" ? clientSlices.length : clientSlices.length + gatewaySlices.length;
   const tiles: StatTile[] = [
-    { icon: MessagesSquare, label: t("wbStats.usage.trend.total"), value: compactTokens(total), hint: windowLabel(viewWindow), title: t("wbStats.usage.trend.totalTitle") },
+    totalTile,
     { icon: TrendingUp, label: t("wbStats.usage.trend.avg"), value: compactTokens(average), hint: t("wbStats.usage.trend.avgHint") },
-    { icon: Gauge, label: t("wbStats.usage.trend.peak"), value: compactTokens(peak.total), hint: peak.label || undefined },
-    /* 网关量单独成 tile 且**不与上面求和**：客户端与网关是两条独立记录（配置重叠时
-       同一请求两处各记一次），求和的数字好看但藏起重复计数。 */
-    { icon: Server, label: t("wbStats.usage.trend.gatewayTokens"), value: compactTokens(gatewayTotal), hint: t("wbStats.usage.trend.gatewayTokensHint"), title: t("wbStats.usage.trend.gatewayTokensTitle") },
-    { icon: Coins, label: t("wbStats.usage.trend.models"), value: exactTokens(slices.length) },
+    { icon: Gauge, label: t("wbStats.usage.trend.peak"), value: compactTokens(peak) },
+    /* 决策 #4：WB 的第四张卡是「模型数」，不是「活跃账号」—— 账号维度在账号页，
+       这里放模型数才能回答「这段时间动了几个模型」。 */
+    { icon: Server, label: t("wbStats.usage.trend.models"), value: exactTokens(modelCount) },
+    {
+      icon: MessagesSquare,
+      label: t("wbStats.usage.trend.requests"),
+      value: exactTokens(
+        ledger === "gateway"
+          ? dimTotals(dim, viewWindow, endpointKey).reduce((sum, row) => sum + row.requests, 0)
+          : rangeRecords,
+      ),
+      hint: t("wbStats.usage.trend.requestsHint"),
+    },
   ];
+
+  const cumulative = useMemo(() => {
+    let running = 0;
+    return columns.map((column) => {
+      running += column.total;
+      return { label: column.label, value: running };
+    });
+  }, [columns]);
 
   return (
     <div className="min-w-0 space-y-6">
       <StatTiles tiles={tiles} ariaLabel={t("wbStats.usage.view.trend")} />
-      {columns.length > 0 ? (
+      <CoverageStrip
+        clientTokens={clientTokens}
+        clientRequests={recon?.clientRows ?? rangeRecords}
+        gatewayTokens={gatewayTokens}
+        gatewayRequests={recon?.gatewayRows ?? 0}
+        gatewayFailed={dimTotals(dim, viewWindow, endpointKey).reduce((sum, row) => sum + row.failed, 0)}
+        recorded={coverage.recorded}
+        windowDays={coverage.total}
+        overlapRows={recon?.matched ?? 0}
+        overlapTokens={overlap}
+        onReconcile={recon ? onReconcile : undefined}
+      />
+      {columns.some((column) => column.total > 0) ? (
         <ChartFrame
           title={t("wbStats.usage.trend.stackedTitle")}
-          caption={t("wbStats.usage.trend.stackedDesc")}
+          caption={t("wbStats.usage.trend.ledgerCaption")}
           ariaLabel={t("wbStats.usage.trend.stackedAria")}
         >
-          <StackedDailyBar columns={columns} />
-        </ChartFrame>
-      ) : null}
-      {gatewayHasBars ? (
-        <ChartFrame
-          title={t("wbStats.usage.trend.gatewayTitle")}
-          caption={gatewayTrendCaption(
-            t,
-            gatewayCoverageInfo.recorded,
-            gatewayCoverageInfo.total,
-            gatewayCoverageInfo.truncated,
-          )}
-          ariaLabel={t("wbStats.usage.trend.gatewayAria")}
-        >
-          <StackedDailyBar columns={gatewayColumns} />
+          <StackedDailyBar columns={columns} palette={[LEDGER_CLIENT_COLOR, LEDGER_GATEWAY_COLOR]} />
         </ChartFrame>
       ) : null}
       <div className="grid min-w-0 gap-6 lg:grid-cols-2">
         {cumulative.length > 0 ? (
           <ChartFrame
             title={t("wbStats.usage.trend.cumulativeTitle")}
-            caption={cumulativeCaption(t, cumulative[cumulative.length - 1].value, peakDelta)}
+            caption={cumulativeCaption(t, cumulative[cumulative.length - 1].value, peak)}
             ariaLabel={t("wbStats.usage.trend.cumulativeTitle")}
           >
             <CumulativeArea points={cumulative} />
           </ChartFrame>
         ) : null}
-        {slices.length > 0 ? (
+        {ledger !== "gateway" && clientSlices.length > 0 ? (
           <ChartFrame
             title={t("wbStats.usage.trend.donutTitle")}
-            caption={`${exactTokens(slices.length)} · ${compactTokens(total)}`}
+            caption={`${exactTokens(clientSlices.length)} · ${compactTokens(clientTokens)}`}
             ariaLabel={t("wbStats.usage.trend.donutTitle")}
+            exportable={false}
           >
-            <ModelDonut slices={slices} size={150} />
+            <ModelDonut slices={clientSlices} size={150} />
+          </ChartFrame>
+        ) : null}
+        {ledger !== "client" && gatewaySlices.length > 0 ? (
+          <ChartFrame
+            title={t("wbStats.usage.models.gatewayBook")}
+            caption={`${exactTokens(gatewaySlices.length)} · ${compactTokens(gatewayTokens)}`}
+            ariaLabel={t("wbStats.usage.models.gatewayBook")}
+            exportable={false}
+          >
+            <ModelDonut slices={gatewaySlices} size={150} />
           </ChartFrame>
         ) : null}
       </div>
-      {heatmapHasData ? (
+      {ledger !== "gateway" && heatmapHasData ? (
         <ChartFrame
           title={t("wbStats.usage.trend.heatmapTitle")}
           caption={t("wbStats.usage.trend.heatmapDesc")}
@@ -291,6 +382,9 @@ function TrendView({
         >
           <UsageHeatmap matrix={matrix} />
         </ChartFrame>
+      ) : null}
+      {ledger === "gateway" ? (
+        <p className="text-[11.5px] text-muted-foreground">{t("wbStats.usage.trend.gatewayNoHours")}</p>
       ) : null}
     </div>
   );
@@ -301,32 +395,50 @@ function TrendView({
 function ModelsView({
   source,
   viewWindow,
+  dim,
+  ledger,
   onRefresh,
 }: {
   source: TokenStatsSource;
   viewWindow: UsageWindow;
+  dim: GatewayUsageDim | null;
+  ledger: UsageLedger;
   onRefresh: () => void | Promise<void>;
 }) {
   const t = useT();
   const { busy, run } = useRefreshAction();
-  const slices = useMemo(() => modelSlices(source, viewWindow), [source, viewWindow]);
-  const total = slices.reduce((sum, slice) => sum + slice.value, 0);
-  const top = slices[0];
+  const coverage = useMemo(() => dimCoverage(dim, viewWindow), [dim, viewWindow]);
+  const clientRows = useMemo(
+    () =>
+      clientModelTotals(source, viewWindow).map((model) => ({
+        name: model.name,
+        tokens: model.tokens,
+        requests: model.requests,
+      })),
+    [source, viewWindow],
+  );
+  const gatewayRows = useMemo(
+    () =>
+      dimTotals(dim, viewWindow, modelKey).map((model) => ({
+        name: model.key || t("wbStats.usage.models.unknown"),
+        tokens: model.tokens,
+        requests: model.requests,
+        failed: model.failed,
+      })),
+    [dim, viewWindow, t],
+  );
+  const clientTotal = clientRows.reduce((sum, row) => sum + row.tokens, 0);
+  const gatewayTotal = gatewayRows.reduce((sum, row) => sum + row.tokens, 0);
+  const gatewayFailed = gatewayRows.reduce((sum, row) => sum + (row.failed ?? 0), 0);
 
-  if (slices.length === 0) {
-    /* 区块级空态（§1.6）——**四要素含出口**：缺出口等于把用户丢在原地。 */
+  if (clientRows.length === 0 && gatewayRows.length === 0) {
     return (
       <EmptyState
         icon={Server}
         title={t("wbStats.usage.empty.models")}
         description={t("wbStats.usage.empty.modelsHint")}
         action={
-          <Button
-            size="sm"
-            variant="outline"
-            disabled={busy}
-            onClick={() => void run(() => onRefresh())}
-          >
+          <Button size="sm" variant="outline" disabled={busy} onClick={() => void run(() => onRefresh())}>
             {busy ? <Loader2 className="animate-spin" /> : <RefreshCw />}
             {t("wbStats.usage.empty.refresh")}
           </Button>
@@ -335,36 +447,41 @@ function ModelsView({
     );
   }
 
-  const tiles: StatTile[] = [
-    { icon: Server, label: t("wbStats.usage.models.count"), value: exactTokens(slices.length) },
-    {
-      icon: Sparkles,
-      label: t("wbStats.usage.models.top"),
-      value: top?.name ?? "—",
-      hint: top ? `${((top.value / total) * 100).toFixed(0)}%` : undefined,
-    },
-    { icon: MessagesSquare, label: t("wbStats.usage.models.total"), value: compactTokens(total) },
-    { icon: Gauge, label: t("wbStats.usage.models.avg"), value: compactTokens(Math.round(total / slices.length)) },
-  ];
-
   return (
-    <div className="min-w-0 space-y-6">
-      <StatTiles tiles={tiles} ariaLabel={t("wbStats.usage.view.models")} />
-      <ChartFrame
-        title={t("wbStats.usage.models.donutTitle")}
-        caption={`${exactTokens(slices.length)} · ${compactTokens(total)}`}
-        ariaLabel={t("wbStats.usage.models.donutTitle")}
-      >
-        <ModelDonut slices={slices} />
-      </ChartFrame>
-      <ChartFrame
-        title={t("wbStats.usage.models.rankTitle")}
-        caption={t("wbStats.usage.models.rankDesc")}
-        ariaLabel={t("wbStats.usage.models.rankTitle")}
-        exportable={false}
-      >
-        <ModelRanking slices={slices} />
-      </ChartFrame>
+    <div className="min-w-0 space-y-4">
+      {ledger === "all" ? (
+        <div className="flex items-center gap-2.5 rounded-[10px] border border-[color:var(--data-series-indigo)]/25 bg-[color:var(--data-series-indigo)]/10 px-3.5 py-2.5 text-xs text-muted-foreground">
+          <Info className="size-3.5 shrink-0 text-[color:var(--data-series-indigo)]" />
+          <span>
+            <b className="font-medium text-foreground">{t("wbStats.usage.models.noMerge")}</b>
+            {t("wbStats.usage.models.noMergeBody")}
+          </span>
+        </div>
+      ) : null}
+      {/* 客户端账本用**排行条 + 迷你趋势线**：它有 `dailyByModel`，能画出「每个模型这段
+          时间怎么走」；网关账本用表（要 `请求 / 失败` 两列，那是网关才有的事实）。 */}
+      {ledger !== "gateway" ? (
+        <ChartFrame
+          title={t("wbStats.usage.models.clientBook")}
+          caption={`${t("wbStats.usage.models.clientBookHint")} · ${compactTokens(clientTotal)}`}
+          ariaLabel={t("wbStats.usage.models.clientBook")}
+          exportable={false}
+        >
+          <ModelRanking slices={modelSlices(source, viewWindow)} />
+        </ChartFrame>
+      ) : null}
+      {ledger !== "client" ? (
+        <LedgerModelTable
+          book="gateway"
+          rows={gatewayRows}
+          total={gatewayTotal}
+          caption={t("wbStats.usage.models.gatewayBookHint", {
+            recorded: coverage.recorded,
+            total: coverage.total,
+          })}
+          failed={gatewayFailed}
+        />
+      ) : null}
     </div>
   );
 }
@@ -374,50 +491,47 @@ function ModelsView({
 function SessionsView({
   source,
   viewWindow,
+  dim,
+  ledger,
   onViewWindowChange,
   onRefresh,
+  onSwitchLedger,
 }: {
   source: TokenStatsSource;
   viewWindow: UsageWindow;
+  dim: GatewayUsageDim | null;
+  ledger: UsageLedger;
   onViewWindowChange: (next: UsageWindow) => void;
   onRefresh: () => void | Promise<void>;
+  onSwitchLedger: (next: UsageLedger) => void;
 }) {
   const t = useT();
   const windowLabel = useUsageWindowLabel();
   const { busy, run } = useRefreshAction();
-  /**
-   * **统计口径**：窗口内的全量点 —— tile 的「会话数 / 总 Token / 均值 / 最高消耗」按它算。
-   *
-   * ★ 2026-10-15：改为**窗口口径**（`sessionPoints(source, viewWindow)`）——
-   * 用户报障「切换时间没有变化」之前，这里吃的是全时数据，切窗口时四个 tile 与两张图
-   * 都不动。素材是后端下发的 `sessions[].daily`（逐日拆分），与趋势 / 模型视图同构。
-   */
   const points = useMemo(() => sessionPoints(source, viewWindow), [source, viewWindow]);
-  /**
-   * **渲染口径**：只画前 `SESSION_RENDER_LIMIT` 个。
-   *
-   * ⚠️ 这是**有意偏离**原型契约 8（「排行条数 = 气泡数 = 会话数」）：会话数可达 1.5 万
-   * （一个 jsonl 一条），全量渲染 = 2×N 个 DOM 节点 + N 个散点 ⇒ 切页要等数秒。
-   * 取舍与「为什么不虚拟滚动」见 `SESSION_RENDER_LIMIT` 的注释。
-   *
-   * 两个图**共用同一个切片**，所以契约 8 里「排行与散点同源、同一批会话」仍成立。
-   */
   const visible = useMemo(() => points.slice(0, SESSION_RENDER_LIMIT), [points]);
   const total = points.reduce((sum, point) => sum + point.value, 0);
-  /** 截断说明。**只在真的截断时出现** —— 没截断还写「共 N 个」是句废话。 */
   const capNote =
     points.length > visible.length
       ? t("wbStats.usage.sessions.shownOf", { shown: visible.length, total: points.length })
       : null;
 
-  if (points.length === 0) {
-    /* 两种空态必须分开（同趋势视图的「筛没 / 真没有」判据）：
-       - 全时有会话、当前窗口为 0 ⇒ 「筛没」：给「看近 30 天」这个**出口**；
-       - 全时也没有 ⇒ 「还没有产生会话」，只留刷新。
-       把两者合成一个「暂无会话记录」会**谎报**——用户明明有会话，只是不在这个窗口里。 */
-    const hasAnySession = source.sessions.some(
-      (session) => session.total > 0 || session.records > 0,
+  /* 网关账本：**换维度**（网关没有 sessionId，但有账号与端点）。 */
+  if (ledger === "gateway") {
+    const accounts = dimTotals(dim, viewWindow, accountKey);
+    const endpoints = dimTotals(dim, viewWindow, endpointKey);
+    return (
+      <GatewaySourceTables
+        accounts={accounts.map((row) => ({ key: row.key, tokens: row.tokens, requests: row.requests }))}
+        endpoints={endpoints.map((row) => ({ key: row.key, requests: row.requests }))}
+        gatewayTokens={accounts.reduce((sum, row) => sum + row.tokens, 0)}
+        gatewayRequests={endpoints.reduce((sum, row) => sum + row.requests, 0)}
+      />
     );
+  }
+
+  if (points.length === 0) {
+    const hasAnySession = source.sessions.some((session) => session.total > 0 || session.records > 0);
     if (hasAnySession) {
       return (
         <ViewEmpty
@@ -429,19 +543,13 @@ function SessionsView({
         />
       );
     }
-    /* 区块级空态（§1.6）——**四要素含出口**。 */
     return (
       <EmptyState
         icon={Users}
         title={t("wbStats.usage.empty.sessions")}
         description={t("wbStats.usage.empty.sessionsHint")}
         action={
-          <Button
-            size="sm"
-            variant="outline"
-            disabled={busy}
-            onClick={() => void run(() => onRefresh())}
-          >
+          <Button size="sm" variant="outline" disabled={busy} onClick={() => void run(() => onRefresh())}>
             {busy ? <Loader2 className="animate-spin" /> : <RefreshCw />}
             {t("wbStats.usage.empty.refresh")}
           </Button>
@@ -451,8 +559,6 @@ function SessionsView({
   }
 
   const tiles: StatTile[] = [
-    /* 「会话数」的 hint 用**当前窗口**标签（原型同款语义：区间内活跃）——
-       没有它，用户看不出这个数字随参数条变化。 */
     { icon: Users, label: t("wbStats.usage.sessions.count"), value: exactTokens(points.length), hint: windowLabel(viewWindow) },
     { icon: MessagesSquare, label: t("wbStats.usage.sessions.total"), value: compactTokens(total), hint: windowLabel(viewWindow) },
     { icon: Gauge, label: t("wbStats.usage.sessions.avg"), value: compactTokens(Math.round(total / points.length)) },
@@ -461,6 +567,22 @@ function SessionsView({
 
   return (
     <div className="min-w-0 space-y-6">
+      {ledger === "all" ? (
+        <div className="flex items-center gap-2.5 rounded-[10px] border border-[color:var(--data-series-indigo)]/25 bg-[color:var(--data-series-indigo)]/10 px-3.5 py-2.5 text-xs text-muted-foreground">
+          <Info className="size-3.5 shrink-0 text-[color:var(--data-series-indigo)]" />
+          <span>
+            {t("wbStats.usage.sessions.gatewayMissing")}
+            {" · "}
+            <button
+              type="button"
+              onClick={() => onSwitchLedger("gateway")}
+              className="cursor-pointer border-b border-dotted border-current text-[color:var(--data-series-indigo)] hover:text-foreground"
+            >
+              {t("wbStats.usage.sessions.jumpGateway")}
+            </button>
+          </span>
+        </div>
+      ) : null}
       <StatTiles tiles={tiles} ariaLabel={t("wbStats.usage.view.sessions")} />
       <div className="grid min-w-0 gap-6 lg:grid-cols-2">
         <ChartFrame
@@ -473,7 +595,6 @@ function SessionsView({
         </ChartFrame>
         <ChartFrame
           title={t("wbStats.usage.sessions.scatterTitle")}
-          /* 轴语义（记录数）**必须留**（「图不能撒谎」红线，门禁断言）；截断说明接在后面。 */
           caption={`${scatterAxisCaption(t)} · ${t("wbStats.usage.sessions.scatterDesc")}${capNote ? ` · ${capNote}` : ""}`}
           ariaLabel={t("wbStats.usage.sessions.scatterAria")}
         >
@@ -491,7 +612,9 @@ export default function TokenStatsPage({
   viewWindow,
   combineAll,
   onViewWindowChange,
-}: { view?: TokenUsageView } & UsageViewProps) {
+  ledger = "all",
+  onLedgerChange,
+}: { view?: TokenUsageView; ledger?: UsageLedger; onLedgerChange?: (next: UsageLedger) => void } & UsageViewProps) {
   const t = useT();
   /* P1：`cn` / `global` 统一走 `useScope`（URL 优先 + localStorage 记忆）。
      ⚠️ 只取值、不取 setter —— 切区域的动作在**侧栏**（`ScopeSwitch`），页内不再有区域选择器。 */
@@ -506,6 +629,11 @@ export default function TokenStatsPage({
   const [gatewayTrend, setGatewayTrend] = useState<GatewayTokenTrend | null>(
     () => gatewayTrendCache.get(region) ?? null,
   );
+  /* 账本（issue #63）：三维度历史 + 今日对账。两者都与统计**并行**取，
+     单区失败只让该区缺席（渐进增强，不弹错噪屏）。 */
+  const [dim, setDim] = useState<GatewayUsageDim | null>(null);
+  const [recon, setRecon] = useState<GatewayUsageRecon | null>(null);
+  const [reconOpen, setReconOpen] = useState(false);
 
   // region 是页面级数据源：切换即重新取数；旧结果保留到新结果返回，避免闪白。
   useEffect(() => {
@@ -543,6 +671,27 @@ export default function TokenStatsPage({
       })
       .catch(() => {
         if (!disposed) setGatewayTrend(null);
+      });
+    /* 三维度历史：与趋势同源（`token_daily`），但它是**模型 / 账号 / 端点**的拆分。
+       `all` 时分区取再合并（与 `mergeGatewayTrends` 同哲学）。 */
+    Promise.all(
+      gatewayRegions.map((gatewayRegion) => api.getGatewayUsageDim(gatewayRegion).catch(() => null)),
+    )
+      .then((results) => {
+        if (!disposed) setDim(mergeDims(results));
+      })
+      .catch(() => {
+        if (!disposed) setDim(null);
+      });
+    /* 对账：只覆盖今日（网关日志是环形窗口）。`all` 时两区各对一次再合并。 */
+    Promise.all(
+      gatewayRegions.map((gatewayRegion) => api.getUsageReconcile(gatewayRegion).catch(() => null)),
+    )
+      .then((results) => {
+        if (!disposed) setRecon(mergeRecons(results));
+      })
+      .catch(() => {
+        if (!disposed) setRecon(null);
       });
     return () => {
       disposed = true;
@@ -637,13 +786,22 @@ export default function TokenStatsPage({
           }
         />
       ) : view === "models" ? (
-        <ModelsView source={source} viewWindow={viewWindow} onRefresh={() => setReload((value) => value + 1)} />
+        <ModelsView
+          source={source}
+          viewWindow={viewWindow}
+          dim={dim}
+          ledger={ledger}
+          onRefresh={() => setReload((value) => value + 1)}
+        />
       ) : view === "sessions" ? (
         <SessionsView
           source={source}
           viewWindow={viewWindow}
+          dim={dim}
+          ledger={ledger}
           onViewWindowChange={onViewWindowChange}
           onRefresh={() => setReload((value) => value + 1)}
+          onSwitchLedger={() => onLedgerChange?.("gateway")}
         />
       ) : (
         <TrendView
@@ -651,8 +809,13 @@ export default function TokenStatsPage({
           viewWindow={viewWindow}
           onViewWindowChange={onViewWindowChange}
           gatewayTrend={gatewayTrend}
+          dim={dim}
+          recon={recon}
+          ledger={ledger}
+          onReconcile={() => setReconOpen(true)}
         />
       )}
+      <ReconcileSheet open={reconOpen} onOpenChange={setReconOpen} recon={recon} />
     </div>
   );
 }

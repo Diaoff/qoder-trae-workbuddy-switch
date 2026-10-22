@@ -14,7 +14,7 @@ use serde_json::{json, Map, Value};
 use tokio::sync::watch;
 
 use crate::modules::account;
-use crate::modules::catalog::CatalogModel;
+use crate::modules::catalog::{parse_credits_rate, CatalogModel, CatalogReasoning};
 use crate::modules::identity;
 use crate::modules::net;
 use crate::modules::region::{region_spec, CatalogUa, Region};
@@ -1011,7 +1011,14 @@ pub fn parse_model_catalog(
             .filter(|value| !value.is_empty())
             .map(str::to_string);
         let badges = parse_badges(wrapped.get("tags"));
-        let free = credits.as_deref().map(is_zero_credits).unwrap_or(false);
+        let reasoning = parse_reasoning(wrapped.get("reasoning"));
+        // ★ 判零走 `parse_credits_rate`（唯一解析点）：旧实现只认 `x0.00`，遇到上游真给的
+        //   `x0.00 credits` 会算成「收费」（issue #65 顺带修）。
+        let free = credits
+            .as_deref()
+            .and_then(parse_credits_rate)
+            .map(|rate| rate == 0.0)
+            .unwrap_or(false);
         by_id.insert(
             id.clone(),
             CatalogModel {
@@ -1024,6 +1031,7 @@ pub fn parse_model_catalog(
                 credits,
                 badges,
                 free,
+                reasoning,
             },
         );
     }
@@ -1072,17 +1080,47 @@ fn parse_badges(tags: Option<&Value>) -> Vec<String> {
 }
 
 /// 判断积分字符串是否为 `x0.00` 形态（免费）。
-fn is_zero_credits(credits: &str) -> bool {
-    let trimmed = credits.trim();
-    let body = trimmed.strip_prefix('x').unwrap_or(trimmed);
-    match body.split_once('.') {
-        Some((int_part, frac)) => {
-            int_part.bytes().all(|b| b == b'0')
-                && !frac.is_empty()
-                && frac.bytes().all(|b| b == b'0')
-        }
-        None => false,
+/// 解析上游 `reasoning` 块（issue #65）。
+///
+/// 实测三种形态（2026-10-21 `wb_raw.json`）：
+/// - `{"effort": "medium", "summary": "auto"}` —— 只给默认档，**没有** `supportedEfforts`
+///   ⇒ 这里返回「档位为空、默认档有值」，由网关侧回落静态表补全可选档位。
+/// - `{"defaultEffort": "high", "supportedEfforts": ["low","high","max"], "canDisableThinking": true}`
+/// - 整个键缺失 ⇒ `None`（与「声明了但没有档位」不同）。
+///
+/// 空数组 / 全脏值 ⇒ `None`：上游给了个空表等于没给，别把它当「不支持思考」的结论。
+fn parse_reasoning(raw: Option<&Value>) -> Option<CatalogReasoning> {
+    let object = raw?.as_object()?;
+    let efforts: Vec<String> = object
+        .get("supportedEfforts")
+        .and_then(Value::as_array)
+        .map(|list| {
+            list.iter()
+                .filter_map(Value::as_str)
+                .map(str::trim)
+                .filter(|effort| !effort.is_empty())
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default();
+    let default_effort = object
+        .get("defaultEffort")
+        // 实测另一支只给 `{"effort": "medium", "summary": "auto"}`（没有 supportedEfforts）
+        // —— 那是「默认用哪一档」，语义等价于 `defaultEffort`，别丢。
+        .or_else(|| object.get("effort"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|effort| !effort.is_empty())
+        .map(str::to_string);
+    let can_disable_thinking = object.get("canDisableThinking").and_then(Value::as_bool);
+    if efforts.is_empty() && default_effort.is_none() && can_disable_thinking.is_none() {
+        return None;
     }
+    Some(CatalogReasoning {
+        efforts,
+        default_effort,
+        can_disable_thinking,
+    })
 }
 
 #[cfg(test)]
@@ -1247,6 +1285,62 @@ mod tests {
         );
         assert!(models[0].free);
         assert_eq!(models[0].badges, vec!["限时免费".to_string()]);
+    }
+
+    /// ★ issue #65：`x0.00 credits` 也是免费（旧判据只认 `x0.00`，`free` 恒 false），
+    /// 且倍率要能解析成数字（同一份目录里三种写法并存）。
+    ///
+    /// 变异：把 `free` 改回 `is_zero_credits`（只比整数段）⇒ 第一条断言红。
+    #[test]
+    fn parse_model_catalog_treats_zero_credits_with_suffix_as_free() {
+        let data = json!({
+            "agents": [{"name": "cli", "models": ["free-a", "free-b", "paid"]}],
+            "models": [
+                {"id": "free-a", "maxInputTokens": 10, "maxOutputTokens": 10, "credits": "x0.00 credits"},
+                {"id": "free-b", "maxInputTokens": 10, "maxOutputTokens": 10, "credits": "0.00"},
+                {"id": "paid", "maxInputTokens": 10, "maxOutputTokens": 10, "credits": "x0.34 credits"}
+            ]
+        });
+        let models = parse_model_catalog(&data, false).unwrap();
+        assert!(models[0].free, "`x0.00 credits` 必须判免费");
+        assert_eq!(models[0].credits_rate(), Some(0.0));
+        assert!(models[1].free, "无前缀的 `0.00` 也要认");
+        assert!(!models[2].free);
+        assert_eq!(models[2].credits_rate(), Some(0.34), "后缀不影响取数");
+    }
+
+    /// ★ issue #65：上游 `reasoning` 块解析 —— 声明了档位 / 只给默认档 / 完全缺失。
+    #[test]
+    fn parse_model_catalog_reads_reasoning_efforts() {
+        let data = json!({
+            "agents": [{"name": "cli", "models": ["declared", "default-only", "none"]}],
+            "models": [
+                {"id": "declared", "maxInputTokens": 10, "maxOutputTokens": 10,
+                 "reasoning": {"defaultEffort": "high", "canDisableThinking": true,
+                               "supportedEfforts": ["low", "high", "max"], "summary": "auto"}},
+                {"id": "default-only", "maxInputTokens": 10, "maxOutputTokens": 10,
+                 "reasoning": {"effort": "medium", "summary": "auto"}},
+                {"id": "none", "maxInputTokens": 10, "maxOutputTokens": 10}
+            ]
+        });
+        let models = parse_model_catalog(&data, false).unwrap();
+        let declared = models[0].reasoning.as_ref().expect("声明了 reasoning");
+        assert_eq!(declared.efforts, vec!["low", "high", "max"]);
+        assert_eq!(declared.default_effort.as_deref(), Some("high"));
+        assert_eq!(declared.can_disable_thinking, Some(true));
+
+        let default_only = models[1].reasoning.as_ref().expect("有默认档也算声明");
+        assert!(default_only.efforts.is_empty(), "没给 supportedEfforts");
+        assert_eq!(
+            default_only.default_effort.as_deref(),
+            Some("medium"),
+            "`effort` 等价于 defaultEffort"
+        );
+
+        assert!(
+            models[2].reasoning.is_none(),
+            "整块缺失 ⇒ None（不是空档位）"
+        );
     }
 
     /// 默认档不小于上限（脏数据）⇒ 不认默认档，避免出现「默认 > 上限」。

@@ -38,17 +38,15 @@
 | 📊 **사용량과 제한이 보입니다** | 토큰, 크레딧, 계정 × 모델 제한, 어떤 세션 사본이 뒤처지고 갈라졌는지까지 한 화면에. |
 | 🔌 **할당량을 다른 도구에 연결** | OpenAI / Anthropic 호환 엔드포인트로 노출해 Cursor, Claude Code, OpenWebUI에 그대로 설정할 수 있습니다. |
 
-<p align="center">
-  <a href="https://github.com/NextAgentX/qoder-trae-workbuddy-switch/releases/latest"><img alt="다운로드" src="https://img.shields.io/badge/%EB%8B%A4%EC%9A%B4%EB%A1%9C%EB%93%9C-Releases-2ea043?style=for-the-badge" /></a>
-  <a href="https://github.com/NextAgentX/qoder-trae-workbuddy-switch/stargazers"><img alt="Star로 응원" src="https://img.shields.io/badge/Star%EB%A1%9C_%EC%9D%91%EC%9B%90-Star-f5c542?style=for-the-badge" /></a>
-  <a href="CONTRIBUTING.en.md"><img alt="기여하기" src="https://img.shields.io/badge/%EA%B8%B0%EC%97%AC%ED%95%98%EA%B8%B0-Pull_Request-4c8bf5?style=for-the-badge" /></a>
-</p>
+> **성격과 이용 범위**
+>
+> 이 프로젝트는 작성자의 **개인 사용·학습** 결과물입니다. 작성자 자신의 다중 계정 전환 번거로움을 해결하려고 만들었습니다. **참고·fork·개선은 환영하지만 유지보수를 약속하지는 않습니다**: 상업적 지원, SLA, 특정 클라이언트 버전과의 호환성 보장은 없습니다.
+>
+> 라이선스는 **PolyForm Noncommercial 1.0.0**이며, **개인적 비상업적 사용만 허용되고 모든 형태의 상업적 사용은 금지**됩니다(기업 내부 상업 프로젝트, SaaS·호스팅 서비스, 판매, 번들 배포 포함). 상업적 사용에는 작성자의 사전 서면 허가가 필요합니다.
 
-
-> ⚠️ **비공식 서드파티 도구**(source-available, PolyForm Noncommercial)입니다. 위 제품 및 권리자와 제휴·승인·후원 관계가 없습니다. 로컬 클라이언트의 인증 데이터를 읽고 쓰며, 설정한 스케줄대로 자동 요청을 보내고, 로컬 포트를 통해 할당량을 전달할 수 있습니다. 사용 전에 **[면책 고지](docs/policies/DISCLAIMER.en.md)** 를 반드시 읽어 주세요.
+> ⚠️ **비공식 · 비상업**: WorkBuddy, CodeBuddy, TraeWork, Qoder 및 그 권리자와 제휴·승인·후원·보증 관계가 없습니다. **상업적으로 사용할 수 없습니다**. 로컬 클라이언트의 인증 데이터를 읽고 쓰며, 설정한 스케줄대로 자동 요청을 보내고, 로컬 포트를 통해 할당량을 전달할 수 있습니다. 사용 전에 **[면책 고지](docs/policies/DISCLAIMER.en.md)** 를 반드시 읽어 주세요.
 
 ## 화면
-
 
 <table>
   <thead>
@@ -431,9 +429,7 @@ npm/                     # npm 패키지(미배포)
 
 ## 프로젝트 후원
 
-- ⭐ **Star 눌러주기** — 가장 직접적인 도움입니다. 더 많은 사람이 검색할 수 있고, 유지보수를 계속할 근거가 됩니다.
-- 🐞 **문제를 구체적으로** — 재현 가능한 이슈 하나가 “안 돼요” 열 마디보다 낫고, 보통 다음 버전에서 고쳐집니다.
-- ☕ **작성자에게 커피 한 잔** (완전 자발적, 어떤 기능도 잠기지 않습니다)
+- ☕ **작성자에게 커피 한 잔** (완전 자발적, 어떤 기능도 잠기지 않으며 상업적 라이선스가 아닙니다)
 
 <table>
   <thead>
@@ -456,7 +452,7 @@ npm/                     # npm 패키지(미배포)
 
 ## 면책 고지
 
-전문은 **[docs/policies/DISCLAIMER.en.md](docs/policies/DISCLAIMER.en.md)**([简体中文](docs/policies/DISCLAIMER.md))에 있으며 총 6개 조항입니다: 비공식 서드파티 도구, 이용 약관과 컴플라이언스 자기 책임, 데이터 쓰기와 백업, 자동화 행위의 위험, API 게이트웨이 노출 위험, "있는 그대로" 제공. 사용하는 시점에 동의한 것으로 간주하며, 동의하지 않으면 즉시 사용을 중단하고 삭제하세요.
+전문은 **[docs/policies/DISCLAIMER.en.md](docs/policies/DISCLAIMER.en.md)**([简体中文](docs/policies/DISCLAIMER.md))에 있으며 총 7개 조항입니다: 비공식 서드파티 도구, 이용 약관과 컴플라이언스 자기 책임, 데이터 쓰기와 백업, 자동화 행위의 위험, API 게이트웨이 노출 위험, "있는 그대로" 제공, 이용 제한(상업적 사용 금지·과금 우회 금지). 사용하는 시점에 동의한 것으로 간주하며, 동의하지 않으면 즉시 사용을 중단하고 삭제하세요.
 
 ## 라이선스
 
@@ -465,6 +461,8 @@ npm/                     # npm 패키지(미배포)
 - 전문: [LICENSE](./LICENSE)
 - 쉬운 설명과 FAQ: [docs/policies/LICENSING.en.md](docs/policies/LICENSING.en.md)([简体中文](docs/policies/LICENSING.md))
 - 상업적 라이선스는 이 저장소의 Issues로 문의해 주세요.
+- **후원은 라이선스와 무관합니다**: 자발적 증여이며 구매, 상업적 라이선스, 서비스 제공 약속이 아닙니다.
+- 이 프로젝트는 **개인 프로젝트**입니다. 상업적 지원, SLA, 유지보수 약속은 없습니다. Issue와 PR은 가능한 범위에서 대응하지만 처리 기한은 보장하지 않습니다.
 
 ## Star 추이
 

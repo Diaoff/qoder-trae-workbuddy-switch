@@ -38,17 +38,15 @@
 | 📊 **利用量と制限が見える** | トークン、クレジット、アカウント × モデルの制限、どのセッション複製が遅れ・分岐したかまで一画面に。 |
 | 🔌 **枠を他のツールにも** | OpenAI / Anthropic 互換エンドポイントとして公開し、Cursor・Claude Code・OpenWebUI にそのまま設定できます。 |
 
-<p align="center">
-  <a href="https://github.com/NextAgentX/qoder-trae-workbuddy-switch/releases/latest"><img alt="ダウンロード" src="https://img.shields.io/badge/%E3%83%80%E3%82%A6%E3%83%B3%E3%83%AD%E3%83%BC%E3%83%89-Releases-2ea043?style=for-the-badge" /></a>
-  <a href="https://github.com/NextAgentX/qoder-trae-workbuddy-switch/stargazers"><img alt="Star で応援" src="https://img.shields.io/badge/Star_%E3%81%A7%E5%BF%9C%E6%8F%B4-Star-f5c542?style=for-the-badge" /></a>
-  <a href="CONTRIBUTING.en.md"><img alt="コントリビュート" src="https://img.shields.io/badge/%E3%82%B3%E3%83%B3%E3%83%88%E3%83%AA%E3%83%93%E3%83%A5%E3%83%BC%E3%83%88-Pull_Request-4c8bf5?style=for-the-badge" /></a>
-</p>
+> **位置づけと利用範囲**
+>
+> 本プロジェクトは作者の**個人利用・学習**の産物です——自分自身の複数アカウント切り替えの手間を解消するために書きました。**参照・fork・改善は歓迎しますが、メンテナンスは約束しません**：商用サポート、SLA、特定クライアントバージョンとの互換性保証はありません。
+>
+> ライセンスは **PolyForm Noncommercial 1.0.0**：**個人の非商業利用のみ許可され、いかなる形の商業利用も禁止**されます（企業内の商業プロジェクト、SaaS／ホスティングサービス、販売、バンドル配布を含む）。商業利用には作者の事前の書面許可が必要です。
 
-
-> ⚠️ **非公式のサードパーティ製ツール**（source-available、PolyForm Noncommercial）。上記製品および権利者との提携・承認・後援関係はありません。ローカルクライアントの認証データを読み書きし、設定したスケジュールで自動リクエストを送信し、ローカルポート経由で利用枠を転送できます。使用前に **[免責事項](docs/policies/DISCLAIMER.en.md)** を必ずお読みください。
+> ⚠️ **非公式・非商業**：WorkBuddy、CodeBuddy、TraeWork、Qoder およびその権利者との提携・承認・スポンサー・後援関係はありません。**商用利用はできません**。ローカルクライアントの認証データを読み書きし、設定したスケジュールで自動リクエストを送信し、ローカルポート経由で利用枠を転送できます。使用前に **[免責事項](docs/policies/DISCLAIMER.en.md)** を必ずお読みください。
 
 ## 画面
-
 
 <table>
   <thead>
@@ -431,9 +429,7 @@ npm/                     # npm パッケージ（未公開）
 
 ## プロジェクトを支援する
 
-- ⭐ **Star を付ける** — いちばん直接的な支援です。見つけてもらいやすくなり、継続開発の判断材料になります。
-- 🐞 **問題を具体的に** — 再現できる Issue は「動かない」の 10 倍有用で、たいてい次の版で直ります。
-- ☕ **作者に一杯おごる**（任意。機能制限は一切ありません）
+- ☕ **作者に一杯おごる**（任意。機能制限は一切ありません。商業ライセンスにもなりません）
 
 <table>
   <thead>
@@ -456,7 +452,7 @@ npm/                     # npm パッケージ（未公開）
 
 ## 免責事項
 
-全文は **[docs/policies/DISCLAIMER.en.md](docs/policies/DISCLAIMER.en.md)**（[简体中文](docs/policies/DISCLAIMER.md)）。全 6 条：非公式サードパーティ製ツール、利用規約とコンプライアンスの自己責任、データ書き込みとバックアップ、自動化行為のリスク、API ゲートウェイ公開のリスク、現状のまま提供。使用した時点で同意したものとみなします。同意できない場合は直ちに使用を中止しアンインストールしてください。
+全文は **[docs/policies/DISCLAIMER.en.md](docs/policies/DISCLAIMER.en.md)**（[简体中文](docs/policies/DISCLAIMER.md)）。全 7 条：非公式サードパーティ製ツール、利用規約とコンプライアンスの自己責任、データ書き込みとバックアップ、自動化行為のリスク、API ゲートウェイ公開のリスク、現状のまま提供、利用制限（商用禁止・課金回避の禁止）。使用した時点で同意したものとみなします。同意できない場合は直ちに使用を中止しアンインストールしてください。
 
 ## ライセンス
 
@@ -465,6 +461,8 @@ npm/                     # npm パッケージ（未公開）
 - 全文：[LICENSE](./LICENSE)
 - 平易な解説と FAQ：[docs/policies/LICENSING.en.md](docs/policies/LICENSING.en.md)（[简体中文](docs/policies/LICENSING.md)）
 - 商業ライセンスについては本リポジトリの Issues でご連絡ください。
+- **寄付はライセンスと無関係**：任意の贈与であり、購入・商業ライセンス・役務提供の約束ではありません。
+- 本プロジェクトは**個人プロジェクト**です。商用サポート、SLA、メンテナンスの約束はありません。Issue と PR にはできる範囲で対応しますが、期限は保証しません。
 
 ## Star 推移
 

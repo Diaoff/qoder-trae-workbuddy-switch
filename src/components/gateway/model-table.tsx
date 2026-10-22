@@ -22,6 +22,14 @@
  * ⇒ **两列独立驱动**：上游状态列只看 `row.available`，网关暴露列只看 `row.disabled`。
  * **不得**把两者压成一个字段（压了之后「上游不可用」与「你自己禁用了」就分不清）。
  *
+ * ## 列集
+ *
+ * `模型 / 上下文 / [可选] 思考档位 / [可选] 积分倍率 / [仅 Trae] 上游状态 / 网关暴露 / [可选] 附加列`。
+ *
+ * 能力两列（issue #65）由**可选** prop `effortColumn` / `creditsColumn` 驱动，内容由调用方
+ * 用 `model-ability.tsx` 的 `<EffortCell>` / `<CreditsCell>` 注入 —— 三个平台的档位来自三个
+ * 不同数据源，壳里**不认平台**。不传 ⇒ 整列不渲染（不做「一列全 `—`」的噪音）。
+ *
  * ## 为什么列集里**没有**「归属」列、「协议」列
  *
  * - **无归属列**（决策 #1）：UI 只渲染**当前 region**（页面持有唯一 region）⇒ 全表同一 scope，
@@ -98,6 +106,20 @@ export interface ModelTableProps {
   showUpstream: boolean;
   labels: ModelTableLabels;
   /**
+   * 可选「思考档位」列（issue #65）。不传 ⇒ 该列不渲染。
+   *
+   * 内容由调用方注入（`model-ability.tsx` 的 `<EffortCell>`）—— 三个平台的档位来自
+   * 不同数据源（WB 目录 / Trae 客户端缓存 / Qoder 官方清单），壳里不认平台。
+   */
+  effortColumn?: { header: string; render: (row: GatewayModelRow) => ReactNode };
+  /**
+   * 可选「积分倍率」列（issue #65）。不传 ⇒ 该列不渲染。
+   *
+   * 与 `effortColumn` 分开而不是塞进同一个「计费」列：倍率是**单值**、档位是**集合**，
+   * 挤在一个单元格里既扫不出来、也没法各自给 tooltip 说明来源。
+   */
+  creditsColumn?: { header: string; render: (row: GatewayModelRow) => ReactNode };
+  /**
    * 可选**附加列**（2026-10-16：限流探测结果折回模型表）。
    *
    * 只有 WB（`model-list.tsx`）传它渲染「限流（探测）」；Trae / Qoder **不传** ⇒ 该列
@@ -120,6 +142,8 @@ export function ModelTable({
   onToggleDisabled,
   showUpstream,
   labels,
+  effortColumn,
+  creditsColumn,
   extraColumn,
 }: ModelTableProps) {
   /** 刚复制成功的行 id（驱动图标 `Copy` → `Check`；1.6s 后复位）。 */
@@ -147,6 +171,18 @@ export function ModelTable({
             <th scope="col" className="px-2 py-2 font-medium">
               {labels.colContext}
             </th>
+            {/* 能力两列（issue #65）排在上下文之后、状态列之前：它们是模型**属性**，
+                与「上游状态 / 网关暴露」这两列**状态**分开读。不传 ⇒ 整列不渲染。 */}
+            {effortColumn && (
+              <th scope="col" className="px-2 py-2 font-medium">
+                {effortColumn.header}
+              </th>
+            )}
+            {creditsColumn && (
+              <th scope="col" className="px-2 py-2 font-medium">
+                {creditsColumn.header}
+              </th>
+            )}
             {showUpstream && (
               <th scope="col" className="px-2 py-2 font-medium">
                 {labels.colUpstream}
@@ -215,6 +251,9 @@ export function ModelTable({
                   {/* 上下文窗口：数字来自官方目录（逐模型不同），未知就显示 `—`，不猜。 */}
                   <span className="font-mono text-xs">{formatContext(row.context_window)}</span>
                 </td>
+                {/* 能力两列：内容全部由调用方注入 ⇒ 壳里仍然只有那 2 处 onClick。 */}
+                {effortColumn && <td className="px-2 py-2">{effortColumn.render(row)}</td>}
+                {creditsColumn && <td className="px-2 py-2">{creditsColumn.render(row)}</td>}
                 {showUpstream && (
                   <td className="px-2 py-2">
                     {/* 上游状态列**只看 `row.available`**。 */}

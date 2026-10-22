@@ -106,6 +106,21 @@ export const zh = {
   "shared.gateway.models.contextFromCatalog": "按目录声明",
   "shared.gateway.models.colUpstream": "上游状态",
   "shared.gateway.models.colExposed": "网关暴露",
+  /* ★ issue #65：模型池里每个模型的「思考档位 / 积分倍率」两列。
+     - 档位空数组有**两种成因**（明确不支持 / 该程序位没下发），文案必须分开，
+       否则 TraeWork 侧整列「—」会被读成「这些模型都不能调档」。
+     - 倍率是**倍数**不是金额（`×0.2` = 基准价的 0.2 倍），说成「价格」会误导。 */
+  "shared.gateway.models.colEfforts": "思考档位",
+  "shared.gateway.models.colCredits": "积分倍率",
+  "shared.gateway.models.effortDefault": "默认档：{effort}",
+  "shared.gateway.models.effortNoneUnknown": "该程序位的清单未下发思考档位信息",
+  "shared.gateway.models.effortNoneUnsupported": "该模型不支持选档",
+  "shared.gateway.models.effortNoneUndeclared": "上游未声明档位，内置档位表也没有对应条目",
+  "shared.gateway.models.effortSourceUpstream": "档位来自上游目录声明",
+  "shared.gateway.models.effortSourceStatic": "档位来自网关内置档位表（上游未声明，可能与官方客户端不一致）",
+  "shared.gateway.models.creditsFree": "免费",
+  "shared.gateway.models.creditsNone": "上游未提供积分倍率",
+  "shared.gateway.models.creditsHint": "倍率：按基准价的多少倍计费，不是金额",
   "shared.gateway.models.upstreamAvailable": "可用",
   "shared.gateway.models.upstreamUnavailable": "不可用",
   "shared.gateway.models.exposed": "已暴露",
@@ -424,7 +439,6 @@ export const zh = {
   "shared.demo.session.replicaAlpha": "重构会话副本视图的归属计算",
   "shared.demo.session.replicaBeta": "统一跨账号会话的复制入口",
   // ---- 模型目录 ----
-  "shared.demo.catalog.limitedFree": "限时免费",
   "shared.demo.catalog.promo": "促销",
   "shared.demo.catalog.globalStale": "上游接口可能已变更，当前展示上次成功缓存",
   // ---- 账号策略 ----

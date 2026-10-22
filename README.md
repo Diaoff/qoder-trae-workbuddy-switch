@@ -36,16 +36,15 @@
 | 📊 **用量与限流看得见** | Token、积分、账号 × 模型限流、会话副本谁落后谁分叉，全在一屏 |
 | 🔌 **额度还能喂给别的工具** | 一键暴露成 OpenAI / Anthropic 兼容接口，直接配进 Cursor、Claude Code、OpenWebUI |
 
-<p align="center">
-  <a href="https://github.com/NextAgentX/qoder-trae-workbuddy-switch/releases/latest"><img alt="下载安装包" src="https://img.shields.io/badge/%E2%AC%87%20%E4%B8%8B%E8%BD%BD%E5%AE%89%E8%A3%85%E5%8C%85-Releases-2ea043?style=for-the-badge" /></a>
-  <a href="https://github.com/NextAgentX/qoder-trae-workbuddy-switch/stargazers"><img alt="点个 Star" src="https://img.shields.io/badge/%E2%AD%90%20%E7%82%B9%E4%B8%AA%20Star-%E8%AE%A9%E4%BD%9C%E8%80%85%E7%9F%A5%E9%81%93%E6%9C%89%E4%BA%BA%E7%94%A8-f5c542?style=for-the-badge" /></a>
-  <a href="CONTRIBUTING.md"><img alt="参与贡献" src="https://img.shields.io/badge/%F0%9F%9B%A0%20%E5%8F%82%E4%B8%8E%E8%B4%A1%E7%8C%AE-PR%20%E6%AC%A2%E8%BF%8E-4c8bf5?style=for-the-badge" /></a>
-</p>
+> **定位与使用边界**
+>
+> 本项目是作者**个人自用与学习**的产物——为解决自己多账号切换的麻烦而写。**欢迎参考、fork 与改进，但不承诺维护**：不提供商业支持、SLA 或特定客户端版本的兼容性承诺。
+>
+> 许可为 **PolyForm Noncommercial 1.0.0**：**仅允许个人非商业使用，禁止任何形式的商业使用**（含企业内部商业项目、SaaS / 托管服务、售卖与捆绑分发）。商业使用须事先取得作者书面授权。
 
-> ⚠️ **非官方第三方工具**（source-available，PolyForm Noncommercial 许可）。与上述产品及其权利人不存在隶属、授权或背书关系。它会读写本机客户端的认证数据、按你的配置自动发起请求，并可通过本地端口转发额度。使用前请读完 **[免责声明](docs/policies/DISCLAIMER.md)**。
+> ⚠️ **非官方 · 非商业**：与 WorkBuddy、CodeBuddy、TraeWork、Qoder 及其权利人不存在隶属、授权、赞助或背书关系；**不得商用**。它会读写本机客户端的认证数据、按你的配置自动发起请求，并可通过本地端口转发额度。使用前请读完 **[免责声明](docs/policies/DISCLAIMER.md)**。
 
 ## 界面预览
-
 
 <table>
   <thead>
@@ -429,9 +428,7 @@ npm/                     # npm 包（尚未发布）
 
 ## 支持这个项目
 
-- ⭐ **点个 Star** —— 这是最直接的帮助：它让更多人搜到这个工具，也让作者知道值得继续维护。
-- 🐛 **把问题说清楚** —— 一个能复现的 Issue 比十句"不好用"有用得多，通常下一版就修了。
-- ☕ **请作者喝杯饮料**（完全自愿，不影响任何功能）
+- ☕ **请作者喝杯饮料**（完全自愿，不影响任何功能，也不构成商业授权）
 
 <table>
   <thead>
@@ -454,7 +451,7 @@ npm/                     # npm 包（尚未发布）
 
 ## 免责声明
 
-完整条款见 **[docs/policies/DISCLAIMER.md](docs/policies/DISCLAIMER.md)**（[English](docs/policies/DISCLAIMER.en.md)），共 6 条：非官方第三方工具、服务条款与合规自理、数据写入与备份、自动化行为风险、API 网关暴露风险、按「原样」提供。使用即表示已阅读并同意；如不同意，请立即停止使用并卸载。
+完整条款见 **[docs/policies/DISCLAIMER.md](docs/policies/DISCLAIMER.md)**（[English](docs/policies/DISCLAIMER.en.md)），共 7 条：非官方第三方工具、服务条款与合规自理、数据写入与备份、自动化行为风险、API 网关暴露风险、按「原样」提供、用途限制（不得商用、不得规避计费）。使用即表示已阅读并同意；如不同意，请立即停止使用并卸载。
 
 ## 许可
 
@@ -463,6 +460,8 @@ npm/                     # npm 包（尚未发布）
 - 条款全文：[LICENSE](./LICENSE)
 - 白话说明与常见问题：[docs/policies/LICENSING.md](docs/policies/LICENSING.md)（[English](docs/policies/LICENSING.en.md)）
 - 商业授权请通过本仓库 Issues 联系作者。
+- **捐赠与授权无关**：赞助属自愿赠与，不构成付费购买、商业授权或任何服务承诺。
+- 本项目为**个人项目**，不提供商业支持、SLA 或维护承诺；Issue 与 PR 会尽力回应，但不保证时限。
 
 ## Star 趋势
 

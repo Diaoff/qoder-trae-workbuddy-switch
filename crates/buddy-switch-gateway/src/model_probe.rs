@@ -369,6 +369,12 @@ pub fn probe_state_of_qoder(status: u16) -> ProbeState {
                 ProbeState::UpstreamError
             }
         }
+        // 探测只看状态码、拿不到 body ⇒ 认不出 401/403 里的排队信号；
+        // 真到了这一档（`classify_http` 不会返回它）也按上游错误处理，不算账号死。
+        QoderErrKind::Queued => ProbeState::UpstreamError,
+        // 402：账号级余额耗尽。探测的「一格」是**模型**维度，这里如实报上游错误
+        // （把账号标成「凭据死」是错的 —— 凭据好着，只是没钱了）。
+        QoderErrKind::BalanceExhausted => ProbeState::UpstreamError,
     }
 }
 
@@ -1641,6 +1647,21 @@ async fn probe_cell_trae(
 mod tests {
     use super::*;
 
+    /// 串行化「碰进程级静态」的用例（作业槽 / 取消位 / 作业位）。
+    ///
+    /// ⚠️ 实测 flake（1/8 概率）：`status_wire_shape_is_stable` 与
+    /// `global_flags_round_trip_and_reset` 并行跑时会互相 `reset_for_test()` /
+    /// `set_job_for_test()` ⇒「cancel() 仍应置取消位」「作业在跑时不得释放」随机红。
+    /// 这两条都必须先拿这把锁 —— 全局状态 + 并行测试只能靠串行化，不靠"小心"。
+    static GLOBAL_STATE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// 拿全局状态锁（被毒化也继续：断言失败的信息比中毒更重要）。
+    fn lock_global_state() -> std::sync::MutexGuard<'static, ()> {
+        GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+    }
+
     fn soft(model_scoped: bool) -> UpstreamEvent {
         UpstreamEvent::SoftRate {
             reset_at_ms: Some(1_700_000_000_000),
@@ -2007,6 +2028,7 @@ mod tests {
     /// 变异：把 `status()` 的 idle 分支改成 `Value::Null` ⇒ red（前端 `job.phase` 直接炸）。
     #[test]
     fn status_wire_shape_is_stable() {
+        let _guard = lock_global_state();
         reset_for_test();
         assert_eq!(status()["phase"], json!("idle"));
 
@@ -2043,6 +2065,7 @@ mod tests {
     ///   但作业**真在跑**时**绝不**释放（否则双作业并发写同一槽）。
     #[test]
     fn global_flags_round_trip_and_reset() {
+        let _guard = lock_global_state();
         reset_for_test();
         assert!(!cancel_flag().load(Ordering::SeqCst));
         assert!(!busy_flag().load(Ordering::SeqCst));

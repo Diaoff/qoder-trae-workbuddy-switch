@@ -187,6 +187,8 @@ fn api_routes() -> Router {
         .route("/api/account/group", post(api_set_account_group))
         .route("/api/account/token-today", get(api_account_token_today))
         .route("/api/account/token-trend", get(api_gateway_token_trend))
+        .route("/api/account/usage-dim", get(api_gateway_usage_dim))
+        .route("/api/account/usage-reconcile", get(api_usage_reconcile))
         .route(
             "/api/switch/config",
             get(api_switch_config).post(api_save_switch_config),
@@ -461,6 +463,9 @@ fn api_routes() -> Router {
             get(api_qoder_checkin_status_map),
         )
         .route("/api/qoder/checkin/claim", post(api_qoder_checkin_claim))
+        // 一次性 Pro 升级包（+1800）：资格查询（只读）/ 领取（幂等）。
+        .route("/api/qoder/pro-pack/status", get(api_qoder_pro_pack_status))
+        .route("/api/qoder/pro-pack/claim", post(api_qoder_pro_pack_claim))
         .route("/api/qoder/credits", get(api_qoder_credits))
         // OAuth 设备授权（PKCE S256）：发起 + 轮询。与 WB 的 `/api/oauth/*` 同形，
         // 但**按 scope 分家**（Qoder 的双区域各有自己的授权页与 client_id）。
@@ -551,6 +556,8 @@ fn api_routes() -> Router {
             get(api_qoder_gateway_config).post(api_save_qoder_gateway_config),
         )
         .route("/api/qoder/gateway/status", get(api_qoder_gateway_status))
+        // 限额护栏：逐账号当日用量 / 拦截原因 / 余额快照（只读）。
+        .route("/api/qoder/gateway/quota", get(api_qoder_gateway_quota))
         .route(
             "/api/qoder/gateway/pool/exclusions",
             post(api_set_qoder_pool_exclusion),
@@ -1866,6 +1873,23 @@ async fn api_account_token_today(RawQuery(query): RawQuery) -> Response {
 async fn api_gateway_token_trend(RawQuery(query): RawQuery) -> Response {
     let region = parse_region(query_value(query.as_deref(), "region").as_deref());
     json_ok(token_daily::gateway_token_trend(region))
+}
+
+/// GET /api/account/usage-dim —— 网关三维度（模型 / 账号 / 端点）逐日历史。
+///
+/// 与 `src-tauri/src/commands.rs` 的 `get_gateway_usage_dim` **一一对应**。
+async fn api_gateway_usage_dim(RawQuery(query): RawQuery) -> Response {
+    let region = parse_region(query_value(query.as_deref(), "region").as_deref());
+    json_ok(token_daily::gateway_usage_dim(region))
+}
+
+/// GET /api/account/usage-reconcile —— 今日客户端 ↔ 网关对账。
+///
+/// 与 `src-tauri/src/commands.rs` 的 `get_usage_reconcile` **一一对应**。
+/// ⚠️ 只读、**不落盘**（结果随网关日志窗口滚动而变）。
+async fn api_usage_reconcile(RawQuery(query): RawQuery) -> Response {
+    let region = parse_region(query_value(query.as_deref(), "region").as_deref());
+    json_ok(token_daily::reconcile_today(region))
 }
 
 /// GET /api/switch/config —— 账号切换与账号列表展示配置。
@@ -7070,10 +7094,45 @@ async fn api_qoder_checkin_claim(Json(body): Json<Value>) -> Response {
     }
 }
 
+/// GET /api/qoder/pro-pack/status —— Pro 升级包资格（**只读**）。
+///
+/// `available=false` ⇒ 活动已下线 / 本区域没有（真机 404 就是这一档）⇒ 前端**不渲染**入口。
+async fn api_qoder_pro_pack_status(RawQuery(query): RawQuery) -> Response {
+    let region = match qoder_region_from_query(query.as_deref()) {
+        Ok(region) => region,
+        Err(error) => return json_err(error, StatusCode::BAD_REQUEST),
+    };
+    let uid = query_value(query.as_deref(), "uid").unwrap_or_default();
+    match qoder::checkin::pro_pack_status_for(region, &uid).await {
+        Ok(value) => json_ok(value),
+        Err(error) => json_err(error, StatusCode::BAD_REQUEST),
+    }
+}
+
+/// POST /api/qoder/pro-pack/claim —— 领取 Pro 升级包（幂等；已领过 `already=true`）。
+async fn api_qoder_pro_pack_claim(Json(body): Json<Value>) -> Response {
+    let region = match qoder_region_from_body(&body) {
+        Ok(region) => region,
+        Err(error) => return json_err(error, StatusCode::BAD_REQUEST),
+    };
+    let uid = body.get("uid").and_then(Value::as_str).unwrap_or("");
+    match qoder::checkin::pro_pack_claim_for(region, uid).await {
+        Ok(value) => json_ok(value),
+        Err(error) => json_err(error, StatusCode::BAD_REQUEST),
+    }
+}
+
 /// GET /api/qoder/credits —— 区域额度 / 套餐视图（逐账号 + 汇总；部分失败如实报）。
 async fn api_qoder_credits(RawQuery(query): RawQuery) -> Response {
     match qoder_region_from_query(query.as_deref()) {
-        Ok(region) => json_ok(qoder::credits::region_view(region).await),
+        Ok(region) => {
+            let view = qoder::credits::region_view(region).await;
+            // ★ 顺手喂**限额护栏**的余额快照（G1 的唯一数据来源）：
+            //   余额是慢变数据，只有这里真的查过一次才有值；没查过 ⇒ G1 恒不触发。
+            //   「余额 > 0」也是解除 402 停放的唯一路径（见 `quota::note_credits_view`）。
+            buddy_switch_gateway::qoder::quota::note_credits_view(region, &view);
+            json_ok(view)
+        }
         Err(error) => json_err(error, StatusCode::BAD_REQUEST),
     }
 }
@@ -7340,6 +7399,23 @@ async fn api_qoder_gateway_status(RawQuery(query): RawQuery) -> Response {
         )
         .await,
     )
+}
+
+/// GET /api/qoder/gateway/quota —— **限额护栏**视图（逐账号当日用量 + 拦截原因）。
+///
+/// `scope` 必填且 fail-closed（与 `/status` 同一条纪律）：两个区域的计数是**两份文件**，
+/// 缺 scope 就无从判断该看哪一份。
+///
+/// 表里的 `blocked` / `blockedReason` 由**选号用的同一个函数**产出
+/// （`quota::blocked`）⇒ 面板说「已拦」就是真的会拦，不会两处口径。
+async fn api_qoder_gateway_quota(RawQuery(query): RawQuery) -> Response {
+    match qoder_region_from_query(query.as_deref()) {
+        Ok(region) => {
+            let state = crate::qoder_gateway_host::shared_state();
+            json_ok(state.quota_view(region).await)
+        }
+        Err(error) => json_err(error, StatusCode::BAD_REQUEST),
+    }
 }
 
 /// GET /api/qoder/gateway/models —— 对外暴露的模型清单（**随上游刷新**）。
