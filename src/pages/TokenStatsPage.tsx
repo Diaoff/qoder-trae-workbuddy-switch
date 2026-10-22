@@ -46,13 +46,14 @@
  */
 
 import { useEffect, useMemo, useState } from "react";
-import { CircleAlert, Gauge, Info, Loader2, MessagesSquare, RefreshCw, Server, TrendingUp, Users } from "lucide-react";
+import { CircleAlert, Gauge, Info, KeyRound, Loader2, MessagesSquare, RefreshCw, Server, TrendingUp, Users } from "lucide-react";
 
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { EmptyState } from "@/components/ui/empty-state";
 import { Skeleton } from "@/components/ui/skeleton";
 import { ChartFrame } from "@/components/usage/chart-frame";
+import { dateKey, usageWindowKeys } from "@/lib/usage-window";
 import { CumulativeArea } from "@/components/usage/cumulative-area";
 import { compactTokens, exactTokens } from "@/components/usage/format";
 import { CoverageStrip, GatewaySourceTables, LEDGER_CLIENT_COLOR, LEDGER_GATEWAY_COLOR, LedgerModelTable } from "@/components/usage/ledger-parts";
@@ -60,6 +61,7 @@ import { ModelDonut } from "@/components/usage/model-donut";
 import { ModelRanking } from "@/components/usage/model-ranking";
 import { ReconcileSheet } from "@/components/usage/reconcile-sheet";
 import { SessionRanking } from "@/components/usage/session-ranking";
+import { KeyRanking, aggregateByKey, type KeyUsageSlice } from "@/components/usage/key-ranking";
 import { SessionScatter } from "@/components/usage/session-scatter";
 import { StackedDailyBar } from "@/components/usage/stacked-daily-bar";
 import { StatTiles, type StatTile } from "@/components/usage/stat-tiles";
@@ -76,6 +78,8 @@ import type {
   RegionFilter,
   TokenStatistics,
   TokenStatsSource,
+  GatewayLogEntry,
+  ApiKeyRecord,
 } from "@/lib/types";
 import { useRefreshAction } from "@/lib/use-refresh-action";
 import { useScope } from "@/lib/use-scope";
@@ -108,7 +112,7 @@ import {
 import { usageWindowDays, type UsageWindow } from "@/lib/usage-window";
 
 /** 本页承载的视图（积分视图在 `CreditStatsPage`）。 */
-export type TokenUsageView = "trend" | "models" | "sessions";
+export type TokenUsageView = "trend" | "models" | "sessions" | "keys";
 
 /** 会话级缓存：切走再切回不重取（与 `CreditStatsPage` 同一约定）。 */
 const statisticsCache: Partial<Record<RegionFilter, TokenStatistics>> = {};
@@ -605,6 +609,101 @@ function SessionsView({
   );
 }
 
+/**
+ * 密钥视图（issue #76 / U4）：**按密钥看用量排行**。
+ *
+ * 数据源与另三个视图不同 —— 它读的是**网关请求日志**（`get_gateway_logs`）而不是
+ * `token_daily` 账本：账本没有 key 维度（见 `key-ranking.tsx` 的模块注释）。
+ *
+ * 两条刻意的处置：
+ * - **Key 名取不到就显示短 id**，不显示「未知」—— 用户看到短 id 还能去密钥页对；
+ * - **老条目（无 `keyId` 键）单列一行**，不并进「无密钥调用」。
+ */
+function KeysView({ viewWindow }: { viewWindow: UsageWindow }) {
+  const t = useT();
+  const [entries, setEntries] = useState<GatewayLogEntry[] | null>(null);
+  const [keyNames, setKeyNames] = useState<Map<string, string>>(new Map());
+  const [error, setError] = useState<string | null>(null);
+  const [reload, setReload] = useState(0);
+
+  useEffect(() => {
+    let cancelled = false;
+    setError(null);
+    void (async () => {
+      try {
+        const [logs, keys] = await Promise.all([
+          api.getGatewayLogs(),
+          api.listApiKeys().catch(() => ({ keys: [] as ApiKeyRecord[] })),
+        ]);
+        if (cancelled) return;
+        setEntries(logs.logs ?? []);
+        setKeyNames(
+          new Map((keys.keys ?? []).map((key) => [key.id, key.name] as const)),
+        );
+      } catch (e) {
+        if (!cancelled) setError(api.asError(e));
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [reload]);
+
+  /* 空态**必须有出口**（门禁 P3）：本视图的出口是「重新读日志」——
+     它读的是文件，用户在别处产生新请求后需要手动触发一次。 */
+  const reloadAction = (
+    <Button size="sm" variant="outline" onClick={() => setReload((value) => value + 1)}>
+      <RefreshCw />
+      {t("wbStats.usage.empty.refresh")}
+    </Button>
+  );
+
+  const slices: KeyUsageSlice[] = useMemo(() => {
+    if (!entries) return [];
+    /* 窗口过滤复用**同一个**日期键算法（`usageWindowKeys` + `dateKey`）——
+       自己写 `toISOString().slice(0,10)` 会按 UTC 切日，与另三个视图在时区边界上
+       差一天（用户在 23:00 之后看会看到两个视图对不上）。 */
+    const inWindow = new Set(usageWindowKeys(viewWindow));
+    const filtered = entries.filter((entry) => inWindow.has(dateKey(new Date(entry.ts))));
+    return aggregateByKey(filtered, keyNames);
+  }, [entries, keyNames, viewWindow]);
+
+  if (error) {
+    return (
+      <EmptyState
+        icon={KeyRound}
+        title={t("wbStats.usage.empty.noData")}
+        description={error}
+        action={reloadAction}
+      />
+    );
+  }
+  if (!entries) {
+    return <div className="h-[180px] animate-pulse rounded-xl bg-muted" />;
+  }
+  if (slices.length === 0) {
+    return (
+      <EmptyState
+        icon={KeyRound}
+        title={t("wbStats.usage.keys.empty")}
+        description={t("wbStats.usage.keys.emptyHint")}
+        action={reloadAction}
+      />
+    );
+  }
+  return (
+    <div className="space-y-3">
+      <ChartFrame
+        title={t("wbStats.usage.keys.title")}
+        ariaLabel={t("wbStats.usage.keys.title")}
+        caption={t("wbStats.usage.keys.caption")}
+      >
+        <KeyRanking slices={slices} />
+      </ChartFrame>
+    </div>
+  );
+}
+
 /* ────────────────────────────── 页面 ────────────────────────────── */
 
 export default function TokenStatsPage({
@@ -793,6 +892,8 @@ export default function TokenStatsPage({
           ledger={ledger}
           onRefresh={() => setReload((value) => value + 1)}
         />
+      ) : view === "keys" ? (
+        <KeysView viewWindow={viewWindow} />
       ) : view === "sessions" ? (
         <SessionsView
           source={source}

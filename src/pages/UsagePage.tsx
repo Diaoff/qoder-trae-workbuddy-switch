@@ -61,12 +61,14 @@ const QoderUsagePage = lazy(() => import("@/pages/QoderUsagePage"));
 const QoderCreditsPage = lazy(() => import("@/pages/QoderCreditsPage"));
 
 /** 一级四视图（与原型 `tabs` 一一对应）。 */
-export type UsageTab = "trend" | "models" | "sessions" | "credits";
+export type UsageTab = "trend" | "models" | "sessions" | "keys" | "credits";
 
 const TAB_LABEL: Record<UsageTab, TranslationKey> = {
   trend: "wbStats.usage.view.trend",
   models: "wbStats.usage.view.models",
   sessions: "wbStats.usage.view.sessions",
+  // ★ issue #76 / U4：按密钥看用量（数据源是网关日志的 `keyId`）。
+  keys: "wbStats.usage.view.keys",
   credits: "wbStats.usage.view.credits",
 };
 
@@ -84,7 +86,13 @@ const TAB_LABEL: Record<UsageTab, TranslationKey> = {
  * 当时那条「Trae 没有与 WB 同形的数据源」的判断只对**趋势**视图的会话维度成立。
  */
 const PLATFORM_TABS: Record<Product, UsageTab[]> = {
-  workbuddy: ["trend", "models", "sessions", "credits"],
+  /* ★ issue #76 / U4：「按密钥」只在 **WB** 出现 —— 判据是**日志里有没有 `keyId`**：
+       · WB：`RequestMeta.key_id` 已接（`8f1a1c4`）⇒ 有维度，画排行；
+       · Trae：日志走 `TraeGatewayState::record_request`，**没有 key_id 参数** ⇒ 没有维度；
+       · Qoder：中继未接密钥策略 ⇒ 同样没有维度。
+     缺数据源就**不画空壳**（§6 #5）—— 一张全是「无密钥调用」的表比没有这一页更糟：
+     用户会以为「我的 key 都没在用」。Trae 补 keyId 与 Qoder 接中继后，这里各加一项即可。 */
+  workbuddy: ["trend", "models", "sessions", "keys", "credits"],
   trae: ["trend", "models", "credits"],
   /* ★ 2026-10-21：Qoder **四个视图齐了**（原先是「只开趋势」）。
      判据是**数据**而不是习惯 —— 这一次真的是数据补齐了：
@@ -279,7 +287,11 @@ export default function UsagePage({ defaultTab = "trend" }: { defaultTab?: Usage
           ) : tokenViews ? (
             <TokenPage
               key={reloadKey}
-              view={active === "models" ? "models" : active === "sessions" ? "sessions" : "trend"}
+              view={
+                active === "models" || active === "sessions" || active === "keys"
+                  ? active
+                  : "trend"
+              }
               {...viewProps}
             />
           ) : (

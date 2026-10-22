@@ -244,6 +244,11 @@ export const zh = {
   "wbStats.usage.view.trend": "趋势",
   "wbStats.usage.view.models": "模型",
   "wbStats.usage.view.sessions": "会话",
+  "wbStats.usage.view.keys": "密钥",
+  "wbStats.usage.keys.title": "按密钥看用量",
+  "wbStats.usage.keys.caption": "每条是一次网关请求：token 数 / 请求次数 / 占比。\n数据来自网关请求日志的 keyId —— 升级前的历史条目没有这个字段，单列在最后一行。",
+  "wbStats.usage.keys.empty": "这个时间窗口内没有带密钥的请求",
+  "wbStats.usage.keys.emptyHint": "密钥用量从升级后开始记录；也可能是这段时间的调用都没带 Key（本地直连）。",
   "wbStats.usage.view.credits": "积分",
 
   // 视图参数条（每页唯一：窗口 + 合并）

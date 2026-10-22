@@ -218,6 +218,11 @@ export const en = {
   "wbStats.usage.view.trend": "Trend",
   "wbStats.usage.view.models": "Models",
   "wbStats.usage.view.sessions": "Sessions",
+  "wbStats.usage.view.keys": "Keys",
+  "wbStats.usage.keys.title": "Usage by key",
+  "wbStats.usage.keys.caption": "Each row: tokens / requests / share.\nSource: the keyId field of gateway request logs — entries written before this feature have no such field and are listed last.",
+  "wbStats.usage.keys.empty": "No keyed requests in this window",
+  "wbStats.usage.keys.emptyHint": "Key usage is recorded from this version on; or these calls carried no key (local direct).",
   "wbStats.usage.view.credits": "Credits",
 
   "wbStats.usage.param.title": "View parameters",
