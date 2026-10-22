@@ -302,10 +302,22 @@ pub scope_groups: Vec<String>,    // 允许访问的**分组** id（与 scope_ac
 
 **已知边界（如实记录，不是「已完成」的一部分）**：
 
-1. **Trae / Qoder / 统一网关三侧密钥表未接入** —— 它们的 Key 是各自独立的台账
-   （`trae/apikey.rs` / `qoder/apikey.rs` / `unified/apikey.rs`），扩字段是各一轮的活。
-   当前行为 = 改造前（不限额 + 全部账号），**不是假功能**（本来就没有配额能力）。
-   `PickInput.allowed` 在这两侧先传 `None`（代码里已标注）。
+1. **Trae 已全通（台账 + 命令 + 前端 + 中继），Qoder / 统一网关未接入** ——
+   它们各自是独立台账（`qoder/apikey.rs` / `unified/apikey.rs`），扩字段是各一轮的活。
+   未接入侧的行为 = 改造前（不限额 + 全部账号），**不是假功能**（本来就没有配额能力）。
+
+   Trae 侧逐项：
+   - 台账 7 字段 + `masked` 七件套 + `update_policy`（复用 `KeyPolicy::normalized`）✅
+   - 命令 `set_trae_key_policy` / `trae_key_usage`（server + tauri + api.ts）✅
+   - 前端两列 + 行内展开 + 抽屉（共用 WB 的四个构件）✅
+   - 中继：配额 429（选号前）+ 白名单（`PickInput.allowed`）+ **请求数**记账 ✅
+   - **token 记账未接** ⬜ —— 需改 `trae/sse.rs` 的转换器（流结束时读 `TokenUsage`），
+     而该文件当时正被并发会话修改，按「不碰别人手里的文件」纪律留到下一轮。
+     ⇒ **Trae 侧 token 配额目前只记不判，请求数配额已生效。**
+
+   ★ Trae 与 WB 的三处字段差异（实现时踩到，代码里已注释）：
+   账号标识 `userId`（非 uid/id）、分组是**独立文件**的 `membership`（非 `groupName`）、
+   台账落盘 camelCase（WB 是 snake_case + masked 转 camelCase）。
 2. **token 计量的配额判定**：记账已接（流式 `KeyUsageSink` + 非流式 `record_ledger`），
    判定也在 `relay` 入口（按 `quota_unit` 取对应口径）⇒ **token 配额已生效**。
 3. **用量列只对「限额」的 Key 发请求**（不限额的显示「不限」，拉它没意义）——
