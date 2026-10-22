@@ -438,20 +438,25 @@ export ANTHROPIC_MODEL="wb-cn:deepseek-v4.1-flash"
 ```
 （只留 `ANTHROPIC_AUTH_TOKEN`，别同时设 `ANTHROPIC_API_KEY`。）
 
-### 5.3 dsh（`$DSH_HOME/settings.yaml`）
+### 5.3 dsh（`$DSH_HOME/profiles/<profile>/cordis.patch.yml`）
 ```yaml
-llm-pi-ai:
-  providers:
-    buddy-unified:
-      apiKeyEnv: BUDDY_SWITCH_KEY
-      api: openai-completions
-      baseURL: http://127.0.0.1:57892/v1
-      models:
-        - id: wb-cn:deepseek-v4.1-flash
-        - id: wb-global:deepseek-v4.1-flash
-        - id: trae-cn:deepseek-v4.1-flash
-          input: [text, image]
+- id: llm-pi-ai
+  config:
+    providers:
+      buddy-unified:
+        apiKeyEnv: BUDDY_SWITCH_KEY
+        api: openai-completions
+        baseURL: http://127.0.0.1:57892/v1
+        defaultInput: [text, image]   # 路由级兜底；条目非空 input 优先
+        models:
+          - id: wb-cn:deepseek-v4.1-flash
+          - id: wb-global:deepseek-v4.1-flash
+          - id: trae-cn:deepseek-v4.1-flash
+            input: [text, image]
 ```
+（`<profile>`：`dsh web` 为 `web`，桌面版为 `desktop`；密钥在 `$DSH_HOME/.credentials.yaml`。
+模态是**声明**不是探测 —— 不写就按纯文本处理，图片在准入阶段就被拦下。细则见
+[`../guides/GATEWAY-CLIENT-INTEGRATION.md`](../guides/GATEWAY-CLIENT-INTEGRATION.md) §3.4。）
 
 ### 5.4 CodeBuddy CLI（`~/.codebuddy/models.json`）—— 本需求最初的受害者
 ```json

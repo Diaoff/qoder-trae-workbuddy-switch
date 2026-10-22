@@ -378,20 +378,32 @@ hermes model      # 交互式：选「自定义端点」→ 填 Base URL + API K
    - Base URL：`http://127.0.0.1:57891/v1`
    - API 协议：`openai-completions`（接 WB 网关也可选 `openai-responses`；**接 Trae 网关不能选 `openai-responses`**，Trae 没有 `/v1/responses`）
    - 模型：点 **Fetch available models**（走 `GET /models`）→ 勾选保存
+   - 输入类型：展开**自定义设置 → 模型选项**，要收图的模型勾上**图片**（新建模型默认只勾文本；要取消文本必须先勾图片，至少保留一种）
    - 凭据：直接在 Web UI 填（落到 `$DSH_HOME/.credentials.yaml`，只回传脱敏描述符），或填 `apiKeyEnv` 指向一个环境变量名
 
-**手改 `$DSH_HOME/settings.yaml`**
+**手改 `$DSH_HOME/profiles/<profile>/cordis.patch.yml`**
+
+配置**不在 `settings.yaml`**（DSH 里没有这个文件）：自定义 provider 落在当前 profile 的
+`cordis.patch.yml`，`dsh web` 启动时 `<profile>` 是 `web`、桌面版是 `desktop`；
+密钥单独存在 `$DSH_HOME/.credentials.yaml`。浏览器与服务器同机时，用设置页头部的
+**Open configuration file** 直接打开这份文件。
+
+patch 是**列表**，每项 `- id: <插件>` + `config:`，providers 挂在 `llm-pi-ai` 的 `config` 下：
 
 ```yaml
-llm-pi-ai:
-  providers:
-    buddy-switch:
-      apiKeyEnv: BUDDY_SWITCH_KEY     # 这是「环境变量名」，不是密钥本身
-      api: openai-completions          # openai-completions | openai-responses | anthropic-messages
-      baseURL: http://127.0.0.1:57891/v1
-      models:
-        - id: <从 /v1/models 复制的模型 id>
+- id: llm-pi-ai
+  config:
+    providers:
+      buddy-switch:
+        displayName: BuddySwitch
+        apiKeyEnv: BUDDY_SWITCH_API_KEY  # 这是「环境变量名」，不是密钥本身
+        api: openai-completions          # openai-completions | openai-responses | anthropic-messages
+        baseURL: http://127.0.0.1:57891/v1
+        models:
+          - id: <从 /v1/models 复制的模型 id>
 ```
+
+⚠️ **patch 里的 override 会整段替换该项的 `config`**：手改时把同文件里其它 provider 与字段一并保留，否则会被清掉。
 
 接 Trae 网关的 Anthropic 协议写法：
 
@@ -410,20 +422,38 @@ llm-pi-ai:
         maxTokensField: max_tokens
 ```
 
-**视觉模型要显式声明**（手工录入的模型默认按纯文本处理）：
+**视觉模型要显式声明**（手工录入的模型默认按纯文本处理）
+
+DSH 判断一个模型能不能收图**只看配置里声明的输入模态**，不看网关实际能力。没声明就在
+**提示词准入阶段**被拦下 —— 请求根本到不了网关，所以「同一模型走官方 API 能发图、走网关不行」
+通常不是网关的问题，而是 DSH 侧没把这项能力声明出来。`input` 只对该模型生效：
 
 ```yaml
-      models:
-        - id: <模型 id>
-          input: [text, image]
+        models:
+          - id: <模型 id>
+            input: [text, image]
 ```
 
-**验证**：保存后用**新会话**发一句「只回复 custom provider connected，不要修改文件，也不要运行命令」。
+全部手填模型都收图时，在**路由**上写一次兜底，别逐条重复：
+
+```yaml
+        defaultInput: [text, image]
+```
+
+- 优先级：条目 `input`（非空）> 已装目录 > 路由 `defaultInput`（默认 `[text]`）。
+- **收回纯文本要写 `input: [text]`**；`input: []` 等价于没写，会继续继承 `defaultInput` 的图片能力。
+- 内置 provider 没有显式 `models` 列表时，用 `modelOverrides` 按模型 id 写 `input`。
+- 未知模态值会被拒；除模型自身的 `input` 外，每个列表至少要写一种模态。
+- **模态声明不做校验**：给实际不收图的模型错开图片，会一直失败在提供方那一侧。
+
+**验证**：保存后用**新会话**发一句「只回复 custom provider connected，不要修改文件，也不要运行命令」，再发一张图。
 
 **坑**
 
 - `apiKeyEnv` 引用的是**环境变量名**；该变量必须在 **dsh 启动前**就存在，改完要重启 dsh。
-- 模型配置**下一次请求生效**；已发过请求的旧会话保留原模型 ⇒ 换模型后要**新建会话**验证。
+- 模型配置**下一次请求生效**；已发过请求的旧会话保留日志里记录的模型与图片 ⇒ 换模型、补模态后都要**新建会话**验证。
+- **`api` 保持 `openai-completions`**：它发的是 `{"type":"image_url","image_url":{"url":"data:image/png;base64,…"}}`，
+  换成 `openai-responses` 则是 `input_image` + `detail`，多数 OpenAI 兼容网关不接受。
 - Fetch 返回 401 = 凭据问题，手动填模型**绕不过**认证。
 - 自定义 provider 的**模型名必须手填**（不像内置目录有清单）。
 
