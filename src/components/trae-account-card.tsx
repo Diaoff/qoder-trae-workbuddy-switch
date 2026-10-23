@@ -13,7 +13,7 @@ import { compactTokens } from "@/components/usage/format";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { AVATAR_TEXT_CLASS, accountInitials, avatarTone } from "@/components/account-card";
 import { displayText } from "@/lib/display-text";
-import { summarizeExpiring } from "@/lib/credit-expiry";
+import { EXPIRY_TIP_MAX_HEIGHT, summarizeExpiring } from "@/lib/credit-expiry";
 import { formatAbsoluteTime, formatRelativeTime } from "@/lib/catalog-source";
 import { useT, type Translate } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
@@ -352,8 +352,12 @@ export function TraeAccountCard({
           {t("trae.comp.card.chip.expiring", { amount: formatCredits(expiring.total), days: expiring.days })}
         </Badge>
       </TooltipTrigger>
-      <TooltipContent side="top">
-        <div className="whitespace-nowrap font-medium">{t("trae.comp.card.chip.expiringTipTitle", { n: expiring.batches.length })}</div>
+      {/* issue #79：逐批明细可能有几十行 ⇒ 限高可滚，标题钉在浮层顶部。
+          与 WB 卡片同一处理（`EXPIRY_TIP_MAX_HEIGHT`），见 `account-card.tsx::expiryTipBody`。 */}
+      <TooltipContent side="top" style={{ maxHeight: EXPIRY_TIP_MAX_HEIGHT }}>
+        <div className="sticky -top-2 -mx-3 -mt-2 bg-popover px-3 pb-1 pt-2 font-medium">
+          {t("trae.comp.card.chip.expiringTipTitle", { n: expiring.batches.length })}
+        </div>
         {expiring.batches.map((batch) => (
           <div key={batch.expireAt} className="whitespace-nowrap tabular-nums">
             {t("trae.comp.card.chip.expiringTipLine", {

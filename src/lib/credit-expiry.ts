@@ -173,3 +173,26 @@ export function nearestExpiringBatch(
 export function daysUntil(expireAt: number, now: number = Date.now()): number {
   return Math.max(1, Math.ceil((expireAt - now) / DAY_MS));
 }
+
+/* ══════════════════════ 渲染约束 ══════════════════════ */
+
+/**
+ * 逐批明细 tooltip 的高度上限（issue #79）。
+ *
+ * ## 为什么需要它
+ *
+ * 明细是**一行一批**：积分包多的时候能有四五十批（实测用户 41 批），
+ * 一行 20px 就是 800px+，一定比可视空间高。
+ *
+ * 两层限制缺一不可：
+ *
+ * ① `var(--radix-popper-available-height)` —— Radix popper 算出的**当前方向可用高度**（已扣
+ *    `collisionPadding`）。`TooltipContent` 基础样式已带同一条，这里再写是为了让 `min()` 能取到它；
+ * ② `56vh` —— 硬上限。只用 ① 的话，徽章恰好在下半屏时浮层会长到半屏高，
+ *    把用户正要看的账号卡整个盖住。hover 是为了「看这张卡」，不是换一屏。
+ *
+ * ⚠️ 定值不要外提到 CSS 变量里：它只服务「逐批明细」这一种长列表，
+ * 短 tooltip 加上限只会让内容无谓地出现滚动条。
+ */
+export const EXPIRY_TIP_MAX_HEIGHT = "min(56vh, var(--radix-popper-available-height))";
+
