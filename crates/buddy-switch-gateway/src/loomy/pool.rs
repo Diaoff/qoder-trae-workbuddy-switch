@@ -323,44 +323,91 @@ impl LoomyPool {
     }
 
     /// 池摘要（统一网关管理面）。
+    ///
+    /// ★ 字段名必须与另外三条产品线**逐字一致**（`available` / `cooling` / `disabled` /
+    /// `expired` / `zero_credits` / `total_credits`）：统一网关的 `pool_object` 只做
+    /// **键值摊平**、不做改名，前端 `UnifiedGatewayPool` 也只认这套名字。
+    ///
+    /// ⚠️ 曾经这里用 `usable` / `authDead` —— 统一网关页渲染成「**undefined 可用**」，
+    /// 而账号状态、冷却、禁用数全被读成 `undefined`（池卡片看起来一切正常，数字全是假的）。
+    /// Loomy 是第四个产品线，最晚落地，没有跟上这套契约。
+    ///
+    /// Loomy 不建模积分 ⇒ `expired` / `zero_credits` / `total_credits` 恒 0
+    /// （与 Qoder 同款处理；「不可知」在这里是真 0，不是缺失）。
     pub fn summary(&self, now: i64) -> Value {
-        let total = self.entries.len();
-        let usable = self
-            .entries
-            .values()
-            .filter(|entry| entry.healthy_for_request(now, ""))
-            .count();
+        // 排除是**互斥第六态**：必须从 `available` 里扣掉，否则「N 可用」与实际可选数不符
+        //（与 WB / Trae / Qoder 同一条不变量：六态之和 == total）。
+        let excluded = self.excluded_map();
+        let mut available = 0usize;
+        let mut cooling = 0usize;
+        let mut disabled = 0usize;
+        let mut excluded_count = 0usize;
+        for entry in self.entries.values() {
+            if excluded.contains_key(&entry.uid) {
+                excluded_count += 1;
+            } else if entry.auth_dead || !entry.has_access() {
+                // 无凭据与凭据失效都属「需人工干预」⇒ 归 `disabled`（与 `accounts_view` 的
+                // `status = disabled` 同一口径；两个出口必须说同一件事）。
+                disabled += 1;
+            } else if entry.cooldown_until > now {
+                cooling += 1;
+            } else {
+                available += 1;
+            }
+        }
         json!({
             "product": "loomy",
-            "total": total,
-            "usable": usable,
-            "cooling": self.entries.values().filter(|e| e.cooldown_until > now).count(),
-            "authDead": self.entries.values().filter(|e| e.auth_dead).count(),
+            "total": self.entries.len(),
+            "available": available,
+            "cooling": cooling,
+            "disabled": disabled,
+            "expired": 0,
+            "zero_credits": 0,
+            "total_credits": 0,
+            "excluded": excluded_count,
         })
     }
 
     /// 账号视图列表（管理面）。
+    ///
+    /// ★ 形状与共用池卡 `GatewayPoolAccount` **逐字对齐**（`status` 五态 + `cooling` /
+    /// `disabled` 两个布尔 + `credits`）。统一网关页与 Loomy 独立页读的是**同一个**类型。
+    ///
+    /// ⚠️ 曾经这里发 `state` / `hasCredential`，而前端读 `status` / `cooling` / `disabled` ——
+    /// 于是**每一个账号都被渲染成「可用」**（`status` 缺失 ⇒ 归一化兜底成 `available`），
+    /// 冷却中的、凭据失效的账号看起来都能用。这类「字段名对不上 ⇒ 静默显示默认值」
+    /// 比直接报错危险得多。
     pub fn accounts_view(&self, now: i64) -> Vec<Value> {
         let excluded = self.excluded_map();
         self.entries
             .values()
             .map(|entry| {
+                let cooling = entry.cooldown_until > now;
+                let disabled = entry.auth_dead || !entry.has_access();
+                let status = if excluded.contains_key(&entry.uid) {
+                    "excluded"
+                } else if disabled {
+                    "disabled"
+                } else if cooling {
+                    "cooling"
+                } else {
+                    "available"
+                };
                 json!({
                     "uid": entry.uid,
                     "name": entry.name,
-                    "hasCredential": entry.has_access(),
-                    "state": if entry.auth_dead {
-                        "auth_dead"
-                    } else if entry.cooldown_until > now {
-                        "cooling"
-                    } else if !entry.has_access() {
-                        "no_credential"
-                    } else {
-                        "usable"
-                    },
+                    "status": status,
+                    // Loomy 池不建模积分 ⇒ **必须** `null`（前端渲染「—」）。
+                    // 给 0 会被读成「这个账号没额度了」，而真相是「不可知」。
+                    "credits": Value::Null,
+                    "cooling": cooling,
+                    "cooldownUntil": (cooling || entry.cooldown_until > 0)
+                        .then_some(entry.cooldown_until),
                     "cooldownReason": entry.cooldown_reason,
+                    "disabled": disabled,
                     "lastError": entry.last_error,
                     "excludedNote": excluded.get(&entry.uid),
+                    "hasCredential": entry.has_access(),
                 })
             })
             .collect()
@@ -389,4 +436,143 @@ pub struct LoomyPool {
     pick_seq: u64,
     dirty: bool,
     region: Option<LoomyRegion>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 造一个池（不碰磁盘：直接塞 entries，绕过 `sync_for`）。
+    fn pool_with(entries: Vec<LoomyPoolEntry>) -> LoomyPool {
+        LoomyPool {
+            entries: entries.into_iter().map(|e| (e.uid.clone(), e)).collect(),
+            ..LoomyPool::default()
+        }
+    }
+
+    fn entry(uid: &str, token: &str, auth_dead: bool, cooldown_until: i64) -> LoomyPoolEntry {
+        let account = RawAccount {
+            uid: uid.to_string(),
+            access_token: token.to_string(),
+            ..RawAccount::default()
+        };
+        let mut entry = LoomyPoolEntry::new(&account);
+        entry.auth_dead = auth_dead;
+        entry.cooldown_until = cooldown_until;
+        entry
+    }
+
+    /// ★ 池摘要的键集合必须与**另外三条产品线逐字一致**。
+    ///
+    /// 统一网关的 `pool_object` 只做键值摊平、**不改名**，前端 `UnifiedGatewayPool`
+    /// 也只认这套名字。Loomy 曾用 `usable` / `authDead` ⇒ 统一网关页渲染成
+    /// 「**undefined 可用**」，冷却与禁用数也全是 `undefined`。
+    ///
+    /// 变异：把 `available` 改回 `usable` ⇒ 本条红。
+    #[test]
+    fn summary_keys_match_other_product_lines() {
+        let now = 1_000_000;
+        let pool = pool_with(vec![entry("a", "tok", false, 0)]);
+        let summary = pool.summary(now);
+
+        for key in [
+            "total",
+            "available",
+            "cooling",
+            "disabled",
+            "expired",
+            "zero_credits",
+            "total_credits",
+            "excluded",
+        ] {
+            assert!(
+                summary.get(key).is_some(),
+                "池摘要缺 `{key}` —— 统一网关页会把它渲染成 undefined。实际键：{:?}",
+                summary.as_object().map(|o| o.keys().collect::<Vec<_>>())
+            );
+        }
+        // 旧名字不得残留：两套名字并存 = 迟早有人读到错的那套。
+        assert!(
+            summary.get("usable").is_none(),
+            "`usable` 已废弃，应为 `available`"
+        );
+        assert!(
+            summary.get("authDead").is_none(),
+            "`authDead` 已废弃，应为 `disabled`"
+        );
+    }
+
+    /// 六态互斥且**和等于 total**（与 WB / Trae / Qoder 同一条不变量）。
+    ///
+    /// 变异：把冷却中的账号同时算进 `available` ⇒ 本条红。
+    #[test]
+    fn summary_states_are_mutually_exclusive() {
+        let now = 1_000_000;
+        let pool = pool_with(vec![
+            entry("ok", "tok", false, 0),                 // available
+            entry("cooling", "tok", false, now + 60_000), // cooling
+            entry("dead", "tok", true, 0),                // disabled（凭据失效）
+            entry("no-token", "", false, 0),              // disabled（无凭据）
+        ]);
+        let summary = pool.summary(now);
+        let n = |k: &str| summary[k].as_u64().unwrap_or(0);
+
+        assert_eq!(n("total"), 4);
+        assert_eq!(n("available"), 1, "只有 ok 可用");
+        assert_eq!(n("cooling"), 1);
+        assert_eq!(n("disabled"), 2, "凭据失效 + 无凭据都需人工干预");
+        assert_eq!(
+            n("available")
+                + n("cooling")
+                + n("disabled")
+                + n("expired")
+                + n("zero_credits")
+                + n("excluded"),
+            n("total"),
+            "六态之和必须等于 total —— 否则卡片会自相矛盾"
+        );
+    }
+
+    /// ★ 账号行的形状必须与共用池卡 `GatewayPoolAccount` 对齐。
+    ///
+    /// 曾发 `state` / `hasCredential`，而前端读 `status` / `cooling` / `disabled` ⇒
+    /// **每个账号都被渲染成「可用」**（缺失字段被归一化兜底成默认值）。
+    ///
+    /// 变异：把 `status` 改回 `state` ⇒ 本条红。
+    #[test]
+    fn accounts_view_matches_shared_pool_card() {
+        let now = 1_000_000;
+        let pool = pool_with(vec![
+            entry("ok", "tok", false, 0),
+            entry("cooling", "tok", false, now + 60_000),
+            entry("dead", "tok", true, 0),
+        ]);
+        let rows = pool.accounts_view(now);
+
+        for row in &rows {
+            for key in ["uid", "name", "status", "cooling", "disabled", "credits"] {
+                assert!(row.get(key).is_some(), "账号行缺 `{key}`：{row}");
+            }
+            assert!(
+                row.get("state").is_none(),
+                "`state` 已废弃，应为 `status`：{row}"
+            );
+        }
+
+        let by_uid = |uid: &str| {
+            rows.iter()
+                .find(|row| row["uid"] == uid)
+                .unwrap_or_else(|| panic!("缺账号 {uid}"))
+        };
+        assert_eq!(by_uid("ok")["status"], "available");
+        assert_eq!(by_uid("cooling")["status"], "cooling");
+        assert_eq!(by_uid("cooling")["cooling"], true);
+        assert_eq!(by_uid("dead")["status"], "disabled");
+        assert_eq!(by_uid("dead")["disabled"], true);
+        // Loomy 不建模积分 ⇒ 必须是 null（0 会被读成「没额度了」）。
+        assert!(
+            by_uid("ok")["credits"].is_null(),
+            "credits 必须是 null（不可知），不能是 0"
+        );
+    }
 }
