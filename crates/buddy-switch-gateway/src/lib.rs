@@ -19,13 +19,13 @@
 
 pub mod account_strategy;
 pub mod apikey;
-pub mod key_usage;
 /// 「接入即识别」与「网关启动补识别」的**唯一探测出口**（P10 §1.6 / T03）。
 pub mod catalog_probe;
 pub mod credits_refresh;
 /// 模型禁用偏好（P11）：两个出口（`/v1/models` + 调用）共用的唯一判断点。
 pub mod disabled_models;
 pub mod error;
+pub mod key_usage;
 pub mod logging;
 /// 账号池 × 模型限流探测（一次性作业；见模块文档）。
 pub mod model_probe;
