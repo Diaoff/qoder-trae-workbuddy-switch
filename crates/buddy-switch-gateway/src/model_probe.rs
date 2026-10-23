@@ -385,7 +385,8 @@ fn save_ledger_to(path: &std::path::Path, store: &LedgerFile) -> Result<(), Stri
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
     }
-    buddy_switch_core::modules::config::atomic_write(path, &content).map_err(|error| error.to_string())
+    buddy_switch_core::modules::config::atomic_write(path, &content)
+        .map_err(|error| error.to_string())
 }
 
 impl LedgerFile {
@@ -997,8 +998,8 @@ async fn prepare(
     }
 
     /* ★ 两条互斥路径（`cells` 优先）：
-       - 显式格清单（账号页台账卡）：**只探点名的格**，不铺笛卡尔积；
-       - 两根轴（网卡选择态）：账号为外层展开 —— 那里用户是显式勾了账号与模型。 */
+    - 显式格清单（账号页台账卡）：**只探点名的格**，不铺笛卡尔积；
+    - 两根轴（网卡选择态）：账号为外层展开 —— 那里用户是显式勾了账号与模型。 */
     let (plan, truncated) = match cells {
         Some(list) => {
             let wanted = dedup_pairs(list.into_iter().map(|cell| (cell.uid, cell.model)));
@@ -1176,8 +1177,8 @@ async fn finish(phase: ProbePhase, target: &ProbeTarget) {
     }
 
     /* ★ 并入**跨重启台账**（与作业槽的分工见 [`ledger_snapshot`]）：
-       作业槽只回答「本轮跑到哪」，而账号页要的是「这些格最近一次怎么样」——
-       不落盘的话重启即空，两处「同步」就只剩本次会话。 */
+    作业槽只回答「本轮跑到哪」，而账号页要的是「这些格最近一次怎么样」——
+    不落盘的话重启即空，两处「同步」就只剩本次会话。 */
     record_ledger(&target.scope(), &cells);
 }
 
@@ -2029,7 +2030,10 @@ mod tests {
         let path = dir.join("probe_results.json");
 
         let mut store = LedgerFile::default();
-        store.merge("wb-cn", &[test_cell("u1", "m1", ProbeState::RateLimitedModel)]);
+        store.merge(
+            "wb-cn",
+            &[test_cell("u1", "m1", ProbeState::RateLimitedModel)],
+        );
         save_ledger_to(&path, &store).unwrap();
 
         let back = load_ledger_from(&path);
@@ -2055,8 +2059,15 @@ mod tests {
         let mut ledger = LedgerFile::default();
         assert!(ledger.merge("wb-cn", &[test_cell("u1", "m1", ProbeState::Ok)]));
         // 第二轮只探一格：**不得**抹掉第一格（账号页逐行实测就靠这条累积）。
-        ledger.merge("wb-cn", &[test_cell("u1", "m2", ProbeState::RateLimitedModel)]);
-        assert_eq!(ledger.flat("wb-cn").len(), 2, "第二轮只探 1 格，却丢了第一格");
+        ledger.merge(
+            "wb-cn",
+            &[test_cell("u1", "m2", ProbeState::RateLimitedModel)],
+        );
+        assert_eq!(
+            ledger.flat("wb-cn").len(),
+            2,
+            "第二轮只探 1 格，却丢了第一格"
+        );
         // 同格覆盖（同一格再测出限流 ⇒ 以新结论为准）。
         ledger.merge(
             "wb-cn",
@@ -2070,7 +2081,10 @@ mod tests {
         assert_eq!(cell.state, ProbeState::RateLimitedModel);
         // 完全相同的格 ⇒ 不算变化（不写盘）。
         assert!(
-            !ledger.merge("wb-cn", &[test_cell("u1", "m1", ProbeState::RateLimitedModel)]),
+            !ledger.merge(
+                "wb-cn",
+                &[test_cell("u1", "m1", ProbeState::RateLimitedModel)]
+            ),
             "同值合并不该报告变化（会造出无意义的写盘）"
         );
         // 作用域隔离：wb-cn 的格不能出现在 wb-global。

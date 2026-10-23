@@ -3393,8 +3393,8 @@ async fn api_probe_start(Json(body): Json<Value>) -> Response {
             .collect()
     });
     /* ★ 显式格清单（与 `uids` / `models` 互斥）：账号页台账卡只探点名的格。
-       逐项反序列化，坏项丢弃而不是整请求 400 —— 与 `uids` / `models` 的
-       `filter_map` 同款宽容度（前端偶尔会带 `null`）。 */
+    逐项反序列化，坏项丢弃而不是整请求 400 —— 与 `uids` / `models` 的
+    `filter_map` 同款宽容度（前端偶尔会带 `null`）。 */
     let cells: Option<Vec<buddy_switch_gateway::model_probe::ProbeStartCell>> =
         body.get("cells").and_then(Value::as_array).map(|items| {
             items
