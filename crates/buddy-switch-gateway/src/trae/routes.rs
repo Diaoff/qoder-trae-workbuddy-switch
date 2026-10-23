@@ -1,4 +1,4 @@
-//! Trae 网关的四个端点与 Bearer 鉴权中间件。
+//! Trae 网关的五个端点与 Bearer 鉴权中间件。
 //!
 //! ## 与 WorkBuddy 网关路由的关系
 //!
@@ -94,10 +94,22 @@ pub struct TraeKeyContext(pub std::sync::Arc<crate::trae::apikey::TraeApiKeyReco
 /// 这种统计静默错位。
 const ENDPOINT_CHAT: &str = "/v1/chat/completions";
 const ENDPOINT_MESSAGES: &str = "/v1/messages";
+/// `POST /v1/responses`（Responses API）。
+///
+/// 上游仍是 `llm_utils_chat`（只认 chat 形态）⇒ 本端点是**两次转换**：入站
+/// Responses → chat（[`crate::protocol::responses::to_upstream_request`]），出站
+/// chat SSE → Responses 事件流（[`crate::protocol::responses::ResponsesSseStream`]）。
+/// 选号 / 换号 / 冷却 / 粘性 / 记账**一行都没改** —— 与 `/v1/messages` 同一个理由。
+const ENDPOINT_RESPONSES: &str = "/v1/responses";
 
 /// 该端点是否要 Anthropic 出站转换。
 fn is_anthropic_endpoint(endpoint: &str) -> bool {
     endpoint == ENDPOINT_MESSAGES
+}
+
+/// 该端点是否要 Responses 出站转换。
+fn is_responses_endpoint(endpoint: &str) -> bool {
+    endpoint == ENDPOINT_RESPONSES
 }
 
 /// 上游 UA。参考实现固定为 `TraeClient/TTNet`，改它没有好处。
@@ -370,6 +382,8 @@ pub async fn chat_for_variant(
             started,
             variant,
             key.as_deref(),
+            // chat 入口没有 custom 工具概念。
+            None,
         )
         .await
     } else {
@@ -395,7 +409,7 @@ pub async fn chat_for_variant(
 /// ## 为什么能与 `/v1/chat/completions` 共用整条链路
 ///
 /// 上游只认一种东西（Trae 私有的 `llm_utils_chat`），所以两条入口的差别**只在协议层**：
-/// 入站 Anthropic → OpenAI 形态（[`anthropic::to_upstream_request`]），
+/// 入站 Anthropic → OpenAI 形态（[`anthropic::to_upstream_request_adaptive`]），
 /// 出站 OpenAI → Anthropic（[`anthropic::AnthropicSseStream`] /
 /// [`anthropic::message_from_response`]）。中间的中继（选号 / 换号 / 冷却 / 粘性 /
 /// 日志）**一行都不用改** —— 这正是把这两个转换放进共用 `protocol` 层
@@ -459,7 +473,11 @@ pub async fn messages_for_variant(
         );
     };
 
-    let upstream = anthropic::to_upstream_request(&parsed);
+    /* ★ 图片：默认丢（Trae 上游是否吃 `content` 里的 `image_url` parts 未实测），
+    丢弃时文本里会留下「已移除 N 张图片」；`BUDDY_SWITCH_ANTHROPIC_FORWARD_IMAGES=1`
+    打开后改走带图分支。`llm_utils_chat` 本来就要求 `content` 是数组，带图产出
+    的 parts 数组不需要额外适配。 */
+    let upstream = anthropic::to_upstream_request_adaptive(&parsed);
     let Ok(encoded) = serde_json::to_vec(&upstream) else {
         return anthropic_error(
             StatusCode::BAD_REQUEST,
@@ -511,6 +529,8 @@ pub async fn messages_for_variant(
             started,
             variant,
             key.as_deref(),
+            // Anthropic 入口没有 custom 工具概念。
+            None,
         )
         .await
     } else {
@@ -548,6 +568,180 @@ pub async fn messages_for_variant(
     }
 }
 
+/// `POST /v1/responses`：Responses 协议入口（Codex 等 Responses 客户端）。
+///
+/// 与 [`messages`] 同一个套路：把扩展里的归属转成显式参数，交给共用实现
+/// [`responses_for_variant`]。
+pub async fn responses(
+    State(state): State<TraeGatewayState>,
+    Extension(key_variant): Extension<TraeKeyVariant>,
+    key_ctx: Option<Extension<TraeKeyContext>>,
+    body: Bytes,
+) -> Response {
+    let key = key_ctx.map(|Extension(ctx)| ctx.0);
+    let actor = key.map(|record| {
+        std::sync::Arc::new(crate::apikey::KeyActor::new(
+            record.id.clone(),
+            record.policy(),
+            state.key_usage.clone(),
+            "trae",
+        ))
+    });
+    responses_for_variant(state, key_variant.0, body, actor).await
+}
+
+/// 一趟 Trae **Responses** 中继（认证之后的全部逻辑）—— 产品线入口与统一网关共用。
+///
+/// ## 为什么这条链能复用
+///
+/// 上游只认 `llm_utils_chat`（chat 形态），所以本端点与 `/v1/chat/completions` 的
+/// 差别**全在协议层**：入站 [`crate::protocol::responses::to_upstream_request`]，
+/// 出站 [`crate::protocol::responses::ResponsesSseStream`] /
+/// [`crate::protocol::responses::to_response_object`]。选号 / 换号 / 冷却 / 粘性 /
+/// 记账与另外两条入口**完全同一份** —— 与 `/v1/messages` 的理由一样：另写一份必然分家。
+///
+/// ## 错误体
+///
+/// 用 OpenAI 形状（[`openai_error`]）而不是 Anthropic 形状：Responses 客户端只认前者。
+pub async fn responses_for_variant(
+    state: TraeGatewayState,
+    variant: TraeVariant,
+    body: Bytes,
+    // ★ issue #76：同 `chat_for_variant`。
+    key: Option<std::sync::Arc<crate::apikey::KeyActor>>,
+) -> Response {
+    let started = Instant::now();
+    // ★ issue #76：配额判定（选号前）。
+    if let Some(actor) = key.as_deref() {
+        if let Some(message) =
+            actor.check_quota_and_count(buddy_switch_core::modules::config::now_ms())
+        {
+            return openai_error(
+                StatusCode::TOO_MANY_REQUESTS,
+                "key_quota_exceeded",
+                &message,
+            );
+        }
+    }
+
+    let config = state.config_snapshot().await;
+    let Ok(parsed) = serde_json::from_slice::<Value>(&body) else {
+        return openai_error(
+            StatusCode::BAD_REQUEST,
+            "invalid_request_error",
+            "请求体不是合法 JSON",
+        );
+    };
+
+    /* freeform（custom）工具名必须从**原始**请求体取：转换之后它们已被降级成普通
+    function，`type` 没了，名字还在但语义丢失 —— 出站要靠这份集合还原成
+    `custom_tool_call` 事件/条目。 */
+    let responses_custom =
+        std::sync::Arc::new(crate::protocol::responses::custom_tool_names(&parsed));
+
+    // Responses 请求 → 上游 chat 形态。
+    let upstream = crate::protocol::responses::to_upstream_request(&parsed);
+    let Ok(encoded) = serde_json::to_vec(&upstream) else {
+        return openai_error(
+            StatusCode::BAD_REQUEST,
+            "invalid_request_error",
+            "请求体无法序列化",
+        );
+    };
+    let upstream_body = Bytes::from(encoded);
+
+    // 模型取**转换后**的请求体（那是真正发给上游的东西）。
+    let model = payload::model_of(&upstream, &config.default_model);
+    // ★ 出口 ②（P11）：与 `/v1/chat/completions` 同源 —— 被禁用的模型直接拒绝。
+    {
+        let scope = scope_of_trae_region(variant.region());
+        let disabled = state.disabled.read().await;
+        if crate::disabled_models::is_disabled(&disabled, scope, &model) {
+            return openai_error(
+                StatusCode::FORBIDDEN,
+                "model_disabled",
+                &crate::disabled_models::disabled_message(scope, &model),
+            );
+        }
+    }
+    let stream = payload::wants_stream(&parsed);
+    let max_rotate = config.max_rotate.max(1);
+    let chat_id = format!("chatcmpl-{}", uuid_like());
+
+    /* 粘性键：会话 id 优先；Responses 客户端（Codex 等）没有 `metadata`，用
+    `prompt_cache_key` 顶上 —— 它本身就是「同一段会话复用同一前缀」的语义，
+    与粘性同目的。两者都没有 ⇒ `None` ⇒ 整段跳过粘性（绝不退化成轮级键）。 */
+    let sticky_key = session_headers::conversation_id_of(&parsed)
+        .map(|conversation| conversation.trim().to_string())
+        .filter(|conversation| !conversation.is_empty())
+        .or_else(|| {
+            parsed
+                .get("prompt_cache_key")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|key| !key.is_empty())
+                .map(str::to_string)
+        })
+        .map(|conversation| sticky::sticky_key(variant.as_str(), &model, &conversation));
+
+    if stream {
+        stream_chat(
+            &state,
+            &upstream_body,
+            &config.default_model,
+            &model,
+            &chat_id,
+            max_rotate,
+            &config.preferred_uid,
+            sticky_key.as_deref(),
+            ENDPOINT_RESPONSES,
+            started,
+            variant,
+            key.as_deref(),
+            Some(responses_custom),
+        )
+        .await
+    } else {
+        match aggregate_payload(
+            &state,
+            &upstream_body,
+            &config.default_model,
+            &model,
+            &chat_id,
+            max_rotate,
+            &config.preferred_uid,
+            sticky_key.as_deref(),
+            ENDPOINT_RESPONSES,
+            started,
+            variant,
+            key.as_deref(),
+        )
+        .await
+        {
+            Ok(payload) => {
+                record_key_tokens(&state, key.as_deref(), &payload);
+                // 非流式：上游给的是 chat.completion，先收成聚合器再走**同一份**
+                // Responses 形状实现（两条上游共用 `to_response_object_from`）。
+                let accumulator =
+                    crate::protocol::openai::CompletionAccumulator::from_response(&payload);
+                json_response(
+                    StatusCode::OK,
+                    crate::protocol::responses::to_response_object(
+                        &accumulator,
+                        &model,
+                        responses_custom.as_ref(),
+                    ),
+                )
+            }
+            Err(failure) => openai_error(
+                StatusCode::from_u16(failure.status).unwrap_or(StatusCode::BAD_GATEWAY),
+                &failure.code,
+                &failure.message,
+            ),
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // 流式
 // ---------------------------------------------------------------------------
@@ -574,6 +768,10 @@ async fn stream_chat(
     variant: TraeVariant,
     // ★ issue #76：本密钥（白名单 / 配额 / 记账）。
     key: Option<&crate::apikey::KeyActor>,
+    // Responses 入口声明的 custom（freeform）工具名：只有 `/v1/responses` 用得上，
+    // chat / messages 传 `None`（它们没有这个概念）。由**原始**请求体取，
+    // 转换后 `type` 已被降级成 function，拿不回来。
+    responses_custom: Option<std::sync::Arc<HashSet<String>>>,
 ) -> Response {
     // ★ issue #76：允许名单整轮算一次，选号与失败兜底共用（理由见 `attempt_once`）。
     let allowed = key.and_then(|actor| allowed_uids_for(&actor.policy, variant));
@@ -645,6 +843,9 @@ async fn stream_chat(
                 });
                 return if is_anthropic_endpoint(endpoint) {
                     anthropic_sse_response(rx, model)
+                } else if is_responses_endpoint(endpoint) {
+                    // Responses 事件流：内层是同一条 OpenAI SSE，逐事件重编。
+                    responses_sse_response(rx, model, responses_custom.clone())
                 } else {
                     sse_response(rx)
                 };
@@ -1451,7 +1652,35 @@ fn anthropic_sse_response(
         .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
 }
 
-/// 32 位 hex，用作 trace / request id 的原料。
+/// Responses SSE 响应：把同一条 OpenAI SSE 逐事件重编成 Responses 事件流。
+///
+/// 与 [`anthropic_sse_response`] 同构，`Box::pin` 的理由也一样
+/// （`ResponsesSseStream` 要求内层 `Unpin`，而 `stream_from_receiver` 产出的是
+/// `unfold`）。差别只在最后一层封装 —— 上游链路、换号、记账完全不区分端点。
+///
+/// ⚠️ Responses 的流**不以 `data: [DONE]` 结尾**（`response.completed` 即终止信号），
+/// 这个差异由 `ResponsesSseStream` 内部处理，这里既不补也不截。
+fn responses_sse_response(
+    rx: mpsc::Receiver<Result<Bytes, std::io::Error>>,
+    model: &str,
+    custom: Option<std::sync::Arc<HashSet<String>>>,
+) -> Response {
+    let inner = Box::pin(sse::stream_from_receiver(rx));
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, "text/event-stream")
+        .header(header::CACHE_CONTROL, "no-cache")
+        .header("X-Accel-Buffering", "no")
+        .body(Body::from_stream(
+            crate::protocol::responses::ResponsesSseStream::new(
+                inner,
+                model.to_string(),
+                custom.unwrap_or_default(),
+            ),
+        ))
+        .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
+}
+
 fn uuid_like() -> String {
     uuid::Uuid::new_v4().simple().to_string()
 }
@@ -1490,6 +1719,22 @@ fn describe_transport_error(error: &reqwest::Error) -> String {
 mod tests {
     use super::*;
     use crate::trae::TraeGatewayConfig;
+
+    /// ★ 出口协议判据（纯函数）：三个端点各对应一种出站封装，**不能互相串**。
+    ///
+    /// 变异：把 `is_responses_endpoint` 写成恒 `false` ⇒ Responses 客户端会收到
+    /// 原始 chat SSE（它的解析器认不出 `choices[].delta`）—— 这条会红。
+    #[test]
+    fn endpoint_predicates_pick_the_outbound_protocol() {
+        assert!(is_anthropic_endpoint(ENDPOINT_MESSAGES));
+        assert!(!is_anthropic_endpoint(ENDPOINT_RESPONSES));
+        assert!(!is_anthropic_endpoint(ENDPOINT_CHAT));
+
+        assert!(is_responses_endpoint(ENDPOINT_RESPONSES));
+        assert!(!is_responses_endpoint(ENDPOINT_MESSAGES));
+        // chat 必须原样透传：误判成任何一种转换都会让普通 OpenAI 客户端解析失败。
+        assert!(!is_responses_endpoint(ENDPOINT_CHAT));
+    }
 
     /// ★ 粘性表的接线往返：绑定后能查到、解绑后查不到、`None` 键**整段跳过**。
     ///

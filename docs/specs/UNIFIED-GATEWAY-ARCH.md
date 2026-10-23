@@ -362,13 +362,15 @@ curl -s $BASE/v1/messages -H "Authorization: Bearer $KEY" \
     "type": "permission_error", "code": "namespace_forbidden" } }
 ```
 
-**③ Trae 命名空间 + `/v1/responses`（501）** —— Trae 分区没有 Responses 端点（只有 WB 有）
-```json
-{ "error": {
-    "message": "Trae 分区没有 /v1/responses 端点。请改用 /v1/chat/completions，或把模型前缀换成 `wb-cn:` / `wb-global:`。",
-    "type": "invalid_request_error", "code": "endpoint_not_supported_for_namespace" } }
-```
-★ **不许 404、不许静默降级到 chat** —— 静默降级会让用户以为 Responses 协议生效了。
+**③ ~~Trae 命名空间 + `/v1/responses`（501）~~ —— 2026-10-22 起不再成立**
+
+Trae 侧已补齐 `/v1/responses`（入站 Responses → chat、出站 chat SSE → Responses 事件流，
+中继与 chat / messages 同一份）。统一网关对 `trae-*` 命名空间**直接分派**到
+`trae::routes::responses_for_variant`，`endpoint_not_supported_for_namespace` 这个错误码
+与 `LlmEndpoint::supports_trae()` 一起移除。三条产品线现在三个 LLM 端点全通。
+
+（历史：曾有「Trae 没有该端点 ⇒ 501、不许 404、不许静默降级到 chat」的约定。补齐后
+这条约定失去对象，但它想防的东西仍然成立 —— **不认识的能力要报错，不要静默降级**。）
 
 **④ 前缀在册但命名空间未启用（400）**
 ```json
@@ -406,6 +408,22 @@ curl -s $BASE/v1/messages -H "Authorization: Bearer $KEY" \
 
 ⇒ 已把 `biz_namespace` 写进 §3.2。`trae-*` 作 `biz_namespace` ⇒ **保存时拒绝**（Trae 业务域不可配，本仓 spike 已定 H0）。
 
+### 4.6 图片（多模态）在各产品线的处理
+
+三条产品线对图片的处理**不一样**，这是上游契约差异决定的，不是实现漂移：
+
+| 产品线 | `/v1/chat/completions` | `/v1/messages` | `/v1/responses` |
+|:--|:--|:--|:--|
+| **WB** | 透传（结构不动，图片 parts 原样给上游） | 默认丢图 + **文本留痕** | 保留：`input_image` → `image_url` part |
+| **Trae** | 透传（`content` 数组原样；上游本就要求数组） | 同上 | 保留：`input_image` → `image_url` part（与 WB 同一条 `protocol::responses` 实现） |
+| **Qoder** | **归一**成 `image_url` part | 归一（`image` block → part） | 归一（`input_image` → part） |
+
+- **Qoder 必须归一**：上游只读 `messages[].content` 里的结构化 `image_url` parts，**不读**顶层 `image_urls` / `chat_context.imageUrls`（issue #24 实测：填了顶层模型仍回「我没有收到图片」）。顶层两份默认不填 —— base64 各存一份会让出站体积翻倍，撞上游 30MB 上限被 RST 并熔断账号池（`BUDDY_SWITCH_QODER_KEEP_TOPLEVEL_IMAGES=1` 仅排查用）。归一保留 `image_url.detail`（精度档位，掉了等于降画质）。
+- **WB / Trae 是透传**：上游就是我们这套 OpenAI 方言，重建结构只会丢信息。`/v1/messages` 是例外 —— 上游是否吃 `content` 里的 parts **未实测**，所以默认丢。
+- **丢图必须留痕**：`/v1/messages` 丢弃时在该条 user 文本末尾追加 `[已移除 N 张图片：当前通道未启用图片转发]`；**纯图片消息**也会保留一条带该提示的 user 消息（否则模型连「用户发了东西」都不知道，只会顺着问题编）。
+- **开关**：`BUDDY_SWITCH_ANTHROPIC_FORWARD_IMAGES=1`（`on` / `true` / `yes`）让 WB / Trae 的 `/v1/messages` 改走带图分支。**先实测再开** —— 打开而上游不认，只是把「静默丢图」换成「上游 400」。
+- **入站体积**：请求体上限 `max_body_mb` 默认 `0` ⇒ 回落 8MB，且 `DefaultBodyLimit` 在 router 构建期固化（**改值要重启网关**）。它比上游 30MB 更早撞上：手机原图转 base64 轻易超 8MB。
+
 ---
 
 ## 5. 客户端接入配置例子
@@ -424,7 +442,7 @@ model_provider = "buddy_unified"
 name = "Buddy Switch (Unified)"
 base_url = "http://127.0.0.1:57892/v1"
 env_key = "BUDDY_SWITCH_KEY"      # 变量名，不是 Key 本身
-wire_api = "responses"            # ⚠️ 用 trae-* 时必须改成 "chat"（Trae 无 /v1/responses）
+wire_api = "responses"            # 三条产品线（wb-* / trae-* / qoder-*）都可用
 ```
 ```bash
 export BUDDY_SWITCH_KEY="sk-uni-..."
@@ -555,10 +573,10 @@ export ANTHROPIC_MODEL="wb-cn:deepseek-v4.1-flash"
 与落盘路径（冷却 / 账本 / 日志），在单测里跑会在用户 `~/.buddy-switch/trae/` 下留痕迹。
 该路径由「直接调 `chat_for_variant` 的既有 Trae e2e（自带隔离状态与假上游）」间接覆盖。
 
-**三个 LLM 端点已全部接通** ✅（`/v1/chat/completions` · `/v1/messages` · `/v1/responses`）。
-★ 统一侧把它们收敛成**一份** `relay_llm(endpoint)`：差异只有两处 —— **错误体形状**
-（`/v1/messages` 用 Anthropic 形状，其余 OpenAI 形状）与 **Trae 是否支持该端点**
-（`/v1/responses` Trae 没有 ⇒ **501**，不许 404、不许静默降级到 chat）。
+**三个 LLM 端点已全部接通** ✅（`/v1/chat/completions` · `/v1/messages` · `/v1/responses`），
+**三条产品线全通**（Trae 的 `/v1/responses` 于 2026-10-22 补齐）。
+★ 统一侧把它们收敛成**一份** `relay_llm(endpoint)`：差异只有**错误体形状**
+（`/v1/messages` 用 Anthropic 形状，其余 OpenAI 形状）—— 端点能力差异随 Trae 补齐而消失。
 命名空间把关（在册 / 非空 / **启用** / **授权**）也收敛成**唯一实现** `guard_namespace` ——
 四道顺序不可换（「未启用」先于「未授权」：前者与 Key 无关，换把 Key 也没用）。
 WB 侧再抽 `messages_for_region` / `responses_for_region`，Trae 侧再抽 `messages_for_variant`（同一手法）。

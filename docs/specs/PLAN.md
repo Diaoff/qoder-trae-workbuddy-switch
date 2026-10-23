@@ -1600,7 +1600,7 @@ sk-uni-…          /health /status /v1/models
 
 1. **解析只做整段精确匹配，禁止前缀匹配** —— `trae` / `traework` / `traecode` **互为前缀**，任何 `starts_with` 式推断都会把请求发给**另一套账号池**。同时禁止用 `TraeVariant::parse` / `TraeProgram::parse` 反推（那是**宽容**解析，会把 `traework-cn` 也吞进去）。
 2. **裸模型名一律 400**（附可用前缀清单）—— 不做「猜一个默认命名空间」的兜底：命名空间表一变，兜底就会**静默走错池**。
-3. **`/v1/responses` 在 Trae 侧不存在** ⇒ 统一入口对 `trae-*` 返回 **501**（明确「不支持」），**不许 404、不许静默降级到 chat**。
+3. ~~**`/v1/responses` 在 Trae 侧不存在** ⇒ 统一入口对 `trae-*` 返回 **501**~~ —— **2026-10-22 已补齐**：Trae 侧新增 `/v1/responses`（协议翻译 + 复用同一中继），统一入口对 `trae-*` 直接分派，501 路径与 `endpoint_not_supported_for_namespace` 错误码一并移除。仍保留的纪律：**不认识的能力要报错，不许静默降级到 chat**。
 
 #### 3.20.4 与既有能力的关系
 

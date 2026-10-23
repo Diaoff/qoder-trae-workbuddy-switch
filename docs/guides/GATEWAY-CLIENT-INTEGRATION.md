@@ -39,7 +39,7 @@
 | `GET /v1/models` | ✅ | ✅ | ✅（聚合四段命名空间，id 带前缀） |
 | `POST /v1/chat/completions` | ✅ | ✅ | ✅ |
 | `POST /v1/messages`（Anthropic） | ✅ | ✅ | ✅ |
-| `POST /v1/responses`（Responses API） | ✅ | ❌ **没有** | ⚠️ 取决于命名空间：`wb-*` / `qoder-*` 可用，`trae-*` 返回 **501** |
+| `POST /v1/responses`（Responses API） | ✅ | ✅（2026-10-22 起） | ✅（三个命名空间都可用） |
 | 健康检查（免鉴权） | `GET /health`（兼容 `/healthz`） | `GET /health`（兼容 `/healthz`） | `GET /health`（兼容 `/healthz`） |
 | `GET /status`（需鉴权） | ✅ | ✅ | ✅ |
 | 业务转发 `POST /biz/*path` | ✅（WB 独有） | ❌ | ✅（命名空间来自 Key 的 `biz_namespace`） |
@@ -51,9 +51,9 @@
 
 ### 1.1 三条必须记住的硬事实
 
-1. **`/v1/responses` 只有 WorkBuddy 与 Qoder 两个分区有，Trae 没有。**
-   Trae 侧没有 ⇒ **Codex 接 Trae 网关时必须 `wire_api = "chat"`**，否则 404。统一入口上 `trae-*` 命名空间的 `/v1/responses` 返回 **501**（明确说「不支持」，不静默降级到 chat）。
-   Qoder 侧（独立端口 `57895` 或统一入口 `qoder-*`）由网关**协议翻译**支持：入站 Responses 翻成 chat，出站把上游 chat SSE 转成 Responses 事件流（非流式转 Responses 对象）⇒ `wire_api = "responses"` 可用。
+1. **`/v1/responses` 三条产品线都有**（Trae 于 2026-10-22 补齐），`wire_api = "responses"` 处处可用。
+   Trae 与 Qoder 侧都走**协议翻译**：入站 Responses 翻成 chat，出站把上游 chat SSE 转成 Responses 事件流（非流式转 Responses 对象）。WB 侧上游本就是 chat 方言，同样翻一层。
+   ⚠️ 曾经的「Trae 没有 ⇒ 501」已随补齐移除；若你按旧文档把 Codex 配成 `wire_api = "chat"`，仍然能用，只是拿不到 Responses 的 `output`/`output_text` 形状。
 2. **两边的认证头规则不一样。**
    WB 侧与统一入口 `x-api-key` 和 `Authorization: Bearer` 都收；Trae 侧**只收 `Authorization: Bearer`**（Qoder 侧同样只认 Bearer）。
    ⇒ Claude Code 接 Trae / Qoder 网关时**必须用 `ANTHROPIC_AUTH_TOKEN`**（走 Bearer）；用 `ANTHROPIC_API_KEY`（走 `x-api-key`）会拿到 401。
@@ -107,7 +107,7 @@
 | Key / 配置落盘 | `~/.buddy-switch/qoder/gateway_keys.json` / `gateway_config.json` |
 | 协议 | OpenAI（`/v1/models`、`/v1/chat/completions`、`/v1/responses`<sup>†</sup>）+ Anthropic（`/v1/messages`） |
 
-<sup>†</sup> Qoder 上游只有 chat SSE ⇒ `/v1/responses` 由网关做协议翻译（入站翻成 chat、出站转 Responses 事件流 / 对象），
+<sup>†</sup> Trae / Qoder 上游只有 chat SSE ⇒ `/v1/responses` 由网关做协议翻译（入站翻成 chat、出站转 Responses 事件流 / 对象），
 Codex 的 `wire_api = "responses"` 可直接用。翻译边界同 WB（见 §3.1「坑」）。
 
 ---
@@ -376,7 +376,7 @@ hermes model      # 交互式：选「自定义端点」→ 填 Base URL + API K
    - Provider ID：小写，如 `buddy-switch`（**创建后不可改名**）
    - 显示名称：`Buddy Switch`
    - Base URL：`http://127.0.0.1:57891/v1`
-   - API 协议：`openai-completions`（接 WB 网关也可选 `openai-responses`；**接 Trae 网关不能选 `openai-responses`**，Trae 没有 `/v1/responses`）
+   - API 协议：`openai-completions`（接 WB / Trae 网关也可选 `openai-responses`；三条产品线现在都支持 `/v1/responses`）
    - 模型：点 **Fetch available models**（走 `GET /models`）→ 勾选保存
    - 输入类型：展开**自定义设置 → 模型选项**，要收图的模型勾上**图片**（新建模型默认只勾文本；要取消文本必须先勾图片，至少保留一种）
    - 凭据：直接在 Web UI 填（落到 `$DSH_HOME/.credentials.yaml`，只回传脱敏描述符），或填 `apiKeyEnv` 指向一个环境变量名

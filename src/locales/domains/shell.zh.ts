@@ -238,10 +238,12 @@ export const zh = {
   "unifiedGateway.guideAnthropic": "Anthropic 兼容",
   "unifiedGateway.guideBase": "Base URL：OpenAI 系 {openai} · Anthropic 系 {anthropic}（不带 /v1，客户端会自己拼）。",
   "unifiedGateway.guideModels": "模型名必须带命名空间前缀（如 {sample}）—— 从 /v1/models 自动发现拿到的就是这种形式。",
-  "unifiedGateway.guideResponses": "/v1/responses 支持 WorkBuddy / Qoder 命名空间（Qoder 侧由网关翻译成 chat），Trae 命名空间会返回 501。",
+  "unifiedGateway.guideResponses": "/v1/responses 三条产品线都支持（Trae / Qoder 侧由网关翻译成 chat）。",
   "unifiedGateway.guideKey": "一把统一密钥可同时授权多个命名空间 —— 见「密钥」分区。",
-  /* ── 裸模型名 + 错误响应样例（原型 UNI_ERRORS 的 5 条）──
-     每一条都**带出路**：只说「不支持」会让人反复试错。 */
+  /* ── 裸模型名 + 错误响应样例（原型 UNI_ERRORS 的 4 条）──
+     每一条都**带出路**：只说「不支持」会让人反复试错。
+     ★ 2026-10-22：Trae 侧补齐 `/v1/responses`，原「501 endpoint_not_supported_for_namespace」
+     那条示例已删除。 */
   "unifiedGateway.bareModel": "裸模型名",
   "unifiedGateway.bareModelHint": "不带前缀的模型名会被拒绝，并给出可用前缀清单",
   "unifiedGateway.showErrors": "看错误响应",
@@ -251,8 +253,6 @@ export const zh = {
   "unifiedGateway.err.bareModel.body": "统一网关要求模型名带命名空间前缀。本网关启用的命名空间：wb-cn: / wb-global: / trae-cn: / trae-global: / qoder-cn: / qoder-global:。\n你填的是 deepseek-v4.1-flash，请改成 wb-cn:deepseek-v4.1-flash 这类形式。",
   "unifiedGateway.err.forbidden.title": "命名空间未授权",
   "unifiedGateway.err.forbidden.body": "该 API Key 未被授权使用命名空间 trae-global（它只授权了 wb-cn、wb-global）。\n请到「网关 → 统一网关 → 密钥」为该 Key 勾选，或另建一把。",
-  "unifiedGateway.err.responses.title": "Trae 命名空间 + /v1/responses",
-  "unifiedGateway.err.responses.body": "Trae 分区没有 /v1/responses 端点。请改用 /v1/chat/completions，\n或把模型前缀换成 wb-cn: / wb-global:。",
   "unifiedGateway.err.notEnabled.title": "命名空间未启用",
   "unifiedGateway.err.notEnabled.body": "命名空间 traework-cn 未在本网关启用（「命名空间」分区里没有勾选它）。",
   "unifiedGateway.err.oldPort.title": "在旧端口填了命名空间",

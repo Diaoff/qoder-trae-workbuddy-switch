@@ -142,11 +142,13 @@ const SAMPLE_MODEL = "wb-cn:deepseek-v4.1-flash";
  *
  * 只放**能确认**的码与出路；不确定的一律不写（编错的错误码比没有更糟）。
  * 文案走 unifiedGateway.err.<key>.title|body，与抽屉逐条对应。
+ *
+ * ★ 2026-10-22：Trae 侧补齐 `/v1/responses`，原 `501 endpoint_not_supported_for_namespace`
+ * 样例已删除（该码与 `LlmEndpoint::supports_trae()` 一起移除）。
  */
 const UNIFIED_ERROR_SAMPLES = [
   { key: "bareModel", code: "400 namespace_prefix_required" },
   { key: "forbidden", code: "403 namespace_forbidden" },
-  { key: "responses", code: "501 endpoint_not_supported_for_namespace" },
   { key: "notEnabled", code: "400 namespace_not_enabled" },
   { key: "oldPort", code: "400 namespace_not_parsed_here" },
 ] as const;

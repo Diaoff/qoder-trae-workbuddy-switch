@@ -2465,14 +2465,13 @@ const uniNsById = (id) => UNI_NS.find((x) => x.id === id);
 const uniPlats = () => [...new Set(UNI_NS.map((x) => x.plat))];
 const uniKeysUsing = (ns) => UNI.keys.filter((k) => k.ns.includes(ns));
 
-/* 错误示例（§4.3 五条）—— 原型里可展开，让评审看到「每条都有出路」。 */
+/* 错误示例（§4.3）—— 原型里可展开，让评审看到「每条都有出路」。
+   ★ 2026-10-22：Trae 侧补齐 `/v1/responses`，原先那条 501 示例已移除。 */
 const UNI_ERRORS = [
   ["裸模型名被拒", "400 namespace_prefix_required",
     "统一网关要求模型名带命名空间前缀。本网关启用的命名空间：wb-cn: / wb-global: / trae-cn: / trae-global: / qoder-cn: / qoder-global:。\n你填的是 `deepseek-v4.1-flash`，请改成 `wb-cn:deepseek-v4.1-flash` 这类形式。"],
   ["命名空间未授权", "403 namespace_forbidden",
     "该 API Key 未被授权使用命名空间 `trae-global`（它只授权了 wb-cn、wb-global）。\n请到「网关 → 统一网关 → 密钥」为该 Key 勾选，或另建一把。"],
-  ["Trae 命名空间 + /v1/responses", "501 endpoint_not_supported_for_namespace",
-    "Trae 分区没有 /v1/responses 端点。请改用 /v1/chat/completions，\n或把模型前缀换成 `wb-cn:` / `wb-global:`。"],
   ["命名空间未启用", "400 namespace_not_enabled",
     "命名空间 `traework-cn` 未在本网关启用（下方「启用的命名空间」里没有它）。"],
   ["在旧端口填命名空间", "400 namespace_not_parsed_here",
@@ -2705,7 +2704,7 @@ function uniGuideCard() {
       <p class="tiny muted" style="margin:6px 2px 0">
         <b>模型名必须带命名空间前缀</b>（如 <span class="mono">${model}</span>）——
         从 <span class="mono">/v1/models</span> 自动发现拿到的就是这种形式。
-        <span class="mono">/v1/responses</span> 只有 WorkBuddy 命名空间有，Trae / Qoder 会返回 <span class="mono">501</span>。
+        <span class="mono">/v1/responses</span> 三条产品线都支持（Trae / Qoder 由网关做协议翻译）。
       </p>
       <p class="tiny muted" style="margin:6px 2px 0">
         一把统一密钥可同时授权多个命名空间 —— 见「密钥」分区。

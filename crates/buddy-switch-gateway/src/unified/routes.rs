@@ -112,13 +112,13 @@ struct HttpError {
     message: String,
 }
 
-/// 三个 LLM 端点 —— 差异**只有两处**。
+/// 三个 LLM 端点 —— 差异**只有一处**：错误体形状。
 ///
-/// | 端点 | 错误体形状 | Trae 是否支持 |
+/// | 端点 | 错误体形状 | 三条产品线 |
 /// |:--|:--|:--|
-/// | `/v1/chat/completions` | OpenAI | ✅ |
-/// | `/v1/messages` | Anthropic | ✅ |
-/// | `/v1/responses` | OpenAI | ❌ **设计如此**（Trae 分区没有这个端点） |
+/// | `/v1/chat/completions` | OpenAI | WB / Trae / Qoder 均支持 |
+/// | `/v1/messages` | Anthropic | 同上 |
+/// | `/v1/responses` | OpenAI | 同上（Trae 于 2026-10-22 补齐） |
 ///
 /// 其余（鉴权 / 命名空间解析 / 启用与授权 / 改写 body / 分派）**三条共用一份** ——
 /// 复制三遍必然漂移，而漂移点恰恰是「哪种情况该 400、哪种该 403」这类安全相关判定。
@@ -127,13 +127,6 @@ enum LlmEndpoint {
     Chat,
     Messages,
     Responses,
-}
-
-impl LlmEndpoint {
-    /// 该端点在 Trae 分区是否可用。`/v1/responses` 只有 WorkBuddy 与 Qoder 有。
-    fn supports_trae(self) -> bool {
-        !matches!(self, LlmEndpoint::Responses)
-    }
 }
 
 /// `POST /v1/chat/completions`。
@@ -193,12 +186,6 @@ async fn relay_llm(
         Ok(pair) => pair,
         Err(error) => return endpoint_error(endpoint, error),
     };
-
-    // ③ ★ `/v1/responses` 在 Trae 分区**不存在** —— 明确报错。
-    //    不许 404（用户会以为路径写错了）、更不许静默降级到 chat（用户会以为 Responses 生效了）。
-    if !endpoint.supports_trae() && gateway_namespace::trae_variant_of(spec).is_some() {
-        return endpoint_error(endpoint, endpoint_not_supported_for(spec.id));
-    }
 
     /* ③' ★ issue #76：把本网关的 Key 收敛成 `KeyActor`，**带进目标产品线的中继**。
 
@@ -284,10 +271,16 @@ async fn relay_llm(
                     )
                     .await
                 }
-                // 防御性兜底（上面第 ③ 步已拦）：**穷举、无 `_ =>`** ⇒ 新增端点时编译失败，
-                // 而不是静默走到别的分派分支。这里返回同一份可诊断错误，不 panic。
+                // Responses 入口：Trae 侧 2026-10-22 补齐（入站 Responses → chat、
+                // 出站 chat SSE → Responses 事件流，中继与上面两条同一份）。
                 LlmEndpoint::Responses => {
-                    endpoint_error(endpoint, endpoint_not_supported_for(spec.id))
+                    crate::trae::routes::responses_for_variant(
+                        trae,
+                        variant,
+                        rewritten,
+                        Some(actor.clone()),
+                    )
+                    .await
                 }
             }
         }
@@ -331,20 +324,6 @@ async fn relay_llm(
                 }
             }
         }
-    }
-}
-
-/// `/v1/responses` + **Trae** 命名空间的可诊断错误（`endpoint_not_supported_for_namespace`
-/// 的**唯一构造点**；Qoder 分区已支持该端点，不在这里）。
-fn endpoint_not_supported_for(namespace: &str) -> HttpError {
-    HttpError {
-        status: StatusCode::NOT_IMPLEMENTED,
-        kind: "invalid_request_error",
-        code: "endpoint_not_supported_for_namespace",
-        message: format!(
-            "Trae 分区没有 /v1/responses 端点（WorkBuddy 与 Qoder 有），而 `{namespace}` 是 Trae 命名空间。\
-             请改用 /v1/chat/completions 或 /v1/messages，或把模型前缀换成 wb-cn: / wb-global: / qoder-cn: 等。"
-        ),
     }
 }
 
@@ -1270,9 +1249,14 @@ mod tests {
         std::fs::remove_dir_all(dir).unwrap();
     }
 
-    /// ★★ `/v1/responses` + Trae 命名空间 ⇒ **501**（设计如此），不是 404、也不是静默降级到 chat。
+    /// ★★ `/v1/responses` + Trae 命名空间 ⇒ **进入 Trae 中继**（2026-10-22 补齐）。
+    ///
+    /// 断言「不再是 501、不再报端点不支持」——这两条才是本次改动的契约。
+    /// 刻意**不**断言具体状态码：隔离环境里 Trae 账号池为空 ⇒ 中继回 503
+    /// `no_healthy_account`，而真机若凑巧有账号就会走得更远；把状态码钉死等于
+    /// 让用例依赖运行环境。
     #[tokio::test]
-    async fn responses_endpoint_rejects_trae_namespaces_with_501() {
+    async fn responses_endpoint_dispatches_trae_namespaces() {
         let (app, dir, key) = app_with_key(&["trae-cn"]).await;
         let (status, body) = post_to(
             &app,
@@ -1281,13 +1265,15 @@ mod tests {
             r#"{"model":"trae-cn:deepseek-v4.1-flash"}"#,
         )
         .await;
-        assert_eq!(status, StatusCode::NOT_IMPLEMENTED);
-        assert_eq!(
-            body["error"]["code"],
-            "endpoint_not_supported_for_namespace"
+        assert_ne!(
+            status,
+            StatusCode::NOT_IMPLEMENTED,
+            "Trae 已支持 /v1/responses，不得再回 501：{body}"
         );
-        let message = body["error"]["message"].as_str().unwrap();
-        assert!(message.contains("wb-cn"), "要给出出路：{message}");
+        assert_ne!(
+            body["error"]["code"], "endpoint_not_supported_for_namespace",
+            "该错误码已随 501 路径一起移除：{body}"
+        );
         std::fs::remove_dir_all(dir).unwrap();
     }
 

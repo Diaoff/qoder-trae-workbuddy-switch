@@ -708,7 +708,7 @@ pub async fn status_view(
 /// 组装 Trae 网关路由（**不含 fallback**）。
 ///
 /// 挂载 `GET /health`（兼容 `/healthz`，见 [`crate::HEALTH_PATHS`]）、`GET /status`、
-/// `GET /v1/models`、`POST /v1/chat/completions`。
+/// `GET /v1/models`、`POST /v1/chat/completions`、`POST /v1/messages`、`POST /v1/responses`。
 /// 鉴权由 [`routes::bearer_auth`] 统一处理，健康检查免鉴权。
 pub fn router(state: TraeGatewayState) -> axum::Router {
     use axum::routing::{get, post};
@@ -720,6 +720,9 @@ pub fn router(state: TraeGatewayState) -> axum::Router {
         .route("/v1/chat/completions", post(routes::chat_completions))
         // Anthropic 协议入口：与上面那条共用整条中继，只在协议层做双向转换。
         .route("/v1/messages", post(routes::messages))
+        // Responses 协议入口：同样只换协议层（入站 Responses → chat、出站 chat SSE
+        // → Responses 事件流），中继与 `/v1/chat/completions` 是同一份。
+        .route("/v1/responses", post(routes::responses))
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
             routes::bearer_auth,
