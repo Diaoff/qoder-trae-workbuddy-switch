@@ -15,7 +15,9 @@ use buddy_switch_core::modules::region::Region;
 
 use crate::logging::RequestMeta;
 use crate::outbound::PromptMode;
-use crate::protocol::anthropic::{aggregate_message, to_upstream_request, AnthropicSseStream};
+use crate::protocol::anthropic::{
+    aggregate_message, to_upstream_request_adaptive, AnthropicSseStream,
+};
 use crate::routes::relay::{self, RelayKind, RelayOutcome, RelayRequest};
 use crate::routes::{anthropic_error, authenticate, json_response, parse_body, sse_response};
 use crate::session_headers;
@@ -120,7 +122,10 @@ pub async fn messages_for_region(
     }
 
     // Anthropic 请求 → 上游（OpenAI 形态）。
-    let upstream_body = to_upstream_request(&parsed);
+    // ★ 图片：默认丢（上游是否吃 `content` 里的 `image_url` parts 未实测），但丢弃
+    // 时会在文本里写「已移除 N 张图片」；`BUDDY_SWITCH_ANTHROPIC_FORWARD_IMAGES=1`
+    // 打开后改走带图分支。见 `protocol::anthropic::to_upstream_request_adaptive`。
+    let upstream_body = to_upstream_request_adaptive(&parsed);
     let upstream_raw = serde_json::to_string(&upstream_body).unwrap_or_else(|_| "{}".to_string());
     let raw = if model == requested_model {
         upstream_raw

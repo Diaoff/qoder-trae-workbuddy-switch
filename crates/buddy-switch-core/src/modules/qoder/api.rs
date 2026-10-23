@@ -311,9 +311,16 @@ fn flatten_parts(parts: &[Value]) -> FlattenedContent {
                 {
                     if let Some(url) = image_url_of(object) {
                         images.push(url.clone());
-                        structured.push(
-                            serde_json::json!({ "type": "image_url", "image_url": { "url": url } }),
-                        );
+                        // ★ `detail` 必须跟着走：它是 OpenAI 的图片精度档位
+                        //   （`low` / `high` / `auto`），丢了对高精度场景就是**掉画质**
+                        //   ——分辨率与 token 消耗都由它决定。归一化只该改**形态**，
+                        //   不该顺手摘掉语义字段。
+                        let mut image = serde_json::json!({ "url": url });
+                        if let Some(detail) = image_detail_of(object) {
+                            image["detail"] = Value::String(detail);
+                        }
+                        structured
+                            .push(serde_json::json!({ "type": "image_url", "image_url": image }));
                     }
                 }
             }
@@ -379,6 +386,21 @@ fn image_url_of(object: &serde_json::Map<String, Value>) -> Option<String> {
         }
     }
     url
+}
+
+/// 取图片精度档位（OpenAI `image_url.detail`）。
+///
+/// 两种位置都认：嵌在 `image_url` 对象里（chat 形态），或与 `image_url` 平级
+/// （Responses 的 `input_image` 把 `detail` 放在 part 顶层）。Anthropic 的
+/// `source` 形态没有这个字段 ⇒ `None`（别给它编一个默认值）。
+fn image_detail_of(object: &serde_json::Map<String, Value>) -> Option<String> {
+    object
+        .get("image_url")
+        .and_then(|value| value.get("detail"))
+        .and_then(Value::as_str)
+        .or_else(|| object.get("detail").and_then(Value::as_str))
+        .map(str::to_string)
+        .filter(|detail| !detail.is_empty())
 }
 
 /// 把 OpenAI content（字符串或 parts 列表）压成纯文本；图片单独收集。
@@ -2619,6 +2641,27 @@ mod tests {
         assert_eq!(content[1]["type"], "image_url");
         assert_eq!(content[1]["image_url"]["url"], "https://x/1.png");
         assert_eq!(flat.images, vec!["https://x/1.png".to_string()]);
+    }
+
+    /// ★ `detail` 是**语义**字段（精度档位），归一化只该改形态，不该摘掉它。
+    ///
+    /// 变异：删掉 `image_detail_of` 的调用 ⇒ 前两条断言红。
+    #[test]
+    fn flatten_keeps_image_detail_in_both_positions() {
+        let flat = flatten_content(Some(&serde_json::json!([
+            {"type": "image_url", "image_url": {"url": "https://x/1.png", "detail": "high"}},
+            // Responses 的 `input_image`：`detail` 与 `image_url` 平级。
+            {"type": "input_image", "image_url": "https://x/2.png", "detail": "low"},
+            {"type": "image_url", "image_url": {"url": "https://x/3.png"}},
+        ])));
+        let parts = flat.parts.expect("有图 ⇒ parts");
+        assert_eq!(parts[0]["image_url"]["detail"], "high");
+        assert_eq!(parts[1]["image_url"]["detail"], "low");
+        assert!(
+            parts[2]["image_url"].get("detail").is_none(),
+            "客户端没给 detail 就不要编一个：{}",
+            parts[2]
+        );
     }
 
     /// 无图消息仍是纯文本（行为不变：上游对纯文本更宽容）。
