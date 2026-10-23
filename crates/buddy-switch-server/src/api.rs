@@ -347,6 +347,7 @@ fn api_routes() -> Router {
         .route("/api/gateway/probe/start", post(api_probe_start))
         .route("/api/gateway/probe/status", get(api_probe_status))
         .route("/api/gateway/probe/cancel", post(api_probe_cancel))
+        .route("/api/gateway/probe/ledger", get(api_probe_ledger))
         // ---- 统一网关（第三个产品线 · 跨作用域）----
         // ⚠️ 前缀 `/api/unified-gateway/…` 与两条既有线路（`/api/gateway/…`、`/api/trae/…`）平行；
         //   命令与其在 `src-tauri/commands.rs` 的实现一一对应（门禁 `check:api` 两侧夹）。
@@ -3365,6 +3366,8 @@ async fn api_gateway_clear_logs() -> Response {
 /// `uids` / `models` **缺省 = 用池里的全部账号 / 该作用域目录**（与 `start` 的 `Option` 语义一致）；
 /// 显式传空数组则走到 `start` 的「没有选中任何账号 / 没有可探测的模型」校验。
 ///
+/// ★ `cells`（**显式格清单**）与那两根轴**互斥**：给了它就只探点名的格（账号页台账卡走这条）。
+///
 /// ★ **作用域参数化**：入参从 `region` 升级为 `scope`（`wb-cn` / `qoder-cn` …）。
 /// `target_for_scope` 是 **fail-closed** 解析（未知 / 拼错 ⇒ 可读错误），并据作用域挑出对应平台的目标。
 async fn api_probe_start(Json(body): Json<Value>) -> Response {
@@ -3389,8 +3392,18 @@ async fn api_probe_start(Json(body): Json<Value>) -> Response {
             .filter_map(|item| item.as_str().map(String::from))
             .collect()
     });
+    /* ★ 显式格清单（与 `uids` / `models` 互斥）：账号页台账卡只探点名的格。
+       逐项反序列化，坏项丢弃而不是整请求 400 —— 与 `uids` / `models` 的
+       `filter_map` 同款宽容度（前端偶尔会带 `null`）。 */
+    let cells: Option<Vec<buddy_switch_gateway::model_probe::ProbeStartCell>> =
+        body.get("cells").and_then(Value::as_array).map(|items| {
+            items
+                .iter()
+                .filter_map(|item| serde_json::from_value(item.clone()).ok())
+                .collect()
+        });
     let adopt = body.get("adopt").and_then(Value::as_bool).unwrap_or(false);
-    match buddy_switch_gateway::model_probe::start(&target, uids, models, adopt).await {
+    match buddy_switch_gateway::model_probe::start(&target, uids, models, cells, adopt).await {
         Ok(total) => {
             tokio::spawn(buddy_switch_gateway::model_probe::run(target));
             json_ok(json!({ "started": true, "total": total }))
@@ -3409,6 +3422,18 @@ async fn api_probe_status(RawQuery(query): RawQuery) -> Response {
         return json_err(error, StatusCode::BAD_REQUEST);
     }
     json_ok(buddy_switch_gateway::model_probe::status())
+}
+
+/// GET /api/gateway/probe/ledger —— 某作用域的**实测台账**（跨重启累积）。
+///
+/// 与 `/status` 的分工：`status` = 本轮作业（进度 / 相位）；本路由 = 这些格**最近一次**的
+/// 实判（落盘 `probe_results.json`，按作用域隔离）。账号页重启后仍要看到实测结论 ⇒ 读它。
+async fn api_probe_ledger(RawQuery(query): RawQuery) -> Response {
+    let scope = query_value(query.as_deref(), "scope").unwrap_or_default();
+    if let Err(error) = resolve_scope_param(Some(&scope)) {
+        return json_err(error, StatusCode::BAD_REQUEST);
+    }
+    json_ok(buddy_switch_gateway::model_probe::ledger_snapshot(&scope))
 }
 
 /// POST /api/gateway/probe/cancel —— 请求取消（逐格检查；已探到的格保留）。

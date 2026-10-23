@@ -123,6 +123,13 @@ interface GatewayState {
    */
   probeCells: ProbeCellIndex;
   /**
+   * 每个作用域**落盘台账**的最近写入时刻（毫秒）—— `probe_ledger.updated_at_ms`。
+   *
+   * 只服务文案（「实测 3 格 · 限流 1（10-23 09:12）」）：没有它，重启后汇总条不知道
+   * 这批结论是什么时候的。**不参与任何判据**。
+   */
+  probeLedgerAt: Record<string, number>;
+  /**
    * **被动底色（来源之一）**：客户端限流台账（`client_limits`）里「仍受限」的 `uid × 模型`。
    *
    * ⚠️ 这只是被动底色的**一半**；另一半是**池的模型级冷却**（`GatewayPoolAccount.modelCoolings`，
@@ -157,11 +164,17 @@ interface GatewayState {
   saveStrategy: (region: Region, strategy: AccountStrategy) => Promise<void>;
   loadLogs: () => Promise<void>;
   clearLogs: () => Promise<void>;
-  /** 启动一次限流探测（后端「作业 + 轮询」；第二次调用返回「已有探测进行中」）。 */
+  /**
+   * 启动一次限流探测（后端「作业 + 轮询」；第二次调用返回「已有探测进行中」）。
+   *
+   * `cells`（**显式格清单**）与 `uids` / `models`（**笛卡尔积**）互斥，后者优先判 `cells`。
+   * 账号页台账卡传 `cells`（台账 3 条 = 3 格）；网卡选择态传两根轴（用户勾了账号与模型）。
+   */
   startProbe: (args: {
     scope: Scope;
     uids?: string[];
     models?: string[];
+    cells?: { uid: string; model: string }[];
     adopt: boolean;
   }) => Promise<{ started: boolean; total: number }>;
   /** 拉一次作业快照；`running` 时自动续轮询，`done` / `cancelled` 时清定时器。 */
@@ -170,6 +183,14 @@ interface GatewayState {
   cancelProbe: (scope: Scope) => Promise<void>;
   /** 读取该 region 的**被动底色**（客户端台账；失败静默为空表）。 */
   loadProbePassive: (region: Region) => Promise<void>;
+  /**
+   * 拉某作用域的**实测台账**（后端落盘、跨重启）并入 `probeCells`。
+   *
+   * ★ 与 `refreshProbeStatus` 的分工：后者是**本轮作业**（单槽、进程内），前者是
+   * 「这些格最近一次怎么样」（`probe_results.json`，按作用域隔离）。任一侧（账号页台账卡 /
+   * 网卡矩阵）进入时都拉一次 ⇒ 重启后两处仍看得到同一份实测结论。
+   */
+  loadProbeLedger: (scope: Scope) => Promise<void>;
   /** 停掉轮询定时器（卡片卸载时调用，防泄漏）。 */
   stopProbePolling: () => void;
   /** 首次进入页面：并发拉取配置 / 状态 / Keys / 策略 / 日志 / 两版模型。 */
@@ -188,6 +209,7 @@ export const useGatewayStore = create<GatewayState>((set, get) => ({
   // 探测未跑过（后端 `{ phase: "idle" }` 归一为 `null`）；被动底色懒加载，默认空表。
   probe: null,
   probeCells: {},
+  probeLedgerAt: {},
   probePassive: {},
   loading: false,
   saving: false,
@@ -363,6 +385,11 @@ export const useGatewayStore = create<GatewayState>((set, get) => ({
       } else {
         // `done` / `cancelled`（或 idle）⇒ 必须清掉定时器，否则会一直空转。
         stopProbeTimer();
+        /* 作业收尾 ⇒ 再对齐一次**落盘台账**：后端在 `finish` 里合并并写盘，这里读回来
+           才能保证「前端索引」与「服务端台账」不会因为漏收快照而长期分叉。 */
+        if (next && (next.phase === "done" || next.phase === "cancelled")) {
+          void get().loadProbeLedger(scope);
+        }
       }
     } catch (e) {
       stopProbeTimer();
@@ -376,6 +403,21 @@ export const useGatewayStore = create<GatewayState>((set, get) => ({
     } finally {
       // 取消后立即对齐一次：后端会把 phase 置 `cancelled` 并保留部分结果。
       await get().refreshProbeStatus(scope);
+    }
+  },
+
+  async loadProbeLedger(scope) {
+    try {
+      const ledger = await api.probeLedger(scope);
+      if (!ledger?.cells?.length) return;
+      set((state) => ({
+        probeCells: mergeProbeCells(state.probeCells, scope, ledger.cells),
+        probeLedgerAt: ledger.updated_at_ms
+          ? { ...state.probeLedgerAt, [scope]: ledger.updated_at_ms }
+          : state.probeLedgerAt,
+      }));
+    } catch {
+      // 台账是**加分项**（跨重启的便利）：拉不到就保持现有数据，绝不污染 error 条。
     }
   },
 

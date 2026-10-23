@@ -185,7 +185,7 @@ const SCOPE_PARAMETERIZED = new Set([
   /* ✅ 2026-10-21：限额护栏视图 —— **生来参数化**。计数落盘是 `qoder/gateway_usage.{region}.json`
      （两区两本文件），缺 scope 就无从判断该读哪一本（没有「默认区域」可回落）。 */
   "qoder_gateway_quota",
-  /* ✅ 2026-10-16：限流探测三条 —— **作用域参数化**。原签名收 `region`（`cn` / `global`），
+  /* ✅ 2026-10-16：限流探测四条 —— **作用域参数化**。原签名收 `region`（`cn` / `global`），
      分不出 `wb-cn` 与 `qoder-cn` ⇒ 升级为 `scope`（`Scope::parse` fail-closed）。
      `probe_start` 的 scope 决定探测目标（WB / Qoder 的账号库与目录）；`probe_status` /
      `probe_cancel` 的 scope 为**命令面统一必填**（作业槽是进程级全局，但未知 / 拼错的
@@ -193,6 +193,9 @@ const SCOPE_PARAMETERIZED = new Set([
   "probe_start",
   "probe_status",
   "probe_cancel",
+  /* ✅ 2026-10-23：实测台账（跨重启的探测结论）—— **必须带 scope**：台账按作用域隔离，
+     缺 scope 会把 wb-cn 的格读成 qoder 的（同名模型、不同上游）。 */
+  "probe_ledger",
 ]);
 
 /**

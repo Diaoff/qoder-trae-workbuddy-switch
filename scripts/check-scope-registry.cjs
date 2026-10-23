@@ -5057,7 +5057,7 @@ check("★ P5-③ `id|uid` 统一谓词：软删除 / 查找 / 备注共用 `res
   return "谓词 = id||uid · 软删除走谓词 · 按 uid 删除单测在";
 });
 
-check("★ P5-④ 参数化命令**恰 39 条**且后端带 scope（commands.rs 签名 + api.rs 读取）", () => {
+check("★ P5-④ 参数化命令**恰 40 条**且后端带 scope（commands.rs 签名 + api.rs 读取）", () => {
   /* 变异④（落点 = commands.rs / check-api-contract.cjs）：删掉某参数化命令的 `scope` 参数
      ⇒ 本条变红（桌面端与 webui 行为分叉，而构建全绿）。 */
   const contract = stripComments(fs.readFileSync(path.join(ROOT, P5_API_CONTRACT_CJS), "utf8"));
@@ -5073,7 +5073,7 @@ check("★ P5-④ 参数化命令**恰 39 条**且后端带 scope（commands.rs 
     "create_qoder_api_key", "credits", "get_disabled_models", "get_qoder_accounts",
     "get_qoder_gateway_models", "get_qoder_local_sources", "get_trae_account_token_today",
     "get_trae_checkin_status_map", "open_data_dir",
-    "preview_import_accounts", "probe_cancel", "probe_start", "probe_status",
+    "preview_import_accounts", "probe_cancel", "probe_ledger", "probe_start", "probe_status",
     "qoder_checkin_claim", "qoder_checkin_status", "qoder_checkin_status_map", "qoder_credits",
     "qoder_delete_account", "qoder_gateway_quota", "qoder_gateway_status", "qoder_import_local",
     "qoder_import_pat", "qoder_oauth_start", "qoder_oauth_status",
@@ -5082,7 +5082,7 @@ check("★ P5-④ 参数化命令**恰 39 条**且后端带 scope（commands.rs 
     "set_model_disabled",
   ];
   if (JSON.stringify([...names].sort()) !== JSON.stringify(EXPECTED)) {
-    throw new Error(`参数化命令集变了（应恰 39 条）：${JSON.stringify([...names].sort())}`);
+    throw new Error(`参数化命令集变了（应恰 40 条）：${JSON.stringify([...names].sort())}`);
   }
   const commands = readCode(COMMANDS_RS);
   const apiTs = readCode(P5_API_TS);
@@ -9181,6 +9181,29 @@ check("★ 客户端限流 × 限流探测：两侧读**同一份**实测结论�
     ["raw.scope === scope", "★ `probe_status` 不按作用域过滤 ⇒ 不判 scope 会把别的平台的格画到本平台矩阵上"],
   ]) {
     if (!store.includes(marker)) throw new Error(`stores/gateway.ts 缺 \`${marker}\`（${why}）`);
+  }
+
+  /* 跨重启：两处都要读**落盘台账**（`probe_ledger`），否则重启后实测结论全丢，
+     「数据同步」只剩本次会话。 */
+  const limitsCard2 = ledger; // 复用上面的读取（避免重复 IO）
+  const cards = {
+    "src/components/client-limits-card.tsx": limitsCard2,
+    "src/components/gateway/model-probe-card.tsx": probeCard,
+  };
+  for (const [rel, text] of Object.entries(cards)) {
+    if (!text.includes("loadProbeLedger(")) {
+      throw new Error(`${rel} 没有读落盘实测台账（重启后看不到上次实测结论）`);
+    }
+  }
+  if (!store.includes("api.probeLedger(")) {
+    throw new Error("stores/gateway.ts 的 `loadProbeLedger` 没有调 `api.probeLedger`（台账入口空转）");
+  }
+  const api = readCode("src/lib/api.ts");
+  if (!api.includes("cells: params.cells")) {
+    throw new Error("api.ts 的 `probeStart` 没有把 `cells`（显式格清单）发出去 ⇒ 账号页会退化成笛卡尔积");
+  }
+  if (!api.includes('probe_ledger: { method: "GET"')) {
+    throw new Error("api.ts 的 ROUTES 缺 `probe_ledger`（webui 通道 404）");
   }
 
   const lib = readCode("src/lib/limit-link.ts");

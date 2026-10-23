@@ -2931,15 +2931,20 @@ pub fn clear_gateway_logs() -> Value {
 /// 对应平台的目标（WB / Qoder；Trae 本轮不做）。
 ///
 /// `uids` / `models` **缺省 = 用池里的全部账号 / 该作用域目录**（与 `start` 的 `Option` 语义一致）。
+///
+/// ★ `cells`（**显式格清单**）与那两根轴**互斥**，给了它就只探点名的格 —— 账号页台账卡
+/// 「实测 N 格」走这条（2 项就是 2 格，不铺笛卡尔积）。
 #[tauri::command]
 pub async fn probe_start(
     scope: String,
     uids: Option<Vec<String>>,
     models: Option<Vec<String>>,
+    cells: Option<Vec<buddy_switch_gateway::model_probe::ProbeStartCell>>,
     adopt: bool,
 ) -> Result<Value, String> {
     let target = buddy_switch_gateway::model_probe::target_for_scope(&scope)?;
-    let total = buddy_switch_gateway::model_probe::start(&target, uids, models, adopt).await?;
+    let total =
+        buddy_switch_gateway::model_probe::start(&target, uids, models, cells, adopt).await?;
     tauri::async_runtime::spawn(buddy_switch_gateway::model_probe::run(target));
     Ok(json!({ "started": true, "total": total }))
 }
@@ -2959,6 +2964,18 @@ pub fn probe_status(scope: String) -> Result<Value, String> {
 pub fn probe_cancel(scope: String) -> Result<Value, String> {
     resolve_scope_param(Some(&scope))?;
     Ok(buddy_switch_gateway::model_probe::cancel())
+}
+
+/// GET /api/gateway/probe/ledger —— 某作用域的**实测台账**（跨重启累积）。
+///
+/// 与 `probe_status` 的分工：`status` = 本轮作业（进度 / 相位）；本命令 = 这些格
+/// **最近一次**的实判（落盘 `probe_results.json`，按作用域隔离）。
+///
+/// ★ 账号页「客户端限流」重启后仍要看到实测结论 ⇒ 必须读它，而不是只读进程内 `probeCells`。
+#[tauri::command]
+pub fn probe_ledger(scope: String) -> Result<Value, String> {
+    resolve_scope_param(Some(&scope))?;
+    Ok(buddy_switch_gateway::model_probe::ledger_snapshot(&scope))
 }
 
 // ===========================================================================

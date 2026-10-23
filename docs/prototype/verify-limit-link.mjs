@@ -136,10 +136,10 @@ try {
   await shot("01-initial.png");
 
   /* ── ② 入口：卡头只测台账组合；join 失败行置灰并说明 ── */
-  /* ★ 格数必须按**后端真实行为**算：`build_plan` 是「账号外层 × 模型」的笛卡尔积
-     （3 账号 × 2 模型 = 6 格）。写成「台账 3 条 = 3 格」就是骗人 —— 点下去会跑 6 格。 */
-  check("卡头按钮 = 账号集合 × 模型集合（3 × 2 = 6 格，与后端 build_plan 同口径）",
-    (await text("#probe-all span")) === "实测 6 格", await text("#probe-all span"));
+  /* ★ 格数 = **去重后的 (uid, model) 组合数**：后端 `probe_start` 收 `cells` 显式清单
+     （与 `uids × models` 的笛卡尔积互斥）⇒ 3 条台账 = 3 格，不白打另外 3 格。 */
+  check("卡头按钮 = 台账里 (仍受限/未知) 的去重组合数（3，不是 3×2=6）",
+    (await text("#probe-all span")) === "实测 3 格", await text("#probe-all span"));
   check("卡头按钮可点（有可实测条目）",
     (await evaluate(`document.querySelector("#probe-all").disabled`)) === false);
   check("join 失败行的「实测」按钮置灰（关联不到账号/模型）",
@@ -147,9 +147,9 @@ try {
   check("置灰按钮**说明了原因**（title 含「无法实测」）",
     /无法实测/.test(await evaluate(`document.querySelector('[data-act="probe-row||"]').title`)),
     await evaluate(`document.querySelector('[data-act="probe-row||"]').title`));
-  check("卡头按钮的 title 写明代价、展开方式与「不回填」",
+  check("卡头按钮的 title 写明代价、「只测台账组合」与「不回填」",
     /最小请求/.test(await evaluate(`document.querySelector("#probe-all").title`))
-      && /账号为外层/.test(await evaluate(`document.querySelector("#probe-all").title`))
+      && /只测台账里出现过的组合/.test(await evaluate(`document.querySelector("#probe-all").title`))
       && /不回填/.test(await evaluate(`document.querySelector("#probe-all").title`)));
 
   /* ── ③ 行内实测：两侧同时变 ── */

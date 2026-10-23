@@ -30,7 +30,7 @@
  * 用户去傻等解锁」的坑）。
  */
 
-import type { ClientLimitEntry, ModelProbeCell, ModelProbeJob, ModelProbeState } from "./types";
+import type { ClientLimitEntry, ModelProbeCell, ModelProbeState } from "./types";
 
 /** 只有这三档算「限流」（与 `PROBE_LIMIT_STATES` 同源；这里放在 lib 侧供纯函数复用）。 */
 export const LIMIT_STATES: readonly ModelProbeState[] = [
@@ -126,9 +126,16 @@ export function probeCellOf(
 
 /** 一次探测的目标集合。 */
 export interface ProbeTargets {
+  /**
+   * **去重后的 `(uid, model)` 显式清单** —— 实测只打这些格。
+   *
+   * 直接喂给 `probe_start` 的 `cells` 参数（**不是** `uids` / `models`）：后者是笛卡尔积，
+   * 台账里 3 条（3 账号 / 2 模型）会被展开成 6 格，多打的 3 格既费配额又答非所问。
+   */
+  pairs: { uid: string; model: string }[];
   uids: string[];
   models: string[];
-  /** **真实格数 = 账号数 × 模型数**（见下）。 */
+  /** 真实格数 = `pairs.length`。 */
   cells: number;
 }
 
@@ -139,26 +146,33 @@ export function isProbeWorthy(entry: ClientLimitEntry): boolean {
 }
 
 /**
- * 从台账算「卡头实测」的目标集合（直接喂给 `probe_start` 的 `uids` / `models`）。
+ * 从台账算「卡头实测」的目标集合（喂给 `probe_start` 的 **`cells`**）。
  *
- * ★★ **格数是笛卡尔积，不是台账条数**：后端 `model_probe::build_plan` 以**账号为外层**展开
- * `uids × models`。台账里 3 条（3 账号 / 2 模型）点下去实际是 **6 格**。
- * 按钮上的数字必须按后端真实行为算 —— 写「3 格」再跑 6 格就是骗人（也白烧 3 次配额）。
- * 想只打某一格：用行尾「实测」（`uids:[uid] models:[model]`，恒 1 格）。
+ * ★★ **格数 = 台账里出现过的 `(账号, 模型)` 组合数**，不是「账号数 × 模型数」：
+ * 后端 `probe_start` 的 `cells` 是**显式清单**（给了它就忽略 `uids` / `models`）。
+ * 台账 3 条（3 账号 / 2 模型）就该是 **3 格** —— 按笛卡尔积跑 6 格是白烧配额。
  *
- * ★ 已恢复（`recovered`）的账号/模型**不进集合** —— 日志已经证明它好了。
+ * ★ 已恢复（`recovered`）的条目**不测** —— 日志已经证明它好了。
+ * ★ join 失败（`accountUid` / `model` 为 null）的条目**测不了**（`isProbeWorthy` 已排除）。
  */
 export function probeTargets(entries: readonly ClientLimitEntry[]): ProbeTargets {
-  const uids: string[] = [];
-  const models: string[] = [];
+  const pairs: { uid: string; model: string }[] = [];
+  const seen = new Set<string>();
   for (const entry of entries) {
     if (!isProbeWorthy(entry)) continue;
     const uid = entry.accountUid as string;
     const model = entry.model as string;
-    if (!uids.includes(uid)) uids.push(uid);
-    if (!models.includes(model)) models.push(model);
+    const key = `${uid}\u0000${model}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    pairs.push({ uid, model });
   }
-  return { uids, models, cells: uids.length * models.length };
+  return {
+    pairs,
+    uids: [...new Set(pairs.map((pair) => pair.uid))],
+    models: [...new Set(pairs.map((pair) => pair.model))],
+    cells: pairs.length,
+  };
 }
 
 /** 台账与实测**不一致**的两种形态（见模块头第 3 条：只并列，不改写）。 */
@@ -221,14 +235,26 @@ export interface ProbeTally {
   ok: number;
 }
 
-/** 汇总本次作业的格（`null` = 没跑过）。 */
-export function tallyProbe(job: ModelProbeJob | null): ProbeTally | null {
-  if (!job || job.phase === "idle") return null;
+/**
+ * 汇总一批格（**读合并索引**，不是读某轮作业）。
+ *
+ * 为什么按索引算：重启后本轮作业是 `idle`，但落盘台账里仍有结论 —— 只按作业算会把
+ * 「上次实测」整段隐藏掉。按索引算，两处（本次跑完 / 重启后）看到的汇总口径完全一致。
+ *
+ * 空索引 ⇒ `null`（**没探过**，不是「0 格全可用」）。
+ */
+export function tallyCells(
+  cells: Readonly<Record<string, Record<string, ModelProbeCell>>>,
+): ProbeTally | null {
+  let total = 0;
   let limited = 0;
   let ok = 0;
-  for (const cell of job.cells) {
-    if (isLimitState(cell.state)) limited += 1;
-    else if (cell.state === "ok") ok += 1;
+  for (const models of Object.values(cells)) {
+    for (const cell of Object.values(models)) {
+      total += 1;
+      if (isLimitState(cell.state)) limited += 1;
+      else if (cell.state === "ok") ok += 1;
+    }
   }
-  return { cells: job.cells.length, limited, ok };
+  return total === 0 ? null : { cells: total, limited, ok };
 }

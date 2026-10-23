@@ -464,7 +464,7 @@ export const en = {
   "wbAccounts.limits.openProbeMatrix": "Open probe matrix →",
   "wbAccounts.limits.probeSummary": "Probed {cells} cells · limited {limited} · available {ok} ({time})",
   "wbAccounts.limits.probeAll": "Probe {cells} cells",
-  "wbAccounts.limits.probeAllHint": "{accounts} accounts × {models} models = {cells} cells (the backend expands accounts as the outer axis); one minimal request per cell, pool cooldowns are not written back.",
+  "wbAccounts.limits.probeAllHint": "Only the pairs seen in the ledger: {cells} cells ({accounts} accounts / {models} models). One minimal request per cell; pool cooldowns are not written back.",
   "wbAccounts.limits.probeAllEmpty": "Nothing to probe (needs \"still limited / unknown\" rows that resolve to both an account and a model).",
   "wbAccounts.limits.probeRow": "Probe",
   "wbAccounts.limits.probeRowHint": "Probe just this cell: one minimal request, no pool cooldown is written back.",

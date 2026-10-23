@@ -511,7 +511,7 @@ export const zh = {
   "wbAccounts.limits.openProbeMatrix": "查看探测矩阵 →",
   "wbAccounts.limits.probeSummary": "实测 {cells} 格 · 限流 {limited} · 可用 {ok}（{time}）",
   "wbAccounts.limits.probeAll": "实测 {cells} 格",
-  "wbAccounts.limits.probeAllHint": "{accounts} 个账号 × {models} 个模型 = {cells} 格（后端按账号为外层展开），每格一次最小请求，不回填池冷却。",
+  "wbAccounts.limits.probeAllHint": "只测台账里出现过的组合：{cells} 格（{accounts} 个账号 / {models} 个模型），每格一次最小请求，不回填池冷却。",
   "wbAccounts.limits.probeAllEmpty": "没有可实测的条目（需要「仍受限 / 状态未知」且能关联到账号与模型）。",
   "wbAccounts.limits.probeRow": "实测",
   "wbAccounts.limits.probeRowHint": "只实测这一格：一次最小请求，不回填池冷却。",

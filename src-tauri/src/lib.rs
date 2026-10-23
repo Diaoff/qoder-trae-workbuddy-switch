@@ -536,6 +536,7 @@ pub fn run() {
             commands::probe_start,
             commands::probe_status,
             commands::probe_cancel,
+            commands::probe_ledger,
             // ---- Trae 模块（与 server 的 /api/trae/* 路由一一对应）----
             commands::get_trae_env,
             commands::get_trae_variants,

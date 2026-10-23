@@ -255,7 +255,7 @@ kbd{padding:1px 5px;border-radius:4px;border:1px solid var(--border);background:
             </div>
             <button class="btn primary sm" id="probe-all" data-act="probe-all">
               <svg viewBox="0 0 24 24"><path d="M12 3v3M12 18v3M3 12h3M18 12h3M5.6 5.6l2.1 2.1M16.3 16.3l2.1 2.1M18.4 5.6l-2.1 2.1M7.7 16.3l-2.1 2.1"/></svg>
-              <span>实测 6 格</span>
+              <span>实测 3 格</span>
             </button>
             <button class="btn sm" data-act="refresh">刷新</button>
           </div>
@@ -350,7 +350,7 @@ kbd{padding:1px 5px;border-radius:4px;border:1px solid var(--border);background:
     <div class="note">
       <h3>② 入口与代价</h3>
       <ul>
-        <li>卡头「实测 N 格」= 台账里 <b>仍受限 + 状态未知</b> 的账号集合 × 模型集合（已恢复的不测 —— 日志已经证明它好了）。<b>后端按账号为外层展开笛卡尔积</b>，故 3 账号 × 2 模型 = 6 格；按钮上的数就是真实格数。</li>
+        <li>卡头「实测 N 格」= 台账里 <b>仍受限 + 状态未知</b> 的 <code>(uid, model)</code> <b>去重组合</b>（已恢复的不测 —— 日志已经证明它好了）。后端收 <code>cells</code> 显式清单（与 <code>uids × models</code> 的笛卡尔积互斥）⇒ 3 条台账就是 3 格，不白打。</li>
         <li>行尾「实测」= 只打这一格；<b>关联不到账号/模型的行置灰</b>，`title` 写明原因。</li>
         <li>两处都 <code>adopt:false</code>：账号页是查证，不写池冷却。要回填请到网关页（那里有明示开关）。</li>
         <li>作业位单例 ⇒ 正在探测时按钮变进度条，重复点击不再起第二个作业。</li>
@@ -503,7 +503,7 @@ function renderLedger() {
     : `实测 ${targets.cells} 格`;
   btn.title = targets.rows.length === 0
     ? "没有可实测的条目（需要「仍受限/未知」且能关联到账号与模型）"
-    : `${targets.uids.length} 个账号 × ${targets.models.length} 个模型 = ${targets.cells} 格（后端按账号为外层展开），每格一次最小请求，不回填池冷却`;
+    : `只测台账里出现过的组合：${targets.cells} 格（${targets.uids.length} 个账号 / ${targets.models.length} 个模型），每格一次最小请求，不回填池冷却`;
 
   renderExtra();
   renderProgress();
@@ -678,11 +678,10 @@ let expanded = true;
 
 /* ══════════════════════════ 探测作业（模拟 @ 380ms/格） ══════════════════════════ */
 function probeTargets() {
-  /* ★ 目标 = 台账里「仍受限 / 未知」的账号集合 × 模型集合。
-     ⚠️ 后端 `build_plan` 是**账号为外层的笛卡尔积**（`uids × models`），
-     传 3 个账号 + 2 个模型就是 **6 格**，不是「3 条台账 = 3 格」。
-     卡头按钮的格数必须按后端真实行为算，否则用户点下去跑了 6 格却只交代 3 格。
-     想只打某一格 → 用行尾「实测」（`uids:[uid] models:[model]`，恒 1 格）。 */
+  /* ★ 目标 = 台账里「仍受限 / 未知」的 **(账号, 模型) 去重组合**。
+     后端 `probe_start` 收 `cells: [{uid, model}]` **显式格清单**（与 `uids × models`
+     的笛卡尔积互斥）⇒ 台账 3 条（3 账号 / 2 模型）就是 **3 格**，不白打另外 3 格。
+     想只打某一格 → 行尾「实测」（清单只有 1 项）。 */
   const rows = LEDGER.filter((e) =>
     e.accountUid && e.model && (e.state === "active" || e.state === "unknown"));
   const seen = new Set();
@@ -695,15 +694,7 @@ function probeTargets() {
   }
   const uids = [...new Set(pairs.map((p) => p.uid))];
   const models = [...new Set(pairs.map((p) => p.model))];
-  return { rows, pairs, uids, models, cells: uids.length * models.length };
-}
-
-/** 卡头实测的待探清单：账号外层 × 模型（与后端 `build_plan` 同序）。 */
-function probePlanAll() {
-  const t = probeTargets();
-  const plan = [];
-  for (const uid of t.uids) for (const model of t.models) plan.push({ uid, model });
-  return plan;
+  return { rows, pairs, uids, models, cells: pairs.length };
 }
 
 function startProbe(plan, origin) {
@@ -778,7 +769,7 @@ document.addEventListener("click", (ev) => {
   const [act, a1, a2] = el.dataset.act.split("|");
 
   if (act === "probe-all") {
-    startProbe(probePlanAll(), "account");
+    startProbe(probeTargets().pairs, "account");
     return;
   }
   if (act === "probe-row") {

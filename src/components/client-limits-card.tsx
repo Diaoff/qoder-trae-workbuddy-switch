@@ -12,7 +12,7 @@ import {
   probeOnlyLimits,
   probeTargets,
   probeTone,
-  tallyProbe,
+  tallyCells,
 } from "@/lib/limit-link";
 import { scopeFromLegacy } from "@/lib/scope";
 import type { TranslationKey } from "@/locales/zh";
@@ -119,6 +119,10 @@ export function ClientLimitsCard({ region }: { region: Region }) {
   const cancelProbe = useGatewayStore((s) => s.cancelProbe);
   /** 台账刷新后同步网关侧的「被动底色」——否则网关卡/模型表那一列会停在旧台账上。 */
   const loadProbePassive = useGatewayStore((s) => s.loadProbePassive);
+  /** 拉**落盘台账**（跨重启的实测结论）：账号页是它的主要读者（网卡矩阵也读同一份）。 */
+  const loadProbeLedger = useGatewayStore((s) => s.loadProbeLedger);
+  /** 落盘台账的最近写入时刻（只用于汇总条文案）。 */
+  const ledgerAt = useGatewayStore((s) => s.probeLedgerAt[scope]);
 
   // 竞态防护：切 region / 切窗口时旧请求可能后到，用序号丢弃过期响应。
   const requestSeq = useRef(0);
@@ -150,22 +154,31 @@ export function ClientLimitsCard({ region }: { region: Region }) {
      store 在 `running` 时会自己续轮询（单实例），故这里只拉第一枪。 */
   useEffect(() => {
     void refreshProbeStatus(scope);
-  }, [scope, refreshProbeStatus]);
+    // 同时把**落盘**的实测台账拉回来：重启后本卡仍要显示上次实测结论（同一份数据）。
+    void loadProbeLedger(scope);
+  }, [scope, refreshProbeStatus, loadProbeLedger]);
 
   const limits = useMemo(() => data?.limits ?? [], [data]);
   const running = probe?.phase === "running";
   const targets = useMemo(() => probeTargets(limits), [limits]);
   /** 实测查出限流、但台账没有记录的格（单列，不污染台账语义）。 */
   const probeOnly = useMemo(() => probeOnlyLimits(cells, limits), [cells, scope, limits]);
-  const tally = useMemo(() => tallyProbe(probe), [probe]);
+  /* 汇总按**合并索引**算（重启后作业是 idle，但台账仍有结论 —— 只按作业算会整段消失）。 */
+  const tally = useMemo(() => tallyCells(cells), [cells]);
 
-  /** 起一轮实测：**恒 `adopt: false`**（账号页只查证）。 */
+  /**
+   * 起一轮实测：**恒 `adopt: false`**（账号页只查证）。
+   *
+   * ★ 传 `cells`（**显式格清单**）而不是 `uids` / `models`：后者是笛卡尔积，
+   * 台账 3 条会被跑成 6 格。显式清单让「N 格」这个数字与实际请求数相等。
+   */
   const runProbe = useCallback(
-    async (uids: string[], models: string[]) => {
+    async (pairs: { uid: string; model: string }[]) => {
       if (running || starting) return;
+      if (pairs.length === 0) return;
       setStarting(true);
       try {
-        await startProbe({ scope, uids, models, adopt: false });
+        await startProbe({ scope, cells: pairs, adopt: false });
       } catch (cause) {
         // 作业位单例：别的入口（含网关页）正在跑时后端会拒绝 —— 如实说，并顺手对齐一次快照。
         toast.error(t("wbAccounts.limits.probeStartFail"), { description: String(cause) });
@@ -179,11 +192,11 @@ export function ClientLimitsCard({ region }: { region: Region }) {
 
   async function onProbeAll() {
     if (targets.cells === 0) return;
-    await runProbe(targets.uids, targets.models);
+    await runProbe(targets.pairs);
   }
 
   async function onProbeRow(uid: string, model: string) {
-    await runProbe([uid], [model]);
+    await runProbe([{ uid, model }]);
   }
 
   async function onCancel() {
@@ -239,7 +252,7 @@ export function ClientLimitsCard({ region }: { region: Region }) {
                 cells: tally.cells,
                 limited: tally.limited,
                 ok: tally.ok,
-                time: probe?.finished_at_ms ? formatDate(probe.finished_at_ms) : "—",
+                time: formatDate(ledgerAt ?? probe?.finished_at_ms ?? 0),
               })}
             </p>
           ) : null}

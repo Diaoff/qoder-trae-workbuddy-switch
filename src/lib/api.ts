@@ -38,6 +38,7 @@ import type {
   CopyResult,
   MigrateResult,
   ModelProbeJob,
+  ModelProbeLedger,
   GatewayConfig,
   GatewayLogEntry,
   GatewayStatus,
@@ -181,8 +182,9 @@ const DEMO_READ_COMMANDS = new Set([
   "get_gateway_config", "gateway_status", "list_api_keys", "get_gateway_models",
   "get_account_strategy", "get_disabled_models", "get_gateway_logs",
   // 限流探测的只读状态命令（probe_status）：演示站需返回未跑过（phase=idle）的快照。
+  // `probe_ledger` 是**只读**台账（跨重启的实测结论）：演示站返回空表（从未探过）。
   // ⚠️ probe_start / probe_cancel 是**写**操作（会真发上游请求 / 置取消位），一律不进这里。
-  "probe_status",
+  "probe_status", "probe_ledger",
   // 「今日 Token」（**只读**观测）：演示站需返回虚构数据，否则 build:demo 报错。
   "get_account_token_today",
   // 网关**逐日**趋势（只读 `token_daily` 历史）：趋势页的网关小图用，演示站同样要虚构数据。
@@ -470,6 +472,8 @@ const ROUTES: Record<string, Route> = {
   probe_start: { method: "POST", path: "/api/gateway/probe/start" },
   probe_status: { method: "GET", path: "/api/gateway/probe/status" },
   probe_cancel: { method: "POST", path: "/api/gateway/probe/cancel" },
+  /* 探测**结果台账**（跨重启累积、按作用域隔离）：只读。与 `/status` 的分工见 `probeLedger`。 */
+  probe_ledger: { method: "GET", path: "/api/gateway/probe/ledger" },
 
   // ---- Trae 模块 ----
   // 键名必须与 src-tauri/src/lib.rs 的 invoke_handler 登记名、
@@ -2366,6 +2370,13 @@ export function probeStart(params: {
   scope: Scope;
   uids?: string[];
   models?: string[];
+  /**
+   * **显式格清单**（与 `uids` / `models` **互斥**，给了它就只探点名的格）。
+   *
+   * 账号页台账卡用它：台账里 3 条（3 账号 / 2 模型）是 **3 格**，而两根轴会展开成 6 格 ——
+   * 多打的 3 格既费配额又答非所问。
+   */
+  cells?: { uid: string; model: string }[];
   adopt: boolean;
 }): Promise<{ started: boolean; total: number }> {
   // ⚠️ 展开成**对象字面量**（而不是直接传 `params`）：`check-api-contract.cjs` 第 8 条要求
@@ -2374,6 +2385,7 @@ export function probeStart(params: {
     scope: params.scope,
     uids: params.uids,
     models: params.models,
+    cells: params.cells,
     adopt: params.adopt,
   });
 }
@@ -2388,6 +2400,20 @@ export function probeStart(params: {
  */
 export function probeStatus(scope: Scope): Promise<{ phase: "idle" } | ModelProbeJob> {
   return call("probe_status", { scope });
+}
+
+/**
+ * 读取某作用域的**实测台账**（**只读**）：这些格**最近一次**的实判，跨重启保留。
+ *
+ * 与 {@link probeStatus} 的分工：
+ * - `probeStatus` = **本轮作业**（进度 / 相位 / 本次回填），进程内单槽，新作业覆盖；
+ * - `probeLedger` = **累积结论**（落盘 `probe_results.json`，按作用域隔离）。
+ *
+ * ★ 账号页「客户端限流」重启后仍要看到实测结论 ⇒ 必须读它（只靠 store 的 `probeCells`
+ * 只能活一个进程）。无记录时 `cells` 为空、`updated_at_ms` 为 `null`（**不是错误**）。
+ */
+export function probeLedger(scope: Scope): Promise<ModelProbeLedger> {
+  return call("probe_ledger", { scope });
 }
 
 /** 请求取消当前探测作业（**写**操作；逐格检查，已探到的格保留）。 */

@@ -207,6 +207,8 @@ export function ModelProbeCard({
   const refreshProbeStatus = useGatewayStore((s) => s.refreshProbeStatus);
   const cancelProbe = useGatewayStore((s) => s.cancelProbe);
   const loadProbePassive = useGatewayStore((s) => s.loadProbePassive);
+  /** 拉**落盘台账**：矩阵在重启后也要显示上次实测结论（与账号页台账卡同一份）。 */
+  const loadProbeLedger = useGatewayStore((s) => s.loadProbeLedger);
   const stopProbePolling = useGatewayStore((s) => s.stopProbePolling);
 
   /**
@@ -279,9 +281,10 @@ export function ModelProbeCard({
   /* 进入 / 切作用域：拉一次作业快照 + 被动底色。卸载时清轮询（防泄漏）。 */
   useEffect(() => {
     void refreshProbeStatus(scope);
+    void loadProbeLedger(scope);
     void loadProbePassive(region);
     return () => stopProbePolling();
-  }, [scope, region, refreshProbeStatus, loadProbePassive, stopProbePolling]);
+  }, [scope, region, refreshProbeStatus, loadProbeLedger, loadProbePassive, stopProbePolling]);
 
   /* 订阅下钻（模型表徽标 → 本卡）。 */
   const phaseRef = useRef<"setup" | "running" | "done">("setup");

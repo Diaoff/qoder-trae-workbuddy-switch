@@ -1938,6 +1938,26 @@ export interface ModelProbeJob {
   cells: ModelProbeCell[];
 }
 
+/**
+ * 某作用域的**实测台账**（`probe_ledger` 返回）：这些格**最近一次**的实判，跨重启保留。
+ *
+ * 与 `ModelProbeJob` 的分工：
+ *
+ * | | `ModelProbeJob`（`probe_status`） | 本类型（`probe_ledger`） |
+ * |---|---|---|
+ * | 是什么 | **本轮作业**（进度 / 相位 / 本次回填） | 这些格**最近一次**的实判 |
+ * | 生命周期 | 进程内单槽，新作业覆盖 | 落盘 `probe_results.json`，按作用域累积 |
+ *
+ * ⚠️ 没有 `phase`：**空 `cells` 就是没探过**（不要把「没记录」渲染成「可用」）。
+ */
+export interface ModelProbeLedger {
+  /** 作用域字面量（后端原样回显，可用于交叉校验）。 */
+  scope: string;
+  /** 最近一次写入时刻（毫秒）；从来没有记录时为 `null`。 */
+  updated_at_ms: number | null;
+  cells: ModelProbeCell[];
+}
+
 /** 回填的一条明细：某个账号的某个模型被置 / 被清。 */
 export interface ModelProbeAdoptRecord {
   uid: string;
