@@ -446,11 +446,20 @@ async fn messages_uses_the_anthropic_error_shape() {
     std::fs::remove_dir_all(dir).unwrap();
 }
 
-/// ★ `/v1/responses` + Trae 命名空间 ⇒ **501**（设计如此）。
+/// ★ `/v1/responses` + Trae 命名空间 ⇒ **正常分派**（2026-10-22 补齐该端点）。
 ///
-/// 不许 404（用户会以为路径写错）、更不许静默降级到 chat（用户会以为 Responses 生效了）。
+/// 这一条原先钉的是「501 + `endpoint_not_supported_for_namespace`」。补上 Trae 侧的
+/// `/v1/responses` 后，同一个请求会走 Trae 网关的同一套中继，失败原因退化为**下游**的
+/// （测试环境没有可用账号 ⇒ `no_credential`），而不再可能是「端点不存在」。
+///
+/// 两条断言分别钉住两件不同的事：
+/// 1. 状态码不再是 `NOT_IMPLEMENTED`（端点确实挂上了）；
+/// 2. 错误码里不再出现那个已删除的码（分派层没有偷偷保留旧分支）。
+///
+/// ⚠️ 不要把它放宽成「只要不是 501 就行」然后删掉第 2 条 —— 分派层若对 Trae 重新
+/// 加了拦截，这条是唯一会红的用例。
 #[tokio::test]
-async fn responses_rejects_trae_namespaces_with_501() {
+async fn responses_is_served_for_trae_namespaces() {
     let (base, key, dir, handle) = start_gateway(&["trae-cn"], None, |_| {}).await;
     let (status, body) = post(
         &base,
@@ -459,15 +468,15 @@ async fn responses_rejects_trae_namespaces_with_501() {
         r#"{"model":"trae-cn:deepseek-v4.1-flash"}"#,
     )
     .await;
-    assert_eq!(status, StatusCode::NOT_IMPLEMENTED);
-    assert_eq!(
-        body["error"]["code"],
-        "endpoint_not_supported_for_namespace"
+    assert_ne!(
+        status,
+        StatusCode::NOT_IMPLEMENTED,
+        "Trae 已支持 /v1/responses：{body}"
     );
-    assert!(
-        body["error"]["message"].as_str().unwrap().contains("wb-cn"),
-        "要给出出路（改用 wb-cn: 或换端点）：{}",
-        body["error"]["message"]
+    let code = body["error"]["code"].as_str().unwrap_or_default();
+    assert_ne!(
+        code, "endpoint_not_supported_for_namespace",
+        "该错误码已随端点补齐删除：{body}"
     );
 
     handle.shutdown().await;
