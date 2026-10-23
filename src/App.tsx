@@ -279,6 +279,88 @@ function navLinkClass({ isActive, collapsed }: { isActive: boolean; collapsed?: 
   );
 }
 
+/** 侧栏导航项的数据形状（`scopedNav` 的元素）。 */
+type ScopedNavItem = {
+  dest: Destination;
+  to: string;
+  labelKey: TranslationKey;
+  icon: ComponentType<{ className?: string }>;
+  badge: { n: number; warn: boolean } | null;
+};
+
+/**
+ * 侧栏导航项（单个）。
+ *
+ * ⚠️⚠️ **`className` 必须是字符串，`isActive` 必须在组件内自己算** —— 这曾是一次线上事故：
+ *
+ * `<TooltipTrigger asChild>` 走 Radix 的 `Slot`，而 `Slot.mergeProps` 对 `className` 的处理是
+ * `[slotValue, childValue].filter(Boolean).join(" ")` —— **它不会调用函数**，只会把函数
+ * `String()` 成一个字符串。于是 `<NavLink className={({ isActive }) => ...}>` 合并后变成
+ * `class="({isActive:...}) => ..."`：所有工具类全部失效，导航项退化成块级元素
+ * （图标一行、文字一行、`h-[38px]` / 内边距 / 圆角全丢，选中态只剩一条错位的横杠）。
+ * 2026-10-22 GitHub Pages 上的侧栏就是这个症状 —— 与构建、base、CSS 产物都无关，
+ * 是 React 层的 className 契约被 `asChild` 打穿。
+ *
+ * ⇒ 判活改由 `useMatch` 完成，规则与 `NavLink` 内部**同一套**
+ * （`end: false` 正是 NavLink 对非根路径的默认值），交给 `Slot` 的永远是静态字符串。
+ * 别再改回 `className={({ isActive }) => ...}`。
+ */
+function SidebarNavItem({ item, collapsed }: { item: ScopedNavItem; collapsed: boolean }) {
+  const t = useT();
+  const isActive = useMatch({ path: item.to, end: false }) !== null;
+  const badge = item.badge;
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <NavLink to={item.to} className={navLinkClass({ isActive, collapsed })}>
+          {/* 折叠态：图标自身居中（`justify-center` 由 navLinkClass 的 collapsed 变体给出），
+              文字不渲染；徽章从「行尾横排」改成**图标右上角标** —— 60px 里横排放不下，
+              而角标是「有未读/有待处理」的通用语言，不依赖文字。 */}
+          <span className="relative">
+            <item.icon className="size-4" />
+            {collapsed && badge !== null ? (
+              <span
+                data-badge={item.dest === "sessions" ? "pending-sync" : `count-${item.dest}`}
+                className={cn(
+                  "absolute -right-1.5 -top-1.5 grid h-[14px] min-w-[14px] place-items-center rounded-full px-1 text-[9px] tabular-nums ring-2 ring-sidebar",
+                  badge.warn ? "bg-warning/22 text-warning" : "bg-muted text-muted-foreground",
+                  isActive && "bg-primary/25 text-foreground",
+                )}
+              >
+                {badge.n}
+              </span>
+            ) : null}
+          </span>
+          {collapsed ? null : (
+            <>
+              {t(item.labelKey)}
+              {badge !== null ? (
+                <span
+                  data-badge={item.dest === "sessions" ? "pending-sync" : `count-${item.dest}`}
+                  className={cn(
+                    "ml-auto grid h-[18px] min-w-[20px] place-items-center rounded-full px-1.5 text-[10.5px] tabular-nums",
+                    badge.warn ? "bg-warning/22 text-warning" : "bg-muted text-muted-foreground",
+                    isActive && "bg-primary/25 text-foreground",
+                  )}
+                >
+                  {badge.n}
+                </span>
+              ) : null}
+            </>
+          )}
+        </NavLink>
+      </TooltipTrigger>
+      {/* 折叠态才需要 tooltip（展开态文字就在旁边；双份显示反而冗余）。 */}
+      {collapsed ? (
+        <TooltipContent side="right">
+          {t(item.labelKey)}
+          {badge !== null ? ` · ${badge.n}` : ""}
+        </TooltipContent>
+      ) : null}
+    </Tooltip>
+  );
+}
+
 /**
  * 每条 Trae 产品线的运行状态。
  *
@@ -922,64 +1004,7 @@ function Layout() {
             aria-label={t("product.navAria", { product: t(platformDescriptor(product).labelKey) })}
           >
             {scopedNav.map((item) => (
-              <Tooltip key={item.to}>
-                <TooltipTrigger asChild>
-                  <NavLink
-                    to={item.to}
-                    className={({ isActive }) => navLinkClass({ isActive, collapsed: sidebarCollapsed })}
-                    /* 折叠态：图标自身居中（`justify-center` 由 navLinkClass 的 collapsed 变体给出），
-                       文字不渲染；徽章从「行尾横排」改成**图标右上角标** —— 60px 里横排放不下，
-                       而角标是「有未读/有待处理」的通用语言，不依赖文字。 */
-                    children={({ isActive }) => (
-                      <>
-                        <span className="relative">
-                          <item.icon className="size-4" />
-                          {sidebarCollapsed && item.badge !== null ? (
-                            <span
-                              data-badge={item.dest === "sessions" ? "pending-sync" : `count-${item.dest}`}
-                              className={cn(
-                                "absolute -right-1.5 -top-1.5 grid h-[14px] min-w-[14px] place-items-center rounded-full px-1 text-[9px] tabular-nums ring-2 ring-sidebar",
-                                item.badge.warn
-                                  ? "bg-warning/22 text-warning"
-                                  : "bg-muted text-muted-foreground",
-                                isActive && "bg-primary/25 text-foreground",
-                              )}
-                            >
-                              {item.badge.n}
-                            </span>
-                          ) : null}
-                        </span>
-                        {sidebarCollapsed ? null : (
-                          <>
-                            {t(item.labelKey)}
-                            {item.badge !== null ? (
-                              <span
-                                data-badge={item.dest === "sessions" ? "pending-sync" : `count-${item.dest}`}
-                                className={cn(
-                                  "ml-auto grid h-[18px] min-w-[20px] place-items-center rounded-full px-1.5 text-[10.5px] tabular-nums",
-                                  item.badge.warn
-                                    ? "bg-warning/22 text-warning"
-                                    : "bg-muted text-muted-foreground",
-                                  isActive && "bg-primary/25 text-foreground",
-                                )}
-                              >
-                                {item.badge.n}
-                              </span>
-                            ) : null}
-                          </>
-                        )}
-                      </>
-                    )}
-                  />
-                </TooltipTrigger>
-                {/* 折叠态才需要 tooltip（展开态文字就在旁边；双份显示反而冗余）。 */}
-                {sidebarCollapsed ? (
-                  <TooltipContent side="right">
-                    {t(item.labelKey)}
-                    {item.badge !== null ? ` · ${item.badge.n}` : ""}
-                  </TooltipContent>
-                ) : null}
-              </Tooltip>
+              <SidebarNavItem key={item.to} item={item} collapsed={sidebarCollapsed} />
             ))}
           </nav>
 
