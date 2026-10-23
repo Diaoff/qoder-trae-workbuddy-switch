@@ -16,6 +16,7 @@ import { GatewayShell } from "@/components/gateway/gateway-shell";
 import { UnifiedGatewayView } from "@/components/gateway/unified-gateway-view";
 import {
   GW_INDEPENDENT_SECTIONS_NO_PROXY,
+  GW_SECTIONS,
   parseGatewayDeepLink,
   unifiedSectionId,
   type GatewaySectionId,
@@ -119,8 +120,11 @@ export default function LoomyApiServicePage() {
     setSearchParams(params, { replace: true });
   }
 
+  /* ★ 切类型**必须重置分区**到**该类型**的第一项（两个类型的分区 id 集合不相交）。
+     ⚠️ 曾经这里恒取独立网关的第一项 ⇒ 切到统一网关时写成 `type=unified&sub=overview`，
+     渲染的仍是独立网关的概览（类型高亮变了、内容与端口都不动）。与另三页对齐。 */
   function goType(next: GatewayType) {
-    writeNav(next, GW_INDEPENDENT_SECTIONS_NO_PROXY[0].id);
+    writeNav(next, GW_SECTIONS[next][0].id);
   }
 
   function goSub(id: GatewaySectionId) {
@@ -357,7 +361,7 @@ export default function LoomyApiServicePage() {
       <GatewayShell
         type={type}
         section={section}
-        sections={LOOMY_GATEWAY_SUBNAV}
+        sections={type === "independent" ? LOOMY_GATEWAY_SUBNAV : undefined}
         onTypeChange={goType}
         onSelect={goSub}
       >
