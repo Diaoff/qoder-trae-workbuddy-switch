@@ -854,4 +854,29 @@ export const zh = {
   "shared.srv.localUnavailableDesc": "改用「浏览器授权登录」或「粘贴授权凭据」；也可以在装了客户端的机器上导出备份再导入",
   "shared.srv.oauthTitle": "浏览器授权登录",
   "shared.srv.oauthDesc": "生成链接与二维码，用任意设备浏览器授权，服务端自己收结果",
+
+  /* ---- webui 登录 / 改密码（`src/pages/LoginPage.tsx`、`SettingsPage.tsx`）----
+     ⚠️ 这几条只在**浏览器形态**出现（桌面端走 `invoke`，没有登录概念）。
+     键仍放 `shared.` 前缀：登录页与设置页都属跨产品共用界面。 */
+  "shared.auth.loginTitle": "需要密码",
+  "shared.auth.loginDesc": "此 Buddy Switch 已设置访问密码，请输入后继续。",
+  "shared.auth.password": "密码",
+  "shared.auth.loginAction": "登录",
+  "shared.auth.loginHint": "密码在首次启动时由 BUDDY_SWITCH_PASSWORD 设定，之后可在「设置」中修改。",
+  "shared.auth.logout": "退出登录",
+  "shared.auth.logoutDesc": "清除本浏览器的登录状态。其他设备不受影响。",
+  "shared.auth.logoutDone": "已退出登录",
+  "shared.auth.passwordTitle": "WebUI 密码",
+  "shared.auth.passwordDesc": "保护管理界面（账号库、网关 Key、签到与备份）。网关 /v1 接口另有密钥鉴权，不受此密码影响。",
+  "shared.auth.currentPassword": "当前密码",
+  "shared.auth.newPassword": "新密码",
+  "shared.auth.confirmPassword": "确认新密码",
+  "shared.auth.savePassword": "保存密码",
+  "shared.auth.passwordSaved": "密码已更新，其他设备需重新登录",
+  "shared.auth.passwordTooShort": "新密码至少 8 位",
+  "shared.auth.passwordMismatch": "两次输入的新密码不一致",
+  "shared.auth.currentPasswordRequired": "请输入当前密码",
+  "shared.auth.notEnabled": "未设置密码。若服务对外监听，启动时会被拒绝。",
+  "shared.auth.enabled": "已启用",
+  "shared.auth.disabled": "未启用",
 } as const;

@@ -31,13 +31,28 @@
 docker run -d --name buddy-switch \
   -p 127.0.0.1:57890:57890 \
   -v buddy-switch-data:/data \
+  -e BUDDY_SWITCH_PASSWORD='换成你的密码' \
   --restart unless-stopped \
   ghcr.io/nextagentx/buddy-switch:latest
-# 打开 http://127.0.0.1:57890
+# 打开 http://127.0.0.1:57890 → 输入上面那个密码
 ```
+
+⚠️ **`-e BUDDY_SWITCH_PASSWORD` 不是可选项**：镜像内置 `BUDDY_SWITCH_HOST=0.0.0.0`，
+而「非回环监听 + 无密码」会让进程**直接拒绝启动**（exit 2）。这是刻意的 fail-closed ——
+管理面能读写账号库与网关 Key，静默裸奔不可接受。详见下方[安全](#安全)一节。
 
 仓库根目录的 `docker-compose.yml` 默认也用这个镜像（`docker compose up -d`），
 它同时保留了 `build:` 作为回落：**先 pull，拉不到才 build**（Compose 的既定语义）。
+
+compose 里 `BUDDY_SWITCH_PASSWORD` 用 `${BUDDY_SWITCH_PASSWORD:?…}` 取值 ⇒ **缺变量时
+`up` 会立刻报错并说明怎么设**，而不是起一个没人知道密码的容器。设置方式：
+
+```bash
+echo 'BUDDY_SWITCH_PASSWORD=换成你的密码' > .env    # 与 docker-compose.yml 同目录
+docker compose up -d
+```
+
+> `.env` 已在 `.gitignore` 里；**不要把真密码提交进仓库**。
 
 ### 方式 B · 从源码构建
 
@@ -120,16 +135,45 @@ runner，再由 merge job 拼 manifest）。手动触发该工作流只产出 `e
 
 ---
 
-## 配置：三个环境变量
+## 配置：环境变量
 
 | 变量 | 默认 | 说明 |
 |:---|:---|:---|
 | `BUDDY_SWITCH_HOME` | `/data`（镜像内置） | **数据根目录**。账号库、网关 Key、签到/积分记录、备份都在它下面。 |
 | `BUDDY_SWITCH_HOST` | `0.0.0.0`（镜像内置） | 监听地址。CLI 原生默认是 `127.0.0.1`，容器里必须改成 `0.0.0.0` 才能从宿主访问。 |
 | `BUDDY_SWITCH_PORT` | `57890` | 监听端口。 |
+| `BUDDY_SWITCH_PASSWORD` | **无（必填）** | webui 管理面登录密码。**首次启动**写入 `<HOME>/.buddy-switch/webui_auth.json`（只存加盐 sha256），随后从进程环境抹掉。 |
+| `BUDDY_SWITCH_ALLOW_UNAUTHENTICATED` | 未设置 | 逃生开关。`1` / `true` / `yes` / `on` 表示**跳过启动护栏**，让管理面无密码运行（每次启动打红色告警）。**仅**下列三个场景可用。 |
 
 优先级：**命令行参数 > 环境变量 > 内置默认值**。即 `docker run … buddy-switch serve --port 8080`
 会覆盖 `BUDDY_SWITCH_PORT`。
+
+### `BUDDY_SWITCH_PASSWORD` 的语义（三个必须知道的点）
+
+1. **只在首次启动生效。** 文件 `<HOME>/.buddy-switch/webui_auth.json` 一旦存在就以它为准 ——
+   改 compose 里的这个变量并重启，**密码不会变**。要改密码走界面：
+   「设置 → 权限与诊断 → WebUI 密码」（需先输旧密码，改完所有设备需重新登录）。
+2. **明文不落盘。** 文件里只有 `salt` + `hash`（`sha256(salt || password)`）+ `updatedAt`。
+   所以这个文件可以安全进备份。
+3. **改了密码会踢掉所有会话。** 这是「旧凭据作废」的正确语义，不是 bug。
+
+> 忘了密码怎么办：删掉 `<HOME>/.buddy-switch/webui_auth.json` 并重新设置 `BUDDY_SWITCH_PASSWORD` 重启。
+> （容器里：`docker exec buddy-switch rm /data/.buddy-switch/webui_auth.json && docker restart buddy-switch`。）
+
+### 逃生开关的三个合法场景
+
+`BUDDY_SWITCH_ALLOW_UNAUTHENTICATED=1` 存在的原因是**端口映射对进程不可见**：
+容器里必须绑 `0.0.0.0`，而宿主可能用 `-p 127.0.0.1:57890:57890` 只映射到回环 ——
+此时「我在对外裸奔」是**假阳性**。它只在这三种情况下合理：
+
+| 场景 | 判据 |
+|:---|:---|
+| **宿主机反代已鉴权** | Caddy / Nginx 已做 Basic Auth / mTLS / OIDC，反代目标是 `127.0.0.1:57890` |
+| **容器不对外映射端口** | 只在自定义 bridge 网络内给别的容器用，`ports:` 全注释掉 |
+| **升级救急** | 拉了新镜像忘了配密码，先用它恢复可用性，再补密码 |
+
+⚠️ **公网直连（`-p 57890:57890` + 公网 IP）严禁开启** —— 那是真裸奔。
+开关**故意**不做成界面选项：那等于把「要不要鉴权」交给被鉴权保护的那个界面决定。
 
 ### `BUDDY_SWITCH_HOME` 是 fail-closed 的
 
@@ -184,15 +228,36 @@ docker run --rm -v buddy-switch-data:/data -v "$PWD:/backup" alpine \
 
 ## 安全
 
-**webui 没有登录，能读写账号库与网关 Key。** 因此：
+**webui 管理面（`/api/*`）受密码保护**（v2026.10.231202 起）。保护边界如下：
+
+| 范围 | 是否需密码 | 理由 |
+|:---|:---|:---|
+| `/api/*`（账号库、网关 Key、签到、备份、设置） | ✅ | 正是风险面 |
+| `/v1/*` 与各网关独立端口 | ❌ | 已有 `sk-*` API Key 自鉴权，客户端程序靠它调用 |
+| 静态资源（`/`、`/assets/*`） | ❌ | 拦了会让 `index.html` 401 ⇒ 登录页永远进不去 |
+| `/health`、`/healthz` | ❌ | 容器 healthcheck 必须免鉴权 |
+
+此外：
 
 - 默认只发布到宿主机回环 `127.0.0.1:57890`（`docker-compose.yml` 里写死的）。
-- 服务端在监听**非回环**地址时会打印一条显式警告。
+- 服务端在监听**非回环**地址且**未设密码**时会**拒绝启动**（exit 2），并在日志里给出两条补救路径。
 - 要跨机访问，二选一：
   1. **SSH 隧道**（推荐）：`ssh -L 57890:127.0.0.1:57890 <host>`，然后本地开
      `http://127.0.0.1:57890`。**不要**改 compose 的端口映射。
-  2. **反代加鉴权**：Nginx / Caddy + Basic Auth 或 mTLS，再把映射改成 `"57890:57890"`。
-- **不要**在无鉴权的情况下把 `57890` 直接暴露到公网或不可信局域网。
+  2. **反代 + TLS**：Nginx / Caddy 终止 TLS，再把映射改成 `"57890:57890"`。
+- **不要**把 `57890` 直接暴露到公网或不可信局域网。
+
+### ⚠️ 明文 HTTP 下密码可被嗅探 —— 公网必须上 TLS
+
+会话 Cookie 是 `HttpOnly; SameSite=Strict`，但**刻意不带 `Secure`**：纯 HTTP 部署下
+带 `Secure` 的 Cookie 会被浏览器直接丢弃，症状是「密码明明对、就是进不去」，极难排查。
+代价是**登录请求本身在明文链路上可被旁路嗅探**。因此：
+
+- 只在 `127.0.0.1` / SSH 隧道 / 可信内网里用 HTTP；
+- 任何跨不可信网络的访问都必须由前置反代提供 **HTTPS**。
+
+登录失败限流：连续 8 次错误后锁定 10 分钟（**全局**计数，不按 IP —— 反代后面所有请求
+的 peer 都是反代地址，按 IP 分桶毫无意义）。
 
 容器内的加固已经做了：非 root 用户（uid `10001`）运行、只装 `ca-certificates` 与 `curl`、
 `/data` 由 `buddy` 持有。

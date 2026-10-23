@@ -15,12 +15,16 @@
 #
 # ⚠️ 安全须知（先读再改端口映射）
 #
-# webui 能**读写账号库与网关 Key**，本身**没有登录**。因此这里默认只发布到宿主机回环
-# `127.0.0.1:57890`，只有本机能访问。要跨机访问，请二选一：
+# webui 能**读写账号库与网关 Key**。自 v2026.10.23 起管理面（`/api/*`）**强制要求密码**：
+# 只要监听地址不是回环，没有密码就**拒绝启动**（exit 2，日志会说明怎么补）。
+# 因此这里**必须**给 `BUDDY_SWITCH_PASSWORD`（见下方 environment）。
+#
+# 端口映射默认仍只发布到宿主机回环 `127.0.0.1:57890`。要跨机访问，请二选一：
 #   1. 走 SSH 隧道（推荐）：`ssh -L 57890:127.0.0.1:57890 <host>`，再在本地开
 #      http://127.0.0.1:57890 —— **不要**改这里的映射；
-#   2. 反代加鉴权（Nginx/Caddy + Basic Auth 或 mTLS），并把映射改成
-#      `"57890:57890"`。**不要**在无鉴权的情况下把 57890 直接暴露到公网/局域网。
+#   2. 反代 + TLS（Nginx/Caddy），并把映射改成 `"57890:57890"`。
+#      ⚠️ 反代本身**不能**替代密码：Cookie 是 `HttpOnly` 但**不带 `Secure`**（纯 HTTP 下
+#      带 `Secure` 会被浏览器丢弃），所以明文链路上密码可被旁路嗅探 ⇒ **必须上 TLS**。
 #
 # 详细说明见 `docs/guides/DOCKER.md`。
 
@@ -57,10 +61,29 @@ services:
       # 数据根目录。**必须是已存在的绝对目录**，否则 CLI 拒绝启动
       # （entrypoint 会 mkdir，但 bind mount 的属主不对时仍会失败 —— 那是故意的）。
       BUDDY_SWITCH_HOME: "/data"
+      # ★ webui 管理面密码（**必需**：绑 0.0.0.0 且没密码时进程直接 exit 2）。
+      #
+      # 语义：**首次启动时**用这个值初始化 `webui_auth.json`（只存加盐 sha256，
+      # 明文不落盘），随后立即从进程环境里抹掉。之后改密码请走
+      # 「设置 → 权限与诊断 → WebUI 密码」——改了以后本变量**不再生效**
+      # （文件已存在即优先，不会被 compose 里的旧值覆盖）。
+      #
+      # ⚠️ **刻意不给默认值**：默认密码等于没有密码（每个部署都相同，且写在仓库里）。
+      # 用 `${VAR:?}` 让 `docker compose up` 在缺变量时**立刻**报下面这句话，
+      # 而不是起一个没人知道密码的容器。设置方式：
+      #   echo 'BUDDY_SWITCH_PASSWORD=<你的密码>' > .env     # 或 export 后再 up
+      BUDDY_SWITCH_PASSWORD: "${BUDDY_SWITCH_PASSWORD:?请先设置 BUDDY_SWITCH_PASSWORD（管理界面登录密码），例如：echo 'BUDDY_SWITCH_PASSWORD=your-password' > .env}"
+      # 逃生开关（默认关闭）：仅当**已有反代鉴权**或**容器不对外映射端口**时才可开。
+      # 打开它会跳过上面的启动护栏，让管理面在**无密码**状态下运行，
+      # 并在每次启动时打一条红色告警。公网直连时**严禁**开启。
+      # BUDDY_SWITCH_ALLOW_UNAUTHENTICATED: "1"
     healthcheck:
       # 用服务端自己的 API 路由做探活：SPA 兜底会让「任何路径都返回 200」，
       # 因此不能拿 `/` 判断存活 —— 必须打一个真实的 API 路由。
-      test: ["CMD", "curl", "-fsS", "-o", "/dev/null", "http://127.0.0.1:57890/api/status"]
+      # ⚠️ 打 `/healthz` 而不是 `/api/status`：后者属管理面，设了密码后**必然 401**
+      #    ⇒ 容器会一直 unhealthy（而服务其实好好的）。`/healthz` 由网关路由提供、
+      #    设计上就免鉴权，是唯一稳定的探活点。
+      test: ["CMD", "curl", "-fsS", "-o", "/dev/null", "http://127.0.0.1:57890/healthz"]
       interval: 30s
       timeout: 5s
       retries: 3

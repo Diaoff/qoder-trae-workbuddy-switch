@@ -22,6 +22,7 @@
 //! 与本组变量无关。
 
 mod api;
+mod auth;
 mod gateway_host;
 // Qoder 网关（第三个平台，默认 57895）：独立端口，不与另三个 merge（axum 同路径 merge 会 panic）。
 mod loomy_gateway_host;
@@ -422,6 +423,30 @@ fn print_status() {
 /// 而唯一的提示是一行可能被 `| head` 吞掉的 stderr 警告。
 /// 未设置该变量时行为完全不变（正常使用真实 home）。判定与文案都在
 /// [`buddy_switch_core::modules::config::env_home_override_refusal`]（纯函数，可单测）。
+/// 鉴权启动护栏：**非回环监听 + 未设密码 + 未显式豁免 ⇒ 拒绝启动**（fail-closed）。
+///
+/// 判定逻辑在 [`crate::auth::startup_refusal`]（纯函数，可并行单测）；本函数只负责
+/// 读环境、调 `exit`、返回告警文案。
+///
+/// 顺序要点：先调 [`crate::auth::shared`]（它会用 `BUDDY_SWITCH_PASSWORD` 初始化哈希
+/// 并把该变量从进程环境抹掉），**再**问「有没有密码」—— 反过来会永远看不到首次启动
+/// 由 env 提供的那份密码。
+fn enforce_auth_guard(host: &str) -> Option<String> {
+    let auth = auth::shared();
+    let decision = auth::startup_refusal(
+        is_loopback_host(host),
+        auth.is_enabled(),
+        auth::allow_unauthenticated_from_env(),
+    );
+    match decision {
+        auth::StartupDecision::Allow { warn } => warn,
+        auth::StartupDecision::Refuse(reason) => {
+            eprintln!("[buddy-switch] 拒绝启动：{reason}");
+            std::process::exit(2);
+        }
+    }
+}
+
 fn refuse_when_home_override_is_invalid(cmd: &str) {
     let value = std::env::var(buddy_switch_core::modules::config::BUDDY_SWITCH_HOME_ENV).ok();
     if let Some(problem) = home_override_problem(cmd, value.as_deref()) {
@@ -466,6 +491,11 @@ async fn serve(args: &[String]) {
     let port = resolve_port(args, std::env::var(BUDDY_SWITCH_PORT_ENV).ok().as_deref());
     let host = resolve_host(args, std::env::var(BUDDY_SWITCH_HOST_ENV).ok().as_deref());
 
+    // ★ 鉴权护栏（fail-closed）：非回环监听 + 未设密码 + 未显式豁免 ⇒ **拒绝启动**。
+    //   必须在 `api::router()` 之前 —— `shared()` 会顺带用 `BUDDY_SWITCH_PASSWORD`
+    //   初始化哈希（并把该变量从进程环境里抹掉），所以「有没有密码」要在那之后问。
+    let auth_warn = enforce_auth_guard(&host);
+
     let app = api::router();
     let addr = format!("{host}:{port}");
     let listener = match tokio::net::TcpListener::bind(&addr).await {
@@ -489,6 +519,15 @@ async fn serve(args: &[String]) {
             "⚠️  webui 正对外监听（{host}）—— 它能读写账号库与网关 Key。\
              请确保只在可信网络内暴露，或用反向代理加上鉴权。"
         );
+    }
+    // 鉴权状态：三种情形分别说清（启用 / 免密仅回环 / 显式豁免），
+    // 避免「我明明设了密码」与「我以为没暴露」这两类误判。
+    if auth::shared().is_enabled() {
+        println!("鉴权: 已启用（/api/* 需登录，网关 /v1/* 与静态资源不受影响）");
+    } else if let Some(warn) = auth_warn.as_deref() {
+        println!("{warn}");
+    } else {
+        println!("鉴权: 未启用（仅回环监听，本机免密）");
     }
     println!("按 Ctrl+C 停止服务。");
 

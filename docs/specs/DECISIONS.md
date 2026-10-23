@@ -1,4 +1,4 @@
-# 决策清单（D1–D50）—— **✅ 全部已确认**
+# 决策清单（D1–D52）—— **✅ 全部已确认**
 
 > ⚠️ **另有一组决策只在 `UNIFIED-GATEWAY-ARCH.md` §10（P16 统一入口，8 条，AI 定稿）**，
 > 尚未并入本文件编号；索引见本文 **K 段**。
@@ -768,3 +768,29 @@ is_content_blocked(...) || (status == 400 && sanitized && is_channel_invalid(...
 - **刻意不实现 refresh**：Loomy 无续期端点（session 14 天，过期只能重登）；网关按 `SessionDead` 换号，面板提示重新登录（诚实标记）。
 - **uid 口径**：userid 优先，否则派生 `loomy-<md5(phone\0token) 前16hex>`；绝不用手机号（同号多账号会合并）。
 - 依据：`docs/specs/LOOMY-PLATFORM.md`。
+
+### D52 webui 管理面鉴权 —— ✅ **已落地（2026-10-23）：Cookie + 服务端 session，仅 `/api/*`，fail-closed 启动**
+
+- **保护范围只到 `/api/*`**：`/v1/*` 与各网关独立端口已有 `sk-*` 自鉴权（客户端程序靠它调用），
+  静态资源拦了会让 `index.html` 401 ⇒ 登录页永远进不去，`/healthz` 是容器 healthcheck 的探活点。
+  边界由**结构**保证：中间件只 `.layer()` 在 `protected_routes()` 上，网关是 `router()` 里 merge 的另一棵树。
+- **Cookie 而非 Bearer**：`HttpOnly` 让 XSS 读不到 token；`localStorage` 方案做不到。
+  防 CSRF 靠 `SameSite=Strict` + 全站同源（**没有 CORS 层**）+ 写操作一律 POST + JSON MIME。
+- **刻意不加 `Secure`**：纯 HTTP 部署下带 `Secure` 的 Cookie 会被浏览器丢弃，症状是「密码对却永远进不去」。
+  代价是登录请求在明文链路上可被嗅探 ⇒ 公网必须由前置反代提供 TLS（文档已写明）。
+- **会话不落盘**：进程重启 = 全部失效。落盘要处理「备份里带活 token」「服务被复制到另一台机器」，
+  而重启踢人的代价只是重输一次密码。
+- **密码只存加盐 sha256**（`webui_auth.json`），与 `apikey.rs` 同一范式 ⇒ 该文件可安全进备份。
+  **不是**抗 GPU 的 KDF；单管理密码 + 非批量撞库场景下够用，上 argon2 需另评估（刻意不为此加依赖）。
+- **`SameSite=Strict` 已验证不打断既有链路**：本仓的 OAuth 全是「起流程 + 前端轮询 + 手工粘回回调链接」，
+  服务端**没有**第三方跳回来的回调端点。
+- **启动 fail-closed**：非回环 + 无密码 + 无豁免 ⇒ `exit 2`（对照 `refuse_when_home_override_is_invalid`）。
+  逃生开关 `BUDDY_SWITCH_ALLOW_UNAUTHENTICATED` **只**由 env 读、不落盘、无 API ——
+  做成界面开关等于把「要不要鉴权」交给被鉴权保护的那个界面决定。
+- **鉴权路由不进 `ROUTES` 表**：那张表要求每条命令在桌面端 `invoke_handler` 登记，而登录对桌面端无意义；
+  误加会门禁变红 + 桌面端 `command not found`。前端单开 `src/lib/webui-auth.ts` 自带 `fetch`（已有门禁钉住）。
+- **限流按全局计数而非按 IP**：反代/容器后面所有请求的 peer 都是同一个地址，按 IP 分桶毫无意义。
+  代价是攻击者可故意连错 8 次把管理员锁 10 分钟（有界 DoS），比无限次暴力破解可接受。
+- 实现：`crates/buddy-switch-server/src/auth.rs`（内核 + 中间件 + 三条公开路由）、
+  `api.rs::api_change_password`、`src/lib/webui-auth.ts`、`src/pages/LoginPage.tsx`、`src/components/auth-gate.tsx`。
+- 部署说明：`docs/guides/DOCKER.md#安全`。

@@ -203,6 +203,8 @@ flowchart TB
 > The npm package is not published yet, so `npm i -g` will not install it; use the source build below for the webui form.
 >
 > The Docker form is **server-only**: switching client login state, launching the client, the tray and the floating window all need a **graphical client on the same machine**, so none of them work inside the container.
+>
+> **The webui management surface is password protected** (since v2026.10.231202): `/api/*` requires sign-in; gateway `/v1/*` endpoints keep their own `sk-*` keys. When listening on a non-loopback address you must set `BUDDY_SWITCH_PASSWORD` or startup is **refused**; loopback stays password-free. See [Docker deployment](docs/guides/DOCKER.md#安全).
 
 ## Quick start
 

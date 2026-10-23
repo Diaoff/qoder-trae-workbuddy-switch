@@ -849,6 +849,33 @@ function main() {
       }
     }
   }
+  // 12) ★ 鉴权三路由**绝不**能进 ROUTES 表（登录对桌面端无意义）。
+  //
+  // `ROUTES` 的第 4 条约束要求每个条目都在 `src-tauri/src/lib.rs` 的 invoke_handler
+  // 登记。把 `/api/auth/*` 加进去会同时造成：门禁变红（或被迫开一个「不登记」的例外，
+  // 而例外会腐烂）+ 桌面端 `invoke("login")` 报 command not found。
+  //
+  // 因此前端单开 `src/lib/webui-auth.ts` 用裸 fetch 直连。这条门禁防的是
+  // 「后来者觉得统一走 ROUTES 更整洁」把这条路悄悄改回去。
+  {
+    const authPaths = ["/api/auth/state", "/api/auth/login", "/api/auth/logout"];
+    for (const { cmd, path: routePath } of routes) {
+      if (authPaths.includes(routePath)) {
+        errors.push(
+          `[auth] ROUTES["${cmd}"] 指向鉴权路由 ${routePath} —— 登录对桌面端无意义，` +
+            `该路由会要求 invoke_handler 登记（第 4 条）并让桌面端 command not found。` +
+            `鉴权三路由请留在 src/lib/webui-auth.ts 里用裸 fetch`,
+        );
+      }
+    }
+    // 反向：`/api/auth/password` 是**受保护**的管理面路由（改密码），它同样不该进 ROUTES
+    // —— 前端由 `webui-password-card.tsx` 直连。上面那三条 + 这一条合起来是「auth 面
+    // 一律不经 ROUTES」。
+    if (routes.some((route) => route.path.startsWith("/api/auth/"))) {
+      errors.push("[auth] ROUTES 里出现了 /api/auth/* —— 鉴权面一律走 src/lib/webui-auth.ts");
+    }
+  }
+
 if (errors.length > 0) {
     process.stderr.write(`API 契约校验失败（共 ${errors.length} 项）：\n`);
     for (const error of errors) process.stderr.write(`  - ${error}\n`);

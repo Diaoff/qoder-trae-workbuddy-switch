@@ -1,6 +1,6 @@
 [package]
 name = "buddy-switch-server"
-version = "2026.10.221931"
+version = "2026.10.231202"
 edition = "2021"
 description = "buddy-switch HTTP server + CLI（npm 安装形态：buddy-switch 命令启动本地 webui）"
 
@@ -14,7 +14,13 @@ buddy-switch-gateway = { path = "../buddy-switch-gateway" }
 axum = "0.7"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
 serde_json = "1"
+serde = { version = "1", features = ["derive"] }
 rust-embed = "8"
+# webui 管理面鉴权（`src/auth.rs`）：密码只存加盐 sha256、会话 token 用 CSPRNG。
+# 两者都已在依赖树中（core / gateway 以同版本使用），此处只是显式声明 ——
+# 不新增任何第三方 crate。
+sha2 = "0.10"
+getrandom = "0.2"
 
 [dev-dependencies]
 # `tower` 已在 Cargo.lock（axum 0.7 的传递依赖），仅用于路由级测试的 `oneshot` 驱动。

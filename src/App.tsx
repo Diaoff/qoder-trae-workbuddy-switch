@@ -7,6 +7,7 @@ import { cn } from "@/lib/utils";
 import * as api from "@/lib/api";
 import type { UpdateInfo } from "@/lib/types";
 import { PageFallback } from "@/components/page-fallback";
+import { AuthGate } from "@/components/auth-gate";
 import { StatusDot } from "@/components/product-marks";
 import { DonateDialog } from "@/components/donate-dialog";
 import { TopBar } from "@/components/shell/top-bar";
@@ -84,6 +85,14 @@ const LoomyOverviewPage = lazy(() => import("@/pages/LoomyOverviewPage"));
 const LoomySettingsPage = lazy(() => import("@/pages/LoomySettingsPage"));
 const LoomyApiServicePage = lazy(() => import("@/pages/LoomyApiServicePage"));
 const LoomyPendingPage = lazy(() => import("@/pages/LoomyPendingPage"));
+/**
+ * webui 登录页。
+ *
+ * ⚠️ **不挂在 `Layout` 里**（见下方 `App` 的路由表）：`Layout` 一挂载就会
+ * 发起一串管理面请求（状态 / 账号 / 网关），未登录时它们全是 401 ——
+ * 挂在里面等于每次登录都先刷一屏错误提示。
+ */
+const LoginPage = lazy(() => import("@/pages/LoginPage"));
 /* P0 收敛清单第 1 项：`Product` 的类型定义**已搬进注册表**，这里改为 import。
    （原来 App.tsx 里有一份局部 `type Product`，两处重复 —— 现在只剩一处。） */
 import { DESTINATION_CAPABILITY, type Destination, DESTINATIONS, destinationOfLegacyPath, hasCapability, platformDescriptor, type Product, platformOfPath } from "@/lib/platforms/registry";
@@ -1110,7 +1119,23 @@ export default function App() {
     <TooltipProvider delayDuration={250}>
       <Router>
         <Routes>
-          <Route element={<Layout />}>
+          {/* 登录页挂在 `Layout` **之外**：`Layout` 一挂载就会发起管理面请求，
+              未登录时全是 401 ⇒ 挂在里面等于每次登录先刷一屏错误提示。 */}
+          <Route
+            path="/login"
+            element={
+              <Suspense fallback={<PageFallback />}>
+                <LoginPage />
+              </Suspense>
+            }
+          />
+          <Route
+            element={
+              <AuthGate>
+                <Layout />
+              </AuthGate>
+            }
+          >
             {/* P2：作用域路由 —— `/s/{scope}/{dest}`（如 `/s/wb-global/accounts`）。
                 ⚠️ 与下面的旧路由**并存**：旧路由不删 ⇒ 旧书签与外部链接继续可达（P2 验收项）。 */}
             <Route path="/s/:scope/:dest" element={<ScopedDestination />} />

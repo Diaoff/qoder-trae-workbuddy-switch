@@ -99,6 +99,11 @@ USER buddy
 WORKDIR /data
 
 # 容器内必须绑 0.0.0.0，否则宿主访问不到（CLI 默认 127.0.0.1）。
+#
+# ⚠️ 绑 0.0.0.0 + 未设 `BUDDY_SWITCH_PASSWORD` ⇒ 进程**拒绝启动**（exit 2）。
+#    这是 fail-closed 的设计：`/api/*` 能读写账号库与网关 Key，静默裸奔不可接受。
+#    镜像**不**给默认密码 —— 默认密码等于没有密码（每个部署都一样）。
+#    必须在 `docker run -e` / compose 的 `environment` 里提供。
 ENV BUDDY_SWITCH_HOME=/data \
     BUDDY_SWITCH_HOST=0.0.0.0 \
     BUDDY_SWITCH_PORT=57890

@@ -132,6 +132,8 @@ import type { CompanionSnapshot } from "./companion";
 import type { QoderGatewayConfigRaw } from "./qoder-gateway";
 /* Loomy 网关配置的写回形状同理（`loomy-gateway.ts` 的 `LoomyGatewayConfigRaw`）。 */
 import type { LoomyGatewayConfigRaw } from "./loomy-gateway";
+/* webui 登录态（**单向依赖**：`webui-auth.ts` 不 import 本模块，故无循环）。 */
+import { redirectToLogin } from "./webui-auth";
 
 /**
  * 双通道适配层：
@@ -731,6 +733,25 @@ function queryString(args?: Record<string, unknown>): string {
   return text ? `?${text}` : "";
 }
 
+/**
+ * 会话失效时统一送登录页。
+ *
+ * ## 为什么要有这个函数，而不是在 `httpCall` 里直接 `location.assign`
+ *
+ * 两个约束：
+ * 1. **桌面端永不触发**：桌面端走 `invoke`，压根不进 `httpCall`；这里再加一道
+ *    `isWebui()` 判断，防的是将来有人把 `httpCall` 挪进共享路径。
+ * 2. **只跳一次**：会话过期时首屏往往有 5~10 个请求同时在飞，每个都 401。
+ *    逐个 `location.assign` 会让浏览器反复打断导航（表现为页面卡住、地址栏闪烁）。
+ *    用一个模块级闸门把这一批收敛成一次跳转。
+ */
+let redirectingToLogin = false;
+function onUnauthorized(): void {
+  if (redirectingToLogin || !isWebui()) return;
+  redirectingToLogin = true;
+  redirectToLogin();
+}
+
 async function httpCall<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
   const route = ROUTES[cmd];
   if (!route) throw new Error(t("shared.api.unsupportedInWebui", { cmd }));
@@ -750,6 +771,14 @@ async function httpCall<T>(cmd: string, args?: Record<string, unknown>): Promise
   }
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
+    // 401 = 会话失效（过期 / 改过密码 / 服务重启）。统一送登录页，而不是把
+    // 「未登录」当成普通业务错误抛给每个渲染点 —— 那些点只会弹一串 toast，
+    // 而用户真正需要的是重新登录。
+    // ⚠️ 403 **不**走这条：它是「已登录但这一步不许可」（如改密码时旧密码填错），
+    // 跳登录页会把一个可原地修正的错误变成「被踢下线」。
+    if (res.status === 401) {
+      onUnauthorized();
+    }
     throw new Error(data.message || data.error || t("shared.api.requestFailed", { status: res.status }));
   }
   // 数据带上来的错误（`error` / `warning` 这类字段）在**这里**统一本地化，

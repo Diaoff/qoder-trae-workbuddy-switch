@@ -90,3 +90,9 @@ _*.cjs
 # Agent 运行时状态（本机工具目录，不入库）
 .omc/
 .claude-flow/
+Dockerfile.local
+
+# Docker Compose 的环境变量文件：`docs/guides/DOCKER.md` 让用户把
+# `BUDDY_SWITCH_PASSWORD=<密码>` 写进这里 —— 那是**明文密码**，绝不能入库。
+.env
+.env.local

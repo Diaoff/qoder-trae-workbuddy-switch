@@ -32,6 +32,7 @@ import { SettingsFieldRow, SettingsGroup, SettingsRow } from "@/components/setti
 import { parseSettingsSubnav, SettingsSubnav, type SettingsSubnavId } from "@/components/settings/settings-subnav";
 import { BackupSection } from "@/components/settings/backup-section";
 import { CacheSection } from "@/components/settings/cache-section";
+import { WebuiPasswordCard } from "@/components/settings/webui-password-card";
 import { AppSettingsGroups } from "@/components/app-settings";
 // 时点表编辑器与 Trae 设置页**共用同一份实现**（校验规则属于规则，不属于版式）。
 import { TimesEditor } from "@/components/schedule-times-editor";
@@ -1727,6 +1728,8 @@ export default function SettingsPage() {
           {section === "diagnostics" && (
             <>
               <PermissionCheckCard />
+              {/* WebUI 访问密码：只在浏览器形态渲染（桌面端走 invoke，无管理面）。 */}
+              <WebuiPasswordCard />
               <DangerZoneCard />
             </>
           )}

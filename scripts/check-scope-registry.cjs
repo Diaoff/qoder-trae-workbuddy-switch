@@ -4761,13 +4761,34 @@ check("★ 网关页两个轴：类型表 + 分区表按类型分家 + 三页接
   }
   /* ★ 表里的每一项都必须在页面上**真的接线** —— 摆了入口没接实现比不摆更糟
      （本项目已出过同类事故）。统一网关的分区走同一个 \`<UnifiedGatewayView section=…>\`。 */
-  for (const page of ["src/pages/ApiServicePage.tsx", "src/pages/TraeApiServicePage.tsx", "src/pages/QoderApiServicePage.tsx", "src/pages/LoomyApiServicePage.tsx"]) {
+  /* 四个网关页：WorkBuddy 是**基准页**（不传 `sections`，外壳缺省按类型取），另三页要显式按类型切换。 */
+  const WORKBUDDY_GATEWAY_PAGE = "src/pages/ApiServicePage.tsx";
+  for (const page of [WORKBUDDY_GATEWAY_PAGE, "src/pages/TraeApiServicePage.tsx", "src/pages/QoderApiServicePage.tsx", "src/pages/LoomyApiServicePage.tsx"]) {
     const code = readCode(page);
     if (!/<GatewayShell\b/.test(code)) throw new Error(`${page} 没有接网关外壳`);
     if (!/parseGatewayDeepLink/.test(code)) throw new Error(`${page} 未接线两个轴的深链解析`);
     if (!/function goType\(/.test(code)) throw new Error(`${page} 切类型未接线（缺 goType）`);
+    /* ★ 切类型**必须按目标类型取第一项**（`GW_SECTIONS[next][0]`），不能恒取独立网关那张表：
+       恒取会让 `type=unified` 配上 `sub=overview`，切到统一网关后**类型高亮变了、内容与端口都不动**
+       （Loomy 页 2026-10-23 实测缺陷）。只查「有 goType」抓不住 —— 必须查函数体。 */
+    const goTypeBody = /function goType\([^)]*\)\s*\{([\s\S]*?)\n  \}/.exec(code);
+    if (!goTypeBody) throw new Error(`${page} 的 goType 形状不认识（无法校验重置逻辑）`);
+    if (!/GW_SECTIONS\[next\]\[0\]\.id/.test(goTypeBody[1])) {
+      throw new Error(`${page} 的 goType 未按目标类型重置分区（应写 GW_SECTIONS[next][0].id）`);
+    }
     if (!/function goSub\(/.test(code)) throw new Error(`${page} 切换分区未写 URL（缺 goSub）`);
     if (!/<UnifiedGatewayView\b/.test(code)) throw new Error(`${page} 未渲染 <UnifiedGatewayView>`);
+    /* ★ 子导航必须**跟着类型走**：统一网关是 4 项（`u-*`）、独立网关是 5/6 项。
+       只管独立网关那张表 ⇒ 切到统一网关后左栏仍是独立项，点任何一项都被 `gatewaySection`
+       fail-closed 打回，表现为「界面没变」（Loomy 页 2026-10-23 实测缺陷）。
+       WorkBuddy 页**不传** `sections`（外壳缺省即 `GW_SECTIONS[type]`，本来就按类型走）。 */
+    if (page === WORKBUDDY_GATEWAY_PAGE) {
+      if (/sections=\{/.test(code)) {
+        throw new Error(`${page} 不该传 sections（外壳默认已按类型取）`);
+      }
+    } else if (!/sections=\{type === "independent"\s*\?[\s\S]{0,60}:\s*undefined\}/.test(code)) {
+      throw new Error(`${page} 的子导航未按类型切换（应写 sections={type === "independent" ? … : undefined}）`);
+    }
     for (const id of uni) {
       if (!code.includes(`section="${id.replace(/^u-/, "")}"`)) {
         throw new Error(`${page} 未渲染统一网关分区 ${id}（表里有、页面上没接线）`);

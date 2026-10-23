@@ -245,6 +245,40 @@ if (!fs.existsSync(WORKFLOWS_DIR)) {
   }
 }
 
+// ---------------------------------------------------------------------------
+// ⑦ compose 的 healthcheck **不得**打受密码保护的管理面路由
+// ---------------------------------------------------------------------------
+// 加了 webui 密码后，`/api/*` 未登录一律 401 ⇒ 拿它探活会让容器**永久 unhealthy**，
+// 而服务其实完全正常。症状极具误导性：`docker ps` 显示 `(unhealthy)`，
+// `docker logs` 里没有任何错误，编排层却可能因此重启容器。
+//
+// 免鉴权探活点只有两类：网关的 `/health` `/healthz`（`HEALTH_PATHS`），
+// 以及鉴权三路由（但那三个会签发/清除会话，不适合探活）。
+if (compose) {
+  const testLine = compose.match(/^\s*test:\s*\[.*\]\s*$/m);
+  if (!testLine) {
+    fail("docker-compose.yml 里找不到 healthcheck 的 `test:` 行");
+  } else {
+    const healthTargets = [...testLine[0].matchAll(/https?:\/\/[^"'\s]*?(\/[^"'\s]*)/g)].map(
+      (m) => m[1],
+    );
+    if (healthTargets.length === 0) {
+      fail("docker-compose.yml 的 healthcheck `test:` 里找不到可识别的 URL");
+    }
+    for (const target of healthTargets) {
+      if (target.startsWith("/api/")) {
+        fail(
+          `docker-compose.yml 的 healthcheck 打的是 \`${target}\` —— 它属管理面，` +
+            "设了 webui 密码后必然 401 ⇒ 容器永久 unhealthy。改用 `/healthz`（网关提供、免鉴权）",
+        );
+      }
+    }
+    if (healthTargets.every((target) => !target.startsWith("/api/"))) {
+      notes.push(`healthcheck 探活点免鉴权：${healthTargets.join(", ")}`);
+    }
+  }
+}
+
 if (failures.length > 0) {
   console.error("[check-docker] 失败：");
   for (const failure of failures) console.error(`  ✗ ${failure}`);

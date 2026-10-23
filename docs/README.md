@@ -22,6 +22,7 @@
 |:--|:--|
 | 本地跑起来 / 出安装包 / 发版 | [`guides/DEVELOPMENT.md`](guides/DEVELOPMENT.md) |
 | 用 Docker 部署服务端 | [`guides/DOCKER.md`](guides/DOCKER.md) |
+| 给 webui 加密码 / 忘了密码 / 公网暴露前该检查什么 | [`guides/DOCKER.md`](guides/DOCKER.md#安全)（保护边界、`BUDDY_SWITCH_PASSWORD` 语义、逃生开关的三个合法场景、明文 HTTP 必须上 TLS） |
 | 服务器上没有客户端，怎么登录 / 能不能开网关 | [`specs/CLIENTLESS-AUTH-PLAN.md`](specs/CLIENTLESS-AUTH-PLAN.md) |
 | 把 Codex / Claude Code / 其它客户端接到网关 | [`guides/GATEWAY-CLIENT-INTEGRATION.md`](guides/GATEWAY-CLIENT-INTEGRATION.md) |
 | 改网关（路由 / 换号 / 错误信封 / 命名空间） | [`specs/UNIFIED-GATEWAY-ARCH.md`](specs/UNIFIED-GATEWAY-ARCH.md) + [`specs/P11-ARCH.md`](specs/P11-ARCH.md) + [`specs/P12-ARCH.md`](specs/P12-ARCH.md) |
@@ -32,7 +33,7 @@
 | 用量页要显示网关调用的明细（按模型 / 按账号） | [`specs/USAGE-GATEWAY-UI-REDESIGN.md`](specs/USAGE-GATEWAY-UI-REDESIGN.md)（交互与视觉，待拍板）+ [`specs/USAGE-GATEWAY-DETAIL-PLAN.md`](specs/USAGE-GATEWAY-DETAIL-PLAN.md)（数据契约与验收） |
 | 新增一个平台 / 产品线 | [`specs/P5-ARCH.md`](specs/P5-ARCH.md) + [`specs/UNIFIED-GATEWAY-ARCH.md`](specs/UNIFIED-GATEWAY-ARCH.md) §11 |
 | 用词拿不准（region / scope / 作用域…） | [`specs/VOCABULARY.md`](specs/VOCABULARY.md)（**冻结，不许自创**） |
-| 想知道某功能当初为什么这么做 | [`specs/DECISIONS.md`](specs/DECISIONS.md)（D1–D46） |
+| 想知道某功能当初为什么这么做 | [`specs/DECISIONS.md`](specs/DECISIONS.md)（D1–D52） |
 | 加新交互（先原型、后代码） | [`prototype/`](prototype/) → `index.html` 可直接打开 |
 | 账号页「客户端限流」怎么和网关「限流探测」联动（同一份数据 + 两处入口） | [`prototype/limit-link-proto.html`](prototype/limit-link-proto.html)（可点设计稿，**已落地**）+ [`prototype/verify-limit-link.mjs`](prototype/verify-limit-link.mjs)（34 条行为校验）+ [`specs/MODEL-LIMIT-PROBE-PLAN.md`](specs/MODEL-LIMIT-PROBE-PLAN.md) §5.9（口径） |
 | 查这版改了什么 | [`releases/`](releases/) |
@@ -48,7 +49,7 @@
 | 文档 | 内容 | 状态 |
 |:--|:--|:--|
 | [`PLAN.md`](specs/PLAN.md) | 架构与交互重构总方案 v2.8（P0–P16 分期表、交互规范、Playbook） | 现行 · P0–P16 已落地 |
-| [`DECISIONS.md`](specs/DECISIONS.md) | 决策清单 D1–D46，逐条有结论 | 现行 · 已拍板 |
+| [`DECISIONS.md`](specs/DECISIONS.md) | 决策清单 D1–D52，逐条有结论 | 现行 · 已拍板 |
 | [`VOCABULARY.md`](specs/VOCABULARY.md) | 词汇表（P0 冻结）。**新代码只许用「新词汇」** | 现行 · 冻结 |
 | [`COVERAGE-REPORT.md`](specs/COVERAGE-REPORT.md) | 原型 112 条行为 vs 真实应用的覆盖度实测 | 现行 · 随原型更新 |
 | [`P5-P12-TASKS.md`](specs/P5-P12-TASKS.md) | P5–P12 的执行级任务清单 | 现行 |

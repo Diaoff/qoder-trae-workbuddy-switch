@@ -8,7 +8,7 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use axum::body::Body;
-use axum::extract::RawQuery;
+use axum::extract::{RawQuery, State};
 use axum::http::{header, StatusCode, Uri};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
@@ -92,7 +92,51 @@ pub fn router() -> Router {
 }
 
 /// 管理面 API 路由（**不含 fallback**）。
+///
+/// ## 鉴权边界（结构保证，不靠自觉）
+///
+/// 本函数只做**组装**：公开的鉴权三路由 + 受保护的 [`protected_routes`]。
+/// 中间件只 `.layer()` 在后者上，因此：
+/// - 网关的 `/v1/*`（`router()` 里 `merge` 进来的**另一棵树**）天然不受影响；
+/// - `.fallback(static_handler)` 的静态资源同样不受影响（拦了会让 `index.html` 401
+///   ⇒ 登录页永远进不去）；
+/// - `/health`、`/healthz` 由网关那棵树提供（`buddy_switch_gateway::health_routes`），
+///   本来就是免鉴权的设计 ⇒ 容器 healthcheck 不因加密码而失效。
 fn api_routes() -> Router {
+    #[cfg(test)]
+    {
+        // ★ 测试环境**绝不**读真实 `~/.buddy-switch/webui_auth.json`。
+        //
+        // 否则：开发机上一旦设过 webui 密码，全部既有路由用例（`call_api` 系列）
+        // 会集体 401 变红，且现象与改动完全无关 —— 这是最难排查的一类「环境相关」红灯。
+        // 测试统一用内存态、免密实例，鉴权行为由 `api_routes_with` 显式注入。
+        api_routes_with(std::sync::Arc::new(crate::auth::WebuiAuth::for_test()))
+    }
+    #[cfg(not(test))]
+    {
+        api_routes_with(crate::auth::shared())
+    }
+}
+
+/// [`api_routes`] 的**可注入版本**（测试用：每个用例独立的鉴权实例）。
+fn api_routes_with(auth: std::sync::Arc<crate::auth::WebuiAuth>) -> Router {
+    // 顺序要点：先 `with_state`（把实例交给 `/api/auth/password` 的 `State` 提取器）
+    // 再 `.layer()`（中间件自带 state，与路由 state 无关）。
+    let protected =
+        protected_routes()
+            .with_state(auth.clone())
+            .layer(axum::middleware::from_fn_with_state(
+                auth.clone(),
+                crate::auth::require_session,
+            ));
+    crate::auth::routes(auth).merge(protected)
+}
+
+/// 受鉴权保护的管理面路由（账号库 / 网关 Key / 签到 / 备份…）。
+///
+/// 泛型参数是 `Arc<WebuiAuth>` 而非 `()`：`/api/auth/password` 需要 `State` 拿鉴权实例。
+/// 其余 270 条路由的 handler 不取 `State`，因此在这个 `Router<S>` 下同样成立。
+fn protected_routes() -> Router<std::sync::Arc<crate::auth::WebuiAuth>> {
     Router::new()
         .route("/api/status", get(api_status))
         .route("/api/accounts", get(api_accounts))
@@ -678,6 +722,8 @@ fn api_routes() -> Router {
         // hook 目标，装出来的命令指向 `buddy-switch` 而不是桌面 exe。
         .route("/api/agent-hooks/status", get(api_agent_hook_status))
         .route("/api/agent-hooks/enabled", post(api_agent_hook_set_enabled))
+        // ---- webui 管理面密码（受保护：必须已登录且验证旧密码）----
+        .route("/api/auth/password", post(api_change_password))
 }
 
 fn json_ok(v: Value) -> Response {
@@ -686,6 +732,60 @@ fn json_ok(v: Value) -> Response {
 
 fn json_err(e: String, code: StatusCode) -> Response {
     (code, Json(json!({ "ok": false, "error": e }))).into_response()
+}
+
+/// `POST /api/auth/password` —— 设置 / 修改 webui 管理密码（**受保护**）。
+///
+/// ## 为什么要验证旧密码
+///
+/// 会话可能被遗忘在公共电脑上；只认会话就等于「谁摸到这台浏览器谁就能改密码」。
+/// 验证旧密码把「拿到会话」升级成「必须知道原密码」。
+///
+/// ## 为什么免密模式允许「不填旧密码」
+///
+/// 首次设置时**还没有**旧密码，强制填写会造出一个填不满的必填项。
+/// 判据是「服务端当前是否已有密码」，不是前端传了什么 —— 前端传 `oldPassword`
+/// 而服务端无密码时，那个字段被**忽略**（而不是当成「要验证一个不存在的密码」）。
+///
+/// ## 改完为什么踢掉所有会话
+///
+/// 密码变更的语义是「旧凭据作废」。留着旧会话等于改密码对已登录设备无效。
+async fn api_change_password(
+    State(auth): State<std::sync::Arc<crate::auth::WebuiAuth>>,
+    Json(body): Json<Value>,
+) -> Response {
+    let new_password = body
+        .get("newPassword")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    if new_password.len() < 8 {
+        return json_err("新密码至少 8 位".to_string(), StatusCode::BAD_REQUEST);
+    }
+    if auth.is_enabled() {
+        let old_password = body
+            .get("oldPassword")
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        if old_password.is_empty() {
+            return json_err("请输入当前密码".to_string(), StatusCode::BAD_REQUEST);
+        }
+        if !auth.check_password(old_password) {
+            // 403 而非 401：请求**已通过**会话鉴权，只是这一步不许可。
+            // 用 401 会让前端 `httpCall` 的「会话失效 → 跳登录页」分支误触发，
+            // 把「旧密码填错」变成「被踢下线」。
+            return json_err("当前密码不正确".to_string(), StatusCode::FORBIDDEN);
+        }
+    }
+    match auth.set_password(&new_password) {
+        Ok(()) => json_ok(json!({
+            "ok": true,
+            // 明说「其他设备需重新登录」：这是本接口最容易被忽略的副作用。
+            "sessionsRevoked": true,
+        })),
+        Err(error) => json_err(error, StatusCode::INTERNAL_SERVER_ERROR),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -4915,8 +5015,8 @@ mod tests {
     #![allow(clippy::await_holding_lock)]
 
     use super::{
-        api_routes, cache_control_for, checkin_status_item, parse_region, parse_region_filter,
-        query_flag_enabled, query_value, router, Assets,
+        api_routes, api_routes_with, cache_control_for, checkin_status_item, parse_region,
+        parse_region_filter, query_flag_enabled, query_value, router, Assets,
     };
     use axum::body::{to_bytes, Body};
     use axum::http::{Method, Request, StatusCode};
@@ -6872,6 +6972,491 @@ mod tests {
                 "{uri} 缺 scope 必须 400: {body}"
             );
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // webui 管理面鉴权（`src/auth.rs`）
+    //
+    // ⚠️ 这一组**必须**用独立实例（`api_routes_with`），不能碰进程级 `auth::shared()`：
+    // 后者是 `OnceLock`，一旦某个用例把它初始化成「已设密码」，同进程内其余用例
+    // 会集体变红（且顺序相关）。可注入实例让每个用例自带一份干净的鉴权状态。
+    // -----------------------------------------------------------------------
+
+    /// 建一个**已设密码**的鉴权实例（不落盘：`Credential` 直接构造）。
+    fn auth_with_password(password: &str) -> std::sync::Arc<crate::auth::WebuiAuth> {
+        let auth = crate::auth::WebuiAuth::for_test();
+        auth.set_password(password).expect("set password");
+        std::sync::Arc::new(auth)
+    }
+
+    /// 发一个请求到给定 router，返回 (状态码, body, Set-Cookie)。
+    async fn call_with_auth(
+        router: axum::Router,
+        method: Method,
+        uri: &str,
+        cookie: Option<&str>,
+        body: Option<Value>,
+    ) -> (StatusCode, Value, Option<String>) {
+        let mut builder = Request::builder().method(method).uri(uri);
+        if let Some(cookie) = cookie {
+            builder = builder.header("cookie", cookie);
+        }
+        let request = match body {
+            Some(value) => builder
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_vec(&value).unwrap()))
+                .unwrap(),
+            None => builder.body(Body::empty()).unwrap(),
+        };
+        let response = router.oneshot(request).await.expect("router call");
+        let status = response.status();
+        let cookie = response
+            .headers()
+            .get("set-cookie")
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_string);
+        let bytes = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("read body");
+        (
+            status,
+            serde_json::from_slice(&bytes).unwrap_or(Value::Null),
+            cookie,
+        )
+    }
+
+    /// 从 `Set-Cookie` 里取出 `bs_session=<token>`（浏览器发的就是这个形状）。
+    fn session_cookie_of(set_cookie: &str) -> String {
+        set_cookie
+            .split(';')
+            .next()
+            .expect("cookie pair")
+            .trim()
+            .to_string()
+    }
+
+    /// ★★ 本需求本身：**未登录访问管理面必须 401**。
+    ///
+    /// 覆盖「能读写账号库与网关 Key」的三条代表性路由（读 / 写 / 敏感导出）。
+    #[tokio::test]
+    async fn protected_management_routes_require_login() {
+        let _guard = test_guard();
+        isolated_home();
+        let router = api_routes_with(auth_with_password("correct-horse"));
+
+        for (method, uri) in [
+            (Method::GET, "/api/accounts"),
+            (Method::GET, "/api/gateway/config"),
+            (Method::POST, "/api/accounts/export"),
+            (Method::POST, "/api/auth/password"),
+        ] {
+            let (status, body, _) = call_with_auth(router.clone(), method, uri, None, None).await;
+            assert_eq!(
+                status,
+                StatusCode::UNAUTHORIZED,
+                "{uri} 未登录必须 401（否则密码形同虚设）: {body}"
+            );
+            // 形状与 `json_err` 一致 ⇒ 前端 httpCall 能直接读到 error。
+            assert_eq!(body["ok"], json!(false), "{uri}: {body}");
+            assert!(
+                body["error"].as_str().unwrap_or("").contains("登录"),
+                "{uri} 的 401 必须可读: {body}"
+            );
+        }
+    }
+
+    /// ★ 免鉴权入口**不得**被误伤：静态资源、健康检查、鉴权三路由。
+    ///
+    /// 这条防的是「好心把中间件挂到整棵树上」——那会让 `index.html` 401，
+    /// 于是登录页永远进不去（自锁死）。
+    #[tokio::test]
+    async fn public_entries_stay_reachable_without_login() {
+        let _guard = test_guard();
+        isolated_home();
+        let auth = auth_with_password("correct-horse");
+
+        // 鉴权三路由本身：`/api/auth/state` 未登录必须 200（否则前端无法判断该不该显示登录页）。
+        let (status, body, _) = call_with_auth(
+            api_routes_with(auth.clone()),
+            Method::GET,
+            "/api/auth/state",
+            None,
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "auth/state 必须公开: {body}");
+        assert_eq!(body["authRequired"], json!(true));
+        assert_eq!(body["authed"], json!(false));
+
+        // 静态资源走**完整 router**（含 fallback），未登录必须 200 —— 否则自锁死。
+        let (status, content_type, _) = call_full(Method::GET, "/").await;
+        assert_eq!(
+            status,
+            StatusCode::OK,
+            "根路径静态资源不得被鉴权拦截（拦了就永远看不到登录页）"
+        );
+        assert!(content_type.contains("text/html"), "{content_type}");
+
+        // 健康检查免鉴权：容器 healthcheck 打的就是它。
+        let (status, _, _) = call_full(Method::GET, "/healthz").await;
+        assert_eq!(status, StatusCode::OK, "/healthz 必须免鉴权");
+    }
+
+    /// 正确密码 → 拿到 HttpOnly Cookie → 同 Cookie 访问管理面 200。
+    #[tokio::test]
+    async fn login_grants_access_to_protected_routes() {
+        let _guard = test_guard();
+        isolated_home();
+        let router = api_routes_with(auth_with_password("correct-horse"));
+
+        let (status, body, cookie) = call_with_auth(
+            router.clone(),
+            Method::POST,
+            "/api/auth/login",
+            None,
+            Some(json!({ "password": "correct-horse" })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let cookie = cookie.expect("登录成功必须下发 Set-Cookie");
+        assert!(cookie.contains("HttpOnly"), "{cookie}");
+        assert!(cookie.contains("SameSite=Strict"), "{cookie}");
+
+        let (status, body, _) = call_with_auth(
+            router,
+            Method::GET,
+            "/api/gateway/config",
+            Some(&session_cookie_of(&cookie)),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "带会话 Cookie 必须放行: {body}");
+    }
+
+    /// 错误密码 → 401，且**不下发** Cookie。
+    #[tokio::test]
+    async fn wrong_password_is_rejected_without_cookie() {
+        let _guard = test_guard();
+        isolated_home();
+        let (status, body, cookie) = call_with_auth(
+            api_routes_with(auth_with_password("correct-horse")),
+            Method::POST,
+            "/api/auth/login",
+            None,
+            Some(json!({ "password": "wrong" })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED, "{body}");
+        assert!(cookie.is_none(), "失败时不得下发 Cookie: {cookie:?}");
+    }
+
+    /// 登出后原 Cookie 立刻失效。
+    #[tokio::test]
+    async fn logout_invalidates_the_session() {
+        let _guard = test_guard();
+        isolated_home();
+        let router = api_routes_with(auth_with_password("correct-horse"));
+        let (_, _, cookie) = call_with_auth(
+            router.clone(),
+            Method::POST,
+            "/api/auth/login",
+            None,
+            Some(json!({ "password": "correct-horse" })),
+        )
+        .await;
+        let session = session_cookie_of(&cookie.expect("cookie"));
+
+        let (status, _, _) = call_with_auth(
+            router.clone(),
+            Method::POST,
+            "/api/auth/logout",
+            Some(&session),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+
+        let (status, _, _) = call_with_auth(
+            router,
+            Method::GET,
+            "/api/gateway/config",
+            Some(&session),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED, "登出后旧 Cookie 必须失效");
+    }
+
+    /// ★ 改密码后**旧会话必须全部作废**（否则「改密码」对已登录设备无效）。
+    #[tokio::test]
+    async fn changing_password_revokes_every_session() {
+        let _guard = test_guard();
+        isolated_home();
+        let auth = auth_with_password("correct-horse");
+        let router = api_routes_with(auth.clone());
+        let (_, _, cookie) = call_with_auth(
+            router.clone(),
+            Method::POST,
+            "/api/auth/login",
+            None,
+            Some(json!({ "password": "correct-horse" })),
+        )
+        .await;
+        let session = session_cookie_of(&cookie.expect("cookie"));
+
+        let (status, body, _) = call_with_auth(
+            router.clone(),
+            Method::POST,
+            "/api/auth/password",
+            Some(&session),
+            Some(json!({ "oldPassword": "correct-horse", "newPassword": "brand-new-secret" })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["sessionsRevoked"], json!(true));
+
+        let (status, _, _) = call_with_auth(
+            router,
+            Method::GET,
+            "/api/gateway/config",
+            Some(&session),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED, "改密码后旧会话必须失效");
+    }
+
+    /// 改密码必须验旧密码（拿到会话 ≠ 能改密码）。
+    #[tokio::test]
+    async fn changing_password_requires_the_old_one() {
+        let _guard = test_guard();
+        isolated_home();
+        let router = api_routes_with(auth_with_password("correct-horse"));
+        let (_, _, cookie) = call_with_auth(
+            router.clone(),
+            Method::POST,
+            "/api/auth/login",
+            None,
+            Some(json!({ "password": "correct-horse" })),
+        )
+        .await;
+        let session = session_cookie_of(&cookie.expect("cookie"));
+
+        let (status, body, _) = call_with_auth(
+            router,
+            Method::POST,
+            "/api/auth/password",
+            Some(&session),
+            Some(json!({ "oldPassword": "guess", "newPassword": "brand-new-secret" })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+    }
+
+    /// 新密码强度下限：太短直接 400（不落盘、不改状态）。
+    #[tokio::test]
+    async fn short_new_password_is_rejected() {
+        let _guard = test_guard();
+        isolated_home();
+        let auth = auth_with_password("correct-horse");
+        let router = api_routes_with(auth.clone());
+        let (_, _, cookie) = call_with_auth(
+            router.clone(),
+            Method::POST,
+            "/api/auth/login",
+            None,
+            Some(json!({ "password": "correct-horse" })),
+        )
+        .await;
+        let session = session_cookie_of(&cookie.expect("cookie"));
+
+        let (status, body, _) = call_with_auth(
+            router,
+            Method::POST,
+            "/api/auth/password",
+            Some(&session),
+            Some(json!({ "oldPassword": "correct-horse", "newPassword": "short" })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+        // 旧密码仍然有效 ⇒ 说明那次 400 没有把状态改坏。
+        assert!(auth.check_password("correct-horse"));
+    }
+
+    /// ★ 免密模式（未设密码）：管理面**必须放行**，否则本机形态直接被锁死。
+    ///
+    /// 这条与上面的 `protected_management_routes_require_login` 是同一个判据的两侧：
+    /// 中间件只在 `is_enabled()` 为真时拦，未设密码时原样透传。
+    /// 缺了这条，把中间件写成「无条件拦」也能让上面那条测试通过。
+    #[tokio::test]
+    async fn management_routes_pass_through_when_no_password_is_set() {
+        let _guard = test_guard();
+        isolated_home();
+        let router = api_routes_with(std::sync::Arc::new(crate::auth::WebuiAuth::for_test()));
+
+        let (status, body, _) = call_with_auth(
+            router.clone(),
+            Method::GET,
+            "/api/gateway/config",
+            None,
+            None,
+        )
+        .await;
+        assert_eq!(
+            status,
+            StatusCode::OK,
+            "未设密码时管理面必须免密可达（本机 / 桌面形态行为不变）: {body}"
+        );
+
+        // `auth/state` 应明确报告「不需要密码」。
+        let (status, body, _) =
+            call_with_auth(router, Method::GET, "/api/auth/state", None, None).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["authRequired"], json!(false), "{body}");
+        assert_eq!(body["authed"], json!(true), "{body}");
+    }
+
+    /// 会话 Cookie 必须**不可**被 JS 伪造的 `Authorization` 头替代。
+    ///
+    /// 这条钉住「只认 Cookie」这个设计：若哪天有人为了让 curl 好测而加一条
+    /// `Authorization: Bearer <session>` 分支，token 就暴露给了 JS 可写的通道，
+    /// `HttpOnly` 的全部收益归零。
+    #[tokio::test]
+    async fn authorization_header_alone_does_not_grant_access() {
+        let _guard = test_guard();
+        isolated_home();
+        let auth = auth_with_password("correct-horse");
+        let router = api_routes_with(auth.clone());
+        let (_, _, cookie) = call_with_auth(
+            router.clone(),
+            Method::POST,
+            "/api/auth/login",
+            None,
+            Some(json!({ "password": "correct-horse" })),
+        )
+        .await;
+        let token = session_cookie_of(&cookie.expect("cookie"))
+            .trim_start_matches("bs_session=")
+            .to_string();
+
+        let request = Request::builder()
+            .method(Method::GET)
+            .uri("/api/gateway/config")
+            .header("authorization", format!("Bearer {token}"))
+            .body(Body::empty())
+            .unwrap();
+        let response = router.oneshot(request).await.expect("router call");
+        assert_eq!(
+            response.status(),
+            StatusCode::UNAUTHORIZED,
+            "只带 Authorization 头不得放行 —— 会话只认 HttpOnly Cookie"
+        );
+    }
+
+    /// 改密码时**新密码必须真的换掉**（不是只返回 200）。
+    #[tokio::test]
+    async fn changed_password_replaces_the_old_one() {
+        let _guard = test_guard();
+        isolated_home();
+        let auth = auth_with_password("correct-horse");
+        let router = api_routes_with(auth.clone());
+        let (_, _, cookie) = call_with_auth(
+            router.clone(),
+            Method::POST,
+            "/api/auth/login",
+            None,
+            Some(json!({ "password": "correct-horse" })),
+        )
+        .await;
+        let session = session_cookie_of(&cookie.expect("cookie"));
+
+        let (status, body, _) = call_with_auth(
+            router.clone(),
+            Method::POST,
+            "/api/auth/password",
+            Some(&session),
+            Some(json!({ "oldPassword": "correct-horse", "newPassword": "brand-new-secret" })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+
+        // 旧密码失效、新密码生效 —— 直接问鉴权内核，绕开 HTTP 层。
+        assert!(!auth.check_password("correct-horse"), "旧密码必须失效");
+        assert!(auth.check_password("brand-new-secret"), "新密码必须生效");
+
+        // 用新密码能重新登录（说明会话撤销后不是把服务锁死）。
+        let (status, body, _) = call_with_auth(
+            router,
+            Method::POST,
+            "/api/auth/login",
+            None,
+            Some(json!({ "password": "brand-new-secret" })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+    }
+
+    /// 已设密码时改密码，**不带旧密码**必须 400（不能靠「省略字段」绕过）。
+    #[tokio::test]
+    async fn changing_password_without_old_password_is_rejected() {
+        let _guard = test_guard();
+        isolated_home();
+        let auth = auth_with_password("correct-horse");
+        let router = api_routes_with(auth.clone());
+        let (_, _, cookie) = call_with_auth(
+            router.clone(),
+            Method::POST,
+            "/api/auth/login",
+            None,
+            Some(json!({ "password": "correct-horse" })),
+        )
+        .await;
+        let session = session_cookie_of(&cookie.expect("cookie"));
+
+        let (status, body, _) = call_with_auth(
+            router,
+            Method::POST,
+            "/api/auth/password",
+            Some(&session),
+            Some(json!({ "newPassword": "brand-new-secret" })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+        assert!(auth.check_password("correct-horse"), "密码不得被改掉");
+    }
+
+    /// 连续失败达到阈值后**锁定**，且锁定期间正确密码也进不来。
+    ///
+    /// 阈值与锁定时长从 `auth.rs` 的常量取，避免「测试写 8、实现改成 10」的漂移。
+    #[tokio::test]
+    async fn repeated_failures_lock_out_even_the_right_password() {
+        let _guard = test_guard();
+        isolated_home();
+        let router = api_routes_with(auth_with_password("correct-horse"));
+
+        for _ in 0..8 {
+            let _ = call_with_auth(
+                router.clone(),
+                Method::POST,
+                "/api/auth/login",
+                None,
+                Some(json!({ "password": "wrong" })),
+            )
+            .await;
+        }
+        let (status, body, _) = call_with_auth(
+            router,
+            Method::POST,
+            "/api/auth/login",
+            None,
+            Some(json!({ "password": "correct-horse" })),
+        )
+        .await;
+        assert_eq!(
+            status,
+            StatusCode::TOO_MANY_REQUESTS,
+            "锁定期间正确密码也必须被拒（否则限流形同虚设）: {body}"
+        );
     }
 }
 
