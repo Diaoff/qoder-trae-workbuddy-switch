@@ -10,11 +10,18 @@ import { AccountMoreMenu, AccountMoreMenuDemo } from "@/components/account-more-
 import type { AccountRefreshKind } from "@/lib/account-refresh";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
+import { shouldOpenAccountDetail } from "@/lib/account-open-guard";
 import { ENCRYPTED_CREDENTIAL_REASON } from "@/lib/api";
 import { compactTokens, exactTokens } from "@/components/usage/format";
 import { demoModeEnabled } from "@/lib/demo-mode";
 import { displayText } from "@/lib/display-text";
-import { daysUntil, nearestExpiringBatch, summarizeExpiring, upcomingExpiries } from "@/lib/credit-expiry";
+import {
+  EXPIRY_TIP_MAX_HEIGHT,
+  daysUntil,
+  nearestExpiringBatch,
+  summarizeExpiring,
+  upcomingExpiries,
+} from "@/lib/credit-expiry";
 import { formatAbsoluteTime, formatRelativeTime } from "@/lib/catalog-source";
 import { useT, type Translate } from "@/lib/i18n";
 import type { AccountMeta, AccountTokenTodayEntry, CreditExpiry, TravelStatus } from "@/lib/types";
@@ -641,6 +648,35 @@ const isCurrentAccount = programSlots.some((slot) => slot.active);
   ) : null;
 
   /**
+   * 逐批到期明细（两枚徽章的 tooltip 共用一套渲染，**只有取哪一段批次**不同）。
+   *
+   * ★ issue #79：明细是**一行一批**，用户实测有 41 批 ⇒ 浮层比窗口还高，
+   * `side="top"` 把**最关键的最近几批**顶出窗口上沿，且没有滚动条（Radix tooltip
+   * 内容 `overflow` 默认可视，超出即被切）。
+   *
+   * 现在三件事一起做：
+   * ① `EXPIRY_TIP_MAX_HEIGHT` 限高（`TooltipContent` 基础样式另有视口兜底）；
+   * ② 限高后必定可滚 ⇒ 标题 `sticky` 钉在浮层顶部，滚到第 30 行也知道「共 N 笔」；
+   * ③ 标题用负外边距铺满浮层宽度并盖住自己的 `py-2` 上边距 —— 否则滚动时行会从
+   *    标题上方那 8px 里穿过去，看起来像标题被切了一半。
+   */
+  const expiryTipBody = (batches: readonly { expireAt: number; amount: number }[]) => (
+    <>
+      <div className="sticky -top-2 -mx-3 -mt-2 bg-popover px-3 pb-1 pt-2 font-medium">
+        {t("wbAccounts.card.expiringTipTitle", { n: batches.length })}
+      </div>
+      {batches.map((batch) => (
+        <div key={batch.expireAt} className="whitespace-nowrap tabular-nums">
+          {t("wbAccounts.card.expiringTipLine", {
+            time: formatAbsoluteTime(batch.expireAt),
+            amount: formatCredits(batch.amount),
+          })}
+        </div>
+      ))}
+    </>
+  );
+
+  /**
    * 「N 积分 M 天内过期」——原型 `.acct-chips` 的第三条（`buddy-switch-prototype.html:2507`）：
    * `a.expiring ? <span class="badge warn">${fmt(a.expiring)} 积分 ${a.expireInDays} 天后过期</span> : ""`。
    *
@@ -668,16 +704,8 @@ const isCurrentAccount = programSlots.some((slot) => slot.active);
           {t("wbAccounts.card.expiringChip", { amount: formatCredits(expiring.total), days: expiring.days })}
         </Badge>
       </TooltipTrigger>
-      <TooltipContent side="top">
-        <div className="whitespace-nowrap font-medium">{t("wbAccounts.card.expiringTipTitle", { n: expiring.batches.length })}</div>
-        {expiring.batches.map((batch) => (
-          <div key={batch.expireAt} className="whitespace-nowrap tabular-nums">
-            {t("wbAccounts.card.expiringTipLine", {
-              time: formatAbsoluteTime(batch.expireAt),
-              amount: formatCredits(batch.amount),
-            })}
-          </div>
-        ))}
+      <TooltipContent side="top" style={{ maxHeight: EXPIRY_TIP_MAX_HEIGHT }}>
+        {expiryTipBody(expiring.batches)}
       </TooltipContent>
     </Tooltip>
   ) : null;
@@ -706,6 +734,13 @@ const isCurrentAccount = programSlots.some((slot) => slot.active);
    * （`scripts/check-scope-registry.cjs` 有反向门禁）。
    */
   const nearestBatch = credit?.ok ? nearestExpiringBatch(metricResources) : null;
+  /**
+   * 未来全部批次 —— **算一次**。
+   *
+   * 此前 title 与明细各调一次 `upcomingExpiries`：同一份数据被过滤+合并+排序两遍，
+   * 而且两次调用之间若跨过某个到期时刻，标题里的「共 N 笔」会和下面列出来的行数不一致。
+   */
+  const upcoming = nearestBatch ? upcomingExpiries(metricResources) : [];
   const nearestChip = nearestBatch && !expiring ? (
     <Tooltip>
       <TooltipTrigger asChild>
@@ -723,18 +758,8 @@ const isCurrentAccount = programSlots.some((slot) => slot.active);
           })}
         </Badge>
       </TooltipTrigger>
-      <TooltipContent side="top">
-        <div className="whitespace-nowrap font-medium">
-          {t("wbAccounts.card.expiringTipTitle", { n: upcomingExpiries(metricResources).length })}
-        </div>
-        {upcomingExpiries(metricResources).map((batch) => (
-          <div key={batch.expireAt} className="whitespace-nowrap tabular-nums">
-            {t("wbAccounts.card.expiringTipLine", {
-              time: formatAbsoluteTime(batch.expireAt),
-              amount: formatCredits(batch.amount),
-            })}
-          </div>
-        ))}
+      <TooltipContent side="top" style={{ maxHeight: EXPIRY_TIP_MAX_HEIGHT }}>
+        {expiryTipBody(upcoming)}
       </TooltipContent>
     </Tooltip>
   ) : null;
@@ -1090,10 +1115,11 @@ const workbuddyControl = workbuddyActive ? (
         role="article"
         onClick={(e) => {
           if (!onOpenDetail) return;
-          const target = e.target;
-          if (target instanceof Element && target.closest("button, a, input, [role='checkbox'], [role='switch'], [data-no-account-open]")) {
-            return;
-          }
+          /* ★ 判据在 `lib/account-open-guard.ts`（三张卡 + 表格行共用）。
+             ⚠️ 此处**不能**手写 `closest("button, …")`：菜单经 Portal 挂到 body，
+             DOM 已不在卡片内，而菜单项是 `div[role="menuitem"]` 不是 button ——
+             旧判据一条也不命中 ⇒ 点任何菜单项都会顺带打开详情抽屉（2026-10-22 报障根因）。 */
+          if (!shouldOpenAccountDetail(e)) return;
           onOpenDetail(account);
         }}
         onKeyDown={(e) => {

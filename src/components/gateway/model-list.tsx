@@ -16,9 +16,9 @@ import { poolOf } from "@/lib/gateway";
 import { useT } from "@/lib/i18n";
 import { scopeOf } from "@/lib/scope";
 import { servedCount } from "@/lib/types";
-import type { GatewayModelRow, ModelProbeCell, Region } from "@/lib/types";
+import type { GatewayModelRow, Region } from "@/lib/types";
 import { cn } from "@/lib/utils";
-import { EMPTY_DISABLED_SET, useGatewayStore, useProbePassive } from "@/stores/gateway";
+import { EMPTY_DISABLED_SET, useGatewayStore, useProbeCells, useProbePassive } from "@/stores/gateway";
 
 /**
  * 模型列表：来源条（实时 / 已保存 / 内置 + 上次识别 + 原因）+ 重新识别 + **模型表格**（P0-4 / P0-12 / P1-7 / P10 / P11）。
@@ -79,9 +79,10 @@ export function ModelList({ region, className }: { region: Region; className?: s
    * 保存或浅读结束后清空，之后以 store 配置为准。
    */
   const [maxContextDraft, setMaxContextDraft] = useState<boolean | null>(null);
-  /* 限流探测：与探测卡读**同一份**派生数据（`probe.cells` 实测 + `useProbePassive()` 被动底色）。 */
+  /* 限流探测：与探测卡/账号页台账读**同一份**派生数据
+     （`useProbeCells(scope)` 实测 + `useProbePassive()` 被动底色）。
+     ⚠️ 这里**不许**自己拼 `probe.cells`：后端作业单槽，单格重测会让那一列突然只剩 1 格。 */
   const status = useGatewayStore((s) => s.status);
-  const probe = useGatewayStore((s) => s.probe);
 
   /* 进入 / 切作用域时读一次该作用域的禁用偏好（页面级 `loadAll` 也会拉，幂等）。 */
   useEffect(() => {
@@ -122,29 +123,31 @@ export function ModelList({ region, className }: { region: Region; className?: s
 
   /* 探测的账号轴（= 该 region 的池条目）与实测格索引（uid × 模型 id）。 */
   const accounts = useMemo(() => poolOf(status, region).accounts, [status, region]);
-  const probedMap = useMemo(() => {
-    const map: Record<string, Record<string, ModelProbeCell>> = {};
-    for (const cell of probe?.cells ?? []) (map[cell.uid] ??= {})[cell.model] = cell;
-    return map;
-  }, [probe]);
+  const probedMap = useProbeCells(scope);
   /* 被动底色（与探测卡**同一份派生值**）：客户端台账 ∪ 池模型级冷却。 */
   const passiveMap = useProbePassive(region);
 
   /**
    * 某模型的探测汇总：`probed` = 本次实测覆盖的账号数；`limited` = 其中被限流/封禁的
-   * （**只有三档算限流**）；`passive` = 只在被动底色里见过的账号数，另按**来源**拆出
+   * （**只有三档算限流**）；`unavailable` = 其中**不可用但不是限流**的（上游排队 / 上游异常 /
+   * 登录失效 / 无此模型 / 网络错误）；`passive` = 只在被动底色里见过的账号数，另按**来源**拆出
    * `passiveFlow`（池冷却 = 真实流量）/ `passiveLedger`（客户端台账 = 客户端日志）——
    * 两来源都有时 `source === "flow"` 且 `both` ⇒ 两边都计（§5.3 角标要能区分来源）。
+   *
+   * ★ `unavailable` 必须**单列**：只有 `limited` 时，探到「上游排队」的模型会显示成
+   *   「全部可用」—— 那是撒谎（该模型此刻真的调不通）。
    */
   function modelProbeStatus(modelId: string): {
     probed: number;
     limited: number;
+    unavailable: number;
     passive: number;
     passiveFlow: number;
     passiveLedger: number;
   } {
     let probed = 0;
     let limited = 0;
+    let unavailable = 0;
     let passive = 0;
     let passiveFlow = 0;
     let passiveLedger = 0;
@@ -153,6 +156,7 @@ export function ModelList({ region, className }: { region: Region; className?: s
       if (cell) {
         probed += 1;
         if (PROBE_LIMIT_STATES.includes(cell.state)) limited += 1;
+        else if (cell.state !== "ok" && cell.state !== "skipped") unavailable += 1;
         continue;
       }
       const info = passiveMap[account.uid]?.[modelId];
@@ -166,22 +170,32 @@ export function ModelList({ region, className }: { region: Region; className?: s
         }
       }
     }
-    return { probed, limited, passive, passiveFlow, passiveLedger };
+    return { probed, limited, unavailable, passive, passiveFlow, passiveLedger };
   }
 
   /**
    * 「限流（探测）」单元格（原型 `probeModelCellHtml`）：
-   * 本次实测过 ⇒ `全部可用` / `N/M 限流`；只被动见过 ⇒ `被动 N`；没探过 ⇒ `—`。
+   * 本次实测过 ⇒ `全部可用` / `N/M 限流` / `N/M 不可用`；只被动见过 ⇒ `被动 N`；没探过 ⇒ `—`。
    * **点徽章 = 下钻**（收窄探测范围到这一个模型，并展开卡片）。
    */
   function renderProbeCell(modelId: string) {
-    const { probed, limited, passive, passiveFlow, passiveLedger } = modelProbeStatus(modelId);
+    const { probed, limited, unavailable, passive, passiveFlow, passiveLedger } =
+      modelProbeStatus(modelId);
     if (probed > 0) {
-      const allOk = limited === 0;
-      const variant = allOk ? "success" : limited === probed ? "destructive" : "warning";
+      const allOk = limited === 0 && unavailable === 0;
+      const variant = allOk
+        ? "success"
+        : limited === probed
+          ? "destructive"
+          : "warning";
       const title = allOk
         ? t("shared.gateway.probe.colTooltipAllOk", { total: probed })
-        : t("shared.gateway.probe.colTooltipLimited", { total: probed, limited });
+        : limited > 0
+          ? t("shared.gateway.probe.colTooltipLimited", { total: probed, limited })
+          : t("shared.gateway.probe.colTooltipUnavailable", {
+              total: probed,
+              unavailable,
+            });
       return (
         <button
           type="button"
@@ -193,7 +207,12 @@ export function ModelList({ region, className }: { region: Region; className?: s
           <Badge variant={variant}>
             {allOk
               ? t("shared.gateway.probe.colAllOk")
-              : t("shared.gateway.probe.colLimited", { limited, total: probed })}
+              : limited > 0
+                ? t("shared.gateway.probe.colLimited", { limited, total: probed })
+                : t("shared.gateway.probe.colUnavailable", {
+                    unavailable,
+                    total: probed,
+                  })}
           </Badge>
         </button>
       );

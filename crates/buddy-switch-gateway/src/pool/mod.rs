@@ -966,6 +966,8 @@ impl Pool {
     /// 算法见 [`pick::pick_with_preference`]。
     ///
     /// `excluded` 是**用户显式排除**的 uid（硬约束：自动选号、兜底、偏好都跳过）；
+    /// `allowed` 是**本密钥的允许名单**（issue #76；`None` = 全部账号）——
+    /// 与 `excluded` 同层，来源不同（一个是全局排除，一个是这一把 Key 的授权范围）；
     /// `mode` 只决定「在合格候选里挑谁」（加权 / 积分择优 / 随机）。
     pub fn pick_account(
         &mut self,
@@ -976,6 +978,7 @@ impl Pool {
         mode: PickMode,
         seed: u64,
         preferred: Option<&str>,
+        allowed: Option<&HashSet<String>>,
     ) -> Option<String> {
         let policy = self.policy();
         // 与模型冷却同一处惰性清理：窗口外的失败记录与已关闸的条目不该无限增长。
@@ -986,6 +989,9 @@ impl Pool {
             model,
             tried,
             excluded: &excluded,
+            // ★ issue #76：本密钥的允许名单（`None` = 全部账号）。
+            //   分组由调用方展开成 uid 后再传进来 —— 池条目不认识「分组」这个概念。
+            allowed,
             mode,
             seed,
         };
@@ -1067,7 +1073,11 @@ impl Pool {
     pub fn is_usable_for(&self, uid: &str, now_ms: i64, model: &str) -> bool {
         let policy = self.policy();
         let excluded = self.excluded_keys();
-        pick::is_usable(&self.entries, &policy, uid, now_ms, model, &excluded)
+        // ★ issue #76：`is_usable_for` 问的是「账号本身还能不能用」——
+        //   **不带** Key 白名单（那是「这一把 Key 允不允许用它」，两个问题）。
+        //   白名单只在选号入口（`pick_account`）生效，这里若也判，
+        //   「复活」按钮会把白名单外的账号判成不可恢复（语义混淆）。
+        pick::is_usable(&self.entries, &policy, uid, now_ms, model, &excluded, None)
     }
 
     /// 申请在途额度；返回是否成功（失败表示该号已占满）。
@@ -1396,6 +1406,32 @@ impl Pool {
     ///
     /// 五态互斥且穷尽，判定见 [`PoolEntry::status_of`]。
     pub fn summary(&self, now_ms: i64, realm: Option<RealmTag>) -> PoolSummary {
+        self.summary_filtered(now_ms, realm, None)
+    }
+
+    /// **名单口径**的池快照（issue #76）：只统计 `allowed` 里的账号。
+    ///
+    /// 白名单生效时**必须**用这个而不是 [`Self::summary`]：全池口径会告诉用户
+    /// 「有 12 个号但 0 个可用」，而他这把 Key 只允许用其中 2 个 —— 数字对不上，
+    /// 也没法定位到底卡在哪。统计规则与 `summary` **逐条同源**（六态互斥 +
+    /// 排除优先 + `in_flight_full` 同源判据），只多一道 uid 过滤，所以不会出现
+    /// 「卡片说 2 个可用、名单口径说 0 个」这种新裂缝。
+    pub fn summary_of(
+        &self,
+        allowed: &HashSet<String>,
+        now_ms: i64,
+        realm: Option<RealmTag>,
+    ) -> PoolSummary {
+        self.summary_filtered(now_ms, realm, Some(allowed))
+    }
+
+    /// [`Self::summary`] / [`Self::summary_of`] 的唯一实现。
+    fn summary_filtered(
+        &self,
+        now_ms: i64,
+        realm: Option<RealmTag>,
+        only: Option<&HashSet<String>>,
+    ) -> PoolSummary {
         let mut summary = PoolSummary {
             total: 0,
             ..PoolSummary::default()
@@ -1403,6 +1439,13 @@ impl Pool {
         for entry in self.entries.values() {
             if realm.is_some() && entry.realm != realm {
                 continue;
+            }
+            // ★ 名单过滤放在**计数之前**：`total` 必须是名单内的总数，
+            //   否则 `available + ... == total` 这条不变量在名单口径下不成立。
+            if let Some(only) = only {
+                if !only.contains(&entry.uid) {
+                    continue;
+                }
             }
             summary.total += 1;
             // ★ 排除优先于一切状态：它决定「能不能被选中」，因此必须先从 `available`
@@ -2529,7 +2572,8 @@ mod tests {
                 &HashSet::new(),
                 PickMode::Weighted,
                 1,
-                None
+                None,
+                None,
             ),
             Some("u1".to_string()),
             "也应当能被选到 —— 这才是「恢复」按钮的意义"
@@ -2705,6 +2749,51 @@ mod tests {
         assert_eq!(all.cooling, 1);
         assert_eq!(all.disabled, 1);
         assert_eq!(all.zero_credits, 1);
+    }
+
+    /// issue #76：**名单口径**只数这把 Key 允许用的号。
+    ///
+    /// 阳性对照：把 `summary_of` 的过滤去掉（退化成 `summary`）⇒ 第一组
+    /// `total` / `available` 断言必红 —— 这正是「白名单用户看到 12 个号都不可用」
+    /// 那个误导的根。
+    #[test]
+    fn summary_of_counts_only_allowlisted_accounts() {
+        let mut pool = Pool::new(PoolConfig::default());
+        pool.upsert("a", Some(RealmTag::Cn), "甲");
+        pool.upsert("b", Some(RealmTag::Cn), "乙");
+        pool.upsert("c", Some(RealmTag::Cn), "丙");
+        for uid in ["a", "b", "c"] {
+            pool.set_credits(uid, 10, 0);
+            pool.mark_credits_refreshed(uid, NOW);
+        }
+
+        let full = pool.summary(NOW, Some(RealmTag::Cn));
+        assert_eq!(full.total, 3, "全池口径不变（管理面卡片仍要看全池）");
+
+        let only: HashSet<String> = ["a".to_string(), "c".to_string()].into_iter().collect();
+        let scoped = pool.summary_of(&only, NOW, Some(RealmTag::Cn));
+        assert_eq!(scoped.total, 2, "名单外的 b 不得计入 total");
+        assert_eq!(scoped.available, 2);
+        assert_eq!(scoped.total_credits, 20.0, "总积分也要按名单口径");
+        // 六态不变量在名单口径下同样成立（否则文案里的分类数字会对不上）。
+        assert_eq!(
+            scoped.available
+                + scoped.cooling
+                + scoped.disabled
+                + scoped.expired
+                + scoped.zero_credits
+                + scoped.excluded,
+            scoped.total,
+            "名单口径同样要满足六态不变量"
+        );
+
+        // 名单里一个都不在本区域池 ⇒ total 0（上层据此说「名单没覆盖本区域」）。
+        let missing: HashSet<String> = ["zzz".to_string()].into_iter().collect();
+        assert_eq!(pool.summary_of(&missing, NOW, Some(RealmTag::Cn)).total, 0);
+
+        // 名单口径仍要按 realm 过滤：跨区域的 uid 不进这一本账。
+        let cross: HashSet<String> = ["a".to_string(), "zzz".to_string()].into_iter().collect();
+        assert_eq!(pool.summary_of(&cross, NOW, Some(RealmTag::Cn)).total, 1);
     }
 
     /// 余额**未知**（从未刷新）不得被算成零积分，也不得计入总积分。
@@ -3207,6 +3296,7 @@ mod tests {
                 PickMode::Weighted,
                 1,
                 None,
+                None,
             )
             .expect("有候选");
         tried.insert(first.clone());
@@ -3221,6 +3311,7 @@ mod tests {
                 &tried,
                 PickMode::Weighted,
                 2,
+                None,
                 None,
             )
             .expect("仍有候选");
@@ -3252,6 +3343,7 @@ mod tests {
                 PickMode::Weighted,
                 1,
                 Some("poor"),
+                None,
             )
             .expect("有候选");
         assert_eq!(picked, "poor", "偏好账号可用时必须优先选中");
@@ -3267,6 +3359,7 @@ mod tests {
                 PickMode::Weighted,
                 2,
                 Some("poor"),
+                None,
             )
             .expect("仍有候选");
         assert_ne!(picked, "poor", "已试过的偏好必须被跳过");
@@ -3281,6 +3374,7 @@ mod tests {
                 PickMode::Weighted,
                 3,
                 Some("no-such"),
+                None,
             )
             .expect("偏好不存在也必须回落到自动择优");
         assert!(
@@ -3297,7 +3391,8 @@ mod tests {
                 &HashSet::new(),
                 PickMode::Weighted,
                 4,
-                None
+                None,
+                None,
             )
             .is_some(),
             "无偏好时行为不变"

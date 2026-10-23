@@ -36,6 +36,10 @@ use super::{payload, sse, QoderGatewayState};
 #[derive(Debug, Clone, Copy)]
 pub struct QoderKeyRegion(pub QoderRegion);
 
+/// ★ issue #76：本次请求的**整条 Key**（策略 + id）—— 配额判定 / 账号白名单 / 记账。
+#[derive(Clone)]
+pub struct QoderKeyContext(pub std::sync::Arc<crate::qoder::apikey::QoderApiKeyRecord>);
+
 fn now_ms() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -146,6 +150,10 @@ pub async fn bearer_auth(
             request
                 .extensions_mut()
                 .insert(QoderKeyRegion(record.region));
+            // ★ issue #76：整条 Key 也塞进扩展（配额 / 白名单 / 记账要用）。
+            request
+                .extensions_mut()
+                .insert(QoderKeyContext(std::sync::Arc::new(record.clone())));
             next.run(request).await
         }
         None => protocol_error(
@@ -213,18 +221,43 @@ pub async fn models(
 pub async fn chat_completions(
     State(state): State<QoderGatewayState>,
     Extension(key): Extension<QoderKeyRegion>,
+    // ★ issue #76：整条 Key（配额 / 白名单 / 记账）。
+    key_ctx: Option<Extension<QoderKeyContext>>,
     body: Bytes,
 ) -> Response {
-    chat_for_region(state, key.0, body, Protocol::OpenAi).await
+    // 变量名避开 `key`（那是 region 扩展）—— 两者是不同东西。
+    let key_record = key_ctx.map(|Extension(ctx)| ctx.0);
+    // ★ issue #76：收敛成 `KeyActor`（id + 策略 + 本产品线的账本）。
+    let actor = key_record.map(|record| {
+        std::sync::Arc::new(crate::apikey::KeyActor::new(
+            record.id.clone(),
+            record.policy(),
+            state.key_usage.clone(),
+            "qoder",
+        ))
+    });
+    chat_for_region(state, key.0, body, Protocol::OpenAi, actor).await
 }
 
 /// `POST /v1/messages`。
 pub async fn messages(
     State(state): State<QoderGatewayState>,
     Extension(key): Extension<QoderKeyRegion>,
+    // ★ issue #76：整条 Key（配额 / 白名单 / 记账）。
+    key_ctx: Option<Extension<QoderKeyContext>>,
     body: Bytes,
 ) -> Response {
-    chat_for_region(state, key.0, body, Protocol::Anthropic).await
+    let key_record = key_ctx.map(|Extension(ctx)| ctx.0);
+    // ★ issue #76：收敛成 `KeyActor`（id + 策略 + 本产品线的账本）。
+    let actor = key_record.map(|record| {
+        std::sync::Arc::new(crate::apikey::KeyActor::new(
+            record.id.clone(),
+            record.policy(),
+            state.key_usage.clone(),
+            "qoder",
+        ))
+    });
+    chat_for_region(state, key.0, body, Protocol::Anthropic, actor).await
 }
 
 /// `POST /v1/responses`（OpenAI Responses API）。
@@ -235,9 +268,49 @@ pub async fn messages(
 pub async fn responses(
     State(state): State<QoderGatewayState>,
     Extension(key): Extension<QoderKeyRegion>,
+    key_ctx: Option<Extension<QoderKeyContext>>,
     body: Bytes,
 ) -> Response {
-    chat_for_region(state, key.0, body, Protocol::Responses).await
+    let key_record = key_ctx.map(|Extension(ctx)| ctx.0);
+    // ★ issue #76：收敛成 `KeyActor`（id + 策略 + 本产品线的账本）。
+    let actor = key_record.map(|record| {
+        std::sync::Arc::new(crate::apikey::KeyActor::new(
+            record.id.clone(),
+            record.policy(),
+            state.key_usage.clone(),
+            "qoder",
+        ))
+    });
+    chat_for_region(state, key.0, body, Protocol::Responses, actor).await
+}
+
+/// 把 Key 策略的账号范围展开成 uid 集合（`None` = 全部账号，不过滤）。
+///
+/// ★ 与 WB / Trae 侧同构；Qoder 的分组是**自由文本** `group`（与 WB 同款，
+/// 不是 Trae 那种独立 membership 文件）。账号库按 region 分家。
+fn allowed_uids_for(
+    policy: &crate::apikey::KeyPolicy,
+    region: QoderRegion,
+) -> Option<HashSet<String>> {
+    use crate::apikey::ScopeMode;
+    if policy.scope_mode != ScopeMode::Selected {
+        return None;
+    }
+    let mut allowed: HashSet<String> = policy.scope_accounts.iter().cloned().collect();
+    if !policy.scope_groups.is_empty() {
+        let file = buddy_switch_core::modules::qoder::account::load_accounts_for(region);
+        for account in file.accounts.iter() {
+            let group = account.group.clone().unwrap_or_default();
+            if group.is_empty() {
+                continue;
+            }
+            if policy.scope_groups.iter().any(|wanted| wanted == &group) {
+                // `RawAccount.uid` 是 `String`（非 Option）—— 与 Trae 的 `userId` 不同。
+                allowed.insert(account.uid.clone());
+            }
+        }
+    }
+    Some(allowed)
 }
 
 /// 一趟 Qoder chat 中继（**认证之后的全部逻辑**）—— 产品线入口与统一网关**共用这一份**。
@@ -246,8 +319,25 @@ pub async fn chat_for_region(
     region: QoderRegion,
     body: Bytes,
     protocol: Protocol,
+    // ★ issue #76：调用方的 Key（`None` = 无 Key 的调用 ⇒ 不判配额、不过白名单、不记账）。
+    key: Option<std::sync::Arc<crate::apikey::KeyActor>>,
 ) -> Response {
     let started = Instant::now();
+    // ★ issue #76：配额判定（选号前）—— 超限直接 429，一步都不发。
+    //   与 WB / Trae 同位置、同文案（复用 `GatewayError::KeyQuotaExceeded`）。
+    if let Some(actor) = key.as_deref() {
+        // 判定 + 请求数记账都在 `KeyActor` 里（四条产品线同一份实现）。
+        if let Some(message) =
+            actor.check_quota_and_count(buddy_switch_core::modules::config::now_ms())
+        {
+            return protocol_error(
+                protocol,
+                StatusCode::TOO_MANY_REQUESTS,
+                "key_quota_exceeded",
+                &message,
+            );
+        }
+    }
     let parsed: Value = match serde_json::from_slice(&body) {
         Ok(value) => value,
         Err(error) => {
@@ -266,7 +356,11 @@ pub async fn chat_for_region(
     // 非 OpenAI 入口先转成 OpenAI chat 形态（中继内部只认一份形态）。
     let openai_payload = match protocol {
         Protocol::OpenAi => parsed.clone(),
-        Protocol::Anthropic => crate::protocol::anthropic::to_upstream_request(&parsed),
+        // ★ Qoder 上游只读 message content 里的结构化 `image_url` parts ⇒
+        // Anthropic 的 `image` block 必须转成多模态 part，不能只取文本
+        // （否则图片被整条丢弃）。Trae / WB 未验证上游是否吃 parts，仍走
+        // 不含图片的 `to_upstream_request`。
+        Protocol::Anthropic => crate::protocol::anthropic::to_upstream_request_with_images(&parsed),
         Protocol::Responses => payload::responses_to_chat(&parsed),
     };
     let wants_stream = payload::wants_stream(&parsed);
@@ -350,6 +444,12 @@ pub async fn chat_for_region(
     // 本轮有多少个号是被**限额护栏**拦下的（决定收尾文案与状态码）。
     let mut quota_blocked_count = 0usize;
 
+    // ★ issue #76：本密钥的允许名单，**整轮算一次** —— 选号与收尾文案都要用同一份
+    //   （收尾必须按名单口径说事实，否则用户会被指去修名单外的账号）。
+    let allowed = key
+        .as_deref()
+        .and_then(|actor| allowed_uids_for(&actor.policy, region));
+
     for _ in 0..max_rotate {
         // 池随账号库同步（导入 / 刷新后即时生效），然后选号。
         // 选号连同**展示名**一起取：失败原因要给用户看名字，不是一串 uid
@@ -358,14 +458,15 @@ pub async fn chat_for_region(
             let mut pools = state.pools.lock().await;
             let pool = pools.entry(region).or_default();
             pool.sync_for(region);
-            pool.pick(&model, &tried, preferred.as_deref()).map(|uid| {
-                let name = pool
-                    .entries()
-                    .find(|entry| entry.uid == uid)
-                    .map(|entry| entry.name.clone())
-                    .unwrap_or_else(|| uid.clone());
-                (uid, name)
-            })
+            pool.pick(&model, &tried, preferred.as_deref(), allowed.as_ref())
+                .map(|uid| {
+                    let name = pool
+                        .entries()
+                        .find(|entry| entry.uid == uid)
+                        .map(|entry| entry.name.clone())
+                        .unwrap_or_else(|| uid.clone());
+                    (uid, name)
+                })
         };
         let Some((uid, display_name)) = picked else {
             break;
@@ -484,6 +585,7 @@ pub async fn chat_for_region(
                         allowed_tools,
                         responses_custom.clone(),
                         inflight,
+                        key.clone(),
                     )
                     .await
                 } else {
@@ -499,6 +601,7 @@ pub async fn chat_for_region(
                         allowed_tools,
                         responses_custom.clone(),
                         inflight,
+                        key.clone(),
                     )
                     .await
                 };
@@ -564,6 +667,8 @@ pub async fn chat_for_region(
                         0,
                         0.0,
                         Some(detail.clone()),
+                        key.as_deref().map(|actor| actor.key_id.as_str()),
+                        key.as_deref().map(|actor| actor.scope),
                     )
                     .await;
                 return protocol_error(
@@ -584,8 +689,30 @@ pub async fn chat_for_region(
     //   报 429 而不是 503 —— 503 会被读成「服务坏了」，这里是**预期行为**。
     let all_quota = quota_blocked_count > 0 && quota_blocked_count == failures.len();
     let message = if failures.is_empty() {
+        // ★ 白名单生效时点明「名单覆盖几个、名单外不会被使用」（issue #76）：
+        //   否则用户看到「没有可用账号」会去账号页反复导入，而问题在名单上。
+        let scope_hint = match allowed.as_ref() {
+            Some(only) => {
+                let covered = {
+                    let pools = state.pools.lock().await;
+                    pools
+                        .get(&region)
+                        .map(|pool| {
+                            pool.entries()
+                                .filter(|entry| only.contains(&entry.uid))
+                                .count()
+                        })
+                        .unwrap_or(0)
+                };
+                format!(
+                    "；这把 API Key 的允许名单只覆盖 {covered} 个账号，\
+                     名单外的账号不会被使用 —— 可在「网关 → 密钥 → 权限」放宽名单"
+                )
+            }
+            None => String::new(),
+        };
         format!(
-            "{} 没有可用账号：请在「账号」页导入（账号需带可调用的访问令牌）",
+            "{} 没有可用账号：请在「账号」页导入（账号需带可调用的访问令牌）{scope_hint}",
             region.display_name()
         )
     } else if all_quota {
@@ -625,6 +752,8 @@ pub async fn chat_for_region(
             0,
             0.0,
             Some(message.clone()),
+            key.as_deref().map(|actor| actor.key_id.as_str()),
+            key.as_deref().map(|actor| actor.scope),
         )
         .await;
     let code = if all_queued {
@@ -730,15 +859,19 @@ async fn stream_relay(
     responses_custom: std::sync::Arc<HashSet<String>>,
     // 在途名额：随流结束 / 客户端断开由 Drop 归还（见 `pool::InflightGuard`）。
     inflight: super::pool::InflightGuard,
+    // ★ issue #76：本密钥（流结束时按 token 记账）。
+    key: Option<std::sync::Arc<crate::apikey::KeyActor>>,
 ) -> Response {
     let upstream = response.bytes_stream();
     let stream_model = model.to_string();
     let usage_slot = std::sync::Arc::new(std::sync::Mutex::new(None::<Value>));
     // 上游错误帧留痕：流式账本在流结束才落，没有它就只能记成「200 + 0 token」。
-    let error_slot = std::sync::Arc::new(std::sync::Mutex::new(None::<String>));
+    let error_slot = std::sync::Arc::new(std::sync::Mutex::new(None::<sse::UpstreamError>));
     let state_for_task = state.clone();
     let uid = uid.to_string();
     let model_for_task = model.to_string();
+    // ★ issue #76：Key 要进 `tokio::spawn`（'static）⇒ clone 一份 Arc。
+    let key_for_task = key.clone();
 
     // 转换链：信封解包 → **泄漏回声守卫** → **DSML 调用块守卫** → `UsageTapStream`
     //        （旁路取 usage / 错误）→（Anthropic 入口再包一层）。
@@ -808,9 +941,26 @@ async fn stream_relay(
         };
         // 上游中途发过错误帧 ⇒ 记 502 + 详情，别写成「200 / 0 token / 无错误」
         // （那正是 issue #46 里最难排查的形态）。
+        //
+        // ★ **排队单列 429**：下游错误帧的 `code` 就是**客户端看到的那个码**
+        //   （`sse::process_line` 对排队信号发 `code:429`），账本用它 ⇒ 日志与客户端
+        //   永远一致。账本若写 502，日志就会把「上游在排队、稍后重试」说成
+        //   「网关挂了」—— 2026-10-22 实测踩到（用户看到 502 以为服务坏了）。
+        // ★ issue #76：按密钥记 token（**流结束**才记 —— 提前记就是假账）。
+        //   拿不到用量（0）就不记：写 0 样本会把「本周期已用」压低，让配额晚触发。
+        if let Some(actor) = key_for_task.as_ref() {
+            // `record_tokens` 内部判 0 跳过（不写 0 样本）。
+            actor.record_tokens(
+                (prompt_tokens + completion_tokens) as u64,
+                buddy_switch_core::modules::config::now_ms(),
+            );
+        }
         let upstream_error = error_slot.lock().ok().and_then(|guard| guard.clone());
         let (status, error) = match &upstream_error {
-            Some(detail) => (502u16, Some(detail.clone())),
+            Some(detail) => (
+                if detail.code == 429 { 429u16 } else { 502u16 },
+                Some(detail.message.clone()),
+            ),
             None => (200u16, None),
         };
         state_for_task
@@ -826,6 +976,8 @@ async fn stream_relay(
                 completion_tokens as i64,
                 credits,
                 error,
+                key_for_task.as_ref().map(|actor| actor.key_id.as_str()),
+                key_for_task.as_ref().map(|actor| actor.scope),
             )
             .await;
     });
@@ -848,6 +1000,8 @@ async fn aggregate_relay(
     responses_custom: std::sync::Arc<HashSet<String>>,
     // 非流式：函数结束即释放（含所有早退分支）。
     _inflight: super::pool::InflightGuard,
+    // ★ issue #76：本密钥（聚合完成后按 token 记账）。
+    key: Option<std::sync::Arc<crate::apikey::KeyActor>>,
 ) -> Response {
     let aggregated = sse::aggregate(response.bytes_stream(), allowed_tools.as_ref()).await;
     let usage = aggregated.usage.clone();
@@ -860,10 +1014,28 @@ async fn aggregate_relay(
     };
     // ★ 账本先定「这一请求到底成没成」再落：上游只要给过错误帧就不是 200，
     //   否则日志会显示「200 + 0 token + error:null」（issue #46 的隐身故障）。
+    //
+    //   **排队单列 429** —— 与客户端拿到的语义一致：下游错误帧的 `code` 就是
+    //   客户端看到的那个码（排队 ⇒ 429），账本用它 ⇒ 日志与客户端永远一致。
+    //   （上游**真**的 429 限流也是 429 —— 同样是「稍后重试」，归一没有歧义。）
     let (log_status, log_error) = match &aggregated.upstream_error {
-        Some(detail) => (502u16, Some(detail.clone())),
+        Some(detail) => (
+            if aggregated.upstream_error_code == Some(429) {
+                429u16
+            } else {
+                502u16
+            },
+            Some(detail.clone()),
+        ),
         None => (200u16, None),
     };
+    // ★ issue #76：非流式同样按密钥记 token（拿不到用量就不记）。
+    if let Some(actor) = key.as_ref() {
+        actor.record_tokens(
+            (prompt_tokens + completion_tokens) as u64,
+            buddy_switch_core::modules::config::now_ms(),
+        );
+    }
     state
         .record_request(
             "chat",
@@ -877,6 +1049,8 @@ async fn aggregate_relay(
             completion_tokens as i64,
             credits,
             log_error,
+            key.as_ref().map(|actor| actor.key_id.as_str()),
+            key.as_ref().map(|actor| actor.scope),
         )
         .await;
 

@@ -203,14 +203,11 @@ fn build_account_body(region: LoomyRegion, param: Value) -> Value {
 }
 
 /// 发送一次讯飞账号端点请求并拆业务信封（签名与发送共用同一份 body 字符串）。
-async fn post_caccount(
-    region: LoomyRegion,
-    path: &str,
-    param: Value,
-) -> Result<Value, String> {
+async fn post_caccount(region: LoomyRegion, path: &str, param: Value) -> Result<Value, String> {
     let spec = realm_spec(region);
     let body_value = build_account_body(region, param);
-    let body = serde_json::to_string(&body_value).map_err(|error| format!("序列化失败：{error}"))?;
+    let body =
+        serde_json::to_string(&body_value).map_err(|error| format!("序列化失败：{error}"))?;
     let headers = crate::modules::loomy::signing::sign_caccount_request(
         region,
         &crate::modules::loomy::signing::SignInput {
@@ -234,8 +231,8 @@ async fn post_caccount(
     if !headers.content_md5.is_empty() {
         header_pairs.push(("Content-MD5".to_string(), headers.content_md5.clone()));
     }
-    let request = apply_headers(client.post(&url).timeout(BUSINESS_TIMEOUT), &header_pairs)
-        .body(body);
+    let request =
+        apply_headers(client.post(&url).timeout(BUSINESS_TIMEOUT), &header_pairs).body(body);
     let response = request
         .send()
         .await
@@ -252,8 +249,8 @@ async fn post_caccount(
             text.chars().take(160).collect::<String>()
         ));
     }
-    let payload: Value = serde_json::from_str(&text)
-        .map_err(|error| format!("账号端点响应不是 JSON：{error}"))?;
+    let payload: Value =
+        serde_json::from_str(&text).map_err(|error| format!("账号端点响应不是 JSON：{error}"))?;
     let envelope = parse_envelope(payload);
     if !envelope.ok {
         return Err(envelope.message);
@@ -317,7 +314,10 @@ pub async fn fetch_models(region: LoomyRegion, token: &str) -> Result<Vec<Value>
 ///
 /// 授权页直接内嵌 uuid（无需执行 JS），因此纯 GET 即可；提取不到时显式报错
 /// （绝不下发空 uuid —— 那会让前端轮询永远 waiting，用户看不到任何原因）。
-pub async fn fetch_wechat_uuid(region: LoomyRegion, state: &str) -> Result<(String, String), String> {
+pub async fn fetch_wechat_uuid(
+    region: LoomyRegion,
+    state: &str,
+) -> Result<(String, String), String> {
     let spec = realm_spec(region);
     let url = crate::modules::loomy::wechat::auth_url(region, state);
     let client = shared_client()?;
@@ -441,12 +441,18 @@ pub async fn wechat_bind_skip(
 }
 
 /// 按官方基址查积分。
-pub async fn points_for(region: LoomyRegion, token: &str) -> Result<crate::modules::loomy::credits::CreditsSnapshot, String> {
+pub async fn points_for(
+    region: LoomyRegion,
+    token: &str,
+) -> Result<crate::modules::loomy::credits::CreditsSnapshot, String> {
     fetch_points(realm_spec(region).api_base, token).await
 }
 
 /// 按官方基址签到。
-pub async fn checkin_for(region: LoomyRegion, token: &str) -> Result<crate::modules::loomy::credits::CheckinOutcome, String> {
+pub async fn checkin_for(
+    region: LoomyRegion,
+    token: &str,
+) -> Result<crate::modules::loomy::credits::CheckinOutcome, String> {
     post_checkin(realm_spec(region).api_base, token).await
 }
 

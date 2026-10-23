@@ -38,6 +38,7 @@ import type {
   CopyResult,
   MigrateResult,
   ModelProbeJob,
+  ModelProbeLedger,
   GatewayConfig,
   GatewayLogEntry,
   GatewayStatus,
@@ -183,8 +184,9 @@ const DEMO_READ_COMMANDS = new Set([
   "get_gateway_config", "gateway_status", "list_api_keys", "get_gateway_models",
   "get_account_strategy", "get_disabled_models", "get_gateway_logs",
   // 限流探测的只读状态命令（probe_status）：演示站需返回未跑过（phase=idle）的快照。
+  // `probe_ledger` 是**只读**台账（跨重启的实测结论）：演示站返回空表（从未探过）。
   // ⚠️ probe_start / probe_cancel 是**写**操作（会真发上游请求 / 置取消位），一律不进这里。
-  "probe_status",
+  "probe_status", "probe_ledger",
   // 「今日 Token」（**只读**观测）：演示站需返回虚构数据，否则 build:demo 报错。
   "get_account_token_today",
   // 网关**逐日**趋势（只读 `token_daily` 历史）：趋势页的网关小图用，演示站同样要虚构数据。
@@ -430,6 +432,11 @@ const ROUTES: Record<string, Route> = {
   // 撤销吊销（恢复）与吊销互逆：已吊销的 Key **两个出口都必须在**（恢复 / 删除）。
   restore_api_key: { method: "POST", path: "/api/gateway/keys/restore" },
   delete_api_key: { method: "POST", path: "/api/gateway/keys/delete" },
+  // ★ issue #76：密钥策略（用量配额 + 可访问账号）。入参是**完整策略**（非补丁）——
+  // 两个 radio 必选其一由抽屉保证，后端不猜「只想改一半」。
+  set_key_policy: { method: "POST", path: "/api/gateway/keys/policy" },
+  // 按密钥的用量快照（与 list 分开：用量每请求写，列表命令不该每次多读一个文件）。
+  key_usage: { method: "GET", path: "/api/gateway/keys/usage" },
   // 账号池：人工解除某账号的禁用。禁用是**终态且落盘**，此前没有任何出口
   // （余额刷新被 `disabled` 挡住、`revive` 在生产代码里零调用点）。
   revive_gateway_account: { method: "POST", path: "/api/gateway/pool/revive" },
@@ -455,6 +462,10 @@ const ROUTES: Record<string, Route> = {
   list_unified_api_keys: { method: "GET", path: "/api/unified-gateway/keys" },
   create_unified_api_key: { method: "POST", path: "/api/unified-gateway/keys" },
   revoke_unified_api_key: { method: "POST", path: "/api/unified-gateway/keys/revoke" },
+  // ★ issue #76：统一网关密钥策略（配额 + 账号范围）与按密钥用量。
+  set_unified_key_policy: { method: "POST", path: "/api/unified-gateway/keys/policy" },
+  unified_key_usage: { method: "GET", path: "/api/unified-gateway/keys/usage" },
+  unified_key_usage_all: { method: "GET", path: "/api/unified-gateway/keys/usage-all" },
   restore_unified_api_key: { method: "POST", path: "/api/unified-gateway/keys/restore" },
   delete_unified_api_key: { method: "POST", path: "/api/unified-gateway/keys/delete" },
   get_gateway_models: { method: "GET", path: "/api/gateway/models" },
@@ -470,6 +481,8 @@ const ROUTES: Record<string, Route> = {
   probe_start: { method: "POST", path: "/api/gateway/probe/start" },
   probe_status: { method: "GET", path: "/api/gateway/probe/status" },
   probe_cancel: { method: "POST", path: "/api/gateway/probe/cancel" },
+  /* 探测**结果台账**（跨重启累积、按作用域隔离）：只读。与 `/status` 的分工见 `probeLedger`。 */
+  probe_ledger: { method: "GET", path: "/api/gateway/probe/ledger" },
 
   // ---- Trae 模块 ----
   // 键名必须与 src-tauri/src/lib.rs 的 invoke_handler 登记名、
@@ -533,6 +546,9 @@ const ROUTES: Record<string, Route> = {
   list_trae_api_keys: { method: "GET", path: "/api/trae/gateway/keys" },
   create_trae_api_key: { method: "POST", path: "/api/trae/gateway/keys" },
   revoke_trae_api_key: { method: "POST", path: "/api/trae/gateway/keys/revoke" },
+  // ★ issue #76：Trae 密钥策略（配额 + 账号范围）与按密钥用量（与 WB 侧同形）。
+  set_trae_key_policy: { method: "POST", path: "/api/trae/gateway/keys/policy" },
+  trae_key_usage: { method: "GET", path: "/api/trae/gateway/keys/usage" },
   // 撤销吊销（恢复）：与 WorkBuddy 侧同形同语义。
   restore_trae_api_key: { method: "POST", path: "/api/trae/gateway/keys/restore" },
   delete_trae_api_key: { method: "POST", path: "/api/trae/gateway/keys/delete" },
@@ -619,6 +635,9 @@ const ROUTES: Record<string, Route> = {
   list_qoder_api_keys: { method: "GET", path: "/api/qoder/gateway/keys" },
   create_qoder_api_key: { method: "POST", path: "/api/qoder/gateway/keys" },
   revoke_qoder_api_key: { method: "POST", path: "/api/qoder/gateway/keys/revoke" },
+  // ★ issue #76：Qoder 密钥策略（配额 + 账号范围）与按密钥用量。
+  set_qoder_key_policy: { method: "POST", path: "/api/qoder/gateway/keys/policy" },
+  qoder_key_usage: { method: "GET", path: "/api/qoder/gateway/keys/usage" },
   // 撤销吊销（恢复）：与另两条产品线同形同语义。
   restore_qoder_api_key: { method: "POST", path: "/api/qoder/gateway/keys/restore" },
   delete_qoder_api_key: { method: "POST", path: "/api/qoder/gateway/keys/delete" },
@@ -2069,6 +2088,16 @@ export interface UnifiedApiKeyView {
   revokedAt: number | null;
   revoked: boolean;
   lastUsedAt: number | null;
+  /* ── 策略（issue #76）—— 与另三条产品线同形同义，前端共用一套构件。
+     ⚠️ 本视图另有 `namespaces` / `bizNamespace`（**最外层**授权：能访问哪些平台），
+     与这里的「账号范围 + 配额」是两个维度。 ── */
+  quotaMode?: "unlimited" | "limited";
+  quotaLimit?: number;
+  quotaUnit?: "token" | "request";
+  quotaPeriod?: "none" | "daily" | "weekly" | "monthly";
+  scopeMode?: "all" | "selected";
+  scopeAccounts?: string[];
+  scopeGroups?: string[];
 }
 
 export function getUnifiedGatewayConfig(): Promise<UnifiedGatewaySnapshot> {
@@ -2190,6 +2219,21 @@ export function revokeUnifiedApiKey(id: string): Promise<{ ok: boolean }> {
   return call("revoke_unified_api_key", { id });
 }
 
+/** ★ issue #76：更新某把统一 Key 的策略（完整策略，非补丁；**不动命名空间授权**）。 */
+export function setUnifiedKeyPolicy(id: string, policy: KeyPolicy): Promise<{ ok: boolean }> {
+  return call("set_unified_key_policy", { id, policy });
+}
+
+/** ★ issue #76：读某把统一 Key 的用量快照。 */
+export function unifiedKeyUsage(id: string): Promise<KeyUsageSnapshot> {
+  return call("unified_key_usage", { id });
+}
+
+/** ★ issue #76：**批量**读统一网关所有 Key 的用量（密钥表每行一列）。 */
+export function unifiedKeyUsageAll(): Promise<Record<string, KeyUsageSnapshot>> {
+  return call("unified_key_usage_all");
+}
+
 /** 撤销吊销 —— **同一把 Key 重新可用**，客户端配置不用改。 */
 export function restoreUnifiedApiKey(id: string): Promise<{ ok: boolean }> {
   return call("restore_unified_api_key", { id });
@@ -2207,6 +2251,48 @@ export function restoreApiKey(id: string): Promise<{ ok: boolean }> {
 
 export function deleteApiKey(id: string): Promise<{ ok: boolean }> {
   return call("delete_api_key", { id });
+}
+
+/* ─────────── 密钥策略（issue #76）───────────
+   类型定义在 `./types`（本文件已单向依赖它，反向 import 会成环）——
+   这里只 re-export，历史 import 路径（`@/lib/api`）继续可用。 */
+import type { QuotaMode, QuotaUnit, QuotaPeriod, ScopeMode } from "./types";
+export type { QuotaMode, QuotaUnit, QuotaPeriod, ScopeMode };
+
+export interface KeyPolicy {
+  quotaMode: QuotaMode;
+  quotaLimit: number;
+  quotaUnit: QuotaUnit;
+  quotaPeriod: QuotaPeriod;
+  scopeMode: ScopeMode;
+  /** 允许访问的账号 uid（`scopeMode === "selected"` 时有效）。 */
+  scopeAccounts: string[];
+  /** 允许访问的**分组** id（与 `scopeAccounts` 取并集）—— 组内换号时策略不用改。 */
+  scopeGroups: string[];
+}
+
+/** 某把 Key 的用量快照（`key_usage` 命令的返回）。 */
+export interface KeyUsageSnapshot {
+  ok: boolean;
+  keyId: string;
+  unit: QuotaUnit;
+  period: QuotaPeriod;
+  /** 当前周期键（`daily:2026-10-22` 等）；累计口径为 `null`。 */
+  periodKey: string | null;
+  /** 当前口径下的已用量（周期切换时自动归零）。 */
+  used: number;
+  /** 累计用量（不随周期重置）。 */
+  total: number;
+}
+
+/** 更新某把 Key 的策略（完整策略，非补丁）。矛盾值由后端收敛到安全的一边。 */
+export function setKeyPolicy(id: string, policy: KeyPolicy): Promise<{ ok: boolean }> {
+  return call("set_key_policy", { id, policy });
+}
+
+/** 读某把 Key 的用量快照。 */
+export function keyUsage(id: string): Promise<KeyUsageSnapshot> {
+  return call("key_usage", { id });
 }
 
 /**
@@ -2330,6 +2416,13 @@ export function probeStart(params: {
   scope: Scope;
   uids?: string[];
   models?: string[];
+  /**
+   * **显式格清单**（与 `uids` / `models` **互斥**，给了它就只探点名的格）。
+   *
+   * 账号页台账卡用它：台账里 3 条（3 账号 / 2 模型）是 **3 格**，而两根轴会展开成 6 格 ——
+   * 多打的 3 格既费配额又答非所问。
+   */
+  cells?: { uid: string; model: string }[];
   adopt: boolean;
 }): Promise<{ started: boolean; total: number }> {
   // ⚠️ 展开成**对象字面量**（而不是直接传 `params`）：`check-api-contract.cjs` 第 8 条要求
@@ -2338,6 +2431,7 @@ export function probeStart(params: {
     scope: params.scope,
     uids: params.uids,
     models: params.models,
+    cells: params.cells,
     adopt: params.adopt,
   });
 }
@@ -2352,6 +2446,20 @@ export function probeStart(params: {
  */
 export function probeStatus(scope: Scope): Promise<{ phase: "idle" } | ModelProbeJob> {
   return call("probe_status", { scope });
+}
+
+/**
+ * 读取某作用域的**实测台账**（**只读**）：这些格**最近一次**的实判，跨重启保留。
+ *
+ * 与 {@link probeStatus} 的分工：
+ * - `probeStatus` = **本轮作业**（进度 / 相位 / 本次回填），进程内单槽，新作业覆盖；
+ * - `probeLedger` = **累积结论**（落盘 `probe_results.json`，按作用域隔离）。
+ *
+ * ★ 账号页「客户端限流」重启后仍要看到实测结论 ⇒ 必须读它（只靠 store 的 `probeCells`
+ * 只能活一个进程）。无记录时 `cells` 为空、`updated_at_ms` 为 `null`（**不是错误**）。
+ */
+export function probeLedger(scope: Scope): Promise<ModelProbeLedger> {
+  return call("probe_ledger", { scope });
 }
 
 /** 请求取消当前探测作业（**写**操作；逐格检查，已探到的格保留）。 */
@@ -3145,6 +3253,16 @@ export function revokeTraeApiKey(id: string): Promise<{ ok: boolean }> {
   return call("revoke_trae_api_key", { id });
 }
 
+/** ★ issue #76：更新某把 Trae Key 的策略（完整策略，非补丁）。 */
+export function setTraeKeyPolicy(id: string, policy: KeyPolicy): Promise<{ ok: boolean }> {
+  return call("set_trae_key_policy", { id, policy });
+}
+
+/** ★ issue #76：读某把 Trae Key 的用量快照。 */
+export function traeKeyUsage(id: string): Promise<KeyUsageSnapshot> {
+  return call("trae_key_usage", { id });
+}
+
 /** 撤销吊销（清 `revokedAt`，Key 重新可用；未吊销会被后端拒绝）。 */
 export function restoreTraeApiKey(id: string): Promise<{ ok: boolean }> {
   return call("restore_trae_api_key", { id });
@@ -3632,6 +3750,16 @@ export function createQoderApiKey(scope: Scope, name: string): Promise<QoderCrea
 /** 吊销 Key（置 `revokedAt`；可逆）。 */
 export function revokeQoderApiKey(id: string): Promise<{ ok: boolean }> {
   return call<{ ok: boolean }>("revoke_qoder_api_key", { id });
+}
+
+/** ★ issue #76：更新某把 Qoder Key 的策略（完整策略，非补丁）。 */
+export function setQoderKeyPolicy(id: string, policy: KeyPolicy): Promise<{ ok: boolean }> {
+  return call("set_qoder_key_policy", { id, policy });
+}
+
+/** ★ issue #76：读某把 Qoder Key 的用量快照。 */
+export function qoderKeyUsage(id: string): Promise<KeyUsageSnapshot> {
+  return call("qoder_key_usage", { id });
 }
 
 /** 撤销吊销（Key 重新可用；明文未变，客户端无需改配置）。 */

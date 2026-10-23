@@ -32,12 +32,7 @@ pub enum Protocol {
 }
 
 /// 入站协议 → 出站转换。
-fn protocol_error(
-    protocol: Protocol,
-    status: StatusCode,
-    code: &str,
-    message: &str,
-) -> Response {
+fn protocol_error(protocol: Protocol, status: StatusCode, code: &str, message: &str) -> Response {
     match protocol {
         Protocol::OpenAi | Protocol::Responses => openai_error(status, code, message),
         Protocol::Anthropic => anthropic_error(status, code, message),
@@ -129,10 +124,10 @@ pub async fn chat_for_region(
     };
 
     /* Responses 的 **custom（freeform）工具**名只从**原始**请求体取：
-       Loomy 的 body 是直传上游的，但 `type: "custom"` 只有 Responses 入口才有 ——
-       不取这一份，出站后客户端会收到 `function_call` 而不是它声明的 `custom_tool_call`
-       （Codex 的 `apply_patch` 这类工具就会「静默不执行」）。
-       与 Qoder 侧同一处取法（`protocol::responses::custom_tool_names`）。 */
+    Loomy 的 body 是直传上游的，但 `type: "custom"` 只有 Responses 入口才有 ——
+    不取这一份，出站后客户端会收到 `function_call` 而不是它声明的 `custom_tool_call`
+    （Codex 的 `apply_patch` 这类工具就会「静默不执行」）。
+    与 Qoder 侧同一处取法（`protocol::responses::custom_tool_names`）。 */
     let responses_custom =
         std::sync::Arc::new(crate::protocol::responses::custom_tool_names(&parsed));
 
@@ -365,7 +360,11 @@ pub async fn chat_for_region(
     let message = if failures.is_empty() {
         "Loomy 没有可用账号：请在「账号」页导入凭据或短信登录".to_string()
     } else {
-        format!("全部账号都失败（{} 个）：{}", failures.len(), failures.join("；"))
+        format!(
+            "全部账号都失败（{} 个）：{}",
+            failures.len(),
+            failures.join("；")
+        )
     };
     state
         .record_request(
@@ -755,22 +754,20 @@ async fn aggregate_relay(
             let anthropic = crate::protocol::anthropic::message_from_response(&chat, model);
             axum::Json(anthropic).into_response()
         }
-        Protocol::Responses => {
-            axum::Json(crate::protocol::responses::to_response_object_from(
-                &crate::protocol::responses::ResponsesParts {
-                    content: &aggregated.content,
-                    reasoning: &aggregated.reasoning,
-                    tool_calls: &aggregated.tool_calls,
-                    model: aggregated.model.as_deref(),
-                    created_at: aggregated.created,
-                    input_tokens: prompt_tokens,
-                    output_tokens: completion_tokens,
-                    custom: custom.as_ref(),
-                },
-                model,
-            ))
-            .into_response()
-        }
+        Protocol::Responses => axum::Json(crate::protocol::responses::to_response_object_from(
+            &crate::protocol::responses::ResponsesParts {
+                content: &aggregated.content,
+                reasoning: &aggregated.reasoning,
+                tool_calls: &aggregated.tool_calls,
+                model: aggregated.model.as_deref(),
+                created_at: aggregated.created,
+                input_tokens: prompt_tokens,
+                output_tokens: completion_tokens,
+                custom: custom.as_ref(),
+            },
+            model,
+        ))
+        .into_response(),
     }
 }
 
@@ -819,9 +816,9 @@ where
                 std::task::Poll::Ready(Some(Ok(frame)))
             }
             other => match other {
-                std::task::Poll::Ready(Some(Err(error))) => std::task::Poll::Ready(Some(Err(
-                    std::io::Error::other(format!("{error:?}")),
-                ))),
+                std::task::Poll::Ready(Some(Err(error))) => {
+                    std::task::Poll::Ready(Some(Err(std::io::Error::other(format!("{error:?}")))))
+                }
                 done => done.map(|opt| {
                     opt.map(|item| {
                         item.map_err(|error| std::io::Error::other(format!("{error:?}")))

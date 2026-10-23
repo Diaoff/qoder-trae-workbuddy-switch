@@ -373,6 +373,9 @@ pub struct TraeGatewayState {
     pub log: Arc<RequestLog>,
     /// 多 API Key 存储（哈希 + 前缀 + **归属产品线**；含旧 `settings.apiKey` 兼容读）。
     pub key_store: Arc<apikey::TraeApiKeyStore>,
+    /// ★ 按密钥的用量账本（issue #76）—— 与 WB 侧**同一个实现**
+    /// （`crate::key_usage::KeyUsageStore`），只是路径在 `trae/` 下。
+    pub key_usage: Arc<crate::key_usage::KeyUsageStore>,
     /// 进程启动时刻（毫秒）。
     pub started_at: i64,
     /// 累计请求数。
@@ -411,6 +414,9 @@ impl TraeGatewayState {
             sticky: Arc::new(Mutex::new(StickyTable::new(config.sticky_ttl_ms))),
             log,
             key_store: Arc::new(apikey::TraeApiKeyStore::new(paths::api_gateway_keys_file())),
+            key_usage: Arc::new(crate::key_usage::KeyUsageStore::new(
+                paths::api_gateway_key_usage_file(),
+            )),
             started_at: core_config::now_ms(),
             total_requests: Arc::new(AtomicU64::new(0)),
             last_error: Arc::new(RwLock::new(None)),
@@ -493,6 +499,11 @@ impl TraeGatewayState {
         completion_tokens: u64,
         error: Option<String>,
         variant: TraeVariant,
+        // ★ issue #76：调用方的 Key id（`None` = 无 Key 的调用 / 老条目）。
+        key_id: Option<&str>,
+        // ★ 归属台账（`"trae"` / `"unified"` / `None`）—— 统一网关转发来的请求
+        //   带的是网关的 Key，没有这个标签会与本产品线的 Key 混淆。
+        key_scope: Option<&'static str>,
     ) {
         self.total_requests.fetch_add(1, Ordering::Relaxed);
         self.log.record(serde_json::json!({
@@ -511,6 +522,10 @@ impl TraeGatewayState {
             // 归属产品线：Token 统计页据此出「变体范围条」（筛选维度）。
             // 用 as_str() 的下划线形态，与 Key/查询参数口径一致（勿用派生 serde）。
             "variant": variant.as_str(),
+            // ★ issue #76：调用方 Key id。**无 Key 写 `null`**（键固定，前端只判一个条件）；
+            //   升级前写入的老条目确实没有这个键 ⇒ 前端两种都要容忍。
+            "keyId": key_id,
+            "keyScope": key_scope,
         }));
         if let Some(message) = error {
             *self.last_error.write().await = Some(message);
@@ -693,7 +708,7 @@ pub async fn status_view(
 /// 组装 Trae 网关路由（**不含 fallback**）。
 ///
 /// 挂载 `GET /health`（兼容 `/healthz`，见 [`crate::HEALTH_PATHS`]）、`GET /status`、
-/// `GET /v1/models`、`POST /v1/chat/completions`。
+/// `GET /v1/models`、`POST /v1/chat/completions`、`POST /v1/messages`、`POST /v1/responses`。
 /// 鉴权由 [`routes::bearer_auth`] 统一处理，健康检查免鉴权。
 pub fn router(state: TraeGatewayState) -> axum::Router {
     use axum::routing::{get, post};
@@ -705,6 +720,9 @@ pub fn router(state: TraeGatewayState) -> axum::Router {
         .route("/v1/chat/completions", post(routes::chat_completions))
         // Anthropic 协议入口：与上面那条共用整条中继，只在协议层做双向转换。
         .route("/v1/messages", post(routes::messages))
+        // Responses 协议入口：同样只换协议层（入站 Responses → chat、出站 chat SSE
+        // → Responses 事件流），中继与 `/v1/chat/completions` 是同一份。
+        .route("/v1/responses", post(routes::responses))
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
             routes::bearer_auth,

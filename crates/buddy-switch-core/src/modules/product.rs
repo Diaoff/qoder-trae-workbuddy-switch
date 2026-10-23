@@ -182,7 +182,10 @@ impl Scope {
         match self {
             Scope::WbCn => Some(Region::Cn),
             Scope::WbGlobal => Some(Region::Global),
-            Scope::TraeCn | Scope::TraeGlobal | Scope::QoderCn | Scope::QoderGlobal
+            Scope::TraeCn
+            | Scope::TraeGlobal
+            | Scope::QoderCn
+            | Scope::QoderGlobal
             | Scope::LoomyCn => None,
         }
     }
@@ -192,7 +195,10 @@ impl Scope {
         match self {
             Scope::TraeCn => Some(TraeRegion::Cn),
             Scope::TraeGlobal => Some(TraeRegion::Global),
-            Scope::WbCn | Scope::WbGlobal | Scope::QoderCn | Scope::QoderGlobal
+            Scope::WbCn
+            | Scope::WbGlobal
+            | Scope::QoderCn
+            | Scope::QoderGlobal
             | Scope::LoomyCn => None,
         }
     }
@@ -202,8 +208,9 @@ impl Scope {
         match self {
             Scope::QoderCn => Some(QoderRegion::Cn),
             Scope::QoderGlobal => Some(QoderRegion::Global),
-            Scope::WbCn | Scope::WbGlobal | Scope::TraeCn | Scope::TraeGlobal
-            | Scope::LoomyCn => None,
+            Scope::WbCn | Scope::WbGlobal | Scope::TraeCn | Scope::TraeGlobal | Scope::LoomyCn => {
+                None
+            }
         }
     }
 
@@ -211,8 +218,12 @@ impl Scope {
     pub fn loomy_region(self) -> Option<LoomyRegion> {
         match self {
             Scope::LoomyCn => Some(LoomyRegion::Cn),
-            Scope::WbCn | Scope::WbGlobal | Scope::TraeCn | Scope::TraeGlobal
-            | Scope::QoderCn | Scope::QoderGlobal => None,
+            Scope::WbCn
+            | Scope::WbGlobal
+            | Scope::TraeCn
+            | Scope::TraeGlobal
+            | Scope::QoderCn
+            | Scope::QoderGlobal => None,
         }
     }
 

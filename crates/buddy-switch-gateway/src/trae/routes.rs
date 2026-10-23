@@ -1,4 +1,4 @@
-//! Trae 网关的四个端点与 Bearer 鉴权中间件。
+//! Trae 网关的五个端点与 Bearer 鉴权中间件。
 //!
 //! ## 与 WorkBuddy 网关路由的关系
 //!
@@ -76,6 +76,16 @@ use super::{
 #[derive(Clone, Copy, Debug)]
 pub struct TraeKeyVariant(pub TraeVariant);
 
+/// ★ issue #76：本次请求的**整条 Key**（策略 + id）—— 供配额判定、账号白名单、
+/// 按密钥记账三处使用。
+///
+/// 为什么单独一个 extension 而不是把字段摊进 [`TraeKeyVariant`]：
+/// 那个类型只承载「用哪个账号池」这一个用途，把它撑大成「Key 全量」会让
+/// 所有读它的地方都依赖 `TraeApiKeyRecord`（含 hash 字段的类型）。
+/// 这里用 `Arc` 持有，中间件每请求克隆一次指针即可。
+#[derive(Clone)]
+pub struct TraeKeyContext(pub std::sync::Arc<crate::trae::apikey::TraeApiKeyRecord>);
+
 /// 日志里的端点名（与 WorkBuddy 网关同名字符串，便于统一聚合）。
 ///
 /// ★ 两条入口各有一个常量，并且**同时**决定出站协议：`/v1/messages` 要额外做一次
@@ -84,10 +94,22 @@ pub struct TraeKeyVariant(pub TraeVariant);
 /// 这种统计静默错位。
 const ENDPOINT_CHAT: &str = "/v1/chat/completions";
 const ENDPOINT_MESSAGES: &str = "/v1/messages";
+/// `POST /v1/responses`（Responses API）。
+///
+/// 上游仍是 `llm_utils_chat`（只认 chat 形态）⇒ 本端点是**两次转换**：入站
+/// Responses → chat（[`crate::protocol::responses::to_upstream_request`]），出站
+/// chat SSE → Responses 事件流（[`crate::protocol::responses::ResponsesSseStream`]）。
+/// 选号 / 换号 / 冷却 / 粘性 / 记账**一行都没改** —— 与 `/v1/messages` 同一个理由。
+const ENDPOINT_RESPONSES: &str = "/v1/responses";
 
 /// 该端点是否要 Anthropic 出站转换。
 fn is_anthropic_endpoint(endpoint: &str) -> bool {
     endpoint == ENDPOINT_MESSAGES
+}
+
+/// 该端点是否要 Responses 出站转换。
+fn is_responses_endpoint(endpoint: &str) -> bool {
+    endpoint == ENDPOINT_RESPONSES
 }
 
 /// 上游 UA。参考实现固定为 `TraeClient/TTNet`，改它没有好处。
@@ -175,6 +197,10 @@ pub async fn bearer_auth(
                 request
                     .extensions_mut()
                     .insert(TraeKeyVariant(record.variant));
+                // ★ issue #76：整条 Key 也塞进扩展（配额 / 白名单 / 记账要用）。
+                request
+                    .extensions_mut()
+                    .insert(TraeKeyContext(std::sync::Arc::new(record.clone())));
                 state.key_store.touch(&record.id);
                 next.run(request).await
             }
@@ -257,12 +283,24 @@ pub async fn models(
 pub async fn chat_completions(
     State(state): State<TraeGatewayState>,
     Extension(key_variant): Extension<TraeKeyVariant>,
+    // ★ issue #76：整条 Key（配额 / 白名单 / 记账）。缺这个扩展 = 老路由 / 测试调用。
+    key_ctx: Option<Extension<TraeKeyContext>>,
     _headers: HeaderMap,
     body: Bytes,
 ) -> Response {
     // 归属产品线由鉴权中间件经请求扩展传入 ⇒ 这里只是把它转成**显式参数**交给共用实现，
     // 让统一网关（没有 Key 归属、只有命名空间）也能调用同一份中继。
-    chat_for_variant(state, key_variant.0, body).await
+    let key = key_ctx.map(|Extension(ctx)| ctx.0);
+    // ★ issue #76：收敛成 `KeyActor`（id + 策略 + **本产品线的账本**）。
+    let actor = key.map(|record| {
+        std::sync::Arc::new(crate::apikey::KeyActor::new(
+            record.id.clone(),
+            record.policy(),
+            state.key_usage.clone(),
+            "trae",
+        ))
+    });
+    chat_for_variant(state, key_variant.0, body, actor).await
 }
 
 /// 一趟 Trae chat 中继（**认证之后的全部逻辑**）—— 产品线入口与统一网关**共用**这一份实现。
@@ -280,8 +318,23 @@ pub async fn chat_for_variant(
     state: TraeGatewayState,
     variant: TraeVariant,
     body: Bytes,
+    // ★ issue #76：调用方的 Key（`None` = 无 Key 的调用 ⇒ 不判配额、不过白名单、不记账）。
+    key: Option<std::sync::Arc<crate::apikey::KeyActor>>,
 ) -> Response {
     let started = Instant::now();
+    // ★ issue #76：配额判定（选号前）—— 超限直接 429，一步都不发。
+    if let Some(actor) = key.as_deref() {
+        // 判定 + 请求数记账都在 `KeyActor` 里（四条产品线同一份实现）。
+        if let Some(message) =
+            actor.check_quota_and_count(buddy_switch_core::modules::config::now_ms())
+        {
+            return openai_error(
+                StatusCode::TOO_MANY_REQUESTS,
+                "key_quota_exceeded",
+                &message,
+            );
+        }
+    }
     let parsed: Value = match serde_json::from_slice(&body) {
         Ok(value) => value,
         Err(error) => {
@@ -328,6 +381,9 @@ pub async fn chat_for_variant(
             ENDPOINT_CHAT,
             started,
             variant,
+            key.as_deref(),
+            // chat 入口没有 custom 工具概念。
+            None,
         )
         .await
     } else {
@@ -342,6 +398,7 @@ pub async fn chat_for_variant(
             sticky_key.as_deref(),
             started,
             variant,
+            key.as_deref(),
         )
         .await
     }
@@ -352,7 +409,7 @@ pub async fn chat_for_variant(
 /// ## 为什么能与 `/v1/chat/completions` 共用整条链路
 ///
 /// 上游只认一种东西（Trae 私有的 `llm_utils_chat`），所以两条入口的差别**只在协议层**：
-/// 入站 Anthropic → OpenAI 形态（[`anthropic::to_upstream_request`]），
+/// 入站 Anthropic → OpenAI 形态（[`anthropic::to_upstream_request_adaptive`]），
 /// 出站 OpenAI → Anthropic（[`anthropic::AnthropicSseStream`] /
 /// [`anthropic::message_from_response`]）。中间的中继（选号 / 换号 / 冷却 / 粘性 /
 /// 日志）**一行都不用改** —— 这正是把这两个转换放进共用 `protocol` 层
@@ -366,10 +423,20 @@ pub async fn chat_for_variant(
 pub async fn messages(
     State(state): State<TraeGatewayState>,
     Extension(key_variant): Extension<TraeKeyVariant>,
+    key_ctx: Option<Extension<TraeKeyContext>>,
     body: Bytes,
 ) -> Response {
     // 同 `/v1/chat/completions`：把扩展里的归属转成显式参数，交给共用实现。
-    messages_for_variant(state, key_variant.0, body).await
+    let key = key_ctx.map(|Extension(ctx)| ctx.0);
+    let actor = key.map(|record| {
+        std::sync::Arc::new(crate::apikey::KeyActor::new(
+            record.id.clone(),
+            record.policy(),
+            state.key_usage.clone(),
+            "trae",
+        ))
+    });
+    messages_for_variant(state, key_variant.0, body, actor).await
 }
 
 /// 一趟 Trae **Anthropic** 中继（认证之后的全部逻辑）—— 产品线入口与统一网关共用。
@@ -380,8 +447,22 @@ pub async fn messages_for_variant(
     state: TraeGatewayState,
     variant: TraeVariant,
     body: Bytes,
+    // ★ issue #76：同 `chat_for_variant`。
+    key: Option<std::sync::Arc<crate::apikey::KeyActor>>,
 ) -> Response {
     let started = Instant::now();
+    // ★ issue #76：配额判定（选号前）。
+    if let Some(actor) = key.as_deref() {
+        if let Some(message) =
+            actor.check_quota_and_count(buddy_switch_core::modules::config::now_ms())
+        {
+            return anthropic_error(
+                StatusCode::TOO_MANY_REQUESTS,
+                "key_quota_exceeded",
+                &message,
+            );
+        }
+    }
 
     let config = state.config_snapshot().await;
     let Ok(parsed) = serde_json::from_slice::<Value>(&body) else {
@@ -392,7 +473,11 @@ pub async fn messages_for_variant(
         );
     };
 
-    let upstream = anthropic::to_upstream_request(&parsed);
+    /* ★ 图片：默认丢（Trae 上游是否吃 `content` 里的 `image_url` parts 未实测），
+    丢弃时文本里会留下「已移除 N 张图片」；`BUDDY_SWITCH_ANTHROPIC_FORWARD_IMAGES=1`
+    打开后改走带图分支。`llm_utils_chat` 本来就要求 `content` 是数组，带图产出
+    的 parts 数组不需要额外适配。 */
+    let upstream = anthropic::to_upstream_request_adaptive(&parsed);
     let Ok(encoded) = serde_json::to_vec(&upstream) else {
         return anthropic_error(
             StatusCode::BAD_REQUEST,
@@ -443,6 +528,9 @@ pub async fn messages_for_variant(
             ENDPOINT_MESSAGES,
             started,
             variant,
+            key.as_deref(),
+            // Anthropic 入口没有 custom 工具概念。
+            None,
         )
         .await
     } else {
@@ -458,14 +546,194 @@ pub async fn messages_for_variant(
             ENDPOINT_MESSAGES,
             started,
             variant,
+            key.as_deref(),
         )
         .await
         {
-            Ok(payload) => json_response(
-                StatusCode::OK,
-                anthropic::message_from_response(&payload, &model),
-            ),
+            Ok(payload) => {
+                // ★ issue #76：Anthropic 端点同样按密钥记 token（payload 是上游 OpenAI 形状，
+                //   所以取 `usage.total_tokens` 与 chat 端点同源）。
+                record_key_tokens(&state, key.as_deref(), &payload);
+                json_response(
+                    StatusCode::OK,
+                    anthropic::message_from_response(&payload, &model),
+                )
+            }
             Err(failure) => anthropic_error(
+                StatusCode::from_u16(failure.status).unwrap_or(StatusCode::BAD_GATEWAY),
+                &failure.code,
+                &failure.message,
+            ),
+        }
+    }
+}
+
+/// `POST /v1/responses`：Responses 协议入口（Codex 等 Responses 客户端）。
+///
+/// 与 [`messages`] 同一个套路：把扩展里的归属转成显式参数，交给共用实现
+/// [`responses_for_variant`]。
+pub async fn responses(
+    State(state): State<TraeGatewayState>,
+    Extension(key_variant): Extension<TraeKeyVariant>,
+    key_ctx: Option<Extension<TraeKeyContext>>,
+    body: Bytes,
+) -> Response {
+    let key = key_ctx.map(|Extension(ctx)| ctx.0);
+    let actor = key.map(|record| {
+        std::sync::Arc::new(crate::apikey::KeyActor::new(
+            record.id.clone(),
+            record.policy(),
+            state.key_usage.clone(),
+            "trae",
+        ))
+    });
+    responses_for_variant(state, key_variant.0, body, actor).await
+}
+
+/// 一趟 Trae **Responses** 中继（认证之后的全部逻辑）—— 产品线入口与统一网关共用。
+///
+/// ## 为什么这条链能复用
+///
+/// 上游只认 `llm_utils_chat`（chat 形态），所以本端点与 `/v1/chat/completions` 的
+/// 差别**全在协议层**：入站 [`crate::protocol::responses::to_upstream_request`]，
+/// 出站 [`crate::protocol::responses::ResponsesSseStream`] /
+/// [`crate::protocol::responses::to_response_object`]。选号 / 换号 / 冷却 / 粘性 /
+/// 记账与另外两条入口**完全同一份** —— 与 `/v1/messages` 的理由一样：另写一份必然分家。
+///
+/// ## 错误体
+///
+/// 用 OpenAI 形状（[`openai_error`]）而不是 Anthropic 形状：Responses 客户端只认前者。
+pub async fn responses_for_variant(
+    state: TraeGatewayState,
+    variant: TraeVariant,
+    body: Bytes,
+    // ★ issue #76：同 `chat_for_variant`。
+    key: Option<std::sync::Arc<crate::apikey::KeyActor>>,
+) -> Response {
+    let started = Instant::now();
+    // ★ issue #76：配额判定（选号前）。
+    if let Some(actor) = key.as_deref() {
+        if let Some(message) =
+            actor.check_quota_and_count(buddy_switch_core::modules::config::now_ms())
+        {
+            return openai_error(
+                StatusCode::TOO_MANY_REQUESTS,
+                "key_quota_exceeded",
+                &message,
+            );
+        }
+    }
+
+    let config = state.config_snapshot().await;
+    let Ok(parsed) = serde_json::from_slice::<Value>(&body) else {
+        return openai_error(
+            StatusCode::BAD_REQUEST,
+            "invalid_request_error",
+            "请求体不是合法 JSON",
+        );
+    };
+
+    /* freeform（custom）工具名必须从**原始**请求体取：转换之后它们已被降级成普通
+    function，`type` 没了，名字还在但语义丢失 —— 出站要靠这份集合还原成
+    `custom_tool_call` 事件/条目。 */
+    let responses_custom =
+        std::sync::Arc::new(crate::protocol::responses::custom_tool_names(&parsed));
+
+    // Responses 请求 → 上游 chat 形态。
+    let upstream = crate::protocol::responses::to_upstream_request(&parsed);
+    let Ok(encoded) = serde_json::to_vec(&upstream) else {
+        return openai_error(
+            StatusCode::BAD_REQUEST,
+            "invalid_request_error",
+            "请求体无法序列化",
+        );
+    };
+    let upstream_body = Bytes::from(encoded);
+
+    // 模型取**转换后**的请求体（那是真正发给上游的东西）。
+    let model = payload::model_of(&upstream, &config.default_model);
+    // ★ 出口 ②（P11）：与 `/v1/chat/completions` 同源 —— 被禁用的模型直接拒绝。
+    {
+        let scope = scope_of_trae_region(variant.region());
+        let disabled = state.disabled.read().await;
+        if crate::disabled_models::is_disabled(&disabled, scope, &model) {
+            return openai_error(
+                StatusCode::FORBIDDEN,
+                "model_disabled",
+                &crate::disabled_models::disabled_message(scope, &model),
+            );
+        }
+    }
+    let stream = payload::wants_stream(&parsed);
+    let max_rotate = config.max_rotate.max(1);
+    let chat_id = format!("chatcmpl-{}", uuid_like());
+
+    /* 粘性键：会话 id 优先；Responses 客户端（Codex 等）没有 `metadata`，用
+    `prompt_cache_key` 顶上 —— 它本身就是「同一段会话复用同一前缀」的语义，
+    与粘性同目的。两者都没有 ⇒ `None` ⇒ 整段跳过粘性（绝不退化成轮级键）。 */
+    let sticky_key = session_headers::conversation_id_of(&parsed)
+        .map(|conversation| conversation.trim().to_string())
+        .filter(|conversation| !conversation.is_empty())
+        .or_else(|| {
+            parsed
+                .get("prompt_cache_key")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|key| !key.is_empty())
+                .map(str::to_string)
+        })
+        .map(|conversation| sticky::sticky_key(variant.as_str(), &model, &conversation));
+
+    if stream {
+        stream_chat(
+            &state,
+            &upstream_body,
+            &config.default_model,
+            &model,
+            &chat_id,
+            max_rotate,
+            &config.preferred_uid,
+            sticky_key.as_deref(),
+            ENDPOINT_RESPONSES,
+            started,
+            variant,
+            key.as_deref(),
+            Some(responses_custom),
+        )
+        .await
+    } else {
+        match aggregate_payload(
+            &state,
+            &upstream_body,
+            &config.default_model,
+            &model,
+            &chat_id,
+            max_rotate,
+            &config.preferred_uid,
+            sticky_key.as_deref(),
+            ENDPOINT_RESPONSES,
+            started,
+            variant,
+            key.as_deref(),
+        )
+        .await
+        {
+            Ok(payload) => {
+                record_key_tokens(&state, key.as_deref(), &payload);
+                // 非流式：上游给的是 chat.completion，先收成聚合器再走**同一份**
+                // Responses 形状实现（两条上游共用 `to_response_object_from`）。
+                let accumulator =
+                    crate::protocol::openai::CompletionAccumulator::from_response(&payload);
+                json_response(
+                    StatusCode::OK,
+                    crate::protocol::responses::to_response_object(
+                        &accumulator,
+                        &model,
+                        responses_custom.as_ref(),
+                    ),
+                )
+            }
+            Err(failure) => openai_error(
                 StatusCode::from_u16(failure.status).unwrap_or(StatusCode::BAD_GATEWAY),
                 &failure.code,
                 &failure.message,
@@ -498,7 +766,15 @@ async fn stream_chat(
     endpoint: &'static str,
     started: Instant,
     variant: TraeVariant,
+    // ★ issue #76：本密钥（白名单 / 配额 / 记账）。
+    key: Option<&crate::apikey::KeyActor>,
+    // Responses 入口声明的 custom（freeform）工具名：只有 `/v1/responses` 用得上，
+    // chat / messages 传 `None`（它们没有这个概念）。由**原始**请求体取，
+    // 转换后 `type` 已被降级成 function，拿不回来。
+    responses_custom: Option<std::sync::Arc<HashSet<String>>>,
 ) -> Response {
+    // ★ issue #76：允许名单整轮算一次，选号与失败兜底共用（理由见 `attempt_once`）。
+    let allowed = key.and_then(|actor| allowed_uids_for(&actor.policy, variant));
     let mut tried: HashSet<String> = HashSet::new();
     let mut last: Option<UpstreamFailure> = None;
 
@@ -511,6 +787,7 @@ async fn stream_chat(
             preferred_uid,
             sticky_key,
             variant,
+            allowed.as_ref(),
         )
         .await
         {
@@ -525,6 +802,8 @@ async fn stream_chat(
                 let task_state = state.clone();
                 let task_model = model.to_string();
                 let task_chat_id = chat_id.to_string();
+                // ★ issue #76：Key 要进 `tokio::spawn`（'static）⇒ 先 clone 一份。
+                let task_key = key.cloned();
                 tokio::spawn(async move {
                     let outcome = sse::stream_convert(
                         response,
@@ -544,11 +823,29 @@ async fn stream_chat(
                         outcome.usage,
                         endpoint,
                         variant,
+                        task_key.as_ref().map(|actor| actor.key_id.as_str()),
+                        task_key.as_ref().map(|actor| actor.scope),
                     )
                     .await;
+                    /* ★ issue #76：按密钥 token 记账 —— 挂在**流结束**这个同一时点
+                    （与 `settle` 并列）：请求前不知道用量，记了就是假账。
+                    `is_meaningful()` = 上游没报用量（全 0）⇒ 不记，别写 0 样本
+                    （会把「本周期已用」压低，让配额晚触发）。 */
+                    if let Some(actor) = task_key.as_ref() {
+                        if outcome.usage.is_meaningful() {
+                            // `record_tokens` 内部判 0 跳过。
+                            actor.record_tokens(
+                                outcome.usage.total,
+                                buddy_switch_core::modules::config::now_ms(),
+                            );
+                        }
+                    }
                 });
                 return if is_anthropic_endpoint(endpoint) {
                     anthropic_sse_response(rx, model)
+                } else if is_responses_endpoint(endpoint) {
+                    // Responses 事件流：内层是同一条 OpenAI SSE，逐事件重编。
+                    responses_sse_response(rx, model, responses_custom.clone())
                 } else {
                     sse_response(rx)
                 };
@@ -557,8 +854,19 @@ async fn stream_chat(
     }
 
     // 没拿到任何可用上游：这里**还没发过响应头**，可以正常返回 JSON 错误。
-    let failure = last.unwrap_or_else(|| no_account_failure_sync(state, variant));
-    settle_failure(state, model, true, started, &failure, endpoint, variant).await;
+    let failure = last.unwrap_or_else(|| no_account_failure_sync(state, variant, allowed.as_ref()));
+    settle_failure(
+        state,
+        model,
+        true,
+        started,
+        &failure,
+        endpoint,
+        variant,
+        key.map(|actor| actor.key_id.as_str()),
+        key.map(|actor| actor.scope),
+    )
+    .await;
     openai_error(
         StatusCode::from_u16(failure.status).unwrap_or(StatusCode::BAD_GATEWAY),
         &failure.code,
@@ -584,7 +892,12 @@ async fn aggregate_payload(
     endpoint: &'static str,
     started: Instant,
     variant: TraeVariant,
+    // ★ issue #76：本密钥（白名单 / 配额 / 记账）。
+    key: Option<&crate::apikey::KeyActor>,
 ) -> Result<Value, UpstreamFailure> {
+    // ★ issue #76：本密钥的允许名单，**整轮算一次** —— 选号与失败兜底都要用同一份
+    //   （兜底文案必须按名单口径说事实，否则用户会被指去修名单外的账号）。
+    let allowed = key.and_then(|actor| allowed_uids_for(&actor.policy, variant));
     let mut tried: HashSet<String> = HashSet::new();
     let mut last: Option<UpstreamFailure> = None;
 
@@ -597,6 +910,7 @@ async fn aggregate_payload(
             preferred_uid,
             sticky_key,
             variant,
+            allowed.as_ref(),
         )
         .await
         {
@@ -618,7 +932,17 @@ async fn aggregate_payload(
         match (payload, error) {
             (Some(payload), None) => {
                 settle(
-                    state, &account, model, false, started, None, usage, endpoint, variant,
+                    state,
+                    &account,
+                    model,
+                    false,
+                    started,
+                    None,
+                    usage,
+                    endpoint,
+                    variant,
+                    key.map(|actor| actor.key_id.as_str()),
+                    key.map(|actor| actor.scope),
                 )
                 .await;
                 return Ok(payload);
@@ -636,8 +960,19 @@ async fn aggregate_payload(
         }
     }
 
-    let failure = last.unwrap_or_else(|| no_account_failure_sync(state, variant));
-    settle_failure(state, model, false, started, &failure, endpoint, variant).await;
+    let failure = last.unwrap_or_else(|| no_account_failure_sync(state, variant, allowed.as_ref()));
+    settle_failure(
+        state,
+        model,
+        false,
+        started,
+        &failure,
+        endpoint,
+        variant,
+        key.map(|actor| actor.key_id.as_str()),
+        key.map(|actor| actor.scope),
+    )
+    .await;
     Err(failure)
 }
 
@@ -654,6 +989,8 @@ async fn aggregate_chat(
     sticky_key: Option<&str>,
     started: Instant,
     variant: TraeVariant,
+    // ★ issue #76：本密钥（白名单 / 配额 / 记账）。
+    key: Option<&crate::apikey::KeyActor>,
 ) -> Response {
     match aggregate_payload(
         state,
@@ -667,10 +1004,15 @@ async fn aggregate_chat(
         ENDPOINT_CHAT,
         started,
         variant,
+        key,
     )
     .await
     {
-        Ok(payload) => json_response(StatusCode::OK, payload),
+        Ok(payload) => {
+            // ★ issue #76：非流式同样按密钥记 token（payload 是 OpenAI 形状，usage 在内）。
+            record_key_tokens(state, key, &payload);
+            json_response(StatusCode::OK, payload)
+        }
         Err(failure) => openai_error(
             StatusCode::from_u16(failure.status).unwrap_or(StatusCode::BAD_GATEWAY),
             &failure.code,
@@ -748,6 +1090,54 @@ enum AttemptResult {
     },
 }
 
+/// 把 Key 策略的账号范围展开成 uid 集合（`None` = 全部账号，不过滤）。
+///
+/// ★ 与 WB 侧 `allowed_uids_for` 同构，但**分组字段不同**：
+/// Trae 的分组是 `groupId`（id），WB 是自由文本 `groupName`。账号库按 variant 分家
+/// （两条产品线的账号库本就独立），所以展开时按 `variant` 读。
+fn allowed_uids_for(
+    policy: &crate::apikey::KeyPolicy,
+    variant: TraeVariant,
+) -> Option<HashSet<String>> {
+    use crate::apikey::ScopeMode;
+    if policy.scope_mode != ScopeMode::Selected {
+        return None;
+    }
+    let mut allowed: HashSet<String> = policy.scope_accounts.iter().cloned().collect();
+    if !policy.scope_groups.is_empty() {
+        /* ★ Trae 的分组是**独立文件**（`user_id -> group_id` 的 `membership` 映射），
+        不像 WB 那样把 `groupName` 挂在账号记录上 ⇒ 读 `load_groups_for` 再反查。
+        这里**只增不删**：`scope_accounts` 里的 uid 即使不在任何分组也保留。 */
+        let groups = buddy_switch_core::modules::trae::account::load_groups_for(variant);
+        for (uid, group_id) in groups.membership.iter() {
+            if policy.scope_groups.iter().any(|wanted| wanted == group_id) {
+                allowed.insert(uid.clone());
+            }
+        }
+    }
+    Some(allowed)
+}
+
+/// 非流式路径的按密钥 token 记账（issue #76）。
+///
+/// 从 OpenAI 形状的 `payload.usage.total_tokens` 取数；缺失 / 0 ⇒ **不记**
+/// （与流式 `is_meaningful()` 同一判据：写 0 样本会让配额晚触发）。
+fn record_key_tokens(
+    // 不再需要 `state`：账本从 actor 取（`KeyActor` 自带 `usage`）。
+    _state: &TraeGatewayState,
+    key: Option<&crate::apikey::KeyActor>,
+    payload: &Value,
+) {
+    let Some(actor) = key else { return };
+    let total = payload
+        .get("usage")
+        .and_then(|usage| usage.get("total_tokens"))
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    // `record_tokens` 内部判 0 跳过（不写 0 样本）。
+    actor.record_tokens(total, buddy_switch_core::modules::config::now_ms());
+}
+
 /// 选号 + 出站一次。`tried` 在内部累加，调用方反复调用即可自动换号。
 ///
 /// 返回 `None` 表示**已经挑不出新账号**（不是失败，是没得试了）。
@@ -760,6 +1150,9 @@ async fn attempt_once(
     preferred_uid: &str,
     sticky_key: Option<&str>,
     variant: TraeVariant,
+    // ★ issue #76：本密钥的允许名单（`None` = 不过白名单）。由调用方算好传进来 ——
+    //   失败兜底（`no_account_failure_sync`）也要用它，两处必须同一份。
+    allowed: Option<&HashSet<String>>,
 ) -> Option<AttemptResult> {
     // 先读粘性（**不持 pools 锁**）：两把锁不嵌套 —— 既不延长池的持锁时间，
     // 也避免日后有人以相反顺序取锁造成死锁。
@@ -775,7 +1168,8 @@ async fn attempt_once(
         // 偏好优先级：**显式指定 > 会话粘性 > 自动择优**（见 [`resolve_preference`]）。
         // 两者都不可用时 `pick_with_preference` 会自行回落到自动择优，绝不拒绝服务。
         let preferred = resolve_preference(preferred_uid, sticky_uid.as_deref());
-        pool.pick(now_secs(), tried, preferred)
+        // 白名单：由调用方展开后传入（分组展开只在 `scope_groups` 非空时读一次文件）。
+        pool.pick(now_secs(), tried, preferred, allowed)
     }?;
     tried.insert(picked.uid.clone());
 
@@ -978,6 +1372,10 @@ async fn settle(
     usage: TokenUsage,
     endpoint: &'static str,
     variant: TraeVariant,
+    // ★ issue #76：调用方 Key id（写进日志，供「按密钥看用量」与定位）。
+    key_id: Option<&str>,
+    // ★ 归属台账（统一网关转发来的请求带的是网关的 Key）。
+    key_scope: Option<&'static str>,
 ) {
     let latency_ms = started.elapsed().as_millis() as i64;
 
@@ -1024,6 +1422,8 @@ async fn settle(
             usage.completion,
             message,
             variant,
+            key_id,
+            key_scope,
         )
         .await;
 }
@@ -1068,6 +1468,8 @@ async fn settle_failure(
     failure: &UpstreamFailure,
     endpoint: &'static str,
     variant: TraeVariant,
+    key_id: Option<&str>,
+    key_scope: Option<&'static str>,
 ) {
     state
         .record_request(
@@ -1081,6 +1483,8 @@ async fn settle_failure(
             0,
             Some(failure.message.clone()),
             variant,
+            key_id,
+            key_scope,
         )
         .await;
 }
@@ -1093,13 +1497,18 @@ async fn settle_failure(
 /// 按区域取名的原因：Key 的**归属就是区域**（账号库、冷却、积分都按区域分家），
 /// 账号管理页的切换器也是「国内版 / 国际版」两个 Tab。文案若按程序位取名
 /// （`Trae Work` / `Trae`），用户会被指到界面上**根本不存在**的入口去加账号。
-fn no_account_failure_sync(state: &TraeGatewayState, variant: TraeVariant) -> UpstreamFailure {
+fn no_account_failure_sync(
+    state: &TraeGatewayState,
+    variant: TraeVariant,
+    // ★ issue #76：白名单生效时诊断与文案都按**名单口径**（`None` = 不过白名单）。
+    allowed: Option<&HashSet<String>>,
+) -> UpstreamFailure {
     // 这里不能 await（调用点在 `unwrap_or_else` 里），用阻塞锁读一次内存视图即可：
     // 池状态在 `attempt_once` 里刚同步过，读到的不会比磁盘旧。
     let diagnose = match state.pools.try_lock() {
         Ok(pools) => pools
             .get(&variant)
-            .map(|pool| pool.diagnose(now_secs()))
+            .map(|pool| pool.diagnose_for(now_secs(), allowed))
             .unwrap_or_default(),
         Err(_) => Vec::new(),
     };
@@ -1110,7 +1519,10 @@ fn no_account_failure_sync(state: &TraeGatewayState, variant: TraeVariant) -> Up
     // **国内**程序位，于是「国内 Key + 国内库为空 + 国际版库有账号」这一情形
     // 永远得不到提示 —— 真正可能有账号的那条线根本不在候选里。提示要双向覆盖，
     // 否则国际版接入后，只在「国际版 Key 配国内账号」这一个方向上给指引。
-    let other_region_with_accounts = if diagnose.is_empty() {
+    //
+    // ★ 白名单生效时**不给这条提示**：名单是用户自己划的，让他「换个区域的 Key」
+    //   等于绕开他自己的策略，反而添乱。
+    let other_region_with_accounts = if diagnose.is_empty() && allowed.is_none() {
         TraeRegion::all()
             .into_iter()
             .filter(|candidate| *candidate != variant.region())
@@ -1121,13 +1533,22 @@ fn no_account_failure_sync(state: &TraeGatewayState, variant: TraeVariant) -> Up
     UpstreamFailure {
         status: 503,
         code: "no_healthy_account".to_string(),
-        message: no_account_message(variant, &diagnose, other_region_with_accounts),
+        message: no_account_message(
+            variant,
+            &diagnose,
+            other_region_with_accounts,
+            // 名单生效时诊断里只剩名单内的账号 ⇒ 条数就是「名单覆盖了几个」。
+            allowed.map(|_| diagnose.len()),
+        ),
     }
 }
 
 /// 空池文案的唯一构造点（纯函数，便于单测钉住「区域名必须出现」）。
 ///
 /// `other_region_with_accounts` 为「另一个区域有账号」时的提示对象；`None` 表示不提。
+/// `scoped_allowed` 为 `Some(n)` 表示这把 Key 的白名单生效、名单覆盖 n 个账号
+/// （issue #76）—— 此时必须点明「名单外的账号不会被使用」，否则用户会以为
+/// 网关把池里其它号藏起来了。
 ///
 /// 取名一律走 [`TraeVariant::region`] + [`TraeRegion::display_name`]：
 /// `TraeWork` 与 `Trae` **同属国内区域**，因此两者产出的文案**逐字相同**。
@@ -1135,6 +1556,7 @@ fn no_account_message(
     variant: TraeVariant,
     diagnose: &[String],
     other_region_with_accounts: Option<TraeRegion>,
+    scoped_allowed: Option<usize>,
 ) -> String {
     let name = variant.region().display_name();
     let base = if diagnose.is_empty() {
@@ -1145,12 +1567,19 @@ fn no_account_message(
     } else {
         format!("「{name}」没有可用账号：{}", diagnose.join("、"))
     };
-    match other_region_with_accounts {
+    let with_region = match other_region_with_accounts {
         Some(other) => {
             let other_name = other.display_name();
             format!("{base}（检测到 {other_name} 有账号：请改用归属 {other_name} 的 API Key）")
         }
         None => base,
+    };
+    match scoped_allowed {
+        Some(count) => format!(
+            "{with_region}（这把 API Key 的允许名单只覆盖 {count} 个账号，\
+             名单外的账号不会被使用；可在「网关 → 密钥 → 权限」放宽名单）"
+        ),
+        None => with_region,
     }
 }
 
@@ -1223,7 +1652,35 @@ fn anthropic_sse_response(
         .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
 }
 
-/// 32 位 hex，用作 trace / request id 的原料。
+/// Responses SSE 响应：把同一条 OpenAI SSE 逐事件重编成 Responses 事件流。
+///
+/// 与 [`anthropic_sse_response`] 同构，`Box::pin` 的理由也一样
+/// （`ResponsesSseStream` 要求内层 `Unpin`，而 `stream_from_receiver` 产出的是
+/// `unfold`）。差别只在最后一层封装 —— 上游链路、换号、记账完全不区分端点。
+///
+/// ⚠️ Responses 的流**不以 `data: [DONE]` 结尾**（`response.completed` 即终止信号），
+/// 这个差异由 `ResponsesSseStream` 内部处理，这里既不补也不截。
+fn responses_sse_response(
+    rx: mpsc::Receiver<Result<Bytes, std::io::Error>>,
+    model: &str,
+    custom: Option<std::sync::Arc<HashSet<String>>>,
+) -> Response {
+    let inner = Box::pin(sse::stream_from_receiver(rx));
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, "text/event-stream")
+        .header(header::CACHE_CONTROL, "no-cache")
+        .header("X-Accel-Buffering", "no")
+        .body(Body::from_stream(
+            crate::protocol::responses::ResponsesSseStream::new(
+                inner,
+                model.to_string(),
+                custom.unwrap_or_default(),
+            ),
+        ))
+        .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
+}
+
 fn uuid_like() -> String {
     uuid::Uuid::new_v4().simple().to_string()
 }
@@ -1262,6 +1719,22 @@ fn describe_transport_error(error: &reqwest::Error) -> String {
 mod tests {
     use super::*;
     use crate::trae::TraeGatewayConfig;
+
+    /// ★ 出口协议判据（纯函数）：三个端点各对应一种出站封装，**不能互相串**。
+    ///
+    /// 变异：把 `is_responses_endpoint` 写成恒 `false` ⇒ Responses 客户端会收到
+    /// 原始 chat SSE（它的解析器认不出 `choices[].delta`）—— 这条会红。
+    #[test]
+    fn endpoint_predicates_pick_the_outbound_protocol() {
+        assert!(is_anthropic_endpoint(ENDPOINT_MESSAGES));
+        assert!(!is_anthropic_endpoint(ENDPOINT_RESPONSES));
+        assert!(!is_anthropic_endpoint(ENDPOINT_CHAT));
+
+        assert!(is_responses_endpoint(ENDPOINT_RESPONSES));
+        assert!(!is_responses_endpoint(ENDPOINT_MESSAGES));
+        // chat 必须原样透传：误判成任何一种转换都会让普通 OpenAI 客户端解析失败。
+        assert!(!is_responses_endpoint(ENDPOINT_CHAT));
+    }
 
     /// ★ 粘性表的接线往返：绑定后能查到、解绑后查不到、`None` 键**整段跳过**。
     ///
@@ -1437,7 +1910,7 @@ mod tests {
     #[test]
     fn no_account_failure_message_is_actionable_and_region_aware() {
         // 这条文案是用户唯一能看到的排障线索：必须包含「下一步做什么」且**点名区域**。
-        let cn = no_account_message(TraeVariant::TraeWork, &[], None);
+        let cn = no_account_message(TraeVariant::TraeWork, &[], None, None);
         assert!(cn.contains("账号管理"), "{cn}");
         assert!(cn.contains("一键签到"), "{cn}");
         // ⚠️ 区域名现在是**客户端产品名**（`Trae CN` / `Trae`，2026-10-13 用户定）。
@@ -1449,14 +1922,14 @@ mod tests {
         // 走 `entries_for_region`），Key 的归属也是区域，因此文案按区域取名。
         // `TraeWork` 与 `Trae` 是**程序位**、同属国内区域 ⇒ 两段文案必须**逐字相同**。
         // 若哪天又按程序位取名（用户会在账号管理页找不到那个入口），这条 `assert_eq!` 会红。
-        let trae = no_account_message(TraeVariant::Trae, &[], None);
+        let trae = no_account_message(TraeVariant::Trae, &[], None, None);
         assert_eq!(
             cn, trae,
             "国内两个程序位共用一本账号库，文案不得按程序位分叉"
         );
 
         // 国际版必须是另一个名字（否则用户分不清该去哪一版加账号）。
-        let global = no_account_message(TraeVariant::Global, &[], None);
+        let global = no_account_message(TraeVariant::Global, &[], None, None);
         assert!(global.contains("「Trae」"), "{global}");
         assert_ne!(cn, global, "两个区域的文案必须可区分: {cn} / {global}");
 
@@ -1465,13 +1938,15 @@ mod tests {
             TraeVariant::Trae,
             &["主号(7481920:冷却中,积分=0)".to_string()],
             None,
+            None,
         );
         assert!(with_reason.contains("「Trae CN」"), "{with_reason}");
         assert!(with_reason.contains("冷却中"), "{with_reason}");
 
         // 「另一个区域有账号」的提示必须**双向**都给。
         // 方向①：国际版 Key + 只有国内账号（R8①的原始场景）。
-        let hinted_global = no_account_message(TraeVariant::Global, &[], Some(TraeRegion::Cn));
+        let hinted_global =
+            no_account_message(TraeVariant::Global, &[], Some(TraeRegion::Cn), None);
         assert!(
             hinted_global.contains("「Trae」"),
             "选中的区域必须出现: {hinted_global}"
@@ -1482,12 +1957,26 @@ mod tests {
         );
         // 方向②：国内版 Key + 只有国际版账号。**这条在修复前做不到** ——
         // 旧实现遍历的是 `TraeVariant::all()`（两条国内程序位），候选里根本没有国际版。
-        let hinted_cn = no_account_message(TraeVariant::TraeWork, &[], Some(TraeRegion::Global));
+        let hinted_cn =
+            no_account_message(TraeVariant::TraeWork, &[], Some(TraeRegion::Global), None);
         assert!(hinted_cn.contains("「Trae CN」"), "{hinted_cn}");
         assert!(
             hinted_cn.contains("检测到 Trae 有账号"),
             "另一个有账号的区域必须出现: {hinted_cn}"
         );
+
+        // ★ issue #76：白名单生效时必须点明「名单外的账号不会被使用」——
+        //   否则用户看到「没有可用账号」会以为网关把池里其它号藏起来了。
+        let scoped = no_account_message(
+            TraeVariant::Trae,
+            &["主号(7481920:冷却中,积分=0)".to_string()],
+            None,
+            Some(1),
+        );
+        assert!(scoped.contains("允许名单只覆盖 1 个账号"), "{scoped}");
+        assert!(scoped.contains("名单外的账号不会被使用"), "{scoped}");
+        // 反向：没有白名单时**不得**出现名单提示（否则是在凭空编造策略）。
+        assert!(!cn.contains("允许名单"), "无白名单时不得出现名单提示: {cn}");
     }
 
     #[test]
@@ -1543,7 +2032,7 @@ mod tests {
         let picked = {
             let mut pool = TraePool::for_variant(TraeVariant::TraeWork);
             pool.sync_for(TraeVariant::TraeWork);
-            pool.pick(now_secs(), &HashSet::new(), None)
+            pool.pick(now_secs(), &HashSet::new(), None, None)
         };
         let Some(picked) = picked else {
             panic!("本机 CN 账号池没有可用账号，探针无法进行");
@@ -1716,7 +2205,7 @@ mod tests {
         let picked = {
             let mut pool = TraePool::for_variant(TraeVariant::TraeWork);
             pool.sync_for(TraeVariant::TraeWork);
-            pool.pick(now_secs(), &HashSet::new(), None)
+            pool.pick(now_secs(), &HashSet::new(), None, None)
         };
         let Some(picked) = picked else {
             panic!("本机 CN 账号池没有可用账号");

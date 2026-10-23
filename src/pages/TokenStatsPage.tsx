@@ -60,6 +60,7 @@ import { ModelDonut } from "@/components/usage/model-donut";
 import { ModelRanking } from "@/components/usage/model-ranking";
 import { ReconcileSheet } from "@/components/usage/reconcile-sheet";
 import { SessionRanking } from "@/components/usage/session-ranking";
+import { KeysView } from "@/components/usage/key-ranking";
 import { SessionScatter } from "@/components/usage/session-scatter";
 import { StackedDailyBar } from "@/components/usage/stacked-daily-bar";
 import { StatTiles, type StatTile } from "@/components/usage/stat-tiles";
@@ -76,6 +77,7 @@ import type {
   RegionFilter,
   TokenStatistics,
   TokenStatsSource,
+  ApiKeyRecord,
 } from "@/lib/types";
 import { useRefreshAction } from "@/lib/use-refresh-action";
 import { useScope } from "@/lib/use-scope";
@@ -108,7 +110,19 @@ import {
 import { usageWindowDays, type UsageWindow } from "@/lib/usage-window";
 
 /** 本页承载的视图（积分视图在 `CreditStatsPage`）。 */
-export type TokenUsageView = "trend" | "models" | "sessions";
+export type TokenUsageView = "trend" | "models" | "sessions" | "keys";
+
+/** 「按密钥」视图的取数（WB：网关日志 + 密钥名）。模块级 ⇒ 引用稳定。 */
+async function loadWbKeyUsage() {
+  const [logs, keys] = await Promise.all([
+    api.getGatewayLogs(),
+    api.listApiKeys().catch(() => ({ keys: [] as ApiKeyRecord[] })),
+  ]);
+  return {
+    entries: logs.logs ?? [],
+    keyNames: new Map((keys.keys ?? []).map((key) => [key.id, key.name] as const)),
+  };
+}
 
 /** 会话级缓存：切走再切回不重取（与 `CreditStatsPage` 同一约定）。 */
 const statisticsCache: Partial<Record<RegionFilter, TokenStatistics>> = {};
@@ -792,6 +806,16 @@ export default function TokenStatsPage({
           dim={dim}
           ledger={ledger}
           onRefresh={() => setReload((value) => value + 1)}
+        />
+      ) : view === "keys" ? (
+        <KeysView
+          window={viewWindow}
+          selfScope="wb"
+          loader={loadWbKeyUsage}
+          title={t("wbStats.usage.keys.title")}
+          caption={t("wbStats.usage.keys.caption")}
+          emptyTitle={t("wbStats.usage.keys.empty")}
+          emptyHint={t("wbStats.usage.keys.emptyHint")}
         />
       ) : view === "sessions" ? (
         <SessionsView

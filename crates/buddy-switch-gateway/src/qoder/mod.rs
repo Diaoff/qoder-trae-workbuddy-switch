@@ -257,6 +257,8 @@ pub struct QoderGatewayState {
     pub log: Arc<RequestLog>,
     /// 多 API Key 存储。
     pub key_store: Arc<apikey::QoderApiKeyStore>,
+    /// ★ 按密钥的用量账本（issue #76）—— 与 WB / Trae 侧**同一个实现**。
+    pub key_usage: Arc<crate::key_usage::KeyUsageStore>,
     /// 模型清单缓存（区域级）。
     catalogs: Arc<RwLock<HashMap<QoderRegion, CachedCatalog>>>,
     pub started_at: i64,
@@ -284,6 +286,9 @@ impl QoderGatewayState {
             sticky: Arc::new(Mutex::new(crate::StickyTable::new(config.sticky_ttl_ms))),
             log,
             key_store: Arc::new(apikey::QoderApiKeyStore::new(paths::gateway_keys_file())),
+            key_usage: Arc::new(crate::key_usage::KeyUsageStore::new(
+                paths::gateway_key_usage_file(),
+            )),
             catalogs: Arc::new(RwLock::new(HashMap::new())),
             started_at: core_config::now_ms(),
             total_requests: Arc::new(AtomicU64::new(0)),
@@ -495,6 +500,10 @@ impl QoderGatewayState {
         // 上游 `usage.credits`（浮点；`0` = 未取到）：G3 的计数来源，也进日志。
         credits: f64,
         error: Option<String>,
+        // ★ issue #76：调用方的 Key id（`None` = 无 Key / 老条目）。
+        key_id: Option<&str>,
+        // ★ 归属台账（`"qoder"` / `"unified"` / `None`）。
+        key_scope: Option<&'static str>,
     ) {
         self.total_requests.fetch_add(1, Ordering::Relaxed);
         self.log.record(serde_json::json!({
@@ -513,6 +522,9 @@ impl QoderGatewayState {
             "credits": credits,
             "stream": stream,
             "error": error,
+            // ★ issue #76：调用方 Key id（无 Key 写 `null`，键固定）。
+            "keyId": key_id,
+            "keyScope": key_scope,
         }));
         // ★ 限额护栏的唯一计数入口：**就在记账一处**累加，别在别处再记一次
         //   （记两次会把「当日已用」算成两倍，护栏提前触发）。

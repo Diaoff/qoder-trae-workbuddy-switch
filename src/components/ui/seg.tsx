@@ -27,6 +27,18 @@
  * `data-[on=true]:bg-card`）两处已对齐的控件都是这个值。三处必须同值 ——
  * 否则同一个「用量」页里，子 Tab 条与参数条会呈现出两种选中态。
  *
+ * ## 色调（`tone`）：账本那一组**不是**默认选中态
+ *
+ * ⚠️ 原型对「账本」这一枚 `.seg` 单独加了 `.book`（`demo.css:1362`）：
+ * `button.on { background: color-mix(in oklab, var(--primary) 18%, transparent); color: var(--primary) }`，
+ * 即**青绿 18% 底 + `primary` 文字**（`font-weight:550` 与 `shadow-sm` 由 `.seg button.on` 继承、
+ * 未被覆盖）。理由：账本不是「同一件事的档位」，而是**换一本账本**看数据 ——
+ * 换账之后整页数字的来源都变了，这一点必须在控件上看得见。
+ *
+ * 不给 `book` 会怎样：深色主题下 `--card` 与 `--muted` 同值（见下节），
+ * 选中项只剩字重差别，用户看不出「我现在看的是哪本账」—— 截图里就是「完全看不出」。
+ * 所以**色调不许由调用点拼类名**（那样又会退回两套按钮外观），走 `tone` 参数。
+ *
  * ## 与 `Tabs` 的分工
  *
  * `Tabs` 管**内容面板切换**（有 `TabsContent`、有 roving tabindex 语义）；
@@ -61,6 +73,14 @@ export interface SegProps<T extends string | number> {
    * 少了这两个属性，读屏用户听到的只是一枚普通按钮 —— 不知道它会开浮层、也不知道开没开。
    */
   popup?: { value: T; expanded: boolean };
+  /**
+   * 色调。缺省 = 原型 `.seg`（选中 `bg-card` + `foreground`）。
+   *
+   * `book` 专给用量页的「账本」那枚（原型 `.seg.book`，`demo.css:1362`）：
+   * 选中态是 `primary 18%` 底 + `primary` 文字 —— 「换了一本账」比「换了一档」重得多，
+   * 必须在控件本身上看得出来（深色下 `card` 与 `muted` 同值，默认色调只剩字重差异）。
+   */
+  tone?: "default" | "book";
   className?: string;
 }
 
@@ -71,6 +91,7 @@ export function Seg<T extends string | number>({
   ariaLabel,
   disabled = false,
   popup,
+  tone = "default",
   className,
 }: SegProps<T>) {
   return (
@@ -91,8 +112,15 @@ export function Seg<T extends string | number>({
             type="button"
             className={cn(
               "h-[26px] cursor-pointer rounded-sm px-[11px] text-xs transition-colors",
+              /* 原型 `.seg button.on` 的三个共有项：550 字重 + `card` 底 + `shadow-sm`；
+                 `.seg.book button.on` 只改**底色与文字色**，前两项仍保留（CSS 层叠如此）。 */
               value === option.value
-                ? "bg-card font-[550] text-foreground shadow-sm"
+                ? cn(
+                    "font-[550] shadow-sm",
+                    tone === "book"
+                      ? "bg-primary/18 text-primary"
+                      : "bg-card text-foreground",
+                  )
                 : "text-muted-foreground hover:text-foreground",
               disabled && "cursor-not-allowed",
             )}

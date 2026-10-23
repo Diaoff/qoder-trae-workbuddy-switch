@@ -329,6 +329,10 @@ pub fn body_limit_bytes(max_body_mb: usize) -> usize {
 pub struct GatewayState {
     pub config: Arc<RwLock<GatewayConfig>>,
     pub keys: Arc<ApiKeyStore>,
+    /// ★ 按密钥的用量账本（issue #76）：与 Key 台账**分文件** ——
+    /// 台账低频写（创建/吊销/改策略），用量每请求写；合并在一个文件里
+    /// 既放大写放大，也让「改策略」与「记一笔」在锁上打架。
+    pub key_usage: Arc<crate::key_usage::KeyUsageStore>,
     pub catalogs: Arc<CatalogStore>,
     pub strategies: Arc<RwLock<HashMap<Region, AccountStrategy>>>,
     /// 用户禁用的模型（P11）：**两个出口共用**（`/v1/models` 过滤 + 调用拒绝）。
@@ -370,6 +374,9 @@ impl GatewayState {
     /// 依据配置构造一份完整运行状态。
     pub fn new(config: GatewayConfig) -> Self {
         let keys = Arc::new(ApiKeyStore::new(region::gateway_keys_file()));
+        let key_usage = Arc::new(crate::key_usage::KeyUsageStore::new(
+            region::gateway_key_usage_file(),
+        ));
         let catalogs = Arc::new(CatalogStore::new());
         let log = Arc::new(RequestLog::new(
             gateway_log_file(),
@@ -409,6 +416,7 @@ impl GatewayState {
         Self {
             config: Arc::new(RwLock::new(config.clone())),
             keys,
+            key_usage,
             catalogs,
             strategies,
             disabled: crate::disabled_models::shared(),

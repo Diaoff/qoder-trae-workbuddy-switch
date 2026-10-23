@@ -889,7 +889,10 @@ export interface TraeGatewayLogEntry {
   promptTokens?: number | null;
   completionTokens?: number | null;
   stream: boolean;
-  error?: string | null;
+  error?: string | null;  /** ★ issue #76：调用方 Key id（`null` = 无 Key；`undefined` = 升级前老条目）。 */
+  keyId?: string | null;
+  /** ★ `keyId` 的归属台账（`"trae"` / `"unified"` / `null`）。 */
+  keyScope?: string | null;
 }
 
 /** 对外暴露的模型条目（`get_trae_gateway_models`）。 */
@@ -1061,6 +1064,15 @@ export interface TraeApiKeyRecord {
   createdAt: number;
   revokedAt: number | null;
   revoked: boolean;
+  /* ── 策略（issue #76）—— 与 `ApiKeyRecord` 同形同义，前端共用一套构件。
+     全部可选 ⇒ 旧台账零迁移；调用方一律先过 `policyOf` 补默认值。 ── */
+  quotaMode?: "unlimited" | "limited";
+  quotaLimit?: number;
+  quotaUnit?: "token" | "request";
+  quotaPeriod?: "none" | "daily" | "weekly" | "monthly";
+  scopeMode?: "all" | "selected";
+  scopeAccounts?: string[];
+  scopeGroups?: string[];
   lastUsedAt: number | null;
 }
 

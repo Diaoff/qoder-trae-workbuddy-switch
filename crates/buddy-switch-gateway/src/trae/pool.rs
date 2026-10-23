@@ -350,6 +350,9 @@ impl TraePool {
         now: i64,
         tried: &HashSet<String>,
         preferred_uid: Option<&str>,
+        // ★ issue #76：本密钥的允许名单（`None` = 全部账号）。
+        //   分组已由调用方展开成 uid（Trae 的分组是 `groupId`，池不认识分组概念）。
+        allowed: Option<&HashSet<String>>,
     ) -> Option<PickedTraeAccount> {
         // 共用内核按 `BTreeMap<uid, E>` 组织候选；池本身用 `Vec`（沿用账号库顺序，
         // 供展示层直接遍历），故这里临时构造一份候选表。
@@ -376,6 +379,7 @@ impl TraePool {
             model: "",
             tried,
             excluded: &excluded,
+            allowed,
             mode,
             seed,
         };
@@ -545,8 +549,20 @@ impl TraePool {
 
     /// 诊断：每个账号为什么不能路由。用于「no healthy account」的排查。
     pub fn diagnose(&self, now: i64) -> Vec<String> {
+        self.diagnose_for(now, None)
+    }
+
+    /// 逐账号诊断；`allowed` 生效时**只列这把 Key 允许用的账号**（issue #76）。
+    ///
+    /// 白名单用户看到的必须是「我允许用的那几个号」为什么不可用 —— 把全池
+    /// 12 个号的原因堆给他，等于让他去修一堆本来就不许用的账号。
+    pub fn diagnose_for(&self, now: i64, allowed: Option<&HashSet<String>>) -> Vec<String> {
         self.entries
             .iter()
+            .filter(|entry| match allowed {
+                Some(only) => only.contains(&entry.uid),
+                None => true,
+            })
             .map(|entry| {
                 let reason = entry.rejection(now).unwrap_or("可用");
                 let credits = entry
@@ -888,13 +904,15 @@ mod tests {
         let zero = entry("zero", Some(0.0), Some(now + 10));
 
         let mut pool = pool_with(vec![soon, later, cooling, zero]);
-        let picked = pool.pick(now, &HashSet::new(), None).expect("应选出账号");
+        let picked = pool
+            .pick(now, &HashSet::new(), None, None)
+            .expect("应选出账号");
         assert_eq!(picked.uid, "soon", "到期最近的优先");
 
         // 已试过的账号不再选。
         let mut tried = HashSet::new();
         tried.insert("soon".to_string());
-        assert_eq!(pool.pick(now, &tried, None).unwrap().uid, "later");
+        assert_eq!(pool.pick(now, &tried, None, None).unwrap().uid, "later");
 
         // 全试过 → 不重复尝试已试账号，但会走**全冷却兜底**挑「最早解冻者」。
         // ★ 这是接入共用内核后新增的能力（旧实现此时直接返回 None）。
@@ -902,7 +920,7 @@ mod tests {
         // （`cool_expiry_ms() == 0`），不参与兜底。
         tried.insert("later".to_string());
         let fallback = pool
-            .pick(now, &tried, None)
+            .pick(now, &tried, None, None)
             .expect("全冷却兜底应挑出最早解冻者");
         assert_eq!(fallback.uid, "cooling");
     }
@@ -913,7 +931,10 @@ mod tests {
         let unknown = entry("unknown", Some(5000.0), None);
         let known = entry("known", Some(1.0), Some(now + 999));
         let mut pool = pool_with(vec![unknown, known]);
-        assert_eq!(pool.pick(now, &HashSet::new(), None).unwrap().uid, "known");
+        assert_eq!(
+            pool.pick(now, &HashSet::new(), None, None).unwrap().uid,
+            "known"
+        );
     }
 
     /// ★★ 护栏：旧实现的「**积分到期最近优先**」语义必须在新算法下继续成立。
@@ -931,7 +952,9 @@ mod tests {
         let far = entry("far", Some(999.0), Some(now + 365 * 24 * 3600));
         let mut pool = pool_with(vec![far, soon]);
 
-        let picked = pool.pick(now, &HashSet::new(), None).expect("应选出账号");
+        let picked = pool
+            .pick(now, &HashSet::new(), None, None)
+            .expect("应选出账号");
         assert_eq!(picked.uid, "soon", "「先用掉快过期的额度」必须压过积分多寡");
     }
 
@@ -947,7 +970,7 @@ mod tests {
         let mut pool = pool_with(vec![rich, poor]);
 
         let picked = pool
-            .pick(now, &HashSet::new(), Some("__max_credits__"))
+            .pick(now, &HashSet::new(), Some("__max_credits__"), None)
             .expect("应选出账号");
         assert_eq!(picked.uid, "rich", "哨兵值必须按积分择优");
     }
@@ -961,7 +984,7 @@ mod tests {
         let mut pool = pool_with(vec![rich, poor]);
 
         let picked = pool
-            .pick(now, &HashSet::new(), Some("poor"))
+            .pick(now, &HashSet::new(), Some("poor"), None)
             .expect("应选出账号");
         assert_eq!(picked.uid, "poor", "指定账号可用时必须优先");
     }
@@ -982,14 +1005,14 @@ mod tests {
 
         // 冷却中的偏好 → 回落
         assert_eq!(
-            pool.pick(now, &HashSet::new(), Some("cooling"))
+            pool.pick(now, &HashSet::new(), Some("cooling"), None)
                 .unwrap()
                 .uid,
             "healthy"
         );
         // 禁用的偏好 → 回落
         assert_eq!(
-            pool.pick(now, &HashSet::new(), Some("disabled"))
+            pool.pick(now, &HashSet::new(), Some("disabled"), None)
                 .unwrap()
                 .uid,
             "healthy"
@@ -998,12 +1021,12 @@ mod tests {
         let mut tried = HashSet::new();
         tried.insert("healthy".to_string());
         let picked = pool
-            .pick(now, &tried, Some("healthy"))
+            .pick(now, &tried, Some("healthy"), None)
             .expect("应回落到其它账号");
         assert_ne!(picked.uid, "healthy", "已试过的偏好必须被跳过");
         // 不存在的 uid → 回落
         assert_eq!(
-            pool.pick(now, &HashSet::new(), Some("no-such-uid"))
+            pool.pick(now, &HashSet::new(), Some("no-such-uid"), None)
                 .unwrap()
                 .uid,
             "healthy"
@@ -1021,7 +1044,7 @@ mod tests {
         let mut pool = pool_with(vec![limited]);
 
         assert!(
-            pool.pick(now, &HashSet::new(), None).is_none(),
+            pool.pick(now, &HashSet::new(), None, None).is_none(),
             "硬冷却账号既不在候选里，也不该被兜底强试"
         );
     }
@@ -1151,6 +1174,43 @@ mod tests {
         let lines = pool.diagnose(now);
         assert_eq!(lines.len(), 1);
         assert!(lines[0].contains("冷却中"), "{}", lines[0]);
+    }
+
+    /// issue #76：白名单生效时诊断只列**这把 Key 允许用**的账号。
+    ///
+    /// 阳性对照：去掉 `diagnose_for` 里的 uid 过滤（退化成 `diagnose`）⇒
+    /// 第一条断言必红 —— 那正是「白名单用户被告知池里 3 个号都不可用」的来源。
+    #[test]
+    fn diagnose_for_filters_to_allowlisted_accounts() {
+        let now = 1_000_000;
+        let mut cooling = entry("u1", Some(9.0), Some(now + 100));
+        cooling.cooldown_until = now + 60;
+        let disabled = {
+            let mut e = entry("u2", Some(9.0), Some(now + 100));
+            e.disabled = true;
+            e
+        };
+        let ok = entry("u3", Some(9.0), Some(now + 100));
+        let pool = pool_with(vec![cooling, disabled, ok]);
+
+        assert_eq!(
+            pool.diagnose(now).len(),
+            3,
+            "全池口径不变（管理面要看全池）"
+        );
+
+        let only: HashSet<String> = ["u2".to_string()].into_iter().collect();
+        let lines = pool.diagnose_for(now, Some(&only));
+        assert_eq!(lines.len(), 1, "名单外账号不得出现在诊断里");
+        assert!(
+            lines[0].contains("u2") || lines[0].contains("禁用"),
+            "{}",
+            lines[0]
+        );
+
+        // 名单里的 uid 不在池中 ⇒ 空诊断（上层据此说「名单没覆盖本区域」）。
+        let missing: HashSet<String> = ["zzz".to_string()].into_iter().collect();
+        assert!(pool.diagnose_for(now, Some(&missing)).is_empty());
     }
 
     #[test]

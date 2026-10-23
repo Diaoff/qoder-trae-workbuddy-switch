@@ -154,6 +154,8 @@ export const zh = {
   "shared.gateway.probe.summaryLast": "上次 {time} · 回填 +{added}/-{cleared}",
   // 不支持回填的平台（Trae）：头部**不提回填**，避免「回填 +0/-0」被读成「回填跑了但没结果」。
   "shared.gateway.probe.summaryLastPlain": "上次 {time}",
+  // 本次**刻意没回填**（账号页发起的查证 / 用户关了开关）：显式说明，别让「置 0 / 清 0」被误读。
+  "shared.gateway.probe.summaryLastNoAdopt": "上次 {time} · 未回填",
   "shared.gateway.probe.notice":
     "将向每个账号各发一次最小请求，消耗极少积分、会在上游留痕，可能触发风控。",
   "shared.gateway.probe.stepModels": "要测哪些模型",
@@ -207,6 +209,9 @@ export const zh = {
   "shared.gateway.probe.exportDone": "已导出探测结果",
   "shared.gateway.probe.exportRows": "{n} 行",
   "shared.gateway.probe.retry": "重探",
+  /* 单元格详情里的单格入口：`uids:[uid] models:[model]`（恒 1 格）、`adopt:false`（查证不写池）。 */
+  "shared.gateway.probe.probeCell": "实测这一格",
+  "shared.gateway.probe.reprobeCell": "重测这一格",
   "shared.gateway.probe.probedAt": "探测于 {time}",
   "shared.gateway.probe.cellTitle": "{account} · {model}\n状态：{state}\n来源：{source}\n{reason}",
   "shared.gateway.probe.sourceProbed": "本次探测",
@@ -229,6 +234,7 @@ export const zh = {
   "shared.gateway.probe.state.auth_dead": "登录失效",
   "shared.gateway.probe.state.model_unavailable": "无此模型",
   "shared.gateway.probe.state.upstream_error": "上游异常",
+  "shared.gateway.probe.state.upstream_queued": "上游排队",
   "shared.gateway.probe.state.transport_error": "网络错误",
   "shared.gateway.probe.state.skipped": "跳过",
   "shared.gateway.probe.state.unknown": "未探测",
@@ -241,16 +247,19 @@ export const zh = {
   "shared.gateway.probe.reason.auth_dead": "上游 12153／401 ⇒ 登录态失效，需重新登录或导入",
   "shared.gateway.probe.reason.model_unavailable": "上游 404 ⇒ 该账号看不到／不支持这个模型",
   "shared.gateway.probe.reason.upstream_error": "上游 5xx／4xx ⇒ 与账号无关",
+  "shared.gateway.probe.reason.upstream_queued": "上游排队（10605／isQueued）⇒ 该模型此刻在排队，等一下就好 —— 不是限流、也不是账号问题",
   "shared.gateway.probe.reason.transport_error": "连接失败 ⇒ 网络层问题，不是账号问题",
   "shared.gateway.probe.reason.skipped": "未探测：无凭据（信封）／账号未登录／已排除",
   "shared.gateway.probe.reason.unknown": "尚未探测（虚线 = 未探测；带内描边 = 被动已知）",
   // 「限流（探测）」列的单元格（点徽章 = 下钻）。
   "shared.gateway.probe.colAllOk": "全部可用",
   "shared.gateway.probe.colLimited": "{limited}/{total} 限流",
+  "shared.gateway.probe.colUnavailable": "{unavailable}/{total} 不可用",
   "shared.gateway.probe.colPassive": "被动 {n}",
   "shared.gateway.probe.colNone": "—",
   "shared.gateway.probe.colTooltipAllOk": "本次实测：{total} 个账号全部可用 —— 点击看矩阵",
   "shared.gateway.probe.colTooltipLimited": "本次实测：{total} 个账号中 {limited} 个被限流／封禁 —— 点击看矩阵",
+  "shared.gateway.probe.colTooltipUnavailable": "本次实测：{total} 个账号中 {unavailable} 个当前不可用（上游排队／上游异常等，非限流）—— 点击看矩阵",
   "shared.gateway.probe.colTooltipPassive": "被动已知：{flow} 个来自真实流量、{ledger} 个来自客户端日志（共 {n} 个账号）—— 尚未主动探测，点击去探测",
   "shared.gateway.probe.colTooltipNone": "尚未探测这个模型 —— 在上方「限流探测」卡里选它",
   // 排序（§5.3：可点表头排序，默认按「限流数」降序；用 Radix Select 不用 details/summary）。

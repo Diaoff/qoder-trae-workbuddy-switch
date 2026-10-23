@@ -24,6 +24,22 @@
  * 1. **矮柱不描边** —— 高度不足 {@link BAR_STROKE_MIN_PX} 的分段一律不描边，
  *    否则描边会把填充盖掉；够高的分段保持原样式（堆叠段之间的分隔线不变）。
  * 2. **每列保底高度** —— 见 {@link MIN_VISIBLE_BAR_PX}，保证「有量必有柱」。
+ *
+ * ## 柱间距：固定像素，且**禁用 `maxBarSize`**（原型 `.cbar` = `flex` + `gap: 2px`）
+ *
+ * recharts 的排布是「先按整条带（band）算宽，再用 `maxBarSize` 压窄并**在带内居中**」
+ * （`getBarPosition` 里的 `(originalSize - size) / 2`）⇒ 被压掉的宽度**全部变成空白**，
+ * 而不是让整排柱子收拢。实测「近 7 天」：带宽 156px、`barCategoryGap="18%"`、`maxBarSize={28}`
+ * ⇒ 柱只有 26px，两柱之间空出 **130px**（截图逐像素量得），看起来像「一天一根孤零零的柱」。
+ *
+ * 原型的写法是「柱子填满带、缝固定 2px」，所以这里：
+ * - 去掉 `maxBarSize`（它正是「柱窄而缝宽」的根因）；
+ * - `barCategoryGap` 给**像素值**而非百分比 —— recharts 把它**在带的两侧各扣一份**
+ *   （`bandSize - 2 * offset`），实际缝隙 = 2 × 本值；取 {@link BAR_CATEGORY_GAP_PX}
+ *   ⇒ 相邻两柱之间 4px（再加上描边 1px 的外溢，肉眼约 2~4px，与原型一致）。
+ *
+ * 副作用是「天数少时柱变胖」（近 7 天每根约 150px）—— 这正是原型的行为（`.cbar` 的
+ * 列是 `flex: 1`），也是「填满」而非「留空」的必然结果。
  */
 
 import { useMemo, type ReactElement } from "react";
@@ -70,6 +86,12 @@ const MIN_VISIBLE_BAR_PX = 2;
  * 取 6 是为了给「上下各 1px 描边」留出至少 4px 的可见填充。
  */
 const BAR_STROKE_MIN_PX = 6;
+
+/**
+ * 柱间缝隙的一半（px）—— recharts 在带的两侧各扣一份，实际缝 = 2 × 本值。
+ * 详见文件头「柱间距」一节：原型 `.cbar` 的 `gap: 2px`，此处取 2 ⇒ 相邻柱之间 4px。
+ */
+const BAR_CATEGORY_GAP_PX = 2;
 
 /** recharts 传给 `Bar.shape` 的入参（只列用到的字段）。 */
 interface BarShapeProps {
@@ -214,7 +236,11 @@ export function StackedDailyBar({
   return (
     <div className="min-w-0 space-y-3.5">
       <ChartContainer config={config} className="h-[210px] w-full">
-        <BarChart data={rows} margin={{ top: 8, right: 8, left: 0, bottom: 0 }} barCategoryGap="18%">
+        <BarChart
+          data={rows}
+          margin={{ top: 8, right: 8, left: 0, bottom: 0 }}
+          barCategoryGap={BAR_CATEGORY_GAP_PX}
+        >
           <CartesianGrid vertical={false} strokeDasharray="3 3" />
           <XAxis dataKey="label" tickLine={false} axisLine={false} tickMargin={8} minTickGap={24} />
           <YAxis tickLine={false} axisLine={false} width={48} tickFormatter={(value) => (valueFormat ?? compactTokens)(Number(value))} />
@@ -228,7 +254,7 @@ export function StackedDailyBar({
               dataKey={item.key}
               stackId="tokens"
               fill={`var(--color-${item.key})`}
-              maxBarSize={28}
+              // 不设 maxBarSize：它会把柱压窄并在带内居中，空隙全部留白（见文件头「柱间距」）。
               radius={index === series.length - 1 ? [4, 4, 0, 0] : 0}
               isAnimationActive={false}
               // 描边与否由 visibleBar 逐段决定（矮柱描边会被自己涂掉），故不在此处设 stroke。

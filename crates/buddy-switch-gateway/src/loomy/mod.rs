@@ -90,9 +90,7 @@ impl LoomyGatewayState {
         ));
         Self {
             pools: Arc::new(Mutex::new(std::collections::HashMap::new())),
-            disabled: Arc::new(Mutex::new(
-                crate::disabled_models::DisabledModels::load(),
-            )),
+            disabled: Arc::new(Mutex::new(crate::disabled_models::DisabledModels::load())),
             sticky: Arc::new(Mutex::new(crate::StickyTable::new(config.sticky_ttl_ms))),
             log,
             http: crate::loomy::routes::build_http_client(),
@@ -144,11 +142,7 @@ impl LoomyGatewayState {
         self.sticky
             .lock()
             .await
-            .bind(
-                key,
-                uid,
-                buddy_switch_core::modules::config::now_ms(),
-            );
+            .bind(key, uid, buddy_switch_core::modules::config::now_ms());
     }
 
     /// 请求日志（中继记账用）。
@@ -550,7 +544,9 @@ pub async fn status_view(
             running,
             addr,
             version: version.to_string(),
-            total_requests: state.total_requests.load(std::sync::atomic::Ordering::Relaxed),
+            total_requests: state
+                .total_requests
+                .load(std::sync::atomic::Ordering::Relaxed),
             last_error: state.last_error.read().await.clone(),
             api_key_prefix,
             pool,

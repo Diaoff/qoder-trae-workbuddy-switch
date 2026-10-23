@@ -207,7 +207,10 @@ mod tests {
             ("GLM 5.3 Flash".to_string(), "x0.8".to_string())
         );
         // 无倍率：原样返回。
-        assert_eq!(split_rate("DeepSeek V4.1"), ("DeepSeek V4.1".to_string(), String::new()));
+        assert_eq!(
+            split_rate("DeepSeek V4.1"),
+            ("DeepSeek V4.1".to_string(), String::new())
+        );
         assert_eq!(split_rate(""), (String::new(), String::new()));
         // 括号里不是倍率 ⇒ 不拆。
         assert_eq!(
@@ -222,7 +225,10 @@ mod tests {
         let display = display_name(raw);
         assert_eq!(display, "MiniMax M3 · x4.0");
         // 对已规范化名再拆一次 ⇒ 一致（不累积 ` · `）。
-        assert_eq!(split_rate(&display), ("MiniMax M3".to_string(), "x4.0".to_string()));
+        assert_eq!(
+            split_rate(&display),
+            ("MiniMax M3".to_string(), "x4.0".to_string())
+        );
         assert_eq!(display_name(&display), display);
     }
 

@@ -608,8 +608,8 @@ async fn orphan_tool_history_is_cleaned_before_reaching_upstream() {
     assert!(body.contains("\"c1\""), "配对完整的调用必须保留：{body}");
     assert!(!body.contains("\"c2\""), "没有回答的调用必须清掉：{body}");
     /* ⚠️ 这里**必须**连引号一起比（`"c9"` 而不是裸 `c9`）：
-       裸子串会命中请求体里的随机 UUID（实测 `request_id` 里出现 `2c9b` 即误判），
-       于是本用例约 1/6 概率**假红** —— 与被测逻辑毫无关系。 */
+    裸子串会命中请求体里的随机 UUID（实测 `request_id` 里出现 `2c9b` 即误判），
+    于是本用例约 1/6 概率**假红** —— 与被测逻辑毫无关系。 */
     assert!(!body.contains("\"c9\""), "悬空结果必须清掉：{body}");
 }
 

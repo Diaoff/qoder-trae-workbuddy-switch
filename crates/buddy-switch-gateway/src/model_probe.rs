@@ -54,32 +54,39 @@
 //!   （[`QoderGatewayState::cached_catalog_models`]），**都不额外联网**。
 //!   而不是「逐账号各拉一次 `/models`」——后者要 N 次额外上游往返，收益不抵成本。
 
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Mutex, OnceLock, RwLock};
 use std::time::{Duration, Instant};
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use buddy_switch_core::modules::account;
 use buddy_switch_core::modules::loomy::region::LoomyRegion;
 use buddy_switch_core::modules::product::{
-    scope_of_loomy_region, scope_of_qoder_region, scope_of_trae_region, scope_of_wb_region, Product, Scope,
+    scope_of_loomy_region, scope_of_qoder_region, scope_of_trae_region, scope_of_wb_region,
+    Product, Scope,
 };
 use buddy_switch_core::modules::qoder::region::QoderRegion;
 use buddy_switch_core::modules::qoder::{api as qoder_api, cosy, PATH_CHAT_SSE};
+// ★ 编译修复（2026-10-22）：`classify_http_with_detail` 从本文件搬到了
+// `qoder::pool`（按产品线归位），调用点没跟着加 use ⇒ crate 编不过。
+use crate::qoder::pool::classify_http_with_detail;
+// 同一次归位：探测读首帧错误走 `qoder::sse::first_upstream_error`（此前直接写 `sse::`）。
+use crate::qoder::sse;
 use buddy_switch_core::modules::region::Region;
 use buddy_switch_core::modules::trae::region::TraeRegion;
 use buddy_switch_core::modules::trae::variant::TraeVariant;
 use buddy_switch_core::modules::upstream::UpstreamChatResult;
 
 use crate::error::truncate_with_marker;
-use crate::outbound::{self, OutboundMeta};
-use crate::pool::{classify_event, ProbeOutcome, RealmTag, UpstreamEvent};
 use crate::loomy::pool::{classify_http as loomy_classify_http, LoomyErrKind};
 use crate::loomy::LoomyGatewayState;
+use crate::outbound::{self, OutboundMeta};
+use crate::pool::{classify_event, ProbeOutcome, RealmTag, UpstreamEvent};
 use crate::qoder::payload;
-use crate::qoder::pool::{classify_http, QoderErrKind};
+use crate::qoder::pool::QoderErrKind;
 use crate::qoder::routes::chat_once_for_account;
 use crate::qoder::{QoderGateway, QoderGatewayState};
 use crate::session_headers::{self, ConversationContext};
@@ -119,7 +126,7 @@ pub const PROBE_CELL_TIMEOUT_SECS: u64 = 30;
 ///
 /// ★★ 只有前三档算**限流**。`NoCredits`（402）与 `AuthDead` 必须**分列** ——
 /// 把「没积分」报成「限流」会让用户去傻等解锁（`client_limits` 已踩过这个坑）。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ProbeState {
     /// 上游 2xx：可用。
@@ -138,6 +145,20 @@ pub enum ProbeState {
     ModelUnavailable,
     /// 5xx / 其它 4xx。
     UpstreamError,
+    /// ★ **上游排队**（`10605` / `isQueued`，裹在 **403** 信封里）。
+    ///
+    /// ## 为什么必须**独立成档**（三个「都不是」）
+    ///
+    /// - 不是**限流**（上游明说 `serviceAvailable:false` + `retryAfterSeconds:30`
+    ///   ⇒ 等 30 秒就好，混进「限流」三档会让用户去傻等解锁）；
+    /// - 不是**凭据失效**（`403` 看着像 `auth_dead`，但账号好着 —— 中继侧
+    ///   `pool::queue_signal` 正是为此把排队与 `auth_dead` 分开）；
+    /// - 不是**上游异常**（它明说 `modelKey` + `queueType` ⇒ 是**可换模型绕开**的）。
+    ///
+    /// ★ **不算限流** ⇒ 不进「限流账号数」统计（前端 `PROBE_LIMIT_STATES` 不含本档）。
+    /// ★ **回填 = `Other`（不写冷却）**：与中继侧「排队不惩罚账号」一致
+    ///   （`pool::apply_error` 对 `Queued` 直接 return，既不冷却也不标死）。
+    UpstreamQueued,
     /// 传输层失败（`status == 0`）或单格超时。
     TransportError,
     /// 没探（无凭据 / 信封 / 账号不在库）。
@@ -188,7 +209,10 @@ pub enum ProbePhase {
 }
 
 /// 一格结果。
-#[derive(Debug, Clone, Serialize)]
+///
+/// `Deserialize` 是给**探测结果台账**（落盘后读回）用的；`PartialEq` 让台账能判断
+/// 「这一格到底变没变」（决定要不要写盘）。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ProbeCell {
     pub uid: String,
     pub nickname: String,
@@ -305,6 +329,154 @@ pub fn cancel() -> Value {
     json!({ "ok": true })
 }
 
+// ---------------------------------------------------------------------------
+// 探测结果台账（跨重启累积、按作用域隔离）
+
+/// 一个作用域的台账：`uid → model → 格`。
+///
+/// 用 `HashMap` 而不是矩阵：`(uid, model)` 是稀疏的（账号页只探台账里出现过的格），
+/// 矩阵形状会逼着存一堆「不存在」的空格。
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+struct ScopeLedger {
+    /// 最近一次写入时刻（毫秒）；前端只用于「实测于 …」这类说明，不参与判据。
+    updated_at_ms: i64,
+    cells: HashMap<String, HashMap<String, ProbeCell>>,
+}
+
+/// 落盘形状：`{ "version": 1, "scopes": { "wb-cn": { … }, … } }`。
+///
+/// ⚠️ `scopes` 的键是 **String**（不是 `Scope`）：未来新增/删除作用域时，未知键只应被忽略，
+/// 而不是让整份反序列化失败（`disabled_models` 踩过：未知键 ⇒ 回落空表 ⇒ 清空全部偏好）。
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+struct LedgerFile {
+    version: u32,
+    scopes: HashMap<String, ScopeLedger>,
+}
+
+/// 台账格式版本（**只做诊断**：字段是纯增量的，故不拿出来做 fail-closed 拒绝）。
+const LEDGER_VERSION: u32 = 1;
+
+/// 台账文件路径：`~/.buddy-switch/probe_results.json`（与 `gateway_config.json` 同目录）。
+fn ledger_file() -> std::path::PathBuf {
+    buddy_switch_core::modules::region::gateway_config_file().with_file_name("probe_results.json")
+}
+
+/// 进程内唯一台账句柄（写侧串行）。懒加载一次，之后只在 `finish` 时写。
+fn shared_ledger() -> &'static RwLock<LedgerFile> {
+    static SHARED: OnceLock<RwLock<LedgerFile>> = OnceLock::new();
+    SHARED.get_or_init(|| RwLock::new(load_ledger()))
+}
+
+fn load_ledger() -> LedgerFile {
+    load_ledger_from(&ledger_file())
+}
+
+/// 读台账文件（**纯 IO，路径可注入**：单测用它做真实 round-trip）。
+///
+/// 缺失 / 损坏一律回落空表：台账是加分项，**绝不能**因为一个坏文件让探测或命令报错。
+fn load_ledger_from(path: &std::path::Path) -> LedgerFile {
+    std::fs::read_to_string(path)
+        .ok()
+        .and_then(|text| serde_json::from_str::<LedgerFile>(&text).ok())
+        .unwrap_or_default()
+}
+
+/// 原子写台账文件（路径可注入；`atomic_write` 是「临时文件 + rename」）。
+fn save_ledger_to(path: &std::path::Path, store: &LedgerFile) -> Result<(), String> {
+    let content = serde_json::to_string_pretty(store).map_err(|error| error.to_string())?;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+    }
+    buddy_switch_core::modules::config::atomic_write(path, &content)
+        .map_err(|error| error.to_string())
+}
+
+impl LedgerFile {
+    /// 合并一批格（**同格覆盖、异格保留**）；返回是否真的有变化（决定要不要写盘）。
+    ///
+    /// ★ **只合并不擦除**：某轮只探 1 格不会把其它格抹掉。这是「账号页逐行实测」能累积的前提，
+    /// 与前端 `mergeProbeCells` 同一口径（后端也必须有，否则重启即空）。
+    fn merge(&mut self, scope: &str, cells: &[ProbeCell]) -> bool {
+        let entry = self.scopes.entry(scope.to_string()).or_default();
+        let mut changed = false;
+        for cell in cells {
+            if cell.uid.is_empty() || cell.model.is_empty() {
+                continue;
+            }
+            let bucket = entry.cells.entry(cell.uid.clone()).or_default();
+            match bucket.get(&cell.model) {
+                Some(previous) if previous == cell => continue,
+                _ => {
+                    bucket.insert(cell.model.clone(), cell.clone());
+                    changed = true;
+                }
+            }
+        }
+        if changed {
+            entry.updated_at_ms = timeutil::now_ms();
+            self.version = LEDGER_VERSION;
+        }
+        changed
+    }
+
+    /// 该作用域的格（扁平、确定性排序：`uid` → `model`）。
+    ///
+    /// 排序不是为了好看：`HashMap` 迭代顺序每次都变，不排序会让同一份数据两次读出来不一致
+    /// （前端 `mergeProbeCells` 靠值比较判变化，顺序抖动会造出无意义的写入与重渲染）。
+    fn flat(&self, scope: &str) -> Vec<ProbeCell> {
+        let Some(entry) = self.scopes.get(scope) else {
+            return Vec::new();
+        };
+        let mut out: Vec<ProbeCell> = entry
+            .cells
+            .values()
+            .flat_map(|models| models.values().cloned())
+            .collect();
+        out.sort_by(|a, b| a.uid.cmp(&b.uid).then_with(|| a.model.cmp(&b.model)));
+        out
+    }
+}
+
+/// 读某作用域的**实测台账**快照（跨重启）。没有记录时返回空 `cells`（不是错误）。
+///
+/// 与 [`status`] 的分工：
+///
+/// | | `status` | 本函数 |
+/// |---|---|---|
+/// | 是什么 | **本轮作业**（进度 / 相位 / 本次回填） | 这些格**最近一次**的实判 |
+/// | 生命周期 | 进程内单槽，新作业覆盖 | 落盘累积（按作用域） |
+/// | 谁读 | 网卡进度条 + 矩阵 | 账号页台账卡（重启后仍要看到实测结论） |
+///
+/// ⚠️ 前端不判 `phase`：`cells` 为空就是没探过。`updated_at_ms` 为 `null` 同理。
+pub fn ledger_snapshot(scope: &str) -> Value {
+    let guard = shared_ledger().read().unwrap();
+    let cells = guard.flat(scope);
+    let updated = guard.scopes.get(scope).map(|entry| entry.updated_at_ms);
+    json!({
+        "scope": scope,
+        "updated_at_ms": updated.filter(|value| *value > 0),
+        "cells": cells,
+    })
+}
+
+/// 把一轮作业的结果并入台账并落盘（**尽力**：失败不影响探测结论，内存态已正确）。
+fn record_ledger(scope: &str, cells: &[ProbeCell]) {
+    if cells.is_empty() {
+        return;
+    }
+    let snapshot = {
+        let mut guard = shared_ledger().write().unwrap();
+        if !guard.merge(scope, cells) {
+            return;
+        }
+        guard.clone()
+    };
+    // 落盘失败不报错：台账是**加分项**（下次 finish 会再写一次），不该让探测本身失败。
+    let _ = save_ledger_to(&ledger_file(), &snapshot);
+}
+
 /// 测试专用：复位作业槽 / 取消位 / 作业位。**只在测试构建里存在**（别在生产误清在跑作业）。
 #[cfg(test)]
 pub fn reset_for_test() {
@@ -344,21 +516,28 @@ fn realm_of(region: Region) -> RealmTag {
 // 探测目标（平台无关的探测循环的抽象）
 // ---------------------------------------------------------------------------
 
-/// ★ **唯一映射点（Qoder）**：Qoder 上游 HTTP 状态 → 单元格状态。纯函数，单测 + 变异覆盖。
+/// ★ **唯一映射点（Qoder）**：Qoder 上游错误 → 单元格状态。纯函数，单测 + 变异覆盖。
 ///
 /// ## 为什么不能复用 [`probe_state_of`]（WB 专属）
 ///
 /// WB 的判据来自**响应体**（[`classify_event`]：`6004` / `IsModelRateLimit` / `11102` / 余额文案…）。
-/// Qoder **没有 body 判据**，唯一判据是状态码 [`classify_http`]（`qoder/pool.rs`）。
+/// Qoder 的 HTTP 层判据是状态码（[`classify_http_with_detail`]），但**必须带 body** ——
+/// 上游把「排队」塞进 **403 信封**里（`10605` / `isQueued`），只看状态码会把它当成
+/// 「凭据失效」（`classify_http` 的老毛病），`pool::queue_signal` 正是为此存在。
 ///
-/// ## `QoderErrKind` 只有四档 ⇒ 在 `ClientError` 里单独把 404 判成 `ModelUnavailable`
+/// ## 档位对应
 ///
-/// [`classify_http`] 把「非 429 / 非 401·403 的 4xx」一律归为 `ClientError`，**不区分 404**。
-/// 故 404 在 `ClientError` 分支里单独识别（「该账号看不到这个模型」），其余 4xx 归 `UpstreamError`。
-/// 429 ⇒ `RateLimitedModel`（Qoder 上游本来就**按模型**报限流，故**没有账号级细分**）；
-/// 401/403 ⇒ `AuthDead`；5xx / 传输 ⇒ `UpstreamError`。
-pub fn probe_state_of_qoder(status: u16) -> ProbeState {
-    match classify_http(status) {
+/// | 上游 | 单元格 |
+/// |:--|:--|
+/// | 排队（`10605` / `isQueued`，403 信封） | `upstream_queued`（**独立成档**：等 30 秒就好，不是限流、不是凭据死） |
+/// | 429 | `rate_limited_model`（Qoder 上游本来就**按模型**报限流） |
+/// | 401 / 403（无排队信号） | `auth_dead` |
+/// | 404 | `model_unavailable` |
+/// | 402 | `upstream_error`（探测的「一格」是**模型**维度：凭据好着，只是没钱了） |
+/// | 5xx / 传输 | `upstream_error` |
+pub fn probe_state_of_qoder(status: u16, detail: &str) -> ProbeState {
+    match classify_http_with_detail(status, detail) {
+        QoderErrKind::Queued => ProbeState::UpstreamQueued,
         QoderErrKind::RateLimited => ProbeState::RateLimitedModel,
         QoderErrKind::AuthDead => ProbeState::AuthDead,
         QoderErrKind::Transient => ProbeState::UpstreamError,
@@ -369,9 +548,6 @@ pub fn probe_state_of_qoder(status: u16) -> ProbeState {
                 ProbeState::UpstreamError
             }
         }
-        // 探测只看状态码、拿不到 body ⇒ 认不出 401/403 里的排队信号；
-        // 真到了这一档（`classify_http` 不会返回它）也按上游错误处理，不算账号死。
-        QoderErrKind::Queued => ProbeState::UpstreamError,
         // 402：账号级余额耗尽。探测的「一格」是**模型**维度，这里如实报上游错误
         // （把账号标成「凭据死」是错的 —— 凭据好着，只是没钱了）。
         QoderErrKind::BalanceExhausted => ProbeState::UpstreamError,
@@ -609,12 +785,7 @@ impl ProbeTarget {
                     .cached_catalog_models()
                     .await
                     .into_iter()
-                    .filter_map(|entry| {
-                        entry
-                            .get("id")
-                            .and_then(Value::as_str)
-                            .map(str::to_string)
-                    })
+                    .filter_map(|entry| entry.get("id").and_then(Value::as_str).map(str::to_string))
                     .collect()
             }
         }
@@ -626,9 +797,7 @@ impl ProbeTarget {
             ProbeTarget::Wb(state, region) => probe_cell_wb(state, *region, uid, model).await,
             ProbeTarget::Qoder(state, region) => probe_cell_qoder(state, *region, uid, model).await,
             ProbeTarget::Trae(state, variant) => probe_cell_trae(state, *variant, uid, model).await,
-            ProbeTarget::Loomy(state, region) => {
-                probe_cell_loomy(state, *region, uid, model).await
-            }
+            ProbeTarget::Loomy(state, region) => probe_cell_loomy(state, *region, uid, model).await,
         }
     }
 
@@ -830,6 +999,41 @@ pub(crate) fn build_plan(accounts: &[String], models: &[String]) -> (Vec<(String
     (plan, truncated)
 }
 
+/// 显式格清单的一项（`probe_start` 的 `cells` 参数）。
+///
+/// ## 为什么需要它（和 `uids × models` 的区别）
+///
+/// `uids × models` 是**笛卡尔积**：账号页台账里有 3 条（3 个账号 / 2 个模型）就会跑 **6 格** ——
+/// 多打的 3 格既费配额、又答非所问（用户要查证的只是台账里出现过的组合）。
+/// 账号页的「实测 N 格」因此传**显式格清单**：`cells: [{uid, model}, …]`，2 项就是 2 格。
+///
+/// ⚠️ **与两根轴互斥**：`cells` 给了就忽略 `uids` / `models`（[`prepare`] 里先判它）。
+/// 网卡「开始探测」的选择态仍走两根轴（那里用户是显式勾了账号与模型，笛卡尔积正是他要的）。
+#[derive(Debug, Clone, Deserialize)]
+pub struct ProbeStartCell {
+    pub uid: String,
+    pub model: String,
+}
+
+/// 去重保序（显式格清单用；`uid` / `model` 都 trim，空的丢掉）。
+///
+/// `probe_ledger` 与前端都是按 `(uid, model)` 定位的 ⇒ 重复项必须去重，
+/// 否则同一格会被探两次（还会让 `total` 与真实格数不符）。
+pub(crate) fn dedup_pairs(
+    pairs: impl IntoIterator<Item = (String, String)>,
+) -> Vec<(String, String)> {
+    let mut seen = std::collections::HashSet::new();
+    let mut out = Vec::new();
+    for (uid, model) in pairs {
+        let (uid, model) = (uid.trim().to_string(), model.trim().to_string());
+        if uid.is_empty() || model.is_empty() || !seen.insert((uid.clone(), model.clone())) {
+            continue;
+        }
+        out.push((uid, model));
+    }
+    out
+}
+
 /// 启动一次探测：**原子抢占作业位** + 建作业（快），逐格执行由调用方 spawn [`run`]。
 ///
 /// 返回本轮格数。作业位被占时返回 `Err`。
@@ -837,6 +1041,7 @@ pub async fn start(
     target: &ProbeTarget,
     uids: Option<Vec<String>>,
     models: Option<Vec<String>>,
+    cells: Option<Vec<ProbeStartCell>>,
     adopt: bool,
 ) -> Result<usize, String> {
     // ★ 原子抢占：`compare_exchange` 让并发两次 `start` **只有一个**能进。
@@ -847,7 +1052,7 @@ pub async fn start(
     {
         return Err("已有探测在进行中，请等它结束或先取消".to_string());
     }
-    match prepare(target, uids, models, adopt).await {
+    match prepare(target, uids, models, cells, adopt).await {
         Ok(total) => Ok(total),
         Err(error) => {
             busy_flag().store(false, Ordering::SeqCst);
@@ -861,6 +1066,7 @@ async fn prepare(
     target: &ProbeTarget,
     uids: Option<Vec<String>>,
     models: Option<Vec<String>>,
+    cells: Option<Vec<ProbeStartCell>>,
     adopt: bool,
 ) -> Result<usize, String> {
     // 账号轴：同步账号库进池后取 uid 列表（池为空 ⇒ 明确报错）。
@@ -869,43 +1075,69 @@ async fn prepare(
         return Err(format!("{} 的账号池里没有账号", target.scope()));
     }
 
-    let accounts: Vec<String> = match uids {
+    /* ★ 两条互斥路径（`cells` 优先）：
+    - 显式格清单（账号页台账卡）：**只探点名的格**，不铺笛卡尔积；
+    - 两根轴（网卡选择态）：账号为外层展开 —— 那里用户是显式勾了账号与模型。 */
+    let (plan, truncated) = match cells {
         Some(list) => {
-            if list.len() > MAX_AXIS {
-                return Err(format!("账号数超过上限（{MAX_AXIS}）"));
-            }
-            let wanted = dedup_keep_order(list);
+            let wanted = dedup_pairs(list.into_iter().map(|cell| (cell.uid, cell.model)));
             if wanted.is_empty() {
-                return Err("没有选中任何账号".to_string());
+                return Err("没有选中任何格".to_string());
             }
-            let picked: Vec<String> = wanted
-                .iter()
-                .filter(|uid| pool_rows.iter().any(|row| row == *uid))
-                .cloned()
+            // 显式清单**不截断**：用户点名的格被悄悄丢掉，比直接报错更糟（他会以为自己测过了）。
+            if wanted.len() > MAX_CELLS {
+                return Err(format!("格数超过上限（{MAX_CELLS}）"));
+            }
+            // 只保留池里真有的账号（与 `uids` 分支同口径：不在库 ⇒ 跳过，而不是整轮报错）。
+            let plan: Vec<(String, String)> = wanted
+                .into_iter()
+                .filter(|(uid, _)| pool_rows.iter().any(|row| row == uid))
                 .collect();
-            if picked.is_empty() {
-                return Err("选中的账号都不在该作用域的池里".to_string());
+            if plan.is_empty() {
+                return Err("选中的格都不在该作用域的账号池里".to_string());
             }
-            picked
+            (plan, false)
         }
-        None => pool_rows,
-    };
+        None => {
+            let accounts: Vec<String> = match uids {
+                Some(list) => {
+                    if list.len() > MAX_AXIS {
+                        return Err(format!("账号数超过上限（{MAX_AXIS}）"));
+                    }
+                    let wanted = dedup_keep_order(list);
+                    if wanted.is_empty() {
+                        return Err("没有选中任何账号".to_string());
+                    }
+                    let picked: Vec<String> = wanted
+                        .iter()
+                        .filter(|uid| pool_rows.iter().any(|row| row == *uid))
+                        .cloned()
+                        .collect();
+                    if picked.is_empty() {
+                        return Err("选中的账号都不在该作用域的池里".to_string());
+                    }
+                    picked
+                }
+                None => pool_rows,
+            };
 
-    let models = match models {
-        Some(list) => {
-            if list.len() > MAX_AXIS {
-                return Err(format!("模型数超过上限（{MAX_AXIS}）"));
+            let models = match models {
+                Some(list) => {
+                    if list.len() > MAX_AXIS {
+                        return Err(format!("模型数超过上限（{MAX_AXIS}）"));
+                    }
+                    dedup_keep_order(list)
+                }
+                // 回落该作用域的**目录**（纯内存、不联网；见模块头「模型轴」）。
+                None => dedup_keep_order(target.catalog_models().await),
+            };
+            if models.is_empty() {
+                return Err("没有可探测的模型（清单为空，请先「重新识别」）".to_string());
             }
-            dedup_keep_order(list)
-        }
-        // 回落该作用域的**目录**（纯内存、不联网；见模块头「模型轴」）。
-        None => dedup_keep_order(target.catalog_models().await),
-    };
-    if models.is_empty() {
-        return Err("没有可探测的模型（清单为空，请先「重新识别」）".to_string());
-    }
 
-    let (plan, truncated) = build_plan(&accounts, &models);
+            build_plan(&accounts, &models)
+        }
+    };
     let total = plan.len();
 
     cancel_flag().store(false, Ordering::SeqCst);
@@ -1021,6 +1253,11 @@ async fn finish(phase: ProbePhase, target: &ProbeTarget) {
             job.adopted = records;
         }
     }
+
+    /* ★ 并入**跨重启台账**（与作业槽的分工见 [`ledger_snapshot`]）：
+    作业槽只回答「本轮跑到哪」，而账号页要的是「这些格最近一次怎么样」——
+    不落盘的话重启即空，两处「同步」就只剩本次会话。 */
+    record_ledger(&target.scope(), &cells);
 }
 
 /// 探一格（WB）：**单账号、单次、零重试、有硬超时**。
@@ -1158,14 +1395,26 @@ async fn probe_cell_wb(state: &GatewayState, region: Region, uid: &str, model: &
 ///
 /// ## 判据零新造
 ///
-/// Qoder **没有 body 判据**，唯一判据是 HTTP 状态码（[`probe_state_of_qoder`]）。
+/// Qoder 的判据是 **HTTP 状态码 + body**（[`probe_state_of_qoder`]）：状态码给大类，
+/// body 区分「排队（`10605`）」与「凭据失效」—— 只看状态码会把 403 排队误判成
+/// 「登录失效」（`pool::classify_http_with_detail` 正是为此存在）。
 ///
 /// ## 发请求：单账号、单次、零重试（本轮最难的一处）
 ///
 /// 用 [`chat_once_for_account`]（从 `qoder::routes::chat_for_region` 抽出的**单账号单次**入口）——
 /// **绝不**用 `chat_for_region` 本身（它带 `max_rotate` 换号轮换，会把结果归因到别的账号）。
 /// 请求体走 Qoder 现成构造：`build_chat_body` + `qoder_encode` + `cosy::shared_cache`。
-/// 2xx ⇒ **立刻丢弃响应体**（不聚合、不解析 SSE），只留状态与耗时。
+///
+/// ## ★ 2xx **不等于**成功（2026-10-22 实测修掉的一个假阴性）
+///
+/// 上游的**排队**信号是 **HTTP 200 + SSE 信封里的错误帧**
+/// （`statusCodeValue:403` + `10605/isQueued`）⇒ 只看 HTTP 状态会把「排队」报成
+/// 「全部可用（上游 200）」，而真实流量拿到的是排队错误。
+/// 故 2xx 时**读一次流**（[`sse::first_upstream_error`]），只为取那**第一帧错误**：
+/// - 找到 ⇒ 按 `(状态码, 详情)` 判档（排队 ⇒ `upstream_queued`）；
+/// - 没找到 ⇒ 真的可用（流被读完即丢弃，不聚合、不落账本）。
+///
+/// 代价可控：探测请求是 `max_tokens:1` + 短文案，流极短。
 async fn probe_cell_qoder(
     state: &QoderGatewayState,
     region: QoderRegion,
@@ -1235,15 +1484,28 @@ async fn probe_cell_qoder(
 
     let started = Instant::now();
     // ★ 单格硬超时（宿主客户端的总超时是 600s，对一格太长）。
-    let result = tokio::time::timeout(
-        Duration::from_secs(PROBE_CELL_TIMEOUT_SECS),
-        chat_once_for_account(state, region, &encoded, &headers),
-    )
+    //   **超时必须罩住「发请求 + 读流」两段** —— 只罩发请求的话，读流卡住会拖死整轮。
+    let result = tokio::time::timeout(Duration::from_secs(PROBE_CELL_TIMEOUT_SECS), async {
+        let response = chat_once_for_account(state, region, &encoded, &headers).await?;
+        let http_status = response.status().as_u16();
+        if !response.status().is_success() {
+            // 非 2xx：错误体不是 SSE 流，读一次即可（判档用 HTTP 状态码 + 错误体）。
+            let detail = response.text().await.unwrap_or_default();
+            return Ok::<_, String>((http_status, Some((http_status, detail))));
+        }
+        // ★ 2xx **不等于**成功：上游的排队信号是「HTTP 200 + 信封里的错误帧」
+        //   （`statusCodeValue:403` + `10605/isQueued`）。
+        //   读一次流只为找那**第一帧错误**（`sse::first_upstream_error`）。
+        //   ⚠️ 判档用**信封里的状态码**（403/429…），不是 HTTP 的 200 ——
+        //   否则排队（403 信封）会落进「上游异常」而不是「上游排队」。
+        let found = sse::first_upstream_error(response.bytes_stream()).await;
+        Ok((http_status, found))
+    })
     .await;
     let latency_ms = started.elapsed().as_millis() as i64;
 
-    let response = match result {
-        Ok(Ok(response)) => response,
+    let (http_status, detail) = match result {
+        Ok(Ok(parts)) => parts,
         Ok(Err(transport_error)) => {
             return ProbeCell {
                 uid: uid.to_string(),
@@ -1270,34 +1532,32 @@ async fn probe_cell_qoder(
         }
     };
 
-    let status = response.status().as_u16();
-    if response.status().is_success() {
-        // ★ 2xx ⇒ **立刻丢弃响应体**（`return` 即 drop，不聚合、不解析 SSE），只留状态与耗时。
-        return ProbeCell {
+    match detail {
+        // 流里没有错误帧 ⇒ 真的可用（正文被丢弃，不聚合、不落账本）。
+        None => ProbeCell {
             uid: uid.to_string(),
             nickname,
             model: model.to_string(),
             state: ProbeState::Ok,
-            http_status: status,
+            http_status,
             reset_at_ms: None,
             reason: String::new(),
             latency_ms,
-        };
-    }
-    // 非 2xx：读**短错误体**作 `reason`（截断并补标记）—— 错误体不是 SSE 流，不会阻塞。
-    let detail: String = truncate_with_marker(
-        &response.text().await.unwrap_or_default(),
-        PROBE_REASON_LIMIT,
-    );
-    ProbeCell {
-        uid: uid.to_string(),
-        nickname,
-        model: model.to_string(),
-        state: probe_state_of_qoder(status),
-        http_status: status,
-        reset_at_ms: None,
-        reason: detail,
-        latency_ms,
+        },
+        // 有错误帧 ⇒ 按 `(状态码, 详情)` 判档（排队 ⇒ `upstream_queued`）。
+        Some((judge_status, detail)) => {
+            let detail = truncate_with_marker(&detail, PROBE_REASON_LIMIT);
+            ProbeCell {
+                uid: uid.to_string(),
+                nickname,
+                model: model.to_string(),
+                state: probe_state_of_qoder(judge_status, &detail),
+                http_status,
+                reset_at_ms: None,
+                reason: detail,
+                latency_ms,
+            }
+        }
     }
 }
 
@@ -1368,12 +1628,7 @@ async fn probe_cell_loomy(
     // ★ 单格硬超时（宿主客户端的总超时是 600s，对一格太长）。
     let result = tokio::time::timeout(
         Duration::from_secs(PROBE_CELL_TIMEOUT_SECS),
-        crate::loomy::routes::chat_once_for_account(
-            state,
-            region,
-            &entry.access_token,
-            &outbound,
-        ),
+        crate::loomy::routes::chat_once_for_account(state, region, &entry.access_token, &outbound),
     )
     .await;
     let latency_ms = started.elapsed().as_millis() as i64;
@@ -1442,11 +1697,8 @@ async fn probe_cell_loomy(
     // ⚠️ 不聚合整条流：探测只要「能不能调通」，不要正文。
     use futures_util::StreamExt;
     let mut stream = response.bytes_stream();
-    let head = tokio::time::timeout(
-        Duration::from_secs(PROBE_CELL_TIMEOUT_SECS),
-        stream.next(),
-    )
-    .await;
+    let head =
+        tokio::time::timeout(Duration::from_secs(PROBE_CELL_TIMEOUT_SECS), stream.next()).await;
     let frame = match head {
         Ok(Some(Ok(bytes))) => String::from_utf8_lossy(&bytes).to_string(),
         Ok(Some(Err(error))) => {
@@ -1761,32 +2013,65 @@ mod tests {
             ProbeState::UpstreamError,
             ProbeState::TransportError,
             ProbeState::Skipped,
+            ProbeState::UpstreamQueued,
         ] {
             assert_eq!(
                 probe_outcome_of(state, None),
                 ProbeOutcome::Other,
-                "{state:?} 不得动冷却 —— 402/登录失效/网络错误都不是「限流」"
+                "{state:?} 不得动冷却 —— 402/登录失效/网络错误/排队都不是「限流」"
             );
         }
     }
 
-    /// ★ Qoder 判据映射：唯一判据是**状态码**（Qoder 没有 body 判据）。
+    /// ★ Qoder 判据映射：唯一判据是 **状态码 + body**（body 用来把「排队」与「凭据死」分开）。
     ///
     /// 变异①：把 429 映射成 `RateLimitedAccount` ⇒ 第一条断言红（Qoder 上游本来就按模型报，无账号级细分）。
     /// 变异②：把 404 也归 `UpstreamError` ⇒ 404 那条断言红（「该账号看不到这个模型」≠ 上游错误）。
+    /// 变异③：把「排队（403 + `10605`）」也映射成 `AuthDead` ⇒ 排队那两条断言红
+    ///   （2026-10-22 真机踩到：排队裹在 403 信封里，只看状态码会把好账号判成登录失效）。
     #[test]
     fn qoder_status_maps_to_probe_state() {
-        assert_eq!(probe_state_of_qoder(429), ProbeState::RateLimitedModel);
-        assert_eq!(probe_state_of_qoder(401), ProbeState::AuthDead);
-        assert_eq!(probe_state_of_qoder(403), ProbeState::AuthDead);
-        assert_eq!(probe_state_of_qoder(404), ProbeState::ModelUnavailable);
-        assert_eq!(probe_state_of_qoder(400), ProbeState::UpstreamError);
-        assert_eq!(probe_state_of_qoder(500), ProbeState::UpstreamError);
-        assert_eq!(probe_state_of_qoder(503), ProbeState::UpstreamError);
+        assert_eq!(probe_state_of_qoder(429, ""), ProbeState::RateLimitedModel);
+        assert_eq!(probe_state_of_qoder(401, ""), ProbeState::AuthDead);
+        assert_eq!(probe_state_of_qoder(403, ""), ProbeState::AuthDead);
+        assert_eq!(probe_state_of_qoder(404, ""), ProbeState::ModelUnavailable);
+        assert_eq!(probe_state_of_qoder(400, ""), ProbeState::UpstreamError);
+        assert_eq!(probe_state_of_qoder(500, ""), ProbeState::UpstreamError);
+        assert_eq!(probe_state_of_qoder(503, ""), ProbeState::UpstreamError);
         // 429 与 401/403 必须落在**不同**档（限流 ≠ 凭据死）。
-        assert_ne!(probe_state_of_qoder(429), probe_state_of_qoder(401));
+        assert_ne!(probe_state_of_qoder(429, ""), probe_state_of_qoder(401, ""));
         // 模型不可见与上游错误必须分列。
-        assert_ne!(probe_state_of_qoder(404), probe_state_of_qoder(500));
+        assert_ne!(probe_state_of_qoder(404, ""), probe_state_of_qoder(500, ""));
+        // ★ 2026-10-22：detail 参与判定 —— Qoder 的**排队**是「HTTP 200 + 信封 403」，
+        //   只看状态码会把它判成「可用」（假阴性，真机踩过）。空 detail 与排队 detail
+        //   在同一状态码下必须落在**不同**档。
+        assert_eq!(
+            probe_state_of_qoder(403, "{\"statusCodeValue\":403,\"isQueued\":true}"),
+            ProbeState::UpstreamQueued,
+            "排队 ⇒ 上游排队（独立成档：不是限流、不是凭据死）"
+        );
+        assert_eq!(
+            probe_state_of_qoder(403, "{\"code\":\"10605\",\"isQueued\":true}"),
+            ProbeState::UpstreamQueued,
+            "排队（10605）⇒ 上游排队"
+        );
+        assert_ne!(
+            probe_state_of_qoder(403, ""),
+            probe_state_of_qoder(403, "isQueued"),
+            "detail 必须真的参与判定"
+        );
+        // ★ 排队**不得**落「凭据失效」：账号好着，只是这个模型在排队。
+        assert_ne!(
+            probe_state_of_qoder(403, "isQueued"),
+            ProbeState::AuthDead,
+            "排队不是凭据失效（否则用户去傻等重新登录）"
+        );
+        // ★ 排队**不得**落「限流」三档：等 30 秒就好，不是被限流。
+        assert_ne!(
+            probe_state_of_qoder(403, "isQueued"),
+            ProbeState::RateLimitedModel,
+            "排队不是限流（否则用户去傻等解锁）"
+        );
     }
 
     /// ★ Loomy 判据映射（二期 9.4）：**两层**都要覆盖。
@@ -1807,8 +2092,14 @@ mod tests {
 
         // 业务码层（恒 200 信封）：这是 Loomy 与另三条**最不一样**的地方。
         assert_eq!(probe_state_of_loomy_code("100002"), ProbeState::AuthDead);
-        assert_eq!(probe_state_of_loomy_code("100001"), ProbeState::ModelUnavailable);
-        assert_eq!(probe_state_of_loomy_code("999999"), ProbeState::UpstreamError);
+        assert_eq!(
+            probe_state_of_loomy_code("100001"),
+            ProbeState::ModelUnavailable
+        );
+        assert_eq!(
+            probe_state_of_loomy_code("999999"),
+            ProbeState::UpstreamError
+        );
         // `000000` 是成功码 —— 它不该走到这里（调用方先判 equals ok_code），
         // 但即便走到也只能是 `UpstreamError`（绝不是 `Ok`：那会造出假绿）。
         assert_ne!(probe_state_of_loomy_code("000000"), ProbeState::Ok);
@@ -1961,6 +2252,7 @@ mod tests {
             ProbeState::AuthDead,
             ProbeState::ModelUnavailable,
             ProbeState::UpstreamError,
+            ProbeState::UpstreamQueued,
             ProbeState::TransportError,
             ProbeState::Skipped,
         ]
@@ -1984,6 +2276,7 @@ mod tests {
                 "auth_dead",
                 "model_unavailable",
                 "upstream_error",
+                "upstream_queued",
                 "transport_error",
                 "skipped",
             ]
@@ -2021,6 +2314,106 @@ mod tests {
         let (small, truncated) = build_plan(&["u0".to_string()], &["m0".to_string()]);
         assert_eq!(small.len(), 1);
         assert!(!truncated, "没超上限就不能报截断");
+    }
+
+    /// 显式格清单：**去重保序 + trim + 丢空**。
+    ///
+    /// 变异：去掉去重 ⇒ 重复项断言红；去掉 trim ⇒ 首项断言红（`probe_ledger` 按 `(uid, model)`
+    /// 定位，带空格就永远对不上）。
+    #[test]
+    fn explicit_pairs_are_trimmed_and_deduped() {
+        let pairs = dedup_pairs(vec![
+            (" u1 ".to_string(), "m1".to_string()),
+            ("u1".to_string(), "m1".to_string()), // 重复
+            (String::new(), "m1".to_string()),    // 空 uid
+            ("u2".to_string(), "  ".to_string()), // 空 model
+            ("u2".to_string(), "m1".to_string()),
+        ]);
+        assert_eq!(
+            pairs,
+            vec![
+                ("u1".to_string(), "m1".to_string()),
+                ("u2".to_string(), "m1".to_string()),
+            ]
+        );
+    }
+
+    /// 台账**落盘 round-trip**：写进去 → 读回来形状不变；损坏文件回落空表（不 panic）。
+    ///
+    /// 变异：让 `load_ledger_from` 在解析失败时 `unwrap()` ⇒ 损坏文件那条断言 panic；
+    /// 把 `save_ledger_to` 写成 `fs::write`（非原子）不会红，但会失去「临时文件 + rename」
+    /// 的抗半写能力 —— 故这条只守「能读回」与「坏文件不炸」。
+    #[test]
+    fn ledger_round_trips_through_disk() {
+        let dir = std::env::temp_dir().join(format!("bs-probe-ledger-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("probe_results.json");
+
+        let mut store = LedgerFile::default();
+        store.merge(
+            "wb-cn",
+            &[test_cell("u1", "m1", ProbeState::RateLimitedModel)],
+        );
+        save_ledger_to(&path, &store).unwrap();
+
+        let back = load_ledger_from(&path);
+        let cells = back.flat("wb-cn");
+        assert_eq!(cells.len(), 1);
+        assert_eq!(cells[0].state, ProbeState::RateLimitedModel);
+        assert_eq!(cells[0].uid, "u1");
+        assert_eq!(cells[0].model, "m1");
+
+        // 损坏文件：回落空表（不能因为一个坏文件让命令面报错）。
+        std::fs::write(&path, "{ not json").unwrap();
+        assert!(load_ledger_from(&path).flat("wb-cn").is_empty());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 台账：**同格覆盖、异格保留、作用域隔离**。
+    ///
+    /// 变异：把 `merge` 改成「先清空再插入」⇒ 第二条「第二轮只剩 1 格」断言红；
+    /// 去掉作用域键 ⇒ 隔离断言红。
+    #[test]
+    fn ledger_merges_without_erasing_and_keeps_scopes_apart() {
+        let mut ledger = LedgerFile::default();
+        assert!(ledger.merge("wb-cn", &[test_cell("u1", "m1", ProbeState::Ok)]));
+        // 第二轮只探一格：**不得**抹掉第一格（账号页逐行实测就靠这条累积）。
+        ledger.merge(
+            "wb-cn",
+            &[test_cell("u1", "m2", ProbeState::RateLimitedModel)],
+        );
+        assert_eq!(
+            ledger.flat("wb-cn").len(),
+            2,
+            "第二轮只探 1 格，却丢了第一格"
+        );
+        // 同格覆盖（同一格再测出限流 ⇒ 以新结论为准）。
+        ledger.merge(
+            "wb-cn",
+            &[test_cell("u1", "m1", ProbeState::RateLimitedModel)],
+        );
+        let cell = ledger
+            .flat("wb-cn")
+            .into_iter()
+            .find(|cell| cell.uid == "u1" && cell.model == "m1")
+            .expect("该格必须还在");
+        assert_eq!(cell.state, ProbeState::RateLimitedModel);
+        // 完全相同的格 ⇒ 不算变化（不写盘）。
+        assert!(
+            !ledger.merge(
+                "wb-cn",
+                &[test_cell("u1", "m1", ProbeState::RateLimitedModel)]
+            ),
+            "同值合并不该报告变化（会造出无意义的写盘）"
+        );
+        // 作用域隔离：wb-cn 的格不能出现在 wb-global。
+        assert!(ledger.flat("wb-global").is_empty());
+        assert!(ledger.scopes.get("wb-global").is_none());
+        // 确定性排序（uid → model）：同一份数据两次读出来必须一致。
+        let first: Vec<String> = ledger.flat("wb-cn").into_iter().map(|c| c.model).collect();
+        let second: Vec<String> = ledger.flat("wb-cn").into_iter().map(|c| c.model).collect();
+        assert_eq!(first, second);
     }
 
     /// 前端要读的 wire 形状：`idle` / `running` / `done` 三种都必须**是对象且带 phase**。
@@ -2200,7 +2593,7 @@ mod tests {
                 "桌面端 `probe_start` 没有按作用域构造探测目标（fail-closed 入口空转）",
             ),
             (
-                "model_probe::start(&target, uids, models, adopt)",
+                "model_probe::start(&target, uids, models, cells, adopt)",
                 "桌面端 `probe_start` 没有真的启动探测",
             ),
             (
@@ -2209,6 +2602,10 @@ mod tests {
             ),
             ("model_probe::status()", "桌面端 `probe_status` 没有接线"),
             ("model_probe::cancel()", "桌面端 `probe_cancel` 没有接线"),
+            (
+                "model_probe::ledger_snapshot(&scope)",
+                "★ 桌面端 `probe_ledger` 没有接线 —— 账号页重启后看不到实测结论（跨重启同步空转）",
+            ),
         ] {
             assert!(
                 desktop.contains(marker),
@@ -2222,6 +2619,7 @@ mod tests {
             "commands::probe_start",
             "commands::probe_status",
             "commands::probe_cancel",
+            "commands::probe_ledger",
         ] {
             assert!(
                 desktop_lib.contains(name),
@@ -2235,8 +2633,9 @@ mod tests {
             r#".route("/api/gateway/probe/start", post(api_probe_start))"#,
             r#".route("/api/gateway/probe/status", get(api_probe_status))"#,
             r#".route("/api/gateway/probe/cancel", post(api_probe_cancel))"#,
+            r#".route("/api/gateway/probe/ledger", get(api_probe_ledger))"#,
             "model_probe::target_for_scope(&scope)",
-            "model_probe::start(&target, uids, models, adopt)",
+            "model_probe::start(&target, uids, models, cells, adopt)",
             "tokio::spawn(buddy_switch_gateway::model_probe::run(target))",
         ] {
             assert!(server.contains(marker), "{SERVER_API_RS} 缺 `{marker}`");

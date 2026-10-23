@@ -23,11 +23,11 @@ use crate::modules::config;
 use crate::modules::export_import::{
     merge_import_record, ConflictPolicy, MergeOutcome, TokenPolicy,
 };
-use crate::modules::product::{
-    require_loomy_region, require_qoder_region, require_trae_region, require_wb_region,
-    Product, Scope,
-};
 use crate::modules::loomy;
+use crate::modules::product::{
+    require_loomy_region, require_qoder_region, require_trae_region, require_wb_region, Product,
+    Scope,
+};
 use crate::modules::qoder;
 use crate::modules::region::catalog_cache_file;
 use crate::modules::trae;

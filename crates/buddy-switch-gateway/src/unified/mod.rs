@@ -108,10 +108,10 @@ pub mod admin {
     use serde_json::{json, Value};
 
     use buddy_switch_core::modules::gateway_namespace::{self, NamespaceSpec, RelayTarget};
+    use buddy_switch_core::modules::loomy::region::LoomyRegion;
     use buddy_switch_core::modules::product::{
         scope_of_loomy_region, scope_of_qoder_region, scope_of_trae_region, scope_of_wb_region,
     };
-    use buddy_switch_core::modules::loomy::region::LoomyRegion;
     use buddy_switch_core::modules::qoder::region::QoderRegion;
     use buddy_switch_core::modules::region::Region;
     use buddy_switch_core::modules::trae::variant::TraeVariant;

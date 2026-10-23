@@ -620,6 +620,18 @@ check("★ P3 用量页视图参数条**只有一条**：由 `UsagePage` 渲染�
   if (!/<RegionBar value=\{combineAll\}/.test(bar)) {
     throw new Error("视图参数条没有把合并态绑到 `combineAll`（`RegionBar`）");
   }
+  /* ★ 账本那一组是原型里**唯一**带色调的分段控件（`.seg.book`，`demo.css:1362`）：
+     选中 = `primary 18%` 底 + `primary` 文字；前面还有一道 `.vsep`（`:1363`）。
+     2026-10-22 实测漏了两处（截图报障）：账本被当成普通 `.seg` 渲染
+     ⇒ 深色下 `card` 与 `muted` 同值，选中项只剩字重差别；且没有竖线，
+     「时间范围」与「账本」在一个胶囊条里连成一片，读起来像一个六档控件。
+     提示词只写在注释里守不住（重构 `Seg` 时没人会回头翻原型）⇒ 落成断言。 */
+  if (!/<span className="h-5 w-px shrink-0 bg-border"/.test(bar)) {
+    throw new Error("参数条的「账本」前缺 `.vsep` 竖分隔线 —— 会与「时间范围」连成一个控件");
+  }
+  if (!/tone="book"/.test(bar)) {
+    throw new Error("账本 `Seg` 没有 `tone=\"book\"` —— 原型 `.seg.book` 的青色选中态丢了");
+  }
   /* ★ 时间窗口的两枚新出口必须都在参数条上：**今天**与**自定义时间**。
      少了任何一枚，UI 就退回「只有 7/14/30」——而原型已经不是那样了。 */
   for (const [label, pattern] of [
@@ -664,6 +676,11 @@ check("★ P3 用量页视图参数条**只有一条**：由 `UsagePage` 渲染�
   const seg = stripComments(fs.readFileSync(path.join(ROOT, "src/components/ui/seg.tsx"), "utf8"));
   if (!/isPopup/.test(seg) || !/aria-haspopup=\{isPopup \? "dialog" : undefined\}/.test(seg)) {
     throw new Error("`Seg` 没有 popup 档能力（aria-haspopup / aria-expanded 无处落地）");
+  }
+  /* 账本色调的实现侧（原型 `.seg.book`，`demo.css:1362`）：
+     `primary 18%` 底 + `primary` 文字，字重 550 与 `shadow-sm` 沿用默认选中态。 */
+  if (!/tone === "book"/.test(seg) || !/bg-primary\/18/.test(seg) || !/text-primary\b/.test(seg)) {
+    throw new Error("`Seg` 没有 `book` 色调（原型 `.seg.book`：`primary 18%` 底 + `primary` 文字）");
   }
   /* ★ 窗口的类型与纯函数只有一处定义：`lib/usage-window.ts`。
      `usage-charts.ts` 是消费方 —— 它自己再定义一次 `UsageWindow` 就是两份真值。 */
@@ -5049,7 +5066,7 @@ check("★ P5-③ `id|uid` 统一谓词：软删除 / 查找 / 备注共用 `res
   return "谓词 = id||uid · 软删除走谓词 · 按 uid 删除单测在";
 });
 
-check("★ P5-④ 参数化命令**恰 55 条**且后端带 scope（commands.rs 签名 + api.rs 读取）", () => {
+check("★ P5-④ 参数化命令集与 EXPECTED 完全一致（commands.rs 签名 + api.rs 读取）", () => {
   /* 变异④（落点 = commands.rs / check-api-contract.cjs）：删掉某参数化命令的 `scope` 参数
      ⇒ 本条变红（桌面端与 webui 行为分叉，而构建全绿）。 */
   const contract = stripComments(fs.readFileSync(path.join(ROOT, P5_API_CONTRACT_CJS), "utf8"));
@@ -5075,7 +5092,7 @@ check("★ P5-④ 参数化命令**恰 55 条**且后端带 scope（commands.rs 
     "loomy_wechat_bind_auth", "loomy_wechat_bind_check", "loomy_wechat_bind_send",
     "loomy_wechat_poll", "loomy_wechat_skip", "loomy_wechat_start",
     "open_data_dir",
-    "preview_import_accounts", "probe_cancel", "probe_start", "probe_status",
+    "preview_import_accounts", "probe_cancel", "probe_ledger", "probe_start", "probe_status",
     "qoder_checkin_claim", "qoder_checkin_status", "qoder_checkin_status_map", "qoder_credits",
     "qoder_delete_account", "qoder_gateway_quota", "qoder_gateway_status", "qoder_import_local",
     "qoder_import_pat", "qoder_oauth_start", "qoder_oauth_status",
@@ -6676,6 +6693,55 @@ check("★ P1-5 账号卡可键盘聚焦（tabIndex + 语义 role + Enter/Space 
     throw new Error("卡片可聚焦但无键盘处理 —— 「可聚焦无操作」无障碍反模式");
   }
   return "tabIndex + role + Enter/Space 打开详情";
+});
+
+check("★★ 整卡/整行打开详情必须走共用守卫（Portal 菜单项不是 button）", () => {
+  /* 2026-10-22 用户报障：「账号卡片的更多操作中，每次点击上面的任何一个操作，侧拉抽屉都被打开」。
+     根因不是漏写守卫，而是**守卫判据选错了维度**：
+       · Radix `DropdownMenuContent` 经 Portal 挂到 `<body>` ⇒ DOM 上不在卡片内，
+         但 React 树里仍在卡片内 ⇒ 冒泡照样回到 `<article onClick>`；
+       · 菜单项是 `Primitive.div[role="menuitem"]`，**不是 `<button>`**（`@radix-ui/react-menu`）
+         ⇒ 旧的 `closest("button, a, input, …")` 一条也命中不了。
+     顺着旧判据打补丁（往选择器里塞 `[role='menuitem']`）治不了根：`select` / `popover` /
+     `dialog` 都是同一套 Portal 手法，每加一个控件要再补一次，且**漏了不报错**、只静默开抽屉。
+     ⇒ 本断言钉住两件事：
+       ① 四处「点整块开详情」都用共用判据 `shouldOpenAccountDetail`；
+       ② 不许再手写 `closest("button, …")` 那种判据（它已经错过一次）。 */
+  const targets = [
+    "src/components/account-card.tsx",
+    "src/components/trae-account-card.tsx",
+    "src/components/qoder/qoder-account-card.tsx",
+    "src/components/account-table.tsx",
+  ];
+  for (const rel of targets) {
+    const src = stripComments(fs.readFileSync(path.join(ROOT, rel), "utf8"));
+    if (!/shouldOpenAccountDetail\(/.test(src)) {
+      throw new Error(
+        `${rel} 打开详情前没过共用判据 \`shouldOpenAccountDetail\` —— Portal 里的菜单项（div[role=menuitem]）会被当成点整卡`,
+      );
+    }
+    if (/closest\(\s*["'`]button,/.test(src)) {
+      throw new Error(
+        `${rel} 又手写了 \`closest("button, …")\` 判据 —— 该判据拦不住 Portal 菜单项（2026-10-22 报障根因），请用 \`shouldOpenAccountDetail\``,
+      );
+    }
+  }
+  const guard = stripComments(
+    fs.readFileSync(path.join(ROOT, "src/lib/account-open-guard.ts"), "utf8"),
+  );
+  if (!/currentTarget\.contains\(target\)/.test(guard)) {
+    throw new Error(
+      "account-open-guard 缺 `currentTarget.contains(target)` —— 这是拦 Portal 内容的唯一稳定判据",
+    );
+  }
+  for (const role of ["menuitem", "button"]) {
+    if (!new RegExp(`role='${role}'`).test(guard)) {
+      throw new Error(
+        `account-open-guard 的豁免选择器缺 \`[role='${role}']\` —— ${role} 不是 <button> 标签，只列标签名会漏`,
+      );
+    }
+  }
+  return "四处同源 · 拦 Portal 弹层 + 非 button 控件";
 });
 
 check("★ P3 会话散点：四侧留边 + ZAxis range 存在（防气泡溢出绘图区）", () => {
@@ -9068,6 +9134,120 @@ check("★ 聚合词条 zh/en 键位一一对应，且两个汇总文件都组�
     throw new Error("en.ts 未组合 aggregate 域");
   }
   return `${zhKeys.length} 键 zh=en · 两个汇总文件均已组合`;
+});
+
+check("★ 限流探测状态：后端枚举 / 前端类型 / zh·en 词条三方**逐字一致**", () => {
+  /* 三处必须同步（2026-10-22 踩过：后端加了一档 `upstream_queued`，
+     前端类型没加 ⇒ 前端整列落「未知」；词条没加 ⇒ 显示成原始 id）。 */
+  const rs = readCode("crates/buddy-switch-gateway/src/model_probe.rs");
+  const enumBlock = rs.match(/pub enum ProbeState \{([\s\S]*?)\n\}/);
+  if (!enumBlock) throw new Error("找不到 `ProbeState` 枚举（断言失效：是否改名/挪位置？）");
+  const backend = [...enumBlock[1].matchAll(/^\s{4}([A-Z][A-Za-z]*),/gm)]
+    .map((m) => m[1])
+    /* wire 名 = serde `rename_all = "snake_case"`（见 `ProbeState` 的 derive）*/
+    .map((name) => name.replace(/([a-z0-9])([A-Z])/g, "$1_$2").toLowerCase());
+  if (backend.length === 0) throw new Error("ProbeState 枚举解析出 0 项（断言失效）");
+
+  const ts = readCode("src/lib/types.ts");
+  const typeBlock = ts.match(/export type ModelProbeState =([\s\S]*?);/);
+  if (!typeBlock) throw new Error("找不到 `ModelProbeState`（前端类型）");
+  const frontend = [...typeBlock[1].matchAll(/"([a-z_]+)"/g)].map((m) => m[1]);
+  if (frontend.length === 0) throw new Error("ModelProbeState 解析出 0 项（断言失效）");
+
+  const missingInFrontend = backend.filter((s) => !frontend.includes(s));
+  const extraInFrontend = frontend.filter((s) => !backend.includes(s));
+  if (missingInFrontend.length || extraInFrontend.length) {
+    throw new Error(
+      `后端与前端状态集不一致：前端缺=${missingInFrontend.join(",") || "无"} / 前端多=${extraInFrontend.join(",") || "无"}`,
+    );
+  }
+
+  /* 词条：每个状态都要有 zh + en 的 label 与 reason（缺一个就显示成原始 id）。 */
+  const localeKeys = (rel) =>
+    new Set([...readCode(rel).matchAll(/"(shared\.gateway\.probe\.(?:state|reason)\.[^"]+)"/g)].map((m) => m[1]));
+  const zh = localeKeys("src/locales/domains/shared.zh.ts");
+  const en = localeKeys("src/locales/domains/shared.en.ts");
+  for (const state of backend) {
+    for (const kind of ["state", "reason"]) {
+      const key = `shared.gateway.probe.${kind}.${state}`;
+      if (!zh.has(key)) throw new Error(`shared.zh.ts 缺词条 ${key}`);
+      if (!en.has(key)) throw new Error(`shared.en.ts 缺词条 ${key}`);
+    }
+  }
+  return `${backend.length} 档 · 后端=前端=zh=en`;
+});
+
+check("★ 客户端限流 × 限流探测：两侧读**同一份**实测结论（不是各拼一份）", () => {
+  /* 需求（2026-10-22）：「账号里的客户端限流要和网关里的模型限流探测关联起来，数据要同步；
+     账号里的客户端限流也可以加入限流探测的入口。」
+     判据：两处都读 store 的跨作业累积索引 `useProbeCells(scope)`，且账号页的入口恒 `adopt: false`。
+     变异（任一即红）：把任一侧改回读 `probe.cells` 自己拼（单格重测会把矩阵打塌 / 探第二行冲掉第一行）。 */
+  const ledger = readCode("src/components/client-limits-card.tsx");
+  for (const [marker, why] of [
+    ["useProbeCells(", "台账卡没有读共享的实测索引 ⇒ 看不到实测结论，也不跟网关同步"],
+    ["probeTargets(", "台账卡没有算实测目标（卡头入口空转）"],
+    ["probeOnlyLimits(", "台账卡没有「实测独有」的分流 ⇒ 实测结果无处落脚"],
+    ["limitConflict(", "台账卡没有做「台账 vs 实测」一致性判定"],
+    ["adopt: false", "★ 账号页的实测必须是「查证」而不是「治理」：不能回填池冷却"],
+  ]) {
+    if (!ledger.includes(marker)) throw new Error(`client-limits-card.tsx 缺 \`${marker}\`（${why}）`);
+  }
+
+  const probeCard = readCode("src/components/gateway/model-probe-card.tsx");
+  if (!probeCard.includes("useProbeCells(")) {
+    throw new Error("model-probe-card.tsx 没有读共享的实测索引 ⇒ 账号页的实测在这看不到");
+  }
+  if (/for \(const cell of probe\?\.cells/.test(probeCard)) {
+    throw new Error("model-probe-card.tsx 又在自己拼 `probe.cells` ⇒ 单格重测会把整张矩阵打塌");
+  }
+
+  /* 第三处消费者：模型表「限流（探测）」列（同一个坑：自己拼 `probe.cells` ⇒ 单格重测后该列只剩 1 格）。 */
+  const modelList = readCode("src/components/gateway/model-list.tsx");
+  if (!modelList.includes("useProbeCells(")) {
+    throw new Error("model-list.tsx 的「限流（探测）」列没有读共享实测索引 ⇒ 与卡片/台账不同源");
+  }
+  if (/probe\?\.cells/.test(modelList)) {
+    throw new Error("model-list.tsx 又在自己拼 `probe.cells` ⇒ 单格重测会让该列突然只剩 1 格");
+  }
+
+  const store = readCode("src/stores/gateway.ts");
+  for (const [marker, why] of [
+    ["mergeProbeCells(", "store 没有合并作业快照 ⇒ 逐行实测的结论会被下一次作业冲掉"],
+    ["raw.scope === scope", "★ `probe_status` 不按作用域过滤 ⇒ 不判 scope 会把别的平台的格画到本平台矩阵上"],
+  ]) {
+    if (!store.includes(marker)) throw new Error(`stores/gateway.ts 缺 \`${marker}\`（${why}）`);
+  }
+
+  /* 跨重启：两处都要读**落盘台账**（`probe_ledger`），否则重启后实测结论全丢，
+     「数据同步」只剩本次会话。 */
+  const limitsCard2 = ledger; // 复用上面的读取（避免重复 IO）
+  const cards = {
+    "src/components/client-limits-card.tsx": limitsCard2,
+    "src/components/gateway/model-probe-card.tsx": probeCard,
+  };
+  for (const [rel, text] of Object.entries(cards)) {
+    if (!text.includes("loadProbeLedger(")) {
+      throw new Error(`${rel} 没有读落盘实测台账（重启后看不到上次实测结论）`);
+    }
+  }
+  if (!store.includes("api.probeLedger(")) {
+    throw new Error("stores/gateway.ts 的 `loadProbeLedger` 没有调 `api.probeLedger`（台账入口空转）");
+  }
+  const api = readCode("src/lib/api.ts");
+  if (!api.includes("cells: params.cells")) {
+    throw new Error("api.ts 的 `probeStart` 没有把 `cells`（显式格清单）发出去 ⇒ 账号页会退化成笛卡尔积");
+  }
+  if (!api.includes('probe_ledger: { method: "GET"')) {
+    throw new Error("api.ts 的 ROUTES 缺 `probe_ledger`（webui 通道 404）");
+  }
+
+  const lib = readCode("src/lib/limit-link.ts");
+  const limitStates = lib.match(/export const LIMIT_STATES[\s\S]*?\];/);
+  if (!limitStates) throw new Error("limit-link.ts 找不到 `LIMIT_STATES`（断言失效：是否改名？）");
+  if (/no_credits|auth_dead/.test(limitStates[0])) {
+    throw new Error("★ `LIMIT_STATES` 里混进了 `no_credits` / `auth_dead` ⇒ 402 会被当成限流（用户去傻等解锁）");
+  }
+  return "台账卡/网关卡同源（useProbeCells）· 入口 adopt:false · store 按 scope 收窄并合并 · 三档限流";
 });
 
 console.log(`\n${passed} passed / ${failures.length} failed\n`);

@@ -5,8 +5,6 @@ import traeIcon from "@/assets/trae.png";
 import traeworkIcon from "@/assets/traework.png";
 import qoderIcon from "@/assets/qoder.png";
 
-const appIconUrl = `${import.meta.env.BASE_URL}icon-transparent.png`;
-
 interface MarkProps {
   size?: number;
   className?: string;
@@ -29,19 +27,6 @@ export function WorkBuddyMark({ size = 32, className }: MarkProps) {
         alt=""
         className="absolute left-1/2 top-1/2 size-[118%] max-w-none -translate-x-1/2 -translate-y-1/2 object-cover"
       />
-    </span>
-  );
-}
-
-/** 应用自身的透明角色图标；桌面安装图标仍使用 public/icon.png。 */
-export function AppIconMark({ size = 32, className }: MarkProps) {
-  return (
-    <span
-      aria-hidden
-      className={cn("inline-flex shrink-0", className)}
-      style={{ width: size, height: size }}
-    >
-      <img src={appIconUrl} alt="" className="size-full object-contain" />
     </span>
   );
 }

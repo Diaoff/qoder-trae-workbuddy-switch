@@ -1,6 +1,6 @@
 # 账号池 × 模型 限流探测 —— 完整实施方案 + 交互方案
 
-> 状态：**方案（待确认，未写码）**。日期：2026-10-16。
+> 状态：**现行（P1–P3 已实现；§5.9 = 账号页联动，2026-10-22 落地）**。初稿日期：2026-10-16。
 > 需求原话：「出一套方案可以测试账号池中每个账号的模型列表的模型是否被限流」
 > 已拍板：**① 被动表 + 主动探测都要　② 三个平台全做　③ 探测结果回填池冷却**
 > 依据：**本仓源码实测**（行号可核实）；未核实处显式标注。
@@ -47,13 +47,31 @@
 | `auth_dead` | `SessionDead`（`12153`） | `AuthDead`（401/403） | `SessionDead`（401，永久禁用） |
 | `model_unavailable` | `NotFound`（404） | `ClientError` | `NotFound`（404） |
 | `upstream_error` | `Server` / `Client` | `Transient`（5xx） | `Server` / `Client`（5xx/4xx 区间） |
+| `upstream_queued`（**上游排队**，2026-10-22 新增） | —（WB 无此形态） | `QoderErrKind::Queued`（`10605` / `isQueued`，裹在 **403 信封**里） | —（Trae 侧并入 `rate_limited_model`） |
 | `transport_error` | `status == 0` | —（连接失败） | —（连接失败） |
 | `ok` | 2xx | 2xx | 2xx |
 | `skipped` | 信封凭据 / 未登录 / 不在库 | 无 access_token（PAT 不可推理） | 无 jwt / 无 device_id |
 
+> ★★ **Qoder 的 2xx ≠ 可用**（2026-10-22 真机取证）：上游的**排队**信号是
+> **HTTP 200 + SSE 信封里的错误帧**（`statusCodeValue:403` + `10605/isQueued`）。
+> 只看 HTTP 状态 ⇒ 排队被报成「全部可用（上游 200）」（假阴性），而真实流量拿到的是排队错误。
+> ⇒ Qoder 探测**必须读一次流**（`qoder::sse::first_upstream_error`）取第一帧错误，
+> 判档用**信封里的状态码 + 错误体**（`classify_http_with_detail`），不看 HTTP 状态。
+>
+> ★ `upstream_queued` **独立成档**（不并入限流三档，也不并入 `auth_dead`）：
+> 上游明说 `modelKey` + `serviceAvailable:false` + `retryAfterSeconds` ⇒ 等 30 秒就好，
+> 不是被限流、也不是凭据失效。回填语义 = `Other`（**不写冷却**），与中继侧
+> `pool::apply_error` 对 `Queued` 的处理一致（既不冷却也不标死）。
+>
+> ★ 账本状态码同步：客户端拿到的是排队错误帧（`code:429`）时，**账本也记 429**，
+> 不记 502 —— 否则日志把「上游在排队、稍后重试」说成「网关挂了」。
+
 > ★★ **红线**：只有前三行能叫「限流」。把 402（没积分）报成「限流」会让用户去傻等解锁 ——
 > `client_limits.rs` 已经踩过这个坑（「上游 6004 文案的 `reset at <T>` 是**配额窗口重置**，不是解锁时刻，实测 6/6 判错」）。
 > **主动探测的价值就是消除这个歧义：结果 = 此刻的实证。**
+>
+> ★ 同理：**排队**（`upstream_queued`）也不许并进「限流」—— 排队等 30 秒就好，
+> 报成限流会让用户去傻等解锁；也不许并进 `auth_dead` —— 账号好着。
 
 ### 1.3 与既有能力的边界（**不重造轮子**）
 
@@ -454,6 +472,41 @@ Trae 现在没有模型级冷却。三选一：
 
 > ⚠️ 原型是**假数据 + 定时器**（确定性生成，刷新不乱跳）。真实实现是
 > **作业 + 轮询**（§3.4），交互形状一致、数据源换成真上游。
+
+---
+
+### 5.9 ★★ 与账号页「客户端限流」的联动（2026-10-22 落地）
+
+需求原话：「账号中的客户端限流要和网关中的模型限流探测关联起来，数据要同步。账号中的客户端限流也可以加入限流探测的入口。」
+
+**两块界面回答同一个问题的两种证据**：台账是**日志反推**（哪一格报过 429、何时恢复），探测是**真发一次最小请求**的实判。此前各自成篇（网关卡单向把台账里 `active` 的格当「被动底色」），现在按 `(uid, model)` 对齐。
+
+| 事项 | 结论（改之前先读） |
+|:--|:--|
+| **同一份数据（三层）** | ①**本轮作业** `probe_status`（单槽、进度/相位）；②前端合并索引 `probeCells`（`useProbeCells(scope)`，`refreshProbeStatus` 收到快照后**按 `(uid, model)` 合并** —— 单槽每次新作业从空 `cells` 开始，不合并的话「逐行实测」探第二行就把第一行冲掉）；③**落盘台账** `probe_ledger`（`probe_results.json`，跨重启、按作用域隔离）。两处界面读的永远是 ②，② 由 ①③ 合并而成。 |
+| **合并只发生在读侧** | 不改后端作业语义（网卡「本次 N 格」仍按 `probe.cells`），也**不擦除**：某次作业没包含的格不会消失（否则探一格清空一堆）。后端在 `finish` 里也**同款合并**进台账（只合并不擦除），故重启后 `probe_ledger` 读回来的就是「这些格最近一次怎么样」。 |
+| **必须按 scope 收窄** | `probe_status` 后端**不按作用域过滤**（全局单槽）⇒ 前端 `raw.scope === scope` 才认。少了它，wb-cn 的格会画到 qoder-cn 的矩阵上。 |
+| **入口一（卡头）** | 账号页台账卡「实测 N 格」= 台账里「仍受限 / 状态未知」的 **`(uid, model)` 去重组合**（已恢复的不测）。传的是 `probe_start` 的 **`cells` 显式清单**（与 `uids × models` 的笛卡尔积互斥）⇒ 3 条台账就是 **3 格**；若走两根轴会变成 6 格，白烧配额。 |
+| **入口二（行尾）** | 每行「实测」= `cells:[{uid, model}]`，恒 1 格。关联不到账号/模型的行（join 失败 / playground）**置灰 + `title` 说明原因**，不是静默不可点。 |
+| **入口三（矩阵格）** | 网关卡矩阵单元格详情里「实测/重测这一格」，同口径（单格、不回填）。 |
+| **两处入口都 `adopt: false`** | 账号页是**查证**，不是治理 —— 绝不悄悄改池冷却。要回填走网关卡的选择态（那里有明示代价 + 逐条明细）。网关卡头部因此显示「上次 … · **未回填**」而不是「置 0 / 清 0」。 |
+| **冲突只并列** | 台账徽章**照旧**；实测结论作为第二结论并列。台账仍受限 + 实测可用 ⇒ 行内写「实测可用，台账仍受限（历史证据，不改写）」；台账已恢复 + 实测受限 ⇒ 「台账已恢复，但此刻实测受限」。谁对不归 UI 裁定。 |
+| **实测独有不进台账** | 实测查出限流、但台账没有记录的格单列在卡尾（`probeOnlyLimits`）。台账的语义是「客户端日志里出现过」，塞进去会污染它、也让「条数」变黑箱。 |
+| **只有三档算限流** | `LIMIT_STATES` = `rate_limited_model` / `rate_limited_account` / `model_blocked`；`no_credits`（402）在行内显式写「**不是限流**：额度用尽，等解锁没用」。`lib/limit-link.ts` 的 `LIMIT_STATES` 被门禁钉住（混进 402 即红）。 |
+| **作业位单例** | 任意入口在跑时，另一侧入口变进度 + 取消（后端拒绝第二个作业时如实 toast，并顺手对齐一次快照）。 |
+| **跨重启** | 作业槽是进程内的，所以另有 `probe_ledger`（`GET /api/gateway/probe/ledger?scope=`，落盘 `~/.buddy-switch/probe_results.json`）。两张卡进入时都拉一次并 merge 进 `probeCells`；作业收尾时也会回读一次对齐。**空 `cells` = 没探过**，不是「全可用」。 |
+| **`cells` 与两根轴互斥** | 后端 `prepare` 先判 `cells`：有则忽略 `uids` / `models`，只探点名的格（去重保序、超 `MAX_CELLS` 直接报错而不是截断 —— 用户点名的格被悄悄丢掉更糟）。网卡「开始探测」仍走两根轴（那里用户显式勾了账号与模型，笛卡尔积正是他要的）。 |
+
+产物：
+
+| 产物 | 位置 |
+|:--|:--|
+| 设计稿（可点，左右并排看「同步」） | `docs/prototype/limit-link-proto.html` |
+| 行为校验（34 条 + 截图） | `node docs/prototype/verify-limit-link.mjs` → `logs/limit-link/*.png` |
+| 纯函数口径 | `src/lib/limit-link.ts`（`mergeProbeCells` / `probeTargets` / `limitConflict` / `probeOnlyLimits` / `tallyCells`） |
+| 后端 | `model_probe.rs`（`ProbeStartCell` / `dedup_pairs` / `LedgerFile` / `ledger_snapshot` / `record_ledger`）+ 两宿主 `probe_ledger` 命令 + server `GET /api/gateway/probe/ledger` |
+| 单测 | `explicit_pairs_are_trimmed_and_deduped` · `ledger_merges_without_erasing_and_keeps_scopes_apart` · `ledger_round_trips_through_disk` · 接线护栏 `both_hosts_wire_every_probe_exit` |
+| 门禁 | `check:scope` 的「★ 客户端限流 × 限流探测：两侧读**同一份**实测结论」 |
 
 ---
 

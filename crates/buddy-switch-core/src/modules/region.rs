@@ -263,6 +263,14 @@ pub fn gateway_keys_file() -> PathBuf {
     store_dir().join("gateway_keys.json")
 }
 
+/// 按密钥的用量账本（issue #76）：`~/.buddy-switch/gateway_key_usage.json`。
+///
+/// 与 Key 台账**分文件**：台账低频写（创建 / 吊销 / 改策略），用量每请求写 ——
+/// 合并在一个文件里既放大写放大，也让「改策略」与「记一笔」在锁上打架。
+pub fn gateway_key_usage_file() -> PathBuf {
+    store_dir().join("gateway_key_usage.json")
+}
+
 /// 目录缓存文件路径：`~/.buddy-switch/gateway_models.<region>.json`。
 pub fn catalog_cache_file(region: Region) -> PathBuf {
     store_dir().join(format!("gateway_models.{}.json", region.as_str()))

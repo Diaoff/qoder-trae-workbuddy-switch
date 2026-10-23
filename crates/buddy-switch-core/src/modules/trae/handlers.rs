@@ -613,6 +613,18 @@ pub async fn run_jwt_refresh_cycle() -> Value {
                 }
                 Err(error) => {
                     failed += 1;
+                    // ★ **失败必须落日志**（2026-10-22 修复）：本循环此前把失败只塞进
+                    //   返回值，而返回值在排程路径上被 `let _ =` 丢掉，`refresh_jwt_for`
+                    //   又只在成功时写日志 ⇒ 「自动续期连续失败 14 天」在日志里零痕迹，
+                    //   用户只能看到卡片上「凭据已过期」。失败与成功同等重要，都要留痕。
+                    //   文案截断：全变体错误串可达上千字符，日志行不该被一条错误撑爆。
+                    store::append_log(
+                        &paths::checkin_log_file_for(target),
+                        &format!(
+                            "JWT 自动刷新失败: user={user_id} 原因={}",
+                            truncate_for_log(&error, 400)
+                        ),
+                    );
                     results.push(json!({ "userId": user_id, "result": "failed", "error": error }));
                 }
             }
@@ -630,6 +642,11 @@ pub async fn run_jwt_refresh_cycle() -> Value {
     }
 
     json!({ "variants": variants })
+}
+
+/// 截断长文本用于日志行（与 `credits::truncate` 同款；本模块只此一处需要）。
+fn truncate_for_log(text: &str, max_chars: usize) -> String {
+    text.chars().take(max_chars).collect()
 }
 
 /// 清除冷却：给了 `userId` 就清单个，否则全清（默认变体，兼容壳）。

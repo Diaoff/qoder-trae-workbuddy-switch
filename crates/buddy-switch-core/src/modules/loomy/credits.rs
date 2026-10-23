@@ -61,7 +61,8 @@ pub fn parse_credits_data(data: &Value) -> Result<CreditsSnapshot, String> {
         );
     };
     let daily = read_number(data.get("dailyBalance")).unwrap_or(0);
-    let total = read_number(data.get("availableBalance")).unwrap_or(permanent.saturating_add(daily));
+    let total =
+        read_number(data.get("availableBalance")).unwrap_or(permanent.saturating_add(daily));
     Ok(CreditsSnapshot {
         permanent,
         daily,
@@ -81,9 +82,9 @@ pub fn parse_checkin_data(data: &Value) -> CheckinOutcome {
             already_done: true,
             gained: 0,
             detail: match (balance, quota) {
-                (Some(balance), Some(quota)) => format!(
-                    "今日每日额度已初始化：{balance}/{quota}（消耗后不回补）"
-                ),
+                (Some(balance), Some(quota)) => {
+                    format!("今日每日额度已初始化：{balance}/{quota}（消耗后不回补）")
+                }
                 _ => "今日每日额度已初始化（幂等命中，未重复发放）".to_string(),
             },
         };
@@ -98,7 +99,9 @@ pub fn parse_checkin_data(data: &Value) -> CheckinOutcome {
         already_done: false,
         gained,
         detail: match quota {
-            Some(quota) => format!("已触发今日每日赠送额度：可用 {gained}/{quota}（消耗后不回补，次日重置）"),
+            Some(quota) => {
+                format!("已触发今日每日赠送额度：可用 {gained}/{quota}（消耗后不回补，次日重置）")
+            }
             None => "已触发今日每日赠送额度（服务端未回报 quota，具体数额未知）".to_string(),
         },
     }

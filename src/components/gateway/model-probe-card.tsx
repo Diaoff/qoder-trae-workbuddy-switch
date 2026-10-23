@@ -15,7 +15,7 @@ import { scopeFromLegacy } from "@/lib/scope";
 import { cn } from "@/lib/utils";
 import type { ModelProbeAdoptRecord, ModelProbeCell, ModelProbeJob, ModelProbeState, Region } from "@/lib/types";
 import { poolOf } from "@/lib/gateway";
-import { useGatewayStore, useProbePassive, type ProbePassiveInfo } from "@/stores/gateway";
+import { useGatewayStore, useProbeCells, useProbePassive, type ProbePassiveInfo } from "@/stores/gateway";
 
 /**
  * 限流探测卡（方案 §5.1–§5.4；原型 `docs/prototype/demo-app.js` 的 `probeCardHtml()`）。
@@ -62,6 +62,7 @@ const TALLY_ORDER: readonly ModelProbeState[] = [
   "rate_limited_model",
   "rate_limited_account",
   "model_blocked",
+  "upstream_queued",
   "no_credits",
   "auth_dead",
   "model_unavailable",
@@ -76,6 +77,7 @@ const LEGEND_ORDER: readonly ModelProbeState[] = [
   "ok",
   "rate_limited_model",
   "rate_limited_account",
+  "upstream_queued",
   "no_credits",
   "skipped",
 ];
@@ -102,6 +104,7 @@ function stateCellClass(state: ModelProbeState | "unknown", kind: "probed" | "pa
     model_unavailable: "border-destructive/58 bg-destructive/26",
     no_credits: "border-warning/40 bg-warning/16",
     upstream_error: "border-warning/40 bg-warning/16",
+    upstream_queued: "border-warning/40 bg-warning/16",
     transport_error: "border-warning/40 bg-warning/16",
     skipped: "border-border bg-muted",
     unknown: "border-border bg-muted",
@@ -128,6 +131,7 @@ function stateGlyph(state: ModelProbeState | "unknown"): string {
       return "✕";
     case "no_credits":
     case "upstream_error":
+    case "upstream_queued":
     case "transport_error":
       return "!";
     default:
@@ -143,6 +147,7 @@ export function probeStateVariant(state: ModelProbeState | "unknown"): "success"
     case "rate_limited_model":
     case "no_credits":
     case "upstream_error":
+    case "upstream_queued":
     case "transport_error":
       return "warning";
     case "rate_limited_account":
@@ -202,6 +207,8 @@ export function ModelProbeCard({
   const refreshProbeStatus = useGatewayStore((s) => s.refreshProbeStatus);
   const cancelProbe = useGatewayStore((s) => s.cancelProbe);
   const loadProbePassive = useGatewayStore((s) => s.loadProbePassive);
+  /** 拉**落盘台账**：矩阵在重启后也要显示上次实测结论（与账号页台账卡同一份）。 */
+  const loadProbeLedger = useGatewayStore((s) => s.loadProbeLedger);
   const stopProbePolling = useGatewayStore((s) => s.stopProbePolling);
 
   /**
@@ -274,9 +281,10 @@ export function ModelProbeCard({
   /* 进入 / 切作用域：拉一次作业快照 + 被动底色。卸载时清轮询（防泄漏）。 */
   useEffect(() => {
     void refreshProbeStatus(scope);
+    void loadProbeLedger(scope);
     void loadProbePassive(region);
     return () => stopProbePolling();
-  }, [scope, region, refreshProbeStatus, loadProbePassive, stopProbePolling]);
+  }, [scope, region, refreshProbeStatus, loadProbeLedger, loadProbePassive, stopProbePolling]);
 
   /* 订阅下钻（模型表徽标 → 本卡）。 */
   const phaseRef = useRef<"setup" | "running" | "done">("setup");
@@ -302,12 +310,13 @@ export function ModelProbeCard({
           : "setup";
   phaseRef.current = phase;
 
-  /* 实测格索引：uid → model → cell（模型表列也读这份数据的等价映射）。 */
-  const probedMap = useMemo(() => {
-    const map: Record<string, Record<string, ModelProbeCell>> = {};
-    for (const cell of probe?.cells ?? []) (map[cell.uid] ??= {})[cell.model] = cell;
-    return map;
-  }, [probe]);
+  /* ★ 实测格索引：`uid → model → cell`。
+     **读 store 的跨作业累积值**（`useProbeCells`），不是本卡 `probe.cells` ——
+     三个理由（口径全文见 `lib/limit-link.ts`）：
+     1. 账号页「逐行实测」发起的作业也在这里显示（同一份数据，不是两份）；
+     2. 在本卡里「重测这一格」不会把整张矩阵塌成 1 格（后端每次新作业从空 `cells` 开始）；
+     3. 与模型表「限流（探测）」列同源，两处不再各自拼一份。 */
+  const probedMap = useProbeCells(scope);
 
   const selectedAccounts = useMemo(
     () => accounts.filter((a) => accountsSel.has(a.uid)),
@@ -398,6 +407,24 @@ export function ModelProbeCard({
     }
   }
 
+  /**
+   * 矩阵里「重测这一格」：**只打这一格、恒 `adopt: false`**。
+   *
+   * - 只打一格：`uids:[uid] models:[model]` ⇒ 后端 1 格（不铺笛卡尔积）；
+   * - 不回填：这是**查证**动作，和账号页的入口同口径。要回填走卡内「开始探测」的开关
+   *   （那里有明示代价与逐条明细）。
+   * - 不会把矩阵打塌：显示读的是跨作业累积索引（`useProbeCells`），见 `probedMap` 的注释。
+   */
+  async function onProbeCell(uid: string, model: string) {
+    try {
+      await startProbe({ scope, uids: [uid], models: [model], adopt: false });
+      setSetupOverride(false);
+    } catch (e) {
+      toast.error(t("shared.gateway.probe.startFail"), { description: String(e) });
+      void refreshProbeStatus(scope);
+    }
+  }
+
   function onExportCsv() {
     const rows: string[][] = [[
       t("shared.gateway.probe.csv.account"),
@@ -438,11 +465,15 @@ export function ModelProbeCard({
       <span className="text-xs text-muted-foreground">
         {resultTime
           ? adoptSupported
-            ? t("shared.gateway.probe.summaryLast", {
-                time: resultTime,
-                added: adoptedAdded,
-                cleared: adoptedCleared,
-              })
+            ? /* 本次**没回填**（账号页发起的查证，或用户关了开关）⇒ 别显示「置 0 / 清 0」，
+                 那读起来像「跑了但什么都没发生」，而不是「刻意不写池」。 */
+              probe && !probe.adopt
+              ? t("shared.gateway.probe.summaryLastNoAdopt", { time: resultTime })
+              : t("shared.gateway.probe.summaryLast", {
+                  time: resultTime,
+                  added: adoptedAdded,
+                  cleared: adoptedCleared,
+                })
             : t("shared.gateway.probe.summaryLastPlain", { time: resultTime })
           : t("shared.gateway.probe.summaryAvailable", {
               accounts: accounts.length,
@@ -498,6 +529,7 @@ export function ModelProbeCard({
               cancelled={probe.phase === "cancelled"}
               onExport={onExportCsv}
               onRetry={() => setSetupOverride(true)}
+              onProbeCell={(uid, model) => void onProbeCell(uid, model)}
             />
           ) : (
             <SetupBody
@@ -788,6 +820,8 @@ function DoneBody(props: {
   cancelled: boolean;
   onExport: () => void;
   onRetry: () => void;
+  /** 重测/首测这一格（`uids:[uid] models:[model]`、不回填）。 */
+  onProbeCell: (uid: string, model: string) => void;
 }) {
   const { t, accounts, models, stateOf } = props;
   const hasAdopt = props.added > 0 || props.cleared > 0;
@@ -1040,6 +1074,20 @@ function DoneBody(props: {
                           <div className="border-t border-border/60 pt-1.5 text-muted-foreground">
                             {props.reason(s.state)}
                           </div>
+                          {/* ★ 入口③：只重测这一格（与账号页「实测」同口径：单格、不回填）。
+                              矩阵里「这一格是刚探的还是几小时前的」肉眼分不出 ⇒ 给重测入口。 */}
+                          <div className="border-t border-border/60 pt-1.5">
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              className="h-6 px-2 text-[11.5px]"
+                              onClick={() => props.onProbeCell(a.uid, m.id)}
+                            >
+                              {cell
+                                ? t("shared.gateway.probe.reprobeCell")
+                                : t("shared.gateway.probe.probeCell")}
+                            </Button>
+                          </div>
                         </div>
                       );
                       return (
@@ -1159,6 +1207,7 @@ const STAT_DOT: Record<string, string> = {
   model_unavailable: "bg-destructive/55",
   no_credits: "bg-warning/35",
   upstream_error: "bg-warning/35",
+  upstream_queued: "bg-warning/35",
   transport_error: "bg-warning/35",
   skipped: "bg-muted",
   unknown: "bg-muted",

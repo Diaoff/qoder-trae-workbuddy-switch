@@ -649,7 +649,14 @@ mod tests {
         ] {
             assert!(parse(bad).is_none(), "{bad:?} 不该被当作命名空间");
         }
-        for good in ["wb-cn", "wb-global", "trae-cn", "trae-global", "qoder-cn", "loomy-cn"] {
+        for good in [
+            "wb-cn",
+            "wb-global",
+            "trae-cn",
+            "trae-global",
+            "qoder-cn",
+            "loomy-cn",
+        ] {
             assert!(parse(good).is_some(), "{good:?} 应在册");
         }
     }

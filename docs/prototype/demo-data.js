@@ -257,28 +257,28 @@ const SCOPES = {
   "wb-cn": {
     id: "wb-cn", platform: "workbuddy", region: "cn",
     running: true, installed: true, version: "2.14.3",
-    todayCredits: 46, gatewayRequests: 312, gatewayKeys: 3, checkinReward: 100,
+    todayCredits: 46, gatewayRequests: 312, gatewayKeys: 5, checkinReward: 100,
     /* ★ 客户端是否接入本机网关（P12 请求代理）。决定「账本」视图的对账结论：
        true ⇒ 客户端 ⊆ 网关（合计 = 网关 + 直连客户端）；false ⇒ 两本账独立（合计 = 相加 − 重叠）。 */
     proxy: true,
     accounts: [
       makeAccount("a1", "jackey", "jackey@example.com", {
-        remark: "主号 · 长期", credits: 1240, creditsTotal: 2000,
+        remark: "主号 · 长期", credits: 1240, creditsTotal: 2000, group: "主力",
         programs: { workbuddy: true, ide: true, cli: false }, priority: true,
         lastUsed: "2 分钟前", todayTokens: 42100, totalTokens: 862400,
       }),
       makeAccount("a2", "team-shared", "shared@example.com", {
-        remark: "团队共用", credits: 860, creditsTotal: 1000,
+        remark: "团队共用", credits: 860, creditsTotal: 1000, group: "主力",
         programs: { workbuddy: false, ide: true, cli: false },
         lastUsed: "1 小时前", todayTokens: 28400, totalTokens: 512000,
       }),
       makeAccount("a3", "backup-01", "backup01@example.com", {
-        remark: "备用", credits: 1580, creditsTotal: 2000, expireInDays: 44,
+        remark: "备用", credits: 1580, creditsTotal: 2000, expireInDays: 44, group: "备用",
         programs: { workbuddy: false, ide: false, cli: false },
         lastUsed: "3 天前", todayTokens: 0, totalTokens: 96400,
       }),
       makeAccount("a4", "qa-bot", "qa@example.com", {
-        remark: "自动化测试", credits: 120, creditsTotal: 2000,
+        remark: "自动化测试", credits: 120, creditsTotal: 2000, group: "自动化",
         checkedIn: false, programs: { workbuddy: false, ide: true, cli: false },
         lastUsed: "5 分钟前", todayTokens: 31200, totalTokens: 288100,
       }),
@@ -288,7 +288,7 @@ const SCOPES = {
         lastUsed: "8 天前", todayTokens: 0, totalTokens: 41200, status: "expired",
       }),
       makeAccount("a6", "ops-02", "ops02@example.com", {
-        remark: "运维", credits: 990, creditsTotal: 2000, expireInDays: 27,
+        remark: "运维", credits: 990, creditsTotal: 2000, expireInDays: 27, group: "备用",
         programs: { workbuddy: false, ide: true, cli: false },
         lastUsed: "昨天", todayTokens: 8700, totalTokens: 173000,
       }),
@@ -780,6 +780,10 @@ const GATEWAY = {
       { id: "k1", name: "默认 Key", masked: "bs_live_9f3a••••••••••••7c21", scope: "国内版", created: "2026-09-12", lastUsed: "2 分钟前", requests: 1842 },
       { id: "k2", name: "CI 自动化", masked: "bs_live_4d18••••••••••••a0e9", scope: "国内版", created: "2026-09-20", lastUsed: "1 小时前", requests: 613, revoked: true },
       { id: "k3", name: "临时调试", masked: "bs_live_c702••••••••••••31bf", scope: "国际版", created: "2026-09-28", lastUsed: "3 天前", requests: 47 },
+      /* 「接近上限」那档（86%）：三档用量状态在默认视图里都能看到。 */
+      { id: "k10", name: "外包同学", masked: "bs_live_d913••••••••••••52af", scope: "国内版", created: "2026-10-06", lastUsed: "18 分钟前", requests: 956 },
+      /* 「不限额」那档：与三档限额同在默认视图（不限 / 正常 / 接近 / 用尽 一览齐全）。 */
+      { id: "k11", name: "自用无限额", masked: "bs_live_f4a7••••••••••••6c03", scope: "国内版", created: "2026-10-11", lastUsed: "1 小时前", requests: 3120 },
     ],
     /* available = 上游事实（能不能调）；disabled = 用户偏好（主动拿掉）。
        两者**正交**，四种组合都合法 —— UI 必须能区分「已禁用」与「上游不可用」。 */
@@ -794,12 +798,23 @@ const GATEWAY = {
     /* 模型清单的来源（§3.17）：实时 / 已保存 / 内置 —— 三级都必须显式标注，
        不许把「内置」伪装成「实时」（用户照着清单调用会扑空）。 */
     catalog: { source: "live", fetchedAt: "12 分钟前", fetchedAbs: "2026-10-03 12:38", note: null },
+    /* ★ 五态互斥（可用 / 冷却 / 禁用 / 零积分 / **已排除**）—— 排除从 `state` 里**独立出来**
+       成为 `excluded` 标记：它是**用户意图**，与账号健康正交（被排除 ≠ 账号坏了）。
+       `tier` 成本分层（free 0 / unknown 1 / paid 2）、`inFlight/maxInFlight` 在途租约、
+       `modelCool` 模型级冷却、`willFail` 演示用的失败注入 —— 全部由 poolSection 派生。 */
     pool: [
-      { account: "jackey", credits: 1240, weight: 100, state: "可用", sticky: true },
-      { account: "team-shared", credits: 860, weight: 80, state: "可用", sticky: false },
-      { account: "qa-bot", credits: 120, weight: 20, state: "余额偏低", sticky: false },
-      { account: "design-lab", credits: 0, weight: 0, state: "已排除", sticky: false },
+      { account: "jackey", credits: 1240, weight: 100, state: "可用", sticky: true, tier: "free", inFlight: 1, maxInFlight: 3, willFail: "429" },
+      { account: "team-shared", credits: 860, weight: 80, state: "可用", sticky: false, tier: "free", inFlight: 0, maxInFlight: 3,
+        modelCool: [{ model: "gpt-5-codex", remain: 192 }] },
+      { account: "qa-bot", credits: 120, weight: 20, state: "可用", low: true, sticky: false, tier: "paid", inFlight: 0, maxInFlight: 3,
+        modelCool: [{ model: "gpt-5-codex", remain: 48 }] },
+      { account: "backup-01", credits: 480, weight: 30, state: "可用", sticky: false, tier: "paid", inFlight: 3, maxInFlight: 3 },
+      { account: "design-lab", credits: 320, weight: 0, state: "可用", sticky: false, tier: "free", inFlight: 0, maxInFlight: 3,
+        excluded: true, excludedNote: "留给客户端自己用" },
     ],
+    /* 模型级暂停：同一模型在 ≥2 个账号上先后被限流 ⇒ 该模型整体暂停，
+       到期后只放**一个**请求做半开试探 —— 否则每个请求都要把每个账号各撞一遍。 */
+    modelGate: { model: "gpt-5-codex", accounts: 2, remain: 42, phase: "paused" },
     logs: [
       { time: "10:38:12", model: "claude-sonnet-4.5", account: "jackey", status: 200, ms: 842, tokens: 1284 },
       { time: "10:37:44", model: "gpt-5-codex", account: "team-shared", status: 200, ms: 610, tokens: 402 },
@@ -814,7 +829,7 @@ const GATEWAY = {
     keys: [{ id: "k4", name: "国际版 Key", masked: "bs_live_1a55••••••••••••88d0", scope: "国际版", created: "2026-09-25", lastUsed: "昨天", requests: 26 }],
     models: [{ name: "claude-sonnet-4.5", provider: "anthropic", scope: "国际版", available: true, efforts: ["low", "medium", "high", "xhigh", "max"], defaultEffort: "high", credits: 1.33 }],
     catalog: { source: "cached", fetchedAt: "昨天 21:04", fetchedAbs: "2026-10-02 21:04", note: "本次探测超时（8s），使用上次成功的结果" },
-    pool: [{ account: "jackey-global", credits: 720, weight: 100, state: "可用", sticky: true }],
+    pool: [{ account: "jackey-global", credits: 720, weight: 100, state: "可用", sticky: true, tier: "free", inFlight: 0, maxInFlight: 2 }],
     logs: [{ time: "09:12:30", model: "claude-sonnet-4.5", account: "jackey-global", status: 200, ms: 1120, tokens: 640 }],
   },
   "trae-cn": {
@@ -1313,3 +1328,28 @@ const APP_UPDATE = {
 /* ─────────── 统一挂载派生用量数据 ───────────
    放在文件末尾：此时 USAGE / SCOPES / GATEWAY 全部已定义。 */
 for (const _id of Object.keys(USAGE)) USAGE[_id].ext = buildUsageExtras(_id);
+
+/* ─────────── 密钥策略（issue #76）───────────
+   **与 `GATEWAY[...].keys` 分开放**：策略是「另一张表」，不是密钥记录上的一堆字段。
+   真实实现里也是 `ApiKeyRecord` 旁边多一张策略/用量表（见 `specs/KEY-PERMISSION-UI-DESIGN.md`）。
+
+   `quota.mode` = unlimited | limited；`unit` = token | request（业务代理没有 token）；
+   `period` = none | daily | weekly | monthly（自然月对齐成本归属）。
+   `scope.mode` = all | selected；`scope.accounts` 是**账号 id**（可按账号自带的
+   `group` 整组选取 —— 分组是账号页已有的同一份数据，不另造）。 */
+const KEY_POLICY = {
+  k1: { quota: { mode: "limited", limit: 10000000, unit: "token", period: "monthly", used: 6200000 }, scope: { mode: "all" } },
+  k2: { quota: { mode: "unlimited" }, scope: { mode: "all" } },
+  k3: { quota: { mode: "limited", limit: 1000000, unit: "token", period: "none", used: 1000000 }, scope: { mode: "selected", accounts: ["a1"] } },
+  k4: { quota: { mode: "unlimited" }, scope: { mode: "all" } },
+  k5: { quota: { mode: "limited", limit: 50000, unit: "request", period: "daily", used: 43000 }, scope: { mode: "selected", accounts: ["t1", "t2"] } },
+  k6: { quota: { mode: "unlimited" }, scope: { mode: "all" } },
+  k7: { quota: { mode: "limited", limit: 20000000, unit: "token", period: "monthly", used: 2000000 }, scope: { mode: "all" } },
+  k8: { quota: { mode: "unlimited" }, scope: { mode: "all" } },
+  k9: { quota: { mode: "unlimited" }, scope: { mode: "all" } },
+  k10: { quota: { mode: "limited", limit: 10000000, unit: "token", period: "monthly", used: 8600000 }, scope: { mode: "selected", accounts: ["a1", "a2", "a3"] } },
+  /* 不限额：与改造前行为一致（消耗多少都放行）。 */
+  k11: { quota: { mode: "unlimited" }, scope: { mode: "all" } },
+};
+const KEY_PERIOD_TEXT = { none: "不重置（累计）", daily: "每日 00:00 重置", weekly: "每周一 00:00 重置", monthly: "自然月结算" };
+const KEY_PERIOD_SHORT = { none: "累计", daily: "每日", weekly: "每周", monthly: "自然月" };

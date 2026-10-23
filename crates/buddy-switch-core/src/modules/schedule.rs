@@ -780,9 +780,7 @@ mod tests {
         for task in ScheduleTask::all() {
             let expected = !matches!(
                 task,
-                ScheduleTask::TraeCheckin
-                    | ScheduleTask::QoderCheckin
-                    | ScheduleTask::LoomyCheckin
+                ScheduleTask::TraeCheckin | ScheduleTask::QoderCheckin | ScheduleTask::LoomyCheckin
             );
             assert_eq!(
                 task.enabled(&cfg),

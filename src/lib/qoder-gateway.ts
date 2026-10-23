@@ -215,6 +215,15 @@ export interface QoderApiKeyRecord {
   revokedAt: number | null;
   revoked: boolean;
   lastUsedAt: number | null;
+  /* ── 策略（issue #76）—— 与 `ApiKeyRecord` / `TraeApiKeyRecord` 同形同义，
+     前端共用一套构件。全部可选 ⇒ 旧台账零迁移。 ── */
+  quotaMode?: "unlimited" | "limited";
+  quotaLimit?: number;
+  quotaUnit?: "token" | "request";
+  quotaPeriod?: "none" | "daily" | "weekly" | "monthly";
+  scopeMode?: "all" | "selected";
+  scopeAccounts?: string[];
+  scopeGroups?: string[];
 }
 
 /**

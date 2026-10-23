@@ -322,6 +322,8 @@ fn api_routes() -> Router {
             get(api_gateway_list_keys).post(api_gateway_create_key),
         )
         .route("/api/gateway/keys/revoke", post(api_gateway_revoke_key))
+        .route("/api/gateway/keys/policy", post(api_gateway_set_key_policy))
+        .route("/api/gateway/keys/usage", get(api_gateway_key_usage))
         .route("/api/gateway/keys/restore", post(api_gateway_restore_key))
         .route("/api/gateway/keys/delete", post(api_gateway_delete_key))
         .route("/api/gateway/models", get(api_gateway_models))
@@ -345,6 +347,7 @@ fn api_routes() -> Router {
         .route("/api/gateway/probe/start", post(api_probe_start))
         .route("/api/gateway/probe/status", get(api_probe_status))
         .route("/api/gateway/probe/cancel", post(api_probe_cancel))
+        .route("/api/gateway/probe/ledger", get(api_probe_ledger))
         // ---- 统一网关（第三个产品线 · 跨作用域）----
         // ⚠️ 前缀 `/api/unified-gateway/…` 与两条既有线路（`/api/gateway/…`、`/api/trae/…`）平行；
         //   命令与其在 `src-tauri/commands.rs` 的实现一一对应（门禁 `check:api` 两侧夹）。
@@ -367,6 +370,20 @@ fn api_routes() -> Router {
         .route(
             "/api/unified-gateway/keys/revoke",
             post(api_unified_gateway_revoke_key),
+        )
+        // ★ issue #76：策略更新 + 按密钥用量（与另三条产品线同形）。
+        .route(
+            "/api/unified-gateway/keys/policy",
+            post(api_unified_gateway_set_key_policy),
+        )
+        .route(
+            "/api/unified-gateway/keys/usage",
+            get(api_unified_gateway_key_usage),
+        )
+        // ★ issue #76：**批量**用量（密钥表每行一列，避免 N 次往返）。
+        .route(
+            "/api/unified-gateway/keys/usage-all",
+            get(api_unified_gateway_key_usage_all),
         )
         .route(
             "/api/unified-gateway/keys/restore",
@@ -574,6 +591,12 @@ fn api_routes() -> Router {
             "/api/qoder/gateway/keys/revoke",
             post(api_qoder_revoke_api_key),
         )
+        // ★ issue #76：策略更新 + 按密钥用量（与 WB / Trae 侧同形）。
+        .route(
+            "/api/qoder/gateway/keys/policy",
+            post(api_qoder_set_key_policy),
+        )
+        .route("/api/qoder/gateway/keys/usage", get(api_qoder_key_usage))
         .route(
             "/api/qoder/gateway/keys/restore",
             post(api_qoder_restore_api_key),
@@ -618,6 +641,12 @@ fn api_routes() -> Router {
             "/api/trae/gateway/keys/revoke",
             post(api_trae_revoke_api_key),
         )
+        // ★ issue #76：策略更新 + 按密钥用量（与 WB 侧同形）。
+        .route(
+            "/api/trae/gateway/keys/policy",
+            post(api_trae_set_key_policy),
+        )
+        .route("/api/trae/gateway/keys/usage", get(api_trae_key_usage))
         .route(
             "/api/trae/gateway/keys/restore",
             post(api_trae_restore_api_key),
@@ -3348,6 +3377,62 @@ async fn api_gateway_delete_key(Json(body): Json<Value>) -> Response {
     }
 }
 
+/// POST /api/gateway/keys/policy —— 更新某把 Key 的策略（配额 + 账号范围）。
+///
+/// ★ 入参是**完整策略**（不是补丁）：两个 radio 必选其一由前端抽屉保证，
+/// 后端不猜「用户是不是想只改一半」。矛盾值（不限额却带上限）由
+/// [`KeyPolicy::normalized`] 收敛到安全的一边，空白名单直接拒绝。
+async fn api_gateway_set_key_policy(Json(body): Json<Value>) -> Response {
+    use buddy_switch_gateway::apikey::KeyPolicy;
+    let state = crate::gateway_host::shared_state();
+    let id = body.get("id").and_then(Value::as_str).unwrap_or("");
+    let policy: KeyPolicy =
+        match serde_json::from_value(body.get("policy").cloned().unwrap_or(Value::Null)) {
+            Ok(policy) => policy,
+            Err(error) => {
+                return json_err(format!("策略字段不合法: {error}"), StatusCode::BAD_REQUEST)
+            }
+        };
+    match state.keys.update_policy(id, policy) {
+        Ok(()) => json_ok(json!({ "ok": true })),
+        Err(error) => json_err(error, StatusCode::BAD_REQUEST),
+    }
+}
+
+/// GET /api/gateway/keys/usage?id=… —— 读某把 Key 的用量快照（累计 + 本周期）。
+///
+/// 与 `list` 分开的理由：用量是**每请求写**的账本，让列表命令每次多读一个文件
+/// 不划算；且用量只在打开抽屉/展开行时才需要。
+async fn api_gateway_key_usage(RawQuery(query): RawQuery) -> Response {
+    let state = crate::gateway_host::shared_state();
+    let id = query_value(query.as_deref(), "id").unwrap_or_default();
+    if id.is_empty() {
+        return json_err("缺少 id".to_string(), StatusCode::BAD_REQUEST);
+    }
+    let now = buddy_switch_core::modules::config::now_ms();
+    let Some(record) = state.keys.list().into_iter().find(|record| record.id == id) else {
+        return json_err("API Key 不存在".to_string(), StatusCode::BAD_REQUEST);
+    };
+    let usage = state.key_usage.snapshot(&id);
+    let used = state
+        .key_usage
+        .used_for(&id, record.quota_unit, record.quota_period, now);
+    json_ok(json!({
+        "ok": true,
+        "keyId": id,
+        "unit": record.quota_unit,
+        "period": record.quota_period,
+        "periodKey": record.quota_period.period_key(now),
+        "used": used,
+        // 累计用量按**同一个口径**取（`KeyUsage` 现在是两个口径各自一份计数，
+        // 没有单一的 `total` —— 见 `key_usage::KeyUsage` 的文档）。
+        "total": usage
+            .as_ref()
+            .map(|entry| entry.counters(record.quota_unit).total)
+            .unwrap_or(0),
+    }))
+}
+
 async fn api_gateway_models(RawQuery(query): RawQuery) -> Response {
     let region = parse_region(query_value(query.as_deref(), "region").as_deref());
     let state = crate::gateway_host::shared_state();
@@ -3498,6 +3583,8 @@ async fn api_gateway_clear_logs() -> Response {
 /// `uids` / `models` **缺省 = 用池里的全部账号 / 该作用域目录**（与 `start` 的 `Option` 语义一致）；
 /// 显式传空数组则走到 `start` 的「没有选中任何账号 / 没有可探测的模型」校验。
 ///
+/// ★ `cells`（**显式格清单**）与那两根轴**互斥**：给了它就只探点名的格（账号页台账卡走这条）。
+///
 /// ★ **作用域参数化**：入参从 `region` 升级为 `scope`（`wb-cn` / `qoder-cn` …）。
 /// `target_for_scope` 是 **fail-closed** 解析（未知 / 拼错 ⇒ 可读错误），并据作用域挑出对应平台的目标。
 async fn api_probe_start(Json(body): Json<Value>) -> Response {
@@ -3522,8 +3609,18 @@ async fn api_probe_start(Json(body): Json<Value>) -> Response {
             .filter_map(|item| item.as_str().map(String::from))
             .collect()
     });
+    /* ★ 显式格清单（与 `uids` / `models` 互斥）：账号页台账卡只探点名的格。
+    逐项反序列化，坏项丢弃而不是整请求 400 —— 与 `uids` / `models` 的
+    `filter_map` 同款宽容度（前端偶尔会带 `null`）。 */
+    let cells: Option<Vec<buddy_switch_gateway::model_probe::ProbeStartCell>> =
+        body.get("cells").and_then(Value::as_array).map(|items| {
+            items
+                .iter()
+                .filter_map(|item| serde_json::from_value(item.clone()).ok())
+                .collect()
+        });
     let adopt = body.get("adopt").and_then(Value::as_bool).unwrap_or(false);
-    match buddy_switch_gateway::model_probe::start(&target, uids, models, adopt).await {
+    match buddy_switch_gateway::model_probe::start(&target, uids, models, cells, adopt).await {
         Ok(total) => {
             tokio::spawn(buddy_switch_gateway::model_probe::run(target));
             json_ok(json!({ "started": true, "total": total }))
@@ -3542,6 +3639,18 @@ async fn api_probe_status(RawQuery(query): RawQuery) -> Response {
         return json_err(error, StatusCode::BAD_REQUEST);
     }
     json_ok(buddy_switch_gateway::model_probe::status())
+}
+
+/// GET /api/gateway/probe/ledger —— 某作用域的**实测台账**（跨重启累积）。
+///
+/// 与 `/status` 的分工：`status` = 本轮作业（进度 / 相位）；本路由 = 这些格**最近一次**的
+/// 实判（落盘 `probe_results.json`，按作用域隔离）。账号页重启后仍要看到实测结论 ⇒ 读它。
+async fn api_probe_ledger(RawQuery(query): RawQuery) -> Response {
+    let scope = query_value(query.as_deref(), "scope").unwrap_or_default();
+    if let Err(error) = resolve_scope_param(Some(&scope)) {
+        return json_err(error, StatusCode::BAD_REQUEST);
+    }
+    json_ok(buddy_switch_gateway::model_probe::ledger_snapshot(&scope))
 }
 
 /// POST /api/gateway/probe/cancel —— 请求取消（逐格检查；已探到的格保留）。
@@ -4290,6 +4399,69 @@ async fn api_trae_revoke_api_key(Json(body): Json<Value>) -> Response {
         Ok(()) => json_ok(json!({ "ok": true })),
         Err(error) => json_err(error, StatusCode::BAD_REQUEST),
     }
+}
+
+/// POST /api/trae/gateway/keys/policy —— 更新某把 Trae Key 的策略（issue #76）。
+///
+/// 与 WB 侧同形：入参是**完整策略**（非补丁），矛盾值由 `KeyPolicy::normalized`
+/// 收敛到安全的一边，空白名单拒绝。
+async fn api_trae_set_key_policy(Json(body): Json<Value>) -> Response {
+    use buddy_switch_gateway::apikey::KeyPolicy;
+    let id = body.get("id").and_then(Value::as_str).unwrap_or("").trim();
+    if id.is_empty() {
+        return json_err("缺少 id".to_string(), StatusCode::BAD_REQUEST);
+    }
+    let policy: KeyPolicy =
+        match serde_json::from_value(body.get("policy").cloned().unwrap_or(Value::Null)) {
+            Ok(policy) => policy,
+            Err(error) => {
+                return json_err(format!("策略字段不合法: {error}"), StatusCode::BAD_REQUEST)
+            }
+        };
+    let state = crate::trae_gateway_host::shared_state();
+    match state.key_store.update_policy(id, policy) {
+        Ok(()) => json_ok(json!({ "ok": true })),
+        Err(error) => json_err(error, StatusCode::BAD_REQUEST),
+    }
+}
+
+/// GET /api/trae/gateway/keys/usage?id=… —— 读某把 Trae Key 的用量快照。
+async fn api_trae_key_usage(RawQuery(query): RawQuery) -> Response {
+    let id = query_value(query.as_deref(), "id").unwrap_or_default();
+    if id.is_empty() {
+        return json_err("缺少 id".to_string(), StatusCode::BAD_REQUEST);
+    }
+    let state = crate::trae_gateway_host::shared_state();
+    let now = buddy_switch_core::modules::config::now_ms();
+    let Some(record) = state
+        .key_store
+        .list()
+        .into_iter()
+        .find(|record| record.id == id)
+    else {
+        return json_err("API Key 不存在".to_string(), StatusCode::BAD_REQUEST);
+    };
+    let usage = state.key_usage.snapshot(&id);
+    let used = state
+        .key_usage
+        .used_for(&id, record.quota_unit, record.quota_period, now);
+    let exceeded = matches!(
+        buddy_switch_gateway::apikey::quota_verdict_for_policy(&record.policy(), used),
+        buddy_switch_gateway::apikey::QuotaVerdict::Exceeded { .. }
+    );
+    json_ok(json!({
+        "ok": true,
+        "keyId": id,
+        "unit": record.quota_unit,
+        "period": record.quota_period,
+        "periodKey": record.quota_period.period_key(now),
+        "used": used,
+        "total": usage
+            .as_ref()
+            .map(|entry| entry.counters(record.quota_unit).total)
+            .unwrap_or(0),
+        "exceeded": exceeded,
+    }))
 }
 
 /// POST /api/trae/gateway/keys/restore —— 撤销吊销（Key 重新可用，`{id}`）。
@@ -6224,6 +6396,16 @@ mod tests {
                 "revokedAt",
                 "revoked",
                 "lastUsedAt",
+                // ★ issue #76：策略七件套（`apikey.rs` 同款白名单已同步）。
+                //   与 `suffix` 同一性质：**显式批准**才进掩敏视图；
+                //   真正的红线是下面三条（无 hash / 无明文 / 无摘要）。
+                "quotaMode",
+                "quotaLimit",
+                "quotaUnit",
+                "quotaPeriod",
+                "scopeMode",
+                "scopeAccounts",
+                "scopeGroups",
             ]),
             "masked record must be an explicit non-secret whitelist"
         );
@@ -6870,6 +7052,103 @@ async fn api_unified_gateway_revoke_key(Json(body): Json<Value>) -> Response {
     }
 }
 
+/// POST /api/unified-gateway/keys/policy —— 更新某把统一 Key 的策略（issue #76）。
+///
+/// ★ **不动命名空间授权**（`namespaces` / `biz_namespace`）—— 那是「能访问哪些平台」，
+/// 与配额是两个维度，混进同一个入口会让「只改配额」意外清掉授权。
+async fn api_unified_gateway_set_key_policy(Json(body): Json<Value>) -> Response {
+    use buddy_switch_gateway::apikey::KeyPolicy;
+    let id = body.get("id").and_then(Value::as_str).unwrap_or("");
+    let policy: KeyPolicy =
+        match serde_json::from_value(body.get("policy").cloned().unwrap_or(Value::Null)) {
+            Ok(policy) => policy,
+            Err(error) => {
+                return json_err(format!("策略字段不合法: {error}"), StatusCode::BAD_REQUEST)
+            }
+        };
+    match crate::unified_gateway_host::shared_state()
+        .keys
+        .update_policy(id, policy)
+    {
+        Ok(()) => json_ok(json!({ "ok": true })),
+        Err(error) => json_err(error, StatusCode::BAD_REQUEST),
+    }
+}
+
+/// GET /api/unified-gateway/keys/usage-all —— **批量**用量（密钥表每行一列）。
+///
+/// 为什么不复用单 Key 命令循环调用：密钥表一屏十几行，N 次往返会让打开分区明显变慢；
+/// 账本本来就是一次 `load()` 全量读，批量反而更省。
+async fn api_unified_gateway_key_usage_all() -> Response {
+    let state = crate::unified_gateway_host::shared_state();
+    let now = buddy_switch_core::modules::config::now_ms();
+    let mut rows = serde_json::Map::new();
+    for record in state.keys.list() {
+        let policy = record.policy();
+        let used =
+            state
+                .key_usage
+                .used_for(&record.id, policy.quota_unit, policy.quota_period, now);
+        let exceeded = matches!(
+            buddy_switch_gateway::apikey::quota_verdict_for_policy(&policy, used),
+            buddy_switch_gateway::apikey::QuotaVerdict::Exceeded { .. }
+        );
+        rows.insert(
+            record.id.clone(),
+            json!({
+                "ok": true,
+                "keyId": record.id,
+                "unit": policy.quota_unit,
+                "period": policy.quota_period,
+                "periodKey": policy.quota_period.period_key(now),
+                "used": used,
+                "total": state
+                    .key_usage
+                    .snapshot(&record.id)
+                    .map(|entry| entry.counters(policy.quota_unit).total)
+                    .unwrap_or(0),
+                "exceeded": exceeded,
+            }),
+        );
+    }
+    json_ok(Value::Object(rows))
+}
+
+/// GET /api/unified-gateway/keys/usage?id=… —— 读某把统一 Key 的用量快照。
+async fn api_unified_gateway_key_usage(RawQuery(query): RawQuery) -> Response {
+    let id = query_value(query.as_deref(), "id").unwrap_or_default();
+    if id.is_empty() {
+        return json_err("缺少 id".to_string(), StatusCode::BAD_REQUEST);
+    }
+    let state = crate::unified_gateway_host::shared_state();
+    let now = buddy_switch_core::modules::config::now_ms();
+    let Some(record) = state.keys.list().into_iter().find(|record| record.id == id) else {
+        return json_err("API Key 不存在".to_string(), StatusCode::BAD_REQUEST);
+    };
+    let policy = record.policy();
+    let usage = state.key_usage.snapshot(&id);
+    let used = state
+        .key_usage
+        .used_for(&id, policy.quota_unit, policy.quota_period, now);
+    let exceeded = matches!(
+        buddy_switch_gateway::apikey::quota_verdict_for_policy(&policy, used),
+        buddy_switch_gateway::apikey::QuotaVerdict::Exceeded { .. }
+    );
+    json_ok(json!({
+        "ok": true,
+        "keyId": id,
+        "unit": policy.quota_unit,
+        "period": policy.quota_period,
+        "periodKey": policy.quota_period.period_key(now),
+        "used": used,
+        "total": usage
+            .as_ref()
+            .map(|entry| entry.counters(policy.quota_unit).total)
+            .unwrap_or(0),
+        "exceeded": exceeded,
+    }))
+}
+
 /// POST /api/unified-gateway/keys/restore —— 撤销吊销（同一把 Key 重新可用）。
 async fn api_unified_gateway_restore_key(Json(body): Json<Value>) -> Response {
     let id = body.get("id").and_then(Value::as_str).unwrap_or("");
@@ -7510,6 +7789,80 @@ async fn api_qoder_revoke_api_key(Json(body): Json<Value>) -> Response {
     }
 }
 
+/// POST /api/qoder/gateway/keys/policy —— 更新某把 Qoder Key 的策略（issue #76）。
+async fn api_qoder_set_key_policy(Json(body): Json<Value>) -> Response {
+    use buddy_switch_gateway::apikey::KeyPolicy;
+    let id = body.get("id").and_then(Value::as_str).unwrap_or("").trim();
+    if id.is_empty() {
+        return json_err("缺少 id".to_string(), StatusCode::BAD_REQUEST);
+    }
+    let policy: KeyPolicy =
+        match serde_json::from_value(body.get("policy").cloned().unwrap_or(Value::Null)) {
+            Ok(policy) => policy,
+            Err(error) => {
+                return json_err(format!("策略字段不合法: {error}"), StatusCode::BAD_REQUEST)
+            }
+        };
+    let state = crate::qoder_gateway_host::shared_state();
+    match state.key_store.update_policy(id, policy) {
+        Ok(()) => json_ok(json!({ "ok": true })),
+        Err(error) => json_err(error, StatusCode::BAD_REQUEST),
+    }
+}
+
+/// GET /api/qoder/gateway/keys/usage?id=… —— 读某把 Qoder Key 的用量快照。
+///
+/// ⚠️ Qoder 的 `key_store.list()` 返回**掩码视图**（`Vec<Value>`）——按 `id` 取出后
+/// 从 JSON 键读策略（`quotaUnit` / `quotaPeriod`），不是记录本体。
+async fn api_qoder_key_usage(RawQuery(query): RawQuery) -> Response {
+    let id = query_value(query.as_deref(), "id").unwrap_or_default();
+    if id.is_empty() {
+        return json_err("缺少 id".to_string(), StatusCode::BAD_REQUEST);
+    }
+    let state = crate::qoder_gateway_host::shared_state();
+    let now = buddy_switch_core::modules::config::now_ms();
+    let Some(row) = state
+        .key_store
+        .list()
+        .into_iter()
+        .find(|row| row["id"] == serde_json::json!(id))
+    else {
+        return json_err("API Key 不存在".to_string(), StatusCode::BAD_REQUEST);
+    };
+    // 掩码视图是 camelCase ⇒ 按字符串解析枚举（与前端同形态）。
+    let policy: buddy_switch_gateway::apikey::KeyPolicy = match serde_json::from_value(row.clone())
+    {
+        Ok(policy) => policy,
+        Err(error) => {
+            return json_err(
+                format!("策略字段异常: {error}"),
+                StatusCode::INTERNAL_SERVER_ERROR,
+            )
+        }
+    };
+    let usage = state.key_usage.snapshot(&id);
+    let used = state
+        .key_usage
+        .used_for(&id, policy.quota_unit, policy.quota_period, now);
+    let exceeded = matches!(
+        buddy_switch_gateway::apikey::quota_verdict_for_policy(&policy, used),
+        buddy_switch_gateway::apikey::QuotaVerdict::Exceeded { .. }
+    );
+    json_ok(json!({
+        "ok": true,
+        "keyId": id,
+        "unit": policy.quota_unit,
+        "period": policy.quota_period,
+        "periodKey": policy.quota_period.period_key(now),
+        "used": used,
+        "total": usage
+            .as_ref()
+            .map(|entry| entry.counters(policy.quota_unit).total)
+            .unwrap_or(0),
+        "exceeded": exceeded,
+    }))
+}
+
 /// POST /api/qoder/gateway/keys/restore —— 撤销吊销（Key 重新可用，`{id}`）。
 async fn api_qoder_restore_api_key(Json(body): Json<Value>) -> Response {
     let id = body.get("id").and_then(Value::as_str).unwrap_or("").trim();
@@ -7791,12 +8144,7 @@ async fn api_set_loomy_pool_exclusion(Json(body): Json<Value>) -> Response {
         .and_then(Value::as_bool)
         .unwrap_or(true);
     let note = body.get("note").and_then(Value::as_str).unwrap_or("");
-    match buddy_switch_gateway::routes::pool_admin::persist(
-        "loomy:cn",
-        uid,
-        excluded,
-        note,
-    ) {
+    match buddy_switch_gateway::routes::pool_admin::persist("loomy:cn", uid, excluded, note) {
         Ok(value) => {
             if excluded {
                 crate::loomy_gateway_host::shared_state()
@@ -7897,9 +8245,7 @@ async fn api_loomy_checkin_all() -> Response {
     if let Err(error) = require_capability(Product::Loomy, capability::Capability::Checkin) {
         return json_err(error, StatusCode::FORBIDDEN);
     }
-    json_ok(
-        loomy::checkin::run_cycle_for(loomy::region::LoomyRegion::Cn).await,
-    )
+    json_ok(loomy::checkin::run_cycle_for(loomy::region::LoomyRegion::Cn).await)
 }
 
 /// POST /api/loomy/checkin/claim —— 触发每日赠送额度（幂等）。

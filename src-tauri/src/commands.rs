@@ -2696,6 +2696,59 @@ pub fn delete_api_key(id: String) -> Result<Value, String> {
     Ok(json!({ "ok": true }))
 }
 
+/// POST /api/gateway/keys/policy —— 更新某把 Key 的策略（配额 + 账号范围）。
+///
+/// ★ 入参是**完整策略**（不是补丁）：两个 radio 必选其一由前端抽屉保证，
+/// 后端不猜「用户是不是想只改一半」。矛盾值由 `KeyPolicy::normalized`
+/// 收敛到安全的一边（不限额 ⇒ 清上限；全部账号 ⇒ 清白名单）。
+#[tauri::command]
+pub fn set_key_policy(
+    id: String,
+    policy: buddy_switch_gateway::apikey::KeyPolicy,
+) -> Result<Value, String> {
+    let state = gateway::shared_state();
+    state.keys.update_policy(&id, policy)?;
+    Ok(json!({ "ok": true }))
+}
+
+/// GET /api/gateway/keys/usage —— 读某把 Key 的用量快照（累计 + 本周期）。
+///
+/// 与 `gateway_api_keys`（list）分开的理由：用量是**每请求写**的账本，
+/// 让列表命令每次多读一个文件不划算；且用量只在打开抽屉 / 展开行时才需要。
+#[tauri::command]
+pub fn key_usage(id: String) -> Result<Value, String> {
+    use buddy_switch_gateway::apikey::QuotaVerdict;
+    let state = gateway::shared_state();
+    let Some(record) = state.keys.list().into_iter().find(|record| record.id == id) else {
+        return Err("API Key 不存在".to_string());
+    };
+    let now = buddy_switch_core::modules::config::now_ms();
+    let used = state
+        .key_usage
+        .used_for(&id, record.quota_unit, record.quota_period, now);
+    // 累计用量按同一口径取（`KeyUsage` 是两个口径各自一份计数，没有单一 `total`）。
+    let total = state
+        .key_usage
+        .snapshot(&id)
+        .map(|entry| entry.counters(record.quota_unit).total)
+        .unwrap_or(0);
+    // 一并给出判定结论：前端不用再实现一遍「超没超限」（同一判据的唯一出口）。
+    let exceeded = matches!(
+        buddy_switch_gateway::apikey::quota_verdict_for_policy(&record.policy(), used),
+        QuotaVerdict::Exceeded { .. }
+    );
+    Ok(json!({
+        "ok": true,
+        "keyId": id,
+        "unit": record.quota_unit,
+        "period": record.quota_period,
+        "periodKey": record.quota_period.period_key(now),
+        "used": used,
+        "total": total,
+        "exceeded": exceeded,
+    }))
+}
+
 /// GET /api/gateway/pool/exclusions —— 该 region 的**排除账号**列表。
 ///
 /// 「排除」= 用户不想让网关用这个号（硬约束：自动选号 / 兜底 / 粘性 / 指定全跳过）。
@@ -2962,15 +3015,20 @@ pub fn clear_gateway_logs() -> Value {
 /// 对应平台的目标（WB / Qoder；Trae 本轮不做）。
 ///
 /// `uids` / `models` **缺省 = 用池里的全部账号 / 该作用域目录**（与 `start` 的 `Option` 语义一致）。
+///
+/// ★ `cells`（**显式格清单**）与那两根轴**互斥**，给了它就只探点名的格 —— 账号页台账卡
+/// 「实测 N 格」走这条（2 项就是 2 格，不铺笛卡尔积）。
 #[tauri::command]
 pub async fn probe_start(
     scope: String,
     uids: Option<Vec<String>>,
     models: Option<Vec<String>>,
+    cells: Option<Vec<buddy_switch_gateway::model_probe::ProbeStartCell>>,
     adopt: bool,
 ) -> Result<Value, String> {
     let target = buddy_switch_gateway::model_probe::target_for_scope(&scope)?;
-    let total = buddy_switch_gateway::model_probe::start(&target, uids, models, adopt).await?;
+    let total =
+        buddy_switch_gateway::model_probe::start(&target, uids, models, cells, adopt).await?;
     tauri::async_runtime::spawn(buddy_switch_gateway::model_probe::run(target));
     Ok(json!({ "started": true, "total": total }))
 }
@@ -2990,6 +3048,18 @@ pub fn probe_status(scope: String) -> Result<Value, String> {
 pub fn probe_cancel(scope: String) -> Result<Value, String> {
     resolve_scope_param(Some(&scope))?;
     Ok(buddy_switch_gateway::model_probe::cancel())
+}
+
+/// GET /api/gateway/probe/ledger —— 某作用域的**实测台账**（跨重启累积）。
+///
+/// 与 `probe_status` 的分工：`status` = 本轮作业（进度 / 相位）；本命令 = 这些格
+/// **最近一次**的实判（落盘 `probe_results.json`，按作用域隔离）。
+///
+/// ★ 账号页「客户端限流」重启后仍要看到实测结论 ⇒ 必须读它，而不是只读进程内 `probeCells`。
+#[tauri::command]
+pub fn probe_ledger(scope: String) -> Result<Value, String> {
+    resolve_scope_param(Some(&scope))?;
+    Ok(buddy_switch_gateway::model_probe::ledger_snapshot(&scope))
 }
 
 // ===========================================================================
@@ -3669,6 +3739,65 @@ pub fn revoke_trae_api_key(id: String) -> Result<Value, String> {
     let state = trae_gateway::shared_state();
     state.key_store.revoke(id)?;
     Ok(json!({ "ok": true }))
+}
+
+/// POST /api/trae/gateway/keys/policy —— 更新某把 Trae Key 的策略（issue #76）。
+///
+/// 与 WB 侧同形：完整策略（非补丁）+ `KeyPolicy::normalized` 的矛盾收敛。
+#[tauri::command]
+pub fn set_trae_key_policy(
+    id: String,
+    policy: buddy_switch_gateway::apikey::KeyPolicy,
+) -> Result<Value, String> {
+    let id = id.trim();
+    if id.is_empty() {
+        return Err("缺少 id".to_string());
+    }
+    let state = trae_gateway::shared_state();
+    state.key_store.update_policy(id, policy)?;
+    Ok(json!({ "ok": true }))
+}
+
+/// GET /api/trae/gateway/keys/usage —— 读某把 Trae Key 的用量快照。
+#[tauri::command]
+pub fn trae_key_usage(id: String) -> Result<Value, String> {
+    use buddy_switch_gateway::apikey::QuotaVerdict;
+    let id = id.trim();
+    if id.is_empty() {
+        return Err("缺少 id".to_string());
+    }
+    let state = trae_gateway::shared_state();
+    let Some(record) = state
+        .key_store
+        .list()
+        .into_iter()
+        .find(|record| record.id == id)
+    else {
+        return Err("API Key 不存在".to_string());
+    };
+    let now = buddy_switch_core::modules::config::now_ms();
+    let used = state
+        .key_usage
+        .used_for(id, record.quota_unit, record.quota_period, now);
+    let total = state
+        .key_usage
+        .snapshot(id)
+        .map(|entry| entry.counters(record.quota_unit).total)
+        .unwrap_or(0);
+    let exceeded = matches!(
+        buddy_switch_gateway::apikey::quota_verdict_for_policy(&record.policy(), used),
+        QuotaVerdict::Exceeded { .. }
+    );
+    Ok(json!({
+        "ok": true,
+        "keyId": id,
+        "unit": record.quota_unit,
+        "period": record.quota_period,
+        "periodKey": record.quota_period.period_key(now),
+        "used": used,
+        "total": total,
+        "exceeded": exceeded,
+    }))
 }
 
 /// POST /api/trae/gateway/keys/restore —— 撤销吊销（Key 重新可用，`{id}`）。
@@ -4417,6 +4546,91 @@ pub fn revoke_unified_api_key(id: String) -> Result<Value, String> {
     Ok(json!({ "ok": true }))
 }
 
+/// POST /api/unified-gateway/keys/policy —— 更新某把统一 Key 的策略（issue #76）。
+///
+/// ★ 不动命名空间授权（`namespaces` / `biz_namespace`）—— 与配额是两个维度。
+#[tauri::command]
+pub fn set_unified_key_policy(
+    id: String,
+    policy: buddy_switch_gateway::apikey::KeyPolicy,
+) -> Result<Value, String> {
+    unified_gateway::shared_state()
+        .keys
+        .update_policy(&id, policy)?;
+    Ok(json!({ "ok": true }))
+}
+
+/// GET /api/unified-gateway/keys/usage-all —— **批量**用量（密钥表每行一列）。
+#[tauri::command]
+pub fn unified_key_usage_all() -> Result<Value, String> {
+    let state = unified_gateway::shared_state();
+    let now = buddy_switch_core::modules::config::now_ms();
+    let mut rows = serde_json::Map::new();
+    for record in state.keys.list() {
+        let policy = record.policy();
+        let used =
+            state
+                .key_usage
+                .used_for(&record.id, policy.quota_unit, policy.quota_period, now);
+        let exceeded = matches!(
+            buddy_switch_gateway::apikey::quota_verdict_for_policy(&policy, used),
+            buddy_switch_gateway::apikey::QuotaVerdict::Exceeded { .. }
+        );
+        rows.insert(
+            record.id.clone(),
+            json!({
+                "ok": true,
+                "keyId": record.id,
+                "unit": policy.quota_unit,
+                "period": policy.quota_period,
+                "periodKey": policy.quota_period.period_key(now),
+                "used": used,
+                "total": state
+                    .key_usage
+                    .snapshot(&record.id)
+                    .map(|entry| entry.counters(policy.quota_unit).total)
+                    .unwrap_or(0),
+                "exceeded": exceeded,
+            }),
+        );
+    }
+    Ok(Value::Object(rows))
+}
+
+/// GET /api/unified-gateway/keys/usage —— 读某把统一 Key 的用量快照。
+#[tauri::command]
+pub fn unified_key_usage(id: String) -> Result<Value, String> {
+    use buddy_switch_gateway::apikey::QuotaVerdict;
+    let state = unified_gateway::shared_state();
+    let now = buddy_switch_core::modules::config::now_ms();
+    let Some(record) = state.keys.list().into_iter().find(|record| record.id == id) else {
+        return Err("API Key 不存在".to_string());
+    };
+    let policy = record.policy();
+    let used = state
+        .key_usage
+        .used_for(&id, policy.quota_unit, policy.quota_period, now);
+    let total = state
+        .key_usage
+        .snapshot(&id)
+        .map(|entry| entry.counters(policy.quota_unit).total)
+        .unwrap_or(0);
+    let exceeded = matches!(
+        buddy_switch_gateway::apikey::quota_verdict_for_policy(&policy, used),
+        QuotaVerdict::Exceeded { .. }
+    );
+    Ok(json!({
+        "ok": true,
+        "keyId": id,
+        "unit": policy.quota_unit,
+        "period": policy.quota_period,
+        "periodKey": policy.quota_period.period_key(now),
+        "used": used,
+        "total": total,
+        "exceeded": exceeded,
+    }))
+}
+
 /// POST /api/unified-gateway/keys/restore —— 撤销吊销（**同一把 Key 重新可用**）。
 ///
 /// 与 `delete` 互逆：只接受**已吊销**的 Key。撤销一次误吊销不需要重建 Key、
@@ -4844,6 +5058,67 @@ pub fn revoke_qoder_api_key(id: String) -> Result<Value, String> {
     let state = qoder_gateway::shared_state();
     state.key_store.revoke(id)?;
     Ok(json!({ "ok": true }))
+}
+
+/// POST /api/qoder/gateway/keys/policy —— 更新某把 Qoder Key 的策略（issue #76）。
+#[tauri::command]
+pub fn set_qoder_key_policy(
+    id: String,
+    policy: buddy_switch_gateway::apikey::KeyPolicy,
+) -> Result<Value, String> {
+    let id = id.trim();
+    if id.is_empty() {
+        return Err("缺少 id".to_string());
+    }
+    let state = qoder_gateway::shared_state();
+    state.key_store.update_policy(id, policy)?;
+    Ok(json!({ "ok": true }))
+}
+
+/// GET /api/qoder/gateway/keys/usage —— 读某把 Qoder Key 的用量快照。
+///
+/// ⚠️ Qoder 的 `key_store.list()` 返回**掩码视图**（`Vec<Value>`）⇒ 策略从 JSON 键读。
+#[tauri::command]
+pub fn qoder_key_usage(id: String) -> Result<Value, String> {
+    use buddy_switch_gateway::apikey::QuotaVerdict;
+    let id = id.trim();
+    if id.is_empty() {
+        return Err("缺少 id".to_string());
+    }
+    let state = qoder_gateway::shared_state();
+    let Some(row) = state
+        .key_store
+        .list()
+        .into_iter()
+        .find(|row| row["id"] == json!(id))
+    else {
+        return Err("API Key 不存在".to_string());
+    };
+    let policy: buddy_switch_gateway::apikey::KeyPolicy =
+        serde_json::from_value(row).map_err(|error| format!("策略字段异常: {error}"))?;
+    let now = buddy_switch_core::modules::config::now_ms();
+    let used = state
+        .key_usage
+        .used_for(id, policy.quota_unit, policy.quota_period, now);
+    let total = state
+        .key_usage
+        .snapshot(id)
+        .map(|entry| entry.counters(policy.quota_unit).total)
+        .unwrap_or(0);
+    let exceeded = matches!(
+        buddy_switch_gateway::apikey::quota_verdict_for_policy(&policy, used),
+        QuotaVerdict::Exceeded { .. }
+    );
+    Ok(json!({
+        "ok": true,
+        "keyId": id,
+        "unit": policy.quota_unit,
+        "period": policy.quota_period,
+        "periodKey": policy.quota_period.period_key(now),
+        "used": used,
+        "total": total,
+        "exceeded": exceeded,
+    }))
 }
 
 /// POST /api/qoder/gateway/keys/restore —— 撤销吊销（Key 重新可用，`{id}`）。

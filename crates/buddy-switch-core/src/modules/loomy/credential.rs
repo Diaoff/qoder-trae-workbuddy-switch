@@ -31,10 +31,7 @@ use crate::modules::loomy::region::{realm_spec, LoomyRegion};
 /// 32 位小写 hex —— 讯飞 session 的固定形态。
 fn is_loomy_session(token: &str) -> bool {
     let bytes = token.as_bytes();
-    bytes.len() == 32
-        && bytes
-            .iter()
-            .all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+    bytes.len() == 32 && bytes.iter().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
 }
 
 /// 15–20 位纯数字 —— 讯飞 `userid` 的形态。
@@ -108,9 +105,10 @@ pub struct ParsedCredential {
 /// 复用的同一实现），否则会出现「识别说是我、导入却报错」的自相矛盾。
 pub fn looks_like_loomy_credential(input: &serde_json::Value) -> bool {
     let source = unwrap_wrappers(input.clone());
-    let Some(token) =
-        pick_string(&source, &["access_token", "accessToken", "session", "token"])
-    else {
+    let Some(token) = pick_string(
+        &source,
+        &["access_token", "accessToken", "session", "token"],
+    ) else {
         return false;
     };
     let userid = pick_string(&source, &["userid", "user_id", "userId"]).unwrap_or_default();
@@ -123,9 +121,7 @@ pub fn looks_like_loomy_credential(input: &serde_json::Value) -> bool {
 /// 接受扁平 / 嵌套 `{auth:{…}}` / 数组首项；camelCase 与 snake_case 都认。
 /// 缺 token 或无判别特征 ⇒ 可读 `Err`（fail-closed，不产出永远 401 的凭据）。
 pub fn parse_credential(input: &serde_json::Value) -> Result<ParsedCredential, String> {
-    let fail = |message: &str| -> Result<ParsedCredential, String> {
-        Err(message.to_string())
-    };
+    let fail = |message: &str| -> Result<ParsedCredential, String> { Err(message.to_string()) };
 
     if !input.is_object() && !input.is_array() {
         return fail("Loomy 凭据必须是一个 JSON 对象");
@@ -141,8 +137,10 @@ pub fn parse_credential(input: &serde_json::Value) -> Result<ParsedCredential, S
     }
     let source = unwrap_wrappers(root);
 
-    let Some(token) = pick_string(&source, &["access_token", "accessToken", "session", "token"])
-    else {
+    let Some(token) = pick_string(
+        &source,
+        &["access_token", "accessToken", "session", "token"],
+    ) else {
         return fail("缺少访问令牌：请提供 Loomy 的 `access_token`（讯飞 session）字段");
     };
     let userid = pick_string(&source, &["userid", "user_id", "userId"]).unwrap_or_default();
@@ -215,7 +213,10 @@ mod tests {
     #[test]
     fn shape_hints_discriminate_loomy_forms() {
         assert!(is_loomy_session(&"a".repeat(32)));
-        assert!(!is_loomy_session(&"A".repeat(32)), "大写不算（session 是小写 hex）");
+        assert!(
+            !is_loomy_session(&"A".repeat(32)),
+            "大写不算（session 是小写 hex）"
+        );
         assert!(!is_loomy_session(&"a".repeat(31)));
         assert!(is_loomy_userid("123456789012345"));
         assert!(is_loomy_userid("12345678901234567890"));
@@ -229,7 +230,8 @@ mod tests {
     #[test]
     fn accepts_flat_and_nested_and_array_forms() {
         let flat = json!({"access_token": "a".repeat(32), "userid": "123456789012345678"});
-        let nested = json!({"auth": {"access_token": "a".repeat(32), "userid": "123456789012345678"}});
+        let nested =
+            json!({"auth": {"access_token": "a".repeat(32), "userid": "123456789012345678"}});
         let array = json!([{"access_token": "a".repeat(32), "userid": "123456789012345678"}]);
         for input in [flat, nested, array] {
             let parsed = parse_credential(&input).expect("应解析成功");
@@ -244,7 +246,8 @@ mod tests {
     #[test]
     fn rejects_foreign_credentials_without_discriminating_features() {
         // JWT 三段式 + 只有 token 字段：别家的典型形状，不能吞。
-        let jwt = json!({"access_token": format!("eyJhbGciOi{}.{}.x", "a".repeat(16), "b".repeat(16))});
+        let jwt =
+            json!({"access_token": format!("eyJhbGciOi{}.{}.x", "a".repeat(16), "b".repeat(16))});
         assert!(parse_credential(&jwt).is_err());
         assert!(!looks_like_loomy_credential(&jwt));
         // 数字串 token 但长度不对。

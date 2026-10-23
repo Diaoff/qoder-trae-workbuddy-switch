@@ -525,6 +525,9 @@ pub fn run() {
             commands::revoke_api_key,
             commands::restore_api_key,
             commands::delete_api_key,
+            // ★ issue #76：密钥策略（用量配额 + 可访问账号）与按密钥用量。
+            commands::set_key_policy,
+            commands::key_usage,
             commands::revive_gateway_account,
             commands::get_unified_gateway_config,
             commands::save_unified_gateway_config,
@@ -533,6 +536,10 @@ pub fn run() {
             commands::list_unified_api_keys,
             commands::create_unified_api_key,
             commands::revoke_unified_api_key,
+            // ★ issue #76：统一网关密钥策略与按密钥用量。
+            commands::set_unified_key_policy,
+            commands::unified_key_usage,
+            commands::unified_key_usage_all,
             commands::restore_unified_api_key,
             commands::delete_unified_api_key,
             commands::get_gateway_models,
@@ -550,6 +557,7 @@ pub fn run() {
             commands::probe_start,
             commands::probe_status,
             commands::probe_cancel,
+            commands::probe_ledger,
             // ---- Trae 模块（与 server 的 /api/trae/* 路由一一对应）----
             commands::get_trae_env,
             commands::get_trae_variants,
@@ -655,6 +663,9 @@ pub fn run() {
             commands::list_trae_api_keys,
             commands::create_trae_api_key,
             commands::revoke_trae_api_key,
+            // ★ issue #76：Trae 密钥策略与按密钥用量（与 WB 侧同形）。
+            commands::set_trae_key_policy,
+            commands::trae_key_usage,
             commands::restore_trae_api_key,
             commands::delete_trae_api_key,
             commands::open_trae_data_dir,
@@ -670,6 +681,9 @@ pub fn run() {
             commands::list_qoder_api_keys,
             commands::create_qoder_api_key,
             commands::revoke_qoder_api_key,
+            // ★ issue #76：Qoder 密钥策略与按密钥用量（与 WB / Trae 侧同形）。
+            commands::set_qoder_key_policy,
+            commands::qoder_key_usage,
             commands::restore_qoder_api_key,
             commands::delete_qoder_api_key,
             commands::get_qoder_gateway_logs,

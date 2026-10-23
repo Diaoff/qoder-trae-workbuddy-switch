@@ -147,7 +147,11 @@ mod tests {
         );
         assert_eq!(classify_code("100001"), Some(UpstreamErrorKind::Client));
         assert_eq!(classify_code("999999"), Some(UpstreamErrorKind::Server));
-        assert_eq!(classify_code(""), None, "无 code（如 /models 的裸列表）不算业务失败");
+        assert_eq!(
+            classify_code(""),
+            None,
+            "无 code（如 /models 的裸列表）不算业务失败"
+        );
     }
 
     #[test]

@@ -79,13 +79,7 @@ fn build_escaped_path(raw_path: &str) -> String {
 fn build_escaped_query_string(query_params: &[(String, String)]) -> String {
     query_params
         .iter()
-        .map(|(key, value)| {
-            format!(
-                "{}={}",
-                escape_rfc3986(key),
-                escape_rfc3986(value)
-            )
-        })
+        .map(|(key, value)| format!("{}={}", escape_rfc3986(key), escape_rfc3986(value)))
         .collect::<Vec<_>>()
         .join("&")
 }
@@ -162,10 +156,7 @@ pub struct AuthHeaders {
 /// ⚠️ **调用方纪律**：`input.body` 必须与实际发送的请求体是**同一个字符串**
 /// （先 `serde_json::to_string` 一次，签名与发送共用）—— 二次序列化会改变字节
 /// （键序 / 空格），签名随即失效。
-pub fn sign_caccount_request(
-    region: LoomyRegion,
-    input: &SignInput<'_>,
-) -> AuthHeaders {
+pub fn sign_caccount_request(region: LoomyRegion, input: &SignInput<'_>) -> AuthHeaders {
     let spec = realm_spec(region);
     let string_to_sign = build_signing_string(input);
     let mut mac = HmacSha1::new_from_slice(spec.access_key_secret.as_bytes())
@@ -256,7 +247,9 @@ mod tests {
                 nonce: "nonce",
             },
         );
-        assert!(headers.authorization.starts_with("account 2thryby66wxi53sk:"));
+        assert!(headers
+            .authorization
+            .starts_with("account 2thryby66wxi53sk:"));
         assert_eq!(headers.date, "Mon, 21 Oct 2026 00:00:00 GMT");
         assert_eq!(headers.nonce, "nonce");
         // "{}" 的 Content-MD5 非空。

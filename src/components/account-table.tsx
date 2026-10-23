@@ -1,6 +1,7 @@
 import type { ReactNode } from "react";
 
 import { Checkbox } from "@/components/ui/checkbox";
+import { shouldOpenAccountDetail } from "@/lib/account-open-guard";
 import { cn } from "@/lib/utils";
 
 /**
@@ -123,8 +124,10 @@ export function AccountTable<T>({
                   /* 行尾「更多」按钮不算「点行」：点它不该顺带打开详情。
                      ⚠️ 用**行自身的 onClick 里判断**而不是给动作格再挂一个 `stopPropagation` ——
                      表格行的可点区预算只有 2 个（勾选格 + 行本身，见 P4 门禁），
-                     多一个 onClick 处理器就会被那条守门判红。 */
-                  if (event.target instanceof Element && event.target.closest("[data-row-actions]")) return;
+                     多一个 onClick 处理器就会被那条守门判红。
+                     ★ 判据与卡片同源（`lib/account-open-guard.ts`）：菜单经 Portal 挂到 body，
+                     菜单项是 `div[role="menuitem"]` 不是 button —— 旧判据在本表里同样拦不住。 */
+                  if (!shouldOpenAccountDetail(event, "[data-row-actions]")) return;
                   onOpen(row);
                 }}
                 onKeyDown={(event) => {

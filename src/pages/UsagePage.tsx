@@ -62,12 +62,14 @@ const LoomyUsagePage = lazy(() => import("@/pages/LoomyUsagePage"));
 const QoderCreditsPage = lazy(() => import("@/pages/QoderCreditsPage"));
 
 /** 一级四视图（与原型 `tabs` 一一对应）。 */
-export type UsageTab = "trend" | "models" | "sessions" | "credits";
+export type UsageTab = "trend" | "models" | "sessions" | "keys" | "credits";
 
 const TAB_LABEL: Record<UsageTab, TranslationKey> = {
   trend: "wbStats.usage.view.trend",
   models: "wbStats.usage.view.models",
   sessions: "wbStats.usage.view.sessions",
+  // ★ issue #76 / U4：按密钥看用量（数据源是网关日志的 `keyId`）。
+  keys: "wbStats.usage.view.keys",
   credits: "wbStats.usage.view.credits",
 };
 
@@ -88,15 +90,22 @@ const PLATFORM_TABS: Record<Product, UsageTab[]> = {
   /* Loomy：一期数据源只有积分快照（每日重置的赠送池）⇒ 只开「积分」一个视图。
      「趋势 / 模型 / 会话」等网关日志落地后再按**数据**补齐（不画空壳）。 */
   loomy: ["credits"],
-  workbuddy: ["trend", "models", "sessions", "credits"],
-  trae: ["trend", "models", "credits"],
+  /* ★ issue #76 / U4：「按密钥」出现在 **WB 与 Trae** —— 判据是**日志里有没有 `keyId`**：
+       · WB：`RequestMeta.key_id`（`8f1a1c4`）；
+       · Trae：`record_request` 的 `key_id` 参数（本轮）；
+       · Qoder：`record_request` 的 `key_id` 参数（本轮）—— 用量页虽是另一套组件
+         （`QoderUsagePage`，按 credits 计），但它也接了同一个 `KeysView`；
+       · 统一网关：中继未接，日志没有 keyId。
+     缺数据源就**不画空壳**（§6 #5）—— 一张全是「无密钥调用」的表比没有这一页更糟。 */
+  workbuddy: ["trend", "models", "sessions", "keys", "credits"],
+  trae: ["trend", "models", "keys", "credits"],
   /* ★ 2026-10-21：Qoder **四个视图齐了**（原先是「只开趋势」）。
      判据是**数据**而不是习惯 —— 这一次真的是数据补齐了：
        · 模型：`qoder_usage.byModel` + 逐日 `days[].byModel`（一直是有的，只是没做视图）；
        · 会话：`qoder_usage.sessions`（按 sessionId 聚合 credits；标题取首个 user 消息）；
        · 积分：`qoder_credits`（上游额度接口的**实时余额**，与「趋势」是两个口径）。
      ⚠️ 会话视图是**只读排行**：Qoder 没有会话复制能力，不摆「打开 / 复制」按钮。 */
-  qoder: ["trend", "models", "sessions", "credits"],
+  qoder: ["trend", "models", "sessions", "keys", "credits"],
 };
 
 /** 平台 → 子页面（Token 页 / 积分页）。 */
@@ -295,7 +304,11 @@ export default function UsagePage({ defaultTab = "trend" }: { defaultTab?: Usage
           ) : tokenViews ? (
             <TokenPage
               key={reloadKey}
-              view={active === "models" ? "models" : active === "sessions" ? "sessions" : "trend"}
+              view={
+                active === "models" || active === "sessions" || active === "keys"
+                  ? active
+                  : "trend"
+              }
               {...viewProps}
             />
           ) : (

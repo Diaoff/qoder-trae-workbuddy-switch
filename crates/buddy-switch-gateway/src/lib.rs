@@ -25,6 +25,7 @@ pub mod credits_refresh;
 /// 模型禁用偏好（P11）：两个出口（`/v1/models` + 调用）共用的唯一判断点。
 pub mod disabled_models;
 pub mod error;
+pub mod key_usage;
 pub mod logging;
 /// 账号池 × 模型限流探测（一次性作业；见模块文档）。
 pub mod model_probe;
@@ -33,9 +34,9 @@ pub mod outbound;
 pub mod pool;
 pub mod protocol;
 // E1 · 代理 KPI 的真实计数（今日代理请求 / 今日换号；落盘，跨重启不丢）。
-pub mod proxy_kpi;
 /// Qoder 的 OpenAI / Anthropic 兼容网关（**平行第三套实现**，独立端口 57895）。
 pub mod loomy;
+pub mod proxy_kpi;
 pub mod qoder;
 pub mod rng;
 pub mod routes;

@@ -1013,7 +1013,7 @@ pub fn select_data_dir_for(variant: super::variant::TraeVariant) -> Option<PathB
 /// （`Option` 的 `Ord` 里 `None < Some(_)`，故反转比较）。
 ///
 /// 供 [`select_data_dir_for`] 取首项；`icube` 侧**遍历全部候选**时也用它
-/// （[`crate::modules::trae::icube::device_credential_by_device_id`] 按 `deviceId` 精确取、
+/// （[`crate::modules::trae::icube::device_secret_by_device_id`] 按 `deviceId` 精确取、
 /// [`crate::modules::trae::icube::login_state_dir_for`] 找「装着登录态的那个目录」）——
 /// 这两个场景都需要「按变体限定的全部存在候选」，而不是单个目录。
 pub(crate) fn data_dirs_by_activity_for(variant: super::variant::TraeVariant) -> Vec<PathBuf> {

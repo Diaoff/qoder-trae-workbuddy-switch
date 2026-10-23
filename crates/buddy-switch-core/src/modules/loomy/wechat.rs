@@ -74,9 +74,8 @@ pub fn extract_uuid(html: &str) -> Option<String> {
         return None;
     }
     // uuid 的字符集终止符（字符集外的第一个字符即结束）。
-    let terminator = |c: char| {
-        !(c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '=' | '+' | '/'))
-    };
+    let terminator =
+        |c: char| !(c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '=' | '+' | '/'));
     if let Some(pos) = html.find("/connect/qrcode/") {
         let rest = &html[pos + "/connect/qrcode/".len()..];
         let end = rest.find(terminator).unwrap_or(rest.len());
@@ -227,7 +226,9 @@ mod tests {
     fn auth_url_carries_appid_redirect_and_state() {
         let url = auth_url(LoomyRegion::Cn, "abc-123");
         assert!(
-            url.starts_with("https://open.weixin.qq.com/connect/qrconnect?appid=wx18d60be432287cf8"),
+            url.starts_with(
+                "https://open.weixin.qq.com/connect/qrconnect?appid=wx18d60be432287cf8"
+            ),
             "{url}"
         );
         // redirect_uri 必须 RFC3986 转义（冒号 / 斜杠不能裸出现）。
@@ -332,12 +333,10 @@ mod tests {
     fn only_confirmed_cancelled_expired_are_terminal() {
         assert!(!WechatPollStatus::Waiting.is_terminal());
         assert!(!WechatPollStatus::Scanned.is_terminal());
-        assert!(
-            WechatPollStatus::Confirmed {
-                code: "c".to_string()
-            }
-            .is_terminal()
-        );
+        assert!(WechatPollStatus::Confirmed {
+            code: "c".to_string()
+        }
+        .is_terminal());
         assert!(WechatPollStatus::Cancelled.is_terminal());
         assert!(WechatPollStatus::Expired.is_terminal());
         assert_eq!(WechatPollStatus::Waiting.as_str(), "waiting");

@@ -111,9 +111,18 @@ const flat = (s) => String(s || "").replace(/\s+/g, " ").trim();
     return true;
   });
   d0.querySelector("#scope-trigger").click();
-  const scopeItems = [...d0.querySelectorAll("#scope-menu .scope-item")];
+  /* ★ 只数**真作用域**（排除「聚合」入口）：聚合面板（issue #50）往作用域菜单加了一项，
+     它与 6 个作用域不同性质 —— 聚合跨全部作用域，不是第 7 个作用域。
+     原先用 `.scope-item` 计数，聚合一加进来就恒为 7 ⇒ 这条断言长期是红的。 */
+  const scopeItems = [...d0.querySelectorAll("#scope-menu .scope-item:not(.agg-entry)")];
   check("单文件：作用域菜单 6 项（3 平台 × 2 区域）", () => {
     if (scopeItems.length !== 6) throw new Error("实际 " + scopeItems.length + " 项");
+    return true;
+  });
+  check("单文件：「聚合」入口与作用域**不同类**（跨全部作用域，不是第 7 个）", () => {
+    const agg = d0.querySelector("#scope-menu .scope-item.agg-entry");
+    if (!agg) throw new Error("聚合入口不在作用域菜单里");
+    if (!agg.textContent.includes("聚合")) throw new Error("聚合入口文案不含「聚合」：" + agg.textContent.trim());
     return true;
   });
   check("单文件：菜单含 Qoder 国内版 / 国际版", () => {

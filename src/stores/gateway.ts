@@ -17,11 +17,13 @@ import type {
   GatewayConfig,
   GatewayLogEntry,
   GatewayStatus,
+  ModelProbeCell,
   ModelProbeJob,
   ModelProbeState,
   Region,
 } from "@/lib/types";
 import { SCOPES, type Scope } from "@/lib/scope";
+import { mergeProbeCells, type ProbeCellIndex } from "@/lib/limit-link";
 
 /** 网关配置缺省值（与后端 GatewayConfig::default 对齐）。 */
 export { DEFAULT_GATEWAY_CONFIG };
@@ -104,6 +106,30 @@ interface GatewayState {
    */
   probe: ModelProbeJob | null;
   /**
+   * **实测结论的跨作业累积索引**（`scope → uid → model → 格`）——
+   * 账号页「客户端限流」与网关卡矩阵**读同一份**（口径见 `lib/limit-link.ts`）。
+   *
+   * ## 为什么不能只留 `probe`
+   *
+   * 后端作业是**单槽**：每次 `probe_start` 都新建一份从空 `cells` 开始的作业。
+   * 若两处都直接读 `probe.cells`：
+   * - 账号页「逐行实测」探第二行 ⇒ 第一行的结论**凭空消失**；
+   * - 网关卡在矩阵里「重测这一格」⇒ 整张矩阵塌成 1 格。
+   *
+   * 故读侧按 `(uid, model)` 合并历史快照（`mergeProbeCells`）。**只合并不擦除**：
+   * 某格探出 `ok` 就覆盖该格；某次作业没包含它**不会**被删掉。
+   *
+   * ⚠️ 进程内存储（与后端作业槽同生命周期）：重启即空，不假装是持久账本。
+   */
+  probeCells: ProbeCellIndex;
+  /**
+   * 每个作用域**落盘台账**的最近写入时刻（毫秒）—— `probe_ledger.updated_at_ms`。
+   *
+   * 只服务文案（「实测 3 格 · 限流 1（10-23 09:12）」）：没有它，重启后汇总条不知道
+   * 这批结论是什么时候的。**不参与任何判据**。
+   */
+  probeLedgerAt: Record<string, number>;
+  /**
    * **被动底色（来源之一）**：客户端限流台账（`client_limits`）里「仍受限」的 `uid × 模型`。
    *
    * ⚠️ 这只是被动底色的**一半**；另一半是**池的模型级冷却**（`GatewayPoolAccount.modelCoolings`，
@@ -123,6 +149,8 @@ interface GatewayState {
   loadKeys: () => Promise<void>;
   createKey: (name: string, region: Region) => Promise<CreateApiKeyResult>;
   revokeKey: (id: string) => Promise<void>;
+  /** ★ issue #76：更新某把 Key 的策略（完整策略，非补丁）。 */
+  setKeyPolicy: (id: string, policy: api.KeyPolicy) => Promise<void>;
   /** 撤销吊销：清 `revokedAt`，Key 重新可用（后端拒绝「未吊销」的恢复）。 */
   restoreKey: (id: string) => Promise<void>;
   deleteKey: (id: string) => Promise<void>;
@@ -136,11 +164,17 @@ interface GatewayState {
   saveStrategy: (region: Region, strategy: AccountStrategy) => Promise<void>;
   loadLogs: () => Promise<void>;
   clearLogs: () => Promise<void>;
-  /** 启动一次限流探测（后端「作业 + 轮询」；第二次调用返回「已有探测进行中」）。 */
+  /**
+   * 启动一次限流探测（后端「作业 + 轮询」；第二次调用返回「已有探测进行中」）。
+   *
+   * `cells`（**显式格清单**）与 `uids` / `models`（**笛卡尔积**）互斥，后者优先判 `cells`。
+   * 账号页台账卡传 `cells`（台账 3 条 = 3 格）；网卡选择态传两根轴（用户勾了账号与模型）。
+   */
   startProbe: (args: {
     scope: Scope;
     uids?: string[];
     models?: string[];
+    cells?: { uid: string; model: string }[];
     adopt: boolean;
   }) => Promise<{ started: boolean; total: number }>;
   /** 拉一次作业快照；`running` 时自动续轮询，`done` / `cancelled` 时清定时器。 */
@@ -149,6 +183,14 @@ interface GatewayState {
   cancelProbe: (scope: Scope) => Promise<void>;
   /** 读取该 region 的**被动底色**（客户端台账；失败静默为空表）。 */
   loadProbePassive: (region: Region) => Promise<void>;
+  /**
+   * 拉某作用域的**实测台账**（后端落盘、跨重启）并入 `probeCells`。
+   *
+   * ★ 与 `refreshProbeStatus` 的分工：后者是**本轮作业**（单槽、进程内），前者是
+   * 「这些格最近一次怎么样」（`probe_results.json`，按作用域隔离）。任一侧（账号页台账卡 /
+   * 网卡矩阵）进入时都拉一次 ⇒ 重启后两处仍看得到同一份实测结论。
+   */
+  loadProbeLedger: (scope: Scope) => Promise<void>;
   /** 停掉轮询定时器（卡片卸载时调用，防泄漏）。 */
   stopProbePolling: () => void;
   /** 首次进入页面：并发拉取配置 / 状态 / Keys / 策略 / 日志 / 两版模型。 */
@@ -166,6 +208,8 @@ export const useGatewayStore = create<GatewayState>((set, get) => ({
   logs: [],
   // 探测未跑过（后端 `{ phase: "idle" }` 归一为 `null`）；被动底色懒加载，默认空表。
   probe: null,
+  probeCells: {},
+  probeLedgerAt: {},
   probePassive: {},
   loading: false,
   saving: false,
@@ -237,6 +281,12 @@ export const useGatewayStore = create<GatewayState>((set, get) => ({
 
   async deleteKey(id) {
     await api.deleteApiKey(id);
+    await get().loadKeys();
+  },
+
+  async setKeyPolicy(id, policy) {
+    await api.setKeyPolicy(id, policy);
+    // 保存后**重新拉列表**：策略写进台账，列表要反映新值（含掩码视图的七件套）。
     await get().loadKeys();
   },
 
@@ -313,11 +363,19 @@ export const useGatewayStore = create<GatewayState>((set, get) => ({
     try {
       const job = await api.probeStatus(scope);
       // 后端用 `{ phase: "idle" }` 表示「从未跑过」⇒ 归一成 `null`（其余档字段齐全）。
-      const next =
+      // ★ 还要按 **scope 收窄**：后端作业是**全局单槽**，`probe_status` 不按作用域过滤 ——
+      //   少了这一步，wb-cn 的探测结果会画到 qoder-cn 的矩阵上（同名模型、不同上游）。
+      const raw =
         job && (job as ModelProbeJob).phase && (job as ModelProbeJob).phase !== "idle"
           ? (job as ModelProbeJob)
           : null;
-      set({ probe: next });
+      const next = raw && raw.scope === scope ? raw : null;
+      /* ★ 读侧合并（见 `probeCells` 的注释）：账号页与网关卡矩阵都读这份。
+         只合并不擦除；没有新格时 `mergeProbeCells` 原样返回同一引用 ⇒ 不空转重渲染。 */
+      set((state) => ({
+        probe: next,
+        probeCells: next ? mergeProbeCells(state.probeCells, scope, next.cells) : state.probeCells,
+      }));
       if (next && next.phase === "running") {
         // `running` ⇒ 续轮询（`setInterval` 单实例；已在跑时先清再起，杜绝并发）。
         stopProbeTimer();
@@ -327,6 +385,11 @@ export const useGatewayStore = create<GatewayState>((set, get) => ({
       } else {
         // `done` / `cancelled`（或 idle）⇒ 必须清掉定时器，否则会一直空转。
         stopProbeTimer();
+        /* 作业收尾 ⇒ 再对齐一次**落盘台账**：后端在 `finish` 里合并并写盘，这里读回来
+           才能保证「前端索引」与「服务端台账」不会因为漏收快照而长期分叉。 */
+        if (next && (next.phase === "done" || next.phase === "cancelled")) {
+          void get().loadProbeLedger(scope);
+        }
       }
     } catch (e) {
       stopProbeTimer();
@@ -340,6 +403,21 @@ export const useGatewayStore = create<GatewayState>((set, get) => ({
     } finally {
       // 取消后立即对齐一次：后端会把 phase 置 `cancelled` 并保留部分结果。
       await get().refreshProbeStatus(scope);
+    }
+  },
+
+  async loadProbeLedger(scope) {
+    try {
+      const ledger = await api.probeLedger(scope);
+      if (!ledger?.cells?.length) return;
+      set((state) => ({
+        probeCells: mergeProbeCells(state.probeCells, scope, ledger.cells),
+        probeLedgerAt: ledger.updated_at_ms
+          ? { ...state.probeLedgerAt, [scope]: ledger.updated_at_ms }
+          : state.probeLedgerAt,
+      }));
+    } catch {
+      // 台账是**加分项**（跨重启的便利）：拉不到就保持现有数据，绝不污染 error 条。
     }
   },
 
@@ -395,6 +473,9 @@ export const useGatewayStore = create<GatewayState>((set, get) => ({
  * - `ledger` = **客户端限流台账**（`client_limits`）—— 只是「客户端日志里出现过」。
  */
 export type ProbePassiveSource = "flow" | "ledger";
+
+/** 未拉取过的作用域回落的**稳定空表**（见 `useProbeCells`）。 */
+const EMPTY_PROBE_SCOPE: Record<string, Record<string, ModelProbeCell>> = {};
 
 /**
  * 被动底色的**一格**：状态 + **来源**。
@@ -452,6 +533,20 @@ export function unionProbePassive(
     }
   }
   return out;
+}
+
+/**
+ * **实测结论**（`uid → model → 格`），只取当前作用域。
+ *
+ * 账号页「客户端限流」与网关卡矩阵**共用**这一份：任一侧发起探测，
+ * 另一侧下一次渲染读到的就是同一份（口径见 `lib/limit-link.ts`）。
+ *
+ * ⚠️ 返回**引用稳定**：未拉取过的 scope 回落到同一个空对象，否则每次渲染都换引用
+ * ⇒ `useMemo` 全部失效、组件空转。
+ */
+export function useProbeCells(scope: Scope): Record<string, Record<string, ModelProbeCell>> {
+  const index = useGatewayStore((s) => s.probeCells);
+  return index[scope] ?? EMPTY_PROBE_SCOPE;
 }
 
 /**

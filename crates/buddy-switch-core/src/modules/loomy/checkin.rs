@@ -70,8 +70,7 @@ pub async fn run_cycle_for(region: LoomyRegion) -> serde_json::Value {
 
                 // ★ 回写签到戳（幂等命中同样要写 —— 它证明「今天这一轮跑过了」）。
                 let mut updated = account.clone();
-                updated.last_checkin =
-                    Some(crate::modules::qoder::store::timestamp());
+                updated.last_checkin = Some(crate::modules::qoder::store::timestamp());
                 let _ = crate::modules::loomy::account::upsert_account_for(region, updated);
 
                 results.push(json!({

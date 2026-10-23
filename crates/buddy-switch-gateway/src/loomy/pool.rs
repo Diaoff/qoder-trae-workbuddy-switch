@@ -212,8 +212,7 @@ impl LoomyPool {
             let mut entry = LoomyPoolEntry::new(account);
             if let Some(previous) = self.entries.get(&entry.uid) {
                 // 保留运行态；令牌与名字以库为准。
-                entry.auth_dead =
-                    previous.auth_dead && entry.access_token == previous.access_token;
+                entry.auth_dead = previous.auth_dead && entry.access_token == previous.access_token;
                 entry.cooldown_until = previous.cooldown_until;
                 entry.cooldown_reason = previous.cooldown_reason.clone();
                 entry.last_error = previous.last_error.clone();
@@ -264,6 +263,11 @@ impl LoomyPool {
             model,
             tried,
             excluded: &excluded,
+            // ★ issue #76（合并 main 时带入）：本密钥的允许名单。
+            //   Loomy 的 Key 库目前还没有「限定账号 / 分组」字段（另三条产品线已接），
+            //   因此这里是 `None` = 全部账号 —— 与合并前行为**一致**，不是静默降级：
+            //   Loomy 的 Key 只有吊销 / 恢复 / 删除三态，没有授权范围可填。
+            allowed: None,
             mode,
             seed,
         };
@@ -307,7 +311,8 @@ impl LoomyPool {
             LoomyErrKind::AuthDead => {
                 entry.auth_dead = true;
                 entry.cooldown_until = now + 30 * 60_000;
-                entry.cooldown_reason = Some("登录已失效（Loomy 无续期端点，需重新登录）".to_string());
+                entry.cooldown_reason =
+                    Some("登录已失效（Loomy 无续期端点，需重新登录）".to_string());
             }
             LoomyErrKind::Transient => {
                 entry.cooldown_until = now + 10_000;
@@ -385,4 +390,3 @@ pub struct LoomyPool {
     dirty: bool,
     region: Option<LoomyRegion>,
 }
-

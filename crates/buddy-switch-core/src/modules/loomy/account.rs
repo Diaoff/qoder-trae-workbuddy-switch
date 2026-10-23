@@ -92,10 +92,7 @@ pub fn load_accounts_for(region: LoomyRegion) -> AccountsFile {
 /// 读账号库并如实报错（写路径用：必须知道是「在空库上新建」还是「在损坏库上覆盖」）。
 pub fn load_accounts_checked_for(region: LoomyRegion) -> Result<AccountsFile, String> {
     let path = paths::accounts_file_for(region);
-    Ok(
-        crate::modules::qoder::store::read_json_checked::<AccountsFile>(&path)?
-            .unwrap_or_default(),
-    )
+    Ok(crate::modules::qoder::store::read_json_checked::<AccountsFile>(&path)?.unwrap_or_default())
 }
 
 /// 写账号库（原子写 + 先建目录）。复用 `qoder::store` 的原子写实现（同款不重写）。
@@ -322,7 +319,10 @@ mod tests {
         let account = sample_account("10086");
         let view = account_view(&account, LoomyRegion::Cn);
         let text = view.to_string();
-        assert!(!text.contains(&"a".repeat(32)), "泄露了 session 明文：{text}");
+        assert!(
+            !text.contains(&"a".repeat(32)),
+            "泄露了 session 明文：{text}"
+        );
         assert!(view["hasCredential"].as_bool().unwrap());
         assert!(view["accessTokenMasked"]
             .as_str()
@@ -361,7 +361,10 @@ mod io_tests {
         let _guard = crate::modules::config::HomeOverrideGuard::set(&home);
         let mut first = sample_account("20001");
         first.nickname = Some("一号".to_string());
-        assert_eq!(upsert_account_for(region, first.clone()), Ok(UpsertOutcome::Added));
+        assert_eq!(
+            upsert_account_for(region, first.clone()),
+            Ok(UpsertOutcome::Added)
+        );
         let mut second = sample_account("20001");
         second.nickname = Some("改名".to_string());
         assert_eq!(
@@ -387,7 +390,11 @@ mod io_tests {
         let file = load_accounts_for(region);
         assert_eq!(file.accounts.len(), 1);
         assert_eq!(file.accounts[0].uid, "30002");
-        assert_eq!(delete_account_for(region, "30001"), Ok(false), "重复删除返回 false");
+        assert_eq!(
+            delete_account_for(region, "30001"),
+            Ok(false),
+            "重复删除返回 false"
+        );
         let _ = std::fs::remove_file(paths::accounts_file_for(region));
     }
 }

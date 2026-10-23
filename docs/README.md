@@ -26,11 +26,15 @@
 | 把 Codex / Claude Code / 其它客户端接到网关 | [`guides/GATEWAY-CLIENT-INTEGRATION.md`](guides/GATEWAY-CLIENT-INTEGRATION.md) |
 | 改网关（路由 / 换号 / 错误信封 / 命名空间） | [`specs/UNIFIED-GATEWAY-ARCH.md`](specs/UNIFIED-GATEWAY-ARCH.md) + [`specs/P11-ARCH.md`](specs/P11-ARCH.md) + [`specs/P12-ARCH.md`](specs/P12-ARCH.md) |
 | 改前端某个页面 | [`specs/PLAN.md`](specs/PLAN.md) 对应 §3.x + 该期 `P*-ARCH.md` |
+| 给密钥设 token 配额 / 限制可访问账号（issue #76） | [`specs/KEY-PERMISSION-UI-DESIGN.md`](specs/KEY-PERMISSION-UI-DESIGN.md)（**已实现**：四条产品线的台账 / 命令 / 前端表 / 中继全部接通）+ [`prototype/key-permission-design.html`](prototype/key-permission-design.html)（可点设计稿） |
+| 侧栏太占地方 / 想只看图标（折叠） | [`specs/SIDEBAR-COLLAPSE-DESIGN.md`](specs/SIDEBAR-COLLAPSE-DESIGN.md)（已落地）+ [`prototype/verify-sidebar-collapse.cjs`](prototype/verify-sidebar-collapse.cjs)（行为校验） |
+| 侧栏品牌块图标与顶栏平台图标看混了（issue #75） | [`prototype/sidebar-brand-design.html`](prototype/sidebar-brand-design.html)（**已按方案 1 落地**：品牌块只留文字、折叠态整块隐藏，`AppIconMark` 已删） |
 | 用量页要显示网关调用的明细（按模型 / 按账号） | [`specs/USAGE-GATEWAY-UI-REDESIGN.md`](specs/USAGE-GATEWAY-UI-REDESIGN.md)（交互与视觉，待拍板）+ [`specs/USAGE-GATEWAY-DETAIL-PLAN.md`](specs/USAGE-GATEWAY-DETAIL-PLAN.md)（数据契约与验收） |
 | 新增一个平台 / 产品线 | [`specs/P5-ARCH.md`](specs/P5-ARCH.md) + [`specs/UNIFIED-GATEWAY-ARCH.md`](specs/UNIFIED-GATEWAY-ARCH.md) §11 |
 | 用词拿不准（region / scope / 作用域…） | [`specs/VOCABULARY.md`](specs/VOCABULARY.md)（**冻结，不许自创**） |
 | 想知道某功能当初为什么这么做 | [`specs/DECISIONS.md`](specs/DECISIONS.md)（D1–D46） |
 | 加新交互（先原型、后代码） | [`prototype/`](prototype/) → `index.html` 可直接打开 |
+| 账号页「客户端限流」怎么和网关「限流探测」联动（同一份数据 + 两处入口） | [`prototype/limit-link-proto.html`](prototype/limit-link-proto.html)（可点设计稿，**已落地**）+ [`prototype/verify-limit-link.mjs`](prototype/verify-limit-link.mjs)（34 条行为校验）+ [`specs/MODEL-LIMIT-PROBE-PLAN.md`](specs/MODEL-LIMIT-PROBE-PLAN.md) §5.9（口径） |
 | 查这版改了什么 | [`releases/`](releases/) |
 
 ---
@@ -92,6 +96,7 @@
 | [`MODEL-LIMIT-PROBE-PLAN.md`](specs/MODEL-LIMIT-PROBE-PLAN.md) | 账号池 × 模型限流探测的完整方案 | 待确认 |
 | [`POOL-PICK-EXCLUDE-PLAN.md`](specs/POOL-PICK-EXCLUDE-PLAN.md) | 账号池选号 Bug + 「排除账号」方案 | 待拍板 |
 | [`CLIENTLESS-AUTH-PLAN.md`](specs/CLIENTLESS-AUTH-PLAN.md) | 无客户端部署（服务器 / 容器）的登录授权与网关可用性（issue #62） | 待拍板 · 原型已出 |
+| [`KEY-PERMISSION-UI-DESIGN.md`](specs/KEY-PERMISSION-UI-DESIGN.md) | 密钥访问权限管理：token 配额 + 可访问账号白名单（issue #76） | 已实现（`KeyActor` 统一四条产品线） |
 
 ---
 
@@ -125,7 +130,11 @@
 | `index.html` | 可直接双击打开的交互原型（多视图演示） |
 | `buddy-switch-prototype.html` | 单文件原型（视觉基准，`check:scope` 会读它） |
 | `demo-app.js` `demo-data.js` `demo.css` | 原型的逻辑 / 演示数据 / 样式 |
-| `verify-*.cjs` | JSDOM 驱动的原型行为校验（`verify-behaviors.cjs` 是 112 条断言那一套） |
+| `key-permission-design.html` | 密钥访问权限管理设计稿（issue #76）：列表两列 + 权限抽屉 + 创建对话框 |
+| `sidebar-brand-design.html` | 侧栏品牌块 × 顶栏平台图标去混淆设计稿（issue #75）：问题复现舞台 + 四方案对比 |
+| `limit-link-proto.html` | 客户端限流 × 模型限流探测的联动设计稿（2026-10-22）：左账号页台账卡、右网关页矩阵，**点任一侧「实测」两侧同时变**（数据同步的唯一可视化证据） |
+| `verify-limit-link.mjs` | 联动设计稿的行为校验（**CDP/Chrome**，34 条：同步 / 累积 / 冲突并列 / 402 分列 / 入口代价 / 作业单例） |
+| `verify-*.cjs` | JSDOM 驱动的原型行为校验（`verify-behaviors.cjs` 是 112 条断言那一套；`verify-key-permission-main.cjs` 是**主原型**里的密钥权限那一套，`verify-key-permission.cjs` 是独立设计稿那一套；`verify-sidebar-collapse.cjs` 是侧栏折叠那一套） |
 
 > ⚠️ **`scripts/check-scope-registry.cjs` 会直接读这里的文件**（不是注释引用）。改名或移动必须同步改脚本，否则门禁红。
 

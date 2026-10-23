@@ -158,7 +158,10 @@ mod tests {
         assert_eq!(spec.app_id, "GM3LOOMY");
         // 微信扫码常量与蓝本逐字对齐（free-llm-router/src/providers/loomy.ts）。
         assert_eq!(spec.wechat_app_id, "wx18d60be432287cf8");
-        assert_eq!(spec.wechat_redirect_uri, "https://loomy.xunfei.cn/oauth/wechat/callback");
+        assert_eq!(
+            spec.wechat_redirect_uri,
+            "https://loomy.xunfei.cn/oauth/wechat/callback"
+        );
         assert_eq!(spec.wechat_poll_timeout_ms, 40_000);
         assert!(!spec.wechat_http_ua.is_empty());
     }
