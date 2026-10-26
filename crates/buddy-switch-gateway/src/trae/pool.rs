@@ -589,6 +589,8 @@ impl TraePool {
 /// 其余项按「Trae 没有对应数据」置零，避免引入无判据的噪声（见模块文档的降级说明）。
 fn trae_pick_policy() -> PickPolicy {
     PickPolicy {
+        // 余额下限：Trae 未启用（Loomy 用它实现「每日池 < 100 就换号」）。
+        min_credits: 0,
         // Trae 没有「快过期积分的绝对值」概念 ⇒ 该项不启用，改由 `expiry_urgency` 承载。
         expiring_weight: 0.0,
         // ★ 必须**大于积分项上限（10.0）**：旧实现的语义是「先看到期时间，再看积分」。

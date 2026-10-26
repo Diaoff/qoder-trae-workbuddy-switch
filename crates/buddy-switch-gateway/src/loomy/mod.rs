@@ -49,6 +49,33 @@ use buddy_switch_core::modules::loomy::region::LoomyRegion;
 
 use crate::loomy::pool::LoomyPool;
 
+/// 读数（「每日池优先」的选号唯一余额来源）刷新间隔（毫秒）。
+///
+/// ## 为什么要这个循环
+///
+/// 选号的余额口径是**每日池**（见 `pool.rs` 的 `PoolEntryLike::credits`），而池里的
+/// 数字只来自账号库里的**最近一次读数**。读数原本只有排程 `loomy_points_sample`
+/// （默认 09:00 / 21:00 两帧）与手动「刷新积分」两条来源 ⇒ 网关可能整天按早上的
+/// 旧数字选号（尤其在把每日池用光之后）。
+///
+/// ## 为什么是 10 分钟（而不是 WB 的 30 分钟）
+///
+/// 两者用的额度形状不同：WB 刷的是「长期余额」，30 分钟粒度够用；Loomy 的每日池是
+/// **当天用完就作废**的短周期额度，而**网关自己就是消耗方** ⇒ 需要更细的粒度。
+/// 成本 = 每个有 session 的账号一次 GET（串行，不并发），可忽略。
+///
+/// ## 硬约束（与 `crate::credits_refresh` 同一条）
+///
+/// **绝不在推理请求路径上拉余额**。本循环只在后台跑；管理面读取可以**顺手**触发一次
+/// （见 [`request_credits_refresh`]），因为那不是推理请求，且取数在别的任务里跑。
+pub const CREDITS_REFRESH_INTERVAL_MS: i64 = 10 * 60 * 1000;
+
+/// 账号库为空时的探测周期（毫秒）。
+///
+/// 与 WB 的 `EMPTY_POOL_PROBE_MS` 同一个教训：账号是刚导入的、读数一次都没取过，
+/// 而周期循环下一轮要等满一整个间隔 ⇒ 用户看到的是「刚导入账号，积分一直是『—』」。
+pub const CREDITS_EMPTY_PROBE_MS: u64 = 15_000;
+
 /// Loomy 网关的共享状态（统一入口与独立端口 **共用同一份**）。
 #[derive(Clone)]
 pub struct LoomyGatewayState {
@@ -78,6 +105,11 @@ pub struct LoomyGatewayState {
     pub body_limit_bytes: usize,
     /// 模型清单缓存（单作用域 ⇒ 一格；带 `fetched_at` 与来源说明）。
     pub(crate) catalog: Arc<RwLock<Option<CachedCatalog>>>,
+    /// 最近一次读数（[`refresh_credits_once`]）的完成时刻；`0` = 从未取过。
+    pub credits_read_ms: Arc<std::sync::atomic::AtomicI64>,
+    /// 是否已有一次读数在飞（**单飞闸门**：周期循环与管理面「顺手触发」共用，
+    /// 避免两边同时打上游）。
+    pub credits_read_in_flight: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl LoomyGatewayState {
@@ -104,6 +136,8 @@ impl LoomyGatewayState {
             last_error: Arc::new(RwLock::new(None)),
             body_limit_bytes: crate::body_limit_bytes(config.max_body_mb),
             catalog: Arc::new(RwLock::new(None)),
+            credits_read_ms: Arc::new(std::sync::atomic::AtomicI64::new(0)),
+            credits_read_in_flight: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         }
     }
 
@@ -186,10 +220,71 @@ impl LoomyGatewayState {
 pub async fn pool_view_for(region: LoomyRegion) -> (Value, Vec<Value>) {
     let state = LoomyGatewayState::shared();
     let now = buddy_switch_core::modules::config::now_ms();
+    // 顺手刷新读数（**不阻塞本视图**，自带 10 分钟闸门）：与 WB 的管理面同一条取舍 ——
+    // 刚导入的账号不该等到下一个周期才在页面上看得到积分。
+    request_credits_refresh(&state);
     let mut pools = state.pools.lock().await;
     let pool = pools.entry(region).or_default();
     pool.sync_for(region);
     (pool.summary(now), pool.accounts_view(now))
+}
+
+/// 跑一趟读数（全库：逐个有 session 的账号查两池积分、回填账号库快照、记一帧采样）。
+///
+/// 直接复用采样循环 —— 它已经是「遍历全库 + 串行打上游 + 回填快照 + 落采样」的
+/// **唯一实现**（排程与手动刷新走的都是它）。写的是**账号库**，而池在每次读视图前
+/// 都会 `sync_for` 重读 ⇒ 下一轮选号就能看到新数字。
+pub async fn refresh_credits_once() -> Value {
+    buddy_switch_core::modules::loomy::credits_daily::run_sample_cycle_for(LoomyRegion::Cn).await
+}
+
+/// 下一轮读数的等待时长（毫秒）——**两侧宿主共用**，别各写一份判据。
+///
+/// 账号库为空 ⇒ 短探测（本趟必然空转，但账号随时可能被导入）。
+pub fn next_credits_refresh_wait_ms() -> u64 {
+    if buddy_switch_core::modules::loomy::account::load_accounts_for(LoomyRegion::Cn)
+        .accounts
+        .is_empty()
+    {
+        CREDITS_EMPTY_PROBE_MS
+    } else {
+        CREDITS_REFRESH_INTERVAL_MS.max(1) as u64
+    }
+}
+
+/// 触发一趟读数（**不阻塞调用方**）：距上次读数不足阈值 / 已有在飞 ⇒ 直接返回 `false`。
+///
+/// ## 谁能调，谁不能
+///
+/// - ✅ 后台周期循环（两宿主按 core 的 `TASKS` 表启动）。
+/// - ✅ **管理面读取**（池视图 / 状态视图）—— 与 WB 侧 `gateway_status` 那句
+///   「顺手触发一次、不阻塞本响应」同一条取舍。
+/// - ❌ **推理请求路径**（`routes::relay`）。余额是慢变数据，在那里拉会直接抬高
+///   端到端延迟 —— 这是 `crate::credits_refresh` 模块文档里的硬约束，Loomy 同样适用。
+///
+/// 幂等性靠两个原子量：`credits_read_ms`（时间闸门）+ `credits_read_in_flight`（单飞）。
+/// ⇒ 反复读管理面**不会**反复打上游。
+pub fn request_credits_refresh(state: &LoomyGatewayState) -> bool {
+    use std::sync::atomic::Ordering;
+
+    let now = core_config::now_ms();
+    let last = state.credits_read_ms.load(Ordering::Relaxed);
+    if last > 0 && now - last < CREDITS_REFRESH_INTERVAL_MS {
+        return false;
+    }
+    if state.credits_read_in_flight.swap(true, Ordering::SeqCst) {
+        return false;
+    }
+    let state = state.clone();
+    tokio::spawn(async move {
+        let _ = refresh_credits_once().await;
+        state.credits_read_ms.store(
+            buddy_switch_core::modules::config::now_ms(),
+            Ordering::Relaxed,
+        );
+        state.credits_read_in_flight.store(false, Ordering::SeqCst);
+    });
+    true
 }
 
 // ---------------------------------------------------------------------------
@@ -516,6 +611,10 @@ pub async fn status_view(
     let now = core_config::now_ms();
     let config = state.config_snapshot().await;
 
+    // 顺手刷新读数（**不阻塞本响应**，自带 10 分钟闸门 + 单飞）—— 与 WB 侧
+    // `gateway_status` 同一条取舍：刚导入的账号不该等到下一个周期才看得到积分。
+    request_credits_refresh(state);
+
     let (pool, accounts, diagnose) = {
         let mut pools = state.pools.lock().await;
         let pool = pools.entry(LoomyRegion::Cn).or_default();
@@ -657,6 +756,41 @@ pub fn log_file() -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// ★ 「顺手刷新读数」的两个门：时间阈值 + 单飞。
+    ///
+    /// 这道门的实际作用：管理面（池视图 / 状态视图）每次被读都会调它，而没有门就意味着
+    /// **每读一次页面就打一轮上游** —— 正是 `credits_refresh` 模块文档里那条
+    /// 「别把取数塞进热路径」的反面教材。
+    ///
+    /// ⚠️ 本用例**故意不触发真正的采样**：两条断言都先把门置上（阈值内的时刻 / 在飞标志）
+    /// ⇒ `request_credits_refresh` 直接返回，不会 `spawn` 采样。否则若开发者本机
+    /// `~/.buddy-switch` 里有真实 Loomy 账号，单测会**真打上游**（本仓明令禁止）。
+    #[test]
+    fn credits_refresh_gate_blocks_the_time_window_and_the_in_flight_case() {
+        use std::sync::atomic::Ordering;
+        let state = LoomyGatewayState::new(LoomyGatewayConfig::default());
+
+        // ① 刚读过（阈值内）⇒ 不打；即便在飞标志是干净的。
+        state
+            .credits_read_ms
+            .store(core_config::now_ms(), Ordering::Relaxed);
+        assert!(
+            !request_credits_refresh(&state),
+            "阈值内重复读管理面不得再打一轮上游"
+        );
+
+        // ② 读数已过期，但上一轮还在飞 ⇒ 不打（单飞闸门）。
+        state.credits_read_ms.store(
+            core_config::now_ms() - CREDITS_REFRESH_INTERVAL_MS - 1,
+            Ordering::Relaxed,
+        );
+        state.credits_read_in_flight.store(true, Ordering::SeqCst);
+        assert!(
+            !request_credits_refresh(&state),
+            "已有读数在飞时不得再起一轮（避免并发打上游）"
+        );
+    }
 
     #[test]
     fn default_config_uses_dedicated_port() {

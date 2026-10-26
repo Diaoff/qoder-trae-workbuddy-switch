@@ -177,13 +177,19 @@ fn spawn_background_task(spec: TaskSpec) {
                      请补刷新循环，或从 core 的 TASKS 表里移除该条目。",
                 );
             }
-            // Loomy：core 的 TASKS 表当前没有 Loomy 任务 ⇒ 本分支当前不可达；
-            // 加了任务但没实现时日志会立刻点名。
+            // Loomy 读数刷新：「每日池优先」的选号余额来源。等待时长由 gateway 侧动态给
+            // （账号库为空 ⇒ 短探测），与 server 侧**同一判据**。
             Product::Loomy => {
-                eprintln!(
-                    "[background] Loomy 的 CreditsRefresh 已登记但**尚无实现** —— \
-                     请补刷新循环，或从 core 的 TASKS 表里移除该条目。"
-                );
+                tauri::async_runtime::spawn(async move {
+                    loop {
+                        // 启动即刷一次（循环首轮）：补齐上次进程遗留的陈旧读数。
+                        let _ = buddy_switch_gateway::loomy::refresh_credits_once().await;
+                        tokio::time::sleep(Duration::from_millis(
+                            buddy_switch_gateway::loomy::next_credits_refresh_wait_ms(),
+                        ))
+                        .await;
+                    }
+                });
             }
         },
         // WorkBuddy 账号池治理状态落盘（只在有改动时真正写盘）。

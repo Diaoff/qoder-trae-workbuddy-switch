@@ -42,7 +42,7 @@ export const en = {
   "loomy.gateway.overview.poolCount": "{count} entries",
   /* Pick order (Loomy-specific): one extra sentence so "auto" has a definite meaning. */
   "loomy.gateway.pool.strategyHint":
-    "Auto pick ranks by the **daily pool**: the part that expires today is spent first; accounts with an empty daily pool come after (when every daily pool is empty the previous order returns).",
+    "Auto pick ranks by the **daily pool**: the part that expires today is spent first; accounts whose daily pool is below 100 are skipped while a better one exists (if every account is below, they are still used). Readings refresh every 10 minutes.",
   "loomy.gateway.overview.view": "View",
 
   "loomy.gateway.lanDialog.title": "Allow LAN access?",

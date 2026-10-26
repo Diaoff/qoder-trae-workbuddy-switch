@@ -373,12 +373,31 @@ pub const TASKS: &[TaskSpec] = &[
         interval: Duration::ZERO,
     },
     // Loomy（第四条产品线）的**积分逐日采样**（二期 9.3）。
+    //
+    // ⚠️ 与上面那条 `CreditsRefresh`（网关选号用的**读数新鲜度**）**不是同一件事**：
+    // 本任务只决定**趋势图**要几帧（默认 09/21 两帧，用户可改）；选号要的是
+    // 「几分钟前的读数」⇒ 那由刚登记的 `(Loomy, CreditsRefresh)` 承担。
+    // 两者都走 `credits_daily::run_sample_cycle_for`（同一实现）：
+    // 跑得密也不会弄坏趋势 —— 同日多次采样是**覆盖**而不是累加（该模块文档已说明）。
     // 只读 GET（非替用户领东西）⇒ 默认开，判据同保活。
     // ⚠️ 同样**不登记 = 两宿主都不跑**：用量页的趋势图会永远空着，
     //    而设置页那个开关看起来是能用的（Trae JWT 续期事故的同一形态）。
     TaskSpec {
         product: Product::Loomy,
         kind: TaskKind::Scheduled(ScheduleTask::LoomyPointsSample),
+        interval: Duration::ZERO,
+    },
+    // Loomy（第四条产品线）的**网关读数刷新**（「每日池优先」的选号余额来源）。
+    //
+    // 为什么必须有它：池里的每日池数字只来自「最近一次读数」，原本只有排程采样
+    // （09/21 两帧）与手动刷新两条来源 ⇒ 网关可能整天按早上的旧数字选号。
+    // `interval` 用 `Duration::ZERO`：等待时长由 gateway 侧动态给
+    // （`loomy::next_credits_refresh_wait_ms`：账号库为空 ⇒ 短探测），与 WB 同形。
+    // ⚠️ 不登记 = 两宿主都不跑 ⇒ 宿主里那个 `Product::Loomy =>` 分支永远不可达，
+    //    只在日志里留一行「已登记但尚无实现」而没人看见。
+    TaskSpec {
+        product: Product::Loomy,
+        kind: TaskKind::CreditsRefresh,
         interval: Duration::ZERO,
     },
 ];
@@ -475,6 +494,10 @@ mod tests {
             "缺 Trae 积分刷新 ⇒ 纯用 API 时积分读数永远陈旧"
         );
         assert!(
+            has_task(Product::Loomy, TaskKind::CreditsRefresh),
+            "缺 Loomy 读数刷新 ⇒ 每日池数字整天不更新，「每日池优先」的选号按旧数字跑"
+        );
+        assert!(
             has_task(Product::Workbuddy, TaskKind::PoolPersist),
             "缺账号池治理状态落盘 ⇒ 冷却 / 熔断 / 成功率 EMA 只在内存里、重启清零"
         );
@@ -524,9 +547,13 @@ mod tests {
         );
     }
 
-    /// 二维化落地：`CreditsRefresh` 是**同一 kind 的两个产品**（不是两个扁平变体）。
+    /// 二维化落地：`CreditsRefresh` 是**同一 kind 的多个产品**（不是多个扁平变体）。
+    ///
+    /// ★ 现在是**三条**（WB / Trae / Loomy）共用这一个 kind —— 这正是二维坐标的价值：
+    /// 三者的实现与数据源完全不同（WB 走网关池、Trae 走 `trae::credits` 区域账号库、
+    /// Loomy 走 `credits_daily` 的采样循环），而任务种类只有一种。
     #[test]
-    fn credits_refresh_is_one_kind_across_two_products() {
+    fn credits_refresh_is_one_kind_across_products() {
         let wb = TASKS
             .iter()
             .find(|s| s.product == Product::Workbuddy && s.kind == TaskKind::CreditsRefresh)
@@ -535,9 +562,18 @@ mod tests {
             .iter()
             .find(|s| s.product == Product::Trae && s.kind == TaskKind::CreditsRefresh)
             .expect("Trae 积分刷新必须在表里");
-        // 同一 kind，两个 product ⇒ 正是二维坐标。
+        let loomy = TASKS
+            .iter()
+            .find(|s| s.product == Product::Loomy && s.kind == TaskKind::CreditsRefresh)
+            .expect("Loomy 读数刷新必须在表里");
+        // 同一 kind，多个 product ⇒ 正是二维坐标。
         assert_eq!(wb.kind, trae.kind, "两者必须共用同一 TaskKind（二维化）");
+        assert_eq!(
+            wb.kind, loomy.kind,
+            "Loomy 也必须共用同一 TaskKind（二维化）"
+        );
         assert_ne!(wb.product, trae.product);
+        assert_ne!(trae.product, loomy.product);
     }
 
     /// **任务级**标识（`产品:种类`）必须稳定且**互不相同**。

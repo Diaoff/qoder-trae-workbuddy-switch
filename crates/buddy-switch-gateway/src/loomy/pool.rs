@@ -482,6 +482,18 @@ impl LoomyPool {
     }
 }
 
+/// **余额下限**：每日池低于这个数就换号（选号口径 = 每日池，见 `PoolEntryLike::credits`）。
+///
+/// ## 为什么是 100
+///
+/// 它是一个「还能跑几个请求」的量级余量，不是精确阈值（上游按用量扣减，本地不知道
+/// 单次消耗）。取它的目的：别把一个只剩几十积分的号排在前面 —— 那会在大请求上
+/// 刚发出去就撞额度不足。
+///
+/// ⚠️ 它不是硬过滤：**全池都低于 100 时照旧用它们**（有额度就不拒服务），
+/// 见 [`crate::pool::pick::PickPolicy::min_credits`]。
+pub const LOOMY_MIN_DAILY_CREDITS: i64 = 100;
+
 /// Loomy 的选号策略（独立函数，别动 `PickPolicy` 默认值 —— 那是 WB 的行为基线）。
 ///
 /// ## 为什么四个权重都是 0，而「优先消耗每日池」仍然生效
@@ -496,9 +508,12 @@ impl LoomyPool {
 ///   而不是确定性的先烧。真要防「同一个号被打满」是另一个决定（目前靠上游报错 + 冷却换号自愈）。
 ///
 /// ⇒ 效果：有每日池的号排在没每日池的号前面，且每日池越多越靠前（`deterministic = true`
-/// 下即严格择优）；全池今日池都空时该权重项被跳过，次序回到改动前。
+/// 下即严格择优）；**且每日池低于 [`LOOMY_MIN_DAILY_CREDITS`] 的号在「有得选」时被剔除**；
+/// 全池今日池都空（或全都不足下限）时该权重项被跳过 / 不过滤，次序回到改动前。
 pub fn loomy_pick_policy() -> PickPolicy {
     PickPolicy {
+        // 「每日池 < 100 就换号」（全池都不足时照旧用，见该常量的注释）。
+        min_credits: LOOMY_MIN_DAILY_CREDITS,
         expiring_weight: 0.0,
         expiry_urgency_weight: 0.0,
         idle_weight_per_hour: 0.0,
@@ -782,6 +797,73 @@ mod tests {
             Some("z-daily-rich"),
             "应当先消耗每日池（它在 uid 次序上排在后面，必须靠权重胜出）"
         );
+    }
+
+    /// ★★ 「每日池 < 100 就换号」——低于下限的号在「有得选」时被**硬保证**剔除。
+    ///
+    /// ## 为什么这条护栏必须用「成功率 EMA 会翻盘」的场景来钉
+    ///
+    /// 权重本身已经按每日池**单调**排序（`credits / max_credits × 10`），所以在「健康的那个
+    /// 每日池明显更多」的场景下，**阈值开不开结果都一样** ⇒ 那样的用例是**假护栏**
+    /// （2026-10-26 实测：把 `min_credits` 改成 0，那种写法仍然绿）。
+    ///
+    /// 阈值真正的作用是**硬保证**：当低于下限的号靠别的因子（成功率 EMA 最多差 3.0，
+    /// 而两个都 ≥ 下限的号之间的比值差可能不到 0.1）本会胜出时，它仍然不许被选中。
+    ///
+    /// 变异：把 `loomy_pick_policy().min_credits` 改成 0 ⇒ 本条红（`z-below` 靠 EMA 胜出）。
+    #[test]
+    fn pick_skips_accounts_below_the_daily_floor() {
+        let mut healthy = entry("a-healthy", "tok", false, 0);
+        healthy.daily_credits = LOOMY_MIN_DAILY_CREDITS; // 刚好达下限
+        healthy.success_ema = 0.0;
+        healthy.error_ema = 10.0; // 成功率 0 ⇒ EMA 项 +0
+        let mut below = entry("z-below-floor", "tok", false, 0);
+        below.daily_credits = LOOMY_MIN_DAILY_CREDITS - 1;
+        below.success_ema = 10.0;
+        below.error_ema = 0.0; // 成功率 1 ⇒ EMA 项 +3
+
+        let mut pool = pool_with(vec![healthy, below]);
+        assert_eq!(
+            pool.pick("m", &HashSet::new(), None).as_deref(),
+            Some("a-healthy"),
+            "每日池不足下限的号即便 EMA 更好，也不该在有得选时被用"
+        );
+
+        // 全都低于下限 ⇒ 照旧用（有额度就不拒服务），且仍按每日池多者优先。
+        let mut low_a = entry("a-low", "tok", false, 0);
+        low_a.daily_credits = 90;
+        let mut low_z = entry("z-low", "tok", false, 0);
+        low_z.daily_credits = 80;
+        let mut all_low = pool_with(vec![low_a, low_z]);
+        assert_eq!(
+            all_low.pick("m", &HashSet::new(), None).as_deref(),
+            Some("a-low"),
+            "全池都不足下限时必须照旧选（不得 503），且仍按每日池多者优先"
+        );
+    }
+
+    /// ★★ 随机模式（Loomy 的下拉里真有这一项）也必须守住下限。
+    ///
+    /// 权重项对随机模式**完全无效**（它是均匀抽签）⇒ 下限是唯一的屏障：没有它，
+    /// 一个只剩几积分的号会被等概率抽中。
+    ///
+    /// 变异：把 `min_credits` 改成 0 ⇒ 候选变 2 个，多次抽签必然出现 `z-below` ⇒ 本条红。
+    #[test]
+    fn random_mode_never_draws_a_below_floor_account_when_a_better_one_exists() {
+        let mut healthy = entry("a-healthy", "tok", false, 0);
+        healthy.daily_credits = 500;
+        let mut below = entry("z-below-floor", "tok", false, 0);
+        below.daily_credits = 1;
+        let mut pool = pool_with(vec![healthy, below]);
+
+        for _ in 0..24 {
+            let picked = pool.pick("m", &HashSet::new(), Some("__random__"));
+            assert_eq!(
+                picked.as_deref(),
+                Some("a-healthy"),
+                "随机模式也不得抽中每日池不足下限的号（那时还有更好的选择）"
+            );
+        }
     }
 
     /// ★ 每日池**更多**的号优先（不是「只要有就行」），且全池今日池都空时

@@ -530,6 +530,9 @@ pub async fn bearer_auth(
 pub async fn status(State(state): State<LoomyGatewayState>) -> Response {
     let config = state.config_snapshot().await;
     let now = buddy_switch_core::modules::config::now_ms();
+    // 管理面读取顺手刷新读数（**不阻塞本响应**，自带闸门）——
+    // ⚠️ 只限管理面：`relay`（推理路径）绝不调它，见 `loomy::request_credits_refresh`。
+    crate::loomy::request_credits_refresh(&state);
     let entries = {
         let mut pools = state.pools.lock().await;
         let pool = pools.entry(LoomyRegion::Cn).or_default();

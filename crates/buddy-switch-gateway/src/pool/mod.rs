@@ -828,6 +828,8 @@ impl Pool {
     fn policy(&self) -> PickPolicy {
         PickPolicy {
             expiring_weight: self.config.expiring_weight,
+            // 余额下限：WorkBuddy 未启用（Loomy 用它实现「每日池 < 100 就换号」）。
+            min_credits: 0,
             expiry_urgency_weight: self.config.expiry_urgency_weight,
             idle_weight_per_hour: self.config.idle_weight_per_hour,
             idle_weight_max: self.config.idle_weight_max,

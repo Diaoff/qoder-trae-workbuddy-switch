@@ -348,6 +348,8 @@ fn min_pick_gap_ms() -> i64 {
 /// Qoder 的选号策略（**独立函数**，别动 [`PickPolicy`] 的默认值 —— 那是 WB 的行为基线）。
 pub fn qoder_pick_policy() -> PickPolicy {
     PickPolicy {
+        // 余额下限：Qoder 未启用（Loomy 用它实现「每日池 < 100 就换号」）。
+        min_credits: 0,
         expiring_weight: 0.0,
         expiry_urgency_weight: 0.0,
         idle_weight_per_hour: 0.0,

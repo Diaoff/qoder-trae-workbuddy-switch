@@ -41,6 +41,26 @@ pub struct PickPolicy {
     /// ★ 对 Trae 侧该权重需**大于积分项上限（10.0）**，否则紧迫度差异会被积分差异
     /// 淹没；见 [`crate::trae::pool`] 的取值说明。
     pub expiry_urgency_weight: f64,
+    /// **余额下限**（选号口径，`0` = 关闭）。
+    ///
+    /// > 有 ≥ 下限的候选时，低于下限的候选**全部剔除**；
+    /// > 全都低于下限时**一个都不剔除**。
+    ///
+    /// ## 为什么是这个形态（而不是硬过滤）
+    ///
+    /// 「低于 N 就不用它」听起来像个硬约束，但做成硬过滤会有一种更坏的后果：
+    /// 全池余额都低于下限时**一个候选都没有** ⇒ 回退到「只挑最早解冻」的兜底，甚至
+    /// 直接拒绝服务 —— 而当时上游明明还能用。所以它是**分层偏好**（与成本分层同一形态）：
+    /// 有更好的就不选差的，没有更好的就照旧。
+    ///
+    /// ## 它按什么量算
+    ///
+    /// 按 [`PoolEntryLike::credits`]（各产品线自己的选号余额口径）—— Loomy 那侧它是
+    /// **每日池**（见 `crate::loomy::pool`），因此 Loomy 的「每日池 < 100 就换号」就是这个字段。
+    ///
+    /// 与成本分层的先后：**余额下限在成本分层之后**（成本分层是更硬的偏好，且它承担
+    /// 「让无观测号仍有机会被观测」的责任）。
+    pub min_credits: i64,
     /// 闲置补偿：每小时增加的权重。
     pub idle_weight_per_hour: f64,
     /// 闲置补偿权重上限。
@@ -473,6 +493,19 @@ pub fn pick<E: PoolEntryLike>(
         .unwrap_or(CostTier::Unknown.rank());
     candidates.retain(|candidate| candidate.tier == best_tier);
 
+    // 余额下限分层（`0` = 关闭，见 `PickPolicy::min_credits`）：
+    // 有「够用」的号就不选不够用的；**全都不够用时一个都不剔除** ——
+    // 否则会出现「上游还有额度、网关却 503」。
+    // 放在成本分层之后：那是更硬的偏好，且它承担「让无观测号有机会被观测」的责任。
+    if policy.min_credits > 0 {
+        let any_above = candidates
+            .iter()
+            .any(|candidate| candidate.credits >= policy.min_credits);
+        if any_above {
+            candidates.retain(|candidate| candidate.credits >= policy.min_credits);
+        }
+    }
+
     // ★★ 策略分流**必须发生在成本分层之后**：
     //    否则「随机」会随机到收费号上 —— 那不是「平均分摊」，是「随机花积分」。
     match input.mode {
@@ -716,6 +749,8 @@ mod tests {
             expiring_weight: 8.0,
             // WorkBuddy 不启用独立紧迫度因子（它的紧迫度由 `expiring_weight` 表达）。
             expiry_urgency_weight: 0.0,
+            // WorkBuddy 不设余额下限（Loomy 用它实现「每日池 < 100 就换号」）。
+            min_credits: 0,
             idle_weight_per_hour: 0.5,
             idle_weight_max: 5.0,
             min_pick_gap_ms: 100,
@@ -855,6 +890,64 @@ mod tests {
             parse_preferred(Some(" __random__ ")),
             (PickMode::Random, None)
         );
+    }
+
+    /// ★ 余额下限分层：有「够用」的号就不选不够用的；**全都不够用时一个都不剔除**。
+    ///
+    /// 可证伪：① 去掉 `min_credits` 那段 ⇒ 第一条断言红；
+    ///         ② 把它写成真硬过滤（不保留 any_above 的兵分两路）⇒ 第二条断言红。
+    #[test]
+    fn min_credits_prefers_above_floor_but_never_empties_the_pool() {
+        let mut rich = base_entry("rich");
+        rich.credits = 500;
+        let mut poor = base_entry("poor");
+        // 低于下限，但**权重项**会把它排得很高（大比例）—— 正因此必须靠分层剔除。
+        poor.credits = 1;
+
+        let mut entries = pool_of(vec![rich.clone(), poor.clone()]);
+        let mut seq = 0;
+        let mut p = policy();
+        p.min_credits = 100;
+        // 严格择优：WB 缺省是有界随机（`deterministic: false`）⇒ 断言会抖。
+        p.deterministic = true;
+        let picked = pick(
+            &mut entries,
+            &mut seq,
+            &p,
+            NOW,
+            None,
+            "m",
+            &HashSet::new(),
+            1,
+        );
+        assert_eq!(
+            picked.as_deref(),
+            Some("rich"),
+            "有 ≥ 下限的号时不得选低于下限的"
+        );
+
+        // 全都低于下限 ⇒ 不能把池清空（否则会有「上游还有额度、网关却 503」）。
+        let mut only_poor_a = base_entry("poor-a");
+        only_poor_a.credits = 9;
+        let mut only_poor_b = base_entry("poor-b");
+        only_poor_b.credits = 3;
+        let mut entries = pool_of(vec![only_poor_a, only_poor_b]);
+        let mut seq = 0;
+        let picked = pick(
+            &mut entries,
+            &mut seq,
+            &p,
+            NOW,
+            None,
+            "m",
+            &HashSet::new(),
+            1,
+        );
+        assert!(
+            picked.is_some(),
+            "全池都不足下限时必须照旧选（剔除到底 = 明明还有额度却拒服务）"
+        );
+        assert_eq!(picked.as_deref(), Some("poor-a"), "退回余额多者优先");
     }
 
     #[test]
