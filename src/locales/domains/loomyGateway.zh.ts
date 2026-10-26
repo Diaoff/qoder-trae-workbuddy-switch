@@ -48,6 +48,9 @@ export const zh = {
   "loomy.gateway.overview.modelsCount": "{count} 个",
   "loomy.gateway.overview.pool": "账号池",
   "loomy.gateway.overview.poolCount": "{count} 个条目",
+  /* 选号口径（Loomy 特有）：池卡共用提示下面再补一句，让“自动择优”这四个字有确切的含义。 */
+  "loomy.gateway.pool.strategyHint":
+    "自动择优按**每日池**排座次：今日不用就作废的那部分先用完；每日池都空的号排在后面（全池今日池皆空时退回原有次序）。",
   "loomy.gateway.overview.view": "查看",
 
   // ---- 局域网风险确认 ----

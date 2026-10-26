@@ -567,6 +567,7 @@ export default function LoomyApiServicePage() {
             excludingUid={excludingUid}
             totalRequests={status?.totalRequests ?? null}
             tiles={LOOMY_POOL_TILES}
+            strategyHint={t("loomy.gateway.pool.strategyHint")}
             autoOptions={[
               { value: AUTO_OPTION, label: t("shared.gateway.pool.preferredAuto") },
               { value: RANDOM_OPTION, label: t("shared.gateway.pool.strategyRandom") },

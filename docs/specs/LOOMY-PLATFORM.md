@@ -134,6 +134,7 @@ chat 路径只在 content-type 是 `application/json` 时 peek 响应体判业�
 | 端口 | **统一入口 + 可选独立端口 57896**（二期 9.2 起并存） | 一期按 §11-D 只走统一入口；二期补独立端口是因为「只想接 Loomy、不想开统一入口」是真实诉求，而 `/v1/*` 路径与另四条逐字重叠 ⇒ 必须独立端口（不能 merge） |
 | 能力集 | `["checkin","credits","oauth","gateway"]`（与 Qoder 同集） | `oauth` = 面板内短信登录；`sessionCopy`/`travel`/`autoRotate` 无 Loomy 等价物 |
 | refresh | **刻意不实现** | Loomy 无续期端点（session 14 天，过期只能重登）；网关按 `SessionDead` 换号，面板提示重新登录（诚实标记） |
+| 选号余额口径 | 取**每日池**（`LoomyPoolEntry::credits()` = `daily_credits`），不是「永久 + 每日」也不是永久池 | 两池的过期语义不同：每日池**当天作废**（不用就白丢）、永久池不清零。内核的积分项是「余额最多者优先」（`credits / max_credits × 10`）⇒ 喂每日池得到的正是「先把今天会作废的那部分烧完」。相加会把「永久很多、今日池已空」的号排在前面（恰好把会作废的留着）；全池今日池皆空时该项被跳过 ⇒ 退回原有 EMA / uid 次序。鲜度 = 最近一次读数（采样 2 帧/日 或手动刷新），用空后靠上游报错 + 冷却换号自愈 |
 | uid 口径 | userid 优先；无 userid 时派生 `loomy-<md5(phone\0token) 前16hex>` | 同一账号恒同 uid；**绝不用手机号**（同号多账号会合并）；token 不进存储 key |
 | 回收站 | 一期不做 | 单作用域、误删可重导；Qoder 的回收站属多区客户端会话同步场景 |
 | 判别特征 | 32-hex session ∨ 15–20 位 userid ∨ 11 位手机号 | 防止把别家 JWT 凭据吞成 Loomy（宁要显式指定，不要存错家） |

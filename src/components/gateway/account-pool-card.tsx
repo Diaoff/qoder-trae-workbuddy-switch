@@ -190,6 +190,7 @@ export function AccountPoolCard({
   totalRequests = null,
   tiles = DEFAULT_POOL_TILES,
   autoOptions,
+  strategyHint,
   emptyHint,
   /**
    * 「恢复」出口（**可选插槽**）：`disabled` 是终态且落盘持久化，没有出口该账号
@@ -215,6 +216,13 @@ export function AccountPoolCard({
   saving?: boolean;
   /** 累计请求数（WorkBuddy 侧无该数据 ⇒ 不传）。 */
   totalRequests?: number | null;
+  /**
+   * 额外的**策略说明**（已翻译好的整句）。
+   *
+   * 余额口径是产品线特有的（Loomy 的「自动择优」= 每日池优先）⇒ 让调用方把这句话补在
+   * 共用提示下面，而不是在共用组件里写产品分支（与 `autoOptions` 同一条纪律）。
+   */
+  strategyHint?: string;
   /** 计数格（默认五格；WorkBuddy 传 [`WB_POOL_TILES`]）。 */
   tiles?: PoolTileKey[];
   /** 下拉里「非账号」的选项（缺省只有「不指定」）。 */
@@ -516,6 +524,9 @@ export function AccountPoolCard({
         <p className="text-xs leading-5 text-muted-foreground">
           {t("shared.gateway.pool.preferredHint")}
         </p>
+        {strategyHint && (
+          <p className="mt-1 text-xs leading-5 text-muted-foreground">{strategyHint}</p>
+        )}
         <p className="mt-1 text-xs leading-5 text-muted-foreground">
           {t("shared.gateway.pool.exclusiveHint")}
         </p>

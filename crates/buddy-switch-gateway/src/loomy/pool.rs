@@ -149,17 +149,41 @@ impl PoolEntryLike for LoomyPoolEntry {
         &self.uid
     }
 
+    /// 选号用的余额口径 = **每日池**（当天作废的那部分）。
+    ///
+    /// ## 为什么是每日池，而不是「永久 + 每日」或永久池
+    ///
+    /// 择优要回答的是「先消耗谁的额度」，而 Loomy 两池的**过期语义不同**：
+    /// 每日池**当天作废**（不用就白丢），永久池不清零（留着以后用没损失）。
+    /// 而内核的积分项正好是「余额最多者优先」（`credits / max_credits * 10`）⇒
+    /// 把每日池放进去，得到的正是**先烧掉今天会作废的那部分**。
+    ///
+    /// - 相加（永久 + 每日）：会把「永久很多、今日池已空」的号排在前面 —— 恰好把
+    ///   「今天不用就作废」的那部分留着，与目标相反；
+    /// - 只取永久池：与「优先消耗每日池」完全相反。
+    ///
+    /// `max_credits == 0`（全池今日池都空）时内核会**跳过**这一项 ⇒ 退回原来的
+    /// EMA / uid 次序，**与本次改动前逐字一致**：今天都没额度不会导致乱换号。
+    ///
+    /// ## 鲜度的诚实说明
+    ///
+    /// 余额来自**最近一次读数**（排程采样 2 帧/日 或手动刷新），本模块不做逐次请求的
+    /// 扣减 ⇒ 排序的鲜度 = 上一次读数的时刻。号真被用空时靠**上游报错 + 冷却换号**
+    /// （既有机制）自愈。
+    ///
+    /// 变异：把这里改回 `0` ⇒ `pick_credit_axis_is_the_daily_pool` /
+    /// `pick_prefers_the_account_with_a_daily_pool` /
+    /// `pick_orders_by_daily_pool_and_falls_back_when_all_empty` 三条一起红。
     fn credits(&self) -> i64 {
-        /* ⚠️ **恒 0，刻意为之**：选号里的 `credits()` 会经 `weight_with_ema` 变成
-        `credits / max_credits * 10` 的权重项、并在同权重时当决胜键（`pick.rs`）。
-        Loomy 的策略是按「闲置 / 冷却」轮转（`expiring_weight = 0.0`、`cost_tier = Unknown`），
-        一旦在这里回报真实余额，就相当于**顺手改了选号优先级**（总是先把余额最多的号用光）。
-        展示用的余额在 [`LoomyPoolEntry::credits`] 字段里，与这里分开。
-
-        变异：把这里改成 `self.credits` ⇒ 选号行为变（护栏见 `display_credits_do_not_leak_into_pick`）。 */
-        0
+        self.daily_credits.max(0)
     }
 
+    /// Loomy 没有**独立**的「快过期积分绝对值」概念：会作废的那部分（每日池）
+    /// 已经由 [`Self::credits`] 承担了。
+    ///
+    /// 若在这里也报每日池，`expiring / credits` 会恒等于 1（所有有每日池的号一样）——
+    /// 一个常数项不改变相对次序，却会让同一个信号被两个因子重复计权。策略里的
+    /// `expiring_weight` 因此保持 0.0（见 `loomy_pick_policy`）。
     fn expiring_credits(&self, _now_ms: i64) -> i64 {
         0
     }
@@ -459,6 +483,20 @@ impl LoomyPool {
 }
 
 /// Loomy 的选号策略（独立函数，别动 `PickPolicy` 默认值 —— 那是 WB 的行为基线）。
+///
+/// ## 为什么四个权重都是 0，而「优先消耗每日池」仍然生效
+///
+/// Loomy 的择优**只靠积分项**（`credits / max_credits * 10`）：
+///
+/// - `expiring_weight`：本产品线的「会作废的余额」就是每日池，已由
+///   [`LoomyPoolEntry`] 的 `credits()` 承担 ⇒ 再用 `expiring / credits` 只会得到恒为 1 的常数；
+/// - `expiry_urgency_weight`：那是「这批额度在**某个时刻**到期」（Trae）的语义。
+///   Loomy 的每日池**全池在同一个时刻作废**（次日零点）⇒ 所有号一样，对**排座次**没信息量；
+/// - 闲置补偿 / 防惊群：保持 **0**（本次不动）—— 它们会让「先把每日池烧完」变成「大概 60% 先烧」，
+///   而不是确定性的先烧。真要防「同一个号被打满」是另一个决定（目前靠上游报错 + 冷却换号自愈）。
+///
+/// ⇒ 效果：有每日池的号排在没每日池的号前面，且每日池越多越靠前（`deterministic = true`
+/// 下即严格择优）；全池今日池都空时该权重项被跳过，次序回到改动前。
 pub fn loomy_pick_policy() -> PickPolicy {
     PickPolicy {
         expiring_weight: 0.0,
@@ -694,28 +732,84 @@ mod tests {
         );
     }
 
-    /// ★★ 展示用的余额**不得**泄入选号（两者刻意分开）。
+    /// ★★ 选号的余额口径 = **每日池**（不是永久池、也不是两池相加）。
     ///
-    /// 选号里的 `credits()` 会变成 `credits / max_credits * 10` 权重项与同权重决胜键
-    /// （`pick.rs`）⇒ 一旦回报真实余额，就相当于**顺手改了选号优先级**（总先挑余额最多的号）。
-    /// 本仓的 Loomy 策略是按「闲置 / 冷却」轮转。
+    /// 「先烧掉今天会作废的那部分」全靠这一条：内核的积分项是「余额最多者优先」，
+    /// 喂给它每日池才能得到「每日池最多的号先用完」。
     ///
-    /// 变异：把 `PoolEntryLike::credits` 改成 `self.credits` ⇒ 本条红。
+    /// 变异：改成 `self.credits`（永久池）或 `self.credits + self.daily_credits` ⇒ 本条红。
     #[test]
-    fn display_credits_do_not_leak_into_pick() {
+    fn pick_credit_axis_is_the_daily_pool() {
         let mut funded = entry("funded", "tok", false, 0);
-        funded.credits = 999_999;
+        funded.credits = 9_999;
+        funded.daily_credits = 30;
 
         assert_eq!(
             PoolEntryLike::credits(&funded),
-            0,
-            "选号用的积分必须恒 0（本字段只供展示）"
+            30,
+            "选号口径必须是每日池；取永久池（9999）或两池相加（10029）都是错的方向"
         );
-        assert_eq!(funded.credits, 999_999, "展示字段本身要保留真实读数");
         assert_eq!(
             PoolEntryLike::expiring_credits(&funded, 1_000_000),
             0,
-            "Loomy 没有「快过期积分」这个量"
+            "「会作废的余额」已由 credits() 承担 ⇒ 该因子不再重复计权"
+        );
+
+        // 今日池为 0 的号：选号口径也是 0（不得被永久池抬高）。
+        let mut permanent_only = entry("permanent-only", "tok", false, 0);
+        permanent_only.credits = 9_999;
+        permanent_only.daily_credits = 0;
+        assert_eq!(PoolEntryLike::credits(&permanent_only), 0);
+    }
+
+    /// ★★ 自动择优必须**先烧每日池**：今日池还有额度的号胜出，哪怕它永久池为空、
+    /// uid 次序上排在后面（旧行为下按 uid 升序会选中 `a-permanent-only`）。
+    ///
+    /// 变异：把 `PoolEntryLike::credits` 改回 `0` ⇒ 两者权重相同 ⇒ 本条红。
+    #[test]
+    fn pick_prefers_the_account_with_a_daily_pool() {
+        let mut permanent_only = entry("a-permanent-only", "tok", false, 0);
+        permanent_only.credits = 9_999;
+        permanent_only.daily_credits = 0;
+        let mut daily_rich = entry("z-daily-rich", "tok", false, 0);
+        daily_rich.credits = 0;
+        daily_rich.daily_credits = 500;
+
+        let mut pool = pool_with(vec![permanent_only, daily_rich]);
+        let picked = pool.pick("m", &HashSet::new(), None);
+        assert_eq!(
+            picked.as_deref(),
+            Some("z-daily-rich"),
+            "应当先消耗每日池（它在 uid 次序上排在后面，必须靠权重胜出）"
+        );
+    }
+
+    /// ★ 每日池**更多**的号优先（不是「只要有就行」），且全池今日池都空时
+    /// 退回改动前的 uid 次序（不因「今天没额度」乱换号）。
+    #[test]
+    fn pick_orders_by_daily_pool_and_falls_back_when_all_empty() {
+        let mut small = entry("a-small-daily", "tok", false, 0);
+        small.daily_credits = 10;
+        let mut big = entry("z-big-daily", "tok", false, 0);
+        big.daily_credits = 800;
+
+        let mut pool = pool_with(vec![small, big]);
+        assert_eq!(
+            pool.pick("m", &HashSet::new(), None).as_deref(),
+            Some("z-big-daily"),
+            "每日池多者优先（它 uid 更大，故必须靠权重胜出）"
+        );
+
+        // 两号的今日池都是 0 ⇒ `max_credits == 0` ⇒ 积分项被跳过 ⇒ uid 升序。
+        let mut a = entry("a-empty", "tok", false, 0);
+        a.credits = 5_000;
+        let mut z = entry("z-empty", "tok", false, 0);
+        z.credits = 1;
+        let mut empty_pool = pool_with(vec![a, z]);
+        assert_eq!(
+            empty_pool.pick("m", &HashSet::new(), None).as_deref(),
+            Some("a-empty"),
+            "今日池都为 0 时必须退回 uid 次序（永久池不参与排座次）"
         );
     }
 }
