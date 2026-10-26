@@ -88,10 +88,16 @@ export const QODER_POOL_TILES: PoolTileKey[] = [
 ];
 
 /**
- * Loomy 侧的四格 —— **没有积分两格**（池不建模积分）、**没有模型冷却**
- * （上游 429 是账号级的），但**有「已排除」**（排除端点已接，互斥第六态）。
+ * Loomy 侧的四格 —— **没有积分两格**、**没有模型冷却**（上游 429 是账号级的），
+ * 但**有「已排除」**（排除端点已接，互斥第六态）。
  *
- * 摆一格永远为 0 的数字就是假控件（与 WB 去掉「积分过期」同一判据）。
+ * ★ 积分的**读数**已经建模了（`accounts[].credits` / `dailyCredits`，池卡账号行并排显示），
+ * 但这两格计数**仍然是 0**，原因与 WB 去掉「积分过期」同一条：
+ * - `expired`（积分过期）：Loomy 的永久池**不过期**，每日池是**每日重置** ⇒ 没有这个状态；
+ * - `zeroCredits`：它在 WB 侧是一个**互斥路由态**（`status = no_credits`，与 `available`
+ *   不重叠）；而 Loomy 的选号**不看余额**（`PoolEntryLike::credits()` 恒 0，余额为 0 的号
+ *   依旧 `available`）⇒ 这一格若是 >0 就会把「五态 + 排除 == total」的不变量搞破。
+ * 零余额逐条看得到（账号行的积分列），不需要一个会误导的计数。
  */
 export const LOOMY_POOL_TILES: PoolTileKey[] = ["available", "cooling", "disabled", "excluded"];
 
@@ -383,9 +389,21 @@ export function AccountPoolCard({
                       )}
                     </td>
                     <td className="px-2 py-2.5 text-xs text-muted-foreground tabular-nums">
-                      {t("shared.gateway.pool.credits", {
-                        credits: formatCredits(account.credits),
-                      })}
+                      {/* Loomy 的两池**不可通约** ⇒ 并排显示（`dailyCredits` 是本产品线独有的
+                          第二池）；其余产品线只有单池，走原来的单值文案。
+                          ★ 不用「产品 === loomy」分支，看**字段在不在** —— 与卡片其余可选字段同一条纪律。 */}
+                      {account.dailyCredits === undefined || account.dailyCredits === null ? (
+                        t("shared.gateway.pool.credits", {
+                          credits: formatCredits(account.credits),
+                        })
+                      ) : (
+                        <span title={t("shared.gateway.pool.creditsTwoPoolsHint")}>
+                          {t("shared.gateway.pool.creditsTwoPools", {
+                            permanent: formatCredits(account.credits),
+                            daily: formatCredits(account.dailyCredits),
+                          })}
+                        </span>
+                      )}
                     </td>
                     <td className="px-2 py-2.5">
                       <div className="flex flex-wrap items-center gap-2">

@@ -2241,6 +2241,8 @@ export interface UnifiedPoolAccount {
   name: string;
   status: string;
   credits: number | null;
+  /** **仅 Loomy**：每日池余额（当天作废）—— 与 `credits`（永久池）并排显示，不相加。 */
+  dailyCredits?: number | null;
   [key: string]: unknown;
 }
 

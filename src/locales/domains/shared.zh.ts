@@ -301,6 +301,10 @@ export const zh = {
     "{models} 处于模型级冷却（只影响这些模型，其它模型仍可用），最早 {time} 解冻。",
   "shared.gateway.pool.empty": "账号池为空。请先在「账号管理」中添加账号。",
   "shared.gateway.pool.credits": "{credits} 积分",
+  /* Loomy 专用：两池**不可通约** ⇒ 并排显示而不是相加（与账号卡「永久 / 每日池」分列同一条口径）。
+     只报永久池会让「永久 0、今日池还有额度」的账号显示成「0 积分」—— 读起来像这个号空了。 */
+  "shared.gateway.pool.creditsTwoPools": "永久 {permanent} · 每日 {daily}",
+  "shared.gateway.pool.creditsTwoPoolsHint": "永久池不清零；每日池当天作废。两池不可通约，不相加。",
   "shared.gateway.pool.diagnoseNote": "请求报「没有可用账号」时，按下面的原因逐条排查：",
   "shared.gateway.pool.preferredLabel": "指定账号",
   "shared.gateway.pool.preferredAria": "指定优先消耗的账号",

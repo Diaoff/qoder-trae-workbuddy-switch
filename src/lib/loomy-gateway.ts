@@ -85,8 +85,15 @@ export interface LoomyGatewayPoolAccount {
   uid: string;
   name: string;
   status: "available" | "cooling" | "disabled";
-  /** Loomy 池不建模积分 ⇒ 恒 `null`（卡片显示「—」）。 */
+  /** 永久池余额（后端从账号库读到的**快照**）；字段缺失 / 非法时才回落 `null` ⇒ 卡片显示「—」。 */
   credits: number | null;
+  /**
+   * **每日池余额**（当天作废）；缺省 = 后端未给（旧数据）⇒ 不渲染第二格。
+   *
+   * 与 `credits` 并排而不是相加：两池不可通约（永久池不清零、每日池当日作废）。
+   * 只显示永久池会让「永久 0、今日池还有额度」的账号读起来像空号。
+   */
+  dailyCredits?: number | null;
   cooling: boolean;
   cooldownUntil: number | null;
   cooldownReason: string | null;
@@ -254,6 +261,7 @@ export function normalizeLoomyGatewayStatus(raw: unknown): LoomyGatewayStatus | 
                 ? (status as LoomyGatewayPoolAccount["status"])
                 : "available",
             credits: asNumber(entry.credits) ?? null,
+            dailyCredits: asNumber(pick(entry, "dailyCredits", "daily_credits")) ?? null,
             cooling: asBoolean(entry.cooling) ?? false,
             cooldownUntil: asNumber(pick(entry, "cooldownUntil", "cooldown_until")) ?? null,
             cooldownReason: asString(pick(entry, "cooldownReason", "cooldown_reason")) ?? null,
@@ -282,7 +290,9 @@ export function normalizeLoomyGatewayStatus(raw: unknown): LoomyGatewayStatus | 
       available: asNumber(pool.available) ?? 0,
       cooling: asNumber(pool.cooling) ?? 0,
       disabled: asNumber(pool.disabled) ?? 0,
-      // Loomy 池不建模积分 ⇒ 后端恒给 0；这里照实归一（不造数），卡片也不渲染这两格。
+      // Loomy 的**两池**：`total_credits` 在池摘要里只合计永久池（两池不可通约，后端不相加）。
+      // `expired` / `zero_credits` 仍是 0 —— 前者 Loomy 没有（永久池不过期），
+      // 后者是 WB 侧的**互斥路由态**（Loomy 余额不参与选号 ⇒ 没有该态）。
       expired: asNumber(pool.expired) ?? 0,
       zeroCredits: asNumber(pick(pool, "zeroCredits", "zero_credits")) ?? 0,
       totalCredits: asNumber(pick(pool, "totalCredits", "total_credits")) ?? 0,

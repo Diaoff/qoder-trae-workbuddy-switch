@@ -1716,6 +1716,14 @@ export interface GatewayPoolAccount {
   status: "available" | "cooling" | "disabled" | "expired" | "no_credits" | "excluded";
   /** 剩余积分；`null` = 尚未刷新过（未知），显示为「—」。 */
   credits: number | null;
+  /**
+   * **仅 Loomy**：每日赠送池余额（当天作废）。
+   *
+   * 它不并入 `credits`：Loomy 的两池**不可通约**（永久池不清零、每日池当日作废），
+   * 相加之后就看不出「哪部分今天会没」—— 池卡因此并排显示（`creditsTwoPools`）。
+   * 其它产品线缺该字段（单池）⇒ 不渲染第二格。
+   */
+  dailyCredits?: number | null;
   cooldownReason?: string | null;
   cooldownUntil?: number | null;
   cooling?: boolean;

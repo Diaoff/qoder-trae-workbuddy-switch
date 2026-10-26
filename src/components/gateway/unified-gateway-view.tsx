@@ -933,8 +933,21 @@ export function UnifiedGatewayView({
                             <tr key={account.uid} className="border-t border-border/60">
                               <td className="py-1 pr-3">{account.name}</td>
                               <td className="py-1 pr-3 tabular-nums">
-                                {/* ★ 不可知时给「—」，**不给 0**（未知 ≠ 零）。 */}
-                                {account.credits === null ? "—" : account.credits}
+                                {/* ★ 不可知时给「—」，**不给 0**（未知 ≠ 零）。
+                                    Loomy 下另有第二池（`dailyCredits`）⇒ 两池并排，不相加。 */}
+                                {account.credits === null ? (
+                                  "—"
+                                ) : account.dailyCredits === undefined ||
+                                  account.dailyCredits === null ? (
+                                  account.credits
+                                ) : (
+                                  <span title={t("shared.gateway.pool.creditsTwoPoolsHint")}>
+                                    {t("shared.gateway.pool.creditsTwoPools", {
+                                      permanent: account.credits,
+                                      daily: account.dailyCredits,
+                                    })}
+                                  </span>
+                                )}
                               </td>
                               <td className="py-1 pr-3">{account.status}</td>
                             </tr>

@@ -272,6 +272,10 @@ export const en = {
     "{models} is/are cooling at the model level (only those models are affected; the account still serves others). Earliest thaw at {time}.",
   "shared.gateway.pool.empty": "The pool is empty. Add accounts under Accounts first.",
   "shared.gateway.pool.credits": "{credits} credits",
+  /* Loomy only: the two pools are not commensurable, so they sit side by side instead of being summed. */
+  "shared.gateway.pool.creditsTwoPools": "Permanent {permanent} · Daily {daily}",
+  "shared.gateway.pool.creditsTwoPoolsHint":
+    "The permanent pool never resets; the daily pool expires today. The two are not summed.",
   "shared.gateway.pool.diagnoseNote": "When a request reports \"no available account\", check these reasons one by one:",
   "shared.gateway.pool.preferredLabel": "Preferred account",
   "shared.gateway.pool.preferredAria": "Account to consume first",
