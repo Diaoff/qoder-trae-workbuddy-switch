@@ -612,6 +612,8 @@ const ROUTES: Record<string, Route> = {
   loomy_set_account_remark: { method: "POST", path: "/api/loomy/accounts/remark" },
   loomy_set_account_group: { method: "POST", path: "/api/loomy/accounts/group" },
   loomy_credits: { method: "POST", path: "/api/loomy/credits" },
+  // 批量刷新积分（串行；与卡片「更多 → 刷新积分」同一条上游路径，只在范围上有别）。
+  loomy_credits_all: { method: "POST", path: "/api/loomy/credits/all" },
   // 积分逐日采样（趋势图数据源，二期 9.3）—— **只读本地文件**，不打上游。
   loomy_credits_daily: { method: "GET", path: "/api/loomy/credits/daily" },
   loomy_checkin_claim: { method: "POST", path: "/api/loomy/checkin/claim" },
@@ -4215,6 +4217,26 @@ export interface LoomyCreditsView {
   permanent: number;
   daily: number;
   total: number;
+}
+
+/** Loomy **批量**刷新积分的回执（口径与采样循环一致：失败明细带 uid + 原因）。 */
+export interface LoomyCreditsAllView {
+  region: string;
+  /** 账号总数（含被跳过的）。 */
+  total: number;
+  /** 本轮真的刷新到新读数的账号数。 */
+  sampled: number;
+  /** 没有 session 而跳过的账号数（不算失败）。 */
+  skipped: number;
+  /** 失败明细：账号 + 上游给的原因（不压成计数，重试时说得清）。 */
+  failed: Array<{ uid: string; error: string }>;
+  /** 采样落盘失败的原因（`null` = 落盘成功）。 */
+  error: string | null;
+}
+
+/** Loomy **批量**刷新积分（串行遍历有 session 的账号）。 */
+export function loomyCreditsAll(scope: Scope): Promise<LoomyCreditsAllView> {
+  return call<LoomyCreditsAllView>("loomy_credits_all", { scope });
 }
 
 /** Loomy 查询两池积分。 */

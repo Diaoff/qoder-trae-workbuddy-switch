@@ -5106,6 +5106,7 @@ check("★ P5-④ 参数化命令集与 EXPECTED 完全一致（commands.rs 签�
     "get_qoder_gateway_models", "get_qoder_local_sources", "get_trae_account_token_today",
     "get_trae_checkin_status_map",
     "loomy_accounts", "loomy_checkin_all", "loomy_checkin_claim", "loomy_credits",
+    "loomy_credits_all",
     "loomy_credits_daily",
     "loomy_delete_account",
     "loomy_import", "loomy_set_account_group", "loomy_set_account_remark",

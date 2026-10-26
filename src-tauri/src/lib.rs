@@ -745,6 +745,7 @@ pub fn run() {
             commands::loomy_set_account_remark,
             commands::loomy_set_account_group,
             commands::loomy_credits,
+            commands::loomy_credits_all,
             commands::loomy_credits_daily,
             // Loomy 独立网关（二期 9.2）—— 与 qoder gateway 那组平行。
             commands::get_loomy_gateway_config,

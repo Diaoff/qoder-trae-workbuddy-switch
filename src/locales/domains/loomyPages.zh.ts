@@ -29,6 +29,18 @@ export const zh = {
   "loomy.page.accounts.batch.retryFailed": "只重试失败的 {n} 个",
   "loomy.page.accounts.batch.skippedNote": "{n} 个账号没有可用 session，已跳过",
 
+  // ---- 全量刷新积分（页头「刷新」按钮：后端复用采样循环，串行打上游）----
+  "loomy.page.accounts.refreshAll.aria": "刷新全部账号的积分",
+  "loomy.page.accounts.refreshAll.done": "积分已刷新",
+  "loomy.page.accounts.refreshAll.partial": "部分账号的积分没刷到",
+  "loomy.page.accounts.refreshAll.nothing": "没有可刷新积分的账号",
+  "loomy.page.accounts.refreshAll.toastFailed": "刷新积分失败",
+  "loomy.page.accounts.refreshAll.ok": "{n} 个刷新成功",
+  "loomy.page.accounts.refreshAll.failed": "{n} 个失败",
+  "loomy.page.accounts.refreshAll.skipped": "{n} 个无凭据已跳过",
+  "loomy.page.accounts.refreshAll.gaugeWriteFailed": "本次读数没能记进趋势账本",
+  "loomy.page.accounts.refreshAll.retry": "重试",
+
   // ---- 卡片 ----
   "loomy.page.accounts.card.manageAria": "{name} 的更多操作",
   "loomy.page.accounts.card.moreActions": "更多操作",

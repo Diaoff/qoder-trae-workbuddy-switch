@@ -5735,6 +5735,27 @@ pub async fn loomy_credits(scope: String, uid: String) -> Result<Value, String> 
     }))
 }
 
+/// Loomy **批量**刷新积分：遍历账号库里**有 session** 的账号，逐个查上游两池积分，
+/// 回填账号库快照并落一帧采样。
+///
+/// ## 为什么直接复用采样循环
+///
+/// 单账号 `loomy_credits` 做的三件事（查两池 / 回填快照 / 补记一帧采样）与本命令**完全一样**，
+/// 差别只在范围。而 `credits_daily::run_sample_cycle_for` 已经是「遍历全库 + 串行打上游 +
+/// 回填快照 + 落采样」的**唯一实现**（排程 `loomy_points_sample` 走的就是它）⇒ 这里只做
+/// 能力 / 作用域校验后直接调它，不写第二份循环。
+///
+/// ⚠️ 刻意**不**让前端 for 循环逐个调单账号端点（本页批量签到同一条纪律）：那会把
+/// 「串行 + 部分失败不中断」复制一份到前端，还会让每个账号各占 N 次 IPC 往返，
+/// 并在账号库的「读-改-写」上开出并发窗口。
+#[tauri::command(rename_all = "camelCase")]
+pub async fn loomy_credits_all(scope: String) -> Result<Value, String> {
+    require_capability(Product::Loomy, capability::Capability::Credits)?;
+    // 单作用域仍**校验**（fail-closed）：`loomy-global` 之类拼错不该静默刷 loomy-cn。
+    let region = require_loomy_region(resolve_scope_param(Some(&scope))?)?;
+    Ok(loomy::credits_daily::run_sample_cycle_for(region).await)
+}
+
 /// Loomy 积分逐日采样（趋势图数据源，二期 9.3）—— **只读本地文件**，不联网。
 #[tauri::command(rename_all = "camelCase")]
 pub fn loomy_credits_daily(scope: String) -> Result<Value, String> {

@@ -22,6 +22,18 @@ export const en = {
   "loomy.page.accounts.batch.retryFailed": "Retry the {n} failed",
   "loomy.page.accounts.batch.skippedNote": "{n} accounts skipped (no usable session)",
 
+  // ---- Refresh all credits (header refresh button: backend reuses the sampling cycle, serial upstream calls) ----
+  "loomy.page.accounts.refreshAll.aria": "Refresh credits for all accounts",
+  "loomy.page.accounts.refreshAll.done": "Credits refreshed",
+  "loomy.page.accounts.refreshAll.partial": "Some accounts could not be refreshed",
+  "loomy.page.accounts.refreshAll.nothing": "No account to refresh credits for",
+  "loomy.page.accounts.refreshAll.toastFailed": "Failed to refresh credits",
+  "loomy.page.accounts.refreshAll.ok": "{n} refreshed",
+  "loomy.page.accounts.refreshAll.failed": "{n} failed",
+  "loomy.page.accounts.refreshAll.skipped": "{n} skipped (no usable session)",
+  "loomy.page.accounts.refreshAll.gaugeWriteFailed": "Readings were not recorded in the trend ledger",
+  "loomy.page.accounts.refreshAll.retry": "Retry",
+
   "loomy.page.accounts.card.manageAria": "More actions for {name}",
   "loomy.page.accounts.card.moreActions": "More actions",
   "loomy.page.accounts.card.viewDetail": "View details",

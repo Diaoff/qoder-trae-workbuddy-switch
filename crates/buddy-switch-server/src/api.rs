@@ -563,6 +563,8 @@ fn protected_routes() -> Router<std::sync::Arc<crate::auth::WebuiAuth>> {
             post(api_loomy_set_account_group),
         )
         .route("/api/loomy/credits", post(api_loomy_credits))
+        // 批量刷新积分（串行；复用采样循环，返回失败明细供「重试」）。
+        .route("/api/loomy/credits/all", post(api_loomy_credits_all))
         // 积分逐日采样（趋势图数据源，二期 9.3）：**只读**本地文件，不打上游。
         .route("/api/loomy/credits/daily", get(api_loomy_credits_daily))
         .route("/api/loomy/checkin/claim", post(api_loomy_checkin_claim))
@@ -8918,6 +8920,34 @@ async fn api_loomy_checkin_all() -> Response {
         return json_err(error, StatusCode::FORBIDDEN);
     }
     json_ok(loomy::checkin::run_cycle_for(loomy::region::LoomyRegion::Cn).await)
+}
+
+/// POST /api/loomy/credits/all —— **批量**刷新积分（串行遍历有 session 的账号）。
+///
+/// 与单账号端点做的是**同一件事**，差别只在范围 ⇒ 直接复用
+/// `credits_daily::run_sample_cycle_for`（遍历全库 + 回填快照 + 落一帧采样的唯一实现，
+/// 排程 `loomy_points_sample` 走的也是它）。
+async fn api_loomy_credits_all(Json(body): Json<Value>) -> Response {
+    if let Err(error) = require_capability(Product::Loomy, capability::Capability::Credits) {
+        return json_err(error, StatusCode::FORBIDDEN);
+    }
+    // 本 handler 与同组几个 Loomy 旧 handler（各自硬编码 `LoomyRegion::Cn`、不读 scope）不同：
+    // scope 在这里**真的校验**（单作用域同样 fail-closed），与桌面侧命令同口径 —— webui 传
+    // `loomy-global` 这类拼错的作用域不会被静默当成 loomy-cn。
+    // ⚠️ 这段刻意写成行注释：本文件里有**字符串字面量含 `/* `**（测试断言的
+    // `.expect("dist must embed a hashed assets/*.js")`），而两个门禁的 `stripComments` 用正则
+    // 剥块注释、不看字符串上下文 ⇒ 它之后新增的 `/* … */` 会充当那条正则一直在等的 `*/`，
+    // 把中间十几万字符整段删掉（实测吞 81557 字符，含 `qoder::trash::trash_account_for`
+    // ⇒「Qoder 删除必须软删」假红）。根因在门禁工具侧，在它修好前本文件不用块注释。
+    let scope = match resolve_scope_param(body.get("scope").and_then(Value::as_str)) {
+        Ok(scope) => scope,
+        Err(error) => return json_err(error, StatusCode::BAD_REQUEST),
+    };
+    let region = match require_loomy_region(scope) {
+        Ok(region) => region,
+        Err(error) => return json_err(error, StatusCode::BAD_REQUEST),
+    };
+    json_ok(loomy::credits_daily::run_sample_cycle_for(region).await)
 }
 
 /// POST /api/loomy/checkin/claim —— 触发每日赠送额度（幂等）。

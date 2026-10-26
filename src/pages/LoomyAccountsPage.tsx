@@ -25,6 +25,7 @@ import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
+import { DemoAction } from "@/components/demo-action";
 import { EmptyState } from "@/components/ui/empty-state";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -92,6 +93,8 @@ function LoomyAccountsInner({ scope }: { scope: LoomyScope }) {
   const [pendingDelete, setPendingDelete] = useState<LoomyAccountView | null>(null);
   /** 批量签到进行中（驱动按钮转圈 + 防连点）。 */
   const [batchBusy, setBatchBusy] = useState(false);
+  /** 全量刷新积分进行中（页头刷新按钮，驱动转圈 + 防连点）。 */
+  const [refreshAllBusy, setRefreshAllBusy] = useState(false);
 
   const reload = useCallback(async () => {
     setError(null);
@@ -250,6 +253,69 @@ function LoomyAccountsInner({ scope }: { scope: LoomyScope }) {
     }
   };
 
+  /**
+   * 页头「刷新」按钮：**全量刷新积分**（不是「重读一遍本地账号库」）。
+   *
+   * ★ 为什么不能只 `reload()`：`loomy_accounts` 只读本地账号库，卡片上的
+   * `credits` / `dailyCredits` 是**上次拉取**的快照 —— 只有排程采样与卡片
+   * 「更多 → 刷新积分」会更新它 ⇒ 只 reload 的话数字与状态纹丝不动。
+   *
+   * ★ 为什么调**批量**命令而不是在前端 for 循环逐个调单账号端点：后端
+   * `credits_daily::run_sample_cycle_for` 已经是「遍历全库 + 串行打上游（不上并发）+
+   * 回填快照 + 落一帧采样」的**唯一实现**（排程 `loomy_points_sample` 走的就是它）；
+   * 在前端循环等于把这套逻辑复制一份，还会多出 N 次 IPC 往返与账号库「读-改-写」的
+   * 并发窗口（与 `doBatchCheckin` 同一条纪律）。
+   *
+   * 失败项**逐条带回 uid + 原因**（不是只给一个计数）⇒ 部分失败时能给出重试出口。
+   * 「重试」重跑整库而不是只跑失败项：这是**只读**查询（不像签到会领东西），重复跑
+   * 不会造成任何重复发放，比在前端筛 uid 再走单账号端点更简单也更不会漏。
+   */
+  const refreshAll = async () => {
+    if (refreshAllBusy || batchBusy) return;
+    if ((accounts?.length ?? 0) === 0) {
+      // 还没有账号库快照（首次加载未回 / 本来就没有账号）⇒ 退回「重新拉取」的语义。
+      await reload();
+      return;
+    }
+    setRefreshAllBusy(true);
+    try {
+      const result = await api.loomyCreditsAll(scope);
+      await reload();
+      const ok = result.sampled;
+      const failed = result.failed?.length ?? 0;
+      const bits: string[] = [];
+      if (ok > 0) bits.push(t("loomy.page.accounts.refreshAll.ok", { n: ok }));
+      if (failed > 0) bits.push(t("loomy.page.accounts.refreshAll.failed", { n: failed }));
+      if (result.skipped > 0) {
+        bits.push(t("loomy.page.accounts.refreshAll.skipped", { n: result.skipped }));
+      }
+      /* 采样落盘失败要**如实说**：那意味着这次刷新不会出现在趋势图上（不回吞成成功）。 */
+      if (result.error) bits.push(t("loomy.page.accounts.refreshAll.gaugeWriteFailed"));
+      const description = bits.join(t("shared.punct.comma"));
+
+      if (failed === 0 && ok === 0) {
+        /* 一个都没刷到（全是无凭据账号）⇒ 不能报「刷新成功」（那与假控件同类）。 */
+        toast.info(t("loomy.page.accounts.refreshAll.nothing"), { description });
+      } else if (failed > 0) {
+        toast.warning(t("loomy.page.accounts.refreshAll.partial"), {
+          description,
+          action: {
+            label: t("loomy.page.accounts.refreshAll.retry"),
+            onClick: () => void refreshAll(),
+          },
+        });
+      } else {
+        toast.success(t("loomy.page.accounts.refreshAll.done"), { description });
+      }
+    } catch (err) {
+      toast.error(t("loomy.page.accounts.refreshAll.toastFailed"), {
+        description: api.asError(err),
+      });
+    } finally {
+      setRefreshAllBusy(false);
+    }
+  };
+
   const doRefreshCredits = async (account: LoomyAccountView) => {
     setBusyUid(account.uid);
     try {
@@ -317,9 +383,23 @@ function LoomyAccountsInner({ scope }: { scope: LoomyScope }) {
           <ScopeChip scope={scope} />
         </div>
         <div className="flex items-center gap-2">
-          <Button variant="outline" size="sm" onClick={() => void reload()} disabled={batchBusy}>
-            <RefreshCw className="size-4" />
-          </Button>
+          {/* 全量刷新积分（打上游回填快照）；演示站无上游可打 ⇒ 统一不可操作。 */}
+          <DemoAction>
+            <Button
+              variant="outline"
+              size="sm"
+              aria-label={t("loomy.page.accounts.refreshAll.aria")}
+              title={t("loomy.page.accounts.refreshAll.aria")}
+              onClick={() => void refreshAll()}
+              disabled={refreshAllBusy || batchBusy}
+            >
+              {refreshAllBusy ? (
+                <Loader2 className="size-4 animate-spin" />
+              ) : (
+                <RefreshCw className="size-4" />
+              )}
+            </Button>
+          </DemoAction>
           {/* 批量签到：只在该平台声明了 checkin 能力、且有账号时才摆出来。
               没有账号时摆一个「全部签到」按钮点了无事发生 = 假控件。 */}
           {accounts !== null && accounts.length > 0 && (
@@ -327,7 +407,7 @@ function LoomyAccountsInner({ scope }: { scope: LoomyScope }) {
               variant="outline"
               size="sm"
               onClick={() => void doBatchCheckin()}
-              disabled={batchBusy}
+              disabled={batchBusy || refreshAllBusy}
             >
               {batchBusy ? (
                 <Loader2 className="size-4 animate-spin" />
