@@ -115,6 +115,9 @@ export const en = {
   "aggregate.detail.remark": "Note",
   "aggregate.detail.group": "Group",
   "aggregate.detail.domain": "Domain",
+  "aggregate.detail.phone": "Phone",
+  "aggregate.detail.userid": "UserID",
+  "aggregate.detail.source": "Source",
   "aggregate.detail.device": "Device fingerprint",
   "aggregate.detail.status": "Status",
   "aggregate.detail.jwt": "Login state (JWT)",
@@ -139,6 +142,7 @@ export const en = {
   "aggregate.export.platform.workbuddy": "WorkBuddy",
   "aggregate.export.platform.trae": "Trae",
   "aggregate.export.platform.qoder": "Qoder",
+  "aggregate.export.platform.loomy": "Loomy",
   "aggregate.export.done": "Exported {n} accounts",
   "aggregate.toast.switching": "Switching…",
 

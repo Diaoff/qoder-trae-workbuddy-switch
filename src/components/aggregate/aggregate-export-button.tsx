@@ -122,7 +122,9 @@ export function AggregateExportButton({
                     ? t("aggregate.export.platform.trae")
                     : source?.platform === "qoder"
                       ? t("aggregate.export.platform.qoder")
-                      : t("aggregate.export.platform.workbuddy")}
+                      : source?.platform === "loomy"
+                        ? t("aggregate.export.platform.loomy")
+                        : t("aggregate.export.platform.workbuddy")}
                 </span>
               </DropdownMenuItem>
             );
@@ -150,7 +152,14 @@ export function AggregateExportButton({
           }}
           scope={current.scope}
           accounts={current.accounts.map((account) => ({
-            id: account.platform === "workbuddy" ? account.data.id : account.platform === "qoder" ? account.data.uid : "",
+            /* 导出命令按平台分：WB 用 `id`、Trae 用 `userId`、Qoder / Loomy 用 `uid`。
+               ⚠️ 曾经这里是「非 WB 非 Qoder ⇒ 空串」的兜底 ⇒ 新增的 Loomy 会导出空 id。 */
+            id:
+              account.platform === "workbuddy"
+                ? account.data.id
+                : account.platform === "trae"
+                  ? account.data.userId
+                  : account.data.uid,
             label: aggregateDisplayName(account),
           }))}
           onExported={onExported}

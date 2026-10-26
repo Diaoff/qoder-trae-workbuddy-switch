@@ -20,6 +20,7 @@
  * | WorkBuddy | `accounts_list` | `region` |
  * | Trae | `get_trae_accounts` | 账号库变体 id |
  * | Qoder | `get_qoder_accounts` | `scope` |
+ * | Loomy | `loomy_accounts` | `scope` |
  *
  * 映射集中在 `AGGREGATE_SOURCES`（纯函数层），这里只负责照着跑 —— 重试、演示数据
  * 都读同一份映射，不会出现「重试时用了错的命令」。
@@ -68,8 +69,12 @@ async function loadOne(source: (typeof AGGREGATE_SOURCES)[number]): Promise<Aggr
     const overview = await api.getTraeAccounts(source.variant);
     return overview.accounts.map((account) => makeAggregateAccount(source.scope, "trae", account));
   }
-  const view = await api.getQoderAccounts(source.scope);
-  return view.accounts.map((account) => makeAggregateAccount(source.scope, "qoder", account));
+  if (source.platform === "qoder") {
+    const view = await api.getQoderAccounts(source.scope);
+    return view.accounts.map((account) => makeAggregateAccount(source.scope, "qoder", account));
+  }
+  const view = await api.getLoomyAccounts(source.scope);
+  return view.accounts.map((account) => makeAggregateAccount(source.scope, "loomy", account));
 }
 
 /**

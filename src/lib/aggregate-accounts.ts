@@ -26,18 +26,19 @@
  */
 
 import type { AccountMeta } from "@/lib/types";
-import type { QoderAccountView } from "@/lib/api";
+import type { LoomyAccountView, QoderAccountView } from "@/lib/api";
 import type { TraeAccount, TraeJwtStatus } from "@/lib/trae-types";
 import { SCOPES, scopeParts, type Scope } from "@/lib/scope";
-import type { PlatformSlug } from "@/lib/platforms/registry";
+import { PLATFORM_SLUG, type PlatformSlug } from "@/lib/platforms/registry";
 
 /* ══════════════════════ 形状 ══════════════════════ */
 
-/** 三个平台在聚合页里的统一形状。`data` 保留各自的原始类型（卡片按平台分派时要用原字段）。 */
+/** 各平台在聚合页里的统一形状。`data` 保留各自的原始类型（卡片按平台分派时要用原字段）。 */
 export type AggregateAccount =
   | { ref: string; scope: Scope; platform: "workbuddy"; data: AccountMeta }
   | { ref: string; scope: Scope; platform: "trae"; data: TraeAccount }
-  | { ref: string; scope: Scope; platform: "qoder"; data: QoderAccountView };
+  | { ref: string; scope: Scope; platform: "qoder"; data: QoderAccountView }
+  | { ref: string; scope: Scope; platform: "loomy"; data: LoomyAccountView };
 
 /** 分组视图的一组（`scope` 一定是有账号的作用域）。 */
 export interface AggregateGroup {
@@ -47,7 +48,7 @@ export interface AggregateGroup {
 
 /* ══════════════════════ 键制 ══════════════════════ */
 
-/** 拼一个账号键。`key` 按平台取：WB `id` / Trae `userId` / Qoder `uid`。 */
+/** 拼一个账号键。`key` 按平台取：WB `id` / Trae `userId` / Qoder `uid` / Loomy `uid`。 */
 export function aggregateRef(scope: Scope, key: string): string {
   return `${scope}:${key}`;
 }
@@ -76,6 +77,7 @@ export function aggregateAccountKey(account: AggregateAccount): string {
     case "trae":
       return account.data.userId;
     case "qoder":
+    case "loomy":
       return account.data.uid;
   }
 }
@@ -83,22 +85,21 @@ export function aggregateAccountKey(account: AggregateAccount): string {
 /** 由 scope + 平台 + 原始数据造一条 `AggregateAccount`（取数层用）。 */
 export function makeAggregateAccount(
   scope: Scope,
-  platform: "workbuddy" | "trae" | "qoder",
-  data: AccountMeta | TraeAccount | QoderAccountView,
+  platform: "workbuddy" | "trae" | "qoder" | "loomy",
+  data: AccountMeta | TraeAccount | QoderAccountView | LoomyAccountView,
 ): AggregateAccount {
   const key =
     platform === "workbuddy"
       ? (data as AccountMeta).id
       : platform === "trae"
         ? (data as TraeAccount).userId
-        : (data as QoderAccountView).uid;
+        : (data as QoderAccountView | LoomyAccountView).uid;
   return { ref: aggregateRef(scope, key), scope, platform, data } as AggregateAccount;
 }
 
 /* ══════════════════════ 展示 ══════════════════════ */
 
-/**
- * 展示名。三个平台的「名字」字段不同名（`nickname` / `name` / `name`），
+/** 展示名。各平台的「名字」字段不同名（`nickname` / `name`），
  * 且都可能是 `null` ⇒ 统一回落到主键，绝不给空串（空串会让卡片标题变一条空白）。
  *
  * ⚠️ 这里**不做 HTML 转义**：返回的是纯文本，交给 React 渲染；
@@ -115,13 +116,21 @@ export function aggregateDisplayName(account: AggregateAccount): string {
   return text || aggregateAccountKey(account);
 }
 
-/** 副标题（邮箱 / 域名）。没有就回落到备注，再没有就是空串（调用方决定要不要渲染）。 */
+/** 副标题（邮箱 / 域名 / 手机号）。没有就回落到备注，再没有就是空串（调用方决定要不要渲染）。 */
 export function aggregateSubtitle(account: AggregateAccount): string {
   if (account.platform === "workbuddy") {
     return (account.data.email ?? "").trim() || (account.data.remark ?? "").trim();
   }
   if (account.platform === "qoder") {
     return (account.data.domain ?? "").trim() || (account.data.remark ?? "").trim();
+  }
+  if (account.platform === "loomy") {
+    /* Loomy 的「身份行」口径与它自己的账号卡同源：手机号 > userid > uid。 */
+    return (
+      (account.data.phone ?? "").trim() ||
+      (account.data.userid ?? "").trim() ||
+      (account.data.remark ?? "").trim()
+    );
   }
   return (account.data.remark ?? "").trim();
 }
@@ -133,6 +142,8 @@ export function aggregateSearchText(account: AggregateAccount): string {
     parts.push(account.data.groupName ?? "", account.data.enterpriseName ?? "");
   } else if (account.platform === "trae") {
     parts.push(account.data.groupId ?? "");
+  } else if (account.platform === "loomy") {
+    parts.push(account.data.group ?? "", account.data.remark ?? "");
   } else {
     parts.push(account.data.group ?? "");
   }
@@ -163,6 +174,11 @@ export function aggregateNeedsAttention(account: AggregateAccount, now: number =
     if (dead.includes(a.jwtStatus)) return true;
     return expiredAt(a.jwtExpTimestamp, now);
   }
+  if (account.platform === "loomy") {
+    /* Loomy 无续期端点：凭据缺失 / 过期就只能重登（与它自己的账号卡同一口径）。 */
+    if (!account.data.hasCredential) return true;
+    return expiredAt(account.data.expiresAt, now);
+  }
   const a = account.data;
   if (!a.hasCredential) return true;
   return expiredAt(a.expiresAt, now);
@@ -188,6 +204,14 @@ export function aggregateUrgency(account: AggregateAccount, now: number = Date.n
     if (a.jwtStatus === "expired") return 0;
     if (a.jwtStatus === "warn") return 2;
     if (!a.checkedToday) return 2;
+    return 4;
+  }
+  if (account.platform === "loomy") {
+    const a = account.data;
+    if (!a.hasCredential) return 0;
+    if (expiredAt(a.expiresAt, now)) return 0;
+    /* 今天还没签到：比「其余」更该被看到（与 Qoder 的 `checkedToday` 同一条排序理由）。 */
+    if (!a.lastCheckin) return 2;
     return 4;
   }
   const a = account.data;
@@ -336,7 +360,8 @@ export function aggregateTotals(
 export type AggregateSource =
   | { scope: Scope; platform: "workbuddy"; region: "cn" | "global" }
   | { scope: Scope; platform: "trae"; variant: "trae_merged" | "global_trae_merged" }
-  | { scope: Scope; platform: "qoder" };
+  | { scope: Scope; platform: "qoder" }
+  | { scope: Scope; platform: "loomy" };
 
 /** Trae 作用域 → 账号库变体 id（与 `use-scope-status.ts` 的两条快照同源）。 */
 const TRAE_VARIANT: Record<string, "trae_merged" | "global_trae_merged"> = {
@@ -352,14 +377,20 @@ export const AGGREGATE_SOURCES: readonly AggregateSource[] = SCOPES.map((scope) 
   if (product === "trae") {
     return { scope, platform: "trae", variant: TRAE_VARIANT[scope] ?? "trae_merged" };
   }
-  return { scope, platform: "qoder" };
+  /* ★ 2026-10-26 缺陷修复：这里原本是「非 WB/Trae ⇒ Qoder」的兜底 ⇒ Loomy 的作用域
+     （`loomy-cn`）被发到 `get_qoder_accounts`，而后端 `require_qoder_region` 对
+     `loomy-cn` 是 fail-closed（400）⇒ 聚合页那一组永远「加载失败」。
+     现在按 `product` **穷尽**分派：新增产品线时这条链会直接返回类型错误，
+     而不是静默掉进某个已有平台的命令。 */
+  if (product === "qoder") {
+    return { scope, platform: "qoder" };
+  }
+  return { scope, platform: "loomy" };
 });
 
 /** 平台短标识（用于 `platformOfScope` 这类判断，避免各处再 `scopeParts` 一遍）。 */
 export function platformOfScope(scope: Scope): PlatformSlug {
-  return scopeParts(scope).product === "workbuddy"
-    ? "wb"
-    : scopeParts(scope).product === "trae"
-      ? "trae"
-      : "qoder";
+  /* ⚠️ 与 `AGGREGATE_SOURCES` **同一个判据**（曾经两处各写一份三元兜底，
+     新增第四条产品线时同时把它们写成「当成 Qoder」）。 */
+  return PLATFORM_SLUG[scopeParts(scope).product];
 }

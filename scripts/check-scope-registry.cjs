@@ -9137,6 +9137,53 @@ check("★ 聚合页的「需处理」按平台分开判（一个字段套三处
   return "WB needsRelogin · Trae jwtStatus · Qoder hasCredential";
 });
 
+check("★★ 聚合取数：每个作用域必须落到**自己的**平台命令（Loomy 曾被当成 Qoder）", () => {
+  /* 2026-10-26 真实缺陷：`AGGREGATE_SOURCES` 结尾是「非 WB 非 Trae ⇒ qoder」的兜底，
+     于是第四条产品线 Loomy 的 `loomy-cn` 被发到 `get_qoder_accounts`，而后端
+     `require_qoder_region` 对它是 fail-closed ⇒ 聚合页那一组永远「加载失败」。
+     实测证据（部署机上）：`/api/qoder/accounts?scope=loomy-cn` → 400
+     `作用域「loomy-cn」不是 Qoder 作用域`；`/api/loomy/accounts?scope=loomy-cn` → 200。
+
+     变异：把 `AGGREGATE_SOURCES` 的 loomy 分支删掉 / 让它回落到 qoder ⇒ 本条红。 */
+  const lib = readCode("src/lib/aggregate-accounts.ts");
+  if (!/platform: "loomy"/.test(lib)) {
+    throw new Error("AGGREGATE_SOURCES 没有 loomy 分支 —— 它会回落到 Qoder 命令（400）");
+  }
+  /* 兜底不得再是某个具体平台：必须是穷尽分派。 */
+  const sources = /export const AGGREGATE_SOURCES[\s\S]*?\n\}\)/.exec(lib);
+  if (!sources) throw new Error("找不到 AGGREGATE_SOURCES");
+  if (/\}\s*return \{ scope, platform: "qoder" \};\s*\n\}\)/.test(sources[0])) {
+    throw new Error("AGGREGATE_SOURCES 仍用「非 WB 非 Trae ⇒ qoder」的兜底 —— 新平台会被静默当成 Qoder");
+  }
+  /* 取数层必须真的调 loomy 的命令。 */
+  const hook = readCode("src/lib/use-aggregate-accounts.ts");
+  if (!/api\.getLoomyAccounts\(/.test(hook)) {
+    throw new Error("取数层没有调 `getLoomyAccounts` —— loomy-cn 那一组仍是失败的");
+  }
+  /* 信号层：Loomy 没有 status_map / 程序位，不得掉进 Qoder 分支。 */
+  const signals = readCode("src/lib/use-aggregate-signals.ts");
+  if (!/source\.platform === "loomy"/.test(signals)) {
+    throw new Error("信号层没有 loomy 分支 —— 签到会拿 loomy-cn 去问 Qoder（必 400）");
+  }
+  /* 写动作：删除 / 备注 / 分组 / 签到必须走 loomy 的命令。 */
+  const page = readCode("src/pages/AggregateAccountsPage.tsx");
+  for (const cmd of [
+    "loomyDeleteAccount",
+    "loomySetAccountRemark",
+    "loomySetAccountGroup",
+    "loomyCheckinClaim",
+    "loomyCredits",
+  ]) {
+    if (!page.includes(cmd)) {
+      throw new Error(`聚合页的 Loomy 动作没有接 ${cmd} —— 会落到 Qoder 的同名命令上（改错库）`);
+    }
+  }
+  if (!/<LoomyAccountCard\b/.test(page)) {
+    throw new Error("聚合页没有渲染 `LoomyAccountCard` —— 会拿 Qoder 卡显示 Loomy 账号");
+  }
+  return "来源穷尽分派 · 取数走 loomy_accounts · 信号显式跳过 · 五个写动作 + 自己的卡";
+});
+
 check("★ 聚合详情抽屉的装配按平台分开（一个字段套三处必有一处错）", () => {
   const detail = readCode("src/lib/aggregate-detail.ts");
   for (const marker of ['account.platform === "workbuddy"', 'account.platform === "trae"', "} else {"]) {

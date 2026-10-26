@@ -34,6 +34,7 @@ import { toast } from "sonner";
 import { AccountCard } from "@/components/account-card";
 import { TraeAccountCard } from "@/components/trae-account-card";
 import { QoderAccountCard } from "@/components/qoder/qoder-account-card";
+import { LoomyAccountCard } from "@/components/loomy/loomy-account-card";
 import { AggregateFilterPanel } from "@/components/aggregate/aggregate-filter-panel";
 import { AggregateExportButton, groupExportTargets } from "@/components/aggregate/aggregate-export-button";
 import { useAggregateWbSwitcher } from "@/components/aggregate/aggregate-wb-switcher";
@@ -243,6 +244,8 @@ export default function AggregateAccountsPage() {
           await useAccountsStore.getState().deleteAccount(key, scopeParts(scope).region);
         } else if (account.platform === "trae") {
           await api.traeDeleteAccount(key, false, traeVariantOf(scope));
+        } else if (account.platform === "loomy") {
+          await api.loomyDeleteAccount(scope, key);
         } else {
           await api.qoderDeleteAccount(scope, key);
         }
@@ -281,6 +284,8 @@ export default function AggregateAccountsPage() {
           await api.setAccountRemark(account.data.id, remark, scopeParts(account.scope).region);
         } else if (account.platform === "trae") {
           await api.traeSetAccountRemark(account.data.userId, remark, traeVariantOf(account.scope));
+        } else if (account.platform === "loomy") {
+          await api.loomySetAccountRemark(account.scope, account.data.uid, remark || null);
         } else {
           await api.qoderSetAccountRemark(account.scope, account.data.uid, remark || null);
         }
@@ -301,6 +306,8 @@ export default function AggregateAccountsPage() {
           await api.setAccountGroup(account.data.id, group, scopeParts(account.scope).region);
         } else if (account.platform === "qoder") {
           await api.qoderSetAccountGroup(account.scope, account.data.uid, group || null);
+        } else if (account.platform === "loomy") {
+          await api.loomySetAccountGroup(account.scope, account.data.uid, group || null);
         } else {
           /* Trae 的分组是 `groupId`（不是自由文本）⇒ 抽屉不渲染该区块，走到这里说明调用方传错了。 */
           return false;
@@ -332,6 +339,8 @@ export default function AggregateAccountsPage() {
           await api.checkin(account.data.id, scopeParts(account.scope).region);
         } else if (account.platform === "qoder") {
           await api.qoderCheckinClaim(account.scope, account.data.uid);
+        } else if (account.platform === "loomy") {
+          await api.loomyCheckinClaim(account.scope, account.data.uid);
         }
         /* Trae 在循环外统一发一次（见下）。 */
         if (account.platform !== "trae") ok += 1;
@@ -385,6 +394,13 @@ export default function AggregateAccountsPage() {
             source.variant,
             items.filter((item) => item.platform === "trae").map((item) => item.data.userId),
           );
+        } else if (source.platform === "loomy") {
+          /* Loomy 没有「今日 Token」也没有逐账号签到状态映射 ⇒ 只重取积分读数
+             （它同时回填账号库快照，卡片上的两池就更新了）。 */
+          const uids = items.filter((item) => item.platform === "loomy").map((item) => item.data.uid);
+          for (const uid of uids) {
+            await api.loomyCredits(source.scope, uid);
+          }
         } else {
           await api.qoderCheckinStatusMap(
             scope,
@@ -414,6 +430,8 @@ export default function AggregateAccountsPage() {
           await useAccountsStore.getState().deleteAccount(account.data.id, scopeParts(account.scope).region);
         } else if (account.platform === "trae") {
           await api.traeDeleteAccount(account.data.userId, false, traeVariantOf(account.scope));
+        } else if (account.platform === "loomy") {
+          await api.loomyDeleteAccount(account.scope, account.data.uid);
         } else {
           await api.qoderDeleteAccount(account.scope, account.data.uid);
         }
@@ -481,6 +499,14 @@ export default function AggregateAccountsPage() {
               await api.getTraeAccountTokenToday(variant, true);
             } else if (kind === "checkin") {
               await api.getTraeCheckinStatusMap(variant, [account.data.userId]);
+            } else {
+              await reload();
+            }
+          } else if (account.platform === "loomy") {
+            /* Loomy：只有「积分」是上游读；签到是**动作**（卡片的菜单里），
+               「凭据」只能重读本地账号库（无续期端点 ⇒ 刷不出新东西）。 */
+            if (kind === "credits") {
+              await api.loomyCredits(account.scope, account.data.uid);
             } else {
               await reload();
             }
@@ -615,6 +641,41 @@ export default function AggregateAccountsPage() {
                 .then(() => reload())
                 .catch((error: unknown) => toast.error(api.asError(error)));
             }}
+            {...common}
+          />
+        );
+      }
+      /* ── Loomy（第四条产品线）──
+         用它**自己**那张卡：两池积分 / 微信短信登录 / 无续期端点的「凭据」语义都在卡内，
+         塞进 Qoder 卡会显示成错的东西（Qoder 卡的字段与它完全不同）。 */
+      if (item.platform === "loomy") {
+        const account = item.data;
+        return (
+          <LoomyAccountCard
+            key={item.ref}
+            account={account}
+            busy={refreshBusy.kindsOf(item.ref).length > 0}
+            onDelete={() => void handleDelete(item)}
+            onCheckin={(target) => {
+              void api
+                .loomyCheckinClaim(item.scope, target.uid)
+                .then(() => {
+                  void reload();
+                  void reloadSignals();
+                })
+                .catch((error: unknown) => toast.error(api.asError(error)));
+            }}
+            onRefreshCredits={(target) => {
+              void api
+                .loomyCredits(item.scope, target.uid)
+                .then(() => {
+                  void reload();
+                  void reloadSignals();
+                })
+                .catch((error: unknown) => toast.error(api.asError(error)));
+            }}
+            onEditRemark={() => openDetail(item.ref, "remark")}
+            onSetGroup={() => openDetail(item.ref, "group")}
             {...common}
           />
         );

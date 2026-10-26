@@ -235,6 +235,26 @@ export function aggregateDetailSections(
     if (typeof a.cooldownUntil === "number" && a.cooldownUntil > 0) {
       credential.push({ label: t("aggregate.detail.cooldown"), value: formatAbsoluteTime(a.cooldownUntil), mono: true });
     }
+  } else if (account.platform === "loomy") {
+    /* Loomy（第四条产品线）：无 domain 轴、无「凭据摘要」字段 ⇒ 身份区用手机号 / userid，
+       凭据区只给「有没有凭据 + 到期时刻」（与它自己的账号卡同一条口径）。 */
+    const a = account.data;
+    identity.push({ label: "UID", value: a.uid, mono: true });
+    if (a.phone) identity.push({ label: t("aggregate.detail.phone"), value: a.phone, mono: true });
+    if (a.userid) identity.push({ label: t("aggregate.detail.userid"), value: a.userid, mono: true });
+    if (a.source) identity.push({ label: t("aggregate.detail.source"), value: a.source });
+    if (a.remark) identity.push({ label: t("aggregate.detail.remark"), value: a.remark });
+    if (a.group) identity.push({ label: t("aggregate.detail.group"), value: a.group });
+
+    credential.push({
+      label: t("aggregate.detail.status"),
+      value: a.hasCredential
+        ? t("aggregate.detail.credentialOk")
+        : t("aggregate.detail.credentialMissing"),
+    });
+    if (typeof a.expiresAt === "number" && a.expiresAt > 0) {
+      credential.push({ label: t("aggregate.detail.expiresAt"), value: formatAbsoluteTime(a.expiresAt), mono: true });
+    }
   } else {
     const a = account.data;
     identity.push({ label: "UID", value: a.uid, mono: true });

@@ -12,6 +12,7 @@
  * | 今日签到 | `get_checkin_status_map` | `get_trae_checkin_status_map` | `qoder_checkin_status_map` |
  * | 程序位状态 | 4 条 status 命令 | `get_trae_variants` + 登录态 | `qoder_program_status` |
  * | 积分 | store 的 `creditMap` | `get_trae_accounts` 自带 | `qoder_credits` |
+ * | （Loomy）| 无此概念 | — | 积分在账号对象上（`credits` / `dailyCredits`） |
  *
  * ## 关键纪律
  *
@@ -182,6 +183,16 @@ export function useAggregateSignals(accounts: readonly AggregateAccount[]): Aggr
             signals.checkin = new Map(
               items.map((item) => [primaryKey(item), map[primaryKey(item)]?.todayCheckedIn ?? null]),
             );
+          } else if (source.platform === "loomy") {
+            /* Loomy **没有** `checkin_status_map` 这条只读命令（它的「今日是否已签」是
+               账号对象上的 `lastCheckin`，取列表时就带回来了）⇒ 这里不额外发请求，
+               也**不能**掉进下面的 Qoder 分支（那会拿 loomy-cn 去问 Qoder，必 400）。 */
+            signals.checkin = new Map(
+              items.map((item) => [
+                primaryKey(item),
+                item.platform === "loomy" ? Boolean(item.data.lastCheckin) : null,
+              ]),
+            );
           } else {
             const ids = items.map((item) => primaryKey(item));
             const map = await api.qoderCheckinStatusMap(source.scope, ids);
@@ -218,6 +229,7 @@ export function useAggregateSignals(accounts: readonly AggregateAccount[]): Aggr
             /* 同上 */
           }
         }
+        /* Loomy：**没有程序位**（无客户端、无切换登录态能力）⇒ 不取，卡片也不渲染。 */
 
         /* ── Qoder 积分 ── */
         if (source.platform === "qoder") {

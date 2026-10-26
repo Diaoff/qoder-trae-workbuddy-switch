@@ -129,6 +129,9 @@ export const zh = {
   "aggregate.detail.remark": "备注",
   "aggregate.detail.group": "分组",
   "aggregate.detail.domain": "域名",
+  "aggregate.detail.phone": "手机号",
+  "aggregate.detail.userid": "UserID",
+  "aggregate.detail.source": "来源",
   "aggregate.detail.device": "设备指纹",
   "aggregate.detail.status": "状态",
   "aggregate.detail.jwt": "登录态（JWT）",
@@ -153,6 +156,7 @@ export const zh = {
   "aggregate.export.platform.workbuddy": "WorkBuddy",
   "aggregate.export.platform.trae": "Trae",
   "aggregate.export.platform.qoder": "Qoder",
+  "aggregate.export.platform.loomy": "Loomy",
   "aggregate.export.done": "已导出 {n} 个账号",
   "aggregate.toast.switching": "正在切换…",
 
