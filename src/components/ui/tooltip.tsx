@@ -46,7 +46,10 @@ function TooltipContent({
         sideOffset={sideOffset}
         collisionPadding={collisionPadding}
         className={cn(
-          "z-50 w-fit max-h-[var(--radix-popper-available-height)] overflow-y-auto overscroll-contain rounded-md bg-popover px-3 py-2 text-xs leading-5 text-popover-foreground shadow-lg ring-1 ring-black/5 animate-in fade-in-0 zoom-in-95 data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95 data-[side=bottom]:slide-in-from-top-2 data-[side=top]:slide-in-from-bottom-2",
+          /* 退出动画刻意不加（issue #80）：`Presence` 等 `animationend` 才卸载，
+             该事件在部分引擎上不保证送达 ⇒ 提示关不掉、幽灵节点留在 DOM 里。
+             进入动画保留（挂载不等待事件）。 */
+          "z-50 w-fit max-h-[var(--radix-popper-available-height)] overflow-y-auto overscroll-contain rounded-md bg-popover px-3 py-2 text-xs leading-5 text-popover-foreground shadow-lg ring-1 ring-black/5 animate-in fade-in-0 zoom-in-95 data-[side=bottom]:slide-in-from-top-2 data-[side=top]:slide-in-from-bottom-2",
           className,
         )}
         {...props}

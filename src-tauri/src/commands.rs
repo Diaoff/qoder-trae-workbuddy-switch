@@ -7,11 +7,13 @@ use serde::Serialize;
 use serde_json::{json, Value};
 use std::sync::Mutex;
 
+// 合并两侧新增的模块：`loomy`（Loomy 产品线）与 `runtime_log`（本工具运行日志）。
 use buddy_switch_core::modules::{
     account, app_prefs, auth_file, backup, cache, capability, checkin, client_limits,
     client_settings, config, credit_usage, credits, diagnostics, export_import, loomy, migrate,
     oauth, process, programs, qoder, refresh, region::Region, region::RegionFilter, rotate,
-    session, skill, switch, token_daily, token_stats, trae, travel, update, vscode_session,
+    runtime_log, session, skill, switch, token_daily, token_stats, trae, travel, update,
+    vscode_session,
 };
 use tauri::{Emitter, Manager};
 // P5 §2.5 第 (2) 条：capability **默认拒绝**。表数据只在 core（`product_spec`），本文件只查表。
@@ -2268,6 +2270,80 @@ pub fn set_app_prefs(prefs: Value) -> Result<Value, String> {
 }
 
 // ---------------------------------------------------------------------------
+// 运行日志（仅桌面端命令面；webui 有同名路由，见 server api.rs）
+// ---------------------------------------------------------------------------
+
+/// GET /api/logs/runtime —— 读取本工具**自身**的运行日志。
+///
+/// `level` 是最低级别（`error` / `warn` / `info` / `debug`）；`date` 为 `YYYY-MM-DD`；
+/// `keyword` 大小写不敏感；`limit` 缺省 500、上限 2000。
+///
+/// `async` + `spawn_blocking`：要读若干个日志文件并逐行解析，同步执行会卡住窗口
+/// （与 [`get_trae_logs`] 同款纪律）。
+#[tauri::command(rename_all = "camelCase")]
+pub async fn runtime_logs(
+    level: Option<String>,
+    date: Option<String>,
+    keyword: Option<String>,
+    limit: Option<u64>,
+) -> Result<Value, String> {
+    let args = json!({
+        "level": level,
+        "date": date,
+        "keyword": keyword,
+        "limit": limit,
+    });
+    tauri::async_runtime::spawn_blocking(move || runtime_log::read(&args))
+        .await
+        .map_err(|error| format!("读取运行日志失败: {error}"))
+}
+
+/// POST /api/logs/runtime/clear —— 清空全部运行日志（**不可逆**）。
+///
+/// 只删本工具自己写的 `runtime-*.log`；同目录的其它文件一律不碰（见 core 的
+/// `parse_log_name` 判据）。
+#[tauri::command]
+pub async fn clear_runtime_logs() -> Result<Value, String> {
+    tauri::async_runtime::spawn_blocking(runtime_log::clear)
+        .await
+        .map_err(|error| format!("清空运行日志失败: {error}"))?
+}
+
+/// POST /api/logs/open-dir —— 在文件管理器中打开日志目录（不存在则先创建）。
+#[tauri::command]
+pub async fn open_runtime_logs_dir() -> Result<Value, String> {
+    tauri::async_runtime::spawn_blocking(runtime_log::open_logs_dir)
+        .await
+        .map_err(|error| format!("打开日志目录失败: {error}"))?
+}
+
+/// POST /api/logs/runtime/slow-call —— 前端上报「慢 IPC 命令」（best-effort 诊断，issue #80）。
+///
+/// 背景：桌面端「界面卡死」类报障，日志里唯一能定位问题的信息是「哪个命令耗时过长」，
+/// 但运行日志此前只记服务端事件 —— IPC 往返 + 命令执行的耗时**没有任何记录** ⇒
+/// 用户按请求带上来的日志总是「很干净」，反而判断不了是不是慢命令占住了主线程
+/// （issue #80 复现时正是如此：日志零条目，但窗口点不动）。
+///
+/// 前端 `call()` 现在给每次 `invoke` 计时，超过阈值就地把 `{cmd, ms}` 报到这里。
+/// 只记 Warn 一条；写失败静默（诊断通道永不阻断业务），命令名是代码标识符、
+/// 不含用户数据，故不需要额外脱敏。
+#[tauri::command]
+pub async fn report_slow_call(cmd: String, ms: u64) -> Value {
+    let cmd = cmd.trim().to_string();
+    if cmd.is_empty() || ms == 0 {
+        return json!({ "ok": false });
+    }
+    let _ = tauri::async_runtime::spawn_blocking(move || {
+        runtime_log::warn(
+            "ipc-slow",
+            format!("命令 {cmd} 耗时 {ms}ms（超过前端计时阈值）"),
+        );
+    })
+    .await;
+    json!({ "ok": true })
+}
+
+// ---------------------------------------------------------------------------
 // 开机自启（仅桌面端；webui 不提供同名接口）
 // ---------------------------------------------------------------------------
 
@@ -2493,9 +2569,17 @@ pub fn set_launch_at_login_enabled(_app: tauri::AppHandle, enabled: bool) -> Res
 // ---------------------------------------------------------------------------
 
 /// GET /api/gateway/config —— 网关配置。
+///
+/// `async` + `spawn_blocking`：读盘。同步执行时这段文件 IO 压在 IPC 主线程上
+/// （Linux 上即 GTK / WebKitGTK 事件循环所在线程），网关页挂载即触发，
+/// 磁盘一慢整窗发灰（issue #48 / #80 同根因类）。
 #[tauri::command]
-pub fn get_gateway_config() -> Value {
-    serde_json::to_value(GatewayConfig::load()).unwrap_or(Value::Null)
+pub async fn get_gateway_config() -> Value {
+    tauri::async_runtime::spawn_blocking(|| {
+        serde_json::to_value(GatewayConfig::load()).unwrap_or(Value::Null)
+    })
+    .await
+    .unwrap_or(Value::Null)
 }
 
 /// POST /api/gateway/config —— 保存配置并应用（启动/重启独立监听）。
@@ -2564,35 +2648,38 @@ pub fn proxy_disable() -> Result<Value, String> {
 ///
 /// **E3.1**：统一复用 [`GatewayStatusView`]（**snake_case**，与 server 的
 /// `/api/gateway/status` 契约一致），不再手工拼 camelCase。
+///
+/// `async`：本命令在**网关页挂载时**就会打（`loadAll` 的第一步），而
+/// `GatewayConfig::load` 是文件 IO、`sync_pool_with_accounts` 要读账号库 ——
+/// 同步执行等于把这些 IO 全压在 IPC 主线程上（Linux 上即 GTK / WebKitGTK
+/// 事件循环所在线程），表现为「进网关页窗口发灰、任何地方点不动」
+/// （issue #48 同款，#80 同根因类）。结构上与 server 侧
+/// `api_gateway_status` 对齐：文件 IO 走 `spawn_blocking`，锁走 `async` 拿满
+/// （取代原先的 `try_write` —— 拿不到锁就静默丢池字段，比等一等更糟）。
 #[tauri::command]
-pub fn gateway_status(app: tauri::AppHandle) -> Value {
-    let config = GatewayConfig::load();
+pub async fn gateway_status(app: tauri::AppHandle) -> Value {
+    // 读配置是文件 IO ⇒ 放 blocking 线程。
+    let config = tauri::async_runtime::spawn_blocking(GatewayConfig::load)
+        .await
+        .unwrap_or_default();
     let runtime = app.state::<gateway::GatewayRuntime>();
     let mut view = GatewayStatusView::from(&config);
     view.running = runtime.is_running();
     view.addr = runtime.addr();
     view.version = update::APP_VERSION.to_string();
     // 账号池视图（与 server 侧 `/api/gateway/status` 逐字一致）。
-    // 本命令是**同步**的，只能用 `try_write`：拿不到锁就只缺池字段，
-    // 绝不能为此阻塞 UI 线程。
     let state = gateway::shared_state();
-    if let Ok(mut pool) = state.pool.try_write() {
+    {
+        let mut pool = state.pool.write().await;
         // 先与账号库对齐（否则「刚导入、还没发过请求」的账号不在池里 ⇒ 页面显示空池）。
         buddy_switch_gateway::sync_pool_with_accounts(&mut pool);
         view.fill_pool(&pool, buddy_switch_gateway::timeutil::now_ms());
     }
-    view.last_error = state
-        .last_error
-        .try_read()
-        .ok()
-        .and_then(|guard| guard.clone());
+    view.last_error = state.last_error.read().await.clone();
 
     // ★ 顺手触发一次余额刷新（**不阻塞本命令**）——与 server 侧同一理由：
     // 账号刚在本命令里同步进池、多半「从未取过余额」，而周期循环下一轮要等满一个间隔，
     // 用户会看到「刚导入账号，积分一直是『—』」。刷新器自带 `needs_refresh` 节流。
-    //
-    // ⚠️ 本命令是**同步**的，没有 tokio 上下文 ⇒ 必须用 tauri 的 async runtime spawn，
-    // 直接 `tokio::spawn` 会 panic（no reactor running）。
     {
         let state = state.clone();
         tauri::async_runtime::spawn(async move {
@@ -2620,16 +2707,25 @@ pub async fn open_workbuddy_data_dir(region: Option<String>) -> Result<Value, St
 }
 
 /// GET /api/gateway/keys —— Key 列表（脱敏）。
+///
+/// `async` + `spawn_blocking`：读密钥台账是文件 IO。同步 `#[tauri::command]` 的
+/// 执行上下文默认是 `Blocking` ⇒ 在 IPC 线程（Linux 上即 GTK / WebKitGTK 事件循环
+/// 所在的主线程）**直接执行**，IO 稍慢就把整窗画成「未响应」、任何地方点不动
+/// （issue #48 同款；#80 即在创建密钥链路上复现）。
 #[tauri::command]
-pub fn list_api_keys() -> Value {
+pub async fn list_api_keys() -> Value {
     let state = gateway::shared_state();
-    let keys: Vec<Value> = state
-        .keys
-        .list()
-        .iter()
-        .map(|record| record.masked())
-        .collect();
-    json!({ "keys": keys })
+    tauri::async_runtime::spawn_blocking(move || {
+        let keys: Vec<Value> = state
+            .keys
+            .list()
+            .iter()
+            .map(|record| record.masked())
+            .collect();
+        json!({ "keys": keys })
+    })
+    .await
+    .unwrap_or_else(|_| json!({ "keys": [] }))
 }
 
 /// ★ 后台探测某 region 的模型目录（「接入即识别」与「启动补识别」的**共用出口**）。
@@ -2673,27 +2769,36 @@ pub async fn create_api_key(name: Option<String>, region: Option<String>) -> Val
 }
 
 /// POST /api/gateway/keys/revoke —— 吊销 Key。
+///
+/// `async` + `spawn_blocking`：台账读写是文件 IO，不能在 IPC 主线程上跑
+/// （同步命令默认 `Blocking`，见 [`list_api_keys`] 的说明 · issue #80）。
 #[tauri::command]
-pub fn revoke_api_key(id: String) -> Result<Value, String> {
+pub async fn revoke_api_key(id: String) -> Result<Value, String> {
     let state = gateway::shared_state();
-    state.keys.revoke(&id)?;
-    Ok(json!({ "ok": true }))
+    tauri::async_runtime::spawn_blocking(move || state.keys.revoke(&id))
+        .await
+        .map_err(|error| format!("吊销 Key 失败: {error}"))?
+        .map(|()| json!({ "ok": true }))
 }
 
 /// POST /api/gateway/keys/restore —— 撤销吊销（清 `revoked_at`，Key 重新可用）。
 #[tauri::command]
-pub fn restore_api_key(id: String) -> Result<Value, String> {
+pub async fn restore_api_key(id: String) -> Result<Value, String> {
     let state = gateway::shared_state();
-    state.keys.restore(&id)?;
-    Ok(json!({ "ok": true }))
+    tauri::async_runtime::spawn_blocking(move || state.keys.restore(&id))
+        .await
+        .map_err(|error| format!("恢复 Key 失败: {error}"))?
+        .map(|()| json!({ "ok": true }))
 }
 
 /// POST /api/gateway/keys/delete —— 删除已吊销 Key。
 #[tauri::command]
-pub fn delete_api_key(id: String) -> Result<Value, String> {
+pub async fn delete_api_key(id: String) -> Result<Value, String> {
     let state = gateway::shared_state();
-    state.keys.delete(&id)?;
-    Ok(json!({ "ok": true }))
+    tauri::async_runtime::spawn_blocking(move || state.keys.delete(&id))
+        .await
+        .map_err(|error| format!("删除 Key 失败: {error}"))?
+        .map(|()| json!({ "ok": true }))
 }
 
 /// POST /api/gateway/keys/policy —— 更新某把 Key 的策略（配额 + 账号范围）。
@@ -2702,51 +2807,60 @@ pub fn delete_api_key(id: String) -> Result<Value, String> {
 /// 后端不猜「用户是不是想只改一半」。矛盾值由 `KeyPolicy::normalized`
 /// 收敛到安全的一边（不限额 ⇒ 清上限；全部账号 ⇒ 清白名单）。
 #[tauri::command]
-pub fn set_key_policy(
+pub async fn set_key_policy(
     id: String,
     policy: buddy_switch_gateway::apikey::KeyPolicy,
 ) -> Result<Value, String> {
     let state = gateway::shared_state();
-    state.keys.update_policy(&id, policy)?;
-    Ok(json!({ "ok": true }))
+    tauri::async_runtime::spawn_blocking(move || state.keys.update_policy(&id, policy))
+        .await
+        .map_err(|error| format!("保存 Key 策略失败: {error}"))?
+        .map(|()| json!({ "ok": true }))
 }
 
 /// GET /api/gateway/keys/usage —— 读某把 Key 的用量快照（累计 + 本周期）。
 ///
 /// 与 `gateway_api_keys`（list）分开的理由：用量是**每请求写**的账本，
 /// 让列表命令每次多读一个文件不划算；且用量只在打开抽屉 / 展开行时才需要。
+///
+/// `async` + `spawn_blocking`：读台账 + 读用量账本共两次文件 IO，且**每把 Key 一次**
+/// （密钥表按行展开时逐把调）⇒ 同步执行会把 IPC 主线程占住（issue #80）。
 #[tauri::command]
-pub fn key_usage(id: String) -> Result<Value, String> {
+pub async fn key_usage(id: String) -> Result<Value, String> {
     use buddy_switch_gateway::apikey::QuotaVerdict;
     let state = gateway::shared_state();
-    let Some(record) = state.keys.list().into_iter().find(|record| record.id == id) else {
-        return Err("API Key 不存在".to_string());
-    };
-    let now = buddy_switch_core::modules::config::now_ms();
-    let used = state
-        .key_usage
-        .used_for(&id, record.quota_unit, record.quota_period, now);
-    // 累计用量按同一口径取（`KeyUsage` 是两个口径各自一份计数，没有单一 `total`）。
-    let total = state
-        .key_usage
-        .snapshot(&id)
-        .map(|entry| entry.counters(record.quota_unit).total)
-        .unwrap_or(0);
-    // 一并给出判定结论：前端不用再实现一遍「超没超限」（同一判据的唯一出口）。
-    let exceeded = matches!(
-        buddy_switch_gateway::apikey::quota_verdict_for_policy(&record.policy(), used),
-        QuotaVerdict::Exceeded { .. }
-    );
-    Ok(json!({
-        "ok": true,
-        "keyId": id,
-        "unit": record.quota_unit,
-        "period": record.quota_period,
-        "periodKey": record.quota_period.period_key(now),
-        "used": used,
-        "total": total,
-        "exceeded": exceeded,
-    }))
+    tauri::async_runtime::spawn_blocking(move || {
+        let Some(record) = state.keys.list().into_iter().find(|record| record.id == id) else {
+            return Err("API Key 不存在".to_string());
+        };
+        let now = buddy_switch_core::modules::config::now_ms();
+        let used = state
+            .key_usage
+            .used_for(&id, record.quota_unit, record.quota_period, now);
+        // 累计用量按同一口径取（`KeyUsage` 是两个口径各自一份计数，没有单一 `total`）。
+        let total = state
+            .key_usage
+            .snapshot(&id)
+            .map(|entry| entry.counters(record.quota_unit).total)
+            .unwrap_or(0);
+        // 一并给出判定结论：前端不用再实现一遍「超没超限」（同一判据的唯一出口）。
+        let exceeded = matches!(
+            buddy_switch_gateway::apikey::quota_verdict_for_policy(&record.policy(), used),
+            QuotaVerdict::Exceeded { .. }
+        );
+        Ok(json!({
+            "ok": true,
+            "keyId": id,
+            "unit": record.quota_unit,
+            "period": record.quota_period,
+            "periodKey": record.quota_period.period_key(now),
+            "used": used,
+            "total": total,
+            "exceeded": exceeded,
+        }))
+    })
+    .await
+    .map_err(|error| format!("读取 Key 用量失败: {error}"))?
 }
 
 /// GET /api/gateway/pool/exclusions —— 该 region 的**排除账号**列表。
@@ -2756,9 +2870,18 @@ pub fn key_usage(id: String) -> Result<Value, String> {
 ///
 /// `inStore=false` 表示该 uid 已不在账号库里（排除项**故意保留** ——
 /// 用户意图针对「这个号」，重新导入同一 uid 仍应继续排除）。
+///
+/// `async` + `spawn_blocking`：`view` 要读排除清单文件。同步执行时这段 IO
+/// 压在 IPC 主线程上（Linux 上即 GTK / WebKitGTK 事件循环所在线程），
+/// 账号池分区挂载即触发（issue #48 / #80 同根因类）。
 #[tauri::command]
-pub fn gateway_pool_exclusions(region: Option<String>) -> Value {
-    buddy_switch_gateway::routes::pool_admin::view(parse_region(region.as_deref()))
+pub async fn gateway_pool_exclusions(region: Option<String>) -> Value {
+    let region = parse_region(region.as_deref());
+    tauri::async_runtime::spawn_blocking(move || {
+        buddy_switch_gateway::routes::pool_admin::view(region)
+    })
+    .await
+    .unwrap_or(Value::Null)
 }
 
 /// POST /api/gateway/pool/exclusions —— 设置 / 取消排除（幂等）。
@@ -2867,18 +2990,26 @@ pub async fn revive_gateway_account(uid: String) -> Result<Value, String> {
 }
 
 /// GET /api/gateway/models —— 模型列表 + 来源（按 region）。
+///
+/// `async` + `spawn_blocking`：`catalogs.current()` 在缓存未加载时会**读盘**
+/// （含读认证文件 / 解析几百 KB 的清单 JSON）。创建 Key 后前端立刻调它
+/// （「接入即识别」的顺势刷新）⇒ 同步执行正好把 IPC 主线程占住（issue #80）。
 #[tauri::command]
-pub fn get_gateway_models(region: Option<String>) -> Value {
+pub async fn get_gateway_models(region: Option<String>) -> Value {
     let region = parse_region(region.as_deref());
     let state = gateway::shared_state();
-    let snapshot = state.catalogs.current(region);
-    // 同步命令：拿不到配置读锁时按「上限」处理（与其它同步读取口同口径）。
-    let max_context = state
-        .config
-        .try_read()
-        .map(|config| config.max_context)
-        .unwrap_or(true);
-    buddy_switch_gateway::routes::models::snapshot_view(&snapshot, max_context)
+    tauri::async_runtime::spawn_blocking(move || {
+        let snapshot = state.catalogs.current(region);
+        // 阻塞上下文里拿不到 tokio 读锁时按「上限」处理（与其它同步读取口同口径）。
+        let max_context = state
+            .config
+            .try_read()
+            .map(|config| config.max_context)
+            .unwrap_or(true);
+        buddy_switch_gateway::routes::models::snapshot_view(&snapshot, max_context)
+    })
+    .await
+    .unwrap_or(Value::Null)
 }
 
 /// POST /api/gateway/models/refresh —— 手动刷新目录（按 region）。
@@ -2986,18 +3117,28 @@ pub async fn set_model_disabled(
 }
 
 /// GET /api/gateway/logs —— 最近 N 条请求日志（元数据）。
+///
+/// `async` + `spawn_blocking`：`list` 要读进程内日志环（大日志时还有序列化）。
+/// 同步执行时压在 IPC 主线程上（Linux 上即 GTK / WebKitGTK 事件循环所在线程），
+/// 网关页挂载即触发（issue #48 / #80 同根因类）。
 #[tauri::command]
-pub fn get_gateway_logs() -> Value {
+pub async fn get_gateway_logs() -> Value {
     let state = gateway::shared_state();
-    json!({ "logs": state.log.list() })
+    tauri::async_runtime::spawn_blocking(move || json!({ "logs": state.log.list() }))
+        .await
+        .unwrap_or_else(|_| json!({ "logs": [] }))
 }
 
 /// POST /api/gateway/logs/clear —— 清空日志。
 #[tauri::command]
-pub fn clear_gateway_logs() -> Value {
+pub async fn clear_gateway_logs() -> Value {
     let state = gateway::shared_state();
-    state.log.clear();
-    json!({ "ok": true })
+    tauri::async_runtime::spawn_blocking(move || {
+        state.log.clear();
+        json!({ "ok": true })
+    })
+    .await
+    .unwrap_or_else(|_| json!({ "ok": false }))
 }
 
 /// POST /api/gateway/probe/start —— 启动一轮「账号 × 模型」限流探测（异步作业）。
@@ -3037,17 +3178,25 @@ pub async fn probe_start(
 ///
 /// `scope` 为**必填**（fail-closed）：作业槽是进程级全局，快照本身与作用域无关，但命令面
 /// 统一带 `scope`，未知 / 拼错的作用域一律拒绝（不静默接受）。
+///
+/// `async` + `spawn_blocking`：探测进行中前端每 `PROBE_POLL_MS` 轮询一次，
+/// 同步执行等于周期性占住 IPC 主线程（Linux 上即 GTK / WebKitGTK 事件循环
+/// 所在线程）—— issue #48 / #80 同根因类。
 #[tauri::command]
-pub fn probe_status(scope: String) -> Result<Value, String> {
+pub async fn probe_status(scope: String) -> Result<Value, String> {
     resolve_scope_param(Some(&scope))?;
-    Ok(buddy_switch_gateway::model_probe::status())
+    tauri::async_runtime::spawn_blocking(|| buddy_switch_gateway::model_probe::status())
+        .await
+        .map_err(|error| format!("读取探测状态失败: {error}"))
 }
 
 /// POST /api/gateway/probe/cancel —— 请求取消（逐格检查；已探到的格保留）。
 #[tauri::command]
-pub fn probe_cancel(scope: String) -> Result<Value, String> {
+pub async fn probe_cancel(scope: String) -> Result<Value, String> {
     resolve_scope_param(Some(&scope))?;
-    Ok(buddy_switch_gateway::model_probe::cancel())
+    tauri::async_runtime::spawn_blocking(|| buddy_switch_gateway::model_probe::cancel())
+        .await
+        .map_err(|error| format!("取消探测失败: {error}"))
 }
 
 /// GET /api/gateway/probe/ledger —— 某作用域的**实测台账**（跨重启累积）。
@@ -3056,10 +3205,18 @@ pub fn probe_cancel(scope: String) -> Result<Value, String> {
 /// **最近一次**的实判（落盘 `probe_results.json`，按作用域隔离）。
 ///
 /// ★ 账号页「客户端限流」重启后仍要看到实测结论 ⇒ 必须读它，而不是只读进程内 `probeCells`。
+///
+/// `async` + `spawn_blocking`：读盘（台账文件）。同步执行时这段 IO 压在
+/// IPC 主线程上（Linux 上即 GTK / WebKitGTK 事件循环所在线程）——
+/// issue #48 / #80 同根因类。
 #[tauri::command]
-pub fn probe_ledger(scope: String) -> Result<Value, String> {
+pub async fn probe_ledger(scope: String) -> Result<Value, String> {
     resolve_scope_param(Some(&scope))?;
-    Ok(buddy_switch_gateway::model_probe::ledger_snapshot(&scope))
+    tauri::async_runtime::spawn_blocking(move || {
+        buddy_switch_gateway::model_probe::ledger_snapshot(&scope)
+    })
+    .await
+    .map_err(|error| format!("读取探测台账失败: {error}"))
 }
 
 // ===========================================================================
@@ -3571,10 +3728,18 @@ pub async fn trae_reset_device(variant: Option<String>) -> Result<Value, String>
 // create_response}` 唯一产出（`MEMORY.md §二`：两条通道不得各自拼装）。
 
 /// GET /api/trae/gateway/config —— Trae 网关配置。
+///
+/// `async` + `spawn_blocking`：读盘。同步执行时这段文件 IO 压在 IPC 主线程上
+/// （Linux 上即 GTK / WebKitGTK 事件循环所在线程），Trae 网关页挂载即触发
+/// （issue #48 / #80 同根因类）。
 #[tauri::command]
-pub fn get_trae_gateway_config() -> Value {
-    serde_json::to_value(buddy_switch_gateway::trae::TraeGatewayConfig::load())
-        .unwrap_or(Value::Null)
+pub async fn get_trae_gateway_config() -> Value {
+    tauri::async_runtime::spawn_blocking(|| {
+        serde_json::to_value(buddy_switch_gateway::trae::TraeGatewayConfig::load())
+            .unwrap_or(Value::Null)
+    })
+    .await
+    .unwrap_or(Value::Null)
 }
 
 /// POST /api/trae/gateway/config —— 保存配置并应用（启动/重启独立监听）。
@@ -3708,120 +3873,145 @@ fn build_trae_client_models(variant: Option<String>) -> Value {
 /// GET /api/trae/gateway/keys —— 多 Key 列表（含归属产品线）。
 ///
 /// 形状唯一来源：gateway crate 的 `apikey::list_response`（HTTP 通道同款）。
+///
+/// ⚠️ 执行上下文见 [`list_api_keys`]：同步 `#[tauri::command]` 会在 IPC 线程（Linux 上即
+/// GTK / WebKitGTK 主线程）**内联**执行，而密钥台账全是文件 IO ⇒ 一律 `async` +
+/// `spawn_blocking`，否则整窗画成「未响应、任何地方点不动」（issue #48 / #80 同一根因）。
 #[tauri::command]
-pub fn list_trae_api_keys() -> Value {
+pub async fn list_trae_api_keys() -> Value {
     let state = trae_gateway::shared_state();
-    buddy_switch_gateway::trae::apikey::list_response(&state.key_store)
+    tauri::async_runtime::spawn_blocking(move || {
+        buddy_switch_gateway::trae::apikey::list_response(&state.key_store)
+    })
+    .await
+    .unwrap_or_else(|_| json!({ "keys": [] }))
 }
 
 /// POST /api/trae/gateway/keys —— 新建 Key（`{name, variant}`，明文仅此一次返回）。
 #[tauri::command]
-pub fn create_trae_api_key(name: Option<String>, variant: Option<String>) -> Value {
+pub async fn create_trae_api_key(name: Option<String>, variant: Option<String>) -> Value {
     let name = name
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())
         .unwrap_or_else(|| "未命名 Key".to_string());
     let state = trae_gateway::shared_state();
-    buddy_switch_gateway::trae::apikey::create_response(
-        &state.key_store,
-        name,
-        parse_trae_variant(variant.as_deref()),
-    )
+    tauri::async_runtime::spawn_blocking(move || {
+        buddy_switch_gateway::trae::apikey::create_response(
+            &state.key_store,
+            name,
+            parse_trae_variant(variant.as_deref()),
+        )
+    })
+    .await
+    // 线程 panic ⇒ 交回 `ok:false`（无 `key` 字段），前端按「保存失败」提示，不静默成功。
+    .unwrap_or_else(|_| json!({ "ok": false }))
 }
 
 /// POST /api/trae/gateway/keys/revoke —— 吊销 Key（`{id}`）。
 #[tauri::command]
-pub fn revoke_trae_api_key(id: String) -> Result<Value, String> {
-    let id = id.trim();
+pub async fn revoke_trae_api_key(id: String) -> Result<Value, String> {
+    let id = id.trim().to_string();
     if id.is_empty() {
         return Err("缺少 id".to_string());
     }
     let state = trae_gateway::shared_state();
-    state.key_store.revoke(id)?;
-    Ok(json!({ "ok": true }))
+    tauri::async_runtime::spawn_blocking(move || state.key_store.revoke(&id))
+        .await
+        .map_err(|error| format!("吊销 Key 失败: {error}"))?
+        .map(|()| json!({ "ok": true }))
 }
 
 /// POST /api/trae/gateway/keys/policy —— 更新某把 Trae Key 的策略（issue #76）。
 ///
 /// 与 WB 侧同形：完整策略（非补丁）+ `KeyPolicy::normalized` 的矛盾收敛。
 #[tauri::command]
-pub fn set_trae_key_policy(
+pub async fn set_trae_key_policy(
     id: String,
     policy: buddy_switch_gateway::apikey::KeyPolicy,
 ) -> Result<Value, String> {
-    let id = id.trim();
+    let id = id.trim().to_string();
     if id.is_empty() {
         return Err("缺少 id".to_string());
     }
     let state = trae_gateway::shared_state();
-    state.key_store.update_policy(id, policy)?;
-    Ok(json!({ "ok": true }))
+    tauri::async_runtime::spawn_blocking(move || state.key_store.update_policy(&id, policy))
+        .await
+        .map_err(|error| format!("更新 Key 策略失败: {error}"))?
+        .map(|()| json!({ "ok": true }))
 }
 
 /// GET /api/trae/gateway/keys/usage —— 读某把 Trae Key 的用量快照。
 #[tauri::command]
-pub fn trae_key_usage(id: String) -> Result<Value, String> {
+pub async fn trae_key_usage(id: String) -> Result<Value, String> {
     use buddy_switch_gateway::apikey::QuotaVerdict;
-    let id = id.trim();
+    let id = id.trim().to_string();
     if id.is_empty() {
         return Err("缺少 id".to_string());
     }
     let state = trae_gateway::shared_state();
-    let Some(record) = state
-        .key_store
-        .list()
-        .into_iter()
-        .find(|record| record.id == id)
-    else {
-        return Err("API Key 不存在".to_string());
-    };
-    let now = buddy_switch_core::modules::config::now_ms();
-    let used = state
-        .key_usage
-        .used_for(id, record.quota_unit, record.quota_period, now);
-    let total = state
-        .key_usage
-        .snapshot(id)
-        .map(|entry| entry.counters(record.quota_unit).total)
-        .unwrap_or(0);
-    let exceeded = matches!(
-        buddy_switch_gateway::apikey::quota_verdict_for_policy(&record.policy(), used),
-        QuotaVerdict::Exceeded { .. }
-    );
-    Ok(json!({
-        "ok": true,
-        "keyId": id,
-        "unit": record.quota_unit,
-        "period": record.quota_period,
-        "periodKey": record.quota_period.period_key(now),
-        "used": used,
-        "total": total,
-        "exceeded": exceeded,
-    }))
+    tauri::async_runtime::spawn_blocking(move || -> Result<Value, String> {
+        let Some(record) = state
+            .key_store
+            .list()
+            .into_iter()
+            .find(|record| record.id == id)
+        else {
+            return Err("API Key 不存在".to_string());
+        };
+        let now = buddy_switch_core::modules::config::now_ms();
+        let used = state
+            .key_usage
+            .used_for(&id, record.quota_unit, record.quota_period, now);
+        let total = state
+            .key_usage
+            .snapshot(&id)
+            .map(|entry| entry.counters(record.quota_unit).total)
+            .unwrap_or(0);
+        let exceeded = matches!(
+            buddy_switch_gateway::apikey::quota_verdict_for_policy(&record.policy(), used),
+            QuotaVerdict::Exceeded { .. }
+        );
+        Ok(json!({
+            "ok": true,
+            "keyId": id,
+            "unit": record.quota_unit,
+            "period": record.quota_period,
+            "periodKey": record.quota_period.period_key(now),
+            "used": used,
+            "total": total,
+            "exceeded": exceeded,
+        }))
+    })
+    .await
+    .map_err(|error| format!("读取 Key 用量失败: {error}"))?
 }
 
 /// POST /api/trae/gateway/keys/restore —— 撤销吊销（Key 重新可用，`{id}`）。
 #[tauri::command]
-pub fn restore_trae_api_key(id: String) -> Result<Value, String> {
-    let id = id.trim();
+pub async fn restore_trae_api_key(id: String) -> Result<Value, String> {
+    let id = id.trim().to_string();
     if id.is_empty() {
         return Err("缺少 id".to_string());
     }
     let state = trae_gateway::shared_state();
-    state.key_store.restore(id)?;
-    Ok(json!({ "ok": true }))
+    tauri::async_runtime::spawn_blocking(move || state.key_store.restore(&id))
+        .await
+        .map_err(|error| format!("恢复 Key 失败: {error}"))?
+        .map(|()| json!({ "ok": true }))
 }
 
 /// POST /api/trae/gateway/keys/delete —— 物理删除**已吊销**的 Key（`{id}`）。
 #[tauri::command]
-pub fn delete_trae_api_key(id: String) -> Result<Value, String> {
-    let id = id.trim();
+pub async fn delete_trae_api_key(id: String) -> Result<Value, String> {
+    let id = id.trim().to_string();
     if id.is_empty() {
         return Err("缺少 id".to_string());
     }
     let state = trae_gateway::shared_state();
-    state.key_store.delete(id)?;
-    Ok(json!({ "ok": true }))
+    tauri::async_runtime::spawn_blocking(move || state.key_store.delete(&id))
+        .await
+        .map_err(|error| format!("删除 Key 失败: {error}"))?
+        .map(|()| json!({ "ok": true }))
 }
 
 /// POST /api/trae/open-data-dir —— 打开 Trae 数据目录（`{variant?}`）。
@@ -3854,18 +4044,28 @@ pub async fn trae_launch_client(variant: Option<String>) -> Result<Value, String
 }
 
 /// GET /api/trae/gateway/logs —— 最近 N 条请求日志（元数据）。
+///
+/// `async` + `spawn_blocking`：Trae 网关页挂载即触发；同步执行时这段 IO
+/// 压在 IPC 主线程上（Linux 上即 GTK / WebKitGTK 事件循环所在线程）——
+/// issue #48 / #80 同根因类。
 #[tauri::command]
-pub fn get_trae_gateway_logs() -> Value {
+pub async fn get_trae_gateway_logs() -> Value {
     let state = trae_gateway::shared_state();
-    json!({ "logs": state.log.list() })
+    tauri::async_runtime::spawn_blocking(move || json!({ "logs": state.log.list() }))
+        .await
+        .unwrap_or_else(|_| json!({ "logs": [] }))
 }
 
 /// POST /api/trae/gateway/logs/clear —— 清空日志。
 #[tauri::command]
-pub fn clear_trae_gateway_logs() -> Value {
+pub async fn clear_trae_gateway_logs() -> Value {
     let state = trae_gateway::shared_state();
-    state.log.clear();
-    json!({ "ok": true })
+    tauri::async_runtime::spawn_blocking(move || {
+        state.log.clear();
+        json!({ "ok": true })
+    })
+    .await
+    .unwrap_or_else(|_| json!({ "ok": false }))
 }
 
 // ---------------------------------------------------------------------------
@@ -4511,19 +4711,33 @@ pub async fn unified_gateway_pool_overview() -> Value {
 }
 
 /// GET /api/unified-gateway/keys —— 统一密钥列表（**只出脱敏**，绝不含 hash/明文）。
+///
+/// `async` + `spawn_blocking`：读密钥台账是文件 IO。同步 `#[tauri::command]` 的
+/// 执行上下文默认是 `Blocking` ⇒ 在 IPC 线程（Linux 上即 GTK / WebKitGTK 事件循环
+/// 所在的主线程）**直接执行**，IO 稍慢就把整窗画成「未响应」、任何地方点不动
+/// （issue #48 同款；#80 即在创建密钥链路上复现）。
 #[tauri::command]
-pub fn list_unified_api_keys() -> Value {
-    // ★ 形状 `{ "keys": [...] }`，与两个既有网关**同形** —— 见
-    //   `buddy_switch_gateway::unified::admin` 的模块文档（裸数组曾让桌面端整页白屏）。
-    buddy_switch_gateway::unified::admin::keys_list_payload(&unified_gateway::shared_state().keys)
+pub async fn list_unified_api_keys() -> Value {
+    let state = unified_gateway::shared_state();
+    tauri::async_runtime::spawn_blocking(move || {
+        // ★ 形状 `{ "keys": [...] }`，与两个既有网关**同形** —— 见
+        //   `buddy_switch_gateway::unified::admin` 的模块文档（裸数组曾让桌面端整页白屏）。
+        buddy_switch_gateway::unified::admin::keys_list_payload(&state.keys)
+    })
+    .await
+    .unwrap_or_else(|_| json!({ "keys": [] }))
 }
 
 /// POST /api/unified-gateway/keys —— 创建统一密钥；**明文只返回这一次**。
 ///
 /// 授权集不合规（空 / 不在册 / 业务转发非 WB 或不在授权集内）⇒ 直接报错，
 /// 校验发生在**落盘之前**（不留一把废 Key）。
+///
+/// `async` + `spawn_blocking`：本命令读 + 写密钥台账。**同步执行时它跑在 IPC 主线程
+/// 上**（同步命令默认 `Blocking`），而创建成功后前端还会连续调 list / usage-all /
+/// models 三条读命令 ⇒ 一串文件 IO 占住主线程，整窗卡死、任何地方点不动（issue #80）。
 #[tauri::command]
-pub fn create_unified_api_key(
+pub async fn create_unified_api_key(
     name: Option<String>,
     namespaces: Vec<String>,
     biz_namespace: Option<String>,
@@ -4532,103 +4746,123 @@ pub fn create_unified_api_key(
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())
         .unwrap_or_else(|| "未命名".to_string());
-    let (record, plaintext) =
-        unified_gateway::shared_state()
-            .keys
-            .create(name, namespaces, biz_namespace)?;
-    Ok(json!({ "ok": true, "key": plaintext, "record": record.masked() }))
+    let state = unified_gateway::shared_state();
+    tauri::async_runtime::spawn_blocking(move || {
+        let (record, plaintext) = state.keys.create(name, namespaces, biz_namespace)?;
+        Ok(json!({ "ok": true, "key": plaintext, "record": record.masked() }))
+    })
+    .await
+    .map_err(|error| format!("创建统一密钥失败: {error}"))?
 }
 
 /// POST /api/unified-gateway/keys/revoke —— 吊销（置标记，**可逆**）。
 #[tauri::command]
-pub fn revoke_unified_api_key(id: String) -> Result<Value, String> {
-    unified_gateway::shared_state().keys.revoke(&id)?;
-    Ok(json!({ "ok": true }))
+pub async fn revoke_unified_api_key(id: String) -> Result<Value, String> {
+    let state = unified_gateway::shared_state();
+    tauri::async_runtime::spawn_blocking(move || state.keys.revoke(&id))
+        .await
+        .map_err(|error| format!("吊销统一密钥失败: {error}"))?
+        .map(|()| json!({ "ok": true }))
 }
 
 /// POST /api/unified-gateway/keys/policy —— 更新某把统一 Key 的策略（issue #76）。
 ///
 /// ★ 不动命名空间授权（`namespaces` / `biz_namespace`）—— 与配额是两个维度。
 #[tauri::command]
-pub fn set_unified_key_policy(
+pub async fn set_unified_key_policy(
     id: String,
     policy: buddy_switch_gateway::apikey::KeyPolicy,
 ) -> Result<Value, String> {
-    unified_gateway::shared_state()
-        .keys
-        .update_policy(&id, policy)?;
-    Ok(json!({ "ok": true }))
+    let state = unified_gateway::shared_state();
+    tauri::async_runtime::spawn_blocking(move || state.keys.update_policy(&id, policy))
+        .await
+        .map_err(|error| format!("保存统一密钥策略失败: {error}"))?
+        .map(|()| json!({ "ok": true }))
 }
 
 /// GET /api/unified-gateway/keys/usage-all —— **批量**用量（密钥表每行一列）。
+///
+/// `async` + `spawn_blocking`：**每把 Key 两次全量读用量账本**（`used_for` + `snapshot`
+/// 各自 `load()`），N 把 Key 就是 2N 次文件 IO。密钥表每次 `keys` 变化都会调它
+/// ⇒ 同步执行必占 IPC 主线程（issue #80）。
 #[tauri::command]
-pub fn unified_key_usage_all() -> Result<Value, String> {
+pub async fn unified_key_usage_all() -> Result<Value, String> {
     let state = unified_gateway::shared_state();
-    let now = buddy_switch_core::modules::config::now_ms();
-    let mut rows = serde_json::Map::new();
-    for record in state.keys.list() {
-        let policy = record.policy();
-        let used =
-            state
-                .key_usage
-                .used_for(&record.id, policy.quota_unit, policy.quota_period, now);
-        let exceeded = matches!(
-            buddy_switch_gateway::apikey::quota_verdict_for_policy(&policy, used),
-            buddy_switch_gateway::apikey::QuotaVerdict::Exceeded { .. }
-        );
-        rows.insert(
-            record.id.clone(),
-            json!({
-                "ok": true,
-                "keyId": record.id,
-                "unit": policy.quota_unit,
-                "period": policy.quota_period,
-                "periodKey": policy.quota_period.period_key(now),
-                "used": used,
-                "total": state
+    tauri::async_runtime::spawn_blocking(move || {
+        let now = buddy_switch_core::modules::config::now_ms();
+        let mut rows = serde_json::Map::new();
+        for record in state.keys.list() {
+            let policy = record.policy();
+            let used =
+                state
                     .key_usage
-                    .snapshot(&record.id)
-                    .map(|entry| entry.counters(policy.quota_unit).total)
-                    .unwrap_or(0),
-                "exceeded": exceeded,
-            }),
-        );
-    }
-    Ok(Value::Object(rows))
+                    .used_for(&record.id, policy.quota_unit, policy.quota_period, now);
+            let exceeded = matches!(
+                buddy_switch_gateway::apikey::quota_verdict_for_policy(&policy, used),
+                buddy_switch_gateway::apikey::QuotaVerdict::Exceeded { .. }
+            );
+            rows.insert(
+                record.id.clone(),
+                json!({
+                    "ok": true,
+                    "keyId": record.id,
+                    "unit": policy.quota_unit,
+                    "period": policy.quota_period,
+                    "periodKey": policy.quota_period.period_key(now),
+                    "used": used,
+                    "total": state
+                        .key_usage
+                        .snapshot(&record.id)
+                        .map(|entry| entry.counters(policy.quota_unit).total)
+                        .unwrap_or(0),
+                    "exceeded": exceeded,
+                }),
+            );
+        }
+        Ok(Value::Object(rows))
+    })
+    .await
+    .map_err(|error| format!("读取统一密钥用量失败: {error}"))?
 }
 
 /// GET /api/unified-gateway/keys/usage —— 读某把统一 Key 的用量快照。
+///
+/// `async` + `spawn_blocking`：读台账 + 两次读用量账本（issue #80）。
 #[tauri::command]
-pub fn unified_key_usage(id: String) -> Result<Value, String> {
+pub async fn unified_key_usage(id: String) -> Result<Value, String> {
     use buddy_switch_gateway::apikey::QuotaVerdict;
     let state = unified_gateway::shared_state();
-    let now = buddy_switch_core::modules::config::now_ms();
-    let Some(record) = state.keys.list().into_iter().find(|record| record.id == id) else {
-        return Err("API Key 不存在".to_string());
-    };
-    let policy = record.policy();
-    let used = state
-        .key_usage
-        .used_for(&id, policy.quota_unit, policy.quota_period, now);
-    let total = state
-        .key_usage
-        .snapshot(&id)
-        .map(|entry| entry.counters(policy.quota_unit).total)
-        .unwrap_or(0);
-    let exceeded = matches!(
-        buddy_switch_gateway::apikey::quota_verdict_for_policy(&policy, used),
-        QuotaVerdict::Exceeded { .. }
-    );
-    Ok(json!({
-        "ok": true,
-        "keyId": id,
-        "unit": policy.quota_unit,
-        "period": policy.quota_period,
-        "periodKey": policy.quota_period.period_key(now),
-        "used": used,
-        "total": total,
-        "exceeded": exceeded,
-    }))
+    tauri::async_runtime::spawn_blocking(move || {
+        let now = buddy_switch_core::modules::config::now_ms();
+        let Some(record) = state.keys.list().into_iter().find(|record| record.id == id) else {
+            return Err("API Key 不存在".to_string());
+        };
+        let policy = record.policy();
+        let used = state
+            .key_usage
+            .used_for(&id, policy.quota_unit, policy.quota_period, now);
+        let total = state
+            .key_usage
+            .snapshot(&id)
+            .map(|entry| entry.counters(policy.quota_unit).total)
+            .unwrap_or(0);
+        let exceeded = matches!(
+            buddy_switch_gateway::apikey::quota_verdict_for_policy(&policy, used),
+            QuotaVerdict::Exceeded { .. }
+        );
+        Ok(json!({
+            "ok": true,
+            "keyId": id,
+            "unit": policy.quota_unit,
+            "period": policy.quota_period,
+            "periodKey": policy.quota_period.period_key(now),
+            "used": used,
+            "total": total,
+            "exceeded": exceeded,
+        }))
+    })
+    .await
+    .map_err(|error| format!("读取统一密钥用量失败: {error}"))?
 }
 
 /// POST /api/unified-gateway/keys/restore —— 撤销吊销（**同一把 Key 重新可用**）。
@@ -4636,16 +4870,22 @@ pub fn unified_key_usage(id: String) -> Result<Value, String> {
 /// 与 `delete` 互逆：只接受**已吊销**的 Key。撤销一次误吊销不需要重建 Key、
 /// 也不需要改动任何客户端配置。
 #[tauri::command]
-pub fn restore_unified_api_key(id: String) -> Result<Value, String> {
-    unified_gateway::shared_state().keys.restore(&id)?;
-    Ok(json!({ "ok": true }))
+pub async fn restore_unified_api_key(id: String) -> Result<Value, String> {
+    let state = unified_gateway::shared_state();
+    tauri::async_runtime::spawn_blocking(move || state.keys.restore(&id))
+        .await
+        .map_err(|error| format!("恢复统一密钥失败: {error}"))?
+        .map(|()| json!({ "ok": true }))
 }
 
 /// POST /api/unified-gateway/keys/delete —— 物理删除（**仅限已吊销**，不可逆）。
 #[tauri::command]
-pub fn delete_unified_api_key(id: String) -> Result<Value, String> {
-    unified_gateway::shared_state().keys.delete(&id)?;
-    Ok(json!({ "ok": true }))
+pub async fn delete_unified_api_key(id: String) -> Result<Value, String> {
+    let state = unified_gateway::shared_state();
+    tauri::async_runtime::spawn_blocking(move || state.keys.delete(&id))
+        .await
+        .map_err(|error| format!("删除统一密钥失败: {error}"))?
+        .map(|()| json!({ "ok": true }))
 }
 
 // ---------------------------------------------------------------------------
@@ -4910,10 +5150,18 @@ pub async fn qoder_usage(scope: String, days: Option<u32>) -> Result<Value, Stri
 // 唯一产出（`MEMORY.md §二`：两条通道不得各自拼装）。
 
 /// GET /api/qoder/gateway/config —— Qoder 网关配置（**全局唯一**，不分区域）。
+///
+/// `async` + `spawn_blocking`：读盘。同步执行时这段文件 IO 压在 IPC 主线程上
+/// （Linux 上即 GTK / WebKitGTK 事件循环所在线程），Qoder 网关页挂载即触发
+/// （issue #48 / #80 同根因类）。
 #[tauri::command]
-pub fn get_qoder_gateway_config() -> Value {
-    serde_json::to_value(buddy_switch_gateway::qoder::QoderGatewayConfig::load())
-        .unwrap_or(Value::Null)
+pub async fn get_qoder_gateway_config() -> Value {
+    tauri::async_runtime::spawn_blocking(|| {
+        serde_json::to_value(buddy_switch_gateway::qoder::QoderGatewayConfig::load())
+            .unwrap_or(Value::Null)
+    })
+    .await
+    .unwrap_or(Value::Null)
 }
 
 /// POST /api/qoder/gateway/config —— 保存配置并应用（启动 / 重启独立监听）。
@@ -5024,15 +5272,20 @@ pub async fn get_qoder_gateway_models(
 /// GET /api/qoder/gateway/keys —— 多 Key 列表（含归属区域）。
 ///
 /// 形状唯一来源：gateway crate 的 `QoderApiKeyStore::list`（HTTP 通道同款）。
+///
+/// ⚠️ 执行上下文见 [`list_api_keys`]：密钥台账是文件 IO，同步命令会占住 IPC 线程（Linux 上
+/// 即 GTK / WebKitGTK 主线程）⇒ 一律 `async` + `spawn_blocking`（issue #48 / #80）。
 #[tauri::command]
-pub fn list_qoder_api_keys() -> Value {
+pub async fn list_qoder_api_keys() -> Value {
     let state = qoder_gateway::shared_state();
-    json!({ "keys": state.key_store.list() })
+    tauri::async_runtime::spawn_blocking(move || json!({ "keys": state.key_store.list() }))
+        .await
+        .unwrap_or_else(|_| json!({ "keys": [] }))
 }
 
 /// POST /api/qoder/gateway/keys —— 新建 Key（`{name, scope}`，明文仅此一次返回）。
 #[tauri::command]
-pub fn create_qoder_api_key(scope: String, name: Option<String>) -> Result<Value, String> {
+pub async fn create_qoder_api_key(scope: String, name: Option<String>) -> Result<Value, String> {
     let scope = resolve_scope_param(Some(&scope))?;
     let region = require_qoder_region(scope)?;
     let name = name
@@ -5040,124 +5293,150 @@ pub fn create_qoder_api_key(scope: String, name: Option<String>) -> Result<Value
         .filter(|value| !value.is_empty())
         .unwrap_or_else(|| "未命名 Key".to_string());
     let state = qoder_gateway::shared_state();
-    let (record, plaintext) = state.key_store.create(name, region)?;
-    Ok(json!({
-        "ok": true,
-        "key": plaintext,
-        "record": record.masked(),
-    }))
+    tauri::async_runtime::spawn_blocking(move || -> Result<Value, String> {
+        let (record, plaintext) = state.key_store.create(name, region)?;
+        Ok(json!({
+            "ok": true,
+            "key": plaintext,
+            "record": record.masked(),
+        }))
+    })
+    .await
+    .map_err(|error| format!("创建密钥失败: {error}"))?
 }
 
 /// POST /api/qoder/gateway/keys/revoke —— 吊销 Key（`{id}`）。
 #[tauri::command]
-pub fn revoke_qoder_api_key(id: String) -> Result<Value, String> {
-    let id = id.trim();
+pub async fn revoke_qoder_api_key(id: String) -> Result<Value, String> {
+    let id = id.trim().to_string();
     if id.is_empty() {
         return Err("缺少 id".to_string());
     }
     let state = qoder_gateway::shared_state();
-    state.key_store.revoke(id)?;
-    Ok(json!({ "ok": true }))
+    tauri::async_runtime::spawn_blocking(move || state.key_store.revoke(&id))
+        .await
+        .map_err(|error| format!("吊销 Key 失败: {error}"))?
+        .map(|()| json!({ "ok": true }))
 }
 
 /// POST /api/qoder/gateway/keys/policy —— 更新某把 Qoder Key 的策略（issue #76）。
 #[tauri::command]
-pub fn set_qoder_key_policy(
+pub async fn set_qoder_key_policy(
     id: String,
     policy: buddy_switch_gateway::apikey::KeyPolicy,
 ) -> Result<Value, String> {
-    let id = id.trim();
+    let id = id.trim().to_string();
     if id.is_empty() {
         return Err("缺少 id".to_string());
     }
     let state = qoder_gateway::shared_state();
-    state.key_store.update_policy(id, policy)?;
-    Ok(json!({ "ok": true }))
+    tauri::async_runtime::spawn_blocking(move || state.key_store.update_policy(&id, policy))
+        .await
+        .map_err(|error| format!("更新 Key 策略失败: {error}"))?
+        .map(|()| json!({ "ok": true }))
 }
 
 /// GET /api/qoder/gateway/keys/usage —— 读某把 Qoder Key 的用量快照。
 ///
 /// ⚠️ Qoder 的 `key_store.list()` 返回**掩码视图**（`Vec<Value>`）⇒ 策略从 JSON 键读。
 #[tauri::command]
-pub fn qoder_key_usage(id: String) -> Result<Value, String> {
+pub async fn qoder_key_usage(id: String) -> Result<Value, String> {
     use buddy_switch_gateway::apikey::QuotaVerdict;
-    let id = id.trim();
+    let id = id.trim().to_string();
     if id.is_empty() {
         return Err("缺少 id".to_string());
     }
     let state = qoder_gateway::shared_state();
-    let Some(row) = state
-        .key_store
-        .list()
-        .into_iter()
-        .find(|row| row["id"] == json!(id))
-    else {
-        return Err("API Key 不存在".to_string());
-    };
-    let policy: buddy_switch_gateway::apikey::KeyPolicy =
-        serde_json::from_value(row).map_err(|error| format!("策略字段异常: {error}"))?;
-    let now = buddy_switch_core::modules::config::now_ms();
-    let used = state
-        .key_usage
-        .used_for(id, policy.quota_unit, policy.quota_period, now);
-    let total = state
-        .key_usage
-        .snapshot(id)
-        .map(|entry| entry.counters(policy.quota_unit).total)
-        .unwrap_or(0);
-    let exceeded = matches!(
-        buddy_switch_gateway::apikey::quota_verdict_for_policy(&policy, used),
-        QuotaVerdict::Exceeded { .. }
-    );
-    Ok(json!({
-        "ok": true,
-        "keyId": id,
-        "unit": policy.quota_unit,
-        "period": policy.quota_period,
-        "periodKey": policy.quota_period.period_key(now),
-        "used": used,
-        "total": total,
-        "exceeded": exceeded,
-    }))
+    tauri::async_runtime::spawn_blocking(move || -> Result<Value, String> {
+        let Some(row) = state
+            .key_store
+            .list()
+            .into_iter()
+            .find(|row| row["id"] == json!(id))
+        else {
+            return Err("API Key 不存在".to_string());
+        };
+        let policy: buddy_switch_gateway::apikey::KeyPolicy =
+            serde_json::from_value(row).map_err(|error| format!("策略字段异常: {error}"))?;
+        let now = buddy_switch_core::modules::config::now_ms();
+        let used = state
+            .key_usage
+            .used_for(&id, policy.quota_unit, policy.quota_period, now);
+        let total = state
+            .key_usage
+            .snapshot(&id)
+            .map(|entry| entry.counters(policy.quota_unit).total)
+            .unwrap_or(0);
+        let exceeded = matches!(
+            buddy_switch_gateway::apikey::quota_verdict_for_policy(&policy, used),
+            QuotaVerdict::Exceeded { .. }
+        );
+        Ok(json!({
+            "ok": true,
+            "keyId": id,
+            "unit": policy.quota_unit,
+            "period": policy.quota_period,
+            "periodKey": policy.quota_period.period_key(now),
+            "used": used,
+            "total": total,
+            "exceeded": exceeded,
+        }))
+    })
+    .await
+    .map_err(|error| format!("读取 Key 用量失败: {error}"))?
 }
 
 /// POST /api/qoder/gateway/keys/restore —— 撤销吊销（Key 重新可用，`{id}`）。
 #[tauri::command]
-pub fn restore_qoder_api_key(id: String) -> Result<Value, String> {
-    let id = id.trim();
+pub async fn restore_qoder_api_key(id: String) -> Result<Value, String> {
+    let id = id.trim().to_string();
     if id.is_empty() {
         return Err("缺少 id".to_string());
     }
     let state = qoder_gateway::shared_state();
-    state.key_store.restore(id)?;
-    Ok(json!({ "ok": true }))
+    tauri::async_runtime::spawn_blocking(move || state.key_store.restore(&id))
+        .await
+        .map_err(|error| format!("恢复 Key 失败: {error}"))?
+        .map(|()| json!({ "ok": true }))
 }
 
 /// POST /api/qoder/gateway/keys/delete —— 物理删除**已吊销**的 Key（`{id}`）。
 #[tauri::command]
-pub fn delete_qoder_api_key(id: String) -> Result<Value, String> {
-    let id = id.trim();
+pub async fn delete_qoder_api_key(id: String) -> Result<Value, String> {
+    let id = id.trim().to_string();
     if id.is_empty() {
         return Err("缺少 id".to_string());
     }
     let state = qoder_gateway::shared_state();
-    state.key_store.delete(id)?;
-    Ok(json!({ "ok": true }))
+    tauri::async_runtime::spawn_blocking(move || state.key_store.delete(&id))
+        .await
+        .map_err(|error| format!("删除 Key 失败: {error}"))?
+        .map(|()| json!({ "ok": true }))
 }
 
 /// GET /api/qoder/gateway/logs —— 最近 N 条请求日志（元数据；含 `region` 归属）。
+///
+/// `async` + `spawn_blocking`：Qoder 网关页挂载即触发；同步执行时这段 IO
+/// 压在 IPC 主线程上（Linux 上即 GTK / WebKitGTK 事件循环所在线程）——
+/// issue #48 / #80 同根因类。
 #[tauri::command]
-pub fn get_qoder_gateway_logs() -> Value {
+pub async fn get_qoder_gateway_logs() -> Value {
     let state = qoder_gateway::shared_state();
-    json!({ "logs": state.log.list() })
+    tauri::async_runtime::spawn_blocking(move || json!({ "logs": state.log.list() }))
+        .await
+        .unwrap_or_else(|_| json!({ "logs": [] }))
 }
 
 /// POST /api/qoder/gateway/logs/clear —— 清空日志。
 #[tauri::command]
-pub fn clear_qoder_gateway_logs() -> Value {
+pub async fn clear_qoder_gateway_logs() -> Value {
     let state = qoder_gateway::shared_state();
-    state.log.clear();
-    json!({ "ok": true })
+    tauri::async_runtime::spawn_blocking(move || {
+        state.log.clear();
+        json!({ "ok": true })
+    })
+    .await
+    .unwrap_or_else(|_| json!({ "ok": false }))
 }
 
 // ---------------------------------------------------------------------------

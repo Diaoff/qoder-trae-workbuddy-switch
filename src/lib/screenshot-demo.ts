@@ -8,6 +8,7 @@ import type {
   CreditOfficialUsageModel, CreditStatistics, GatewayConfig, GatewayLogEntry, GatewayPoolAccount,
   GatewayStatus, GatewayTokenTrend, GatewayUsageDim, GatewayUsageRecon, GithubConfig, Region, RotateLog,
   RotateStatus, ScheduleConfig, TokenStatistics,
+  RuntimeLogsResponse, RuntimeLogLevel,
   Session, SessionReplicaResponse,
   SkillListResponse,
   TokenStatsGroup, TokenStatsSource,
@@ -157,7 +158,7 @@ let demoActiveCliAccountId = accountSeeds[5].id;
  * 若 `get` 恒返回常量，演示站里把开关关掉、重开抽屉又变回开 —— 看起来像开关坏了。
  * 后端那一侧的真值是文件，这里就对应「进程内的一份」。
  */
-let demoAppPrefs = { close_to_tray: true };
+let demoAppPrefs = { close_to_tray: true, legal_consent_at: 0 };
 
 // Counts and relative model roles follow anonymous aggregates from the sanitized local cache.
 // No upstream request row or identifier is copied into this fixture.
@@ -3106,8 +3107,60 @@ function demoTraeTokenStatistics(days?: number): TraeTokenStatistics {
  * 文案逐字取自 `store::append_log` 的真实调用点，这样演示站看到的行
  * 与真实运行时的行是同一种形状，视觉核对才有意义。
  */
-function demoTraeLogs(args?: Record<string, unknown>): TraeLogsResponse {
+/**
+ * 运行日志（本工具自身）的演示数据。
+ *
+ * ⚠️ 演示站**只**演示读；`clear_runtime_logs` / `open_runtime_logs_dir` 是动作，
+ * 刻意不在此列（演示环境不能真删本机日志或弹文件管理器）。
+ */
+function demoRuntimeLogs(args?: Record<string, unknown>): RuntimeLogsResponse {
   const day0 = localDate(0);
+  const day1 = localDate(1);
+  const stamp = (daysAgo: number, hour: number, minute: number, second = 0) => {
+    const date = new Date(atLocalTime(daysAgo, hour, minute));
+    date.setSeconds(second);
+    return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")} ${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}:${String(date.getSeconds()).padStart(2, "0")}`;
+  };
+  const all = [
+    { level: "info" as const, scope: "startup", time: stamp(1, 9, 2), ts: atLocalTime(1, 9, 2), message: "Buddy Switch 桌面端 启动 · 版本 2026.10.221931 · windows x86_64 · pid 18244 · 日志级别 info" },
+    { level: "info" as const, scope: "gateway", time: stamp(1, 9, 2, 1), ts: atLocalTime(1, 9, 2) + 1000, message: "已启动: http://127.0.0.1:57891" },
+    { level: "warn" as const, scope: "trae-gateway", time: stamp(1, 9, 2, 2), ts: atLocalTime(1, 9, 2) + 2000, message: "启动失败: 端口 57894 已被占用" },
+    { level: "info" as const, scope: "switch", time: stamp(0, 9, 14), ts: atLocalTime(0, 9, 14), message: "切换成功 · 目标账号 7481999 · 客户端已重启" },
+    { level: "error" as const, scope: "checkin", time: stamp(0, 8, 6), ts: atLocalTime(0, 8, 6), message: "签到失败: 上游返回 401（凭据可能已过期）" },
+    { level: "debug" as const, scope: "pool", time: stamp(0, 9, 15), ts: atLocalTime(0, 9, 15), message: "选号明细: 可用 3 / 冷却 1 / 熔断 0" },
+  ].filter((entry) => entry.time.startsWith(day0) || entry.time.startsWith(day1));
+
+  const level = typeof args?.level === "string" ? (args.level as RuntimeLogLevel) : "";
+  const date = typeof args?.date === "string" ? args.date : "";
+  const keyword = typeof args?.keyword === "string" ? args.keyword.toLowerCase() : "";
+  const order: RuntimeLogLevel[] = ["error", "warn", "info", "debug"];
+  const minRank = level ? order.indexOf(level) : -1;
+  const entries = all.filter((entry) => {
+    if (date && !entry.time.startsWith(date)) return false;
+    if (minRank >= 0 && order.indexOf(entry.level) > minRank) return false;
+    if (keyword && !`${entry.scope} ${entry.message}`.toLowerCase().includes(keyword)) return false;
+    return true;
+  });
+
+  const counts: Record<RuntimeLogLevel, number> = { error: 0, warn: 0, info: 0, debug: 0 };
+  for (const entry of all) counts[entry.level] += 1;
+
+  return {
+    entries: entries.slice().sort((a, b) => b.ts - a.ts),
+    total: entries.length,
+    truncated: false,
+    limit: 500,
+    dates: [day0, day1],
+    counts,
+    level: "info",
+    logDir: "/demo/buddy-switch/logs",
+    keepDays: 7,
+    maxPartBytes: 4194304,
+    maxPartsPerDay: 4,
+  };
+}
+
+function demoTraeLogs(args?: Record<string, unknown>): TraeLogsResponse {  const day0 = localDate(0);
   const day1 = localDate(1);
   const day2 = localDate(2);
   const stamp = (daysAgo: number, hour: number, minute: number) => {
@@ -3362,7 +3415,12 @@ export function screenshotDemoResponse(command: string, args?: Record<string, un
     case "cache_scan": return demoCacheScan();
     case "set_app_prefs": {
       const raw = (args?.prefs as { close_to_tray?: unknown } | undefined)?.close_to_tray;
-      demoAppPrefs = { close_to_tray: typeof raw === "boolean" ? raw : true };
+      /* 每次只改 `close_to_tray`，其余键保持原值 —— 与后端「部分字段写入不会
+         抹掉其它已知键」的语义一致（同意时间戳不能被一次开关切换清掉）。 */
+      demoAppPrefs = {
+        close_to_tray: typeof raw === "boolean" ? raw : true,
+        legal_consent_at: demoAppPrefs.legal_consent_at,
+      };
       return { ...demoAppPrefs };
     }
     case "switch_progress": return { running: false, progress: null };
@@ -3441,6 +3499,7 @@ export function screenshotDemoResponse(command: string, args?: Record<string, un
     case "get_trae_token_statistics":
       return demoTraeTokenStatistics(typeof args?.days === "number" ? args.days : undefined);
     case "get_trae_logs": return demoTraeLogs(args);
+    case "runtime_logs": return demoRuntimeLogs(args);
     case "get_trae_gateway_config": return demoTraeGatewayConfig();
     case "trae_gateway_status": return demoTraeGatewayStatus();
     case "get_trae_gateway_models": return demoTraeGatewayModels(args);

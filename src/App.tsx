@@ -10,6 +10,8 @@ import { PageFallback } from "@/components/page-fallback";
 import { AuthGate } from "@/components/auth-gate";
 import { StatusDot } from "@/components/product-marks";
 import { DonateDialog } from "@/components/donate-dialog";
+import { LegalConsentDialog } from "@/components/legal-consent-dialog";
+import { consumeDonatePrompt, DONATE_PROMPT_AT_LAUNCH, noteLaunch } from "@/lib/donate-prompt";
 import { TopBar } from "@/components/shell/top-bar";
 import { UpdateInstallDialog } from "@/components/update-install-dialog";
 import { CommandPalette } from "@/components/command-palette/command-palette";
@@ -1114,6 +1116,25 @@ function Layout() {
 
 export default function App() {
   const Router = pagesDemoHostingEnabled ? HashRouter : BrowserRouter;
+  /** 第三次启动时自动弹一次的打赏引导（关闭后不再自动出现）。 */
+  const [donatePromptOpen, setDonatePromptOpen] = useState(false);
+
+  useEffect(() => {
+    /* 自动引导只在**桌面包**里数启动次数：
+       - webui 每次刷新都会算一次「启动」 ⇒ 会把引导变成骚扰；
+       - demo / 截图模式更不能自动弹，否则 README 截图会全部变成同一张打赏弹窗。 */
+    if (demoModeEnabled || !api.isDesktop()) return;
+    if (noteLaunch() < DONATE_PROMPT_AT_LAUNCH) return;
+    void api
+      .getAppPrefs()
+      .then((prefs) => {
+        // 风险确认还没通过 ⇒ 本次不弹，也**不消耗**「已提示」：下次启动还有机会。
+        if (!(prefs.legal_consent_at > 0)) return;
+        if (consumeDonatePrompt()) setDonatePromptOpen(true);
+      })
+      // 读不到偏好就安静跳过 —— 不在错误状态下再叠一张弹窗。
+      .catch(() => {});
+  }, []);
 
   return (
     <TooltipProvider delayDuration={250}>
@@ -1162,6 +1183,12 @@ export default function App() {
         </Routes>
         <Toaster />
       </Router>
+      {/* 首启风险确认：全屏模态，只在桌面包且 `legal_consent_at == 0` 时出现。
+          放在 Router 之外 —— 它不依赖路由，也不该因导航而重挂载。 */}
+      <LegalConsentDialog />
+      {/* 第三次启动自动弹一次打赏引导（含 Star 入口）；每台设备只自动弹一次，
+          节奏与去重见 `lib/donate-prompt.ts`。 */}
+      <DonateDialog open={donatePromptOpen} onOpenChange={setDonatePromptOpen} />
     </TooltipProvider>
   );
 }

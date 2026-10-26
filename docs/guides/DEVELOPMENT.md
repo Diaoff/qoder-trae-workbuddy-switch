@@ -139,7 +139,7 @@ macOS 未签名会触发 Gatekeeper，先 `xattr -d com.apple.quarantine <路径
 | `index.html` `vite.config.ts` `tsconfig*.json` `components.json` | 前端构建入口与工具配置，工具链按固定路径找它们 | 不能动 |
 | `package.json` `package-lock.json` / `Cargo.toml` `Cargo.lock` `rustfmt.toml` | 两套依赖清单与格式化配置 | 不能动 |
 | `Dockerfile` `docker-compose.yml` `.dockerignore` `docker/` | 服务端容器形态；`docker/entrypoint.sh` 被 Dockerfile 引用 | 构建上下文必须在根 |
-| `README*.md`（8 语种）`CONTRIBUTING*.md` `LICENSE` `AGENTS.md` | 面向使用者与协作者的门面；`AGENTS.md` 另含 UI / 提交 / 文档规范 | 不能动 |
+| `README.md` / `README.cn.md`（中英两版）`CONTRIBUTING*.md` `LICENSE` `AGENTS.md` | 面向使用者与协作者的门面；`AGENTS.md` 另含 UI / 提交 / 文档规范 | 不能动 |
 | `src/` `src-tauri/` `crates/` `npm/` `scripts/` `docs/` `public/` | 源码、宿主、核心库、npm 包、工具脚本、文档、Web 静态资源 | — |
 | `node_modules/` `target/` `dist/` `deliverables/` | 依赖与构建产物（**全部被 `.gitignore` 忽略**） | 可随时删，重跑 `npm ci` / 构建即回来 |
 
@@ -188,6 +188,24 @@ docs/
 > ★ 2026-10-17 起网关统一落在 `5789x` 一段（57891 / 57892 / 57894 / 57895），2026-10-22 补上 Loomy 的 57896 —— 整段刚好用满，不再出现「WB 是 5789x、Trae/Qoder 是 78xx」的混编。**只改默认值**：配置文件里写着旧端口的保持原端口。
 
 五条网关的 `/v1/models` 与 `/v1/chat/completions` **逐字重叠** ⇒ 不能 merge 进同一个 Router（axum 同路径 merge 是**运行期 panic**，有护栏测试 `two_products_own_overlapping_paths` / `loomy_gateway_also_overlaps_the_other_products` 钉住）。所以永远是五个端口、五套 Key 库、五份配置。
+
+## 排查问题：先看运行日志
+
+本工具**自己**的运行日志在 `~/.buddy-switch/logs/runtime-YYYY-MM-DD.log`（按日纯文本），
+桌面端「设置 → 日志」与 webui 同一路径可直接查看（级别 / 日期 / 关键字筛选）。
+
+| 想调什么 | 怎么调 |
+| --- | --- |
+| 日志级别 | 环境变量 `BUDDY_SWITCH_LOG_LEVEL`（`error` / `warn` / `info` / `debug`，缺省 `info`），**改后要重启** |
+| 日志上限 | 代码常量 `runtime_log::KEEP_DAYS`(7) / `MAX_PART_BYTES`(4 MiB) / `MAX_PARTS_PER_DAY`(4) |
+| 想看更细 | 设为 `debug` 重启；`debug` 及以上会写「选号明细」这类逐条记录 |
+
+> ⚠️ **别和另外两份日志搞混**：`gateway_logs.json` 是客户端经网关的**请求日志**（JSON、面向统计，在网关页看）；
+> 上游客户端自己的日志在各自数据目录里。三者用途不同，刻意不合并。
+>
+> ⚠️ 桌面宿主是 `windows_subsystem = "windows"` 的 **release GUI（没有控制台）**，
+> 所以 `eprintln!` 在用户机器上等于写进虚无 —— **诊断输出一律走 `runtime_log`**，
+> 新增宿主级日志请用 `src-tauri/src/lib.rs` 的 `host_log(...)`（debug 构建会同时打 stderr）。
 
 ## 门禁（改完必跑）
 

@@ -65,6 +65,24 @@
 
 ⚠️ **两类都要支持，且要分开报「未检测到」与「读不出」**（同本仓既有的空态二分纪律）。
 
+### 3.1 macOS 与 Windows 是**两套**密钥来源（issue #81，2026-09-23 真机取证）
+
+| | Windows | macOS |
+|:--|:--|:--|
+| 桌面 userData 目录 | `%APPDATA%\com.qoder[.cn].app.stable\` | `~/Library/Application Support/com.qoder[.cn].app.stable\`（**叶子名与 Windows 逐字相同** ⇒ `dirs::config_dir()` 直接可用，无需按平台分叉） |
+| 主密钥来源 | 同目录 `Local State` 的 `os_crypt.encrypted_key`（DPAPI 解出） | **登录钥匙串**：macOS 的 `Local State` 实测只有 `{"uninstall_metrics":…}`，**没有 `os_crypt`** |
+| 钥匙串条目 | — | 国内版 `svce="Qoder CN App Safe Storage"` / `acct="Qoder CN App Key"`；国际版 `svce="Qoder Safe Storage"` / `acct="Qoder Key"`（`security dump-keychain` 实测） |
+| blob 算法 | `v10` + 12B 随机 nonce + AES-256-GCM | `v10` + AES-128-CBC，key = `PBKDF2-HMAC-SHA1(口令, salt="saltysalt", iter=1003, len=16)`，**IV 固定 16×0x20 不写进文件**，PKCS7 |
+| CLI 凭据 | `~/.qoder[.cn]/.auth/user`（加密或明文） | 同左；实测 `~/.qoder-cn/.auth/` **只有 `machine_id`、没有 `user`** ⇒ CN 的 CLI 不落盘凭据，登录态由桌面端注入 |
+
+★ **服务名按区域不同**（国内版 Electron 应用名是 `Qoder CN App`，国际版是 `Qoder`）⇒
+收进 `region::RealmSpec.macos_keychain_service` 表字段，读写两侧（`profile` 导入 /
+`switch` 切换）同表取值。曾经两侧都硬编码国际版的 `"Qoder Safe Storage"`，国内版在
+macOS 上永远查不到钥匙串条目 ⇒ 解密失败 ⇒ 「桌面端检测不到 / 切换不了账号」（issue #81）。
+
+> 读钥匙串会触发系统授权弹窗（一次性，用户点「始终允许」后不再打扰）；
+> `security` 调用必须带超时（本仓 `vscode_cn_inject` 已按 10s 上限执行）。
+
 ---
 
 ## 4. 能力清单

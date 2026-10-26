@@ -2,6 +2,7 @@ import { zh as backup } from "./domains/backup.zh";
 import { zh as aggregate } from "./domains/aggregate.zh";
 import { zh as cache } from "./domains/cache.zh";
 import { zh as clientSettings } from "./domains/clientSettings.zh";
+import { zh as legalConsent } from "./domains/legalConsent.zh";
 import { zh as recycleBin } from "./domains/recycleBin.zh";
 import { zh as proxy } from "./domains/proxy.zh";
 import { zh as sessions } from "./domains/sessions.zh";
@@ -62,6 +63,7 @@ export const zh = {
   ...proxy,
   ...skillManager,
   ...clientSettings,
+  ...legalConsent,
   ...aggregate,
 } as const;
 

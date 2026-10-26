@@ -36,8 +36,8 @@ use serde_json::json;
 use buddy_switch_core::modules::background::{TaskKind, TaskSpec, TASKS};
 use buddy_switch_core::modules::product::Product;
 use buddy_switch_core::modules::{
-    account, auth_file, backup, config, process, region::Region, rotate, schedule, scheduler,
-    token_daily, trae, update,
+    account, auth_file, backup, config, process, region::Region, rotate, runtime_log, schedule,
+    scheduler, token_daily, trae, update,
 };
 
 fn default_port() -> u16 {
@@ -531,6 +531,12 @@ async fn serve(args: &[String]) {
     }
     println!("按 Ctrl+C 停止服务。");
 
+    // ★ 运行日志：装 panic hook + 写启动横幅（版本 / 平台 / 数据目录 / 级别）。
+    //   服务端有控制台，但仍要落盘 —— webui 的「日志」页读的是同一批文件，
+    //   而 Docker 部署时控制台输出常常没人留。
+    runtime_log::init("Buddy Switch 服务端");
+    runtime_log::info("startup", format!("webui 监听 {addr}"));
+
     let no_open = args.iter().any(|a| a == "--no-open");
     if !no_open {
         open_browser(&addr);
@@ -544,30 +550,50 @@ async fn serve(args: &[String]) {
     //   而「客户端 hook 指向哪一个」由用户最后装的 hook 决定。
     tokio::spawn(async {
         if let Err(error) = buddy_switch_core::modules::agent_hook_rx::serve().await {
-            eprintln!("[agent-hook] {error}");
+            runtime_log::error("agent-hook", error.to_string());
         }
     });
 
     // 按配置启动 API 网关独立监听（默认关闭；默认 127.0.0.1:57891）。
+    // ★ 启动结果同时落**运行日志**：webui 的「日志」页读的是同一批文件，
+    //   而控制台输出在 Docker / 后台运行时常常没人留（这正是本功能存在的理由）。
     match gateway_host::apply().await {
-        Ok(Some(addr)) => println!("API 网关: http://{addr}"),
+        Ok(Some(addr)) => {
+            println!("API 网关: http://{addr}");
+            runtime_log::info("gateway", format!("已启动: http://{addr}"));
+        }
         Ok(None) => {}
-        Err(error) => eprintln!("[gateway] 启动失败: {error}"),
+        Err(error) => {
+            eprintln!("[gateway] 启动失败: {error}");
+            runtime_log::error("gateway", format!("启动失败: {error}"));
+        }
     }
 
     // 按配置启动 Trae 网关独立监听（默认关闭；默认 127.0.0.1:57894）。
     match trae_gateway_host::apply().await {
-        Ok(Some(addr)) => println!("Trae API 网关: http://{addr}"),
+        Ok(Some(addr)) => {
+            println!("Trae API 网关: http://{addr}");
+            runtime_log::info("trae-gateway", format!("已启动: http://{addr}"));
+        }
         Ok(None) => {}
-        Err(error) => eprintln!("[trae-gateway] 启动失败: {error}"),
+        Err(error) => {
+            eprintln!("[trae-gateway] 启动失败: {error}");
+            runtime_log::error("trae-gateway", format!("启动失败: {error}"));
+        }
     }
 
     // 按配置启动 Qoder 网关独立监听（默认关闭；默认 127.0.0.1:57895）。
     // ⚠️ 一个监听、两个区域（区域由请求所用 API Key 的归属决定）。
     match qoder_gateway_host::apply().await {
-        Ok(Some(addr)) => println!("Qoder API 网关: http://{addr}"),
+        Ok(Some(addr)) => {
+            println!("Qoder API 网关: http://{addr}");
+            runtime_log::info("qoder-gateway", format!("已启动: http://{addr}"));
+        }
         Ok(None) => {}
-        Err(error) => eprintln!("[qoder-gateway] 启动失败: {error}"),
+        Err(error) => {
+            eprintln!("[qoder-gateway] 启动失败: {error}");
+            runtime_log::error("qoder-gateway", format!("启动失败: {error}"));
+        }
     }
 
     // 按配置启动 Loomy 网关独立监听（默认关闭；默认 127.0.0.1:57896）。
@@ -581,9 +607,15 @@ async fn serve(args: &[String]) {
     // 按配置启动**统一网关**独立监听（默认关闭；默认 127.0.0.1:57892）。
     // ⚠️ 起不来**不阻断**另两个入口 —— 三个入口互不牵连（关掉统一入口不影响任何既有客户端）。
     match unified_gateway_host::apply().await {
-        Ok(Some(addr)) => println!("统一 API 网关: http://{addr}"),
+        Ok(Some(addr)) => {
+            println!("统一 API 网关: http://{addr}");
+            runtime_log::info("unified-gateway", format!("已启动: http://{addr}"));
+        }
         Ok(None) => {}
-        Err(error) => eprintln!("[unified-gateway] 启动失败: {error}"),
+        Err(error) => {
+            eprintln!("[unified-gateway] 启动失败: {error}");
+            runtime_log::error("unified-gateway", format!("启动失败: {error}"));
+        }
     }
 
     axum::serve(listener, app).await.unwrap();

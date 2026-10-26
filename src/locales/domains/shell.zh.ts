@@ -391,6 +391,47 @@ export const zh = {
     "这里只有本工具的设置与备份入口；WorkBuddy 客户端自己的运行日志在其数据目录的 logs 子目录下（本工具暂未接入展示）。",
   "settings.logs.emptyAction": "查看网关设置",
 
+  // ---- 设置页「日志」分区 · 运行日志卡片（runtime-log-card.tsx）----
+  // ⚠️ 这份是**本工具自己**的日志（网关起不来 / 切号失败 / panic）。
+  //    与「网关请求日志」（JSON、面向统计）和「客户端日志」是三件不同的事 —— 文案里必须分清。
+  "settings.runtimeLog.groupTitle": "运行日志",
+  "settings.runtimeLog.intro":
+    "本工具自身做了什么、哪一步失败了都在这里（网关启动、账号切换、后台任务、崩溃）。保留 {days} 天，当前级别 {level}。客户端自己的日志不在本页。",
+  "settings.runtimeLog.levelAll": "全部级别",
+  "settings.runtimeLog.levelError": "错误",
+  "settings.runtimeLog.levelWarn": "警告",
+  "settings.runtimeLog.levelInfo": "信息",
+  "settings.runtimeLog.levelDebug": "调试",
+  "settings.runtimeLog.dateAll": "全部日期",
+  "settings.runtimeLog.searchPlaceholder": "搜索来源或内容…",
+  "settings.runtimeLog.search": "筛选",
+  "settings.runtimeLog.reset": "重置",
+  "settings.runtimeLog.autoRefresh": "自动刷新",
+  "settings.runtimeLog.autoRefreshAria": "自动刷新运行日志",
+  "settings.runtimeLog.refresh": "刷新",
+  "settings.runtimeLog.copy": "复制",
+  "settings.runtimeLog.openDir": "打开目录",
+  "settings.runtimeLog.openDirFailed": "打开日志目录失败",
+  "settings.runtimeLog.clear": "清空",
+  "settings.runtimeLog.cleared": "已删除 {count} 个日志文件",
+  "settings.runtimeLog.clearFailed": "清空运行日志失败",
+  "settings.runtimeLog.clearConfirmTitle": "清空运行日志？",
+  "settings.runtimeLog.clearConfirmBody":
+    "将删除全部运行日志文件，不可恢复。下次启动后会重新开始记录。账号、配置与用量账本不受影响。",
+  "settings.runtimeLog.clearConfirmAction": "确认清空",
+  "settings.runtimeLog.cancel": "取消",
+  "settings.runtimeLog.countSummary": "共 {total} 条",
+  "settings.runtimeLog.truncated": "已截断至最近 {limit} 条",
+  "settings.runtimeLog.emptyTitle": "还没有运行日志",
+  "settings.runtimeLog.emptyBody":
+    "本工具启动后会开始记录。若刚装好还没运行过任何操作，这里是空的属正常。",
+  "settings.runtimeLog.emptyFilteredTitle": "当前筛选条件下没有匹配",
+  "settings.runtimeLog.emptyFilteredBody": "日志文件里可能确实没有这些记录；重置筛选可看到全部。",
+  "settings.runtimeLog.details": "落盘位置与上限",
+  "settings.runtimeLog.dirLabel": "目录",
+  "settings.runtimeLog.limitLabel": "上限",
+  "settings.runtimeLog.limitValue": "保留 {days} 天 · 单文件 {size} · 每天最多 {parts} 个分片",
+
   // ---- 作用域可见性设置（app-settings.tsx）----
   "appSettings.scopeVisibility.groupTitle": "作用域显示",
   "appSettings.scopeVisibility.toggleAria": "{scope} 可见性开关",

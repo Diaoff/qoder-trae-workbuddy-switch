@@ -79,19 +79,6 @@ buddy-switch version      # 版本号
 
 **欢迎 PR 与 Issue** —— 报 Bug、补文档、适配新版客户端、改进界面都可以。提交前的检查项与几条硬性要求（不要提交本地数据与来源不明的代码、贡献按同一许可分发）见[贡献指南](https://github.com/NextAgentX/qoder-trae-workbuddy-switch/blob/main/CONTRIBUTING.md)。
 
-## 支持这个项目
-
-如果 Buddy Switch 帮到了你，可以请作者喝杯饮料 ☕
-
-<table>
-  <tbody>
-    <tr>
-      <td align="center"><img src="https://raw.githubusercontent.com/NextAgentX/qoder-trae-workbuddy-switch/main/docs/images/donate-wechat.png" alt="微信支付收款码" width="240" /><br />微信支付</td>
-      <td align="center"><img src="https://raw.githubusercontent.com/NextAgentX/qoder-trae-workbuddy-switch/main/docs/images/donate-alipay.jpg" alt="支付宝收款码" width="240" /><br />支付宝</td>
-    </tr>
-  </tbody>
-</table>
-
 ## 许可
 
 [PolyForm Noncommercial License 1.0.0](https://github.com/NextAgentX/qoder-trae-workbuddy-switch/blob/main/LICENSE) —— **个人非商业使用许可，商业使用不被授权**；白话说明与常见问题见[许可说明](https://github.com/NextAgentX/qoder-trae-workbuddy-switch/blob/main/docs/policies/LICENSING.md)；如需商业授权，请通过主仓库 Issues 联系作者。

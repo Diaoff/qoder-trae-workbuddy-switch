@@ -98,7 +98,28 @@ pub struct RealmSpec {
     /// CLI 本地目录名（`~/.qoder-cn` / `~/.qoder`）。
     pub cli_home_dir: &'static str,
     /// 桌面 App 的 `%APPDATA%` 目录名（Electron userData）。
+    ///
+    /// ⚠️ macOS 上叶子名与 Windows **逐字相同**（2026-09-23 真机取证：
+    /// `~/Library/Application Support/com.qodercn.app.stable` 与 `%APPDATA%` 同名），
+    /// 所以 `paths::roaming_dir()`（`dirs::config_dir()`）在 macOS 上直接可用，
+    /// 不需要按平台分叉。
     pub desktop_app_dir: &'static str,
+    /// ★ macOS 登录钥匙串里 Electron `safeStorage` 的**服务名**（按区域不同）。
+    ///
+    /// macOS 与 Windows 的密钥来源是**两套**：Windows 从 `Local State` 的
+    /// `os_crypt.encrypted_key` 经 DPAPI 解出；macOS 的 `Local State` 里**没有**
+    /// `os_crypt`（实测只有 `uninstall_metrics`），主密钥口令在**登录钥匙串**，
+    /// 服务名 = `<Electron 应用名> Safe Storage`。
+    ///
+    /// 真机取证（2026-09-23，macOS 15.6.1 / arm64，`security dump-keychain`）：
+    /// - 国内版：`svce="Qoder CN App Safe Storage"` / `acct="Qoder CN App Key"`
+    /// - 国际版：`svce="Qoder Safe Storage"` / `acct="Qoder Key"`
+    ///
+    /// ⚠️ 两区**不同名**：国内版 Electron 应用名是 `Qoder CN App`（带 ` CN App`），
+    /// 国际版是 `Qoder`。曾经读写两侧都硬编码 `"Qoder Safe Storage"`，国内版在
+    /// macOS 上永远查不到条目 ⇒ 桌面登录态解不开 ⇒ 导入与切换全失败（issue #81）。
+    /// 服务名在本表按区域维护，**不许**在调用方硬编码。
+    pub macos_keychain_service: &'static str,
     /// ★ OAuth 设备授权 URL **是否携带 `redirect_uri`**。
     ///
     /// 两区**确实不同**（国内带、国际不带）——这是实测结论，不是猜测。
@@ -122,6 +143,7 @@ pub const CN_REALM: RealmSpec = RealmSpec {
     user_agent: "QoderWork/1.1.64",
     cli_home_dir: ".qoder-cn",
     desktop_app_dir: "com.qodercn.app.stable",
+    macos_keychain_service: "Qoder CN App Safe Storage",
     send_redirect_uri: true,
     nonce_dashed: true,
 };
@@ -139,6 +161,7 @@ pub const GLOBAL_REALM: RealmSpec = RealmSpec {
     user_agent: "Qoder/1.1.64",
     cli_home_dir: ".qoder",
     desktop_app_dir: "com.qoder.app.stable",
+    macos_keychain_service: "Qoder Safe Storage",
     send_redirect_uri: false,
     nonce_dashed: false,
 };
@@ -239,6 +262,11 @@ mod tests {
                 cn.desktop_app_dir,
                 global.desktop_app_dir,
             ),
+            (
+                "macos_keychain_service",
+                cn.macos_keychain_service,
+                global.macos_keychain_service,
+            ),
         ] {
             assert_ne!(a, b, "{name} 在两区相同 —— 该差异必须真实存在");
         }
@@ -264,7 +292,36 @@ mod tests {
         assert_eq!(realm_spec(QoderRegion::Cn).gateway_fallbacks.len(), 0);
     }
 
-    /// ★ 域名反查 **fail-closed**：不认识就 `None`，**不回落**。
+    /// ★ macOS 钥匙串服务名按区域取**实测值**（issue #81 的根因防线）。
+    ///
+    /// 取证：2026-09-23，macOS 15.6.1 / arm64，`security dump-keychain` ——
+    /// 国内版条目 `svce="Qoder CN App Safe Storage"` / `acct="Qoder CN App Key"`，
+    /// 国际版条目 `svce="Qoder Safe Storage"` / `acct="Qoder Key"`。
+    ///
+    /// 可证伪：把国内版改成国际版的值（或反过来），本用例立即变红 ——
+    /// 那正是 issue #81 的缺陷形态：macOS 上国内版桌面登录态永远解不开，
+    /// 界面呈「桌面端检测不到 / 读不出来」，导入与切换全失败。
+    #[test]
+    fn macos_keychain_service_names_are_the_measured_ones() {
+        assert_eq!(
+            realm_spec(QoderRegion::Cn).macos_keychain_service,
+            "Qoder CN App Safe Storage"
+        );
+        assert_eq!(
+            realm_spec(QoderRegion::Global).macos_keychain_service,
+            "Qoder Safe Storage"
+        );
+        // 命名规律：`<Electron 应用名> Safe Storage`，两区基名不同（CN 带 ` CN App`）。
+        assert!(realm_spec(QoderRegion::Cn)
+            .macos_keychain_service
+            .starts_with("Qoder CN App "));
+        assert_ne!(
+            realm_spec(QoderRegion::Cn).macos_keychain_service,
+            realm_spec(QoderRegion::Global).macos_keychain_service,
+        );
+    }
+
+    /// 域名反查 **fail-closed**：不认识就 `None`，**不回落**。
     ///
     /// 可证伪：在末尾加 `_ => Some(QoderRegion::Cn)` 式兜底，第三条断言立即变红
     /// —— 那正是「国际版账号被写进国内版库」的缺陷形态。

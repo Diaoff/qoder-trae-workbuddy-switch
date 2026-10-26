@@ -356,6 +356,27 @@ export const en = {
   "wbStats.usage.trend.gatewayAria": "Gateway usage by day bar chart",
   "wbStats.usage.trend.gatewaySegment": "Gateway",
 
+  // "Count gateway" toggle on the usage page (keys referenced by `src/lib/usage-gateway.ts`).
+  // Each view has its own on/off wording: it states what exactly gets merged, not just "enabled".
+  "wbStats.usage.gateway.trend.label": "Count gateway tokens",
+  "wbStats.usage.gateway.trend.on": "Adds a separate gateway-by-day chart below the trend (never summed with the client book)",
+  "wbStats.usage.gateway.trend.off": "Client book only; no gateway-by-day chart",
+  "wbStats.usage.gateway.models.label": "Count gateway model usage",
+  "wbStats.usage.gateway.models.on": "Merges gateway requests and tokens per model (prefixed “Gateway · ”), never merged with same-name client models",
+  "wbStats.usage.gateway.models.off": "Direct client usage only",
+  "wbStats.usage.gateway.sessions.label": "Count gateway requests",
+  "wbStats.usage.gateway.sessions.on": "Lists gateway requests separately; gateway logs carry no session id, so they are not sessions",
+  "wbStats.usage.gateway.sessions.off": "Gateway requests hidden",
+  "wbStats.usage.gateway.credits.label": "Count gateway credits",
+  "wbStats.usage.gateway.credits.on": "Uses the gateway balance for matching accounts and adds accounts the client lacks (never summed)",
+  "wbStats.usage.gateway.credits.off": "Client account snapshot balances only",
+  /* Trae credits have their own wording: there the two rings are split out, not merged into a total. */
+  "wbStats.usage.gateway.traeCredits.label": "Split out gateway requests",
+  "wbStats.usage.gateway.traeCredits.on": "Splits the two rings into their own group",
+  "wbStats.usage.gateway.traeCredits.off": "Client account data only",
+  "wbStats.usage.gateway.hint.native": "This view's usage is already aggregated from the gateway log — there is no “not counted” state",
+  "wbStats.usage.gateway.hint.unavailable": "This product has no independent gateway data to count alongside client stats",
+
   "wbStats.usage.models.count": "Models",
   "wbStats.usage.models.top": "Top model",
   "wbStats.usage.models.total": "Total tokens",

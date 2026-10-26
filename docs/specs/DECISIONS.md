@@ -749,6 +749,36 @@ is_content_blocked(...) || (status == 400 && sanitized && is_channel_invalid(...
 
 ---
 
+## M. 本工具自身的运行日志（2026-10-23）
+
+### D51 本工具的运行日志落盘到 `~/.buddy-switch/logs/` —— ✅ **已落地（2026-10-23）**
+
+**结论**：新增 core 模块 `runtime_log`（按日纯文本 `runtime-YYYY-MM-DD.log`），
+两宿主启动时 `init()`（装 panic hook + 写启动横幅），宿主原先的 `eprintln!` 诊断改走它；
+设置页「日志」分区渲染 `RuntimeLogCard`（级别 / 日期 / 关键字筛选 + 复制 + 打开目录 + 清空）。
+
+**理由**：桌面宿主是 `windows_subsystem = "windows"` 的 **release GUI —— 没有控制台**，
+`eprintln!` 在用户机器上写进虚无。于是「网关起不来」「切号失败」只有一句界面 toast，
+用户拿不到任何可粘贴给维护者的东西。已实测的典型例：`agent-hook` 端口被占，
+过去只在 stderr 里，现在是一条 `ERROR [agent-hook]` 记录。
+
+- **定了会动什么**：`crates/buddy-switch-core/src/modules/runtime_log.rs`（新）；
+  两宿主启动序列各加一次 `init()`；`src-tauri/src/lib.rs` 的 `host_log` 出口；
+  server `main.rs` 四条网关启动结果；三条命令 / 路由（`runtime_logs` /
+  `clear_runtime_logs` / `open_runtime_logs_dir`）；设置页「日志」分区。
+- **三条硬约束**（不可放宽）：① **永不失败**（日志是旁路能力，IO 错误内部吞掉，
+  出错时不得回调自身）；② **有界**（4 MiB × 4 分片/天 × 7 天 ⇒ ≤112 MiB）；
+  ③ **出站脱敏**（`redact`：`name=value` 凭据名 + `Bearer` + JWT 三形态，写盘前过）。
+- **与另两份日志的分工**（刻意不合并）：本模块 = 本工具自己做了什么；
+  `gateway_logs.json` = 客户端经网关发了什么（JSON、面向统计）；客户端日志 = 上游客户端自己写。
+- **本机路径**照写（与「诊断包」相反 —— 那份是**发给别人**的，路径一律不出现）；
+  路径统一成正斜杠（Windows `display()` 的 `C:/a\b` 混用形式贴进 issue 易错）。
+- **选反方案的代价**：只在启动时裁一次保留 ⇒ 连跑数周的长驻进程会让「7 天上限」失效；
+  不脱敏 ⇒ 日志文件被贴进 issue 时带着 token 一起走；直接 `eprintln!` 转发 ⇒
+  一次 panic 就把「日志模块」变成新的故障源。
+
+---
+
 一句话总结这 28 条的内在一致性：
 
 > **数据域与视图分开（D1）、先做同构度高的（D2）、平台差异显式声明而不是靠判断（D12）、

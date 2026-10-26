@@ -1,4 +1,4 @@
-import { ExternalLink } from "lucide-react";
+import { ExternalLink, Star } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { useT } from "@/lib/i18n";
@@ -76,6 +76,18 @@ export function DonateDialog({
             </figure>
           ))}
         </div>
+        {/* ★ Star 引导：放在收款码下方、动作条上方 —— 打开这个弹层的人正处在「愿意支持」
+            的意愿峰值，而 Star 对他是**零成本**动作，转化率天然高于打赏。
+            链接指向仓库首页（Star 按钮在那里），不直连 `/stargazers`（那是名单，不是动作）。 */}
+        <button
+          type="button"
+          onClick={() => void openReleaseUrl(GITHUB_REPOSITORY_URL)}
+          className="flex flex-wrap items-center justify-center gap-x-2 gap-y-1 rounded-lg border border-border bg-muted/30 px-3 py-2 text-[12.5px] leading-relaxed text-muted-foreground transition-colors hover:border-primary/40 hover:text-foreground"
+        >
+          <Star className="size-3.5 shrink-0 text-amber-500" aria-hidden="true" />
+          <span>{t("wbSettings.donate.starLead")}</span>
+          <span className="shrink-0 font-medium text-primary">{t("wbSettings.donate.starCta")}</span>
+        </button>
         <DialogFooter className="sm:justify-between">
           <Button
             type="button"

@@ -7,7 +7,6 @@ import {
   Play,
   RefreshCw,
   Save,
-  ScrollText,
   ShieldAlert,
   Stethoscope,
   Trash2,
@@ -25,7 +24,6 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { EmptyState } from "@/components/ui/empty-state";
 import { ScopeChip, scopeLabel } from "@/components/scope-chip";
 import { SettingsFieldRow, SettingsGroup, SettingsRow } from "@/components/settings-primitives";
 // P7 T03：设置页子导航（9 项）+「备份与恢复」分区 + 通用设置分组（与侧栏弹层共用）。
@@ -33,6 +31,7 @@ import { parseSettingsSubnav, SettingsSubnav, type SettingsSubnavId } from "@/co
 import { BackupSection } from "@/components/settings/backup-section";
 import { CacheSection } from "@/components/settings/cache-section";
 import { WebuiPasswordCard } from "@/components/settings/webui-password-card";
+import { RuntimeLogCard } from "@/components/settings/runtime-log-card";
 import { AppSettingsGroups } from "@/components/app-settings";
 // 时点表编辑器与 Trae 设置页**共用同一份实现**（校验规则属于规则，不属于版式）。
 import { TimesEditor } from "@/components/schedule-times-editor";
@@ -1735,16 +1734,10 @@ export default function SettingsPage() {
           )}
 
           {section === "logs" && (
-            <EmptyState
-              icon={ScrollText}
-              title={t("settings.logs.emptyTitle")}
-              description={t("settings.logs.emptyBody")}
-              action={
-                <Button variant="outline" size="sm" onClick={() => goSection("gateway")}>
-                  {t("settings.logs.emptyAction")}
-                </Button>
-              }
-            />
+            /* 运行日志（本工具自身）：此前这里只是个「本分区暂无运行日志」空占位，
+               而宿主是 release GUI（无控制台）⇒ 用户拿不到任何可粘贴的诊断输出。
+               现在直接读写 `~/.buddy-switch/logs/runtime-*.log`。 */
+            <RuntimeLogCard />
           )}
 
           {section === "backup" && (

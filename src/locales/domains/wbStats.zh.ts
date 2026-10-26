@@ -387,6 +387,27 @@ export const zh = {
   "wbStats.usage.trend.gatewayAria": "网关逐日用量柱状图",
   "wbStats.usage.trend.gatewaySegment": "网关",
 
+  // 用量页「计入网关」开关（文案键由 `src/lib/usage-gateway.ts` 的语义表引用）。
+  // ⚠️ 四个视图各一套 on/off：说的是**这次到底合了什么**，不是泛泛的「已开启」。
+  "wbStats.usage.gateway.trend.label": "计入网关 Token",
+  "wbStats.usage.gateway.trend.on": "趋势图下方另开一张网关逐日用量图（不与客户端相加）",
+  "wbStats.usage.gateway.trend.off": "只看客户端账本，不显示网关逐日图",
+  "wbStats.usage.gateway.models.label": "计入网关模型用量",
+  "wbStats.usage.gateway.models.on": "按模型并入网关请求与 Token（前缀「网关 · 」），不与同名客户端模型合并",
+  "wbStats.usage.gateway.models.off": "只统计客户端直连用量",
+  "wbStats.usage.gateway.sessions.label": "计入网关请求记录",
+  "wbStats.usage.gateway.sessions.on": "单独列出网关请求；网关日志没有会话 ID，不计作会话",
+  "wbStats.usage.gateway.sessions.off": "不显示网关请求记录",
+  "wbStats.usage.gateway.credits.label": "计入网关积分余额",
+  "wbStats.usage.gateway.credits.on": "同账号取网关余额，客户端没有的账号也补进来（不相加）",
+  "wbStats.usage.gateway.credits.off": "只统计客户端账号快照余额",
+  /* Trae 积分的专门口径：那边是拆出两个环形，不是并入余额合计 —— 别让用户以为总数变了。 */
+  "wbStats.usage.gateway.traeCredits.label": "拆出网关请求分组",
+  "wbStats.usage.gateway.traeCredits.on": "两个环形拆成独立一组随开关显示",
+  "wbStats.usage.gateway.traeCredits.off": "只显示客户端账号数据",
+  "wbStats.usage.gateway.hint.native": "该视图的用量本身就由网关日志聚合，没有「不计入」这一档",
+  "wbStats.usage.gateway.hint.unavailable": "该产品线没有可与客户端统计并行的独立网关数据",
+
   // 模型视图
   "wbStats.usage.models.count": "模型数",
   "wbStats.usage.models.top": "头部模型",

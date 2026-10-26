@@ -25,6 +25,7 @@ import { TimesEditor } from "@/components/schedule-times-editor";
 import { ScopeChip, scopeLabel } from "@/components/scope-chip";
 import { AppSettingsGroups } from "@/components/app-settings";
 import { BackupSection } from "@/components/settings/backup-section";
+import { RuntimeLogCard } from "@/components/settings/runtime-log-card";
 // 设置子导航**与 WorkBuddy 设置页共用同一张表 / 同一个解析函数**（PLAN §3.9、D12）。
 import { parseSettingsSubnav, SettingsSubnav, type SettingsSubnavId } from "@/components/settings/settings-subnav";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
@@ -1714,6 +1715,9 @@ export default function TraeSettingsPage() {
           </CardContent>
         </SettingsGroup>
         <RuntimeLogsSection variant={program.programVariant} />
+        {/* 本工具**自身**的运行日志（与上面那份 Trae 客户端日志是两个数据源）：
+            网关起不来 / 切号失败 / panic 都记在这里。标题由卡片自带（「运行日志」）。 */}
+        <RuntimeLogCard />
           </>
         )}
 

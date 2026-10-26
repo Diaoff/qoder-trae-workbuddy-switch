@@ -1325,8 +1325,14 @@ export function UnifiedGatewayView({
       />
 
       {/* 一次性明文：**拦截遮罩与 ESC** —— 明文不可复原（库里只有 sha256），
-          误关一次就得吊销重建 + 改所有客户端配置。关闭只剩显式按钮。 */}
-      <Dialog open={plaintext !== null} onOpenChange={() => undefined}>
+          误关一次就得吊销重建 + 改所有客户端配置。
+          ★ 但**右上角 X 必须真的能关**（`onOpenChange` 收到 `false` 就落 `setPlaintext(null)`）：
+          原先这里写的是 `onOpenChange={() => undefined}`，于是 X 变成一个「点了完全没反应」的
+          死按钮 —— 加上遮罩与 ESC 也被拦，用户手上就只剩底部那一个按钮，任何一次没点中
+          都表现为「整个界面卡死、哪里都点不动」（issue #80）。
+          语义上与底部按钮完全一致（用户已显式表示要关闭），不是误关。
+          另外三张 Key 表（WB / Trae / Qoder）本来就是 `!open && closePlaintext()`，此处对齐。 */}
+      <Dialog open={plaintext !== null} onOpenChange={(open) => !open && setPlaintext(null)}>
         <DialogContent
           className="sm:max-w-md"
           onInteractOutside={(event) => event.preventDefault()}

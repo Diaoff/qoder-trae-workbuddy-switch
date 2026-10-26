@@ -34,6 +34,8 @@ use buddy_switch_core::modules::agent_watch;
 use buddy_switch_core::modules::agent_hook_install;
 use buddy_switch_core::modules::app_prefs;
 use buddy_switch_core::modules::proxy;
+// 运行日志（本工具自身，排查问题用）：读 / 清 / 开目录三件。桌面端有同名命令。
+use buddy_switch_core::modules::runtime_log;
 
 // P5 §2.5 第 (2) 条：capability **默认拒绝**。表数据只在 core（`product_spec`），本文件只查表。
 // ⚠️ 本文件在 `src-tauri/src/commands.rs` 有**同款**接线（刻意不去重，见共享知识）。
@@ -264,6 +266,12 @@ fn protected_routes() -> Router<std::sync::Arc<crate::auth::WebuiAuth>> {
         .route("/api/switch", post(api_switch))
         // Q1 · 诊断包导出（只读；凭据闸门在 core 内，命中即拒绝发出）。
         .route("/api/diagnostics/export", post(api_export_diagnostic))
+        // 运行日志（本工具自身，排查问题用）：读 / 清 / 开目录。
+        // ⚠️ 与 `src-tauri/src/commands.rs` 的三条同名命令**一一对应**（刻意不去重）。
+        .route("/api/logs/runtime", get(api_runtime_logs))
+        .route("/api/logs/runtime/clear", post(api_clear_runtime_logs))
+        .route("/api/logs/runtime/slow-call", post(api_report_slow_call))
+        .route("/api/logs/open-dir", post(api_open_logs_dir))
         .route("/api/switch/progress", get(api_switch_progress))
         .route("/api/sessions", get(api_sessions))
         .route("/api/sessions/replicas", get(api_session_replicas))
@@ -2240,6 +2248,85 @@ async fn api_export_diagnostic() -> Response {
         }
         Err(error) => json_err(error, StatusCode::BAD_REQUEST),
     }
+}
+
+/// GET /api/logs/runtime —— 读取本工具**自身**的运行日志。
+///
+/// 参数：`level`（最低级别）/ `date`（`YYYY-MM-DD`）/ `keyword` / `limit`，全部可选。
+/// 过滤与解析逻辑只在 core（`runtime_log::read`）—— 两宿主共用一份，杜绝形状漂移。
+///
+/// 读若干文件 + 逐行解析属于阻塞 IO，故放进 blocking 线程池。
+async fn api_runtime_logs(RawQuery(query): RawQuery) -> Response {
+    let read = |key: &str| query_value(query.as_deref(), key);
+    let limit = read("limit").and_then(|value| value.parse::<u64>().ok());
+    let params = json!({
+        "level": read("level"),
+        "date": read("date"),
+        "keyword": read("keyword"),
+        "limit": limit,
+    });
+    match tokio::task::spawn_blocking(move || runtime_log::read(&params)).await {
+        Ok(value) => json_ok(value),
+        Err(error) => json_err(
+            format!("读取运行日志失败: {error}"),
+            StatusCode::INTERNAL_SERVER_ERROR,
+        ),
+    }
+}
+
+/// POST /api/logs/runtime/clear —— 清空全部运行日志（**不可逆**，前端须二次确认）。
+async fn api_clear_runtime_logs() -> Response {
+    match tokio::task::spawn_blocking(runtime_log::clear).await {
+        Ok(Ok(value)) => json_ok(value),
+        Ok(Err(error)) => json_err(error, StatusCode::BAD_REQUEST),
+        Err(error) => json_err(
+            format!("清空运行日志失败: {error}"),
+            StatusCode::INTERNAL_SERVER_ERROR,
+        ),
+    }
+}
+
+/// POST /api/logs/open-dir —— 在文件管理器中打开日志目录（不存在则先创建）。
+///
+/// ⚠️ 会真的起一个 GUI 进程（`explorer` / `open` / `xdg-open`）—— Docker 部署时
+/// 容器里没有文件管理器，调用会失败并返回错误，属预期（webui 侧据此提示）。
+async fn api_open_logs_dir() -> Response {
+    match tokio::task::spawn_blocking(runtime_log::open_logs_dir).await {
+        Ok(Ok(value)) => json_ok(value),
+        Ok(Err(error)) => json_err(error, StatusCode::BAD_REQUEST),
+        Err(error) => json_err(
+            format!("打开日志目录失败: {error}"),
+            StatusCode::INTERNAL_SERVER_ERROR,
+        ),
+    }
+}
+
+/// POST /api/logs/runtime/slow-call —— 前端上报「慢 IPC 命令」（issue #80 诊断通道）。
+///
+/// 与桌面端 `commands::report_slow_call` 同形：webui 走 HTTP，慢的是整条请求链路
+/// （fetch 往返 + handler），同样值得留一条。命令名是代码标识符、不含用户数据。
+async fn api_report_slow_call(Json(body): Json<Value>) -> Response {
+    let cmd = body
+        .get("cmd")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    let ms = body.get("ms").and_then(Value::as_u64).unwrap_or(0);
+    if cmd.is_empty() || ms == 0 {
+        return json_err(
+            "参数不完整（cmd / ms）".to_string(),
+            StatusCode::BAD_REQUEST,
+        );
+    }
+    let _ = tokio::task::spawn_blocking(move || {
+        runtime_log::warn(
+            "ipc-slow",
+            format!("命令 {cmd} 耗时 {ms}ms（超过前端计时阈值）"),
+        );
+    })
+    .await;
+    json_ok(json!({ "ok": true }))
 }
 
 /// GET /api/backup/auto/list —— 列出自动备份 / 导入前快照（最新在前）。

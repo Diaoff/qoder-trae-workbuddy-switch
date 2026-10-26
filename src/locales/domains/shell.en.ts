@@ -376,6 +376,49 @@ export const en = {
     "This section only holds this tool's settings and backup entries; WorkBuddy's own runtime logs live in a logs subdirectory of its data dir (not surfaced here yet).",
   "settings.logs.emptyAction": "Open gateway settings",
 
+  // ---- Settings "Logs" section · runtime log card (runtime-log-card.tsx) ----
+  // ⚠️ This is THIS TOOL's own log (gateway startup, account switch, background tasks, panics).
+  //    It is a different thing from the gateway request log (JSON, for statistics) and from the
+  //    upstream client's log — the copy must keep them apart.
+  "settings.runtimeLog.groupTitle": "Runtime log",
+  "settings.runtimeLog.intro":
+    "What this tool did and which step failed — gateway startup, account switching, background tasks, crashes. Kept for {days} days, current level {level}. The client's own logs are not here.",
+  "settings.runtimeLog.levelAll": "All levels",
+  "settings.runtimeLog.levelError": "Error",
+  "settings.runtimeLog.levelWarn": "Warning",
+  "settings.runtimeLog.levelInfo": "Info",
+  "settings.runtimeLog.levelDebug": "Debug",
+  "settings.runtimeLog.dateAll": "All dates",
+  "settings.runtimeLog.searchPlaceholder": "Search scope or message…",
+  "settings.runtimeLog.search": "Filter",
+  "settings.runtimeLog.reset": "Reset",
+  "settings.runtimeLog.autoRefresh": "Auto refresh",
+  "settings.runtimeLog.autoRefreshAria": "Auto refresh the runtime log",
+  "settings.runtimeLog.refresh": "Refresh",
+  "settings.runtimeLog.copy": "Copy",
+  "settings.runtimeLog.openDir": "Open folder",
+  "settings.runtimeLog.openDirFailed": "Failed to open the log folder",
+  "settings.runtimeLog.clear": "Clear",
+  "settings.runtimeLog.cleared": "Deleted {count} log file(s)",
+  "settings.runtimeLog.clearFailed": "Failed to clear the runtime log",
+  "settings.runtimeLog.clearConfirmTitle": "Clear the runtime log?",
+  "settings.runtimeLog.clearConfirmBody":
+    "All runtime log files will be deleted and cannot be recovered. Recording restarts on the next launch. Accounts, settings and usage ledgers are not affected.",
+  "settings.runtimeLog.clearConfirmAction": "Clear",
+  "settings.runtimeLog.cancel": "Cancel",
+  "settings.runtimeLog.countSummary": "{total} entries",
+  "settings.runtimeLog.truncated": "Truncated to the latest {limit}",
+  "settings.runtimeLog.emptyTitle": "No runtime log yet",
+  "settings.runtimeLog.emptyBody":
+    "Recording starts once this tool launches. An empty list right after a fresh install is expected.",
+  "settings.runtimeLog.emptyFilteredTitle": "No match for the current filters",
+  "settings.runtimeLog.emptyFilteredBody":
+    "The log files may genuinely have no such entries; reset the filters to see everything.",
+  "settings.runtimeLog.details": "Location and limits",
+  "settings.runtimeLog.dirLabel": "Folder",
+  "settings.runtimeLog.limitLabel": "Limits",
+  "settings.runtimeLog.limitValue": "Keep {days} days · {size} per file · up to {parts} parts per day",
+
   // ---- Scope visibility (app-settings.tsx) ----
   "appSettings.scopeVisibility.groupTitle": "Scope Visibility",
   "appSettings.scopeVisibility.toggleAria": "Toggle visibility for {scope}",

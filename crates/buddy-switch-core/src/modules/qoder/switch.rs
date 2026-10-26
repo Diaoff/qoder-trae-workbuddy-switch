@@ -41,7 +41,7 @@
 //!
 //! | 程序位 | 路径 | 形态 |
 //! |:--|:--|:--|
-//! | 桌面版 | [`paths::desktop_auth_file`] | Electron safeStorage（`v10`；密钥取自同目录 `Local State`） |
+//! | 桌面版 | [`paths::desktop_auth_file`] | Electron safeStorage（`v10`；Windows 下密钥取自同目录 `Local State` 经 DPAPI 解出；macOS 下口令在登录钥匙串，服务名按区域查表） |
 //! | CLI | [`paths::cli_auth_file`] | 明文 JSON，或 AES-128-CBC（`key = iv = machine_id[:16]`，标准 Base64） |
 //!
 //! CLI 侧**跟随既有形态**写回：原文件是明文就写明文、是密文就写密文、文件不存在则按
@@ -53,15 +53,8 @@ use serde_json::{json, Map, Value};
 
 use crate::modules::qoder::account::{self, RawAccount};
 use crate::modules::qoder::paths;
-use crate::modules::qoder::region::QoderRegion;
+use crate::modules::qoder::region::{realm_spec, QoderRegion};
 use crate::modules::qoder::store;
-
-/// macOS Keychain 里 Qoder 桌面版 Electron `safeStorage` 的服务名。
-///
-/// ⚠️ **必须与 [`super::profile`] 的读路径逐字一致**：读写两侧若用了不同的服务名，
-/// 就会各自拿到不同的密钥（导入读到一份、切换写到另一份），表现为「切换后客户端退登」。
-/// 该常量在 `profile.rs` 里是私有的，无法共享，只能在此复刻一份并靠注释钉住。
-const MACOS_KEYCHAIN_SERVICE: &str = "Qoder Safe Storage";
 
 /// Linux `secret-tool` 的应用名候选（按顺序尝试）。同上：必须与 `profile.rs` 一致。
 const LINUX_SECRET_TOOL_NAMES: &[&str] = &["qoder", "Qoder"];
@@ -239,12 +232,18 @@ where
     let outcome = match program {
         QoderProgram::Desktop => {
             let app_dir = paths::desktop_app_dir(region);
+            // ★ macOS 钥匙串服务名**按区域查表**（issue #81）：国内版是
+            // `Qoder CN App Safe Storage`、国际版才是 `Qoder Safe Storage`
+            // （真机取证 2026-09-23，`security dump-keychain`）。读写两侧
+            // （本模块与 `super::profile`）从同一张表取 —— 用不同服务名会各自拿到
+            // 不同的密钥，表现为「切换后客户端退登」。
+            let macos_service = realm_spec(region).macos_keychain_service;
             let encode = move |plain: &[u8]| {
                 crate::modules::vscode_cn_inject::encrypt_electron_safe_storage(
                     plain,
                     &app_dir,
                     DESKTOP_LABEL,
-                    MACOS_KEYCHAIN_SERVICE,
+                    macos_service,
                     LINUX_SECRET_TOOL_NAMES,
                 )
             };
@@ -254,7 +253,7 @@ where
                     blob,
                     &app_dir,
                     DESKTOP_LABEL,
-                    MACOS_KEYCHAIN_SERVICE,
+                    macos_service,
                     LINUX_SECRET_TOOL_NAMES,
                 )
             };
@@ -1349,7 +1348,7 @@ mod tests {
             b"{}",
             &dir,
             DESKTOP_LABEL,
-            MACOS_KEYCHAIN_SERVICE,
+            realm_spec(QoderRegion::Cn).macos_keychain_service,
             LINUX_SECRET_TOOL_NAMES,
         )
         .unwrap_err();

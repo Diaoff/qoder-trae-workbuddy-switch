@@ -1037,6 +1037,13 @@ pub fn structured_tool_history_for(payload: &Value, meta: &ModelMeta, region: Qo
 /// 由客户端请求构造 `agent_chat_generation` 上游请求体（随后过 [`cosy::qoder_encode`]）。
 ///
 /// `region` 参与「结构化工具历史」的 auto 判据（只在 CN 出口启用的白名单规则）。
+/// 上游 `parameters.max_tokens` 的硬范围（实测：超限/零/负一律 400
+/// `invalid_parameter_error`：`Range of max_tokens should be [1, 131072]`）。
+///
+/// 客户端侧常按模型清单的 `context_length`（最大档开关下是 1M）反推输出预算，
+/// 会要出 100W+ 的值；网关**必须**在出站前钳制，否则整条请求被打回。
+pub const MAX_TOKENS_LIMIT: i64 = 131_072;
+
 pub fn build_chat_body(
     payload: &Value,
     meta: &ModelMeta,
@@ -1171,7 +1178,10 @@ pub fn build_chat_body_with_structured(
         let max_tokens = payload
             .get("max_tokens")
             .or_else(|| payload.get("max_completion_tokens"))
-            .and_then(Value::as_i64);
+            .and_then(Value::as_i64)
+            // ★ 上游范围 [1, MAX_TOKENS_LIMIT]：客户端要 100W（常见：按
+            // `context_length` 反推输出预算）会被上游 400 打回，钳制后再放行。
+            .map(|tokens| tokens.clamp(1, MAX_TOKENS_LIMIT));
         if let Some(max_tokens) = max_tokens {
             parameters.insert("max_tokens".into(), Value::from(max_tokens));
         }
@@ -2875,6 +2885,43 @@ mod tests {
         assert_eq!(body["parameters"]["reasoning_effort"], "max");
         // tools 置空（客户端没给）。
         assert_eq!(body["tools"], serde_json::json!([]));
+    }
+
+    /// ★ max_tokens 出站钳制：上游范围 `[1, MAX_TOKENS_LIMIT]`，超限/零/负
+    /// 都会被上游 400（`Range of max_tokens should be [1, 131072]`）。
+    ///
+    /// 行为级钉子 —— 直接看 [`build_chat_body`] 产物，不只看谓词。
+    #[test]
+    fn build_chat_body_clamps_max_tokens_into_upstream_range() {
+        let meta_ref = meta();
+        for (input, expected) in [
+            (2_000_000_i64, MAX_TOKENS_LIMIT),
+            (MAX_TOKENS_LIMIT + 1, MAX_TOKENS_LIMIT),
+            (MAX_TOKENS_LIMIT, MAX_TOKENS_LIMIT),
+            (4_096, 4_096),
+            (1, 1),
+            (0, 1),
+            (-5, 1),
+        ] {
+            let payload = serde_json::json!({
+                "model": "ultimate",
+                "messages": [{"role": "user", "content": "hi"}],
+                "max_tokens": input,
+            });
+            let body = build_chat_body(&payload, &meta_ref, QoderRegion::Cn, "").unwrap();
+            assert_eq!(
+                body["parameters"]["max_tokens"], expected,
+                "max_tokens={input} 应钳到 {expected}"
+            );
+        }
+        // `max_completion_tokens` 同一条路径（新客户端字段）。
+        let payload = serde_json::json!({
+            "model": "ultimate",
+            "messages": [{"role": "user", "content": "hi"}],
+            "max_completion_tokens": 999_999_i64,
+        });
+        let body = build_chat_body(&payload, &meta_ref, QoderRegion::Cn, "").unwrap();
+        assert_eq!(body["parameters"]["max_tokens"], MAX_TOKENS_LIMIT);
     }
 
     /// ★ issue #72 的**行为级**钉子：DeepSeek 族的工具历史必须进结构化字段，

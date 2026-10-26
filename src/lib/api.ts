@@ -59,6 +59,9 @@ import type {
   RegionFilter,
   RotateLog,
   RotateStatus,
+  RuntimeLogClearResult,
+  RuntimeLogQuery,
+  RuntimeLogsResponse,
   ScheduleConfig,
   ScheduleRunResult,
   Session,
@@ -244,6 +247,10 @@ const DEMO_READ_COMMANDS = new Set([
   // 限额护栏视图（只读；逐账号当日用量 + 拦截原因）。
   "qoder_gateway_quota",
   "list_qoder_api_keys", "get_qoder_gateway_logs",
+  // 运行日志（**只读**）：演示站需返回虚构数据，否则 build:demo 报错。
+  // ⚠️ clear_runtime_logs（删文件）/ open_runtime_logs_dir（起 GUI 进程）是**动作**，
+  //    一律不进这里 —— 演示环境绝不能真的删本机日志或弹文件管理器。
+  "runtime_logs",
 ]);
 
 export function isDemoMode(): boolean {
@@ -352,6 +359,12 @@ const ROUTES: Record<string, Route> = {
   restore_auto_backup: { method: "POST", path: "/api/backup/auto/restore" },
   // Q1 · 诊断包导出（只读；凭据闸门在 core，命中即拒绝发出）。
   export_diagnostic: { method: "POST", path: "/api/diagnostics/export" },
+  // 运行日志（本工具自身，排查问题用）：读 / 清 / 开目录。
+  runtime_logs: { method: "GET", path: "/api/logs/runtime" },
+  clear_runtime_logs: { method: "POST", path: "/api/logs/runtime/clear" },
+  open_runtime_logs_dir: { method: "POST", path: "/api/logs/open-dir" },
+  // issue #80：前端 invoke 计时超阈值时的诊断上报（慢命令进运行日志）。
+  report_slow_call: { method: "POST", path: "/api/logs/runtime/slow-call" },
   get_auto_backup_config: { method: "GET", path: "/api/backup/auto/config" },
   save_auto_backup_config: { method: "POST", path: "/api/backup/auto/config" },
   switch_account: { method: "POST", path: "/api/switch" },
@@ -794,8 +807,32 @@ async function call<T>(cmd: string, args?: Record<string, unknown>): Promise<T> 
     if (!DEMO_READ_COMMANDS.has(cmd)) throw new Error(demoUnavailableMessage());
     return localizeCodedStrings(screenshotDemoResponse(cmd, args)) as T;
   }
-  if (!isWebui()) return localizeCodedStrings(await invoke<T>(cmd, args)) as T;
+  if (!isWebui()) {
+    // ★ issue #80：给每次 IPC 往返计时。桌面端「界面卡死」类报障，唯一能自证的
+    // 信息就是「哪个命令耗时长」—— 而运行日志此前只记服务端事件，IPC 耗时零记录，
+    // 于是用户按请求带上来的日志总是「很干净」，反而判断不了根因。
+    // 超过 `SLOW_CALL_MS` 阈值就地把 `{cmd, ms}` 报进运行日志（fire-and-forget，
+    // 绝不 await、绝不影响本次调用结果）。
+    const startedAt = Date.now();
+    try {
+      return localizeCodedStrings(await invoke<T>(cmd, args)) as T;
+    } finally {
+      const elapsed = Date.now() - startedAt;
+      // 排除上报命令自身：否则慢上报会触发新一轮上报（递归）。
+      if (cmd !== "report_slow_call" && elapsed >= SLOW_CALL_MS) {
+        void reportSlowCall(cmd, elapsed).catch(() => {});
+      }
+    }
+  }
   return httpCall<T>(cmd, args);
+}
+
+/** 慢命令上报阈值（ms）：管理面正常命令都远低于此；超了的按「疑似占住主线程」记一条 Warn。 */
+const SLOW_CALL_MS = 3000;
+
+/** 上报一次慢命令（best-effort；失败静默 —— 诊断通道永不阻断业务）。 */
+export function reportSlowCall(cmd: string, ms: number): Promise<{ ok: boolean }> {
+  return call("report_slow_call", { cmd, ms });
 }
 
 // ---------------------------------------------------------------------------
@@ -1187,6 +1224,38 @@ export function listAutoBackups(): Promise<{ backups: AutoBackupEntry[] }> {
  */
 export function exportDiagnostic(): Promise<{ name: string; text: string }> {
   return call<{ name: string; text: string }>("export_diagnostic");
+}
+
+/**
+ * 读取本工具**自身**的运行日志（设置页「日志」分区）。
+ *
+ * 与 `getTraeLogs` 的区别：那个读的是 **Trae 客户端**的日志；本函数读的是
+ * **本工具**写的 `~/.buddy-switch/logs/runtime-*.log`。两者数据源互不相干。
+ *
+ * 文件不存在时返回空列表（不是错误）——新装用户还没产生任何日志。
+ */
+export function runtimeLogs(query?: RuntimeLogQuery): Promise<RuntimeLogsResponse> {
+  const args: Record<string, unknown> = {};
+  if (query?.level) args.level = query.level;
+  if (query?.date) args.date = query.date;
+  if (query?.keyword) args.keyword = query.keyword;
+  if (query?.limit) args.limit = query.limit;
+  return call("runtime_logs", Object.keys(args).length > 0 ? args : undefined);
+}
+
+/**
+ * 清空运行日志（**不可逆**）。
+ *
+ * 只删本工具自己写的 `runtime-*.log`；同目录其它文件一律不碰（后端按文件名判据筛）。
+ * ⚠️ 调用前必须让用户二次确认 —— 这是删数据，不是隐藏。
+ */
+export function clearRuntimeLogs(): Promise<RuntimeLogClearResult> {
+  return call("clear_runtime_logs");
+}
+
+/** 在文件管理器中打开日志目录（不存在则先创建）。 */
+export function openRuntimeLogsDir(): Promise<{ ok: boolean; path: string }> {
+  return call("open_runtime_logs_dir");
 }
 
 /** P7 T02：从自动备份 / 导入前快照**恢复**（覆盖策略；恢复本身也可撤销）。 */
@@ -2646,7 +2715,9 @@ export function relaunchApp(): Promise<void> {
  */
 export function getAppPrefs(): Promise<AppPrefs> {
   if (demoModeEnabled) return call("get_app_prefs");
-  if (!isDesktop()) return Promise.resolve({ close_to_tray: true });
+  /* webui 没有宿主进程，`app_prefs.json` 无人维护 ⇒ 这里给「未确认风险」的默认形状，
+     风险确认弹层在 webui 下不渲染（见 `legal-consent-dialog.tsx`）。 */
+  if (!isDesktop()) return Promise.resolve({ close_to_tray: true, legal_consent_at: 0 });
   return call("get_app_prefs");
 }
 

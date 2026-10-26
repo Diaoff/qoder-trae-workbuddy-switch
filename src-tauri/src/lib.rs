@@ -18,8 +18,25 @@ mod unified_gateway;
 use buddy_switch_core::modules;
 use buddy_switch_core::modules::background::{TaskKind, TaskSpec, TASKS};
 use buddy_switch_core::modules::product::Product;
+use buddy_switch_core::modules::runtime_log;
 use std::time::Duration;
 use tauri::Manager;
+
+/// 宿主诊断输出的**唯一出口**：写运行日志，并在 **debug** 构建同时打 stderr。
+///
+/// ## 为什么不能直接 `eprintln!`
+///
+/// 本宿主是 `windows_subsystem = "windows"` 的 release GUI（见 `main.rs`）：**没有控制台**，
+/// `eprintln!` 在用户机器上写进虚无。于是「网关起不来」「切号失败」这类问题只有一句界面
+/// toast，用户拿不到任何可粘贴给维护者的东西。改走运行日志后，设置页「日志」分区直接可读。
+///
+/// debug 构建仍打 stderr：`tauri dev` 下开发者在终端就能看到，不必去翻文件。
+fn host_log(level: runtime_log::Level, scope: &str, message: impl AsRef<str>) {
+    let message = message.as_ref();
+    runtime_log::log(level, scope, message);
+    #[cfg(debug_assertions)]
+    eprintln!("[{scope}] {message}");
+}
 
 const SCREENSHOT_DEMO_ENV: &str = "BUDDY_SWITCH_SCREENSHOT_DEMO";
 
@@ -153,9 +170,11 @@ fn spawn_background_task(spec: TaskSpec) {
             ⚠️ 与 server 侧同款：core 的 `TASKS` 表里没有任何 Qoder 任务 ⇒ 本分支当前
             不可达；一旦登记了，这行警告会出现在日志里，而不是悄悄空转。 */
             Product::Qoder => {
-                eprintln!(
-                    "[background] Qoder 的 CreditsRefresh 已登记但**尚无实现** —— \
-                     请补刷新循环，或从 core 的 TASKS 表里移除该条目。"
+                host_log(
+                    runtime_log::Level::Warn,
+                    "background",
+                    "Qoder 的 CreditsRefresh 已登记但**尚无实现** —— \
+                     请补刷新循环，或从 core 的 TASKS 表里移除该条目。",
                 );
             }
             // Loomy：core 的 TASKS 表当前没有 Loomy 任务 ⇒ 本分支当前不可达；
@@ -276,8 +295,55 @@ fn on_window_event<R: tauri::Runtime>(window: &tauri::Window<R>, event: &tauri::
     companion::on_window_event(window, event);
 }
 
+/// Linux / WebKitGTK 渲染兜底（issue #80）。
+///
+/// ## 为什么需要它
+///
+/// WebKitGTK 在 **Wayland** 会话下走 DMA-BUF + 加速合成。实测在某些驱动组合
+/// （NVIDIA 专有驱动、分数缩放、部分 Mesa 版本）上表现为：**已有图层照常绘制，
+/// 新创建的合成层画不出来**。对应到本工具就是「点『创建密钥』→ 弹窗确实进了 DOM、
+/// `body` 也被 Radix 锁成 `pointer-events:none`，但屏幕上什么都没多出来，整窗点不动」
+/// —— 与 issue #80 的复现描述逐字吻合（Wayland / 屏幕没有对话框 / 点了没有任何变化 /
+/// 日志干净）。这也是为什么它跟「慢 IO 占住 IPC 线程」无关：那条路会留下 `[ipc-slow]`
+/// 记录，而这里一次 IPC 都没发生。
+///
+/// ## 为什么默认开
+///
+/// 关掉 DMA-BUF 渲染器的代价是合成路径变慢（本工具以表单为主，无感）；
+/// 收益是弹窗 / 浮层**一定能画出来**。画不出来是致命的，帧率不是。
+///
+/// ## 覆盖方式
+///
+/// - 自己设了 `WEBKIT_DISABLE_DMABUF_RENDERER` ⇒ 完全交给用户，本函数不动；
+/// - `BUDDY_SWITCH_KEEP_DMABUF=1` ⇒ 保留 DMA-BUF（想对比/排障时用）。
+///
+/// 只在 Wayland 下设，X11 没有这个问题，不要无谓地拖慢它。
+#[cfg(target_os = "linux")]
+fn apply_linux_render_workarounds() {
+    if std::env::var_os("WEBKIT_DISABLE_DMABUF_RENDERER").is_some() {
+        return;
+    }
+    if std::env::var("BUDDY_SWITCH_KEEP_DMABUF")
+        .map(|v| v == "1")
+        .unwrap_or(false)
+    {
+        return;
+    }
+    let wayland = std::env::var("XDG_SESSION_TYPE")
+        .map(|value| value.eq_ignore_ascii_case("wayland"))
+        .unwrap_or(false)
+        || std::env::var_os("WAYLAND_DISPLAY").is_some();
+    if wayland {
+        std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // ★ 必须在 `tauri::Builder` 起来之前 —— WebKitGTK 在进程启动早期读这些环境变量。
+    #[cfg(target_os = "linux")]
+    apply_linux_render_workarounds();
+
     let mut builder = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
@@ -295,6 +361,29 @@ pub fn run() {
 
     let app = builder
         .setup(|app| {
+            // ★ 运行日志：装 panic hook + 写启动横幅（版本 / 平台 / 数据目录 / 级别）。
+            //   放在最前面 —— 它要成为日志文件里的**第一条**记录，之后所有诊断都排在它后面；
+            //   晚一步调用就会丢掉「tray 初始化阶段」可能出现的错误。
+            runtime_log::init("Buddy Switch 桌面端");
+            // ★ 图形栈诊断（issue #80）：报告「点了没反应」时，第一件要确认的事是
+            //   「会话类型 + WebKit 合成路径」，而此前日志里一个字都没有 ——
+            //   用户贴出来的日志总是「很干净」，排查只能靠猜。
+            #[cfg(target_os = "linux")]
+            {
+                let session =
+                    std::env::var("XDG_SESSION_TYPE").unwrap_or_else(|_| "unknown".into());
+                let wayland_display =
+                    std::env::var("WAYLAND_DISPLAY").unwrap_or_else(|_| "-".into());
+                let dmabuf = std::env::var("WEBKIT_DISABLE_DMABUF_RENDERER")
+                    .unwrap_or_else(|_| "unset".into());
+                runtime_log::info(
+                    "startup",
+                    &format!(
+                        "图形栈 · session={session} · WAYLAND_DISPLAY={wayland_display} · \
+                         WEBKIT_DISABLE_DMABUF_RENDERER={dmabuf}"
+                    ),
+                );
+            }
             #[cfg(desktop)]
             {
                 tray::setup(app)?;
@@ -324,7 +413,7 @@ pub fn run() {
                 //   宿主照常可用；用户从哪里看得到？——设置页的监听开关会显示连接不上。
                 tauri::async_runtime::spawn(async {
                     if let Err(error) = buddy_switch_core::modules::agent_hook_rx::serve().await {
-                        eprintln!("[agent-hook] {error}");
+                        host_log(runtime_log::Level::Error, "agent-hook", error.to_string());
                     }
                 });
                 // 按配置启动 API 网关独立监听（默认关闭；默认 127.0.0.1:57891）。
@@ -332,9 +421,17 @@ pub fn run() {
                 tauri::async_runtime::spawn(async move {
                     let runtime = handle.state::<gateway::GatewayRuntime>();
                     match runtime.apply().await {
-                        Ok(Some(addr)) => eprintln!("[gateway] 已启动: http://{addr}"),
+                        Ok(Some(addr)) => host_log(
+                            runtime_log::Level::Info,
+                            "gateway",
+                            format!("已启动: http://{addr}"),
+                        ),
                         Ok(None) => {}
-                        Err(error) => eprintln!("[gateway] 启动失败: {error}"),
+                        Err(error) => host_log(
+                            runtime_log::Level::Error,
+                            "gateway",
+                            format!("启动失败: {error}"),
+                        ),
                     }
                 });
                 // 按配置启动 Trae 网关独立监听（默认关闭；默认 127.0.0.1:57894）。
@@ -342,9 +439,17 @@ pub fn run() {
                 tauri::async_runtime::spawn(async move {
                     let runtime = handle.state::<trae_gateway::TraeGatewayRuntime>();
                     match runtime.apply().await {
-                        Ok(Some(addr)) => eprintln!("[trae-gateway] 已启动: http://{addr}"),
+                        Ok(Some(addr)) => host_log(
+                            runtime_log::Level::Info,
+                            "trae-gateway",
+                            format!("已启动: http://{addr}"),
+                        ),
                         Ok(None) => {}
-                        Err(error) => eprintln!("[trae-gateway] 启动失败: {error}"),
+                        Err(error) => host_log(
+                            runtime_log::Level::Error,
+                            "trae-gateway",
+                            format!("启动失败: {error}"),
+                        ),
                     }
                 });
                 // 按配置启动 Qoder 网关独立监听（默认关闭；默认 127.0.0.1:57895）。
@@ -353,9 +458,17 @@ pub fn run() {
                 tauri::async_runtime::spawn(async move {
                     let runtime = handle.state::<qoder_gateway::QoderGatewayRuntime>();
                     match runtime.apply().await {
-                        Ok(Some(addr)) => eprintln!("[qoder-gateway] 已启动: http://{addr}"),
+                        Ok(Some(addr)) => host_log(
+                            runtime_log::Level::Info,
+                            "qoder-gateway",
+                            format!("已启动: http://{addr}"),
+                        ),
                         Ok(None) => {}
-                        Err(error) => eprintln!("[qoder-gateway] 启动失败: {error}"),
+                        Err(error) => host_log(
+                            runtime_log::Level::Error,
+                            "qoder-gateway",
+                            format!("启动失败: {error}"),
+                        ),
                     }
                 });
                 // 按配置启动 Loomy 网关独立监听（默认关闭；默认 127.0.0.1:57896）。
@@ -378,9 +491,17 @@ pub fn run() {
                 tauri::async_runtime::spawn(async move {
                     let runtime = handle.state::<unified_gateway::UnifiedGatewayRuntime>();
                     match runtime.apply().await {
-                        Ok(Some(addr)) => eprintln!("[unified-gateway] 已启动: http://{addr}"),
+                        Ok(Some(addr)) => host_log(
+                            runtime_log::Level::Info,
+                            "unified-gateway",
+                            format!("已启动: http://{addr}"),
+                        ),
                         Ok(None) => {}
-                        Err(error) => eprintln!("[unified-gateway] 启动失败: {error}"),
+                        Err(error) => host_log(
+                            runtime_log::Level::Error,
+                            "unified-gateway",
+                            format!("启动失败: {error}"),
+                        ),
                     }
                 });
             }
@@ -511,6 +632,12 @@ pub fn run() {
             commands::relaunch_app,
             commands::get_app_prefs,
             commands::set_app_prefs,
+            // 运行日志（本工具自身，排查问题用）：读取 / 清空 / 打开目录 / 慢命令上报。
+            commands::runtime_logs,
+            commands::clear_runtime_logs,
+            commands::open_runtime_logs_dir,
+            // 前端 invoke 计时超阈值时的诊断上报（issue #80：卡死类报障需要「哪个命令慢」）。
+            commands::report_slow_call,
             commands::get_launch_at_login_enabled,
             commands::set_launch_at_login_enabled,
             commands::get_gateway_config,

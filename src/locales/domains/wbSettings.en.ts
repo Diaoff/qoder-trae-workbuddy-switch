@@ -277,4 +277,6 @@ export const en = {
   "wbSettings.donate.alipay": "Alipay",
   "wbSettings.donate.qrAlt": "{name} QR code",
   "wbSettings.donate.repoHome": "Project home",
+  "wbSettings.donate.starLead": "Finding it useful? A star costs you nothing and keeps the project alive",
+  "wbSettings.donate.starCta": "Star on GitHub",
 };

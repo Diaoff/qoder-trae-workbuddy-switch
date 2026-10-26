@@ -6,6 +6,13 @@
 //! |:---|:---|:---|
 //! | 主题 / 语言 / 作用域快捷键 / 自动检查更新 | 只有渲染层 | `localStorage`（见 `lib/theme.ts` 等） |
 //! | **关闭窗口时是否隐藏到托盘** | **宿主（Rust）** | 本模块的 `app_prefs.json` |
+//! | **首次启动的风险确认时间** | 只有渲染层 | 本模块的 `app_prefs.json`（**刻意的例外**，见下） |
+//!
+//! 最后一行是本模块**唯一**偏离「只放宿主也读的偏好」这条界线的项：`legal_consent_at`
+//! 只有渲染层读，但它不能放 `localStorage` —— 用户清一次站点数据就等于抹掉「已确认风险」
+//! 的证据，产品会重新弹窗、作者手里什么都不剩。所以它跟 `close_to_tray` 一起进
+//! `app_prefs.json`（store 根下、可审计、跨版本与清缓存存续），代价只是随
+//! `get_app_prefs` / `set_app_prefs` 多走一遍命令。
 //!
 //! 「关闭窗口」这件事发生在 `WindowEvent::CloseRequested` 里，那一刻**没有渲染层参与**
 //! —— `prevent_close()` 必须在 Rust 侧当场决定，晚了窗口已经没了。所以这一项不能像
@@ -40,22 +47,37 @@ pub fn app_prefs_file() -> PathBuf {
 /// `watch_agent_sessions = false`：P15 的外部 Agent 会话监听**默认关**。
 /// 开启它要**往别的客户端写 hook 配置**，属于必须由用户显式同意的动作
 /// （`P15-SPIKE-RESULTS §6 D41`）—— 默认开等于替用户改了别人的配置。
+///
+/// `legal_consent_at = 0`：**0 表示尚未确认**首次启动的风险提示（epoch 毫秒，非零即已确认）。
+/// 默认必须是 0 —— 把默认值写成「已同意」等于替用户签字，与免责声明的本意正相反。
 pub fn default_app_prefs() -> Value {
-    json!({ "close_to_tray": true, "watch_agent_sessions": false })
+    json!({
+        "close_to_tray": true,
+        "watch_agent_sessions": false,
+        "legal_consent_at": 0
+    })
 }
 
-/// 归一化：只认已知键；值必须是布尔，否则回落默认值；未知键丢弃。
+/// 归一化：只认已知键；**按默认值的类型**决定受理哪种输入（布尔键只认布尔、
+/// 时间戳键只认非负整数），否则回落默认值；未知键丢弃。
 ///
 /// 归一化而不是原样透传，理由与 `normalize_switch_config` 相同：配置文件是用户
 /// 可手改的，一个 `"false"`（字符串）如果被当成真值传给 `if`，就会出现
 /// 「设置里显示已关闭、实际仍然隐藏到托盘」这种**两边都以为自己对**的状态。
+/// 时间戳同理：`"1760000000000"` 这种字符串不认，宁可回落 0（= 未确认，再问一次）
+/// 也不能凭空认定用户已经同意过风险提示。
 fn normalize_app_prefs(input: &Value) -> Value {
     let defaults = default_app_prefs();
     let mut merged = defaults.clone();
     if let Some(obj) = input.as_object() {
-        for key in defaults.as_object().unwrap().keys() {
-            if let Some(value) = obj.get(key).and_then(Value::as_bool) {
-                merged[key.as_str()] = json!(value);
+        for (key, default) in defaults.as_object().unwrap() {
+            let accepted = match default {
+                Value::Bool(_) => obj.get(key).and_then(Value::as_bool).map(Value::Bool),
+                Value::Number(_) => obj.get(key).and_then(Value::as_u64).map(|n| json!(n)),
+                _ => None,
+            };
+            if let Some(value) = accepted {
+                merged[key.as_str()] = value;
             }
         }
     }
@@ -125,8 +147,13 @@ mod tests {
             "要写别的客户端配置的动作，必须默认关"
         );
         assert_eq!(
+            d["legal_consent_at"],
+            json!(0),
+            "0 = 未确认风险提示；默认写成已同意等于替用户签字"
+        );
+        assert_eq!(
             d.as_object().unwrap().len(),
-            2,
+            3,
             "每加一个键都要同步这条断言"
         );
     }
@@ -141,7 +168,7 @@ mod tests {
         assert_eq!(stringy["close_to_tray"], json!(true));
         // 未知键丢弃（防止把别的模块的配置误存进来）
         let extra = normalize_app_prefs(&json!({ "close_to_tray": false, "theme": "dark" }));
-        assert_eq!(extra.as_object().unwrap().len(), 2, "只认已知的两个键");
+        assert_eq!(extra.as_object().unwrap().len(), 3, "只认已知的三个键");
         assert!(extra.get("theme").is_none());
         // 非对象输入 ⇒ 全默认
         assert_eq!(normalize_app_prefs(&json!("nope")), default_app_prefs());
@@ -188,6 +215,34 @@ mod tests {
                 .get("watch_agent_sessions")
                 .and_then(Value::as_bool)
                 .unwrap_or(false);
+            assert_eq!(got, want, "输入 {input} 应得 {want}");
+        }
+    }
+
+    /// `legal_consent_at` 真值表：只认**非负整数**（epoch 毫秒）。
+    ///
+    /// 字符串 / 负数 / 小数 / 缺字段一律回落 0（= 未确认）。方向必须是「宁可再问一次」：
+    /// 任何一格错成「当作已同意」，都等于用户没勾选就被认定同意了风险提示。
+    ///
+    /// 可证伪性：把 `Value::Number(_)` 分支也接 `as_bool`（或直接透传原值）⇒ 后四格变红。
+    #[test]
+    fn legal_consent_at_真值表() {
+        let cases: [(Value, u64); 6] = [
+            (
+                json!({ "legal_consent_at": 1_760_000_000_000u64 }),
+                1_760_000_000_000,
+            ),
+            (json!({ "legal_consent_at": 1 }), 1),
+            (json!({ "legal_consent_at": "1760000000000" }), 0), // 字符串 ⇒ 未确认
+            (json!({ "legal_consent_at": -1 }), 0),              // 负数 ⇒ 未确认
+            (json!({ "legal_consent_at": 1.5 }), 0),             // 小数 ⇒ 未确认
+            (json!({}), 0),                                      // 缺字段 ⇒ 未确认
+        ];
+        for (input, want) in cases {
+            let got = normalize_app_prefs(&input)
+                .get("legal_consent_at")
+                .and_then(Value::as_u64)
+                .unwrap_or(0);
             assert_eq!(got, want, "输入 {input} 应得 {want}");
         }
     }

@@ -284,4 +284,6 @@ export const zh = {
   "wbSettings.donate.alipay": "支付宝",
   "wbSettings.donate.qrAlt": "{name}收款码",
   "wbSettings.donate.repoHome": "项目主页",
+  "wbSettings.donate.starLead": "觉得好用？顺手给项目点个 Star（零成本，是继续维护最大的动力）",
+  "wbSettings.donate.starCta": "去 GitHub 点 Star",
 } as const;

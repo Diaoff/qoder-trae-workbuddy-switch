@@ -147,7 +147,8 @@ pub async fn messages(
     relay_llm(state, headers, body, LlmEndpoint::Messages).await
 }
 
-/// `POST /v1/responses`（OpenAI Responses API）。⚠️ Trae 命名空间在本端点会被**明确拒绝**。
+/// `POST /v1/responses`（OpenAI Responses API）。三条产品线都支持：Trae 于 2026-10-22 补齐
+/// （入站 Responses → chat、出站 chat SSE → Responses 事件流），Qoder 内部同样翻译成 chat。
 pub async fn responses(
     State(state): State<UnifiedGatewayState>,
     headers: HeaderMap,

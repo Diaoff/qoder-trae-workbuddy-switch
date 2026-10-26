@@ -17,10 +17,12 @@ By using this project you acknowledge that you have read, understood and agreed 
 - Managing multiple accounts, switching login state, batch or scheduled check-in, and forwarding quota **may not comply with** the terms of service, subscription agreements, employer policies or laws of your jurisdiction that apply to you.
 - Whether your usage is compliant is **yours to determine**. Any account restriction, quota clawback, ban, breach claim or legal dispute arising from the use of this project is borne entirely by you; the author accepts no liability.
 - Do not use this tool for any purpose that violates applicable laws, regulations or terms of service.
+- The behaviours above are **off by default**: automatic check-in must be enabled per account; external agent session watching is off and requires explicit confirmation (it writes into third-party client configuration); the model gateway binds to `127.0.0.1` by default and only forwards quota after you create an API key yourself.
+- On first launch the app asks you to tick a box confirming the above; the confirmation time is stored in the local preferences file (`app_prefs.json`).
 
 ## 3. Data writes and backups
 
-- Switching accounts, cloning sessions, migrating long-term memory and connector configuration, and writing Trae login state all **directly modify data files of third-party clients** on your machine (see [Data and privacy](../../README.en.md#data-and-privacy)).
+- Switching accounts, cloning sessions, migrating long-term memory and connector configuration, and writing Trae login state all **directly modify data files of third-party clients** on your machine (see [Data and privacy](../../README.md#data-and-privacy)).
 - The project attempts to back up data before rewriting it, but a backup can fail for reasons such as an unwritable path, insufficient disk space or the target file being locked. **The automatic backup is not a reliability guarantee of any kind.**
 - **Keep your own independent backups of anything important.** The author accepts no liability for any data loss, corruption, inconsistency or abnormal login state.
 
@@ -45,7 +47,7 @@ By using this project you acknowledge that you have read, understood and agreed 
 
 - This project is the author's **personal, self-use and learning** work. It is not a commercial product, and it constitutes no adaptation, validation or promise for any commercial use.
 - **Any form of commercial use is prohibited**, including but not limited to: internal commercial projects at a company, paid products or paid services, offering it as a SaaS or hosted service, and selling or bundling this software or its modified/derivative versions. Commercial use requires prior written authorization from the author (see [Licensing](LICENSING.en.md)).
-- You must not use it to **circumvent the billing, quota limits, risk controls or identity verification of any upstream service**, and you must not resell, sublease, share or otherwise make available to third parties any quota, account or credential obtained through this tool.
+- You must not resell, sublease, share or otherwise make available to third parties any quota, account or credential obtained through this tool.
 - Do not use this project for any unlawful purpose, or as infrastructure for a paid service offered to third parties.
 - You bear full responsibility for any consequence of violating these restrictions; the author is not involved. The author reserves the right to terminate the license and require that use stop.
 - This is a **personal project**: no commercial support, SLA or maintenance commitment is provided.

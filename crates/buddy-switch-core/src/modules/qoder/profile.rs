@@ -4,7 +4,7 @@
 //!
 //! | 来源 | 路径 | 形态 |
 //! |:--|:--|:--|
-//! | **桌面 App** | `%APPDATA%\com.qoder[cn].app.stable\auth.v1.dat` | Electron `safeStorage`（`v10` 布局；Windows 下密钥经 DPAPI 解出） |
+//! | **桌面 App** | `%APPDATA%\com.qoder[cn].app.stable\auth.v1.dat` | Electron `safeStorage`（`v10` 布局；Windows 下密钥经 DPAPI 解出；macOS 下口令在登录钥匙串，服务名按区域查表，见 [`region::realm_spec`]） |
 //! | **Qoder CLI** | `~/.qoder[.cn]/.auth/user` | 明文 JSON，或 AES-128-CBC（`key = iv = machine_id[:16]`） |
 //!
 //! ## 三条纪律
@@ -269,6 +269,13 @@ fn account_from_record(region: QoderRegion, raw: &Value, source: &str) -> Option
 /// 读桌面 App 的凭据文件。
 ///
 /// `Ok(None)` = 文件在但里面没有可用账号；`Err(Missing)` = 文件不存在。
+///
+/// ★ macOS 的密钥来源与 Windows 是**两套**（issue #81）：Windows 从 `Local State`
+/// 的 `os_crypt.encrypted_key` 经 DPAPI 解出 AES-256-GCM 主密钥；macOS 的
+/// `Local State` 里没有 `os_crypt`，主密钥口令在**登录钥匙串**，服务名按区域查
+/// [`realm_spec`] 的 `macos_keychain_service`（真机取证 2026-09-23：
+/// 国内版 `Qoder CN App Safe Storage` / 国际版 `Qoder Safe Storage`）。
+/// 读写两侧（本模块与 [`super::switch`]）都从同一张表取，不再各留私有常量。
 fn read_desktop_credential(region: QoderRegion) -> Result<Option<RawAccount>, ReadError> {
     let path = paths::desktop_auth_file(region);
     if !path.exists() {
@@ -284,7 +291,10 @@ fn read_desktop_credential(region: QoderRegion) -> Result<Option<RawAccount>, Re
         &blob,
         &app_dir,
         "Qoder 桌面版",
-        MACOS_KEYCHAIN_SERVICE,
+        // ★ macOS 钥匙串服务名**按区域查表**（issue #81）：国内版是
+        // `Qoder CN App Safe Storage`、国际版才是 `Qoder Safe Storage`。
+        // 曾经两侧都硬编码国际版的名字，国内版在 macOS 上永远查不到钥匙串条目。
+        realm_spec(region).macos_keychain_service,
         LINUX_SECRET_TOOL_NAMES,
     )
     .map_err(|error| {
@@ -302,12 +312,6 @@ fn read_desktop_credential(region: QoderRegion) -> Result<Option<RawAccount>, Re
     })?;
     Ok(account_from_record(region, &json, SOURCE_DESKTOP_APP))
 }
-
-/// macOS Keychain 里 Electron `safeStorage` 的服务名。
-///
-/// ⚠️ **未实测**：Electron 的约定是「`<App Name> Safe Storage`」。若某台机器上查不到，
-/// 错误文案会把该名字带出来，便于定位（而不是静默失败）。
-const MACOS_KEYCHAIN_SERVICE: &str = "Qoder Safe Storage";
 
 /// Linux `secret-tool` 的应用名候选（按顺序尝试）。
 const LINUX_SECRET_TOOL_NAMES: &[&str] = &["qoder", "Qoder"];
