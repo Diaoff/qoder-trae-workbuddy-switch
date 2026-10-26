@@ -265,23 +265,64 @@ function read(file) {
 }
 
 /**
- * 去掉行注释与块注释。
+ * 去掉行注释与块注释（只给扫描器看，**不写回文件**）。
  *
  * 必要性（真实踩过）：注释里写 `call("<cmd>")` 这类示例会把扫描器骗过去，
  * 报出「未登记的命令 <cmd>」，而真正的调用点全都没问题——护栏于是从
  * 「保护构建」变成「制造噪声」，最后被开发者绕过。
- * 用 `(^|[^:])` 排除 `://`，避免把 URL 里的 `//` 当成行注释起点。
  *
- * ## 顺序：**先剥行注释，再剥块注释**（2026-10-21 修正）
+ * ## 为什么要认「字符串」（2026-10-26）
  *
- * 反过来会出事：行注释里出现块注释的**起始标记**（本仓真实存在 ——
- * `// 对齐 WB 的 /api/oauth/…` 后跟一个星号）时，块注释的正则从那里起吃到下一个
- * 结束标记，一口气吞掉十几万字符 ⇒ 后面所有「handler 是否读到 scope」都变成假红
- * （实测把 40 条断言全打成红）。行注释先剥，那类字样连同行一起消失，
- * 块注释就只剩真正的注释块了。
+ * 旧实现是两条正则，会被**字符串字面量里的块注释起始标记**骗过去：本仓真实存在
+ * `.expect("dist must embed a hashed assets/*.js")`（api.rs）这类写法。
+ * 正则把那两个字符当注释开头，一路吃到后面**第一个**结束标记（可能是十几万字符之外的
+ * 某条正常注释），中间的真实代码被整段删掉；而行注释那条正则会吃掉 `"https://…"` 所在行的
+ * **剩余全部内容**（含该行真正的代码）。两者都让断言跑在**被截断的源码**上。
+ *
+ * 顺序那条坑（2026-10-21，先剥行注释再剥块注释）现在自然不存在了：单遍扫描不会
+ * 把行注释里的块注释起始标记当起点。
+ *
+ * ⚠️ 本函数在 `check-scope-registry.cjs` 里有**逐字相同**的一份（两个门禁都读 api.rs，
+ * 漂移会让同一条源码得到两个结论）—— 改这里就同步改那边。
  */
 function stripComments(text) {
-  return text.replace(/(^|[^:])\/\/[^\n]*/g, "$1").replace(/\/\*[\s\S]*?\*\//g, "");
+  let out = "";
+  let i = 0;
+  const length = text.length;
+  while (i < length) {
+    const ch = text[i];
+    /* 字符串字面量：原样拷走（包含里面的 `//` 与 `/*`）。 */
+    if (ch === '"' || ch === "`") {
+      out += ch;
+      i += 1;
+      while (i < length) {
+        if (text[i] === "\\") {
+          out += text.slice(i, i + 2);
+          i += 2;
+          continue;
+        }
+        out += text[i];
+        const closed = text[i] === ch;
+        i += 1;
+        if (closed) break;
+      }
+      continue;
+    }
+    /* 行注释：吃到行尾（保留换行，行号不变）。 */
+    if (ch === "/" && text[i + 1] === "/") {
+      while (i < length && text[i] !== "\n") i += 1;
+      continue;
+    }
+    /* 块注释：整段丢掉（未闭合则吃到文件尾）。 */
+    if (ch === "/" && text[i + 1] === "*") {
+      const end = text.indexOf("*/", i + 2);
+      i = end < 0 ? length : end + 2;
+      continue;
+    }
+    out += ch;
+    i += 1;
+  }
+  return out;
 }
 
 /**
@@ -619,6 +660,38 @@ function main() {
 
   const routeCmds = new Set(routes.map((r) => r.cmd));
   const errors = [];
+  /* ★ 先自检扫描器本身（下面所有断言都建在它上面）。
+     2026-10-26 真实事故：`api.rs` 的 ``.expect("dist must embed a hashed assets/*.js")``
+     里那两个字符被旧正则当块注释开头，一路吃到后面**第一个**结束标记（当时在十几万字符
+     之外的一条新注释）⇒ 中间真实代码被整段删掉（实测 81557 字符，含
+     `qoder::trash::trash_account_for` ⇒「Qoder 删除必须软删」假红）。
+     变异：把 `stripComments` 改回「两条正则」⇒ 这里直接报红。 */
+  {
+    const fixture = [
+      'const url = "https://example.com/a"; // 行注释',
+      'const glob = "dist must embed a hashed assets/*.js";',
+      "function mustSurvive() {}",
+      "/* 一条**正常闭合**的块注释 —— 旧实现把它当上面那个假起点的终点 */",
+      "function alsoMustSurvive() {}",
+    ].join("\n");
+    const out = stripComments(fixture);
+    for (const needle of [
+      "mustSurvive",
+      "alsoMustSurvive",
+      "https://example.com/a",
+      "dist must embed a hashed assets/*.js",
+    ]) {
+      if (!out.includes(needle)) {
+        errors.push(
+          `[stripper] 剥注释后丢了 \`${needle}\` —— 字符串字面量里的注释标记把代码吃掉了` +
+            "（断言会跑在被截断的源码上）",
+        );
+      }
+    }
+    if (out.includes("// 行注释")) errors.push("[stripper] 真行注释没有被剥掉");
+    if (out.includes("正常闭合")) errors.push("[stripper] 真块注释没有被剥掉");
+  }
+
   const hints = [];
 
   // 1) 每个 call("<cmd>") 必须已在桌面端 invoke_handler 登记。

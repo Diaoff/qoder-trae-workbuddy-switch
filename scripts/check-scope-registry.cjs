@@ -125,6 +125,41 @@ function check(name, fn) {
 
 console.log("\n作用域与平台注册表门禁\n");
 
+check("★ 剥注释器认**字符串**：字符串里的注释标记不得吞掉后面的代码", () => {
+  /* 2026-10-26 真实事故：api.rs 的 ``.expect("dist must embed a hashed assets/*.js")`` 里
+     那两个字符被旧正则当成块注释开头，一路吃到后面**第一个**结束标记（当时在十几万字符之外
+     一条新加的注释）⇒ 中间真实代码被整段删掉（实测 81557 字符，含
+     `qoder::trash::trash_account_for` ⇒「Qoder 删除必须软删」假红）。
+     行注释那条正则同样会被 `"@…"` 编：把 `"https://…"` 所在行的**剩余内容**（含该行
+     真正的代码）一起删掉 —— 全仓 19 个被本门禁读取的文件都中过（11–970 字符）。
+
+     变异：把 `stripComments` 改回「两条正则」⇒ 本条变红。 */
+  const fixture = [
+    'let url = "https://example.com/a"; // 行注释',
+    'let glob = "dist must embed a hashed assets/*.js";',
+    'function must_survive() {}',
+    '/* 一条**正常闭合**的块注释 —— 旧实现把它当上面那个假起点的终点 */',
+    'function also_must_survive() {}',
+  ].join("\n");
+  const out = stripComments(fixture);
+  for (const needle of [
+    "must_survive",
+    "also_must_survive",
+    "https://example.com/a",
+    "dist must embed a hashed assets/*.js",
+  ]) {
+    if (!out.includes(needle)) {
+      throw new Error(`剥注释后丢了 \`${needle}\` —— 字符串字面量里的注释标记把代码吃掉了`);
+    }
+  }
+  if (out.includes("// 行注释")) throw new Error("真行注释没有被剥掉");
+  if (out.includes("正常闭合")) throw new Error("真块注释没有被剥掉");
+  if (!out.includes("function must_survive")) {
+    throw new Error("剥注释后代码形状被破坏（行内空白/换行不应变动）");
+  }
+  return "字符串原样保留 · 真注释仍被剥 · 假开头不再吞代码";
+});
+
 check("注册表能列出 7 个作用域（3 平台 × 2 区域 + Loomy 单作用域）", () => {
   const got = [...scope.SCOPES];
   if (got.length !== 7) throw new Error(`实际 ${got.length} 个：${got.join(",")}`);
@@ -318,12 +353,76 @@ check("P1 回滚开关默认开启（VITE_SCOPE_UNIFIED 未设时）", () => {
  * 结果反例断言**匹配到注释**而误报。**锚必须只落在代码上**。
  * （简单正则对字符串里的 `//` 会误伤，但本断言只找 `useState` / 函数调用，风险可接受。）
  */
-function stripComments(source) {
-  // ⚠️ 顺序：**先剥行注释再剥块注释**。反过来的话，行注释里出现块注释起始标记
-  //（本仓真实存在：`// … /api/oauth/…` 后跟一个星号）会被当成块注释起点，
-  // 一路吃到下一个结束标记，把成百上千行源码吞掉 ⇒ 后面所有“handler 是否存在”
-  // 的断言都变成假红（`check-api-contract.cjs` 踩过同一个坑）。
-  return source.replace(/\/\/.*$/gm, "").replace(/\/\*[\s\S]*?\*\//g, "");
+/**
+ * 剥注释（只给扫描器看，**不写回文件**）。
+ *
+ * ## 为什么要认「字符串」
+ *
+ * 旧实现是两条正则（先剥行注释、再剥块注释），会被**字符串字面量里的块注释起始
+ * 标记**骗过去：本仓真实存在 `.expect("dist must embed a hashed assets/*.js")`（api.rs）、
+ * `"*` `/"` 形式的星号斜杠串（trae/account.rs）、`` `/api/qoder/*` `` 这类路径写法 ——
+ * 正则把那两个字符当成注释开头，一路吃到后面**第一个**结束标记
+ * （可能是十几万字符之外你的某条正常注释），中间的真实代码被 `replace` 整段删掉。
+ *
+ * 2026-10-26 真实事故：api.rs 那个假注释开头之后到文件尾**原本一个结束标记都没有**
+ * ⇒ 正则匹配不上 ⇒ 什么都不删（所以它静静地潜伏了两个多月）；一旦有人在后面加一条
+ * **正常闭合**的块注释，就把尾巴接上了 —— 实测吞掉 81557 字符（含
+ * `qoder::trash::trash_account_for`）⇒「Qoder 删除端点必须走软删除」直接假红。
+ *
+ * ## 现在的口径（单遍扫描）
+ *
+ * - 字符串字面量（双引号 / 反引号）**整段原样保留**：门禁靠读字符串里的命令名、
+ *   路由、词条键做断言，绝不能被当注释吃掉；
+ * - 行注释吃到行尾（保留换行，行号不变）；块注释整段丢掉 ——
+ *   与旧实现一致，所以断言口径不变；
+ * - 未闭合的块注释吃到文件尾（旧正则的行为是「匹配不上 ⇒ 什么都不删」，那才是坑）。
+ *
+ * ## 刻意不把单引号当字符串定界符
+ *
+ * Rust 的生命周期（`&'a str`）会被误当成字符串开头，反而把大段代码吞掉；本仓的 JS/TS
+ * 一律用双引号（prettier 口径），所以不认单引号是**安全**的一侧。
+ *
+ * ⚠️ 本函数在 `check-api-contract.cjs` 里有**逐字相同**的一份（两个门禁都读 api.rs，
+ * 漂移会让同一条源码得到两个结论）—— 改这里就同步改那边。
+ */
+function stripComments(text) {
+  let out = "";
+  let i = 0;
+  const length = text.length;
+  while (i < length) {
+    const ch = text[i];
+    /* 字符串字面量：原样拷走（包含里面的 `//` 与 `/*`）。 */
+    if (ch === '"' || ch === "`") {
+      out += ch;
+      i += 1;
+      while (i < length) {
+        if (text[i] === "\\") {
+          out += text.slice(i, i + 2);
+          i += 2;
+          continue;
+        }
+        out += text[i];
+        const closed = text[i] === ch;
+        i += 1;
+        if (closed) break;
+      }
+      continue;
+    }
+    /* 行注释：吃到行尾（保留换行，行号不变）。 */
+    if (ch === "/" && text[i + 1] === "/") {
+      while (i < length && text[i] !== "\n") i += 1;
+      continue;
+    }
+    /* 块注释：整段丢掉（未闭合则吃到文件尾）。 */
+    if (ch === "/" && text[i + 1] === "*") {
+      const end = text.indexOf("*/", i + 2);
+      i = end < 0 ? length : end + 2;
+      continue;
+    }
+    out += ch;
+    i += 1;
+  }
+  return out;
 }
 
 check("★ P2 路由：`/s/:scope/:dest` 已注册，且旧路由**保留**（旧书签可达）", () => {
