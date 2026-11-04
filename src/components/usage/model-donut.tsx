@@ -35,6 +35,21 @@ export function ModelDonut({ slices, size = 170 }: { slices: ModelSlice[]; size?
     config[item.name] = { label: item.name, color: item.fill };
   });
 
+  /**
+   * ★ **半径必须由 `size` 推导，不能写死。**
+   *
+   * 曾经写死 `innerRadius={52}` / `outerRadius={78}`（按默认 `size = 170` 调的）——
+   * 而调用方普遍传 `size = 150`（`TokenStatsPage` 的两个账本环形、`TraeCreditsPage` 的两个
+   * 环形）。170 够放 156 的圆，150 放不下 ⇒ 圆比 `<svg>` 大，SVG 默认 `overflow: hidden`
+   * ⇒ 上下左右各切掉 3px，**环形的顶部和底部被削平**（issue 报障的截图形态）。
+   *
+   * 留白 = `6px`（`strokeWidth = 2` 外沿多占 1px，再留 5px 吸收 `ResponsiveContainer`
+   * 量出的亚像素误差）；内半径沿用原比例 0.66（52/78）。默认 `size = 170` 时外半径
+   * 79 / 内半径 52，与改造前（78 / 52）几乎一致 —— 大尺寸的观感不变。
+   */
+  const outerRadius = Math.round(size / 2 - 6);
+  const innerRadius = Math.round(outerRadius * 0.66);
+
   return (
     <div className="flex min-w-0 flex-wrap items-center gap-4">
       <div className="relative shrink-0">
@@ -44,8 +59,8 @@ export function ModelDonut({ slices, size = 170 }: { slices: ModelSlice[]; size?
               data={data}
               dataKey="value"
               nameKey="name"
-              innerRadius={52}
-              outerRadius={78}
+              innerRadius={innerRadius}
+              outerRadius={outerRadius}
               stroke="var(--background)"
               strokeWidth={2}
               isAnimationActive={false}

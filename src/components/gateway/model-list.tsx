@@ -9,6 +9,7 @@ import { CatalogSourceBar } from "@/components/gateway/catalog-source-bar";
 import { ContextSourceCard } from "@/components/gateway/context-source-card";
 import { ModelTable } from "@/components/gateway/model-table";
 import { CreditsCell, EffortCell } from "@/components/gateway/model-ability";
+import { useImageCapColumn } from "@/components/gateway/model-image-column";
 import { focusProbeModel, PROBE_LIMIT_STATES } from "@/components/gateway/model-probe-card";
 import * as api from "@/lib/api";
 import { describeCatalogSource, formatAbsoluteTime } from "@/lib/catalog-source";
@@ -294,6 +295,13 @@ export function ModelList({ region, className }: { region: Region; className?: s
     }
   }
 
+  /* 图片输入列（issue #101）：取数 / 三态判据 / 写入 / 提示全在共用装配器里，
+     本页只告诉它「目录条目怎么按 id 取」（`catalogById` 就是上面那份回查表）。 */
+  const imageColumn = useImageCapColumn({
+    scope,
+    entryOf: (id) => catalogById.get(id),
+  });
+
   return (
     <div className={cn(className)}>
       {/* 无卡头 —— 分区名由左栏导航承担（与 Trae / Qoder 侧同口径）。
@@ -341,6 +349,7 @@ export function ModelList({ region, className }: { region: Region; className?: s
             onToggleDisabled={(row, disabled) => void onToggleDisabled(row, disabled)}
             showUpstream={false}
             labels={labels}
+            imageColumn={imageColumn}
             /* ★ issue #65：思考档位 / 积分倍率（三平台同构，渲染统一走
                `model-ability.tsx`）。档位空数组在 WB 侧只有一种成因：上游没声明、
                内置档位表也没条目 ⇒ `undeclared`。 */

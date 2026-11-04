@@ -20,6 +20,9 @@ use tokio::sync::mpsc;
 
 use buddy_switch_core::modules::loomy::region::{realm_spec, LoomyRegion};
 
+use crate::pool::UpstreamEvent;
+use crate::protocol::error_sniffer::{self, SniffedError};
+
 use super::pool::{classify_http, LoomyErrKind};
 use super::LoomyGatewayState;
 
@@ -103,8 +106,104 @@ fn prepare_body(parsed: &Value, model: &str) -> Value {
     out
 }
 
-/// 一趟 Loomy chat 中继（认证之后的全部逻辑）—— 统一网关复用这一份。
+/// 一趟 Loomy chat 中继（认证之后的**全部逻辑**）—— 统一网关复用这一份。
+///
+/// 本函数只做**模型降级链的 hop 循环**（与 Trae / Qoder 同一份骨架）；
+/// 真正的一次中继在 [`chat_for_region_once`]。没有配链时**逐字**走原路径。
 pub async fn chat_for_region(
+    state: LoomyGatewayState,
+    region: LoomyRegion,
+    body: Bytes,
+    protocol: Protocol,
+) -> Response {
+    let parsed: Value = match serde_json::from_slice(&body) {
+        Ok(value) => value,
+        // 非法 JSON 交给 `_once` 去报同一个 400（错误文案只有一份）。
+        Err(_) => return chat_for_region_once(state, region, body, protocol).await,
+    };
+    let origin_model = model_of(&parsed);
+    if origin_model.is_empty() {
+        return chat_for_region_once(state, region, body, protocol).await;
+    }
+
+    let scope = buddy_switch_core::modules::product::scope_of_loomy_region(region);
+    let fallback = crate::routes::fallback::FallbackLoop::plan(scope, &origin_model).await;
+    // 没有可用链（绝大多数用户）⇒ 走原路径。
+    if fallback.len() <= 1 {
+        return chat_for_region_once(state, region, body, protocol).await;
+    }
+
+    let raw_body = String::from_utf8_lossy(&body).to_string();
+    let mut hop = 0usize;
+    let mut last: Option<Response> = None;
+    let mut last_trigger: Option<crate::model_fallback::Trigger> = None;
+    loop {
+        // 越界**不回落主模型**：备选全被禁用时不能把主模型原样重发一次。
+        let Some(hop_model) = fallback.model_at(hop) else {
+            return last.expect("第 0 跳必然执行过");
+        };
+        /* 被用户禁用的目标直接跳过（一次请求都不发）。Loomy 的禁用表是 tokio Mutex，
+        与 `FallbackLoop::should_skip`（收 RwLock）不同型 ⇒ 用同一份判定函数就地判。 */
+        if hop > 0 {
+            let skip = {
+                let disabled = state.disabled.lock().await;
+                crate::disabled_models::is_disabled(&disabled, scope, hop_model)
+            };
+            if skip {
+                hop += 1;
+                continue;
+            }
+        }
+        let Some(hop_body) = fallback.body_for(hop, &raw_body) else {
+            return last.expect("第 0 跳必然执行过");
+        };
+        let hop_model = hop_model.to_string();
+        let hop_body = Bytes::from(hop_body);
+        let hop_scope = fallback.scope_at(hop).unwrap_or(scope);
+        /* 跨平台目标交给 `cross::relay_on_scope`（同进程内调目标产品线入口）；
+        同作用域才走本产品线的一次中继。Loomy 单区域 ⇒ 同平台跨区域不存在。 */
+        let response = if hop_scope.product() != scope.product() {
+            Box::pin(crate::routes::cross::relay_on_scope(
+                hop_scope,
+                axum::http::HeaderMap::new(),
+                hop_body,
+                None,
+            ))
+            .await
+        } else {
+            chat_for_region_once(state.clone(), region, hop_body, protocol).await
+        };
+
+        if response.status().is_success() {
+            let mut response = response;
+            if hop > 0 {
+                if let Some(trigger) = last_trigger {
+                    fallback.apply_headers(hop, &mut response, trigger);
+                    crate::model_fallback::record_success(
+                        scope,
+                        fallback.origin(),
+                        &hop_model,
+                        trigger,
+                        // Loomy 的 hop 起点在 `_once` 内部，这里给不出精确耗时 ⇒ 0。
+                        0,
+                    );
+                }
+            }
+            return response;
+        }
+
+        // 能不能继续降级：状态码能映射到触发条件，且该条件在用户配的白名单里。
+        match fallback.can_fallback(&response) {
+            Some(trigger) => last_trigger = Some(trigger),
+            None => return response,
+        }
+        last = Some(response);
+        hop += 1;
+    }
+}
+
+/// 一次中继（不降级）：选号 → 发请求 → 换号。
+async fn chat_for_region_once(
     state: LoomyGatewayState,
     region: LoomyRegion,
     body: Bytes,
@@ -299,6 +398,7 @@ pub async fn chat_for_region(
                     &uid,
                     started,
                     responses_custom.clone(),
+                    sticky_key.clone(),
                 )
                 .await
             } else {
@@ -622,16 +722,25 @@ async fn stream_relay(
     uid: &str,
     started: Instant,
     custom: std::sync::Arc<std::collections::HashSet<String>>,
+    sticky_key: Option<String>,
 ) -> Response {
     let stream_model = model.to_string();
     let usage_slot = std::sync::Arc::new(std::sync::Mutex::new(None::<Value>));
+    /* ★ issue #129：流中途的失败必须能**回写治理**（冷却 / 粘性解绑 / 日志状态）。
+    改造前这里只旁听 usage：上游在流里报错，日志仍写「200 / 无错误」、账号照旧
+    留在池里 ⇒ 客户端重试再撞同一个号（「日志全 429、池卡全绿」）。
+
+    ⚠️ 本改动**不改对外字节**：错误帧仍按上游原样透传（客户端本来就能看到），
+    我们只是把同一次失败如实记进池与日志 —— 因此不需要 `auto_failover` 开关。 */
+    let error_slot: std::sync::Arc<std::sync::Mutex<Option<SniffedError>>> =
+        std::sync::Arc::new(std::sync::Mutex::new(None));
     let state_for_task = state.clone();
     let uid = uid.to_string();
     let model_for_task = model.to_string();
 
     // 协议转换（Anthropic / Responses 入口）排在外层 —— 上游是标准 OpenAI SSE。
     let raw = response.bytes_stream();
-    let tapped = OpenAiUsageTap::new(raw, usage_slot.clone());
+    let tapped = OpenAiUsageTap::new(raw, usage_slot.clone(), error_slot.clone());
     let converter: std::pin::Pin<
         Box<dyn futures_util::Stream<Item = Result<axum::body::Bytes, std::io::Error>> + Send>,
     > = match protocol {
@@ -666,18 +775,38 @@ async fn stream_relay(
             Some(usage) => usage_counts(usage),
             None => (0, 0),
         };
+        let failure = error_slot.lock().ok().and_then(|guard| guard.clone());
+        let (log_status, log_error) = match &failure {
+            Some(error) => (error.status, Some(error.message.clone())),
+            None => (200u16, None),
+        };
+        /* ★ issue #129：流内失败必须**写冷却 + 解绑粘性**。改造前这里恒写 200、
+        账号在池里始终干净 ⇒ 客户端重试再撞同一个号，表现为「日志全 429、池卡全绿」。
+        与「不发错误帧」并不冲突：客户端看到的是上游原文，治理只影响本地池。 */
+        if let Some(error) = &failure {
+            let kind = classify_http(error.status);
+            {
+                let mut pools = state_for_task.pools.lock().await;
+                if let Some(pool) = pools.get_mut(&region) {
+                    pool.apply_error(&uid, kind, &error.message);
+                }
+            }
+            if let Some(key) = sticky_key.as_deref() {
+                state_for_task.sticky.lock().await.unbind(key);
+            }
+        }
         state_for_task
             .record_request(
                 "chat",
                 region,
                 &model_for_task,
-                200,
+                log_status,
                 &uid,
                 started.elapsed().as_millis() as i64,
                 true,
                 prompt_tokens as i64,
                 completion_tokens as i64,
-                None,
+                log_error,
             )
             .await;
     });
@@ -767,6 +896,9 @@ async fn aggregate_relay(
                 input_tokens: prompt_tokens,
                 output_tokens: completion_tokens,
                 custom: custom.as_ref(),
+                /* 上游原始 usage：Responses 出口从这里取缓存命中与思考细节，
+                否则这些字段在 Loomy 侧永远缺失（与 WB/Trae/Qoder 的出口同口径）。 */
+                raw_usage: usage.as_ref(),
             },
             model,
         ))
@@ -778,11 +910,21 @@ async fn aggregate_relay(
 pub struct OpenAiUsageTap<S> {
     inner: S,
     usage_slot: std::sync::Arc<std::sync::Mutex<Option<Value>>>,
+    /// 流内观测到的上游错误（第一条为准；`None` = 正常收尾）。
+    error_slot: std::sync::Arc<std::sync::Mutex<Option<SniffedError>>>,
 }
 
 impl<S> OpenAiUsageTap<S> {
-    pub fn new(inner: S, usage_slot: std::sync::Arc<std::sync::Mutex<Option<Value>>>) -> Self {
-        Self { inner, usage_slot }
+    pub fn new(
+        inner: S,
+        usage_slot: std::sync::Arc<std::sync::Mutex<Option<Value>>>,
+        error_slot: std::sync::Arc<std::sync::Mutex<Option<SniffedError>>>,
+    ) -> Self {
+        Self {
+            inner,
+            usage_slot,
+            error_slot,
+        }
     }
 }
 
@@ -808,6 +950,14 @@ where
                     if data == "[DONE]" {
                         continue;
                     }
+                    /* ★ issue #129：上游在流里报错时先留证（不改字节）。 */
+                    if let Some(error) = error_sniffer::sniff_payload(data) {
+                        if let Ok(mut guard) = self.error_slot.lock() {
+                            if guard.is_none() {
+                                *guard = Some(error);
+                            }
+                        }
+                    }
                     if let Ok(chunk) = serde_json::from_str::<Value>(data) {
                         if let Some(usage) = chunk.get("usage").filter(|u| u.is_object()) {
                             if let Ok(mut guard) = self.usage_slot.lock() {
@@ -820,6 +970,16 @@ where
             }
             other => match other {
                 std::task::Poll::Ready(Some(Err(error))) => {
+                    /* 传输层中断不是「模型说完了」：同样留证，供收尾时写冷却与日志。 */
+                    if let Ok(mut guard) = self.error_slot.lock() {
+                        if guard.is_none() {
+                            *guard = Some(SniffedError {
+                                event: UpstreamEvent::Server,
+                                message: format!("上游连接中断：{error:?}"),
+                                status: 502,
+                            });
+                        }
+                    }
                     std::task::Poll::Ready(Some(Err(std::io::Error::other(format!("{error:?}")))))
                 }
                 done => done.map(|opt| {
@@ -829,5 +989,58 @@ where
                 }),
             },
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use futures_util::StreamExt;
+
+    /// ★ issue #129：流内错误帧必须被**留证**（收尾据此写冷却与日志），
+    /// 且透传字节**逐字不变** —— 错误帧本来就交给客户端，治理只影响本地池。
+    #[tokio::test]
+    async fn usage_tap_records_upstream_error_frames() {
+        let usage_slot = std::sync::Arc::new(std::sync::Mutex::new(None::<Value>));
+        let error_slot = std::sync::Arc::new(std::sync::Mutex::new(None::<SniffedError>));
+        let frames: Vec<Result<axum::body::Bytes, std::io::Error>> = vec![
+            Ok(axum::body::Bytes::from_static(
+                b"data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n",
+            )),
+            Ok(axum::body::Bytes::from_static(
+                b"data: {\"choices\":[{\"delta\":{}}],\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":4}}\n\n",
+            )),
+            Ok(axum::body::Bytes::from_static(
+                b"data: {\"error\":{\"message\":\"rate limited\",\"type\":\"rate_limit_error\"}}\n\n",
+            )),
+        ];
+        let expected = frames.len();
+        let mut tap = OpenAiUsageTap::new(
+            futures_util::stream::iter(frames),
+            usage_slot.clone(),
+            error_slot.clone(),
+        );
+
+        let mut passed = 0usize;
+        while let Some(item) = tap.next().await {
+            item.expect("tap 不得改写上游错误");
+            passed += 1;
+        }
+
+        assert_eq!(passed, expected, "透传帧数必须不变（不改对外字节）");
+        let usage = usage_slot
+            .lock()
+            .unwrap()
+            .clone()
+            .expect("usage 帧仍要记账");
+        assert_eq!(usage["prompt_tokens"], 3);
+
+        let error = error_slot
+            .lock()
+            .unwrap()
+            .clone()
+            .expect("错误帧必须被留证");
+        assert_eq!(error.status, 429, "限流错误应归到 429");
+        assert!(error.message.contains("rate limited"));
     }
 }

@@ -15,7 +15,7 @@ name: docker
 # ⚠️ 必须**全小写**：镜像名大写会被 docker 直接判 `invalid reference format`。
 # 因此这里**不写** `${{ github.repository_owner }}`（那是 `NextAgentX` 大写），
 # 而是硬编码小写。`scripts/check-docker.cjs` 会校验这串名字与 `docker-compose.yml`、
-# `README.md`、`docs/guides/DOCKER.md` 完全一致 —— 四处漂移的症状是
+# `README.md`、`README.en.md`、`docs/guides/DOCKER.md` 完全一致 —— 四处漂移的症状是
 # 「compose 拉不到 → 静默回落成本地构建」，用户只会觉得慢，不会觉得错。
 #
 # ## 标签
@@ -97,7 +97,7 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
 
       # 版本号写进 Cargo / package.json 等载体，**必须在 docker build 之前** ——
       # 二进制里的版本是编译期确定的，镜像跑起来再改已经晚了。

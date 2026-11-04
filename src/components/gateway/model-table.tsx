@@ -24,7 +24,8 @@
  *
  * ## 列集
  *
- * `模型 / 上下文 / [可选] 思考档位 / [可选] 积分倍率 / [仅 Trae] 上游状态 / 网关暴露 / [可选] 附加列`。
+ * `模型 / 上下文 / [可选] 图片输入 / [可选] 思考档位 / [可选] 积分倍率 / [仅 Trae] 上游状态 /
+ * 网关暴露 / [可选] 附加列`。
  *
  * 能力两列（issue #65）由**可选** prop `effortColumn` / `creditsColumn` 驱动，内容由调用方
  * 用 `model-ability.tsx` 的 `<EffortCell>` / `<CreditsCell>` 注入 —— 三个平台的档位来自三个
@@ -120,6 +121,15 @@ export interface ModelTableProps {
    */
   creditsColumn?: { header: string; render: (row: GatewayModelRow) => ReactNode };
   /**
+   * 可选「图片输入」列（issue #101）。不传 ⇒ 该列不渲染。
+   *
+   * 与 `effortColumn` / `creditsColumn` **同构**：壳里只放表头 + 单元格容器，
+   * 内容（徽标 + 覆盖按钮）由调用方用 `model-image-cell.tsx` 注入。
+   * 为什么不把交互写进壳里：那样「每行恰好 2 处可点区」的门禁会失守，
+   * 而这条约束保护的是「整行可点 / 勾选」这类会抢事件的交互不再溜进来。
+   */
+  imageColumn?: { header: string; render: (row: GatewayModelRow) => ReactNode };
+  /**
    * 可选**附加列**（2026-10-16：限流探测结果折回模型表）。
    *
    * 只有 WB（`model-list.tsx`）传它渲染「限流（探测）」；Trae / Qoder **不传** ⇒ 该列
@@ -144,6 +154,7 @@ export function ModelTable({
   labels,
   effortColumn,
   creditsColumn,
+  imageColumn,
   extraColumn,
 }: ModelTableProps) {
   /** 刚复制成功的行 id（驱动图标 `Copy` → `Check`；1.6s 后复位）。 */
@@ -171,8 +182,14 @@ export function ModelTable({
             <th scope="col" className="px-2 py-2 font-medium">
               {labels.colContext}
             </th>
-            {/* 能力两列（issue #65）排在上下文之后、状态列之前：它们是模型**属性**，
-                与「上游状态 / 网关暴露」这两列**状态**分开读。不传 ⇒ 整列不渲染。 */}
+            {/* 能力列排在上下文之后、状态列之前：它们是模型**属性**，
+                与「上游状态 / 网关暴露」这两列**状态**分开读。不传 ⇒ 整列不渲染。
+                顺序 = 图片输入（能不能读图）→ 思考档位 → 积分倍率（成本）。 */}
+            {imageColumn && (
+              <th scope="col" className="px-2 py-2 font-medium">
+                {imageColumn.header}
+              </th>
+            )}
             {effortColumn && (
               <th scope="col" className="px-2 py-2 font-medium">
                 {effortColumn.header}
@@ -251,7 +268,8 @@ export function ModelTable({
                   {/* 上下文窗口：数字来自官方目录（逐模型不同），未知就显示 `—`，不猜。 */}
                   <span className="font-mono text-xs">{formatContext(row.context_window)}</span>
                 </td>
-                {/* 能力两列：内容全部由调用方注入 ⇒ 壳里仍然只有那 2 处 onClick。 */}
+                {/* 能力列：内容全部由调用方注入 ⇒ 壳里仍然只有那 2 处 onClick。 */}
+                {imageColumn && <td className="px-2 py-2">{imageColumn.render(row)}</td>}
                 {effortColumn && <td className="px-2 py-2">{effortColumn.render(row)}</td>}
                 {creditsColumn && <td className="px-2 py-2">{creditsColumn.render(row)}</td>}
                 {showUpstream && (

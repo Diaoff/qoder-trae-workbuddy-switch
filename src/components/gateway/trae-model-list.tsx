@@ -8,6 +8,7 @@ import { CatalogSourceBar } from "@/components/gateway/catalog-source-bar";
 import { ContextSourceCard } from "@/components/gateway/context-source-card";
 import { ModelTable } from "@/components/gateway/model-table";
 import { CreditsCell, EffortCell } from "@/components/gateway/model-ability";
+import { useImageCapColumn } from "@/components/gateway/model-image-column";
 import { DemoAction } from "@/components/demo-action";
 import { TraeVariantMark } from "@/components/product-marks";
 import * as api from "@/lib/api";
@@ -258,6 +259,14 @@ export function TraeModelList({
     }
   }
 
+  /* 图片输入列（issue #101）：Trae 的客户端清单**没有**多模态字段 ⇒ `entryOf` 恒 `undefined`，
+     于是这一列只有「本页手动指定 / 未声明」两种状态 —— 如实反映「网关确实不知道」。
+     要让它自动识别，只能等上游清单开始下发能力字段（或 WB 那条目录路径）。 */
+  const imageColumn = useImageCapColumn({
+    scope,
+    entryOf: () => undefined,
+  });
+
   return (
     <div className={cn(className)}>
       {/* 与 WB / Qoder 同一位置、同一形态：模型页顶部一个上下文开关（Trae 叫 Max Mode）。 */}
@@ -366,6 +375,7 @@ export function TraeModelList({
             onToggleDisabled={(row, disabled) => void onToggleDisabled(row, disabled)}
             showUpstream={true}
             labels={labels}
+            imageColumn={imageColumn}
             /* ★ issue #65：档位 / 倍率都来自**客户端清单**（网关不参与解析）。
                `thinking === "unknown"` 必须显示成「未下发」—— TraeWork 的
                `solo_work_lite` 实测 22 条只有 1 条带档位，写成「不支持」就是撒谎。 */

@@ -9,6 +9,7 @@ import { CatalogSourceBar } from "@/components/gateway/catalog-source-bar";
 import { ContextSourceCard } from "@/components/gateway/context-source-card";
 import { ModelTable } from "@/components/gateway/model-table";
 import { CreditsCell, EffortCell } from "@/components/gateway/model-ability";
+import { useImageCapColumn } from "@/components/gateway/model-image-column";
 import { DemoAction } from "@/components/demo-action";
 import * as api from "@/lib/api";
 import { formatAbsoluteTime, type CatalogSourceView } from "@/lib/catalog-source";
@@ -172,6 +173,14 @@ export function QoderModelList({
     }
   }
 
+  /* 图片输入列（issue #101）：Qoder 官方清单**没有**多模态字段 ⇒ `entryOf` 恒 `undefined`，
+     这一列只有「本页手动指定 / 未声明」两种状态。别在这里读管理面视图里那个
+     `supports_images`：它本来就是由覆盖表算出来的，绕一圈只会多一处可能漂移的判断。 */
+  const imageColumn = useImageCapColumn({
+    scope,
+    entryOf: () => undefined,
+  });
+
   return (
     <div className={cn(className)}>
       {/* 无卡头 —— 分区名由左栏导航承担（与 WB / Trae 侧同口径）。 */}
@@ -215,6 +224,7 @@ export function QoderModelList({
             onToggleDisabled={(row, disabled) => void onToggleDisabled(row, disabled)}
             showUpstream={false}
             labels={labels}
+            imageColumn={imageColumn}
             /* ★ issue #65：官方清单里的计费与能力事实（免费 / 峰谷价 / 思考档位）。
                与 WB / Trae **同一套两列**（`model-ability.tsx`），不再挤在一个「价格 / 思考」
                单元格里 —— 倍率是单值、档位是集合，混排既扫不出来也没法各自说明来源。

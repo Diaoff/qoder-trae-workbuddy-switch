@@ -62,6 +62,20 @@ pub struct GatewayConfig {
     /// 单轮请求的最大换号次数（默认 3）。
     #[serde(alias = "maxRotate")]
     pub max_rotate: usize,
+    /// **账号故障时自动切换**（issue #129，默认 `false`）。
+    ///
+    /// 开启后，流中途的账号级失败不再被「补终止标记」伪装成成功，而是先发一条
+    /// **可重试**的错误帧（`429` / `502`，见 [`crate::failover`]），让客户端整步重跑；
+    /// 失败的账号同时写冷却、解绑粘性 ⇒ 重试必然落到另一个号。
+    ///
+    /// 默认关闭是刻意的：它改变对外字节语义（从「假成功」变成「显式错误」），
+    /// 不能让升级悄悄改变既有表现；也让「不勾选 = 回归基线」成为天然的回归测试。
+    ///
+    /// ★ 放在 config **顶层**而不是 `PoolConfig` 里：`PoolConfig` 是**启动期固化**的
+    /// （`Pool::new` 克隆一次、运行期无 setter），而本开关必须热生效 ⇒ 每轮从
+    /// `config_snapshot()` 读，与 `max_rotate` 同一处。
+    #[serde(alias = "autoFailover")]
+    pub auto_failover: bool,
     /// 是否启用出站指纹脱敏（默认 true）。
     #[serde(alias = "sanitizeFingerprints")]
     pub sanitize_fingerprints: bool,
@@ -113,6 +127,7 @@ impl Default for GatewayConfig {
             log_bodies: false,
             per_key_rate_limit: None,
             max_rotate: 3,
+            auto_failover: false,
             sanitize_fingerprints: true,
             prompt_mode: "passthrough".to_string(),
             prompt_file: None,
@@ -147,7 +162,10 @@ impl GatewayConfig {
         core_config::atomic_write(&file, &content).map_err(|error| error.to_string())
     }
 
-    /// 对外 Base URL（供接入指引展示）。
+    /// 对外**根地址**（含协议与端口，**不含 `/v1`**）。
+    ///
+    /// OpenAI 系 Base URL 由前端派生（`src/lib/gateway-url.ts`），本字段只给根地址 ——
+    /// 两条分支返回不同形态曾导致「接入地址」少一层 `/v1`（#165）。
     pub fn base_url(&self) -> String {
         let host = if self.bind_addr.trim().is_empty() {
             "127.0.0.1"
@@ -178,7 +196,7 @@ pub struct GatewayStatusView {
     pub running: bool,
     /// 实际监听地址；未监听时为 `None`。
     pub addr: Option<String>,
-    /// 对外 Base URL（含协议与端口，供接入指引展示）。
+    /// 对外**根地址**（含协议与端口，**不含 `/v1`**；OpenAI 基址由前端派生）。
     pub base_url: String,
     /// 配置中的监听地址。
     pub bind_addr: String,
@@ -340,6 +358,11 @@ pub struct GatewayState {
     /// 进程内**唯一**实例（[`crate::disabled_models::shared`]）—— 与 Trae 网关、命令面
     /// 读的是同一个 `Arc`，否则「命令改了一份、网关读另一份」就是假开关。
     pub disabled: Arc<RwLock<DisabledModels>>,
+    /// 模型降级链（主模型失败 ⇒ 改用备选重发一次）。
+    ///
+    /// 与 `disabled` 同一套纪律：进程内**唯一**实例（[`crate::model_fallback::shared`]）、
+    /// 独立文件、**保存即生效**（不进 `Pool.config`，否则改完要重启网关）。
+    pub fallback: Arc<RwLock<crate::model_fallback::ModelFallback>>,
     pub upstream: Arc<UpstreamClient>,
     pub log: Arc<RequestLog>,
     /// ★ E1：代理 KPI 的热计数（今日代理请求 / 今日换号）。
@@ -420,6 +443,7 @@ impl GatewayState {
             catalogs,
             strategies,
             disabled: crate::disabled_models::shared(),
+            fallback: crate::model_fallback::shared(),
             upstream,
             log,
             // 进程启动即把上次落盘的台账**并进来**，避免重启后「今日」从零起算。
@@ -635,6 +659,7 @@ mod tests {
             "log_bodies",
             "per_key_rate_limit",
             "max_rotate",
+            "auto_failover",
             "sanitize_fingerprints",
             "prompt_mode",
             "prompt_file",

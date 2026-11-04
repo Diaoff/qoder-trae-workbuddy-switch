@@ -121,6 +121,25 @@ export const zh = {
   "shared.gateway.models.creditsFree": "免费",
   "shared.gateway.models.creditsNone": "上游未提供积分倍率",
   "shared.gateway.models.creditsHint": "倍率：按基准价的多少倍计费，不是金额",
+  /* ★ issue #101：图片输入能力（三态）。
+     「未声明」≠「不支持」—— 上游清单（Trae / Qoder 根本没有这个字段）没说时，
+     客户端按自己的配置处理，网关**不替它断言**。三态文案必须分开，否则用户会以为
+     网关在说「这个模型不能读图」。 */
+  "shared.gateway.models.colImages": "图片输入",
+  "shared.gateway.models.imageYes": "支持",
+  "shared.gateway.models.imageNo": "不支持",
+  "shared.gateway.models.imageUndeclared": "未声明",
+  "shared.gateway.models.imageSourceUpstream": "上游目录声明支持图片输入",
+  "shared.gateway.models.imageSourceKnown": "网关内置表声明（上游没有能力字段，可手动改）",
+  "shared.gateway.models.imageSourceOverride": "你在本页手动指定（覆盖上游声明）",
+  "shared.gateway.models.imageUndeclaredHint":
+    "上游清单没有声明这个模型能否读图。客户端连上来时默认按「不支持」处理（图片会被它自己挡掉，请求根本不到网关），需要时可在此手动标记。",
+  "shared.gateway.models.imageMarkYes": "标记为支持图片",
+  "shared.gateway.models.imageMarkNo": "标记为不支持图片",
+  "shared.gateway.models.imageReset": "还原上游声明",
+  "shared.gateway.models.imageYesToast": "已标记「{name}」支持图片输入",
+  "shared.gateway.models.imageNoToast": "已标记「{name}」不支持图片输入",
+  "shared.gateway.models.imageResetToast": "已还原「{name}」的图片能力为上游声明",
   "shared.gateway.models.upstreamAvailable": "可用",
   "shared.gateway.models.upstreamUnavailable": "不可用",
   "shared.gateway.models.exposed": "已暴露",
@@ -146,6 +165,92 @@ export const zh = {
   // ★ 安全审计 S1：notice 恒定可见（探测是真实上游请求，不是本地操作）。
   // ★ 安全审计 S2：reason（上游原文）只许纯文本渲染。
   "shared.gateway.models.colProbe": "限流（探测）",
+  // ── 模型降级链（P13）──
+  // 文案纪律：只说「明确失败」「不回退」「不把失败改写成成功」，
+  // 不用「智能容错」这类让人以为能兜住一切的词。
+  "shared.gateway.fallback.title": "模型降级链",
+  "shared.gateway.fallback.badgeOff": "未配置",
+  "shared.gateway.fallback.badgeOn": "已启用 · {count} 条",
+  "shared.gateway.fallback.badgeClosed": "已关闭",
+  "shared.gateway.fallback.limit": "同作用域 · 最多 {max} 跳",
+  "shared.gateway.fallback.notice": "仅在上游明确失败时触发。已开始向客户端输出的流不会回退，也不会把失败改写成成功 —— 客户端可通过响应头 X-Buddy-Fallback-To 得知实际使用的模型。",
+  "shared.gateway.fallback.enable": "启用降级",
+  "shared.gateway.fallback.enableHint": "关掉后配置保留，但一次都不触发",
+  "shared.gateway.fallback.new": "新建降级链",
+  "shared.gateway.fallback.emptyTitle": "还没有降级链",
+  "shared.gateway.fallback.emptyDesc": "当某个模型在上游明确失败（整体限流、被封禁、5xx）时，网关可以自动改用你指定的备用模型重发一次，而不是把错误直接抛给客户端。默认关闭，配置后才生效。",
+  "shared.gateway.fallback.addTarget": "+ 备选",
+  "shared.gateway.fallback.chainOff": "已停用",
+  "shared.gateway.fallback.chainDisable": "停用",
+  "shared.gateway.fallback.chainEnable": "启用",
+  "shared.gateway.fallback.footNote": "状态点读的是实时闸门与冷却（与账号池同源），不是配置快照。降级成功后主模型的闸门不解除 —— 它确实失败了；闸门到期后请求自然回到主模型，无需「回切」开关。",
+  "shared.gateway.fallback.diag.gated": "第 {hop} 跳 {model} 正在闸门暂停中（剩 {secs}s）。期间该链会直接跳到下一跳；若都不行，返回原始错误，不会无限等待。",
+  "shared.gateway.fallback.diag.disabled": "第 {hop} 跳 {model} 已被禁用，该跳会被跳过。",
+  "shared.gateway.fallback.diag.noVision": "第 {hop} 跳 {model} 不支持图片输入，而主模型支持。带图片的请求会跳过这一跳，继续下一个备选 —— 而不是发出一个必然失败的请求。",
+  "shared.gateway.fallback.stats": "近 {days} 天：降级 {total} 次（成功 {ok} · 失败 {fail}）",
+  "shared.gateway.fallback.events": "降级流水",
+  "shared.gateway.fallback.eventsHide": "收起流水",
+  "shared.gateway.fallback.expand": "展开",
+  "shared.gateway.fallback.collapse": "收起",
+  "shared.gateway.fallback.event.time": "时间",
+  "shared.gateway.fallback.event.path": "实际路径",
+  "shared.gateway.fallback.event.reason": "触发原因",
+  "shared.gateway.fallback.event.account": "账号",
+  "shared.gateway.fallback.event.cost": "耗时",
+  "shared.gateway.fallback.event.result": "结果",
+  "shared.gateway.fallback.event.degraded": "已降级",
+  "shared.gateway.fallback.event.failed": "备选也失败",
+  "shared.gateway.fallback.event.blocked": "按规则不降级",
+  "shared.gateway.fallback.event.empty": "最近还没有降级事件。",
+  "shared.gateway.fallback.event.note": "只有最近 {count} 条，且不参与任何统计口径：请求日志是环形缓冲（默认 200 条），繁忙时只覆盖十几分钟。需要「近 7 天降级率」时必须从账本另开一个维度，不能拿这张表算。",
+  "shared.gateway.fallback.drawer.new": "新建降级链",
+  "shared.gateway.fallback.drawer.edit": "编辑降级链 · {model}",
+  "shared.gateway.fallback.field.from": "主模型",
+  "shared.gateway.fallback.field.fromLocked": "主模型不可改。要换主模型请删掉这条链重配 —— 改 from 等于换了一条链。",
+  "shared.gateway.fallback.field.crossModelPlaceholder": "填目标平台的模型 id",
+  "shared.gateway.fallback.field.thisScope": "本区域",
+  "shared.gateway.fallback.field.crossPlatformPending": "跨平台仅 WorkBuddy 支持",
+  "shared.gateway.fallback.field.targets": "备选模型（按顺序尝试）",
+  "shared.gateway.fallback.field.targetsHint": "最多 {max} 个（含主模型共 {hops} 跳）。已禁用 / 上游不可用的模型不会出现在这里。",
+  "shared.gateway.fallback.capsNote": "带图片的请求会自动跳过不支持图片输入的备选；工具调用 / 结构化输出 / 上下文窗口本版不校验，由备选自己决定接受还是拒绝。",
+  "shared.gateway.fallback.field.triggers": "触发条件",
+  "shared.gateway.fallback.trigger.gate": "模型闸门暂停",
+  "shared.gateway.fallback.trigger.gateDesc": "该模型近期在多个账号上失败、已被网关整体暂停。零成本直接跳下一跳。",
+  "shared.gateway.fallback.trigger.model_rate": "模型级限流（6004）",
+  "shared.gateway.fallback.trigger.model_rateDesc": "上游明确表示是这个模型被限，换号无用。",
+  "shared.gateway.fallback.trigger.model_blocked": "模型被封禁（11102）",
+  "shared.gateway.fallback.trigger.model_blockedDesc": "上游对该模型返回封禁；短时间不会恢复。",
+  "shared.gateway.fallback.trigger.server": "上游 5xx",
+  "shared.gateway.fallback.trigger.serverDesc": "服务端故障。开启后故障期间流量会涌向备选，可能把备选也打挂。",
+  "shared.gateway.fallback.trigger.timeout": "请求超时",
+  "shared.gateway.fallback.trigger.timeoutDesc": "超过 600s 未响应。开启后长任务可能被重复计费。",
+  // 卡片上的紧凑标签（只标「超出基线」的增量，完整清单进 title）。
+  "shared.gateway.fallback.trigger.not_found": "模型不存在（404）",
+  "shared.gateway.fallback.trigger.not_foundDesc": "上游说这个模型不存在：可能是该账号的清单里没有它（换号有用），也可能是上游整体下线了（换模型有用）。",
+  "shared.gateway.fallback.short.gate": "闸门",
+  "shared.gateway.fallback.short.model_rate": "6004",
+  "shared.gateway.fallback.short.model_blocked": "11102",
+  "shared.gateway.fallback.short.server": "5xx",
+  "shared.gateway.fallback.short.timeout": "超时",
+  "shared.gateway.fallback.short.not_found": "404",
+  "shared.gateway.fallback.never.title": "固定不降级",
+  "shared.gateway.fallback.never.desc": "参数错误 4xx：换模型救不了，只会把同一个错误翻译成更陌生的模型名；内容审核拒绝：换模型等于换一套审核尺度，效果上就是帮调用方绕过审核；402 余额不足：账号额度问题，换模型同样 402；Key 配额用尽：按 Key 计量，与模型无关。",
+  "shared.gateway.fallback.sim.title": "模拟路径 · 按当前闸门与冷却预演",
+  "shared.gateway.fallback.sim.primary": "主模型",
+  "shared.gateway.fallback.sim.target": "备选 {n}",
+  "shared.gateway.fallback.sim.try": "先试它",
+  "shared.gateway.fallback.sim.willUse": "可用 → 本次会用它",
+  "shared.gateway.fallback.sim.skipGated": "仍在暂停 → 跳过，不发请求",
+  "shared.gateway.fallback.sim.skipDisabled": "不可用 → 跳过",
+  "shared.gateway.fallback.sim.allFail": "若所有跳都不可用，返回的是原始错误，不会无限等待，也不会把失败改写成成功。",
+  "shared.gateway.fallback.save": "保存",
+  "shared.gateway.fallback.cancel": "取消",
+  "shared.gateway.fallback.saveOk": "降级链已保存",
+  "shared.gateway.fallback.saveOkDesc": "立即生效，无需重启网关",
+  "shared.gateway.fallback.needTarget": "至少选一个备选模型",
+  "shared.gateway.fallback.needTargetDesc": "只配主模型不构成降级链",
+  "shared.gateway.fallback.enabledToast": "已启用降级",
+  "shared.gateway.fallback.disabledToast": "已关闭降级",
   "shared.gateway.probe.title": "限流探测",
   "shared.gateway.probe.badge": "账号 × 模型 实探",
   "shared.gateway.probe.expand": "展开",
@@ -282,6 +387,10 @@ export const zh = {
   "shared.gateway.probe.emptyAllSkippedDesc":
     "这些账号都没有可用凭据——可能没登录、凭据是加密信封、或已被移出账号库。请到「账号」页重新登录或导入账号；若本机没有对应桌面客户端（Docker / headless），请在「网关 → 账号池」用扫码方式添加；若用的是「指定账号」策略，请确认该账号仍在本机账号库中。",
   "shared.gateway.pool.totalRequests": "累计请求 {count}",
+  // ★ issue #129：账号池顶部「账号故障时自动切换」开关。
+  "shared.gateway.pool.autoFailover": "账号故障时自动切换",
+  "shared.gateway.pool.autoFailoverHint":
+    "开启后，一个账号在回复中途挂掉时，网关会把这次失败变成「可重试错误」，客户端自动换号重跑整个步骤，你看到的是从头完整重写的回复。代价：这一次回答的已输出部分作废、会再消耗一次额度。关闭时保持原有行为（上游报错按原样透出）。默认关闭：它改变对外报错方式，属于行为变更。",
   "shared.gateway.pool.tile.available": "可路由",
   // 「可路由」格里的小字注：其中几个只是**并发占满**（账号正常、几秒自愈）。
   // 不做第七格的理由见 `GatewayPoolSummary.inFlightFull` 的注释 —— 瞬时态与故障态不能并排。
@@ -296,9 +405,20 @@ export const zh = {
   // Qoder 独有的一格：上游 429 按**模型**报 ⇒ 账号本身可用、但有模型级冷却。
   "shared.gateway.pool.tile.modelCooling": "模型冷却",
   // 模型冷却徽标（issue #88）：**必须带解冻时刻**，否则「N 个模型限流」等于没说。
+  //
+  // ★ 2026-10-29：冷却已经按上游声明的时刻走（`Pool::adopt_probe_result`），所以默认就是
+  //   「{time} 解冻」。只有**上游什么都没说**、走本仓兜底时才是「约 … 解冻」——
+  //   那个时刻是猜的，加「约」是为了不让人拿它当承诺。
   "shared.gateway.pool.modelCoolingBadge": "{count} 个模型限流 · {time} 解冻",
+  "shared.gateway.pool.modelCoolingBadgeApprox": "{count} 个模型限流 · 约 {time} 解冻",
   "shared.gateway.pool.modelCoolingHint":
     "{models} 处于模型级冷却（只影响这些模型，其它模型仍可用），最早 {time} 解冻。",
+  // 徽标 tooltip 的逐模型行（issue #88 缺口 4.2）：名称 · 剩余 · 是否兜底 · 上游声明时刻。
+  "shared.gateway.pool.modelCoolingRow": "{model} · 剩 {remaining}{fallback}{upstream}",
+  // 上游**文案**里声明的恢复时刻（只在与实际冷却截止不同时出现 —— 例如被 24h 截断）。
+  "shared.gateway.pool.modelCoolingRowUpstream": " · 上游称 {time} 重置",
+  // 「兜底」= 上游没给墙钟，本仓按 probe_fallback_ms 猜的（默认 10 分钟）。
+  "shared.gateway.pool.modelCoolingFallback": "（兜底）",
   "shared.gateway.pool.empty": "账号池为空。请先在「账号管理」中添加账号。",
   "shared.gateway.pool.credits": "{credits} 积分",
   /* Loomy 专用：两池**不可通约** ⇒ 并排显示而不是相加（与账号卡「永久 / 每日池」分列同一条口径）。
@@ -312,6 +432,8 @@ export const zh = {
   // 仅 WorkBuddy：三档策略里「非指定账号」的第二档（写回 `AccountStrategy::MaxCredits`）。
   "shared.gateway.pool.strategyMaxCredits": "按实时积分择优（每次请求查询）",
   "shared.gateway.pool.strategyRandom": "随机（在合格账号里均匀抽签）",
+  // issue #102：粘住当前账号、限流才换 —— 目的是复用上游前缀缓存，降低 token 消耗。
+  "shared.gateway.pool.strategySequential": "顺序（固定一个号，限流才换）",
   "shared.gateway.pool.preferredMissing": "已指定的账号（当前不在池中）",
   // 偏好语义：指定账号不可用时**回落**自动择优，而不是拒绝服务。
   "shared.gateway.pool.preferredHint": "偏好而非强制：指定账号冷却 / 失效 / 零积分时自动改用其他账号，不会拒绝服务。",
@@ -614,6 +736,17 @@ export const zh = {
   "shared.refreshPart.checkin": "签到状态已刷新",
   "shared.refreshPart.credential": "凭据状态已刷新",
   "shared.refreshPart.fail": "刷新失败",
+  // 积分的自动刷新节拍与「上次刷新」（三平台积分视图共用，issue #133）。
+  // ★ 两句文案对应**两种成本**（issue #133 复核 §3）：`autoEvery` 是「打上游」的视图，
+  //   `autoFollow` 是「只读本地快照」的视图。有抖动之后「每 N 分钟」不再成立 ⇒ 用「约」。
+  "shared.credit.autoEvery": "约每 {n} 分钟向官方查询一次",
+  "shared.credit.autoFollow": "自动跟随后台同步",
+  "shared.credit.autoOff": "自动刷新已关闭（设置 · 通用可开启）",
+  /* 资源包明细里那一句「已用 X」。**四个装配点共用这一条**（issue #144 复核 §3.4）：
+     它不属于任何平台的词条域，而此前渠道页写「已用 13.99」、聚合页与 Qoder 写裸数字
+     —— 同一个抽屉里同一列有两种说法，用户无从判断那个数字是什么。 */
+  "shared.credit.packUsed": "已用 {n}",
+  "shared.credit.lastRefresh": "上次刷新 {time}",
   // 详情抽屉顶部的四个指标块（文本在页面侧格式化，这里只提供标签与固定短语）。
   "shared.stat.credits": "积分",
   "shared.stat.tokens": "今日 Token",

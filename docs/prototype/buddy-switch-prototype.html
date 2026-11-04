@@ -1732,6 +1732,209 @@ tr.krow-detail-row > td { padding: 0 !important; border-top: 0 !important; }
 /* 表格里的「在途」：达到上限时用红字（它是**临时**不可选，不是账号坏了） */
 td.num.full { color: var(--destructive); font-weight: 600; }
 
+/* ─────────── 设置页「二选一」分段器（issue #109） ───────────
+   设置页里这两个标签比常规 `.seg` 长（「直连上游」/「走本机网关」），
+   常规内边距会挤成两行；同时补上 disabled 态 —— 冲突时「直连上游」被护栏禁掉，
+   而 `.seg` 原本没有 disabled 样式，禁用与可点会长得一样（那等于没禁）。 */
+.seg.wide button { padding: 5px 12px; white-space: nowrap; }
+.seg button:disabled { cursor: not-allowed; opacity: .45; }
+.seg button:disabled:hover { color: var(--muted-fg); }
+
+/* ─────────── CodeBuddy CLI 接入方式（issue #109） ───────────
+   这块是「两套凭据通道二选一」，不是偏好开关 —— 所以用**状态条 + 模式卡**，
+   而不是设置页常规的 `.srow` + `.seg`。完整设计判断见 `demo-app.js` 里
+   `viewCliIntegration()` 的头注释。要点：
+     · 分段器的语义是「同一事物的不同取值」（主题：深/浅），可随时来回切、无代价；
+       而这里切换会清 token、关轮换、要重启 CLI ⇒ 视觉权重必须更重。
+     · 能力差异用 ✓/— **左右对齐**，让两卡可以横着比；写成两段话就没法比。
+     · 冲突态把状态条染成警示色并只留一条出路 —— 只禁用按钮而不给下一步，用户会卡住。 */
+.mode-strip {
+  display: flex; align-items: center; gap: 12px;
+  padding: 12px 14px; border-radius: 12px; margin-bottom: 12px;
+  border: 1px solid var(--border); background: var(--card);
+}
+.mode-strip .ms-ico {
+  flex: none; width: 30px; height: 30px; border-radius: 9px;
+  display: grid; place-items: center; background: var(--muted); color: var(--muted-fg);
+}
+.mode-strip .ms-ico svg { width: 16px; height: 16px; }
+.mode-strip .ms-main { flex: 1; min-width: 0; }
+.mode-strip .ms-main b { display: block; font-size: 12.5px; font-weight: 600; }
+.mode-strip .ms-main span { display: block; font-size: 11.5px; color: var(--muted-fg); margin-top: 2px; line-height: 1.55; }
+.mode-strip .ms-sep { margin: 0 6px; color: var(--faint); }
+.mode-strip.ok {
+  border-color: color-mix(in oklab, var(--success) 34%, transparent);
+  background: color-mix(in oklab, var(--success) 7%, var(--card));
+}
+.mode-strip.info {
+  border-color: color-mix(in oklab, var(--primary) 36%, transparent);
+  background: color-mix(in oklab, var(--primary) 7%, var(--card));
+}
+.mode-strip.warn {
+  border-color: color-mix(in oklab, var(--warning) 38%, transparent);
+  background: color-mix(in oklab, var(--warning) 8%, var(--card));
+}
+.mode-strip.warn .ms-ico {
+  background: color-mix(in oklab, var(--warning) 18%, transparent); color: var(--warning);
+}
+
+.mode-cards { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; padding: 14px 16px 16px; }
+@media (max-width: 880px) { .mode-cards { grid-template-columns: 1fr; } }
+.mode-card {
+  display: flex; flex-direction: column; padding: 14px;
+  border: 1px solid var(--border); border-radius: 12px; background: var(--card-2);
+  transition: border-color .12s, background .12s;
+}
+.mode-card.on {
+  border-color: color-mix(in oklab, var(--primary) 55%, transparent);
+  background: color-mix(in oklab, var(--primary) 6%, var(--card-2));
+}
+/* 冲突时被护栏挡住的卡：降不透明度而不是隐藏 —— 隐藏会让「这条路存在」这件事消失。 */
+.mode-card.off { opacity: .55; }
+.mode-card .mc-head { display: flex; align-items: flex-start; gap: 10px; }
+.mode-card .mc-ico {
+  flex: none; width: 30px; height: 30px; border-radius: 9px;
+  display: grid; place-items: center; background: var(--muted); color: var(--muted-fg);
+}
+.mode-card.on .mc-ico {
+  background: color-mix(in oklab, var(--primary) 18%, transparent); color: var(--primary);
+}
+.mode-card .mc-ico svg { width: 16px; height: 16px; }
+.mode-card .mc-ttl { flex: 1; min-width: 0; }
+.mode-card .mc-name { display: flex; align-items: center; gap: 6px; font-size: 13px; font-weight: 600; }
+.mode-card .mc-tag { font-size: 11.5px; color: var(--muted-fg); margin-top: 2px; }
+.mode-card .mc-cur { flex: none; }
+.mode-card ul.cap { list-style: none; margin: 12px 0 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.mode-card ul.cap li { display: flex; align-items: flex-start; gap: 7px; font-size: 11.5px; line-height: 1.5; }
+.mode-card ul.cap li svg { width: 13px; height: 13px; margin-top: 1px; flex: none; }
+.mode-card ul.cap li.yes { color: var(--foreground); }
+.mode-card ul.cap li.yes svg { color: var(--success); }
+.mode-card ul.cap li.no { color: var(--faint); }
+.mode-card .mc-foot { margin-top: auto; padding-top: 14px; }
+.mode-card .mc-foot .btn { width: 100%; justify-content: center; }
+
+.adv-toggle {
+  display: flex; align-items: center; gap: 8px; width: 100%;
+  appearance: none; cursor: pointer; font: inherit; font-size: 12.5px; font-weight: 550;
+  color: var(--foreground); background: transparent; border: 0;
+  padding: 12px 16px; text-align: left;
+}
+.adv-toggle:hover { background: oklch(1 0 0 / 4%); }
+.adv-toggle .adv-caret { width: 12px; color: var(--muted-fg); }
+.adv-body { border-top: 1px solid var(--border); }
+
+/* ══════════════════════ 模型降级链（模型分区内的策略卡）══════════════════════
+   为什么是卡片而不是新分区：新增分区要同时改 `GW_SECTIONS`、三个网关页的接线
+   与 `check-scope-registry.cjs` 的断言；而卡片零门禁成本，且「降级链」与「模型清单」
+   本来就是同一组东西 —— 清单说有哪些模型，降级链说它们挂了怎么办。
+
+   ## 链行为什么是 grid 而不是 flex
+   第一列必须按**内容宽度**收：用 `1fr` 会让主模型与箭头之间裂开一大片空白
+   （第一版就是这么错的，模型 chip 贴着左边、箭头飘在中间）。备选列吃剩余空间，
+   触发标签靠右 —— 三者的宽度语义不同，grid 才能一次说清。 */
+.fb-list { padding: 0 16px; }
+
+.fb-chain {
+  display: grid;
+  grid-template-columns: auto 18px minmax(0, 1fr) auto;
+  align-items: center; gap: 9px;
+  padding: 12px 0; border-bottom: 1px solid var(--border);
+}
+.fb-chain:last-child { border-bottom: 0; }
+/* 停用的链整行变暗但仍可见（与「禁用模型」同一套语言：用户要知道它存在、可随时启用）。 */
+.fb-chain.is-off { opacity: .6; }
+.fb-chain:hover { background: color-mix(in oklab, var(--accent) 45%, transparent); }
+.fb-chain:hover .fb-side { opacity: 1; }
+
+.fb-model {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-family: ui-monospace, "SFMono-Regular", Consolas, monospace; font-size: 11.5px;
+  background: var(--card-2); border: 1px solid var(--border);
+  border-radius: 7px; padding: 3px 8px; max-width: 100%;
+}
+.fb-model .nm { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* 源模型用主色描边：一眼分出「从谁降到谁」，不必读两遍名字。 */
+.fb-model.src {
+  border-color: color-mix(in oklab, var(--primary) 38%, transparent);
+  background: color-mix(in oklab, var(--primary) 10%, var(--card-2));
+}
+
+/* 状态点 = **实时健康态**（不是静态标记）。这是整个卡片里最关键的一个元素：
+   它回答用户唯一真正关心的问题 ——「我这条链现在真的能救我吗」。 */
+.fb-dot { width: 6px; height: 6px; border-radius: 999px; flex: none; background: var(--muted-fg); }
+.fb-dot.ok { background: var(--success); }
+.fb-dot.warn { background: var(--warning); }
+.fb-dot.off { opacity: .45; }
+
+.fb-arrow { color: var(--muted-fg); font-size: 12px; text-align: center; opacity: .7; }
+.fb-targets { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; min-width: 0; }
+.fb-sep { color: var(--muted-fg); opacity: .45; font-size: 11px; }
+.fb-add {
+  font-size: 11px; color: var(--muted-fg); border: 1px dashed var(--border-strong);
+  border-radius: 7px; padding: 3px 8px; background: transparent;
+}
+.fb-add:hover { color: var(--foreground); border-color: var(--primary); }
+
+.fb-side { display: flex; align-items: center; gap: 8px; opacity: .85; transition: opacity .12s; }
+.fb-tags { display: flex; gap: 4px; flex-wrap: wrap; justify-content: flex-end; max-width: 200px; }
+.fb-tag {
+  font-size: 10px; color: var(--muted-fg); background: var(--card-2);
+  border: 1px solid var(--border); border-radius: 5px; padding: 1px 5px; white-space: nowrap;
+}
+
+/* 诊断带贴在链行**下方**，而不是弹 toast：降级链的问题几乎全是「配置对了但不会生效」
+   （目标也在闸门里 / 目标能力不匹配 / 环路），这类问题必须在**配置的那一刻**看得见。 */
+.fb-diag {
+  grid-column: 1 / -1; display: flex; align-items: flex-start; gap: 6px;
+  margin-top: 3px; padding: 7px 9px; border-radius: 8px;
+  font-size: 11px; line-height: 1.6;
+}
+.fb-diag svg { width: 12px; height: 12px; flex: none; margin-top: 2px; }
+.fb-diag.warn {
+  color: color-mix(in oklab, var(--warning) 85%, var(--foreground));
+  background: color-mix(in oklab, var(--warning) 10%, transparent);
+  border: 1px solid color-mix(in oklab, var(--warning) 26%, transparent);
+}
+.fb-diag.info { color: var(--muted-fg); background: var(--card-2); border: 1px solid var(--border); }
+
+/* ── 抽屉：模拟路径用**纵向时序**，不是横向箭头链 ──
+   560px 窗宽下横向链必然折行，折完就看不出顺序了（设计稿第一版实测）。 */
+.fb-sim { border: 1px solid var(--border); border-radius: 10px; background: var(--card-2); padding: 10px 12px; }
+.fb-sim .h {
+  font-size: 10.5px; letter-spacing: .04em; text-transform: uppercase; color: var(--muted-fg);
+}
+.fb-step {
+  display: grid; grid-template-columns: 14px minmax(0, 1fr) 48px auto;
+  align-items: center; gap: 8px; padding: 5px 0; font-size: 11.5px;
+}
+.fb-step + .fb-step { border-top: 1px solid var(--border); }
+.fb-step .n { font-family: ui-monospace, Consolas, monospace; font-size: 10px; color: var(--muted-fg); text-align: center; }
+.fb-step .m { font-family: ui-monospace, Consolas, monospace; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.fb-step .r { font-size: 10.5px; color: var(--muted-fg); }
+.fb-step .s { font-size: 10.5px; text-align: right; white-space: nowrap; }
+.fb-step .s.warn { color: var(--warning); }
+.fb-step .s.ok { color: var(--success); }
+
+.fb-slot { display: flex; align-items: center; gap: 6px; }
+.fb-slot .i { font-family: ui-monospace, Consolas, monospace; font-size: 10px; color: var(--muted-fg); width: 14px; text-align: right; flex: none; }
+.fb-slot select { flex: 1; min-width: 0; }
+
+/* issue #122 · 设置页顶部「这一页影响谁」提示条。
+   全局项与按作用域项的**视觉必须一致**（都是灰底提示），差别只在文案 ——
+   给全局项加醒目色会让它看起来像「警告」，而这不是警告，是归属说明。 */
+.scope-note {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin-bottom: 12px;
+  padding: 8px 12px;
+  border-radius: 10px;
+  background: var(--muted, #f5f5f5);
+  color: var(--muted-fg, #6b7280);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
 </style>
 </head>
 <body>
@@ -2660,12 +2863,12 @@ const GATEWAY = {
     /* available = 上游事实（能不能调）；disabled = 用户偏好（主动拿掉）。
        两者**正交**，四种组合都合法 —— UI 必须能区分「已禁用」与「上游不可用」。 */
     models: [
-      { name: "claude-sonnet-4.5", provider: "anthropic", scope: "国内版", available: true, context: 200000, maxWindow: 200000, efforts: ["low", "medium", "high", "xhigh", "max"], defaultEffort: "high", credits: 1.33 },
-      { name: "claude-opus-4.1", provider: "anthropic", scope: "国内版", available: true, disabled: true, context: 200000, maxWindow: 200000, efforts: ["low", "medium", "high"], defaultEffort: "high", credits: 3.31 },
-      { name: "gpt-5-codex", provider: "openai", scope: "国内版", available: true, context: 400000, maxWindow: 1000000, efforts: ["low", "medium", "high", "xhigh", "max"], defaultEffort: "high", credits: 0.79 },
-      { name: "gemini-2.5-pro", provider: "openai", scope: "国内版", available: true, context: 300000, maxWindow: 1000000, efforts: ["low", "medium", "high"], defaultEffort: "medium", credits: 0.34 },
-      { name: "claude-sonnet-4.5", provider: "anthropic", scope: "国际版", available: true, context: 200000, maxWindow: 200000, efforts: ["low", "medium", "high", "xhigh", "max"], defaultEffort: "high", credits: 1.33 },
-      { name: "gpt-5-codex", provider: "openai", scope: "国际版", available: false, disabled: true, context: 400000, maxWindow: 1000000, efforts: ["low", "medium", "high", "xhigh", "max"], defaultEffort: "high", credits: 0.79 },
+      { name: "claude-sonnet-4.5", provider: "anthropic", scope: "国内版", available: true, context: 200000, maxWindow: 200000, efforts: ["low", "medium", "high", "xhigh", "max"], defaultEffort: "high", credits: 1.33, caps: ["tools", "vision"] },
+      { name: "claude-opus-4.1", provider: "anthropic", scope: "国内版", available: true, disabled: true, context: 200000, maxWindow: 200000, efforts: ["low", "medium", "high"], defaultEffort: "high", credits: 3.31, caps: ["tools", "vision"] },
+      { name: "gpt-5-codex", provider: "openai", scope: "国内版", available: true, context: 400000, maxWindow: 1000000, efforts: ["low", "medium", "high", "xhigh", "max"], defaultEffort: "high", credits: 0.79, caps: ["tools", "vision"] },
+      { name: "gemini-2.5-pro", provider: "openai", scope: "国内版", available: true, context: 300000, maxWindow: 1000000, efforts: ["low", "medium", "high"], defaultEffort: "medium", credits: 0.34, caps: ["vision"] },
+      { name: "claude-sonnet-4.5", provider: "anthropic", scope: "国际版", available: true, context: 200000, maxWindow: 200000, efforts: ["low", "medium", "high", "xhigh", "max"], defaultEffort: "high", credits: 1.33, caps: ["tools", "vision"] },
+      { name: "gpt-5-codex", provider: "openai", scope: "国际版", available: false, disabled: true, context: 400000, maxWindow: 1000000, efforts: ["low", "medium", "high", "xhigh", "max"], defaultEffort: "high", credits: 0.79, caps: ["tools", "vision"] },
     ],
     /* 模型清单的来源（§3.17）：实时 / 已保存 / 内置 —— 三级都必须显式标注，
        不许把「内置」伪装成「实时」（用户照着清单调用会扑空）。 */
@@ -2687,6 +2890,44 @@ const GATEWAY = {
     /* 模型级暂停：同一模型在 ≥2 个账号上先后被限流 ⇒ 该模型整体暂停，
        到期后只放**一个**请求做半开试探 —— 否则每个请求都要把每个账号各撞一遍。 */
     modelGate: { model: "gpt-5-codex", accounts: 2, remain: 42, phase: "paused" },
+    /* ══════════ 模型降级链（用户偏好，不是运行配置）══════════
+       主模型在上游**明确失败**时，按序改用备选模型重发一次。
+
+       ## `triggers` 是白名单，不是「失败就降级」
+       参数错 4xx / 内容审核拒绝 / 402 余额不足 / Key 配额用尽 **固定不在表里**：
+       前三者换模型救不了（只会把同一个错误翻译成更陌生的模型名），后者是账号或密钥
+       层面的额度问题。**内容审核尤其不能降级** —— 换模型等于换一套审核尺度，
+       效果上就是帮调用方绕过审核，还会造成「同一段内容今天被拒、明天通过」。
+
+       ## 备选只在本作用域内选
+       跨作用域 = 换账号池 + 换 wire 协议 + 换计费，那是统一网关命名空间的职责，
+       不是降级链的职责。
+
+       ## 每次请求都从主模型开始（不做粘性降级）
+       闸门已提供免费回切：主模型失败后处于暂停期，期间请求在闸门判定处直接短路、
+       一次上游请求都不发。粘性只会让「以为在用 A 其实一直在用 B」变成长期静默态。 */
+    fallback: {
+      enabled: true,
+      chains: [
+        /* 主演示链：第 1 跳在闸门中（见上面的 `modelGate`）、第 2 跳缺 tools 能力 ——
+           两种诊断同时出现在一条链上，正好验证「诊断带可以有多个」。 */
+        { from: "claude-sonnet-4.5", targets: ["gpt-5-codex", "gemini-2.5-pro"], triggers: ["gate", "rate", "blocked", "server"], enabled: true },
+        { from: "gemini-2.5-pro", targets: ["gpt-5-codex"], triggers: ["gate", "rate"], enabled: true },
+        /* 已停用：配置保留但不触发。停用态必须可见，否则用户以为链被删了。 */
+        { from: "claude-opus-4.1", targets: ["claude-sonnet-4.5"], triggers: ["gate"], enabled: false },
+      ],
+      /* 最近降级（请求日志里的降级标记）。
+         ★ **只显示最近 N 条，不参与任何统计口径** —— 请求日志是环形缓冲（默认 200 条），
+         繁忙时只覆盖十几分钟。任何按窗口聚合的数字都必须来自账本，不能从这张表算。 */
+      events: [
+        { time: "14:22:07", from: "claude-sonnet-4.5", path: ["gpt-5-codex"], reason: "gate", reasonText: "闸门暂停 42s", account: "主号 A", ms: 1200, result: "degraded" },
+        { time: "14:19:44", from: "claude-sonnet-4.5", path: ["gpt-5-codex", "gemini-2.5-pro"], reason: "rate", reasonText: "6004 模型限流", account: "主号 A / B", ms: 3800, result: "degraded" },
+        { time: "14:02:11", from: "gemini-2.5-pro", path: ["gpt-5-codex"], reason: "blocked", reasonText: "11102 模型封禁", account: "主号 C", ms: 900, result: "degraded" },
+        /* 不可降级的那一档：必须在流水里可见，且写清「按规则不降级」而不是「失败」。 */
+        { time: "13:58:02", from: "claude-sonnet-4.5", path: [], reason: "credit", reasonText: "402 余额不足", account: "主号 A", ms: 300, result: "blocked" },
+        { time: "13:41:20", from: "claude-sonnet-4.5", path: ["gpt-5-codex", "gemini-2.5-pro"], reason: "server", reasonText: "5xx", account: "主号 B", ms: 2100, result: "failed" },
+      ],
+    },
     logs: [
       { time: "10:38:12", model: "claude-sonnet-4.5", account: "jackey", status: 200, ms: 842, tokens: 1284 },
       { time: "10:37:44", model: "gpt-5-codex", account: "team-shared", status: 200, ms: 610, tokens: 402 },
@@ -3057,6 +3298,14 @@ const SETTINGS = [
     ],
   },
   {
+    /* ★ issue #109：CodeBuddy CLI 的**接入方式**（二选一）。
+       放设置页而不是账号卡：CLI 的凭据只有一份（`~/.codebuddy/settings.json`），
+       这是**全局一次性配置**；账号卡上的 `cliControl` 是「按账号切默认账号」，另一层次。
+       渲染走 `viewCliIntegration()`（`kind: "cli"`），因为它是分段器 + 条件行，
+       不是 `rows` 能表达的静态行。 */
+    id: "cli", label: "CodeBuddy CLI", kind: "cli",
+  },
+  {
     id: "diagnostics", label: "权限与诊断",
     groups: [
       { title: "环境自检", rows: [
@@ -3286,6 +3535,14 @@ const state = {
   gwSub: "overview",
   gwApi: "openai",      // 快速接入的协议 Tab：openai / anthropic
   gwScanning: false,    // 模型清单「识别中」（§3.17）
+  /* 模型降级链（P13）：`fbDraft` = 抽屉里正在编辑的草稿；`fbEvents` = 流水是否展开；
+     `fbOpen` = 卡片是否展开（默认收起，与「限流探测」卡同形态）。
+     ★ 草稿与已存配置**分开**：抽屉里改了没保存就关掉，不能污染配置。
+     ★ 重开抽屉时必须**保留**已有草稿（切触发条件 / 换备选都要重开刷新），
+       从配置重建会把用户刚做的改动冲掉 —— 见 `openFbDrawer` 的 `same` 判断。 */
+  fbDraft: null,
+  fbEvents: false,
+  fbOpen: false,
   /* Trae 上下文策略（Max Mode）：always = 支持表内模型始终注入 is_max_mode；off = 回到上游默认窗口。
      Max Mode 是**请求级开关**，不是模型 —— 所以清单里一个模型只有一条记录，没有 `-max` 影子 id。 */
   maxMode: "always",
@@ -3293,6 +3550,21 @@ const state = {
   maxContext: true,
   gwTool: "codex",      // 接入说明里选中的客户端（§3.18.3）
   setSub: "general",
+  /* ★ CodeBuddy CLI 的**接入方式**（issue #109）—— 全局一次性配置，与「按账号切 CLI 默认账号」
+     是两个层次。两条路互斥（都写 `~/.codebuddy/settings.json`），所以用单一 mode 表达。
+       `foreignGateway` 是**仅原型**的演示开关：模拟「settings 已被外部改成网关地址」，
+       用来看冲突态（护栏把「直连上游」按钮禁掉）长什么样。 */
+  cli: {
+    mode: "direct",
+    model: "",
+    rotate: true,
+    /* 高级区折叠态：默认模型 / Key 是低频项，默认收起（不占主视线）。 */
+    advanced: false,
+    /* 切换后 env 不会热重载 ⇒ 状态条要能说「待重启」，否则用户以为没生效。 */
+    pendingRestart: false,
+    /* **仅原型**的演示开关：模拟「settings 已被外部改成网关地址」，用来看冲突态。 */
+    foreignGateway: false,
+  },
   /* 会话工作台（v2.3）：客户端 Tab + 状态筛选 + 排序 */
   sessionClient: "workbuddy",
   sessionFilter: "all",
@@ -3317,8 +3589,13 @@ const state = {
   gwRoll: {},
   /* 「模拟请求」产出的换号链路（步骤数组）。任何池状态变更都会清空它，避免陈旧的假链路。{ [scope]: step[] } */
   gwChain: {},
-  /* 「免费号不可用时允许用收费号」：**默认关**（与「不偷偷花积分」的安全默认同源）。{ [scope]: bool } */
+  /* 「免费号不可用时允许用收费号」：**默认关**（与「不偷偷花积分」的安全默认同源）。{ [scope]: bool }
+     ★ issue #129：`gwAutoFailover` 按**产品线**存（`wb` / `trae` / `qoder`），不是按 scope ——
+     真实实现就是三份配置各一个同名布尔，WB 的两个版本 Tab 共用同一个值。
+     演示里也按产品线取，否则「切到国际版发现开关自己变了」会演成一个不存在的 bug。 */
   gwPayFallback: {},
+  /* 「账号故障时自动切换」（issue #129）：**默认关**（改变对外报错语义 = 行为变更）。{ [platform]: bool } */
+  gwAutoFailover: {},
   /* 密钥表「行内展开」：当前展开了哪把密钥的明细（null = 都收起）。
      ★ 一次只展开一行 —— 展开区是「低头看详情」，同时展开三行就把一览表毁掉了。
      纯本地状态，不发请求；点同一行再点一次即收起。 */
@@ -5408,6 +5685,327 @@ function contextCell(model) {
   return `<span class="badge">${fmtWindow(max)}</span> <span class="tiny muted">已是上限</span>`;
 }
 
+/* ══════════════════════ 模型降级链（P13）══════════════════════
+   主模型在上游**明确失败**时，按序改用备选模型重发一次。
+
+   ## 为什么它是「模型」分区里的一张卡，而不是第 7 个分区
+   新增分区要同时改 `GW_SECTIONS`、三个网关页的接线、以及
+   `scripts/check-scope-registry.cjs` 的断言 —— 四处联动、漏一处 build 就红。
+   而「降级链」与「模型清单」本来就是同一组东西：清单说有哪些模型，
+   降级链说它们挂了怎么办。放一起，用户能看着清单直接配。
+
+   ## 状态点为什么是**派生**的，不是写死的
+   `fbStateOf` 从 `modelGate` / `pool[].modelCool` / `disabled` / `available` 现算，
+   与账号池那张表读同一份数据。写死的绿点会在闸门暂停时仍然亮着 ——
+   那比不显示更糟：用户以为有保护，实际降级到一个同样不可用的模型。
+   这也遵守原型的一条老纪律：**卡片里不手写任何数字或状态**。
+
+   ## 三条不能破的边界
+   ① `triggers` 是**白名单**：参数错 / 内容审核 / 402 / Key 配额 永不在表里；
+   ② 已开始向客户端输出的流**不回退**（物理限制，不是策略）；
+   ③ 备选只在本作用域内选 —— 跨作用域是统一网关命名空间的职责。 */
+
+/** 可勾选的触发条件（顺序即展示顺序：先「默认开」后「需谨慎」）。 */
+const FB_TRIGGERS = [
+  ["gate", "模型闸门暂停", "该模型近期在多个账号上失败、已被网关整体暂停。零成本直接跳下一跳。"],
+  ["rate", "模型级限流（6004）", "上游明确表示是这个模型被限，换号无用。"],
+  ["blocked", "模型被封禁（11102）", "上游对该模型返回封禁；短时间不会恢复。"],
+  ["server", "上游 5xx", "服务端故障。开启后故障期间流量会涌向备选，可能把备选也打挂。"],
+  ["timeout", "请求超时", "超过 600s 未响应。开启后长任务可能被重复计费。"],
+];
+
+/** **固定不降级**的四类。放在抽屉里显式列出 —— 让用户看见「什么不会降级」比让他猜更重要。 */
+const FB_NEVER = [
+  ["参数错误 4xx", "换模型救不了，只会把同一个错误翻译成更陌生的模型名"],
+  ["内容审核拒绝", "换模型等于换一套审核尺度 —— 效果上就是帮调用方绕过审核"],
+  ["402 余额不足", "账号额度问题，换模型同样 402"],
+  ["Key 配额用尽", "按 Key 计量，与模型无关"],
+];
+
+const FB_TRIGGER_LABEL = { gate: "闸门", rate: "6004", blocked: "11102", server: "5xx", timeout: "超时" };
+
+/** 基线触发条件（默认全开）。卡片上**只标注超出基线的部分** ——
+    把这三项也画成 tag，每行右侧会堆满同样的三个词，反而看不出「这条链额外开了 5xx」。 */
+const FB_BASELINE = ["gate", "rate", "blocked"];
+
+/** 模型在某作用域内的**实时**状态（派生，不存）。 */
+function fbStateOf(g, name) {
+  const m = (g.models || []).find((x) => x.name === name);
+  if (!m) return { kind: "unknown", label: "不在清单里" };
+  if (m.disabled) return { kind: "disabled", label: "已禁用" };
+  if (!m.available) return { kind: "unavailable", label: "上游不可用" };
+  const gate = g.modelGate;
+  if (gate && gate.model === name && gate.phase === "paused")
+    return { kind: "gated", label: `闸门暂停 · 剩 ${gate.remain}s`, remain: gate.remain, accounts: gate.accounts };
+  const cool = (g.pool || []).flatMap((a) => a.modelCool || []).find((c) => c.model === name);
+  if (cool) return { kind: "cooling", label: `账号冷却 · 剩 ${cool.remain}s` };
+  return { kind: "ok", label: "可用" };
+}
+
+/** 状态 → 圆点档位。`gated`/`cooling` 是**黄**（暂时不可用），`disabled`/`unavailable` 是**灰**。 */
+function fbDotCls(kind) {
+  if (kind === "ok") return "ok";
+  if (kind === "gated" || kind === "cooling") return "warn";
+  return "off";
+}
+
+/** 目标模型**接不住**主模型请求的哪一项能力。返回 `null` = 无冲突。 */
+function fbCapWarn(g, from, target) {
+  const a = (g.models || []).find((x) => x.name === from);
+  const b = (g.models || []).find((x) => x.name === target);
+  if (!a || !b) return null;
+  const CN = { tools: "工具调用", vision: "图片输入", json: "结构化输出" };
+  const lost = (a.caps || []).filter((c) => !(b.caps || []).includes(c));
+  return lost.length ? lost.map((c) => CN[c] || c).join(" / ") : null;
+}
+
+/** 一条链的诊断（可以有**多条**：闸门中 + 能力不匹配同时成立是常见情形）。 */
+function fbDiags(g, chain) {
+  const out = [];
+  chain.targets.forEach((t, i) => {
+    const st = fbStateOf(g, t);
+    if (st.kind === "gated")
+      /* 不写 `（${st.label}）`：label 本身已含「闸门暂停」，会变成「正在闸门暂停中（闸门暂停 · 剩 42s）」。 */
+      out.push(["warn", `第 ${i + 1} 跳 <b>${esc(t)}</b> 正在闸门暂停中（${st.accounts} 个账号先后失败，剩 ${st.remain}s）。期间该链会直接跳到下一跳；若都不行，返回原始错误，不会无限等待。`]);
+    else if (st.kind === "cooling")
+      out.push(["warn", `第 ${i + 1} 跳 <b>${esc(t)}</b> 有账号在冷却（${st.label}），仍可能命中其它健康账号。`]);
+    else if (st.kind === "disabled" || st.kind === "unavailable")
+      out.push(["warn", `第 ${i + 1} 跳 <b>${esc(t)}</b> ${st.kind === "disabled" ? "已被禁用" : "上游不可用"}，该跳会被跳过。`]);
+    const cap = fbCapWarn(g, chain.from, t);
+    if (cap)
+      out.push(["warn", `<b>${esc(t)}</b> 不支持${cap}，而主模型支持。带这类内容的请求<b>不会</b>降级到它 —— 网关会跳过这一跳继续下一个，而不是发出一个必然失败的请求。`]);
+  });
+  return out;
+}
+
+/** 降级链卡片（模型分区，位于上下文策略卡与清单来源条之间）。 */
+function fallbackCard(g) {
+  const fb = g.fallback || { enabled: false, chains: [], events: [] };
+  const on = fb.enabled && fb.chains.some((c) => c.enabled);
+  const active = fb.chains.filter((c) => c.enabled).length;
+
+  const badge = !fb.chains.length ? `<span class="badge">未配置</span>`
+    : fb.enabled ? `<span class="badge ok">已启用 · ${active} 条</span>`
+    : `<span class="badge">已关闭</span>`;
+
+  const head = `<div class="card-head">
+    <h3>模型降级链</h3>${badge}
+    <div class="grow"></div>
+    <span class="tiny muted">同作用域 · 最多 2 跳</span>
+    <button class="btn sm ghost" data-act="fb-events">${state.fbEvents ? "收起流水" : "降级流水"}</button>
+    <button class="btn sm ghost" data-act="fb-toggle-open" aria-expanded="${state.fbOpen}">${state.fbOpen ? "收起" : "展开"}</button>
+  </div>`;
+
+  /* 恒定明示：这两句必须一直在，不能塞进 tooltip ——
+     「会不会偷偷换模型」是这个功能最需要被回答的疑问。 */
+  const notice = `<div style="padding:12px 16px 0">
+    <p class="tiny muted" style="margin:0;line-height:1.7">
+      仅在上游<b>明确失败</b>时触发。已开始向客户端输出的流<b>不会回退</b>，也不会把失败改写成成功 ——
+      客户端可通过响应头 <span class="mono">X-Buddy-Fallback-To</span> 得知实际使用的模型。
+    </p>
+  </div>`;
+
+  const bar = `<div class="row" style="gap:10px;padding:12px 16px;border-bottom:1px dashed var(--border)">
+    <button class="switch${fb.enabled ? " on" : ""}" data-act="fb-toggle" aria-label="启用降级"></button>
+    <div class="lab" style="flex:1;min-width:0">
+      <b style="display:block;font-size:12.5px;font-weight:550">启用降级</b>
+      <span class="tiny muted">关掉后配置保留，但一次都不触发</span>
+    </div>
+    <button class="btn sm" data-act="fb-new">${ICON.plus}新建降级链</button>
+  </div>`;
+
+  const rows = fb.chains.map((c) => {
+    const src = fbStateOf(g, c.from);
+    const targets = c.targets.map((t, i) => {
+      const st = fbStateOf(g, t);
+      return `${i ? `<span class="fb-sep">›</span>` : ""}
+        <span class="fb-model" title="${esc(st.label)}"><i class="fb-dot ${fbDotCls(st.kind)}"></i><span class="nm">${esc(t)}</span></span>`;
+    }).join("");
+    const extra = c.triggers.filter((k) => !FB_BASELINE.includes(k));
+    const tags = extra.map((k) => `<span class="fb-tag">+${FB_TRIGGER_LABEL[k] || esc(k)}</span>`).join("");
+    const tagTitle = `触发条件：${c.triggers.map((k) => FB_TRIGGER_LABEL[k] || k).join(" / ")}`;
+    const diags = fbDiags(g, c).map(([cls, text]) =>
+      `<div class="fb-diag ${cls}">${ICON.warn}<span>${text}</span></div>`).join("");
+    return `<div class="fb-chain${c.enabled ? "" : " is-off"}">
+      <span class="fb-model src" title="${esc(src.label)}"><i class="fb-dot ${fbDotCls(src.kind)}"></i><span class="nm">${esc(c.from)}</span></span>
+      <span class="fb-arrow">→</span>
+      <div class="fb-targets">${targets}${c.targets.length < 2
+        ? `<button class="fb-add" data-act="fb-edit|${esc(c.from)}">+ 备选</button>` : ""}</div>
+      <div class="fb-side">
+        ${c.enabled ? `<div class="fb-tags" title="${esc(tagTitle)}">${tags}</div>` : `<span class="badge">已停用</span>`}
+        <button class="btn ghost xs" data-act="fb-chain-toggle|${esc(c.from)}" title="${c.enabled ? "停用这条链" : "启用这条链"}">
+          ${c.enabled ? "停用" : "启用"}</button>
+        <button class="btn ghost xs" data-act="fb-edit|${esc(c.from)}" title="编辑">${ICON.more}</button>
+      </div>
+      ${diags}
+    </div>`;
+  }).join("");
+
+  const empty = `<div class="empty" style="padding:34px 20px 36px">
+    <div class="ico">${ICON.arrowRight}</div>
+    <b>还没有降级链</b>
+    <p>当某个模型在上游明确失败（整体限流、被封禁、5xx）时，网关可以自动改用你指定的备用模型重发一次，
+       而不是把错误直接抛给客户端。默认关闭，配置后才生效。</p>
+    <button class="btn primary" data-act="fb-new">${ICON.plus}新建降级链</button>
+  </div>`;
+
+  const events = state.fbEvents ? fbEventsHtml(fb) : "";
+
+  /* 折叠只收配置区：标题 / 徽标 / 恒定明示留在卡头 ——「会不会偷偷换模型」是这张卡的
+     身份，不能随配置一起折掉（与「限流探测」卡同口径）。 */
+  const body = state.fbOpen ? `${bar}
+    ${fb.chains.length ? `<div class="fb-list">${rows}</div>
+      <p class="tiny muted" style="margin:0;padding:10px 16px 12px;line-height:1.7">
+        状态点读的是<b>实时</b>闸门与冷却（与账号池同源），不是配置快照。降级成功后主模型的闸门<b>不解除</b> ——
+        它确实失败了；闸门到期后请求自然回到主模型，无需「回切」开关。
+      </p>` : empty}
+    ${events}` : "";
+
+  return `<section class="card" style="margin-bottom:16px">
+    ${head}${notice}${body}
+  </section>`;
+}
+
+/** 降级流水（最近 N 条）。**不做任何比率** —— 请求日志是环形缓冲，按窗口聚合必错。 */
+function fbEventsHtml(fb) {
+  const rows = (fb.events || []).map((e) => {
+    const path = e.path.length
+      ? `<span class="muted">${esc(e.from)}</span> → <b>${e.path.map(esc).join("</b> → <b>")}</b>`
+      : `<span class="muted">${esc(e.from)}</span> <span class="muted">→ —</span>`;
+    const res = e.result === "degraded" ? `<span class="badge ok">已降级</span>`
+      : e.result === "failed" ? `<span class="badge bad">备选也失败</span>`
+      : `<span class="badge">按规则不降级</span>`;
+    return `<tr>
+      <td class="mono muted nowrap">${esc(e.time)}</td>
+      <td class="mono">${path}</td>
+      <td><span class="badge ${e.result === "blocked" ? "" : "warn"}">${esc(e.reasonText)}</span></td>
+      <td class="tiny muted">${esc(e.account)}</td>
+      <td class="num">${(e.ms / 1000).toFixed(1)}s</td>
+      <td>${res}</td>
+    </tr>`;
+  }).join("");
+  return `<div style="border-top:1px solid var(--border)">
+    <div class="tbl-wrap"><table class="tbl">
+      <thead><tr><th>时间</th><th>实际路径</th><th>触发原因</th><th>账号</th><th>耗时</th><th>结果</th></tr></thead>
+      <tbody>${rows}</tbody></table></div>
+    <p class="tiny muted" style="margin:0;padding:10px 16px 12px;line-height:1.7">
+      只有最近 <b>${(fb.events || []).length}</b> 条，且<b>不参与任何统计口径</b>：请求日志是环形缓冲（默认 200 条），
+      繁忙时只覆盖十几分钟。需要「近 7 天降级率」时必须从账本另开一个维度，不能拿这张表算。
+    </p>
+  </div>`;
+}
+
+/* ── 编辑抽屉 ──
+   用抽屉而不是弹窗：原型里「改一份带多组的配置」一律走右侧抽屉（Key 权限、CLI 接入同款），
+   弹窗只留给「确认一个动作」。这里要选模型、排顺序、勾条件、看预演，属前者。 */
+function fbDrawerHtml(g) {
+  const d = state.fbDraft;
+  /* 按名字去重：同一模型在清单里可能有「国内版 / 国际版」两条记录（跨区目录），
+     下拉里出现两个一模一样的选项会让人以为是两回事。 */
+  const pool = [...new Map((g.models || [])
+    .filter((m) => !m.disabled && m.available)
+    .map((m) => [m.name, m])).values()];
+  const opt = (sel, withEmpty) => `${withEmpty ? `<option value="">选择模型…</option>` : ""}${pool
+    .map((m) => `<option value="${esc(m.name)}"${m.name === sel ? " selected" : ""}>${esc(m.name)}</option>`).join("")}`;
+
+  const fromPart = `<div class="dsec">
+    <h4>主模型</h4>
+    ${d.isNew
+      ? `<div class="fb-slot"><select class="inp" data-fb-from>${opt(d.from, true)}</select></div>
+         <p class="tiny muted" style="margin:0">一条链只对应一个主模型；同一主模型不允许配置两条链。</p>`
+      : `<div class="fb-slot"><select class="inp" disabled><option>${esc(d.from)}</option></select></div>
+         <p class="tiny muted" style="margin:0">主模型不可改。要换主模型请删掉这条链重配 —— 改 from 等于换了一条链。</p>`}
+  </div>`;
+
+  const targetPart = `<div class="dsec">
+    <h4>备选模型（按顺序尝试）</h4>
+    ${[0, 1].map((i) => `<div class="fb-slot">
+      <span class="i">${i + 1}</span>
+      <select class="inp" data-fb-slot="${i}">${opt(d.targets[i] || "", true)}</select>
+      <button class="btn xs" data-act="fb-move|${i}|up"${i === 0 ? " disabled" : ""} title="上移">↑</button>
+      <button class="btn xs" data-act="fb-move|${i}|down"${i === 1 ? " disabled" : ""} title="下移">↓</button>
+    </div>`).join("")}
+    <p class="tiny muted" style="margin:0">最多 2 个（含主模型共 3 跳）。已禁用 / 上游不可用的模型不会出现在这里。</p>
+  </div>`;
+
+  const triggerPart = `<div class="dsec">
+    <h4>触发条件</h4>
+    ${FB_TRIGGERS.map(([k, title, desc]) => {
+      const on = d.triggers.includes(k);
+      return `<button class="opt${on ? " on" : ""}" data-act="fb-trigger|${k}">
+        <span class="ico">${ICON.check}</span>
+        <span class="t"><b>${title}</b><span>${desc}</span></span>
+        <span class="badge ${on ? "ok" : ""}">${on ? "开" : "关"}</span>
+      </button>`;
+    }).join("")}
+    <div class="opt is-off" style="cursor:default">
+      <span class="ico">${ICON.shield}</span>
+      <span class="t"><b>固定不降级</b><span>${FB_NEVER
+        /* 用 <span> 而不是 <b>：`.opt .t b` 是 `display:block`，四项加粗会各占一行、竖排成列表。 */
+        .map(([t, why]) => `<span style="color:var(--foreground)">${t}</span>：${why}`).join("；")}。</span></span>
+    </div>
+  </div>`;
+
+  return fromPart + targetPart + triggerPart + fbSimHtml(g);
+}
+
+/** 模拟路径：**纵向时序**。560px 抽屉里横向箭头链必然折行，折完就看不出顺序了。 */
+function fbSimHtml(g) {
+  const d = state.fbDraft;
+  if (!d.from) return `<div class="fb-sim"><div class="h">模拟路径</div>
+    <p class="tiny muted" style="margin:6px 0 0">先选主模型。</p></div>`;
+  const steps = [[d.from, "主模型", fbStateOf(g, d.from)]];
+  d.targets.filter(Boolean).forEach((t, i) => steps.push([t, `备选 ${i + 1}`, fbStateOf(g, t)]));
+
+  const html = steps.map(([name, role, st], i) => {
+    /* 每一跳会怎么走：主模型本身不看状态（它总是先试），备选看状态决定「跳过 / 会用」。 */
+    let cls = "", txt = "可用 → 会用";
+    if (i > 0) {
+      if (st.kind === "gated") { cls = "warn"; txt = "仍在暂停 → 跳过，不发请求"; }
+      else if (st.kind === "cooling") { cls = "warn"; txt = "部分账号冷却 → 仍会试"; }
+      else if (st.kind === "disabled" || st.kind === "unavailable") { cls = "warn"; txt = "不可用 → 跳过"; }
+      else { cls = "ok"; txt = "可用 → 本次会用它"; }
+    } else {
+      cls = "warn"; txt = st.kind === "ok" ? "先试它" : `${st.label}`;
+    }
+    return `<div class="fb-step"><span class="n">${i + 1}</span><span class="m">${esc(name)}</span>
+      <span class="r">${role}</span><span class="s ${cls}">${esc(txt)}</span></div>`;
+  }).join("");
+
+  const capWarn = d.targets.filter(Boolean)
+    .map((t) => [t, fbCapWarn(g, d.from, t)]).filter(([, w]) => w);
+  return `<div class="fb-sim">
+    <div class="h">模拟路径 · 按当前闸门与冷却预演</div>
+    ${html}
+    <p class="tiny muted" style="margin:6px 0 0;line-height:1.6">
+      ${capWarn.length
+        ? `${capWarn.map(([t, w]) => `<b>${esc(t)}</b> 缺${w}`).join("、")}：带这类内容的请求会跳过该跳。`
+        : "若所有跳都不可用，返回的是<b>原始错误</b>，不会无限等待，也不会把失败改写成成功。"}
+    </p>
+  </div>`;
+}
+
+/** 打开编辑抽屉。`from` 为空 = 新建。 */
+function openFbDrawer(from) {
+  const g = GATEWAY[state.scope];
+  const fb = g.fallback || (g.fallback = { enabled: true, chains: [], events: [] });
+  const exist = from ? fb.chains.find((c) => c.from === from) : null;
+  /* ★ 已有草稿且编辑的是同一条链 ⇒ **保留草稿**。切触发条件 / 换备选都要重开抽屉来刷新
+     画面（保存按钮可用态、模拟路径都由 draft 派生），若每次都从配置重建，
+     用户刚勾上的条件会被立刻冲掉 —— 这是「点了没反应」的经典成因。 */
+  const same = state.fbDraft && (state.fbDraft.isNew ? !from : state.fbDraft.from === from);
+  if (!same) {
+    state.fbDraft = exist
+      ? { from: exist.from, targets: [...exist.targets], triggers: [...exist.triggers], isNew: false }
+      : { from: "", targets: [], triggers: ["gate", "rate", "blocked"], isNew: true };
+  }
+  state.drawer = { kind: "fallback", from: from || null };
+  const canSave = Boolean(state.fbDraft.from);
+  openDrawer(fbDrawerHtml(g), exist ? `编辑降级链 · ${exist.from}` : "新建降级链",
+    `<button class="btn ghost grow0" data-act="drawer-cancel">取消</button>
+     <button class="btn primary grow0" data-act="fb-save"${canSave ? "" : " disabled"}>保存</button>`);
+}
+
 /* WorkBuddy / Qoder 的只读说明：没有请求级 Max Mode，清单直接按目录声明上限。 */
 function contextFixedCard() {
   const on = state.maxContext;
@@ -5863,7 +6461,10 @@ function gwSubId() {
 function uniOverviewSection() {
   const running = UNI.enabled;
   const onCount = UNI.namespaces.size;
+  /* ★ 两档语义（#165）：`base` 是**根地址**（Anthropic 系要它），`baseV1` 是 OpenAI 基址。
+     接入地址行显示 / 复制的是 `baseV1` —— 与下方「接入说明」同口径，否则照抄必然 404。 */
   const base = `http://127.0.0.1:${UNI.port}`;
+  const baseV1 = `${base}/v1`;
   const tot = uniPoolTotals();
   const verdict = uniVerdict();
   /* 失败态走深链（`?err=unified`），与既有 `?err=gateway` / `?err=usage` 同一口径。 */
@@ -5883,8 +6484,8 @@ function uniOverviewSection() {
       <span class="badge ${verdict.cls}" title="${esc(verdict.hint)}">${verdict.label}</span></div>
     <div class="srow"><div class="lab"><b>启用统一网关</b><span>在 ${esc(UNI.bind)}:${UNI.port} 上提供带命名空间前缀的单一入口</span></div>
       <button class="switch${running ? " on" : ""}" data-act="uni-toggle" aria-label="启用统一网关"></button></div>
-    <div class="srow"><div class="lab"><b>接入地址</b><span class="mono">${base}</span></div>
-      <button class="btn sm" data-act="copy|${base}">${ICON.copy}复制</button></div>
+    <div class="srow"><div class="lab"><b>接入地址</b><span class="mono">${baseV1}</span></div>
+      <button class="btn sm" data-act="copy|${baseV1}">${ICON.copy}复制</button></div>
     <div class="srow"><div class="lab"><b>监听地址</b><span class="mono">${esc(UNI.bind)}${UNI.bind === "0.0.0.0" ? " · 局域网内任何设备都能消耗你的额度" : ""}</span></div>
       <select class="inp" data-uni-bind aria-label="监听地址">
         <option value="127.0.0.1"${UNI.bind === "127.0.0.1" ? " selected" : ""}>仅本机 127.0.0.1</option>
@@ -6408,14 +7009,9 @@ function dur(sec) {
 /** 互斥五态徽标（已排除 / 冷却 / 禁用 / 零积分 / 可用）。
  *  ★ 五态**逐条相加 = 条目数**，所以「可用」里绝不能再混进已排除的号 ——
  *  否则卡片说「4 可用」，用户却只能选中 3 个，数字与事实不符。 */
-function poolStateBadge(x) {
-  if (x.excluded) return `<span class="badge bad">已排除</span>`;
-  if (x.state === "冷却") return `<span class="badge warn">冷却</span>`;
-  if (x.state === "禁用") return `<span class="badge bad">禁用</span>`;
-  if (x.state === "零积分") return `<span class="badge warn">零积分</span>`;
-  return `<span class="badge ok">可用</span>`;
-}
-
+/* ★ 这里曾有一份**逐字重复**的 `poolStateBadge` 声明（2026-10-30 删除）：
+   脚本作用域里同名 `function` 重复声明是 **SyntaxError** ⇒ 整份原型在浏览器里
+   一行都不执行（页面只剩静态骨架）。门禁只做文本匹配，所以一直没红。 */
 /** 本次「演示请求」用的模型：模型闸门的模型 > 第一个可用模型。
  *  ★ 不再给下拉选择：模型是**请求**的属性，不是网关的配置项。
  *  把它做成池卡上的选择器，会让人以为「网关有一个全局模型设置」—— 那是假控件。 */
@@ -6631,6 +7227,8 @@ function poolSection(g) {
   const mode = gwModeOf(scope);
   const pinned = mode === "pinned" ? state.pins[scope] || null : null;
   const payFallback = !!state.gwPayFallback[scope];
+  /* ★ issue #129：按**产品线**取（见 `gwAutoFailover` 的注释）——WB 两个版本共用一份。 */
+  const autoFailover = !!state.gwAutoFailover[curScope().platform];
   const seed = state.gwRoll[scope] || 1;
   const c = poolCounts(g);
   const v = poolVerdict(g, model, { payFallback, mode, seed });
@@ -6693,6 +7291,9 @@ function poolSection(g) {
       <span class="tiny muted">收费号兜底</span>
       <button class="switch${payFallback ? " on" : ""}" data-act="pool-payfallback"
         role="switch" aria-checked="${payFallback}" aria-label="允许用收费号兜底"></button>
+      <span class="tiny muted" title="一个账号在回复中途挂掉时，把这次失败变成「客户端可重试的错误」：客户端自动换号重跑整个步骤，你看到的是从头完整重写的回复。代价：已输出的部分作废、这一步再消耗一次额度。默认关 —— 它改变对外报错语义，属于行为变更。">账号故障时自动切换</span>
+      <button class="switch${autoFailover ? " on" : ""}" data-act="pool-autofailover"
+        role="switch" aria-checked="${autoFailover}" aria-label="账号故障时自动切换"></button>
     </div>
     <div class="kpi-row">${tiles
       .map((t) => `<div class="${t.tone}"><b>${t.n}</b><span>${t.k}</span></div>`)
@@ -6767,8 +7368,8 @@ function viewGateway() {
         <span class="badge ${g.enabled ? "ok" : ""}">${g.enabled ? "运行中" : "已停用"}</span></div>
       <div class="srow"><div class="lab"><b>启用本地网关</b><span>在 127.0.0.1 上提供 OpenAI / Anthropic 兼容接口</span></div>
         <button class="switch${g.enabled ? " on" : ""}" data-act="toggle|gw-enabled"></button></div>
-      <div class="srow"><div class="lab"><b>接入地址</b><span class="mono">${g.baseUrl}</span></div>
-        <button class="btn sm" data-act="copy|${g.baseUrl}">${ICON.copy}复制</button></div>
+      <div class="srow"><div class="lab"><b>接入地址</b><span class="mono">${g.baseUrl}/v1</span></div>
+        <button class="btn sm" data-act="copy|${g.baseUrl}/v1">${ICON.copy}复制</button></div>
       <div class="srow"><div class="lab"><b>上游账号凭据</b><span>账号池读取上游凭据的有效性</span></div>
         <button class="btn sm" data-act="gw-verify">${ICON.refresh}校验</button></div>
       <div class="srow"><div class="lab"><b>可用模型</b><span>${g.models.filter((m) => m.available).length} 个</span></div>
@@ -6825,7 +7426,10 @@ function viewGateway() {
   } else if (sub === "models") {
     const served = g.models.filter((m) => m.available && !m.disabled).length;
     const trae = curScope().platform === "trae";
-    main = `${trae ? maxModePolicyCard() : contextFixedCard()}${catalogBar(g.catalog)}
+    /* 降级链卡在「上下文策略」与「清单来源条」之间：
+       前两者都是**策略**（怎么用这批模型），来源条必须紧贴表格（它说的是「这份清单从哪来」）。
+       卡片默认展开 —— 它比下面的长表更需要被看见，用户不必滚到底才想起有这功能。 */
+    main = `${trae ? maxModePolicyCard() : contextFixedCard()}${fallbackCard(g)}${catalogBar(g.catalog)}
     <div class="tbl-wrap"><table class="tbl">
       <thead><tr><th>模型</th><th>协议</th><th>归属</th><th>上下文</th><th>思考档位</th><th>积分倍率</th><th>上游状态</th><th style="width:124px">网关暴露</th></tr></thead>
       <tbody>${g.models.map((m) => `<tr${m.disabled ? ' class="row-off"' : ""}>
@@ -6979,6 +7583,10 @@ function viewSessions() {
         <button class="${state.sessionSort === "recent" ? "on" : ""}" data-act="sess-sort|recent">最近更新</button>
         <button class="${state.sessionSort === "oldest" ? "on" : ""}" data-act="sess-sort|oldest">最早更新</button>
       </div>
+      <!-- issue #87 · 会话导出 / 导入。导出**只读**（只写用户选的那个文件）；
+           导入会先预览再确认 —— 写用户数据的东西不许一步到位。 -->
+      <button class="btn" data-act="sess-export" title="把当前账号的全部会话导出成一个 JSON 包（备份 / 换机用）">${ICON.download}导出会话</button>
+      <button class="btn ghost" data-act="sess-import" title="从导出的 JSON 包里恢复会话（只新增，不覆盖）">${ICON.upload}导入会话</button>
     </div>
 
     ${sorted.length ? `<div class="sg-grid">${cards}</div>` : empty}
@@ -7118,9 +7726,20 @@ function drawerSession(key) {
 }
 
 /* ══════════════════════ 设置 ══════════════════════ */
+/* issue #122 · 每个设置分区的**作用域归属**。
+   判据（与真实现 `SETTINGS_SCOPE` 同一条）：看该分区的读写命令里有没有 scope / region。
+   全局 = 改一次对所有作用域生效；作用域 = 每个作用域各有一份。
+   ★ 用户的原话是「看起来不清楚哪些是改了影响所有作用域的」—— 这一条就是回答它。 */
+const SETTINGS_SCOPE = {
+  general: "global", account: "scoped", checkin: "global", gateway: "scoped",
+  schedule: "global", client: "scoped", cli: "global",
+  diagnostics: "global", logs: "global", backup: "global",
+};
+
 function viewSettings() {
   const p = curPlatform();
   const group = SETTINGS.find((s) => s.id === state.setSub);
+  const scopeKind = SETTINGS_SCOPE[group.id] || "global";
   return `<div class="page">
     <div class="page-head">
       <div><h1>设置</h1><p>${scopeLabel(state.scope)} · 按主题分区，不再是一屏长滚动</p></div>
@@ -7130,7 +7749,14 @@ function viewSettings() {
     <div class="split">
       <nav class="subnav">${SETTINGS.map((s) => `<button class="${state.setSub === s.id ? "on" : ""}" data-act="set-sub|${s.id}">${s.label}</button>`).join("")}</nav>
       <div class="split-main">
-        ${group.kind === "backup" ? viewBackup() : group.groups.map((g) => {
+        <div class="scope-note" data-settings-scope="${scopeKind}">
+          <span>${scopeKind === "global"
+            ? "全局设置 · 对所有作用域生效，切换作用域不会改变它"
+            : `仅影响当前作用域（${scopeLabel(state.scope)}）· 其他作用域有各自的设置`}</span>
+        </div>
+        ${group.kind === "backup" ? viewBackup()
+          : group.kind === "cli" ? viewCliIntegration()
+          : group.groups.map((g) => {
           const rows = g.rows.filter((r) => !r.cap || p.capabilities.includes(r.cap));
           if (!rows.length) return "";
           return `<section class="card">
@@ -7142,6 +7768,254 @@ function viewSettings() {
       </div>
     </div>
   </div>`;
+}
+
+/* ══════════════════════ CodeBuddy CLI 接入方式（issue #109）══════════════════════
+ *
+ * ## 为什么它是「二选一」，而不是再加一个功能开关
+ *
+ * CLI 的凭据只有**一份**（`~/.codebuddy/settings.json`），两条路都要写它：
+ *   · 直连上游：本工具写**上游 token**（`CODEBUDDY_AUTH_TOKEN` / `apiKeyHelper`），
+ *     选号由本工具的自动轮换决定；
+ *   · 走本机网关：本工具写**网关 Key**（`CODEBUDDY_BASE_URL` / `CODEBUDDY_API_KEY`），
+ *     选号由网关**按模型**决定（某个模型限流时自动换号）。
+ *
+ * 混用 ⇒ CLI 把**上游 token** 发到本机网关 ⇒ 401；而轮换每轮又重写一次 settings
+ * ⇒ 表现为**时好时坏**，症状正像「API 密钥无效」（issue #106 那类观感）。
+ *
+ * 所以这块 UI 必须满足三条：① 同一时刻只选一个；② 切换要显式告知代价；③ 当前状态一眼可见。
+ *
+ * ## 与账号卡 `cliControl` 的分工（容易混）
+ *
+ * 账号卡那个是「**按账号**切 CLI 的默认账号」（逐账号动作，需要客户端在运行）；
+ * 这里是「**凭据从哪来**」（全局一次性）。网关模式下前者失效 —— 选号已经不归本工具了。
+ *
+ * ## 冲突态不是错误
+ *
+ * 当 settings 里已有网关地址、用户还想点「直连上游」时，**禁用而不是报错**：
+ * 后端会拒绝（PR #114 的护栏），但让用户点了才看到报错是下策。文案刻意写
+ * 「这不是错误，是护栏」+「混用会时好时坏」—— 后半句是关键，那是它最难查的地方。
+ */
+
+/** 模型下拉的候选。真实实现读网关 `/v1/models`（当前启用的命名空间），原型写死三个。 */
+/* ══════════════════════ CodeBuddy CLI 接入方式（issue #109）══════════════════════
+ *
+ * ## 这块 UI 的本质
+ *
+ * 不是「一个功能入口」，而是 **CLI 的凭据通道二选一**：`~/.codebuddy/settings.json`
+ * 只有一份，两条路都要写它。
+ *   · 直连上游：本工具写**上游 token**，选号由本工具的轮换决定（按账号、按积分到期）；
+ *   · 走本机网关：本工具写**网关 Key**，选号由网关按模型决定（一个模型限流只影响它自己）。
+ *
+ * 混用 ⇒ CLI 把上游 token 发到本机网关 ⇒ 401；轮换每轮又重写一次 ⇒ **时好时坏**。
+ *
+ * ## 为什么是「状态条 + 两张模式卡」，而不是一个分段器（设计判断）
+ *
+ * 上一版把它做成了 `.srow` 里一条 `.seg`（直连 / 网关），与「主题：跟随系统 / 浅色 / 深色」
+ * 同一视觉权重。那是**错的语义**：
+ *   ① 分段器表达的是「同一个东西的不同取值」，可随时来回切、无代价；
+ *      而这里是**两套不同的凭据通道**，切换会清 token、关轮换、且要重启 CLI 才生效。
+ *   ② 分段器只能写名字。而用户选哪条路的依据是**能力差异**（按账号切 vs 按模型切），
+ *      这个差异必须在选项上**并列可见**，不能藏在说明文字里。
+ *   ③ 打开这页的第一个问题是「我现在是什么状态」，不是「我能改什么」——
+ *      所以状态条置顶，且要回答「生效了吗」。
+ *
+ * 因此：
+ *   · **状态条**（置顶）：一句话说清「现在走哪条路 / 谁在选号」，右侧给生效态
+ *     （`已生效` / `待重启 CLI`）。env 不热重载，用户最容易在这里误判「没生效」。
+ *   · **两张模式卡**（并列）：名称 + 一句价值主张 + **✓/— 能力对比（左右对齐，可横比）** + 动作。
+ *     当前那张标「当前」且动作位是 disabled 的「已启用」；另一张给「切换到此模式」。
+ *   · **切换走向导**（抽屉）：低频高影响的操作，先列代价、再选默认模型、最后执行。
+ *   · **高级折叠**：默认模型与 Key 是低频项，收起来，不占主视线。
+ *
+ * ## 冲突态不是「禁用 + 一段话」
+ *
+ * 检测到 settings 已被外部改成网关地址时：把**状态条变成警示条**，并给出**唯一出路**
+ * （「接管网关配置」）。只禁用「直连上游」按钮而不给下一步，用户会卡在原地。
+ */
+
+/** 两条通道的**能力矩阵** —— 两卡并列展示，选哪条路的依据就在这里。 */
+const CLI_MODES = [
+  {
+    id: "direct",
+    name: "直连上游",
+    tagline: "本工具管理凭据，并按积分到期选号",
+    icon: "key",
+    caps: [
+      ["按账号切换（积分到期优先）", true],
+      ["自动轮换 / 到期提醒", true],
+      ["某个模型限流时自动换号", false],
+    ],
+  },
+  {
+    id: "gateway",
+    name: "走本机网关",
+    tagline: "CLI 指向本机网关，由网关按模型选号",
+    icon: "route",
+    caps: [
+      ["某个模型限流时自动换号", true],
+      ["按模型统计用量与成本", true],
+      ["按账号指定", false],
+    ],
+    recommended: true,
+  },
+];
+
+const CLI_MODELS = ["", "glm-5.3", "deepseek-v4-flash", "claude-sonnet-4.5"];
+
+/* 图标用 inline SVG：全局 `svg { stroke: currentColor; fill: none }` 已定义，
+   所以这里只写路径，颜色自动跟随文字色。 */
+const CLI_ICON = {
+  key: '<svg viewBox="0 0 24 24"><circle cx="8.5" cy="15.5" r="3.5"/><path d="M11 13l7.5-7.5 2.5 2.5-7.5 7.5"/></svg>',
+  route: '<svg viewBox="0 0 24 24"><circle cx="6" cy="6" r="2"/><circle cx="18" cy="18" r="2"/><path d="M8 6h5a5 5 0 0 1 5 5v5"/></svg>',
+  check: '<svg viewBox="0 0 24 24"><path d="M4 12.5l5 5L20 6.5"/></svg>',
+  dash: '<svg viewBox="0 0 24 24"><path d="M5 12h14"/></svg>',
+};
+
+function viewCliIntegration() {
+  const c = state.cli;
+  const gateway = c.mode === "gateway";
+  /* 冲突 = settings 里已有网关地址（外部改的），而当前 mode 还是直连。 */
+  const blocked = c.foreignGateway && !gateway;
+
+  /* ── 状态条：先回答「我现在是什么状态 / 生效了吗」 ── */
+  const strip = blocked
+    ? `<div class="mode-strip warn" role="status">
+        <span class="ms-ico">${CLI_ICON.route}</span>
+        <div class="ms-main">
+          <b>检测到 settings 已指向本机网关（<span class="mono">127.0.0.1:57891</span>）</b>
+          <span>「直连上游」暂时不可选：再写上游 token，CLI 会把 token 发到网关 ⇒ 401，而且轮换每轮重写一次 ⇒ <b>时好时坏</b>。这不是错误，是护栏。</span>
+        </div>
+        <button class="btn primary" data-act="cli-mode|gateway">接管网关配置</button>
+      </div>`
+    : `<div class="mode-strip ${gateway ? "info" : "ok"}" role="status">
+        <span class="ms-ico">${CLI_ICON[gateway ? "route" : "key"]}</span>
+        <div class="ms-main">
+          <b>${gateway ? "走本机网关" : "直连上游"}<span class="ms-sep">·</span>${gateway ? "由网关按模型选号" : "由本工具按积分到期选号"}</b>
+          <span>${gateway
+            ? "CLI 的请求打到 <span class=\"mono\">127.0.0.1:57891</span>，凭据是一把专用网关 Key"
+            : "上游 token 写在 <span class=\"mono\">~/.codebuddy/settings.json</span>，由本工具维护"}</span>
+        </div>
+        ${c.pendingRestart
+          ? `<span class="badge warn" title="env 不热重载">待重启 CLI</span>`
+          : `<span class="badge ok">已生效</span>`}
+      </div>`;
+
+  /* ── 两张模式卡：能力并列可比 ── */
+  const card = (m) => {
+    const on = c.mode === m.id;
+    const dis = blocked && m.id === "direct";
+    return `<div class="mode-card${on ? " on" : ""}${dis ? " off" : ""}">
+      <div class="mc-head">
+        <span class="mc-ico">${CLI_ICON[m.icon]}</span>
+        <div class="mc-ttl">
+          <div class="mc-name">${m.name}${m.recommended && !on ? ' <span class="badge info">推荐</span>' : ""}</div>
+          <div class="mc-tag">${m.tagline}</div>
+        </div>
+        ${on ? '<span class="badge ok mc-cur">当前</span>' : ""}
+      </div>
+      <ul class="cap">
+        ${m.caps
+          .map(([text, yes]) => `<li class="${yes ? "yes" : "no"}">${yes ? CLI_ICON.check : CLI_ICON.dash}<span>${text}</span></li>`)
+          .join("")}
+      </ul>
+      <div class="mc-foot">
+        ${on
+          ? '<button class="btn ghost" disabled>已启用</button>'
+          : `<button class="btn${m.recommended ? " primary" : ""}" data-act="cli-mode|${m.id}"${dis ? " disabled" : ""}>切换到此模式</button>`}
+      </div>
+    </div>`;
+  };
+
+  /* ── 高级（折叠）：默认模型与 Key 是低频项 ── */
+  const adv = `<section class="card">
+    <button class="adv-toggle" data-act="cli-advanced" aria-expanded="${c.advanced ? "true" : "false"}">
+      <span class="adv-caret">${c.advanced ? "▾" : "▸"}</span>高级
+      <span class="tiny muted">默认模型 · CLI 专用 Key</span>
+    </button>
+    ${c.advanced
+      ? `<div class="adv-body">
+          <div class="srow">
+            <div class="lab"><b>默认模型</b><span>留空 = 由 CLI 自己决定；固定模型会让「按模型选号」失去一半意义</span></div>
+            <select class="inp" data-act="cli-model">
+              ${CLI_MODELS.map((m) => `<option value="${esc(m)}"${c.model === m ? " selected" : ""}>${m === "" ? "留空 · 由 CLI 自己决定" : esc(m)}</option>`).join("")}
+            </select>
+          </div>
+          <div class="srow">
+            <div class="lab"><b>CLI 专用 Key</b><span>${gateway ? "切换时自动创建，网关页可吊销" : "切到网关模式时才会创建"}</span></div>
+            ${gateway
+              ? '<span class="mono">sk-wb-a1b2••••••••9f3c</span>'
+              : '<span class="muted tiny">—</span>'}
+          </div>
+          ${gateway
+            ? `<div class="srow">
+                <div class="lab"><b>自动轮换</b><span>选号已交给网关；轮换每轮都会把网关 Key 覆盖回去，故已关闭</span></div>
+                <span class="badge warn">已关闭</span>
+              </div>`
+            : ""}
+        </div>`
+      : ""}
+  </section>`;
+
+  /* 演示开关（**仅原型**）：真实实现里这个状态由后端 `status().gatewayMode` 给出。 */
+  const demo = `<section class="card">
+    <div class="srow">
+      <div class="lab"><b>演示：模拟「settings 已被外部改成网关地址」</b><span>仅原型可见 —— 用来看冲突态（状态条变警示 + 只留一条出路）</span></div>
+      <button class="switch${c.foreignGateway ? " on" : ""}" data-act="cli-demo-foreign" aria-label="演示开关"></button>
+    </div>
+  </section>`;
+
+  return `${strip}
+  <section class="card">
+    <div class="card-head"><h3>接入方式</h3><span class="grow"></span>
+      <span class="tiny muted">两者互斥，切换会重写 settings.json</span>
+    </div>
+    <div class="mode-cards">${CLI_MODES.map(card).join("")}</div>
+  </section>
+  ${adv}
+  ${demo}`;
+}
+
+/**
+ * 切换向导（抽屉）：先列代价 → 再选默认模型 → 最后执行。
+ *
+ * 为什么是向导而不是一个确认框：这次切换会**清掉上游 token**（不可见的破坏性操作），
+ * 还要选一个可能长期生效的默认模型。两件事挤在一个「确定/取消」里，用户只会点确定。
+ */
+function drawerCliConfirm(target) {
+  const toGateway = target === "gateway";
+  const c = state.cli;
+  const body = toGateway
+    ? `<p class="tiny muted" style="margin:0 0 8px">会改写 <code>~/.codebuddy/settings.json</code>：</p>
+       <ul class="notes">
+         <li>写入网关地址 <span class="mono">http://127.0.0.1:57891</span> 与一把新 Key（列表里叫「CodeBuddy CLI（网关）」）</li>
+         <li><b>清掉</b>现有的上游 token 与 <code>apiKeyHelper</code></li>
+         <li><b>关闭自动轮换</b>（选号改由网关负责）</li>
+       </ul>
+       <div class="srow" style="padding:12px 0 0;border:0">
+         <div class="lab"><b>默认模型</b><span>留空 = 由 CLI 自己决定（推荐）</span></div>
+         <select class="inp" id="cli-wiz-model">
+           ${CLI_MODELS.map((m) => `<option value="${esc(m)}"${c.model === m ? " selected" : ""}>${m === "" ? "留空 · 由 CLI 自己决定" : esc(m)}</option>`).join("")}
+         </select>
+       </div>
+       <div class="note-warn">改完需要<b>重启终端与 CodeBuddy CLI</b> 才生效（环境变量不热重载）。<br>
+         上游 token 只是不再写进 settings，<b>账号库里仍有</b> —— 想切回来点「直连上游」即可，不需要重新登录。</div>`
+    : `<p class="tiny muted" style="margin:0 0 8px">会改写 <code>~/.codebuddy/settings.json</code>：</p>
+       <ul class="notes">
+         <li><b>删掉</b>网关地址、CLI 专用 Key 与 <code>CODEBUDDY_MODEL</code></li>
+         <li>重新写入当前账号的上游 token（或恢复 <code>apiKeyHelper</code>）</li>
+         <li><b>重新开启自动轮换</b>（选号回到本工具）</li>
+       </ul>
+       <div class="note-ok">切回后由本工具按积分到期择优换号；网关里那把「CodeBuddy CLI（网关）」Key 会保留，
+         你可以在网关页自行吊销。</div>`;
+
+  openDrawer(
+    body,
+    toGateway ? "切到「走本机网关」？" : "切回「直连上游」？",
+    `<div class="tiny muted" style="flex:1;min-width:0">动的是用户级配置文件，确认后立即写入</div>
+     <button class="btn ghost grow0" data-act="drawer-cancel">取消</button>
+     <button class="btn primary grow0" data-act="cli-confirm|${target}">确认切换</button>`,
+  );
 }
 
 function settingsRow(r) {
@@ -9265,6 +10139,74 @@ document.addEventListener("click", (e) => {
       renderContent(); break;
     }
     case "gw-sub": stop(); state.gwSub = a1; renderContent(); break;
+    /* ── 模型降级链（P13）────────────────────────────────────────────
+       全部动作都作用在 `GATEWAY[state.scope].fallback` 上 —— 与账号池、模型清单同源，
+       不在别处存第二份。`fbDraft` 只是抽屉里的临时态，关掉即丢。 */
+    case "fb-toggle": {
+      stop();
+      const fb = GATEWAY[state.scope].fallback;
+      if (!fb) break;
+      fb.enabled = !fb.enabled;
+      renderContent();
+      toast(fb.enabled ? "ok" : "info", fb.enabled ? "已启用降级" : "已关闭降级",
+        fb.enabled ? "主模型明确失败时会按链改用备选" : "配置保留，但一次都不会触发");
+      break;
+    }
+    case "fb-events": stop(); state.fbOpen = true; state.fbEvents = !state.fbEvents; renderContent(); break;
+    case "fb-toggle-open": stop(); state.fbOpen = !state.fbOpen; renderContent(); break;
+    case "fb-new": stop(); openFbDrawer(null); break;
+    case "fb-edit": stop(); openFbDrawer(a1); break;
+    case "fb-chain-toggle": {
+      stop();
+      const c = (GATEWAY[state.scope].fallback?.chains || []).find((x) => x.from === a1);
+      if (!c) break;
+      c.enabled = !c.enabled;
+      renderContent();
+      break;
+    }
+    case "fb-trigger": {
+      stop();
+      const t = state.fbDraft.triggers;
+      const i = t.indexOf(a1);
+      if (i >= 0) t.splice(i, 1); else t.push(a1);
+      /* 重开抽屉只刷新画面，草稿由 `openFbDrawer` 的 `same` 判断保住。 */
+      openFbDrawer(state.fbDraft.isNew ? null : state.fbDraft.from);
+      break;
+    }
+    case "fb-move": {
+      stop();
+      const i = Number(a1);
+      const t = state.fbDraft.targets;
+      const j = a2 === "up" ? i - 1 : i + 1;
+      if (j >= 0 && j < t.length) [t[i], t[j]] = [t[j], t[i]];
+      openFbDrawer(state.fbDraft.isNew ? null : state.fbDraft.from);
+      break;
+    }
+    case "fb-save": {
+      stop();
+      const g = GATEWAY[state.scope];
+      const fb = g.fallback || (g.fallback = { enabled: true, chains: [], events: [] });
+      const d = state.fbDraft;
+      if (!d || !d.from) break;
+      const targets = d.targets.filter(Boolean).slice(0, 2);
+      const exist = fb.chains.find((c) => c.from === d.from);
+      if (exist) {
+        exist.targets = targets;
+        exist.triggers = [...d.triggers];
+      } else {
+        fb.chains.push({ from: d.from, targets, triggers: [...d.triggers], enabled: true });
+      }
+      /* 没有任何跳的链等于没配 —— 直接拦下，不写进配置（否则卡片上会出现一条空链）。 */
+      if (!targets.length) {
+        toast("err", "至少选一个备选模型", "只配主模型不构成降级链");
+        break;
+      }
+      state.fbDraft = null;
+      closeDrawer();
+      renderContent();
+      toast("ok", "降级链已保存", "立即生效，无需重启网关");
+      break;
+    }
     case "uni-toggle": {
       stop();
       UNI.enabled = !UNI.enabled;
@@ -9501,6 +10443,24 @@ document.addEventListener("click", (e) => {
       renderContent();
       break;
     }
+    case "pool-autofailover": {
+      stop();
+      /* 按**产品线**存（真实实现就是三份 config 各一个同名布尔）——WB 的两个版本 Tab 共用一个值，
+         否则「切到国际版开关自己变了」会被演成一个不存在的 bug。 */
+      const platform = curScope().platform;
+      state.gwAutoFailover[platform] = !state.gwAutoFailover[platform];
+      const on = state.gwAutoFailover[platform];
+      toast(
+        on ? "ok" : "info",
+        on ? "已开启：账号故障时自动切换" : "已关闭：账号故障时自动切换",
+        on
+          ? "回复中途账号挂掉 ⇒ 网关发一条可重试错误（429 / 502），客户端自动换号重跑这一步，你会看到回复从头重写"
+          : "回到改造前的行为：上游报错按原样透出（流中途失败仍会被补终止标记）"
+      );
+      state.gwChain[state.scope] = null;
+      renderContent();
+      break;
+    }
     case "pool-payfallback": {
       stop();
       state.gwPayFallback[state.scope] = !state.gwPayFallback[state.scope];
@@ -9559,10 +10519,69 @@ document.addEventListener("click", (e) => {
       break;
     }
     case "set-sub": stop(); state.setSub = a1; renderContent(); break;
+    /* ── CodeBuddy CLI 接入方式（issue #109） ── */
+    case "cli-mode": {
+      stop();
+      /* 已经是当前档 ⇒ 不重复确认（避免「点了取消但状态没变」的困惑）。 */
+      if (state.cli.mode === a1) break;
+      if (a1 === "gateway") { drawerCliConfirm("gateway"); break; }
+      drawerCliConfirm("direct");
+      break;
+    }
+    case "cli-advanced": {
+      stop();
+      state.cli.advanced = !state.cli.advanced;
+      renderContent();
+      break;
+    }
+    case "cli-confirm": {
+      stop();
+      const target = a1;
+      /* 向导里的模型下拉（`#cli-wiz-model`）在抽屉里，不是 `data-act` ⇒ 直接读值。 */
+      const wiz = $("#cli-wiz-model");
+      if (wiz) state.cli.model = wiz.value || "";
+      closeDrawer();
+      state.cli.mode = target;
+      /* env 不热重载：切换后一律标「待重启 CLI」，直到用户下次进来重看。 */
+      state.cli.pendingRestart = true;
+      /* 切到网关后，settings 里的网关地址就是**我们自己**写的 ⇒ 冲突态解除。 */
+      if (target === "gateway") state.cli.foreignGateway = false;
+      state.cli.rotate = target === "direct";
+      renderContent();
+      toast("ok",
+        target === "gateway" ? "已切到本机网关" : "已切回直连上游",
+        target === "gateway"
+          ? "已创建 CLI 专用 Key 并关闭自动轮换；重启终端与 CLI 后生效"
+          : "已清掉网关配置并恢复上游 token；自动轮换已重新开启");
+      break;
+    }
+    case "cli-model": {
+      /* select 的 value 是空串时 `a1` 会是 `""`，`split("|")` 拿不到它 ⇒ 从事件目标取。 */
+      state.cli.model = e.target.value || "";
+      break;
+    }
+    case "drawer-cancel": stop(); closeDrawer(); break;
+    case "cli-demo-foreign": {
+      stop();
+      state.cli.foreignGateway = !state.cli.foreignGateway;
+      renderContent();
+      break;
+    }
     /* ── 会话工作台（§3.15） ── */
     case "sess-client": stop(); state.sessionClient = a1; state.sessionFilter = "all"; renderContent(); break;
     case "sess-filter": stop(); state.sessionFilter = a1; renderContent(); break;
     case "sess-sort": stop(); state.sessionSort = a1; renderContent(); break;
+    /* issue #87 · 会话导出 / 导入（导出只读；导入先预览再确认、只做加法）。 */
+    case "sess-export":
+      stop();
+      toast("ok", "已导出 12 个会话", "BuddySwitch-sessions-2026-11-03.json",
+        null, "原型说明：导出只写你选的那个文件，不碰客户端数据");
+      break;
+    case "sess-import":
+      stop();
+      toast("ok", "已导入 12 个会话", "只新增，不覆盖任何现有会话",
+        null, "原型说明：同一份包导两次就是两份 —— 不做静默去重");
+      break;
     case "sess-open": stop(); drawerSession(a1); break;
     case "sess-sync": stop(); closeDrawer(); toast("ok", "已同步 1 个会话组", "新增内容已追加到落后的副本（加法，不删除原有内容）"); break;
     case "sess-unify": stop(); closeDrawer(); toast("ok", "已统一到其他副本", "保留了你选择的那一份"); break;
@@ -10331,6 +11350,22 @@ document.addEventListener("change", (e) => {
   if (!row) return;
   row.value = el.value;
   renderContent();
+});
+
+/* 降级链抽屉里的下拉：主模型与备选都走 change（`select` 不发 click）。
+   改完重开抽屉以刷新「保存」按钮可用态与模拟路径 —— 两处都由 draft 派生。 */
+document.addEventListener("change", (e) => {
+  const el = e.target;
+  if (!el || !el.dataset || !state.fbDraft) return;
+  if (el.dataset.fbFrom !== undefined) {
+    state.fbDraft.from = el.value;
+    openFbDrawer(null);
+  } else if (el.dataset.fbSlot !== undefined) {
+    const i = Number(el.dataset.fbSlot);
+    while (state.fbDraft.targets.length <= i) state.fbDraft.targets.push("");
+    state.fbDraft.targets[i] = el.value;
+    openFbDrawer(state.fbDraft.isNew ? null : state.fbDraft.from);
+  }
 });
 
 /* 确认 Dialog：按钮走 data-act 委托；遮罩点击沿用现有 overlay 模式 */

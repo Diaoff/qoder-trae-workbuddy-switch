@@ -83,6 +83,21 @@ export const en = {
   "shared.gateway.models.contextTitle": "Context limit",
   "shared.gateway.models.contextFixedDesc": "On: lists and requests use the upstream maximum window (e.g. 1M). Off: fall back to the default window (e.g. 300k). Numbers come from the official catalog.",
   "shared.gateway.models.contextFromCatalog": "From catalog",
+  "shared.gateway.models.colImages": "Image input",
+  "shared.gateway.models.imageYes": "Supported",
+  "shared.gateway.models.imageNo": "Not supported",
+  "shared.gateway.models.imageUndeclared": "Not declared",
+  "shared.gateway.models.imageSourceUpstream": "Declared image-capable by the upstream catalog",
+  "shared.gateway.models.imageSourceKnown": "Declared by the gateway built-in table (upstream has no capability field)",
+  "shared.gateway.models.imageSourceOverride": "Manually set on this page (overrides upstream)",
+  "shared.gateway.models.imageUndeclaredHint":
+    "The upstream catalog does not say whether this model accepts images. Clients default to \"not supported\" and drop images before the request reaches the gateway — mark it here if you know better.",
+  "shared.gateway.models.imageMarkYes": "Mark as image-capable",
+  "shared.gateway.models.imageMarkNo": "Mark as not image-capable",
+  "shared.gateway.models.imageReset": "Restore upstream declaration",
+  "shared.gateway.models.imageYesToast": "Marked \"{name}\" as image-capable",
+  "shared.gateway.models.imageNoToast": "Marked \"{name}\" as not image-capable",
+  "shared.gateway.models.imageResetToast": "Restored \"{name}\" to the upstream declaration",
   "shared.gateway.models.colUpstream": "Upstream",
   "shared.gateway.models.colExposed": "Gateway exposure",
   /* issue #65: thinking levels + credit multiplier columns. */
@@ -118,6 +133,89 @@ export const en = {
   // ★ Security S1: the notice stays visible at all times (probes hit the real upstream).
   // ★ Security S2: `reason` (raw upstream text) must be rendered as plain text only.
   "shared.gateway.models.colProbe": "Rate limit (probe)",
+  // ── Model fallback (P13) ──
+  "shared.gateway.fallback.title": "Model fallback",
+  "shared.gateway.fallback.badgeOff": "Not configured",
+  "shared.gateway.fallback.badgeOn": "Enabled · {count}",
+  "shared.gateway.fallback.badgeClosed": "Off",
+  "shared.gateway.fallback.limit": "Same scope · up to {max} hops",
+  "shared.gateway.fallback.notice": "Triggered only on explicit upstream failures. A stream that has already reached the client is never rolled back, and a failure is never rewritten as success — clients can read X-Buddy-Fallback-To to see the model actually used.",
+  "shared.gateway.fallback.enable": "Enable fallback",
+  "shared.gateway.fallback.enableHint": "Config is kept when off, but nothing triggers",
+  "shared.gateway.fallback.new": "New fallback chain",
+  "shared.gateway.fallback.emptyTitle": "No fallback chains yet",
+  "shared.gateway.fallback.emptyDesc": "When a model fails explicitly upstream (global rate limit, blocked, 5xx), the gateway can resend with a backup model you choose instead of handing the error back. Off by default.",
+  "shared.gateway.fallback.addTarget": "+ Backup",
+  "shared.gateway.fallback.chainOff": "Disabled",
+  "shared.gateway.fallback.chainDisable": "Disable",
+  "shared.gateway.fallback.chainEnable": "Enable",
+  "shared.gateway.fallback.footNote": "Status dots read live gate and cooldown state (same source as the account pool), not the config snapshot. A successful fallback does not clear the primary model's gate — it really did fail; once the gate expires, requests return to the primary on their own, with no switch-back toggle.",
+  "shared.gateway.fallback.diag.gated": "Hop {hop} {model} is gated ({secs}s left). The chain skips to the next hop; if none work, the original error is returned instead of waiting.",
+  "shared.gateway.fallback.diag.disabled": "Hop {hop} {model} is disabled and will be skipped.",
+  "shared.gateway.fallback.diag.noVision": "Hop {hop} {model} does not accept image input while the primary does. Requests with images skip this hop and move to the next backup instead of sending a request that is bound to fail.",
+  "shared.gateway.fallback.stats": "Last {days} days: {total} fallbacks ({ok} succeeded · {fail} failed)",
+  "shared.gateway.fallback.events": "Fallback log",
+  "shared.gateway.fallback.eventsHide": "Hide log",
+  "shared.gateway.fallback.expand": "Expand",
+  "shared.gateway.fallback.collapse": "Collapse",
+  "shared.gateway.fallback.event.time": "Time",
+  "shared.gateway.fallback.event.path": "Actual path",
+  "shared.gateway.fallback.event.reason": "Trigger",
+  "shared.gateway.fallback.event.account": "Account",
+  "shared.gateway.fallback.event.cost": "Duration",
+  "shared.gateway.fallback.event.result": "Result",
+  "shared.gateway.fallback.event.degraded": "Degraded",
+  "shared.gateway.fallback.event.failed": "Backups failed",
+  "shared.gateway.fallback.event.blocked": "Not degraded by rule",
+  "shared.gateway.fallback.event.empty": "No fallback events yet.",
+  "shared.gateway.fallback.event.note": "Only the latest {count} entries, and they never feed any aggregate: the request log is a ring buffer (200 by default) covering minutes on a busy gateway. A 7-day fallback rate must come from a new ledger dimension, not this table.",
+  "shared.gateway.fallback.drawer.new": "New fallback chain",
+  "shared.gateway.fallback.drawer.edit": "Edit fallback · {model}",
+  "shared.gateway.fallback.field.from": "Primary model",
+  "shared.gateway.fallback.field.fromLocked": "The primary cannot be changed. Delete and recreate to switch it — changing from is a different chain.",
+  "shared.gateway.fallback.field.crossModelPlaceholder": "target platform model id",
+  "shared.gateway.fallback.field.thisScope": "this scope",
+  "shared.gateway.fallback.field.crossPlatformPending": "cross-platform only from WorkBuddy",
+  "shared.gateway.fallback.field.targets": "Backup models (tried in order)",
+  "shared.gateway.fallback.field.targetsHint": "Up to {max} (with the primary, {hops} hops total). Disabled or unavailable models are not listed.",
+  "shared.gateway.fallback.capsNote": "Requests with images automatically skip backups that do not accept image input; tools, structured output and context window are not checked in this version — the backup accepts or rejects them itself.",
+  "shared.gateway.fallback.field.triggers": "Triggers",
+  "shared.gateway.fallback.trigger.gate": "Model gate paused",
+  "shared.gateway.fallback.trigger.gateDesc": "The model has been failing across accounts and is paused gateway-wide. Free to skip — no upstream request is sent.",
+  "shared.gateway.fallback.trigger.model_rate": "Model-level rate limit (6004)",
+  "shared.gateway.fallback.trigger.model_rateDesc": "Upstream says this model specifically is limited; another account will not help.",
+  "shared.gateway.fallback.trigger.model_blocked": "Model blocked (11102)",
+  "shared.gateway.fallback.trigger.model_blockedDesc": "Upstream blocks this model; it will not recover soon.",
+  "shared.gateway.fallback.trigger.server": "Upstream 5xx",
+  "shared.gateway.fallback.trigger.serverDesc": "Server fault. Enabling this pushes traffic to backups during an outage, which may take them down too.",
+  "shared.gateway.fallback.trigger.timeout": "Request timeout",
+  "shared.gateway.fallback.trigger.timeoutDesc": "No response within 600s. Long jobs may be billed twice.",
+  "shared.gateway.fallback.trigger.not_found": "Model not found (404)",
+  "shared.gateway.fallback.trigger.not_foundDesc": "Upstream says the model does not exist: it may be missing from that account's list (another account helps) or removed upstream entirely (another model helps).",
+  "shared.gateway.fallback.short.gate": "gate",
+  "shared.gateway.fallback.short.model_rate": "6004",
+  "shared.gateway.fallback.short.model_blocked": "11102",
+  "shared.gateway.fallback.short.server": "5xx",
+  "shared.gateway.fallback.short.timeout": "timeout",
+  "shared.gateway.fallback.short.not_found": "404",
+  "shared.gateway.fallback.never.title": "Never falls back",
+  "shared.gateway.fallback.never.desc": "Bad request 4xx: another model cannot fix it and only makes the error more confusing. Content moderation refusal: switching models means switching moderation thresholds, which effectively helps callers bypass review. 402 out of credits: an account-level quota problem. Key quota exhausted: metered per key, unrelated to the model.",
+  "shared.gateway.fallback.sim.title": "Simulated path · using current gate and cooldown state",
+  "shared.gateway.fallback.sim.primary": "Primary",
+  "shared.gateway.fallback.sim.target": "Backup {n}",
+  "shared.gateway.fallback.sim.try": "tried first",
+  "shared.gateway.fallback.sim.willUse": "available → will be used",
+  "shared.gateway.fallback.sim.skipGated": "still paused → skipped, no request",
+  "shared.gateway.fallback.sim.skipDisabled": "unavailable → skipped",
+  "shared.gateway.fallback.sim.allFail": "If no hop works, the original error is returned — no endless waiting, and no rewriting a failure as success.",
+  "shared.gateway.fallback.save": "Save",
+  "shared.gateway.fallback.cancel": "Cancel",
+  "shared.gateway.fallback.saveOk": "Fallback chain saved",
+  "shared.gateway.fallback.saveOkDesc": "Takes effect immediately, no gateway restart",
+  "shared.gateway.fallback.needTarget": "Pick at least one backup model",
+  "shared.gateway.fallback.needTargetDesc": "A primary alone is not a fallback chain",
+  "shared.gateway.fallback.enabledToast": "Fallback enabled",
+  "shared.gateway.fallback.disabledToast": "Fallback disabled",
   "shared.gateway.probe.title": "Rate-limit probe",
   "shared.gateway.probe.badge": "Account × model live probe",
   "shared.gateway.probe.expand": "Expand",
@@ -250,6 +348,10 @@ export const en = {
   "shared.gateway.probe.emptyAllSkippedDesc":
     "None of these accounts have a usable credential — they may be signed out, hold an encrypted-envelope credential, or have been removed from the account store. Sign in again or import an account on the \"Accounts\" page; if there is no desktop client on this machine (Docker / headless), add an account by QR scan under \"Gateway → Account pool\"; if the \"Pinned account\" strategy is in use, make sure that account is still in the local account store.",
   "shared.gateway.pool.totalRequests": "{count} requests",
+  // issue #129: "auto switch when an account fails" toggle in the pool card toolbar.
+  "shared.gateway.pool.autoFailover": "Switch account on failure",
+  "shared.gateway.pool.autoFailoverHint":
+    "When an account fails mid-reply, the gateway turns that failure into a retryable error so the client reruns the whole step on another account — you get the full answer rewritten from the start. Cost: the partial output is discarded and the step is billed again. Off keeps the previous behaviour (upstream errors are surfaced as-is). Off by default: it changes what clients see on errors.",
   "shared.gateway.pool.tile.available": "Routable",
   // Sub-line inside the "Routable" tile: some of them are merely **at the in-flight cap**
   // (account is fine, clears by itself in seconds). See `GatewayPoolSummary.inFlightFull`
@@ -267,9 +369,24 @@ export const en = {
   "shared.gateway.pool.tile.modelCooling": "Model cooling",
   // Model-cooling badge (issue #88): the thaw time is mandatory — "N models
   // rate-limited" without a time tells the user nothing actionable.
+  //
+  // 2026-10-29: the cooldown now follows upstream's declared reset time
+  // (`Pool::adopt_probe_result`), so the default wording is "thaw at {time}".
+  // Only when upstream said nothing and we fall back to our own guess do we prefix
+  // with "~", so nobody reads a guess as a promise.
   "shared.gateway.pool.modelCoolingBadge": "{count} model(s) rate-limited · thaw at {time}",
+  "shared.gateway.pool.modelCoolingBadgeApprox":
+    "{count} model(s) rate-limited · thaw ~{time}",
   "shared.gateway.pool.modelCoolingHint":
     "{models} is/are cooling at the model level (only those models are affected; the account still serves others). Earliest thaw at {time}.",
+  // Per-model tooltip rows (issue #88 gap 4.2): name · remaining · fallback marker ·
+  // upstream-declared reset time.
+  "shared.gateway.pool.modelCoolingRow": "{model} · {remaining} left{fallback}{upstream}",
+  // Upstream's own reset time, shown only when it differs from the actual cooldown end
+  // (e.g. clipped by the 24h cap).
+  "shared.gateway.pool.modelCoolingRowUpstream": " · upstream resets {time}",
+  // "fallback" = upstream gave no wall clock; we guessed probe_fallback_ms (10 min).
+  "shared.gateway.pool.modelCoolingFallback": " (fallback)",
   "shared.gateway.pool.empty": "The pool is empty. Add accounts under Accounts first.",
   "shared.gateway.pool.credits": "{credits} credits",
   /* Loomy only: the two pools are not commensurable, so they sit side by side instead of being summed. */
@@ -283,6 +400,9 @@ export const en = {
   // WorkBuddy only: the second non-account option (writes `AccountStrategy::MaxCredits`).
   "shared.gateway.pool.strategyMaxCredits": "Pick by live credits (queried per request)",
   "shared.gateway.pool.strategyRandom": "Random (uniform draw among eligible accounts)",
+  // issue #102: stick to one account, switch only when it is limited — reuses the
+  // upstream prefix cache, which is what keeps token usage down.
+  "shared.gateway.pool.strategySequential": "Sequential (stick to one account until limited)",
   "shared.gateway.pool.preferredMissing": "Preferred account (not in this pool)",
   // Preference, not a hard pin: falls back when the preferred account can't serve.
   "shared.gateway.pool.preferredHint": "A preference, not a hard pin: if it is cooling, dead, or out of credits, another account is used instead — requests are never rejected.",
@@ -553,6 +673,15 @@ export const en = {
   "shared.refreshPart.checkin": "Check-in status refreshed",
   "shared.refreshPart.credential": "Credential status refreshed",
   "shared.refreshPart.fail": "Refresh failed",
+  // Credit auto-refresh cadence and "last refreshed" (shared by all three credit views, issue #133).
+  // Two strings for two cost profiles: `autoEvery` hits upstream, `autoFollow` only re-reads
+  // the local snapshot. Jitter makes "every {n} min" false, hence "about".
+  "shared.credit.autoEvery": "Queries upstream about every {n} min",
+  "shared.credit.autoFollow": "Follows background sync",
+  "shared.credit.autoOff": "Auto-refresh is off (enable in Settings · General)",
+  /* The "Used X" line in the pack list — shared by all four assembly sites (issue #144 review §3.4). */
+  "shared.credit.packUsed": "Used {n}",
+  "shared.credit.lastRefresh": "Last refreshed {time}",
   "shared.stat.credits": "Credits",
   "shared.stat.tokens": "Today's tokens",
   "shared.stat.checkin": "Check-in",

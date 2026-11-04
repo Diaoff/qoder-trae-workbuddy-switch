@@ -25,7 +25,7 @@
  *
  * ## ★ 凭据红线（与后端 `CREDENTIAL_KEYS` 同一套判据）
  *
- * 这三个键的值都是**枚举 / 布尔**（`zh`/`en`、`system`/`light`/`dark`、作用域
+ * 这三个键的值都是**枚举 / 布尔**（`zh`/`en`、`system`/`light`/`dark`/`black`、作用域
  * 字面量），**本就不该**出现凭据。但 §7 #3 明确要求「更新代理 URL 可能含 `user:pass@`，
  * 命中即按同一套 `CREDENTIAL_KEYS` 剥离」—— 本模块把这条**前置**为读取侧的护栏：
  * 任何值只要命中凭据标记或 `scheme://user:pass@host` 形态，**一律不进快照**。

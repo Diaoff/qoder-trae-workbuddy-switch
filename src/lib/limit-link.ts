@@ -97,8 +97,12 @@ export function mergeProbeCells(
     const models = next ? next[scope] : bucket;
     const previous = models[cell.uid]?.[cell.model];
     // 同一格重复合并（每秒轮询会反复拿到同一份快照）⇒ 不造新对象。
+    // ⚠️ `probed_at_ms` 必须进比较：只看结论的话，重测同一格拿到「同样的 429」会被判成
+    // 「没变化」⇒ 行内「实测于 …」永远停在第一次的时刻（时间戳假在新的一侧最难被发现）。
     if (previous && previous.http_status === cell.http_status && previous.state === cell.state
-      && previous.latency_ms === cell.latency_ms) {
+      && previous.latency_ms === cell.latency_ms
+      && previous.reset_at_ms === cell.reset_at_ms
+      && previous.probed_at_ms === cell.probed_at_ms) {
       continue;
     }
     next ??= { ...index, [scope]: { ...bucket } };
@@ -157,21 +161,36 @@ export function isProbeWorthy(entry: ClientLimitEntry): boolean {
  */
 export function probeTargets(entries: readonly ClientLimitEntry[]): ProbeTargets {
   const pairs: { uid: string; model: string }[] = [];
-  const seen = new Set<string>();
   for (const entry of entries) {
     if (!isProbeWorthy(entry)) continue;
-    const uid = entry.accountUid as string;
-    const model = entry.model as string;
-    const key = `${uid}\u0000${model}`;
+    pairs.push({ uid: entry.accountUid as string, model: entry.model as string });
+  }
+  return probeTargetsOfPairs(pairs);
+}
+
+/**
+ * 由**显式格清单**算目标集合（与 {@link probeTargets} 共用同一套去重与折叠）。
+ *
+ * 谁用：没有客户端台账的平台（Qoder / Trae 的账号页卡）—— 它们的「实测 N 格」只能从
+ * **已探出的限流格**出发，没有台账条目可挑。两份实现分开写必然一边改了去重、另一边没改。
+ */
+export function probeTargetsOfPairs(
+  pairs: readonly { uid: string | null | undefined; model: string | null | undefined }[],
+): ProbeTargets {
+  const dedup: { uid: string; model: string }[] = [];
+  const seen = new Set<string>();
+  for (const pair of pairs) {
+    if (!pair.uid || !pair.model) continue;
+    const key = `${pair.uid}\u0000${pair.model}`;
     if (seen.has(key)) continue;
     seen.add(key);
-    pairs.push({ uid, model });
+    dedup.push({ uid: pair.uid, model: pair.model });
   }
   return {
-    pairs,
-    uids: [...new Set(pairs.map((pair) => pair.uid))],
-    models: [...new Set(pairs.map((pair) => pair.model))],
-    cells: pairs.length,
+    pairs: dedup,
+    uids: [...new Set(dedup.map((pair) => pair.uid))],
+    models: [...new Set(dedup.map((pair) => pair.model))],
+    cells: dedup.length,
   };
 }
 
@@ -198,6 +217,26 @@ export function limitConflict(
 }
 
 /**
+ * 取**全部限流格**（确定性排序：账号 → 模型）。
+ *
+ * 无「客户端限流台账」的平台（Qoder / Trae 的账号页卡，`ClientLimitsCard ledger={false}`）用它 ——
+ * 那边没有台账可对照，结论只可能来自实测。WB 的「实测独有」是它的**子集**（再滤掉台账已覆盖的格），
+ * 故 `probeOnlyLimits` 建在它之上，排序口径只此一处。
+ */
+export function limitedCells(
+  cells: Readonly<Record<string, Record<string, ModelProbeCell>>>,
+): ModelProbeCell[] {
+  const out: ModelProbeCell[] = [];
+  for (const models of Object.values(cells)) {
+    for (const cell of Object.values(models)) {
+      if (isLimitState(cell.state)) out.push(cell);
+    }
+  }
+  out.sort((a, b) => a.uid.localeCompare(b.uid) || a.model.localeCompare(b.model));
+  return out;
+}
+
+/**
  * 「实测独有」：实测查出限流、但台账里**没有对应条目**的格。
  *
  * 入参是**已按作用域收窄**的那一层（`useProbeCells(scope)` 的返回值），
@@ -215,17 +254,8 @@ export function probeOnlyLimits(
     if (!entry.accountUid || !entry.model) continue;
     covered.add(`${entry.accountUid}\u0000${entry.model}`);
   }
-  const out: ModelProbeCell[] = [];
-  for (const [uid, models] of Object.entries(cells)) {
-    for (const [model, cell] of Object.entries(models)) {
-      if (!isLimitState(cell.state)) continue;
-      if (covered.has(`${uid}\u0000${model}`)) continue;
-      out.push(cell);
-    }
-  }
-  // 确定性排序（区域内部顺序无关）：账号 → 模型 → 状态。
-  out.sort((a, b) => a.uid.localeCompare(b.uid) || a.model.localeCompare(b.model));
-  return out;
+  if (covered.size === 0) return limitedCells(cells);
+  return limitedCells(cells).filter((cell) => !covered.has(`${cell.uid}\u0000${cell.model}`));
 }
 
 /** 一次作业的汇总（用于卡头/进度）。 */

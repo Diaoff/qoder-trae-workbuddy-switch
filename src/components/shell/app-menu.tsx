@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Monitor, Moon, Settings, Sun } from "lucide-react";
+import { Monitor, Moon, MoonStar, Settings, Sun } from "lucide-react";
 
 import { ClientSettingsDialog } from "@/components/client-settings";
 import { DonateDialog } from "@/components/donate-dialog";
@@ -12,7 +12,13 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { useT } from "@/lib/i18n";
-import { getThemePreference, setThemePreference, type ThemePreference } from "@/lib/theme";
+import {
+  getThemePreference,
+  setThemePreference,
+  THEME_LABEL_KEYS,
+  THEME_PREFERENCES,
+  type ThemePreference,
+} from "@/lib/theme";
 import { cn } from "@/lib/utils";
 
 /**
@@ -77,23 +83,32 @@ export function AppMenu() {
   );
 }
 
-/** 三态选项 → 图标（`system` 跟随系统用显示器）。 */
-const THEME_META: Record<ThemePreference, { icon: typeof Sun; labelKey: "appSettings.theme.system" | "appSettings.theme.light" | "appSettings.theme.dark" }> = {
-  system: { icon: Monitor, labelKey: "appSettings.theme.system" },
-  light: { icon: Sun, labelKey: "appSettings.theme.light" },
-  dark: { icon: Moon, labelKey: "appSettings.theme.dark" },
+/**
+ * 四态选项 → 图标（`system` 跟随系统用显示器；`black` 用「月+星」区别于普通 `dark` 的月亮，
+ * 两者若同图标，菜单里会出现两个一模一样的月亮、只能靠文字分辨）。
+ * 文案键统一走 `theme.ts::THEME_LABEL_KEYS`，与设置页下拉共用同一份。
+ */
+const THEME_ICONS: Record<ThemePreference, typeof Sun> = {
+  system: Monitor,
+  light: Sun,
+  dark: Moon,
+  black: MoonStar,
 };
 
 /**
- * 顶栏主题菜单 —— **三态选择**（系统 / 浅色 / 深色）。
+ * 顶栏主题菜单 —— **四态选择**（系统 / 浅色 / 深色 / 纯黑）。
  *
- * ⚠️ **不做二态假开关**：`theme.ts` 的偏好本就三态（`system` 是独立选项，
+ * ⚠️ **不做二态假开关**：`theme.ts` 的偏好本就多态（`system` 是独立选项，
  * 不是「跟随系统时把按钮按当前系统值显示」）。压成明/暗二态会让「跟随系统」
  * 这一态在界面上无处可表达，用户也关不掉它。
+ *
+ * 触发器图标跟随当前偏好（而不是固定写死晴天）—— 否则选了纯黑之后按钮仍显示太阳，
+ * 看起来像「没生效」。
  */
 export function ThemeMenu() {
   const t = useT();
   const [preference, setPreference] = useState<ThemePreference>(getThemePreference);
+  const TriggerIcon = THEME_ICONS[preference];
 
   return (
     <DropdownMenu>
@@ -104,12 +119,12 @@ export function ThemeMenu() {
           title={t("topbar.theme")}
           className={iconButtonClass}
         >
-          <Sun className="size-[17px]" aria-hidden="true" />
+          <TriggerIcon className="size-[17px]" aria-hidden="true" />
         </button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end" className="w-40">
-        {(Object.keys(THEME_META) as ThemePreference[]).map((key) => {
-          const { icon: Icon, labelKey } = THEME_META[key];
+        {THEME_PREFERENCES.map((key) => {
+          const Icon = THEME_ICONS[key];
           return (
             <DropdownMenuItem
               key={key}
@@ -120,7 +135,7 @@ export function ThemeMenu() {
               className={cn(key === preference && "bg-accent")}
             >
               <Icon aria-hidden="true" />
-              {t(labelKey)}
+              {t(THEME_LABEL_KEYS[key])}
             </DropdownMenuItem>
           );
         })}

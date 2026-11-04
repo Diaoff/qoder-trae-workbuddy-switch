@@ -2724,6 +2724,83 @@ check("★ issue #65 模型表「思考档位 / 积分倍率」三平台同构�
   return "壳两个列槽 · 三平台都传 · 渲染只在 model-ability · 无 onClick";
 });
 
+check("★ issue #101 图片输入列：三平台都传、渲染唯一、未声明不得画成不支持", () => {
+  /* 需求（issue #101）：客户端连本网关时，图片被它自己的模型配置挡掉（请求根本没到网关）。
+     网关能做的是在 `/v1/models` 声明能力，并在管理面让用户能纠正 —— 两件事都得在。
+
+     可证伪：
+     ① 共用壳必须有 `imageColumn` 可选列槽，且表头 + 单元格各渲染一次；
+     ② 三个平台页**都**要传（少传一个 ⇒ 该平台看不到、也改不了，需求只做了一半）；
+     ③ 单元格渲染只允许来自 `model-image-cell.tsx`（页面自己拼就变红）；
+     ④ **三态文案必须都在**：把 `未声明` 写成 `不支持` 就是把「不知道」说成事实；
+     ⑤ 判据只允许在 `lib/model-image.ts`（页面里出现 `?? false` 即变红）。 */
+  const shell = readCode(MODEL_TABLE);
+  if (!/imageColumn\?:\s*\{/.test(shell)) {
+    throw new Error("模型表格壳缺可选列槽 `imageColumn`（不传就该整列不渲染）");
+  }
+  const uses = (shell.match(/\{imageColumn &&/g) || []).length;
+  if (uses !== 2) {
+    throw new Error(`\`imageColumn\` 在壳里出现 ${uses} 次，应表头 + 单元格各一次`);
+  }
+
+  const cell = readCode("src/components/gateway/model-image-cell.tsx");
+  for (const key of [
+    "shared.gateway.models.imageYes",
+    "shared.gateway.models.imageNo",
+    "shared.gateway.models.imageUndeclared",
+  ]) {
+    if (!cell.includes(key)) throw new Error(`model-image-cell.tsx 缺「${key}」—— 三态无法表达`);
+  }
+  if (!/data-act="gw-model-image-toggle"/.test(cell)) {
+    throw new Error("model-image-cell.tsx 缺覆盖切换按钮（只有徽标 = 只能看不能改）");
+  }
+
+  const judge = readCode("src/lib/model-image.ts");
+  if (!judge.includes("supports: null")) {
+    throw new Error("lib/model-image.ts 没有「未声明」这一档（supports: null）—— 三态塌成布尔");
+  }
+  if (/\?\?\s*false/.test(judge)) {
+    throw new Error("lib/model-image.ts 出现 `?? false` —— 把「未声明」压成「不支持」就是撒谎");
+  }
+
+  const pages = {
+    WB: WB_MODEL_LIST,
+    Trae: TRAE_MODEL_LIST,
+    Qoder: "src/components/gateway/qoder-model-list.tsx",
+  };
+  for (const [label, rel] of Object.entries(pages)) {
+    const code = readCode(rel);
+    if (!/imageColumn=\{imageColumn\}/.test(code)) {
+      throw new Error(`${label} 没传 \`imageColumn\` —— 该平台看不到也改不了图片能力`);
+    }
+    if (!/useImageCapColumn/.test(code)) {
+      throw new Error(`${label} 没有复用共用装配器（自己拼一份 = 又一处分叉）`);
+    }
+    if (code.includes("supports ?? false") || code.includes("supports_images ?? false")) {
+      throw new Error(`${label} 出现 \`?? false\` —— 「未声明」被写成了「不支持」`);
+    }
+  }
+
+  // zh / en 同步（en 缺键会回落中文，但显式加了才算同步）。
+  for (const file of [SHARED_LOCALE_ZH, SHARED_LOCALE_EN]) {
+    const text = readCode(file);
+    for (const key of [
+      "colImages",
+      "imageYes",
+      "imageNo",
+      "imageUndeclared",
+      "imageUndeclaredHint",
+      "imageMarkYes",
+      "imageReset",
+    ]) {
+      if (!text.includes(`shared.gateway.models.${key}`)) {
+        throw new Error(`${path.basename(file)} 缺 \`${key}\` 词条`);
+      }
+    }
+  }
+  return "壳有列槽 · 三平台都传 · 渲染唯一 · 三态文案齐 · 无 ?? false";
+});
+
 check("★ P11 禁用错误可展示（后端 403 model_disabled 的文案经 api.asError 透出）", () => {
   /* T01 对硬调用返回 403 / `type_name="model_disabled"` / 文案说明「被禁用」。
      前端要**能展示它**：切换失败路径必须把错误经 `api.asError` 本地化后透出
@@ -4691,14 +4768,21 @@ const APP_SETTINGS_SNAPSHOT = "src/lib/app-settings-snapshot.ts";
 const BACKUP_LOCALE_ZH = "src/locales/domains/backup.zh.ts";
 const BACKUP_LOCALE_EN = "src/locales/domains/backup.en.ts";
 
-check("★ P7 设置 9 项子导航：9 项齐备，第 9 项是「备份与恢复」", () => {
+check("★ P7 设置 11 项子导航：11 项齐备，最后一项是「备份与恢复」，且含 CodeBuddy CLI", () => {
   const code = readCode(BACKUP_SUBNAV);
   const m = code.match(/SETTINGS_SUBNAV[\s\S]*?=\s*\[([\s\S]*?)\];/);
   if (!m) throw new Error("找不到 `SETTINGS_SUBNAV` 表");
   const ids = [...m[1].matchAll(/id:\s*"([a-z]+)"/g)].map((x) => x[1]);
-  if (ids.length !== 9) throw new Error(`子导航应 9 项，实际 ${ids.length}：${ids.join(",")}`);
+  /* ★ 项数**故意写死**：子导航是设置页唯一导航，多一项少一项都要有意识。
+     issue #109 加「CodeBuddy CLI」（`cli`）时就是靠这条提醒改这里的。
+     issue #111 收尾加「网络」（`network`，Qoder 逐包出站代理）时同理。
+     ⚠️ `cli` 是 WorkBuddy 侧独有、`network` 目前只有 Qoder 侧有内容 —— 各设置页用
+     `items` 收窄排除，所以「表里有 11 项」不等于「每个平台都显示 11 项」。 */
+  if (ids.length !== 11) throw new Error(`子导航应 11 项，实际 ${ids.length}：${ids.join(",")}`);
+  if (!ids.includes("cli")) throw new Error("缺 cli（CodeBuddy CLI 接入方式，issue #109）");
+  if (!ids.includes("network")) throw new Error("缺 network（逐包出站代理，issue #111）");
   if (ids[ids.length - 1] !== "backup") {
-    throw new Error(`第 9 项应为 backup（备份与恢复），实际 ${ids[ids.length - 1]}`);
+    throw new Error(`最后一项应为 backup（备份与恢复），实际 ${ids[ids.length - 1]}`);
   }
   if (!/settings\.subnav\.backup/.test(code)) throw new Error("缺「备份与恢复」标签键");
   return ids.join(" / ");
@@ -5115,7 +5199,7 @@ check("★ P7 边界：损坏文件（非法 JSON）返回可读错误、不崩�
  *
  * ⚠️ 判据只锚**代码**（`readCode` 先剥注释）—— 锚在注释上会被「注释里写着反例」骗过去。
  * ⚠️ 第 ④ 条的 api.rs 一侧是**文件级**「读到了 scope」（与 `check-api-contract.cjs` 第 8 条
- *    同款粗粒度）；逐命令的四处同步由 `check:api` 兜住，本段只锁「恰 18 条 + 后端带 scope」
+ *    同款粗粒度）；逐命令的四处同步由 `check:api` 兜住，本段只锁「恰 40 条 + 后端带 scope」
  *    （2026-10-15：模型禁用两条从 region 升级为 scope、Qoder 账号运维四件 ——
  *     刷新 / 签到状态 / 签到领取 / 额度 —— 一并并入）。
  */
@@ -5239,7 +5323,23 @@ check("★ P5-④ 参数化命令集与 EXPECTED 完全一致（commands.rs 签�
   return `${names.length} 条 · commands.rs 带 scope · api.ts 有 · api.rs 读 scope`;
 });
 
-check("★ P5-⑤ 程序位表驱动：4 个入口走 `find(table, id)`，无按 id 硬编码；表 3 项", () => {
+/// 从 `programs.rs` 的 `PROGRAMS` 表里解析**有序 id 列表**。
+///
+/// ★ 安全审计「流程 20」：此前这里（以及 B5）把 id 写死成 3 项，而表里实际有 5 项
+/// （`vscode_codebuddy_plugin` / `jetbrains_codebuddy_plugin` 从来没被校验过）——
+/// 标题还写着「表 3 项」。写死清单的门禁会**自己过期而没人发现**，所以改成从表里解析。
+function programSlotIds(rustSource) {
+  const start = rustSource.indexOf("PROGRAMS");
+  if (start < 0) throw new Error("programs.rs 里找不到 `PROGRAMS`");
+  const end = rustSource.indexOf("];", start);
+  if (end < 0) throw new Error("`PROGRAMS` 表没有闭合的 `];`");
+  const block = rustSource.slice(start, end);
+  const ids = [...block.matchAll(/id:\s*"([a-z0-9_]+)"/g)].map((m) => m[1]);
+  if (ids.length === 0) throw new Error("`PROGRAMS` 表里解析不到任何 `id:`");
+  return ids;
+}
+
+check("★ P5-⑤ 程序位表驱动：4 个入口走 `find(table, id)`，无按 id 硬编码；表内每一项都校验", () => {
   /* 变异⑤（落点 = programs.rs）：把 `status_in` 改成按 id 的 `match` 硬编码 ⇒ 本条变红
      （「加第 3 个程序位无需改代码」被破）。 */
   const programs = readCode(P5_PROGRAMS_RS);
@@ -5249,13 +5349,15 @@ check("★ P5-⑤ 程序位表驱动：4 个入口走 `find(table, id)`，无按
     if (!/find\(table,\s*id\)/.test(body)) throw new Error(`\`${fn}\` 未走表驱动 \`find(table, id)\``);
     if (/match\s+id\s*\{/.test(body)) throw new Error(`\`${fn}\` 出现按 id 的 match 硬编码`);
   }
-  for (const id of ["codebuddy_cli", "codebuddy_cn_ide", "vscode_cn_inject"]) {
+  const ids = programSlotIds(programs);
+  // 每个 id 必须真的出现在表里（解析来源就是表本身；这里防的是解析口径漂移）。
+  for (const id of ids) {
     if (!programs.includes(`"${id}"`)) throw new Error(`PROGRAMS 缺程序位 ${id}`);
   }
   if (!/fn adding_a_slot_needs_no_dispatch_change/.test(programs)) {
     throw new Error("缺「加程序位无需改派发」可证伪单测");
   }
-  return "4 入口走 find(table,id) · 无 id 硬编码 · 3 程序位 · 单测在";
+  return `4 入口走 find(table,id) · 无 id 硬编码 · ${ids.length} 程序位（${ids.join(",")}）· 单测在`;
 });
 
 check("★ P5 边界：WB 选号基线未动（expiry_urgency_weight=0.0 / deterministic=false）", () => {
@@ -7959,9 +8061,9 @@ check("★★ 三条产品线的账号池归一化都必须保留 `excluded`（�
 });
 
 check("★ 策略哨兵值前后端逐字一致（否则下拉是假开关）", () => {
-  /* 三个哨兵（`__auto__` / `__max_credits__` / `__random__`）在**前端常量**里定义一次、
-     在**后端 `PREFERRED_*`** 里再定义一次。任何一处漂移的后果都不是报错，而是
-     「用户选了『按积分择优』，后端把它当成一个不存在的 uid，静默回落加权」
+  /* 四个哨兵（`__auto__` / `__max_credits__` / `__random__` / `__sequential__`）在
+     **前端常量**里定义一次、在**后端 `PREFERRED_*`** 里再定义一次。任何一处漂移的后果
+     都不是报错，而是「用户选了『按积分择优』，后端把它当成一个不存在的 uid，静默回落加权」
      —— 假开关，且从界面上完全看不出来。故用契约检查把两份钉在一起。 */
   const card = stripComments(
     fs.readFileSync(path.join(ROOT, "src/components/gateway/account-pool-card.tsx"), "utf8"),
@@ -7976,6 +8078,7 @@ check("★ 策略哨兵值前后端逐字一致（否则下拉是假开关）", 
     ["AUTO_OPTION", "PREFERRED_AUTO"],
     ["MAX_CREDITS_OPTION", "PREFERRED_MAX_CREDITS"],
     ["RANDOM_OPTION", "PREFERRED_RANDOM"],
+    ["SEQUENTIAL_OPTION", "PREFERRED_SEQUENTIAL"],
   ];
   for (const [tsName, rsName] of pairs) {
     const ts = new RegExp(`export const ${tsName} = "([^"]+)"`).exec(card);
@@ -7988,12 +8091,13 @@ check("★ 策略哨兵值前后端逐字一致（否则下拉是假开关）", 
       );
     }
   }
-  return "3 个哨兵值前后端逐字一致";
+  return "4 个哨兵值前后端逐字一致";
 });
 
-check("★ 三个网关页的账号池策略档位必须一致（含「随机」）", () => {
+check("★ 三个网关页的账号池策略档位必须一致（含「随机」「顺序」）", () => {
   /* 后端 `account_strategy::AccountStrategy` 是**三平台共用**的枚举（Current / Pinned /
-     MaxCredits / Random），但「策略选项」是每页各自传给池卡的 `autoOptions`。任一页少给一档，
+     MaxCredits / Random / Sequential），但「策略选项」是每页各自传给池卡的 `autoOptions`。
+     任一页少给一档，
      症状是**该平台静默失去那个策略**：界面上没有这一项，用户根本无从知道后端支持它，
      而合并另一页时又会被当成「本来就没有」—— 排查成本极高（2026-10-17 用户报「随机模式没有了」，
      真因就是 WorkBuddy 页只传了两档）。
@@ -8006,7 +8110,12 @@ check("★ 三个网关页的账号池策略档位必须一致（含「随机」
   ];
   for (const [page, writeBack] of pages) {
     const source = stripComments(fs.readFileSync(path.join(ROOT, page), "utf8"));
-    for (const option of ["AUTO_OPTION", "MAX_CREDITS_OPTION", "RANDOM_OPTION"]) {
+    for (const option of [
+      "AUTO_OPTION",
+      "MAX_CREDITS_OPTION",
+      "RANDOM_OPTION",
+      "SEQUENTIAL_OPTION",
+    ]) {
       if (!source.includes(option)) {
         throw new Error(`${page} 的账号池 autoOptions 缺 ${option} —— 三平台策略档位必须一致`);
       }
@@ -8015,13 +8124,23 @@ check("★ 三个网关页的账号池策略档位必须一致（含「随机」
        选了会被当成一个不存在的 uid 静默回落自动择优。
        ⚠️ 两平台写回形态不同：Trae / Qoder 直接存哨兵串（`preferredUid`，由后端
        `pool::parse_preferred` 解释），WorkBuddy 存 `AccountStrategy`，故后者的
-       `random` 哨兵必须**显式**映射成 `persist({ kind: "random" })`。 */
+       `random` / `sequential` 哨兵必须**显式**映射成 `persist({ kind: … })`。 */
     if (writeBack === "strategy") {
       if (!/persist\(\{\s*kind:\s*"random"\s*\}\)/.test(source)) {
         throw new Error(`${page} 没有把 RANDOM_OPTION 映射到 persist({ kind: "random" })`);
       }
       if (!/strategy\.kind === "random"/.test(source)) {
         throw new Error(`${page} 没有把 kind: "random" 读回成下拉值（保存后选项会弹回「不指定」）`);
+      }
+      if (!/persist\(\{\s*kind:\s*"sequential"\s*\}\)/.test(source)) {
+        throw new Error(
+          `${page} 没有把 SEQUENTIAL_OPTION 映射到 persist({ kind: "sequential" })`,
+        );
+      }
+      if (!/strategy\.kind === "sequential"/.test(source)) {
+        throw new Error(
+          `${page} 没有把 kind: "sequential" 读回成下拉值（保存后选项会弹回「不指定」）`,
+        );
       }
     } else if (!/persist\(\{\s*preferredUid/.test(source)) {
       throw new Error(`${page} 没有把哨兵值写回 preferredUid`);
@@ -8035,7 +8154,12 @@ check("★ 三个网关页的账号池策略档位必须一致（含「随机」
   if (!/"random"/.test(union[1])) {
     throw new Error("AccountStrategy union 缺 `{ kind: \"random\" }` —— 后端枚举已有 Random");
   }
-  return "3 个网关页 × 3 档策略 + union 一致";
+  if (!/"sequential"/.test(union[1])) {
+    throw new Error(
+      "AccountStrategy union 缺 `{ kind: \"sequential\" }` —— 后端枚举已有 Sequential（issue #102）",
+    );
+  }
+  return "3 个网关页 × 4 档策略 + union 一致";
 });
 
 check("★ Q6「登录态快照」不得升为 Capability（D40）", () => {
@@ -8640,6 +8764,20 @@ check("★ B5-程序位：卡片 = 注册表 ∪ {WorkBuddy 主位}（刻意例�
       throw new Error(`后端 PROGRAMS 缺少程序位 \`${id}\` —— 两侧注册表漂移`);
     }
   }
+  // ★ 安全审计「流程 20」：**必须双向**。
+  //
+  // 改造前只校「前端 → 后端」。于是后端加第 6 个程序位（`programs.rs` 加一行 + 一个
+  // adapter）后：编译绿、本条绿、P5-⑤ 绿（它当时只认写死的 3 个）—— 而前端没有这一格
+  // ⇒ 新程序位在 UI 里**完全不可见**，也没有任何测试或门禁会红。
+  // 这与 `background.rs::both_hosts_register_every_task_kind`（读两侧源码做双向校验）
+  // 是同一套思路。
+  for (const id of programSlotIds(rust)) {
+    if (!ids.includes(id)) {
+      throw new Error(
+        `后端 PROGRAMS 有程序位 \`${id}\`，但前端 \`WORKBUDDY_PROGRAMS\` 没有镜像 —— UI 里看不到它`,
+      );
+    }
+  }
   // 卡片必须有主位控件（公式的另一半）。
   const card = stripComments(
     fs.readFileSync(path.join(ROOT, "src/components/account-card.tsx"), "utf8"),
@@ -8715,6 +8853,48 @@ check("★ §2 明暗主题切换：钉住行为而非只钉 localStorage 键名
     throw new Error("主题切换没有作用到 DOM（只写 localStorage 的话刷新前后会不同步）");
   }
   return "主题既持久化又作用到 DOM";
+});
+
+check("★ §2 纯黑（OLED）主题：`black` 必须是 `dark` 的**超集**，不是替代品", () => {
+  const theme = readCode("src/lib/theme.ts");
+  // 只挂 black 而不挂 dark ⇒ 全仓上百处 `dark:` 工具类集体失效（`@custom-variant dark (&:is(.dark *))`）。
+  if (!/classList\.toggle\(\s*"dark"/.test(theme)) throw new Error("applyTheme 不再挂 .dark 类");
+  if (!/classList\.toggle\(\s*"black"/.test(theme)) throw new Error("applyTheme 不再挂 .black 类");
+  if (!/preference === "black"/.test(theme)) throw new Error("black 未参与深浅推导（纯黑会渲染成浅色）");
+
+  const css = fs.readFileSync(path.join(ROOT, "src/index.css"), "utf8");
+  const darkAt = css.search(/^\.dark\s*\{/m);
+  const blackAt = css.search(/^\.black\s*\{/m);
+  if (darkAt < 0) throw new Error("index.css 缺 `.dark` 令牌块");
+  if (blackAt < 0) throw new Error("index.css 缺 `.black` 令牌块");
+  // 同特异性靠源码顺序取胜：`.black` 必须排在 `.dark` 之后，否则整块静默失效、控制台零报错。
+  if (blackAt < darkAt) throw new Error("`.black` 排在 `.dark` 之前 —— 同特异性下会被 `.dark` 覆盖");
+
+  const block = css.slice(blackAt, css.indexOf("\n}", blackAt));
+  if (!/--background:\s*oklch\(\s*0\s+0\s+0\s*\)/.test(block)) {
+    throw new Error("纯黑的 `--background` 必须是 `oklch(0 0 0)`（否则只是「更深的深色」，不是纯黑）");
+  }
+  // 只改 background 不改面板 ⇒ 纯黑底上浮起一片深色的灰蓝板子，比原深色更突兀。
+  for (const token of ["--card", "--card-2", "--popover", "--sidebar"]) {
+    if (!block.includes(`${token}:`)) throw new Error(`\`.black\` 缺 ${token}`);
+  }
+
+  for (const rel of [SHELL_LOCALE_ZH, SHELL_LOCALE_EN]) {
+    if (!/"appSettings\.theme\.black"\s*:/.test(fs.readFileSync(path.join(ROOT, rel), "utf8"))) {
+      throw new Error(`${path.basename(rel)} 缺 appSettings.theme.black`);
+    }
+  }
+  // 选项列表只能来自 `THEME_PREFERENCES` / `THEME_LABEL_KEYS`：两处各写一份必然漏改一处。
+  for (const rel of ["src/components/shell/app-menu.tsx", "src/components/app-settings.tsx"]) {
+    const code = readCode(rel);
+    if (!/THEME_PREFERENCES/.test(code)) {
+      throw new Error(`${path.basename(rel)} 未从 THEME_PREFERENCES 渲染选项`);
+    }
+    if (/"appSettings\.theme\.black"/.test(code)) {
+      throw new Error(`${path.basename(rel)} 手写了词条键（应走 THEME_LABEL_KEYS）`);
+    }
+  }
+  return "black ⊃ dark · `.black` 在 `.dark` 之后 · 背景为纯黑 · 两处列表同源";
 });
 
 check("★ §2 表格 / 卡片视图切换存在（不持久化是刻意的）", () => {
@@ -9198,13 +9378,31 @@ check("★ 聚合详情抽屉的装配按平台分开（一个字段套三处必
   }  /* 程序位徽标：只能给**能判的那一条**（WorkBuddy 主位），其余不许画「未绑定」的假徽标。 */
   const programs = detail.match(/export function aggregateDetailPrograms[\s\S]*?\n\}/);
   if (!programs) throw new Error("找不到 aggregateDetailPrograms");
-  if (!/account\.platform !== "workbuddy"\) return \[\];/.test(programs[0])) {
-    throw new Error("aggregateDetailPrograms 不是「只给 WorkBuddy」—— 其余平台的程序位状态另有来源");
+  /* ★ 2026-10-26（issue #89 · 4.4）：原先这里硬要求「只给 WorkBuddy」。
+     那条断言在当时是对的（聚合页确实没取 Trae / Qoder 的程序位），但信号层后来取了
+     ⇒ 断言把**过期的取舍**钉成了永久契约，代码于是永远画不出 Trae / Qoder 的徽标。
+     现在改为「必须按平台分派」：三个平台都要有自己的分支，不许一刀切 return []。 */
+  if (/account\.platform !== "workbuddy"\) return \[\];/.test(programs[0])) {
+    throw new Error(
+      "aggregateDetailPrograms 又退回「只给 WorkBuddy」—— 信号层已有 Trae / Qoder 的程序位",
+    );
+  }
+  for (const marker of ['account.platform === "trae"', 'account.platform === "qoder"']) {
+    if (!programs[0].includes(marker)) {
+      throw new Error(`aggregateDetailPrograms 缺平台分支：${marker}`);
+    }
   }
   if (!/current: Boolean\(ctx\.currentProgram\)/.test(programs[0])) {
-    throw new Error("aggregateDetailPrograms 没有用 currentProgram 判「当前登录」");
+    throw new Error("aggregateDetailPrograms 没有用 currentProgram 判 WorkBuddy 的「当前登录」");
   }
-  return "三平台分开 · 复用同一判定 · 程序位只给能判的那一条";
+  /* 页面必须真的把信号层的程序位传进去，否则函数改好了也画不出来（这正是 4.4 的成因）。 */
+  const page = readCode("src/pages/AggregateAccountsPage.tsx");
+  for (const field of ["traePrograms:", "qoderPrograms:"]) {
+    if (!page.includes(field)) {
+      throw new Error(`聚合页没有把 ${field} 传给详情上下文 —— 抽屉里那两个平台没有程序位徽标`);
+    }
+  }
+  return "三平台分开 · 复用同一判定 · 程序位按平台分派且页面已接线";
 });
 
 check("★★ 顶栏「聚合」入口的账号数与聚合页**同源**（两个数据源必然对不上）", () => {
@@ -9249,11 +9447,119 @@ check("★★ 聚合页的写动作必须落到**真实命令**（不许摆假�
   /* 批量删除必须带撤销（后端有 `account_restore` ⇒ 不给撤销就是「假承诺」）。 */
   if (!/showUndoToast\(/.test(page)) throw new Error("批量删除没有撤销 —— 后端支持恢复却不给撤销");
   if (!/accountRestore\(/.test(page)) throw new Error("批量删除的撤销没有调用 account_restore");
-  /* 切换：三个平台各一条。 */
+  /* 切换：三个平台各一条。
+     ★ 命令可能落在**共享层**（`components/aggregate/aggregate-*-switcher.tsx`）——
+     「确认框 + busy + 成功/失败反馈」必须收在一处，否则就是 issue #89 第五节
+     指出的成因 2（内联箭头 ⇒ 每个调用点各写一遍）。因此把页面与两个切换器
+     合并成一份源码再查：命令不许凭空消失，但也不强求写在页面里。 */
+  const writePath = [
+    page,
+    readCode("src/components/aggregate/aggregate-trae-switcher.tsx"),
+    readCode("src/components/aggregate/aggregate-qoder-switcher.tsx"),
+  ].join("\n");
   for (const cmd of ["traeSwitchAccount", "qoderSwitchAccount"]) {
-    if (!page.includes(cmd)) throw new Error(`聚合页没有接 ${cmd}`);
+    if (!writePath.includes(cmd)) throw new Error(`聚合页（含共享切换器）没有接 ${cmd}`);
   }
-  return "四项刷新 · 批量签到/删除（带撤销）· 三平台切换";
+  /* ★ 收进共享层的代价是「确认框可能被顺手删掉而没人发现」⇒ 这里钉住它：
+     Trae 必须走 `RestartConfirmDialog`（要关客户端），Qoder 必须是确认 Dialog。
+     两者都必须由切换器的 `confirmProps` 驱动，否则就是「有框但不生效」。 */
+  if (!/RestartConfirmDialog \{\.\.\.traeSwitch\.confirmProps\}/.test(page)) {
+    throw new Error("聚合页的 Trae 切换没有渲染重启确认框 —— 点一下就会静默重启客户端");
+  }
+  if (!/open=\{qoderSwitch\.confirmProps\.open\}/.test(page)) {
+    throw new Error("聚合页的 Qoder 切换没有渲染确认框 —— 点一下就直接改写客户端登录态");
+  }
+  /* 删除必须先确认（单个与批量共用同一个框）。 */
+  if (!/open=\{confirmDelete !== null\}/.test(page)) {
+    throw new Error("聚合页的删除没有确认框 —— 与三个渠道页的交互契约相反");
+  }
+  return "四项刷新 · 批量签到/删除（带撤销）· 三平台切换（确认框已钉住）";
+});
+
+check("★★ 聚合页与渠道页必须传同一组卡片 props（少传只会静默降级）", () => {
+  /* issue #89 的成因 1：「复用组件」被当成了「行为一致」的证明。
+     三张卡都是「缺回调 ⇒ 控件禁用或整块消失」的设计 ⇒ **每一个 prop 都是一处
+     独立的一致性风险**，而此前没有任何断言覆盖「调用点传齐了没有」。
+
+     这份清单只收**两侧都必须有**的项（渠道页有、聚合页漏过，且漏了会静默降级）。
+     「可选但降级」的项（如 `onExtSessions`）刻意不收 —— 把它们钉死会让合理的
+     取舍无法表达。
+
+     ⚠️ 检查方式是「文件里出现了 `prop=` 这个 JSX 属性」：够用且稳定。
+     抽屉 `actions={{ onDelete: … }}` 用的是冒号，不会误判成卡片属性。 */
+  const aggregate = readCode("src/pages/AggregateAccountsPage.tsx");
+  const REQUIRED = {
+    AccountCard: [
+      "onDelete",
+      "onSwitch",
+      "onCheckin",
+      "onExport",
+      "onGuideToSetting",
+      "onGuidePlugin",
+      "onAddPlaintextAccount",
+      "onRefreshPart",
+      "refreshingKinds",
+      "travelStatus",
+      "creditPriority",
+      "workbuddyActive",
+      "todayCheckedIn",
+    ],
+    TraeAccountCard: [
+      "onDelete",
+      "programs",
+      "current",
+      "busy",
+      "switchBusy",
+      "onSwitchTo",
+      "onCheckin",
+      "onRefreshCredits",
+      "onRefreshPart",
+      "refreshingKinds",
+      "checkedTodayOverride",
+    ],
+    QoderAccountCard: [
+      "onDelete",
+      "programs",
+      "onSwitch",
+      "switchBusy",
+      "onCheckin",
+      "onExport",
+      "onRefreshPart",
+      "refreshingKinds",
+      "refreshKinds",
+    ],
+  };
+  const missing = [];
+  for (const [card, props] of Object.entries(REQUIRED)) {
+    for (const prop of props) {
+      /* `prop={` 或 `prop="` 都算传了；`prop={` 覆盖绝大多数（回调 / 布尔表达式）。 */
+      if (!aggregate.includes(`${prop}=`)) missing.push(`${card}.${prop}`);
+    }
+  }
+  if (missing.length > 0) {
+    throw new Error(
+      `聚合页漏传这些卡片 props（会静默降级成灰按钮 / 整块消失）：${missing.join(" · ")}`,
+    );
+  }
+  /* 抽屉同理：`actions` 一个都不传时「操作」区整块消失（4.3 的原症状）。 */
+  for (const prop of [
+    "actions",
+    "checkin",
+    "checkinHistory",
+    "switchTargets",
+    "groups",
+    "loading",
+    "current",
+    "onRefreshPart",
+    /* ★ issue #144 复核 §4.5：Qoder 的逐包为空时，缺这一项就等于「一片空白」——
+       用户分不清「没登录」与「真的没有包」，也没有任何按钮。渠道页一直有，聚合页曾漏。 */
+    "packsNotice",
+  ]) {
+    if (!aggregate.includes(`${prop}=`)) {
+      throw new Error(`聚合页的详情抽屉漏传 ${prop} —— 抽屉只能看不能操作`);
+    }
+  }
+  return `三张卡 ${Object.values(REQUIRED).flat().length} 项 + 抽屉 9 项均已接线`;
 });
 
 check("★ 新增账号提示：筛选生效期间新出现的账号**要能一键加入**", () => {
@@ -9416,6 +9722,33 @@ check("★ 客户端限流 × 限流探测：两侧读**同一份**实测结论�
     throw new Error("★ `LIMIT_STATES` 里混进了 `no_credits` / `auth_dead` ⇒ 402 会被当成限流（用户去傻等解锁）");
   }
   return "台账卡/网关卡同源（useProbeCells）· 入口 adopt:false · store 按 scope 收窄并合并 · 三档限流";
+});
+
+check("★★ Qoder / Trae 账号页的限流卡必须 `ledger={false}`（否则把 WorkBuddy 的台账串台）", () => {
+  /* 三平台共用 `ClientLimitsCard`，差异只有一个开关。
+     `client_limits` 扫的是 **WorkBuddy 客户端**落盘的会话 jsonl —— 在 Qoder / Trae 页传同样的
+     region **不会报错**，只会把 WB 的限流记录画到别的平台上（串台比空表坏得多，而且肉眼像真数据）。
+     变异：删掉 `ledger={false}` ⇒ 本断言红。 */
+  for (const [rel, page] of [
+    ["src/pages/QoderAccountsPage.tsx", "Qoder"],
+    ["src/pages/TraeAccountsPage.tsx", "Trae"],
+  ]) {
+    const src = readCode(rel);
+    const start = src.indexOf("<ClientLimitsCard");
+    if (start < 0) throw new Error(`${page} 账号页没有挂限流卡（与 WB 不一致）`);
+    const rest = src.slice(start);
+    const tag = rest.slice(0, rest.indexOf("/>"));
+    if (!tag.includes("ledger={false}")) {
+      throw new Error(`${page} 账号页的限流卡缺 \`ledger={false}\` ⇒ 会显示 WorkBuddy 的客户端限流台账`);
+    }
+    if (!tag.includes("probePath=")) {
+      throw new Error(`${page} 账号页的限流卡缺 \`probePath\` ⇒ 「去网关探测」会跳到 WB 的网关页`);
+    }
+  }
+  if (/ledger=\{false\}/.test(readCode("src/pages/AccountsPage.tsx"))) {
+    throw new Error("WorkBuddy 账号页必须走台账模式（`ledger` 默认 true），不能关掉");
+  }
+  return "Qoder/Trae ledger=false + 各自 probePath · WB 保持台账模式";
 });
 
 console.log(`\n${passed} passed / ${failures.length} failed\n`);

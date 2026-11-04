@@ -131,7 +131,12 @@ export const en = {
   "aggregate.detail.credentialRelogin": "Sign-in required",
   "aggregate.detail.credentialMissing": "Credential missing",
   "aggregate.detail.unknown": "Unknown",
+  "aggregate.detail.qoderPackPlan": "Plan quota",
+  "aggregate.detail.qoderPackBonus": "Bonus pack",
+  "aggregate.detail.qoderPackDedicated": "Dedicated pack",
   "aggregate.detail.packFallbackName": "Credit pack",
+  "aggregate.detail.packExpired": "Expired",
+  "aggregate.detail.packForever": "Never expires",
   "aggregate.detail.groupSaved": "Group saved",
 
   // ---- Export (per scope: the export command is single-scope) ----
@@ -145,6 +150,13 @@ export const en = {
   "aggregate.export.platform.loomy": "Loomy",
   "aggregate.export.done": "Exported {n} accounts",
   "aggregate.toast.switching": "Switching…",
+  // Delete confirmation (issue #89 · 2.3): the undo toast is a remedy, not a substitute
+  // for asking first.
+  "aggregate.delete.title": "Delete account",
+  "aggregate.delete.body": "Delete “{name}”? You can restore it right away with the “Undo” action in the toast.",
+  "aggregate.delete.batchBody": "Delete the {n} selected accounts? You can restore them right away with the “Undo” action in the toast.",
+  "aggregate.delete.cancel": "Cancel",
+  "aggregate.delete.confirm": "Delete",
 
   // ---- Batch action results ----
   "aggregate.toast.checkinDone": "Checked in {n} accounts",

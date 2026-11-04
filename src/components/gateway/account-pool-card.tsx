@@ -1,10 +1,12 @@
-import { Loader2 } from "lucide-react";
+import { Info, Loader2 } from "lucide-react";
 import type { ReactNode } from "react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { DemoAction } from "@/components/demo-action";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Switch } from "@/components/ui/switch";
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { POOL_STATUS_LABELS } from "@/lib/gateway";
 import { useT } from "@/lib/i18n";
 import type { GatewayPoolAccount, GatewayPoolSummary } from "@/lib/types";
@@ -23,6 +25,14 @@ export const AUTO_OPTION = "__auto__";
 export const MAX_CREDITS_OPTION = "__max_credits__";
 /** 「随机」哨兵 —— 与后端 `pool::PREFERRED_RANDOM` **逐字相同**。 */
 export const RANDOM_OPTION = "__random__";
+/**
+ * 「顺序」哨兵 —— 与后端 `pool::PREFERRED_SEQUENTIAL` **逐字相同**（issue #102）。
+ *
+ * 语义：**粘住当前账号**，只有它被限流 / 冷却 / 排除 / 占满在途时才换下一个。
+ * 与「随机」的目的正好相反 —— 随机把额度摊开，代价是同一段对话的上下文
+ * 反复落到不同账号上、上游前缀缓存全 miss（用户报「token 消耗过快」正是这个）。
+ */
+export const SEQUENTIAL_OPTION = "__sequential__";
 
 /** 五态计数格。 */
 export type PoolTileKey =
@@ -122,27 +132,89 @@ const TILE_META: Record<PoolTileKey, { labelKey: TranslationKey; tone: "ok" | "w
  * 时间只藏在 `title` 的模型名里 —— 用户无从判断「还要等多久」「是不是早就该好了」。
  * 上游 429 的恢复信息本来就是按模型给的，不展示等于把它丢掉。
  */
+/**
+ * 解冻时刻的可读形式：**今天只给时分，跨天补上「月/日」**（issue #88 缺口 4.2）。
+ *
+ * 改造前一律用 `toLocaleTimeString`（只到时分）。封禁档最长 24 小时，跨天时
+ * 「05:00」会被读成「今天早上 5 点已过」，而实际是**次日**。
+ */
+function formatThawAt(ms: number, now: number): string {
+  const target = new Date(ms);
+  const sameDay = target.toDateString() === new Date(now).toDateString();
+  return target.toLocaleString(
+    undefined,
+    sameDay
+      ? { hour: "2-digit", minute: "2-digit" }
+      : { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" },
+  );
+}
+
+/** 剩余时长的粗粒度表述（tooltip 逐行用）。 */
+function formatRemaining(ms: number, now: number): string {
+  const minutes = Math.max(0, Math.round((ms - now) / 60_000));
+  if (minutes < 60) return `${minutes}m`;
+  const hours = Math.round(minutes / 60);
+  if (hours < 48) return `${hours}h`;
+  return `${Math.round(hours / 24)}d`;
+}
+
 function modelCoolingBadge(account: GatewayPoolAccount, t: ReturnType<typeof useT>): ReactNode {
-  const entries = Object.entries(account.modelCoolings ?? {});
-  if (!entries.length) return null;
+  const details = account.modelCooldownDetails ?? {};
+  const rows = Object.entries(account.modelCoolings ?? {}).map(([model, until]) => ({
+    model,
+    until,
+    fallback: details[model]?.fallback ?? false,
+    // 上游文案里声明的恢复时刻（`0` = 上游没说）。
+    declared: details[model]?.upstreamResetAtMs ?? 0,
+  }));
   const now = Date.now();
   // 只展示仍有效的（后端已过滤，这里再兜一次防时钟漂移导致的负数）。
-  const live = entries.filter(([, until]) => Number.isFinite(until) && until > now);
+  const live = rows.filter((row) => Number.isFinite(row.until) && row.until > now);
   if (!live.length) return null;
-  const models = live.map(([model]) => model).join("、");
-  // 最早解冻的那个决定「什么时候能再用上其中一部分」。
-  const earliest = Math.min(...live.map(([, until]) => until));
-  const time = new Date(earliest).toLocaleTimeString(undefined, {
-    hour: "2-digit",
-    minute: "2-digit",
-  });
+
+  const earliest = Math.min(...live.map((row) => row.until));
+  const latest = Math.max(...live.map((row) => row.until));
+  // ★ issue #88 缺口 4.2：**不能只给最早**。
+  //
+  // 3 个模型分别冷却 2 分钟 / 10 分钟 / 2 小时时，只说「最近 2 分钟后」会被读成
+  // 「整批都快好了」—— 而实际还有两个要等两小时。所以只要不是同一个时刻，就给区间。
+  const range =
+    latest > earliest
+      ? `${formatThawAt(earliest, now)} – ${formatThawAt(latest, now)}`
+      : formatThawAt(earliest, now);
+
+  // ★ 2026-10-29：冷却**已经按上游声明的时刻**走（`Pool::adopt_probe_result` 的第二档），
+  // 所以徽标直接给 `until` 就是上游说的那个时刻。只有 `fallback`（上游什么都没说、
+  // 走本仓 10 分钟兜底）才加「约」—— 那个时刻是猜的，不能当承诺展示。
+  const anyFallback = live.some((row) => row.fallback);
+
+  // tooltip 逐模型列出：名称 + 剩余时长 +（若是兜底值）标记 +（若与截止时刻不同）上游时刻。
+  // 「兜底」必须显式标出来 —— 那是本仓猜的 10 分钟，不是上游说的，排查含义相反。
+  const hint = live
+    .map((row) =>
+      t("shared.gateway.pool.modelCoolingRow", {
+        model: row.model,
+        remaining: formatRemaining(row.until, now),
+        fallback: row.fallback ? t("shared.gateway.pool.modelCoolingFallback") : "",
+        // 只在「上游说的」与「实际冷却截止」不一致时补一句（例如被 24h 截断）。
+        upstream:
+          row.declared > 0 && Math.abs(row.declared - row.until) > 60_000
+            ? t("shared.gateway.pool.modelCoolingRowUpstream", {
+                time: formatThawAt(row.declared, now),
+              })
+            : "",
+      }),
+    )
+    .join("\n");
+
   return (
-    <Badge
-      variant="secondary"
-      className="shrink-0 text-warning"
-      title={t("shared.gateway.pool.modelCoolingHint", { models, time })}
-    >
-      {t("shared.gateway.pool.modelCoolingBadge", { count: live.length, time })}
+    <Badge variant="secondary" className="shrink-0 text-warning" title={hint}>
+      {anyFallback
+        ? t("shared.gateway.pool.modelCoolingBadgeApprox", {
+            count: live.length,
+            time: range,
+          })
+        : t("shared.gateway.pool.modelCoolingBadge", { count: live.length, time: range })}
     </Badge>
   );
 }
@@ -163,8 +235,9 @@ function formatCount(value: number | null | undefined): string {
  * 数据全部由调用方传入（状态来自各自的 `*_gateway_status`），卡片自身不发请求，
  * 因此两侧的差异只剩两处**数据驱动**的参数：
  * - [`tiles`]：计数格。Trae 五格，WorkBuddy 四格（无积分过期判据）。
- * - [`autoOptions`]：下拉里除账号之外的选项。Trae 只有「不指定」；WorkBuddy 另有
- *   「按实时积分择优」（那是它自己的策略能力，写回 `AccountStrategy`）。
+ * - [`autoOptions`]：下拉里除账号之外的选项。三个网关页现在**传同一组四档**
+ *   （不指定 / 按实时积分择优 / 随机 / **顺序**）—— 差异只在写回形态：
+ *   WorkBuddy 存 `AccountStrategy`，Trae / Qoder 存哨兵串 `preferredUid`。
  *
  * ## 指定账号的语义（务必与后端一致）
  *
@@ -202,6 +275,9 @@ export function AccountPoolCard({
   revivingUid = null,
   onExclude,
   excludingUid = null,
+  autoFailover,
+  onAutoFailoverChange,
+  failoverSaving = false,
   className,
 }: {
   pool: GatewayPoolSummary | null;
@@ -243,6 +319,17 @@ export function AccountPoolCard({
   onExclude?: (uid: string, excluded: boolean) => void;
   /** 正在切换排除状态的 uid。 */
   excludingUid?: string | null;
+  /**
+   * ★ issue #129：**账号故障时自动切换**的当前值。
+   *
+   * 三平台各有一份同名字段（`auto_failover`）。不传 = 该调用点未接线 ⇒ **不渲染**开关
+   * （宁可少一个控件，也不要摆一个点了不生效的假开关）。
+   */
+  autoFailover?: boolean;
+  /** 切换出口；与 `autoFailover` **同生同空**。 */
+  onAutoFailoverChange?: (value: boolean) => void;
+  /** 开关保存中（禁用，避免连点产生两次整份写入）。 */
+  failoverSaving?: boolean;
   className?: string;
 }) {
   const t = useT();
@@ -295,6 +382,44 @@ export function AccountPoolCard({
           </SelectContent>
         </Select>
         <div className="grow" />
+        {/* ★ issue #129：账号故障时自动切换。
+            放在工具条而不是另开一张卡：它是**选号行为**的一个开关，与「指定账号」
+            同层；摆到别处会让用户以为是全局设置（改了影响所有平台）。 */}
+        {onAutoFailoverChange ? (
+          <div className="flex items-center gap-2">
+            <Switch
+              id="gateway-auto-failover"
+              checked={autoFailover ?? false}
+              onCheckedChange={onAutoFailoverChange}
+              disabled={saving || failoverSaving}
+              aria-label={t("shared.gateway.pool.autoFailover")}
+            />
+            <label
+              htmlFor="gateway-auto-failover"
+              className="cursor-pointer text-xs text-muted-foreground"
+            >
+              {t("shared.gateway.pool.autoFailover")}
+            </label>
+            {/* ⓘ 只是解释，不是必需信息 ⇒ 收进浮层，工具条保持一行。
+                给 `aria-label` 让键盘 / 读屏用户也能拿到说明。 */}
+            <TooltipProvider>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <button
+                    type="button"
+                    className="text-muted-foreground/70 transition-colors hover:text-foreground"
+                    aria-label={t("shared.gateway.pool.autoFailoverHint")}
+                  >
+                    <Info className="size-3.5" aria-hidden />
+                  </button>
+                </TooltipTrigger>
+                <TooltipContent className="max-w-80 text-xs leading-relaxed">
+                  {t("shared.gateway.pool.autoFailoverHint")}
+                </TooltipContent>
+              </Tooltip>
+            </TooltipProvider>
+          </div>
+        ) : null}
         {totalRequests !== null && (
           <span className="text-xs text-muted-foreground">
             {t("shared.gateway.pool.totalRequests", { count: formatCount(totalRequests) })}

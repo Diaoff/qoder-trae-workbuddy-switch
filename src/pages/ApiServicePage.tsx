@@ -10,10 +10,12 @@ import {
   AUTO_OPTION,
   MAX_CREDITS_OPTION,
   RANDOM_OPTION,
+  SEQUENTIAL_OPTION,
   WB_POOL_TILES,
 } from "@/components/gateway/account-pool-card";
 import { IntegrationGuide } from "@/components/gateway/integration-guide";
 import { ModelList } from "@/components/gateway/model-list";
+import { ModelFallbackCard } from "@/components/gateway/model-fallback-card";
 import { ModelProbeCard } from "@/components/gateway/model-probe-card";
 // P12 · 请求代理面板（**C 路：base URL 重定向**）—— 默认关，应用只记"用户已按引导设置"。
 // ⚠️ 只接 WB 侧：C 路本期不做 Trae（`proxy.rs` 的 `PROXY_GATEWAY_BASE` 只覆盖 WB 网关端口）。
@@ -511,9 +513,14 @@ export default function ApiServicePage() {
 
           {/* ---- 模型 ---- */}
           {/* 限流探测卡**在表之上**（方案 §5.1：卡片在模型分区里，不是弹层）。 */}
+          {/* 降级链卡在探测与表之间：探测说「模型 × 账号现在健不健康」，
+              降级链说「模型不健康时怎么办」—— 同一组东西，放一起才能对着配。
+              ⚠️ 只在 WorkBuddy 页渲染：Trae / Qoder 的中继是各自实现，尚未接降级，
+              渲染一张点了没效果的卡就是假开关（§3.4 规则 1）。 */}
           {section === "models" && (
             <>
               <ModelProbeCard region={region} className="mb-6" />
+              <ModelFallbackCard region={region} className="mb-6" />
               <ModelList region={region} />
             </>
           )}
@@ -586,6 +593,26 @@ function RegionPoolCard({ region }: { region: Region }) {
   const [saving, setSaving] = useState(false);
   const [revivingUid, setRevivingUid] = useState<string | null>(null);
   const [excludingUid, setExcludingUid] = useState<string | null>(null);
+  /* ★ issue #129：「账号故障时自动切换」是**网关级**开关（不分区域），
+     所以两张区域卡显示的是同一个值、改任一张都生效。 */
+  const config = useGatewayStore((s) => s.config);
+  const saveConfig = useGatewayStore((s) => s.saveConfig);
+  const [failoverSaving, setFailoverSaving] = useState(false);
+
+  async function onAutoFailoverChange(next: boolean) {
+    if (next === config.auto_failover) return;
+    setFailoverSaving(true);
+    try {
+      // 整份保存：只改这一个键，其余沿用当前快照（与顶层 `persist` 同口径）。
+      // 成功**不弹 toast**：开关本身已有视觉反馈，再弹一次只是噪音
+      // （且与「端口 / 监听」那条保存提示撞在一起会连闪两条）。
+      await saveConfig({ ...config, auto_failover: next });
+    } catch (e) {
+      toast.error(t("wbStats.gateway.saveFail"), { description: api.asError(e) });
+    } finally {
+      setFailoverSaving(false);
+    }
+  }
 
   /* ★ 探测收尾后主动刷一次池状态（issue #88）。
    *
@@ -612,7 +639,9 @@ function RegionPoolCard({ region }: { region: Region }) {
         ? MAX_CREDITS_OPTION
         : strategy.kind === "random"
           ? RANDOM_OPTION
-          : "";
+          : strategy.kind === "sequential"
+            ? SEQUENTIAL_OPTION
+            : "";
 
   async function persist(next: AccountStrategy) {
     setSaving(true);
@@ -635,6 +664,12 @@ function RegionPoolCard({ region }: { region: Region }) {
        后端 `AccountStrategy::Random` 是三平台共用枚举，这里少一档就是该平台静默失去它。 */
     if (next === RANDOM_OPTION) {
       void persist({ kind: "random" });
+      return;
+    }
+    /* 顺序（issue #102）：粘住当前账号，只有它不可用时才换下一个。
+       目的是**上游前缀缓存复用** —— 随机每轮换号会让同一段上下文反复按输入计价。 */
+    if (next === SEQUENTIAL_OPTION) {
+      void persist({ kind: "sequential" });
       return;
     }
     if (next === AUTO_OPTION || next === "") {
@@ -709,12 +744,17 @@ function RegionPoolCard({ region }: { region: Region }) {
       revivingUid={revivingUid}
       onExclude={onExclude}
       excludingUid={excludingUid}
+      // ★ issue #129：账号故障时自动切换（网关级，两张区域卡同源）。
+      autoFailover={config.auto_failover}
+      onAutoFailoverChange={onAutoFailoverChange}
+      failoverSaving={failoverSaving}
       // WorkBuddy 池不存积分有效期 ⇒ 没有「积分过期」格（见卡片注释）。
       tiles={WB_POOL_TILES}
       autoOptions={[
         { value: AUTO_OPTION, label: t("shared.gateway.pool.preferredAuto") },
         { value: MAX_CREDITS_OPTION, label: t("shared.gateway.pool.strategyMaxCredits") },
         { value: RANDOM_OPTION, label: t("shared.gateway.pool.strategyRandom") },
+        { value: SEQUENTIAL_OPTION, label: t("shared.gateway.pool.strategySequential") },
       ]}
       // 不传 `title`：与 Trae 侧一致用默认的「账号池」——版本由**页头切换器**承担，
       // 卡内再挂一次版本后缀只是噪音（Trae 的池卡同样不标区域）。

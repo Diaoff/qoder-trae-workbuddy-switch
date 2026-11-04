@@ -143,6 +143,9 @@ export const en = {
   "wbAccounts.card.ideNotDetected": "CodeBuddy IDE not detected",
   "wbAccounts.card.switchingIde": "Switching CodeBuddy IDE",
   "wbAccounts.card.setCurrentCli": "Set as CodeBuddy CLI current account",
+  // issue #109: with the CLI on the local gateway, switching accounts no longer applies.
+  "wbAccounts.card.cliGatewayMode":
+    "The CLI now goes through the local gateway, which picks accounts by model. To switch per account, switch back to direct upstream in Settings → CodeBuddy CLI.",
   "wbAccounts.card.switchingCli": "Switching CodeBuddy CLI current account",
   "wbAccounts.card.connectCliFirst": "Connect CodeBuddy CLI first",
   // P4: remark editor moved to the shared drawer; only the card entry point stays.
@@ -163,7 +166,6 @@ export const en = {
   // prototype card (top / chips / metrics / actions only).
   "wbAccounts.card.expired": "Expired",
   "wbAccounts.card.expiresOn": "Expires {date}",
-  "wbAccounts.card.used": "Used {n}",
 
   // ---- Detail drawer sections (assembled by AccountsPage) ----
   "wbAccounts.detail.section.account": "Account",
@@ -435,6 +437,11 @@ export const en = {
   "wbAccounts.limits.loading": "Reading rate-limit records…",
   "wbAccounts.limits.loadFailed": "Failed to load",
   "wbAccounts.limits.empty": "No rate-limit records in the selected range.",
+  "wbAccounts.limits.subtitleNoLedger": "This platform has no client log to infer from, so only **probe** results are listed here (same data as the gateway rate-limit probe); reset times come from the upstream.",
+  "wbAccounts.limits.emptyNoLedger": "No probe results yet.",
+  "wbAccounts.limits.emptyNoLedgerDesc": "Pick accounts and models in the gateway's rate-limit probe (costs are stated there); one round is enough for the results to show up here.",
+  "wbAccounts.limits.emptyNoLimitNoLedger": "No limited cells in the probe results.",
+  "wbAccounts.limits.emptyNoLimitNoLedgerDesc": "All available is good news — the full matrix (including available cells and their latency) lives in the gateway probe.",
   "wbAccounts.limits.active": "Limited",
   "wbAccounts.limits.recovered": "Recovered",
   // "Reset time unknown" is a third state — neither "limited" nor "recovered".
@@ -466,6 +473,8 @@ export const en = {
   "wbAccounts.limits.probeAll": "Probe {cells} cells",
   "wbAccounts.limits.probeAllHint": "Only the pairs seen in the ledger: {cells} cells ({accounts} accounts / {models} models). One minimal request per cell; pool cooldowns are not written back.",
   "wbAccounts.limits.probeAllEmpty": "Nothing to probe (needs \"still limited / unknown\" rows that resolve to both an account and a model).",
+  "wbAccounts.limits.probeAllHintNoLedger": "Re-probe these {cells} limited cells: one minimal request each, no cooldown write-back.",
+  "wbAccounts.limits.probeAllEmptyNoLedger": "No limited cells to re-probe yet — run the gateway probe first.",
   "wbAccounts.limits.probeRow": "Probe",
   "wbAccounts.limits.probeRowHint": "Probe just this cell: one minimal request, no pool cooldown is written back.",
   "wbAccounts.limits.probeRowDisabled": "This row cannot be resolved to an account and model (deleted session / playground), so it cannot be probed.",
@@ -473,10 +482,16 @@ export const en = {
   "wbAccounts.limits.probeCancel": "Cancel",
   "wbAccounts.limits.probeStartFail": "Could not start the probe",
   "wbAccounts.limits.probeVerdict": "Probe · {state}",
-  "wbAccounts.limits.probeVerdictHint": "Probe result: {state} (HTTP {http} · {ms} ms{reset})",
+  "wbAccounts.limits.probeVerdictHint": "Probe result: {state} (HTTP {http} · {ms} ms{reset}){probed}",
   "wbAccounts.limits.conflictRecovered": "Probe says available, ledger still says limited (historical evidence, not rewritten)",
   "wbAccounts.limits.conflictLimited": "Ledger says recovered, but the probe is limited right now",
   "wbAccounts.limits.probeNotCredit": "Not rate limiting: out of credits — waiting for a reset will not help.",
   "wbAccounts.limits.probeOnlyTitle": "{count} probe-only cells",
   "wbAccounts.limits.probeOnlyHint": "Cells the probe found limited but the ledger has no record of. Listed here only — never written into the ledger (which records what the client logs actually saw).",
+  "wbAccounts.limits.probeOnlyResetHint": "The reset time the upstream declares: structured field first, otherwise parsed from the `msg` text. It is the quota-window reset, not the unlock time, and never feeds the cooldown write-back. Reads unknown only when neither exists.",
+  "wbAccounts.limits.probedAt": "Probed {time}",
+  "wbAccounts.limits.probedAtUnknown": "Probe time unknown (legacy ledger)",
+  "wbAccounts.limits.legacyRows": "{count} of these cells were recorded by an older version: no per-cell probe time and no upstream reset time. Hit \"Probe\" on a row to fill them in (this scope's probe ledger was last written {time}).",
+  "wbAccounts.limits.probedAtHint": "When this cell was actually probed (per-cell `probed_at_ms`). "
+    + "Legacy ledgers lack it, so it reads unknown and asks you to re-probe — never borrow the scope's last write time, which would make several accounts show one identical timestamp.",
 };

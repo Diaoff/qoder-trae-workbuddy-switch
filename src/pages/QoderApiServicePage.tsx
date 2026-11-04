@@ -10,6 +10,7 @@ import {
   AUTO_OPTION,
   MAX_CREDITS_OPTION,
   RANDOM_OPTION,
+  SEQUENTIAL_OPTION,
   AccountPoolCard,
   QODER_POOL_TILES,
 } from "@/components/gateway/account-pool-card";
@@ -26,6 +27,7 @@ import {
 import { QoderApiKeyTable } from "@/components/gateway/qoder-api-key-table";
 import { QoderModelList } from "@/components/gateway/qoder-model-list";
 import { QoderQuotaGuard } from "@/components/gateway/qoder-quota-guard";
+import { ModelFallbackCard } from "@/components/gateway/model-fallback-card";
 import { ModelProbeCard } from "@/components/gateway/model-probe-card";
 import { TraeIntegrationGuide } from "@/components/gateway/trae-integration-guide";
 import { TraeRequestLog } from "@/components/gateway/trae-request-log";
@@ -45,6 +47,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Skeleton } from "@/components/ui/skeleton";
 import { Switch } from "@/components/ui/switch";
 import * as api from "@/lib/api";
+import { gatewayOpenAiBaseUrl } from "@/lib/gateway-url";
 import { copyText } from "@/lib/clipboard";
 import { useT } from "@/lib/i18n";
 import {
@@ -415,10 +418,12 @@ export default function QoderApiServicePage() {
   }
 
   const running = status?.running ?? false;
-  const baseUrl = useMemo(() => {
-    const host = config.bindAddr === LAN ? LOOPBACK : config.bindAddr;
-    return `http://${host}:${config.port}/v1`;
-  }, [config.bindAddr, config.port]);
+  /* ★ OpenAI 系 Base URL（含 `/v1`）统一由 `lib/gateway-url.ts` 派生（#165）：`0.0.0.0` 归一、
+     `/v1` 只加一次，别在这里手拼。 */
+  const baseUrl = useMemo(
+    () => gatewayOpenAiBaseUrl(config.bindAddr, config.port),
+    [config.bindAddr, config.port],
+  );
 
   const keyPrefix = status?.apiKeyPrefix || "";
   /* ★ 概览两行的取数（与另两个分区**同源口径**）：
@@ -661,6 +666,13 @@ export default function QoderApiServicePage() {
                 models={probeModels}
                 className="mb-6"
               />
+              {/* 降级链：与 WB 页同一组件，作用域与模型清单由本页注入。 */}
+              <ModelFallbackCard
+                region={region}
+                scope={scopeOf("qoder", region)}
+                modelOptions={probeModels}
+                className="mb-6"
+              />
               <QoderModelList
                 catalog={catalog}
                 region={region}
@@ -697,6 +709,9 @@ export default function QoderApiServicePage() {
               // 排除：与 WorkBuddy 同一语义（硬约束），只是 scope 换成 `qoder:<region>`。
               onExclude={(uid, excluded) => void onExclude(uid, excluded)}
               excludingUid={excludingUid}
+              // ★ issue #129：账号故障时自动切换（网关级，与会话粘性同层）。
+              autoFailover={config.autoFailover}
+              onAutoFailoverChange={(checked) => void persist({ autoFailover: checked })}
               totalRequests={status?.totalRequests ?? null}
               tiles={QODER_POOL_TILES}
               /* 选号策略（哨兵值由后端 `pool::parse_preferred` 解释成 `PickMode`）。 */
@@ -707,6 +722,10 @@ export default function QoderApiServicePage() {
                   label: t("shared.gateway.pool.strategyMaxCredits"),
                 },
                 { value: RANDOM_OPTION, label: t("shared.gateway.pool.strategyRandom") },
+                {
+                  value: SEQUENTIAL_OPTION,
+                  label: t("shared.gateway.pool.strategySequential"),
+                },
               ]}
             />
             </>

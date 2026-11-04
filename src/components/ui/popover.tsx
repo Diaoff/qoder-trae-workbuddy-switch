@@ -57,6 +57,10 @@ function PopoverContent({
         sideOffset={sideOffset}
         className={cn(
           "z-50 rounded-lg border bg-popover p-1.5 text-popover-foreground shadow-overlay outline-none",
+          /* ★ 浮层必须限高可滚（本仓硬约束，issue #79/#80）：不限高 + 内容长
+             ⇒ 超出窗口的部分被切掉且**没有滚动条**，用户以为内容就这么点。
+             用 Radix 给的可用高度变量，窗口再小也不会溢出。 */
+          "max-h-[var(--radix-popover-content-available-height)] overflow-y-auto",
           /* 退出动画刻意不加（issue #80）：`Presence` 等 `animationend` 才卸载，
              该事件在部分引擎上不保证送达 ⇒ 浮层关不掉、幽灵节点留在 DOM 里。
              进入动画保留（挂载不等待事件）。 */

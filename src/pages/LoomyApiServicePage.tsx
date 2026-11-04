@@ -10,6 +10,7 @@ import {
   AccountPoolCard,
   LOOMY_POOL_TILES,
   RANDOM_OPTION,
+  SEQUENTIAL_OPTION,
 } from "@/components/gateway/account-pool-card";
 import { GatewayClientlessNotice } from "@/components/clientless-notice";
 import { GatewayShell } from "@/components/gateway/gateway-shell";
@@ -24,6 +25,7 @@ import {
 } from "@/components/gateway/gateway-subnav";
 import { LoomyApiKeyTable } from "@/components/gateway/loomy-api-key-table";
 import { LoomyModelList } from "@/components/gateway/loomy-model-list";
+import { ModelFallbackCard } from "@/components/gateway/model-fallback-card";
 import { ModelProbeCard } from "@/components/gateway/model-probe-card";
 import { TraeIntegrationGuide } from "@/components/gateway/trae-integration-guide";
 import { TraeRequestLog } from "@/components/gateway/trae-request-log";
@@ -44,6 +46,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Switch } from "@/components/ui/switch";
 import * as api from "@/lib/api";
 import { copyText } from "@/lib/clipboard";
+import { gatewayOpenAiBaseUrl } from "@/lib/gateway-url";
 import { useT } from "@/lib/i18n";
 import {
   DEFAULT_LOOMY_GATEWAY_CONFIG,
@@ -283,10 +286,12 @@ export default function LoomyApiServicePage() {
   }
 
   const running = status?.running ?? false;
-  const baseUrl = useMemo(() => {
-    const host = config.bindAddr === LAN ? LOOPBACK : config.bindAddr;
-    return `http://${host}:${config.port}/v1`;
-  }, [config.bindAddr, config.port]);
+  /* ★ OpenAI 系 Base URL（含 `/v1`）统一由 `lib/gateway-url.ts` 派生（#165）：
+     `0.0.0.0` 归一、`/v1` 只加一次 —— 别在这里手拼。 */
+  const baseUrl = useMemo(
+    () => gatewayOpenAiBaseUrl(config.bindAddr, config.port),
+    [config.bindAddr, config.port],
+  );
 
   const keyPrefix = status?.apiKeyPrefix || "";
   /* 与另三个分区**同源口径**：
@@ -546,6 +551,14 @@ export default function LoomyApiServicePage() {
               adoptSupported={false}
               className="mb-6"
             />
+            {/* 降级链：与 WB / Trae / Qoder **同一组件**（P13），作用域与模型清单由本页注入。
+                后端 Loomy 中继已接 hop 循环（`chat_for_region`），这里只负责配置面。 */}
+            <ModelFallbackCard
+              region="cn"
+              scope={scope}
+              modelOptions={probeModels}
+              className="mb-6"
+            />
             <LoomyModelList
               catalog={catalog}
               refreshing={refreshingModels}
@@ -571,6 +584,9 @@ export default function LoomyApiServicePage() {
             autoOptions={[
               { value: AUTO_OPTION, label: t("shared.gateway.pool.preferredAuto") },
               { value: RANDOM_OPTION, label: t("shared.gateway.pool.strategyRandom") },
+              /* 「顺序」= 固定一个号直到它不可用（issue #102）：Loomy 走共用选号内核，
+                 这个哨兵由 `pool::parse_preferred` 统一识别。 */
+              { value: SEQUENTIAL_OPTION, label: t("shared.gateway.pool.strategySequential") },
             ]}
           />
         )}

@@ -22,7 +22,7 @@ By using this project you acknowledge that you have read, understood and agreed 
 
 ## 3. Data writes and backups
 
-- Switching accounts, cloning sessions, migrating long-term memory and connector configuration, and writing Trae login state all **directly modify data files of third-party clients** on your machine (see [Data and privacy](../../README.md#data-and-privacy)).
+- Switching accounts, cloning sessions, migrating long-term memory and connector configuration, and writing Trae login state all **directly modify data files of third-party clients** on your machine (see [Data and privacy](../../README.en.md#data-and-privacy)).
 - The project attempts to back up data before rewriting it, but a backup can fail for reasons such as an unwritable path, insufficient disk space or the target file being locked. **The automatic backup is not a reliability guarantee of any kind.**
 - **Keep your own independent backups of anything important.** The author accepts no liability for any data loss, corruption, inconsistency or abnormal login state.
 

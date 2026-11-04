@@ -28,24 +28,46 @@
  */
 
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { AlertTriangle, ListTree, RotateCw, SearchX, UserPlus } from "lucide-react";
 import { toast } from "sonner";
 
-import { AccountCard } from "@/components/account-card";
+import { AccountCard, type GuideTarget } from "@/components/account-card";
 import { TraeAccountCard } from "@/components/trae-account-card";
 import { QoderAccountCard } from "@/components/qoder/qoder-account-card";
 import { LoomyAccountCard } from "@/components/loomy/loomy-account-card";
 import { AggregateFilterPanel } from "@/components/aggregate/aggregate-filter-panel";
-import { AggregateExportButton, groupExportTargets } from "@/components/aggregate/aggregate-export-button";
+import {
+  AggregateExportButton,
+  AggregateExportDialog,
+  groupExportTargets,
+} from "@/components/aggregate/aggregate-export-button";
 import { useAggregateWbSwitcher } from "@/components/aggregate/aggregate-wb-switcher";
+import { useAggregateTraeSwitcher } from "@/components/aggregate/aggregate-trae-switcher";
+import { useAggregateQoderSwitcher } from "@/components/aggregate/aggregate-qoder-switcher";
 import { RestartConfirmDialog } from "@/components/restart-confirm-dialog";
+import { SwitchAccountDialog } from "@/components/switch-account-dialog";
+import { OAuthLoginDialog } from "@/components/oauth-login-dialog";
 import { ScopeMark, scopeLabel } from "@/components/scope-chip";
-import { AccountDetailDrawer } from "@/components/account-detail-drawer";
+import {
+  AccountDetailDrawer,
+  type DetailActions,
+  type DetailSwitchTarget,
+} from "@/components/account-detail-drawer";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { EmptyState } from "@/components/ui/empty-state";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import * as api from "@/lib/api";
+import { checkinCreditsOf } from "@/lib/api";
 import {
   AGGREGATE_SOURCES,
   aggregateAccountKey,
@@ -62,8 +84,10 @@ import {
   type AggregateAccount,
 } from "@/lib/aggregate-accounts";
 import { useAggregateAccounts } from "@/lib/use-aggregate-accounts";
+import { qoderPackKey, qoderPacksNotice, useQoderWebPacks } from "@/lib/use-qoder-web-packs";
 import {
   checkinTodayOf,
+  signalKeyOf,
   todayTokensOf,
   traeProgramsOf,
   useAggregateSignals,
@@ -78,10 +102,13 @@ import {
 } from "@/lib/aggregate-detail";
 import { useT } from "@/lib/i18n";
 import { SCOPES, scopeParts, type Scope } from "@/lib/scope";
-import { demoModeEnabled } from "@/lib/demo-mode";
+import type { AccountMeta, CheckinLog, CreditStatsEvent, Region } from "@/lib/types";
 import { isWorkbuddyCurrent } from "@/lib/account-current";
+import { pickPriorityAccountId } from "@/lib/credit-priority";
+import { lastSevenDays, localDateKey } from "@/lib/checkin-history";
 import { useWbProgramStatuses, wbProgramAvailability } from "@/lib/wb-program-statuses";
 import {
+  QODER_REFRESH_KINDS,
   REFRESH_DONE_LABEL,
   useAccountRefreshBusy,
   type AccountRefreshKind,
@@ -128,6 +155,90 @@ export default function AggregateAccountsPage() {
   const wbSwitch = useAggregateWbSwitcher(() => {
     void reload();
   });
+  /**
+   * Trae / Qoder 的程序位切换（issue #89 · 2.1 / 2.2）。
+   *
+   * 与 `wbSwitch` **同构**：确认框 + busy + 成功/失败反馈都收在 hook 里，页面只调 `request`。
+   * 此前这两条线是 `renderCard` 里的内联箭头 ⇒ 点一下就直接改客户端登录态（Trae 还会
+   * 静默重启客户端），而渠道页是**先确认再执行**。
+   */
+  const traeSwitch = useAggregateTraeSwitcher(() => {
+    void reload();
+    void reloadSignals();
+  });
+  const qoderSwitch = useAggregateQoderSwitcher(() => {
+    void reload();
+    void reloadSignals();
+  });
+  /**
+   * 单账号导出（issue #89 · B9）。
+   *
+   * 聚合页此前只有工具栏的「导出」按钮，而它强制「选中优先、否则全可见」——
+   * **单账号导出这条路没有**。卡片菜单里的「导出账号」因此是灰的（`disabled={!onExport}`）。
+   * 现在复用同一个受控弹窗（`AggregateExportDialog`），只把目标换成一个账号。
+   */
+  const [exportTarget, setExportTarget] = useState<AggregateAccount | null>(null);
+
+  /**
+   * 「OAuth 扫码添加」（issue #89 · B7）。
+   *
+   * 卡片在**凭据是加密信封**的账号上会渲染这条出口 —— 那时积分那一行只剩一句错误文案，
+   * 「扫码重新登录」是**唯一出路**。不传 `onAddPlaintextAccount` 就整个按钮不渲染，
+   * 用户手上没有任何可点的东西。
+   *
+   * 区域取**该账号自己的作用域**：聚合页一屏里有 6 个作用域，用页面级区域会把国内号
+   * 的扫码登录写进国际版账号库。
+   */
+  const [oauthRegion, setOauthRegion] = useState<Region | null>(null);
+  /**
+   * Qoder 逐资源包明细（issue #111）：与 Qoder 账号页**共用同一份控制器**
+   * （`useQoderWebPacks`，issue #144 复核 §4.5）。
+   *
+   * 与其它平台不同，这份数据**不在账号快照里**（走网页会话，仅桌面端 + 需登录一次），
+   * 所以只能打开抽屉时按需拉。★ 此前聚合页只自己拉一次 `qoderWebCreditPacks`，
+   * 拿不到就什么都不渲染 ⇒ 用户看到一片空白，既不知道「登录一次就能看」，也没有按钮。
+   * 现在引导（`packsNotice`）与动作（读取 / 退出）都在抽屉里，与账号页逐字相同。
+   */
+  const qoderWebPacks = useQoderWebPacks(t);
+
+  /** WorkBuddy 主程序位（「WB」那枚）的切换：与账号页同一个向导（含会话迁移）。 */
+  const [wbSwitchDialog, setWbSwitchDialog] = useState<{
+    account: AccountMeta;
+    region: Region;
+  } | null>(null);
+
+  const navigate = useNavigate();
+  /**
+   * 「未检测到程序位」的引导（issue #89 · B2）：与账号页**同一条路径** ——
+   * 一句针对性 toast + 跳到**该作用域**设置页的「权限与诊断」子项锚点。
+   *
+   * ⚠️ 必须带 `?section=diagnostics`：跳到设置页首页的话用户还得自己找子项。
+   * 这里比账号页多一步「取该账号自己的 scope」—— 聚合页一屏里有 6 个作用域，
+   * 用当前页面的作用域会把人带到另一条产品线的设置页。
+   */
+  const onGuideToSetting = useCallback(
+    (item: AggregateAccount, target: GuideTarget) => {
+      toast.info(
+        target === "ide"
+          ? t("wbAccounts.toast.guideIdeSetting")
+          : t("wbAccounts.toast.guideCliSetting"),
+      );
+      navigate(`/s/${item.scope}/settings?section=diagnostics`);
+    },
+    [navigate, t],
+  );
+
+  /** 「插件未安装」的引导（issue #89 · B3）：与账号页同一句 toast。 */
+  const onGuidePlugin = useCallback(
+    (programId: string) => {
+      const client =
+        programId === "vscode_codebuddy_plugin"
+          ? t("wbAccounts.program.vscodeCodebuddyPlugin")
+          : t("wbAccounts.program.jetbrainsCodebuddyPlugin");
+      toast.info(t("wbAccounts.card.guidePlugin", { client }));
+    },
+    [t],
+  );
   const wbProgramAvail = wbProgramAvailability(wbPrograms);
   const wbCnStatus = useAccountsStore((s) => s.status);
   const wbGlobalStatus = useAccountsStore((s) => s.global.status);
@@ -136,6 +247,29 @@ export default function AggregateAccountsPage() {
       scopeParts(scope).region === "cn" ? wbCnCredit[id] : wbGlobalCredit[id],
     [wbCnCredit, wbGlobalCredit],
   );
+
+  /**
+   * ⭐「建议优先」徽章：**每个作用域挑一个**（issue #89 · B6）。
+   *
+   * 判据与账号页**共用** `pickPriorityAccountId`（`lib/credit-priority.ts`）——
+   * 此前账号页有徽章、聚合页没有，同一张卡在两个页面显示不同的推荐，
+   * 用户无从判断该信哪个。这里只做「按作用域分组」这一步。
+   */
+  const priorityIdByScope = useMemo(() => {
+    const grouped = new Map<Scope, AccountMeta[]>();
+    for (const account of accounts) {
+      if (account.platform !== "workbuddy") continue;
+      const list = grouped.get(account.scope) ?? [];
+      list.push(account.data);
+      grouped.set(account.scope, list);
+    }
+    const out = new Map<Scope, string>();
+    for (const [scope, list] of grouped) {
+      const id = pickPriorityAccountId(list, (account) => creditOf(scope, account.id));
+      if (id) out.set(scope, id);
+    }
+    return out;
+  }, [accounts, creditOf]);
 
   const [query, setQuery] = useState("");
   const [mode, setMode] = useState<AggregateMode>("group");
@@ -234,7 +368,14 @@ export default function AggregateAccountsPage() {
   /* ── 删除（真删 + 撤销）────────────────────────────────────────
      撤销走 `offerUndo`，它的 `undo` 是**必填**参数 —— 后端没有恢复命令时
      这段代码根本写不出来（`undo-toast.ts` 文件头那条红线的落地方式）。 */
-  const handleDelete = useCallback(
+  /* ★ issue #89 · 2.3：删除**必须先确认**。三个渠道页都是 `setDeleteTarget(a)`
+     → Dialog 确认；聚合页此前点菜单项即刻删除。撤销 toast 只是**事后**补救，
+     与渠道页养成的「删账号会先问一句」的预期相反。 */
+  const [confirmDelete, setConfirmDelete] = useState<
+    { kind: "one"; account: AggregateAccount } | { kind: "batch"; count: number } | null
+  >(null);
+
+  const performDelete = useCallback(
     async (account: AggregateAccount) => {
       const scope = account.scope;
       const key = aggregateAccountKey(account);
@@ -364,6 +505,181 @@ export default function AggregateAccountsPage() {
     else toast.success(t("aggregate.toast.checkinDone", { n: ok }));
     setSelected(new Set());
   }, [accounts, reload, selected, t]);
+
+  /**
+   * Trae 的非切换类动作（签到 / 保存登录态 / 刷新 JWT / 解冷却）的忙标记。
+   *
+   * ★ issue #89 · C6：卡片的 `busy` 是**一个字符串**，`checkingIn` / `saving` /
+   * `refreshingJwt` / `thawing` 都由 `busy === \`xxx-${uid}\`` 派生，而这些同时是
+   * `disabled` 的一部分 ⇒ 不传就等于「永远不显示执行中、可以重复点，
+   * 重复点会真的发第二次请求」。切换那条走 `traeSwitch.busy`（它自己管确认框），
+   * 这里管其余四个，两者互斥不会同时非空。
+   */
+  const [traeBusy, setTraeBusy] = useState<string | null>(null);
+
+  /**
+   * 跑一个 Trae 单账号动作：置忙 → 执行 → 重取账号与信号 → 失败报错 → 复位。
+   *
+   * 抽成函数而不是四个内联箭头：内联版本此前**既没有忙标记、也没有统一的失败文案**，
+   * 而「同一动作两处实现」正是本仓反复出现的分叉来源。
+   */
+  const runTraeAction = useCallback(
+    async (item: AggregateAccount, key: string, action: () => Promise<void>) => {
+      if (item.platform !== "trae") return;
+      setTraeBusy(key);
+      try {
+        await action();
+        await reload();
+        void reloadSignals();
+      } catch (error) {
+        toast.error(api.asError(error), { description: aggregateDisplayName(item) });
+      } finally {
+        setTraeBusy(null);
+      }
+    },
+    [reload, reloadSignals],
+  );
+
+  /**
+   * 单账号签到（Trae）—— 四种情况各自说清（issue #89 · C5）。
+   *
+   * 卡片菜单与抽屉「操作」区**共用这一个**：同一动作两处实现是本仓反复出现的分叉来源。
+   * 后端在计划阶段就会跳过（今日已签 / 冷却中 / 凭据过期）并**不返回 results** ——
+   * 所以「一条结果都没有」必须单独说，否则用户看到的是「点了没反应」。
+   */
+  const checkinTrae = useCallback(
+    (item: AggregateAccount) => {
+      if (item.platform !== "trae") return;
+      const variant = traeVariantOf(item.scope);
+      void runTraeAction(item, `checkin-${item.data.userId}`, async () => {
+        const label = aggregateDisplayName(item);
+        const result = await api.traeCheckin({
+          scope: "selected",
+          userIds: [item.data.userId],
+          variant,
+        });
+        const outcome = result.results[0];
+        if (!outcome) {
+          toast.info(t("trae.page.accounts.checkinNotRun"), {
+            description:
+              result.warnings[0] ?? t("trae.page.accounts.checkinSkippedDesc", { name: label }),
+          });
+        } else if (outcome.action === "skip_already") {
+          toast.success(t("trae.page.accounts.alreadyCheckedToday"), { description: label });
+        } else if (!outcome.ok) {
+          toast.error(t("trae.page.accounts.checkinFailed"), {
+            description: t("trae.page.accounts.checkinFailedDesc", {
+              name: label,
+              reason: outcome.message || outcome.action,
+            }),
+          });
+        } else {
+          toast.success(t("trae.page.accounts.checkinSuccess"), {
+            description:
+              outcome.delta > 0
+                ? t("trae.page.accounts.checkinSuccessDesc", { name: label, delta: outcome.delta })
+                : label,
+          });
+        }
+      });
+    },
+    [runTraeAction, t],
+  );
+
+  /**
+   * 单账号签到（Qoder）。
+   *
+   * 后端 `qoderCheckinClaim` 返回 `{ ok, disabled, rewardCredits }` 三态：
+   * `disabled` = 活动未开放（**不是失败**，报成失败会让用户以为账号有问题）。
+   */
+  const checkinQoder = useCallback(
+    async (item: AggregateAccount) => {
+      if (item.platform !== "qoder") return;
+      const name = aggregateDisplayName(item);
+      try {
+        const result = await api.qoderCheckinClaim(item.scope, item.data.uid);
+        if (result.ok) {
+          toast.success(t("qoder.page.accounts.checkin.done", { name }), {
+            description:
+              result.rewardCredits && result.rewardCredits > 0 ? `+${result.rewardCredits}` : undefined,
+          });
+        } else if (result.disabled) {
+          /* 活动通道未开放 —— 事实，不是错误。 */
+          toast.info(t("qoder.page.accounts.chip.checkinUnavailable"), { description: name });
+        } else {
+          toast.error(t("qoder.page.accounts.checkin.resultFail", { n: 1 }), { description: name });
+        }
+        await reload();
+        void reloadSignals();
+      } catch (error) {
+        toast.error(api.asError(error), { description: name });
+      }
+    },
+    [reload, reloadSignals, t],
+  );
+
+  /**
+   * 单账号刷 Trae 积分（issue #89 · C3）。
+   *
+   * 卡片「尚未查询到积分」那一行的就地刷新按钮走这里 —— 那一行恰恰是「没有积分」时
+   * 唯一的出口，按钮若是死的（`disabled={... || !onRefreshCredits}`），用户就只能去
+   * 全选 → 批量刷新 → 取消全选。
+   *
+   * 成功后必须 `reloadSignals()`：逐包明细来自信号层的 `get_trae_credits`，
+   * 只 `reload()`（账号列表）刷不出包粒度数据。
+   */
+  const refreshTraeCredits = useCallback(
+    async (item: AggregateAccount) => {
+      if (item.platform !== "trae") return;
+      const description = aggregateDisplayName(item);
+      try {
+        await api.traeRefreshCredits(item.data.userId, traeVariantOf(item.scope));
+        await reloadSignals();
+        toast.success(t(REFRESH_DONE_LABEL.credits), { description });
+      } catch (error) {
+        toast.error(api.asError(error), { description });
+      }
+    },
+    [reloadSignals, t],
+  );
+
+  /**
+   * 单账号签到（WorkBuddy）。
+   *
+   * ★ issue #89 · 2.6：聚合页此前**没传** `onCheckin`，而 `AccountMoreMenu` 的分支是
+   * `disabled={featuresDisabled || !onCheckin}` ⇒「今天还没签」的 WB 账号在菜单里
+   * 看得见、点不动；而**同一页**的 Trae / Qoder 卡片都传了 `onCheckin`。
+   * 用户没有别的单账号签到路径（批量签要先把这一个勾上）。
+   *
+   * 反馈链照 `AccountsPage.onCheckin`：`already` 与 `error` 必须分开说 ——
+   * 把「今天已经签过了」报成「签到失败」是这个动作最常见的误报。
+   */
+  const checkinOne = useCallback(
+    async (item: AggregateAccount) => {
+      if (item.platform !== "workbuddy") return;
+      const region = scopeParts(item.scope).region;
+      const description = aggregateDisplayName(item);
+      try {
+        const res = await api.checkin(item.data.id, region);
+        const label =
+          res.result === "success"
+            ? t("wbAccounts.toast.checkinSuccess")
+            : res.result === "already"
+              ? t("wbAccounts.toast.checkedInToday")
+              : t("wbAccounts.toast.checkinFail");
+        if (res.result === "error") {
+          toast.error(label, { description: res.error ? `${description} · ${res.error}` : description });
+        } else {
+          toast.success(label, { description });
+        }
+        await reload();
+        void reloadSignals();
+      } catch (error) {
+        toast.error(t("wbAccounts.toast.checkinFail"), { description: api.asError(error) });
+      }
+    },
+    [reload, reloadSignals, t],
+  );
 
   /**
    * 批量刷新（**当前可见的全部账号**，不是选中的那些）。
@@ -514,7 +830,11 @@ export default function AggregateAccountsPage() {
             /* Qoder **没有 token 概念**（见 `qoder::usage` 模块头）⇒ 卡片的刷新项里
                本来就没有「今日 Token」，这里也不会收到。 */
             if (kind === "credits") {
-              await api.qoderCredits(account.scope);
+              /* ★ issue #89 · 2.7：这里原先是 `qoderCredits`（**只读**额度视图），
+                 而渠道页同一项调 `qoderRefreshAccount`（真的去上游换令牌）。两者菜单项同名、
+                 `kind` 同为 `"credits"`、完成 toast 也同一句 ⇒ 凭据已过期的账号在聚合页
+                 点「刷新积分」**必然还是那组旧数字**，却报「已刷新积分」。 */
+              await api.qoderRefreshAccount(account.scope, account.data.uid);
             } else if (kind === "checkin") {
               await api.qoderCheckinStatusMap(account.scope, [account.data.uid]);
             } else {
@@ -552,7 +872,11 @@ export default function AggregateAccountsPage() {
         selected: selected.has(item.ref),
         onToggleSelect: () => toggleSelect(item.ref),
         onOpenDetail: () => openDetail(item.ref),
-        featuresDisabled: demoModeEnabled,
+        /* ★ 与三个渠道页对齐（issue #89 · 2.4）：渠道页恒传 `false`，让 `api.ts` 统一
+           拦截写操作并给可读原因（`demoUnavailableMessage`）—— 比一枚「点不动又不说明」
+           的按钮好。聚合页此前传 `demoModeEnabled` ⇒ 演示站上聚合页卡片全退化成灰按钮，
+           切到任一渠道页同一批卡片又可点。 */
+        featuresDisabled: false,
       };
       if (item.platform === "workbuddy") {
         const region = scopeParts(item.scope).region;
@@ -560,27 +884,57 @@ export default function AggregateAccountsPage() {
           <AccountCard
             key={item.ref}
             account={item.data}
-            onDelete={() => void handleDelete(item)}
+            onDelete={() => setConfirmDelete({ kind: "one", account: item })}
             credit={creditOf(item.scope, item.data.id)}
             creditLoading={region === "cn" ? wbCnCreditLoading[item.data.id] : wbGlobalCreditLoading[item.data.id]}
             /* 「当前登录」判定与账号页**共用** `isWorkbuddyCurrent`（见 `lib/account-current.ts`）。 */
             workbuddyActive={isWorkbuddyCurrent(item.data, (region === "cn" ? wbCnStatus : wbGlobalStatus)?.current)}
             codebuddyCliConfigured={wbProgramAvail.cliConfigured}
+            /* ★ issue #109：与账号页**同一来源**（`wbProgramAvailability`）——
+               少传这个 prop 不会报错，只会静默降级成「可点」（issue #89 那类问题）。 */
+            codebuddyCliGatewayMode={wbProgramAvail.cliGatewayMode}
+            /* ★ issue #89 · B1：主程序位「WB」的切换。不传 ⇒ `disabled={... || !onSwitch}`
+               命中，所有非当前账号的「WB」按钮点不动。走与账号页同一个向导（含会话迁移）。 */
+            onSwitch={() => setWbSwitchDialog({ account: item.data, region })}
+            /* ★ issue #89 · B2 / B3：不传这两个 ⇒ IDE / CLI 的「未检测到」与
+               VS Code / JetBrains 的「未装」都变成**点不动的灰按钮**，
+               而卡片注释原本写着「不摆一枚点不动的灰按钮」。 */
+            onGuideToSetting={(target) => onGuideToSetting(item, target)}
+            onGuidePlugin={onGuidePlugin}
+            /* ★ issue #89 · B9：不传 ⇒ 菜单「导出账号」恒灰（`disabled={!onExport}`）。 */
+            onExport={() => setExportTarget(item)}
+            onAddPlaintextAccount={() => setOauthRegion(scopeParts(item.scope).region)}
             onSwitchCodebuddyCli={() => wbSwitch.request("cli", item)}
             onSwitchCodebuddyCnIde={() => wbSwitch.request("ide", item)}
             onSwitchVscodePlugin={() => wbSwitch.request("vscode", item)}
             onSwitchJetbrainsPlugin={() => wbSwitch.request("jetbrains", item)}
-            codebuddyCliBusy={wbSwitch.busyAccountId === item.data.id}
+            /* ★ issue #89 · B4：四个程序位各自的 `Busy`（锁该位全部按钮）与 `Loading`
+               （给正在切的那张卡转圈）。此前只传了 `codebuddyCliBusy`，且用的是
+               **逐账号**语义 ⇒ ① 另外三个位不锁、切换中可无限重复点；
+               ② 六个 `*Loading` 全缺 ⇒ 正在切的卡不转圈、不写「切换中」、`aria-busy` 为假。 */
+            codebuddyCliBusy={wbSwitch.slotBusy("cli")}
+            codebuddyCliLoading={wbSwitch.slotLoading("cli", item.data.id)}
             codebuddyCliActive={item.data.id === wbPrograms.cli?.activeAccountId}
             codebuddyCnIdeAvailable={wbProgramAvail.cnIdeAvailable}
+            codebuddyCnIdeBusy={wbSwitch.slotBusy("ide")}
+            codebuddyCnIdeLoading={wbSwitch.slotLoading("ide", item.data.id)}
             codebuddyCnIdeActive={item.data.id === wbPrograms.cnIde?.activeAccountId}
             vscodePluginAvailable={wbProgramAvail.vscodeAvailable}
+            vscodePluginBusy={wbSwitch.slotBusy("vscode")}
+            vscodePluginLoading={wbSwitch.slotLoading("vscode", item.data.id)}
             vscodePluginActive={item.data.id === wbPrograms.vscode?.activeAccountId}
             jetbrainsPluginAvailable={wbProgramAvail.jetbrainsAvailable}
+            jetbrainsPluginBusy={wbSwitch.slotBusy("jetbrains")}
+            jetbrainsPluginLoading={wbSwitch.slotLoading("jetbrains", item.data.id)}
             jetbrainsPluginActive={item.data.id === wbPrograms.jetbrains?.activeAccountId}
             todayTokens={todayTokens}
             todayTokensTruncated={signals?.todayTokensTruncated}
             todayCheckedIn={checkinToday ?? undefined}
+            /* ★ issue #89 · B5：旅行状态来自信号层（`reloadSignals` 会一起刷新）。 */
+            travelStatus={signals?.travel.get(item.data.id)}
+            /* ★ issue #89 · B6：与账号页共用一个判据（见 `priorityIdByScope`）。 */
+            creditPriority={item.data.id === priorityIdByScope.get(item.scope)}
+            onCheckin={() => void checkinOne(item)}
             onRefreshPart={(_account, kind) => void refreshPart(item, kind)}
             refreshingKinds={refreshBusy.kindsOf(item.ref)}
             doneKinds={refreshBusy.doneKindsOf(item.ref)}
@@ -594,53 +948,60 @@ export default function AggregateAccountsPage() {
         return (
           <TraeAccountCard
             key={item.ref}
-            account={item.data}
-            onDelete={() => void handleDelete(item)}
             /* 程序位：**没取到就不传** ⇒ 卡片整行不渲染（不是画一排「未检测到」的灰胶囊）。 */
-            programs={programs.length ? programs : undefined}
-            onSwitchTo={(account, target) => {
-              void api
-                .traeSwitchAccount({ userId: account.userId, variant: target })
-                .then(() => {
-                  void reload();
-                  void reloadSignals();
-                })
-                .catch((error: unknown) => toast.error(api.asError(error)));
+            /* ★ issue #89 · C2：逐包明细来自 `get_trae_credits` 的 `packages[uid]`，
+               账号视图只带聚合积分。与渠道页同样**合并进 account 对象**再交给卡片，
+               否则指标行的 `/Y` 与「N 积分 M 天内过期」chip 在这里常缺。 */
+            account={{
+              ...item.data,
+              creditPackages:
+                signals?.traeCredits.get(item.data.userId) ?? item.data.creditPackages ?? null,
             }}
+            onDelete={() => setConfirmDelete({ kind: "one", account: item })}
+            /* ★ issue #89 · C4 / C6：不传 `busy` ⇒ 六个 `busy === \`xxx-${uid}\`` 恒 false
+               ⇒ 菜单项永远不显示「执行中」、永远可重复点，而 `saving` / `thawing`
+               同时是 `disabled` 的一部分 ⇒ 重复点会真的发第二次请求。 */
+            busy={traeSwitch.busy ?? traeBusy}
+            switchBusy={traeSwitch.switchBusy}
+            programs={programs.length ? programs : undefined}
+            /* ★ issue #89 · 2.5：`current` 此前没传 ⇒ 卡片头部的「当前登录」徽章与
+               左侧主色竖条永不出现，而页脚的程序位胶囊按 `program.current` 自己判、照常亮
+               ⇒ 同一张卡上两个信号互相矛盾。判据与渠道页 `isCurrentAccount` 同式。 */
+            current={programs.some((program) => program.current)}
+            /* ★ issue #89 · 2.1：切走共享层 —— 先弹重启确认再执行。
+               此前直接调 `api.traeSwitchAccount`，而它的 `launch` 默认 `true`
+               ⇒ 点一下页脚胶囊客户端就被静默重启，全程没有一句确认。
+               `label` 由卡片原样上传（后端 `program.label`），不由变体反推（issue #20）。 */
+            onSwitchTo={(_account, target, label) => traeSwitch.request(item, target, label)}
+            /* ★ issue #89 · C3：「尚未查询到积分」那一行的就地刷新按钮，
+               不传 ⇒ `disabled={... || !onRefreshCredits}` 命中，而这一行恰恰是
+               「没有积分」时唯一的出口。 */
+            onRefreshCredits={() => void refreshTraeCredits(item)}
             checkedTodayOverride={checkinToday ?? undefined}
             onRefreshPart={(_account, kind) => void refreshPart(item, kind)}
             refreshingKinds={refreshBusy.kindsOf(item.ref)}
             doneKinds={refreshBusy.doneKindsOf(item.ref)}
             todayTokens={todayTokens}
             todayTokensTruncated={signals?.todayTokensTruncated}
-            onCheckin={(account) => {
-              void api
-                .traeCheckin({ scope: "selected", userIds: [account.userId], variant })
-                .then(() => {
-                  void reload();
-                  void reloadSignals();
-                })
-                .catch((error: unknown) => toast.error(api.asError(error)));
-            }}
-            onEditRemark={() => openDetail(item.ref, "remark")}
-            onSaveLogin={(account) => {
-              void api
-                .traeSaveLogin(account.userId, variant)
-                .then(() => reload())
-                .catch((error: unknown) => toast.error(api.asError(error)));
-            }}
-            onRefreshJwt={(account) => {
-              void api
-                .traeRefreshJwt(account.userId, variant)
-                .then(() => reload())
-                .catch((error: unknown) => toast.error(api.asError(error)));
-            }}
-            onClearCooldown={(account) => {
-              void api
-                .traeClearCooldown(account.userId, variant)
-                .then(() => reload())
-                .catch((error: unknown) => toast.error(api.asError(error)));
-            }}
+            /* ★ issue #89 · C5：四种情况各自说清，逻辑在 `checkinTrae`（抽屉共用）。 */
+            onCheckin={() => checkinTrae(item)}
+            /* 三个动作走同一个执行器：键名与卡片派生的 `saving` / `refreshingJwt` /
+               `thawing` 一致，否则菜单项永远不显示「执行中」且可重复点（issue #89 · C6）。 */
+            onSaveLogin={(account) =>
+              void runTraeAction(item, `save-${account.userId}`, () =>
+                api.traeSaveLogin(account.userId, variant).then(() => undefined),
+              )
+            }
+            onRefreshJwt={(account) =>
+              void runTraeAction(item, `jwt-${account.userId}`, () =>
+                api.traeRefreshJwt(account.userId, variant).then(() => undefined),
+              )
+            }
+            onClearCooldown={(account) =>
+              void runTraeAction(item, `thaw-${account.userId}`, () =>
+                api.traeClearCooldown(account.userId, variant).then(() => undefined),
+              )
+            }
             {...common}
           />
         );
@@ -655,7 +1016,7 @@ export default function AggregateAccountsPage() {
             key={item.ref}
             account={account}
             busy={refreshBusy.kindsOf(item.ref).length > 0}
-            onDelete={() => void handleDelete(item)}
+            onDelete={() => setConfirmDelete({ kind: "one", account: item })}
             onCheckin={(target) => {
               void api
                 .loomyCheckinClaim(item.scope, target.uid)
@@ -686,7 +1047,7 @@ export default function AggregateAccountsPage() {
         <QoderAccountCard
           key={item.ref}
           account={item.data}
-          onDelete={() => void handleDelete(item)}
+          onDelete={() => setConfirmDelete({ kind: "one", account: item })}
           credits={
             creditsRow && creditsRow.ok
               ? { remaining: creditsRow.remaining ?? 0, total: creditsRow.total ?? 0, plan: creditsRow.plan ?? null }
@@ -694,36 +1055,34 @@ export default function AggregateAccountsPage() {
           }
           checkinToday={checkinToday}
           programs={qoderPrograms.length ? qoderPrograms : null}
-          onSwitch={(program) => {
-            void api
-              .qoderSwitchAccount(item.scope, program.id, item.data.uid)
-              .then(() => {
-                void reload();
-                void reloadSignals();
-              })
-              .catch((error: unknown) => toast.error(api.asError(error)));
-          }}
-          onCheckin={(account) => {
-            void api
-              .qoderCheckinClaim(item.scope, account.uid)
-              .then(() => {
-                void reload();
-                void reloadSignals();
-              })
-              .catch((error: unknown) => toast.error(api.asError(error)));
-          }}
+          /* ★ issue #89 · D1：不传就回落四项 ⇒ 菜单里多出「刷新今日 Token」，
+             Qoder 没有 token 概念，点了什么也不发生。 */
+          refreshKinds={QODER_REFRESH_KINDS}
+          /* ★ issue #89 · 2.2：写客户端登录态 ⇒ 必须先确认（渠道页同纪律）。 */
+          onSwitch={(program) => qoderSwitch.request(item, program)}
+          switchBusy={qoderSwitch.switchBusy}
+          onCheckin={() => void checkinQoder(item)}
           onEditRemark={() => openDetail(item.ref, "remark")}
           onSetGroup={() => openDetail(item.ref, "group")}
+          onExport={() => setExportTarget(item)}
           {...common}
         />
       );
     },
     [
       creditOf,
-      handleDelete,
+      performDelete,
+      onGuidePlugin,
+      onGuideToSetting,
       openDetail,
+      priorityIdByScope,
+      qoderSwitch.request,
+      qoderSwitch.switchBusy,
       refreshBusy,
       refreshPart,
+      refreshTraeCredits,
+      runTraeAction,
+      traeBusy,
       reload,
       reloadSignals,
       saveGroup,
@@ -731,6 +1090,9 @@ export default function AggregateAccountsPage() {
       signalsByScope,
       t,
       toggleSelect,
+      traeSwitch.busy,
+      traeSwitch.request,
+      traeSwitch.switchBusy,
       wbCnCreditLoading,
       wbCnStatus,
       wbGlobalCreditLoading,
@@ -940,8 +1302,41 @@ export default function AggregateAccountsPage() {
     );
   }
 
-  const detailAccount = detailRef ? accounts.find((item) => item.ref === detailRef) : undefined;
+  /**
+   * 抽屉的**详情对象** = 账号 + 它的信号（issue #144 复核 §4.1）。
+   *
+   * ★ 为什么在这里合并：渠道页打开抽屉时，存进 state 的是**卡片渲染时那份已合并的数据**
+   * （`{ ...account, creditPackages: credits.packages[uid] }`）；而聚合页此前拿的是
+   * `list_account_views_for` 的原样输出 —— 后端根本不产出 `creditPackages` 键。
+   * 于是同一句 `detail.creditPackages` 在两边一个拿到数据、一个拿到 `null`（#144 的
+   * 「资源包区块恒为空」就是这么来的）。
+   *
+   * 现在「账号 + 信号」的合并**只发生在这里**（聚合页这一侧），下游 `aggregate-detail`
+   * 读的字段与渠道页**同名同义**，不必再额外传一个 `traePacks` 侧信道。
+   */
+  const detailAccount = useMemo<AggregateAccount | undefined>(() => {
+    const base = detailRef ? accounts.find((item) => item.ref === detailRef) : undefined;
+    if (!base || base.platform !== "trae") return base;
+    const packs = signalsByScope.get(base.scope)?.traeCredits.get(base.data.userId) ?? null;
+    /* 信号层没取到 ⇒ **保持原样**（不写 `null`）：账号视图里的值同样是「不知道」，
+       两者都只会让区块不渲染，没必要用一个 `null` 去覆盖可能的旧值。 */
+    if (packs === null) return base;
+    return { ...base, data: { ...base.data, creditPackages: packs } };
+  }, [accounts, detailRef, signalsByScope]);
 
+  /**
+   * 打开抽屉时按需拉 Qoder 逐包。
+   *
+   * TTL / 并发去重都在控制器里（与 Qoder 账号页同一份），这里只负责「打开就取一次」。
+   * ★ 依赖用 `detailRef` 而不是 `detailAccount`：后者是每次渲染新算出来的对象，
+   *   把它放进依赖会让 effect 每渲染一次都跑一遍（页面渲染很频繁）。
+   */
+  useEffect(() => {
+    if (!detailAccount || detailAccount.platform !== "qoder") return;
+    void qoderWebPacks.load(detailAccount.scope, detailAccount.data.uid);
+    // `load` 是纯读取 + setState，只按抽屉指向的账号变化触发。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [detailRef]);
 
   /**
    * 抽屉的数据上下文。**只喂页面已经有的东西**（不为了打开抽屉再发一轮请求）：
@@ -975,8 +1370,344 @@ export default function AggregateAccountsPage() {
               (region === "cn" ? wbCnStatus : wbGlobalStatus)?.current,
             )
           : false,
+      /* ★ issue #89 · 4.4：程序位状态**早就在信号层里**，此前只是没传进来 ⇒
+         抽屉里 Trae / Qoder 永远没有程序位徽标，而注释还写着「页面按账号装配后传入」。
+         这里只做形状转换，**不发请求**。 */
+      traePrograms:
+        detailAccount.platform === "trae" ? traeProgramsOf(signals, detailAccount) : undefined,
+      qoderPrograms: detailAccount.platform === "qoder" ? signals?.qoderPrograms : undefined,
+      qoderPacks:
+        detailAccount.platform === "qoder"
+          ? qoderWebPacks.packs[qoderPackKey(detailAccount.scope, detailAccount.data.uid)]
+          : undefined,
     };
-  }, [creditOf, detailAccount, signalsByScope, t, wbCnStatus, wbGlobalStatus]);
+  }, [
+    creditOf,
+    detailAccount,
+    qoderWebPacks.packs,
+    signalsByScope,
+    t,
+    wbCnStatus,
+    wbGlobalStatus,
+  ]);
+
+  /**
+   * 抽屉头部的「当前登录」徽章（issue #89 · 4.3 的一部分）。
+   *
+   * 三个平台的判据不同，且都**已经在手边**（WB 走 `AppStatus.current`，
+   * Trae / Qoder 走程序位的 `current` / `currentUid`）——
+   * 此前聚合页的抽屉一律不显示，于是「这个号是不是正登着」只能退回卡片上看。
+   */
+  const detailCurrent = useMemo(() => {
+    if (!detailAccount) return false;
+    if (detailAccount.platform === "workbuddy") return Boolean(detailContext?.currentProgram);
+    if (detailAccount.platform === "trae") {
+      return (detailContext?.traePrograms ?? []).some((program) => program.current);
+    }
+    return (detailContext?.qoderPrograms ?? []).some(
+      (program) => program.currentUid === detailAccount.data.uid,
+    );
+  }, [detailAccount, detailContext]);
+
+  /**
+   * 抽屉「操作」区（issue #89 · 4.3）。
+   *
+   * 渠道页抽屉的定位是「卡片上不做的事都在这里做」，而聚合页此前**一个动作都没有**。
+   * 这里接四个：刷新 / 签到 / 导出 / 权限诊断 / 删除。
+   *
+   * ⚠️ `showCheckin` 必须按**今天到底签没签**给（`checkinTodayOf` 返回 `null` = 未知 ⇒
+   * 不给入口），否则会摆出一个「点了必然提示已签」的按钮。
+   * ⚠️ `credentialUnavailable` 没接：三个平台的判据不同（WB `needsRelogin` / Trae `jwtStatus` /
+   * Qoder `hasCredential`），接错会变成「凭据已死却告诉用户去签到」。缺这一条只影响
+   * 一句说明文案，不影响按钮是否出现。
+   */
+  const detailActions = useMemo<DetailActions | null>(() => {
+    if (!detailAccount) return null;
+    const checkedIn = checkinTodayOf(signalsByScope.get(detailAccount.scope), detailAccount);
+    return {
+      onRefresh: () => {
+        void reload();
+        void reloadSignals();
+      },
+      onCheckin: () => {
+        if (detailAccount.platform === "workbuddy") void checkinOne(detailAccount);
+        else if (detailAccount.platform === "trae") checkinTrae(detailAccount);
+        else void checkinQoder(detailAccount);
+      },
+      showCheckin: checkedIn === false,
+      onExport: () => setExportTarget(detailAccount),
+      /* 诊断区是**单作用域**页面 ⇒ 必须带该账号自己的 scope 与子项锚点。 */
+      onPermission: () => navigate(`/s/${detailAccount.scope}/settings?section=diagnostics`),
+      onDelete: () => setConfirmDelete({ kind: "one", account: detailAccount }),
+    };
+  }, [
+    checkinOne,
+    checkinQoder,
+    checkinTrae,
+    detailAccount,
+    navigate,
+    reload,
+    reloadSignals,
+    signalsByScope,
+  ]);
+
+  /**
+   * 抽屉里**可点的**「切换到此账号」程序位（issue #89 · 4.3 收尾）。
+   *
+   * 之前不传 `switchTargets` 时抽屉退回**只读**徽标（4.4 已画出）：看得到「这个号
+   * 挂在哪条线上」，但**点不动** —— 要切换得先关掉抽屉、再去点卡片页脚那枚胶囊。
+   * 数据与回调全都已经在手边（`wbSwitch` / `traeSwitch` / `qoderSwitch` +
+   * 各自的 `programs`），所以这里只是装配，不发任何请求。
+   *
+   * `available` 的判据与卡片上那枚胶囊**同源**（`installed && hasDataDir` /
+   * `state === "ready" && !running`）—— 两处判据不同就会出现「卡片说能切、抽屉说不能」。
+   */
+  const detailSwitchTargets = useMemo<DetailSwitchTarget[]>(() => {
+    if (!detailAccount) return [];
+    if (detailAccount.platform === "workbuddy") {
+      const id = detailAccount.data.id;
+      const region = scopeParts(detailAccount.scope).region;
+      return [
+        {
+          key: "workbuddy",
+          label: t("product.workbuddy"),
+          current: isWorkbuddyCurrent(detailAccount.data, (region === "cn" ? wbCnStatus : wbGlobalStatus)?.current),
+          available: true,
+          onSwitch: () => setWbSwitchDialog({ account: detailAccount.data, region }),
+        },
+        {
+          key: "ide",
+          label: t("wbAccounts.program.codebuddyCnIde"),
+          current: id === wbPrograms.cnIde?.activeAccountId,
+          available: wbProgramAvail.cnIdeAvailable,
+          busy: wbSwitch.slotBusy("ide"),
+          loading: wbSwitch.slotLoading("ide", id),
+          onSwitch: wbProgramAvail.cnIdeAvailable ? () => wbSwitch.request("ide", detailAccount) : undefined,
+        },
+        {
+          key: "cli",
+          label: t("wbAccounts.program.codebuddyCli"),
+          current: id === wbPrograms.cli?.activeAccountId,
+          available: wbProgramAvail.cliConfigured,
+          busy: wbSwitch.slotBusy("cli"),
+          loading: wbSwitch.slotLoading("cli", id),
+          onSwitch: wbProgramAvail.cliConfigured ? () => wbSwitch.request("cli", detailAccount) : undefined,
+        },
+        {
+          key: "vscode",
+          label: t("wbAccounts.program.vscodeCodebuddyPlugin"),
+          current: id === wbPrograms.vscode?.activeAccountId,
+          available: wbProgramAvail.vscodeAvailable,
+          busy: wbSwitch.slotBusy("vscode"),
+          loading: wbSwitch.slotLoading("vscode", id),
+          onSwitch: wbProgramAvail.vscodeAvailable ? () => wbSwitch.request("vscode", detailAccount) : undefined,
+        },
+        {
+          key: "jetbrains",
+          label: t("wbAccounts.program.jetbrainsCodebuddyPlugin"),
+          current: id === wbPrograms.jetbrains?.activeAccountId,
+          available: wbProgramAvail.jetbrainsAvailable,
+          busy: wbSwitch.slotBusy("jetbrains"),
+          loading: wbSwitch.slotLoading("jetbrains", id),
+          onSwitch: wbProgramAvail.jetbrainsAvailable ? () => wbSwitch.request("jetbrains", detailAccount) : undefined,
+        },
+      ];
+    }
+    if (detailAccount.platform === "trae") {
+      const item = detailAccount;
+      return (signalsByScope.get(item.scope) ? traeProgramsOf(signalsByScope.get(item.scope), item) : []).map(
+        (program) => ({
+          key: `${program.region}:${program.program}`,
+          label: program.label,
+          current: program.current,
+          available: program.installed && program.hasDataDir,
+          busy: traeSwitch.switchBusy,
+          loading: traeSwitch.busy === `switch-${item.data.userId}@${program.variant}`,
+          onSwitch: () => traeSwitch.request(item, program.variant, program.label),
+        }),
+      );
+    }
+    const item = detailAccount;
+    const uid = item.data.uid;
+    return (signalsByScope.get(item.scope)?.qoderPrograms ?? []).map((program) => ({
+      key: program.id,
+      label: program.label,
+      current: program.currentUid === uid,
+      available: program.state === "ready" && !program.running,
+      busy: qoderSwitch.switchBusy,
+      onSwitch: () => qoderSwitch.request(item, program),
+    }));
+  }, [
+    detailAccount,
+    qoderSwitch,
+    signalsByScope,
+    t,
+    traeSwitch,
+    wbCnStatus,
+    wbGlobalStatus,
+    wbProgramAvail.cnIdeAvailable,
+    wbProgramAvail.cliConfigured,
+    wbProgramAvail.jetbrainsAvailable,
+    wbProgramAvail.vscodeAvailable,
+    wbPrograms.cli?.activeAccountId,
+    wbPrograms.cnIde?.activeAccountId,
+    wbPrograms.jetbrains?.activeAccountId,
+    wbPrograms.vscode?.activeAccountId,
+    wbSwitch,
+  ]);
+
+  /**
+   * 抽屉「签到」页签的数据（issue #89 · 4.3 收尾）。
+   *
+   * 三个平台的签到端点返回的是**同一个** `CheckinStatusEntry`，里面本来就有
+   * `dailyCredit` / `todayCredit` / `totalCredits` / `streakDays` / `checkinDates`。
+   * 之前我在 PR #95 里判断「聚合页只有布尔值 ⇒ 会画出 +0 假数据」，**那个判断是错的**：
+   * 数据一直都在，只是信号层把除 `todayCheckedIn` 之外的字段丢掉了。
+   * 现在信号层保留整条（`checkinDetail`），这里只做形状转换，**不发新请求**。
+   *
+   * ⚠️ 只在 `todayCheckedIn === true` 时传：抽屉的签到区块只在已签时渲染内容，
+   * 传 `false` 会得到一个**空页签**（比没有页签更糟）。「今天没签」的出口是
+   * 操作区的「签到」按钮（`showCheckin`），不是这里。
+   * ⚠️ `checkinHistory`（近 7 天）仍然不传：它要 `getCheckinLog` **逐账号**取，
+   * 与聚合页「按作用域批量取、绝不逐账号」的取数纪律冲突。
+   */
+  const detailCheckin = useMemo(() => {
+    if (!detailAccount) return null;
+    const entry = signalsByScope
+      .get(detailAccount.scope)
+      ?.checkinDetail.get(signalKeyOf(detailAccount));
+    if (!entry || !entry.ok || !entry.todayCheckedIn) return null;
+    return { todayCheckedIn: entry.todayCheckedIn, ...checkinCreditsOf(entry) };
+  }, [detailAccount, signalsByScope]);
+
+  /**
+   * 抽屉「签到历史（近 7 天）」的两个数据源（issue #89 · 4.3 收尾）。
+   *
+   * ⚠️ 我前一轮说「它要 `getCheckinLog` **逐账号**取、与批量取数纪律冲突」—— **又说错了**：
+   * `getCheckinLogs()` 是**无参数的整本台账**（`get_checkin_logs` 一次给全部记录），
+   * 渠道页也是「打开抽屉时拉一次再客户端过滤」，没有逐账号命令。
+   *
+   * ⚠️ 但台账**只有 WorkBuddy 的签到流程会写**（`add_checkin_log` 全仓唯一调用点
+   * 在 `modules/checkin.rs`）⇒ 对 Trae / Qoder 传这份历史会渲染 7 行「未签到」**假数据**。
+   * 所以只对 `workbuddy` 账号取、只对 `workbuddy` 账号传。
+   */
+  const detailWbId =
+    detailAccount?.platform === "workbuddy" ? detailAccount.data.id : null;
+  const detailWbRegion =
+    detailAccount?.platform === "workbuddy"
+      ? scopeParts(detailAccount.scope).region
+      : null;
+  /* 早期台账条目没有 `accountId`，靠邮箱兜底匹配（与渠道页同口径）。 */
+  const detailWbEmail =
+    detailAccount?.platform === "workbuddy" ? detailAccount.data.email ?? null : null;
+  const [detailCheckinLogs, setDetailCheckinLogs] = useState<CheckinLog[] | null>(null);
+  const [detailCreditEvents, setDetailCreditEvents] = useState<CreditStatsEvent[] | null>(null);
+
+  useEffect(() => {
+    if (!detailWbId || !detailWbRegion) {
+      setDetailCheckinLogs(null);
+      setDetailCreditEvents(null);
+      return;
+    }
+    let cancelled = false;
+    /* 失败不阻断抽屉：该列回落「—」，绝不臆造固定奖励（与渠道页同口径）。 */
+    void api
+      .getCheckinLogs()
+      .then((res) => {
+        if (!cancelled) setDetailCheckinLogs(res.logs);
+      })
+      .catch(() => {
+        if (!cancelled) setDetailCheckinLogs(null);
+      });
+    void api
+      .getCreditStatistics(false, detailWbRegion)
+      .then((stats) => {
+        if (!cancelled) setDetailCreditEvents(stats.events);
+      })
+      .catch(() => {
+        if (!cancelled) setDetailCreditEvents(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [detailWbId, detailWbRegion]);
+
+  /**
+   * 「近 7 天」逐日结果 —— 与 `AccountsPage.detailCheckinHistory` **同一口径**：
+   * 同一天多条取最新一条；`accountId` 为空的旧记录用邮箱兜底匹配
+   * （早期台账没有 `accountId`）。
+   */
+  const detailCheckinHistory = useMemo(() => {
+    if (!detailWbId || !detailCheckinLogs) return null;
+    return lastSevenDays().map((day) => {
+      const log = detailCheckinLogs
+        .filter(
+          (entry) =>
+            localDateKey(entry.ts) === day &&
+            (entry.accountId === detailWbId ||
+              (entry.accountId == null && detailWbEmail != null && entry.email === detailWbEmail)),
+        )
+        .sort((left, right) => right.ts - left.ts)[0];
+      const event = (detailCreditEvents ?? []).find(
+        (item) => item.kind === "checkin" && item.date === day && item.accountId === detailWbId,
+      );
+      const amount = event && event.kind === "checkin" ? event.amount ?? null : null;
+      if (!log) {
+        return {
+          date: day,
+          resultLabel: t("shared.drawer.checkin.result.none"),
+          tone: "none" as const,
+          amount,
+        };
+      }
+      if (log.result === "success") {
+        return {
+          date: day,
+          resultLabel: t("shared.drawer.checkin.result.success"),
+          tone: "ok" as const,
+          amount,
+        };
+      }
+      if (log.result === "already") {
+        return {
+          date: day,
+          resultLabel: t("shared.drawer.checkin.result.already"),
+          tone: "warn" as const,
+          amount,
+        };
+      }
+      return {
+        date: day,
+        resultLabel: t("shared.drawer.checkin.result.fail"),
+        tone: "fail" as const,
+        amount,
+      };
+    });
+  }, [detailCheckinLogs, detailCreditEvents, detailWbEmail, detailWbId, t]);
+
+  /**
+   * 抽屉「分组」下拉的候选（issue #89 · 4.3）。
+   *
+   * 只取**同一作用域**已有的分组名（跨作用域混在一起会把 WB 的分组名塞给 Qoder）。
+   * Trae 的分组是 `groupId` 而非自由文本 ⇒ 不给候选（与 `onSaveGroup` 的取舍一致）。
+   */
+  const detailGroups = useMemo(() => {
+    if (!detailAccount || detailAccount.platform === "trae") return undefined;
+    const names = new Set<string>();
+    for (const account of accounts) {
+      if (account.scope !== detailAccount.scope) continue;
+      /* Qoder / Loomy 的分组都是自由文本 `group`（Trae 是 `groupId`，已在上面排除）。
+         ⚠️ 这里曾经只列 `qoder`，新增的 Loomy 会恒为 `null` ⇒ 抽屉里选不到已有分组。 */
+      const group =
+        account.platform === "workbuddy"
+          ? account.data.groupName
+          : account.platform === "trae"
+            ? null
+            : account.data.group;
+      if (group && group.trim()) names.add(group);
+    }
+    return [...names].sort((left, right) => left.localeCompare(right));
+  }, [accounts, detailAccount]);
 
   return (
     <div className="mx-auto w-full max-w-[1560px] px-6 pb-16">
@@ -1141,7 +1872,13 @@ export default function AggregateAccountsPage() {
           <Button size="sm" variant="outline" onClick={() => void batchCheckin()}>
             {t("shared.batch.checkin")}
           </Button>
-          <Button size="sm" variant="outline" className="text-destructive hover:text-destructive" onClick={() => void batchDelete()}>
+          {/* ★ issue #89 · 2.3：批量删除同样先确认（此前点一下就删）。 */}
+          <Button
+            size="sm"
+            variant="outline"
+            className="text-destructive hover:text-destructive"
+            onClick={() => setConfirmDelete({ kind: "batch", count: selected.size })}
+          >
             {t("shared.batch.delete")}
           </Button>
           <Button size="sm" variant="ghost" onClick={() => setSelected(new Set())}>
@@ -1154,6 +1891,116 @@ export default function AggregateAccountsPage() {
 
       {/* ══ WB 程序位切换的统一重启确认框（与账号页同一个组件）══ */}
       <RestartConfirmDialog {...wbSwitch.confirmProps} />
+
+      {/* ══ Trae 程序位切换的重启确认（issue #89 · 2.1）══
+          与 WB 用同一个组件：Trae 的切换同样是「先关客户端、写登录态、再重开」，
+          确认框里的「自动重开」勾选映射到 `api.traeSwitchAccount` 的 `launch`。 */}
+      <RestartConfirmDialog {...traeSwitch.confirmProps} />
+
+      {/* ══ Qoder 程序位切换确认（issue #89 · 2.2）══
+          Qoder 没有「重启客户端」这一档 ⇒ 普通确认框，不摆无效的「自动重开」勾选。 */}
+      <Dialog
+        open={qoderSwitch.confirmProps.open}
+        onOpenChange={qoderSwitch.confirmProps.onOpenChange}
+      >
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>{t("qoder.page.accounts.switch.title")}</DialogTitle>
+            <DialogDescription>
+              {t("qoder.page.accounts.switch.desc", {
+                name: qoderSwitch.confirmProps.name,
+                program: qoderSwitch.confirmProps.programLabel,
+              })}
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => qoderSwitch.confirmProps.onOpenChange(false)}
+              disabled={qoderSwitch.switchBusy}
+            >
+              {t("qoder.page.accounts.switch.cancel")}
+            </Button>
+            <Button onClick={qoderSwitch.confirmProps.onConfirm} disabled={qoderSwitch.switchBusy}>
+              {t("qoder.page.accounts.switch.confirm")}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* ══ 删除确认（issue #89 · 2.3，单个与批量共用）══
+          撤销 toast 是**事后**补救，不能替代「删之前问一句」——三个渠道页都是先确认。 */}
+      <Dialog
+        open={confirmDelete !== null}
+        onOpenChange={(open) => {
+          if (!open) setConfirmDelete(null);
+        }}
+      >
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>{t("aggregate.delete.title")}</DialogTitle>
+            <DialogDescription>
+              {confirmDelete?.kind === "batch"
+                ? t("aggregate.delete.batchBody", { n: confirmDelete.count })
+                : t("aggregate.delete.body", {
+                    name: confirmDelete ? aggregateDisplayName(confirmDelete.account) : "",
+                  })}
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setConfirmDelete(null)}>
+              {t("aggregate.delete.cancel")}
+            </Button>
+            <Button
+              variant="destructive"
+              onClick={() => {
+                const target = confirmDelete;
+                setConfirmDelete(null);
+                if (!target) return;
+                if (target.kind === "batch") void batchDelete();
+                else void performDelete(target.account);
+              }}
+            >
+              {t("aggregate.delete.confirm")}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* ══ OAuth 扫码添加（issue #89 · B7）══ 区域取该账号自己的作用域。 */}
+      <OAuthLoginDialog
+        open={oauthRegion !== null}
+        onOpenChange={(open) => {
+          if (!open) setOauthRegion(null);
+        }}
+        region={oauthRegion ?? "cn"}
+      />
+
+      {/* ══ 单账号导出（issue #89 · B9）══ 与工具栏共用同一个受控弹窗。 */}
+      <AggregateExportDialog
+        target={exportTarget ? { scope: exportTarget.scope, accounts: [exportTarget] } : null}
+        onOpenChange={(open) => {
+          if (!open) setExportTarget(null);
+        }}
+        onExported={() => {
+          void reload();
+        }}
+      />
+
+      {/* ══ WorkBuddy 主程序位切换向导（issue #89 · B1）══
+          与账号页**同一个组件**：它带会话迁移三步（目标与来源 → 迁移内容 → 确认），
+          在聚合页重写一遍既不可能也不该。 */}
+      <SwitchAccountDialog
+        open={wbSwitchDialog !== null}
+        onOpenChange={(open) => {
+          if (!open) setWbSwitchDialog(null);
+        }}
+        account={wbSwitchDialog?.account ?? null}
+        region={wbSwitchDialog?.region}
+        onDone={() => {
+          void reload();
+        }}
+      />
 
       {/* ══ 详情抽屉（`accountKey` 恰好就是 `${scope}:${key}`，与 ref 同源）══ */}
       <AccountDetailDrawer
@@ -1196,9 +2043,40 @@ export default function AggregateAccountsPage() {
         stats={detailAccount && detailContext ? aggregateDetailStats(detailAccount, detailContext) : []}
         sections={detailAccount && detailContext ? aggregateDetailSections(detailAccount, detailContext) : []}
         packs={detailAccount && detailContext ? aggregateDetailPacks(detailAccount, detailContext) : []}
+        /* ★ issue #144 复核 §4.5：聚合页此前**没有**这条引导 —— 逐包为空时用户只看到
+           一个空白区块，分不清「没登录」与「真的没有包」。文案与动作与 Qoder 账号页同源。 */
+        packsNotice={
+          detailAccount?.platform === "qoder"
+            ? qoderPacksNotice(t, qoderWebPacks, detailAccount.scope, detailAccount.data.uid)
+            : null
+        }
         programs={detailAccount && detailContext ? aggregateDetailPrograms(detailAccount, detailContext) : []}
+        /* ★ issue #89 · 4.3：这三项的数据与回调**都已经在页面里**（`refreshPart` 是卡片
+           正在用的同一个函数），此前只是没传给抽屉 ⇒ 抽屉只能看不能刷。 */
+        current={detailCurrent}
+        actions={detailActions}
+        checkin={detailCheckin}
+        checkinHistory={detailCheckinHistory}
+        switchTargets={detailSwitchTargets}
+        onWizardSwitch={
+          detailAccount?.platform === "workbuddy"
+            ? () =>
+                setWbSwitchDialog({
+                  account: (detailAccount as { platform: "workbuddy"; data: AccountMeta }).data,
+                  region: scopeParts(detailAccount.scope).region,
+                })
+            : undefined
+        }
+        groups={detailGroups}
+        loading={loading}
+        refreshingKinds={detailAccount ? refreshBusy.kindsOf(detailAccount.ref) : []}
+        onRefreshPart={
+          detailAccount ? (kind) => void refreshPart(detailAccount, kind) : undefined
+        }
         snapshots={[]}
-        featuresDisabled={demoModeEnabled}
+        /* 与三个渠道页的抽屉一致：恒 `false`，写操作交给 `api.ts` 统一拦截并说明
+           原因（issue #89 · 2.4）。渠道页注释已写明「备注是否可编辑不受演示模式影响」。 */
+        featuresDisabled={false}
       />
     </div>
   );

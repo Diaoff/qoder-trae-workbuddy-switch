@@ -7,6 +7,7 @@
 // 因此本文件对 Config 以 snake_case 为准、对 Status 以 camelCase 为准，并各自保留别名兜底。
 
 import { t } from "@/lib/i18n";
+import { gatewayOpenAiBaseUrlFrom } from "@/lib/gateway-url";
 import type {
   GatewayConfig,
   GatewayPoolAccount,
@@ -25,6 +26,8 @@ export const DEFAULT_GATEWAY_CONFIG: GatewayConfig = {
   log_bodies: false,
   per_key_rate_limit: null,
   max_context: true,
+  // ★ issue #129：账号故障时自动切换，**默认关闭**（与 Rust 默认同口径）。
+  auto_failover: false,
 };
 
 function asString(value: unknown): string | undefined {
@@ -185,9 +188,44 @@ export function normalizeGatewayPoolAccounts(raw: unknown): GatewayPoolAccount[]
           typeof record.deviceIdMasked === "string" ? record.deviceIdMasked : null,
         // 模型级冷却（池冷却）—— 探测矩阵的被动底色用；缺省 `{}`。
         modelCoolings: normalizeModelCoolings(record.modelCoolings ?? record.model_coolings),
+        // 带来源的明细（issue #88 缺口 4.1）—— 徽标用；缺省 `{}`（Trae / 旧后端没有）。
+        modelCooldownDetails: normalizeModelCooldownDetails(
+          record.modelCooldownDetails ?? record.model_cooldown_details,
+        ),
       },
     ];
   });
+}
+
+/**
+ * 归一化「模型冷却明细」（issue #88 缺口 4.1）。
+ *
+ * 逐项校验而不是整体信任：这是后端新增字段，Trae / Qoder 侧与旧后端都没有它，
+ * 演示数据也可能缺 —— 任何一项形状不对就**跳过该模型**，而不是让整个对象变成
+ * `undefined` 后在徽标里炸。
+ */
+function normalizeModelCooldownDetails(
+  raw: unknown,
+): NonNullable<GatewayPoolAccount["modelCooldownDetails"]> {
+  if (!raw || typeof raw !== "object") return {};
+  const out: NonNullable<GatewayPoolAccount["modelCooldownDetails"]> = {};
+  for (const [model, value] of Object.entries(raw as Record<string, unknown>)) {
+    if (!value || typeof value !== "object" || model.length === 0) continue;
+    const item = value as Record<string, unknown>;
+    const untilMs = asNumber(item.untilMs);
+    if (untilMs === undefined) continue;
+    out[model] = {
+      untilMs,
+      resetAtMs: asNumber(item.resetAtMs) ?? 0,
+      // 上游文案里声明的时刻（展示用）；旧后端没有该键 ⇒ `0`（徽标回落兜底时刻）。
+      upstreamResetAtMs: asNumber(item.upstreamResetAtMs) ?? 0,
+      // 后端直接给 `fallback`；缺失时**由 `resetAtMs === 0` 推出**（同一判据，不猜）。
+      fallback: typeof item.fallback === "boolean" ? item.fallback : (asNumber(item.resetAtMs) ?? 0) === 0,
+      reason: typeof item.reason === "string" ? item.reason : "",
+      hits: asNumber(item.hits) ?? 0,
+    };
+  }
+  return out;
 }
 
 /** 归一化诊断行（只保留非空字符串）。 */
@@ -218,6 +256,11 @@ export function normalizeGatewayConfig(raw: unknown): GatewayConfig {
     per_key_rate_limit:
       asNumber(record.per_key_rate_limit) ?? asNumber(record.perKeyRateLimit) ?? null,
     max_context: asBoolean(record.max_context) ?? DEFAULT_GATEWAY_CONFIG.max_context,
+    // ★ issue #129：缺键 ⇒ `false`（老配置文件 / 老后端），与「默认关闭」一致。
+    auto_failover:
+      asBoolean(record.auto_failover) ??
+      asBoolean(record.autoFailover) ??
+      DEFAULT_GATEWAY_CONFIG.auto_failover,
   };
 }
 
@@ -276,21 +319,24 @@ export function poolOf(status: GatewayStatus | null, region: Region): {
 }
 
 /**
- * 计算对外展示的 Base URL。
+ * 计算对外展示的 **OpenAI 系 Base URL（含 `/v1`）**。
  *
- * 优先使用后端返回的 `baseUrl`；否则按监听地址与端口拼接（兜底，正常不应触发）。
- * `0.0.0.0` 对外不可直接使用，展示时回退为 `127.0.0.1`。
+ * ★ 语义是**单一形态**：无论走「后端 `baseUrl`」还是「按监听地址拼」的分支，返回的都带 `/v1`。
+ * 历史缺陷（#165 / 集成文档附录 B）：两条分支形态不同（后端值是根地址、兜底带 `/v1`），
+ * 消费方按「带 `/v1`」用 ⇒ 主路径少一层、请求 404。现在统一经 `stripV1Suffix` 收敛再拼。
+ *
+ * `0.0.0.0` 对外不可直接使用，展示时归一回环（在 `gateway-url.ts` 里，唯一一处）。
  */
 export function resolveGatewayBaseUrl(
   status: GatewayStatus | null,
   fallbackAddr: string,
   fallbackPort: number,
 ): string {
-  if (status?.baseUrl) return status.baseUrl;
-  const rawHost = status?.addr ?? fallbackAddr;
-  const host = rawHost === "0.0.0.0" ? "127.0.0.1" : rawHost;
-  const port = status?.port ?? fallbackPort;
-  return `http://${host}:${port}/v1`;
+  return gatewayOpenAiBaseUrlFrom(
+    status?.baseUrl,
+    status?.addr ?? fallbackAddr,
+    status?.port ?? fallbackPort,
+  );
 }
 
 /** 网关进程是否实际在监听（缺省视为已停止）。 */

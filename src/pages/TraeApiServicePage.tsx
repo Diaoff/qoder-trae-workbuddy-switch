@@ -10,6 +10,7 @@ import {
   AUTO_OPTION,
   MAX_CREDITS_OPTION,
   RANDOM_OPTION,
+  SEQUENTIAL_OPTION,
   AccountPoolCard,
 } from "@/components/gateway/account-pool-card";import { GatewayClientlessNotice } from "@/components/clientless-notice";
 import { GatewayShell } from "@/components/gateway/gateway-shell";
@@ -22,6 +23,7 @@ import {
   type GatewayType,
 } from "@/components/gateway/gateway-subnav";
 import { TraeApiKeyTable } from "@/components/gateway/trae-api-key-table";
+import { ModelFallbackCard } from "@/components/gateway/model-fallback-card";
 import { ModelProbeCard } from "@/components/gateway/model-probe-card";
 import { TraeIntegrationGuide } from "@/components/gateway/trae-integration-guide";
 import { TraeModelList } from "@/components/gateway/trae-model-list";
@@ -42,6 +44,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Skeleton } from "@/components/ui/skeleton";
 import { Switch } from "@/components/ui/switch";
 import * as api from "@/lib/api";
+import { gatewayOpenAiBaseUrl } from "@/lib/gateway-url";
 import { useT } from "@/lib/i18n";
 import { scopeOf } from "@/lib/scope";
 import { copyText } from "@/lib/clipboard";
@@ -455,10 +458,12 @@ export default function TraeApiServicePage() {
   }
 
   const running = status?.running ?? false;
-  const baseUrl = useMemo(() => {
-    const host = config.bindAddr === LAN ? LOOPBACK : config.bindAddr;
-    return `http://${host}:${config.port}/v1`;
-  }, [config.bindAddr, config.port]);
+  /* ★ OpenAI 系 Base URL（含 `/v1`）统一由 `lib/gateway-url.ts` 派生（#165）：`0.0.0.0` 归一、
+     `/v1` 只加一次，别在这里手拼。 */
+  const baseUrl = useMemo(
+    () => gatewayOpenAiBaseUrl(config.bindAddr, config.port),
+    [config.bindAddr, config.port],
+  );
 
   const keyPrefix = status?.apiKeyPrefix || "";
   /* ★ 概览两行的取数（与 WB 侧 `ApiServicePage` 的概览行**同源口径**）：
@@ -742,6 +747,14 @@ export default function TraeApiServicePage() {
                 adoptSupported={false}
                 className="mb-6"
               />
+              {/* 降级链：与 WB 页同一组件，但作用域与模型清单由本页注入
+                  （Trae 的清单来自客户端 `vscdb`，不在 gateway store 里）。 */}
+              <ModelFallbackCard
+                region={traeRegionOf(variant)}
+                scope={scopeOf("trae", traeRegionOf(variant))}
+                modelOptions={probeModels}
+                className="mb-6"
+              />
               <TraeModelList
                 sources={modelSources}
                 region={traeRegionOf(variant)}
@@ -770,6 +783,9 @@ export default function TraeApiServicePage() {
               // 排除：scope 按**变体**分家（`trae:trae_work` / `trae:trae_cn` / …）。
               onExclude={(uid, excluded) => void onExclude(uid, excluded)}
               excludingUid={excludingUid}
+              // ★ issue #129：账号故障时自动切换（网关级，与会话粘性同层）。
+              autoFailover={config.autoFailover}
+              onAutoFailoverChange={(checked) => void persist({ autoFailover: checked })}
               totalRequests={status?.totalRequests ?? null}
               /* 选号策略（与 WorkBuddy 同一张卡、同一套哨兵值）。
                  值经后端 `pool::parse_preferred` 解释成 `PickMode` —— 见该函数的文档：
@@ -781,6 +797,10 @@ export default function TraeApiServicePage() {
                   label: t("shared.gateway.pool.strategyMaxCredits"),
                 },
                 { value: RANDOM_OPTION, label: t("shared.gateway.pool.strategyRandom") },
+                {
+                  value: SEQUENTIAL_OPTION,
+                  label: t("shared.gateway.pool.strategySequential"),
+                },
               ]}
             />
           )}

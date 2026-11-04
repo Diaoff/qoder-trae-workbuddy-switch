@@ -10,10 +10,10 @@ use std::sync::Mutex;
 // 合并两侧新增的模块：`loomy`（Loomy 产品线）与 `runtime_log`（本工具运行日志）。
 use buddy_switch_core::modules::{
     account, app_prefs, auth_file, backup, cache, capability, checkin, client_limits,
-    client_settings, config, credit_usage, credits, diagnostics, export_import, loomy, migrate,
-    oauth, process, programs, qoder, refresh, region::Region, region::RegionFilter, rotate,
-    runtime_log, session, skill, switch, token_daily, token_stats, trae, travel, update,
-    vscode_session,
+    client_settings, codebuddy_cli, config, credit_usage, credits, diagnostics, export_import,
+    gateway_ledger, loomy, migrate, oauth, process, programs, qoder, refresh, region::Region,
+    region::RegionFilter, rotate, runtime_log, session, session_bundle, skill, switch, token_daily,
+    token_stats, trae, travel, update, vscode_session,
 };
 use tauri::{Emitter, Manager};
 // P5 §2.5 第 (2) 条：capability **默认拒绝**。表数据只在 core（`product_spec`），本文件只查表。
@@ -864,6 +864,99 @@ pub async fn install_codebuddy_cli_helper() -> Result<Value, String> {
         .map_err(|e| e.to_string())?
 }
 
+/// POST /api/codebuddy-cli/enable-gateway —— 把 CLI 切到**本机网关**模式（issue #109 §PR-2）。
+///
+/// 三件事必须**一起**做，缺一件都会留下「两条通道混用」：
+/// ① 建一把 CLI 专用网关 Key；
+/// ② 写 settings（并**清掉**上游 token 与 `apiKeyHelper`）；
+/// ③ 关掉自动轮换 —— 否则每轮都会把网关 Key 覆盖成上游 token。
+///
+/// 写失败时把刚建的 Key **吊销**，不留一把没人用的凭据。
+#[tauri::command(rename_all = "camelCase")]
+pub async fn codebuddy_cli_enable_gateway(region: Option<String>, model: Option<String>) -> Value {
+    let region = parse_region(region.as_deref());
+    let state = gateway::shared_state();
+    // 端口取**当前生效**的配置，不写死 57891（用户可改端口）。
+    let port = state.config_snapshot().await.port;
+    let base_url = format!("http://127.0.0.1:{port}");
+    let (record, plaintext) = state
+        .keys
+        .create("CodeBuddy CLI（网关）".to_string(), region);
+    match codebuddy_cli::enable_gateway_mode(&base_url, &plaintext, model.as_deref()) {
+        Ok(detail) => {
+            let rotate_disabled = rotate::disable_auto_rotate().is_ok();
+            json!({
+                "ok": true,
+                "baseUrl": base_url,
+                "keyPrefix": record.prefix,
+                "key": record.masked(),
+                "rotateDisabled": rotate_disabled,
+                "detail": detail,
+                "message": "已切到本机网关模式：重启终端与 CodeBuddy CLI 后生效（env 不支持热重载）",
+            })
+        }
+        Err(error) => {
+            let _ = state.keys.revoke(&record.id);
+            json!({ "ok": false, "error": error })
+        }
+    }
+}
+
+/// POST /api/codebuddy-cli/disable-gateway —— 从「走本机网关」切回**直连上游**（issue #109）。
+///
+/// 两步，顺序不可颠倒：
+/// ① 先清掉 settings 里的三个网关键（`BASE_URL` / `API_KEY` / `MODEL`）——
+///    不清的话第 ② 步会被 PR #114 的护栏拦住（那正是它的职责）；
+/// ② 再按当前账号重建直连凭据（`install_helper`）。
+///
+/// **不自动重开自动轮换**：切到网关时是**强制**关掉它的（轮换每轮会覆盖网关 Key），
+/// 但自动开启一个后台任务比自动关闭更危险 —— 用户可能本来就因为别的原因关着。
+/// 返回 `rotateDisabled` 让界面提示一句，由用户决定。
+#[tauri::command]
+pub async fn codebuddy_cli_disable_gateway() -> Value {
+    let cleared = match codebuddy_cli::disable_gateway_mode() {
+        Ok(value) => value,
+        Err(error) => return json!({ "ok": false, "error": error }),
+    };
+    /* `models.json` 里仍有网关地址 ⇒ 本工具没写过那个文件，**停下并让用户处理**，
+    否则下一步 install_helper 又会被护栏拦住，报错更难懂。 */
+    if let Some(warning) = cleared.get("warning").and_then(Value::as_str) {
+        return json!({ "ok": false, "error": warning, "detail": cleared });
+    }
+
+    let restored =
+        tauri::async_runtime::spawn_blocking(|| programs::install_helper("codebuddy_cli"))
+            .await
+            .map_err(|error| error.to_string())
+            .and_then(|result| result);
+
+    let rotate_enabled = config::load_auto_rotate_config()
+        .get("enabled")
+        .and_then(Value::as_bool)
+        == Some(true);
+    match restored {
+        Ok(_) => json!({
+            "ok": true,
+            "changed": cleared.get("changed").cloned().unwrap_or(json!(false)),
+            "restored": true,
+            "rotateDisabled": !rotate_enabled,
+            "message": if rotate_enabled {
+                "已切回直连上游：网关配置已清理，直连凭据已重建；重启终端与 CLI 后生效"
+            } else {
+                "已切回直连上游：网关配置已清理，直连凭据已重建。\u{26a0} 自动轮换仍是关闭的 —— 需要的话在「签到与积分」里开启"
+            },
+        }),
+        Err(error) => json!({
+            "ok": false,
+            /* 网关配置**已经清掉了**，但凭据没重建 —— 必须说清，否则用户看到「失败」会以为一切没变。 */
+            "error": format!("网关配置已清理，但重建直连凭据失败：{error}"),
+            "changed": true,
+            "restored": false,
+            "detail": cleared,
+        }),
+    }
+}
+
 /// POST /api/codebuddy-cli/switch —— 只切换 CodeBuddy CLI，不重启 WorkBuddy。
 ///
 /// **表驱动**：`programs::switch("codebuddy_cli", …)`（CLI 不重启客户端 ⇒ `restart` 传 `None`）。
@@ -1658,6 +1751,83 @@ pub async fn unify_session_replicas(
     .map_err(|error| format!("统一会话副本失败: {error}"))
 }
 
+/// POST /api/sessions/export —— 把会话导出成一个 JSON 包（issue #87）。
+///
+/// **只读**：不写客户端任何数据。导出包是单个 `.json`（不是 zip —— 见
+/// `session_bundle` 模块头：本仓不为一个搬运功能引入解压攻击面）。
+///
+/// ## `uid` / `sessionIds` 都可省略
+///
+/// - 省略 `uid` ⇒ 取**当前登录账号**（与 `list_sessions` 同一口径：本仓不猜
+///   「用户指的是哪个账号」，但这里"当前账号"是有权威来源的）。
+/// - 省略 `sessionIds`（或空数组）⇒ 导出该账号**全部会话** —— v1 的口径：
+///   备份 / 换机不需要先学会多选。传了 id 就只导那几个（留给后续的多选 UI）。
+///
+/// async + spawn_blocking：要读会话正文（可能几十 MB）并写文件，不跑在 Tauri 主线程上。
+#[tauri::command(rename_all = "camelCase")]
+pub async fn export_sessions_bundle(
+    out_path: String,
+    uid: Option<String>,
+    session_ids: Option<Vec<String>>,
+    region: Option<String>,
+) -> Result<Value, String> {
+    require_capability(Product::Workbuddy, capability::Capability::SessionCopy)?;
+    let region = parse_region(region.as_deref());
+    let explicit_uid = uid.filter(|value| !value.trim().is_empty());
+    let ids = session_ids.unwrap_or_default();
+    tauri::async_runtime::spawn_blocking(move || {
+        let uid = match explicit_uid {
+            Some(uid) => uid,
+            None => session::current_user_uid_for(region)
+                .ok_or_else(|| "读不到当前登录账号（客户端是否已登录？）".to_string())?,
+        };
+        let path = std::path::Path::new(&out_path);
+        if ids.is_empty() {
+            session_bundle::export_all_for(region, &uid, path)
+        } else {
+            session_bundle::export_sessions_for(region, &uid, &ids, path)
+        }
+    })
+    .await
+    .map_err(|error| format!("导出会话失败: {error}"))?
+}
+
+/// GET /api/sessions/import/preview —— 只读导出包，回报条数与标题（导入前给用户确认）。
+#[tauri::command]
+pub async fn preview_sessions_bundle(path: String) -> Result<Value, String> {
+    require_capability(Product::Workbuddy, capability::Capability::SessionCopy)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        session_bundle::preview_bundle(std::path::Path::new(&path))
+    })
+    .await
+    .map_err(|error| format!("读取导出包失败: {error}"))?
+}
+
+/// POST /api/sessions/import —— 把导出包里的会话**作为新会话**写进当前账号（issue #87）。
+///
+/// ★ 只做加法：每条都生成新 id，绝不覆盖既有会话（见 `session_bundle` 的硬约束）。
+/// `uid` 省略 ⇒ 当前登录账号。
+#[tauri::command(rename_all = "camelCase")]
+pub async fn import_sessions_bundle(
+    path: String,
+    uid: Option<String>,
+    region: Option<String>,
+) -> Result<Value, String> {
+    require_capability(Product::Workbuddy, capability::Capability::SessionCopy)?;
+    let region = parse_region(region.as_deref());
+    let explicit_uid = uid.filter(|value| !value.trim().is_empty());
+    tauri::async_runtime::spawn_blocking(move || {
+        let uid = match explicit_uid {
+            Some(uid) => uid,
+            None => session::current_user_uid_for(region)
+                .ok_or_else(|| "读不到当前登录账号（客户端是否已登录？）".to_string())?,
+        };
+        session_bundle::import_sessions_for(region, &uid, std::path::Path::new(&path))
+    })
+    .await
+    .map_err(|error| format!("导入会话失败: {error}"))?
+}
+
 /// 把前端的 `client` 字符串解析成 [`vscode_session::ExtClient`]。
 ///
 /// ⚠️ **空串与未知值一律 `Err`**（不回落默认值）：本仓不猜「用户指的是哪个客户端」——
@@ -1982,7 +2152,7 @@ pub async fn get_gateway_token_trend(region: Option<String>) -> Result<Value, St
         .map_err(|error| format!("读取网关用量趋势失败: {error}"))
 }
 
-/// 网关**三维度**逐日历史（模型 / 账号 / 端点）—— 用量页「账本」视图的数据源。
+/// 网关**四维度**逐日历史（密钥 / 模型 / 账号 / 端点）—— 用量页「账本」视图的数据源。
 ///
 /// 三条维度由同一次聚合产出、共用同一水位线 ⇒「按模型合计 = 按账号合计 = 按端点合计 = 网关卡」。
 /// ⚠️ 只读：不扫盘、不触发记录；`days` 只含落库日（缺日 = 未记录，不是 0）。
@@ -1992,6 +2162,38 @@ pub async fn get_gateway_usage_dim(region: Option<String>) -> Result<Value, Stri
     tauri::async_runtime::spawn_blocking(move || token_daily::gateway_usage_dim(region))
         .await
         .map_err(|error| format!("读取网关维度用量失败: {error}"))
+}
+
+/// 网关**四维度**逐日历史（Trae / Qoder）—— 用量页「账本」视图的数据源。
+///
+/// 与上面 WB 的 [`get_gateway_usage_dim`] **返回体逐字段同形**（`days[].keys /
+/// models / accounts / endpoints`），前端因此复用同一个 `GatewayUsageDim` 类型与拆分函数。
+/// 数据来自 [`gateway_ledger`]（90 天落库，后台周期增量记录）。
+///
+/// `scope` 取 `cn` / `global` / `unlabeled` / `all`（缺省 `all`）：
+/// **合并放在后端**做 —— Trae 有三档（未标注的旧日志单列一档），前端逐档取三次
+/// 再递归合并容易漏一档。
+///
+/// ⚠️ 只读：不扫盘、不触发记录；`days` 只含落库日（缺日 = 未记录，不是 0）。
+#[tauri::command]
+pub async fn get_trae_gateway_usage_dim(scope: Option<String>) -> Result<Value, String> {
+    let scope = scope.unwrap_or_else(|| "all".to_string());
+    tauri::async_runtime::spawn_blocking(move || {
+        gateway_ledger::usage_dim(gateway_ledger::LedgerProduct::Trae, &scope)
+    })
+    .await
+    .map_err(|error| format!("读取 Trae 网关账本失败: {error}"))
+}
+
+/// 网关**四维度**逐日历史（Qoder）。语义与 [`get_trae_gateway_usage_dim`] 完全一致。
+#[tauri::command]
+pub async fn get_qoder_gateway_usage_dim(scope: Option<String>) -> Result<Value, String> {
+    let scope = scope.unwrap_or_else(|| "all".to_string());
+    tauri::async_runtime::spawn_blocking(move || {
+        gateway_ledger::usage_dim(gateway_ledger::LedgerProduct::Qoder, &scope)
+    })
+    .await
+    .map_err(|error| format!("读取 Qoder 网关账本失败: {error}"))
 }
 
 /// 今日**客户端 ↔ 网关对账**（只读；匹配算法在 `modules::reconcile`）。
@@ -3116,6 +3318,175 @@ pub async fn set_model_disabled(
     }))
 }
 
+/* ══════════════════════ 模型降级链（P13）══════════════════════
+三个命令的分工：`get` 读视图、`save` 写配置、`preview` **纯计算**。
+
+★ `preview` 必须**零副作用**：它读闸门与禁用表，但绝不写、绝不领探针票。
+  「点一下预览就把闸门弄乱了」是灾难 —— 用户只是想看看会发生什么。
+★ 配置存**独立文件**（`gateway_model_fallback.json`），不进 `GatewayConfig`、
+  更不进 `Pool.config` —— 后者的 `config` 在 `GatewayState::new` 时固化，
+  改完必须重启网关才生效，而用户完全看不出来（假开关）。
+  ⇒ 保存后**立即生效**，无需重启。 */
+
+/// 构造某作用域的降级链视图（含备选的**实时**健康态）。
+///
+/// 状态点读的是闸门与禁用表**当下**的值（与账号池同源），不是配置快照 ——
+/// 否则卡片上的点会在闸门暂停时仍然亮着，比不显示更糟。
+async fn fallback_view(scope: buddy_switch_core::modules::product::Scope) -> Result<Value, String> {
+    let state = gateway::shared_state();
+    let fb = state.fallback.read().await.clone();
+    let disabled = state.disabled.read().await.clone();
+    let gates: Vec<(String, i64)> = {
+        let pool = state.pool.read().await;
+        pool.model_gates()
+            .iter()
+            .map(|gate| (gate.model.clone(), gate.until_ms))
+            .collect()
+    };
+    let refs: Vec<(&str, i64)> = gates
+        .iter()
+        .map(|(model, until)| (model.as_str(), *until))
+        .collect();
+    let view = buddy_switch_gateway::model_fallback::build_view(
+        &fb,
+        &disabled,
+        scope,
+        &state.catalogs,
+        &refs,
+        buddy_switch_gateway::timeutil::now_ms(),
+    );
+    serde_json::to_value(view).map_err(|error| error.to_string())
+}
+
+/// GET /api/gateway/model-fallback —— 某作用域的降级链。
+#[tauri::command]
+pub async fn get_model_fallback(scope: String) -> Result<Value, String> {
+    let scope = resolve_scope_param(Some(&scope))?;
+    fallback_view(scope).await
+}
+
+/// POST /api/gateway/model-fallback —— 保存某作用域的降级链（**立即生效**）。
+#[tauri::command]
+pub async fn save_model_fallback(scope: String, config: Value) -> Result<Value, String> {
+    require_capability(Product::Workbuddy, capability::Capability::Gateway)?;
+    let scope = resolve_scope_param(Some(&scope))?;
+    let parsed: buddy_switch_gateway::model_fallback::ScopeFallback =
+        serde_json::from_value(config).map_err(|error| format!("降级链格式错误: {error}"))?;
+
+    // 规范化：**在写盘之前**把脏值挡掉（丢掉空 from、剔除与主模型同名的 target、
+    // 去重后截断到上限）。逻辑在 gateway crate 里，与 WebUI 那条路**共用同一份**。
+    // 传 `scope`：「同名即自环」只在同作用域成立（跨区域同名是另一个上游）。
+    let normalized = buddy_switch_gateway::model_fallback::normalize(scope, parsed);
+
+    let store = buddy_switch_gateway::model_fallback::shared();
+    {
+        let mut guard = store.write().await;
+        guard.set_scope(scope, normalized);
+        // 写失败必须回传：否则用户以为保存了，重启后配置又变回去。
+        guard.save()?;
+    }
+    fallback_view(scope).await
+}
+
+/// GET /api/gateway/fallback-stats —— 某作用域近 `days` 天的降级统计。
+///
+/// 读的是**落盘账本**（`token_daily::fallback_days`），不是进程内环形缓冲 ——
+/// 「近 7 天降级了多少次」只能来自逐日计数（环形缓冲只覆盖最近几十秒）。
+#[tauri::command]
+pub async fn get_fallback_stats(scope: String, days: u32) -> Result<Value, String> {
+    let scope = resolve_scope_param(Some(&scope))?;
+    Ok(buddy_switch_gateway::model_fallback::stats_payload(
+        scope, days,
+    ))
+}
+
+/// POST /api/gateway/model-fallback/preview —— 保存前**预演**一次降级路径。
+///
+/// **纯计算，零副作用**：只读闸门 / 禁用表，不写、不领探针票、不发上游请求。
+/// 前端用它做「模拟路径」，让用户不必先保存再等一次真实失败。
+#[tauri::command]
+pub async fn preview_model_fallback(
+    scope: String,
+    from: String,
+    targets: Vec<String>,
+) -> Result<Value, String> {
+    let scope = resolve_scope_param(Some(&scope))?;
+    let state = gateway::shared_state();
+    let now = buddy_switch_gateway::timeutil::now_ms();
+    let disabled = state.disabled.read().await.clone();
+    let gates: Vec<(String, i64)> = {
+        let pool = state.pool.read().await;
+        pool.model_gates()
+            .iter()
+            .map(|gate| (gate.model.clone(), gate.until_ms))
+            .collect()
+    };
+    let refs: Vec<(&str, i64)> = gates
+        .iter()
+        .map(|(model, until)| (model.as_str(), *until))
+        .collect();
+    // 预演逻辑收在 gateway crate：与 WebUI 那条路**共用同一份** ——
+    // 两处各写一份时，两个管理面迟早给出不同的模拟结果。
+    Ok(buddy_switch_gateway::model_fallback::preview_payload(
+        scope, &from, &targets, &disabled, &refs, now,
+    ))
+}
+
+/// GET /api/gateway/model-image-caps —— 某**作用域**被用户手动指定的图片能力覆盖（issue #101）。
+///
+/// 形状 `{ scope, caps: { "<模型 id>": true|false } }`：**缺失的键 = 跟随上游**（不是「不支持」）。
+/// 只有用户动过的模型才在这里出现，因此前端拿它当「覆盖表」，与目录里的
+/// `supports_images` / `image_input_source` 合成三态展示。
+///
+/// 读的是**进程内唯一**的存储（[`buddy_switch_gateway::model_capability::shared`]）——
+/// 与三条产品线 `/v1/models` 的声明是同一份，不是「命令写一份、网关读另一份」。
+#[tauri::command]
+pub async fn get_model_image_caps(scope: String) -> Result<Value, String> {
+    let scope = resolve_scope_param(Some(&scope))?;
+    // 纯内存读（HashMap 克隆），但仍放进 blocking 池：与写入侧同一把 std 锁，
+    // 避免在 IPC 线程上做任何可能被写者阻塞的操作。
+    let caps = tauri::async_runtime::spawn_blocking(move || {
+        buddy_switch_gateway::model_capability::overrides_of(scope)
+    })
+    .await
+    .map_err(|error| format!("读取图片能力失败: {error}"))?;
+    Ok(json!({ "scope": scope.as_str(), "caps": caps }))
+}
+
+/// POST /api/gateway/model-image-caps —— 指定 / 清除某**作用域**一个模型的图片能力覆盖。
+///
+/// `supports`：`true` / `false` = 手动指定；**`null` = 还原上游声明**（删键，不是写 `false`）。
+/// 三态是这块的全部要点 —— 把「还原」实现成 `false` 会让 WB 上游明明声明支持的模型
+/// 在客户端里永远看不到图片入口。
+///
+/// `set_and_save` 是**阻塞**的（含磁盘写）⇒ 放进 `spawn_blocking`（本仓既有纪律：
+/// 同步 IO 不得压在 IPC / 事件循环线程上，issue #48 / #80 同根因类）。
+#[tauri::command]
+pub async fn set_model_image_cap(
+    scope: String,
+    model_id: String,
+    supports: Option<bool>,
+) -> Result<Value, String> {
+    let scope = resolve_scope_param(Some(&scope))?;
+    let id = model_id.trim().to_string();
+    if id.is_empty() {
+        return Err("模型 id 不能为空".to_string());
+    }
+    let changed = tauri::async_runtime::spawn_blocking(move || {
+        buddy_switch_gateway::model_capability::set_and_save(scope, &id, supports)
+    })
+    .await
+    .map_err(|error| format!("保存图片能力失败: {error}"))??;
+    Ok(json!({
+        "ok": true,
+        "scope": scope.as_str(),
+        "model_id": model_id.trim(),
+        // `null` 表示「跟随上游」，与入参同义回显（前端据此清掉本地覆盖）。
+        "supports": supports,
+        "changed": changed,
+    }))
+}
+
 /// GET /api/gateway/logs —— 最近 N 条请求日志（元数据）。
 ///
 /// `async` + `spawn_blocking`：`list` 要读进程内日志环（大日志时还有序列化）。
@@ -3371,6 +3742,150 @@ pub async fn get_trae_token_statistics(days: Option<i64>, scope: Option<String>)
         Ok(value) => value,
         Err(error) => json!({ "error": format!("统计 Token 用量失败: {error}") }),
     }
+}
+
+/// POST /api/trae/client-import/unlock —— 用口令把**加密库**导出成明文副本。
+///
+/// 这是「内置解密」的唯一入口：口令由用户输入，本工具不内置任何提取手段
+/// （口令在 Trae 的 native 进程里，磁盘上没有副本 —— 见 `buddy-switch-vault` 的模块头）。
+///
+/// 三种结果必须分开：
+/// - `mode: "decrypted"` —— 口令对，已导出到固定落点并设为当前数据源；
+/// - `mode: "plaintext"` —— 用户给的本来就是明文库（**不**做无谓的解密与复制）；
+/// - `error` —— 口令错 / 不是 SQLite / 文件不存在，各自带稳定 `code`。
+#[tauri::command]
+pub async fn unlock_trae_client_db(path: String, passphrase: String) -> Value {
+    tauri::async_runtime::spawn_blocking(move || {
+        let source = std::path::PathBuf::from(path.trim());
+        let plain = trae::client_import::plaintext_path();
+        let target = plain.to_string_lossy().to_string();
+
+        match buddy_switch_vault::verify(&source, &passphrase) {
+            Ok(info) => {
+                if let Err(error) =
+                    buddy_switch_vault::export_plaintext(&source, &passphrase, &plain)
+                {
+                    return json!({
+                        "ok": false,
+                        "error": { "code": error.code(), "message": error.message() },
+                    });
+                }
+                let saved = trae::client_import::save_config(&target);
+                json!({
+                    "ok": saved,
+                    "mode": "decrypted",
+                    "compatibility": info.compatibility,
+                    "tables": info.tables,
+                    "path": target,
+                    "probe": trae::client_import::probe(&target),
+                })
+            }
+            // 已经是明文：直接用它，不复制、不覆盖。
+            Err(buddy_switch_vault::VaultError::AlreadyPlaintext) => {
+                let source_text = source.to_string_lossy().to_string();
+                let saved = trae::client_import::save_config(&source_text);
+                json!({
+                    "ok": saved,
+                    "mode": "plaintext",
+                    "path": source_text,
+                    "probe": trae::client_import::probe(&source_text),
+                })
+            }
+            Err(error) => json!({
+                "ok": false,
+                "error": { "code": error.code(), "message": error.message() },
+            }),
+        }
+    })
+    .await
+    .unwrap_or_else(|error| {
+        json!({
+            "ok": false,
+            "error": { "code": "io", "message": format!("解锁失败: {error}") },
+        })
+    })
+}
+
+/// GET /api/trae/client-import/probe —— 探测一个**用户自己导出的明文库**能否读。
+///
+/// 只探测、不保存配置（前端「校验」按钮用）。返回体里的 `error.code` 决定界面文案：
+/// 五种错误必须分开显示 —— 「还没指定」「文件是加密的」「认不出结构」「没有用量字段」
+/// 「IO 失败」是五件不同的事，混成一个「读取失败」会让用户无从下手。
+#[tauri::command]
+pub async fn probe_trae_client_db(path: String) -> Value {
+    match tauri::async_runtime::spawn_blocking(move || trae::client_import::probe(&path)).await {
+        Ok(value) => value,
+        Err(error) => json!({
+            "ok": false,
+            "path": "",
+            "error": { "code": "io", "message": format!("探测失败: {error}") },
+            "tables": [],
+        }),
+    }
+}
+
+/// GET /api/trae/client-usage —— 客户端账本（读导入的明文库）。
+///
+/// `path` 缺省时用已保存的路径；两者都没有 ⇒ `{ configured: false }`（**不是空统计**：
+/// 「没导入」与「导入了但这段没用量」必须能分开）。
+#[tauri::command]
+pub async fn get_trae_client_token_stats(
+    path: Option<String>,
+    days: Option<i64>,
+    scope: Option<String>,
+) -> Value {
+    match tauri::async_runtime::spawn_blocking(move || {
+        let scope = scope
+            .as_deref()
+            .map(trae::token_stats::TraeTokenScope::parse)
+            .unwrap_or_default();
+        let target = path
+            .or_else(trae::client_import::configured_path)
+            .unwrap_or_default();
+        if target.trim().is_empty() {
+            return json!({ "source": "trae-client", "configured": false });
+        }
+        trae::client_import::summarize(&target, days, scope)
+    })
+    .await
+    {
+        Ok(value) => value,
+        Err(error) => json!({
+            "source": "trae-client",
+            "error": { "code": "io", "message": format!("读取客户端账本失败: {error}") },
+        }),
+    }
+}
+
+/// GET /api/trae/client-import/config —— 已保存的导入路径与「文件还在不在」。
+#[tauri::command]
+pub async fn get_trae_client_db_config() -> Value {
+    tauri::async_runtime::spawn_blocking(|| {
+        let path = trae::client_import::configured_path();
+        let exists = path
+            .as_deref()
+            .map(|target| std::path::Path::new(target).is_file())
+            .unwrap_or(false);
+        json!({ "path": path, "exists": exists })
+    })
+    .await
+    .unwrap_or_else(|error| json!({ "path": null, "exists": false, "error": error.to_string() }))
+}
+
+/// POST /api/trae/client-import/path —— 保存 / 清除导入路径（`path = null` 即清除）。
+#[tauri::command]
+pub async fn save_trae_client_db_path(path: Option<String>) -> Value {
+    tauri::async_runtime::spawn_blocking(move || {
+        let saved = match path.as_deref().map(str::trim) {
+            Some(target) if !target.is_empty() => {
+                json!({ "ok": trae::client_import::save_config(target), "path": target })
+            }
+            _ => json!({ "ok": trae::client_import::clear_config(), "path": Value::Null }),
+        };
+        saved
+    })
+    .await
+    .unwrap_or_else(|error| json!({ "ok": false, "path": null, "error": error.to_string() }))
 }
 
 /// GET /api/trae/logs —— 运行日志（系统日志页的「运行日志」标签页）。
@@ -5020,6 +5535,80 @@ pub async fn qoder_pro_pack_status(scope: String, uid: String) -> Result<Value, 
     let scope = resolve_scope_param(Some(&scope))?;
     let region = require_qoder_region(scope)?;
     qoder::checkin::pro_pack_status_for(region, &uid).await
+}
+
+// ---------------------------------------------------------------------------
+// issue #111 · Qoder 网页端逐资源包明细（登录窗 + 会话收割 + 取证探针）
+// ---------------------------------------------------------------------------
+//
+// 实现全在 [`crate::qoder_web`]，这里只是薄包装 —— 与本文件其余命令同构。
+// ⚠️ **必须包在 `commands.rs` 里**：`scripts/check-api-contract.cjs` 只把
+// `commands::<name>` 形态认作「已登记」，直接写 `qoder_web::<name>` 会被判未登记
+// （构建全绿、桌面端 command not found 的那类静默失效）。
+
+/// POST /api/qoder/web/login-open —— 打开（或前置）Qoder 网页端登录窗。
+#[tauri::command(rename_all = "camelCase")]
+pub async fn qoder_web_login_open(app: tauri::AppHandle, scope: String) -> Result<Value, String> {
+    crate::qoder_web::login_open(&app, scope).await
+}
+
+/// POST /api/qoder/web/login-close —— 关闭登录窗（幂等）。
+#[tauri::command(rename_all = "camelCase")]
+pub async fn qoder_web_login_close(app: tauri::AppHandle) -> Result<Value, String> {
+    crate::qoder_web::login_close(&app).await
+}
+
+/// POST /api/qoder/web/credit-packs/probe —— 收割会话 Cookie 并探一次逐包接口。
+#[tauri::command(rename_all = "camelCase")]
+pub async fn qoder_web_credit_packs_probe(
+    app: tauri::AppHandle,
+    scope: String,
+    uid: String,
+) -> Result<Value, String> {
+    crate::qoder_web::credit_packs_probe(&app, scope, uid).await
+}
+
+/// GET /api/qoder/web/session/status —— 本区域有没有可用的网页会话（只读）。
+#[tauri::command(rename_all = "camelCase")]
+pub async fn qoder_web_session_status(scope: String, uid: String) -> Result<Value, String> {
+    crate::qoder_web::session_status(scope, uid).await
+}
+
+/// GET /api/qoder/web/session/window-cookies —— 登录窗里现有的 Cookie **名称与条数**（只读、不打上游）。
+///
+/// 前端轮询它来发现「用户已经在窗口里登录完了」（`fingerprint` 变化）。
+#[tauri::command(rename_all = "camelCase")]
+pub async fn qoder_web_window_cookies(
+    app: tauri::AppHandle,
+    scope: String,
+) -> Result<Value, String> {
+    crate::qoder_web::window_cookies(&app, scope).await
+}
+
+/// GET /api/qoder/web/credit-packs —— 读**已缓存**会话取逐包明细（渲染用，不弹窗）。
+#[tauri::command(rename_all = "camelCase")]
+pub async fn qoder_web_credit_packs(scope: String, uid: String) -> Result<Value, String> {
+    crate::qoder_web::credit_packs(scope, uid).await
+}
+
+/// POST /api/qoder/web/session/logout —— 清除本地会话缓存（幂等；「退出网页登录」）。
+#[tauri::command(rename_all = "camelCase")]
+pub async fn qoder_web_session_logout(scope: String) -> Result<Value, String> {
+    crate::qoder_web::session_logout(scope).await
+}
+
+/// GET /api/qoder/web/proxy —— 读出站代理配置（逐包取数用；空 = 直连）。
+#[tauri::command(rename_all = "camelCase")]
+pub async fn qoder_web_proxy_get() -> Result<Value, String> {
+    crate::qoder_web::web_proxy_config()
+}
+
+/// POST /api/qoder/web/proxy —— 保存出站代理配置（两个字段都先过形状校验）。
+#[tauri::command(rename_all = "camelCase")]
+pub async fn qoder_web_proxy_set(config: Value) -> Result<Value, String> {
+    let parsed: buddy_switch_core::modules::qoder::web_proxy::WebProxyConfig =
+        serde_json::from_value(config).map_err(|error| format!("代理配置格式错误: {error}"))?;
+    crate::qoder_web::web_proxy_config_save(parsed)
 }
 
 /// POST /api/qoder/pro-pack/claim —— 领取 Pro 升级包（幂等；已领过 `already=true`）。

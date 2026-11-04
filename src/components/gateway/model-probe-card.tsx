@@ -1074,9 +1074,12 @@ function DoneBody(props: {
                               <div>
                                 {t("shared.gateway.probe.detailLatency")}：{cell.latency_ms} ms
                               </div>
-                              {cell.reset_at_ms != null && (
+                              {/* 恢复时刻：结构化优先，其次上游文案里声明的（`… reset at <T>`）。
+                                  它**不参与回填**（配额窗口 ≠ 解锁时刻），只在这里给个「等到几点」。 */}
+                              {(cell.upstream_reset_at_ms ?? cell.reset_at_ms) != null && (
                                 <div>
-                                  {t("shared.gateway.probe.detailReset")}：{formatDateTime(cell.reset_at_ms)}
+                                  {t("shared.gateway.probe.detailReset")}：
+                                  {formatDateTime((cell.upstream_reset_at_ms ?? cell.reset_at_ms) as number)}
                                 </div>
                               )}
                               {reasonText && (

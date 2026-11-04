@@ -58,8 +58,8 @@ export function DonateDialog({
           <DialogTitle>{t("wbSettings.donate.title")}</DialogTitle>
           <DialogDescription>{t("wbSettings.donate.desc")}</DialogDescription>
         </DialogHeader>
-        {/* 两张收款码的长宽比并不相同（1121×1527 / 1080×1620），若各自按宽度铺满，
-            高度会差出十几像素、下面的渠道名对不齐。这里给**统一高度的容器 + object-contain**：
+        {/* 两张收款码的像素尺寸不同（微信 425×422 / 支付宝 799×803），若各自按宽度铺满，
+            高度会有偏差、下面的渠道名对不齐。这里给**统一高度的容器 + object-contain**：
             图按自身比例缩放到容器内，多出来的部分留白，两张码的视觉高度与说明位置因此一致。
             **不要用 `object-cover`** —— 那会把二维码裁掉边缘，扫不出来。 */}
         <div className="grid grid-cols-2 gap-4">

@@ -80,7 +80,6 @@ import type {
   CheckinLog,
   CodeBuddyCliStatus,
   CodeBuddyCnIdeStatus,
-  CreditExpiry,
   CreditStatsEvent,
   JetbrainsCodebuddyPluginStatus,
   ExtClientId,
@@ -97,20 +96,43 @@ import { useScope } from "@/lib/use-scope";
 import { useAccountsStore } from "@/stores/accounts";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { useT } from "@/lib/i18n";
+import type { Translate } from "@/lib/i18n";
 import { daysUntil, nearestExpiringBatch } from "@/lib/credit-expiry";
+import {
+  compareCreditPriority,
+  nearestCreditExpiry,
+  pickPriorityAccountId,
+} from "@/lib/credit-priority";
 import { formatAbsoluteTime } from "@/lib/catalog-source";
 import { showUndoToast } from "@/lib/undo-toast";
+import { toDetailPacks, type CreditPackTexts } from "@/lib/credit-packs";
 
-function expiringSoonAmount(credit?: CreditExpiry): number {
-  return credit?.ok ? credit.expiringSoonRemaining ?? 0 : 0;
+/**
+ * 资源包明细的**文案层**（WorkBuddy 词条域）。
+ *
+ * 过滤 / 排序 / 比例在 `credit-packs.ts` 里（四份实现合成一份）；这里只剩词条 ——
+ * 文案域本来就该按平台分开（混用会串），逻辑则不该。
+ */
+function WB_PACK_TEXTS(t: Translate): CreditPackTexts {
+  return {
+    remainingText: formatCredits,
+    totalText: formatCredits,
+    usedText: (value) => t("shared.credit.packUsed", { n: formatCredits(value) }),
+    expiryText: (expireAtMs, expired) =>
+      expired
+        ? t("wbAccounts.card.expired")
+        : expireAtMs !== null
+          ? t("wbAccounts.card.expiresOn", { date: formatCreditExpiry(expireAtMs, t) })
+          : t("wbAccounts.card.forever"),
+  };
 }
+
+
 
 /* 日期口径（`localDateKey` / `lastSevenDays`）已上提到 `@/lib/checkin-history` ——
    Trae 侧也要装配「近 7 天」抽屉区块，两处必须同口径（差一天就会把「昨天签的」显示成「未签到」）。 */
 
-function hasExpiringSoonCredits(credit?: CreditExpiry): boolean {
-  return credit?.ok === true && expiringSoonAmount(credit) > 0;
-}
+
 
 /**
  * 需要走「统一重启确认」的客户端（PLAN §3.15.3）。
@@ -121,37 +143,8 @@ function hasExpiringSoonCredits(credit?: CreditExpiry): boolean {
  */
 type SwitchClient = "cli" | "ide" | "vscode" | "jetbrains";
 
-/**
- * 「最近一批未来到期」的到期时刻（issue #69）。
- *
- * ⚠️ **不看 `expiringSoon`**（那是 7 天警告窗口），**不看 `credit.soonestExpireAt`**
- * （它把已过期资源也算进最小值 ⇒ 「已经浪费的」会抢占「先消耗」的位）。
- * 统一走 `nearestExpiringBatch` —— 它只认「未来 + 剩余 > 0 + 有到期时刻」。
- */
-function nearestCreditExpiry(credit?: CreditExpiry): number {
-  const batch = credit?.ok ? nearestExpiringBatch(credit.resources) : null;
-  return batch ? batch.expireAt : Number.POSITIVE_INFINITY;
-}
-
-/**
- * 「建议优先」的分档（issue #69）。
- *
- * | rank | 条件 | 含义 |
- * |:--|:--|:--|
- * | 0 | 7 天内有临期 | **再不用就浪费**（警告强度最高） |
- * | 1 | 正常（有未来到期 / 无到期） | **先消耗快到期的**（用户真正要的顺序） |
- * | 2 | 有**已过期**积分 | 已经浪费了 ⇒ 排到正常之后，别抢「先消耗」的位 |
- * | 3 | 积分查询失败 | 未知排最后 |
- *
- * ⚠️ 2026-10-21 前 rank 1 = 已过期、rank 2 = 正常 ⇒ 「有过期积分」的账号排在
- * 「14 天后到期」的账号**前面** —— 那正好把用户要的相对顺序倒过来了。
- */
-function creditPriorityRank(credit?: CreditExpiry): number {
-  if (!credit?.ok) return 3;
-  if (hasExpiringSoonCredits(credit)) return 0;
-  if (credit.expired) return 2;
-  return 1;
-}
+/* 「最近到期」与「建议优先」的四条判据已上提到 `@/lib/credit-priority` ——
+   聚合页也要显示同一个 ⭐ 徽章，两处各算一次必然分叉（issue #89 · B6）。 */
 
 /**
  * 「这个账号是不是客户端当前登录的那个」—— 判定已抽到 `lib/account-current.ts`，
@@ -1503,19 +1496,10 @@ function RegionPanel({ region }: { region: Region }) {
    *   假选项（决策 #3 的原判据「无字段」已不成立 —— 见 `check-scope-registry.cjs` 对应断言）。
    */
   const listConfig = useMemo<AccountListConfig<AccountMeta>>(() => {
-    const priorityComparator: AccountComparator<AccountMeta> = (left, right) => {
-      const leftCredit = creditMap[left.id];
-      const rightCredit = creditMap[right.id];
-      const rankDifference = creditPriorityRank(leftCredit) - creditPriorityRank(rightCredit);
-      if (rankDifference !== 0) return rankDifference;
-      /* 组内：**最近到期升序** → 临期金额降序（issue #69）。
-         「最近到期」用 `nearestCreditExpiry`（只认未来批次），不再用
-         `soonestRelevantExpiry`（它只看 7 天窗口内的批次）。 */
-      const leftExpiry = nearestCreditExpiry(leftCredit);
-      const rightExpiry = nearestCreditExpiry(rightCredit);
-      if (leftExpiry !== rightExpiry) return leftExpiry - rightExpiry;
-      return expiringSoonAmount(rightCredit) - expiringSoonAmount(leftCredit);
-    };
+    /* 三级键（分档 → 最近到期升序 → 临期金额降序）在 `credit-priority.ts` 里，
+       与聚合页的 ⭐ 徽章**共用同一份**（issue #89 · B6）。 */
+    const priorityComparator: AccountComparator<AccountMeta> = (left, right) =>
+      compareCreditPriority(creditMap[left.id], creditMap[right.id]);
     const nameComparator: AccountComparator<AccountMeta> = (left, right) =>
       wbAccountName(left).localeCompare(wbAccountName(right), undefined, { numeric: true, sensitivity: "base" });
     /**
@@ -1603,7 +1587,7 @@ function RegionPanel({ region }: { region: Region }) {
   /** 只服务「建议优先」徽章：按积分优先级排一遍（与当前 `sort` 无关）。 */
   const priorityOrdered = sortAccounts(accounts, "priority", listConfig);
   const priorityAccountId = creditOrderingReady
-    ? priorityOrdered.find((account) => hasExpiringSoonCredits(creditMap[account.id]))?.id
+    ? pickPriorityAccountId(priorityOrdered, (account) => creditMap[account.id])
     : undefined;
 
   /** 排序 / 分组下拉选项 —— 由 `availableSorts` / `availableGroups`（数据）驱动，无假选项。 */
@@ -1952,43 +1936,41 @@ function RegionPanel({ region }: { region: Region }) {
     ];
   }, [detail, creditMap, tokenTodayMap, tokenTodayTruncated, checkinMap, t]);
 
+  /**
+   * 资源包明细（issue #144 复核 · L1/L2）：**过滤 / 排序 / `ratio` 全部走
+   * `credit-packs.ts` 的共用装配**，这里只剩「字段改名 + 文案」。
+   *
+   * ⚠️ 三件事不再在这里写：① `remaining <= 0` 剔除；② 已过期垫底 → 到期升序 →
+   * 永久垫后；③ `ratio` 乘 100 并夹紧。此前这四份实现（三渠道页 + 聚合页）各自
+   * 决定，于是「同一账号的同一批包」在卡片与抽屉里排在不同位置。
+   *
+   * ⚠️ `expiringSoon` 改读**后端标记**（`EXPIRING_SOON_DAYS` = 7 天），不再前端写死
+   * 7 天窗口 —— 前端自设窗口正是 `credit-expiry.ts` 文件头那条规范要根除的东西。
+   */
   const detailPacks: DetailPack[] =
     detail && detailCredit?.ok
-      ? (detailCredit.resources ?? [])
-          .filter((resource) => resource.remaining > 0)
-          .map((resource, index) => ({ resource, index }))
-          .sort((left, right) => {
-            const leftExpiry = left.resource.expireAt ?? Number.POSITIVE_INFINITY;
-            const rightExpiry = right.resource.expireAt ?? Number.POSITIVE_INFINITY;
-            return leftExpiry === rightExpiry ? left.index - right.index : leftExpiry - rightExpiry;
-          })
-          .map(({ resource }) => ({
+      ? toDetailPacks(
+          (detailCredit.resources ?? []).map((resource) => ({
             key: `${resource.packageCode ?? resource.packageName ?? "pack"}-${resource.expireAt ?? "none"}`,
             // `packageName` / `packageCode` 声明为 `string | null`，但后端可能吐对象
             // （`api.ts` 只归一了账号字段，没归一 credit 的这两个）⇒ 直接当 React 子节点会
             // 卸载整棵树（issue #2 白屏）。过 `displayText` 出口归一，取不到再回落。
-            name: displayText(resource.packageName) || displayText(resource.packageCode) || t("wbAccounts.card.creditPackFallback"),
-            remainingText: formatCredits(resource.remaining),
-            totalText: formatCredits(resource.total),
-            usedText: t("wbAccounts.card.used", { n: formatCredits(resource.used) }),
-            expiryText: resource.expired
-              ? t("wbAccounts.card.expired")
-              : resource.expireAt
-                ? t("wbAccounts.card.expiresOn", { date: formatCreditExpiry(resource.expireAt, t) })
-                : t("wbAccounts.card.forever"),
+            name:
+              displayText(resource.packageName) ||
+              displayText(resource.packageCode) ||
+              t("wbAccounts.card.creditPackFallback"),
+            total: resource.total,
+            remaining: resource.remaining,
+            used: resource.used,
+            /* WB 的 `CreditResource.expireAt` 是**毫秒**（后端 `parse_timestamp_ms`）——
+               与 Trae 的秒口径不同，见 `credit-packs.ts` 文件头第 ① 条。 */
+            expireAtMs: resource.expireAt,
             expired: resource.expired,
-            /* ⚠️ 与后端**逐条同口径**：`expired` 只覆盖「`expire_at <= now`」，
-               所以**下界 `> now` 不能省**。此前只判上界，靠的是「`expired` 恒等于
-               `expire_at <= now`」这条后端不变量 —— 隐式耦合，后端口径一改就会把
-               「已过期」的包标成「临期」。
-               `resource.expireAt` 是**毫秒**（`CreditResource.expireAt`，WB 侧口径）。 */
-            expiringSoon:
-              !resource.expired &&
-              resource.expireAt != null &&
-              resource.expireAt > now &&
-              resource.expireAt - now <= 7 * 86_400_000,
-            ratio: resource.total > 0 ? Math.min(100, Math.max(0, (resource.remaining / resource.total) * 100)) : 0,
-          }))
+            expiringSoon: resource.expiringSoon,
+          })),
+          WB_PACK_TEXTS(t),
+          now,
+        )
       : [];
   const detailPrograms: DetailProgramBadge[] = detail
     ? [
@@ -2460,6 +2442,8 @@ function RegionPanel({ region }: { region: Region }) {
                               creditPriority={a.id === priorityAccountId}
                               workbuddyActive={isWorkbuddyCurrent(a, current)}
                               codebuddyCliConfigured={codebuddyCli?.configured && !codebuddyCli.migrationRequired && !codebuddyCli.syncPending}
+                              /* ★ issue #109：网关模式下「切到 CLI」置灰（选号不归本工具了）。 */
+                              codebuddyCliGatewayMode={Boolean(codebuddyCli?.gatewayMode)}
                               codebuddyCliActive={a.id === cliCurrentAccountId}
                               codebuddyCliBusy={codebuddyCliSwitchingId !== null}
                               onSwitchCodebuddyCli={onSwitchCodebuddyCli}

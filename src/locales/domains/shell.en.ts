@@ -64,7 +64,7 @@ export const en = {
   "topbar.refreshDone": "Refreshed",
   "topbar.refreshDoneDesc": "{scope}: accounts and status updated",
   "topbar.refreshFailed": "Refresh failed",
-  "topbar.theme": "Switch light/dark theme",
+  "topbar.theme": "Switch theme",
   "topbar.appMenu": "App settings",
 
   // ---- Page-head scope subtitles (redesign §3.2) ----
@@ -137,11 +137,12 @@ export const en = {
   "appSettings.appearance.title": "Appearance",
   "appSettings.appearance.theme.label": "Theme",
   "appSettings.appearance.theme.description":
-    "Use light, dark, or follow the system appearance",
+    "Light, dark, pure black (OLED-friendly), or follow the system",
   "appSettings.appearance.theme.aria": "Theme",
   "appSettings.theme.system": "System",
   "appSettings.theme.light": "Light",
   "appSettings.theme.dark": "Dark",
+  "appSettings.theme.black": "Pure black",
 
   "appSettings.language.title": "Language",
   "appSettings.language.label": "Interface language",
@@ -192,13 +193,78 @@ export const en = {
   // ---- Settings sub-nav (P7 §3.9: 9 items, the 9th is "Backup & restore") ----
   "settings.subnav.aria": "Settings sections",
   "settings.subnav.general": "General",
+  "settings.scope.global": "Global setting · applies to every scope; switching scope will not change it",
+  "settings.scope.scoped": "Affects the current scope only ({scope}) · other scopes have their own settings",
   "settings.subnav.account": "Accounts & sign-in",
   "settings.subnav.checkin": "Check-in & credits",
   "settings.subnav.gateway": "Gateway",
   "settings.subnav.schedule": "Scheduled tasks",
   "settings.subnav.client": "Client",
+  "settings.subnav.cli": "CodeBuddy CLI",
+
+  /* ── CodeBuddy CLI connection mode (issue #109) ──
+     This is a mutually exclusive credential-channel choice, not a preference toggle:
+     both paths write the same `~/.codebuddy/settings.json`. Mixing them makes the CLI
+     send the upstream token to the local gateway (401), and rotation rewrites it every
+     cycle — so it fails intermittently. */
+  "wbSettings.cli.stripDirect": "Direct upstream · this app picks accounts by credit expiry",
+  "wbSettings.cli.stripGateway": "Via local gateway · the gateway picks by model",
+  "wbSettings.cli.stripDirectSub": "The upstream token lives in ~/.codebuddy/settings.json and is maintained here",
+  "wbSettings.cli.stripGatewaySub": "CLI requests go to {url}, authenticated with a dedicated gateway key",
+  "wbSettings.cli.effective": "Active",
+  "wbSettings.cli.pendingRestart": "Restart CLI",
+  "wbSettings.cli.pendingRestartTip": "env is not hot-reloaded: restart the terminal and CodeBuddy CLI",
+  "wbSettings.cli.sectionTitle": "Connection mode",
+  "wbSettings.cli.sectionHint": "Mutually exclusive; switching rewrites settings.json",
+  "wbSettings.cli.mode.direct": "Direct upstream",
+  "wbSettings.cli.mode.directTagline": "This app manages credentials and picks accounts by credit expiry",
+  "wbSettings.cli.mode.gateway": "Via local gateway",
+  "wbSettings.cli.mode.gatewayTagline": "The CLI points at the local gateway, which picks by model",
+  "wbSettings.cli.cap.directAccount": "Switch per account (soonest expiry first)",
+  "wbSettings.cli.cap.directRotate": "Auto-rotation / expiry reminders",
+  "wbSettings.cli.cap.modelSwitch": "Switch accounts when one model is rate-limited",
+  "wbSettings.cli.cap.usage": "Usage and cost per model",
+  "wbSettings.cli.cap.gatewayAccount": "Pin a specific account",
+  "wbSettings.cli.current": "Current",
+  "wbSettings.cli.enabled": "Enabled",
+  "wbSettings.cli.switchTo": "Switch to this mode",
+  "wbSettings.cli.recommended": "Recommended",
+  "wbSettings.cli.advanced": "Advanced",
+  "wbSettings.cli.advancedHint": "Default model · CLI-only key",
+  "wbSettings.cli.modelLabel": "Default model",
+  "wbSettings.cli.modelDesc": "Leave blank to let the CLI decide; pinning a model defeats half the point of per-model routing",
+  "wbSettings.cli.modelBlank": "Blank · let the CLI decide",
+  "wbSettings.cli.keyLabel": "CLI-only key",
+  "wbSettings.cli.keyDescGateway": "Created automatically on switch; revoke it from the gateway page",
+  "wbSettings.cli.keyDescDirect": "Only created when you switch to gateway mode",
+  "wbSettings.cli.rotateLabel": "Auto-rotation",
+  "wbSettings.cli.rotateDescGateway": "Account picking moved to the gateway; rotation would overwrite the gateway key each cycle, so it is off",
+  "wbSettings.cli.rotateOff": "Off",
+  "wbSettings.cli.conflictTitle": "settings.json already points at the local gateway ({url})",
+  "wbSettings.cli.conflictBody": "\"Direct upstream\" is unavailable: writing the upstream token would make the CLI send it to the gateway (401), and rotation rewrites it every cycle — intermittent failures. This is not an error; it is a guard rail.",
+  "wbSettings.cli.conflictAction": "Take over gateway config",
+  "wbSettings.cli.wizardGatewayTitle": "Switch to \"via local gateway\"?",
+  "wbSettings.cli.wizardDirectTitle": "Switch back to \"direct upstream\"?",
+  "wbSettings.cli.wizardIntro": "This rewrites ~/.codebuddy/settings.json:",
+  "wbSettings.cli.wizardGatewayCost1": "Write the gateway URL and a new key (listed as \"CodeBuddy CLI (gateway)\")",
+  "wbSettings.cli.wizardGatewayCost2": "Clear the existing upstream token and apiKeyHelper",
+  "wbSettings.cli.wizardGatewayCost3": "Turn off auto-rotation (account picking moves to the gateway)",
+  "wbSettings.cli.wizardDirectCost1": "Remove the gateway URL, the CLI-only key and the default model",
+  "wbSettings.cli.wizardDirectCost2": "Rewrite the upstream token for the current account (or restore apiKeyHelper)",
+  "wbSettings.cli.wizardDirectCost3": "Auto-rotation keeps your last setting (it will not be turned back on)",
+  "wbSettings.cli.wizardRestart": "Restart the terminal and CodeBuddy CLI afterwards — env is not hot-reloaded.",
+  "wbSettings.cli.wizardTokenKept": "The upstream token is only removed from settings; it stays in the account store — switching back needs no re-login.",
+  "wbSettings.cli.wizardCancel": "Cancel",
+  "wbSettings.cli.wizardConfirm": "Switch",
+  "wbSettings.cli.toastGateway": "Switched to the local gateway",
+  "wbSettings.cli.toastGatewayDesc": "A CLI-only key was created and auto-rotation turned off; restart the terminal and CLI",
+  "wbSettings.cli.toastDirect": "Switched back to direct upstream",
+  "wbSettings.cli.toastDirectDesc": "Gateway config cleared and upstream credentials rebuilt; restart the terminal and CLI",
+  "wbSettings.cli.toastFailed": "Switch failed",
+  "wbSettings.cli.loadFailed": "Could not read CLI status",
   "settings.subnav.diagnostics": "Permissions & diagnostics",
   "settings.subnav.logs": "Logs",
+  "settings.subnav.network": "Network",
   "settings.subnav.backup": "Backup & restore",
 
   // ---- Gateway workspace subnav (PLAN §3.9: 6 items, shared by both product lines) ----
@@ -424,6 +490,14 @@ export const en = {
   "appSettings.scopeVisibility.toggleAria": "Toggle visibility for {scope}",
   "appSettings.scopeVisibility.hint": "Hidden scopes disappear from the top bar and shortcuts; direct URLs remain accessible.",
   "appSettings.scopeVisibility.onlyOneLeft": "Only one scope left visible — cannot hide more",
+
+  // ---- Credit auto-refresh (app-settings.tsx; issue #133 review §3: upstream off by default) ----
+  "appSettings.creditAutoRefresh.groupTitle": "Credit auto-refresh",
+  "appSettings.creditAutoRefresh.upstreamLabel": "Query upstream automatically",
+  "appSettings.creditAutoRefresh.upstreamDesc":
+    "Queries upstream for balances and usage about every 10 minutes. These are real requests, so this is off by default — when off, data refreshes only on page load or when you click refresh.",
+  "appSettings.creditAutoRefresh.hint":
+    "Views that only re-read local snapshots (Trae credits / accounts) are unaffected: they make no upstream requests and keep following the background sync.",
 
   // ---- Shared fallbacks ----
   "common.unknownError": "Unknown error",

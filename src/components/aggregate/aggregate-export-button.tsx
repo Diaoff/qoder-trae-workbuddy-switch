@@ -41,7 +41,7 @@ import type { TraeAccount } from "@/lib/trae-types";
 import { AGGREGATE_SOURCES, aggregateDisplayName, type AggregateAccount } from "@/lib/aggregate-accounts";
 
 /** 一次导出的目标：一个作用域 + 该作用域下的账号。 */
-interface ExportTarget {
+export interface ExportTarget {
   scope: Scope;
   accounts: AggregateAccount[];
 }
@@ -132,40 +132,65 @@ export function AggregateExportButton({
         </DropdownMenuContent>
       </DropdownMenu>
 
-      {current?.accounts[0]?.platform === "trae" ? (
-        <TraeExportAccountsDialog
-          open={current !== null}
-          onOpenChange={(next) => {
-            if (!next) setCurrent(null);
-          }}
-          variant={traeVariantOf(current.scope)}
-          /* ⚠️ Trae 弹窗收的是**完整账号对象**（它自己算展示名，且导出文件键名是 `UserID`），
-             与通用弹窗的 `{id,label}` 形状不同 —— 两个弹窗本来就不同构。 */
-          accounts={current.accounts.map((account) => account.data as TraeAccount)}
-          onExported={onExported}
-        />
-      ) : current ? (
-        <ExportAccountsDialog
-          open={current !== null}
-          onOpenChange={(next) => {
-            if (!next) setCurrent(null);
-          }}
-          scope={current.scope}
-          accounts={current.accounts.map((account) => ({
-            /* 导出命令按平台分：WB 用 `id`、Trae 用 `userId`、Qoder / Loomy 用 `uid`。
-               ⚠️ 曾经这里是「非 WB 非 Qoder ⇒ 空串」的兜底 ⇒ 新增的 Loomy 会导出空 id。 */
-            id:
-              account.platform === "workbuddy"
-                ? account.data.id
-                : account.platform === "trae"
-                  ? account.data.userId
-                  : account.data.uid,
-            label: aggregateDisplayName(account),
-          }))}
-          onExported={onExported}
-        />
-      ) : null}
+      <AggregateExportDialog
+        target={current}
+        onOpenChange={(next) => {
+          if (!next) setCurrent(null);
+        }}
+        onExported={onExported}
+      />
     </>
+  );
+}
+
+/**
+ * 受控的导出弹窗（**单作用域**）。
+ *
+ * ## 为什么要单独导出这个组件（issue #89 · B9）
+ *
+ * 卡片「更多 → 导出账号」只有**一个**账号，而 `AggregateExportButton` 自带下拉与
+ * 「先选作用域」那一步 —— 把按钮塞进卡片菜单既不合版式，也没必要。
+ * 抽出受控弹窗后：工具栏按钮走「下拉 + 本组件」，卡片菜单走「直接传一个账号」，
+ * **两处复用同一套弹窗**（两个平台的导出弹窗本来就不同构，重写必然漂）。
+ */
+export function AggregateExportDialog({
+  target,
+  onOpenChange,
+  onExported,
+}: {
+  target: ExportTarget | null;
+  onOpenChange: (open: boolean) => void;
+  onExported?: (count: number) => void;
+}) {
+  if (!target) return null;
+  return target.accounts[0]?.platform === "trae" ? (
+    <TraeExportAccountsDialog
+      open
+      onOpenChange={onOpenChange}
+      variant={traeVariantOf(target.scope)}
+      /* ⚠️ Trae 弹窗收的是**完整账号对象**（它自己算展示名，且导出文件键名是 `UserID`），
+         与通用弹窗的 `{id,label}` 形状不同 —— 两个弹窗本来就不同构。 */
+      accounts={target.accounts.map((account) => account.data as TraeAccount)}
+      onExported={onExported}
+    />
+  ) : (
+    <ExportAccountsDialog
+      open
+      onOpenChange={onOpenChange}
+      scope={target.scope}
+      accounts={target.accounts.map((account) => ({
+        /* 导出命令按平台分：WB 用 `id`、Trae 用 `userId`、Qoder / Loomy 用 `uid`。
+           ⚠️ 这里曾经的兜底是空串 —— 新增平台（如 Loomy）会导出一份没有 id 的文件。 */
+        id:
+          account.platform === "workbuddy"
+            ? account.data.id
+            : account.platform === "trae"
+              ? account.data.userId
+              : account.data.uid,
+        label: aggregateDisplayName(account),
+      }))}
+      onExported={onExported}
+    />
   );
 }
 

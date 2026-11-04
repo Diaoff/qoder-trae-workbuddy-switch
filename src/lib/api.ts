@@ -77,9 +77,16 @@ import type {
   ExtClientId,
   ExtCopyItem,
   ExtCopyResponse,
+  SessionBundleExportReport,
+  SessionBundleImportReport,
+  SessionBundlePreview,
   ExtDiffResponse,
   ExtSessionsResponse,
   ExtSyncResponse,
+  FallbackPreview,
+  FallbackStats,
+  ModelFallbackView,
+  ScopeFallbackConfig,
   SwitchConfig,
   SwitchResult,
   TrashList,
@@ -172,6 +179,11 @@ const DEMO_READ_COMMANDS = new Set([
   "credits",
   "checkin_status",
   "get_codebuddy_cli_status", "get_codebuddy_cn_ide_status", "get_checkin_status",
+  // 模型降级链（P13）：`get` 与 `preview` 都是**只读**语义（preview 零副作用），
+  // 演示模式需要对应快照。
+  "get_model_fallback",
+  "preview_model_fallback",
+  "get_fallback_stats",
   // 编辑器内 CodeBuddy 插件（VS Code / JetBrains）的**只读**状态。
   // ⚠️ switch / detect 是动作（detect 会读本机 secret），一律不进这里。
   "get_vscode_codebuddy_plugin_status", "get_jetbrains_codebuddy_plugin_status",
@@ -187,7 +199,9 @@ const DEMO_READ_COMMANDS = new Set([
   "list_sessions", "list_session_replicas",
   // API 网关只读命令（演示站需返回虚构数据，否则 build:demo 报错）
   "get_gateway_config", "gateway_status", "list_api_keys", "get_gateway_models",
-  "get_account_strategy", "get_disabled_models", "get_gateway_logs",
+  // ⚠️ 图片能力**读取**只读，进演示面；`set_model_image_cap` 是写操作，**不进**（与禁用同款）。
+  "get_account_strategy", "get_disabled_models", "get_model_image_caps",
+  "get_gateway_logs",
   // 限流探测的只读状态命令（probe_status）：演示站需返回未跑过（phase=idle）的快照。
   // `probe_ledger` 是**只读**台账（跨重启的实测结论）：演示站返回空表（从未探过）。
   // ⚠️ probe_start / probe_cancel 是**写**操作（会真发上游请求 / 置取消位），一律不进这里。
@@ -198,6 +212,10 @@ const DEMO_READ_COMMANDS = new Set([
   "get_gateway_token_trend",
   // 账本视图（issue #63）：两个只读命令，演示站同样要虚构数据。
   "get_gateway_usage_dim", "get_usage_reconcile",
+  // 账本视图的平台补齐（Trae / Qoder 的网关账本，返回体与 WB 同形）。
+  "get_trae_gateway_usage_dim", "get_qoder_gateway_usage_dim",
+  // Trae 客户端账本（读用户自己导出的明文库）—— 演示站虚构一份「未导入」状态。
+  "probe_trae_client_db", "get_trae_client_token_stats", "get_trae_client_db_config",
   // Trae 分区只读命令（演示站需返回虚构数据，否则 build:demo 报错）。
   // 只登记**只读**命令：写操作（签到 / 增删账号 / 切换 / 重置设备…）一律不进这里，
   // 由 `DemoAction` 包裹后在演示模式下统一提示不可操作。
@@ -241,6 +259,13 @@ const DEMO_READ_COMMANDS = new Set([
   // 保存配置 / Key 三态 / 排除账号都是**写**，一律不进这里（由页面侧处理）。
   "get_loomy_gateway_config", "loomy_gateway_status", "get_loomy_gateway_models",
   "list_loomy_api_keys", "get_loomy_gateway_logs",
+  // issue #111 · 逐包链路（三条都只读；演示站要有数据，否则卡片指标行与浮层无法截图）。
+  // ⚠️ `qoder_web_window_cookies` 也登记：它只回「登录窗里有哪些 cookie（名称/条数/指纹）」，
+  //    零副作用、不打上游；不登记的话演示模式下前端轮询会抛「缺少只读数据」。
+  "qoder_credits", "qoder_web_credit_packs", "qoder_web_session_status",
+  "qoder_web_window_cookies",
+  // ⚠️ `qoder_web_proxy_set` 是写操作，**不进**这里（保存失败走页面错误提示）。
+  "qoder_web_proxy_get",
   // issue #47：逐账号「今日签到状态」（**只读**）。
   "qoder_checkin_status_map",
   "get_qoder_gateway_config", "qoder_gateway_status", "get_qoder_gateway_models",
@@ -319,6 +344,9 @@ const ROUTES: Record<string, Route> = {
   checkin_status: { method: "POST", path: "/api/checkin/status/query" },
   get_codebuddy_cli_status: { method: "GET", path: "/api/codebuddy-cli/status" },
   install_codebuddy_cli_helper: { method: "POST", path: "/api/codebuddy-cli/install-helper" },
+  // issue #109 §PR-2：一键把 CLI 切到本机网关（建 Key + 写 settings + 关轮换）。
+  codebuddy_cli_enable_gateway: { method: "POST", path: "/api/codebuddy-cli/enable-gateway" },
+  codebuddy_cli_disable_gateway: { method: "POST", path: "/api/codebuddy-cli/disable-gateway" },
   switch_codebuddy_cli_account: { method: "POST", path: "/api/codebuddy-cli/switch" },
   get_codebuddy_cn_ide_status: { method: "GET", path: "/api/codebuddy-cn-ide/status" },
   switch_codebuddy_cn_ide_account: { method: "POST", path: "/api/codebuddy-cn-ide/switch" },
@@ -341,6 +369,9 @@ const ROUTES: Record<string, Route> = {
   get_gateway_token_trend: { method: "GET", path: "/api/account/token-trend" },
   // 网关三维度（模型 / 账号 / 端点）逐日历史：账本视图的数据源（issue #63）。
   get_gateway_usage_dim: { method: "GET", path: "/api/account/usage-dim" },
+  // 同上，Trae / Qoder 各自的网关账本（`scope` 走 query）。
+  get_trae_gateway_usage_dim: { method: "GET", path: "/api/trae/gateway/usage-dim" },
+  get_qoder_gateway_usage_dim: { method: "GET", path: "/api/qoder/gateway/usage-dim" },
   // 今日客户端 ↔ 网关对账（只读、不落盘）：`region` 走 query。
   get_usage_reconcile: { method: "GET", path: "/api/account/usage-reconcile" },
   oauth_start: { method: "POST", path: "/api/oauth/start" },
@@ -385,6 +416,11 @@ const ROUTES: Record<string, Route> = {
   // ★ **破坏性写操作**（目标原有的分歧内容会被丢弃）⇒ 不进演示只读命令表。
   unify_session_replicas: { method: "POST", path: "/api/sessions/unify" },
   copy_sessions: { method: "POST", path: "/api/sessions/copy" },
+  // issue #87 · **会话导出 / 导入**（单文件 JSON 包）。
+  // 导出**只读**（只写用户选的落点文件）；导入是**加法写**（每条都生成新 id，不覆盖）。
+  export_sessions_bundle: { method: "POST", path: "/api/sessions/export" },
+  preview_sessions_bundle: { method: "GET", path: "/api/sessions/import/preview" },
+  import_sessions_bundle: { method: "POST", path: "/api/sessions/import" },
   // 客户端限流台账（**只读**观测：账号 × 模型 × 恢复时刻）。
   client_limits: { method: "GET", path: "/api/client/limits" },
   // Skill 管理（cc-switch 式）：清单 + 启停 + 跨区搬迁 + 本地导入。
@@ -490,6 +526,14 @@ const ROUTES: Record<string, Route> = {
   // 模型禁用偏好（P11）：GET 列表 / POST 置位·清位，同一路径两种方法（与 `/api/gateway/strategy` 同构）。
   get_disabled_models: { method: "GET", path: "/api/gateway/disabled-models" },
   set_model_disabled: { method: "POST", path: "/api/gateway/disabled-models" },
+  // 模型降级链（P13）：配置独立文件，保存即生效。
+  get_model_fallback: { method: "GET", path: "/api/gateway/model-fallback" },
+  save_model_fallback: { method: "POST", path: "/api/gateway/model-fallback" },
+  preview_model_fallback: { method: "POST", path: "/api/gateway/model-fallback/preview" },
+  get_fallback_stats: { method: "GET", path: "/api/gateway/fallback-stats" },
+  // 图片能力声明 / 覆盖（issue #101）：与上面两条同构 —— 同一路径两种方法。
+  get_model_image_caps: { method: "GET", path: "/api/gateway/model-image-caps" },
+  set_model_image_cap: { method: "POST", path: "/api/gateway/model-image-caps" },
   get_gateway_logs: { method: "GET", path: "/api/gateway/logs" },
   clear_gateway_logs: { method: "POST", path: "/api/gateway/logs/clear" },
   // 限流探测（账号 × 模型矩阵 · 一次性作业 + 轮询）：与 api.rs 路由、lib.rs 命令名三方一致。
@@ -516,6 +560,13 @@ const ROUTES: Record<string, Route> = {
   get_trae_account_token_today: { method: "GET", path: "/api/trae/account/token-today" },
   get_trae_credits: { method: "GET", path: "/api/trae/credits" },
   get_trae_token_statistics: { method: "GET", path: "/api/trae/token-stats" },
+  // 客户端账本（导入明文库）：探测 / 配置 / 读用量 / 存路径。
+  probe_trae_client_db: { method: "GET", path: "/api/trae/client-import/probe" },
+  get_trae_client_db_config: { method: "GET", path: "/api/trae/client-import/config" },
+  save_trae_client_db_path: { method: "POST", path: "/api/trae/client-import/path" },
+  // 内置解密：口令由用户输入，工具内部导出明文副本（`buddy-switch-vault`）。
+  unlock_trae_client_db: { method: "POST", path: "/api/trae/client-import/unlock" },
+  get_trae_client_token_stats: { method: "GET", path: "/api/trae/client-usage" },
   get_trae_logs: { method: "GET", path: "/api/trae/logs" },
   get_trae_profiles: { method: "GET", path: "/api/trae/profiles" },
   get_trae_settings: { method: "GET", path: "/api/trae/settings" },
@@ -600,6 +651,17 @@ const ROUTES: Record<string, Route> = {
   qoder_switch_account: { method: "POST", path: "/api/qoder/accounts/switch" },
   qoder_set_account_group: { method: "POST", path: "/api/qoder/accounts/group" },
   qoder_usage: { method: "GET", path: "/api/qoder/usage" },
+  // issue #111 · 网页端逐资源包明细。三条都是**桌面端专属**：headless 形态（Docker /
+  // npm CLI）没有 `Webview`，server 侧同名路由返回结构化「仅桌面端可用」，不返回空包列表。
+  qoder_web_login_open: { method: "POST", path: "/api/qoder/web/login-open" },
+  qoder_web_login_close: { method: "POST", path: "/api/qoder/web/login-close" },
+  qoder_web_credit_packs_probe: { method: "POST", path: "/api/qoder/web/credit-packs/probe" },
+  qoder_web_credit_packs: { method: "GET", path: "/api/qoder/web/credit-packs" },
+  qoder_web_session_status: { method: "GET", path: "/api/qoder/web/session/status" },
+  qoder_web_window_cookies: { method: "GET", path: "/api/qoder/web/session/window-cookies" },
+  qoder_web_session_logout: { method: "POST", path: "/api/qoder/web/session/logout" },
+  qoder_web_proxy_get: { method: "GET", path: "/api/qoder/web/proxy" },
+  qoder_web_proxy_set: { method: "POST", path: "/api/qoder/web/proxy" },
   // Qoder API 网关管理面（网关本体走独立端口 57895，见 src/pages/QoderApiServicePage）。
   // ⚠️ **一个监听、两个区域**：状态 / 清单两条按 `scope` 看对应的那本账号库（fail-closed）；
   //   配置与监听是否起来是两区域共用的事实（故 config 不带 scope）。
@@ -917,6 +979,38 @@ export function getCodebuddyCliStatus(): Promise<CodeBuddyCliStatus> {
 
 export function installCodebuddyCliHelper(): Promise<CodeBuddyCliInstallResult> {
   return call("install_codebuddy_cli_helper");
+}
+
+/**
+ * 把 CodeBuddy CLI 切到**本机网关**模式（issue #109 §PR-2）。
+ *
+ * 一次调用做三件事：建一把 CLI 专用网关 Key、写 `settings.json`（并清掉上游 token 与
+ * `apiKeyHelper`）、关掉自动轮换。**互斥**：与「接入 CLI / 切号」不能同时开
+ * （两条通道都往 settings 写凭据，混用会让 CLI 把上游 token 发到网关 ⇒ 401）。
+ */
+/**
+ * 从「走本机网关」切回**直连上游**（issue #109）。
+ *
+ * 会做两件事：清掉 settings 里的三个网关键、按当前账号重建直连凭据。
+ * **不会**自动重开自动轮换（切到网关时是被强制关掉的，但自动开启后台任务比自动关闭
+ * 更危险 —— 用户可能本来就因别的原因关着）⇒ 看 `rotateDisabled` 决定要不要提示。
+ */
+export function disableCodebuddyCliGateway(): Promise<{
+  ok: boolean;
+  changed?: boolean;
+  restored?: boolean;
+  rotateDisabled?: boolean;
+  message?: string;
+  error?: string;
+}> {
+  return call("codebuddy_cli_disable_gateway");
+}
+
+export function enableCodebuddyCliGateway(input: {
+  region?: string;
+  model?: string;
+}): Promise<{ ok: boolean; baseUrl?: string; message?: string; error?: string }> {
+  return call("codebuddy_cli_enable_gateway", input);
 }
 
 export function switchCodebuddyCliAccount(accountId: string): Promise<CodeBuddyCliSwitchResult> {
@@ -1384,6 +1478,29 @@ export function getGatewayUsageDim(region?: Region): Promise<GatewayUsageDim> {
 }
 
 /**
+ * Trae 的网关**逐日账本**（issue #63 的平台补齐）—— 返回体与 {@link getGatewayUsageDim} 同形。
+ *
+ * `scope` 是**区域档**（`cn` / `global` / `unlabeled` / `all`），`unlabeled` = 早于
+ * `variant` 字段的旧日志（单列一档，不并入任何区域）。
+ * ⚠️ `all` 的合并**在后端**做：Trae 有三档，前端逐档取再递归合并容易漏一档。
+ * ⚠️ 只读；`days` 只含落库日（缺日 = 未记录，不是 0）。
+ */
+export function getTraeGatewayUsageDim(scope?: string): Promise<GatewayUsageDim> {
+  return call<GatewayUsageDim>(
+    "get_trae_gateway_usage_dim",
+    scope ? { scope } : undefined,
+  );
+}
+
+/** Qoder 的网关逐日账本 —— 与 {@link getTraeGatewayUsageDim} 同一形状与口径。 */
+export function getQoderGatewayUsageDim(scope?: string): Promise<GatewayUsageDim> {
+  return call<GatewayUsageDim>(
+    "get_qoder_gateway_usage_dim",
+    scope ? { scope } : undefined,
+  );
+}
+
+/**
  * 今日**客户端 ↔ 网关对账**（只读、不落盘）。
  *
  * 回答「两本账重叠多少」：`matched` 条能在两边对上，`estimate = 客户端 + 网关 − 重叠`。
@@ -1524,6 +1641,50 @@ export function copyExtSessions(
   items: ExtCopyItem[],
 ): Promise<ExtCopyResponse> {
   return call("copy_vscode_sessions", { client, sourceUid, targetUid, items });
+}
+
+/**
+ * issue #87 · **导出会话**成一个 JSON 包（**只读**：不碰客户端数据）。
+ *
+ * 包是单个 `.json` 而不是 zip —— 本仓不为一个搬运功能引入解压攻击面（见后端
+ * `session_bundle` 模块头）。体积约为正文的两倍（JSON 转义），换来的是**人可读、
+ * 可 diff、可用任何工具检查**。
+ *
+ * `outPath` 由前端用系统「另存为」对话框拿到（后端不弹窗）。
+ */
+export function exportSessionsBundle(
+  outPath: string,
+  options: { uid?: string; sessionIds?: string[]; region?: string } = {},
+): Promise<SessionBundleExportReport> {
+  return call("export_sessions_bundle", {
+    outPath,
+    uid: options.uid,
+    sessionIds: options.sessionIds ?? [],
+    region: options.region,
+  });
+}
+
+/**
+ * issue #87 · **预览导出包**（只读）：条数 + 前 50 条的标题。
+ *
+ * 导入是写操作，所以先让用户看一眼「这个包里到底有什么」，再决定要不要导。
+ */
+export function previewSessionsBundle(path: string): Promise<SessionBundlePreview> {
+  return call("preview_sessions_bundle", { path });
+}
+
+/**
+ * issue #87 · **导入导出包**：把包里的会话**作为新会话**写进 `uid`。
+ *
+ * ★ **只做加法**：每条都生成新 id，绝不覆盖既有会话。同一份包导两次 ⇒ 两份副本
+ * （**不静默去重** —— 「我以为覆盖了，结果两份」比「我以为合并了，结果只有一份」更难查）。
+ * 逐条结果在 `imported[]` / `failed[]` 里，失败必带原因。
+ */
+export function importSessionsBundle(
+  path: string,
+  options: { uid?: string; region?: string } = {},
+): Promise<SessionBundleImportReport> {
+  return call("import_sessions_bundle", { path, uid: options.uid, region: options.region });
 }
 
 /**
@@ -2497,6 +2658,65 @@ export function setModelDisabled(
   return call("set_model_disabled", { scope, modelId, disabled });
 }
 
+/* ── 模型降级链（P13）──────────────────────────────────────────────
+   `preview` 是**纯计算**：后端只读闸门与禁用表，不写、不领探针票、不发上游请求。
+   前端用它做「模拟路径」，让用户不必先保存再等一次真实失败。 */
+
+export function getModelFallback(scope: Scope): Promise<ModelFallbackView> {
+  return call("get_model_fallback", { scope });
+}
+
+export function saveModelFallback(
+  scope: Scope,
+  config: ScopeFallbackConfig,
+): Promise<ModelFallbackView> {
+  return call("save_model_fallback", { scope, config });
+}
+
+export function getFallbackStats(scope: Scope, days = 7): Promise<FallbackStats> {
+  return call("get_fallback_stats", { scope, days });
+}
+
+export function previewModelFallback(
+  scope: Scope,
+  from: string,
+  targets: string[],
+): Promise<FallbackPreview> {
+  return call("preview_model_fallback", { scope, from, targets });
+}
+
+/**
+ * 读取某**作用域**的图片能力覆盖（issue #101）。
+ *
+ * 形状 `{ scope, caps }`：`caps` 只包含**用户手动指定过**的模型（`true` = 支持图片输入）。
+ * 缺失的键 = 跟随上游声明（**不是**「不支持」）—— 三态语义见 `lib/model-image.ts`。
+ */
+export function getModelImageCaps(
+  scope: Scope,
+): Promise<{ scope: Scope; caps: Record<string, boolean> }> {
+  return call("get_model_image_caps", { scope });
+}
+
+/**
+ * 指定 / 清除某作用域一个模型的图片能力覆盖（issue #101）。
+ *
+ * `supports`：`true` / `false` = 手动指定；**`null` = 还原上游声明**（后端删键，不是写 `false`）。
+ * 后端幂等：重复写同值返回 `changed: false`。
+ */
+export function setModelImageCap(
+  scope: Scope,
+  modelId: string,
+  supports: boolean | null,
+): Promise<{
+  ok: boolean;
+  scope: Scope;
+  model_id: string;
+  supports: boolean | null;
+  changed: boolean;
+}> {
+  return call("set_model_image_cap", { scope, modelId, supports });
+}
+
 export function getGatewayLogs(): Promise<{ logs: GatewayLogEntry[] }> {
   return call("get_gateway_logs");
 }
@@ -2863,6 +3083,136 @@ export function getTraeTokenStatistics(
   if (days !== undefined) args.days = days;
   if (scope !== undefined) args.scope = scope;
   return call("get_trae_token_statistics", Object.keys(args).length > 0 ? args : undefined);
+}
+
+/**
+ * 「客户端账本」= 读**用户自己导出的明文库**（Trae 的对话库是 SQLCipher 加密的，
+ * 本工具不内置解密 —— 见 `trae/client_import.rs` 的模块头）。
+ *
+ * 返回体是**判别式**的，前端必须按 `error.code` 分支，不能一律当「空数据」：
+ * - `{ configured: false }` —— 还没指定明文库（不是「这段没用量」）
+ * - `{ error: { code } }` —— 指定了但读不了（五种原因各自有文案）
+ * - `{ source: "trae-client", summary, ... }` —— 正常统计（与网关统计同形）
+ */
+export interface TraeClientImportError {
+  code: "missing" | "not_plaintext" | "unrecognized" | "no_usage" | "io";
+  message: string;
+}
+
+/** `probe_trae_client_db` 的返回：探测一个明文库能否读（不保存配置）。 */
+export interface TraeClientProbe {
+  ok: boolean;
+  path: string;
+  error?: TraeClientImportError;
+  /** 库里实际存在的表名 —— 认不出结构时**必须**回显，否则用户无法反馈适配。 */
+  tables: string[];
+  detected?: {
+    messagesTable: string;
+    textColumn: string;
+    timeColumn: string;
+    usageMode: string;
+    sessionColumn?: string | null;
+    modelColumn?: string | null;
+    sampleRows?: number;
+    usageHint?: boolean;
+    sessionsEstimated?: boolean;
+    truncated?: boolean;
+  };
+  /**
+   * 计数。⚠️ **可选**：`Unrecognized` / `NotPlaintext` 分支根本走不到统计，
+   * 后端不会给这一格 ⇒ 前端必须判空（写 `counts.sessions` 会在失败时炸）。
+   */
+  counts?: {
+    sessions: number;
+    messages: number;
+    withUsage: number;
+    credits: number;
+    /**
+     * 一行里含**多份 usage** 的行数。
+     *
+     * `> 0` ⇒ 这些行按累加计算，若那些 usage 属于同一段对话的历史轮次，统计值会偏大。
+     * 后端会在 `note` 里逐字披露；前端也该让用户看得见（不要当成正常数据静默显示）。
+     */
+    multiUsageRows?: number;
+  };
+}
+
+/** `get_trae_client_db_config` 的返回。`exists: false` = 路径还在但文件没了。 */
+export interface TraeClientConfig {
+  path: string | null;
+  exists: boolean;
+}
+
+/** 内置解密的错误分类（与 `buddy-switch-vault::VaultError` 一一对应）。 */
+export interface TraeVaultError {
+  code: "missing" | "already_plaintext" | "wrong_key" | "not_sqlite" | "io";
+  message: string;
+}
+
+/** `unlock_trae_client_db` 的返回。 */
+export interface TraeUnlockResult {
+  ok: boolean;
+  /** `decrypted` = 口令对且已导出明文副本；`plaintext` = 你给的本来就是明文，直接用它。 */
+  mode?: "decrypted" | "plaintext";
+  /** 生效的 `cipher_compatibility`（4 新库 / 3 老库）。 */
+  compatibility?: number;
+  tables?: string[];
+  /** 最终被设为数据源的路径（`decrypted` 时是固定落点，不是用户选的那个）。 */
+  path?: string;
+  /** 解锁后顺带跑的探测（与 {@link probeTraeClientDb} 同形）。 */
+  probe?: TraeClientProbe;
+  error?: TraeVaultError;
+}
+
+/**
+ * 用口令把**加密的** Trae 对话库导出成明文副本，并设为客户端账本的数据源。
+ *
+ * ⚠️ 口令必须由你自己提供：它由 Trae 的 native 进程持有、磁盘上没有副本，
+ * 本工具不内置任何提取手段（不解密「别人给你的密文」，只解「你自己的库」）。
+ *
+ * 若传入的本来就是明文库，后端**不会**做无谓的解密与复制，直接返回 `mode: "plaintext"`。
+ */
+export function unlockTraeClientDb(
+  path: string,
+  passphrase: string,
+): Promise<TraeUnlockResult> {
+  return call("unlock_trae_client_db", { path, passphrase });
+}
+
+/** 探测一个明文库（「校验」按钮）。 */
+export function probeTraeClientDb(path: string): Promise<TraeClientProbe> {
+  return call("probe_trae_client_db", { path });
+}
+
+/** 已保存的导入路径。 */
+export function getTraeClientDbConfig(): Promise<TraeClientConfig> {
+  return call("get_trae_client_db_config");
+}
+
+/** 保存 / 清除导入路径（`path = null` 即清除）。 */
+export function saveTraeClientDbPath(
+  path: string | null,
+): Promise<{ ok: boolean; path: string | null }> {
+  return call("save_trae_client_db_path", { path });
+}
+
+/**
+ * 客户端账本用量（读导入的明文库）。
+ *
+ * 与 {@link getTraeTokenStatistics} **同形**（`source` 为 `"trae-client"`），
+ * 因此前端两个源可以共用同一套图表适配；差别只在「读的是哪本账」。
+ */
+export function getTraeClientTokenStats(
+  days?: number,
+  scope?: TraeTokenScope,
+): Promise<TraeTokenStatistics & { configured?: boolean; error?: TraeClientImportError }> {
+  const args: Record<string, unknown> = {};
+  if (days !== undefined) args.days = days;
+  if (scope !== undefined) args.scope = scope;
+  return call(
+    "get_trae_client_token_stats",
+    Object.keys(args).length > 0 ? args : undefined,
+  );
 }
 
 /**
@@ -3583,6 +3933,185 @@ export function qoderProPackClaim(
   uid: string,
 ): Promise<QoderProPackClaimResult> {
   return call<QoderProPackClaimResult>("qoder_pro_pack_claim", { scope, uid });
+}
+
+// ---------------------------------------------------------------------------
+// issue #111 · Qoder 网页端逐资源包明细
+// ---------------------------------------------------------------------------
+//
+// ⚠️ 这三条**仅桌面端可用**：逐包数据在网页端私有接口，只认浏览器登录后的会话
+// Cookie，而只有 Tauri 的 `Webview::cookies()` 能读到它。headless 形态（Docker /
+// npm CLI / 裸二进制）调用会得到结构化的「仅桌面端可用」错误 —— 那**不是**「该账号
+// 没有资源包」，两者不得混为一谈。
+
+/** 逐包探针结果（认领会话 + 取一次明细；`raw` 是上游原始响应，不含 Cookie）。 */
+export interface QoderWebCreditProbe {
+  /** 是否拿到了会话（`window` 现读 / `staged` 关窗前暂存 / `stored` 缓存）。 */
+  hasSession: boolean;
+  /** 会话来源：登录窗现读 / 关窗前暂存 / 本地缓存 / 无。 */
+  source?: "window" | "staged" | "stored" | "none";
+  cookieCount: number;
+  /** 只给名称，**不含值**（Cookie 等价于完整身份凭据）。 */
+  cookieNames: string[];
+  /** 会话归属者是否与 `uid` 一致；不一致 ⇒ 明细必须丢弃。 */
+  uidMatches?: boolean;
+  /** 响应形状摘要（分组名 / 行数 / 行内键名），不含额度数值。 */
+  shape?: unknown;
+  /** 解析后的资源包（S3，字段映射由真样本锚定）。 */
+  packs?: QoderCreditPack[];
+  /** 上游原始响应（仅探针返回）。 */
+  raw?: unknown;
+  message?: string;
+}
+
+/** 打开（或前置）Qoder 网页端登录窗，供用户登录一次。 */
+export function qoderWebLoginOpen(
+  scope: Scope,
+): Promise<{ opened: boolean; url: string }> {
+  return call<{ opened: boolean; url: string }>("qoder_web_login_open", { scope });
+}
+
+/** 关闭 Qoder 网页端登录窗（已关闭 ⇒ `closed=false`，不报错）。 */
+export function qoderWebLoginClose(): Promise<{ closed: boolean }> {
+  return call<{ closed: boolean }>("qoder_web_login_close", {});
+}
+
+/** 收割会话 Cookie 并探一次逐包接口（取证；命中即缓存，供下次免登录）。 */
+export function qoderWebCreditPacksProbe(
+  scope: Scope,
+  uid: string,
+): Promise<QoderWebCreditProbe> {
+  return call<QoderWebCreditProbe>("qoder_web_credit_packs_probe", { scope, uid });
+}
+
+/** 网页会话状态（前端据此决定显示「登录」还是「已登录 / 需重新登录」）。 */
+export interface QoderWebSessionStatus {
+  /** 有新鲜且 uid 匹配的会话。 */
+  hasSession: boolean;
+  /** 有缓存但已过期或换过账号 ⇒ 该引导重新登录，而非当作「已登录」。 */
+  expired: boolean;
+  /**
+   * 有会话但**还没被 uid 认领**（关窗前刚收割到）。
+   *
+   * ★ 这是「登录完关窗、还没探过一次」这个真实时刻的状态：此时 `hasSession` 仍是 false，
+   * 但用户已经登录了 —— 界面必须给「读取逐包」而不是再说一次「去登录」。
+   */
+  pending?: boolean;
+  source: "window" | "staged" | "stored" | "none";
+  cookieNames: string[];
+  savedAtMs: number;
+  verifiedAtMs: number;
+}
+
+/**
+ * 登录窗里现有的 Cookie（**只有名称 / 条数 / 指纹，没有值**）。
+ *
+ * 用途：前端轮询它来判断「用户是否已经在窗口里登录完」。为什么不轮询 probe ——
+ * probe 一旦拿到非空 Cookie 就会真打上游，未登录时的匿名 Cookie 换来 401，
+ * 401 又会清缓存，40 次轮询就是一串注定失败的请求 + 反复抹掉刚写的缓存。
+ */
+export interface QoderWebWindowCookies {
+  /** 登录窗当前是否开着。 */
+  windowOpen: boolean;
+  cookieCount: number;
+  cookieNames: string[];
+  /** 集合指纹（不可逆）；空串 = 窗口没开 / 还没读到。变了即「登录态可能变了」。 */
+  fingerprint: string;
+}
+
+/** 一个 Qoder 资源包（积分包）。字段名与上游 snake_case 逐字对应。 */
+export interface QoderCreditPack {
+  group: string;
+  id?: string;
+  source?: string;
+  status?: string;
+  limit: number;
+  used: number;
+  remaining: number;
+  unit?: string;
+  usagePercentage: number;
+  isActive: boolean;
+  /** 毫秒；缺省 = 无到期时间（上游 `expires_at = 0`）。 */
+  expiresAtMs?: number;
+}
+
+/** 逐包汇总（后端算好，前端只显示）。 */
+export interface QoderPackSummary {
+  /** 有额度的包数（`limit > 0`）。 */
+  count: number;
+  /** 额度为 0 的占位条目数（套餐条目）。 */
+  zeroCount: number;
+  limit: number;
+  used: number;
+  remaining: number;
+}
+
+/** 「拿不到逐包」的原因 —— 前端按它选文案，不要统一显示「出错了」。 */
+export type QoderPacksUnavailableReason =
+  | "no_session"
+  | "session_expired"
+  | "session_mismatch"
+  | "upstream";
+
+export interface QoderWebCreditPacks {
+  available: boolean;
+  reason?: QoderPacksUnavailableReason;
+  message?: string;
+  packs: QoderCreditPack[];
+  summary?: QoderPackSummary;
+  verifiedAtMs?: number;
+}
+
+/** 读已缓存的网页会话取逐包明细（不弹登录窗；拿不到时给结构化原因）。 */
+export function qoderWebCreditPacks(
+  scope: Scope,
+  uid: string,
+): Promise<QoderWebCreditPacks> {
+  return call<QoderWebCreditPacks>("qoder_web_credit_packs", { scope, uid });
+}
+
+/** 查询网页会话状态（只读）。 */
+export function qoderWebSessionStatus(
+  scope: Scope,
+  uid: string,
+): Promise<QoderWebSessionStatus> {
+  return call<QoderWebSessionStatus>("qoder_web_session_status", { scope, uid });
+}
+
+/** 逐包取数的出站代理配置（两个区域各一个 URL；空 = 直连）。 */
+export interface QoderWebProxyConfig {
+  /** 国内版。缺省直连，一般不用填。 */
+  cn: string;
+  /** 国际版。国内网络直连会被上游按 IP 拦下 ⇒ 通常要填。 */
+  global: string;
+}
+
+/** 读逐包出站代理配置（只读）。 */
+export function qoderWebProxyGet(): Promise<QoderWebProxyConfig> {
+  return call<QoderWebProxyConfig>("qoder_web_proxy_get", {});
+}
+
+/** 保存逐包出站代理配置（两个 URL 都先过后端形状校验）。 */
+export function qoderWebProxySet(
+  config: QoderWebProxyConfig,
+): Promise<{ ok: boolean; config: QoderWebProxyConfig }> {
+  return call("qoder_web_proxy_set", { config });
+}
+
+/**
+ * 读登录窗里现有的 Cookie **名称与条数**（只读、不打上游）。
+ *
+ * 登录窗开着时轮询它：`fingerprint` 变化 ⇒ 用户在窗口里登录完了 ⇒ 再调一次
+ * {@link qoderWebCreditPacksProbe} 认领会话。副作用：后端会顺手把这份 Cookie
+ * 暂存在内存里，于是渲染路径（{@link qoderWebCreditPacks}）立刻就能用上它。
+ */
+export function qoderWebWindowCookies(scope: Scope): Promise<QoderWebWindowCookies> {
+  return call<QoderWebWindowCookies>("qoder_web_window_cookies", { scope });
+}
+
+/** 清除本地网页会话（「退出网页登录」；幂等）。 */
+export function qoderWebSessionLogout(scope: Scope): Promise<{ cleared: boolean }> {
+  return call<{ cleared: boolean }>("qoder_web_session_logout", { scope });
 }
 
 /** 限额护栏视图（`GET /api/qoder/gateway/quota`）。 */

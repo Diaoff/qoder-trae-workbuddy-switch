@@ -143,6 +143,13 @@ export interface GatewayDimEntry {
   account?: string;
   /** `endpoints[]` 的键（空串 = 未记录端点）。 */
   endpoint?: string;
+  /**
+   * `keys[]` 的键 —— `{keyScope}:{keyId}` / `__legacy__` / `__none__`。
+   *
+   * 判据与后端 `token_daily::key_bucket_of` 逐字相同；解析与命名只在
+   * `src/lib/key-usage.ts` 一处做（别在视图里再拆一次冒号）。
+   */
+  key?: string;
   input: number;
   output: number;
   total: number;
@@ -164,14 +171,27 @@ export interface GatewayUsageDimDay {
   models: GatewayDimEntry[];
   accounts: GatewayDimEntry[];
   endpoints: GatewayDimEntry[];
+  /**
+   * 按**调用方密钥**的维度（v4 才有的第四维）。
+   *
+   * ⚠️ 升级前的日期里是**空数组**（= 那时候还没这个维度），不是「用量为 0」。
+   * 两者在 UI 上必须分开表述 —— 空数组画成 0 会让用户以为那些天没人用过。
+   */
+  keys: GatewayDimEntry[];
+  /**
+   * 该日的**密钥**维度是从中间开始记的（v3 → v4 播种）⇒ 只是**下界**。
+   *
+   * 与 `partial` 分开：`partial` 说的是模型/账号/端点。
+   */
+  keysPartial: boolean;
 }
 
 /**
- * `get_gateway_usage_dim` 的返回 —— 网关三维度逐日历史。
+ * `get_gateway_usage_dim` 的返回 —— 网关四维度逐日历史。
  *
  * ⚠️ 与 `get_gateway_token_trend` **同源同形状**：`days` 只含落库日
  * ⇒ **缺日 = 未记录，不是 0**；join 窗口后必须算覆盖率并披露。
- * ⚠️ 三条维度的合计**都等于**当日的网关 token 总量（同一次聚合、同一水位线）。
+ * ⚠️ 四条维度的合计**都等于**当日的网关 token 总量（同一次聚合、同一水位线）。
  */
 export interface GatewayUsageDim {
   date: string;
@@ -329,6 +349,13 @@ export interface Session {
   hasHistory: boolean;
   /** WorkBuddy playground（侧栏「任务」）；缺省视为空间会话。 */
   isPlayground?: boolean;
+  /**
+   * ★ issue #147：该会话是**某次复制的产物**（复制账本里有它的血缘）。
+   *
+   * 只在「db 读不到、退回 jsonl 反扫」时由后端给出（`degraded` 同源）。这类条目
+   * 默认**不勾选**：再复制一代只会让 `projects/` 下的 jsonl 数量翻倍。
+   */
+  isCopy?: boolean;
 }
 
 /**
@@ -422,6 +449,60 @@ export interface ExtCopyResponse {
   errors: Array<{ workspaceHash: string; conversationId: string; error: string }>;
   copiedCount: number;
   failCount: number;
+}
+
+/**
+ * issue #87 · **会话导出**报告。
+ *
+ * `skipped` 里的每一条都有原因 —— 导出不做「静默少几条」：用户勾了 10 个、只出去 8 个，
+ * 必须当场看见少了哪两个、为什么。
+ */
+export interface SessionBundleExportReport {
+  /** 落盘路径（用户用「另存为」选的）。 */
+  path: string;
+  /** 真正写进包里的会话数。 */
+  exported: number;
+  /** 跳过的会话（找不到正文 / 不在 projects/ 下 / 读失败）。 */
+  skipped: Array<{ id: string; reason: string }>;
+  /** 包体积（字节）。 */
+  bytes: number;
+}
+
+/** issue #87 · **导出包预览**（导入前给用户确认）。 */
+export interface SessionBundlePreview {
+  kind: string;
+  schema: number | null;
+  exportedAt: string | null;
+  /** 导出端所在的区域（`cn` / `global`）—— 只作参考，导入按当前账号的区域写。 */
+  region: string | null;
+  count: number;
+  /** 前 50 条（`count` 可能更大）。 */
+  sessions: Array<{
+    title: string | null;
+    sourceCid: string | null;
+    workspace: string | null;
+    /** 包里是否带索引行（不带 ⇒ 导入只写正文，客户端列表里可能看不到）。 */
+    hasRow: boolean;
+  }>;
+}
+
+/**
+ * issue #87 · **会话导入**报告。
+ *
+ * ★ **只做加法**：每条都生成新 id，绝不覆盖既有会话；同一份包导两次就是两份副本
+ * （不静默去重 —— 「我以为覆盖了，结果两份」比「我以为合并了，结果只有一份」更难查）。
+ */
+export interface SessionBundleImportReport {
+  imported: Array<{
+    sourceCid: string;
+    /** 新会话 id（带连字符的 UUID）。 */
+    newId: string;
+    /** 是否写了索引行；`false` = 包里没带行，只写了正文。 */
+    rowWritten: boolean;
+  }>;
+  failed: Array<{ sourceCid: string; error: string }>;
+  importedCount: number;
+  failedCount: number;
 }
 
 /**
@@ -529,6 +610,16 @@ export interface SessionReplicaBaseline {
 export interface SessionReplicaContent {
   status: "latest" | "behind" | "diverge" | "unknown";
   commonPrefix: number | null;
+  /**
+   * ★ issue #141：`commonPrefix` 是**精确值**还是**下界**。
+   *
+   * 逐行 hash 只覆盖前 512 行（`PREFIX_HASH_LIMIT`）⇒ 长会话在窗口之外分叉时，
+   * 后端只能保证「至少 512 行相同」，**具体多少不知道**。此时为 `false`，界面必须说
+   * 「至少 N 条」——说成「N 条」就是拿窗口上限冒充真值。
+   *
+   * 旧后端没有这个字段 ⇒ 前端按 `false` 处理（保守）。
+   */
+  commonPrefixExact?: boolean;
   deltas: Record<string, number>;
   latestLineCount: number | null;
   sinceBaseline: Record<string, number | null>;
@@ -1365,7 +1456,7 @@ export interface TokenStatsTotals { total: number; input: number; output: number
  * 而不是 0（0 = 真的没消耗，`—` = 不知道，两者不能混）。
  */ credit?: number | null; }
 export interface TokenStatsGroup extends TokenStatsTotals { key: string; title?: string | null; project?: string; sessionId?: string; /** ★ 仅 `sessions[]` 携带：会话**逐日拆分**（窗口切片的素材，键 `YYYY-MM-DD`）。旧后端缺省 ⇒ 前端按全时口径回落（见 `sessionPoints`）。 */ daily?: TokenStatsGroup[]; }
-export interface TokenStatsSource { source: "workbuddy" | "codebuddy-cli" | "codebuddy-ide" | "workbuddy-ai" | "trae-gateway"; summary: TokenStatsTotals; models: TokenStatsGroup[]; projects: TokenStatsGroup[]; sessions: TokenStatsGroup[]; daily: TokenStatsGroup[]; /** Optional model-specific daily series for trend filtering. */ dailyByModel?: Record<string, TokenStatsGroup[]>; hours: TokenStatsGroup[]; filesScanned: number; parseErrors: number; coverageStartAt?: number | null; coverageEndAt?: number | null; }
+export interface TokenStatsSource { source: "workbuddy" | "codebuddy-cli" | "codebuddy-ide" | "workbuddy-ai" | "trae-gateway" | "trae-client"; summary: TokenStatsTotals; models: TokenStatsGroup[]; projects: TokenStatsGroup[]; sessions: TokenStatsGroup[]; daily: TokenStatsGroup[]; /** Optional model-specific daily series for trend filtering. */ dailyByModel?: Record<string, TokenStatsGroup[]>; hours: TokenStatsGroup[]; filesScanned: number; parseErrors: number; coverageStartAt?: number | null; coverageEndAt?: number | null; }
 export interface TokenStatistics { /** 查询范围（后端返回：cn / global / all）；缺省兼容旧后端。 */ region?: RegionFilter; generatedAt: number; rangeDays?: number | null; sources: TokenStatsSource[]; }
 
 export interface CodeBuddyCliStatus {
@@ -1383,6 +1474,13 @@ export interface CodeBuddyCliStatus {
   activeAccountName: string | null;
   accountCount: number;
   statePath: string;
+  /**
+   * CLI 是否已被指向**本机网关**（issue #109）。
+   *
+   * 非 `null` = 已走网关（值就是命中的 URL）⇒「接入 CLI / 切号」会被后端拒绝、
+   * 自动轮换会跳过。界面据此把控件置灰并说明原因，而不是让用户点了才看到报错。
+   */
+  gatewayMode?: string | null;
 }
 
 export interface CodeBuddyCliSwitchResult {
@@ -1631,6 +1729,135 @@ export interface GatewayConfig {
   per_key_rate_limit?: number | null;
   /** 上下文上限策略（默认 true）：清单声明上游上限窗口；false ⇒ 默认窗口。 */
   max_context: boolean;
+  /**
+   * ★ issue #129：**账号故障时自动切换**（默认 `false`）。
+   *
+   * 开启后，流中途的账号级失败不再被「补终止标记」伪装成成功，而是先发一条
+   * **可重试**的错误帧（含 `HTTP 429` / `HTTP 502`）；失败账号同时写冷却、解绑粘性
+   * ⇒ 客户端整步重跑时必然落到另一个号。
+   */
+  auto_failover: boolean;
+}
+
+/* ─────────── 模型降级链（P13）───────────
+   与后端 `crates/buddy-switch-gateway/src/model_fallback.rs` 逐字对应。
+   ★ 备选的**健康态由后端派生**（`TargetView.state`），前端不自己算 ——
+     否则卡片上的点和账号池里的点会在两个时刻各自计算，出现「这边绿那边黄」。 */
+
+/** 可触发降级的上游事件（**白名单**）。 */
+export type FallbackTrigger =
+  | "gate"
+  | "model_rate"
+  | "model_blocked"
+  | "server"
+  | "timeout"
+  | "not_found";
+
+/** 备选模型的实时健康态。 */
+export type FallbackTargetState = "healthy" | "gated" | "disabled" | "unknown";
+
+export interface FallbackTargetView {
+  model: string;
+  /** 该目标所在的作用域（`wb-cn` / `wb-global` / `trae-cn` …）。 */
+  scope: string;
+  state: FallbackTargetState;
+  /** 闸门剩余秒数（仅 `state === "gated"` 时有值）。 */
+  gated_for_secs: number | null;
+  /**
+   * 目标相对主模型**缺**的能力（目前只有 `"image"`）。
+   * 只表达「主模型明确支持、目标明确不支持」，任一侧未知就不写。
+   */
+  caps_lost: string[];
+}
+
+export interface FallbackChainView {
+  from: string;
+  targets: FallbackTargetView[];
+  triggers: FallbackTrigger[];
+  enabled: boolean;
+}
+
+/** 一条降级事件（进程内环形缓冲，**不落盘、不参与统计**）。 */
+export interface FallbackEvent {
+  /** 作用域（`wb-cn` / `trae-cn` …）：流水按作用域分，不混三个平台。 */
+  scope: string;
+  at_ms: number;
+  from: string;
+  path: string[];
+  /** 触发原因的稳定标识（`model_gate` / `model_rate` / …）。 */
+  reason: string;
+  account: string;
+  ms: number;
+  result: "degraded" | "failed" | "blocked";
+}
+
+/** `get_model_fallback` / `save_model_fallback` 的返回。 */
+export interface ModelFallbackView {
+  scope: string;
+  enabled: boolean;
+  chains: FallbackChainView[];
+  /** 生效上限（含主模型共 `max_targets + 1` 跳）。 */
+  max_targets: number;
+  /** 基线触发条件：卡片上**只标注超出这部分**的增量。 */
+  baseline: FallbackTrigger[];
+  /** 最近的降级事件（新的在前）。只有最近 N 条，**不是统计口径**。 */
+  events: FallbackEvent[];
+}
+
+/** 保存时的提交形状（与后端 `ScopeFallback` 一致）。 */
+/**
+ * 一个备选目标：**哪个作用域**的**哪个模型**。
+ *
+ * `scope` 省略 / `null` = 与入口同作用域（绝大多数情况）。
+ * 显式指定时可以跨区域（`wb-cn` → `wb-global`）—— 同平台跨区域在 WB 中继里
+ * 靠「换 region」实现，协议一致；跨平台（`wb-cn` → `trae-cn`）暂不支持执行，
+ * 卡片会按 `scope` 标注。
+ */
+export interface FallbackTargetInput {
+  scope?: string | null;
+  model: string;
+}
+
+export interface ScopeFallbackConfig {
+  enabled: boolean;
+  chains: Record<
+    string,
+    { targets: FallbackTargetInput[]; triggers: FallbackTrigger[]; enabled: boolean }
+  >;
+}
+
+/** 某个本地日的降级计数。 */
+export interface FallbackDayCount {
+  date: string;
+  degraded: number;
+  failed: number;
+}
+
+/**
+ * 近 N 天的降级统计（来自**落盘账本**，不是环形缓冲）。
+ *
+ * `total` 只统计 `degraded` + `failed` —— `blocked`（按规则没降级）不进分母，
+ * 否则「成功率」会把压根没降级的事故算进去。
+ */
+export interface FallbackStats {
+  scope: string;
+  days: FallbackDayCount[];
+  total: { degraded: number; failed: number };
+}
+
+/** 预演的一步。 */
+export interface FallbackPreviewStep {
+  model: string;
+  role: "primary" | "target";
+  action: "try" | "skip_disabled" | "skip_gated";
+  gated_for_secs: number | null;
+}
+
+/** `preview_model_fallback` 的返回（纯计算，零副作用）。 */
+export interface FallbackPreview {
+  ok: boolean;
+  scope: string;
+  steps: FallbackPreviewStep[];
 }
 
 /**
@@ -1650,7 +1877,12 @@ export interface GatewayStatus {
   port: number;
   /** 是否允许非回环（局域网）监听。 */
   allowNonLoopback: boolean;
-  /** 后端返回的 Base URL（源自 snake_case `base_url`，如 http://127.0.0.1:57891/v1），优先使用。 */
+  /**
+   * 后端返回的**根地址**（源自 snake_case `base_url`，形如 `http://127.0.0.1:57891`，**不含 `/v1`**）。
+   *
+   * ★ OpenAI 系 Base URL 由前端派生（`lib/gateway-url.ts` 的 `gatewayOpenAiBaseUrlFrom`），
+   * 不要直接把本字段粘给 OpenAI 客户端 —— 少一层 `/v1` 必然 404（#165）。
+   */
   baseUrl?: string;
   /**
    * **最近一次请求失败**的可读原因（源自 snake_case `last_error`；`null` = 还没失败过）。
@@ -1753,6 +1985,38 @@ export interface GatewayPoolAccount {
    * Trae / Qoder 侧暂无该字段 ⇒ 归一化缺省 `{}`（老后端 / 演示站不炸）。
    */
   modelCoolings?: Record<string, number>;
+  /**
+   * 同一份冷却数据的**带来源**版本（issue #88 缺口 4.1）。
+   *
+   * `modelCoolings` 只给解冻时刻，用户分不清那是**上游声明的**还是**本仓兜底猜的**
+   * （拿不到上游墙钟时冷 `probe_fallback_ms`，默认 10 分钟）—— 两者对排查的含义相反：
+   * 前者该等，后者该怀疑是不是配大了。
+   *
+   * Trae / Qoder 侧暂无该字段 ⇒ 缺省 `{}`，徽标回落 `modelCoolings`。
+   */
+  modelCooldownDetails?: Record<
+    string,
+    {
+      /** 解冻时刻（ms）。 */
+      untilMs: number;
+      /** 上游声明的重置时刻（ms）；`0` = 上游没给。 */
+      resetAtMs: number;
+      /**
+       * 上游**文案**里声明的重置时刻（ms）；`0` = 未声明。
+       *
+       * 与 `resetAtMs` 的区别：后者在「上游没给结构化墙钟」时会被本仓算出的兜底值
+       * 覆盖（`fallback === true` 就是那种情况），所以它回答不了「上游说几点恢复」。
+       * 本字段只来自文案解析，**不参与冷却计算** —— 徽标优先显示它
+       * （「上游称 16:26 重置」），否则显示兜底时刻（「约 11:12 重试」）。
+       */
+      upstreamResetAtMs: number;
+      /** 由 `resetAtMs === 0` 推出：`true` = 本仓兜底时长，不是上游说的。 */
+      fallback: boolean;
+      reason: string;
+      /** `11102` 封禁的累计次数（退避指数）；`6004` 限流恒 0。 */
+      hits: number;
+    }
+  >;
 }
 
 /** API Key 记录（列表脱敏返回，绝不含明文）。字段名与后端 masked() 输出一致。 */
@@ -1819,7 +2083,16 @@ export interface CatalogModel {
   /** 上限档（后端 `snapshot_view` 输出；与 `context_window` 在旧响应里同值）。 */
   context_length_max?: number | null;
   max_tokens: number;
-  supports_images: boolean;
+  /**
+   * 是否支持图片输入（issue #101）。
+   *
+   * ⚠️ **可能整个字段不存在** —— 上游没声明、用户也没手动指定时后端不下发该字段
+   * （Trae / Qoder 的清单根本没有这个信息）。判据请走 `lib/model-image.ts` 的
+   * `resolveImageCap()`，别在这里 `?? false`（那会把「不知道」说成「不支持」）。
+   */
+  supports_images?: boolean | null;
+  /** 能力的来源：`upstream`（上游目录）/ `override`（本页手动指定）/ `null`（未声明）。 */
+  image_input_source?: "upstream" | "override" | "known" | null;
   /** 积分倍率**原文**（`x0.79` / `x0.34 credits` 三种写法并存）。 */
   credits?: string | null;
   /** 积分倍率数字（后端已归一）；`null` = 上游没给。渲染一律用这个，别自己剥 `x`。 */
@@ -1933,7 +2206,25 @@ export interface ModelProbeCell {
   model: string;
   state: ModelProbeState;
   http_status: number;
+  /** 上游声明的重置时刻（**配额窗口**，非解锁时刻）；上游没给 ⇒ `null`。 */
   reset_at_ms: number | null;
+  /**
+   * **展示专用**的上游声明重置时刻：`reset_at_ms` 为空时，从上游文案
+   * （`… will reset at 2026-10-28 15:33:19 UTC+8 …`）解析出的那个时刻。
+   *
+   * ★★ **不参与回填**（后端 `probe_outcome_of` 只读 `reset_at_ms`）：文案里的时刻是
+   * **配额窗口重置**、不是解锁时刻，拿它当冷却时长会把号冷掉几小时甚至一天。
+   * 界面显示时要标明来源（`resetHint`），不要写成「已恢复」。
+   */
+  upstream_reset_at_ms?: number | null;
+  /**
+   * 这一格**实测的时刻**（落盘台账里也保留）。
+   *
+   * ⚠️ 不要拿作用域的 `updated_at_ms` 顶替：那是「本作用域最近一次有格变化」，
+   * 给某一行用会把三天前探的格标成刚刚探过。
+   * `0` / 缺失 = **老台账**（该版本没记）⇒ 界面显示「时间未知」，不编。
+   */
+  probed_at_ms?: number;
   /** 上游返回原文（**不可信输入**：控制字符 / ANSI / 标记都可能出现，UI 必须纯文本渲染）。 */
   reason: string;
   latency_ms: number;
@@ -2022,7 +2313,15 @@ export type AccountStrategy =
    * 是共用枚举，前端少一个选项 = 该能力在这一平台静默消失（见
    * `check-scope-registry.cjs` 的「三平台策略选项一致」）。
    */
-  | { kind: "random" };
+  | { kind: "random" }
+  /**
+   * 顺序（issue #102）：**粘住当前账号**，只有它不可用时才换下一个。
+   *
+   * 与 `random` 的目的正好相反：随机把额度摊开，代价是同一段对话的上下文
+   * 反复落到不同账号上、上游前缀缓存全 miss（用户报「token 消耗过快」）。
+   * 排除 / 禁用 / 冷却 / 模型冷却 / 在途满**照样生效**。
+   */
+  | { kind: "sequential" };
 
 /** 某 region 的策略 + 当前选用账号（selected 与 AccountMeta 同构）。 */
 export interface AccountStrategyView {
@@ -2085,6 +2384,18 @@ export interface GatewayLogEntry {
    */
   credit?: number | null;
   stream: boolean;
+  /**
+   * ★ issue #129：**流中途被判失败**时的错误摘要（上游原文，含账号名 / 状态码）。
+   *
+   * - `null` = 这次请求正常结束；
+   * - `undefined` = 升级前写入的老条目（那时还没有这个键）。
+   *
+   * 为什么要单独一个字段：流式条目的 `status` 在写日志那一刻已经定成 200
+   * （上游响应头到达时就写了），**事后断流改不回来** —— 所以后端在开关开启时
+   * 会用这个字段把 `status` 改成真实的 429 / 502 并附上原因。缺了它，
+   * 一次「账号在流中途挂掉」在日志页会显示成**成功的 200 请求**。
+   */
+  error?: string | null;
 }
 
 // ── P7 全局备份：导入预览 / 结果 / 自动备份（与后端 `backup.rs` 同源）─────────────

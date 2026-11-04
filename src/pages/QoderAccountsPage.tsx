@@ -64,6 +64,8 @@ import { AccountWorkbench } from "@/components/account-workbench";
 import { AddAccountDrawer } from "@/components/add-account-drawer";
 import { ExportAccountsDialog } from "@/components/export-accounts-dialog";
 import { ImportAccountsDialog } from "@/components/import-accounts-dialog";
+/* 账号页「限流」卡：与 WB **同一个组件**；Qoder 没有客户端限流台账 ⇒ `ledger={false}`。 */
+import { ClientLimitsCard } from "@/components/client-limits-card";
 import { RecycleBinSheet } from "@/components/recycle-bin-sheet";
 import {
   QoderAccountCard,
@@ -94,6 +96,8 @@ import type {
   QoderProgramStatus,
 } from "@/lib/api";
 import { accountSearchText } from "@/lib/account-search";
+import { packSourceLabel, packState } from "@/lib/qoder-packs";
+import { qoderPackKey, qoderPacksNotice, useQoderWebPacks } from "@/lib/use-qoder-web-packs";
 import {
   filterAccounts,
   groupAccounts,
@@ -105,14 +109,24 @@ import {
   type AccountViewMode,
 } from "@/lib/account-list-view";
 import { formatAbsoluteTime } from "@/lib/catalog-source";
+import { packRatio, toDetailPacks, type CreditPackTexts } from "@/lib/credit-packs";
 import { displayText } from "@/lib/display-text";
 import { formatCredits } from "@/components/account-card";
-import { REFRESH_DONE_LABEL, useAccountRefreshBusy, type AccountRefreshKind } from "@/lib/account-refresh";
+import {
+  QODER_REFRESH_KINDS,
+  REFRESH_DONE_LABEL,
+  useAccountRefreshBusy,
+  type AccountRefreshKind,
+} from "@/lib/account-refresh";
 import { useT } from "@/lib/i18n";
+import type { Translate } from "@/lib/i18n";
 import { platformDescriptor, platformOfPath } from "@/lib/platforms/registry";
 import { scopeOf, type Scope } from "@/lib/scope";
 import { useScope } from "@/lib/use-scope";
 import { useMediaQuery } from "@/lib/use-media-query";
+import { useAutoRefreshWhenVisible } from "@/lib/use-auto-refresh";
+import { CREDITS_UPSTREAM_REFRESH_INTERVAL_MS } from "@/lib/use-credit-auto-refresh";
+import { useCreditRefreshPref } from "@/lib/credit-refresh-pref";
 import { useRefreshAction } from "@/lib/use-refresh-action";
 
 /** ISO-8601 → 毫秒时间戳（解析不了给 `null` ⇒ 调用方**省掉那一行**，不显示 1970）。 */
@@ -121,6 +135,28 @@ const stampToMs = (iso: string | null | undefined): number | null => {
   const ts = Date.parse(iso);
   return Number.isNaN(ts) ? null : ts;
 };
+
+/**
+ * 资源包明细的**文案层**（Qoder 词条域）。
+ *
+ * 过滤 / 排序 / `ratio` 在 `credit-packs.ts`（四份实现合成一份）；这里只剩词条。
+ * ★「已用」这一句用**共用**词条 `shared.credit.packUsed`（issue #144 复核 §3.4）：
+ * 它不属于任何平台的词条域，此前这里写裸数字、WB / Trae 写「已用 N」—— 同一个抽屉里
+ * 同一列两种说法。包名与到期文案仍按 Qoder 域给（那两个确实带平台语义）。
+ */
+function QODER_PACK_TEXTS(t: Translate): CreditPackTexts {
+  return {
+    remainingText: (value) => String(value),
+    totalText: (value) => String(value),
+    usedText: (value) => t("shared.credit.packUsed", { n: String(value) }),
+    expiryText: (expireAtMs, expired) =>
+      expired
+        ? t("qoder.page.accounts.web.expired")
+        : expireAtMs !== null
+          ? formatAbsoluteTime(expireAtMs)
+          : t("qoder.page.accounts.web.neverExpires"),
+  };
+}
 
 /** 批量签到 / 批量刷新的失败项（`uid` 用于只重试失败项，`name` 用于展示）。 */
 interface FailedItem {
@@ -142,6 +178,8 @@ export default function QoderAccountsPage() {
 
   /* ── 额度 / 签到（**上游调用**，与账号列表分开加载；见文件头「加载策略」） ── */
   const [credits, setCredits] = useState<Record<string, QoderCreditsRow>>({});
+  /** 额度快照最后一次成功读到的时刻（issue #133，自动刷新判过期用；`0` = 还没读到）。 */
+  const [creditsAt, setCreditsAt] = useState(0);
   const [checkinRows, setCheckinRows] = useState<Record<string, QoderCheckinRow>>({});
   /* 程序位状态（只读）：决定页脚程序位行、「当前登录」徽章与「切换到此账号」的可用性。 */
   const [programs, setPrograms] = useState<QoderProgramStatus[] | null>(null);
@@ -173,6 +211,29 @@ export default function QoderAccountsPage() {
    * 只在打开抽屉时查一次（单账号 1 个请求），不在列表首页批查（会翻 N 倍）。
    */
   const [proPack, setProPack] = useState<Record<string, api.QoderProPackStatus>>({});
+  /**
+   * 逐包明细（issue #111）：按 uid 缓存。
+   *
+   * ⚠️ 与 `credits` **并存、不互替**：`credits` 是 openapi 的聚合三标量（任何形态都有），
+   * 逐包要走网页会话（仅桌面端 + 需登录一次）。拿不到逐包时**回落聚合行**，
+   * 绝不显示空区块 —— 那是「不知道」伪装成「没有」。
+   *
+   * ★ 状态与五个动作（读 / 认领 / 退出 / 登录 / 缓存）都搬进 `useQoderWebPacks`：
+   * 聚合页的抽屉要的是**同一套**东西（issue #144 复核 §4.5），各写一份必然只有一半。
+   */
+  const qoderWebPacks = useQoderWebPacks(t);
+  /**
+   * 本页只有**一个**作用域 ⇒ 用一个小适配把「带作用域的键」收回到 `uid`。
+   * 控制器本身按 `scope` 存（聚合页跨 6 个作用域），这里不做二次缓存。
+   */
+  const packOf = useCallback(
+    (uid: string | undefined) => (uid ? qoderWebPacks.packs[qoderPackKey(scope, uid)] : undefined),
+    [qoderWebPacks.packs, scope],
+  );
+  const packsBusyOf = useCallback(
+    (uid: string | undefined) => !!uid && !!qoderWebPacks.loading[qoderPackKey(scope, uid)],
+    [qoderWebPacks.loading, scope],
+  );
   const [proBusy, setProBusy] = useState<string | null>(null);
   const [detailAutoEditRemark, setDetailAutoEditRemark] = useState(false);
   const [detailAutoEditGroup, setDetailAutoEditGroup] = useState(false);
@@ -233,6 +294,7 @@ export default function QoderAccountsPage() {
     }
     if (creditsView.status === "fulfilled") {
       setCredits(Object.fromEntries(creditsView.value.accounts.map((row) => [row.uid, row])));
+      setCreditsAt(Date.now());
     }
     if (checkinView.status === "fulfilled") {
       setCheckinRows(Object.fromEntries(checkinView.value.accounts.map((row) => [row.uid, row])));
@@ -250,6 +312,27 @@ export default function QoderAccountsPage() {
     }
     void loadEnrichment();
   }, [hasAccounts, loadEnrichment]);
+
+  /**
+   * ★ 卡片上的额度自动重读（issue #133）。
+   *
+   * 空库时不发（`qoderCredits` 会逐账号打上游，没有账号就没有可刷的东西）。
+   * 失败时保留上一份快照（`loadEnrichment` 内部已 `allSettled`），不把「暂时取不到」显示成「没有额度」。
+   *
+   * ★ **默认关，opt-in**（issue #133 复核 §3）：同 Qoder 积分页 —— 逐账号打上游
+   * 不替用户决定。关掉后手动入口是卡片「更多 → 刷新积分」（那条现在真的会刷额度）。
+   */
+  const upstreamAutoRefresh = useCreditRefreshPref((state) => state.upstreamAutoRefresh);
+  const refreshEnrichment = useCallback(() => {
+    if (!hasAccounts) return;
+    return loadEnrichment();
+  }, [hasAccounts, loadEnrichment]);
+  useAutoRefreshWhenVisible(
+    creditsAt,
+    refreshEnrichment,
+    CREDITS_UPSTREAM_REFRESH_INTERVAL_MS,
+    upstreamAutoRefresh,
+  );
 
   /** `/` 键聚焦搜索框（与另两平台同一条规则）；在输入框里打字时不劫持。 */
   useEffect(() => {
@@ -579,7 +662,6 @@ export default function QoderAccountsPage() {
    * credits、没有 token 概念（见 `qoder::usage` 模块头），摆一个点了只能重读缓存的
    * 菜单项比不摆更坏。
    */
-  const QODER_REFRESH_KINDS = ["credits", "checkin", "credential"] as const;
   const refreshPartBusy = useAccountRefreshBusy();
 
 
@@ -590,8 +672,15 @@ export default function QoderAccountsPage() {
       await refreshPartBusy.run(account.uid, kind, async () => {
         try {
           if (kind === "credits") {
+            /* ⚠️ 两件事都要做（issue #133 复核 §5.1）：
+               ① `qoderRefreshAccount` 只是**换令牌**（device / job / PAT 三路由），它不查额度；
+               ② 额度在 `loadEnrichment()` 里（`qoderCredits`）。
+               此前只 `reload()`（重取账号列表 + 来源），于是这一项点完**卡片上的额度数字
+               不会变**，却弹一个「已刷新积分」的成功 toast —— 名不符实。
+               聚合页的同名菜单项之所以有效，是因为它后面还有 `reloadSignals()`。 */
             await api.qoderRefreshAccount(scope, account.uid);
             await reload();
+            await loadEnrichment();
           } else if (kind === "checkin") {
             /* 只问这一个账号（批量接口传 1 个 id 即可，不新增「单账号」变体）。 */
             const map = await api.qoderCheckinStatusMap(scope, [account.uid]);
@@ -605,7 +694,7 @@ export default function QoderAccountsPage() {
         }
       });
     },
-    [refreshPartBusy, scope, reload, t],
+    [refreshPartBusy, scope, reload, loadEnrichment, t],
   );
 
   /**
@@ -686,6 +775,7 @@ export default function QoderAccountsPage() {
       );
     await loadEnrichment();
   }
+
 
   function openDetail(account: QoderAccountView) {
     setDetailAutoEditRemark(false);
@@ -792,10 +882,12 @@ export default function QoderAccountsPage() {
   }, [detail, t]);
 
   /**
-   * 抽屉的积分包 —— **只在拿到额度时**渲染（`packs` 空数组 = 抽屉不渲染该区块）。
+   * 抽屉的积分包：**有逐包就用逐包，没有就回落聚合行**（issue #111）。
    *
-   * ⚠️ `expiryText` 给 `—`：额度响应里的 `expiresAt` 单位未取证，按毫秒渲染会把秒值
-   * 显示成 1970（谎报）。宁可写「未知」。
+   * 逐包来自网页会话（`qoderWebCreditPacks`），需要桌面端 + 登录过一次；
+   * 拿不到时显示 openapi 的聚合三标量 —— 那在任何形态都拿得到，不是空区块。
+   * 聚合行的 `expiryText` 仍给 `—`：`quota/usage` 的 `expiresAt` 是套餐级、不是包级，
+   * 按它渲染「到期」会张冠李戴。
    */
   /** 分组候选（本作用域已用过的组名）—— 抽屉里的分组选择器用，见 WB 页同名变量。 */
   const detailGroups = useMemo(() => {
@@ -871,8 +963,54 @@ export default function QoderAccountsPage() {
     ];
   }, [detail, credits, checkinTodayOf, checkinMap, t]);
 
+  /**
+   * 资源包明细（issue #144 复核 · L1/L2）。
+   *
+   * ① 逐包：过滤 / 排序 / `ratio` 走 `credit-packs.ts`；
+   * ② 回落聚合行：**不**过过滤（它不是「一个包」，而是这个账号的余额总量，
+   *    `0 / 100` 本身就是「用完了」这条信息，剔掉会变成「没有积分区块」）。
+   *
+   * ★ 过滤口径与聚合页对齐：`remaining > 0` 且 `limit > 0`。此前渠道页一个都不过滤，
+   * 聚合页却过滤 ⇒ 「已用完的包要不要列」在同一个平台上有了两个相反答案（#144 §3.2）。
+   */
   const detailPacks = useMemo<DetailPack[]>(() => {
     if (!detail) return [];
+    const web = packOf(detail.uid);
+
+    // ① 有逐包 ⇒ 逐条渲染（这才回答了「我有几个包、各剩多少、何时到期」）。
+    if (web?.available && web.packs.length > 0) {
+      const now = Date.now();
+      const seen = new Map<string, number>();
+      return toDetailPacks(
+        web.packs.map((pack, index) => {
+          const source = packSourceLabel(t, pack.source);
+          const ordinal = (seen.get(source) ?? 0) + 1;
+          seen.set(source, ordinal);
+          const state = packState(pack, now);
+          return {
+            key: pack.id ?? `${pack.group}-${index}`,
+            name: t("qoder.page.accounts.web.packName", {
+              source,
+              n: String(ordinal),
+            }),
+            total: pack.limit,
+            remaining: pack.remaining,
+            used: pack.used,
+            /* Qoder 的 `expiresAtMs` 本来就是毫秒（`api.ts` 的字段名已带 `Ms`）。 */
+            expireAtMs: pack.expiresAtMs ?? null,
+            expired: state === "expired",
+            /* Qoder 上游**没有**临期标记 ⇒ 用 `packState` 算，窗口取 `qoder-packs.ts`
+               的 `EXPIRING_SOON_MS`（14 天，与卡片浮层同源）。这里是「平台适配层」，
+               纯函数不猜窗口。 */
+            expiringSoon: state === "expiring",
+          };
+        }),
+        QODER_PACK_TEXTS(t),
+        now,
+      );
+    }
+
+    // ② 没有逐包 ⇒ **回落聚合行**（不是空区块；聚合三标量在任意形态都拿得到）。
     const row = credits[detail.uid];
     if (!row || !row.ok) return [];
     const remaining = row.remaining ?? 0;
@@ -888,10 +1026,27 @@ export default function QoderAccountsPage() {
         expiryText: "—",
         expired: false,
         expiringSoon: false,
-        ratio: total > 0 ? Math.min(100, Math.max(0, (remaining / total) * 100)) : 0,
+        ratio: packRatio(remaining, total),
       },
     ];
-  }, [detail, credits, t]);
+  }, [detail, credits, packOf, t]);
+
+  /**
+   * 抽屉里积分包区块下方的说明与动作（#111 复核 §2.6 / 验收 #16）。
+   *
+   * ★ 三态判定与两个动作都在 `qoderPacksNotice` 里（`lib/use-qoder-web-packs.ts`）——
+   * 聚合页的抽屉要的是**同一份**（issue #144 复核 §4.5：此前只有本页注入，聚合页的
+   * 用户只看到空白区块，既不知道「登录一次就能看」，也没有按钮）。
+   */
+  const detailPacksNotice = qoderPacksNotice(t, qoderWebPacks, scope, detail?.uid);
+
+  /** 打开抽屉时取一次逐包（TTL 内不重复请求）。 */
+  useEffect(() => {
+    const uid = detail?.uid;
+    if (uid) void qoderWebPacks.load(scope, uid);
+    // `load` 是纯读取 + setState，不依赖其它 props；只按 uid 变化触发。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [detail?.uid]);
 
   /** 打开抽屉时查一次 Pro 升级包资格（活动下线/接口不可用 ⇒ 静默不渲染）。 */
   useEffect(() => {
@@ -1260,6 +1415,7 @@ export default function QoderAccountsPage() {
               setExportTargets([target]);
               setExportOpen(true);
             }}
+            onWebLogin={(target) => void qoderWebPacks.login(scope, target.uid)}
             onDelete={setPendingDelete}
             onRefreshPart={(kind) => onRefreshPart(account, kind)}
             refreshingKinds={refreshPartBusy.kindsOf(account.uid)}
@@ -1289,6 +1445,11 @@ export default function QoderAccountsPage() {
                 setExportTargets([account]);
                 setExportOpen(true);
               }}
+              onWebLogin={(target) => void qoderWebPacks.login(scope, target.uid)}
+              onReadPacks={(target) => void qoderWebPacks.read(scope, target.uid)}
+              packs={packOf(account.uid)}
+              packsLoading={packsBusyOf(account.uid)}
+              onRequestPacks={(target) => void qoderWebPacks.load(scope, target.uid)}
               credits={
                 row && row.ok
                   ? { remaining: row.remaining ?? 0, total: row.total ?? 0, plan: row.plan ?? null }
@@ -1300,6 +1461,18 @@ export default function QoderAccountsPage() {
             />
           );
         }}
+        /* 列表下方的平台插槽：**限流**卡（与 WB 同一个 `ClientLimitsCard`、同一几何与时间口径）。
+           ⚠️ `ledger={false}`：Qoder 没有可反推的客户端日志（`client_limits` 扫的是 WB 的 jsonl），
+           不传它会把 **WB 的**限流记录画到本页上 —— 串台比空表坏得多。 */
+        footer={
+          <section className="mt-7 min-w-0">
+            <ClientLimitsCard
+              region={region}
+              ledger={false}
+              probePath="/qoder/api-service?sub=models"
+            />
+          </section>
+        }
       />
 
       {/* 产品名走注册表（唯一来源）—— 本页在 Qoder 分区下渲染，但产品名不写死。 */}
@@ -1451,6 +1624,7 @@ export default function QoderAccountsPage() {
         avatarSeed={detail ? qoderAccountName(detail) : ""}
         sections={detail ? [{ key: "account", title: t("qoder.page.accounts.drawer.info"), rows: detailRows }] : []}
         packs={detailPacks}
+        packsNotice={detailPacksNotice}
         stats={detailStats}
         refreshingKinds={detail ? refreshPartBusy.kindsOf(detail.uid) : []}
         onRefreshPart={detail ? (kind) => void onRefreshPart(detail, kind) : undefined}

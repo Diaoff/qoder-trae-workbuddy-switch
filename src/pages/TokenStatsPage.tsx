@@ -112,16 +112,14 @@ import { usageWindowDays, type UsageWindow } from "@/lib/usage-window";
 /** 本页承载的视图（积分视图在 `CreditStatsPage`）。 */
 export type TokenUsageView = "trend" | "models" | "sessions" | "keys";
 
-/** 「按密钥」视图的取数（WB：网关日志 + 密钥名）。模块级 ⇒ 引用稳定。 */
-async function loadWbKeyUsage() {
-  const [logs, keys] = await Promise.all([
-    api.getGatewayLogs(),
-    api.listApiKeys().catch(() => ({ keys: [] as ApiKeyRecord[] })),
-  ]);
-  return {
-    entries: logs.logs ?? [],
-    keyNames: new Map((keys.keys ?? []).map((key) => [key.id, key.name] as const)),
-  };
+/**
+ * 「按密钥」视图**只取展示名**：用量来自网关账本（本页已取的 `dim`），
+ * 不再读请求日志 —— 那是环形缓冲，窗口对齐不了（见 `src/lib/key-usage.ts`）。
+ * 模块级函数 ⇒ 引用稳定（`KeysView` 的 `useEffect` 依赖它）。
+ */
+async function loadWbKeyNames() {
+  const keys = await api.listApiKeys().catch(() => ({ keys: [] as ApiKeyRecord[] }));
+  return new Map((keys.keys ?? []).map((key) => [key.id, key.name] as const));
 }
 
 /** 会话级缓存：切走再切回不重取（与 `CreditStatsPage` 同一约定）。 */
@@ -265,6 +263,17 @@ function TrendView({
 
   const coverage = useMemo(() => dimCoverage(dim, viewWindow), [dim, viewWindow]);
   const heatmapHasData = useMemo(() => matrix.cells.some((row) => row.some((value) => value > 0)), [matrix]);
+  /* ★ 累计曲线必须在本函数**所有** hook 之后才能算 —— 但它自己就是 hook，
+     所以只能放在早退**之前**。放在 `if (filtered) return` 之后会让 hook 数量随
+     `filtered` 变化：点击「今天」从「有数据」切到「本窗口无数据」时 React 抛
+     #300（Rendered more hooks than during the previous render），整页白屏（issue #131）。 */
+  const cumulative = useMemo(() => {
+    let running = 0;
+    return columns.map((column) => {
+      running += column.total;
+      return { label: column.label, value: running };
+    });
+  }, [columns]);
 
   if (filtered) {
     return (
@@ -323,14 +332,6 @@ function TrendView({
       hint: t("wbStats.usage.trend.requestsHint"),
     },
   ];
-
-  const cumulative = useMemo(() => {
-    let running = 0;
-    return columns.map((column) => {
-      running += column.total;
-      return { label: column.label, value: running };
-    });
-  }, [columns]);
 
   return (
     <div className="min-w-0 space-y-6">
@@ -809,13 +810,10 @@ export default function TokenStatsPage({
         />
       ) : view === "keys" ? (
         <KeysView
+          dim={dim}
           window={viewWindow}
           selfScope="wb"
-          loader={loadWbKeyUsage}
-          title={t("wbStats.usage.keys.title")}
-          caption={t("wbStats.usage.keys.caption")}
-          emptyTitle={t("wbStats.usage.keys.empty")}
-          emptyHint={t("wbStats.usage.keys.emptyHint")}
+          loadNames={loadWbKeyNames}
         />
       ) : view === "sessions" ? (
         <SessionsView

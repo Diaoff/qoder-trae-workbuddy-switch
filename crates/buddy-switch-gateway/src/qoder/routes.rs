@@ -204,6 +204,7 @@ pub async fn models(
         &catalog.models,
         disabled.get(scope),
         state.max_context_now(),
+        scope,
     );
     drop(disabled);
     let mut body = filtered;
@@ -292,25 +293,13 @@ fn allowed_uids_for(
     policy: &crate::apikey::KeyPolicy,
     region: QoderRegion,
 ) -> Option<HashSet<String>> {
-    use crate::apikey::ScopeMode;
-    if policy.scope_mode != ScopeMode::Selected {
-        return None;
-    }
-    let mut allowed: HashSet<String> = policy.scope_accounts.iter().cloned().collect();
-    if !policy.scope_groups.is_empty() {
-        let file = buddy_switch_core::modules::qoder::account::load_accounts_for(region);
-        for account in file.accounts.iter() {
-            let group = account.group.clone().unwrap_or_default();
-            if group.is_empty() {
-                continue;
-            }
-            if policy.scope_groups.iter().any(|wanted| wanted == &group) {
-                // `RawAccount.uid` 是 `String`（非 Option）—— 与 Trae 的 `userId` 不同。
-                allowed.insert(account.uid.clone());
-            }
-        }
-    }
-    Some(allowed)
+    // ★ 安全审计 P1-7：判定与展开由 `apikey::scope_allows` **唯一提供**。
+    //   这里只负责取 `(uid, 分组)` —— Qoder 的分组是账号记录上的自由文本 `group`。
+    let accounts = buddy_switch_core::modules::qoder::account::load_accounts_for(region)
+        .accounts
+        .into_iter()
+        .map(|account| (account.uid, account.group));
+    crate::apikey::allowed_uids_for_policy(policy, accounts)
 }
 
 /// 一趟 Qoder chat 中继（**认证之后的全部逻辑**）—— 产品线入口与统一网关**共用这一份**。
@@ -322,9 +311,11 @@ pub async fn chat_for_region(
     // ★ issue #76：调用方的 Key（`None` = 无 Key 的调用 ⇒ 不判配额、不过白名单、不记账）。
     key: Option<std::sync::Arc<crate::apikey::KeyActor>>,
 ) -> Response {
-    let started = Instant::now();
-    // ★ issue #76：配额判定（选号前）—— 超限直接 429，一步都不发。
-    //   与 WB / Trae 同位置、同文案（复用 `GatewayError::KeyQuotaExceeded`）。
+    // 整轮请求的起点（降级事件用它算耗时；`_once` 内部另算它自己那一跳的）。
+    let request_started = Instant::now();
+    // ★ issue #76：配额判定（选号前）—— **必须放在降级循环之外**。
+    //   它在 `chat_for_region_once` 里时，一次降级请求会消耗 2–3 份配额
+    //   （每跳各判一次）—— 配额是**按请求**计的，与「试了几个模型」无关。
     if let Some(actor) = key.as_deref() {
         // 判定 + 请求数记账都在 `KeyActor` 里（四条产品线同一份实现）。
         if let Some(message) =
@@ -338,6 +329,144 @@ pub async fn chat_for_region(
             );
         }
     }
+
+    // ★ 降级链（P13）：主模型失败且命中触发条件时，改用备选模型重发。
+    //
+    //   hop 循环放在**这里**（而不是 `chat_for_region_once` 内部）：三个协议入口
+    //   （OpenAI / Anthropic / Responses）都走这一个函数 ⇒ 三者行为天然一致。
+    //
+    // ★ 模型名在**外层**先解析一次（hop 序列要按主模型算），而且必须与
+    //   `chat_for_region_once` 内的解析**完全一致**（含「空 ⇒ 清单第一条」兜底）——
+    //   不一致的话，外层算出的 hop 序列会与内层实际用的模型对不上，
+    //   那个模型就永远不降级。
+    let scope = scope_of_qoder_region(region);
+    let origin_model = qoder_model_of(&state, region, &body, protocol).await;
+    if origin_model.is_empty() {
+        // 模型还没定（清单为空）⇒ 交给 `_once` 走它自己的「未指定模型」错误路径。
+        return chat_for_region_once(state, region, body, protocol, key).await;
+    }
+    let fallback = crate::routes::fallback::FallbackLoop::plan(scope, &origin_model).await;
+    // 没有可用链 ⇒ 走原路径（绝大多数用户是这一条）。
+    if fallback.len() <= 1 {
+        return chat_for_region_once(state, region, body, protocol, key).await;
+    }
+    let raw_body = String::from_utf8_lossy(&body).to_string();
+    let mut hop = 0usize;
+    // 上一跳的失败响应（越界时返回它）与触发原因（写进降级头）。
+    let mut last: Option<Response> = None;
+    let mut last_trigger: Option<crate::model_fallback::Trigger> = None;
+    loop {
+        // ★ 越界在这里挡：`model_at` 越界返回 `None`（**不回落主模型**）——
+        //   回落会让「备选全被禁用」变成「把主模型原样重发一次」。
+        let Some(hop_model) = fallback.model_at(hop) else {
+            return last.expect("第 0 跳必然执行过");
+        };
+        // 被用户禁用的目标直接跳过：一次请求都不发。
+        if fallback.should_skip(hop, &state.disabled).await {
+            hop += 1;
+            continue;
+        }
+        // body 里没有 `model` 字段 ⇒ 改写不了 ⇒ 不降级
+        // （否则每跳实际发同一个模型，却告诉客户端「降到了备选」= 对客户端撒谎）。
+        let Some(hop_body) = fallback.body_for(hop, &raw_body) else {
+            return last.expect("第 0 跳必然执行过");
+        };
+        let hop_model = hop_model.to_string();
+        let hop_body = Bytes::from(hop_body);
+        // 同平台跨区域：换 region（协议一致，只是账号池与域名不同）。
+        let hop_region = fallback
+            .scope_at(hop)
+            .map(crate::routes::cross::qoder_region_of)
+            .unwrap_or(region);
+        // ★ 跨平台目标：交给 `cross::relay_on_scope`（同进程内调目标产品线入口）。
+        let response = if fallback
+            .scope_at(hop)
+            .is_some_and(|target_scope| target_scope.product() != scope.product())
+        {
+            Box::pin(crate::routes::cross::relay_on_scope(
+                fallback.scope_at(hop).expect("上面已判过 Some"),
+                axum::http::HeaderMap::new(),
+                hop_body.clone(),
+                None,
+            ))
+            .await
+        } else {
+            chat_for_region_once(state.clone(), hop_region, hop_body, protocol, key.clone()).await
+        };
+        if response.status().is_success() {
+            let mut response = response;
+            if hop > 0 {
+                if let Some(trigger) = last_trigger {
+                    fallback.apply_headers(hop, &mut response, trigger);
+                    // 记一笔降级成功（Qoder 拿不到完整轨迹，path 只记最终用的那个）。
+                    crate::model_fallback::record_success(
+                        scope,
+                        fallback.origin(),
+                        &hop_model,
+                        trigger,
+                        request_started.elapsed().as_millis() as i64,
+                    );
+                }
+            }
+            return response;
+        }
+        // 能不能继续降级：**状态码能映射到触发条件** 且 **该条件在用户配的白名单里**。
+        match fallback.can_fallback(&response) {
+            Some(trigger) => last_trigger = Some(trigger),
+            None => return response,
+        }
+        last = Some(response);
+        hop += 1;
+    }
+}
+
+/// Qoder 的模型名解析（**外层与内层必须用同一个**）。
+///
+/// 顺序：显式 `model` → 配置默认模型 → 清单第一条。
+/// 少了「清单第一条」那一档，外层算出的 hop 序列会与内层实际用的模型对不上。
+async fn qoder_model_of(
+    state: &QoderGatewayState,
+    region: QoderRegion,
+    body: &Bytes,
+    protocol: Protocol,
+) -> String {
+    let config = state.config_snapshot().await;
+    let parsed: Value = serde_json::from_slice(body).unwrap_or(Value::Null);
+    let openai_payload = match protocol {
+        Protocol::OpenAi => parsed,
+        Protocol::Anthropic => crate::protocol::anthropic::to_upstream_request_with_images(&parsed),
+        Protocol::Responses => payload::responses_to_chat(&parsed),
+    };
+    let mut model = payload::model_of(&openai_payload, &config.default_model);
+    if model.is_empty() {
+        let catalog = state.catalog_for(region).await;
+        if let Some(first) = catalog.models.first() {
+            model = first
+                .get("id")
+                .or_else(|| first.get("key"))
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string();
+        }
+    }
+    model
+}
+
+/// Qoder 的一趟中继（**不含**降级循环；降级由 [`chat_for_region`] 在外层做）。
+///
+/// 单独拆出来的原因：内层有十几处 `return`（成功 / 各种失败），把它们改成
+/// 「产出 Response」才能让外层看到「这一跳彻底失败了，可以换下一个模型」。
+pub async fn chat_for_region_once(
+    state: QoderGatewayState,
+    region: QoderRegion,
+    body: Bytes,
+    protocol: Protocol,
+    // ★ issue #76：调用方的 Key（`None` = 无 Key 的调用 ⇒ 不判配额、不过白名单、不记账）。
+    key: Option<std::sync::Arc<crate::apikey::KeyActor>>,
+) -> Response {
+    let started = Instant::now();
+    // ★ issue #76：配额判定已**上移到 `chat_for_region`**（降级循环之外）——
+    //   留在这里会每跳判一次，一次降级请求消耗 2–3 份配额。
     let parsed: Value = match serde_json::from_slice(&body) {
         Ok(value) => value,
         Err(error) => {
@@ -586,6 +715,15 @@ pub async fn chat_for_region(
                         responses_custom.clone(),
                         inflight,
                         key.clone(),
+                        // ★ issue #129：首帧后失败也要解绑粘性（否则重跑仍撞同一个号）。
+                        sticky_key.clone(),
+                        // ★ issue #139：Anthropic 出口 `message_start` 的输入 token
+                        //   占位（上游真实值要到末帧）。其它协议用不上。
+                        if protocol == Protocol::Anthropic {
+                            crate::protocol::anthropic::estimate_input_tokens(&openai_payload)
+                        } else {
+                            0
+                        },
                     )
                     .await
                 } else {
@@ -861,15 +999,23 @@ async fn stream_relay(
     inflight: super::pool::InflightGuard,
     // ★ issue #76：本密钥（流结束时按 token 记账）。
     key: Option<std::sync::Arc<crate::apikey::KeyActor>>,
+    // ★ issue #129：会话粘性键（流中途失败时解绑 —— 否则重跑仍撞同一个号）。
+    sticky_key: Option<String>,
+    // ★ issue #139：Anthropic 出口 `message_start` 的输入 token 估算（0 = 不估）。
+    estimated_input: u64,
 ) -> Response {
     let upstream = response.bytes_stream();
     let stream_model = model.to_string();
     let usage_slot = std::sync::Arc::new(std::sync::Mutex::new(None::<Value>));
     // 上游错误帧留痕：流式账本在流结束才落，没有它就只能记成「200 + 0 token」。
     let error_slot = std::sync::Arc::new(std::sync::Mutex::new(None::<sse::UpstreamError>));
+    // ★ issue #129：断流是否补可重试错误帧（开关从**本轮**配置快照读，热生效）。
+    let auto_failover = state.config_snapshot().await.auto_failover;
     let state_for_task = state.clone();
     let uid = uid.to_string();
     let model_for_task = model.to_string();
+    // ★ issue #129：粘性键要进 `tokio::spawn`（'static）⇒ clone 一份。
+    let sticky_for_task = sticky_key;
     // ★ issue #76：Key 要进 `tokio::spawn`（'static）⇒ clone 一份 Arc。
     let key_for_task = key.clone();
 
@@ -887,7 +1033,9 @@ async fn stream_relay(
     let tapped = sse::UsageTapStream::new(
         sse::DsmlGuardStream::new(
             sse::LeakGuardStream::new(
-                sse::QoderOpenAiStream::new(upstream),
+                // ★ issue #129：开关开启时，断流补一条可重试错误帧（关闭 = 原行为）。
+                sse::QoderOpenAiStream::new(upstream)
+                    .with_failover(auto_failover, error_slot.clone()),
                 allowed_tools_shared.clone(),
             ),
             allowed_tools_shared,
@@ -902,10 +1050,10 @@ async fn stream_relay(
         Box<dyn futures_util::Stream<Item = Result<Bytes, std::io::Error>> + Send>,
     > = match protocol {
         Protocol::OpenAi => Box::pin(tapped),
-        Protocol::Anthropic => Box::pin(crate::protocol::anthropic::AnthropicSseStream::new(
-            tapped,
-            stream_model.clone(),
-        )),
+        Protocol::Anthropic => Box::pin(
+            crate::protocol::anthropic::AnthropicSseStream::new(tapped, stream_model.clone())
+                .with_estimated_input(estimated_input),
+        ),
         // Responses 事件流：`response.created` … `response.completed`（**不补 `[DONE]`**，
         // 上游那一条会被本层吞掉 —— 见 `protocol::responses::ResponsesSseStream`）。
         Protocol::Responses => Box::pin(crate::protocol::responses::ResponsesSseStream::new(
@@ -956,6 +1104,22 @@ async fn stream_relay(
             );
         }
         let upstream_error = error_slot.lock().ok().and_then(|guard| guard.clone());
+        /* ★★ issue #129 §5.2 改动 3/4：流内错误**必须**写冷却并解绑粘性。
+        改造前这里只把错误写进日志（`error_slot` → `record_request`），账号在池里
+        始终干净 ⇒ 下一次选号仍然挑它、客户端重试再撞同一堵墙，表现为
+        「日志里全是 429，池卡全绿」。 */
+        if let Some(detail) = &upstream_error {
+            let kind = super::pool::classify_http_with_detail(detail.code, &detail.message);
+            {
+                let mut pools = state_for_task.pools.lock().await;
+                if let Some(pool) = pools.get_mut(&region) {
+                    pool.apply_error(&uid, kind, &detail.message, &model_for_task);
+                }
+            }
+            if let Some(key) = sticky_for_task.as_deref() {
+                state_for_task.sticky.lock().await.unbind(key);
+            }
+        }
         let (status, error) = match &upstream_error {
             Some(detail) => (
                 if detail.code == 429 { 429u16 } else { 502u16 },
@@ -1082,6 +1246,7 @@ async fn aggregate_relay(
                 input_tokens: prompt_tokens,
                 output_tokens: completion_tokens,
                 custom: &responses_custom,
+                raw_usage: usage.as_ref(),
             },
             model,
         ))

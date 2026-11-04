@@ -89,7 +89,15 @@ pub fn allowed_tool_names(parsed: &Value) -> Option<HashSet<String>> {
 }
 
 /// `/v1/models` 响应：清单元数据 + **禁用过滤**（`disabled` 是该区域作用域的集合）。
-pub fn models_response(catalog: &[Value], disabled: &BTreeSet<String>, max_context: bool) -> Value {
+///
+/// ★ 图片能力（issue #101）：Qoder 的官方清单**没有**多模态字段 ⇒ `upstream = None`，
+/// 能下发的只有用户在「模型」页手动指定的覆盖（`model_capability` 是唯一解析点）。
+pub fn models_response(
+    catalog: &[Value],
+    disabled: &BTreeSet<String>,
+    max_context: bool,
+    scope: buddy_switch_core::modules::product::Scope,
+) -> Value {
     let data: Vec<Value> = catalog
         .iter()
         .filter(|entry| {
@@ -106,7 +114,7 @@ pub fn models_response(catalog: &[Value], disabled: &BTreeSet<String>, max_conte
                 .or_else(|| entry.get("key"))
                 .and_then(Value::as_str)
                 .unwrap_or("");
-            json!({
+            let mut value = json!({
                 "id": id,
                 "object": "model",
                 "created": 0,
@@ -120,7 +128,11 @@ pub fn models_response(catalog: &[Value], disabled: &BTreeSet<String>, max_conte
                 // 两档原值（前端本地即时切换用）。
                 "context_length_default": context_windows(entry).0,
                 "context_length_max": context_windows(entry).1,
-            })
+            });
+            if let Some(object) = value.as_object_mut() {
+                crate::model_capability::apply(object, scope, id, None);
+            }
+            value
         })
         .collect();
     json!({ "object": "list", "data": data })
@@ -152,7 +164,7 @@ pub fn admin_models_response(
                 .or_else(|| entry.get("key"))
                 .and_then(Value::as_str)
                 .unwrap_or("");
-            json!({
+            let mut value = json!({
                 "id": id,
                 "object": "model",
                 "owned_by": "qoder",
@@ -176,7 +188,17 @@ pub fn admin_models_response(
                 "is_free": entry.get("is_free").cloned().unwrap_or(Value::Bool(false)),
                 "promotion": entry.get("promotion").cloned(),
                 "thinking_efforts": thinking_efforts(entry),
-            })
+            });
+            // 图片能力与出口 ① 同一解析点（管理面显示必须等于网关真正下发的）。
+            if let Some(object) = value.as_object_mut() {
+                crate::model_capability::apply(
+                    object,
+                    buddy_switch_core::modules::product::scope_of_qoder_region(region),
+                    id,
+                    None,
+                );
+            }
+            value
         })
         .collect();
     json!({
@@ -291,6 +313,30 @@ pub fn meta_for(
 mod tests {
     use super::*;
 
+    /// ★ issue #101：没有覆盖、上游也不声明时，出口 ① **不得**出现 `supports_images`。
+    ///
+    /// 「未声明」与「不支持」是两件事：写 `false` 会让客户端以为这是网关的结论，
+    /// 而 Qoder 官方清单根本没有这个字段。
+    #[test]
+    fn models_response_omits_image_capability_when_undeclared() {
+        let catalog = vec![json!({
+            "key": "issue101-qoder-probe",
+            "display_name": "probe",
+            "max_input_tokens": 200_000,
+        })];
+        let body = models_response(
+            &catalog,
+            &BTreeSet::new(),
+            true,
+            buddy_switch_core::modules::product::Scope::QoderCn,
+        );
+        assert!(
+            body["data"][0].get("supports_images").is_none(),
+            "上游没声明时不得下发能力断言：{}",
+            body["data"][0]
+        );
+    }
+
     /// ★ 出口①必须带 `context_length`（OpenAI 兼容客户端读这个字段），
     /// 与 Trae / WB 三平台同名同义；`max_input_tokens` 保留为上游原字段。
     #[test]
@@ -300,7 +346,12 @@ mod tests {
             "display_name": "Qwen3.8-Max",
             "max_input_tokens": 200_000,
         })];
-        let body = models_response(&catalog, &BTreeSet::new(), true);
+        let body = models_response(
+            &catalog,
+            &BTreeSet::new(),
+            true,
+            buddy_switch_core::modules::product::Scope::QoderCn,
+        );
         assert_eq!(body["data"][0]["context_length"], 200_000);
         assert_eq!(body["data"][0]["max_input_tokens"], 200_000);
     }
@@ -320,11 +371,21 @@ mod tests {
             }
         })];
 
-        let max = models_response(&catalog, &BTreeSet::new(), true);
+        let max = models_response(
+            &catalog,
+            &BTreeSet::new(),
+            true,
+            buddy_switch_core::modules::product::Scope::QoderCn,
+        );
         assert_eq!(max["data"][0]["context_length"], 1_000_000);
         assert_eq!(max["data"][0]["context_length_default"], 200_000);
         assert_eq!(max["data"][0]["context_length_max"], 1_000_000);
-        let lower = models_response(&catalog, &BTreeSet::new(), false);
+        let lower = models_response(
+            &catalog,
+            &BTreeSet::new(),
+            false,
+            buddy_switch_core::modules::product::Scope::QoderCn,
+        );
         assert_eq!(lower["data"][0]["context_length"], 200_000);
 
         assert_eq!(
@@ -425,7 +486,12 @@ mod tests {
         ];
         let mut disabled = BTreeSet::new();
         disabled.insert("ultimate".to_string());
-        let response = models_response(&catalog, &disabled, true);
+        let response = models_response(
+            &catalog,
+            &disabled,
+            true,
+            buddy_switch_core::modules::product::Scope::QoderCn,
+        );
         let ids: Vec<&str> = response["data"]
             .as_array()
             .unwrap()

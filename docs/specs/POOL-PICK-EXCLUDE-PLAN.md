@@ -23,13 +23,14 @@
 > | O3 在途满排队 2s | ✅ | `relay.rs::acquire_with_wait` + `PoolConfig::acquire_timeout_ms` |
 > | §4 排除账号（存储/选号/状态/端点/前端） | ✅ | `pool/exclusions.rs`（新）、`pool/pick.rs`、`routes/pool_admin.rs`（新）、`commands.rs`、`server/api.rs`、`account-pool-card.tsx` |
 > | 随机档 `AccountStrategy::Random` | ✅（仅 WB 的 relay 生效） | `account_strategy.rs`、`pool/pick.rs::PickMode` |
+> | 顺序档 `AccountStrategy::Sequential`（issue #102） | ✅（三平台共用；见 §10） | `pool/pick.rs::PickMode::Sequential`、`account_strategy.rs`、`routes/relay.rs`、三个网关页 |
 > | O5 排除时按 uid 清粘性 | ✅ | `sticky.rs::purge_uid` + `pool_admin::set` |
 > | 前端：排除按钮 / 已排除格 / 模型冷却徽标 | ✅（仅 WB 页） | `account-pool-card.tsx`、`ApiServicePage.tsx` |
 >
 > | O1 跨请求模型闸门 + 半开探测（含探针 120s 租约） | ✅ | `pool/gate.rs`（新）、`routes/relay.rs` |
 > | P0-4 在途租约自愈 | ✅ | `pool/entry.rs::in_flight_now`、`pool/mod.rs::acquire` |
 > | **P0-3 200 信封错误（非流式）** | ✅ | `protocol/error_sniffer.rs`（新）+ `chat`/`messages`/`responses` 三条路由 + `relay::note_envelope_failure` |
-> | **P0-3 流内信封错误（流式）** | ✅ | `UsageTap::with_error_sink` + `relay::EnvelopeErrorSink`（旁听、不改字节、spawn 落治理）+ 末端残帧也判 |
+> | **P0-3 流内信封错误（流式）** | ✅ | `UsageTap::with_error_sink` + `relay::EnvelopeErrorSink`（旁听、spawn 落治理）+ 末端残帧也判。★ 2026-10-30：`UsageTap` 仍**只旁听不改字节**；收尾是否追加错误帧由**协议出口**按 `auto_failover` 决定（见 [`ACCOUNT-FAILOVER.md`](ACCOUNT-FAILOVER.md)） |
 > | **O6 模型 × 账号维度 EMA** | ✅ | `PoolEntry.model_health` + `weight_of_model`（样本 <3 回落账号级） |
 > | **Trae / Qoder 策略枚举** | ✅ | `pool::parse_preferred`（哨兵值 `__auto__` / `__max_credits__` / `__random__`）+ 两平台 `pick` 内部解析 + 两页池卡下拉三档 |
 >
@@ -232,6 +233,8 @@ UpstreamChatResult::Ok(ok) => {
    但**冷却只用 `from_json`**）：
    - 结构化字段（`resetTime` 等）→ 可信，可用作冷却墙钟；
    - 文案兜底（`… UTC+8`）→ **只用于展示/诊断**，不进冷却（依据 `client_limits.rs` 的 6/6 实测）。
+   > ⚠️ **2026-10-29 已改**：文案时刻降为**第二档**冷却依据（结构化缺失时用，封顶 24h）。
+   > 见本文档 §5 表格后的「改口径」说明与 `Pool::adopt_probe_result` 的注释。
 3. `apply_upstream_error` 的模型级分支：
    ```rust
    let reset = reset_at.filter(|v| *v > now_ms + MIN_MODEL_COOLDOWN_MS)
@@ -447,6 +450,22 @@ POST /api/gateway/pool/exclusions
 
 ---
 
+> ### ⚠️ 2026-10-29 改口径（决策 2 被推翻，其余不变）
+>
+> 决策 2 的「① 不采信文案 `reset at`」在 WB `6004` 上被实测推翻：该响应体**一个结构化
+> 数值键都没有**，于是每一条回填都走兜底（探测 10 分钟）—— 上游明说 `16:26:36` 恢复，
+> 网关 11:12 就去撞、撞回来再冷 10 分钟，界面上显示的时刻也与上游说的无关（用户报障）。
+>
+> 现在的口径（`Pool::adopt_probe_result`）：**结构化墙钟 > 文案声明 > 兜底**，
+> 文案声明封顶 `PoolConfig::declared_reset_max_ms`（默认 24h，与封禁退避同一量级）。
+> 旧口径担心的过度冷却由三件事兜住：该模型下一次成功即清（`note_success`）、
+> 用户点「限流探测」探到可用即清、到期走「半开 + 单探针」（`verify_on_expiry`）。
+>
+> 单测：`adopt_probe_uses_upstream_declared_reset_as_cooldown` /
+> `adopt_probe_caps_absurd_upstream_declared_reset`。
+
+---
+
 ## 6. 落地顺序与改动面
 
 | 阶段 | 内容 | 改动文件（预估） | 风险 |
@@ -562,8 +581,8 @@ enum GatePhase { Paused, HalfOpen, Closed }
 
 - **没有「本次请求的模型」选择器**：模型是**请求**的属性，不是网关配置项。做成池卡上的下拉，
   会让人以为「网关有一个全局模型设置」——那是假控件。当前演示请求的模型在计数格下方以只读文字给出。
-- **「指定账号」四档策略收在同一个下拉里**（不指定 / 按实时积分择优 / **随机** / 某个账号），与真实
-  `AccountPoolCard` 同形 —— 它们是同一个枚举 `AccountStrategy{Current, Pinned, MaxCredits, Random}`，
+- **「指定账号」五档策略收在同一个下拉里**（不指定 / 按实时积分择优 / **随机** / **顺序** / 某个账号），与真实
+  `AccountPoolCard` 同形 —— 它们是同一个枚举 `AccountStrategy{Current, Pinned, MaxCredits, Random, Sequential}`，
   拆成多个控件会让它们同时成立。原型里 `max_credits` 按「它应该有的样子」实现
   （候选内按积分降序），**当前后端并非如此**（见 D6 / 决策 10）。
 - 原型里的「本次请求会选中谁」是**确定性**的（免费层取权重最高者）；真实实现是
@@ -608,13 +627,15 @@ while attempt < max_rotate:
 |:--|:--|:--|:--|
 | 429 + `6004`（模型级） | **是** | 模型冷却 60s 起（P0-1） | 换到「同模型可用」的号就有救 |
 | 429（账号级） | **是** | 账号软冷却（≤15min） | 该号整体被限 |
-| 402 / 余额文案 | **是** | 硬冷却至次日 04:00 | 换号能救 |
+| 402 / 余额文案 | **是** | 硬冷却至次日 04:00 | 换号能救（★ 2026-10-30 修：`apply_upstream_error` 曾返回 `true` ⇒ `relay_once` 在 402 上一击 `break`，与本行自相矛盾） |
 | 5xx | **是** | 熔断计数 | 上游抖动，换号常能过 |
 | `12153` 会话失效 | **是** | 三振禁用 | 该号登录态坏了 |
+| **401 / 403（无 `12153`）** | **是** | 浅冷却 60s，**不计数、不禁用**（#100） | 凭据被拒多半是 token 过期 ⇒ 保活刷新可自愈；打终态会让「号没坏却用不了」 |
 | 404 | **只换 1 次** | 60s | 可能是账号级模型清单差异；换第 3 次纯浪费 |
 | 400 / 422 参数错 | **否** | 无 | 同一份坏参数喂给下一个号 = 白烧配额（现在会白撞 3 次） |
 | `11128` 内容审核 | 否（走降级提示词） | 无 | 与账号无关 |
-| 流内错误（响应头已发） | **否** | 记冷却 + 解绑粘性 | 协议上无法换（见 P0-3） |
+| 流内错误（响应头已发） | **否** | 记冷却 + 解绑粘性 + 写 `last_error` | 协议上无法换（见 P0-3）：字节已经发出去，退不回来 |
+| **流内错误 + `auto_failover` 开启** | **否**（但**不再补终止标记**） | 同上 + 日志写真实状态码 | 网关改为发一条**可重试**错误帧（429 / 502），由**客户端**整步重跑 ⇒ 下一轮自然落到别的号。见 [`ACCOUNT-FAILOVER.md`](ACCOUNT-FAILOVER.md) |
 
 ### 9.3 四种策略在换号时的行为（同一段代码，只有「选谁」不同）
 
@@ -623,6 +644,7 @@ while attempt < max_rotate:
 | 自动择优 | 权重 → 短名单 → 加权抽签 | 重新抽签（`tried` 排除） |
 | 按实时积分择优 | 积分最高 | 取**次高** |
 | **随机** | 候选内**均匀**抽签 | 重新均匀抽（`tried` 排除） |
+| **顺序**（#102） | **粘住最近被选中的号**（`used_seq` 降序取第一） | 该号已进 `tried` ⇒ 自动落到「次近使用」的号 |
 | 指定账号 | 指定的那个 | **回落自动择优**（偏好不是约束，现有行为） |
 
 共同点：`model` 维度**始终参与过滤** ⇒ 模型级限流不会把请求换到一个同样被限流的号上。
@@ -658,3 +680,60 @@ while attempt < max_rotate:
 
 闸门暂停时点它 ⇒ 链路只有一行「停：整体暂停 42s」（**一个请求都不发**）。
 「重置」把冷却 / 闸门 / 排除复位，可反复演示。
+
+---
+
+## 10. 顺序档（issue #102，2026-10-26）
+
+> 用户原话：「期望指定账号这里加一个顺序切换，账号限流后自动切换下一个账号。
+> 现在随机选号的模式导致缓存复用率极低，token 消耗过快」。
+
+### 10.1 为什么需要第五档
+
+`Random` 每轮都可能换号 ⇒ 同一段对话的上下文落在不同账号上，**上游前缀缓存（KV cache）命中率归零**，
+同样的上下文被反复按输入计价。用户体感就是「token 消耗快得离谱」。
+
+`Current`（自动择优）虽然有会话粘性，但粘性键来自客户端的 `conversation_id`：客户端不给（很多
+CLI/自建 harness 不给）就整段跳过，退化成每轮加权抽签 —— 与随机同样的后果，只是不那么明显。
+
+因此需要一个**不依赖任何客户端字段**就能稳定复用同一个账号的策略。
+
+### 10.2 语义（与「轮流」的区别）
+
+| 档位 | 每轮选谁 | 效果 |
+|:--|:--|:--|
+| 自动择优 | 权重 → 短名单 → 加权抽签 | 有偏随机，缓存命中率中等（有粘性时高） |
+| 按积分择优 | 积分最高 | 稳定，但按积分而不是按「已在用的号」 |
+| 随机 | 候选内均匀抽签 | 每轮换号 ⇒ **缓存命中率归零** |
+| **顺序** | **最近被选中的那个** | **一直用它**；它不可用才换下一个 |
+
+「顺序」**不是**轮流（round-robin）：轮流每轮换号，对缓存毫无帮助。本档是
+「一个号用到不能用」—— 健康 / 未被限流 / 未被排除 / 未占满在途就一直用它。
+
+顺序从哪来：候选按 `used_seq` **降序**取第一名（`used_seq` 是选号序号，单调递增、与系统时钟无关
+⇒ 不受时间回拨影响）；从未用过的号 `used_seq = 0`，并列按 uid 升序。
+冷启动取 uid 最小者并一直粘着；它被限流后落回「次近使用」的号；全都没用过就是 uid 序的下一个。
+
+### 10.3 三条硬约束（与其它档一致）
+
+1. **分层仍然在前**：成本分层（免费 > 无观测 > 收费）先过滤，再分策略 —— 顺序档不会「稳定地用收费号」。
+2. **排除 / 禁用 / 冷却 / 模型冷却 / 在途满 / `tried` 照样生效**：策略只决定「在合格候选里挑谁」。
+3. **不受防惊群（`min_pick_gap_ms`）约束**：那条规则的目的恰恰相反（别让同一个号被连续打死）。
+   故本档在分层之后直接返回，不进入短名单 + 防惊群那一段。
+
+### 10.4 一个刻意取舍：冷却恢复后**不抢回**
+
+A 被限流 → 换 B → 60 秒后 A 恢复。此时**仍然留在 B**（B 的 `used_seq` 更大）。
+否则每 60 秒抖一次账号，缓存又被清空，等于没修。只有 B 也出问题才回到 A。
+
+### 10.5 落地位置
+
+| 层 | 落点 |
+|:--|:--|
+| 算法 | `pool/pick.rs::PickMode::Sequential`（分层之后直接返回，`mark_selected` 共用） |
+| 哨兵 | `pool::PREFERRED_SEQUENTIAL = "__sequential__"` ↔ 前端 `SEQUENTIAL_OPTION` |
+| 策略枚举 | `account_strategy::AccountStrategy::Sequential`（serde 标签 `"sequential"`）；池为空时回落「跟随登录态」 |
+| 接线 | `routes/relay.rs::select_account`（`Sequential ⇒ (PickMode::Sequential, None)`，粘性不参与） |
+| 前端 | 三个网关页的 `autoOptions` 同一档 + `ApiServicePage` 的 `persist({kind:"sequential"})` 与读回 |
+| 门禁 | `check-scope-registry.cjs`：4 个哨兵逐字一致 · 三页 × 4 档 · union 含 `"sequential"` |
+| 测试 | `pick.rs`：粘住同一号 / 限流才换且恢复不抢回 / 吃 `tried` 与排除 |

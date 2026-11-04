@@ -14,7 +14,9 @@ use crate::logging::RequestMeta;
 use crate::outbound::PromptMode;
 use crate::protocol::openai::{CompletionAccumulator, SsePassthrough};
 use crate::routes::relay::{self, RelayKind, RelayOutcome, RelayRequest};
-use crate::routes::{authenticate, json_response, openai_error, parse_body, sse_response};
+use crate::routes::{
+    authenticate, json_response, openai_error, openai_error_with_fallback, parse_body, sse_response,
+};
 use crate::session_headers;
 use crate::state::GatewayState;
 use crate::timeutil;
@@ -150,7 +152,10 @@ pub async fn chat_for_region(
         crate::model_route::rewrite_body_model(&raw_source, &model)
     };
 
-    let conversation_id = relay::conversation_id_of(&parsed);
+    // ★ issue #150：粘性键不能只认 body 的 `metadata.conversation_id` —— Claude Code
+    //   发 `x-claude-code-session-id` 头、Codex 发 body `session_id`，都要认
+    //   （见 `session_headers::session_key_of`）。出站 `X-Conversation-ID` 同样用它。
+    let session_key = session_headers::session_key_of(&parsed, &headers);
     let turn_key = session_headers::turn_key(&parsed);
     let inbound_request_id = header_of(&headers, "x-conversation-request-id");
     let trace_id = header_of(&headers, "x-trace-id");
@@ -161,7 +166,7 @@ pub async fn chat_for_region(
         region,
         &raw,
         &model,
-        conversation_id.clone(),
+        session_key.clone(),
         turn_key.as_deref(),
         inbound_request_id.as_deref(),
         trace_id.clone(),
@@ -186,7 +191,7 @@ pub async fn chat_for_region(
                 region,
                 &raw,
                 &model,
-                conversation_id,
+                session_key.clone(),
                 turn_key.as_deref(),
                 inbound_request_id.as_deref(),
                 trace_id,
@@ -197,7 +202,42 @@ pub async fn chat_for_region(
     }
 
     match attempt {
+        // 跨作用域降级：目标产品线已经产出了成型响应，直接返回。
+        // 跨作用域降级：目标产品线已经产出了成型响应，直接返回。
+        //
+        // ★ 但**请求日志必须记**：否则用户看不到这次请求存在（账本也少一笔）。
+        //   token 用量拿不到（响应由目标产品线封装）—— 记 0 表示「本入口未知」，
+        //   不是「没消耗」；目标平台自己的账本会记它那一边的真实用量。
+        Ok(RelayOutcome::Ready { response, model }) => {
+            let elapsed = started.elapsed().as_millis() as i64;
+            state.log.record(
+                RequestMeta {
+                    endpoint: "/v1/chat/completions",
+                    key_id: key.as_deref().map(|actor| actor.key_id.clone()),
+                    key_scope: key.as_deref().map(|actor| actor.scope),
+                    method: "POST",
+                    region,
+                    account: String::new(),
+                    account_uid: String::new(),
+                    model,
+                    status: response.status().as_u16(),
+                    latency_ms: elapsed,
+                    total_ms: elapsed,
+                    prompt_tokens: 0,
+                    completion_tokens: 0,
+                    cached_tokens: 0,
+                    credit: 0.0,
+                    stream: true,
+                    // ★ issue #129：流中途失败摘要（`None` = 正常结束 / 老条目）。
+                    error: None,
+                }
+                .to_value(),
+            );
+            return response;
+        }
         Err(failure) => {
+            // 先取轨迹：下面的日志会把 `failure.uid` move 走，之后再借整条 `failure` 就晚了。
+            let note = relay::fallback_summary_json(&failure);
             let http_status = failure.error.status();
             let elapsed_ms = started.elapsed().as_millis() as i64;
             state.log.record(
@@ -216,23 +256,42 @@ pub async fn chat_for_region(
                     total_ms: elapsed_ms,
                     prompt_tokens: 0,
                     completion_tokens: 0,
+                    cached_tokens: 0,
                     credit: 0.0,
                     stream: wants_stream,
+                    // ★ issue #129：流中途失败摘要（`None` = 正常结束 / 老条目）。
+                    error: None,
                 }
                 .to_value(),
             );
-            openai_error(failure.error)
+            openai_error_with_fallback(failure.error, note)
         }
         Ok(RelayOutcome::Ok {
             response,
             prefix,
             account,
             uid,
+            fallback,
         }) => {
+            // ★ 降级后**实际使用的模型**：账本与日志都记它。
+            //   记客户端请求的 origin 会让用量页的模型维度骗人 ——
+            //   「claude 名下记着 glm 的消耗」是账本最不该犯的错。
+            //   用 shadowing 而不是逐处替换：分支内所有 `model` 从此指向真实模型。
+            let model = fallback
+                .as_ref()
+                .map(|info| info.to.clone())
+                .unwrap_or_else(|| model.clone());
             // ★ 上游**响应头**已到 ⇒ 此刻的耗时就是 `latencyMs`（TTFB，与改造前逐字同语义）。
             //   绝不能等到流结束再算 —— 那是 `totalMs`（2026-10-15 事故根因）。
             let header_at_ms = started.elapsed().as_millis() as i64;
-            if wants_stream {
+            // ★ issue #129：流中途失败的三个消费者（协议出口 / 请求日志 / 粘性解绑）
+            //   共用同一个信号槽。开关从**本轮**配置快照读（热生效）。
+            let auto_failover = state.config_snapshot().await.auto_failover;
+            let failure = crate::failover::StreamFailure::new(auto_failover);
+            // 粘性键用**客户端请求的模型**（与 `relay` 内部推导同一口径）——
+            // 用降级后的目标模型算出来的键永远匹配不上，解绑会静默失效。
+            let sticky_key = relay::sticky_key_for(region, &model, session_key.as_deref());
+            let mut resp = if wants_stream {
                 // ★ 流式请求的日志**推迟到流结束**才写（`StreamingLogSink`）：写日志的
                 //   那一刻用量还没到达，此前只能把 token 写死 0（实测本机 200/200 条全 0）。
                 //   账本同理 —— 两者共用 `UsageTap` 的结束回调。
@@ -244,7 +303,8 @@ pub async fn chat_for_region(
                         key_scope: key.as_deref().map(|actor| actor.scope),
                         method: "POST",
                         region,
-                        account,
+                        // 留给 `with_failover` 的对外文案（下面还要读一次）。
+                        account: account.clone(),
                         account_uid: uid.clone(),
                         model: model.clone(),
                         status: 200,
@@ -254,28 +314,42 @@ pub async fn chat_for_region(
                         total_ms: 0,
                         prompt_tokens: 0,
                         completion_tokens: 0,
+                        cached_tokens: 0,
                         credit: 0.0,
                         stream: true,
+                        // ★ issue #129：流中途失败摘要（`None` = 正常结束 / 老条目）。
+                        error: None,
                     },
                     started,
                     &uid,
                     &model,
                     // ★ issue #76：按密钥的 token 记账（流结束才写）。
                     key.as_deref(),
+                    // ★ issue #129：日志据此写真实状态码（不是恒 200）。
+                    Some(failure.clone()),
                 );
                 // 组合顺序：上游字节流 -> UsageTap (旁观原始字节 + 结束回报) -> ReasoningDelta
                 // (快照差分) -> SsePassthrough (补发 [DONE])
-                sse_response(SsePassthrough::new(
-                    crate::protocol::reasoning::ReasoningDelta::new(
+                sse_response(
+                    SsePassthrough::new(crate::protocol::reasoning::ReasoningDelta::new(
                         crate::protocol::usage_tap::UsageTap::new(
                             relay::prefix_stream(prefix, response),
                             sinks,
                         )
                         // ★ 流内信封错误（P0-3 流式半边）：逐帧旁听，命中就记冷却 +
                         //   计模型闸门。**不改字节**，客户端看到的内容与改造前完全一致。
-                        .with_error_sink(relay::envelope_error_sink(&state, &uid, &model)),
-                    ),
-                ))
+                        .with_error_sink(relay::envelope_error_sink(
+                            &state,
+                            &uid,
+                            &model,
+                            sticky_key.as_deref(),
+                        ))
+                        // ★ issue #129：同一份嗅探结果也写进失败槽（出口/日志读它）。
+                        .with_failure(Some(failure.clone())),
+                    ))
+                    // ★ issue #129：开关开启时，收尾先发可重试错误帧再补 [DONE]。
+                    .with_failover(Some(failure), &account, &model),
+                )
             } else {
                 let text = relay::body_text_with_prefix(prefix, response).await;
                 // ★★ **200 信封错误**（P0-3）：上游常把限流/封禁/会话失效装在 2xx 响应体里
@@ -286,7 +360,8 @@ pub async fn chat_for_region(
                 //   这里只**记冷却 + 返回真实错误**，不换号：响应已完整读完，
                 //    按方案 §5 决策 4 的口径，这一类不做轮换（协议上也退不回去）。
                 if let Some(envelope) = crate::protocol::error_sniffer::sniff_http_body(&text) {
-                    return envelope_error_response(
+                    // 降级后仍然拿到「200 信封错误」：头要带上 —— 否则客户端不知道这次是备选模型的锅。
+                    let mut resp = envelope_error_response(
                         &state,
                         region,
                         started,
@@ -297,6 +372,10 @@ pub async fn chat_for_region(
                         envelope,
                     )
                     .await;
+                    if let Some(info) = fallback.as_ref() {
+                        relay::apply_fallback_headers(&mut resp, info);
+                    }
+                    return resp;
                 }
                 let accumulator = CompletionAccumulator::from_sse(&text);
                 // 只在拿到真实 credit 时写账本——否则会把账号误标为「免费」。
@@ -322,13 +401,22 @@ pub async fn chat_for_region(
                         total_ms: started.elapsed().as_millis() as i64,
                         prompt_tokens: accumulator.prompt_tokens.unwrap_or(0),
                         completion_tokens: accumulator.completion_tokens.unwrap_or(0),
+                        cached_tokens: 0,
                         credit: accumulator.credit.unwrap_or(0.0),
                         stream: false,
+                        // ★ issue #129：流中途失败摘要（`None` = 正常结束 / 老条目）。
+                        error: None,
                     }
                     .to_value(),
                 );
                 json_response(StatusCode::OK, completion)
+            };
+            // 降级成功：把「从谁降到谁、为什么」写进响应头。
+            // 客户端看到的 `model` 字段已经变了，不给这三行它只会以为网关串号了。
+            if let Some(info) = fallback.as_ref() {
+                relay::apply_fallback_headers(&mut resp, info);
             }
+            resp
         }
     }
 }
@@ -381,8 +469,11 @@ async fn envelope_error_response(
             total_ms: elapsed_ms,
             prompt_tokens: 0,
             completion_tokens: 0,
+            cached_tokens: 0,
             credit: 0.0,
             stream: false,
+            // ★ issue #129：流中途失败摘要（`None` = 正常结束 / 老条目）。
+            error: None,
         }
         .to_value(),
     );
@@ -426,6 +517,7 @@ async fn run(
     relay::relay(
         state,
         RelayRequest {
+            openai_shape: true,
             region,
             kind: RelayKind::Llm,
             model: model.to_string(),

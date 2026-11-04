@@ -9,20 +9,32 @@ use crate::disabled_models::is_disabled;
 use crate::routes::{authenticate, json_response, openai_error};
 use crate::state::GatewayState;
 use buddy_switch_core::modules::catalog::{CatalogModel, CatalogSnapshot};
-use buddy_switch_core::modules::product::scope_of_wb_region;
+use buddy_switch_core::modules::product::{scope_of_wb_region, Scope};
 
 /// 一条 WB 模型在 OpenAI `/v1/models` 里的形状（**唯一产出点**：独立网关与统一网关共用）。
 ///
 /// ★ `context_length` 必须与 Trae 侧同名字段对齐 —— OpenAI 兼容客户端读的是它；
 /// `context_window` 保留给老客户端与管理面（WB 目录原本就用这个名字）。
-pub fn model_entry(model: &CatalogModel, max_context: bool) -> serde_json::Value {
+///
+/// ★ 图片能力（issue #101）走 [`crate::model_capability::apply`]：上游 `supportsImages`
+/// 优先、用户在「模型」页的覆盖次之、两边都没有就**不下发**该字段。这里**只传上游原值**，
+/// 合并判断只有一处（`model_capability`），别在此处再写一遍 `if override`。
+///
+/// ★ 思考档位（issue #127）与**管理面**（[`snapshot_view`]）同源同值：上游目录声明的
+/// `reasoning.efforts` 优先、内置静态表次之，`efforts_source` 标明是哪一份。
+/// 客户端据此才知道「这个模型能传哪些 `reasoning_effort`」—— 改造前只有管理面有，
+/// 出口 ① 一条都不给，客户端只能猜（猜错的档位会被 [`crate::outbound::effort`] 静默降级）。
+///
+/// ⚠️ 两边都没声明时**不写这三个字段**（不是写空数组）：`[]` 会被读成「该模型不支持思考」，
+/// 而真相是「上游没下发、内置表也没有」—— 与 `supports_images` 的取舍一致，不编事实。
+pub fn model_entry(model: &CatalogModel, max_context: bool, scope: Scope) -> serde_json::Value {
     // 开关决定声明「上限档」还是「默认档」（上游两档：如 300k 默认 / 1M 上限）。
     let window = if max_context {
         model.context_window
     } else {
         model.context_window_default.unwrap_or(model.context_window)
     };
-    json!({
+    let mut value = json!({
         "id": model.id,
         "object": "model",
         "created": 0,
@@ -33,14 +45,34 @@ pub fn model_entry(model: &CatalogModel, max_context: bool) -> serde_json::Value
         "context_length_max": model.context_window,
         "context_window": window,
         "max_tokens": model.max_tokens,
-        "supports_images": model.supports_images,
         // 原文（上游怎么写就怎么给）+ 数字（同一份解析的唯一出口）。
         "credits": model.credits,
         "credits_rate": model.credits_rate(),
         "badges": model.badges,
         // 判零用 `is_free()`（认 `x0.00 credits`），不读落盘的 `free` 快照。
         "free": model.is_free(),
-    })
+    });
+    if let Some(object) = value.as_object_mut() {
+        crate::model_capability::apply(object, scope, &model.id, Some(model.supports_images));
+        // 思考档位（issue #127）：与 `snapshot_view` 共用 `ModelAbility::resolve`，
+        // 否则「管理面显示的档位」与「网关下发的档位」迟早漂移。
+        if let Some(region) = scope.wb_region() {
+            let ability =
+                ModelAbility::resolve(model, crate::outbound::effort::static_effort_cap(region));
+            if !ability.efforts.is_empty() {
+                object.insert(
+                    "reasoning_efforts".into(),
+                    serde_json::json!(ability.efforts),
+                );
+                object.insert(
+                    "default_effort".into(),
+                    serde_json::json!(ability.default_effort),
+                );
+                object.insert("efforts_source".into(), serde_json::json!(ability.source));
+            }
+        }
+    }
+    value
 }
 
 /// 管理面用的目录快照视图：把每个模型的 `context_window` 按开关换成**生效窗口**，
@@ -75,6 +107,11 @@ pub fn snapshot_view(snapshot: &CatalogSnapshot, max_context: bool) -> serde_jso
     }
     let mut value = serde_json::to_value(&snapshot).unwrap_or(serde_json::Value::Null);
     if let Some(rows) = value.get_mut("models").and_then(|v| v.as_array_mut()) {
+        // ★ 图片能力（issue #101）：与出口 ① 走**同一个**解析点 —— 管理面显示的能力必须
+        //   就是网关真正下发的那一份，否则用户改了覆盖、界面点头、客户端却看不到。
+        //   行里此刻的 `supports_images` 是 `CatalogModel` 序列化出来的**上游原值**，
+        //   先读出来当 `upstream`，再由 `apply` 用覆盖压过它。
+        let scope = scope_of_wb_region(snapshot.region);
         for ((row, max), ability) in rows.iter_mut().zip(maxes).zip(abilities) {
             if let Some(object) = row.as_object_mut() {
                 object.insert("context_length_max".into(), serde_json::json!(max));
@@ -92,6 +129,13 @@ pub fn snapshot_view(snapshot: &CatalogSnapshot, max_context: bool) -> serde_jso
                     serde_json::json!(ability.default_effort),
                 );
                 object.insert("efforts_source".into(), serde_json::json!(ability.source));
+                let id = object
+                    .get("id")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let upstream = object.get("supports_images").and_then(|v| v.as_bool());
+                crate::model_capability::apply(object, scope, &id, upstream);
             }
         }
     }
@@ -149,11 +193,13 @@ pub async fn handler(State(state): State<GatewayState>, headers: HeaderMap) -> R
     //   禁用过滤读的是**与出口 ② 同一份** `disabled`（`is_disabled` 是唯一判断点）。
     let disabled = state.disabled.read().await;
     let max_context = state.config.read().await.max_context;
+    // 作用域一次算好：禁用过滤与图片能力解析读的是**同一个**作用域（WB 的 region → Scope）。
+    let scope = scope_of_wb_region(record.region);
     let data: Vec<serde_json::Value> = snapshot
         .models
         .iter()
-        .filter(|model| !is_disabled(&disabled, scope_of_wb_region(record.region), &model.id))
-        .map(|model| model_entry(model, max_context))
+        .filter(|model| !is_disabled(&disabled, scope, &model.id))
+        .map(|model| model_entry(model, max_context, scope))
         .collect();
     drop(disabled);
 
@@ -190,14 +236,52 @@ mod tests {
             free: false,
             reasoning: None,
         };
-        let max = model_entry(&model, true);
+        let max = model_entry(&model, true, Scope::WbCn);
         assert_eq!(max["context_length"], 960_000, "默认用上限档");
         assert_eq!(max["context_window"], 960_000);
 
         // 开关关 ⇒ 声明默认档（上游 contextWindow.defaultLength）。
-        let lower = model_entry(&model, false);
+        let lower = model_entry(&model, false, Scope::WbCn);
         assert_eq!(lower["context_length"], 300_000);
         assert_eq!(lower["context_window"], 300_000);
+    }
+
+    /// ★ issue #101：出口 ① 必须把**图片能力**写进清单 —— 客户端就是靠它决定要不要发图。
+    ///
+    /// 变异：删掉 `model_entry` 里的 `model_capability::apply` ⇒ 本条红（客户端永远看不到能力，
+    /// 也就永远自己把图片挡掉 —— 正是 issue #101 的现场）。
+    #[test]
+    fn wb_model_entry_declares_image_capability() {
+        let mut model = CatalogModel {
+            id: "issue101-image-probe".into(),
+            name: "probe".into(),
+            context_window: 200_000,
+            context_window_default: None,
+            max_tokens: 32_000,
+            supports_images: true,
+            credits: None,
+            badges: vec![],
+            free: false,
+            reasoning: None,
+        };
+        let entry = model_entry(&model, true, Scope::WbCn);
+        assert_eq!(entry["supports_images"], true);
+        assert_eq!(entry["image_input_source"], "upstream");
+        // OpenRouter 兼容字段：主流客户端读的是它，不读我们的私有 `supports_images`。
+        assert_eq!(
+            entry["architecture"]["input_modalities"],
+            serde_json::json!(["text", "image"])
+        );
+        assert_eq!(entry["architecture"]["modality"], "text+image->text");
+
+        // 上游明确说不支持 ⇒ 给 `false`（客户端据此隐藏上传入口），**不是**省略。
+        model.supports_images = false;
+        let entry = model_entry(&model, true, Scope::WbCn);
+        assert_eq!(entry["supports_images"], false);
+        assert_eq!(
+            entry["architecture"]["input_modalities"],
+            serde_json::json!(["text"])
+        );
     }
 
     /// 没有默认档的上游（如国内目录只给一个数）⇒ 关开关也回落到上限，不能变 0。
@@ -215,7 +299,10 @@ mod tests {
             free: false,
             reasoning: None,
         };
-        assert_eq!(model_entry(&model, false)["context_length"], 1_000_000);
+        assert_eq!(
+            model_entry(&model, false, Scope::WbCn)["context_length"],
+            1_000_000
+        );
     }
 
     fn model(id: &str, credits: Option<&str>, reasoning: Option<CatalogReasoning>) -> CatalogModel {
@@ -243,6 +330,48 @@ mod tests {
             models,
             note: None,
         }
+    }
+
+    /// ★ issue #127：出口 ①（`/v1/models`）必须下发思考档位，且与管理面同源同值。
+    ///
+    /// 改造前只有管理面（`snapshot_view`）有 `reasoning_efforts`，客户端拿到的清单里
+    /// 一条都没有 —— 用户只能猜档位，猜错的会被 `outbound::effort` 静默降级。
+    ///
+    /// 变异：删掉 `model_entry` 里那段 `ModelAbility::resolve` ⇒ 前两条断言红。
+    #[test]
+    fn wb_model_entry_declares_reasoning_efforts() {
+        // ① 上游声明优先，`efforts_source = "upstream"`。
+        let upstream = model(
+            "kimi-k2.8-preview",
+            None,
+            Some(CatalogReasoning {
+                efforts: vec!["low".into(), "high".into(), "max".into()],
+                default_effort: Some("high".into()),
+                can_disable_thinking: None,
+            }),
+        );
+        let entry = model_entry(&upstream, true, Scope::WbCn);
+        assert_eq!(
+            entry["reasoning_efforts"],
+            serde_json::json!(["low", "high", "max"])
+        );
+        assert_eq!(entry["default_effort"], "high");
+        assert_eq!(entry["efforts_source"], "upstream");
+
+        // ② 上游没声明 ⇒ 回落内置静态表，来源必须标明 `"static"`（否则用户以为网关读错了）。
+        let fallback = model_entry(&model("glm-5.3", None, None), true, Scope::WbCn);
+        assert!(
+            fallback["reasoning_efforts"]
+                .as_array()
+                .is_some_and(|list| !list.is_empty()),
+            "{fallback}"
+        );
+        assert_eq!(fallback["efforts_source"], "static");
+
+        // ③ 两边都没有 ⇒ **不下发**这三个字段（不是空数组：空数组会被读成「不支持思考」）。
+        let unknown = model_entry(&model("not-anywhere", None, None), true, Scope::WbCn);
+        assert!(unknown.get("reasoning_efforts").is_none(), "{unknown}");
+        assert!(unknown.get("efforts_source").is_none(), "{unknown}");
     }
 
     /// ★ issue #65：思考档位三档来源必须能区分 —— 上游声明 / 内置静态表 / 都没有。
@@ -302,8 +431,11 @@ mod tests {
         let with_suffix = model("hy3", Some("x0.00 credits"), None);
         assert_eq!(with_suffix.credits_rate(), Some(0.0));
         assert!(with_suffix.is_free(), "`x0.00 credits` 必须判免费");
-        assert_eq!(model_entry(&with_suffix, true)["free"], true);
-        assert_eq!(model_entry(&with_suffix, true)["credits_rate"], 0.0);
+        assert_eq!(model_entry(&with_suffix, true, Scope::WbCn)["free"], true);
+        assert_eq!(
+            model_entry(&with_suffix, true, Scope::WbCn)["credits_rate"],
+            0.0
+        );
 
         // 非零带后缀照常给数字（前端不必各自剥后缀）
         let paid = model("fast-model", Some("x0.34 credits"), None);

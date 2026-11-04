@@ -41,6 +41,7 @@ use crate::timeutil;
 ///
 /// ⚠️ 这是 P12 T03（本地路由）加入的：**业务请求要复用同一条**换号/熔断逻辑，
 /// 而不是另写一份 —— `relay` 是「把请求送到上游」的**唯一实现**（见模块文档）。
+#[derive(Debug, Clone)]
 pub enum RelayKind {
     /// LLM：路径 `/v2/chat/completions`，头走 `build_chat_headers`，body 走 `chat_body_for`。
     Llm,
@@ -81,11 +82,27 @@ impl BizMethod {
 }
 
 /// 本轮中继的输入。
+///
+/// `Clone` 是**降级循环**要的：每一跳都要一份把 `model` / `prepared_body` 换掉的副本，
+/// 其余字段（Key 策略、会话、region）逐跳相同。逐字段手抄会在加字段时静默漏掉一个
+/// —— 那类漏法只在特定请求上才现形，最难查。
+#[derive(Clone)]
 pub struct RelayRequest {
     /// 归属域（由 API Key 决定，不接受客户端声明）。
     pub region: Region,
     /// ★ **协议类型**（P12 T03 新增）。
     pub kind: RelayKind,
+    /// 入口是不是 **OpenAI 形态**（`/v1/chat/completions`）。
+    ///
+    /// ## 为什么跨作用域降级要看它
+    /// 目标产品线的入口**只吃 OpenAI body、只吐 OpenAI SSE**。而 `/v1/messages`
+    /// （Anthropic）与 `/v1/responses` 的客户端拿到 OpenAI SSE 会**解析失败** ——
+    /// 那比不降级更糟（用户看到一串乱码事件）。
+    ///
+    /// `prepared_body` 在三种入口下都是 OpenAI 形态（Anthropic / Responses 在进中继前
+    /// 已转换），所以**发出去**没问题；问题在**回来的响应格式**。
+    /// ⇒ 非 OpenAI 入口只允许同作用域降级。
+    pub openai_shape: bool,
     /// 客户端声明的模型名（原样，仅用于冷却与账本）。
     pub model: String,
     /// 已由 [`outbound::prepare_outbound_body`] 处理过的请求体。
@@ -136,10 +153,48 @@ pub enum RelayOutcome {
         account: String,
         /// 命中账号的 uid（用于后续记账本）。
         uid: String,
+        /// 本次响应是否**由降级产生**（`None` = 用的就是主模型）。
+        ///
+        /// 客户端看到的 `model` 字段会变成目标模型 —— 不给这个摘要，用户只会以为网关串号了。
+        fallback: Option<FallbackInfo>,
+    },
+    /// **已完全成型**的响应，调用方直接返回、不再加工。
+    ///
+    /// 跨作用域降级用它：目标产品线的入口函数返回的是 `axum::Response`
+    /// （它自己已经把 SSE / JSON / 错误体都封装好了），与 `Ok { response: reqwest::Response }`
+    /// 是两种不同的类型，不能互转。硬要转就得把整条流读进内存 —— 那会毁掉流式。
+    Ready {
+        response: axum::response::Response,
+        /// 实际服务这次请求的**目标模型**（`trae-cn:claude-4` 这种带作用域的形式）。
+        ///
+        /// 必须带出来：入口要用它写请求日志。不带的话日志只能记原模型，
+        /// 用户会以为「降级了但日志还显示原模型」。
+        model: String,
     },
 }
 
+/// 一次降级的可读摘要：从谁、降到谁、为什么、跳过了哪些。
+///
+/// 路由层据此注入三个响应头（见 `crate::routes::fallback_headers`）。
+#[derive(Debug, Clone)]
+pub struct FallbackInfo {
+    /// 客户端原本请求的模型。
+    pub from: String,
+    /// 实际使用的模型。
+    pub to: String,
+    /// 触发原因（稳定标识见 `Trigger::as_str`）。
+    pub reason: crate::model_fallback::Trigger,
+    /// 被跳过的跳：`(model, 原因)`。原因 ∈ `disabled` / `gated`。
+    pub skipped: Vec<(String, &'static str)>,
+}
+
 /// 中继失败。
+/// 单跳允许的最大尝试次数（`max_rotate` 的合法上限）。
+///
+/// 上限定 6：单次上游失败多为 1–2s，6 次 ≈ 12s，仍在客户端 30–60s 超时内。
+/// 再往上调只会把「池里号很多」变成「一个请求跑一分钟」。
+pub const MAX_ATTEMPTS_PER_HOP: usize = 6;
+
 pub struct RelayFailure {
     /// 对外错误。
     pub error: GatewayError,
@@ -151,6 +206,33 @@ pub struct RelayFailure {
     pub upstream_message: String,
     /// 本轮出站改写是否动过黑名单指纹（成因判定用，见 [`should_degrade_retry`]）。
     pub sanitized: bool,
+    /// 归因到**模型**的上游事件（降级判据用）。
+    ///
+    /// 只有真正打到上游并拿到结论的出口才带它；配额 / 闸门 / 选不出号这类
+    /// 「一次请求都没发」的出口是 `None` —— 那几类本来也不该降级。
+    pub event: Option<UpstreamEvent>,
+    /// 降级尝试的轨迹（仅在「配了链且真的走过降级」时出现）。
+    pub fallback: Option<FallbackSummary>,
+}
+
+/// 一次降级尝试的完整轨迹（失败时用，写进错误消息与请求日志）。
+///
+/// ## 为什么不塞进 `GatewayError`
+///
+/// `GatewayError` 的每个变体都被 `error.rs` 的契约测试钉着（状态码、`type_name`、
+/// 对外 JSON 形状）。为一个可选诊断字段改那个契约，收益远小于风险。
+/// ⇒ v1 把轨迹**并进错误消息文本**（用户能读、日志能查），结构化字段留到有客户端
+/// 真的需要编程判断时再开。
+#[derive(Debug, Clone)]
+pub struct FallbackSummary {
+    /// 客户端原本请求的模型。
+    pub origin: String,
+    /// 真正尝试过的备选（按顺序）。
+    pub tried: Vec<String>,
+    /// 被跳过的跳。
+    pub skipped: Vec<(String, &'static str)>,
+    /// 最后一跳的触发原因。
+    pub trigger: Option<crate::model_fallback::Trigger>,
 }
 
 /// 等**首帧**再决定：先取一块字节，若它本身就是错误信封就判成失败（可换号）。
@@ -221,54 +303,64 @@ pub async fn body_text_with_prefix(
     text
 }
 
+/// 进程内的请求序号（半开探针票的归属标识，不需要密码学随机）。
+static PROBE_TAG_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+fn next_probe_tag() -> String {
+    format!(
+        "req-{}",
+        PROBE_TAG_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    )
+}
+
 #[allow(clippy::result_large_err)]
 // `RelayFailure` 承载完整上游响应与诊断上下文，装箱会丢掉「一次就能定位」的可读性。
-/// 把一次请求送到上游；内含换号轮换与失败治理。
+/// 把一次请求送到上游；内含**模型降级**与换号轮换两层循环。
+///
+/// ## 三层结构（顺序不能换）
+///
+/// ```text
+/// relay()          ← 请求级收尾：归还验证票
+///  └ relay_hops()  ← 模型维度：主模型 → 备选1 → 备选2
+///     └ relay_once() ← 账号维度：换号重试（原来的 relay_inner）
+/// ```
+///
+/// **为什么降级在换号外层**：换号是「同一个模型换一个账号」，降级是「换一个模型」。
+/// 塞进换号循环里会出现「A 号 + glm 失败 → 换 deepseek 再试 A 号」—— 同一个账号被反复用，
+/// 且 `tried` 集合的语义被污染（它本该只表示「本轮试过哪些账号」）。
+///
+/// ## ★ 探针票必须按 hop 归还
+///
+/// 半开探针票绑定的是 `(model, request_tag)`。跨 hop 时 `model` 变了，所以归还必须在
+/// **每一跳结束时**各自做一次。漏了会让上一跳的模型在半开态卡满 `PROBE_LEASE_MS`（120s），
+/// 表现为「配好降级之后主模型彻底不可用」，而且日志里一个错都没有 —— 这是本功能最容易
+/// 写错的一处，`relay_hops` 里那句 `release_probe(model, ...)` 不能挪走。
 pub async fn relay(
     state: &GatewayState,
     request: RelayRequest,
 ) -> Result<RelayOutcome, RelayFailure> {
-    let mut now_ms = timeutil::now_ms();
-    let realm = realm_of(request.region);
-    let config = state.config_snapshot().await;
-    let tries = config.max_rotate.max(1);
-
-    // 与账号库对齐（增量 upsert，不删除既有账号以保留治理历史）。
+    // ★★ Key 配额判定必须在**降级循环之外**（2026-10-29 审查发现）。
     //
-    // ★ 排除表也在这里同步进池：它是**硬约束**，选号 / 兜底 / 偏好都要看它。
-    //   放在「取账号」同一处，是为了让「池内容」与「排除集」永远同源同版本 ——
-    //   两处各同步一次，迟早出现「新加的排除项要等下一次请求才生效」。
-    {
-        let scope = scope_key(request.region);
-        let accounts = account::load_accounts_for(request.region);
-        let mut pool = state.pool.write().await;
-        pool.sync_accounts(&accounts, Some(realm));
-        pool.sync_exclusions(scope, &exclusions::load_for(scope));
-    }
-
-    // ★ issue #76：**配额判定在选号之前**（规范 §6.2）——
-    //   超限的请求不占用在途额度、不触发换号，一步都不发。
-    //   放在这里（账号同步后、粘性前）是因为：判定要用 `state.key_usage`，
-    //   而记账口径（period）要跟账号库无关地按 Key 自己的策略走。
+    // 改造前它在 `relay_once` 里 —— 而 `relay_once` 现在每跳都会跑一次，
+    // 于是一次降级请求会消耗 2-3 份配额（`check_and_record` 每次都记账），
+    // 且每跳多一次全量落盘。配额是**按请求**计的，与「试了几个模型」无关。
+    //
+    // ★ issue #76：**判定在选号之前** —— 超限的请求不占用在途额度、不触发换号，
+    //   一步都不发。记账口径（period）按 Key 自己的策略走，与账号库无关。
     if let Some(policy) = request.key_policy.as_ref() {
         let now = timeutil::now_ms();
-        let used = state.key_usage.used_for(
-            &request.key_id_for_policy(),
-            policy.quota_unit,
-            policy.quota_period,
-            now,
-        );
-        // 请求数在**进入网关后**记（业务代理没有 usage 回包，只有请求数可计）；
-        // token 在流结束记（`UsageTap` 的 sink，见 `logging.rs` 同款接法）。
-        state
-            .key_usage
-            .record_request(&request.key_id_for_policy(), policy.quota_period, now);
-        if let crate::apikey::QuotaVerdict::Exceeded {
-            used,
-            limit,
-            unit,
-            period,
-        } = crate::apikey::quota_verdict_for_policy(policy, used)
+        let key_id = request.key_id_for_policy();
+        // ★★ 安全审计 P2-17：**判定与记账必须是同一个原子操作**，且**超限不记账**。
+        //
+        // 改造前是「`used_for` 判 → `record_request` 记 → 再判」—— 两个问题：
+        // ① **被拒的请求仍然计入分母**（用户会看到 101/100 这种越界数字，且分母被
+        //    持续抬高，越拒越难通过）；② 读-判-写不在同一把锁里，并发会同时通过判定
+        //    并丢计数（`KeyUsageStore::check_and_record` 的文档已就此论证过）。
+        //
+        // `check_and_record` 本来就实现了正确口径（同一把锁、超限不记），
+        // `KeyActor::check_quota_and_count` 也一直用它 —— 只有这条主路径是手写的两步版。
+        if let Some((used, limit, unit, period)) =
+            state.key_usage.check_and_record(&key_id, policy, now)
         {
             return Err(RelayFailure {
                 error: GatewayError::KeyQuotaExceeded {
@@ -282,8 +374,569 @@ pub async fn relay(
                 uid: String::new(),
                 upstream_message: String::new(),
                 sanitized: false,
+                // Key 配额按 Key 计量、与模型无关 ⇒ 不降级（见 `model_fallback` 模块文档）。
+                event: None,
+                fallback: None,
             });
         }
+    }
+
+    let probe_tag = next_probe_tag();
+    let outcome = relay_hops(state, request, &probe_tag).await;
+    // 唯一失败出口 ⇒ 在这里记一次，覆盖全部失败路径（含无可用账号、含 biz）。
+    // 上游原文优先于错误码文案：用户排查时「402 余额不足」比「no_credential」有用。
+    if let Err(failure) = &outcome {
+        state
+            .note_last_error(if failure.upstream_message.is_empty() {
+                failure.error.message()
+            } else {
+                failure.upstream_message.clone()
+            })
+            .await;
+    }
+    // 验证票是**请求级**的（与模型无关）：整轮含所有跳结束后才归还一次。
+    state.pool.write().await.release_verify_tickets(&probe_tag);
+    outcome
+}
+
+/// 把降级摘要写进响应头（**成功路径**）。
+///
+/// 三个头是客户端区分「降级」与「故障」的**唯一**依据：响应体里的 `model` 字段已经变成
+/// 目标模型，不给来源与原因，用户只会以为网关串号了。
+///
+/// 用 `insert`（不是 `append`）：这些头不该出现多次，追加会让客户端拿到一串值。
+pub fn apply_fallback_headers(response: &mut axum::response::Response, info: &FallbackInfo) {
+    use axum::http::HeaderValue;
+    let headers = response.headers_mut();
+    for (name, value) in [
+        ("x-buddy-fallback-from", info.from.as_str()),
+        ("x-buddy-fallback-to", info.to.as_str()),
+        ("x-buddy-fallback-reason", info.reason.as_str()),
+    ] {
+        if let Ok(value) = HeaderValue::from_str(value) {
+            headers.insert(name, value);
+        }
+    }
+}
+
+/// 模型维度的一轮：主模型失败且命中链的触发条件时，改用备选重发。
+#[allow(clippy::result_large_err)]
+async fn relay_hops(
+    state: &GatewayState,
+    request: RelayRequest,
+    probe_tag: &str,
+) -> Result<RelayOutcome, RelayFailure> {
+    let origin = request.model.clone();
+    let scope = fallback_scope(request.region);
+
+    // 业务请求（签到 / 积分 / 旅行）没有「模型」概念，一律不降级。
+    let plan: Vec<crate::model_fallback::FallbackTarget> = if matches!(request.kind, RelayKind::Llm)
+    {
+        let fb = state.fallback.read().await;
+        crate::model_fallback::plan_for(&fb, scope, &origin)
+    } else {
+        vec![crate::model_fallback::FallbackTarget::same_scope(
+            origin.clone(),
+        )]
+    };
+
+    // 没有链（或链里没有有效备选）⇒ 走原路径。绝大多数用户是这一条，零额外开销。
+    let chain = if plan.len() > 1 {
+        let fb = state.fallback.read().await;
+        crate::model_fallback::chain_of(&fb, scope, &origin)
+    } else {
+        None
+    };
+    let Some(chain) = chain else {
+        let outcome = relay_once(state, request, probe_tag, None).await;
+        state.pool.write().await.release_probe(&origin, probe_tag);
+        return outcome;
+    };
+
+    let mut body = request.prepared_body.clone();
+    let mut last: Option<RelayFailure> = None;
+    let mut tried: Vec<String> = Vec::new();
+    let mut skipped: Vec<(String, &'static str)> = Vec::new();
+    let mut reason: Option<crate::model_fallback::Trigger> = None;
+    // 当前跳要用的归属域。
+    //
+    // 跨作用域的目标全部走 `cross::relay_on_scope` 并**直接 return**，
+    // 所以这里不再需要 `mut`（CI 的 `-D warnings` 会把 unused_mut 当错误）。
+    let hop_region = request.region;
+    // ★ 总请求预算：**延迟由请求次数决定，不由跳数决定**。
+    //   每跳分到 `min(max_rotate, 剩余预算)` 次尝试，用完即停（不论链还剩几跳）。
+    let mut remaining_budget = crate::model_fallback::TOTAL_REQUEST_BUDGET;
+    let per_hop_cap = state
+        .config_snapshot()
+        .await
+        .max_rotate
+        .clamp(1, MAX_ATTEMPTS_PER_HOP);
+    let started = std::time::Instant::now();
+
+    for (hop, target) in plan.iter().enumerate() {
+        let model = &target.model;
+        if hop > 0 {
+            // ★ 跨作用域的目标分两种，处置完全不同：
+            //
+            //   1. **同平台跨区域**（`wb-cn` → `wb-global`）：换 region 走正常路径即可 ——
+            //      协议一致，只是账号池与上游域名不同。这是零成本的兜底，优先支持。
+            //   2. **跨平台**（`wb-cn` → `trae-cn`）：需要换 relay。暂不支持，且**不静默**：
+            //      记进 `skipped` 并在卡片上显示原因，否则用户配了链却等不到降级。
+            if target.crosses_scope(scope) {
+                // 非 OpenAI 入口不能跨作用域：目标产品线只吐 OpenAI SSE，
+                // Anthropic / Responses 的客户端解析不了（详见 `openai_shape` 的文档）。
+                if !request.openai_shape {
+                    skipped.push((
+                        format!("{}:{}", target.scope_or(scope).as_str(), target.model),
+                        "cross_scope_openai_only",
+                    ));
+                    continue;
+                }
+                let target_scope = target.scope_or(scope);
+                // 目标平台在当前构建里不可用（变体缺失）⇒ 跳过，不发请求。
+                if !crate::routes::cross::is_reachable(target_scope) {
+                    skipped.push((
+                        format!("{}:{}", target_scope.as_str(), target.model),
+                        "target_unavailable",
+                    ));
+                    continue;
+                }
+                // ★ 跨作用域统一走 `cross::relay_on_scope`：它在**同一进程**内把请求交给
+                //   目标产品线的入口（入站/出站都是 OpenAI 形态，无需协议转换）。
+                //   `key: None` —— 配额在入口已判过一次，再判会让一次降级吃两份配额。
+                // ★ 与同平台分支同一条硬约束：body 里没有 `model` 字段 ⇒ 改写是 no-op ⇒
+                //   每跳实际发同一个模型，却告诉客户端「降到了备选」= 撒谎。
+                if !crate::model_route::body_has_model(&body) {
+                    break;
+                }
+                let mut hop_body_bytes = body.clone().into_bytes();
+                // 改模型名：跨平台时 body 里的 `model` 必须是**目标作用域**的模型名。
+                hop_body_bytes = crate::model_route::rewrite_body_model(
+                    &String::from_utf8_lossy(&hop_body_bytes),
+                    &target.model,
+                )
+                .into_bytes();
+                // ★ `Box::pin` 是**编译期**要求：`relay_on_scope` → 目标平台入口 → 它们的
+                //   relay 与本函数同型，编译器无法证明不递归（async fn 的 future 大小必须
+                //   在编译期确定）。
+                //
+                //   **运行时不会无限递归**：目标平台的中继（`trae` / `qoder` 的
+                //   `FallbackLoop::plan`）**过滤掉跨作用域目标**，所以它不会再调回这里。
+                //   这条不变量由 `cross_scope_targets_are_not_self_loops_and_dedupe_by_scope`
+                //   与 `FallbackLoop::plan` 的 retain 共同保证。
+                let response = Box::pin(crate::routes::cross::relay_on_scope(
+                    target_scope,
+                    // 入口的 headers 不在 `RelayRequest` 里（它只带归属域与 body）。
+                    // 跨平台降级不依赖入口的会话头：目标产品线用自己的粘性键。
+                    axum::http::HeaderMap::new(),
+                    axum::body::Bytes::from(hop_body_bytes),
+                    None,
+                ))
+                .await;
+
+                if response.status().is_success() {
+                    if hop > 0 {
+                        crate::model_fallback::record_event(crate::model_fallback::FallbackEvent {
+                            scope: scope.as_str().to_string(),
+                            at_ms: timeutil::now_ms(),
+                            from: origin.clone(),
+                            path: vec![format!("{}:{}", target_scope.as_str(), target.model)],
+                            reason: reason
+                                .map(|value| value.as_str().to_string())
+                                .unwrap_or_default(),
+                            account: String::new(),
+                            ms: started.elapsed().as_millis() as i64,
+                            result: "degraded",
+                        });
+                    }
+                    let mut response = response;
+                    if hop > 0 {
+                        if let Some(trigger) = reason {
+                            crate::routes::relay::apply_fallback_headers(
+                                &mut response,
+                                &FallbackInfo {
+                                    from: origin.clone(),
+                                    to: format!("{}:{}", target_scope.as_str(), target.model),
+                                    reason: trigger,
+                                    skipped: skipped.clone(),
+                                },
+                            );
+                        }
+                    }
+                    return Ok(RelayOutcome::Ready {
+                        response,
+                        model: format!("{}:{}", target_scope.as_str(), target.model),
+                    });
+                }
+
+                // 失败：只有 5xx / 429 值得继续降级（其余是请求本身的问题）。
+                let status = response.status();
+                let (event, kind) = if status == axum::http::StatusCode::TOO_MANY_REQUESTS {
+                    (
+                        UpstreamEvent::SoftRate {
+                            reset_at_ms: None,
+                            model_scoped: true,
+                        },
+                        buddy_switch_core::modules::upstream::UpstreamErrorKind::SoftRate,
+                    )
+                } else if status.is_server_error() {
+                    (
+                        UpstreamEvent::Server,
+                        buddy_switch_core::modules::upstream::UpstreamErrorKind::Server,
+                    )
+                } else {
+                    // 4xx 不可降级 —— 直接原样抛（含 401/402/审核）。
+                    let trigger = crate::model_fallback::trigger_for(
+                        &GatewayError::Upstream {
+                            kind: buddy_switch_core::modules::upstream::UpstreamErrorKind::Client,
+                            status: status.as_u16(),
+                            message: format!("降级目标 {} 返回 {}", target_scope.as_str(), status),
+                            attempts: Vec::new(),
+                        },
+                        None,
+                    );
+                    let _ = trigger;
+                    return Err(RelayFailure {
+                        error: GatewayError::Upstream {
+                            kind: buddy_switch_core::modules::upstream::UpstreamErrorKind::Client,
+                            status: status.as_u16(),
+                            message: format!("降级目标 {} 返回 {}", target_scope.as_str(), status),
+                            attempts: Vec::new(),
+                        },
+                        account: String::new(),
+                        uid: String::new(),
+                        upstream_message: String::new(),
+                        sanitized: false,
+                        event: None,
+                        fallback: None,
+                    });
+                };
+                let failure = RelayFailure {
+                    error: GatewayError::Upstream {
+                        kind,
+                        status: status.as_u16(),
+                        message: format!("降级目标 {} 返回 {}", target_scope.as_str(), status),
+                        attempts: Vec::new(),
+                    },
+                    account: String::new(),
+                    uid: String::new(),
+                    upstream_message: String::new(),
+                    sanitized: false,
+                    event: Some(event),
+                    fallback: None,
+                };
+                // 走与同平台失败**完全一样**的收口：判 allowed、记 tried、决定是否下一跳。
+                let trigger =
+                    crate::model_fallback::trigger_for(&failure.error, failure.event.as_ref());
+                let allowed =
+                    trigger.is_some_and(|value| crate::model_fallback::allows(&chain, value));
+                if hop > 0 {
+                    tried.push(format!("{}:{}", target_scope.as_str(), target.model));
+                }
+                last = Some(failure);
+                if allowed && plan.len() > hop + 1 {
+                    if reason.is_none() {
+                        reason = trigger;
+                    }
+                    continue;
+                }
+                break;
+            }
+            // 目标不可用（已禁用 / 闸门暂停中）⇒ **跳过这一跳，不发请求**。
+            // 发出去只会拿到一个必然失败的响应，白烧一次配额与延迟。
+            if let Some(why) =
+                fallback_skip_reason(state, scope, request.region, model, &body).await
+            {
+                skipped.push((model.clone(), why));
+                continue;
+            }
+            // ★ body 里没有 `model` 字段 ⇒ 改写不了 ⇒ **不降级**：
+            //   客户端没传 model 时中继用的是配置默认模型，而我们不知道那是哪个 ——
+            //   硬改写会变成「改了一个不存在的字段」，每跳实际发同一个模型，
+            //   却告诉客户端「降到了备选」= 对客户端撒谎。
+            if !crate::model_route::body_has_model(&body) {
+                break;
+            }
+            // 改名复用 `model_route` 的现成实现（它已经是「改 body 顶层 model」的唯一入口）。
+            body = crate::model_route::rewrite_body_model(&body, model);
+        }
+        let hop_attempts = per_hop_cap.min(remaining_budget.max(1));
+        remaining_budget = remaining_budget.saturating_sub(hop_attempts);
+        let hop_request = RelayRequest {
+            model: model.clone(),
+            prepared_body: body.clone(),
+            region: hop_region,
+            ..request.clone()
+        };
+        let outcome = relay_once(state, hop_request, probe_tag, Some(hop_attempts)).await;
+        // ★ 见 `relay` 的文档：按 hop 归还，不能挪到循环外。
+        state.pool.write().await.release_probe(model, probe_tag);
+
+        match outcome {
+            // `relay_once` 不产 `Ready`（它只走本平台的上游）；透传是为了穷尽 match。
+            Ok(RelayOutcome::Ready { response, model }) => {
+                return Ok(RelayOutcome::Ready { response, model })
+            }
+            Ok(RelayOutcome::Ok {
+                response,
+                prefix,
+                account,
+                uid,
+                ..
+            }) => {
+                if hop > 0 {
+                    // 只有**真的降级成功**才记事件：主模型成功不产生噪音。
+                    let mut path = tried.clone();
+                    path.push(model.clone());
+                    crate::model_fallback::record_event(crate::model_fallback::FallbackEvent {
+                        scope: scope.as_str().to_string(),
+                        at_ms: timeutil::now_ms(),
+                        from: origin.clone(),
+                        path,
+                        reason: reason
+                            .map(|value| value.as_str().to_string())
+                            .unwrap_or_default(),
+                        account: account.clone(),
+                        ms: started.elapsed().as_millis() as i64,
+                        result: "degraded",
+                    });
+                }
+                return Ok(RelayOutcome::Ok {
+                    response,
+                    prefix,
+                    account,
+                    uid,
+                    fallback: (hop > 0).then(|| FallbackInfo {
+                        from: origin.clone(),
+                        to: model.clone(),
+                        // hop > 0 且走到了成功分支 ⇒ 必然经过一次 `allowed` 判定，
+                        // `reason` 一定被设过。兜底成 Gate 会说谎（把一个 6004 报成闸门）。
+                        reason: reason.expect("hop > 0 的成功路径必然设置过 reason"),
+                        skipped: skipped.clone(),
+                    }),
+                });
+            }
+            Err(failure) => {
+                let trigger =
+                    crate::model_fallback::trigger_for(&failure.error, failure.event.as_ref());
+                let allowed =
+                    trigger.is_some_and(|value| crate::model_fallback::allows(&chain, value));
+                // `tried` 只收**备选**：主模型不在「降级到过谁」里 ——
+                // 事件路径与错误消息都按这个口径读（`tried.is_empty()` = 一次都没降级）。
+                if hop > 0 {
+                    tried.push(model.clone());
+                }
+                last = Some(failure);
+                // 不可降级（参数错 / 审核 / 402 / 401）或已无下一跳 ⇒ 原样抛出。
+                if allowed && plan.len() > hop + 1 {
+                    // ★ 记**第一次**触发原因：后续跳的失败通常是「换一个也不行」，
+                    //   覆盖它会把最有诊断价值的原始原因冲掉（审查 2026-10-29 发现）。
+                    if reason.is_none() {
+                        reason = trigger;
+                    }
+                    continue;
+                }
+                break;
+            }
+        }
+    }
+
+    // 失败出口：`tried` 只装备选 ⇒ `!tried.is_empty()` 说明**确实试过降级**。
+    // 两者的诊断价值不同：「备选也失败」与「按规则不降级」不能混成一条。
+    crate::model_fallback::record_event(crate::model_fallback::FallbackEvent {
+        scope: scope.as_str().to_string(),
+        at_ms: timeutil::now_ms(),
+        from: origin.clone(),
+        path: tried.clone(),
+        reason: reason
+            .map(|value| value.as_str().to_string())
+            .unwrap_or_default(),
+        account: last.as_ref().map(|f| f.account.clone()).unwrap_or_default(),
+        ms: started.elapsed().as_millis() as i64,
+        result: if tried.is_empty() {
+            "blocked"
+        } else {
+            "failed"
+        },
+    });
+
+    let mut failure = last.expect("plan 至少含主模型，循环必然产出 failure");
+    // 只有**真的动过降级**（试过备选，或跳过了某一跳）才留轨迹。
+    // 一条 `tried: []` 的空轨迹只会让客户端以为「降级过但没成」——
+    // 而实际原因是「这次失败压根不在白名单里」（如没有可用账号）。
+    if !tried.is_empty() || !skipped.is_empty() {
+        failure.fallback = Some(FallbackSummary {
+            origin,
+            tried,
+            skipped,
+            trigger: reason,
+        });
+        append_fallback_note(&mut failure);
+    }
+    Err(failure)
+}
+
+/// WB 的 region → 作用域（降级配置按作用域分家）。
+fn fallback_scope(region: Region) -> buddy_switch_core::modules::product::Scope {
+    use buddy_switch_core::modules::product::Scope;
+    match region {
+        Region::Cn => Scope::WbCn,
+        Region::Global => Scope::WbGlobal,
+    }
+}
+
+/// 这一跳**该不该跳过**（跳过 = 一次上游请求都不发）。
+///
+/// 三类判据，都要求**明确的否定证据**；任一处「不知道」都放行：
+///
+/// 1. 用户禁用；
+/// 2. 闸门暂停中；
+/// 3. **图片能力**：请求带图、而目标模型明确不支持图片输入。
+///
+/// ## 为什么只校验图片
+///
+/// 目录里只有「图片输入」是有权威声明的（`supports_images` + 用户覆盖，见
+/// `model_capability`）。tools / json_schema / 上下文窗口都**没有**可靠数据 ——
+/// 猜一个阈值去拦，会把本来能成功的请求跳掉，比不拦更糟。
+/// 这三项留给 P1（见 `docs/specs/MODEL-FALLBACK.md` §10.4）。
+async fn fallback_skip_reason(
+    state: &GatewayState,
+    scope: buddy_switch_core::modules::product::Scope,
+    region: Region,
+    model: &str,
+    body: &str,
+) -> Option<&'static str> {
+    {
+        let disabled = state.disabled.read().await;
+        if crate::disabled_models::is_disabled(&disabled, scope, model) {
+            return Some("disabled");
+        }
+    }
+    let now = timeutil::now_ms();
+    let pool = state.pool.read().await;
+    let gated = pool
+        .model_gates()
+        .iter()
+        .any(|gate| gate.model.eq_ignore_ascii_case(model) && gate.until_ms > now);
+    if gated {
+        return Some("gated");
+    }
+    drop(pool);
+
+    if wants_image(body) && image_support(state, scope, region, model) == Some(false) {
+        return Some("no_vision");
+    }
+    None
+}
+
+/// 这次请求是否带图片输入。
+///
+/// 用**字符串匹配**而不是解析整份 body：这段在每个候选跳上都要跑一遍，
+/// 为两个固定字段名解析一次 JSON 不值得。字段名来自协议本身
+/// （Chat Completions 的 `image_url` / Responses 的 `input_image`），不会漂移。
+fn wants_image(body: &str) -> bool {
+    body.contains("\"image_url\"") || body.contains("\"input_image\"")
+}
+
+/// 某模型是否支持图片输入（用户覆盖 > 目录声明；两边都没有 ⇒ `None` = 不知道）。
+fn image_support(
+    state: &GatewayState,
+    scope: buddy_switch_core::modules::product::Scope,
+    region: Region,
+    model: &str,
+) -> Option<bool> {
+    let snapshot = state.catalogs.current(region);
+    let upstream = snapshot
+        .models
+        .iter()
+        .find(|entry| entry.name.eq_ignore_ascii_case(model))
+        .map(|entry| entry.supports_images);
+    crate::model_capability::resolve_effective(scope, model, upstream).map(|cap| cap.supports)
+}
+
+/// 降级轨迹 → 错误体顶层要用的 JSON（`None` = 这次根本没走降级）。
+///
+/// 与 [`append_fallback_note`] 并存：文本给**人**读（错误消息里一句话），
+/// JSON 给**客户端**编程判断（哪些跳试过、哪些被跳过、触发原因）。
+pub fn fallback_summary_json(failure: &RelayFailure) -> Option<serde_json::Value> {
+    let summary = failure.fallback.as_ref()?;
+    let skipped: Vec<serde_json::Value> = summary
+        .skipped
+        .iter()
+        .map(|(model, why)| serde_json::json!({ "model": model, "reason": why }))
+        .collect();
+    Some(serde_json::json!({
+        "origin": summary.origin,
+        "tried": summary.tried,
+        "skipped": skipped,
+        "trigger": summary.trigger.map(|value| value.as_str()),
+    }))
+}
+
+/// 把降级轨迹并进错误消息（给**人**读的那一句）。
+fn append_fallback_note(failure: &mut RelayFailure) {
+    let Some(summary) = failure.fallback.as_ref() else {
+        return;
+    };
+    let mut parts: Vec<String> = Vec::new();
+    if !summary.tried.is_empty() {
+        parts.push(format!("已尝试降级到 {}", summary.tried.join(" → ")));
+    }
+    if !summary.skipped.is_empty() {
+        let list: Vec<String> = summary
+            .skipped
+            .iter()
+            .map(|(model, why)| {
+                format!(
+                    "{model}（{}）",
+                    match *why {
+                        "disabled" => "已禁用",
+                        "no_vision" => "不支持图片输入",
+                        _ => "闸门暂停",
+                    }
+                )
+            })
+            .collect();
+        parts.push(format!("跳过 {}", list.join("、")));
+    }
+    if parts.is_empty() {
+        return;
+    }
+    let note = format!("；降级未成功：{}", parts.join("；"));
+    if let GatewayError::Upstream { message, .. } = &mut failure.error {
+        message.push_str(&note);
+    }
+}
+
+#[allow(clippy::result_large_err)]
+async fn relay_once(
+    state: &GatewayState,
+    request: RelayRequest,
+    probe_tag: &str,
+    // 本次允许的**上游尝试次数**（由外层按总预算分配）。
+    // 传 `None` = 用配置里的 `max_rotate`（非降级路径 / 无预算概念时）。
+    attempts: Option<usize>,
+) -> Result<RelayOutcome, RelayFailure> {
+    let mut now_ms = timeutil::now_ms();
+    let realm = realm_of(request.region);
+    let config = state.config_snapshot().await;
+    // ★ `max_rotate` 现在可配（1–6），且会被**总请求预算**进一步压小：
+    //   外层按「剩余预算」分配，避免「跳数 × 轮次」把单请求拖到客户端超时。
+    let tries = attempts
+        .unwrap_or(config.max_rotate)
+        .clamp(1, MAX_ATTEMPTS_PER_HOP);
+
+    // 与账号库对齐（增量 upsert，不删除既有账号以保留治理历史）。
+    //
+    // ★ 排除表也在这里同步进池：它是**硬约束**，选号 / 兜底 / 偏好都要看它。
+    //   放在「取账号」同一处，是为了让「池内容」与「排除集」永远同源同版本 ——
+    //   两处各同步一次，迟早出现「新加的排除项要等下一次请求才生效」。
+    {
+        let scope = scope_key(request.region);
+        let accounts = account::load_accounts_for(request.region);
+        let mut pool = state.pool.write().await;
+        pool.sync_accounts(&accounts, Some(realm));
+        pool.sync_exclusions(scope, &exclusions::load_for(scope));
     }
 
     // 会话粘性键；客户端没给会话 id 时为 `None`（整段跳过粘性，保持原行为）。
@@ -326,22 +979,61 @@ pub async fn relay(
         //
         // 与下面的「本轮第 2 个账号失败即停」是两个层次：那条只能挽回**当前**这一轮，
         // 这条让**后续请求**也直接快速失败 —— 否则每个新请求都要重新撞一遍同样的墙。
-        if let Some(block) = state.pool.write().await.admit_model(&request.model, now_ms) {
+        if let Some(block) = state
+            .pool
+            .write()
+            .await
+            .admit_model(&request.model, now_ms, probe_tag)
+        {
+            // ★★ issue #106：闸门短路必须**自带错误**，不能落到下面 `last == None` 的兜底。
+            //
+            // 改造前这里只 push 一条 attempt 就 `break`，于是 `last` 仍是 `None` ⇒ 走
+            // `pool_unavailable_error`，而 `PoolBusy` 的判据（可用号全在途满）在这种场景
+            // 不成立 ⇒ 一律 **401 `no_credential`**。客户端把 401 归为 `AUTH`、不可重试、
+            // 渲染成「API 密钥无效」⇒ 整轮会话终止。实测证据：那次耗时 19ms、账号列为空。
+            //
+            // 语义上这是「上游此刻对该模型整体限流」= 可重试的临时不可用 ⇒ 503 + Retry-After。
+            let remain_secs = (block.remain_ms.max(0) as u64).div_ceil(1000);
+            // ★ 安全审计 P1-3：`remain_ms` 现在给的是**探针租约的真实剩余**（不再是 0），
+            //   所以两种情形可以分开说清 —— 且都不再撒谎。
+            let reason = if block.failures > 0 {
+                format!(
+                    "{} 整体暂停（窗口内已失败 {} 次，剩 {}s）",
+                    block.model, block.failures, remain_secs
+                )
+            } else {
+                format!(
+                    "{} 半开试探中：另一个请求正在探路，最多再等 {}s",
+                    block.model, remain_secs
+                )
+            };
             attempts.push(UpstreamAttempt {
                 account: String::new(),
                 uid: String::new(),
                 status: 0,
-                reason: if block.remain_ms > 0 {
-                    format!(
-                        "{} 整体暂停（剩 {}s，已在 {} 个账号上被限流）",
-                        block.model,
-                        block.remain_ms / 1000,
-                        block.accounts
-                    )
-                } else {
-                    format!("{} 半开试探名额已被其它请求占用", block.model)
-                },
+                reason,
             });
+            // 本轮**一次都没打到上游**时才用它：否则用户更需要看的是「第 1 轮为什么失败」
+            // （那条错误自身已经带着完整的 `attempts`）。
+            if last.is_none() {
+                last = Some(RelayFailure {
+                    error: GatewayError::ModelGatePaused {
+                        model: block.model,
+                        remain_secs,
+                        failures: block.failures,
+                        // 闸门路径：成因是「窗口内失败次数够了」，不是「没号可换」。
+                        cooled_accounts: 0,
+                        attempts: attempts.clone(),
+                    },
+                    account: String::new(),
+                    uid: String::new(),
+                    upstream_message: String::new(),
+                    sanitized: request.sanitized,
+                    // 闸门暂停没有上游事件（一次请求都没发）—— 降级判据按错误类型判 Gate。
+                    event: None,
+                    fallback: None,
+                });
+            }
             break;
         }
         // 粘性只是**偏好**：查不到就按原逻辑选号（读锁，不占选号要用的写锁）。
@@ -365,6 +1057,8 @@ pub async fn relay(
             attempt,
             preferred_uid.as_deref(),
             allowed.as_ref(),
+            // ★ #88 4.2：到期验证票按请求归属 —— 同一格同一时刻只放一个探针。
+            probe_tag,
         )
         .await;
 
@@ -476,7 +1170,7 @@ pub async fn relay(
                             let disabled =
                                 pool.apply_upstream_error(&uid, &request.model, &event, now_ms);
                             let gate_opened = if is_model_level(&event) {
-                                pool.note_model_failure(&request.model, now_ms)
+                                pool.note_model_failure(&request.model, &uid, now_ms)
                             } else {
                                 false
                             };
@@ -504,6 +1198,8 @@ pub async fn relay(
                             uid,
                             upstream_message: envelope.message,
                             sanitized: request.sanitized,
+                            event: Some(event.clone()),
+                            fallback: None,
                         });
                         if disabled || gate_opened || !should_rotate(&event, attempt) {
                             break;
@@ -532,6 +1228,7 @@ pub async fn relay(
                     prefix,
                     account: account_name,
                     uid,
+                    fallback: None,
                 });
             }
             UpstreamChatResult::Err {
@@ -539,7 +1236,17 @@ pub async fn relay(
                 status,
                 message,
             } => {
-                let event = classify_event(status, &message);
+                // ★ 传输层超时**不经过** `classify_event`（它只看得见 status + body，
+                //   而超时的 status 是 0、body 是描述文案）。用 `kind` 直判：
+                //   `UpstreamErrorKind::Timeout` 由 `reqwest::Error::is_timeout()` 产出。
+                let event = if matches!(
+                    kind,
+                    buddy_switch_core::modules::upstream::UpstreamErrorKind::Timeout
+                ) {
+                    UpstreamEvent::Timeout
+                } else {
+                    classify_event(status, &message)
+                };
                 let (disabled, gate_opened) = if uid.is_empty() {
                     (false, false)
                 } else {
@@ -548,7 +1255,7 @@ pub async fn relay(
                     // 只有**模型级**失败才计入闸门：账号级 429 / 402 / 5xx 是「那个号的事」，
                     // 计进来会让「一个号额度耗尽」把整个模型停掉（误触发比不触发更糟）。
                     let gate_opened = if is_model_level(&event) {
-                        pool.note_model_failure(&request.model, now_ms)
+                        pool.note_model_failure(&request.model, &uid, now_ms)
                     } else {
                         false
                     };
@@ -581,6 +1288,8 @@ pub async fn relay(
                     uid,
                     upstream_message: message,
                     sanitized: request.sanitized,
+                    event: Some(event.clone()),
+                    fallback: None,
                 });
 
                 // 账号已禁用 → 重试无意义。
@@ -622,7 +1331,7 @@ pub async fn relay(
         //   **不可能有用**的事（报障人：切换过多个账号、桌面端和 Buddy Switch 都试过）。
         //   池快照就在手边，把事实摆出来即可。
         None => {
-            let (summary, scoped) = {
+            let (summary, scoped, model_cooling) = {
                 let pool = state.pool.read().await;
                 let summary = pool.summary(now_ms, Some(realm));
                 // ★ issue #76：白名单生效时再取一份**名单口径**快照（同一个读锁，
@@ -630,28 +1339,54 @@ pub async fn relay(
                 let scoped = allowed
                     .as_ref()
                     .map(|uids| pool.summary_of(uids, now_ms, Some(realm)));
-                (summary, scoped)
+                // ★★ issue #134：`summary.model_cooling` 是「有**任意**模型冷却的账号数」，
+                //   与本次请求的模型无关 ⇒ 不能拿它判「这个模型整体被限流」。
+                //   必须逐账号问该模型的截止时刻（与选号同一套硬约束），见
+                //   `pool::pick::model_cooling_until`。
+                //
+                //   为什么这条判据必须存在：`#125` 把闸门开闸判据改成「去重账号数 ≥ 2」
+                //   ⇒ **单账号池里闸门永远不会开**，模型限流于是落回这里的兜底，
+                //   而兜底只有 `pool_busy`(503) / `no_credential`(401)，前者判据不成立
+                //   ⇒ 401 ⇒ 客户端判 AUTH、整轮终止（正是 #106 修掉的那个症状）。
+                let model_cooling = pool.model_cooling_until(
+                    now_ms,
+                    Some(realm),
+                    &request.model,
+                    &tried,
+                    allowed.as_ref(),
+                );
+                (summary, scoped, model_cooling)
             };
-            RelayFailure {
+            let error = match model_cooling {
+                // 该模型在**全部**可试账号上都在冷却 ⇒ 与闸门暂停同语义（503 + Retry-After）。
+                Some((until_ms, accounts)) => GatewayError::ModelGatePaused {
+                    model: request.model.clone(),
+                    remain_secs: (until_ms.saturating_sub(now_ms).max(0) as u64)
+                        .div_ceil(1000)
+                        .max(1),
+                    failures: 0,
+                    cooled_accounts: accounts,
+                    attempts: attempts.clone(),
+                },
                 // ★ 不要再写死 `NoCredential`：全部健康只是在途占满时那是 401 误报，
                 //   会让客户端去重建登录态（见 `pool_unavailable_error`）。
-                error: pool_unavailable_error(request.region, &summary, scoped.as_ref()),
+                None => pool_unavailable_error(request.region, &summary, scoped.as_ref()),
+            };
+            RelayFailure {
+                error,
                 account: String::new(),
                 uid: String::new(),
                 upstream_message: String::new(),
                 sanitized: request.sanitized,
+                // 选不出账号 ⇒ 一次请求都没发，没有可降级的依据。
+                event: None,
+                fallback: None,
             }
         }
     };
-    // 唯一失败出口 ⇒ 在这里记一次即可覆盖全部失败路径（含「没有可用账号」）。
-    // 上游原文优先于错误码文案：用户排查时「402 余额不足」比「no_credential」有用。
-    state
-        .note_last_error(if failure.upstream_message.is_empty() {
-            failure.error.message()
-        } else {
-            failure.upstream_message.clone()
-        })
-        .await;
+    // `note_last_error` 已上移到 `relay()` 的出口：`relay_once` 现在每跳都跑，
+    // 留在这里会让 3 跳请求写 3 次（每次覆盖，最终只剩最后一跳的原因，
+    // 而最有诊断价值的往往是第 1 跳）。
     Err(failure)
 }
 
@@ -682,7 +1417,12 @@ fn should_rotate(event: &UpstreamEvent, attempt: usize) -> bool {
         | UpstreamEvent::SoftRate { .. }
         | UpstreamEvent::ModelBlocked
         | UpstreamEvent::Server
+        // 超时也换号：不同账号走不同上游节点，换一条链路可能就不超时了。
+        | UpstreamEvent::Timeout
         | UpstreamEvent::SessionDead => true,
+        // 401/403 换号能救：池里其它号的凭据可能好好的（issue #100）。
+        // 旧实现把它归到 `Client`（不换号）⇒ 池里明明有健康账号，客户端却直接吃到 401。
+        UpstreamEvent::AuthRejected => true,
         // 只换一次（`attempt == 0` 时还允许再试一个号）。
         UpstreamEvent::NotFound => attempt == 0,
         // 调用方自己的问题，换谁都一样。
@@ -698,6 +1438,12 @@ pub struct EnvelopeErrorSink {
     state: GatewayState,
     uid: String,
     model: String,
+    /// 会话粘性键（`None` = 客户端没给会话 id ⇒ 本来就没绑定）。
+    ///
+    /// ★ issue #129 §5.2 改动 3：首帧前的两条失败路径早已解绑粘性，首帧后的
+    /// sink 路径**漏了这一步** ⇒ 客户端重跑时粘性会把它拉回同一个号，
+    /// 开关看起来「没生效」（其实换号逻辑从没被执行）。
+    sticky_key: Option<String>,
 }
 
 impl crate::protocol::usage_tap::StreamErrorSink for EnvelopeErrorSink {
@@ -705,8 +1451,19 @@ impl crate::protocol::usage_tap::StreamErrorSink for EnvelopeErrorSink {
         let state = self.state.clone();
         let uid = self.uid.clone();
         let model = self.model.clone();
+        let sticky_key = self.sticky_key.clone();
         tokio::spawn(async move {
+            // ① 冷却 / 熔断 / 模型闸门（既有唯一路径）。
             note_envelope_failure(&state, &uid, &model, &error.event).await;
+            // ② 粘性解绑：这个号已经失败过，下一轮必须换。
+            if let Some(key) = sticky_key.as_deref() {
+                state.sticky.write().await.unbind(key);
+            }
+            // ③ 管理面「最近一次失败」：流中途失败不经过 `relay()` 的唯一失败出口，
+            //    不写这里的话账号池卡片能看到冷却、而「最近一次失败」却还停在上一次。
+            state
+                .note_last_error(format!("账号「{uid}」流内失败：{}", error.message))
+                .await;
         });
     }
 }
@@ -716,6 +1473,8 @@ pub fn envelope_error_sink(
     state: &GatewayState,
     uid: &str,
     model: &str,
+    // ★ issue #129：首帧后失败同样要解绑粘性（见 `EnvelopeErrorSink::sticky_key`）。
+    sticky_key: Option<&str>,
 ) -> Option<std::sync::Arc<dyn crate::protocol::usage_tap::StreamErrorSink>> {
     if uid.is_empty() {
         return None;
@@ -724,6 +1483,7 @@ pub fn envelope_error_sink(
         state: state.clone(),
         uid: uid.to_string(),
         model: model.to_string(),
+        sticky_key: sticky_key.map(str::to_string),
     }))
 }
 
@@ -749,7 +1509,7 @@ pub async fn note_envelope_failure(
     let mut pool = state.pool.write().await;
     pool.apply_upstream_error(uid, model, event, now_ms);
     if is_model_level(event) {
-        pool.note_model_failure(model, now_ms);
+        pool.note_model_failure(model, uid, now_ms);
     }
 }
 
@@ -763,11 +1523,19 @@ pub fn upstream_kind_of(
     use buddy_switch_core::modules::upstream::UpstreamErrorKind;
     match event {
         UpstreamEvent::HardCredit => UpstreamErrorKind::HardCredit,
-        UpstreamEvent::SoftRate { .. } => UpstreamErrorKind::SoftRate,
+        UpstreamEvent::SoftRate { .. } => {
+            buddy_switch_core::modules::upstream::UpstreamErrorKind::SoftRate
+        }
         UpstreamEvent::SessionDead => UpstreamErrorKind::SessionDead,
+        // 401/403 对**客户端**的语义就是「这个账号的凭据不可用了」⇒ 对外仍是 401，
+        // 由文案把「换号后仍失败时该去重新登录」讲清楚。
+        UpstreamEvent::AuthRejected => UpstreamErrorKind::SessionDead,
         UpstreamEvent::NotFound => UpstreamErrorKind::NotFound,
-        UpstreamEvent::Server => UpstreamErrorKind::Server,
-        UpstreamEvent::ModelBlocked | UpstreamEvent::Client => UpstreamErrorKind::Client,
+        UpstreamEvent::Server => buddy_switch_core::modules::upstream::UpstreamErrorKind::Server,
+        UpstreamEvent::Timeout => UpstreamErrorKind::Timeout,
+        UpstreamEvent::ModelBlocked | UpstreamEvent::Client => {
+            buddy_switch_core::modules::upstream::UpstreamErrorKind::Client
+        }
     }
 }
 
@@ -802,7 +1570,12 @@ fn describe_event(event: &UpstreamEvent) -> String {
         UpstreamEvent::ModelBlocked => "11102 模型被封禁 → 退避".to_string(),
         UpstreamEvent::NotFound => "404 上游未找到 → 浅冷却 60s".to_string(),
         UpstreamEvent::Server => "5xx 上游异常 → 计入熔断".to_string(),
+        UpstreamEvent::Timeout => "请求超时 → 计入熔断并换号（换模型可能更有效）".to_string(),
         UpstreamEvent::SessionDead => "12153 会话失效 → 三振禁用".to_string(),
+        // issue #100：401/403 不再归到「调用方错误」—— 那是**该账号的凭据**被拒。
+        UpstreamEvent::AuthRejected => {
+            "401/403 凭据被拒 → 浅冷却 60s 并换号（保活刷新后可自愈）".to_string()
+        }
         UpstreamEvent::Client => "4xx 调用方错误（不换号）".to_string(),
     }
 }
@@ -849,25 +1622,15 @@ async fn acquire_with_wait(
 /// ★ 展开**只增不删**：`scope_accounts` 里的 uid 即使账号库已删除也保留 ——
 ///   那是用户显式写进去的，删掉会让「改完策略发现少一个号」无从解释。
 fn allowed_uids_for(policy: &crate::apikey::KeyPolicy, region: Region) -> Option<HashSet<String>> {
-    use crate::apikey::ScopeMode;
-    if policy.scope_mode != ScopeMode::Selected {
-        return None;
-    }
-    let mut allowed: HashSet<String> = policy.scope_accounts.iter().cloned().collect();
-    if !policy.scope_groups.is_empty() {
-        for account in account::load_accounts_for(region) {
-            let group = account::get_str(&account, "groupName").unwrap_or_default();
-            if group.is_empty() {
-                continue;
-            }
-            if policy.scope_groups.iter().any(|wanted| wanted == &group) {
-                if let Some(uid) = account::get_str(&account, "uid") {
-                    allowed.insert(uid);
-                }
-            }
-        }
-    }
-    Some(allowed)
+    // ★ 安全审计 P1-7：判定与展开由 `apikey::scope_allows` **唯一提供**。
+    //   这里只负责「从 WB 账号库取 (uid, 分组)」—— 分组字段是自由文本 `groupName`。
+    let accounts = account::load_accounts_for(region)
+        .into_iter()
+        .filter_map(|account| {
+            let uid = account::get_str(&account, "uid")?;
+            Some((uid, account::get_str(&account, "groupName")))
+        });
+    crate::apikey::allowed_uids_for_policy(policy, accounts)
 }
 
 /// 选号：优先账号池（有治理状态），池给不出时回落既有策略。
@@ -879,12 +1642,28 @@ fn allowed_uids_for(policy: &crate::apikey::KeyPolicy, region: Region) -> Option
 /// 区域与模型都进键：跨区域的账号库本就分家；同一会话切模型时应允许落到各自最合适的账号
 /// （否则「模型级限流只封锁该模型」的优势会被粘性抵消）。
 fn sticky_key_of(request: &RelayRequest) -> Option<String> {
-    request
-        .conversation_id
-        .as_deref()
+    sticky_key_for(
+        request.region,
+        &request.model,
+        request.conversation_id.as_deref(),
+    )
+}
+
+/// [`sticky_key_of`] 的**路由层可用**版本（issue #129）。
+///
+/// 流中途失败的治理（解绑粘性）发生在 `StreamErrorSink` 里 —— 那是个后台任务，
+/// 拿不到 `RelayRequest`。三条路由本来就有 `(region, model, conversation_id)`，
+/// 直接用同一份推导即可；**不得**在别处另写一套拼键规则（键一不一致，
+/// 解绑就静默失效，表现为「重试还是撞同一个号」）。
+pub fn sticky_key_for(
+    region: Region,
+    model: &str,
+    conversation_id: Option<&str>,
+) -> Option<String> {
+    conversation_id
         .map(str::trim)
         .filter(|value| !value.is_empty())
-        .map(|value| sticky::sticky_key(request.region.as_str(), &request.model, value))
+        .map(|value| sticky::sticky_key(region.as_str(), model, value))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -899,12 +1678,15 @@ async fn select_account(
     attempt: usize,
     sticky_uid: Option<&str>,
     allowed: Option<&HashSet<String>>,
+    owner: &str,
 ) -> Option<Value> {
     // 偏好与策略**都来自同一个枚举** `AccountStrategy`，因此这里一次算清：
     // - `Pinned`    ⇒ 加权选号 + 偏好 uid（指定是偏好，不是约束）；
     // - `MaxCredits`⇒ 候选内按积分择优（**粘性不参与**：否则「按积分择优」会被粘性绑架成
     //                 「总落在同一个号上」，用户看到的又是假开关）；
     // - `Random`    ⇒ 候选内均匀抽签（同上，粘性不参与）；
+    // - `Sequential`⇒ 粘住当前号、不可用才换（**粘性天然重复，故不参与**：它自己就是
+    //                 「会话级粘性」的账号级版本，再叠一层只会让换号多绕一步）；
     // - `Current`   ⇒ 加权选号 + 粘性（粘性是自动择优的子优化）。
     let strategy = state.strategy_for(region).await;
     let (mode, preferred) = match &strategy {
@@ -913,40 +1695,45 @@ async fn select_account(
         }
         AccountStrategy::MaxCredits => (PickMode::MaxCredits, None),
         AccountStrategy::Random => (PickMode::Random, None),
+        AccountStrategy::Sequential => (PickMode::Sequential, None),
         _ => (PickMode::Weighted, sticky_uid),
     };
 
-    let (picked_uid, pool_empty) = {
-        let mut pool = state.pool.write().await;
-        if pool.is_empty() {
-            (None, true)
-        } else {
-            let seed = (now_ms as u64)
-                .wrapping_mul(31)
-                .wrapping_add(attempt as u64)
-                .wrapping_add(0x9E37_79B9_7F4A_7C15);
-            // 偏好不可用时由 `pick_with_preference` 自行回落到自动择优；
-            // 排除项由池自己持有（`sync_exclusions`），无需在这里传。
-            (
+    // 账号删除后池条目仍在（`sync_accounts` 增量 upsert），而 `find_account_for`
+    // 只查账号库 ⇒ 选中它取不到凭据。**主防线**是池内的 `present_in_store` 标记
+    // （`sync_accounts` 维护、`pick` 直接跳过，见 `PoolEntry::present_in_store`）；
+    // 这里的逐个验证是**兜底**：同步与取凭据之间仍可能有一条被删掉的号，
+    // 无凭据的记入 `skipped` 后重选，绝不让一条脏数据拖死整轮。
+    let mut skipped: HashSet<String> = tried.clone();
+    let pool_empty = state.pool.read().await.is_empty();
+    if !pool_empty {
+        loop {
+            let picked_uid = {
+                let mut pool = state.pool.write().await;
+                let seed = (now_ms as u64)
+                    .wrapping_mul(31)
+                    .wrapping_add(attempt as u64)
+                    .wrapping_add(skipped.len() as u64)
+                    .wrapping_add(0x9E37_79B9_7F4A_7C15);
+                // 偏好不可用时由 `pick_with_preference` 自行回落到自动择优；
+                // 排除项由池自己持有（`sync_exclusions`），无需在这里传。
                 pool.pick_account(
                     now_ms,
                     Some(realm),
                     model,
-                    tried,
+                    &skipped,
                     mode,
                     seed,
                     preferred,
                     allowed,
-                ),
-                false,
-            )
-        }
-    };
-
-    if let Some(uid) = picked_uid {
-        // 池里存在但账号库已删除 → 该 uid 无凭据可用，落回策略选择。
-        if let Some(account_value) = account::find_account_for(region, &uid) {
-            return Some(account_value);
+                    owner,
+                )
+            };
+            let Some(uid) = picked_uid else { break };
+            if let Some(account_value) = account::find_account_for(region, &uid) {
+                return Some(account_value);
+            }
+            skipped.insert(uid);
         }
     }
 
@@ -988,8 +1775,9 @@ async fn select_account(
 
 /// 池快照 → `no_credential` 的具体原因（**唯一判据**）。
 ///
-/// `total == 0` ⇒ 该区域在池里一条都没有：账号库为空，或库里的账号都没有 `uid`
-/// 而被 `sync_accounts` 跳过。否则是「有号，但一个都不可用」—— 这两种处境的可行动
+/// `total == 0` ⇒ 该区域在账号库里一个号都没有（空库，或库里的账号都没有 `uid` 而被
+/// `sync_accounts` 跳过，或池里只剩「账号已删除」的残留条目 —— 它们不计入 `total`，
+/// 见 `PoolEntry::present_in_store`）。否则是「有号，但一个都不可用」—— 这两种处境的可行动
 /// 指引完全不同（见 [`NoCredentialCause`]）。
 ///
 /// 刻意用 `total` 而不是「`available == 0`」：后者只说「不可用」，前者才能区分
@@ -1005,6 +1793,7 @@ fn no_credential_cause_of(summary: &PoolSummary) -> NoCredentialCause {
             zero_credits: summary.zero_credits,
             excluded: summary.excluded,
             in_flight_full: summary.in_flight_full,
+            model_cooling: summary.model_cooling,
         }
     }
 }
@@ -1064,6 +1853,7 @@ fn scope_empty_cause(pool_total: usize, scoped: &PoolSummary) -> NoCredentialCau
         zero_credits: scoped.zero_credits,
         excluded: scoped.excluded,
         in_flight_full: scoped.in_flight_full,
+        model_cooling: scoped.model_cooling,
     }
 }
 
@@ -1326,13 +2116,14 @@ pub fn stream_sinks(
     // ★ issue #76：调用方的 `KeyActor`（`None` = 无 Key 的调用 ⇒ 不记按密钥用量）。
     //   用 actor 而不是具体 Key 类型：统一网关的 Key 是第四套台账，也能带进来。
     key: Option<&crate::apikey::KeyActor>,
+    // ★ issue #129：流中途失败信号（日志据此写真实状态码而非恒 200）。
+    failure: Option<std::sync::Arc<crate::failover::StreamFailure>>,
 ) -> Vec<std::sync::Arc<dyn crate::protocol::usage_tap::UsageSink>> {
     let mut sinks: Vec<std::sync::Arc<dyn crate::protocol::usage_tap::UsageSink>> =
-        vec![std::sync::Arc::new(crate::logging::StreamingLogSink::new(
-            state.log.clone(),
-            meta,
-            started,
-        ))];
+        vec![std::sync::Arc::new(
+            crate::logging::StreamingLogSink::new(state.log.clone(), meta, started)
+                .with_failure(failure),
+        )];
     if let Some(ledger) = pool_usage_sink(state, uid, model) {
         sinks.push(ledger);
     }
@@ -1355,6 +2146,26 @@ mod tests {
     fn realm_mapping_covers_both_regions() {
         assert_eq!(realm_of(Region::Cn), RealmTag::Cn);
         assert_eq!(realm_of(Region::Global), RealmTag::Global);
+    }
+
+    /// 降级前的图片检测只认协议里的两个字段名。
+    ///
+    /// 用字符串匹配而不是解析整份 body（这段在每个候选跳上都要跑一遍），
+    /// 所以必须钉住它**不误判** —— 把普通文案里的 "image" 当成图片输入，
+    /// 会让纯文本请求被无谓地跳过一跳。
+    #[test]
+    fn wants_image_matches_only_protocol_fields() {
+        assert!(wants_image(
+            r#"{"messages":[{"content":[{"type":"image_url","image_url":{"url":"x"}}]}]}"#
+        ));
+        assert!(wants_image(
+            r#"{"input":[{"type":"input_image","image_url":"x"}]}"#
+        ));
+        assert!(
+            !wants_image(r#"{"messages":[{"content":"describe this image"}]}"#),
+            "普通文案里的 image 不算图片输入"
+        );
+        assert!(!wants_image(r#"{"model":"m","messages":[]}"#));
     }
 
     /// ★ 池快照必须能区分「一个号都没有」与「有号但全不可用」。
@@ -1385,6 +2196,7 @@ mod tests {
                 excluded: 0,
                 zero_credits: 0,
                 in_flight_full: 0,
+                model_cooling: 0,
             },
             "有号但全不可用 ⇒ 必须带上分类计数，不能退化成「未登录」"
         );
@@ -1488,6 +2300,7 @@ mod tests {
                     zero_credits: 0,
                     excluded: 0,
                     in_flight_full: 0,
+                    model_cooling: 0,
                 },
                 "白名单生效时必须报名单口径，不能把全池 12 个号摆给用户"
             ),
@@ -1611,6 +2424,7 @@ mod tests {
 
     fn relay_request(conversation_id: Option<&str>, model: &str, region: Region) -> RelayRequest {
         RelayRequest {
+            openai_shape: false,
             region,
             // 既有测试全部针对 **LLM** 路径 ⇒ 行为必须与加 `kind` 之前**逐字相同**。
             kind: RelayKind::Llm,
@@ -1675,6 +2489,24 @@ mod tests {
     // （判据与自动选号同源，不再有第二套）。对应性质现在由 `pool/pick.rs` 的
     // `pick_with_preference` 系列用例与 `pool::tests::pick_account_honours_preferred_uid_and_falls_back`
     // 守住；Trae 侧另有 `trae::pool::preferred_uid_falls_back_when_unusable` 做行为级印证。
+
+    /// ★ issue #100：上游 401/403 必须**换号**。
+    ///
+    /// 旧实现把它归到 `UpstreamEvent::Client`（「调用方错误，不换号」）⇒ 池里明明有
+    /// 健康账号，客户端却直接吃到 401。用户原话：「之前旧的登录状态直接报 401」。
+    ///
+    /// 变异：把 `should_rotate` 里的 `AuthRejected` 挪回「不换号」⇒ 第一条断言红。
+    #[test]
+    fn auth_rejected_rotates_to_another_account() {
+        use crate::pool::UpstreamEvent;
+        assert!(should_rotate(&UpstreamEvent::AuthRejected, 0));
+        assert!(
+            should_rotate(&UpstreamEvent::AuthRejected, 5),
+            "401/403 不受 attempt 预算影响（它换号就能救）"
+        );
+        // 对照：参数错（400/422）仍然不换号 —— 换号只是把同一份坏参数喂给下一个号。
+        assert!(!should_rotate(&UpstreamEvent::Client, 0));
+    }
 }
 
 /// **首帧窥探**的集成测试：起一个只应答一次的**真 HTTP 服务**，让 `peek_first_frame`

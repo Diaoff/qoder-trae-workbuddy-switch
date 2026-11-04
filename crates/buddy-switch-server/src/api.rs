@@ -17,10 +17,11 @@ use rust_embed::RustEmbed;
 use serde_json::{json, Value};
 
 use buddy_switch_core::modules::{
-    account, auth_file, backup, checkin, client_limits, client_settings, config, credit_usage,
-    credits, diagnostics, export_import, loomy, migrate, oauth, process, programs, qoder, refresh,
-    region::Region, region::RegionFilter, rotate, schedule, scheduler, session, skill, switch,
-    token_daily, token_stats, trae, travel, update, vscode_session,
+    account, auth_file, backup, checkin, client_limits, client_settings, codebuddy_cli, config,
+    credit_usage, credits, diagnostics, export_import, gateway_ledger, loomy, migrate, oauth,
+    process, programs, qoder, refresh, region::Region, region::RegionFilter, rotate, schedule,
+    scheduler, session, session_bundle, skill, switch, token_daily, token_stats, trae, travel,
+    update, vscode_session,
 };
 use buddy_switch_gateway::unified::UnifiedGatewayConfig;
 use buddy_switch_gateway::GatewayProduct;
@@ -88,7 +89,16 @@ static SWITCH_REGION: Mutex<Option<Region>> = Mutex::new(None);
 /// 否则 axum 会因 fallback 冲突直接 panic。
 pub fn router() -> Router {
     let gateway_state = crate::gateway_host::shared_state();
+    // ★ 安全审计 P0-1：**管理面必须有来源校验**。
+    //
+    // 这里 `.layer(...)` 的位置很关键：它在 `merge` **之前**，所以只作用于
+    // `api_routes()`（`/api/*`）；网关那棵树有自己的 Bearer 鉴权与独立端口，
+    // 不该被 webui 的 Host 策略牵连。
+    //
+    // 也不能挂在最外层：那会把 `static_handler`（SPA 静态资源）一起拦掉，
+    // 而静态资源是公开的、且它的 GET 请求不带 `Content-Type`。
     api_routes()
+        .layer(axum::middleware::from_fn(crate::api_guard::guard))
         .merge(buddy_switch_gateway::router(gateway_state))
         .fallback(static_handler)
 }
@@ -192,6 +202,16 @@ fn protected_routes() -> Router<std::sync::Arc<crate::auth::WebuiAuth>> {
             post(api_codebuddy_cli_install_helper),
         )
         .route("/api/codebuddy-cli/switch", post(api_codebuddy_cli_switch))
+        // issue #109 §PR-2：一键把 CLI 切到本机网关（建 Key + 写 settings + 关轮换）。
+        .route(
+            "/api/codebuddy-cli/enable-gateway",
+            post(api_codebuddy_cli_enable_gateway),
+        )
+        // issue #109：切回直连（清网关键 + 重建上游凭据）。没有它，用户切过去就回不来。
+        .route(
+            "/api/codebuddy-cli/disable-gateway",
+            post(api_codebuddy_cli_disable_gateway),
+        )
         .route(
             "/api/codebuddy-cn-ide/status",
             get(api_codebuddy_cn_ide_status),
@@ -279,6 +299,13 @@ fn protected_routes() -> Router<std::sync::Arc<crate::auth::WebuiAuth>> {
         .route("/api/sessions/sync", post(api_session_sync))
         .route("/api/sessions/unify", post(api_session_unify))
         .route("/api/sessions/copy", post(api_copy_sessions))
+        // issue #87 · 会话导出 / 导入（单文件 JSON 包；导入是加法写）。
+        .route("/api/sessions/export", post(api_export_sessions_bundle))
+        .route(
+            "/api/sessions/import/preview",
+            get(api_preview_sessions_bundle),
+        )
+        .route("/api/sessions/import", post(api_import_sessions_bundle))
         // P14 S4a · VS Code 插件 / CodeBuddy IDE 的会话仓（只读枚举 + 加法复制）。
         .route("/api/vscode-sessions", get(api_vscode_sessions))
         .route("/api/vscode-sessions/copy", post(api_copy_vscode_sessions))
@@ -392,6 +419,25 @@ fn protected_routes() -> Router<std::sync::Arc<crate::auth::WebuiAuth>> {
             "/api/gateway/disabled-models",
             get(api_gateway_disabled_models).post(api_gateway_set_model_disabled),
         )
+        // 图片能力声明 / 覆盖（issue #101）：同一路径两种方法，与 Tauri 命令一一对应。
+        .route(
+            "/api/gateway/model-image-caps",
+            get(api_gateway_model_image_caps).post(api_gateway_set_model_image_cap),
+        )
+        // 模型降级链（P13）：读 / 存 / 预演，与三个 Tauri 命令一一对应。
+        .route(
+            "/api/gateway/model-fallback",
+            get(api_gateway_model_fallback).post(api_save_gateway_model_fallback),
+        )
+        .route(
+            "/api/gateway/model-fallback/preview",
+            post(api_preview_gateway_model_fallback),
+        )
+        // 降级统计：读**落盘账本**（不是环形缓冲），「近 N 天」才成立。
+        .route(
+            "/api/gateway/fallback-stats",
+            get(api_gateway_fallback_stats),
+        )
         .route("/api/gateway/logs", get(api_gateway_logs))
         .route("/api/gateway/logs/clear", post(api_gateway_clear_logs))
         // 限流探测（账号 × 模型矩阵 · 一次性作业 + 轮询）：start 异步作业 / status 快照 / cancel。
@@ -495,6 +541,22 @@ fn protected_routes() -> Router<std::sync::Arc<crate::auth::WebuiAuth>> {
         .route("/api/trae/checkin", post(api_trae_checkin))
         .route("/api/trae/credits", get(api_trae_credits))
         .route("/api/trae/token-stats", get(api_trae_token_statistics))
+        // Trae 客户端账本（导入用户自己导出的明文库；不内置解密）。
+        .route("/api/trae/client-import/probe", get(api_trae_client_probe))
+        .route(
+            "/api/trae/client-import/config",
+            get(api_trae_client_config),
+        )
+        .route(
+            "/api/trae/client-import/path",
+            post(api_trae_save_client_path),
+        )
+        // 内置解密：口令由用户输入，工具内部完成「加密库 → 明文副本」。
+        .route(
+            "/api/trae/client-import/unlock",
+            post(api_trae_unlock_client_db),
+        )
+        .route("/api/trae/client-usage", get(api_trae_client_usage))
         .route("/api/trae/logs", get(api_trae_logs))
         .route("/api/trae/credits/refresh", post(api_trae_refresh_credits))
         .route("/api/trae/refresh-jwt", post(api_trae_refresh_jwt))
@@ -621,6 +683,46 @@ fn protected_routes() -> Router<std::sync::Arc<crate::auth::WebuiAuth>> {
             post(api_loomy_wechat_bind_check),
         )
         .route("/api/loomy/wechat/skip", post(api_loomy_wechat_skip))
+        // ---- Qoder 网页端逐资源包明细（issue #111）----
+        // ★ 三条都**只对桌面端成立**：逐包数据在网页端私有接口，只认浏览器登录后的
+        //   会话 Cookie，而只有 Tauri 的 `Webview::cookies()` 能读到它。本进程是
+        //   headless 服务端（Docker / npm CLI / 裸二进制），没有 `Webview` ⇒ 原理上做不到。
+        //   ⇒ 结构化拒绝，**不返回空包列表**（那会被读成「该账号没有资源包」，与事实相反）。
+        .route(
+            "/api/qoder/web/login-open",
+            post(api_qoder_web_desktop_only),
+        )
+        .route(
+            "/api/qoder/web/login-close",
+            post(api_qoder_web_desktop_only),
+        )
+        .route(
+            "/api/qoder/web/credit-packs/probe",
+            post(api_qoder_web_desktop_only),
+        )
+        .route(
+            "/api/qoder/web/credit-packs",
+            get(api_qoder_web_desktop_only),
+        )
+        .route(
+            "/api/qoder/web/session/status",
+            get(api_qoder_web_desktop_only),
+        )
+        .route(
+            "/api/qoder/web/session/window-cookies",
+            get(api_qoder_web_desktop_only),
+        )
+        .route(
+            "/api/qoder/web/session/logout",
+            post(api_qoder_web_desktop_only),
+        )
+        // ---- Qoder 逐包出站代理（issue #111 收尾）----
+        // ★ 这是**纯配置**，不是「仅桌面端可用」：headless 服务端只要有会话文件同样要取
+        //   逐包，代理通道（国际版按 IP 判地区）对它是同等需要的能力 ⇒ 真实读写。
+        .route(
+            "/api/qoder/web/proxy",
+            get(api_qoder_web_proxy_get).post(api_qoder_web_proxy_set),
+        )
         // ---- Qoder API 网关（管理面；网关本体走独立端口 57895，**不** merge 进本 Router）----
         // ⚠️ 一个监听、两个区域：区域由请求所用 API Key 的归属决定（`QoderKeyRegion`），
         //   状态 / 模型两条按 `scope` 看对应的那本账号库（fail-closed）。
@@ -664,6 +766,11 @@ fn protected_routes() -> Router<std::sync::Arc<crate::auth::WebuiAuth>> {
             "/api/qoder/gateway/logs/clear",
             post(api_qoder_clear_gateway_logs),
         )
+        // 网关账本（用量页「账本」视图，issue #63 的平台补齐）。
+        .route(
+            "/api/qoder/gateway/usage-dim",
+            get(api_qoder_gateway_usage_dim),
+        )
         .route("/api/trae/device/reset", post(api_trae_reset_device))
         .route(
             "/api/trae/settings",
@@ -701,6 +808,11 @@ fn protected_routes() -> Router<std::sync::Arc<crate::auth::WebuiAuth>> {
             post(api_trae_set_key_policy),
         )
         .route("/api/trae/gateway/keys/usage", get(api_trae_key_usage))
+        // 网关账本（用量页「账本」视图，issue #63 的平台补齐）。
+        .route(
+            "/api/trae/gateway/usage-dim",
+            get(api_trae_gateway_usage_dim),
+        )
         .route(
             "/api/trae/gateway/keys/restore",
             post(api_trae_restore_api_key),
@@ -803,11 +915,60 @@ async fn api_change_password(
 // ---------------------------------------------------------------------------
 
 /// 从 query 中读取一个参数值（URL 解码为最简实现，仅处理 `%` 之外的常规字符）。
+/// 解析 GET 查询串里某个键的值（**做过 percent-decode**）。
+///
+/// ## 为什么必须解码（2026-10-28 修）
+///
+/// 前端用 `URLSearchParams` 拼 query，它会把 Windows 路径编码成
+/// `D%3A%5Ctrae-plain%5Cdatabase.db`、把空格编码成 `+`。旧实现直接
+/// `value.to_string()` 取原始片段 ⇒ 服务端拿到的是一条**没解码**的串，
+/// 路径必然打不开，而桌面端（走 IPC，参数不经 URL）完全正常 ——
+/// 这是典型的「两个通道语义分叉」。
+///
+/// 这个缺陷以前看不出来：既有 GET 参数全是 `region` / `days` / `scope` / 逗号 id
+/// 这类枚举值，没有任何需要编码的字符。一传**文件路径**就暴露。
+///
+/// 解码规则与 `application/x-www-form-urlencoded` 一致：`%XX` → 字节、`+` → 空格。
+/// 非法的 `%` 序列**原样保留**（宁可让路径打不开并报错，也不要静默丢字符）。
 fn query_value(query: Option<&str>, name: &str) -> Option<String> {
     query.unwrap_or("").split('&').find_map(|pair| {
         let (key, value) = pair.split_once('=').unwrap_or((pair, ""));
-        (key == name).then(|| value.to_string())
+        (decode_query_component(key) == name).then(|| decode_query_component(value))
     })
+}
+
+/// `%XX` 与 `+` 的解码（[`query_value`] 的唯一实现）。
+fn decode_query_component(raw: &str) -> String {
+    let bytes = raw.as_bytes();
+    let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        match bytes[index] {
+            b'+' => {
+                out.push(b' ');
+                index += 1;
+            }
+            b'%' if index + 2 < bytes.len() => {
+                let hex = std::str::from_utf8(&bytes[index + 1..index + 3]).ok();
+                match hex.and_then(|digits| u8::from_str_radix(digits, 16).ok()) {
+                    Some(byte) => {
+                        out.push(byte);
+                        index += 3;
+                    }
+                    // 非法转义：原样收下 `%`，继续往后走（不吞字符）。
+                    None => {
+                        out.push(bytes[index]);
+                        index += 1;
+                    }
+                }
+            }
+            byte => {
+                out.push(byte);
+                index += 1;
+            }
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
 }
 
 /// 解析**逗号分隔**的账号 id 列表（`accountIds=a,b,c`；缺失 / 空串 ⇒ 空数组）。
@@ -1832,6 +1993,86 @@ async fn api_codebuddy_cli_install_helper() -> Response {
     }
 }
 
+/// POST /api/codebuddy-cli/enable-gateway —— 把 CLI 切到**本机网关**模式（issue #109 §PR-2）。
+///
+/// 与桌面宿主的同名命令**刻意各写一份**（本仓惯例）：两宿主的接线各自独立，
+/// 但都只调 core 的 `codebuddy_cli::enable_gateway_mode` + `rotate::disable_auto_rotate`，
+/// 判定逻辑不重复。
+async fn api_codebuddy_cli_enable_gateway(Json(body): Json<Value>) -> Response {
+    let region = parse_region(body.get("region").and_then(Value::as_str));
+    let model = body
+        .get("model")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let state = crate::gateway_host::shared_state();
+    let port = state.config_snapshot().await.port;
+    let base_url = format!("http://127.0.0.1:{port}");
+    let (record, plaintext) = state
+        .keys
+        .create("CodeBuddy CLI（网关）".to_string(), region);
+    match codebuddy_cli::enable_gateway_mode(&base_url, &plaintext, model) {
+        Ok(detail) => {
+            let rotate_disabled = rotate::disable_auto_rotate().is_ok();
+            json_ok(json!({
+                "ok": true,
+                "baseUrl": base_url,
+                "keyPrefix": record.prefix,
+                "key": record.masked(),
+                "rotateDisabled": rotate_disabled,
+                "detail": detail,
+                "message": "已切到本机网关模式：重启终端与 CodeBuddy CLI 后生效（env 不支持热重载）",
+            }))
+        }
+        Err(error) => {
+            // 写失败 ⇒ 吊销刚建的 Key，不留一把没人用的凭据。
+            let _ = state.keys.revoke(&record.id);
+            json_err(error, StatusCode::BAD_REQUEST)
+        }
+    }
+}
+
+/// POST /api/codebuddy-cli/disable-gateway —— 从「走本机网关」切回直连（issue #109）。
+///
+/// 与桌面宿主同名命令**刻意各写一份**（本仓惯例），但逻辑一致：先清网关键、再重建凭据。
+async fn api_codebuddy_cli_disable_gateway() -> Response {
+    let cleared = match codebuddy_cli::disable_gateway_mode() {
+        Ok(value) => value,
+        Err(error) => return json_err(error, StatusCode::BAD_REQUEST),
+    };
+    /* `models.json` 里仍有网关地址 ⇒ 本工具没写过那个文件，停下让用户处理。 */
+    if let Some(warning) = cleared.get("warning").and_then(Value::as_str) {
+        return json_err(warning.to_string(), StatusCode::BAD_REQUEST);
+    }
+
+    let restored = tokio::task::spawn_blocking(|| programs::install_helper("codebuddy_cli"))
+        .await
+        .map_err(|error| error.to_string())
+        .and_then(|result| result);
+
+    let rotate_enabled = config::load_auto_rotate_config()
+        .get("enabled")
+        .and_then(Value::as_bool)
+        == Some(true);
+    match restored {
+        Ok(_) => json_ok(json!({
+            "ok": true,
+            "changed": cleared.get("changed").cloned().unwrap_or(json!(false)),
+            "restored": true,
+            "rotateDisabled": !rotate_enabled,
+            "message": if rotate_enabled {
+                "已切回直连上游：网关配置已清理，直连凭据已重建；重启终端与 CLI 后生效"
+            } else {
+                "已切回直连上游：网关配置已清理，直连凭据已重建。⚠ 自动轮换仍是关闭的 —— 需要的话在「签到与积分」里开启"
+            },
+        })),
+        Err(error) => json_err(
+            format!("网关配置已清理，但重建直连凭据失败：{error}"),
+            StatusCode::BAD_REQUEST,
+        ),
+    }
+}
+
 async fn api_codebuddy_cli_switch(Json(body): Json<Value>) -> Response {
     let id = body.get("accountId").and_then(|v| v.as_str()).unwrap_or("");
     match programs::switch("codebuddy_cli", id, None) {
@@ -2016,12 +2257,35 @@ async fn api_gateway_token_trend(RawQuery(query): RawQuery) -> Response {
     json_ok(token_daily::gateway_token_trend(region))
 }
 
-/// GET /api/account/usage-dim —— 网关三维度（模型 / 账号 / 端点）逐日历史。
+/// GET /api/account/usage-dim —— 网关四维度（密钥 / 模型 / 账号 / 端点）逐日历史。
 ///
 /// 与 `src-tauri/src/commands.rs` 的 `get_gateway_usage_dim` **一一对应**。
 async fn api_gateway_usage_dim(RawQuery(query): RawQuery) -> Response {
     let region = parse_region(query_value(query.as_deref(), "region").as_deref());
     json_ok(token_daily::gateway_usage_dim(region))
+}
+
+/// GET /api/trae/gateway/usage-dim —— Trae 网关账本（四维度逐日）。
+///
+/// 与 `src-tauri/src/commands.rs` 的 `get_trae_gateway_usage_dim` **一一对应**。
+/// `scope` 取 `cn` / `global` / `unlabeled` / `all`（缺省 `all`，合并放后端）。
+async fn api_trae_gateway_usage_dim(RawQuery(query): RawQuery) -> Response {
+    let scope = query_value(query.as_deref(), "scope").unwrap_or_else(|| "all".to_string());
+    json_ok(gateway_ledger::usage_dim(
+        gateway_ledger::LedgerProduct::Trae,
+        &scope,
+    ))
+}
+
+/// GET /api/qoder/gateway/usage-dim —— Qoder 网关账本（四维度逐日）。
+///
+/// 与 `src-tauri/src/commands.rs` 的 `get_qoder_gateway_usage_dim` **一一对应**。
+async fn api_qoder_gateway_usage_dim(RawQuery(query): RawQuery) -> Response {
+    let scope = query_value(query.as_deref(), "scope").unwrap_or_else(|| "all".to_string());
+    json_ok(gateway_ledger::usage_dim(
+        gateway_ledger::LedgerProduct::Qoder,
+        &scope,
+    ))
 }
 
 /// GET /api/account/usage-reconcile —— 今日客户端 ↔ 网关对账。
@@ -2574,6 +2838,131 @@ async fn api_session_unify(Json(body): Json<Value>) -> Response {
         .cloned()
         .unwrap_or_default();
     json_ok(session::unify_session_replicas_for(region, &items))
+}
+
+/// POST /api/sessions/export —— 把选中的会话导出成一个 JSON 包（issue #87）。
+///
+/// 与 Tauri 侧 `commands::export_sessions_bundle` **同契约**（两宿主同步）。
+/// body：`{ uid, sessionIds: [...], outPath, region? }`。
+///
+/// **只读**：不碰客户端数据，只写用户指定的落点文件（单文件 JSON，不是 zip ——
+/// 见 core `session_bundle` 模块头：不为一个搬运功能引入解压攻击面）。
+async fn api_export_sessions_bundle(Json(body): Json<Value>) -> Response {
+    if let Err(error) = require_capability(Product::Workbuddy, capability::Capability::SessionCopy)
+    {
+        return json_err(error, StatusCode::FORBIDDEN);
+    }
+    // uid 省略 ⇒ 当前登录账号（与 Tauri 侧同契约）。
+    let uid = body
+        .get("uid")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+    let session_ids: Vec<String> = body
+        .get("sessionIds")
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(Value::as_str)
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default();
+    let Some(out_path) = body
+        .get("outPath")
+        .and_then(Value::as_str)
+        .filter(|path| !path.trim().is_empty())
+    else {
+        return json_err("缺少 outPath".to_string(), StatusCode::BAD_REQUEST);
+    };
+    let region = parse_region(body.get("region").and_then(Value::as_str));
+    let uid = match uid {
+        Some(uid) => uid,
+        None => match session::current_user_uid_for(region) {
+            Some(uid) => uid,
+            None => {
+                return json_err(
+                    "读不到当前登录账号（客户端是否已登录？）".to_string(),
+                    StatusCode::BAD_REQUEST,
+                )
+            }
+        },
+    };
+    let path = std::path::Path::new(out_path);
+    // 空 sessionIds ⇒ 导出该账号全部会话（v1 口径，与 Tauri 侧一致）。
+    let result = if session_ids.is_empty() {
+        session_bundle::export_all_for(region, &uid, path)
+    } else {
+        session_bundle::export_sessions_for(region, &uid, &session_ids, path)
+    };
+    match result {
+        Ok(report) => json_ok(report),
+        Err(error) => json_err(error, StatusCode::BAD_REQUEST),
+    }
+}
+
+/// GET /api/sessions/import/preview —— 只读导出包，回报条数与标题（导入前确认）。
+///
+/// 查询参数：`path`（**必填**）。
+async fn api_preview_sessions_bundle(RawQuery(query): RawQuery) -> Response {
+    if let Err(error) = require_capability(Product::Workbuddy, capability::Capability::SessionCopy)
+    {
+        return json_err(error, StatusCode::FORBIDDEN);
+    }
+    let Some(path) = query_value(query.as_deref(), "path").filter(|path| !path.trim().is_empty())
+    else {
+        return json_err("缺少 path".to_string(), StatusCode::BAD_REQUEST);
+    };
+    match session_bundle::preview_bundle(std::path::Path::new(path.trim())) {
+        Ok(preview) => json_ok(preview),
+        Err(error) => json_err(error, StatusCode::BAD_REQUEST),
+    }
+}
+
+/// POST /api/sessions/import —— 把导出包里的会话**作为新会话**写进指定账号（issue #87）。
+///
+/// 与 Tauri 侧 `commands::import_sessions_bundle` **同契约**（两宿主同步）。
+/// body：`{ uid, path, region? }`。
+///
+/// ★ **只做加法**：每条都生成新 id，绝不覆盖既有会话；同一份包导两次 = 两份副本
+/// （不静默去重 —— 「我以为覆盖了，结果两份」比「我以为合并了，结果只有一份」更难查）。
+async fn api_import_sessions_bundle(Json(body): Json<Value>) -> Response {
+    if let Err(error) = require_capability(Product::Workbuddy, capability::Capability::SessionCopy)
+    {
+        return json_err(error, StatusCode::FORBIDDEN);
+    }
+    let uid = body
+        .get("uid")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+    let Some(path) = body
+        .get("path")
+        .and_then(Value::as_str)
+        .filter(|path| !path.trim().is_empty())
+    else {
+        return json_err("缺少 path".to_string(), StatusCode::BAD_REQUEST);
+    };
+    let region = parse_region(body.get("region").and_then(Value::as_str));
+    let uid = match uid {
+        Some(uid) => uid,
+        None => match session::current_user_uid_for(region) {
+            Some(uid) => uid,
+            None => {
+                return json_err(
+                    "读不到当前登录账号（客户端是否已登录？）".to_string(),
+                    StatusCode::BAD_REQUEST,
+                )
+            }
+        },
+    };
+    match session_bundle::import_sessions_for(region, &uid, std::path::Path::new(path.trim())) {
+        Ok(report) => json_ok(report),
+        Err(error) => json_err(error, StatusCode::BAD_REQUEST),
+    }
 }
 
 /// 把前端的 `client` 字符串解析成 [`vscode_session::ExtClient`]。
@@ -3749,6 +4138,206 @@ async fn api_gateway_set_model_disabled(Json(body): Json<Value>) -> Response {
     }))
 }
 
+/// 某作用域降级链的视图 JSON。
+///
+/// **与 Tauri 命令共用同一份派生**（`model_fallback::build_view`）—— 两个管理面
+/// （桌面 / WebUI）如果各拼一份，状态点迟早会在两边给出不同结论。
+async fn fallback_view_json(scope: buddy_switch_core::modules::product::Scope) -> Value {
+    let state = crate::gateway_host::shared_state();
+    let fb = state.fallback.read().await.clone();
+    let disabled = state.disabled.read().await.clone();
+    let gates: Vec<(String, i64)> = {
+        let pool = state.pool.read().await;
+        pool.model_gates()
+            .iter()
+            .map(|gate| (gate.model.clone(), gate.until_ms))
+            .collect()
+    };
+    let refs: Vec<(&str, i64)> = gates
+        .iter()
+        .map(|(model, until)| (model.as_str(), *until))
+        .collect();
+    let view = buddy_switch_gateway::model_fallback::build_view(
+        &fb,
+        &disabled,
+        scope,
+        &state.catalogs,
+        &refs,
+        buddy_switch_gateway::timeutil::now_ms(),
+    );
+    serde_json::to_value(view).unwrap_or(Value::Null)
+}
+
+/// GET /api/gateway/model-fallback —— 某作用域的降级链（含备选**实时**健康态）。
+async fn api_gateway_model_fallback(RawQuery(query): RawQuery) -> Response {
+    let scope = match resolve_scope_param(query_value(query.as_deref(), "scope").as_deref()) {
+        Ok(scope) => scope,
+        Err(error) => return json_err(error, StatusCode::BAD_REQUEST),
+    };
+    json_ok(fallback_view_json(scope).await)
+}
+
+/// POST /api/gateway/model-fallback —— 保存某作用域的降级链（**立即生效**）。
+///
+/// `config` 是**整作用域覆盖**（与 Tauri 命令同一语义）：前端提交时必须把其它链带上。
+async fn api_save_gateway_model_fallback(Json(body): Json<Value>) -> Response {
+    let scope = match resolve_scope_param(body.get("scope").and_then(Value::as_str)) {
+        Ok(scope) => scope,
+        Err(error) => return json_err(error, StatusCode::BAD_REQUEST),
+    };
+    let raw = body.get("config").cloned().unwrap_or(Value::Null);
+    let parsed: buddy_switch_gateway::model_fallback::ScopeFallback =
+        match serde_json::from_value(raw) {
+            Ok(value) => value,
+            Err(error) => {
+                return json_err(format!("降级链格式错误: {error}"), StatusCode::BAD_REQUEST)
+            }
+        };
+    let normalized = buddy_switch_gateway::model_fallback::normalize(scope, parsed);
+    let store = buddy_switch_gateway::model_fallback::shared();
+    {
+        let mut guard = store.write().await;
+        guard.set_scope(scope, normalized);
+        // 写失败必须回传：否则用户以为保存了，重启后配置又变回去。
+        if let Err(error) = guard.save() {
+            return json_err(error, StatusCode::INTERNAL_SERVER_ERROR);
+        }
+    }
+    json_ok(fallback_view_json(scope).await)
+}
+
+/// GET /api/gateway/fallback-stats —— 某作用域近 `days` 天的降级统计（**落盘账本**）。
+async fn api_gateway_fallback_stats(RawQuery(query): RawQuery) -> Response {
+    let scope = match resolve_scope_param(query_value(query.as_deref(), "scope").as_deref()) {
+        Ok(scope) => scope,
+        Err(error) => return json_err(error, StatusCode::BAD_REQUEST),
+    };
+    let days = query_value(query.as_deref(), "days")
+        .and_then(|value| value.parse::<u32>().ok())
+        .unwrap_or(7);
+    json_ok(buddy_switch_gateway::model_fallback::stats_payload(
+        scope, days,
+    ))
+}
+
+/// POST /api/gateway/model-fallback/preview —— 保存前**预演**（**纯计算，零副作用**）。
+async fn api_preview_gateway_model_fallback(Json(body): Json<Value>) -> Response {
+    let scope = match resolve_scope_param(body.get("scope").and_then(Value::as_str)) {
+        Ok(scope) => scope,
+        Err(error) => return json_err(error, StatusCode::BAD_REQUEST),
+    };
+    let from = body.get("from").and_then(Value::as_str).unwrap_or("");
+    let targets: Vec<String> = body
+        .get("targets")
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(Value::as_str)
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default();
+    let state = crate::gateway_host::shared_state();
+    let now = buddy_switch_gateway::timeutil::now_ms();
+    let disabled = state.disabled.read().await.clone();
+    let gates: Vec<(String, i64)> = {
+        let pool = state.pool.read().await;
+        pool.model_gates()
+            .iter()
+            .map(|gate| (gate.model.clone(), gate.until_ms))
+            .collect()
+    };
+    let refs: Vec<(&str, i64)> = gates
+        .iter()
+        .map(|(model, until)| (model.as_str(), *until))
+        .collect();
+    json_ok(buddy_switch_gateway::model_fallback::preview_payload(
+        scope, from, &targets, &disabled, &refs, now,
+    ))
+}
+
+/// GET /api/gateway/model-image-caps —— 某**作用域**被用户手动指定的图片能力覆盖（issue #101）。
+///
+/// 形状 `{ scope, caps: { "<模型 id>": true|false } }`：**缺失的键 = 跟随上游**。
+/// 读的是进程内唯一存储，与三条产品线 `/v1/models` 的声明同源。
+async fn api_gateway_model_image_caps(RawQuery(query): RawQuery) -> Response {
+    let scope = match resolve_scope_param(query_value(query.as_deref(), "scope").as_deref()) {
+        Ok(scope) => scope,
+        Err(error) => return json_err(error, StatusCode::BAD_REQUEST),
+    };
+    let caps = match tokio::task::spawn_blocking(move || {
+        buddy_switch_gateway::model_capability::overrides_of(scope)
+    })
+    .await
+    {
+        Ok(caps) => caps,
+        Err(error) => {
+            return json_err(
+                format!("读取图片能力失败: {error}"),
+                StatusCode::BAD_REQUEST,
+            )
+        }
+    };
+    json_ok(json!({ "scope": scope.as_str(), "caps": caps }))
+}
+
+/// POST /api/gateway/model-image-caps —— 指定 / 清除某作用域一个模型的图片能力覆盖。
+///
+/// `supports`：`true` / `false` = 手动指定；**`null` = 还原上游声明**（删键，不是写 `false`）。
+/// ⚠️ `modelId` 按 camelCase 读（与前端 `call()` 原样发送的键一致）；只读 snake 会造成
+/// 静默 no-op —— 与 `api_gateway_set_model_disabled` 同一手法。
+async fn api_gateway_set_model_image_cap(Json(body): Json<Value>) -> Response {
+    let scope = match resolve_scope_param(body.get("scope").and_then(Value::as_str)) {
+        Ok(scope) => scope,
+        Err(error) => return json_err(error, StatusCode::BAD_REQUEST),
+    };
+    let model_id = body
+        .get("modelId")
+        .or_else(|| body.get("model_id"))
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    if model_id.is_empty() {
+        return json_err("模型 id 不能为空".to_string(), StatusCode::BAD_REQUEST);
+    }
+    // `supports` 允许**显式 null**（= 还原上游）⇒ 不能把「缺失」当 `false`。
+    let supports = match body.get("supports") {
+        None | Some(Value::Null) => None,
+        Some(Value::Bool(value)) => Some(*value),
+        Some(_) => {
+            return json_err(
+                "`supports` 只能是 true / false / null".to_string(),
+                StatusCode::BAD_REQUEST,
+            )
+        }
+    };
+    // 闭包要 `move` 走 id，但响应体还要回显它 ⇒ 先克隆一份给闭包。
+    let id_for_save = model_id.clone();
+    let changed = match tokio::task::spawn_blocking(move || {
+        buddy_switch_gateway::model_capability::set_and_save(scope, &id_for_save, supports)
+    })
+    .await
+    {
+        Ok(Ok(changed)) => changed,
+        Ok(Err(error)) => return json_err(error, StatusCode::BAD_REQUEST),
+        Err(error) => {
+            return json_err(
+                format!("保存图片能力失败: {error}"),
+                StatusCode::BAD_REQUEST,
+            )
+        }
+    };
+    json_ok(json!({
+        "ok": true,
+        "scope": scope.as_str(),
+        "model_id": model_id,
+        "supports": supports,
+        "changed": changed,
+    }))
+}
+
 async fn api_gateway_logs() -> Response {
     let state = crate::gateway_host::shared_state();
     json_ok(json!({ "logs": state.log.list() }))
@@ -3946,6 +4535,162 @@ async fn api_trae_token_statistics(RawQuery(query): RawQuery) -> Response {
         .map(|value| trae::token_stats::TraeTokenScope::parse(&value))
         .unwrap_or_default();
     json_ok(trae::handlers::token_statistics(days, scope))
+}
+
+/// GET /api/trae/client-import/probe —— 探测一个**用户自己导出的明文库**能否读。
+///
+/// 与 `src-tauri/src/commands.rs` 的 `probe_trae_client_db` **一一对应**。
+/// 只探测、不保存配置；`error.code` 决定界面文案（五种错误必须分开显示）。
+async fn api_trae_client_probe(RawQuery(query): RawQuery) -> Response {
+    let path = query_value(query.as_deref(), "path").unwrap_or_default();
+    let value = tokio::task::spawn_blocking(move || trae::client_import::probe(&path))
+        .await
+        .unwrap_or_else(|error| {
+            serde_json::json!({
+                "ok": false,
+                "path": "",
+                "error": { "code": "io", "message": format!("探测失败: {error}") },
+                "tables": [],
+            })
+        });
+    json_ok(value)
+}
+
+/// GET /api/trae/client-import/config —— 已保存的导入路径与「文件还在不在」。
+async fn api_trae_client_config() -> Response {
+    let value = tokio::task::spawn_blocking(|| {
+        let path = trae::client_import::configured_path();
+        let exists = path
+            .as_deref()
+            .map(|target| std::path::Path::new(target).is_file())
+            .unwrap_or(false);
+        serde_json::json!({ "path": path, "exists": exists })
+    })
+    .await
+    .unwrap_or_else(
+        |error| serde_json::json!({ "path": null, "exists": false, "error": error.to_string() }),
+    );
+    json_ok(value)
+}
+
+/// POST /api/trae/client-import/path —— 保存 / 清除导入路径（`path` 缺省或空串即清除）。
+async fn api_trae_save_client_path(Json(body): Json<Value>) -> Response {
+    let path = body
+        .get("path")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+    let value = tokio::task::spawn_blocking(move || match path.as_deref() {
+        Some(target) => serde_json::json!({
+            "ok": trae::client_import::save_config(target),
+            "path": target,
+        }),
+        None => serde_json::json!({
+            "ok": trae::client_import::clear_config(),
+            "path": Value::Null,
+        }),
+    })
+    .await
+    .unwrap_or_else(
+        |error| serde_json::json!({ "ok": false, "path": null, "error": error.to_string() }),
+    );
+    json_ok(value)
+}
+
+/// POST /api/trae/client-import/unlock —— 用口令把**加密库**导出成明文副本。
+///
+/// 与 `src-tauri/src/commands.rs` 的 `unlock_trae_client_db` **一一对应**（同一套分支语义：
+/// `decrypted` / `plaintext` / `error`）。
+async fn api_trae_unlock_client_db(Json(body): Json<Value>) -> Response {
+    let path = body
+        .get("path")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .trim()
+        .to_string();
+    let passphrase = body
+        .get("passphrase")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+
+    let value = tokio::task::spawn_blocking(move || {
+        let source = std::path::PathBuf::from(&path);
+        let plain = trae::client_import::plaintext_path();
+        let target = plain.to_string_lossy().to_string();
+        match buddy_switch_vault::verify(&source, &passphrase) {
+            Ok(info) => {
+                if let Err(error) =
+                    buddy_switch_vault::export_plaintext(&source, &passphrase, &plain)
+                {
+                    return serde_json::json!({
+                        "ok": false,
+                        "error": { "code": error.code(), "message": error.message() },
+                    });
+                }
+                let saved = trae::client_import::save_config(&target);
+                serde_json::json!({
+                    "ok": saved,
+                    "mode": "decrypted",
+                    "compatibility": info.compatibility,
+                    "tables": info.tables,
+                    "path": target,
+                    "probe": trae::client_import::probe(&target),
+                })
+            }
+            Err(buddy_switch_vault::VaultError::AlreadyPlaintext) => {
+                let saved = trae::client_import::save_config(&path);
+                serde_json::json!({
+                    "ok": saved,
+                    "mode": "plaintext",
+                    "path": path,
+                    "probe": trae::client_import::probe(&path),
+                })
+            }
+            Err(error) => serde_json::json!({
+                "ok": false,
+                "error": { "code": error.code(), "message": error.message() },
+            }),
+        }
+    })
+    .await
+    .unwrap_or_else(|error| {
+        serde_json::json!({
+            "ok": false,
+            "error": { "code": "io", "message": format!("解锁失败: {error}") },
+        })
+    });
+    json_ok(value)
+}
+
+/// GET /api/trae/client-usage —— 客户端账本（读导入的明文库）。
+///
+/// `path` 缺省时用已保存的路径；两者都没有 ⇒ `{ configured: false }`
+/// （**不是空统计**：「没导入」与「导入了但这段没用量」必须能分开）。
+async fn api_trae_client_usage(RawQuery(query): RawQuery) -> Response {
+    let path = query_value(query.as_deref(), "path").filter(|value| !value.trim().is_empty());
+    let days = query_value(query.as_deref(), "days").and_then(|value| value.parse::<i64>().ok());
+    let scope = query_value(query.as_deref(), "scope")
+        .map(|value| trae::token_stats::TraeTokenScope::parse(&value))
+        .unwrap_or_default();
+    let value = tokio::task::spawn_blocking(move || {
+        let target = path
+            .or_else(trae::client_import::configured_path)
+            .unwrap_or_default();
+        if target.trim().is_empty() {
+            return serde_json::json!({ "source": "trae-client", "configured": false });
+        }
+        trae::client_import::summarize(&target, days, scope)
+    })
+    .await
+    .unwrap_or_else(|error| {
+        serde_json::json!({
+            "source": "trae-client",
+            "error": { "code": "io", "message": format!("读取客户端账本失败: {error}") },
+        })
+    });
+    json_ok(value)
 }
 
 /// GET /api/trae/logs —— 运行日志（`kind` / `date` / `keyword` / `limit` / `variant` 均可选）。
@@ -4775,6 +5520,51 @@ async fn api_companion_set_visible() -> Response {
     )
 }
 
+/// GET /api/qoder/web/proxy —— 读逐包出站代理配置（两个区域各一个 URL；空 = 直连）。
+async fn api_qoder_web_proxy_get() -> Response {
+    match serde_json::to_value(buddy_switch_core::modules::qoder::web_proxy::WebProxyConfig::load())
+    {
+        Ok(value) => json_ok(value),
+        Err(error) => json_err(error.to_string(), StatusCode::INTERNAL_SERVER_ERROR),
+    }
+}
+
+/// POST /api/qoder/web/proxy —— 保存逐包出站代理配置（两个字段都先过形状校验）。
+async fn api_qoder_web_proxy_set(Json(body): Json<Value>) -> Response {
+    let submitted = body.get("config").cloned().unwrap_or(body);
+    let config: buddy_switch_core::modules::qoder::web_proxy::WebProxyConfig =
+        match serde_json::from_value(submitted) {
+            Ok(config) => config,
+            Err(error) => {
+                return json_err(
+                    format!("代理配置格式错误: {error}"),
+                    StatusCode::BAD_REQUEST,
+                )
+            }
+        };
+    if let Err(error) = config.save() {
+        return json_err(error, StatusCode::BAD_REQUEST);
+    }
+    json_ok(json!({ "ok": true, "config": config }))
+}
+
+/// POST /api/qoder/web/{login-open,login-close,credit-packs/probe} —— Qoder 网页端逐包链路。
+///
+/// ★ **仅桌面端可用**，且是**原理性**限制而非未实现：逐包数据在网页端私有接口
+/// `/api/v2/me/usages/big_model_credits`，只认浏览器登录后的会话 Cookie；本进程是
+/// headless 服务端（Docker / npm CLI / 裸二进制），没有 Tauri 的 `Webview` ⇒ 拿不到
+/// 那份 Cookie（issue #111 §4）。
+///
+/// 三条路由共用同一句拒绝，理由见 [`api_companion_set_visible`] 的同一取舍：
+/// **不假装成功**。尤其不能返回 `packs: []` —— 那会被前端读成「该账号没有资源包」，
+/// 与「当前形态拿不到」是两件完全不同的事。
+async fn api_qoder_web_desktop_only() -> Response {
+    json_err(
+        "Qoder 逐包明细需要桌面版：当前运行的是一体化服务端/命令行形态，没有内嵌浏览器，无法采集网页会话。聚合额度（剩余/已用/总量）在任意形态都可用。".to_string(),
+        StatusCode::BAD_REQUEST,
+    )
+}
+
 /// POST /api/companion/toggle —— 翻转可见性（webui 无此窗口，同上）。
 async fn api_companion_toggle() -> Response {
     json_err(
@@ -5228,6 +6018,7 @@ mod tests {
         let request = Request::builder()
             .method(method)
             .uri(uri)
+            .header("host", "127.0.0.1:57890")
             .body(Body::empty())
             .unwrap();
         let response = router().oneshot(request).await.expect("router call");
@@ -5248,11 +6039,123 @@ mod tests {
         )
     }
 
+    /// 驱动**完整** `router()`（含 `api_guard` 中间件），只回状态码。
+    ///
+    /// 三个 header 分别对应 guard 的三条判据，`None` 表示该头**不发送**。
+    async fn status_with_headers(
+        method: Method,
+        uri: &str,
+        host: Option<&str>,
+        origin: Option<&str>,
+        sec_fetch_site: Option<&str>,
+        content_type: Option<&str>,
+    ) -> StatusCode {
+        let mut builder = Request::builder().method(method).uri(uri);
+        for (name, value) in [
+            ("host", host),
+            ("origin", origin),
+            ("sec-fetch-site", sec_fetch_site),
+            ("content-type", content_type),
+        ] {
+            if let Some(value) = value {
+                builder = builder.header(name, value);
+            }
+        }
+        router()
+            .oneshot(builder.body(Body::empty()).unwrap())
+            .await
+            .expect("router call")
+            .status()
+    }
+
+    /// ★★ 安全审计 P0-1：**`api_guard` 必须真的挂在 `router()` 上**。
+    ///
+    /// 这条是「中间件写好了但没接线」的唯一防线 —— `api_guard` 自己的单测只能证明
+    /// `judge()` 判得对，证明不了它被装进了管理面。变异验证：把 `router()` 里的
+    /// `.layer(...)` 去掉，本用例立刻红。
+    #[tokio::test]
+    async fn management_surface_rejects_foreign_host_and_cross_site_requests() {
+        let _home = isolated_home();
+
+        // ① 正常同源访问 ⇒ 放行。
+        assert_ne!(
+            status_with_headers(
+                Method::GET,
+                "/api/status",
+                Some("127.0.0.1:57890"),
+                None,
+                None,
+                None
+            )
+            .await,
+            StatusCode::FORBIDDEN,
+            "回环 Host 必须放行"
+        );
+
+        // ② DNS rebinding 形态：Host 与 Origin **同源**，但主机名是攻击者的。
+        assert_eq!(
+            status_with_headers(
+                Method::GET,
+                "/api/status",
+                Some("attacker.com:57890"),
+                Some("http://attacker.com:57890"),
+                None,
+                None,
+            )
+            .await,
+            StatusCode::FORBIDDEN,
+            "同源 Origin 不是防线，Host 必须是回环"
+        );
+
+        // ③ 普通跨站（Host 是回环、Origin 是别人的）⇒ 也拒。
+        assert_eq!(
+            status_with_headers(
+                Method::GET,
+                "/api/status",
+                Some("127.0.0.1:57890"),
+                Some("http://evil.example"),
+                None,
+                None,
+            )
+            .await,
+            StatusCode::FORBIDDEN
+        );
+
+        // ④ 完全没有 Host（HTTP/1.0 / 伪造）⇒ 拒。
+        assert_eq!(
+            status_with_headers(Method::GET, "/api/status", None, None, None, None).await,
+            StatusCode::FORBIDDEN
+        );
+
+        // ⑤ 写接口必须是 JSON —— 挡「`text/plain` 简单请求绕过预检」的 CSRF。
+        assert_eq!(
+            status_with_headers(
+                Method::POST,
+                "/api/accounts/remark",
+                Some("127.0.0.1:57890"),
+                None,
+                None,
+                Some("text/plain"),
+            )
+            .await,
+            StatusCode::UNSUPPORTED_MEDIA_TYPE
+        );
+
+        // ⑥ 静态资源（fallback）**不受**管理面校验影响：公开可读，且 GET 没有 Content-Type。
+        let (status, _, _) = call_full(Method::GET, "/").await;
+        assert_ne!(
+            status,
+            StatusCode::FORBIDDEN,
+            "SPA 首页不能被管理面校验拦掉（它不在 /api/* 上）"
+        );
+    }
+
     /// 取响应的 `Cache-Control`（无该头时返回空串）。
     async fn call_cache_control(uri: &str) -> (StatusCode, String) {
         let request = Request::builder()
             .method(Method::GET)
             .uri(uri)
+            .header("host", "127.0.0.1:57890")
             .body(Body::empty())
             .unwrap();
         let response = router().oneshot(request).await.expect("router call");
@@ -5316,6 +6219,33 @@ mod tests {
         assert_eq!(query_value(None, "region"), None);
         assert_eq!(query_value(Some("flag"), "flag").as_deref(), Some(""));
         assert_eq!(query_value(Some("x=1&x=2"), "x").as_deref(), Some("1"));
+    }
+
+    /// GET 参数必须解码：Windows 路径经 `URLSearchParams` 编码后要能还原。
+    ///
+    /// 这条是 2026-10-28 的缺陷回归测试：不解码时 `path=D%3A%5Cx` 会原样传给后端，
+    /// 桌面端（IPC）却正常 —— 两个通道语义分叉，且只在「传路径」时暴露。
+    #[test]
+    fn query_value_decodes_percent_and_plus() {
+        assert_eq!(
+            query_value(Some("path=D%3A%5Ctrae-plain%5Cdatabase.db"), "path").as_deref(),
+            Some(r"D:\trae-plain\database.db")
+        );
+        // `URLSearchParams` 把空格编码成 `+`（不是 `%20`），必须还原。
+        assert_eq!(
+            query_value(Some("path=C%3A%5CProgram+Files%5Cx.db"), "path").as_deref(),
+            Some(r"C:\Program Files\x.db")
+        );
+        // 非法的 `%` 序列原样保留（不静默丢字符）。
+        assert_eq!(
+            query_value(Some("q=100%ZZ"), "q").as_deref(),
+            Some("100%ZZ")
+        );
+        // 中文路径（多字节 UTF-8）也要能还原。
+        assert_eq!(
+            query_value(Some("path=%E6%A1%8C%E9%9D%A2%5Cx.db"), "path").as_deref(),
+            Some("桌面\\x.db")
+        );
     }
 
     #[test]
@@ -6070,6 +7000,8 @@ mod tests {
                 "allow_model_region_prefix",
                 "max_body_mb",
                 "max_context",
+                // ★ issue #129：账号故障时自动切换（WB / Trae / Qoder 三份配置同名）。
+                "auto_failover",
             ])
         );
 

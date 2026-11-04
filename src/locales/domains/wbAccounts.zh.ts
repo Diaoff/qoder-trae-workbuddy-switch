@@ -173,6 +173,9 @@ export const zh = {
   "wbAccounts.card.ideNotDetected": "未检测到 CodeBuddy IDE",
   "wbAccounts.card.switchingIde": "正在切换 CodeBuddy IDE",
   "wbAccounts.card.setCurrentCli": "设为 CodeBuddy CLI 当前账号",
+  // issue #109：CLI 走本机网关时，切号语义上已不存在（选号由网关按模型决定）。
+  "wbAccounts.card.cliGatewayMode":
+    "CLI 已走本机网关，选号由网关按模型决定。要按账号切换，请先在「设置 → CodeBuddy CLI」切回直连上游。",
   "wbAccounts.card.switchingCli": "正在切换 CodeBuddy CLI 当前账号",
   "wbAccounts.card.connectCliFirst": "请先接入 CodeBuddy CLI",
   // P4：备注编辑器与「查看详情」入口。
@@ -199,7 +202,6 @@ export const zh = {
   // `expiringSoonTitle` / `resourceTitle` / `creditsUnit` / `noCredits` 一并删除。
   "wbAccounts.card.expired": "已到期",
   "wbAccounts.card.expiresOn": "到期 {date}",
-  "wbAccounts.card.used": "已用 {n}",
 
   // ---- 详情抽屉的信息区块（由 AccountsPage 装配后注入）----
   "wbAccounts.detail.section.account": "账号信息",
@@ -481,6 +483,13 @@ export const zh = {
   "wbAccounts.limits.loading": "正在读取限流记录…",
   "wbAccounts.limits.loadFailed": "读取失败",
   "wbAccounts.limits.empty": "所选范围内没有限流记录。",
+  /* 无「客户端限流台账」的平台（Qoder / Trae）：同一张卡、同一套行与时间口径，
+     但**不能**声称「从客户端本地数据汇总」—— 那两句关于台账的话必须换掉。 */
+  "wbAccounts.limits.subtitleNoLedger": "本平台没有可反推的客户端日志，下面只有**实测**结论（与网关「限流探测」同一份）；恢复时刻取上游声明。",
+  "wbAccounts.limits.emptyNoLedger": "还没有实测结论。",
+  "wbAccounts.limits.emptyNoLedgerDesc": "账号 × 模型 的选择在网关「限流探测」里做（那里会明示成本）；跑完一轮，结论就同步到这里。",
+  "wbAccounts.limits.emptyNoLimitNoLedger": "实测结论里没有限流的格。",
+  "wbAccounts.limits.emptyNoLimitNoLedgerDesc": "全部可用是好事 —— 完整矩阵（含可用格与各自的耗时）在网关「限流探测」里看。",
   "wbAccounts.limits.active": "仍受限",
   "wbAccounts.limits.recovered": "已恢复",
   // 「恢复时间未知」是**第三种状态**，既不是「仍受限」也不是「已恢复」。
@@ -513,6 +522,8 @@ export const zh = {
   "wbAccounts.limits.probeAll": "实测 {cells} 格",
   "wbAccounts.limits.probeAllHint": "只测台账里出现过的组合：{cells} 格（{accounts} 个账号 / {models} 个模型），每格一次最小请求，不回填池冷却。",
   "wbAccounts.limits.probeAllEmpty": "没有可实测的条目（需要「仍受限 / 状态未知」且能关联到账号与模型）。",
+  "wbAccounts.limits.probeAllHintNoLedger": "重测这 {cells} 个限流格：每格一次最小请求，不回填池冷却。",
+  "wbAccounts.limits.probeAllEmptyNoLedger": "还没有限流格可重测 —— 先去网关「限流探测」跑一轮。",
   "wbAccounts.limits.probeRow": "实测",
   "wbAccounts.limits.probeRowHint": "只实测这一格：一次最小请求，不回填池冷却。",
   "wbAccounts.limits.probeRowDisabled": "关联不到账号或模型（会话已删除 / playground），无法实测。",
@@ -520,10 +531,20 @@ export const zh = {
   "wbAccounts.limits.probeCancel": "取消",
   "wbAccounts.limits.probeStartFail": "启动实测失败",
   "wbAccounts.limits.probeVerdict": "实测 · {state}",
-  "wbAccounts.limits.probeVerdictHint": "实测结论：{state}（HTTP {http} · {ms} ms{reset}）",
+  "wbAccounts.limits.probeVerdictHint": "实测结论：{state}（HTTP {http} · {ms} ms{reset}）{probed}",
   "wbAccounts.limits.conflictRecovered": "实测可用，台账仍受限（历史证据，不改写）",
   "wbAccounts.limits.conflictLimited": "台账已恢复，但此刻实测受限",
   "wbAccounts.limits.probeNotCredit": "不是限流：额度用尽，等解锁没用。",
   "wbAccounts.limits.probeOnlyTitle": "实测独有 {count} 格",
   "wbAccounts.limits.probeOnlyHint": "实测查出限流、但台账没有记录的格。只在这里列出 —— 不写进台账（台账是「客户端日志里出现过」的事实）。",
+  // 「恢复时间」与「实测时刻」是**两条**独立信息，必须都写，且缺失时说「未知」而不是留白。
+  // 留白会被读成「已恢复」；而这两格本来就是「此刻仍限流」。
+  // 上游 6004 把恢复时刻写在 `msg` 文案里（`… will reset at 2026-10-28 15:33:19 UTC+8 …`），
+  // 结构化 JSON 里没有 ⇒ 解析后只用于**展示**，绝不进回填（那是配额窗口、不是解锁时刻）。
+  "wbAccounts.limits.probeOnlyResetHint": "上游声明的恢复时刻：先看结构化字段，没有就从 `msg` 文案里解析。它是**配额窗口**的重置时间，不等于解锁时刻，也不参与回填。两者都没有才写「恢复时间未知」。",
+  "wbAccounts.limits.probedAt": "实测于 {time}",
+  "wbAccounts.limits.probedAtUnknown": "实测时间未知（旧台账）",
+  "wbAccounts.limits.legacyRows": "其中 {count} 格由旧版本记录：既没有逐格实测时刻，也没有上游声明的恢复时刻。点行尾「实测」重测一次即可补齐（本作用域实测台账最近写入 {time}）。",
+  "wbAccounts.limits.probedAtHint": "这一格的实测结论是哪一刻打的（`probed_at_ms`，逐格记录）。"
+    + "旧版台账没有该字段 ⇒ 如实显示「未知」并提示重测 —— **绝不**拿本作用域最近写入时刻冒充：那会让多个账号显示同一个时间，看起来像逐格结论。",
 } as const;

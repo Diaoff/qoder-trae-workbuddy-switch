@@ -8,9 +8,11 @@ import { formatDate } from "@/lib/format";
 import { useT } from "@/lib/i18n";
 import {
   limitConflict,
+  limitedCells,
   probeCellOf,
   probeOnlyLimits,
   probeTargets,
+  probeTargetsOfPairs,
   probeTone,
   tallyCells,
 } from "@/lib/limit-link";
@@ -96,7 +98,30 @@ const TONE_VARIANTS = {
  *
  * ⚠️ **只读**：本卡不写台账、不改账号状态（PRD R8）。唯一的写入口是显式点了「实测」。
  */
-export function ClientLimitsCard({ region }: { region: Region }) {
+export function ClientLimitsCard({
+  region,
+  ledger = true,
+  probePath = "/api-service?type=independent&sub=models",
+}: {
+  region: Region;
+  /**
+   * 本平台**是否有「客户端限流台账」**（默认 `true`）。
+   *
+   * 台账来自 core `client_limits`：它扫的是 **WorkBuddy 客户端**落盘的会话 jsonl。
+   * Qoder / Trae 没有这份日志 ⇒ 传 `false`：
+   *
+   * - **不发** `client_limits` 请求（⚠️ 传了也不会报错，只会把 **WB 的**限流记录画到别的平台上
+   *   —— 串台比空表坏得多）；
+   * - 不画窗口 Tabs（没有台账可切窗口）；
+   * - 卡头「实测 N 格」的目标改由**已探出的限流格**给出；主列表 = 这些格
+   *   （WB 里它们收在卡尾「实测独有」折叠里，因为 WB 的主列表是台账）。
+   *
+   * 其余（行结构、恢复/实测时刻、入口、汇总）与 WB **完全同一套**。
+   */
+  ledger?: boolean;
+  /** 该平台网关「限流探测」的深链（副标题出口 + 无台账时的空态按钮）。 */
+  probePath?: string;
+}) {
   const t = useT();
   const location = useLocation();
   /** 作用域由 **region + 当前路由所属平台** 推出（与网关卡同一套转换，别自己拼 `-`）。 */
@@ -128,6 +153,15 @@ export function ClientLimitsCard({ region }: { region: Region }) {
   const requestSeq = useRef(0);
 
   const load = useCallback(async () => {
+    /* 无台账平台：这个请求它没有意义（见 `ledger` 的文档）。显式短路，别让「空表」伪装成
+       「窗口内没有限流」。 */
+    if (!ledger) {
+      requestSeq.current += 1;
+      setData(null);
+      setError(null);
+      setLoading(false);
+      return;
+    }
     const seq = ++requestSeq.current;
     setLoading(true);
     setError(null);
@@ -144,7 +178,7 @@ export function ClientLimitsCard({ region }: { region: Region }) {
     } finally {
       if (seq === requestSeq.current) setLoading(false);
     }
-  }, [region, windowKey, loadProbePassive]);
+  }, [region, windowKey, ledger, loadProbePassive]);
 
   useEffect(() => {
     void load();
@@ -158,11 +192,38 @@ export function ClientLimitsCard({ region }: { region: Region }) {
     void loadProbeLedger(scope);
   }, [scope, refreshProbeStatus, loadProbeLedger]);
 
-  const limits = useMemo(() => data?.limits ?? [], [data]);
-  const running = probe?.phase === "running";
-  const targets = useMemo(() => probeTargets(limits), [limits]);
-  /** 实测查出限流、但台账没有记录的格（单列，不污染台账语义）。 */
-  const probeOnly = useMemo(() => probeOnlyLimits(cells, limits), [cells, scope, limits]);
+  const limits = useMemo(() => (ledger ? data?.limits ?? [] : []), [data, ledger]);
+  /* ★ 作业槽是**进程级单槽**（`probe_status` 后端不按作用域过滤）⇒ 必须判 scope，
+     否则 A 平台的进度会画到 B 平台的卡上。 */
+  const running = probe?.phase === "running" && probe.scope === scope;
+  /** 实测里**限流**的格：无台账平台的整张列表就是它。 */
+  const limited = useMemo(() => limitedCells(cells), [cells]);
+  /**
+   * 卡头「实测 N 格」的目标。
+   *
+   * 有台账 ⇒ 台账里「仍受限 / 未知」的组合（WB 口径不变）；
+   * 无台账 ⇒ **已探出的限流格**（那个平台没有别的证据可用）。
+   */
+  const targets = useMemo(
+    () => (ledger ? probeTargets(limits) : probeTargetsOfPairs(limited)),
+    [ledger, limits, limited],
+  );
+  /** 实测查出限流、但台账没有记录的格（单列，不污染台账语义；无台账平台它就是主列表）。 */
+  const probeOnly = useMemo(
+    () => (ledger ? probeOnlyLimits(cells, limits) : limited),
+    [ledger, cells, limits, limited],
+  );
+  /**
+   * 缺**逐格时刻**的行数（旧版本写的台账）。
+   *
+   * 这些格既没有 `probed_at_ms`、也没有 `upstream_reset_at_ms`，行内只能写「未知」。
+   * ⚠️ **不能**拿作用域级的 `probeLedgerAt` 顶替：那会让 4 个账号显示同一个时刻，
+   * 看起来像逐格结论、其实是「本作用域最近一次写入」—— 比空着更误导（2026-10-27 报障）。
+   */
+  const legacyRows = useMemo(
+    () => probeOnly.filter((cell) => !cell.probed_at_ms).length,
+    [probeOnly],
+  );
   /* 汇总按**合并索引**算（重启后作业是 idle，但台账仍有结论 —— 只按作业算会整段消失）。 */
   const tally = useMemo(() => tallyCells(cells), [cells]);
 
@@ -199,6 +260,12 @@ export function ClientLimitsCard({ region }: { region: Region }) {
     await runProbe([{ uid, model }]);
   }
 
+  /** 无台账平台的「刷新」：重拉本轮作业快照 + 落盘台账（本卡没有别的数据源）。 */
+  const reloadProbe = useCallback(
+    () => Promise.all([refreshProbeStatus(scope), loadProbeLedger(scope)]),
+    [refreshProbeStatus, loadProbeLedger, scope],
+  );
+
   async function onCancel() {
     try {
       await cancelProbe(scope);
@@ -214,7 +281,7 @@ export function ClientLimitsCard({ region }: { region: Region }) {
           <div className="flex items-center gap-2">
             <Gauge className="size-4 shrink-0 text-muted-foreground" aria-hidden="true" />
             <h2 className="text-sm font-semibold text-foreground">{t("wbAccounts.limits.title")}</h2>
-            {data ? (
+            {ledger && data ? (
               <span className="text-xs text-muted-foreground tabular-nums">
                 {t("wbAccounts.limits.summary", {
                   total: data.counts.entries,
@@ -233,13 +300,15 @@ export function ClientLimitsCard({ region }: { region: Region }) {
             ) : null}
           </div>
           <p className="mt-1 text-xs leading-5 text-muted-foreground">
-            {t("wbAccounts.limits.subtitle")}
+            {ledger
+              ? t("wbAccounts.limits.subtitle")
+              : t("wbAccounts.limits.subtitleNoLedger")}
             {" "}
             <span className="text-muted-foreground/80">{t("wbAccounts.limits.probeShared")}</span>
             {" "}
             {/* 出口②：去网关看完整矩阵（矩阵天生要宽度，不搬进本卡）。 */}
             <Link
-              to="/api-service?type=independent&sub=models"
+              to={probePath}
               className="text-primary underline decoration-dashed underline-offset-2"
             >
               {t("wbAccounts.limits.openProbeMatrix")}
@@ -259,15 +328,17 @@ export function ClientLimitsCard({ region }: { region: Region }) {
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
-          <Tabs value={windowKey} onValueChange={(next) => setWindowKey(next as WindowKey)}>
-            <TabsList aria-label={t("wbAccounts.limits.windowLabel")}>
-              {(Object.keys(WINDOW_LABELS) as WindowKey[]).map((key) => (
-                <TabsTrigger key={key} value={key}>
-                  {t(WINDOW_LABELS[key])}
-                </TabsTrigger>
-              ))}
-            </TabsList>
-          </Tabs>
+          {ledger ? (
+            <Tabs value={windowKey} onValueChange={(next) => setWindowKey(next as WindowKey)}>
+              <TabsList aria-label={t("wbAccounts.limits.windowLabel")}>
+                {(Object.keys(WINDOW_LABELS) as WindowKey[]).map((key) => (
+                  <TabsTrigger key={key} value={key}>
+                    {t(WINDOW_LABELS[key])}
+                  </TabsTrigger>
+                ))}
+              </TabsList>
+            </Tabs>
+          ) : null}
 
           {/* 入口①：卡头实测（进行中 ⇒ 进度 + 取消，不给「再点一次」的机会）。 */}
           {running && probe ? (
@@ -294,12 +365,16 @@ export function ClientLimitsCard({ region }: { region: Region }) {
               onClick={() => void onProbeAll()}
               title={
                 targets.cells === 0
-                  ? t("wbAccounts.limits.probeAllEmpty")
-                  : t("wbAccounts.limits.probeAllHint", {
-                      accounts: targets.uids.length,
-                      models: targets.models.length,
-                      cells: targets.cells,
-                    })
+                  ? ledger
+                    ? t("wbAccounts.limits.probeAllEmpty")
+                    : t("wbAccounts.limits.probeAllEmptyNoLedger")
+                  : ledger
+                    ? t("wbAccounts.limits.probeAllHint", {
+                        accounts: targets.uids.length,
+                        models: targets.models.length,
+                        cells: targets.cells,
+                      })
+                    : t("wbAccounts.limits.probeAllHintNoLedger", { cells: targets.cells })
               }
             >
               {starting ? <Loader2 className="animate-spin" /> : <Sparkles />}
@@ -307,7 +382,12 @@ export function ClientLimitsCard({ region }: { region: Region }) {
             </Button>
           )}
 
-          <Button size="sm" variant="outline" onClick={() => void load()} disabled={loading}>
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={() => void (ledger ? load() : reloadProbe())}
+            disabled={loading}
+          >
             {loading ? <Loader2 className="animate-spin" /> : <RefreshCw />}
             {t("wbAccounts.limits.refresh")}
           </Button>
@@ -315,35 +395,85 @@ export function ClientLimitsCard({ region }: { region: Region }) {
       </div>
 
       <div className="border-t border-border px-5 py-4">
-        {loading && !data ? (
-          <div className="space-y-2">
-            {[0, 1].map((index) => (
-              <Skeleton key={index} className="h-16 w-full rounded-lg" />
-            ))}
-          </div>
-        ) : error ? (
-          <p className="text-sm text-destructive">
-            {t("wbAccounts.limits.loadFailed")}：{error}
-          </p>
-        ) : limits.length === 0 ? (
-          <EmptyState icon={Gauge} title={t("wbAccounts.limits.empty")} />
+        {/* ① 台账区（只有有台账的平台有；WB 的主列表就是它）。 */}
+        {ledger ? (
+          loading && !data ? (
+            <div className="space-y-2">
+              {[0, 1].map((index) => (
+                <Skeleton key={index} className="h-16 w-full rounded-lg" />
+              ))}
+            </div>
+          ) : error ? (
+            <p className="text-sm text-destructive">
+              {t("wbAccounts.limits.loadFailed")}：{error}
+            </p>
+          ) : limits.length === 0 ? (
+            <EmptyState icon={Gauge} title={t("wbAccounts.limits.empty")} />
+          ) : (
+            <ul className="space-y-2">
+              {limits.map((entry) => (
+                <LimitRow
+                  key={limitRowKey(entry)}
+                  entry={entry}
+                  cell={probeCellOf(cells, entry.accountUid, entry.model)}
+                  running={running}
+                  starting={starting}
+                  onProbe={onProbeRow}
+                />
+              ))}
+            </ul>
+          )
+        ) : probeOnly.length === 0 ? (
+          /* ② 无台账平台且还没探过：本卡不揣「账号 × 模型」两轴（那属于网关页），
+                只能给出去哪儿跑第一轮 —— 空态必须有出口。 */
+          <EmptyState
+            icon={Gauge}
+            title={
+              tally
+                ? t("wbAccounts.limits.emptyNoLimitNoLedger")
+                : t("wbAccounts.limits.emptyNoLedger")
+            }
+            description={
+              tally
+                ? t("wbAccounts.limits.emptyNoLimitNoLedgerDesc")
+                : t("wbAccounts.limits.emptyNoLedgerDesc")
+            }
+            action={
+              <Button asChild size="sm" variant="outline">
+                <Link to={probePath}>{t("wbAccounts.limits.openProbeMatrix")}</Link>
+              </Button>
+            }
+          />
         ) : (
-          <ul className="space-y-2">
-            {limits.map((entry) => (
-              <LimitRow
-                key={limitRowKey(entry)}
-                entry={entry}
-                cell={probeCellOf(cells, entry.accountUid, entry.model)}
-                running={running}
-                starting={starting}
-                onProbe={onProbeRow}
-              />
-            ))}
-          </ul>
+          <>
+            {legacyRows > 0 ? (
+              <p
+                className="mb-1.5 text-xs leading-5 text-muted-foreground"
+                data-act="limits-legacy-rows"
+              >
+                {t("wbAccounts.limits.legacyRows", {
+                  count: legacyRows,
+                  time: formatDate(ledgerAt ?? 0),
+                })}
+              </p>
+            ) : null}
+            <ul className="space-y-2">
+              {probeOnly.map((cell) => (
+                <ProbeLimitRow
+                  key={`${cell.uid}:${cell.model}`}
+                  cell={cell}
+                  running={running}
+                  starting={starting}
+                  onProbe={onProbeRow}
+                />
+              ))}
+            </ul>
+          </>
         )}
 
-        {/* 实测独有：台账里没有记录、但实测查出限流的格。**单列**，不进台账。 */}
-        {probeOnly.length > 0 ? (
+        {/* 实测独有：台账里没有记录、但实测查出限流的格。**单列**，不进台账。
+            ⚠️ 只在**有台账**时折叠 —— 无台账的平台这几行就是主列表（上面 ② 已画）。 */}
+        {ledger && probeOnly.length > 0 ? (
           <Collapsible className="mt-3" defaultOpen>
             <CollapsibleTrigger
               className="group inline-flex items-center gap-1.5 rounded-md border border-border px-2 py-0.5 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
@@ -356,21 +486,26 @@ export function ClientLimitsCard({ region }: { region: Region }) {
               <p className="mb-1.5 text-xs leading-5 text-muted-foreground">
                 {t("wbAccounts.limits.probeOnlyHint")}
               </p>
-              <ul className="space-y-1.5">
+          {legacyRows > 0 ? (
+            <p
+              className="mb-1.5 text-xs leading-5 text-muted-foreground"
+              data-act="limits-legacy-rows"
+            >
+              {t("wbAccounts.limits.legacyRows", {
+                count: legacyRows,
+                time: formatDate(ledgerAt ?? 0),
+              })}
+            </p>
+          ) : null}
+              <ul className="space-y-2">
                 {probeOnly.map((cell) => (
-                  <li
+                  <ProbeLimitRow
                     key={`${cell.uid}:${cell.model}`}
-                    className="flex flex-wrap items-center gap-2 rounded-lg border border-dashed border-border px-3 py-2"
-                  >
-                    <span className="text-sm font-medium">{cell.nickname || cell.uid}</span>
-                    <Badge variant="secondary">{cell.model}</Badge>
-                    <Badge variant={TONE_VARIANTS[probeTone(cell.state)]} className="shrink-0">
-                      {t(`shared.gateway.probe.state.${cell.state}` as never)}
-                    </Badge>
-                    <span className="text-xs text-muted-foreground tabular-nums">
-                      HTTP {cell.http_status}
-                    </span>
-                  </li>
+                    cell={cell}
+                    running={running}
+                    starting={starting}
+                    onProbe={onProbeRow}
+                  />
                 ))}
               </ul>
             </CollapsibleContent>
@@ -390,6 +525,88 @@ export function ClientLimitsCard({ region }: { region: Region }) {
 function limitRowKey(entry: ClientLimitEntry): string {
   const code = entry.code ?? entry.codeText ?? "?";
   return `${entry.accountUid ?? "?"}:${entry.model ?? "?"}:${code}:${entry.resetAt ?? "?"}`;
+}
+
+/**
+ * 一格**实测限流**的行。
+ *
+ * 两处共用这一份：WB 卡尾的「实测独有」折叠，以及**无台账平台的主列表**
+ * （Qoder / Trae —— 它们没有客户端日志，实测结论就是全部）。
+ *
+ * 几何与 {@link LimitRow} 同构（左：账号 / 模型 / 徽章 + 一行 meta，右：行尾「实测」按钮），
+ * 这样同一张卡在有台账和无台账时**长得一样**；时间口径也完全一致：
+ * 恢复时刻 = `upstream_reset_at_ms ?? reset_at_ms`（上游声明，配额窗口 ≠ 解锁时刻），
+ * 实测时刻 = `probed_at_ms`（老台账没有该字段 ⇒ 只给上界）。
+ */
+function ProbeLimitRow({
+  cell,
+  running,
+  starting,
+  onProbe,
+}: {
+  cell: ModelProbeCell;
+  running: boolean;
+  starting: boolean;
+  onProbe: (uid: string, model: string) => Promise<void>;
+}) {
+  const t = useT();
+  const resetAt = cell.upstream_reset_at_ms ?? cell.reset_at_ms;
+  return (
+    <li className="flex items-start justify-between gap-4 rounded-lg border border-border px-3.5 py-3">
+      <div className="min-w-0 flex-1">
+        <div className="flex min-w-0 flex-wrap items-center gap-2">
+          <span className="truncate text-sm font-medium" title={cell.uid}>
+            {cell.nickname || cell.uid}
+          </span>
+          <Badge variant="secondary" className="shrink-0">
+            {cell.model}
+          </Badge>
+          <Badge variant={TONE_VARIANTS[probeTone(cell.state)]} className="shrink-0">
+            {t(`shared.gateway.probe.state.${cell.state}` as never)}
+          </Badge>
+        </div>
+        <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
+          <span className="tabular-nums">HTTP {cell.http_status}</span>
+          {/* ★ 恢复时刻：上游声明优先（结构化 → 文案），两者都没有才写「未知」
+              （留白会被读成「已恢复」，而这几格的定义就是「此刻仍限流」）。 */}
+          <span
+            className="tabular-nums"
+            title={t("wbAccounts.limits.probeOnlyResetHint")}
+            data-act="limits-probe-only-reset"
+          >
+            {resetAt
+              ? t("wbAccounts.limits.resetAt", { time: formatDate(resetAt) })
+              : t("wbAccounts.limits.resetUnknown")}
+          </span>
+          {/* ★ 实测时刻：这行结论是**哪一刻**的。 */}
+          <span
+            className="tabular-nums text-muted-foreground/80"
+            title={t("wbAccounts.limits.probedAtHint")}
+            data-act="limits-probe-only-probed-at"
+          >
+            {cell.probed_at_ms
+              ? t("wbAccounts.limits.probedAt", { time: formatDate(cell.probed_at_ms) })
+              : t("wbAccounts.limits.probedAtUnknown")}
+          </span>
+        </div>
+      </div>
+
+      {/* 行尾入口：只打这一格（恒 1 格，与台账行的「实测」同一手势）。 */}
+      <div className="flex shrink-0 flex-col items-end gap-1.5">
+        <Button
+          size="sm"
+          variant="ghost"
+          className="h-7 px-2 text-xs"
+          disabled={running || starting}
+          title={t("wbAccounts.limits.probeRowHint")}
+          onClick={() => void onProbe(cell.uid, cell.model)}
+          data-act="limits-probe-only-row"
+        >
+          {running ? t("wbAccounts.limits.probing") : t("wbAccounts.limits.probeRow")}
+        </Button>
+      </div>
+    </li>
+  );
 }
 
 function LimitRow({
@@ -423,12 +640,20 @@ function LimitRow({
   const probeable = Boolean(entry.accountUid && entry.model);
   const conflict = limitConflict(entry, cell);
   const verdict = cell ? t(`shared.gateway.probe.state.${cell.state}` as never) : null;
+  /** 上游声明的恢复时刻（结构化优先、文案兜底）——tooltip 用，比「未知」有用。 */
+  const probeResetAt = cell ? (cell.upstream_reset_at_ms ?? cell.reset_at_ms) : null;
   const probeTitle = cell
     ? t("wbAccounts.limits.probeVerdictHint", {
         state: verdict ?? "",
         http: cell.http_status,
         ms: cell.latency_ms,
-        reset: cell.reset_at_ms ? ` · ${t("wbAccounts.limits.resetAt", { time: formatDate(cell.reset_at_ms) })}` : "",
+        reset: probeResetAt
+          ? ` · ${t("wbAccounts.limits.resetAt", { time: formatDate(probeResetAt) })}`
+          : "",
+        // 实测时刻：结论的新旧决定它还能不能当证据（重测入口就在下面）。
+        probed: cell.probed_at_ms
+          ? ` · ${t("wbAccounts.limits.probedAt", { time: formatDate(cell.probed_at_ms) })}`
+          : "",
       })
     : t("wbAccounts.limits.probeRowHint");
 

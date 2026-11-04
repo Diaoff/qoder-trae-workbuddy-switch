@@ -27,6 +27,14 @@ const results = [];
 /* ─────────── 变异注入 ─────────── */
 const MUT = (process.argv.find((a) => a.startsWith("--mutate")) || "").replace("--mutate", "").replace(/^=/, "");
 const MUTATIONS = {
+  /* issue #109：切到网关时**跳过确认**、直接改状态 —— 确认框成了装饰。
+     期望「切到网关**先弹确认**」那条红（它同时断言「确认前状态不能变」）。 */
+  cliConfirm: {
+    desc: "切到网关不弹确认，直接改状态",
+    file: "demo-app.js",
+    from: 'if (a1 === "gateway") { drawerCliConfirm("gateway"); break; }',
+    to: 'if (a1 === "gateway") { state.cli.mode = "gateway"; renderContent(); break; } /* MUTATED: 跳过确认 */',
+  },
   merge: {
     desc: "把 merge 退回假开关（只改标签、不换数据源）",
     file: "demo-app.js",
@@ -1098,10 +1106,15 @@ async function boot(query) {
   const bByAct = (act) => [...dB.querySelectorAll("[data-act]")].find((el) => el.dataset.act === act);
   const flat = (s) => String(s || "").replace(/\s+/g, " ").trim();
 
-  check("备份页：设置子导航含「备份与恢复」，共 9 项", () => {
+  check("备份页：设置子导航含「备份与恢复」，共 10 项", () => {
+    /* 10 = 通用 / 账号与登录 / 签到与积分 / 网关 / 计划任务 / 客户端 / CodeBuddy CLI /
+       权限与诊断 / 日志 / 备份与恢复。
+       ★ 这一条**故意写死数字**：子导航是设置页的唯一导航，多一项少一项都要有意识
+         （issue #109 加「CodeBuddy CLI」时就是靠它提醒改这一行的）。 */
     const items = [...dB.querySelectorAll(".subnav button")].map((b) => b.textContent.trim());
-    if (items.length !== 9) throw new Error(`子导航 ${items.length} 项，期望 9 项`);
+    if (items.length !== 10) throw new Error(`子导航 ${items.length} 项，期望 10 项`);
     if (!items.includes("备份与恢复")) throw new Error("没有「备份与恢复」：" + items.join("/"));
+    if (!items.includes("CodeBuddy CLI")) throw new Error("没有「CodeBuddy CLI」：" + items.join("/"));
     return items.join(" / ");
   });
 
@@ -1111,6 +1124,36 @@ async function boot(query) {
     const off = rows.filter((r) => !r.querySelector(".check").classList.contains("on"));
     if (off.length) throw new Error(`${off.length} 个作用域默认未勾选`);
     return "6/6 默认全选";
+  });
+
+  /* ★ issue #122 · 设置页必须说清「这一页影响谁」。
+     用户原话：「现在修改设置，看起来不清楚哪些是改了影响所有作用域的」。
+     变异：把 `SETTINGS_SCOPE` 全改成 "global" ⇒ 第二条（按作用域项）红；
+     把提示条整块删掉 ⇒ 第一条红。 */
+  check("★ issue #122 设置页标明归属：全局项写「对所有作用域生效」，按作用域项写「仅影响当前作用域」", () => {
+    const note = dB.querySelector("[data-settings-scope]");
+    if (!note) throw new Error("设置页没有作用域归属提示条");
+    if (note.dataset.settingsScope !== "global") {
+      throw new Error(`备份页应为全局项，实际 ${note.dataset.settingsScope}`);
+    }
+    const text = flat(note.textContent);
+    if (!text.includes("对所有作用域生效")) throw new Error("全局项没写「对所有作用域生效」：" + text);
+
+    /* 切到「账号与登录」（按作用域）—— 同一页面的另一侧也要说清。 */
+    bByAct("set-sub|account").click();
+    const note2 = dB.querySelector("[data-settings-scope]");
+    if (!note2) throw new Error("切分区后提示条消失了（归属说明不该只在一个分区里有）");
+    if (note2.dataset.settingsScope !== "scoped") {
+      throw new Error(`账号页应为按作用域项，实际 ${note2.dataset.settingsScope}`);
+    }
+    const text2 = flat(note2.textContent);
+    if (!text2.includes("仅影响当前作用域")) {
+      throw new Error("按作用域项没写「仅影响当前作用域」：" + text2);
+    }
+    /* ★ 切回备份页：后面还有一组备份断言，它们默认「当前就在备份页」。
+       少了这一句，它们会因为读到账号页而集体假红（本条一开始就踩了这个坑）。 */
+    bByAct("set-sub|backup").click();
+    return "全局 / 按作用域两侧文案都在";
   });
 
   check("★ 备份页：每个作用域行都有名字（不是空串）", () => {
@@ -1243,6 +1286,33 @@ async function boot(query) {
     if (opts.includes("已一致")) throw new Error("数据里没有「已一致」的组，却渲染了该选项");
     if (!opts.includes("有分歧")) throw new Error("有分叉组，却没渲染「有分歧」");
     return opts.join(" / ");
+  });
+
+  /* ★ issue #87 · 会话导出 / 导入：两个入口都要在，且**导入必须说清「只新增」**。
+     变异：把 `case "sess-import"` 的文案改成「已导入」而不提「只新增，不覆盖」
+     ⇒ 第二条断言红（用户最怕的是「导入把我的历史冲掉了」）。 */
+  check("★ issue #87 会话页有「导出 / 导入」两个入口", () => {
+    const exp = sByAct("sess-export");
+    const imp = sByAct("sess-import");
+    if (!exp) throw new Error("没有「导出会话」入口");
+    if (!imp) throw new Error("没有「导入会话」入口");
+    if (!sFlat(exp.textContent).includes("导出")) throw new Error("导出按钮文案不含「导出」");
+    if (!sFlat(imp.textContent).includes("导入")) throw new Error("导入按钮文案不含「导入」");
+    return "导出 + 导入";
+  });
+
+  check("★ issue #87 点导出 / 导入都有反馈，且导入明说「只新增，不覆盖」", () => {
+    const toasts = dSG.querySelector("#toasts");
+    sByAct("sess-export").click();
+    const afterExport = sFlat(toasts.textContent);
+    if (!afterExport.includes("已导出")) throw new Error("点导出没有成功反馈");
+
+    sByAct("sess-import").click();
+    const afterImport = sFlat(toasts.textContent);
+    if (!afterImport.includes("已导入")) throw new Error("点导入没有结果反馈");
+    /* 用户最怕「导入把我的历史冲掉」⇒ 文案必须把「只新增」说在前面。 */
+    if (!afterImport.includes("只新增")) throw new Error("导入反馈没说清「只新增，不覆盖」");
+    return "导出/导入均有反馈 · 导入文案含「只新增」";
   });
 
   /* 注：「结构化空态」的断言已合并到下面 Trae 的那条（原版依赖的「空客户端」是演示数据里
@@ -2350,6 +2420,134 @@ async function boot(query) {
     dsAcct.querySelector('[data-act="drawer-tab|a1|credits"]').click();
     if (!dsAcct.querySelector(".pk")) throw new Error("单文件原型的积分页没有资源包明细（两份漂移了）");
     return "指标 / Tab / 积分明细 / 分组 都在";
+  });
+
+  /* ══════════════════════ CodeBuddy CLI 接入方式（issue #109）══════════════════════
+   *
+   * 这块是「两套凭据通道二选一」，不是偏好开关 —— 所以断言钉的是**设计判断**，不是像素：
+   *   ① 状态条先说「现在走哪条 / 谁在选号 / 生效了吗」；
+   *   ② 两张卡的能力用 ✓/— **条数一致**（否则没法横着比）；
+   *   ③ 切换**先向导**，且「确认前状态不能变」；
+   *   ④ 切完状态条必须变「待重启 CLI」（env 不热重载，这是最容易误判「没生效」的地方）；
+   *   ⑤ 冲突态：状态条变警示 + 直连卡禁用 + **给一条出路**（只禁用不给下一步 = 用户卡住）。
+   */
+  const domCli = await boot("dest=settings&set=cli&hint=0");
+  const dc = domCli.window.document;
+  const cByAct = (act) => [...dc.querySelectorAll("[data-act]")].find((el) => el.dataset.act === act);
+  const cClick = (el) => el.dispatchEvent(new domCli.window.MouseEvent("click", { bubbles: true }));
+  const stripText = () => (dc.querySelector(".mode-strip") || {}).textContent || "";
+  const onCard = () => dc.querySelector(".mode-card.on");
+
+  check("CLI 接入：状态条置顶，说清「走哪条路 + 谁在选号 + 已生效」", () => {
+    const strip = dc.querySelector(".mode-strip");
+    if (!strip) throw new Error("没有状态条（打开这页的第一个问题就是「我现在是什么状态」）");
+    const text = strip.textContent;
+    if (!text.includes("直连上游")) throw new Error("状态条没说明当前模式：" + text.slice(0, 80));
+    if (!text.includes("按积分到期选号")) throw new Error("状态条没说清「谁在选号」");
+    if (!text.includes("已生效")) throw new Error("状态条必须回答「生效了吗」（这里应是已生效）");
+    /* 状态条必须在模式卡**之前**（DOM 顺序即视觉顺序）。 */
+    const cards = dc.querySelector(".mode-cards");
+    if (!(strip.compareDocumentPosition(cards) & domCli.window.Node.DOCUMENT_POSITION_FOLLOWING)) {
+      throw new Error("状态条应在模式卡之前");
+    }
+    return text.replace(/\s+/g, " ").trim().slice(0, 60);
+  });
+
+  check("CLI 接入：两张模式卡并列，能力项**条数一致**（可横比）+ 有 yes/no", () => {
+    const cards = [...dc.querySelectorAll(".mode-card")];
+    if (cards.length !== 2) throw new Error(`应有 2 张模式卡，实际 ${cards.length}`);
+    const counts = cards.map((card) => card.querySelectorAll(".cap li").length);
+    if (counts[0] !== counts[1]) {
+      throw new Error(`两卡能力项条数不一致（${counts.join(" vs ")}）—— 用户没法横着比`);
+    }
+    if (counts[0] < 2) throw new Error("能力项太少，等于没说明差异");
+    const hasNo = cards.every((card) => card.querySelector(".cap li.no"));
+    if (!hasNo) throw new Error("每张卡都该有一条「—」（只说优点等于广告，不是对比）");
+    return `2 卡 × ${counts[0]} 项 · 各有 yes/no`;
+  });
+
+  check("CLI 接入：当前卡标「当前」，且动作是 disabled 的「已启用」", () => {
+    const card = onCard();
+    if (!card) throw new Error("没有 .mode-card.on（当前模式不可辨）");
+    if (!card.textContent.includes("当前")) throw new Error("当前卡没有「当前」标记");
+    const btn = card.querySelector(".mc-foot .btn");
+    if (!btn || !btn.disabled) throw new Error("当前卡的动作必须是 disabled（不能重复切换）");
+    return card.querySelector(".mc-name").textContent.trim();
+  });
+
+  check("CLI 接入：切到网关**先弹向导**，且确认前状态不变", () => {
+    const other = [...dc.querySelectorAll(".mode-card")].find((card) => card !== onCard());
+    const btn = other.querySelector(".mc-foot .btn");
+    cClick(btn);
+    const drawer = dc.querySelector("#drawer-body");
+    if (!drawer || !drawer.textContent.trim()) throw new Error("没有弹切换向导");
+    const text = drawer.textContent;
+    for (const must of ["清掉", "关闭自动轮换", "重启终端"]) {
+      if (!text.includes(must)) throw new Error(`向导缺「${must}」：${text.slice(0, 100)}`);
+    }
+    /* 向导里必须能选默认模型（这是它区别于「确认框」的地方）。 */
+    if (!drawer.querySelector("#cli-wiz-model")) throw new Error("向导里没有默认模型下拉");
+    if (!onCard().textContent.includes("直连上游")) throw new Error("确认前状态就变了 —— 向导成了装饰");
+    return "代价三项 + 模型下拉 · 确认前不变";
+  });
+
+  check("CLI 接入：确认后状态条变「走本机网关 · 待重启 CLI」", () => {
+    cClick(cByAct("cli-confirm|gateway"));
+    const text = stripText();
+    if (!text.includes("走本机网关")) throw new Error("状态条没切到网关：" + text.slice(0, 80));
+    if (!text.includes("由网关按模型选号")) throw new Error("状态条没说清「谁在选号」");
+    if (!text.includes("待重启 CLI")) {
+      throw new Error("切换后必须标「待重启 CLI」—— env 不热重载，不标用户会以为没生效");
+    }
+    if (text.includes("已生效")) throw new Error("刚切完就写「已生效」是假话（还没重启 CLI）");
+    return text.replace(/\s+/g, " ").trim().slice(0, 60);
+  });
+
+  check("CLI 接入：高级默认收起；展开后才有模型下拉与 Key（且 Key 是掩码）", () => {
+    if (dc.querySelector('select[data-act="cli-model"]')) {
+      throw new Error("高级区默认应收起（默认模型是低频项，不该占主视线）");
+    }
+    const toggle = dc.querySelector(".adv-toggle");
+    if (!toggle) throw new Error("没有高级折叠入口");
+    cClick(toggle);
+    const select = dc.querySelector('select[data-act="cli-model"]');
+    if (!select) throw new Error("展开后仍没有模型下拉");
+    if (![...select.options].some((o) => o.textContent.includes("留空"))) {
+      throw new Error("模型下拉缺「留空 · 由 CLI 自己决定」");
+    }
+    const body = dc.querySelector(".adv-body").textContent;
+    if (!body.includes("••••")) throw new Error("Key 必须是掩码");
+    if (/sk-wb-[a-z0-9]{20,}/i.test(body)) throw new Error("出现了疑似完整 Key");
+    if (!body.includes("已关闭")) throw new Error("网关模式下自动轮换应显示「已关闭」");
+    return "默认收起 · 展开有模型/Key/轮换";
+  });
+
+  check("CLI 接入：冲突态 = 状态条警示 + 直连卡禁用 + **给一条出路**", () => {
+    /* 先切回直连，再打开演示开关（模拟 settings 已被外部改成网关地址）。 */
+    const gwCard = [...dc.querySelectorAll(".mode-card")].find((card) => card !== onCard());
+    cClick(gwCard.querySelector(".mc-foot .btn"));
+    cClick(cByAct("cli-confirm|direct"));
+    cClick(cByAct("cli-demo-foreign"));
+
+    const strip = dc.querySelector(".mode-strip");
+    if (!strip.classList.contains("warn")) throw new Error("冲突态的状态条必须是警示态");
+    const text = strip.textContent;
+    if (!text.includes("这不是错误，是护栏")) throw new Error("缺「这不是错误，是护栏」");
+    if (!text.includes("时好时坏")) throw new Error("缺「时好时坏」—— 那是这个故障最难查的地方");
+
+    const directCard = [...dc.querySelectorAll(".mode-card")].find((card) =>
+      card.textContent.includes("直连上游"),
+    );
+    if (!directCard.classList.contains("off")) throw new Error("冲突时直连卡应标 .off");
+    const btn = directCard.querySelector(".mc-foot .btn");
+    if (btn && !btn.disabled) throw new Error("冲突时直连卡的动作必须 disabled（只改样式等于没禁）");
+
+    /* ★ 只禁用不给下一步 = 用户卡住：状态条里必须有一条可点的出路。 */
+    const way = [...strip.querySelectorAll("[data-act]")].find((el) =>
+      el.dataset.act.startsWith("cli-mode|"),
+    );
+    if (!way) throw new Error("冲突态必须给出一条出路（接管网关配置），否则用户卡在原地");
+    return "警示条 · 直连卡禁用 · 出路：" + way.textContent.trim();
   });
 
   const pass = results.filter((r) => r.ok).length;

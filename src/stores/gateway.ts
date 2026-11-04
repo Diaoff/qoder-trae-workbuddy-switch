@@ -16,11 +16,14 @@ import type {
   CreateApiKeyResult,
   GatewayConfig,
   GatewayLogEntry,
+  FallbackStats,
   GatewayStatus,
+  ModelFallbackView,
   ModelProbeCell,
   ModelProbeJob,
   ModelProbeState,
   Region,
+  ScopeFallbackConfig,
 } from "@/lib/types";
 import { SCOPES, type Scope } from "@/lib/scope";
 import { mergeProbeCells, type ProbeCellIndex } from "@/lib/limit-link";
@@ -33,6 +36,13 @@ export { DEFAULT_GATEWAY_CONFIG };
  * 消费者：模型列表组件（`s.disabled[scope]` 可能尚未加载）。
  */
 export const EMPTY_DISABLED_SET: ReadonlySet<string> = new Set();
+
+/**
+ * 未拉取到的作用域的**图片能力覆盖表**空值（引用稳定 ⇒ 不触发无谓重渲染）。
+ *
+ * ⚠️ 空表 ≠「都不支持」：缺失的键语义是**跟随上游声明**（issue #101 的三态）。
+ */
+export const EMPTY_IMAGE_CAPS: Readonly<Record<string, boolean>> = Object.freeze({});
 
 function defaultStrategyView(region?: Region): AccountStrategyView {
   return {
@@ -96,6 +106,20 @@ interface GatewayState {
    * ⚠️ 用 `Set` 是为了 O(1) 命中；更新时**必须换一个新 `Set`**（zustand 靠引用变化触发重渲染）。
    */
   disabled: Partial<Record<Scope, Set<string>>>;
+  /** 模型降级链（P13）：按作用域缓存视图。缺键 = 还没读过（**不是**「没有链」）。 */
+  fallback: Partial<Record<Scope, ModelFallbackView>>;
+  /** 近 7 天降级统计（**落盘账本**，与 `fallback.events` 的环形缓冲不同源）。 */
+  fallbackStats: Partial<Record<Scope, FallbackStats>>;
+  /**
+   * 每个**作用域**的图片能力**覆盖表**（issue #101）：`{ 模型 id: 是否支持图片 }`。
+   *
+   * ⚠️ **缺失的键 = 跟随上游声明**，不是「不支持」。三态语义见 `lib/model-image.ts`；
+   * 把这里当布尔表读会得到「所有没出现过的模型都不支持图片」—— 那是错的。
+   *
+   * 与 `disabled` 同构：进程内唯一存储在后端（`gateway_model_image_caps.json`），
+   * 三条产品线 `/v1/models` 的声明读的是同一份，所以这里改完客户端立刻能看到。
+   */
+  imageCaps: Partial<Record<Scope, Record<string, boolean>>>;
   strategies: Record<Region, AccountStrategyView>;
   logs: GatewayLogEntry[];
   /**
@@ -160,6 +184,20 @@ interface GatewayState {
   loadDisabled: (scope: Scope) => Promise<void>;
   /** 置位 / 清位某**作用域**的一个模型（禁用 / 启用）—— 后端幂等。 */
   setModelDisabled: (scope: Scope, modelId: string, disabled: boolean) => Promise<void>;
+  /** 读取某**作用域**的图片能力覆盖表（issue #101）。 */
+  loadImageCaps: (scope: Scope) => Promise<void>;
+  /** 读取某**作用域**的降级链（含备选的实时健康态）。 */
+  loadFallback: (scope: Scope) => Promise<void>;
+  /** 读取某**作用域**近 7 天的降级统计（落盘账本）。 */
+  loadFallbackStats: (scope: Scope) => Promise<void>;
+  /** 保存某**作用域**的降级链；后端返回最新视图，直接覆盖缓存（不再多发一次读）。 */
+  saveFallback: (scope: Scope, config: ScopeFallbackConfig) => Promise<void>;
+  /**
+   * 写图片能力覆盖：`true` / `false` = 手动指定，**`null` = 还原上游声明**（后端删键）。
+   *
+   * 三态是这块的要点 —— 实现成 `false` 会让「还原」变成「明确不支持」。
+   */
+  setModelImageCap: (scope: Scope, modelId: string, supports: boolean | null) => Promise<void>;
   loadStrategies: () => Promise<void>;
   saveStrategy: (region: Region, strategy: AccountStrategy) => Promise<void>;
   loadLogs: () => Promise<void>;
@@ -204,6 +242,11 @@ export const useGatewayStore = create<GatewayState>((set, get) => ({
   models: { cn: null, global: null },
   // 默认全开（D27）：各作用域的 `disabled` 懒加载，未拉取即视为空集，不替用户做决定。
   disabled: {},
+  /** 模型降级链（P13）：按作用域缓存视图。空 = 还没读过（不是「没有链」）。 */
+  fallback: {},
+  fallbackStats: {},
+  // 图片能力覆盖懒加载：空表 = 全部跟随上游声明（**不是**「都不支持」，issue #101）。
+  imageCaps: {},
   strategies: defaultStrategies(),
   logs: [],
   // 探测未跑过（后端 `{ phase: "idle" }` 归一为 `null`）；被动底色懒加载，默认空表。
@@ -321,6 +364,52 @@ export const useGatewayStore = create<GatewayState>((set, get) => ({
       if (disabled) next.add(modelId);
       else next.delete(modelId);
       return { disabled: { ...s.disabled, [scope]: next } };
+    });
+  },
+
+  async loadFallback(scope) {
+    try {
+      const view = await api.getModelFallback(scope);
+      set((s) => ({ fallback: { ...s.fallback, [scope]: view } }));
+    } catch (e) {
+      set({ error: api.asError(e) });
+    }
+  },
+
+  async loadFallbackStats(scope) {
+    try {
+      const stats = await api.getFallbackStats(scope);
+      set((s) => ({ fallbackStats: { ...s.fallbackStats, [scope]: stats } }));
+    } catch (e) {
+      set({ error: api.asError(e) });
+    }
+  },
+
+  async saveFallback(scope, config) {
+    // 后端返回**最新视图**（含实时健康态）⇒ 直接覆盖缓存，不再多发一次读。
+    // 状态点因此会立刻反映「刚配的目标现在是否在闸门里」。
+    const view = await api.saveModelFallback(scope, config);
+    set((s) => ({ fallback: { ...s.fallback, [scope]: view } }));
+  },
+
+  async loadImageCaps(scope) {
+    try {
+      const { caps } = await api.getModelImageCaps(scope);
+      set((s) => ({ imageCaps: { ...s.imageCaps, [scope]: caps ?? {} } }));
+    } catch (e) {
+      set({ error: api.asError(e) });
+    }
+  },
+
+  async setModelImageCap(scope, modelId, supports) {
+    // 与禁用同款：先落库，成功后再改内存 —— 失败时覆盖表保持不变。
+    await api.setModelImageCap(scope, modelId, supports);
+    set((s) => {
+      const next = { ...(s.imageCaps[scope] ?? {}) };
+      // `null` = 还原上游 ⇒ **删键**（不是写 false）。这条与后端 `set(.., None)` 同义。
+      if (supports === null) delete next[modelId];
+      else next[modelId] = supports;
+      return { imageCaps: { ...s.imageCaps, [scope]: next } };
     });
   },
 

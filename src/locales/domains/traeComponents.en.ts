@@ -66,14 +66,31 @@ export const en = {
   "trae.comp.card.chip.expired": "Credentials expired",
   "trae.comp.card.chip.needRelogin": "Needs re-login",
   "trae.comp.card.chip.expiring": "{amount} credits expire within {days} days",
-  "trae.comp.card.chip.expiringTipTitle": "Expiring batches ({n})",
-  "trae.comp.card.chip.expiringTipLine": "{time} · {amount} credits",
+  // issue #83 · 3 (second half): per-package name / remaining / expiry must be visible,
+  // not just the aggregate. Rendered in a tooltip — the card is a fixed 4-block layout.
+  "trae.comp.card.packs.title": "Credit packages ({n})",
+  "trae.comp.card.packs.line": "{name} · {remaining}/{total} left · expires {expire}",
+  "trae.comp.card.packs.lineExpired": "{name} · {remaining}/{total} left · expired {expire}",
+  "trae.comp.card.packs.unnamed": "Unnamed package",
   "trae.comp.card.chip.unchecked": "Not checked in today",
   "trae.comp.card.chip.cooling": "Cooling down",
   "trae.comp.card.chip.jwtAuto": "Auto-refresh JWT",
   "trae.comp.card.chip.jwtManual": "JWT refreshable",
   "trae.comp.card.cooldown.until": " · until {time}",
   "trae.comp.card.cooldown.fallback": "Cooling down ({type})",
+  "trae.comp.card.chip.authRejected": "Credential rejected (self-healing)",
+  // ---- Cooldown state → user action (single source, see src/lib/trae-cooldown.ts) ----
+  "trae.comp.card.cooldown.hint.sessionDead":
+    "The upstream invalidated this session (12153). Sign in again; the marker clears itself once the credential changes. You can also use \"Clear cooldown\" in the menu.",
+  "trae.comp.card.cooldown.hint.authRejected":
+    "The upstream rejected this access token but did not invalidate the session — usually expiry. The keep-alive refresh recovers it in about 60 seconds.",
+  "trae.comp.card.cooldown.hint.planLimit": "Plan quota exhausted. Wait for the reset or use another account.",
+  "trae.comp.card.cooldown.hint.transient":
+    "Rate limited or upstream hiccup. Recovers when the cooldown expires; the first successful request clears it immediately.",
+  "trae.comp.card.cooldown.age.justNow": "just now",
+  "trae.comp.card.cooldown.age.minutes": "{minutes} min ago",
+  "trae.comp.card.cooldown.age.hours": "{minutes} h ago",
+  "trae.comp.card.cooldown.age.days": "{minutes} d ago",
 
   // ---- Program switch controls ----
   "trae.comp.card.currentOf": "Current account in {label}",
@@ -105,7 +122,6 @@ export const en = {
   "trae.comp.card.section.info": "Account info",
   "trae.comp.card.package.fallback": "Credit package",
   // P4: "used / expiry" text for the drawer `DetailPack` (mirrors the WorkBuddy drawer).
-  "trae.comp.card.package.used": "Used {n}",
   "trae.comp.card.package.expired": "Expired",
 
   // ---- Action explanations (used as menu-item titles) ----

@@ -350,9 +350,9 @@ pub async fn chat_for_variant(
     let model = payload::model_of(&parsed, &config.default_model);
     // ★ 出口 ②（P11）：被禁用的模型直接拒绝 —— 与 `/v1/models` 读**同一份** `disabled`
     //   （`is_disabled` 是唯一判断点）。只改过滤不拒绝 = 假开关。
+    // ★ 禁用集合按**作用域**分家（2026-10-15 起）—— Trae 路由把区域升成 Scope。
+    let scope = scope_of_trae_region(variant.region());
     {
-        // ★ 禁用集合按**作用域**分家（2026-10-15 起）—— Trae 路由把区域升成 Scope。
-        let scope = scope_of_trae_region(variant.region());
         let disabled = state.disabled.read().await;
         if crate::disabled_models::is_disabled(&disabled, scope, &model) {
             return openai_error(
@@ -368,39 +368,116 @@ pub async fn chat_for_variant(
 
     let sticky_key = sticky_key_of(&parsed, variant, &model);
 
-    if stream {
-        stream_chat(
-            &state,
-            &body,
-            &config.default_model,
-            &model,
-            &chat_id,
-            max_rotate,
-            &config.preferred_uid,
-            sticky_key.as_deref(),
-            ENDPOINT_CHAT,
-            started,
-            variant,
-            key.as_deref(),
-            // chat 入口没有 custom 工具概念。
-            None,
-        )
-        .await
-    } else {
-        aggregate_chat(
-            &state,
-            &body,
-            &config.default_model,
-            &model,
-            &chat_id,
-            max_rotate,
-            &config.preferred_uid,
-            sticky_key.as_deref(),
-            started,
-            variant,
-            key.as_deref(),
-        )
-        .await
+    // ★ 降级链（P13）：主模型失败且命中触发条件时，改用备选模型重发。
+    //   hop 循环放在**入口层**而不是 `stream_chat` 内部 —— 三个入口（chat / messages /
+    //   responses）共用同一段，不会各写一份而漂移。
+    let fallback = crate::routes::fallback::FallbackLoop::plan(scope, &model).await;
+    let raw_body = String::from_utf8_lossy(&body).to_string();
+    let mut hop = 0usize;
+    // 上一跳的失败响应（越界时返回它）与触发原因（写进降级头）。
+    let mut last: Option<Response> = None;
+    let mut last_trigger: Option<crate::model_fallback::Trigger> = None;
+    loop {
+        // ★ 越界在这里挡：`model_at` 越界返回 `None`（**不回落主模型**）——
+        //   回落会让「备选全被禁用」变成「把主模型原样重发一次」，
+        //   还会写出 `Fallback-From: A / To: A` 的荒唐头。
+        let Some(hop_model) = fallback.model_at(hop) else {
+            return last.expect("第 0 跳必然执行过");
+        };
+        // 被用户禁用的目标直接跳过：一次请求都不发。
+        if fallback.should_skip(hop, &state.disabled).await {
+            hop += 1;
+            continue;
+        }
+        // body 里没有 `model` 字段 ⇒ 改写不了 ⇒ 不降级
+        // （否则每跳实际发同一个模型，却告诉客户端「降到了备选」= 对客户端撒谎）。
+        let Some(hop_body) = fallback.body_for(hop, &raw_body) else {
+            return last.expect("第 0 跳必然执行过");
+        };
+        let hop_model = hop_model.to_string();
+        // 同平台跨区域：换 variant（`trae-cn` ↔ `trae-global` 协议一致，只是账号池与域名不同）。
+        //
+        // ★ 只在**目标作用域 ≠ 入口作用域**时才换：同作用域必须**原样保留入口的变体**。
+        //   `trae_variant_of` 返回的是**合并版**（`trae_merged`），而入口可能是 `trae_cn` ——
+        //   无脑替换会让请求日志里的变体名从 `trae_cn` 变成 `trae_merged`
+        //   （`request_log_carries_the_variant` 钉住了这一点）。
+        let hop_variant = fallback
+            .scope_at(hop)
+            .filter(|target_scope| *target_scope != scope)
+            .and_then(crate::routes::cross::trae_variant_of)
+            .unwrap_or(variant);
+        let hop_body = Bytes::from(hop_body);
+        // ★ 跨平台目标：交给 `cross::relay_on_scope`（同进程内调目标产品线入口）。
+        //   深度由 `cross_depth()` 兜底（`FallbackLoop::plan` 已先过滤一次）。
+        let response = if fallback
+            .scope_at(hop)
+            .is_some_and(|target_scope| target_scope.product() != scope.product())
+        {
+            Box::pin(crate::routes::cross::relay_on_scope(
+                fallback.scope_at(hop).expect("上面已判过 Some"),
+                axum::http::HeaderMap::new(),
+                hop_body.clone(),
+                None,
+            ))
+            .await
+        } else if stream {
+            stream_chat(
+                &state,
+                &hop_body,
+                &config.default_model,
+                &hop_model,
+                &chat_id,
+                max_rotate,
+                &config.preferred_uid,
+                sticky_key.as_deref(),
+                ENDPOINT_CHAT,
+                started,
+                hop_variant,
+                key.as_deref(),
+                // chat 入口没有 custom 工具概念。
+                None,
+            )
+            .await
+        } else {
+            aggregate_chat(
+                &state,
+                &hop_body,
+                &config.default_model,
+                &hop_model,
+                &chat_id,
+                max_rotate,
+                &config.preferred_uid,
+                sticky_key.as_deref(),
+                started,
+                hop_variant,
+                key.as_deref(),
+            )
+            .await
+        };
+        if response.status().is_success() {
+            let mut response = response;
+            if hop > 0 {
+                if let Some(trigger) = last_trigger {
+                    fallback.apply_headers(hop, &mut response, trigger);
+                    // 记一笔降级成功（Trae 拿不到完整轨迹，path 只记最终用的那个）。
+                    crate::model_fallback::record_success(
+                        scope,
+                        fallback.origin(),
+                        &hop_model,
+                        trigger,
+                        started.elapsed().as_millis() as i64,
+                    );
+                }
+            }
+            return response;
+        }
+        // 能不能继续降级：**状态码能映射到触发条件** 且 **该条件在用户配的白名单里**。
+        match fallback.can_fallback(&response) {
+            Some(trigger) => last_trigger = Some(trigger),
+            None => return response,
+        }
+        last = Some(response);
+        hop += 1;
     }
 }
 
@@ -491,8 +568,8 @@ pub async fn messages_for_variant(
     // 流式开关见 [`anthropic_wants_stream`]（**必须**读原始请求体）。
     let model = payload::model_of(&upstream, &config.default_model);
     // ★ 出口 ②（P11）：与 `/v1/chat/completions` 同源 —— 被禁用的模型直接拒绝（Anthropic 错误体）。
+    let scope = scope_of_trae_region(variant.region());
     {
-        let scope = scope_of_trae_region(variant.region());
         let disabled = state.disabled.read().await;
         if crate::disabled_models::is_disabled(&disabled, scope, &model) {
             return anthropic_error(
@@ -515,56 +592,131 @@ pub async fn messages_for_variant(
     // （与 WorkBuddy 侧 `messages.rs` 同源）。拿不到 ⇒ 返回 `None` ⇒ 整段跳过粘性。
     let sticky_key = sticky_key_of(&parsed, variant, &model);
 
-    if stream {
-        stream_chat(
-            &state,
-            &upstream_body,
-            &config.default_model,
-            &model,
-            &chat_id,
-            max_rotate,
-            &config.preferred_uid,
-            sticky_key.as_deref(),
-            ENDPOINT_MESSAGES,
-            started,
-            variant,
-            key.as_deref(),
-            // Anthropic 入口没有 custom 工具概念。
-            None,
-        )
-        .await
-    } else {
-        match aggregate_payload(
-            &state,
-            &upstream_body,
-            &config.default_model,
-            &model,
-            &chat_id,
-            max_rotate,
-            &config.preferred_uid,
-            sticky_key.as_deref(),
-            ENDPOINT_MESSAGES,
-            started,
-            variant,
-            key.as_deref(),
-        )
-        .await
-        {
-            Ok(payload) => {
-                // ★ issue #76：Anthropic 端点同样按密钥记 token（payload 是上游 OpenAI 形状，
-                //   所以取 `usage.total_tokens` 与 chat 端点同源）。
-                record_key_tokens(&state, key.as_deref(), &payload);
-                json_response(
-                    StatusCode::OK,
-                    anthropic::message_from_response(&payload, &model),
-                )
-            }
-            Err(failure) => anthropic_error(
-                StatusCode::from_u16(failure.status).unwrap_or(StatusCode::BAD_GATEWAY),
-                &failure.code,
-                &failure.message,
-            ),
+    // ★ 降级链（P13）：与 `/v1/chat/completions` 同一套 hop 循环（见那里的注释）。
+    let fallback = crate::routes::fallback::FallbackLoop::plan(scope, &model).await;
+    let raw_body = String::from_utf8_lossy(&upstream_body).to_string();
+    let mut hop = 0usize;
+    // 上一跳的失败响应（越界时返回它）与触发原因（写进降级头）。
+    let mut last: Option<Response> = None;
+    let mut last_trigger: Option<crate::model_fallback::Trigger> = None;
+    loop {
+        // ★ 越界在这里挡：`model_at` 越界返回 `None`（**不回落主模型**）——
+        //   回落会让「备选全被禁用」变成「把主模型原样重发一次」，
+        //   还会写出 `Fallback-From: A / To: A` 的荒唐头。
+        let Some(hop_model) = fallback.model_at(hop) else {
+            return last.expect("第 0 跳必然执行过");
+        };
+        // 被用户禁用的目标直接跳过：一次请求都不发。
+        if fallback.should_skip(hop, &state.disabled).await {
+            hop += 1;
+            continue;
         }
+        // body 里没有 `model` 字段 ⇒ 改写不了 ⇒ 不降级
+        // （否则每跳实际发同一个模型，却告诉客户端「降到了备选」= 对客户端撒谎）。
+        let Some(hop_body) = fallback.body_for(hop, &raw_body) else {
+            return last.expect("第 0 跳必然执行过");
+        };
+        let hop_model = hop_model.to_string();
+        // 同平台跨区域：换 variant（`trae-cn` ↔ `trae-global` 协议一致，只是账号池与域名不同）。
+        //
+        // ★ 只在**目标作用域 ≠ 入口作用域**时才换：同作用域必须**原样保留入口的变体**。
+        //   `trae_variant_of` 返回的是**合并版**（`trae_merged`），而入口可能是 `trae_cn` ——
+        //   无脑替换会让请求日志里的变体名从 `trae_cn` 变成 `trae_merged`
+        //   （`request_log_carries_the_variant` 钉住了这一点）。
+        let hop_variant = fallback
+            .scope_at(hop)
+            .filter(|target_scope| *target_scope != scope)
+            .and_then(crate::routes::cross::trae_variant_of)
+            .unwrap_or(variant);
+        let hop_body = Bytes::from(hop_body);
+        // ★ 跨平台目标：交给 `cross::relay_on_scope`（同进程内调目标产品线入口）。
+        //   深度由 `cross_depth()` 兜底（`FallbackLoop::plan` 已先过滤一次）。
+        let response = if fallback
+            .scope_at(hop)
+            .is_some_and(|target_scope| target_scope.product() != scope.product())
+        {
+            Box::pin(crate::routes::cross::relay_on_scope(
+                fallback.scope_at(hop).expect("上面已判过 Some"),
+                axum::http::HeaderMap::new(),
+                hop_body.clone(),
+                None,
+            ))
+            .await
+        } else if stream {
+            stream_chat(
+                &state,
+                &hop_body,
+                &config.default_model,
+                &hop_model,
+                &chat_id,
+                max_rotate,
+                &config.preferred_uid,
+                sticky_key.as_deref(),
+                ENDPOINT_MESSAGES,
+                started,
+                hop_variant,
+                key.as_deref(),
+                // Anthropic 入口没有 custom 工具概念。
+                None,
+            )
+            .await
+        } else {
+            match aggregate_payload(
+                &state,
+                &hop_body,
+                &config.default_model,
+                &hop_model,
+                &chat_id,
+                max_rotate,
+                &config.preferred_uid,
+                sticky_key.as_deref(),
+                ENDPOINT_MESSAGES,
+                started,
+                hop_variant,
+                key.as_deref(),
+            )
+            .await
+            {
+                Ok(payload) => {
+                    // ★ issue #76：Anthropic 端点同样按密钥记 token（payload 是上游 OpenAI 形状，
+                    //   所以取 `usage.total_tokens` 与 chat 端点同源）。
+                    record_key_tokens(&state, key.as_deref(), &payload);
+                    json_response(
+                        StatusCode::OK,
+                        anthropic::message_from_response(&payload, &hop_model),
+                    )
+                }
+                Err(failure) => anthropic_error(
+                    StatusCode::from_u16(failure.status).unwrap_or(StatusCode::BAD_GATEWAY),
+                    &failure.code,
+                    &failure.message,
+                ),
+            }
+        };
+        if response.status().is_success() {
+            let mut response = response;
+            if hop > 0 {
+                if let Some(trigger) = last_trigger {
+                    fallback.apply_headers(hop, &mut response, trigger);
+                    // 记一笔降级成功（Trae 拿不到完整轨迹，path 只记最终用的那个）。
+                    crate::model_fallback::record_success(
+                        scope,
+                        fallback.origin(),
+                        &hop_model,
+                        trigger,
+                        started.elapsed().as_millis() as i64,
+                    );
+                }
+            }
+            return response;
+        }
+        // 能不能继续降级：**状态码能映射到触发条件** 且 **该条件在用户配的白名单里**。
+        match fallback.can_fallback(&response) {
+            Some(trigger) => last_trigger = Some(trigger),
+            None => return response,
+        }
+        last = Some(response);
+        hop += 1;
     }
 }
 
@@ -653,8 +805,8 @@ pub async fn responses_for_variant(
     // 模型取**转换后**的请求体（那是真正发给上游的东西）。
     let model = payload::model_of(&upstream, &config.default_model);
     // ★ 出口 ②（P11）：与 `/v1/chat/completions` 同源 —— 被禁用的模型直接拒绝。
+    let scope = scope_of_trae_region(variant.region());
     {
-        let scope = scope_of_trae_region(variant.region());
         let disabled = state.disabled.read().await;
         if crate::disabled_models::is_disabled(&disabled, scope, &model) {
             return openai_error(
@@ -684,61 +836,136 @@ pub async fn responses_for_variant(
         })
         .map(|conversation| sticky::sticky_key(variant.as_str(), &model, &conversation));
 
-    if stream {
-        stream_chat(
-            &state,
-            &upstream_body,
-            &config.default_model,
-            &model,
-            &chat_id,
-            max_rotate,
-            &config.preferred_uid,
-            sticky_key.as_deref(),
-            ENDPOINT_RESPONSES,
-            started,
-            variant,
-            key.as_deref(),
-            Some(responses_custom),
-        )
-        .await
-    } else {
-        match aggregate_payload(
-            &state,
-            &upstream_body,
-            &config.default_model,
-            &model,
-            &chat_id,
-            max_rotate,
-            &config.preferred_uid,
-            sticky_key.as_deref(),
-            ENDPOINT_RESPONSES,
-            started,
-            variant,
-            key.as_deref(),
-        )
-        .await
-        {
-            Ok(payload) => {
-                record_key_tokens(&state, key.as_deref(), &payload);
-                // 非流式：上游给的是 chat.completion，先收成聚合器再走**同一份**
-                // Responses 形状实现（两条上游共用 `to_response_object_from`）。
-                let accumulator =
-                    crate::protocol::openai::CompletionAccumulator::from_response(&payload);
-                json_response(
-                    StatusCode::OK,
-                    crate::protocol::responses::to_response_object(
-                        &accumulator,
-                        &model,
-                        responses_custom.as_ref(),
-                    ),
-                )
-            }
-            Err(failure) => openai_error(
-                StatusCode::from_u16(failure.status).unwrap_or(StatusCode::BAD_GATEWAY),
-                &failure.code,
-                &failure.message,
-            ),
+    // ★ 降级链（P13）：与 `/v1/chat/completions` 同一套 hop 循环（见那里的注释）。
+    let fallback = crate::routes::fallback::FallbackLoop::plan(scope, &model).await;
+    let raw_body = String::from_utf8_lossy(&upstream_body).to_string();
+    let mut hop = 0usize;
+    // 上一跳的失败响应（越界时返回它）与触发原因（写进降级头）。
+    let mut last: Option<Response> = None;
+    let mut last_trigger: Option<crate::model_fallback::Trigger> = None;
+    loop {
+        // ★ 越界在这里挡：`model_at` 越界返回 `None`（**不回落主模型**）——
+        //   回落会让「备选全被禁用」变成「把主模型原样重发一次」，
+        //   还会写出 `Fallback-From: A / To: A` 的荒唐头。
+        let Some(hop_model) = fallback.model_at(hop) else {
+            return last.expect("第 0 跳必然执行过");
+        };
+        // 被用户禁用的目标直接跳过：一次请求都不发。
+        if fallback.should_skip(hop, &state.disabled).await {
+            hop += 1;
+            continue;
         }
+        // body 里没有 `model` 字段 ⇒ 改写不了 ⇒ 不降级
+        // （否则每跳实际发同一个模型，却告诉客户端「降到了备选」= 对客户端撒谎）。
+        let Some(hop_body) = fallback.body_for(hop, &raw_body) else {
+            return last.expect("第 0 跳必然执行过");
+        };
+        let hop_model = hop_model.to_string();
+        // 同平台跨区域：换 variant（`trae-cn` ↔ `trae-global` 协议一致，只是账号池与域名不同）。
+        //
+        // ★ 只在**目标作用域 ≠ 入口作用域**时才换：同作用域必须**原样保留入口的变体**。
+        //   `trae_variant_of` 返回的是**合并版**（`trae_merged`），而入口可能是 `trae_cn` ——
+        //   无脑替换会让请求日志里的变体名从 `trae_cn` 变成 `trae_merged`
+        //   （`request_log_carries_the_variant` 钉住了这一点）。
+        let hop_variant = fallback
+            .scope_at(hop)
+            .filter(|target_scope| *target_scope != scope)
+            .and_then(crate::routes::cross::trae_variant_of)
+            .unwrap_or(variant);
+        let hop_body = Bytes::from(hop_body);
+        // ★ 跨平台目标：交给 `cross::relay_on_scope`（同进程内调目标产品线入口）。
+        //   深度由 `cross_depth()` 兜底（`FallbackLoop::plan` 已先过滤一次）。
+        let response = if fallback
+            .scope_at(hop)
+            .is_some_and(|target_scope| target_scope.product() != scope.product())
+        {
+            Box::pin(crate::routes::cross::relay_on_scope(
+                fallback.scope_at(hop).expect("上面已判过 Some"),
+                axum::http::HeaderMap::new(),
+                hop_body.clone(),
+                None,
+            ))
+            .await
+        } else if stream {
+            stream_chat(
+                &state,
+                &hop_body,
+                &config.default_model,
+                &hop_model,
+                &chat_id,
+                max_rotate,
+                &config.preferred_uid,
+                sticky_key.as_deref(),
+                ENDPOINT_RESPONSES,
+                started,
+                hop_variant,
+                key.as_deref(),
+                Some(responses_custom.clone()),
+            )
+            .await
+        } else {
+            match aggregate_payload(
+                &state,
+                &hop_body,
+                &config.default_model,
+                &hop_model,
+                &chat_id,
+                max_rotate,
+                &config.preferred_uid,
+                sticky_key.as_deref(),
+                ENDPOINT_RESPONSES,
+                started,
+                hop_variant,
+                key.as_deref(),
+            )
+            .await
+            {
+                Ok(payload) => {
+                    record_key_tokens(&state, key.as_deref(), &payload);
+                    // 非流式：上游给的是 chat.completion，先收成聚合器再走**同一份**
+                    // Responses 形状实现（两条上游共用 `to_response_object_from`）。
+                    let accumulator =
+                        crate::protocol::openai::CompletionAccumulator::from_response(&payload);
+                    json_response(
+                        StatusCode::OK,
+                        crate::protocol::responses::to_response_object(
+                            &accumulator,
+                            &hop_model,
+                            responses_custom.as_ref(),
+                        ),
+                    )
+                }
+                Err(failure) => openai_error(
+                    StatusCode::from_u16(failure.status).unwrap_or(StatusCode::BAD_GATEWAY),
+                    &failure.code,
+                    &failure.message,
+                ),
+            }
+        };
+        if response.status().is_success() {
+            let mut response = response;
+            if hop > 0 {
+                if let Some(trigger) = last_trigger {
+                    fallback.apply_headers(hop, &mut response, trigger);
+                    // 记一笔降级成功（Trae 拿不到完整轨迹，path 只记最终用的那个）。
+                    crate::model_fallback::record_success(
+                        scope,
+                        fallback.origin(),
+                        &hop_model,
+                        trigger,
+                        started.elapsed().as_millis() as i64,
+                    );
+                }
+            }
+            return response;
+        }
+        // 能不能继续降级：**状态码能映射到触发条件** 且 **该条件在用户配的白名单里**。
+        match fallback.can_fallback(&response) {
+            Some(trigger) => last_trigger = Some(trigger),
+            None => return response,
+        }
+        last = Some(response);
+        hop += 1;
     }
 }
 
@@ -842,7 +1069,14 @@ async fn stream_chat(
                     }
                 });
                 return if is_anthropic_endpoint(endpoint) {
-                    anthropic_sse_response(rx, model)
+                    // ★ issue #139：`message_start` 要当场给 `input_tokens`，而上游的
+                    //   真实值到末帧才来 ⇒ 用请求体估一个占位值（0 = 客户端把上下文
+                    //   占用画成 0%，用户看不出何时该 compact）。只有 Anthropic 端点
+                    //   需要，其它协议不必付这一次 JSON 解析。
+                    let estimated = serde_json::from_slice::<serde_json::Value>(body)
+                        .map(|value| anthropic::estimate_input_tokens(&value))
+                        .unwrap_or(0);
+                    anthropic_sse_response(rx, model, estimated)
                 } else if is_responses_endpoint(endpoint) {
                     // Responses 事件流：内层是同一条 OpenAI SSE，逐事件重编。
                     responses_sse_response(rx, model, responses_custom.clone())
@@ -1099,23 +1333,27 @@ fn allowed_uids_for(
     policy: &crate::apikey::KeyPolicy,
     variant: TraeVariant,
 ) -> Option<HashSet<String>> {
-    use crate::apikey::ScopeMode;
-    if policy.scope_mode != ScopeMode::Selected {
-        return None;
-    }
-    let mut allowed: HashSet<String> = policy.scope_accounts.iter().cloned().collect();
-    if !policy.scope_groups.is_empty() {
-        /* ★ Trae 的分组是**独立文件**（`user_id -> group_id` 的 `membership` 映射），
-        不像 WB 那样把 `groupName` 挂在账号记录上 ⇒ 读 `load_groups_for` 再反查。
-        这里**只增不删**：`scope_accounts` 里的 uid 即使不在任何分组也保留。 */
-        let groups = buddy_switch_core::modules::trae::account::load_groups_for(variant);
-        for (uid, group_id) in groups.membership.iter() {
-            if policy.scope_groups.iter().any(|wanted| wanted == group_id) {
-                allowed.insert(uid.clone());
-            }
-        }
-    }
-    Some(allowed)
+    // ★ 安全审计 P1-7：判定与展开由 `apikey::scope_allows` **唯一提供**。
+    //   这里只负责取 `(uid, groupId)` —— Trae 的分组是**独立文件**
+    //   （`user_id -> group_id` 的 `membership` 映射），不是账号记录上的字段。
+    //
+    //   `chain(membership)` 是**必须**的：membership 里可能有账号库里已不存在的 uid
+    //   （账号被删但分组映射还没清），改造前那份实现就是直接遍历 membership 的，
+    //   只遍历 `accounts` 会静默缩小授权范围。
+    let groups = buddy_switch_core::modules::trae::account::load_groups_for(variant);
+    let from_accounts = buddy_switch_core::modules::trae::account::load_accounts_for(variant)
+        .accounts
+        .into_iter()
+        .filter_map(|account| {
+            let uid = account.user_id?;
+            let group = groups.membership.get(&uid).cloned();
+            Some((uid, group))
+        });
+    let from_membership = groups
+        .membership
+        .iter()
+        .map(|(uid, group)| (uid.clone(), Some(group.clone())));
+    crate::apikey::allowed_uids_for_policy(policy, from_accounts.chain(from_membership))
 }
 
 /// 非流式路径的按密钥 token 记账（issue #76）。
@@ -1202,7 +1440,7 @@ async fn attempt_once(
             })
         }
         Err((status, detail)) => {
-            let kind = classify_http(status);
+            let kind = classify_http(status, &detail);
             let failure = UpstreamFailure {
                 // 传输层错误没有 HTTP 状态码，对客户端统一报 502（网关上游不可达）。
                 status: if status == 0 { 502 } else { status },
@@ -1409,12 +1647,19 @@ async fn settle(
             .note_success(&account.uid);
     }
 
-    // 状态码恒为 200：SSE 已经以 200 开头发出，错误只能体现在事件里。
+    /* ★ issue #129 §5.2 改动 4：流中途失败必须写**真实**状态码。
+    改造前这里恒写 200（「SSE 已经以 200 开头发出」），于是「账号在流中途挂掉」
+    在日志页显示成一次**成功**请求 —— 对外静默的代价绝不能是「对内也静默」。
+    Qoder 侧早就是按错误帧回填 429/502 的，这里对齐它。 */
+    let status = error
+        .as_ref()
+        .map(|(code, _)| super::pool::client_error_of(*code, "").status)
+        .unwrap_or(200);
     state
         .record_request(
             endpoint,
             model,
-            200,
+            status,
             &account.uid,
             latency_ms,
             stream,
@@ -1638,6 +1883,8 @@ fn sse_response(rx: mpsc::Receiver<Result<Bytes, std::io::Error>>) -> Response {
 fn anthropic_sse_response(
     rx: mpsc::Receiver<Result<Bytes, std::io::Error>>,
     model: &str,
+    // ★ issue #139：`message_start` 的输入 token 估算（0 = 不估，行为与改造前一致）。
+    estimated_input: u64,
 ) -> Response {
     let inner = Box::pin(sse::stream_from_receiver(rx));
     Response::builder()
@@ -1645,10 +1892,10 @@ fn anthropic_sse_response(
         .header(header::CONTENT_TYPE, "text/event-stream")
         .header(header::CACHE_CONTROL, "no-cache")
         .header("X-Accel-Buffering", "no")
-        .body(Body::from_stream(anthropic::AnthropicSseStream::new(
-            inner,
-            model.to_string(),
-        )))
+        .body(Body::from_stream(
+            anthropic::AnthropicSseStream::new(inner, model.to_string())
+                .with_estimated_input(estimated_input),
+        ))
         .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
 }
 

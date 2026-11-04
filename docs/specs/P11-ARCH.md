@@ -731,3 +731,115 @@ graph TD
 > **核心路径**：T01 → T02（**两个出口**是 P11 的成立前提）。
 > **依赖 P10**：T01 的「清单同源」建立在 P10 的 `/v1/models` 识别清单之上（P10 设计已完成，可先做）。
 > **★ T04 前置**：真实应用验收断言加进 `scripts/check-scope-registry.cjs`（**不动**原型套件 `verify-behaviors.cjs`），见 §1.10.1。
+
+---
+
+## 9. 追加：图片输入能力的**声明**与**覆盖**（issue #101，2026-10-26）
+
+> **状态**：已实施（`crates/buddy-switch-gateway/src/model_capability.rs`）。
+
+### 9.1 问题不是网关丢图，而是网关**没说**
+
+报障现场（issue #101）：客户端（DeepSeek Harness）接本网关后读图报
+
+```
+model "wb-cn:deepseek-v4.1-flash" does not declare image input
+```
+
+这句话是**客户端自己**打的：它按本地模型注册表判断能力，条目没勾「支持图片输入」时
+**在发请求前**就把图片挡掉 —— 请求根本没到网关。因此这不是代理链路的问题，
+而是「网关没把能力写在客户端读得到的地方」。
+
+### 9.2 三条产品线的上游声明情况**完全不同**
+
+| 产品线 | 上游是否声明 | 出口 ① 的实现 |
+|:--|:--|:--|
+| WorkBuddy | ✅ 目录 `supportsImages`（`disabledMultimodal` 是否决项） | 上游原值直接下发 |
+| Trae | ❌ 客户端清单只有 name / 上下文窗口 | 只有用户覆盖生效 |
+| Qoder | ❌ 官方清单没有该字段 | 只有用户覆盖生效 |
+
+### 9.3 三态（本节的**唯一**要点）
+
+| `supports_images` | 语义 | 客户端行为 |
+|:--|:--|:--|
+| `true` | 支持图片输入 | 允许上传 / 发 `image_url` parts |
+| `false` | **明确**不支持 | 隐藏上传入口 |
+| 字段缺失 | **未声明** | 回落客户端自己的模型配置 |
+
+⇒ 上游没说时**不下发字段**。把「没说」压成 `false`，等于网关替 Trae / Qoder 的
+全部模型凭空造一句「不支持图片」（§3.4 规则 1「无数据不渲染」的同一取向）。
+
+#### 9.3.1 内置表（issue #142）
+
+Trae / Qoder 的清单**根本没有**能力字段 ⇒ 按三态规则「不下发」⇒ 客户端隐藏上传入口，
+`deepseek-v4.1-flash` 明明能吃图也发不出去。对**已确认**的模型给一个静态声明，
+比让客户端一律回落到「不支持」更接近事实。解析顺序（唯一入口
+`model_capability::resolve` / `resolve_effective`）：
+
+| 顺序 | 来源 | `image_input_source` |
+|:--|:--|:--|
+| 1 | 用户覆盖（「模型」页手标） | `override` |
+| 2 | 上游目录声明 | `upstream` |
+| 3 | 网关**内置表**（只放确认过的模型） | `known` |
+| 4 | 都没有 | 字段缺失（`null`） |
+
+纪律：
+
+- 内置表**只会说 `true`** —— 说 `false` 会把用户的上传入口关掉，而「没实测到」≠「不支持」；
+- 只放**确认过**的模型，不确定就继续 `None`（宁可少声明，不可编能力）；
+- 用户覆盖仍然优先 ⇒ 表写错了用户能自己改回来；界面把 `known` 与 `upstream` **分开显示**，
+  不把「我们说的」冒充「上游说的」。
+
+### 9.4 字段
+
+- `supports_images`：本仓私有字段（**老客户端只认这个**）；
+- `architecture.input_modalities` / `architecture.modality` / `architecture.output_modalities`：
+  OpenRouter 兼容形状 —— 主流客户端（LobeChat / Cherry Studio 等）读的是它，
+  不读我们的私有字段。**两套都写**，能自动识别的客户端才多；
+- `image_input_source`：`upstream` / `known` / `override` / `null`，界面用它区分
+  「上游说的」「网关内置表说的」与「你标的」。
+
+### 9.5 覆盖存储
+
+- 文件 `~/.buddy-switch/gateway_model_image_caps.json`，形状 `{ 作用域: { 模型 id: bool } }`；
+- **缺失的键 = 跟随上游**（不是 `false`）；「还原上游」= **删键**；
+- 与 `disabled_models` **同构但不合并**：禁用默认全开、能力默认跟随上游，两者的「缺省」
+  方向相反，混在一个 store 里会让缺省有两种解释；
+- 进程内**唯一**实例（`model_capability::shared()`），三条网关 + 统一网关 + 命令面共用；
+- ★ 用 **std `RwLock`**（不是 tokio）：读取点在**同步**清单构造器里，而 Trae 侧在
+  `spawn_blocking`（不能 `.await`）、统一网关在 **async** 上下文（`blocking_read` 会 panic）
+  —— tokio 锁在这两处必有一处炸。锁只保护内存小表，**落盘在锁外**（`set_and_save`）。
+
+### 9.6 命令面
+
+| 命令 | 路由 | 说明 |
+|:--|:--|:--|
+| `get_model_image_caps` | `GET /api/gateway/model-image-caps?scope=` | `{ scope, caps }`，只含**被覆盖过**的模型 |
+| `set_model_image_cap` | `POST /api/gateway/model-image-caps` | `{ scope, modelId, supports: true \| false \| null }`，`null` = 还原 |
+
+### 9.7 ★ 声明必须与转发同源（硬约束）
+
+`supports_images` 描述的是**模型能力**，不是「本网关一定转发」：
+
+- `POST /v1/chat/completions`（OpenAI 兼容）：图片 parts **原样透传**（`outbound::sanitize`
+  只改 `text` part）⇒ 声明与数据面一致；
+- `POST /v1/messages`（Anthropic）：默认**丢弃**，仅 `BUDDY_SWITCH_ANTHROPIC_FORWARD_IMAGES=1`
+  转发，丢弃时在文本里写明「已移除 N 张图片」。
+
+⇒ 改其中一边必须回头看另一边。若哪天数据面彻底不支持图片，这里继续声明 `true` 就是撒谎，
+比不声明更坏（客户端发图 ⇒ 模型答非所问）。
+
+### 9.8 管理面
+
+模型表新增「图片输入」列（三平台**都**传）：徽标（支持 / 不支持 / **未声明**）+ 覆盖按钮 +
+（覆盖时）还原按钮。判据只有 `src/lib/model-image.ts::resolveImageCap` 一处，
+渲染只有 `model-image-cell.tsx` 一处，取数与提示在 `model-image-column.tsx`。
+门禁 `check-scope-registry.cjs` 钉住：三平台都传 · 三态文案齐 · **不得出现 `?? false`**。
+
+### 9.9 已知边界
+
+- **不能替客户端勾选**：客户端不读 `/v1/models` 的能力字段时，仍要在它自己的模型配置里
+  勾一次「支持图片输入」。#101 的正解就是这个；本节做的是让「能被自动识别」成为可能，
+  并让用户能手动纠正上游的错报。
+- **Trae / Qoder 无法自动识别**：上游清单没有这个信息，任何「自动」都只能是探测
+  （发 1×1 图试 200/400），那是独立需求，不在本节范围。

@@ -18,6 +18,7 @@
 use serde_json::{json, Map, Value};
 use std::collections::BTreeSet;
 
+use buddy_switch_core::modules::product::scope_of_trae_region;
 use buddy_switch_core::modules::trae::model_list::ClientModelList;
 use buddy_switch_core::modules::trae::variant::TraeVariant;
 
@@ -166,14 +167,20 @@ fn max_mode_window(variant: Option<TraeVariant>, model: &str) -> Option<(i64, i6
 ///
 /// `max_mode` 是**说明字段**（OpenAI 兼容客户端会忽略未知字段）：
 /// `true` = 该模型支持 Max Mode（`context_length` 已按它自己的上限声明）。
+///
+/// ★ 图片能力（issue #101）：Trae 的客户端清单**只有** name / 上下文窗口，没有任何
+/// 多模态字段 ⇒ `upstream = None`，能下发的只有用户在「模型」页手动指定的覆盖。
+/// `scope = None`（静态兜底清单，没有变体上下文）时**不写任何能力字段** ——
+/// 静态清单里的模型本来就只是「名字可能过时」的兜底，不该顺带断言能力。
 fn model_entry(
     id: &str,
     context_length: i64,
     max_mode: bool,
     default_window: Option<i64>,
     max_window: Option<i64>,
+    scope: Option<buddy_switch_core::modules::product::Scope>,
 ) -> Value {
-    json!({
+    let mut value = json!({
         "id": id,
         "object": "model",
         "created": 1_753_600_000,
@@ -183,7 +190,11 @@ fn model_entry(
         "context_length_default": default_window,
         "context_length_max": max_window,
         "max_mode": max_mode,
-    })
+    });
+    if let (Some(scope), Some(object)) = (scope, value.as_object_mut()) {
+        crate::model_capability::apply(object, scope, id, None);
+    }
+    value
 }
 
 /// `/v1/models` 的响应体（**静态兜底清单**）。
@@ -349,6 +360,8 @@ fn models_response_from(
 ) -> Value {
     let allowed =
         |name: &str| disabled.is_none_or(|set| !crate::disabled_models::is_disabled_in(set, name));
+    // 图片能力按**变体所属作用域**取（同区域两条程序位共用一份偏好，与禁用同一口径）。
+    let scope = variant.map(|variant| scope_of_trae_region(variant.region()));
     let mut data: Vec<Value> = Vec::with_capacity(entries.len());
     for (name, default_window, max_window) in entries {
         if !allowed(name) {
@@ -374,6 +387,7 @@ fn models_response_from(
             max_mode_flag,
             Some(dev),
             max,
+            scope,
         ));
     }
     json!({ "object": "list", "data": data })
@@ -1098,6 +1112,21 @@ mod tests {
         assert_eq!(model_of(&json!({}), "d"), "d");
         assert!(!wants_stream(&json!({})));
         assert!(wants_stream(&json!({"stream": true})));
+    }
+
+    /// ★ issue #101：静态兜底清单**不得**顺带断言图片能力。
+    ///
+    /// 静态清单没有变体上下文（`scope = None`），而且它连模型名都可能是过时的 ——
+    /// 在这种清单上写 `supports_images` 等于凭空造一个事实。
+    #[test]
+    fn static_fallback_does_not_declare_image_capability() {
+        let response = models_response();
+        let first = &response["data"][0];
+        assert!(
+            first.get("supports_images").is_none(),
+            "静态兜底清单不得声明图片能力：{first}"
+        );
+        assert!(first.get("architecture").is_none());
     }
 
     /// ★★ 护栏：静态兜底清单**内容**必须与「实测可调」一致（issue #4 后续报障的正题）。

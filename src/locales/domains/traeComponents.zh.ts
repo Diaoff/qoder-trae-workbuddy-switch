@@ -99,14 +99,31 @@ export const zh = {
   // 「{amount} 积分 {days} 天内过期」——issue #44：金额是窗口内**全部**临期之和，
   // 天数取其中最晚那一刻，故只能写「天内」（写「天后」会把不同批次混成一句话，是假话）。
   "trae.comp.card.chip.expiring": "{amount} 积分 {days} 天内过期",
-  "trae.comp.card.chip.expiringTipTitle": "按到期时间分批（共 {n} 批）",
-  "trae.comp.card.chip.expiringTipLine": "{time} · {amount} 积分",
+  // issue #83 · 3 后半：卡片上要能看到**逐包**的名称 / 剩余 / 到期，而不是只有汇总。
+  // 落点是浮层（卡片是 4 块 / 243px 的固定版式，塞第五块会挤掉「当前登录」徽章）。
+  "trae.comp.card.packs.title": "积分包明细（{n}）",
+  "trae.comp.card.packs.line": "{name} · 剩 {remaining}/{total} · {expire} 到期",
+  "trae.comp.card.packs.lineExpired": "{name} · 剩 {remaining}/{total} · {expire} 已过期",
+  "trae.comp.card.packs.unnamed": "未命名包",
   "trae.comp.card.chip.unchecked": "今日未签到",
   "trae.comp.card.chip.cooling": "冷却中",
   "trae.comp.card.chip.jwtAuto": "自动刷新 JWT",
   "trae.comp.card.chip.jwtManual": "支持刷新 JWT",
   "trae.comp.card.cooldown.until": " · 至 {time}",
   "trae.comp.card.cooldown.fallback": "冷却中（{type}）",
+  "trae.comp.card.chip.authRejected": "凭据被拒（可自愈）",
+  // ---- 冷却态 → 用户动作（唯一口径，见 src/lib/trae-cooldown.ts） ----
+  "trae.comp.card.cooldown.hint.sessionDead":
+    "上游已作废这个会话（12153）。请重新登录；凭据换新后这条标记会自动消失，也可在菜单里「解除冷却」",
+  "trae.comp.card.cooldown.hint.authRejected":
+    "上游拒了这份 access token，但没有作废会话 —— 多半是过期，保活刷新一轮就会自己恢复（约 60 秒）",
+  "trae.comp.card.cooldown.hint.planLimit": "套餐额度已用尽，等额度重置或换一个账号",
+  "trae.comp.card.cooldown.hint.transient":
+    "限流或上游抖动，冷却到期后自动恢复；到期后第一条成功请求会立刻清掉它",
+  "trae.comp.card.cooldown.age.justNow": "刚刚",
+  "trae.comp.card.cooldown.age.minutes": "{minutes} 分钟前",
+  "trae.comp.card.cooldown.age.hours": "{minutes} 小时前",
+  "trae.comp.card.cooldown.age.days": "{minutes} 天前",
 
   // ---- 程序切换控件 ----
   "trae.comp.card.currentOf": "{label} 当前账号",
@@ -143,7 +160,6 @@ export const zh = {
   "trae.comp.card.section.info": "账号信息",
   "trae.comp.card.package.fallback": "积分包",
   // P4：抽屉 `DetailPack` 的「已用 / 到期」文本（与 WorkBuddy 抽屉同形，各平台自持文案）。
-  "trae.comp.card.package.used": "已用 {n}",
   "trae.comp.card.package.expired": "已到期",
 
   // ---- 操作说明（作为「更多」菜单项的 `title`）----

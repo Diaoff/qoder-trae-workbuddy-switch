@@ -30,9 +30,15 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 
 import * as api from "@/lib/api";
-import type { AccountTokenTodayEntry, Region } from "@/lib/types";
+import type { AccountTokenTodayEntry, Region, TravelStatus } from "@/lib/types";
+import type { CheckinStatusEntry } from "@/lib/api";
 import type { QoderProgramStatus, QoderCreditsRow } from "@/lib/api";
-import type { TraeAccount, TraeRegionId, TraeVariantStatus } from "@/lib/trae-types";
+import type {
+  TraeAccount,
+  TraeCreditPackage,
+  TraeRegionId,
+  TraeVariantStatus,
+} from "@/lib/trae-types";
 import {
   loadTraeVariantLogins,
   loadTraeVariantStatuses,
@@ -52,6 +58,18 @@ export interface ScopeSignals {
   /** 今日签到：`账号键 → 是否已签`（`null` = 未知 / 通道未开放）。 */
   checkin: Map<string, boolean | null>;
   /**
+   * 签到状态的**完整条目**（`CheckinStatusEntry`），与 `checkin` 同源同一次请求。
+   *
+   * ★ 为什么要多存一份（issue #89 · 4.3 收尾）：三个平台的签到端点
+   * （`get_checkin_status_map` / `get_trae_checkin_status_map` / `qoder_checkin_status_map`）
+   * **返回的是同一个类型**，里面本来就有 `dailyCredit` / `todayCredit` /
+   * `totalCredits` / `streakDays` / `checkinDates` —— 而本层此前只留下 `todayCheckedIn`
+   * 一个布尔，把其余字段全丢了 ⇒ 抽屉的「签到」页签只能整块不渲染。
+   *
+   * 存整条而不是在页面侧再取一次：**同一份数据不该发两次请求**。
+   */
+  checkinDetail: Map<string, CheckinStatusEntry>;
+  /**
    * Trae 程序位的**探测结果**（跨区域一次探测，逐区域过滤）。
    *
    * ⚠️ 这里存的是 `statuses` / `logins` 本身，**不是**算好的程序位数组 ——
@@ -65,17 +83,62 @@ export interface ScopeSignals {
   qoderPrograms: QoderProgramStatus[];
   /** Qoder 积分（`uid → 行`）。 */
   qoderCredits: Map<string, QoderCreditsRow>;
+  /**
+   * WorkBuddy 的**今日旅行状态**（`账号 id → 状态`）。
+   *
+   * ★ issue #89 · B5：卡片上的「旅行中 / 刚结束」chip 由它决定。渠道页是页面级
+   * `travelMap`，聚合页此前没取 ⇒ 那一枚 chip 在聚合页永不出现。
+   * 放在信号层而不是页面 effect 里：`reloadSignals()` 会顺带刷新它，
+   * 不必再为「什么时候重取」单独设计一个触发条件。
+   *
+   * ⚠️ 只有 WorkBuddy 有这个概念（`get_travel_status_map` 是 WB 专属命令）。
+   */
+  /**
+   * Trae 的**逐包积分**（`userId → 包数组`）。
+   *
+   * ★ issue #89 · C2：账号视图（`list_account_views_for`）只带聚合积分，包粒度明细在
+   * `get_trae_credits` 的 `packages[uid]` 里。渠道页把它**合并进 account 对象**再交给卡片；
+   * 聚合页此前直接用账号对象自带的 `creditPackages`（未刷新过积分时为 `null`）
+   * ⇒ 指标行的 `/Y` 与「N 积分 M 天内过期」chip 在聚合页常缺。
+   *
+   * 每个作用域**一次**调用（不是逐账号），符合本层的取数纪律 ①。
+   */
+  traeCredits: Map<string, TraeCreditPackage[]>;
+  /**
+   * WorkBuddy 的**今日旅行状态**（`账号 id → 状态`）。
+   *
+   * ★ issue #89 · B5：卡片上的「旅行中 / 刚结束」chip 由它决定。渠道页是页面级
+   * `travelMap`，聚合页此前没取 ⇒ 那一枚 chip 在聚合页永不出现。
+   * 放在信号层而不是页面 effect 里：`reloadSignals()` 会顺带刷新它，
+   * 不必再为「什么时候重取」单独设计一个触发条件。
+   *
+   * ⚠️ 只有 WorkBuddy 有这个概念（`get_travel_status_map` 是 WB 专属命令）。
+   */
+  travel: Map<string, TravelStatus>;
 }
 
 const EMPTY: ScopeSignals = {
   todayTokens: new Map(),
   todayTokensTruncated: false,
   checkin: new Map(),
+  checkinDetail: new Map(),
   traeStatuses: [],
   traeLogins: {},
   qoderPrograms: [],
   qoderCredits: new Map(),
+  traeCredits: new Map(),
+  travel: new Map(),
 };
+
+/**
+ * 账号在信号层里的主键（各平台不同：WB `id` / Trae `userId` / Qoder `uid`）。
+ *
+ * 导出给页面用：抽屉要按同一个键去 `checkinDetail` 里取明细，
+ * 两边各写一份「WB 用 id、Trae 用 userId」迟早错一个（错了就是静默取不到）。
+ */
+export function signalKeyOf(account: AggregateAccount): string {
+  return primaryKey(account);
+}
 
 /** 账号在某个作用域里的主键（各平台不同：WB `id` / Trae `userId` / Qoder `uid`）。 */
 function primaryKey(account: AggregateAccount): string {
@@ -177,11 +240,23 @@ export function useAggregateSignals(accounts: readonly AggregateAccount[]): Aggr
             signals.checkin = new Map(
               items.map((item) => [primaryKey(item), map[primaryKey(item)]?.todayCheckedIn ?? null]),
             );
+            signals.checkinDetail = new Map(
+              items.flatMap((item) => {
+                const entry = map[primaryKey(item)];
+                return entry ? [[primaryKey(item), entry] as const] : [];
+              }),
+            );
           } else if (source.platform === "trae") {
             const ids = items.map((item) => primaryKey(item));
             const map = await api.getTraeCheckinStatusMap(source.variant, ids);
             signals.checkin = new Map(
               items.map((item) => [primaryKey(item), map[primaryKey(item)]?.todayCheckedIn ?? null]),
+            );
+            signals.checkinDetail = new Map(
+              items.flatMap((item) => {
+                const entry = map[primaryKey(item)];
+                return entry ? [[primaryKey(item), entry] as const] : [];
+              }),
             );
           } else if (source.platform === "loomy") {
             /* Loomy **没有** `checkin_status_map` 这条只读命令（它的「今日是否已签」是
@@ -206,9 +281,33 @@ export function useAggregateSignals(accounts: readonly AggregateAccount[]): Aggr
                 return [primaryKey(item), entry.todayCheckedIn] as const;
               }),
             );
+            /* `active === false`（该区域未开放活动）的条目**不存明细** ——
+               抽屉据此不渲染签到区，而不是渲染一片 0。 */
+            signals.checkinDetail = new Map(
+              items.flatMap((item) => {
+                const entry = map[primaryKey(item)];
+                if (!entry || entry.active === false) return [];
+                return [[primaryKey(item), entry] as const];
+              }),
+            );
           }
         } catch {
           /* 签到状态读不到 ⇒ 全部未知（`null`） */
+        }
+
+        /* ── WorkBuddy 今日旅行（issue #89 · B5）── */
+        if (source.platform === "workbuddy") {
+          try {
+            const ids = items
+              .filter((item) => item.platform === "workbuddy")
+              .map((item) => item.data.id);
+            if (ids.length > 0) {
+              const map = await api.getTravelStatusMap(ids, scopeParts(source.scope).region);
+              signals.travel = new Map(Object.entries(map));
+            }
+          } catch {
+            /* 取不到 ⇒ 不渲染那一枚 chip（不是画一个「未旅行」） */
+          }
         }
 
         /* ── 程序位 ── */
@@ -230,6 +329,16 @@ export function useAggregateSignals(accounts: readonly AggregateAccount[]): Aggr
           }
         }
         /* Loomy：**没有程序位**（无客户端、无切换登录态能力）⇒ 不取，卡片也不渲染。 */
+
+        /* ── Trae 逐包积分（issue #89 · C2）── */
+        if (source.platform === "trae") {
+          try {
+            const overview = await api.getTraeCredits(source.variant);
+            signals.traeCredits = new Map(Object.entries(overview.packages ?? {}));
+          } catch {
+            /* 取不到 ⇒ 卡片不渲染逐包明细（不是画一条 0） */
+          }
+        }
 
         /* ── Qoder 积分 ── */
         if (source.platform === "qoder") {

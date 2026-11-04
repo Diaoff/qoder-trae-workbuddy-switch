@@ -26,11 +26,12 @@ use serde_json::{json, Value};
 
 use buddy_switch_core::modules::trae::variant::TraeVariant;
 use buddy_switch_core::modules::trae::{account, credits, device};
+use buddy_switch_core::modules::upstream::SESSION_DEAD_MARKERS;
 
 use crate::pool::entry::CoolKind;
 use crate::pool::entry_like::PoolEntryLike;
 use crate::pool::pick::{pick_with_preference, PickPolicy};
-use crate::pool::PoolSummary;
+use crate::pool::{PoolSummary, UpstreamEvent};
 
 /// 上游错误的治理类别。
 ///
@@ -44,8 +45,22 @@ pub enum TraeErrKind {
     PlanLimit,
     /// 触发限流。
     SoftRate,
-    /// 会话失效（凭据问题，永久禁用）。
+    /// 会话失效（上游**真的**作废了会话：`12153` / `Offline user session not found`）。
+    ///
+    /// 永久禁用。**只有**带作废标记时才该落到这里（见 [`TraeErrKind::AuthRejected`]）。
     SessionDead,
+    /// **凭据被拒**（401/403，但响应体里**没有**会话作废标记）。
+    ///
+    /// ## 为什么必须与 `SessionDead` 分开（issue #108 §P0-B）
+    ///
+    /// 改造前 401 一律判 `SessionDead` ⇒ `until = 9999999999`（永久）+ 派生 `disabled`
+    /// ⇒ 账号进入**静默终态**：不路由、不签到、不解冻、不探测回填。而 401 的绝大多数
+    /// 成因是 **access token 过期**，保活刷新一轮就能自愈 —— 把可自愈的问题打成终态，
+    /// 用户看到的是「号没坏却再也用不了」，而且重新登录也救不回来（冷却表没人清）。
+    ///
+    /// 本档的处置与 WorkBuddy 侧 `UpstreamEvent::AuthRejected` **同一口径**：
+    /// 换号 + 浅冷却 60 秒，**不计数、不禁用**。
+    AuthRejected,
     /// 接口不存在。
     NotFound,
     /// 上游 5xx。
@@ -56,6 +71,40 @@ pub enum TraeErrKind {
     Business,
 }
 
+/// 上游 `(code, message)` → **对外**错误形状（issue #129）。
+///
+/// ## 为什么对外必须换一套形状
+///
+/// 客户端（DeepSeek Harness 的 `openai-completions` 适配器）**只做文本正则**：
+/// `429` / `rate limit` → `RATE_LIMIT`（可重试），`5\d\d` → `SERVER`（可重试），
+/// `401|403` → `AUTH`（**终态**，且 UI 渲染成「API 密钥无效」）。
+///
+/// Trae 的上游码（`1005` 套餐限额、`4008` 限流、`12153` 会话失效）一个都命中不了，
+/// 原样透出只会让客户端归成 `PI_AI_ERROR` —— 一次终态，连重试的机会都没有。
+/// 而流中途的凭据/额度问题本来可以靠「换号 + 重跑」救回来。
+///
+/// 因此这里把内部类别**收敛**成三种对外形状（口径与 WorkBuddy 侧
+/// [`crate::failover::client_error`] 一致，两处不许分家）。
+pub fn client_error_of(code: i64, message: &str) -> crate::failover::ClientError {
+    let kind = classify_solo(code, message);
+    let event = match kind {
+        // 额度/限流/会话失效/凭据被拒 ⇒ 统一 429：对客户端都是「这个号不行了，换一个」。
+        // ★ `SessionDead` 也走 429 而不是 401 —— 见 issue #129 §5.2 改动 2。
+        TraeErrKind::PlanLimit
+        | TraeErrKind::SoftRate
+        | TraeErrKind::SessionDead
+        | TraeErrKind::AuthRejected
+        // 未知业务码：换号也可能救（`should_rotate` 对它为真），给可重试更安全。
+        | TraeErrKind::Business => UpstreamEvent::SoftRate {
+            reset_at_ms: None,
+            model_scoped: false,
+        },
+        TraeErrKind::Server => UpstreamEvent::Server,
+        TraeErrKind::NotFound | TraeErrKind::Client | TraeErrKind::None => UpstreamEvent::Client,
+    };
+    crate::failover::client_error(&event, "", "")
+}
+
 impl TraeErrKind {
     /// 落盘用的类型名。
     pub fn as_str(self) -> &'static str {
@@ -64,6 +113,7 @@ impl TraeErrKind {
             TraeErrKind::PlanLimit => "PlanLimit",
             TraeErrKind::SoftRate => "SoftRate",
             TraeErrKind::SessionDead => "SessionDead",
+            TraeErrKind::AuthRejected => "AuthRejected",
             TraeErrKind::NotFound => "NotFound",
             TraeErrKind::Server => "Server",
             TraeErrKind::Client => "Client",
@@ -77,10 +127,29 @@ impl TraeErrKind {
     }
 }
 
-/// 按 HTTP 状态码分类（上游在**建立连接阶段**就失败时使用）。
-pub fn classify_http(status: u16) -> TraeErrKind {
+/// 按 HTTP 状态码 + **响应体**分类（上游在**建立连接阶段**就失败时使用）。
+///
+/// ## 为什么必须带 body（issue #108 §P0-B）
+///
+/// 判定顺序不能反：**先**看 body 里有没有会话作废标记（`12153` /
+/// `Offline user session not found`，与 WB 侧同一常量来源
+/// [`SESSION_DEAD_MARKERS`]），**再**按状态码归类。
+///
+/// - 有标记 ⇒ `SessionDead`（永久，需重新登录）；
+/// - 裸 401/403（无标记）⇒ `AuthRejected`（浅冷却 60s，可自愈）。
+///
+/// 改造前 Trae 侧**完全不识别 `12153`**，所以「真正的作废」与「token 过期」只能共用
+/// 裸 401 这一个判据 —— 怎么选都错。先补识别，才有资格降级。
+pub fn classify_http(status: u16, body: &str) -> TraeErrKind {
+    if SESSION_DEAD_MARKERS
+        .iter()
+        .any(|marker| body.contains(marker))
+    {
+        return TraeErrKind::SessionDead;
+    }
     match status {
-        401 => TraeErrKind::SessionDead,
+        // 403 与 401 同族：凭据被拒，但未必是终态。
+        401 | 403 => TraeErrKind::AuthRejected,
         429 => TraeErrKind::SoftRate,
         404 => TraeErrKind::NotFound,
         code if code >= 500 => TraeErrKind::Server,
@@ -94,6 +163,14 @@ pub fn classify_http(status: u16) -> TraeErrKind {
 /// 顺序有讲究：先看业务码，再看文案兜底，最后才按数字区间归类。把 `1005`（套餐额度）
 /// 误判成 `Client` 会让一个额度耗尽的账号在 10 分钟后被反复重试。
 pub fn classify_solo(code: i64, message: &str) -> TraeErrKind {
+    // ★ issue #108：会话作废标记优先于一切业务码判读 —— 它是**唯一**能把
+    //   「真作废」与「token 过期」区分开的证据，放在后面会被 code 分支吞掉。
+    if SESSION_DEAD_MARKERS
+        .iter()
+        .any(|marker| message.contains(marker))
+    {
+        return TraeErrKind::SessionDead;
+    }
     let lower = message.to_lowercase();
     if code == 1005 || lower.contains("plan") {
         return TraeErrKind::PlanLimit;
@@ -110,7 +187,8 @@ pub fn classify_solo(code: i64, message: &str) -> TraeErrKind {
         return TraeErrKind::SoftRate;
     }
     match code {
-        401 => TraeErrKind::SessionDead,
+        // 与 `classify_http` 同口径：裸 401/403 是「凭据被拒」，不是「会话作废」。
+        401 | 403 => TraeErrKind::AuthRejected,
         429 => TraeErrKind::SoftRate,
         404 => TraeErrKind::NotFound,
         // **只有真正的 HTTP 状态码区间**才映射为 Client / Server。
@@ -149,11 +227,10 @@ pub struct TraePoolEntry {
     pub cool_kind: Option<CoolKind>,
     /// 最近被选中时刻（毫秒；`0` = 从未）。
     ///
-    /// ⚠️ **不跨请求保留**：池在每次选号前都会 [`TraePool::sync_for`] 重建，
-    /// 该字段随之归零。因此共用内核的「防惊群」与「LRU 兜底」在 Trae 侧
-    /// **不生效**（属已知降级，见模块文档）。
+    /// ★ 安全审计 P1-5：**现在跨请求保留**（[`TraePool::sync_for`] 会按 uid 继承）。
+    /// 改造前每次重建都归零，于是「顺序」档退化成「永远选 uid 最小的那个」。
     pub last_used_ms: i64,
-    /// 选中单调序号（同上，不跨请求保留）。
+    /// 选中单调序号（**跨请求保留**，理由同上）。
     pub used_seq: u64,
 }
 
@@ -219,6 +296,33 @@ pub struct TraePool {
     pick_seq: u64,
 }
 
+/// 把上一轮条目的选号序号继承到新条目上，并返回**对齐后的 `pick_seq`**。
+///
+/// ## 为什么必须独立成纯函数（可单测）
+///
+/// `sync_for` 需要读账号库（文件），而这条继承逻辑是最容易被「重建时忘了带」的地方 ——
+/// 出错的症状是「顺序档又退回按 uid 升序」，且只有连发两个请求才看得出来。
+/// 抽出来之后单测能直接钉住它，不必搭文件夹具。
+///
+/// `pick_seq` 必须**不小于**任何已用序号：共用内核的 `mark_selected` 会
+/// `pick_seq += 1` 再写进条目，若起点落后于历史值，新选中的号会与历史条目并列。
+fn inherit_order(
+    entries: &mut [TraePoolEntry],
+    previous: &std::collections::HashMap<String, (u64, i64)>,
+) -> u64 {
+    for entry in entries.iter_mut() {
+        if let Some((seq, at)) = previous.get(&entry.uid) {
+            entry.used_seq = *seq;
+            entry.last_used_ms = *at;
+        }
+    }
+    entries
+        .iter()
+        .map(|entry| entry.used_seq)
+        .max()
+        .unwrap_or(0)
+}
+
 impl TraePool {
     /// 新建空池（默认变体；首次 [`Self::sync_for`] 前为空）。
     pub fn new() -> Self {
@@ -257,13 +361,37 @@ impl TraePool {
         let remaining = credits::load_remaining_for(variant);
         let cooldowns = credits::load_cooldowns_for(variant);
 
+        // ★★ 安全审计 P1-5：**选号序号必须跨请求保留**。
+        //
+        // `sync_for` 每个请求都会整体重建 `entries`。改造前重建时把 `used_seq` 一律
+        // 置 0 ⇒ 共用内核的「顺序」档（`PickMode::Sequential`，语义是「粘住最近用过的
+        // 那个号」）在 Trae 侧退化成「永远选 uid 最小的那个」—— 而 Trae 页面上
+        // 摆着这一档（issue #102 的功能在这里名不副实）。
+        //
+        // 按 uid 继承，与 Qoder 侧的做法一致（`qoder/pool.rs::sync_for`）。
+        let previous_order: std::collections::HashMap<String, (u64, i64)> = self
+            .entries
+            .iter()
+            .map(|entry| (entry.uid.clone(), (entry.used_seq, entry.last_used_ms)))
+            .collect();
+
         // 账号库按**区域**分家（见 `core::modules::trae::region`）：国内两个产品线标识
         // 读到的是**同一本**库。这里显式传 `variant.region()`，让"按区域取号"这件事
         // 在调用点就看得见，而不是靠 `*_for(variant)` 内部的隐式折算。
         self.entries = account::entries_for_region(variant.region())
             .into_iter()
             .map(|(uid, raw)| {
-                let cooldown = cooldowns.cooldowns.get(&uid);
+                // ★★ issue #108 §P0-A：冷却记录必须**自证它判的是哪一份凭据**。
+                //
+                // 否则会出现最坏的一种不一致：卡片（走 `account_view`）已经因指纹不符而
+                // 显示正常，池这边却仍把它 `disabled` ⇒ 界面说「可用」、网关永远不选它。
+                // 判定与视图必须同源，故这里用同一个 `matches_credential`。
+                let credential_exp =
+                    buddy_switch_core::modules::trae::jwt::parse(&raw.jwt).exp_timestamp;
+                let cooldown = cooldowns
+                    .cooldowns
+                    .get(&uid)
+                    .filter(|entry| entry.matches_credential(credential_exp));
                 let device = device::derive(&uid);
                 TraePoolEntry {
                     jwt: clean_jwt(&raw.jwt),
@@ -292,7 +420,8 @@ impl TraePool {
                         // 限流 / 4xx / 5xx：值得再试一次 ⇒ 软冷却。
                         _ => Some(CoolKind::Soft),
                     }),
-                    // 选号产生的使用痕迹不跨请求保留（池每次 `sync_for` 重建）。
+                    // 默认 0（从未用过）；若池里已有同 uid 的历史条目，
+                    // 下面会按 uid 继承 —— 见本函数开头的说明。
                     last_used_ms: 0,
                     used_seq: 0,
                     uid,
@@ -300,6 +429,9 @@ impl TraePool {
             })
             .filter(|entry| !entry.jwt.is_empty())
             .collect();
+
+        // 继承历史选号序号（见本函数开头的说明）。
+        self.pick_seq = inherit_order(&mut self.entries, &previous_order);
 
         self.entries.len()
     }
@@ -327,7 +459,6 @@ impl TraePool {
     ///
     /// ## 已知降级（缺数据走中性默认，见 [`crate::pool::entry_like`]）
     ///
-    /// - `last_used_ms` / `used_seq` 不跨请求保留 ⇒ **防惊群与 LRU 兜底不生效**；
     /// - `in_flight` 恒 0 ⇒ 在途限流不生效；
     /// - 无成本观测 ⇒ 成本分层恒为 `Unknown`（不产生过滤）。
     ///
@@ -392,6 +523,17 @@ impl TraePool {
             preferred_uid,
         )?;
 
+        // ★★ 安全审计 P1-5：**把选号的副作用写回池**。
+        //
+        // `candidates` 是临时表，`mark_selected` 改的是它的 `used_seq` / `last_used_ms`；
+        // 不回写的话，连「请求内」都不保留 —— 顺序档每次都要从零重新决定「最近用过谁」。
+        if let Some(selected) = candidates.get(&uid) {
+            if let Some(entry) = self.entries.iter_mut().find(|entry| entry.uid == uid) {
+                entry.used_seq = selected.used_seq;
+                entry.last_used_ms = selected.last_used_ms;
+            }
+        }
+
         self.account_for(&uid)
     }
 
@@ -430,7 +572,24 @@ impl TraePool {
         // 关键：按**本池变体**写回冷却（`self.variant`）。若改回无变体的 `save_cooldown`，
         // 会恒定写默认产品线，导致 CN 账号的冷却落进 Work 文件、CN 池读 CN 文件读不到，
         // 死号永不被冷却且被反复选中——正是「读侧改了、写侧没改」的半成品缺陷。
-        credits::save_cooldown_for(self.variant, uid, error_type, cooldown_seconds, reason);
+        // ★ issue #108 §P0-A：写入时记下**这次判定所依据的** JWT `exp`。
+        //   凭据被换掉（重新登录 / 续期 / 手动粘贴）后，这条记录会自动失效，
+        //   无需那六个出口各自去清冷却。
+        let credential_exp = self
+            .entries
+            .iter()
+            .find(|entry| entry.uid == uid)
+            .and_then(|entry| {
+                buddy_switch_core::modules::trae::jwt::parse(&entry.jwt).exp_timestamp
+            });
+        credits::save_cooldown_with_credential_for(
+            self.variant,
+            uid,
+            error_type,
+            cooldown_seconds,
+            reason,
+            credential_exp,
+        );
 
         let now = chrono::Local::now().timestamp();
         for entry in self.entries.iter_mut().filter(|entry| entry.uid == uid) {
@@ -774,13 +933,19 @@ fn mask_device(device_id: &str) -> String {
 
 /// 错误类别 → `(落盘类型名, 冷却秒数)`。
 ///
-/// 秒数沿用 Trae 账号模块的经验值：`-1` 表示永久。**不要**把 `SessionDead` 调小，
-/// 401 是凭据失效，短冷却只会让它被反复重试并持续触发风控。
+/// 秒数沿用 Trae 账号模块的经验值：`-1` 表示永久。
+///
+/// ★ issue #108：`SessionDead` 仍然永久（**真**会话作废，短冷却只会反复撞墙）；
+/// 但 401/403 已经改由 [`TraeErrKind::AuthRejected`] 承担，浅冷却 60 秒、不禁用 ——
+/// 与 WorkBuddy 侧 `AUTH_REJECT_COOLDOWN_MS` 对齐。改造前那段「401 是凭据失效，
+/// 短冷却只会让它被反复重试」的注释针对的是**裸 401 被当成终态**这个前提，
+/// 该前提现在由「先识别 12153」取代，注释一并改写以免与新语义冲突。
 fn cooldown_of(kind: TraeErrKind) -> (&'static str, i64) {
     match kind {
         TraeErrKind::None => ("None", 0),
         TraeErrKind::PlanLimit => ("PlanLimit", 43_200),
         TraeErrKind::SoftRate => ("SoftRate", 60),
+        TraeErrKind::AuthRejected => ("AuthRejected", 60),
         TraeErrKind::SessionDead => ("SessionDead", -1),
         TraeErrKind::NotFound => ("NotFound", 60),
         TraeErrKind::Server => ("Server", 600),
@@ -817,6 +982,104 @@ mod tests {
         pool
     }
 
+    /// ★★ 安全审计 P1-5：`sync_for` 重建条目时**必须继承**选号序号。
+    ///
+    /// 这是顺序档真正失效的**主要原因**：`pick` 的写回只活到下一次 `sync_for`，
+    /// 而 Trae 每个请求都会 sync 一次 ⇒ 不继承就等于每次请求都从零开始。
+    ///
+    /// 变异验证：删掉 `sync_for` 里的 `inherit_order(...)` 调用（或让它返回 0）⇒ 红。
+    #[test]
+    fn sync_inherits_the_order_state_and_realigns_pick_seq() {
+        let mut entries = vec![
+            entry("uid-a", Some(1.0), None),
+            entry("uid-b", Some(1.0), None),
+            entry("uid-c", Some(1.0), None),
+        ];
+        let mut previous = std::collections::HashMap::new();
+        previous.insert("uid-a".to_string(), (7_u64, 1_234_i64));
+        previous.insert("uid-b".to_string(), (3_u64, 999_i64));
+
+        let seq = inherit_order(&mut entries, &previous);
+        assert_eq!(entries[0].used_seq, 7, "历史序号必须继承");
+        assert_eq!(entries[0].last_used_ms, 1_234);
+        assert_eq!(entries[1].used_seq, 3);
+        assert_eq!(entries[2].used_seq, 0, "没有历史记录的号保持 0");
+        assert_eq!(
+            seq, 7,
+            "`pick_seq` 必须追上历史最大值，否则新选中会与历史并列"
+        );
+
+        // 反向对照：历史里有、账号库里已没有的 uid 不该把 `pick_seq` 抬到 99
+        //（那会让序号凭空跳一大截，虽然无害但没有依据）。
+        previous.insert("uid-deleted".to_string(), (99_u64, 0));
+        let seq = inherit_order(&mut entries, &previous);
+        assert_eq!(seq, 7, "{seq}");
+        assert!(
+            !entries.iter().any(|entry| entry.uid == "uid-deleted"),
+            "已删除的账号不该被「复活」进池里"
+        );
+    }
+
+    /// ★★ 安全审计 P1-5：「顺序」档在 Trae 上必须**真的粘住**最近用过的号。
+    ///
+    /// 改造前有两个原因让它名不副实：
+    /// ① [`TraePool::sync_for`] 每请求重建 `entries`，`used_seq` 一律归零；
+    /// ② [`TraePool::pick`] 把 entries clone 进临时表，`mark_selected` 的写回随函数
+    ///    返回丢弃 —— 连**请求内**都不保留。
+    ///
+    /// 于是这一档退化成「永远选 uid 最小的号」，而 Trae 页面下拉里摆着它（issue #102）。
+    ///
+    /// 变异验证：去掉 `pick` 里的回写 ⇒ 第二条断言红；去掉 `sync_for` 里的继承 ⇒
+    /// 第三条断言红。
+    #[test]
+    fn sequential_sticks_to_the_last_used_account_across_picks() {
+        let mut pool = pool_with(vec![
+            entry("uid-a", Some(10.0), None),
+            entry("uid-b", Some(10.0), None),
+        ]);
+        let tried = HashSet::new();
+        let now = 1_700_000_000_i64;
+
+        // ① 第一次：冷启动按 uid 序取最小。
+        let first = pool
+            .pick(now, &tried, Some("__sequential__"), None)
+            .expect("必须能选出账号")
+            .uid;
+        assert_eq!(first, "uid-a");
+
+        // ② 副作用必须写回池（改造前写进了临时表就丢了）。
+        let used = pool
+            .entries()
+            .iter()
+            .find(|entry| entry.uid == first)
+            .map(|entry| entry.used_seq)
+            .unwrap_or(0);
+        assert!(
+            used > 0,
+            "选中后 `used_seq` 必须大于 0，否则「最近用过谁」这个信息根本不存在"
+        );
+
+        // ③ 第二次：顺序档必须粘住**刚刚用过的那个**，而不是又回到 uid 序的第一个。
+        let second = pool
+            .pick(now + 60, &tried, Some("__sequential__"), None)
+            .expect("必须能选出账号")
+            .uid;
+        assert_eq!(
+            second, first,
+            "顺序档的语义是「粘住最近使用的账号」，第二次必须还是它"
+        );
+
+        // ④ 让 a 冷却后，必须换到 b（证明「粘住」不是「永远只选它」）。
+        if let Some(entry) = pool.entries.iter_mut().find(|entry| entry.uid == "uid-a") {
+            entry.cooldown_until = now + 3_600;
+        }
+        let third = pool
+            .pick(now + 120, &tried, Some("__sequential__"), None)
+            .expect("a 冷却后必须能换到 b")
+            .uid;
+        assert_eq!(third, "uid-b");
+    }
+
     #[test]
     fn clean_jwt_strips_prefix_and_whitespace() {
         assert_eq!(clean_jwt("Cloud-IDE-JWT abc"), "abc");
@@ -825,15 +1088,43 @@ mod tests {
         assert_eq!(clean_jwt("   "), "");
     }
 
+    /// ★★ issue #108 §P0-B：**先识别 `12153`，再降级裸 401**。
+    ///
+    /// 两条断言必须同批存在，缺一条都会把修复做反：
+    /// - 裸 401/403 不得判成永久失效（否则「token 过期」被打成终态，重登也救不回）；
+    /// - 带作废标记的 401 **必须**判成永久失效（否则真作废会被当可自愈，反复撞墙）。
     #[test]
-    fn classify_http_covers_the_error_families() {
-        assert_eq!(classify_http(401), TraeErrKind::SessionDead);
-        assert_eq!(classify_http(429), TraeErrKind::SoftRate);
-        assert_eq!(classify_http(404), TraeErrKind::NotFound);
-        assert_eq!(classify_http(500), TraeErrKind::Server);
-        assert_eq!(classify_http(503), TraeErrKind::Server);
-        assert_eq!(classify_http(400), TraeErrKind::Client);
-        assert_eq!(classify_http(200), TraeErrKind::None);
+    fn classify_http_separates_session_dead_from_plain_401() {
+        // ① 裸 401/403 ⇒ 浅冷却档，`is_permanent()` 必须为假。
+        assert_eq!(classify_http(401, ""), TraeErrKind::AuthRejected);
+        assert_eq!(classify_http(403, ""), TraeErrKind::AuthRejected);
+        assert!(
+            !classify_http(401, "").is_permanent(),
+            "裸 401 不得是终态：access token 过期可自愈"
+        );
+        // ② 带作废标记 ⇒ 永久档，与状态码无关（上游也可能用 200/400 返回）。
+        for body in [
+            r#"{"code":12153,"message":"Offline user session not found"}"#,
+            r#"{"code":0,"message":"12153"}"#,
+        ] {
+            assert_eq!(
+                classify_http(401, body),
+                TraeErrKind::SessionDead,
+                "带作废标记必须判永久：{body}"
+            );
+            assert!(classify_http(400, body).is_permanent(), "{body}");
+        }
+        // ③ 其余家族不变。
+        assert_eq!(classify_http(429, ""), TraeErrKind::SoftRate);
+        assert_eq!(classify_http(404, ""), TraeErrKind::NotFound);
+        assert_eq!(classify_http(500, ""), TraeErrKind::Server);
+        assert_eq!(classify_http(503, ""), TraeErrKind::Server);
+        assert_eq!(classify_http(400, ""), TraeErrKind::Client);
+        assert_eq!(classify_http(200, ""), TraeErrKind::None);
+
+        // ④ 冷却时长：浅档 60s、永久档 -1（`-1` 是落盘的「永久」语义）。
+        assert_eq!(cooldown_of(TraeErrKind::AuthRejected), ("AuthRejected", 60));
+        assert_eq!(cooldown_of(TraeErrKind::SessionDead), ("SessionDead", -1));
     }
 
     #[test]
@@ -847,7 +1138,12 @@ mod tests {
         assert_eq!(classify_solo(4008, ""), TraeErrKind::SoftRate);
         assert_eq!(classify_solo(0, "Quota exceeded"), TraeErrKind::SoftRate);
         assert_eq!(classify_solo(0, "rate limit"), TraeErrKind::SoftRate);
-        assert_eq!(classify_solo(401, ""), TraeErrKind::SessionDead);
+        // 裸 401 走浅冷却档；带作废标记才是永久档（issue #108）。
+        assert_eq!(classify_solo(401, ""), TraeErrKind::AuthRejected);
+        assert_eq!(
+            classify_solo(0, "Offline user session not found"),
+            TraeErrKind::SessionDead
+        );
         assert_eq!(classify_solo(500, ""), TraeErrKind::Server);
         assert_eq!(classify_solo(400, ""), TraeErrKind::Client);
         assert_eq!(classify_solo(0, ""), TraeErrKind::None);

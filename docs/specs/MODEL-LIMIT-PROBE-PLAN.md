@@ -44,7 +44,7 @@
 | `rate_limited_account`（账号级限流） | `SoftRate{model_scoped:false}` | —（Qoder 无此细分，一律按模型） | —（同上，无法细分） |
 | `model_blocked`（模型封禁） | `ModelBlocked`（`11102`） | —（Qoder 无此码） | — |
 | `no_credits` | `HardCredit`（402 / 余额文案） | `Transient`？→ 需按 body 细分（未核实） | `PlanLimit`（`1005` / 含 `plan`） |
-| `auth_dead` | `SessionDead`（`12153`） | `AuthDead`（401/403） | `SessionDead`（401，永久禁用） |
+| `auth_dead` | `SessionDead`（`12153`）/**`AuthRejected`（401/403，issue #100）** | `AuthDead`（401/403） | `SessionDead`（401，永久禁用） |
 | `model_unavailable` | `NotFound`（404） | `ClientError` | `NotFound`（404） |
 | `upstream_error` | `Server` / `Client` | `Transient`（5xx） | `Server` / `Client`（5xx/4xx 区间） |
 | `upstream_queued`（**上游排队**，2026-10-22 新增） | —（WB 无此形态） | `QoderErrKind::Queued`（`10605` / `isQueued`，裹在 **403 信封**里） | —（Trae 侧并入 `rate_limited_model`） |
@@ -492,9 +492,11 @@ Trae 现在没有模型级冷却。三选一：
 | **两处入口都 `adopt: false`** | 账号页是**查证**，不是治理 —— 绝不悄悄改池冷却。要回填走网关卡的选择态（那里有明示代价 + 逐条明细）。网关卡头部因此显示「上次 … · **未回填**」而不是「置 0 / 清 0」。 |
 | **冲突只并列** | 台账徽章**照旧**；实测结论作为第二结论并列。台账仍受限 + 实测可用 ⇒ 行内写「实测可用，台账仍受限（历史证据，不改写）」；台账已恢复 + 实测受限 ⇒ 「台账已恢复，但此刻实测受限」。谁对不归 UI 裁定。 |
 | **实测独有不进台账** | 实测查出限流、但台账没有记录的格单列在卡尾（`probeOnlyLimits`）。台账的语义是「客户端日志里出现过」，塞进去会污染它、也让「条数」变黑箱。 |
+| **「实测独有」每行必须给两个时刻**（2026-10-27） | ①**恢复时刻** = `ProbeCell.upstream_reset_at_ms`（上游声明：结构化字段优先，其次从 `msg` 文案 `… reset at <T> UTC+8` 解析，见 `pool::parse_reset_at_ms`）；②**实测时刻** = `ProbeCell.probed_at_ms`（逐格记，落盘保留）。★ **展示与回填必须分家**：文案里的时刻与结构化时刻**各有出处**，落进不同字段（`upstream_reset_at_ms` / `reset_at_ms`）。⚠️ **2026-10-29 改口径**：文案时刻不再只用于展示 —— 结构化缺失时它是**第二档冷却依据**（封顶 `PoolConfig::declared_reset_max_ms`，默认 24h），见 `Pool::adopt_probe_result`。旧口径（「文案是配额窗口、实测 6/6 判错 ⇒ 绝不进冷却」）在 WB `6004` 上被推翻：该响应体没有结构化键 ⇒ 每条回填都走 10 分钟兜底，上游说 16:26 恢复、网关 11:12 就去撞。⚠️ 逐格时刻**不能**拿作用域的 `updated_at_ms` 顶替（那是「本作用域最近一次有格变化」，会把三天前探的格标成刚刚探过）；老台账无该字段（= `0`）时**逐格如实显示「未知」**（★ 2026-10-27 报障：曾用作用域级 `probeLedgerAt` 当上界 ⇒ 4 个账号显示同一个时刻，看起来像逐格结论；现在改为在分组里给一条「这 N 格由旧版本记录，重测一次即可补齐（本作用域最近写入 …）」并指向行尾「实测」）。`mergeProbeCells` 的去重比较**必须含** `probed_at_ms`／`reset_at_ms`，否则「重测拿到同样的 429」会被判成没变化 ⇒ 时间戳永远停在第一次。 |
 | **只有三档算限流** | `LIMIT_STATES` = `rate_limited_model` / `rate_limited_account` / `model_blocked`；`no_credits`（402）在行内显式写「**不是限流**：额度用尽，等解锁没用」。`lib/limit-link.ts` 的 `LIMIT_STATES` 被门禁钉住（混进 402 即红）。 |
-| **作业位单例** | 任意入口在跑时，另一侧入口变进度 + 取消（后端拒绝第二个作业时如实 toast，并顺手对齐一次快照）。 |
+| **作业位单例** | 任意入口在跑时，另一侧入口变进度 + 取消（后端拒绝第二个作业时如实 toast，并顺手对齐一次快照）。
 | **跨重启** | 作业槽是进程内的，所以另有 `probe_ledger`（`GET /api/gateway/probe/ledger?scope=`，落盘 `~/.buddy-switch/probe_results.json`）。两张卡进入时都拉一次并 merge 进 `probeCells`；作业收尾时也会回读一次对齐。**空 `cells` = 没探过**，不是「全可用」。 |
+| **Qoder / Trae 账号页用同一张限流卡**（2026-10-27） | 三平台共用 `ClientLimitsCard`，差异只有一个开关 `ledger`：那两个平台**没有可反推的客户端限流台账**（`client_limits` 只扫 WorkBuddy 的会话 jsonl）⇒ 传 `ledger={false}`，它**不发** `client_limits` 请求（⚠️ 传了不报错，只会把 WB 的限流记录画到 Qoder/Trae 页上 —— 串台比空表坏）、不画窗口 Tabs（没有台账可切窗口）、卡头「实测 N 格」的目标改由**已探出的限流格**给出（`probeTargetsOfPairs`），主列表也换成这些格。行结构（`ProbeLimitRow`）与行尾「实测」按钮与台账行同构，时间口径共用 `upstream_reset_at_ms ?? reset_at_ms` / `probed_at_ms`。 |
 | **`cells` 与两根轴互斥** | 后端 `prepare` 先判 `cells`：有则忽略 `uids` / `models`，只探点名的格（去重保序、超 `MAX_CELLS` 直接报错而不是截断 —— 用户点名的格被悄悄丢掉更糟）。网卡「开始探测」仍走两根轴（那里用户显式勾了账号与模型，笛卡尔积正是他要的）。 |
 
 产物：

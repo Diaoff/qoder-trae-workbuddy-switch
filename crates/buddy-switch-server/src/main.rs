@@ -22,6 +22,9 @@
 //! 与本组变量无关。
 
 mod api;
+// 管理面的来源校验（Host / Origin / Content-Type）。**必须在 `api::router()` 之前装载策略。**
+mod api_guard;
+// webui 密码鉴权：非回环监听 + 未设密码 ⇒ 拒绝启动（fail-closed）。
 mod auth;
 mod gateway_host;
 // Qoder 网关（第三个平台，默认 57895）：独立端口，不与另三个 merge（axum 同路径 merge 会 panic）。
@@ -36,8 +39,8 @@ use serde_json::json;
 use buddy_switch_core::modules::background::{TaskKind, TaskSpec, TASKS};
 use buddy_switch_core::modules::product::Product;
 use buddy_switch_core::modules::{
-    account, auth_file, backup, config, process, region::Region, rotate, runtime_log, schedule,
-    scheduler, token_daily, trae, update,
+    account, auth_file, backup, config, gateway_ledger, process, region::Region, rotate,
+    runtime_log, schedule, scheduler, token_daily, trae, update,
 };
 
 fn default_port() -> u16 {
@@ -98,6 +101,19 @@ fn is_loopback_host(host: &str) -> bool {
     matches!(host, "127.0.0.1" | "localhost" | "::1" | "[::1]")
 }
 
+/// 「给浏览器的地址」：监听地址是回环就用它，否则换成 `127.0.0.1`。
+///
+/// `--host 0.0.0.0` 时 `http://0.0.0.0:57890` 打不开（Windows 上还会被当成
+/// 不可路由地址），而且 `Host: 0.0.0.0` 会被管理面的来源校验拒绝。
+/// 端口保留用户给的那个 —— 对外监听与本地打开用的是同一个端口。
+fn browser_addr(host: &str, port: u16) -> String {
+    if is_loopback_host(host) {
+        format!("{host}:{port}")
+    } else {
+        format!("127.0.0.1:{port}")
+    }
+}
+
 /// 为某一类任务起一个独立排程循环。
 ///
 /// 排程语义（重读配置 → 算 `next_fire` → sleep 到点 → 派发）全部在
@@ -123,8 +139,9 @@ const POOL_PERSIST_INTERVAL_MS: u64 = 30_000;
 
 /// Trae 积分刷新周期（毫秒）。
 ///
-/// 与 WorkBuddy 余额刷新的缺省间隔（30 分钟）保持一致：同一管理面不该有两种节奏。
-const TRAE_CREDITS_REFRESH_INTERVAL_MS: u64 = 30 * 60 * 1000;
+/// 10 分钟（issue #133）：界面侧积分视图 / 账号卡按同一间隔自动重读，上下游同节奏。
+/// ⚠️ 与桌面宿主 `src-tauri/src/lib.rs` 的同名常量**必须同值**。
+const TRAE_CREDITS_REFRESH_INTERVAL_MS: u64 = 10 * 60 * 1000;
 
 /// 定时备份的检查周期（毫秒）。
 ///
@@ -318,19 +335,53 @@ fn spawn_background_task(spec: TaskSpec) {
         //
         // 覆盖**两个 region**：`gateway_logs.json` 是单文件、行内带 `region`，
         // 只记一个 region 会让另一个的历史永远空着。
-        TaskKind::GatewayUsageRecord => {
-            tokio::spawn(async move {
-                loop {
-                    for region in Region::all() {
-                        let _ = token_daily::record_gateway_today(region);
+        TaskKind::GatewayUsageRecord => match spec.product {
+            // WorkBuddy：`token_daily` 的 gateway 桶（按 region 分文件）。
+            //
+            // 覆盖**两个 region**：`gateway_logs.json` 是单文件、行内带 `region`，
+            // 只记一个 region 会让另一个的历史永远空着。
+            Product::Workbuddy => {
+                tokio::spawn(async move {
+                    loop {
+                        for region in Region::all() {
+                            let _ = token_daily::record_gateway_today(region);
+                        }
+                        tokio::time::sleep(std::time::Duration::from_millis(
+                            GATEWAY_USAGE_RECORD_INTERVAL_MS,
+                        ))
+                        .await;
                     }
-                    tokio::time::sleep(std::time::Duration::from_millis(
-                        GATEWAY_USAGE_RECORD_INTERVAL_MS,
-                    ))
-                    .await;
-                }
-            });
-        }
+                });
+            }
+            // Trae / Qoder：`gateway_ledger`（按 scope 分文件，含 unlabeled 一档）。
+            // 与桌面端同一分支语义；常驻进程更需要它（从不打开页面 ⇒ 没人触发记录）。
+            Product::Trae => {
+                tokio::spawn(async move {
+                    loop {
+                        gateway_ledger::record_all(gateway_ledger::LedgerProduct::Trae);
+                        tokio::time::sleep(std::time::Duration::from_millis(
+                            GATEWAY_USAGE_RECORD_INTERVAL_MS,
+                        ))
+                        .await;
+                    }
+                });
+            }
+            Product::Qoder => {
+                tokio::spawn(async move {
+                    loop {
+                        gateway_ledger::record_all(gateway_ledger::LedgerProduct::Qoder);
+                        tokio::time::sleep(std::time::Duration::from_millis(
+                            GATEWAY_USAGE_RECORD_INTERVAL_MS,
+                        ))
+                        .await;
+                    }
+                });
+            }
+            // Loomy：**没有** `gateway_ledger` 这一层 —— 它的用量是积分逐日采样
+            // （`loomy::credits_daily`，由排程单独跑），不在这里记第二本账。
+            // 不做空转循环：`TASKS` 里给它注册一个什么都不做的常驻任务只是噪音。
+            Product::Loomy => {}
+        },
         // ★ 客户端（登录态）用量「今日」快照（2026-10-15 用户报障修复）：周期把客户端
         // 会话日志的**今日**用量聚合进 `token_daily` 的 client 桶并落盘。
         //
@@ -497,8 +548,13 @@ async fn serve(args: &[String]) {
     let port = resolve_port(args, std::env::var(BUDDY_SWITCH_PORT_ENV).ok().as_deref());
     let host = resolve_host(args, std::env::var(BUDDY_SWITCH_HOST_ENV).ok().as_deref());
 
+    // ★ 安全审计 P0-1：装载管理面的 Host 白名单（默认只有回环）。
+    //   必须在 `api::router()` 之前 —— `router()` 里的中间件会在构造时取策略。
+    let allowed_hosts = std::env::var(api_guard::ALLOWED_HOSTS_ENV).ok();
+    api_guard::init(allowed_hosts.as_deref());
+
     // ★ 鉴权护栏（fail-closed）：非回环监听 + 未设密码 + 未显式豁免 ⇒ **拒绝启动**。
-    //   必须在 `api::router()` 之前 —— `shared()` 会顺带用 `BUDDY_SWITCH_PASSWORD`
+    //   同样必须在 `api::router()` 之前 —— `shared()` 会顺带用 `BUDDY_SWITCH_PASSWORD`
     //   初始化哈希（并把该变量从进程环境里抹掉），所以「有没有密码」要在那之后问。
     let auth_warn = enforce_auth_guard(&host);
 
@@ -525,6 +581,19 @@ async fn serve(args: &[String]) {
             "⚠️  webui 正对外监听（{host}）—— 它能读写账号库与网关 Key。\
              请确保只在可信网络内暴露，或用反向代理加上鉴权。"
         );
+        // ★ 安全审计 P0-1：管理面默认只接受回环 Host。对外监听时**必须**告知怎么放开，
+        //   否则远程用户只会看到一个 403，然后以为软件坏了。
+        match api_guard::init(allowed_hosts.as_deref()).clone() {
+            policy if policy == api_guard::Policy::default() => println!(
+                "⚠️  管理面只接受本机访问（Host 必须是 127.0.0.1 / localhost / ::1）。\
+                 远程访问请在启动前设置 {}（逗号分隔，可带端口）。",
+                api_guard::ALLOWED_HOSTS_ENV
+            ),
+            _ => println!(
+                "管理面允许的额外 Host 来自 {}。",
+                api_guard::ALLOWED_HOSTS_ENV
+            ),
+        }
     }
     // 鉴权状态：三种情形分别说清（启用 / 免密仅回环 / 显式豁免），
     // 避免「我明明设了密码」与「我以为没暴露」这两类误判。
@@ -545,7 +614,9 @@ async fn serve(args: &[String]) {
 
     let no_open = args.iter().any(|a| a == "--no-open");
     if !no_open {
-        open_browser(&addr);
+        // ★ 打开浏览器要用**回环**地址：`--host 0.0.0.0` 时 `http://0.0.0.0:57890`
+        //   既不是有效访问方式，也会被管理面的 Host 校验拒掉（见 `api_guard`）。
+        open_browser(&browser_addr(&host, port));
     }
 
     spawn_background_loops();
@@ -688,6 +759,19 @@ mod tests {
 
     fn args(values: &[&str]) -> Vec<String> {
         values.iter().map(|value| value.to_string()).collect()
+    }
+
+    /// ★ 安全审计 P0-1：`--host 0.0.0.0` 时给浏览器打开的必须是**回环**地址。
+    ///
+    /// 反例（改坏会红）：直接 `http://0.0.0.0:57890` —— 打不开，而且
+    /// `Host: 0.0.0.0` 会被管理面的来源校验拒成 403，用户会以为软件坏了。
+    #[test]
+    fn browser_url_uses_loopback_even_when_listening_wide() {
+        assert_eq!(browser_addr("127.0.0.1", 57890), "127.0.0.1:57890");
+        assert_eq!(browser_addr("localhost", 57890), "localhost:57890");
+        // 对外监听：地址换成回环，**端口不变**（否则打开的就不是刚起的那个服务）。
+        assert_eq!(browser_addr("0.0.0.0", 57890), "127.0.0.1:57890");
+        assert_eq!(browser_addr("192.168.1.5", 1234), "127.0.0.1:1234");
     }
 
     /// ★ 默认必须仍是**回环**：改坏这条等于「不声不响把 webui 暴露到局域网」。

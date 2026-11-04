@@ -58,7 +58,7 @@ This project adopted the license above on **2026-09-22**. **Versions released be
 
 ## Third parties
 
-This project drew on several open-source projects during its development; see [Acknowledgements](../../README.md#acknowledgements) in the README. Each of those projects is governed by its own license, and this project has no affiliation, partnership or endorsement relationship with any of them. All product names, trademarks and service marks appearing here belong to their respective owners.
+This project drew on several open-source projects during its development; see [Acknowledgements](../../README.en.md#acknowledgements) in the README. Each of those projects is governed by its own license, and this project has no affiliation, partnership or endorsement relationship with any of them. All product names, trademarks and service marks appearing here belong to their respective owners.
 
 ## See also
 

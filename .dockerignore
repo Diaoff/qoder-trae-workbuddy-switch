@@ -45,5 +45,10 @@ docs/images
 *.log
 *.md
 !README.md
+# ★ 英文版 README 必须一起进上下文：`check:docker` 在**镜像内**也会跑一遍，它要
+#   逐字比对 `README.md` / `README.en.md` / `docs/guides/DOCKER.md` 里的镜像名。
+#   只放行 `README.md` 时，容器里 `npm run build` 会红在「缺少文件：README.en.md」，
+#   而本机 `npm run check:docker` 是绿的（本地这两份文件都在）—— 2026-10-27 实测踩过。
+!README.en.md
 # 部署指南是 `check:docker` 的镜像名契约来源之一，必须留在上下文里。
 !docs/guides/DOCKER.md

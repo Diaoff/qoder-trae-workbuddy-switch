@@ -21,15 +21,29 @@
  * ## 窗口由**后端**决定，前端不再自设
  *
  * 是否临期只认后端下发的 `expiringSoon` 标记（`credits.rs::EXPIRING_SOON_DAYS` = 7 天、
- * `trae/credits.rs::EXPIRING_SOON_SECS` = 7 天）。此前 WorkBuddy 卡片在前端另设 3 天窗口，
+ * `trae/credits.rs::EXPIRING_SOON_SECS` = **14 天**）。此前 WorkBuddy 卡片在前端另设 3 天窗口，
  * 与统计页 / 总览页（都读后端的 `expiringSoonRemaining`）口径不一致 —— 同一件事两个数字。
  *
  * ⚠️ 不可把 `expiringSoon`（布尔）当额度求和，也不可在缺该字段时自行推窗口：
  * 缺字段一律当「未知」跳过，宁可少一枚徽章，不可编一个到期日。
+ *
+ * ⚠️ 拿不到后端标记的**少数**地方（积分页的到期分桶、账号抽屉的积分指标块）用
+ * {@link TRAE_EXPIRING_SOON_MS} —— 它是后端窗口的**镜像**，不是第二个口径。
  */
 
 /** 一天的毫秒数。 */
 const DAY_MS = 86_400_000;
+
+/**
+ * Trae 的临期窗口，**镜像后端** `trae/credits.rs::EXPIRING_SOON_SECS`（14 天）。
+ *
+ * 只给「拿不到后端 `expiringSoon` 标记」的地方用（积分页到期分桶、账号抽屉的积分指标块）。
+ * 有标记时必须只认标记 —— 前端写死 7 天正是 #144 复核 §3.3 的残差：
+ * 10 天后到期的包在卡片上说临期、点开抽屉却不说。
+ *
+ * ⚠️ 改后端那个常量时这里要跟着改（两个数刻意分开写，不跨语言共享，但**必须同值**）。
+ */
+export const TRAE_EXPIRING_SOON_MS = 14 * DAY_MS;
 
 /** 一批到期：同一时刻到期的剩余积分之和。 */
 export interface ExpiringBatch {
@@ -54,7 +68,10 @@ export interface ExpiringItem {
   expireAt: number | null;
   /** 后端标记：已到期。 */
   expired?: boolean;
-  /** 后端标记：临期（7 天窗口）。`undefined` 表示数据源没这个字段 ⇒ 视为未知、跳过。 */
+  /**
+   * 后端标记：临期（窗口见后端 `EXPIRING_SOON_SECS`，**14 天**）。
+   * `undefined` 表示数据源没这个字段 ⇒ 视为未知、跳过。
+   */
   expiringSoon?: boolean;
 }
 
@@ -105,17 +122,17 @@ export function summarizeExpiring(
  *
  * ## 为什么要有这一段（issue #69）
  *
- * `summarizeExpiring` 只看**后端 7 天临期窗口**内的批次 —— 那是对的，因为「7 天内过期」
+ * `summarizeExpiring` 只看**后端临期窗口**（14 天）内的批次 —— 那是对的，因为「N 天内过期」
  * 是一句**警告**（「再不用就浪费了」）。但用户真正要回答的是另一个问题：
  * **「我好几个账号，先用哪个？」** —— 这个问题需要「**每一笔未来到期**」的相对顺序，
  * 而不是「7 天内的那批」。
  *
- * 8 天后到期、30 天后到期的积分，在 `summarizeExpiring` 里**根本不可见**
+ * 15 天后到期、30 天后到期的积分，在 `summarizeExpiring` 里**根本不可见**
  * （`expiringSoon !== true` 直接被跳过）⇒ 用户说「两周内到期的看不到」就是这个。
  *
  * ## 三条与 `summarizeExpiring` **刻意不同**的地方
  *
- * ① **不读 `expiringSoon`**：那个布尔由后端的 7 天窗口决定，**不能**表达「14 天后」。
+ * ① **不读 `expiringSoon`**：那个布尔由后端的 14 天窗口决定，**不能**表达「30 天后」。
  * ② **不读 `credit.soonestExpireAt`**：它把**已过期**资源也算进最小值 ⇒ 拿它排序会
  *    把「已过期」排到最前（那是「已经浪费了」，不该抢占「先消耗」的位）。
  * ③ **不设天数上限**：「最近一批」是相对顺序，不是一个窗口。
