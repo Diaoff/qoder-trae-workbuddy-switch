@@ -24,7 +24,7 @@ use crate::pool::UpstreamEvent;
 use crate::protocol::error_sniffer::{self, SniffedError};
 
 use super::pool::{classify_http, LoomyErrKind};
-use super::LoomyGatewayState;
+use super::{LoomyGatewayState, LoomyKey};
 
 /// 入站协议（与 `qoder::routes::Protocol` 同语义）。
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -115,22 +115,23 @@ pub async fn chat_for_region(
     region: LoomyRegion,
     body: Bytes,
     protocol: Protocol,
+    key: Option<LoomyKey>,
 ) -> Response {
     let parsed: Value = match serde_json::from_slice(&body) {
         Ok(value) => value,
         // 非法 JSON 交给 `_once` 去报同一个 400（错误文案只有一份）。
-        Err(_) => return chat_for_region_once(state, region, body, protocol).await,
+        Err(_) => return chat_for_region_once(state, region, body, protocol, key).await,
     };
     let origin_model = model_of(&parsed);
     if origin_model.is_empty() {
-        return chat_for_region_once(state, region, body, protocol).await;
+        return chat_for_region_once(state, region, body, protocol, key).await;
     }
 
     let scope = buddy_switch_core::modules::product::scope_of_loomy_region(region);
     let fallback = crate::routes::fallback::FallbackLoop::plan(scope, &origin_model).await;
     // 没有可用链（绝大多数用户）⇒ 走原路径。
     if fallback.len() <= 1 {
-        return chat_for_region_once(state, region, body, protocol).await;
+        return chat_for_region_once(state, region, body, protocol, key).await;
     }
 
     let raw_body = String::from_utf8_lossy(&body).to_string();
@@ -171,7 +172,7 @@ pub async fn chat_for_region(
             ))
             .await
         } else {
-            chat_for_region_once(state.clone(), region, hop_body, protocol).await
+            chat_for_region_once(state.clone(), region, hop_body, protocol, key.clone()).await
         };
 
         if response.status().is_success() {
@@ -208,6 +209,7 @@ async fn chat_for_region_once(
     region: LoomyRegion,
     body: Bytes,
     protocol: Protocol,
+    key: Option<LoomyKey>,
 ) -> Response {
     let started = Instant::now();
     let parsed: Value = match serde_json::from_slice(&body) {
@@ -365,6 +367,7 @@ async fn chat_for_region_once(
                         prompt_tokens as i64,
                         completion_tokens as i64,
                         None,
+                        key.as_ref(),
                     )
                     .await;
                 {
@@ -399,6 +402,7 @@ async fn chat_for_region_once(
                     started,
                     responses_custom.clone(),
                     sticky_key.clone(),
+                    key,
                 )
                 .await
             } else {
@@ -411,6 +415,7 @@ async fn chat_for_region_once(
                     &uid,
                     started,
                     responses_custom.clone(),
+                    key,
                 )
                 .await
             };
@@ -445,6 +450,7 @@ async fn chat_for_region_once(
                     0,
                     0,
                     Some(detail.clone()),
+                    key.as_ref(),
                 )
                 .await;
             return protocol_error(
@@ -478,6 +484,7 @@ async fn chat_for_region_once(
             0,
             0,
             Some(message.clone()),
+            key.as_ref(),
         )
         .await;
     protocol_error(
@@ -581,7 +588,7 @@ pub async fn health() -> Response {
 /// OpenAI 形状的话，它报的是「响应格式错误」而不是「凭据无效」，排查方向被带偏。
 pub async fn bearer_auth(
     State(state): State<LoomyGatewayState>,
-    request: Request,
+    mut request: Request,
     next: Next,
 ) -> Response {
     if crate::HEALTH_PATHS.contains(&request.uri().path()) {
@@ -614,7 +621,13 @@ pub async fn bearer_auth(
             "缺少凭据：请在 Authorization 头携带 `Bearer <API Key>`（在「网关 → 密钥」页创建）",
         );
     };
-    if state.key_store.verify(key).is_some() {
+    if let Some(record) = state.key_store.verify(key) {
+        // ★ 请求日志要记「哪把 Key、哪套台账」——与 WB / Trae / Qoder 同形。
+        //   独立端口（57896）来的记 `loomy`；统一网关（57892）转发时由它对侧注入 `unified`。
+        request.extensions_mut().insert(LoomyKey {
+            id: record.id,
+            scope: "loomy",
+        });
         next.run(request).await
     } else {
         protocol_error(
@@ -698,18 +711,52 @@ fn models_response(catalog: &[Value], disabled: &std::collections::BTreeSet<Stri
 }
 
 /// `POST /v1/chat/completions`。
-pub async fn chat_completions(State(state): State<LoomyGatewayState>, body: Bytes) -> Response {
-    chat_for_region(state, LoomyRegion::Cn, body, Protocol::OpenAi).await
+pub async fn chat_completions(
+    State(state): State<LoomyGatewayState>,
+    // 中间件校验通过后写进扩展的 Key 归属（用于请求日志的 `keyId` / `keyScope`）。
+    key: Option<axum::Extension<LoomyKey>>,
+    body: Bytes,
+) -> Response {
+    chat_for_region(
+        state,
+        LoomyRegion::Cn,
+        body,
+        Protocol::OpenAi,
+        key.map(|axum::Extension(key)| key),
+    )
+    .await
 }
 
 /// `POST /v1/messages`。
-pub async fn messages(State(state): State<LoomyGatewayState>, body: Bytes) -> Response {
-    chat_for_region(state, LoomyRegion::Cn, body, Protocol::Anthropic).await
+pub async fn messages(
+    State(state): State<LoomyGatewayState>,
+    key: Option<axum::Extension<LoomyKey>>,
+    body: Bytes,
+) -> Response {
+    chat_for_region(
+        state,
+        LoomyRegion::Cn,
+        body,
+        Protocol::Anthropic,
+        key.map(|axum::Extension(key)| key),
+    )
+    .await
 }
 
 /// `POST /v1/responses`（OpenAI Responses API；Codex CLI 的 `wire_api = "responses"`）。
-pub async fn responses(State(state): State<LoomyGatewayState>, body: Bytes) -> Response {
-    chat_for_region(state, LoomyRegion::Cn, body, Protocol::Responses).await
+pub async fn responses(
+    State(state): State<LoomyGatewayState>,
+    key: Option<axum::Extension<LoomyKey>>,
+    body: Bytes,
+) -> Response {
+    chat_for_region(
+        state,
+        LoomyRegion::Cn,
+        body,
+        Protocol::Responses,
+        key.map(|axum::Extension(key)| key),
+    )
+    .await
 }
 
 /// 流式中继：上游是标准 OpenAI SSE ⇒ 直接逐帧透传（含 usage 旁路记账）。
@@ -723,6 +770,7 @@ async fn stream_relay(
     started: Instant,
     custom: std::sync::Arc<std::collections::HashSet<String>>,
     sticky_key: Option<String>,
+    key: Option<LoomyKey>,
 ) -> Response {
     let stream_model = model.to_string();
     let usage_slot = std::sync::Arc::new(std::sync::Mutex::new(None::<Value>));
@@ -807,6 +855,7 @@ async fn stream_relay(
                 prompt_tokens as i64,
                 completion_tokens as i64,
                 log_error,
+                key.as_ref(),
             )
             .await;
     });
@@ -824,6 +873,7 @@ async fn aggregate_relay(
     uid: &str,
     started: Instant,
     custom: std::sync::Arc<std::collections::HashSet<String>>,
+    key: Option<LoomyKey>,
 ) -> Response {
     // 上游是标准 OpenAI SSE ⇒ 复用 Qoder 聚合器（无 leak-guard 的工具回声问题 ——
     // Loomy 上游本来就给结构化 tool_calls）。
@@ -850,6 +900,7 @@ async fn aggregate_relay(
             prompt_tokens as i64,
             completion_tokens as i64,
             log_error,
+            key.as_ref(),
         )
         .await;
 

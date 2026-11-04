@@ -76,6 +76,17 @@ pub const CREDITS_REFRESH_INTERVAL_MS: i64 = 10 * 60 * 1000;
 /// 而周期循环下一轮要等满一整个间隔 ⇒ 用户看到的是「刚导入账号，积分一直是『—』」。
 pub const CREDITS_EMPTY_PROBE_MS: u64 = 15_000;
 
+/// 调用方 Key 的**归属**（只用于请求日志；与 WB / Trae / Qoder 的 `keyId` / `keyScope` 同义）。
+///
+/// `scope`：`"loomy"` = 独立端口（57896）自己的 Key；`"unified"` = 统一网关（57892）
+/// 的 Key 转发进来。两者共用同一套账号池与日志 ⇒ 不区分的话，「按密钥用量」会把
+/// 网关的 Key 当成一把不存在的本地 Key（显示成短 id，用户永远对不上）。
+#[derive(Debug, Clone)]
+pub struct LoomyKey {
+    pub id: String,
+    pub scope: &'static str,
+}
+
 /// Loomy 网关的共享状态（统一入口与独立端口 **共用同一份**）。
 #[derive(Clone)]
 pub struct LoomyGatewayState {
@@ -192,6 +203,10 @@ impl LoomyGatewayState {
         prompt_tokens: i64,
         completion_tokens: i64,
         error: Option<String>,
+        // ★ 与 WB / Trae / Qoder 对齐：调用方 Key 的 id 与归属台账。
+        //   少了它，Loomy 日志回答不了「这条是统一网关转来的、还是独立 57896
+        //   端口直连的」「用的是哪把 Key」。
+        key: Option<&LoomyKey>,
     ) {
         self.total_requests
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -209,6 +224,9 @@ impl LoomyGatewayState {
             "completionTokens": completion_tokens,
             "stream": stream,
             "error": error.clone(),
+            // `null` = 该次调用没有 Key（探测 / 老条目）—— 与另三条渠道同形。
+            "keyId": key.map(|key| key.id.as_str()),
+            "keyScope": key.map(|key| key.scope),
         }));
         if let Some(message) = error {
             *self.last_error.write().await = Some(message);

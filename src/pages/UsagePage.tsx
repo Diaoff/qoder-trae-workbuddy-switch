@@ -95,7 +95,9 @@ const PLATFORM_TABS: Record<Product, UsageTab[]> = {
        · Trae：`record_request` 的 `key_id` 参数（本轮）；
        · Qoder：`record_request` 的 `key_id` 参数（本轮）—— 用量页虽是另一套组件
          （`QoderUsagePage`，按 credits 计），但它也接了同一个 `KeysView`；
-       · 统一网关：中继未接，日志没有 keyId。
+       · 统一网关：**没有自己的日志**（全部转发给产品线），转发时用 `keyScope: "unified"`
+         标出来源；Loomy 2026-11 起也带 `keyId` / `keyScope`（它的用量页仍只有「积分」一档，
+         token 日志视图还没接）。
      缺数据源就**不画空壳**（§6 #5）—— 一张全是「无密钥调用」的表比没有这一页更糟。 */
   workbuddy: ["trend", "models", "sessions", "keys", "credits"],
   trae: ["trend", "models", "keys", "credits"],

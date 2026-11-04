@@ -122,11 +122,17 @@ async fn relay_on_scope_inner(
         这两项在那边本来就是空的（与统一网关直连 Loomy 命名空间的调用同形）。 */
         Product::Loomy => {
             let state = crate::loomy::LoomyGatewayState::shared();
+            // 把**调用方那把 Key** 的归属带进 Loomy 日志（跨平台降级时同样要能追溯）。
+            let key = key.map(|actor| crate::loomy::LoomyKey {
+                id: actor.key_id.clone(),
+                scope: actor.scope,
+            });
             crate::loomy::routes::chat_for_region(
                 state,
                 buddy_switch_core::modules::loomy::region::LoomyRegion::Cn,
                 body,
                 crate::loomy::routes::Protocol::OpenAi,
+                key,
             )
             .await
         }

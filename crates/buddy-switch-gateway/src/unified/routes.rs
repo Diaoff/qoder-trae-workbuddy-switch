@@ -330,6 +330,12 @@ async fn relay_llm(
         上游是标准 OpenAI 兼容 `/chat/completions`；三个端点全部经协议层转换。 */
         RelayTarget::Loomy(region) => {
             let loomy = crate::loomy::LoomyGatewayState::shared();
+            /* ★ 把**统一网关那把 Key** 的归属带进 Loomy 日志（`keyScope: "unified"`）：
+            否则同一份 Loomy 日志里分不清「统一网关转来的」与「独立 57896 直连的」。 */
+            let key = Some(crate::loomy::LoomyKey {
+                id: actor.key_id.clone(),
+                scope: actor.scope,
+            });
             match endpoint {
                 LlmEndpoint::Chat => {
                     crate::loomy::routes::chat_for_region(
@@ -337,6 +343,7 @@ async fn relay_llm(
                         region,
                         rewritten,
                         crate::loomy::routes::Protocol::OpenAi,
+                        key,
                     )
                     .await
                 }
@@ -346,6 +353,7 @@ async fn relay_llm(
                         region,
                         rewritten,
                         crate::loomy::routes::Protocol::Anthropic,
+                        key,
                     )
                     .await
                 }
@@ -355,6 +363,7 @@ async fn relay_llm(
                         region,
                         rewritten,
                         crate::loomy::routes::Protocol::Responses,
+                        key,
                     )
                     .await
                 }
