@@ -429,8 +429,8 @@ impl LoomyPool {
 
     /// ★ 账号视图列表（管理面）。
     ///
-    /// ★ 形状与共用池卡 `GatewayPoolAccount` **逐字对齐**（`status` 五态 + `cooling` /
-    /// `disabled` 两个布尔 + `credits`），另有 Loomy 自己的第二池 `dailyCredits`。
+    /// ★ 形状与共用池卡 `GatewayPoolAccount` **逐字对齐**（`status` 六态 + `cooling` /
+    /// `disabled` / `excluded` 三个布尔 + `credits`），另有 Loomy 自己的第二池 `dailyCredits`。
     /// 统一网关页与 Loomy 独立页读的是**同一个**类型。
     ///
     /// ⚠️ 曾经这里发 `state` / `hasCredential`，而前端读 `status` / `cooling` / `disabled` ——
@@ -439,6 +439,14 @@ impl LoomyPool {
     /// 比直接报错危险得多。
     pub fn accounts_view(&self, now: i64) -> Vec<Value> {
         let excluded = self.excluded_map();
+        self.accounts_view_with(now, &excluded)
+    }
+
+    /// 与 [Self::accounts_view] 同一实现，排除表由调用方注入。
+    ///
+    /// 生产路径的排除表来自磁盘上的 gateway_pool_exclusions.json；单测不该依赖
+    /// 用户机器上的那一份（并行跑时还可能互相踩），因此把「读哪份表」抽成参数。
+    fn accounts_view_with(&self, now: i64, excluded: &BTreeMap<String, String>) -> Vec<Value> {
         self.entries
             .values()
             .map(|entry| {
@@ -474,6 +482,12 @@ impl LoomyPool {
                     "cooldownReason": entry.cooldown_reason,
                     "disabled": disabled,
                     "lastError": entry.last_error,
+                    // ★ 用户显式排除（硬约束：选号 / 兜底 / 粘性 / 指定全跳过）。
+                    //   必须**逐行下发布尔值**，不能只靠 status=excluded：前端池卡用白名单
+                    //   重建账号对象，漏了这个字段 ⇒ 按钮文案恒为「排除」、点击恒传 true
+                    //   ⇒ 已排除的账号再也取消不掉（WB / Trae / Qoder 在 2026-10-22 报障过
+                    //   一次，Loomy 分支落地时又漏了一遍）。
+                    "excluded": excluded.contains_key(&entry.uid),
                     "excludedNote": excluded.get(&entry.uid),
                     "hasCredential": entry.has_access(),
                 })
@@ -647,7 +661,9 @@ mod tests {
         let rows = pool.accounts_view(now);
 
         for row in &rows {
-            for key in ["uid", "name", "status", "cooling", "disabled", "credits"] {
+            for key in [
+                "uid", "name", "status", "cooling", "disabled", "excluded", "credits",
+            ] {
                 assert!(row.get(key).is_some(), "账号行缺 `{key}`：{row}");
             }
             assert!(
@@ -666,6 +682,44 @@ mod tests {
         assert_eq!(by_uid("cooling")["cooling"], true);
         assert_eq!(by_uid("dead")["status"], "disabled");
         assert_eq!(by_uid("dead")["disabled"], true);
+    }
+
+    /// ★ 排除必须**逐行下发布尔值**，`status = "excluded"` 不够。
+    ///
+    /// 前端池卡（`normalizeLoomyGatewayStatus` / `normalizeGatewayPoolAccounts`）用白名单
+    /// 重建账号对象：漏了 `excluded` ⇒ 按钮文案恒为「排除」、`onExclude(uid, !undefined)`
+    /// 恒传 `true` ⇒ 账号被排除后再也取消不掉，删号重加也一样（排除记录按 uid 保留）。
+    ///
+    /// 变异：删掉 `accounts_view` 里的 `"excluded"` 一行 ⇒ 本条红。
+    #[test]
+    fn accounts_view_carries_excluded_flag_per_row() {
+        let now = 1_000_000;
+        let pool = pool_with(vec![
+            entry("blocked", "tok", false, 0),
+            entry("ok", "tok", false, 0),
+        ]);
+        let excluded = BTreeMap::from([("blocked".to_string(), "留给客户端".to_string())]);
+
+        let rows = pool.accounts_view_with(now, &excluded);
+        let by_uid = |uid: &str| {
+            rows.iter()
+                .find(|row| row["uid"] == uid)
+                .unwrap_or_else(|| panic!("缺账号 {uid}"))
+                .clone()
+        };
+
+        assert_eq!(by_uid("blocked")["status"], "excluded");
+        assert_eq!(
+            by_uid("blocked")["excluded"],
+            true,
+            "已排除的账号必须带 excluded=true —— 否则前端永远只能再点一次「排除」"
+        );
+        assert_eq!(by_uid("blocked")["excludedNote"], "留给客户端");
+        assert_eq!(
+            by_uid("ok")["excluded"],
+            false,
+            "未排除的账号要明确下发 false"
+        );
     }
 
     /// ★ 两池积分必须**逐账号下发**（统一网关与 Loomy 独立页的账号池卡都读这两个字段）。

@@ -84,7 +84,7 @@ export type LoomyGatewayPoolSummary = GatewayPoolSummary;
 export interface LoomyGatewayPoolAccount {
   uid: string;
   name: string;
-  status: "available" | "cooling" | "disabled";
+  status: "available" | "cooling" | "disabled" | "excluded";
   /** 永久池余额（后端从账号库读到的**快照**）；字段缺失 / 非法时才回落 `null` ⇒ 卡片显示「—」。 */
   credits: number | null;
   /**
@@ -99,6 +99,16 @@ export interface LoomyGatewayPoolAccount {
   cooldownReason: string | null;
   /** `true` = **需人工干预**（无凭据 / 凭据失效），「恢复」出口据此渲染。 */
   disabled: boolean;
+  /**
+   * **用户显式排除**（硬约束：自动选号 / 兜底 / 粘性 / 指定全跳过）。
+   *
+   * 必须与 `status` 分开归一化：池卡的「排除 / 取消排除」按钮读的是这个布尔值
+   * （`onExclude(uid, !account.excluded)`）。只靠 `status = "excluded"` 不够 ——
+   * 丢了它按钮会永远显示「排除」、点下去永远传 true ⇒ 取消不掉（2026-10-22 报障根因）。
+   */
+  excluded: boolean;
+  /** 排除备注（为什么排除）。 */
+  excludedNote: string | null;
 }
 
 /** 状态视图。 */
@@ -257,7 +267,7 @@ export function normalizeLoomyGatewayStatus(raw: unknown): LoomyGatewayStatus | 
             uid,
             name: asString(entry.name) ?? uid,
             status:
-              status === "cooling" || status === "disabled"
+              status === "cooling" || status === "disabled" || status === "excluded"
                 ? (status as LoomyGatewayPoolAccount["status"])
                 : "available",
             credits: asNumber(entry.credits) ?? null,
@@ -266,6 +276,11 @@ export function normalizeLoomyGatewayStatus(raw: unknown): LoomyGatewayStatus | 
             cooldownUntil: asNumber(pick(entry, "cooldownUntil", "cooldown_until")) ?? null,
             cooldownReason: asString(pick(entry, "cooldownReason", "cooldown_reason")) ?? null,
             disabled: asBoolean(entry.disabled) ?? false,
+            // ★ 排除是**互斥第六态**，且必须与 `status` 并行归一化：池卡的「排除 /
+            //   取消排除」按钮只读这个布尔值。白名单重建漏了它 ⇒ 按钮文案恒为「排除」、
+            //   点击恒传 true ⇒ 账号被排除后永久取消不掉（WB / Trae / Qoder 已踩过）。
+            excluded: asBoolean(entry.excluded) ?? false,
+            excludedNote: asString(pick(entry, "excludedNote", "excluded_note")) ?? null,
           };
         })
         .filter((item): item is LoomyGatewayPoolAccount => item !== null)
@@ -295,6 +310,8 @@ export function normalizeLoomyGatewayStatus(raw: unknown): LoomyGatewayStatus | 
       // 后者是 WB 侧的**互斥路由态**（Loomy 余额不参与选号 ⇒ 没有该态）。
       expired: asNumber(pool.expired) ?? 0,
       zeroCredits: asNumber(pick(pool, "zeroCredits", "zero_credits")) ?? 0,
+      // 排除也是互斥第六态：漏了它，卡片的「已排除」格恒显示 0（而后端明明数了）。
+      excluded: asNumber(pool.excluded) ?? 0,
       totalCredits: asNumber(pick(pool, "totalCredits", "total_credits")) ?? 0,
     },
     accounts,
