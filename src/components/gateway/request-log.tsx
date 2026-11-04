@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button";
 import { EmptyState } from "@/components/ui/empty-state";
 import { DemoAction } from "@/components/demo-action";
 import * as api from "@/lib/api";
+import { formatLogTime } from "@/lib/format";
 import { useT } from "@/lib/i18n";
 import { regionDescriptor } from "@/lib/region";
 import { cn } from "@/lib/utils";
@@ -14,12 +15,6 @@ import { useGatewayStore } from "@/stores/gateway";
 
 /** 单次渲染的日志行上限（与 Trae 侧 `trae-request-log.tsx` **同值**）。 */
 const MAX_LOG_ROWS = 50;
-
-function formatClock(ts: number): string {
-  const date = new Date(ts);
-  if (Number.isNaN(date.getTime())) return "—";
-  return `${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}:${String(date.getSeconds()).padStart(2, "0")}`;
-}
 
 function formatTokens(value: number | null | undefined): string {
   if (value == null) return "—";
@@ -126,7 +121,7 @@ export function RequestLog({ className }: { className?: string }) {
 function LogRow({ entry }: { entry: GatewayLogEntry }) {
   return (
     <tr className="border-b border-border/40 last:border-0">
-      <td className="whitespace-nowrap px-5 py-2 font-mono text-xs">{formatClock(entry.ts)}</td>
+      <td className="whitespace-nowrap px-5 py-2 font-mono text-xs">{formatLogTime(entry.ts)}</td>
       <td className="px-3 py-2 text-xs text-muted-foreground">
         {regionDescriptor(entry.region).versionLabel}
       </td>

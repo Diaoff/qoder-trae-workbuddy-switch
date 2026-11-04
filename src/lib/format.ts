@@ -24,3 +24,17 @@ export function formatDate(ts: number): string {
   if (Number.isNaN(date.getTime())) return "—";
   return `${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")} ${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`;
 }
+
+/**
+ * 请求日志的时间列：`MM-DD HH:mm:ss`（本地时区）。无效输入返回 `—`。
+ *
+ * ★ 必须带日期：日志是**滚动窗口**（WB 200 条 / 页面 50 行），跨天时只给时分秒
+ *   根本分不清「10:14 是今天还是上周」—— 而排查超时恰恰要看「哪一天、隔了多久」。
+ */
+export function formatLogTime(ts: number): string {
+  if (!ts) return "—";
+  const date = new Date(ts);
+  if (Number.isNaN(date.getTime())) return "—";
+  const pad = (value: number) => String(value).padStart(2, "0");
+  return `${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
+}

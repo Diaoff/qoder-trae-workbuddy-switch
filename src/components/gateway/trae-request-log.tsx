@@ -3,18 +3,13 @@ import { Eraser, Loader2, ScrollText } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { EmptyState } from "@/components/ui/empty-state";
 import { DemoAction } from "@/components/demo-action";
+import { formatLogTime } from "@/lib/format";
 import { useT } from "@/lib/i18n";
 import type { TraeGatewayLogEntry } from "@/lib/trae-types";
 import { cn } from "@/lib/utils";
 
 /** 单次渲染的日志行上限（与 WB 侧 `request-log.tsx` **同值**）。 */
 const MAX_LOG_ROWS = 50;
-
-function formatClock(ts: number): string {
-  const date = new Date(ts);
-  if (Number.isNaN(date.getTime())) return "—";
-  return `${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}:${String(date.getSeconds()).padStart(2, "0")}`;
-}
 
 function formatTokens(value: number | null | undefined): string {
   if (value == null) return "—";
@@ -93,7 +88,7 @@ export function TraeRequestLog({
             <tbody>
               {rows.map((entry, index) => (
                 <tr key={`${entry.ts}-${index}`} className="border-b border-border/40 last:border-0">
-                  <td className="whitespace-nowrap px-5 py-2 font-mono text-xs">{formatClock(entry.ts)}</td>
+                  <td className="whitespace-nowrap px-5 py-2 font-mono text-xs">{formatLogTime(entry.ts)}</td>
                   {/* 账号：显示**原值** + `truncate`（完整值放 `title`）。
                       此前只取末 8 位 —— 与 WB 侧的「显示全名」对不上，同一个账号在
                       两个页面显示成两个样子。 */}
