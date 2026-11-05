@@ -729,8 +729,6 @@ pub async fn spawn_listener(state: LoomyGatewayState) -> anyhow::Result<crate::G
 /// Loomy 网关产品线（[`crate::GatewayProduct`] 实现）。
 pub struct LoomyGateway;
 
-static LOOMY_SHARED_STATE: std::sync::OnceLock<LoomyGatewayState> = std::sync::OnceLock::new();
-
 impl crate::GatewayProduct for LoomyGateway {
     type State = LoomyGatewayState;
 
@@ -745,9 +743,12 @@ impl crate::GatewayProduct for LoomyGateway {
     ];
 
     fn shared_state() -> LoomyGatewayState {
-        LOOMY_SHARED_STATE
-            .get_or_init(|| LoomyGatewayState::new(LoomyGatewayConfig::load()))
-            .clone()
+        // ★ 必须回到 [`LoomyGatewayState::shared`] 这个**中继单例**。
+        //   这里曾经自建第二个单例（`LOOMY_SHARED_STATE`）⇒ 进程内出现两份状态：
+        //   中继把请求写进自己的日志/池，管理面（本函数的调用方）读的是另一份，
+        //   页面永远显示「暂无请求」、池与配置也可能各说各话（2026-11-04 线上实测）。
+        //   WB / Trae / Qoder 的中继与管理面本来就走同一个单例，不存在这个问题。
+        LoomyGatewayState::shared()
     }
 
     fn is_enabled(state: &LoomyGatewayState) -> impl std::future::Future<Output = bool> + Send {
@@ -774,6 +775,19 @@ pub fn log_file() -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// ★ 管理面（`GatewayProduct::shared_state`）与中继（`LoomyGatewayState::shared`）
+    ///   必须是**同一份状态**。曾经是两个单例 ⇒ 中继记的请求日志/池，管理面永远看不到，
+    ///   页面显示「暂无请求」（2026-11-04 线上实测）。用 `log` 的 Arc 指针判等。
+    #[test]
+    fn gateway_product_shared_state_is_the_relay_singleton() {
+        let admin = <LoomyGateway as crate::GatewayProduct>::shared_state();
+        let relay = LoomyGatewayState::shared();
+        assert!(
+            std::sync::Arc::ptr_eq(&admin.log, &relay.log),
+            "管理面与中继必须共用同一份状态（否则日志/池/配置各说各话）"
+        );
+    }
 
     /// ★ 「顺手刷新读数」的两个门：时间阈值 + 单飞。
     ///
